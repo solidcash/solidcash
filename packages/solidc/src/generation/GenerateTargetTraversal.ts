@@ -9717,7 +9717,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMasterSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
           this.emitDelegateSelfPreservation(node);
-          this.emitDelegateMintingNftUniqueness(node);
+          // DX-8 residual: a routed (message-bus) delegate keeps the minting count alone.
+          if (this.ownsMessageBusParticipantBlock()) this.emitDelegateMintingNftUniqueness(node);
+          else this.emitDelegateRecordConservation(node);
         } else if (isUpgrade) {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -9748,6 +9750,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
           this.emitDelegateSelfPreservation(node);
+          if (!this.ownsMessageBusParticipantBlock()) this.emitDelegateRecordConservation(node);
         } else if (isUpgrade) {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -45287,6 +45290,104 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emit(Op.OP_DROP, locationData);
     this.popFromStack(); // (del_cat_cap)
+  }
+
+  /**
+   * DX-8. A delegated call co-spends the implementation's minting master, which authorizes every record of the
+   * implementation's own category, so the delegate conserves them: the non-minting items of that category (data
+   * NFTs, entries, containers, immutables, FT) the outputs carry must be the ones the inputs carry, in the same
+   * order and unchanged (category, value, FT amount, lock, commitment). Each side folds them into a hash chain and
+   * the chains must match; minting NFTs only balance, as in emitDelegateMintingNftUniqueness, which this subsumes.
+   */
+  private emitDelegateRecordConservation(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+    this.emit(Op.OP_INPUTINDEX, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.pushToStack('(del_cat_cap)');
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(del_mint_bal)');
+    this.emitDelegateRecordChain(loc, true);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.popFromStack(); // (del_chain)
+    this.emitDelegateRecordChain(loc, false);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(); // (del_chain)
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.popFromStack(); // (del_mint_bal)
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (del_cat_cap)
+  }
+
+  /** `[cat_cap, bal] -> [cat_cap, bal', chain]` over the inputs (bal + minting) or outputs (bal - minting). */
+  private emitDelegateRecordChain(loc: SingleLocationData, inputs: boolean): void {
+    const [count, category, value, amount, bytecode, commitment] = inputs
+      ? [Op.OP_TXINPUTCOUNT, Op.OP_UTXOTOKENCATEGORY, Op.OP_UTXOVALUE, Op.OP_UTXOTOKENAMOUNT, Op.OP_UTXOBYTECODE,
+        Op.OP_UTXOTOKENCOMMITMENT]
+      : [Op.OP_TXOUTPUTCOUNT, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_OUTPUTVALUE, Op.OP_OUTPUTTOKENAMOUNT,
+        Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTTOKENCOMMITMENT];
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(del_chain)');
+    this.emit(count, loc);
+    this.pushToStack('(del_k)');
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(category, loc);                      // [cc, bal, h, k, cat]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(5n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);                      // a minting NFT of the category: balance it
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ROT, loc);
+    this.emit(inputs ? Op.OP_1ADD : Op.OP_1SUB, loc);
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);                   // [cc, bal, h, k, cat, base]
+    this.emit(encodeInt(2n), loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(encodeInt(5n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);                      // any other item of the category: chain it
+    for (const field of [value, amount]) {
+      this.emit(Op.OP_OVER, loc);
+      this.emit(field, loc);
+      this.emit(encodeInt(8n), loc);
+      this.emit(Op.OP_NUM2BIN, loc);
+      this.emit(Op.OP_CAT, loc);
+    }
+    this.emit(Op.OP_OVER, loc);
+    this.emit(bytecode, loc);
+    this.emit(Op.OP_SHA256, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(commitment, loc);
+    this.emit(Op.OP_CAT, loc);                     // [cc, bal, h, k, cat||value||amount||H(lock)||commitment]
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_SHA256, loc);
+    this.emit(Op.OP_SWAP, loc);                    // [cc, bal, h', k]
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (del_k)
   }
 
   /**

@@ -25,6 +25,7 @@ import {
 } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
+import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
 import type { Unlocker, Utxo } from '../interfaces.js';
 import type { StateValueType } from '../types/state-inference.js';
 import {
@@ -219,6 +220,13 @@ export async function deployFromStatefulContract<T extends Artifact>(
         + `Got vout ${fu.vout}.`,
       );
     }
+  }
+  // Child i's category is fundingUtxos[i].txid, so each coin is proven at the funder's own lock before anything is
+  // signed: a coin a provider lists there but that sits at another lock would hand the category to its owner.
+  const funderLock: Uint8Array = funder.generateLockingBytecode();
+  for (const fu of fundingUtxos) {
+    const coinRefusal = await ownCoinRefusal(provider, fu, funderLock, { role: 'funder', tokenFree: true });
+    if (coinRefusal !== undefined) throw new Error(coinRefusal);
   }
 
   // child i's category = fundingUtxos[i].txid. The first child's category doubles as the returned handle's.

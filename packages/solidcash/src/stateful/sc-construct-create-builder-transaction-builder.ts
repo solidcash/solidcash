@@ -488,15 +488,27 @@ export function constructCreateBuilderTransactionBuilder(
       if (current < 0n && !isPendingBatchPredecessor(
         abiFunction, finalArgs, Number(slot), predecessorCommitment ?? '',
       )) continue;
+      // DS-6: a lent delete of the node's own key (-3) naming this proof may have run on it: the planned relink then
+      // carries the default value (empty for the kinds the plan relinks so) in place of the node's own.
+      const argOf = (name: string): unknown => finalArgs[abiFunction.inputs.findIndex((c) => c.name === name)];
+      const deletedPredOut = expectedPredOut !== undefined && (abiFunction.sortedBatchInfo ?? []).some((batch) => (
+        batch.slotIndices.includes(Number(slot)) && batch.slotIndices.some((other) => {
+          const deleted = argOf(`__internal__vmapBatchSlot_${other}`);
+          return argOf(`__internal__vmapBatchPredOut_${other}`) === -3n
+            && argOf(`__internal__vmapBatchProof_${other}`) === proofOffset && deleted instanceof Uint8Array
+            && binToHex(deleted) === expectedPredOut.slice(0, 64).toLowerCase();
+        }))) ? expectedPredOut.slice(0, 128).toLowerCase() : undefined;
       if (current >= 0n && sameLock(outputLock(Number(current)), required)
         && (expectedPredOut === undefined
-          || commitmentOf(Number(current))?.toLowerCase() === expectedPredOut.toLowerCase())) continue;
+          || commitmentOf(Number(current))?.toLowerCase() === expectedPredOut.toLowerCase()
+          || (deletedPredOut !== undefined && commitmentOf(Number(current))?.toLowerCase() === deletedPredOut))) continue;
       // The P' is materialized elsewhere in this frame: find the output that carries it, requiring both the
       // authenticated lock and the exact content so a same-address NEW node can never be substituted.
       if (expectedPredOut !== undefined) {
         const found = materialized.outputs.findIndex((_output, index) =>
           sameLock(outputLock(index), required)
-          && commitmentOf(index)?.toLowerCase() === expectedPredOut.toLowerCase());
+          && (commitmentOf(index)?.toLowerCase() === expectedPredOut.toLowerCase()
+            || (deletedPredOut !== undefined && commitmentOf(index)?.toLowerCase() === deletedPredOut)));
         if (found >= 0) {
           finalArgs[position] = BigInt(found);
           changed = true;

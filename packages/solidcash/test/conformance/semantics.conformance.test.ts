@@ -108,6 +108,49 @@ describe('semantics: keccak256 (evmCompat)', () => {
     'return keccak256(bytes(s)) == keccak256("abc");', ['abc'], { evmCompat: true }));
 });
 
+// A string literal has solc's bytes on every path (compile-time hash and erc7201 folds, run-time pushes, memory,
+// constants): `\xNN` is one raw byte, `\uNNNN` is UTF-8, a backslash-newline continuation is dropped, and a
+// unicode literal is UTF-8. Solidity text: "a\n\r\t\'\"\\\x41\xc3\xa9\u00e9\u20ac\<newline>b" (16 bytes).
+const ESCAPED = '"a\\n\\r\\t\\\'\\"\\\\\\x41\\xc3\\xa9\\u00e9\\u20ac\\\nb"';
+// unicode"Hello <U+1F603> <U+00E9> \u00e9 \xc3\xa9" (19 bytes).
+const UNICODE = 'unicode"Hello \u{1F603} \u00e9 \\u00e9 \\xc3\\xa9"';
+const INVALID_UTF8 = '"\\xff\\xc3\\xa9"';
+const erc7201Formula = (id: string): string =>
+  `uint256(keccak256(bytes.concat(bytes32(uint256(keccak256(bytes(${id}))) - 1))) & ~bytes32(uint256(0xff)))`;
+const literal = (
+  label: string, retType: string, body: string, decls?: string,
+): Promise<void> => run(label, '', retType, body, [], { evmCompat: true, ...(decls ? { decls } : {}) });
+
+describe('semantics: string literal bytes (evmCompat)', () => {
+  it('keccak256 of an escaped literal', () => literal('lit-esc-keccak', 'bytes32',
+    `return keccak256(bytes(${ESCAPED}));`));
+  it('keccak256 folded from an escaped literal', () => literal('lit-esc-keccak-fold', 'bytes32',
+    `return keccak256(${ESCAPED});`));
+  it('length of an escaped literal', () => literal('lit-esc-length', 'uint256', `return bytes(${ESCAPED}).length;`));
+  it('keccak256 of a unicode literal', () => literal('lit-unicode-keccak', 'bytes32',
+    `return keccak256(bytes(${UNICODE}));`));
+  it('length of a unicode literal', () => literal('lit-unicode-length', 'uint256',
+    `return bytes(${UNICODE}).length;`));
+  it('keccak256 folded from a non-UTF-8 literal', () => literal('lit-raw-keccak-fold', 'bytes32',
+    `return keccak256(${INVALID_UTF8});`));
+  it('keccak256 of a non-UTF-8 literal in memory', () => literal('lit-raw-memory-keccak', 'bytes32',
+    `bytes memory b = ${INVALID_UTF8}; return keccak256(b);`));
+  it('length of a non-UTF-8 literal in memory', () => literal('lit-raw-memory-length', 'uint256',
+    `bytes memory b = ${INVALID_UTF8}; return b.length;`));
+  it('a string constant holding an escaped literal', () => literal('lit-esc-constant', 'bytes32',
+    'return keccak256(bytes(K));', `string constant K = ${ESCAPED};`));
+  it('erc7201 of an escaped literal', () => literal('lit-esc-erc7201', 'uint256', `return erc7201(${ESCAPED});`));
+  it('erc7201 of a unicode literal', () => literal('lit-unicode-erc7201', 'uint256', `return erc7201(${UNICODE});`));
+  it('erc7201 of an escaped string constant', () => literal('lit-esc-erc7201-constant', 'uint256',
+    'return erc7201(K);', `string constant K = ${ESCAPED};`));
+  it('the erc7201 formula over an escaped literal', () => literal('lit-esc-erc7201-formula', 'uint256',
+    `return ${erc7201Formula(ESCAPED)};`));
+  it('erc7201 of an escaped literal equals its formula', () => literal('lit-esc-erc7201-match', 'bool',
+    `return erc7201(${ESCAPED}) == ${erc7201Formula(ESCAPED)};`));
+  it('erc7201 of a unicode literal equals its formula', () => literal('lit-unicode-erc7201-match', 'bool',
+    `return erc7201(${UNICODE}) == ${erc7201Formula(UNICODE)};`));
+});
+
 describe('semantics: reverts on both VMs', () => {
   it('uint8 addition overflow', () => reverts('uint8-add-overflow', 'uint8 a', 'uint8', 'return a + 1;', [255n]));
   it('int8 negation of the minimum', () => reverts('int8-neg-min', 'int8 a', 'int8', 'return -a;', [-128n]));

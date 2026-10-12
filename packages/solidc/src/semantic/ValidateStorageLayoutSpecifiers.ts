@@ -1,4 +1,5 @@
 import { computeErc7201SlotNumber } from '@solidcash/utils';
+import { stringLiteralBytes } from '../ast/stringLiteralBytes.js';
 import { Location, Point } from '../ast/Location.js';
 import { StorageLayoutSpecifierError } from '../Errors.js';
 
@@ -91,7 +92,6 @@ const META_MEMBERS = new Map<string, Ty>([
 ]);
 const CONTRACT_KINDS = new Set(['contract', 'interface', 'library']);
 const SKIPPED_ITEMS = new Set(['constructor', 'fallback', 'receive', 'using', 'pragma', 'import']);
-const ESCAPES = new Map([['n', '\n'], ['r', '\r'], ['t', '\t']]);
 const VARIABLE_MODIFIERS = new Set([
   'public', 'private', 'internal', 'external', 'constant', 'immutable', 'override', 'transient', 'virtual',
 ]);
@@ -541,7 +541,8 @@ class LayoutSpecifierCheck {
         if (callee.den?.k !== 'builtin' || callee.den.name !== 'erc7201') return isUnknown(callee) ? undefined : null;
         const arg = e.args.length === 1 ? this.evaluate(e.args[0]) : null;
         if (!arg) return arg;
-        return typeof arg.v === 'string' ? { ty: UINT256, v: rat(computeErc7201SlotNumber(arg.v)) } : null;
+        if (typeof arg.v !== 'string') return null;
+        return { ty: UINT256, v: rat(computeErc7201SlotNumber(Uint8Array.from(arg.v, (c) => c.charCodeAt(0)))) };
       }
       default: return null;
     }
@@ -850,14 +851,10 @@ function readString(code: string, quoteAt: number, hex: boolean, toks: Tok[], st
     raw += code.slice(i, i + step);
     i += step;
   }
-  const s = hex
-    ? (raw.replace(/_/g, '').match(/../g) ?? []).map((h) => String.fromCharCode(parseInt(h, 16))).join('')
-    : raw.replace(/\\(?:x([\da-fA-F]{2})|u([\da-fA-F]{4})|(\r?\n)|([\s\S]))/g,
-      (_m: string, x?: string, u?: string, newline?: string, ch?: string): string => {
-        if (x || u) return String.fromCharCode(parseInt(x ?? u ?? '', 16));
-        if (newline) return '';
-        return ESCAPES.get(ch ?? '') ?? ch ?? '';
-      });
+  // One char per byte: hex digits pair up, any other string takes the bytes solc gives it (a malformed escape, which
+  // the parser rejects, reads as empty).
+  const bytes = hex ? (raw.replace(/_/g, '').match(/../g) ?? []).map((h) => parseInt(h, 16)) : stringLiteralBytes(raw);
+  const s = Array.from(bytes ?? [], (b) => String.fromCharCode(b)).join('');
   toks.push({ t: 'str', v: raw, pos: start, s });
   return i + 1;
 }

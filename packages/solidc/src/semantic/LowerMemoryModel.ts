@@ -1936,7 +1936,8 @@ export default class LowerMemoryModel extends AstTraversal {
     // assignable to a `string` return/state var - see types.ts string<->bytes rules).
     this.memBytes.set(node.name, bytesT instanceof BytesType ? bytesT : new BytesType());
     // Length: the runtime size expr for `new bytes(n)`, or the (zero) literal's byte length for the folded constant.
-    const literal = isString ? encodeString((node.expression as StringLiteralNode).value)
+    const literal = node.expression instanceof StringLiteralNode
+      ? node.expression.solidityBytes ?? encodeString(node.expression.value)
       : isHex ? (node.expression as HexLiteralNode).value : undefined;
     // A runtime size is evaluated once, where the bump evaluates it first.
     const size = this.once(literal

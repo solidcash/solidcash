@@ -689,6 +689,14 @@ export class FunctionTypeNotEncodableError extends SolidCashError {
   }
 }
 
+// A function id an entry point receives is caller-chosen; it must be checkable against the contract's own
+// public/external functions of its type.
+export class UncheckedFunctionIdParameterError extends SolidCashError {
+  constructor(node: Node, name: string, reason: string) {
+    super(node, `Function-pointer parameter '${name}' of an external/public function ${reason}`);
+  }
+}
+
 // solc TypeError 4103: an explicitly public/external library function cannot take or return an internal function.
 export class InternalTypeInPublicFunctionError extends ParseError {
   constructor(location?: Location) {

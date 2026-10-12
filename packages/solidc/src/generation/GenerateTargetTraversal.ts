@@ -91,6 +91,7 @@ import {
   isEvmNotationScalarType,
   resolveAddressForm,
   INVALID_FUNCTION_POINTER_ID,
+  implicitlyCastable,
   type AbiFunction,
   type AddressForm,
 } from '@solidcash/utils';
@@ -291,6 +292,7 @@ import {
   BlockLayoutUnavailableError, StackVariableUnavailableError, SolidcDiagnosticError,
   UnsupportedEvmAbiEncodingError, UnpinnedExternalCallTargetError, LogicalSenderUnavailableError,
   DirectStaleReadError, ConstructorStaleReadError, UnpublishableLoopGuardError, importedFileCaveat,
+  UncheckedFunctionIdParameterError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
@@ -1011,6 +1013,45 @@ class IdentifierUsageCollector extends AstTraversal {
     this.names.add(node.name);
     return node;
   }
+}
+
+// Names read anywhere except as a value an entry point hands back (`return p;`, `return (c ? p : q, 1);`).
+class InvocableIdentifierCollector extends IdentifierUsageCollector {
+  visitReturn(node: ReturnNode): Node {
+    const visitValue = (expression: ExpressionNode): void => {
+      if (expression instanceof IdentifierNode) return;
+      if (expression instanceof TernaryOpNode) {
+        this.visit(expression.condition);
+        visitValue(expression.ifTrue);
+        visitValue(expression.ifFalse);
+        return;
+      }
+      this.visit(expression);
+    };
+    node.expressions.forEach(visitValue);
+    return node;
+  }
+}
+
+// The type of `this.f` as a value, as TypeCheckTraversal assigns it (declared parameters only).
+function functionValueType(fn: FunctionDefinitionNode): FunctionType {
+  const stateMutability = fn.modifiers.includes(FunctionModifier.PAYABLE) ? 'payable'
+    : fn.modifiers.includes(FunctionModifier.PURE) ? 'pure'
+      : fn.modifiers.includes(FunctionModifier.VIEW) ? 'view' : 'nonpayable';
+  return new FunctionType(
+    fn.parameters.filter((p) => !p.name.startsWith('__internal__')).map((p) => p.type),
+    fn.returnTypes,
+    true,
+    stateMutability,
+  );
+}
+
+function containsFunctionType(type: Type, seen = new Set<StructType>()): boolean {
+  if (type instanceof FunctionType) return true;
+  if (type instanceof ArrayType) return containsFunctionType(type.elementType, seen);
+  if (!(type instanceof StructType) || seen.has(type)) return false;
+  seen.add(type);
+  return type.fields.some((field) => containsFunctionType(field.type, seen));
 }
 
 /**
@@ -2406,6 +2447,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   detachedVerifierBytecodes: Map<number, Uint8Array> = new Map();
   outlinedSubroutineBytecodes: Map<number, Uint8Array> = new Map(); // compiler helper id -> OP_INVOKE body
   invokeDebugInfo: Map<number, FunctionDebugInformation & { bytecode: string; name?: string }> = new Map();
+  // Public/external functions OP_DEFINE'd under their own id: the only ids an entry-supplied pointer may name.
+  private entryFunctionPointerTargets?: Array<{ id: number; type: FunctionType }>;
 
   // Every OP_DEFINE'd body emitted at contract level, kept in Script form so cross-function outlining can share
   // repeated spans between them before the dispatcher is emitted. `outputIndex` is the body's data push.
@@ -5972,6 +6015,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // can read constructor params (the subroutine path is param-less - only declared args are pushed). Key on
     // `!isEntryPoint`, not `visibility !== 'public'`, so external entry points (also non-'public') are not broken.
     const invoked = this.reachableInvokedFunctionIds(node);
+    // Only bodies already compiled for pointer calls (`this.f` values: no hidden callee frame) and defined here.
+    this.entryFunctionPointerTargets = node.functions
+      .filter((fn) => fn.isEntryPoint && fn.functionId !== undefined && invoked.has(fn.functionId)
+        && indirect.has(fn.functionId))
+      .map((fn) => ({ id: fn.functionId!, type: functionValueType(fn) }));
     const cheapAdmission = this.compilerOptions.__cheapAdmissionCodegen === true;
     const keepAdmissionBody = (fn: FunctionDefinitionNode): boolean => {
       // The throwaway pass only needs the atomic verifier closure so the binder can offload it.
@@ -7040,6 +7088,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.constructorParameterCount = 0; // no data pushes in sub-traversal output
       subTraversal.userFunctionDefs = this.userFunctionDefs;
       subTraversal.isDefineSubTraversal = false; // full entry-point compilation (removeFinalVerify + cleanStack)
+      subTraversal.entryFunctionPointerTargets = this.entryFunctionPointerTargets;
       subTraversal.upgradeSignatureFenceIds = this.upgradeSignatureFenceIds;
       subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
       subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
@@ -9204,6 +9253,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }).__kernelReadCarrierAuthorizationBox;
       if (box) box.codegenMatchedKernelJournalDispositionCommitment = dispositionDigest;
     }
+    if (!this.isDefineSubTraversal && node.isEntryPoint) this.emitEntryFunctionIdChecks(node);
     this.refuseStaleSortedReads(node);
     node.body = this.visit(node.body) as BlockNode;
     this.emitRepeatedSortedUpsertLoopCensuses(node);
@@ -9933,6 +9983,89 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitParameter(node: ParameterNode): Node {
     this.pushToStack(node.name, true);
     return node;
+  }
+
+  /**
+   * A function value an entry point receives is a caller-chosen OP_INVOKE id that could name any OP_DEFINE'd body
+   * (private or compiler helpers included). Pin it, and each element of a function-pointer array, to this
+   * contract's public/external functions of the parameter's type: the reach of an EVM external pointer. Parity
+   * gap: the invoked body still sees the original msg.sender where the EVM gives address(this). Internal flows
+   * (`this.f` passed inside the contract) run the OP_DEFINE'd copy of the function and are not re-checked.
+   */
+  private emitEntryFunctionIdChecks(node: FunctionDefinitionNode): void {
+    const params = node.parameters.filter((param) => containsFunctionType(param.type));
+    if (params.length === 0 || !node.body) return;
+    // An unread or only-returned value is never invoked here; leave it (and the function's bytes) unchecked.
+    const usage = new InvocableIdentifierCollector();
+    usage.visit(node.body);
+    for (const param of params) {
+      if (!usage.names.has(param.name)) continue;
+      const elementType = param.type instanceof ArrayType ? param.type.elementType : undefined;
+      const fnType = param.type instanceof FunctionType ? param.type
+        : elementType instanceof FunctionType ? elementType : undefined;
+      if (!fnType) {
+        throw new UncheckedFunctionIdParameterError(param, param.name,
+          'carries function ids inside a struct or nested array, which cannot be validated at entry');
+      }
+      const ids = (this.entryFunctionPointerTargets ?? [])
+        .filter((target) => implicitlyCastable(target.type, fnType))
+        .map((target) => BigInt(target.id));
+      if (ids.length === 0) {
+        throw new UncheckedFunctionIdParameterError(param, param.name, 'can only name this contract\'s '
+          + `public/external functions of type ${fnType.toString()}, and none of them is invocable by id`);
+      }
+      const loc: SingleLocationData = { location: param.location, positionHint: PositionHint.START };
+      this.emit(encodeInt(BigInt(this.getStackIndex(param.name))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(function_id)');
+      if (fnType === param.type) {
+        this.emitFunctionIdMembershipVerify(ids, loc);
+      } else {
+        // [length ++ elements]: drop the length, then verify elements until the remainder is empty.
+        this.emitPushdataDecode(PrimitiveType.BIGINT, loc);
+        this.emit(Op.OP_NIP, loc);
+        this.emit(Op.OP_BEGIN, loc);
+        this.emit(Op.OP_SIZE, loc);
+        this.emit(Op.OP_0NOTEQUAL, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emitPushdataDecode(fnType, loc);
+        this.emit(Op.OP_SWAP, loc);
+        this.emitFunctionIdMembershipVerify(ids, loc);
+        this.emit(encodeBool(false), loc);
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(encodeBool(true), loc);
+        this.emit(Op.OP_ENDIF, loc);
+        this.emit(Op.OP_UNTIL, loc);
+        this.emit(Op.OP_DROP, loc);
+      }
+      this.popFromStack();
+    }
+  }
+
+  /** Consume the id on top; fail unless its bytes equal one of `ids` (what OP_INVOKE then reads). */
+  private emitFunctionIdMembershipVerify(ids: bigint[], loc: SingleLocationData): void {
+    if (ids.length === 1) {
+      this.emit(encodeInt(ids[0]), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      return;
+    }
+    ids.forEach((id, index) => {
+      const last = index === ids.length - 1;
+      if (!last) this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(id), loc);
+      this.emit(Op.OP_EQUAL, loc);
+      if (last) {
+        this.emit(Op.OP_BOOLOR, loc);
+        this.emit(Op.OP_VERIFY, loc);
+        return;
+      }
+      // [acc, id, eq] -> [acc | eq, id]
+      if (index > 0) {
+        this.emit(Op.OP_ROT, loc);
+        this.emit(Op.OP_BOOLOR, loc);
+      }
+      this.emit(Op.OP_SWAP, loc);
+    });
   }
 
   visitVariableDefinition(node: VariableDefinitionNode): Node {

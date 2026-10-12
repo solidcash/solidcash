@@ -3608,6 +3608,13 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (mixesIntegerAndBytes) {
       throw new TernaryTypeMismatchError(node);
     }
+    // Integer literal branches take Solidity's type, their common mobile type (`c ? 63 : 255` is uint8), so
+    // arithmetic on the conditional is checked at that width even when its condition is a literal.
+    const mobile = this.conditionalMobileType(node);
+    if (mobile) {
+      node.type = mobile;
+      return node;
+    }
     if (implicitlyCastable(node.ifTrue.type, node.ifFalse.type)) {
       node.type = node.ifFalse.type;
     } else if (implicitlyCastable(node.ifFalse.type, node.ifTrue.type)) {
@@ -3617,6 +3624,25 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     return node;
+  }
+
+  // A source conditional of literal-valued branches: the wider of their mobile types when both share a signedness.
+  // Mixed signs have no common type (a solc error), so like any other conditional that one keeps its old typing.
+  private conditionalMobileType(node: TernaryOpNode): IntType | undefined {
+    if (!node.sourceConditional) return undefined;
+    const ifTrue = this.literalBranchMobileType(node.ifTrue);
+    const ifFalse = this.literalBranchMobileType(node.ifFalse);
+    if (!ifTrue || !ifFalse || ifTrue.signed !== ifFalse.signed) return undefined;
+    return ifTrue.bits >= ifFalse.bits ? ifTrue : ifFalse;
+  }
+
+  // An integer literal's (or literal-only expression's) mobile type, or that of a nested such conditional.
+  private literalBranchMobileType(branch: ExpressionNode): IntType | undefined {
+    if (branch instanceof TernaryOpNode) return this.conditionalMobileType(branch);
+    if (branch.type !== PrimitiveType.INT) return undefined;
+    const rational = this.evalLiteralRational(branch);
+    if (!rational || rational.numerator % rational.denominator !== 0n) return undefined;
+    return literalMobileType(rational.numerator / rational.denominator);
   }
 
   visitIdentifier(node: IdentifierNode): Node {

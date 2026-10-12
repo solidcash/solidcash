@@ -2104,6 +2104,9 @@ export class NullaryOpNode extends ExpressionNode {
 }
 
 export class TernaryOpNode extends ExpressionNode {
+  // Written in source: integer literal branches give it their common mobile type (`c ? 63 : 255` is uint8).
+  sourceConditional?: boolean;
+
   constructor(
     public condition: ExpressionNode,
     public ifTrue: ExpressionNode,

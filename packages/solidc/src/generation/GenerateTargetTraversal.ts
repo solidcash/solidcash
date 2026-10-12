@@ -26349,6 +26349,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !this.isCompilerMessageBusRoute()) {
       this.emitSharedProofRedirect(collection.name, sharedProofPrior, loc);
     }
+    if (this.activityAliasWrite(slotIndex)) {
+      this.emitActivityAliasReadRedirect(this.entrySlots[slotIndex].aliasCondDeleteSlot!, loc);
+    }
     if (this.readsRecordsFromFrame && this.batchTargetOrdinal(slotIndex) !== undefined) {
       if (this.readsPastBatchWrite()) this.emitCreatedTargetName(slotIndex, loc);
       // The node a write targets may be one an earlier frame created, which the frame names at its output alone.
@@ -26428,6 +26431,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(Op.OP_DROP, loc);
     this.emitEntryInputIndex(prior, loc, 2);
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
+   * DS-6: [Hk32, entryAddr, idx] -> [Hk32, entryAddr, idx']. A read of an activity-settled swap-remove write's entry
+   * whose own input holds no node of its collection takes its owner delete's fixed input: where the keys meet, the SDK
+   * spends the key's node there and funds the write's slot. The caller authenticates the input and proves the key.
+   */
+  private emitActivityAliasReadRedirect(owner: number, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_NOTIF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(__alias_read_hk)'); this.pushToStack('(__alias_read_addr)');
+    this.emitFixedEntryInputIndex(owner, loc);
+    this.popFromStack(2);
     this.emit(Op.OP_ENDIF, loc);
   }
 

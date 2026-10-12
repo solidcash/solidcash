@@ -13783,8 +13783,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // Verify a value cast to an enum is an actual member. Contiguous enums use a cheap range check; non-contiguous
   // ones (`enum E { A, B = 5 }`) would admit gap values with a range check, so verify exact membership instead.
-  private emitEnumBoundsCheck(type: EnumType, locationData: SingleLocationData): void {
-    if (this.uncheckedDepth > 0) return;
+  private emitEnumBoundsCheck(type: EnumType, locationData: SingleLocationData, always = false): void {
+    if (this.uncheckedDepth > 0 && !always) return;
     const values = type.members.map((m) => m.value);
     const min = values.reduce((a, b) => (b < a ? b : a), values[0]);
     const max = values.reduce((a, b) => (b > a ? b : a), values[0]);
@@ -21232,12 +21232,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   // evmCompat abi.decode of an all-value-type schema: the blob is N consecutive 32-byte big-endian words.
-  // Decode each in order (the last word is the remaining blob). Pure-emit; the caller tracks the net effect.
+  // Decode each in order. Pure-emit; the caller tracks the net effect.
   // Dynamic types (string / unbounded bytes) are not yet supported here.
   private emitEvmAbiDecode(schema: readonly Type[], loc: SingleLocationData): void {
     for (let i = 0; i < schema.length; i += 1) {
       if (i === schema.length - 1) {
-        this.emitEvmWordToValue(schema[i], loc); // the remaining blob is exactly the last 32-byte word
+        // As solc: a short blob reverts (OP_SPLIT), trailing bytes are ignored. Trusted blobs are exact.
+        if (!this.evmDecodeTrusted) this.emitEvmTakeHead(32, loc);
+        this.emitEvmWordToValue(schema[i], loc);
       } else {
         this.emit(encodeInt(32n), loc);
         this.emit(Op.OP_SPLIT, loc); // [word, remainder]
@@ -21380,6 +21382,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     throw new Error(`evmCompat abi.decode: unsupported type '${type.toString()}' (value types only)`);
+  }
+
+  // Keep the first `width` bytes of the blob on top (reverts when shorter) and drop the rest.
+  private emitEvmTakeHead(width: number, loc: SingleLocationData): void {
+    this.emit(encodeInt(BigInt(width)), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
   }
 
   // Revert unless the non-negative decoded value on top is below `bound` (it stays on the stack).
@@ -22461,19 +22470,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(new Uint8Array([0x51]), locationData);
       this.emit(Op.OP_EQUAL, locationData);
     } else if (type instanceof BytesType && type.bound !== undefined && type.bound >= 2 && type.bound <= 75) {
-      // Skip length prefix byte, rest is the data
-      this.emit(encodeInt(1n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_NIP, locationData);
+      this.emitExactPushLastField(type.bound, locationData);
     } else if (type === PrimitiveType.PUBKEY) {
-      this.emit(encodeInt(1n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_NIP, locationData);
+      this.emitExactPushLastField(33, locationData);
     } else {
       // Generic: parse pushdata header, extract value, drop remainder (should be empty)
       this.emitGenericPushdataDecode(type, locationData);
       this.emit(Op.OP_DROP, locationData); // drop remainder (empty)
     }
+  }
+
+  // The remaining blob must be exactly `<n> ++ n bytes`: revert on a wrong prefix or length, leave the n bytes.
+  private emitExactPushLastField(n: number, locationData: SingleLocationData): void {
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(encodeInt(BigInt(n + 1)), locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.emit(encodeInt(1n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(new Uint8Array([n]), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
   }
 
   /**
@@ -22681,14 +22697,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * After `emitGenericPushdataDecode` leaves `[value, remainder]`, refuse an out-of-range numeric value in place
-   * without disturbing the remainder. No-op for non-bounded types (bytes, string, bigint, function pointers).
+   * After `emitGenericPushdataDecode` leaves `[value, remainder]`, refuse an out-of-range numeric value or a non-member
+   * enum in place without disturbing the remainder. No-op for other types (bytes, string, bigint, function pointers).
    * Stack before: [value, remainder] -> Stack after: [value, remainder]
    */
   private emitPushdataDecodedBoundsCheck(type: Type, locationData: SingleLocationData): void {
-    if (!(type instanceof IntType) && !(type instanceof FixedType)) return;
+    if (!(type instanceof IntType) && !(type instanceof FixedType) && !(type instanceof EnumType)) return;
     this.emit(Op.OP_SWAP, locationData); // [remainder, value]
-    this.emitDecodedNumericRangeCheck(type, locationData);
+    if (type instanceof EnumType) this.emitEnumBoundsCheck(type, locationData, true);
+    else this.emitDecodedNumericRangeCheck(type, locationData);
     this.emit(Op.OP_SWAP, locationData); // [value, remainder]
   }
 
@@ -22700,7 +22717,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitGenericPushdataDecode(type: Type, locationData: SingleLocationData): void {
     this.bumpSubroutineUse(GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID);
     const isIntLike = type === PrimitiveType.INT || type === PrimitiveType.BIGINT
-      || type instanceof IntType || type instanceof FixedType;
+      || type instanceof IntType || type instanceof FixedType || type instanceof EnumType;
 
     // Use the shared OP_DEFINE subroutine when available. This helper is a pure data-stack
     // transformation and does not read the delegate proxy index off the altstack, so delegate

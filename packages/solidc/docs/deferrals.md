@@ -1923,3 +1923,21 @@ read-only; satoshi and fungible-token movements of the callee are not pinned wit
 
 **Why deferred:** it is a semantic-versus-size trade-off on every contract that calls view functions; it needs a
 decision, then an adversarial review like the other covenant changes.
+
+## A framed proxy's `initialize` runs as a third transaction (audit SDKFRAMED-2 residual, 2026-10-12)
+
+**What:** `deployFramedProxy` broadcasts the implementation genesis and the proxy genesis, then runs `initialize`
+as a separate hop, so between the proxy genesis and the hop a mempool watcher can initialize the proxy first.
+a77f58421 moved every refusal that can be known up front before the first genesis (an unproven genesis coin, a
+caller funder whose lock is not `callerLockingBytecode`, a caller coin that is also a genesis coin or is not proven
+at the caller lock). Still raised after the geneses: a record-count mismatch, hop planning errors, an unaccepted
+hop, and the "sends value from a loop" check. A deploy without `callerFunding` leaves the proxy uninitialized by
+design (five deploy tests rely on it). The direct (non-framed) deploy in `sc-deploy.ts` has the same
+unproven-coin shape that SDKFRAMED-1 closed for framed deploys; no audit row names it.
+
+**Proposed design:** run `initialize` as the proxy genesis's own constructor frame, or plan the hop before any
+broadcast against a provider overlay that serves the two unbroadcast geneses. The loop-value check can move up
+front using the predicted genesis state.
+
+**Why deferred:** the first is a protocol change to the proxy genesis; the second refactors the hop pipeline,
+which reads the provider in several places and keys its deployment registry by provider identity.

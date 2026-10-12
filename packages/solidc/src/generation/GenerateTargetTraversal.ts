@@ -3377,6 +3377,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitBytesNonEmpty(locationData);
   }
 
+  /** A direct pure read that may prove its key with another slot's input (emitSharedProofRedirect). */
+  private sharesProofInput(slotIndex: number): boolean {
+    return this.entrySlots[slotIndex]?.sharedProofPriorSlot !== undefined && !this.isCompilerMessageBusRoute();
+  }
+
+  /**
+   * [] -> [1 if the slot's fixed input sits at its collection's entry address]. A shared-proof read slot holds a node
+   * only there: its presence gates decide as its batch or collection census and its redirect do, by the address.
+   */
+  private emitEntrySlotAtAddressCheck(slotIndex: number, loc: SingleLocationData): void {
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack('(sortedaddr)');
+    this.emitSortedEntryAddress(computeCollectionHash(this.entrySlots[slotIndex].collectionSignature), loc);
+    this.emitFixedEntryInputIndex(slotIndex, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.popFromStack();
+  }
+
   /**
    * [] -> [1 if the entry is present]. A framed frame reads it at the coordinate its block declares. A node an
    * earlier frame created declares the no-index sentinel there, which names no input, and only that coordinate reads
@@ -3386,7 +3407,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitReadOnlyEntryExistsCheck(slotIndex: number, locationData: SingleLocationData): void {
     if (!this.readsRecordsFromFrame) {
-      this.emitSlotExistsCheck('entry', slotIndex, locationData);
+      if (this.sharesProofInput(slotIndex)) this.emitEntrySlotAtAddressCheck(slotIndex, locationData);
+      else this.emitSlotExistsCheck('entry', slotIndex, locationData);
       return;
     }
     this.emitEntryInputIndex(slotIndex, locationData, 0);

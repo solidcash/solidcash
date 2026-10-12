@@ -23228,9 +23228,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  // A folded call whose value is used and which cannot complete (statement forms became a `revert` earlier): fail
+  // where it is evaluated, then push one placeholder per result so the unreachable rest keeps its stack shape.
+  private emitFoldedCallFailure(node: ExternalFunctionCallNode): void {
+    const revert = new RevertNode();
+    revert.location = node.location;
+    this.visit(revert);
+    const results = node.type instanceof TupleType ? node.type.elements.length
+      : node.type === undefined || node.type === PrimitiveType.VOID ? 0 : 1;
+    for (let i = 0; i < results; i += 1) {
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.END });
+      this.pushToStack('(value)');
+    }
+  }
+
   visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
     // A call folded into a deploy genesis is inert here - its effect is emitted by the deploy covenant.
-    if (node.foldedIntoDeploy) return node;
+    if (node.foldedIntoDeploy) {
+      if (node.foldedCallReverts) this.emitFoldedCallFailure(node);
+      return node;
+    }
     // A call an argument expression makes was already lowered into its own site for the call it feeds; visiting it
     // again would bind a second record, so the visit lifts the value it left on the frame for the digest instead.
     if (this.framedMaster && this.framedLoweredSites.has(node)) {

@@ -1946,8 +1946,10 @@ which reads the provider in several places and keys its deployment registry by p
 
 **What:** a direct body such as `if (sel > 0) { delete m[k]; } else { m[j] = v; }` compiles to one linear
 two-target batch. Its delete keeps the hardened guard of 34ffb8b25 (the delete slot's input sits at the entry
-address; a false guard means no write ran), so when the write arm runs while `k` is absent the call is refused.
-It fails closed. Lone conditional deletes settle by what ran (06c633c6d) and have no such gap.
+address; a false guard means no write ran), and 32cc7fbe9 gives the write its own ran flag so an unrun write keeps
+its node. Three honest calls fail closed: the write arm while `k` is absent, the delete arm while `j` is absent
+(before 32cc7fbe9 it settled a duplicate predecessor relink), and a write arm that covers only part of a larger
+batch. Lone conditional deletes settle by what ran (06c633c6d) and have no such gap.
 
 **Proposed design:** settle the delete outside the batch as the lone-delete code does, and give the write its own
 ran flag: when it ran, check its single-target transition; when it did not, keep its node. Collection counts add

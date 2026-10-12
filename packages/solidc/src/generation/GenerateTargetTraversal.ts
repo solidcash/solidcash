@@ -9723,9 +9723,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMasterSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
           this.emitDelegateSelfPreservation(node);
-          // DX-8 residual: a routed (message-bus) delegate keeps the minting count alone.
-          if (this.ownsMessageBusParticipantBlock()) this.emitDelegateMintingNftUniqueness(node);
-          else this.emitDelegateRecordConservation(node);
+          // DX-8, direct and routed alike: an honest route carries no implementation item but its executor.
+          this.emitDelegateRecordConservation(node);
         } else if (isUpgrade) {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -9756,7 +9755,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
           this.emitDelegateSelfPreservation(node);
-          if (!this.ownsMessageBusParticipantBlock()) this.emitDelegateRecordConservation(node);
+          this.emitDelegateRecordConservation(node);
         } else if (isUpgrade) {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -45398,112 +45397,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Verify the delegate's OWN minting NFT is not duplicated.
-   * emitMintingNftUniqueness uses emitMasterInputIndex (proxy's index),
-   * so this additional check verifies the delegate's own category (via OP_INPUTINDEX).
-   */
-  private emitDelegateMintingNftUniqueness(node: FunctionDefinitionNode): void {
-    const locationData: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
-
-    // Get delegate's own category+capability (33 bytes: 32-byte category + 0x02 minting)
-    this.emit(Op.OP_INPUTINDEX, locationData);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-    this.pushToStack('(del_cat_cap)');
-
-    // Initialize counter = 0
-    this.emit(encodeInt(0n), locationData);
-    this.pushToStack('(del_mint_bal)');
-
-    // Input loop: count minting NFTs of delegate's category
-    this.emit(Op.OP_TXINPUTCOUNT, locationData);
-    this.emit(Op.OP_1SUB, locationData);
-    this.pushToStack('(loop_i)');
-
-    this.emit(Op.OP_BEGIN, locationData);
-
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_LESSTHAN, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(encodeBool(true), locationData);
-    this.emit(Op.OP_ELSE, locationData);
-
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-    this.emit(encodeInt(3n), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_EQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-
-    this.emit(Op.OP_1SUB, locationData);
-    this.emit(encodeBool(false), locationData);
-
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_UNTIL, locationData);
-    this.popFromStack(); // (loop_i)
-
-    // Output loop: decrement counter for each matching output
-    this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
-    this.emit(Op.OP_1SUB, locationData);
-    this.pushToStack('(loop_j)');
-
-    this.emit(Op.OP_BEGIN, locationData);
-
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_LESSTHAN, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(encodeBool(true), locationData);
-    this.emit(Op.OP_ELSE, locationData);
-
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(encodeInt(33n), locationData);
-    this.emit(Op.OP_NUMEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(encodeInt(3n), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_EQUAL, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(encodeBool(false), locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_1SUB, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-
-    this.emit(Op.OP_1SUB, locationData);
-    this.emit(encodeBool(false), locationData);
-
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_UNTIL, locationData);
-    this.popFromStack(); // (loop_j)
-
-    // Verify balance >= 0 (no new minting NFTs of delegate's category created)
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
-    this.popFromStack(); // (del_mint_bal)
-
-    this.emit(Op.OP_DROP, locationData);
-    this.popFromStack(); // (del_cat_cap)
-  }
-
-  /**
    * DX-8. A delegated call co-spends the implementation's minting master, which authorizes every record of the
    * implementation's own category, so the delegate conserves them: the non-minting items of that category (data
    * NFTs, entries, containers, immutables, FT) the outputs carry must be the ones the inputs carry, in the same
    * order and unchanged (category, value, FT amount, lock, commitment). Each side folds them into a hash chain and
-   * the chains must match; minting NFTs only balance, as in emitDelegateMintingNftUniqueness, which this subsumes.
+   * the chains must match; minting NFTs of the category only balance (no new minting NFT). Routed delegates too.
    */
   private emitDelegateRecordConservation(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };

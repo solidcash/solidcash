@@ -1941,3 +1941,19 @@ front using the predicted genesis state.
 
 **Why deferred:** the first is a protocol change to the proxy genesis; the second refactors the hop pipeline,
 which reads the provider in several places and keys its deployment registry by provider identity.
+
+## A conditional delete beside a write in one sorted batch refuses the write arm on an absent key (DS-6 residual, 2026-10-12)
+
+**What:** a direct body such as `if (sel > 0) { delete m[k]; } else { m[j] = v; }` compiles to one linear
+two-target batch. Its delete keeps the hardened guard of 34ffb8b25 (the delete slot's input sits at the entry
+address; a false guard means no write ran), so when the write arm runs while `k` is absent the call is refused.
+It fails closed. Lone conditional deletes settle by what ran (06c633c6d) and have no such gap.
+
+**Proposed design:** settle the delete outside the batch as the lone-delete code does, and give the write its own
+ran flag: when it ran, check its single-target transition; when it did not, keep its node. Collection counts add
+per target, and a write that ran may not use the delete slot's input as its proof node.
+
+**Why deferred:** the SDK places inputs before its VM probe, but when the two keys share a node (adjacent keys,
+the same gap, or the same key) the slot that must hold that input depends on which branch runs. It needs a
+re-plan after the first derive pass, plus per-target no-op witnesses and a multi-target version of
+`dropSkippedConditionalInserts`.

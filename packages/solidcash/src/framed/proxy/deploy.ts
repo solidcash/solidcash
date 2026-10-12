@@ -18,11 +18,14 @@
  * The first two transactions are broadcast through the shipped deployment entry point, which selects the framed
  * genesis from the artifact. The third is built by the shipped composer: the plan names the deployed masters, the
  * proxy's record and validator, and the delegate edge, and the shipped derivation resolves the callee reference
- * and fills the witnesses. That derived transaction is the specification of the hop. When the caller supplies its
- * own funding (`callerFunding`), the hop is rebuilt on the outpoints the two geneses actually created — the two
- * masters, the validator, the proxy's record and the caller's own coin — signed by the caller, and broadcast, so
- * the deployment comes out as three broadcast transactions. When it does not, the hop is only derived, which is
- * what a caller that wants the shape without broadcasting it takes.
+ * and fills the witnesses. That derived transaction is the specification of the hop. The hop is rebuilt on the
+ * outpoints the two geneses create (the two masters, the validator, the proxy's record) and the caller's own coin
+ * (`callerFunding`, required), and signed by the caller.
+ *
+ * Nothing is broadcast until all three are built and the hop is accepted: the geneses are signed through an overlay
+ * that holds them and serves their outputs to the hop's planning, and the three go out back to back only then. A
+ * refusal anywhere before that broadcasts nothing, so no proxy is left uninitialized for anyone to initialize first
+ * (audit SDKFRAMED-2).
  *
  * A later call by anyone is the same hop on the same live pools: `callFramedProxyEntry` names the entry and the
  * caller's coin and runs the identical plan, derivation, evaluation and broadcast. The delegation is one
@@ -82,6 +85,7 @@ import { decodeReturnValues } from '../read/index.js';
 import { FramedProxyDeployError } from './errors.js';
 import { hopTrace, hopTraceError, hopTraceOn } from './hop-trace.js';
 import { learnedReachedValue } from './reached-values.js';
+import { stageBroadcasts } from './staged-broadcasts.js';
 import { skippedEmits, type WriteActivationFacts } from './write-activation.js';
 import {
   hopEntryWrites, mappingHeadCollection, mappingNodeSlot, sharedNodeId,
@@ -164,12 +168,13 @@ export interface FramedProxyDeployOptions {
   /** The deployer's own 25-byte P2PKH lock: the root frame's caller, and the `initialize` frame's `msg.sender`. */
   readonly callerLockingBytecode: Uint8Array;
   /**
-   * The caller's own funding for the initialize hop, or absent to leave the hop derived.
+   * The caller's own funding for the initialize hop. Required: a deployment without it is refused, since the geneses
+   * alone would leave the proxy uninitialized for anyone to initialize first.
    *
-   * Supplying it is what makes the hop real: the derived hop is rebuilt on the outpoints the two geneses actually
-   * created, the caller input is signed by `funder` over that transaction, and the result is broadcast, so the
-   * deployment comes out as three broadcast transactions. The caller's input is the deployer's own — the frame's
-   * root caller — so the UTXO must sit at `callerLockingBytecode`, the same lock the witness sender is bound to.
+   * The derived hop is rebuilt on the outpoints the two geneses create, the caller input is signed by `funder` over
+   * that transaction, and the three transactions are broadcast. The caller's input is the deployer's own (the
+   * frame's root caller), so the UTXO must sit at `callerLockingBytecode`, the same lock the witness sender is bound
+   * to.
    */
   readonly callerFunding?: FramedProxyCallerFunding;
   /**
@@ -214,7 +219,10 @@ export interface FramedProxyDeployment {
     readonly completed: readonly FrameRequest[];
     /** Every participant's verdict, in input order. */
     readonly verdicts: readonly InitializeVerdict[];
-    /** True when every convention input — the masters, the validator and the record — was accepted. */
+    /**
+     * True when every convention input (the masters, the validator and the record) was accepted. A refused hop is
+     * thrown before anything is broadcast, so a returned deployment always carries `true`.
+     */
     readonly accepted: boolean;
     /** The commitment of each record after the entry ran, in data-NFT order: what the entry itself computed. */
     readonly writtenRecordCommitments: readonly Uint8Array[];
@@ -229,14 +237,13 @@ export interface FramedProxyDeployment {
     /** The first returned value, for the common single-value `initialize`. */
     readonly value: StateValue;
     /**
-     * The provider's receipt for the hop, present only when the caller supplied `callerFunding` and every participant
-     * was accepted.
+     * The provider's receipt for the hop, broadcast right after the two geneses.
      *
      * The hop's outputs carry what `transaction` describes — the same participants recreated, the record at the
      * commitment the entry computed — placed on the outpoints the geneses created. `transaction` remains the
-     * derived specification either way.
+     * derived specification.
      */
-    readonly broadcast?: TransactionDetails;
+    readonly broadcast: TransactionDetails;
   };
 }
 
@@ -1027,11 +1034,14 @@ function callerUnlocking(): Uint8Array {
  * seeded with the implementation's address — `addrV(implementationCategory)`, not whatever `Contract.address`
  * reports for a placeholder program — so the proxy's fallback delegates to the master the implementation actually
  * runs on.
+ *
+ * The deployment commits fully or broadcasts nothing: every refusal, static or from the hop's own evaluation, is
+ * raised while the three transactions are only held, and they are broadcast back to back after the hop is accepted.
  */
 export async function deployFramedProxy(
   options: FramedProxyDeployOptions,
 ): Promise<FramedProxyDeployment> {
-  const { provider, implementationArtifact } = options;
+  const { implementationArtifact } = options;
   const proxyArtifact = options.proxyArtifact ?? buildProxyArtifact(implementationArtifact);
   requireProxyShape(proxyArtifact);
   requireSharedLayout(implementationArtifact, proxyArtifact);
@@ -1048,10 +1058,21 @@ export async function deployFramedProxy(
       throw new FramedProxyDeployError('each genesis funding UTXO must be at vout 0 to create a token category');
     }
   }
-  // A refusal knowable now is raised before the first genesis: one raised after the proxy's leaves it uninitialized
-  // for anyone to initialize first (audit SDKFRAMED-2).
-  const upFrontRefusal = await deployFundingRefusal(options);
+  // The hop is what initializes the proxy, so a deployment that cannot broadcast it is refused (audit SDKFRAMED-2).
+  const { callerFunding } = options;
+  if (callerFunding === undefined) {
+    throw new FramedProxyDeployError(
+      'a framed proxy deployment needs `callerFunding`: without the caller\'s own coin the initialize hop cannot be '
+      + 'broadcast, and the geneses alone would leave the proxy uninitialized for anyone to initialize first',
+    );
+  }
+  // A refusal knowable now is raised before anything is signed.
+  const upFrontRefusal = await deployFundingRefusal(options, callerFunding);
   if (upFrontRefusal !== undefined) throw new FramedProxyDeployError(upFrontRefusal);
+  // Every transaction below is signed through the overlay, which holds it and serves its outputs to the reads after
+  // it, so a refusal anywhere before the release broadcasts nothing.
+  const staging = stageBroadcasts(options.provider);
+  const { provider } = staging;
 
   const validatorProgram = framedValidator.buildValidatorProgram();
   const implementationCategory = hexToBin(options.implementationDeploy.fundingUtxo.txid);
@@ -1102,7 +1123,7 @@ export async function deployFramedProxy(
     .filter((collection) => collection.sorted === true)
     .map((collection) => ({ name: collection.name, signature: collection.signature }));
 
-  // 1. The implementation's genesis and pools.
+  // 1. The implementation's genesis and pools, signed and held until the hop is accepted.
   const implementation = await deployStatefulContract(
     implementationArtifact, [...(options.implementationArgs ?? [])],
     { ...options.implementationDeploy, provider },
@@ -1156,7 +1177,7 @@ export async function deployFramedProxy(
     return hexToBin(commitment);
   });
 
-  const vm = options.vm ?? await providerMachine(provider);
+  const vm = options.vm ?? await providerMachine(options.provider);
   const maximumCommitmentBytes = provider.consensusLimits?.maximumNftCommitmentBytes
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
   const recordLockingBytecode = stateRecordLockingBytecode(options.proxyDeploy.fundingUtxo.txid);
@@ -1274,11 +1295,18 @@ export async function deployFramedProxy(
       initializeEntry!.resultEncoding, implementationArtifact.enums,
     );
 
-  // The hop is the derived transaction until the caller offers its own coin; then it is rebuilt on the geneses'
-  // outpoints, signed and broadcast. A hop a participant refused is never broadcast: its verdicts are the answer.
-  const broadcast = options.callerFunding === undefined || !accepted ? undefined : await broadcastHop({
+  // A hop a participant refused is never broadcast, and neither is either genesis: its verdicts are the refusal.
+  if (!accepted) {
+    const refused = verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
+    throw new FramedProxyDeployError(
+      `the "${options.initialize.functionName}" hop was refused, so nothing was broadcast: ${refused}`,
+    );
+  }
+  // The hop is rebuilt on the geneses' outpoints and signed, and held like them.
+  const broadcast = await broadcastHop({
     provider,
-    callerFunding: options.callerFunding,
+    callerFunding,
     callerLockingBytecode: options.callerLockingBytecode,
     proxyArtifact,
     implementationArtifact,
@@ -1291,11 +1319,20 @@ export async function deployFramedProxy(
       : { spentUtxos: new Map([...(entryWrites?.spentUtxos ?? []), ...externalPlan.utxos, ...facetSpends]) }),
   });
 
+  // 3. Everything is built and the hop accepted: the implementation's genesis, the proxy's and the hop go out back
+  // to back, in that order.
+  try {
+    await staging.release();
+  } catch (error) {
+    throw new FramedProxyDeployError(
+      `the deployment was refused while broadcasting: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   // The deployment is recorded under the address the proxy presents, so a caller whose own state holds that
   // address — another contract's entry calling into this one — resolves the live deployment from it. The record
   // carries the implementation's artifact beside the proxy's category and the implementation's own, so the caller
   // can place the same fallback-plus-delegate chain this deployment runs.
-  registerDeployment(provider, {
+  registerDeployment(options.provider, {
     contractName: implementationArtifact.contractName,
     address: binToHex(proxyMaster.address),
     lockingBytecode: binToHex(proxyMaster.address),
@@ -1325,21 +1362,21 @@ export async function deployFramedProxy(
       writtenEventCommitments,
       // The value the entry returned, which its own body computed, decoded the way a direct call decodes one.
       retval, values, value: values[0] ?? 0n,
-      ...(broadcast === undefined ? {} : { broadcast }),
+      broadcast,
     },
   };
 }
 
 /** Why the coins a proxy deployment signs for cannot carry it: both genesis coins and the hop's caller coin. */
-async function deployFundingRefusal(options: FramedProxyDeployOptions): Promise<string | undefined> {
+async function deployFundingRefusal(
+  options: FramedProxyDeployOptions, callerFunding: FramedProxyCallerFunding,
+): Promise<string | undefined> {
   const halves = [options.implementationDeploy, options.proxyDeploy];
   for (const half of halves) {
     const refusal = await ownCoinRefusal(
       options.provider, half.fundingUtxo, half.funder.generateLockingBytecode(), { role: 'funder', tokenFree: true });
     if (refusal !== undefined) return refusal;
   }
-  const { callerFunding } = options;
-  if (callerFunding === undefined) return undefined;
   if (!bytesEqual(callerFunding.funder.generateLockingBytecode(), options.callerLockingBytecode)) {
     return CALLER_LOCK_REFUSAL;
   }

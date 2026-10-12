@@ -14,6 +14,7 @@ import {
   RequireNode, ReturnNode, StateAccessNode, StateAssignNode,
   StringLiteralNode, StructDefinitionNode, TernaryOpNode, TimeOpNode, TupleAssignmentNode, TupleIndexOpNode,
   UnaryOpNode, VariableDefinitionNode,
+  exactArrayLength,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
 
@@ -326,7 +327,7 @@ function publishFunctionSources(
           while (constantIndex.kind === 'cast' && constantIndex.expression) constantIndex = constantIndex.expression;
           const literalIndex = constantIndex.kind === 'literal' && typeof constantIndex.value === 'string'
             && /^\d+$/u.test(constantIndex.value) ? BigInt(constantIndex.value) : undefined;
-          if (literalIndex !== undefined && literalIndex >= BigInt(arrayType.bound)) return false;
+          if (literalIndex !== undefined && literalIndex >= exactArrayLength(arrayType)!) return false;
           env.locals.set(definition, {
             kind: 'array', type: arrayType.toString(),
             args: Array.from({ length: arrayType.bound }, (_, position) => {

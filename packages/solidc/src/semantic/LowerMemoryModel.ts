@@ -50,6 +50,7 @@ import {
   ArrayPopNode,
   EmitStatementNode,
   FunctionModifier,
+  exactArrayLength,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { GlobalFunction } from '../ast/Globals.js';
@@ -1842,7 +1843,7 @@ export default class LowerMemoryModel extends AstTraversal {
       this.usesMemory = true;
       this.memArrays.set(node.name, arrT);
       const ptr = new IdentifierNode(node.name);
-      const size = this.intLit(BigInt(arrT.bound) * WORD);
+      const size = this.intLit(exactArrayLength(arrT)! * WORD);
       const decl = this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.freePtr()), node);
       const bump = this.at(this.setFreePtr(this.add(this.clone(ptr), this.clone(size))), node);
       const grow = this.at(this.assign(YULMEM,
@@ -2086,7 +2087,7 @@ export default class LowerMemoryModel extends AstTraversal {
     // element's checked address, moved back to the first element's.
     const span = BigInt(values.length - 1);
     const lastIndex = head.index.value + span;
-    const size = arrT.bound === undefined ? this.literalSizes.get(head.name) : BigInt(arrT.bound);
+    const size = arrT.bound === undefined ? this.literalSizes.get(head.name) : exactArrayLength(arrT);
     const within = size !== undefined && lastIndex < size;
     const run: Once = within ? { first: addr, again: () => this.clone(addr) } : {
       first: new BinaryOpNode(
@@ -2188,7 +2189,7 @@ export default class LowerMemoryModel extends AstTraversal {
         || this.memNestedArrays.has(node.expression.name) || this.memBytes.has(node.expression.name))) {
       const arrT = this.memArrays.get(node.expression.name) ?? this.memStructArrays.get(node.expression.name)
         ?? this.memNestedArrays.get(node.expression.name);
-      if (arrT?.bound !== undefined) return this.at(this.intLit(BigInt(arrT.bound)), node);
+      if (arrT?.bound !== undefined) return this.at(this.intLit(exactArrayLength(arrT)!), node);
       const len = this.mload(new IdentifierNode(node.expression.name), this.uint());
       return this.at(new CastNode(PrimitiveType.BIGINT, len, false), node);
     }
@@ -2196,7 +2197,7 @@ export default class LowerMemoryModel extends AstTraversal {
     if (node.operator === UnaryOperator.SIZE) {
       const b = this.resolvePtr(node.expression);
       if (b && b.memType instanceof ArrayType) {
-        if (b.memType.bound !== undefined) return this.at(this.intLit(BigInt(b.memType.bound)), node);
+        if (b.memType.bound !== undefined) return this.at(this.intLit(exactArrayLength(b.memType)!), node);
         return this.at(new CastNode(PrimitiveType.BIGINT, this.mload(b.ptr, this.uint()), false), node);
       }
     }
@@ -2394,15 +2395,15 @@ export default class LowerMemoryModel extends AstTraversal {
     const { read } = options;
     const at = (base: ExpressionNode, i: ExpressionNode): ExpressionNode => (memType instanceof ArrayType
       ? this.arrayElemAddr(memType, base, i) : this.byteAddr(base, i));
-    const bound = memType instanceof ArrayType ? memType.bound : undefined;
+    const bound = memType instanceof ArrayType ? exactArrayLength(memType) : undefined;
     if (read && index instanceof IntLiteralNode && (index.value < 0n
-      || (read instanceof TupleIndexOpNode && bound !== undefined && index.value >= BigInt(bound)))) {
+      || (read instanceof TupleIndexOpNode && bound !== undefined && index.value >= bound))) {
       throw new IndexOutOfBoundsError(read as TupleIndexOpNode);
     }
     const size = ptr instanceof IdentifierNode ? this.literalSizes.get(ptr.name) : undefined;
     const literal = index instanceof IntLiteralNode && index.value >= 0n ? index.value : undefined;
     const unchecked = options.proven === true || (literal !== undefined
-      && ((bound !== undefined && literal < BigInt(bound)) || (size !== undefined && literal < size)));
+      && ((bound !== undefined && literal < bound) || (size !== undefined && literal < size)));
     // A load evaluates a pointer or index beyond a literal or a name once, binding it where the check reads it again.
     const single = uses === 1 && !(this.isTrivial(ptr) && this.isTrivial(index) && !options.bindIndex);
     const reused = !single || !unchecked;
@@ -2413,7 +2414,7 @@ export default class LowerMemoryModel extends AstTraversal {
     // The address evaluates the pointer, then the index, then the length word and the check against it.
     const length = bound === undefined
       ? memWordLoad(() => base.again(), { decodeType: PrimitiveType.BIGINT })
-      : this.intLit(BigInt(bound));
+      : this.intLit(bound);
     const inRange = new FunctionCallNode(new IdentifierNode(GlobalFunction.WITHIN), [i.again(), this.intLit(0n), length]);
     const checked = new BinaryOpNode(i.first, BinaryOperator.DIV, new CastNode(PrimitiveType.BIGINT, inRange, false));
     return { first: at(base.first, checked), again, single };

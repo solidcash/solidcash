@@ -237,6 +237,8 @@ import {
   StateArrayDeleteNode,
   type KeySourceInfo,
   type YulWordBuiltin,
+  exactArrayBounds,
+  exactArrayLength,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { GlobalFunction, Class } from '../ast/Globals.js';
@@ -16562,11 +16564,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
-    // A bounded chunk-packed array always holds its N elements: `.length` is the constant bound.
-    if (node.operator === UnaryOperator.SIZE && node.expression instanceof StateAccessNode
-      && node.expression.stateVariable?.isDynamic && node.expression.stateVariable.type instanceof ArrayType
-      && node.expression.stateVariable.type.bound !== undefined) {
-      this.emit(encodeInt(BigInt(node.expression.stateVariable.type.bound)), locationData);
+    // A bounded chunk-packed array always holds its N elements: `.length` is the constant bound. So is the length of
+    // a bound past the safe-integer range, whose blob can never hold its elements.
+    const stateArrayType = node.expression instanceof StateAccessNode ? node.expression.stateVariable?.type : undefined;
+    if (node.operator === UnaryOperator.SIZE && stateArrayType instanceof ArrayType && stateArrayType.bound !== undefined
+      && ((node.expression as StateAccessNode).stateVariable!.isDynamic || exactArrayBounds.has(stateArrayType))) {
+      this.emit(encodeInt(exactArrayLength(stateArrayType)!), locationData);
       this.pushToStack('(value)');
       return node;
     }

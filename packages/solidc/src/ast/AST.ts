@@ -3630,3 +3630,11 @@ export class ConsoleStatementNode extends Node {
 }
 
 export type ConsoleParameterNode = LiteralNode | IdentifierNode;
+
+/** The exact length of an array type whose bound is past Number.MAX_SAFE_INTEGER (`ArrayType.bound` rounds it). */
+export const exactArrayBounds = new WeakMap<ArrayType, bigint>();
+
+/** A bounded array type's exact length (undefined when unbounded). */
+export function exactArrayLength(type: ArrayType): bigint | undefined {
+  return type.bound === undefined ? undefined : exactArrayBounds.get(type) ?? BigInt(type.bound);
+}

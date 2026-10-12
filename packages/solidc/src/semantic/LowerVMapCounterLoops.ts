@@ -16,6 +16,7 @@ import {
   StateAccessNode, StateArrayAssignNode, StateArrayDeleteNode, StateArrayPopNode, StateArrayPushNode,
   StateAssignNode, StatementNode, SwitchNode, TernaryOpNode, TokenContainerMethodStatementNode, TransferStatementNode,
   TryCatchNode, TupleAssignmentNode, TupleIndexOpNode, UnaryOpNode, VariableDefinitionNode, WhileNode, FunctionModifier,
+  exactArrayLength,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -8341,7 +8342,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               && candidate.expression instanceof IdentifierNode) {
               const fixedArrayType = localTypes.get(candidate.expression.name);
               if (fixedArrayType instanceof ArrayType && fixedArrayType.bound !== undefined) {
-                const length = new IntLiteralNode(BigInt(fixedArrayType.bound));
+                const length = new IntLiteralNode(exactArrayLength(fixedArrayType)!);
                 length.location = candidate.location;
                 length.type = candidate.type ?? new IntType(true, 256);
                 return length;

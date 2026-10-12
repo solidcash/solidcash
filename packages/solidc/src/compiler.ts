@@ -125,8 +125,9 @@ import {
   WhileNode, DoWhileNode, TernaryOpNode, UnaryOpNode, BreakNode, ContinueNode,
   type ExternalCallExpression,
   BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility, StructDefinitionNode,
+  exactArrayLength,
 } from './ast/AST.js';
-import AstBuilder, { exactArrayBounds } from './ast/AstBuilder.js';
+import AstBuilder from './ast/AstBuilder.js';
 import { Class, GlobalFunction } from './ast/Globals.js';
 import { ThrowingErrorListener, type SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
 import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
@@ -20907,7 +20908,7 @@ export function parseCode(
 function assertStorageWithinEvmSlots(contract: ContractNode): void {
   const slots = (type: Type, active: Set<StructType>): bigint => {
     if (type instanceof ArrayType && type.bound !== undefined) {
-      return (exactArrayBounds.get(type) ?? BigInt(type.bound)) * slots(type.elementType, active);
+      return exactArrayLength(type)! * slots(type.elementType, active);
     }
     if (!(type instanceof StructType) || active.has(type)) return 1n;
     const nested = new Set(active).add(type);

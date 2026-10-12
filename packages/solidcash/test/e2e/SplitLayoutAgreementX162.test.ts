@@ -154,8 +154,10 @@ describe('X162: a divided ERC-7201 split bundle agrees about storage, loads, and
     // transition on the root script rather than a delegated one.
     const rootRoute = bundle.manifest.routes.find((r: any) => r.function === '__updateBlockOracle');
     expect(rootRoute.target).toBe('root');
-    const oracleCall = deployed.call.__updateBlockOracle(new SignatureTemplate(alicePriv), 1_700_000_000n)
-      .setState({ __block_timestamp: 1_700_000_000n });
+    // The mock keeper already moved the register to the tip time, and the owner cannot rewind it.
+    const stamp = BigInt((signer.provider as { getBlockTime(): number }).getBlockTime()) + 1n;
+    const oracleCall = deployed.call.__updateBlockOracle(new SignatureTemplate(alicePriv), stamp)
+      .setState({ __block_timestamp: stamp });
     const built = await oracleCall.build();
     const tx = built.buildLibauthTransaction();
     // The root script commits this output. send() then mines, and the mock keeper rewrites a timestamp-only
@@ -177,7 +179,7 @@ describe('X162: a divided ERC-7201 split bundle agrees about storage, loads, and
       }
     });
     expect(committed).toHaveLength(1);
-    expect(committed[0].__block_timestamp).toBe(1_700_000_000n);
+    expect(committed[0].__block_timestamp).toBe(stamp);
     expect(committed[0].CStorage__c).toBe(9n);
     await oracleCall.send();
     const afterOracle = await deployed.root.getState();

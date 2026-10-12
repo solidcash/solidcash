@@ -36,7 +36,9 @@ import AstTraversal from '../ast/AstTraversal.js';
  * Owner duty to refresh: a baked owner key (`__blockOracleOwner`, an immutable pubkey register seeded at
  * genesis) + an injected `__updateBlockOracle(sig, ...fields)` that requires the owner signature and the
  * freshness/anti-over-reporting bound `tx.time >= number` with `number < 500,000,000` (the owner cannot report
- * a height above the chain), then writes each register. block.chainid is a separate baked constant (NOT here).
+ * a height above the chain) and the non-rewind bounds `number >= block.number`, `timestamp >= block.timestamp`
+ * (the owner cannot replay an old window), then writes each register. block.chainid is a separate baked
+ * constant (NOT here).
  *
  * Runs before semantic analysis so injected decls/reads/writes resolve normally. `block.timestamp` always
  * lowers to the injected `__block_timestamp` oracle register; the compat-only tx.locktime mapping was removed.
@@ -382,6 +384,16 @@ export default class SynthesizeBlockOracle extends AstTraversal {
         TimeOp.CHECK_LOCKTIME, this.at(new IdentifierNode(setterParam('__block_number'))) as IdentifierNode,
         'block oracle: number exceeds chain height',
       )) as TimeOpNode);
+    }
+    // Non-rewind: number and timestamp only move forward, so the owner cannot replay an old window.
+    for (const varName of ['__block_number', '__block_timestamp'].filter((name) => this.used.has(name))) {
+      const forward = this.at(new BinaryOpNode(
+        this.at(new IdentifierNode(setterParam(varName))) as IdentifierNode,
+        BinaryOperator.GE,
+        this.stateAccessRaw(varName),
+      )) as BinaryOpNode;
+      const label = varName.slice('__block_'.length);
+      body.push(this.at(new RequireNode(forward, `block oracle: ${label} rewound`)) as RequireNode);
     }
 
     for (const varName of fields) {

@@ -2663,6 +2663,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     expr: ExpressionNode, subs: Map<string, ExpressionNode>, fieldExprs: Map<string, ExpressionNode>,
     fieldType: (name: string) => Type | undefined, expectedType?: Type,
   ): ExpressionNode | null {
+    // A hex number literal in an integer slot is its big-endian integer, as TypeCheck reinterprets it in the body;
+    // the folded genesis skips that pass, so a raw byte string would replay as the wrong value and recipe type.
+    if (expr instanceof HexLiteralNode && !expr.isHexStringLiteral && (expectedType instanceof IntType
+      || expectedType === PrimitiveType.INT || expectedType === PrimitiveType.BIGINT)) {
+      let value = expr.numericValue ?? 0n;
+      if (expr.numericValue === undefined) for (const byte of expr.value) value = (value << 8n) + BigInt(byte);
+      const int = new IntLiteralNode(value);
+      int.location = expr.location;
+      return int;
+    }
     if (expr instanceof LiteralNode) return expr;
     // Pure helper replay is intentionally narrower than direct constructor folding: transaction/message
     // projections and state reads must not become hidden helper inputs. Unknown node kinds also fail closed below.

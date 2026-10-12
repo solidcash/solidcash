@@ -505,7 +505,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
         && !(fn.name.startsWith('__message_bus_entry_') && this.ownsRuntimeMappingLoop(fn))
         && (this.touchesOwnEntry(fn) || this.touchesScalarState(fn)
-          || this.containsMsgSender(fn) || this.containsKeccak(fn)
+          || this.containsMsgSender(fn) || this.containsKeccak(fn) || this.statefulHashesThroughFreeFunction(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
           || this.transitivelyContainsEvent(fn) || (calledByName.has(fn.name) && this.checksSignature(fn)))) {
         this.inlinedFns.add(fn.name);
@@ -807,6 +807,21 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const callee = this.lookupOverload(node.identifier.name, node.parameters.length);
       return callee !== undefined && callee !== fn && this.eligibleShape(callee)
         && this.freeFunctionHashes(callee, seen);
+    });
+  }
+
+  /**
+   * A contract function of a stateful contract reaching keccak256 only through a file-level free function that
+   * hashes (an erc7201-style `slotOf(id)`). That helper inlines into the function, so its calls would run in this
+   * function's OP_INVOKE body, which reads side-cars the calling entry point never publishes. Inline it like a
+   * function hashing directly. A stateless contract keeps its existing bytecode.
+   */
+  private statefulHashesThroughFreeFunction(fn: FunctionDefinitionNode): boolean {
+    if (this.stateVarNames.size === 0 && this.collectionNames.size === 0) return false;
+    return this.nodesOf(fn).some((node) => {
+      if (!(node instanceof FunctionCallNode)) return false;
+      const callee = this.lookupOverload(node.identifier.name, node.parameters.length);
+      return callee !== undefined && callee !== fn && this.freeFunctionHashes(callee);
     });
   }
 

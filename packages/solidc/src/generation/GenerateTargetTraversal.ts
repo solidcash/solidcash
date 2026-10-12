@@ -5908,22 +5908,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
-    // keccak256 side-car basis. Narrow on purpose: exactly ONE reserved side-car slot, at the same offset in
-    // every reaching entry point. That is the shape where the helper's own emission index (0) provably names the
-    // same slot the entry point reserved; with several slots the helper's indices and the entry point's own
-    // calls could collide, so those keep today's count-relative fallback.
+    // keccak256 side-car basis: the same reserved side-car slots, at the same offsets, in every reaching entry
+    // point. The helper's call i then reads that layout's batch slot floor(i / 3), member i % 3: the SDK funds a
+    // dispatched handler's calls in exactly that order (its published call list, batched by three from the first
+    // slot). A count-relative read in a stateful block names the funder, so no stateful shape keeps it on purpose.
     this.keccakSideCarBasisByFunctionId = new Map();
     for (const [functionId, entries] of this.keccakEntryPointsReaching(node)) {
       const target = functionsById.get(functionId);
       if (!target || target.blockLayout || indirect.has(functionId) || entries.length === 0) continue;
-      const sideCarOffsets = (fn: FunctionDefinitionNode): number[] => (fn.blockLayout?.slots ?? [])
-        .filter((slot) => slot.kind === 'keccakSideCar').map((slot) => slot.offset);
+      const sideCarOffsets = (fn: FunctionDefinitionNode): string => (fn.blockLayout?.slots ?? [])
+        .filter((slot) => slot.kind === 'keccakSideCar').map((slot) => slot.offset).join(',');
       const first = sideCarOffsets(entries[0]);
-      if (first.length !== 1) continue;
-      if (!entries.every((entry) => {
-        const offsets = sideCarOffsets(entry);
-        return offsets.length === 1 && offsets[0] === first[0];
-      })) continue;
+      if (first === '' || !entries.every((entry) => sideCarOffsets(entry) === first)) continue;
       this.keccakSideCarBasisByFunctionId.set(functionId, entries[0]);
       if (target.name !== '__message_bus_verify_atomic'
         && entries.some((entry) => this.ownsMessageBusParticipantBlock(entry))) {
@@ -13661,13 +13657,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const callCount = ordinaryCallCount + (layoutBasis ? (layoutBasis.ecrecoverEvmCallCount ?? 0) : 0);
     const batchCount = batchable ? Math.ceil(callCount / 3) : callCount;
     const batchWidth = batchable ? Math.min(3, callCount - batchIndex * 3) : 1;
-    // The reaching entry point's side-car slot, when this helper can borrow it (see keccakSideCarBasis). It
-    // decides BOTH the read index below and `absoluteForward`, which selects the stateful covenant hash - the
-    // SDK deploys a stateful side-car, so reading its slot while checking the stateless hash fails integrity.
-    const basisSlot = fn.blockLayout || i !== 0
+    // The reaching entry point's side-car slot for this call's batch, when this helper can borrow its layout (see
+    // keccakSideCarBasis). It decides BOTH the read index below and `absoluteForward`, which selects the stateful
+    // covenant hash - the SDK deploys a stateful side-car, so reading its slot while checking the stateless hash
+    // fails integrity. Every batched call borrows its own batch slot: a nested call (emitted after its outer one)
+    // or a later sequential call must not fall back to the count-relative read, which names the funder.
+    const basisSlot = fn.blockLayout || (!batchable && i !== 0)
       ? undefined
       : (layoutBasis?.blockLayout?.slots ?? [])
-        .find((slot) => slot.kind === 'keccakSideCar' && slot.slotIndex === 0);
+        .find((slot) => slot.kind === 'keccakSideCar' && slot.slotIndex === batchIndex);
     // X83. Refuse before emitting anything, on exactly the condition the fixed-slot read below would abort on:
     // a stateful call outside any keccak loop whose side-car slot the block layout never reserved. Checked
     // against the layout rather than against `keccakInLoop` so a slot-count disagreement is named too. A

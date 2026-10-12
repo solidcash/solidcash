@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from './direct-compile.js';
+import { compileString, compileStringMulti } from './direct-compile.js';
 import { Contract, TransactionBuilder } from '../src/index.js';
 import { StatefulContract } from '../src/stateful/index.js';
 import { randomUtxo } from '../src/utils.js';
@@ -57,6 +57,50 @@ contract FnIdNested() {
     function runNested(function(int) external returns (int)[][] memory cbs, int x) public {
         require(cbs[0][0](x) == x + 1);
     }
+}`;
+
+// A foreign `this.f` passed into another contract's constructor and called there.
+const CROSS_CONSTRUCTOR = `
+contract D {
+    uint public x;
+    constructor(function() external pure returns (uint) g) { x = g(); }
+}
+contract C {
+    function f() public returns (uint r) { D d = new D(this.sixteen); r = d.x(); }
+    function sixteen() public pure returns (uint) { return 16; }
+}`;
+
+// Ids from another contract carried through a contract that never invokes a function value.
+const CROSS_ARRAY = `
+pragma abicoder v2;
+struct S { function () external[] functions; }
+contract C {
+    function f(function () external[] calldata functions) external returns (S memory) {
+        S memory s;
+        s.functions = functions;
+        return s;
+    }
+}
+contract Test {
+    C immutable c = new C();
+    function test() external returns (bool) {
+        function() external[] memory functions = new function() external[](2);
+        functions[0] = this.random1;
+        functions[1] = this.random2;
+        S memory ret = c.f(functions);
+        return ret.functions.length == 2;
+    }
+    function random1() external {}
+    function random2() external {}
+}`;
+
+// The same array shape in a contract that does invoke function values stays refused.
+const ARRAY_NO_TARGET = `
+contract FnIdNoTarget() {
+    function g(int x) public pure returns (int) { return x + 1; }
+    function run(function(int) external returns (int) cb, int x) public { require(cb(x) == x + 1); }
+    function viaSelf(int x) public { run(this.g, x); require(true); }
+    function keep(function() external[] memory fns) public { require(fns.length > 0); }
 }`;
 
 type Unlock = Record<string, (...args: unknown[]) => unknown>;
@@ -126,5 +170,19 @@ describe('entry fn-ptr parameters accept only matching public/external functions
 
   it('refuses function ids nested deeper than one array level in an entry parameter', () => {
     expect(() => compileString(NESTED, {})).toThrow(/cannot be validated at entry/);
+  });
+
+  it('compiles a foreign `this.f` passed to another contract\'s constructor', () => {
+    // `f` deploys without a signature check; permissionless deploy is intended here.
+    const artifacts = compileStringMulti(CROSS_CONSTRUCTOR, {
+      evmCompat: true, enforceFinalRequire: false, allowUnsafeOperations: true,
+    });
+    expect(Object.keys(artifacts)).toEqual(expect.arrayContaining(['C', 'D']));
+  });
+
+  it('compiles foreign ids carried by a contract that never invokes a function value', () => {
+    const artifacts = compileStringMulti(CROSS_ARRAY, { evmCompat: true, enforceFinalRequire: false });
+    expect(Object.keys(artifacts)).toEqual(expect.arrayContaining(['C', 'Test']));
+    expect(() => compileString(ARRAY_NO_TARGET, {})).toThrow(/none of them is invocable by id/);
   });
 });

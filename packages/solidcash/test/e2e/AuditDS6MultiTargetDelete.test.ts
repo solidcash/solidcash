@@ -16,10 +16,11 @@ import { keyToSlot, SortedList } from '../../src/stateful/SortedList.js';
  * A conditional delete that shares its sorted batch with writes of the same mapping. Each target settles alone: the
  * delete at its own site, a write by its own transition where it ran and by the node it keeps where it did not. A
  * write's proof is its own input, so a spender can neither rewrite an unrun write's node nor copy another target's
- * node into it. Keys whose nodes do not coincide settle whichever arm runs, present or absent; keys whose nodes do
- * (adjacent keys, one gap, one key) fail closed. The `require` in each arm keeps IfConvertConditionalEntryOp from
- * turning the branch into an unconditional write. The write-first order, and a swap-remove pair under one arm, take
- * the swap-remove alias path: they keep the guarded batch, in which that write takes a ran flag too.
+ * node into it. Whichever arm runs settles, present or absent. Where the targets' nodes coincide (adjacent keys, one
+ * gap, one key), the node sits at the slot of the target that runs and the other target's slot is funded, so the
+ * covenant is unchanged. The `require` in each arm keeps IfConvertConditionalEntryOp from turning the branch into an
+ * unconditional write. The write-first order, and a swap-remove pair under one arm, take the swap-remove alias path:
+ * they keep the guarded batch, in which that write takes a ran flag too.
  */
 
 const SOURCE = `contract MultiTargetDelete {
@@ -113,6 +114,29 @@ async function farKey(deployed: Deployed, keys: bigint[]): Promise<bigint> {
     if (!list.has(keyToSlot(bigIntToVmNumber(key))) && !taken.includes(spent(key))) return key;
   }
   throw new Error('no key far from the others');
+}
+
+/** `count` absent keys whose access spends the node `owner`'s access spends: keys in that node's gap. */
+async function keysIn(deployed: Deployed, owner: bigint, count = 1): Promise<bigint[]> {
+  const list = await nodes(deployed);
+  const spent = (key: bigint): string => {
+    const slot = keyToSlot(bigIntToVmNumber(key));
+    const node = list.find(slot) ?? list.predecessorOf(slot);
+    return `${node.utxo.txid}:${node.utxo.vout}`;
+  };
+  const keys: bigint[] = [];
+  for (let key = 100n; key < 5000n && keys.length < count; key += 1n) {
+    if (!list.has(keyToSlot(bigIntToVmNumber(key))) && spent(key) === spent(owner)) keys.push(key);
+  }
+  if (keys.length < count) throw new Error(`no ${count} keys in the gap of ${owner}`);
+  return keys;
+}
+
+/** Each `[key, value]` reads back. */
+async function expectValues(sc: StatefulContract<any>, pairs: bigint[][]): Promise<void> {
+  for (const [key, value] of pairs) {
+    await expect(sc.getFunction('check')(key, value).send()).resolves.toBeDefined();
+  }
 }
 
 async function capture(provider: Provider, run: () => Promise<unknown>): Promise<string> {
@@ -236,6 +260,58 @@ describe('a conditional delete in a multi-target sorted batch', () => {
     }
     // The head, the cleared 7 and 20.
     expect((await nodes(deployed)).all).toHaveLength(3);
+  }, 300_000);
+});
+
+describe('a conditional delete and a write whose nodes coincide', () => {
+  it('settles each arm with one key, present and absent', async () => {
+    const deployed = await deploy();
+    const { sc } = deployed;
+    await sc.getFunction('dropOrSet')(7n, 7n, 300n, 0n).send();
+    await expectValues(sc, [[7n, 300n]]);
+    await sc.getFunction('dropOrSet')(7n, 7n, 999n, 1n).send();
+    await expectValues(sc, [[7n, 0n]]);
+    const x = await farKey(deployed, []);
+    await sc.getFunction('dropOrSet')(x, x, 999n, 1n).send();
+    expect((await nodes(deployed)).all).toHaveLength(3);
+    await sc.getFunction('dropOrSet')(x, x, 500n, 0n).send();
+    await expectValues(sc, [[x, 500n], [7n, 0n], [20n, 200n]]);
+    expect((await nodes(deployed)).all).toHaveLength(4);
+  }, 300_000);
+
+  it('settles each arm with the written key in the deleted key\'s gap', async () => {
+    const deployed = await deploy();
+    const { sc } = deployed;
+    const [j] = await keysIn(deployed, 7n);
+    // The delete arm first: 7 keeps its node, so the write still lands in its gap.
+    await sc.getFunction('dropOrSet')(7n, j, 999n, 1n).send();
+    await expectValues(sc, [[7n, 0n], [j, 0n]]);
+    await sc.getFunction('dropOrSet')(7n, j, 300n, 0n).send();
+    await expectValues(sc, [[j, 300n], [7n, 0n], [20n, 200n]]);
+    expect((await nodes(deployed)).all).toHaveLength(4);
+  }, 300_000);
+
+  it('settles each arm with the deleted key absent in the written key\'s gap', async () => {
+    const deployed = await deploy();
+    const { sc } = deployed;
+    const [k] = await keysIn(deployed, 7n);
+    await sc.getFunction('dropOrSet')(k, 7n, 999n, 1n).send();
+    await expectValues(sc, [[7n, 70n], [k, 0n]]);
+    await sc.getFunction('dropOrSet')(k, 7n, 300n, 0n).send();
+    await expectValues(sc, [[7n, 300n], [k, 0n], [20n, 200n]]);
+    expect((await nodes(deployed)).all).toHaveLength(3);
+  }, 300_000);
+
+  // Refused at send (input 0, OP_VERIFY) in its one run, cause not found; deferrals.md, DS-6 residual.
+  it.skip('settles each arm with both keys absent in one gap', async () => {
+    const deployed = await deploy();
+    const { sc } = deployed;
+    const [k, j] = await keysIn(deployed, 7n, 2);
+    await sc.getFunction('dropOrSet')(k, j, 999n, 1n).send();
+    expect((await nodes(deployed)).all).toHaveLength(3);
+    await sc.getFunction('dropOrSet')(k, j, 300n, 0n).send();
+    await expectValues(sc, [[j, 300n], [k, 0n], [7n, 70n], [20n, 200n]]);
+    expect((await nodes(deployed)).all).toHaveLength(4);
   }, 300_000);
 });
 

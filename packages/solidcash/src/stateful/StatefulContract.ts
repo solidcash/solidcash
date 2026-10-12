@@ -6632,8 +6632,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       omitLocalFeeTail?: boolean;
       /** Compiler-authenticated terminal value productions transported through atomic graph promotion. */
       valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
+      /** DS-6: the sorted batch targets that spend a node they share with other targets (else the first). */
+      sortedNodeOwners?: readonly number[];
     },
   ): Promise<StatefulTransactionBuilder> {
+    const callerArgs = [...args];
     const physicalAbiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
     let abiFunction = overrides?.abiFunction ?? physicalAbiFunction;
     // A function the compiler refused is emitted as a program that fails wherever it is reached: name its reason.
@@ -6919,6 +6922,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const batchTargetPlaceholders = new Map<number, string>();
     let exactBatchTargetSlots = new Set<number>();
     let batchPredCommitments = new Map<string, string[]>();
+    // DS-6: the targets that may own a node shared with an earlier target instead, tried where the first refuses.
+    const sortedNodeOwnerAlternatives: number[] = [];
     const runtimeMessageBusAliasSkipSlots = new Set<number>();
     const inactiveMessageBusEntrySlots = new Set(
       (entryAbiFunction as AbiFunction & { messageBusInactiveEntrySlots?: readonly number[] } | undefined)
@@ -8638,6 +8643,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const noOpSlots = new Set(batchNoOp ? batch.slotIndices : batch.slotIndices.filter((slotIndex) => (
           settlesByActivity && softDeleteSlots.includes(slotIndex) && absentSoftDelete(slotIndex))));
+        // DS-6: activity-settled targets whose nodes coincide spend that node once, at the slot of the target that
+        // runs (`sortedNodeOwners`, else the first). The others are lent: their slot is funded and runs nothing.
+        const lentSlots = new Set<number>();
+        if (settlesByActivity && batch.slotIndices.length > 1
+          && batch.slotIndices.some((slotIndex) => softDeleteSlots.includes(slotIndex))) {
+          const byNode = new Map<string, number[]>();
+          for (const slotIndex of batch.slotIndices) {
+            const spent = entryNfts.find((entry) => entry.slotIndex === slotIndex)?.utxo;
+            const uid = spent ? `${spent.txid}:${spent.vout}` : undefined;
+            if (uid !== undefined) byNode.set(uid, [...(byNode.get(uid) ?? []), slotIndex]);
+          }
+          for (const members of [...byNode.values()].filter((group) => group.length > 1)) {
+            const owner = members.find((slotIndex) => overrides?.sortedNodeOwners?.includes(slotIndex)) ?? members[0];
+            if (overrides?.sortedNodeOwners === undefined) sortedNodeOwnerAlternatives.push(...members.slice(1));
+            for (const slotIndex of members.filter((member) => member !== owner)) {
+              lentSlots.add(slotIndex);
+              const entry = entryNfts.find((candidate) => candidate.slotIndex === slotIndex)!;
+              entry.exists = false;
+              entry.utxo = undefined;
+              // A lent write leaves no node; a lent delete's slot has no entry, which drops its output already.
+              if (!softDeleteSlots.includes(slotIndex)) runtimeMessageBusAliasSkipSlots.add(slotIndex);
+            }
+          }
+        }
         if (noOpSlots.size === batch.slotIndices.length) {
           const noOpRows = batch.linear ? batch.slotIndices.map((slotIndex) => ({
             slotIndex, slot: batchTargetSlots.get(slotIndex)!, next: new Uint8Array(32),
@@ -8672,7 +8701,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }));
         const writes = batch.slotIndices
           .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !inactiveBatchSlots.has(slotIndex)
-            && !readOnlyBatchSlots.has(slotIndex) && !noOpSlots.has(slotIndex))
+            && !readOnlyBatchSlots.has(slotIndex) && !noOpSlots.has(slotIndex) && !lentSlots.has(slotIndex))
           .map((slotIndex) => ({ slot: settlementSlots.get(slotIndex)!, value: new Uint8Array() }));
         if (writes.some((w) => !w.slot)) throw new Error(`vmap batch '${batch.collection}' is missing a target slot`);
         const plan = list.planBatchUpsert(writes);
@@ -8721,7 +8750,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             || (batchSourceRows.length > 1 && overrides?.omitLocalFeeTail !== true))
           && uniqueBatchTargets.size === 1;
         const linearRows = batch.linear ? batch.slotIndices
-          .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !noOpSlots.has(slotIndex))
+          .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !noOpSlots.has(slotIndex)
+            && !lentSlots.has(slotIndex))
           .map((slotIndex) => {
             const slot = batchTargetSlots.get(slotIndex)!;
             const out = plan.outputs.find((candidate) => bytesToSlotValue(candidate.slot) === bytesToSlotValue(slot));
@@ -8737,19 +8767,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (!firstLinearPredSlot.has(proofSlot)) firstLinearPredSlot.set(proofSlot, row.slotIndex);
         }
         const ownerByUtxo = new Map<string, number>();
-        // An absent delete keeps the node its slot spends, so a write whose proof is that node is not its own owner.
-        for (const slotIndex of noOpSlots) {
-          const spent = entryNfts.find((entry) => entry.slotIndex === slotIndex)?.utxo;
-          if (spent) ownerByUtxo.set(`${spent.txid}:${spent.vout}`, slotIndex);
-        }
         for (const slotIndex of batch.slotIndices) {
-          if (noOpSlots.has(slotIndex)) {
+          // An absent delete and a lent target run no transition: each proof names its own slot, and a lent write
+          // is inactive (-2).
+          if (noOpSlots.has(slotIndex) || lentSlots.has(slotIndex)) {
             const offset = entryAbiFunction!.blockLayout?.slots.find(
               (slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex,
             )?.offset;
             if (offset === undefined) throw new Error(`vmap no-op slot has no block offset ${slotIndex}`);
-            batchWitnesses.push(batchTargetSlots.get(slotIndex)!, BigInt(offset), new Uint8Array(32), -3n,
-              ...(batch.linear ? [0n] : []));
+            batchWitnesses.push(batchTargetSlots.get(slotIndex)!, BigInt(offset), new Uint8Array(32),
+              softDeleteSlots.includes(slotIndex) ? -3n : -2n, ...(batch.linear ? [0n] : []));
             continue;
           }
           if (inactiveBatchSlots.has(slotIndex)) {
@@ -12768,6 +12795,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // atomic-promotion-complete (size-guarded end marker for finishCreateBuilderAtomicPromotion)
 
     timing('complete');
+    // DS-6: a node targets share sits at the first one's slot; where the probe refuses that, another target ran.
+    const vmErrored = (candidate: StatefulTransactionBuilder): boolean => (
+      (candidate as unknown as { __vmErrored?: boolean }).__vmErrored === true);
+    if (vmErrored(builder)) {
+      for (const owner of new Set(sortedNodeOwnerAlternatives)) {
+        const retry = await this._createBuilder(functionName, callerArgs, { ...overrides, sortedNodeOwners: [owner] });
+        if (!vmErrored(retry)) return retry;
+      }
+    }
     return builder;
   }
 

@@ -907,12 +907,15 @@ function orderedAccesses(
 /**
  * A delete a branch guards (DS-6): its frame creates no node, so at a key the list does not hold its group is the kept
  * node that brackets the key, whether the delete runs or not, alone in its batch or beside a write. The artifact
- * publishes it as a batch target whose entry slot is a soft delete.
+ * publishes it as a batch target whose entry slot is a soft delete with one mutation: a value that does not chunk
+ * publishes its delete as the write of its default (the compiler's `framedGuardedDelete` reads it alike).
  */
 function guardedDelete(fn: AbiFunction, access: NonNullable<AbiFunction['entryAccesses']>[number]): boolean {
   const slotIndex = access.slotIndex;
   const written = access.operations.filter((operation) => operation !== 'read');
-  return slotIndex !== undefined && written.length === 1 && written[0] === 'delete'
+  const deletesOnly = written.length === 1 && (written[0] === 'delete'
+    || (written[0] === 'write' && access.mutationEffectOrdinals?.length === 1));
+  return slotIndex !== undefined && deletesOnly
     && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slotIndex))
     && (fn.blockLayout?.slots ?? []).some((slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex
       && slot.softDelete === true);
@@ -1122,7 +1125,16 @@ function planHopCollectionBatch(
   let unstatedValue = false;
   // The slots of writes a branch guards whose condition the frame's facts do not decide.
   const undecided: Uint8Array[] = [];
-  const writes = targets.map(({ access, keys, value }) => {
+  const activationFrame = {
+    artifact: request.artifact, functionName: request.functionName, args,
+    senderAddress: request.callerLockingBytecode,
+    ...(request.activationFacts === undefined ? {} : { facts: request.activationFacts }),
+  };
+  // DS-6: a swap-remove write meeting the key of a delete the frame's facts decide does not run, by their positions.
+  // A body whose values do not chunk stages such a write: it lands on the delete's node where the list holds the key,
+  // and is written through its own group elsewhere (settled below, against the list).
+  const landing: { readonly write: number; readonly owner: number }[] = [];
+  const writes = targets.map(({ access, keys, value }, position) => {
     if (keyTypes.length !== access.keyParams.length) {
       throw new FramedProxyDeployError(
         `the implementation's "${request.functionName}" entry writes mapping "${access.collection}" with `
@@ -1142,22 +1154,22 @@ function planHopCollectionBatch(
       );
     }
     // A swap-remove write whose key meets that of the delete following it is a no-op the body skips: the delete
-    // writes the entry, and the write's group keeps the key's predecessor.
-    const owner = access.aliasCondDeleteSlot === undefined ? undefined
-      : targets.find((target) => target.access.slotIndex === access.aliasCondDeleteSlot);
-    if (owner !== undefined && owner.keys.length === keys.length
-      && owner.keys.every((key, at) => bytesEqual(key, keys[at]!))) {
-      return { keys: [...keys], value: new Uint8Array(0), stated: false, skipped: true };
+    // writes the entry, and the write's group keeps the key's predecessor. Bar a landing write.
+    const owner = access.aliasCondDeleteSlot === undefined ? -1
+      : targets.findIndex((target) => target.access.slotIndex === access.aliasCondDeleteSlot);
+    const met = targets[owner];
+    if (met !== undefined && met.keys.length === keys.length
+      && met.keys.every((key, at) => bytesEqual(key, keys[at]!))) {
+      if (chunkable || writeRuns(activationFrame, met.access.activation) !== false) {
+        return { keys: [...keys], value: new Uint8Array(0), stated: false, skipped: true };
+      }
+      landing.push({ write: position, owner });
     }
     // A write a branch guards is declared only where its condition holds on the frame's facts: a skipped one keeps
     // its node, or its absent key's predecessor. One those facts do not decide is planned as written, its node's end
     // view learned from whichever check the body stops at, the write's close or the arm not taken's; a node it would
     // create cannot be so declared, and is refused once the inventory shows the key absent.
-    const runs = writeRuns({
-      artifact: request.artifact, functionName: request.functionName, args,
-      senderAddress: request.callerLockingBytecode,
-      ...(request.activationFacts === undefined ? {} : { facts: request.activationFacts }),
-    }, access.activation);
+    const runs = writeRuns(activationFrame, access.activation);
     if (runs === false) return { keys: [...keys], value: new Uint8Array(0), stated: false, skipped: true };
     if (runs === undefined) {
       if (chunkable) {
@@ -1298,9 +1310,18 @@ function planHopCollectionBatch(
       + 'whether the write creates the key\'s node',
     );
   }
+  // A landing write at a key the list holds is skipped, and the delete's group names the node at the value the body
+  // computes. At a key it does not hold, the write is planned as written beside the delete's kept bracket.
+  const landed = writes.map((write, at) => {
+    const pair = landing.find((candidate) => candidate.write === at || candidate.owner === at);
+    if (pair === undefined || !held(keyToSlotMulti([...write.keys]))) return write;
+    return pair.write === at
+      ? { keys: write.keys, value: new Uint8Array(0), stated: false, skipped: true }
+      : { keys: write.keys, value: new Uint8Array(1), stated: false };
+  });
   // A guarded delete creates no node (DS-6): at a key the list does not hold, run or not, its group is the kept node
   // that brackets the key, which the frame reads as skipped; a write beside it may relink that node.
-  const settled = writes.map((write, at) => (guardedDelete(fn, targets[at]!.access)
+  const settled = landed.map((write, at) => (guardedDelete(fn, targets[at]!.access)
     && !held(keyToSlotMulti([...write.keys])) ? { ...write, stated: false, skipped: true } : write));
   const plan = planMappingBatch({
     writes: settled, inventory,

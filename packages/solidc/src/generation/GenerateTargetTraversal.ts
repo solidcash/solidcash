@@ -31257,6 +31257,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const readSlots = this.entrySlots.flatMap((info, i) => (info.collection === batch.collection
         && !targets.includes(i) && !info.operations.includes('write')
         && !info.operations.includes('delete') ? [i] : []));
+      // A pure read's fixed input is never a target's proof input: the census below would count that input twice.
+      if (this.directConvention && !this.isCompilerMessageBusRoute(node)) {
+        for (const read of readSlots) {
+          for (const target of targets) {
+            // Tracked, so the proof index's picks run with no untracked item above the model.
+            this.emitFixedEntryInputIndex(read, loc);
+            this.pushToStack('(read_input)');
+            proofIndex(target);
+            bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_VERIFY);
+            this.popFromStack();
+          }
+        }
+      }
       const directSmallCensus = (targets.length === 1 || (targets.length === 2 && batch.linear === true))
         && aliasWrite === undefined && this.directConvention
         && !this.isCompilerMessageBusRoute(node)

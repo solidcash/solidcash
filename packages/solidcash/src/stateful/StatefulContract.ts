@@ -507,6 +507,7 @@ import { pushAutoResolvedExternalCall as pushAutoResolvedExternalCallImpl } from
 import { resolveEcrecoverComputeCoSpends as resolveEcrecoverComputeCoSpendsImpl } from './sc-resolve-ecrecover-co-spends.js';
 import { resolveStatefulKeccakLoop as resolveStatefulKeccakLoopImpl } from './sc-resolve-stateful-keccak-loop.js';
 import {
+  keccakProbeTrailingRun,
   resolveKeccakComputeCoSpends as resolveKeccakComputeCoSpendsImpl,
   type ResolveKeccakProbeCtx,
 } from './sc-resolve-keccak-compute-co-spends.js';
@@ -5232,7 +5233,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     abiFunction: AbiFunction, preimages: (Uint8Array | null)[], salt: Uint8Array, scUtxos: Utxo[],
     probeCtx?: {
       masterUtxo: Utxo; stateInputUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[];
-      frontRegionInputs?: UnlockableUtxo[]; locktime?: number;
+      frontRegionInputs?: UnlockableUtxo[]; trailingReadInputs?: readonly UnlockableUtxo[];
+      firstDynamicReadInput?: Utxo; locktime?: number;
     },
   ): Promise<void> {
     if (!probeCtx) {
@@ -5255,12 +5257,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
     const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
     const lock = keccakComputeLockingBytecode(salt, true);
+    // A hashed chunk-backed value (string/bytes state) is read from the trailing run before its side-car.
+    const trailing = keccakProbeTrailingRun(
+      abiFunction, stateInputUnlocker, base + batchCount, probeCtx.trailingReadInputs, probeCtx.firstDynamicReadInput,
+    );
     let guard = 0;
     while (preimages.some((p) => p === null)) {
       if (guard++ > n) throw new Error('keccak256 stateful preimage extraction did not converge.');
       const probe = new CovenantTransactionBuilder({ provider: this.inner.provider });
       if (probeCtx.locktime) probe.setLocktime(probeCtx.locktime);
-      probe.addInput(masterUtxo, stateInputUnlocker);
+      probe.addInput(masterUtxo, trailing.unlocker);
       dataNftUtxos.forEach((u, i) => probe.addInput(u, dataNftUnlockers[i]));
       frontRegion.forEach((u) => probe.addInputs([u])); // unlockable form: u already carries its unlocker
       const recreates: Output[] = [];
@@ -5273,6 +5279,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         probe.addInput(scUtxos[batch], unlocker);
         recreates.push(recreate);
       }
+      probe.addInputs(trailing.inputs);
       probe.addOutput({
         to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token,
       });
@@ -5281,6 +5288,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }));
       frontRegion.forEach((u) => probe.addOutput(this._frontRegionRecreate(u))); // self-preserving recreate
       for (const rec of recreates) probe.addOutput({ ...rec, to: lock });
+      trailing.inputs.forEach((u) => probe.addOutput(this._frontRegionRecreate(u)));
       const transaction = probe.buildLibauthTransaction();
       const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
       const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as unknown[];
@@ -12165,6 +12173,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         masterUtxo: derivationMasterUtxo, stateInputUnlocker,
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
         frontRegionInputs: keccakFrontRegion, locktime: maxBhLocktime,
+        trailingReadInputs: iterationEntryInputs, firstDynamicReadInput: dynamicReadChunkInputs[0],
         ecrecoverPreimages: ecrecoverEvmPreimages,
         plannedPreimages: (keccakAbiFunction as MessageBusRuntimeAbiFunction).messageBusKeccakPreimages,
         ...((delegatedKeccak || graphOwnedKeccak

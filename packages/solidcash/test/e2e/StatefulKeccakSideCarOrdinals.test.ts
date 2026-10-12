@@ -8,8 +8,11 @@ import { fundedSigner } from '../test-util.js';
 /**
  * Several keccak256 calls in one stateful function: a hash nested in another hash's argument, two sequential
  * hashes, and a free helper reached through a public function called internally. Each call must read its own
- * side-car batch member at the stateful block layout, matching the order the SDK funds them in.
+ * side-car batch member at the stateful block layout, matching the order the SDK funds them in. A string state
+ * variable is hashed from its chunk run, one chunk for a short value and several for a long one.
  */
+const WIDE = 'erc7201.namespace.'.repeat(8);
+
 const SOURCE = `
 function namespaceSlot(string memory id) pure returns (uint256) {
     return uint256(keccak256(bytes.concat(bytes32(uint256(keccak256(bytes(id))) - 1))) & ~bytes32(uint256(0xff)));
@@ -17,12 +20,16 @@ function namespaceSlot(string memory id) pure returns (uint256) {
 
 contract SlotRegistry {
     string space = "example.main";
+    string wide = "${WIDE}";
     uint256 slot;
     bytes32 first;
     bytes32 second;
 
     function recordSlot() public {
         slot = erc7201(space);
+    }
+    function recordWideSlot() public {
+        slot = erc7201(wide);
     }
     function checkSlot(uint256 expected) public view {
         require(slot == expected);
@@ -57,14 +64,19 @@ const deploy = async (): Promise<Deployed> => {
 };
 
 describe('stateful keccak256 side-car ordinals', () => {
-  // Open: hashing a chunk-backed string state variable still fails the preflight at input 0 (OP_VERIFY), as the
-  // corpus erc7201 lines over a string state variable do; parameter and literal preimages below pass.
-  it.skip('stores and checks a nested-hash slot of a string state variable', async () => {
+  it('stores and checks a nested-hash slot of a string state variable', async () => {
     expect(slotOf('example.main')).toBe(0x183a6125c38840424c4a85fa12bab2ab606c4b6d0e7cc73c0c06ba5300eab500n);
     const registry = await deploy();
     await registry.getFunction('recordSlot')().send();
     await expect(registry.getFunction('checkSlot')(slotOf('example.main')).send()).resolves.toBeDefined();
     await expect(registry.getFunction('checkSlot')(slotOf('example.main') + 256n).send()).rejects.toThrow();
+  }, 300_000);
+
+  it('stores and checks a nested-hash slot of a string state variable spanning several chunks', async () => {
+    expect(utf8(WIDE).length).toBeGreaterThan(120);
+    const registry = await deploy();
+    await registry.getFunction('recordWideSlot')().send();
+    await expect(registry.getFunction('checkSlot')(slotOf(WIDE)).send()).resolves.toBeDefined();
   }, 300_000);
 
   it('stores two sequential hashes, one of a parameter and one computed', async () => {

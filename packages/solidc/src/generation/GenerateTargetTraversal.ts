@@ -27025,17 +27025,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A compose-on-alias write always runs: its predOut -2 marks a shared entry, not an inactive row.
     const compose = inBatch && aliasOwner === undefined && node instanceof MappingAssignNode
       && this.composeBatchSlots(slotIndex) !== undefined;
+    // DS-6: where the owner delete may not run after this write, the alias arm takes the value (emitStagedAliasWrite).
+    const staged = aliasOwner !== undefined && inBatch && !hasRepoint && this.stagesAliasWrite(node, aliasOwner);
     if (aliasOwner !== undefined) {
       // Bind H(lastKey) before deciding whether swap-remove aliases its later delete. On the alias arm the upsert
       // must be a true no-op (including not evaluating its value); the owner delete remains independently proven.
       this.emit(Op.OP_DUP, loc);
       this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${slotIndex}`, loc);
       this.emit(Op.OP_EQUALVERIFY, loc);
-      this.emit(Op.OP_DUP, loc);
-      this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${aliasOwner}`, loc);
-      this.emit(Op.OP_EQUAL, loc);
-      this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);
-      this.emit(Op.OP_ELSE, loc);
+      if (!staged) {
+        this.emit(Op.OP_DUP, loc);
+        this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${aliasOwner}`, loc);
+        this.emit(Op.OP_EQUAL, loc);
+        this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);
+        this.emit(Op.OP_ELSE, loc);
+      }
     } else if (inBatch && !compose) {
       // A funded fixed slot does not imply an inactive logical write: distinct absent targets can share one
       // predecessor proof, in which case this slot is funded while __internal__vmapBatchProof_N points at the
@@ -27119,6 +27123,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     this.emit(Op.OP_FROMALTSTACK, loc); // [v, Hk32], H is intentionally untracked
+    if (staged) this.emitStagedAliasWrite(node, aliasOwner!, loc);
 
     if (inBatch) {
       // Bind the SDK-planned full-width slot witness to the actual runtime key hash.
@@ -29907,6 +29912,85 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       (layout) => layout.kind === 'entry' && layout.slotIndex === slot && layout.softDelete) === true;
     return new Set((node.sortedBatchInfo ?? []).filter((batch) => batch.slotIndices.length > 1
       && batch.slotIndices.some(softDelete)).flatMap((batch) => batch.slotIndices.filter((slot) => !softDelete(slot))));
+  }
+
+  /**
+   * DS-6: whether a direct swap-remove write may run without its conditional owner delete running after it. Where the
+   * keys meet, such a write still lands, on the delete's node through its soft-delete registers.
+   */
+  private stagesAliasWrite(node: MappingAssignNode | MappingDeleteNode, owner: number): boolean {
+    if (!this.directConvention || this.framedMaster || this.readsRecordsFromFrame || this.isDefineSubTraversal
+      || this.isCompilerMessageBusRoute() || !this.condDeleteSlots.has(owner)
+      || this.isChunkableValue(node.collection!.innermostValueType)
+      || this.getStackIndex(`__entry_key_enc_${owner}`, true) < 0
+      || this.getStackIndex(`__entry_value_enc_${owner}`, true) < 0) return false;
+    const sameBatch = this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(owner)
+      && batch.slotIndices.includes(node.entrySlotIndex)) ?? false;
+    return sameBatch && !this.aliasDeleteFollowsWrite(this.currentFunction.body, node, owner);
+  }
+
+  /**
+   * True when a swap-remove write's owner delete runs wherever the write has: one statement list holds both, the
+   * delete itself after the write's statement, and nothing between them leaves the list.
+   */
+  private aliasDeleteFollowsWrite(block: BlockNode, write: Node, owner: number): boolean {
+    const holds = (statement: Node): boolean => statement === write
+      || (statement instanceof BlockNode && (statement.statements ?? []).some(holds))
+      || (statement instanceof UncheckedNode && holds(statement.block))
+      || (statement instanceof BranchNode && (holds(statement.ifBlock)
+        || (statement.elseBlock !== undefined && holds(statement.elseBlock))));
+    // A loop, switch or try is not walked: it counts as leaving.
+    const leaves = (statement: Node): boolean => statement instanceof ReturnNode || statement instanceof BreakNode
+      || statement instanceof ContinueNode || statement instanceof WhileNode || statement instanceof DoWhileNode
+      || statement instanceof SwitchNode || statement instanceof TryCatchNode
+      || statement instanceof CollectionIterationNode
+      || (statement instanceof BlockNode && (statement.statements ?? []).some(leaves))
+      || (statement instanceof UncheckedNode && leaves(statement.block))
+      || (statement instanceof BranchNode && (leaves(statement.ifBlock)
+        || (statement.elseBlock !== undefined && leaves(statement.elseBlock))));
+    const statements = block.statements ?? [];
+    const at = statements.findIndex(holds);
+    if (at < 0) return false;
+    const end = statements.findIndex((statement, index) => index > at
+      && statement instanceof MappingDeleteNode && statement.entrySlotIndex === owner);
+    if (end >= 0) return !statements.slice(at, end).some(leaves);
+    const inner = statements[at];
+    if (inner instanceof BlockNode) return this.aliasDeleteFollowsWrite(inner, write, owner);
+    if (inner instanceof UncheckedNode) return this.aliasDeleteFollowsWrite(inner.block, write, owner);
+    return inner instanceof BranchNode && (this.aliasDeleteFollowsWrite(inner.ifBlock, write, owner)
+      || (inner.elseBlock !== undefined && this.aliasDeleteFollowsWrite(inner.elseBlock, write, owner)));
+  }
+
+  /**
+   * DS-6: [v, H] with the write's witnesses parked. Where H meets the owner delete's slot, the key's node at the
+   * delete's slot takes v: the delete's registers become its slot and successor with v, which the delete overwrites
+   * if it runs after. Elsewhere opens the write's own arm, which closes the conditional.
+   */
+  private emitStagedAliasWrite(node: MappingAssignNode | MappingDeleteNode, owner: number, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${owner}`, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    const atDecision = [...this.stack];
+    // The node is the key's own: an absent key's predecessor sits there instead and keeps its value.
+    this.pushToStack('(__upsert_hk)');
+    this.emitFixedEntryInputIndex(owner, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack();
+    // The parked slot, proof and both successors.
+    for (let pair = 0; pair < 2; pair += 1) {
+      this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_2DROP, loc);
+    }
+    this.emitReplace(this.getStackIndex(`__entry_value_enc_${owner}`), node);
+    this.popFromStack();
+    this.emitFixedEntryInputIndex(owner, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(encodeInt(64n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(value)');
+    this.emitReplace(this.getStackIndex(`__entry_key_enc_${owner}`), node);
+    this.popFromStack();
+    this.emit(Op.OP_ELSE, loc);
+    this.stack = atDecision;
   }
 
   /** An activity-settled target's settlement: its own delete site, its write flag, or the plain transition. */

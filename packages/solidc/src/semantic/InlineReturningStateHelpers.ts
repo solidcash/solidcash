@@ -600,10 +600,10 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       // `IPair(..).getReserves()`) must inline like a low-level-call one: the external-call covenant param is only
       // threaded at an entry point, so a subroutine holding it surfaces phantom params at the call site. Transitive
       // so a helper reaching the external call only through another inlined helper inlines too. So does one that
-      // checks a transaction signature.
+      // checks a transaction signature, and a file-level one that hashes (freeFunctionHashes).
       } else if (this.eligibleShape(fn)
         && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
-          || this.transitivelyContainsEvent(fn) || this.checksSignature(fn))) {
+          || this.transitivelyContainsEvent(fn) || this.checksSignature(fn) || this.freeFunctionHashes(fn))) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -788,6 +788,26 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return this.nodesOf(fn).some(
       (node) => node instanceof FunctionCallNode && node.identifier.name === 'keccak256',
     );
+  }
+
+  /**
+   * A file-level free function reaching keccak256, directly or through another such function, has the same
+   * problem: as an OP_INVOKE subroutine its calls read side-cars by its own ordinals and count, which the caller's
+   * published preimage list never covers (an erc7201-style `slot(id)` helper). Library members keep their own
+   * machinery, and a same-arity overload (which an inline cannot resolve) keeps the subroutine form.
+   */
+  private freeFunctionHashes(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
+    const key = inlineKey(fn.name, fn.parameters.length);
+    if (fn.name.includes('.') || !this.freeFns.includes(fn) || this.ambiguousInlineKeys.has(key)) return false;
+    if (this.containsKeccak(fn)) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return this.nodesOf(fn).some((node) => {
+      if (!(node instanceof FunctionCallNode)) return false;
+      const callee = this.lookupOverload(node.identifier.name, node.parameters.length);
+      return callee !== undefined && callee !== fn && this.eligibleShape(callee)
+        && this.freeFunctionHashes(callee, seen);
+    });
   }
 
   // msg.sender is backed by a synthetic entry-point witness/category parameter. A returning helper compiled as
@@ -1490,7 +1510,11 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   ): ExpressionNode | undefined {
     // Identifier arguments are already evaluated values, so substituting one at several use sites neither
     // duplicates effects nor changes order. More complex arguments stay on the ordinary hoist path/fail closed.
-    if (args.some((arg) => !(arg instanceof IdentifierNode))) return undefined;
+    // Literals are effect-free too; a hashing helper takes them, since its subroutine form misaddresses side-cars.
+    const hashes = this.containsKeccak(callee) || this.freeFunctionHashes(callee);
+    if (args.some((arg) => !(arg instanceof IdentifierNode || (hashes && arg instanceof LiteralNode)))) {
+      return undefined;
+    }
     const cloned = cloneNode(callee) as FunctionDefinitionNode;
     substituteInFunction(cloned, new Map(callee.parameters.map((parameter, index) =>
       [parameter.name, cloneNode(args[index]) as ExpressionNode])));

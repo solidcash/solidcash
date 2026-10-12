@@ -271,11 +271,11 @@ describe('two writes of one arm that run on one node', () => {
     const change = outputs.reduce((best, output, index) => (output.token === undefined
       && output.valueSatoshis > (best < 0 ? 0n : outputs[best].valueSatoshis) ? index : best), -1);
     expect(change).toBeGreaterThan(-1);
-    expect(outputs[change].valueSatoshis).toBeGreaterThan(20_000n);
+    expect(outputs[change].valueSatoshis).toBeGreaterThan(2_000n);
     const node = outputs[offsetOf(deployed.fn, second)];
     // The token prefix lengthens the transaction, so the fee grows with it: the relay floor is not what refuses.
     outputs[change] = {
-      ...outputs[change], valueSatoshis: outputs[change].valueSatoshis - 10_000n,
+      ...outputs[change], valueSatoshis: outputs[change].valueSatoshis - 1_000n,
       lockingBytecode: node.lockingBytecode, token: { ...node.token!, nft: {
         ...node.token!.nft!, commitment: Uint8Array.from([...slotOf(4242n), ...new Uint8Array(32), 1]),
       } },

@@ -27018,6 +27018,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(__repoint)');
       this.sortedUpsertPendingRepoint = false; // this flush consumes it
     }
+    const aliasOwner = this.entrySlots[slotIndex]?.aliasCondDeleteSlot;
+    // DS-6: an owner delete in a later branch seeds its registers only there; this write seeds them first, to stage.
+    if (aliasOwner !== undefined && inBatch && !hasRepoint && this.seedsAliasOwner(node, aliasOwner)) {
+      this.preAllocateCondDeleteWrite(aliasOwner, loc);
+    }
 
     // 1. H(k) FIRST (before the value), so a self-referential RMW `m[k] = m[k] + ...` with a computed/local key k
     // does not lose k: visitIdentifier ROLL-consumes the lexically-LAST use of k (the RHS read inside emitValue,
@@ -27026,7 +27031,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitSortedKeyHash(node, slotIndex, loc);
     this.pushToStack('(__upsert_hk)');
     this.keepGenesisKeyHash(node, loc);
-    const aliasOwner = this.entrySlots[slotIndex]?.aliasCondDeleteSlot;
     const runtimeAliasOwners = this.entrySlots[slotIndex]?.runtimeAliasPriorSlots ?? [];
     // A compose-on-alias write always runs: its predOut -2 marks a shared entry, not an inactive row.
     const compose = inBatch && aliasOwner === undefined && node instanceof MappingAssignNode
@@ -29969,14 +29973,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * keys meet, such a write still lands, on the delete's node through its soft-delete registers.
    */
   private stagesAliasWrite(node: MappingAssignNode | MappingDeleteNode, owner: number): boolean {
+    return this.condDeleteSlots.has(owner) && this.getStackIndex(`__entry_key_enc_${owner}`, true) >= 0
+      && this.getStackIndex(`__entry_value_enc_${owner}`, true) >= 0 && this.aliasWriteMayStage(node, owner);
+  }
+
+  /** DS-6: stagesAliasWrite short of the owner delete's registers. */
+  private aliasWriteMayStage(node: MappingAssignNode | MappingDeleteNode, owner: number): boolean {
     if (!this.directConvention || this.framedMaster || this.readsRecordsFromFrame || this.isDefineSubTraversal
-      || this.isCompilerMessageBusRoute() || !this.condDeleteSlots.has(owner)
-      || this.isChunkableValue(node.collection!.innermostValueType)
-      || this.getStackIndex(`__entry_key_enc_${owner}`, true) < 0
-      || this.getStackIndex(`__entry_value_enc_${owner}`, true) < 0) return false;
+      || this.isCompilerMessageBusRoute() || this.isChunkableValue(node.collection!.innermostValueType)) return false;
     const sameBatch = this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(owner)
       && batch.slotIndices.includes(node.entrySlotIndex)) ?? false;
     return sameBatch && !this.aliasDeleteFollowsWrite(this.currentFunction.body, node, owner);
+  }
+
+  /**
+   * DS-6: a staging write on the body's straight line whose owner is a branch's delete not seeded yet (that branch
+   * runs after it). Seeded here, as that branch would, the registers live to the close; the branch then reuses them.
+   */
+  private seedsAliasOwner(node: MappingAssignNode | MappingDeleteNode, owner: number): boolean {
+    const softDelete = this.currentFunction.blockLayout?.slots.some((slot) => slot.kind === 'entry'
+      && slot.slotIndex === owner && slot.softDelete) ?? false;
+    return softDelete && this.scopeDepth === 0 && this.plainLoopDepth === 0 && !this.condDeleteSlots.has(owner)
+      && !this.preAllocatedEntryWrites.has(owner) && !this.pendingEntryWrites.has(owner)
+      && !this.pendingEntryDeletes.has(owner) && this.ownsFixedEntrySlot(owner) && this.aliasWriteMayStage(node, owner);
   }
 
   /**

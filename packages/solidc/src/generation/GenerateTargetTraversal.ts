@@ -29949,6 +29949,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * DS-6: the two writes of an activity-settled batch, in batch order, where one call may run both: no branch or
+   * switch holds them in separate arms. Two that ran on one node chain on it (emitSortedBatchTransitionVerification).
+   */
+  private chainedActivityWrites(node: FunctionDefinitionNode, targets: readonly number[]): [number, number] | undefined {
+    const writes = targets.filter((slot) => this.sortedEntryLayout(node, slot)?.softDelete !== true);
+    if (writes.length !== 2) return undefined;
+    const holds = (root: Node, slot: number): boolean => {
+      let found = false;
+      walkInvocationAst(root, (candidate) => {
+        if ((candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode)
+          && candidate.entrySlotIndex === slot) found = true;
+      });
+      return found;
+    };
+    const both = (root: Node): boolean => holds(root, writes[0]) && holds(root, writes[1]);
+    const mayRunBoth = (root: Node): boolean => {
+      if (root instanceof BlockNode) {
+        const statements = root.statements ?? [];
+        const first = statements.filter((statement) => holds(statement, writes[0]));
+        return first.some((statement) => statements.some((other) => other !== statement && holds(other, writes[1])))
+          || first.some((statement) => both(statement) && mayRunBoth(statement));
+      }
+      if (root instanceof UncheckedNode) return mayRunBoth(root.block);
+      const arms = root instanceof BranchNode ? [root.ifBlock, root.elseBlock]
+        : root instanceof SwitchNode ? [...root.cases.map((c) => c.body), root.defaultCase] : undefined;
+      // A loop, a call or any other statement holding both may run both.
+      return arms === undefined || arms.some((arm) => arm !== undefined && both(arm) && mayRunBoth(arm));
+    };
+    return both(node.body) && mayRunBoth(node.body) ? [writes[0], writes[1]] : undefined;
+  }
+
+  /**
    * DS-6: a framed frame's delete of a batch target, whose node is the one its group names. Its batch operands carry
    * the node's slot and successor, and its batch transition closes it against the frame's declared views.
    */
@@ -31363,13 +31395,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // DS-6: a batch a conditional delete shares with writes settles each target alone.
       const softDelete = (slot: number): boolean => this.sortedEntryLayout(node, slot)?.softDelete === true;
       const sharedActivity = byActivity && targets.length > 1 && targets.some(softDelete);
+      const chain = sharedActivity ? this.chainedActivityWrites(node, targets) : undefined;
+      const chainLink = (slot: number): string => `(__vmap_chain_lower_${slot})`;
       const settled = activity !== undefined || sharedActivity;
       const aliasWrite = targets.find((slot) => {
         const owner = this.entrySlots[slot]?.aliasCondDeleteSlot;
         return owner !== undefined && targets.includes(owner);
       });
       const aliasOwner = aliasWrite === undefined ? undefined : this.entrySlots[aliasWrite].aliasCondDeleteSlot;
-      const singleTarget = (slot: number, ran = false): void => {
+      const pickTracked = (name: string, extra = 0): void => {
+        this.emit(encodeInt(BigInt(this.getStackIndex(name) + extra)), loc); bin(Op.OP_PICK);
+      };
+      // DS-6: a `link`ed target is one write of a chained pair; its `lower` flag is set where its key is the pair's
+      // lower one, its `higher` flag where the other's is.
+      const singleTarget = (
+        slot: number, ran = false, link?: { other: number; lower: string; higher: string },
+      ): void => {
         const directProofField = (field: 'slot' | 'next' | 'value', extra = 0): void => {
           commitmentField(() => {
             proofIndex(slot, extra);
@@ -31383,13 +31424,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
           bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
         }
-        // One logical target has no intra-batch topology: its final next must equal the authenticated old next.
-        directProofField('next'); arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
+        // One logical target has no intra-batch topology: its final next must equal the authenticated old next. The
+        // lower of a chained pair links to the higher, which keeps the old next.
+        if (link === undefined) directProofField('next');
+        else {
+          pickTracked(link.lower); bin(Op.OP_IF); arg(`__internal__vmapBatchSlot_${link.other}`);
+          bin(Op.OP_ELSE); directProofField('next'); bin(Op.OP_ENDIF);
+        }
+        arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
         directProofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`, 1); bin(Op.OP_EQUAL);
         bin(Op.OP_IF);
         // UPDATE: no separate predecessor output is permitted.
         arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
         bin(Op.OP_ELSE);
+        // The higher of a chained pair follows the lower's node, which relinks the shared node once.
+        if (link !== undefined) {
+          pickTracked(link.higher); bin(Op.OP_IF);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
+          bin(Op.OP_ELSE);
+        }
         // INSERT: recreate the exact proof predecessor as proof.slot || target || proof.value. The predecessor is one
         // the transaction spends (a head is minted only at genesis), so the recreated output keeps the locking
         // bytecode of the input the proof names; a coordinate that names no input is refused here.
@@ -31404,6 +31457,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
         directProofField('slot', 1); arg(`__internal__vmapBatchSlot_${slot}`, 2); bin(Op.OP_CAT);
         directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
+        if (link !== undefined) bin(Op.OP_ENDIF);
         bin(Op.OP_ENDIF);
         if (!ran) bin(Op.OP_ENDIF);
       };
@@ -31439,7 +31493,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.activityKeptWriteSlots.add(targets[0]);
       } else if (sharedActivity) {
         // A delete settles at its own site and close. A write's proof is its own input, so no two targets name one
-        // node: where the write ran it is its single-target transition, elsewhere it keeps that node.
+        // node: where the write ran it is its single-target transition, elsewhere it keeps that node. A pair that ran
+        // on one proof chains instead: the first spends the node, the second's slot is funded.
+        if (chain !== undefined) {
+          // [link(first), link(second)]: both ran, on one proof, and that write's key is the lower one.
+          const flagOf = (slot: number): string => GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot);
+          pickTracked(flagOf(chain[0])); pickTracked(flagOf(chain[1]), 1); bin(Op.OP_BOOLAND);
+          arg(`__internal__vmapBatchProof_${chain[0]}`); arg(`__internal__vmapBatchProof_${chain[1]}`);
+          bin(Op.OP_NUMEQUAL); bin(Op.OP_BOOLAND); bin(Op.OP_DUP);
+          for (const [slot, other] of [chain, [chain[1], chain[0]]]) {
+            arg(`__internal__vmapBatchSlot_${slot}`); bin(Op.OP_BIN2NUM);
+            arg(`__internal__vmapBatchSlot_${other}`); bin(Op.OP_BIN2NUM);
+            bin(Op.OP_LESSTHAN); bin(Op.OP_BOOLAND);
+            if (slot === chain[0]) bin(Op.OP_SWAP);
+          }
+          this.pushToStack(chainLink(chain[0])); this.pushToStack(chainLink(chain[1]));
+        }
         for (const slot of targets) {
           if (softDelete(slot)) {
             if (!this.condDeleteSlots.has(slot)) throw new Error(`Sorted delete slot ${slot} has no settlement`);
@@ -31448,14 +31517,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitFixedEntryInputIndex(slot, loc);
           this.pushToStack('(own_input)');
           proofIndex(slot);
-          bin(Op.OP_NUMEQUALVERIFY);
+          if (chain !== undefined && slot === chain[1]) {
+            // A chained second names the first's input.
+            bin(Op.OP_NUMEQUAL);
+            pickTracked(chainLink(chain[0])); bin(Op.OP_BOOLOR); pickTracked(chainLink(chain[1])); bin(Op.OP_BOOLOR);
+            bin(Op.OP_VERIFY);
+          } else bin(Op.OP_NUMEQUALVERIFY);
           this.popFromStack();
           const flag = GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot);
           this.emit(encodeInt(BigInt(this.getStackIndex(flag))), loc); bin(Op.OP_PICK);
           bin(Op.OP_IF);
           arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
           bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_VERIFY);
-          singleTarget(slot, true);
+          const other = chain?.find((write) => write !== slot);
+          singleTarget(slot, true, other === undefined ? undefined
+            : { other, lower: chainLink(slot), higher: chainLink(other) });
           bin(Op.OP_ELSE);
           this.emitEntryPreservationBody(slot, loc);
           bin(Op.OP_ENDIF);
@@ -31949,10 +32025,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         bin(Op.OP_ENDIF);
       };
       // A shared batch's target counts as the node its slot spends, which a write that ran spends as its proof; with
-      // `outputs`, a write that ran adds the predecessor it relinks.
+      // `outputs`, a write that ran adds the predecessor it relinks. A chained second spends no node and adds its own.
       const sharedCount = (outputs: boolean): void => {
         targets.forEach((slot, index) => {
           readSlotIsNode(slot);
+          if (chain !== undefined && slot === chain[1]) {
+            pickTracked(chainLink(chain[0]), index > 0 ? 2 : 1); pickTracked(chainLink(chain[1]), index > 0 ? 3 : 2);
+            bin(Op.OP_BOOLOR);
+            if (outputs) bin(Op.OP_BOOLOR);
+            else { bin(Op.OP_NOT); bin(Op.OP_BOOLAND); }
+          }
           if (index > 0) bin(Op.OP_ADD);
         });
         for (const slot of outputs ? targets.filter((target) => !softDelete(target)) : []) {
@@ -32104,7 +32186,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const countOpts = linearRoute ? { expectedOnAltstack: true } : undefined;
       this.emitVerifyChunkUtxoCount(inputExpected, false, loc, addr, countOpts);
       this.emitVerifyChunkUtxoCount(expected, true, loc, addr, countOpts);
-      for (const name of [addr, inputExpected, expected]) {
+      for (const name of [addr, inputExpected, expected, ...[...(chain ?? [])].reverse().map(chainLink)]) {
         const depth = this.getStackIndex(name);
         this.emit(encodeInt(BigInt(depth)), loc); bin(Op.OP_ROLL); bin(Op.OP_DROP);
         this.removeFromStack(depth);

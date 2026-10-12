@@ -6632,7 +6632,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       omitLocalFeeTail?: boolean;
       /** Compiler-authenticated terminal value productions transported through atomic graph promotion. */
       valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
-      /** DS-6: the sorted batch targets that spend a node they share with other targets (else the first). */
+      /** DS-6: the sorted batch targets that spend, or chain on, a node they share with other targets (else the first). */
       sortedNodeOwners?: readonly number[];
     },
   ): Promise<StatefulTransactionBuilder> {
@@ -6922,8 +6922,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const batchTargetPlaceholders = new Map<number, string>();
     let exactBatchTargetSlots = new Set<number>();
     let batchPredCommitments = new Map<string, string[]>();
-    // DS-6: the targets that may own a node shared with an earlier target instead, tried where the first refuses.
-    const sortedNodeOwnerAlternatives: number[] = [];
+    // DS-6: the owner sets that may hold a node shared with an earlier target instead, tried where the first refuses.
+    const sortedNodeOwnerAlternatives: number[][] = [];
     const runtimeMessageBusAliasSkipSlots = new Set<number>();
     const inactiveMessageBusEntrySlots = new Set(
       (entryAbiFunction as AbiFunction & { messageBusInactiveEntrySlots?: readonly number[] } | undefined)
@@ -8644,7 +8644,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const noOpSlots = new Set(batchNoOp ? batch.slotIndices : batch.slotIndices.filter((slotIndex) => (
           settlesByActivity && softDeleteSlots.includes(slotIndex) && absentSoftDelete(slotIndex))));
         // DS-6: activity-settled targets whose nodes coincide spend that node once, at the slot of the target that
-        // runs (`sortedNodeOwners`, else the first). The others are lent: their slot is funded and runs nothing.
+        // runs (`sortedNodeOwners`, else the first). The others are lent: their slot is funded and runs nothing. Two
+        // listed writes both run on the node: the first spends it and the second chains on it.
         const lentSlots = new Set<number>();
         if (settlesByActivity && batch.slotIndices.length > 1
           && batch.slotIndices.some((slotIndex) => softDeleteSlots.includes(slotIndex))) {
@@ -8655,9 +8656,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (uid !== undefined) byNode.set(uid, [...(byNode.get(uid) ?? []), slotIndex]);
           }
           for (const members of [...byNode.values()].filter((group) => group.length > 1)) {
-            const owner = members.find((slotIndex) => overrides?.sortedNodeOwners?.includes(slotIndex)) ?? members[0];
-            if (overrides?.sortedNodeOwners === undefined) sortedNodeOwnerAlternatives.push(...members.slice(1));
-            for (const slotIndex of members.filter((member) => member !== owner)) {
+            const listed = members.filter((slotIndex) => overrides?.sortedNodeOwners?.includes(slotIndex));
+            const owners = listed.length > 0 ? listed : [members[0]];
+            if (overrides?.sortedNodeOwners === undefined) {
+              sortedNodeOwnerAlternatives.push(...members.slice(1).map((slotIndex) => [slotIndex]));
+              const memberWrites = members.filter((slotIndex) => !softDeleteSlots.includes(slotIndex));
+              if (memberWrites.length > 1) sortedNodeOwnerAlternatives.push(memberWrites);
+            }
+            for (const slotIndex of members.filter((member) => !owners.includes(member))) {
               lentSlots.add(slotIndex);
               const entry = entryNfts.find((candidate) => candidate.slotIndex === slotIndex)!;
               entry.exists = false;
@@ -12799,8 +12805,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const vmErrored = (candidate: StatefulTransactionBuilder): boolean => (
       (candidate as unknown as { __vmErrored?: boolean }).__vmErrored === true);
     if (vmErrored(builder)) {
-      for (const owner of new Set(sortedNodeOwnerAlternatives)) {
-        const retry = await this._createBuilder(functionName, callerArgs, { ...overrides, sortedNodeOwners: [owner] });
+      const tried = new Set<string>();
+      for (const owners of sortedNodeOwnerAlternatives) {
+        if (tried.has(owners.join())) continue;
+        tried.add(owners.join());
+        const retry = await this._createBuilder(functionName, callerArgs, { ...overrides, sortedNodeOwners: owners });
         if (!vmErrored(retry)) return retry;
       }
     }

@@ -106,6 +106,10 @@ export function reassertNestedEmitEvents(
     );
   if (eventSelection.status === 'absent' && !legacyEventFallback) return;
   const publishFn = chunkableValueWriteAbi(host);
+  // A known writer that declares no event emits none. Reconstructing one mints an immutable NFT no covenant reads,
+  // branded with the executing implementation's category under a delegate (which DX-8 conservation refuses).
+  if (eventSelection.status === 'absent' && publishFn !== undefined && (publishFn.emits?.length ?? 0) === 0
+    && !publishFn.blockLayout?.slots.some((slot) => slot.kind === 'event')) return;
   const eventOffset = eventSelection.status === 'exact'
     ? eventSelection.slotOffset
     : publishFn?.blockLayout?.slots.find((slot) => slot.kind === 'event')?.offset ?? 4;

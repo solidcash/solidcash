@@ -1,12 +1,19 @@
 import { PrimitiveType } from '@solidcash/utils';
 import {
   BlockNode,
+  BreakNode,
+  CollectionIterationNode,
+  ContinueNode,
   ContractNode,
+  DoWhileNode,
   FunctionDefinitionNode,
   IntLiteralNode,
   Node,
   NullaryOpNode,
+  ReturnNode,
+  StatementNode,
   TimeOpNode,
+  WhileNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { TimeOp } from '../ast/Globals.js';
@@ -44,14 +51,18 @@ export default class InjectLocktimeGuardTraversal extends AstTraversal {
   }
 
   visitBlock(node: BlockNode): Node {
+    const statements = node.statements;
+    if (!statements || statements.length === 0) return node;
     const previous = this.hasTimeCheckOnPath;
 
-    // Check whether there are any locktime checks on the same execution path, BEFORE entering the block body.
-    // So even if there are locktime checks after the `tx.locktime` access, it counts as a locktime check
-    if (node.statements?.some(isLocktimeCheck)) {
-      this.hasTimeCheckOnPath = true;
-    }
-    super.visitBlock(node);
+    // A check covers a read when every path through the read reaches it: an earlier check, or a later one with no
+    // early exit (return/break/continue) from the read's statement up to the check (SEM-6).
+    const checks = statements.flatMap((s, i) => (isLocktimeCheck(s) ? [i] : []));
+    const exits = statements.map(holdsEarlyExit);
+    node.statements = statements.map((statement, i) => {
+      this.hasTimeCheckOnPath = previous || checks.some((j) => j < i || !exits.slice(i, j).includes(true));
+      return this.visit(statement) as StatementNode;
+    });
     this.hasTimeCheckOnPath = previous;
     return node;
   }
@@ -74,6 +85,52 @@ function isLocktimeCheck(statement: Node): boolean {
     }
   }
   return false;
+}
+
+// Whether a statement can leave its enclosing block early: any return, or a break/continue outside its own loops.
+function holdsEarlyExit(statement: StatementNode): boolean {
+  const finder = new EarlyExitFinder();
+  finder.visit(statement);
+  return finder.found;
+}
+
+class EarlyExitFinder extends AstTraversal {
+  found = false;
+  private loopDepth = 0;
+
+  visitReturn(node: ReturnNode): Node {
+    this.found = true;
+    return node;
+  }
+
+  visitBreak(node: BreakNode): Node {
+    if (this.loopDepth === 0) this.found = true;
+    return node;
+  }
+
+  visitContinue(node: ContinueNode): Node {
+    if (this.loopDepth === 0) this.found = true;
+    return node;
+  }
+
+  visitWhile(node: WhileNode): Node {
+    return this.inLoop(() => super.visitWhile(node));
+  }
+
+  visitDoWhile(node: DoWhileNode): Node {
+    return this.inLoop(() => super.visitDoWhile(node));
+  }
+
+  visitCollectionIteration(node: CollectionIterationNode): Node {
+    return this.inLoop(() => super.visitCollectionIteration(node));
+  }
+
+  private inLoop(visit: () => Node): Node {
+    this.loopDepth += 1;
+    const result = visit();
+    this.loopDepth -= 1;
+    return result;
+  }
 }
 
 function createLocktimeGuard(funcNode: FunctionDefinitionNode): TimeOpNode {

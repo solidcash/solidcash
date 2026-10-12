@@ -1,6 +1,6 @@
-=== SOLC SEMANTIC RUNTIME PARITY (first slice): 1380/1490 executed lines matched (92.62%) | 7 matched-with-density-reserve | 93 mismatched | 9 mismatched-with-density-reserve | 0 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | 3 refused-at-compile | 123 skipped | 0 error | 451 fixtures run of 1542 compiled candidates | 660.5s ===
-=== STATEFUL SLICE (deploy once, lines in order): 673/755 executed lines matched (89.14%) | 6 matched-with-density-reserve | 52 mismatched | 9 mismatched-with-density-reserve | 14 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | after divergence 25/60 matched | 43 refused-at-compile | 10 refused-at-deploy | 0 skipped | 0 error | 328 fixtures run of 621 with state variables + 5 routed from the pure slice ===
-=== PIPELINE-SPECIFIC EXPECTATIONS (compileViaYul true/false, excluded from both rates): legacy 26/30 | via-IR 94/104 executed lines matched | 43 fixtures run of 84 | 8 twin pairs: 3 legacy, 2 both, 1 neither, 1 unmeasured, 1 via-IR ===
+=== SOLC SEMANTIC RUNTIME PARITY (first slice): 1370/1474 executed lines matched (92.94%) | 7 matched-with-density-reserve | 87 mismatched | 9 mismatched-with-density-reserve | 0 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | 3 refused-at-compile | 115 skipped | 0 error | 439 fixtures run of 1542 compiled candidates | 671.3s ===
+=== STATEFUL SLICE (deploy once, lines in order): 684/759 executed lines matched (90.12%) | 6 matched-with-density-reserve | 45 mismatched | 9 mismatched-with-density-reserve | 14 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | after divergence 21/54 matched | 26 refused-at-compile | 10 refused-at-deploy | 0 skipped | 0 error | 325 fixtures run of 621 with state variables + 5 routed from the pure slice ===
+=== PIPELINE-SPECIFIC EXPECTATIONS (compileViaYul true/false, excluded from both rates): legacy 26/30 | via-IR 94/103 executed lines matched | 42 fixtures run of 84 | 8 twin pairs: 3 legacy, 2 both, 1 neither, 1 unmeasured, 1 via-IR ===
 
 --- FIXTURES SKIPPED (by reason) ---
   621  state-variables
@@ -17,6 +17,7 @@
    17  no-matching-decl
    16  no-calls
    15  ret-type:address
+   13  evm-version:older
    11  type:address
     7  target-is-library
     5  ret-type:array
@@ -35,29 +36,28 @@
     1  unparsed
 
 --- LINES (selected fixtures) ---
- 1616  selected
- 1380  matched
+ 1592  selected
+ 1370  matched
     7  matched-with-density-reserve
-   93  mismatched
+   87  mismatched
     9  mismatched-with-density-reserve
     0  matched-under-mock-size-limits
     1  mismatched-under-mock-size-limits
     3  refused-at-compile
-  123  skipped
+  115  skipped
     0  error (timeout/worker)
 
 --- LINES SKIPPED (by reason) ---
    95  arg-out-of-range
-   28  stateful-artifact
+   20  stateful-artifact
 
 --- MISMATCH SHAPES ---
-   32  expected values, got revert: require@LN
-   27  expected values, got wrong value (unmapped final verify)
+   30  expected values, got revert: require@LN
+   29  expected values, got wrong value (unmapped final verify)
     9  expected values, got (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation c
     9  expected values, got revert: Program failed an OP_VERIFY operation.
-    7  expected FAILURE, got success (no revert)
     7  expected values, got revert: The provided unlocking bytecode exceeds the maximum bytecode length. Maximum bytecode length: N bytes.
-    4  expected values, got build-error: Error: keccakN preimage extraction did not converge.
+    5  expected FAILURE, got success (no revert)
     3  expected values, got wrong value
     1  expected values, got (under mock size limits: input) revert: Program called an OP_SPLIT operation with an invalid index. stack item length: N; requested split inde
     1  expected values, got build-error: Error: keccakN batch too large (N total blocks); a single side-car input funds at most N keccak b
@@ -102,12 +102,9 @@ test/libsolidity/semanticTests/array/memory_arrays_of_various_sizes.sol:16  f(ui
 test/libsolidity/semanticTests/builtinFunctions/blobhash.sol:16  f() -> 0x0100000000000000000000000000000000000000000000000000000000000001  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/builtinFunctions/blobhash.sol:17  g() -> 0x0100000000000000000000000000000000000000000000000000000000000002  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/builtinFunctions/blobhash_shadow_resolution.sol:12  f() -> 0x03  =>  wrong value (unmapped final verify)
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_abi_encode.sol:19  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction did not converge.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_abi_encode.sol:20  builtinOutput() -> -14651554186193368082021334953908208762193027200365752719897746810709432803072  =>  build-error: Error: keccak256 preimage extraction did not converge.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_pure_function.sol:17  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction did not converge.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_string_concat.sol:15  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction did not converge.
 test/libsolidity/semanticTests/builtinFunctions/erc7201_param_string_literal_with_escaped_chars.sol:18  builtinMatchesSolidityImplementation() -> true  =>  revert: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/builtinFunctions/erc7201_param_unicode_string_literal.sol:14  builtinMatchesSolidityImplementation() -> true  =>  revert: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/builtinFunctions/msg_sig.sol:7  foo(uint256): 0x0 -> 0x2fbebd3800000000000000000000000000000000000000000000000000000000  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/builtinFunctions/msg_sig_after_internal_call_is_same.sol:11  foo(uint256): 0x0 -> 0x2fbebd3800000000000000000000000000000000000000000000000000000000  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/constants/asm_address_constant_regression.sol:11  f() -> 0x00  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/deployedCodeExclusion/subassembly_deduplication.sol:42  test() -> true  =>  wrong value (unmapped final verify)
@@ -126,8 +123,6 @@ test/libsolidity/semanticTests/inlineAssembly/transient_storage_multiple_calls_d
 test/libsolidity/semanticTests/inlineAssembly/transient_storage_multiple_transactions.sol:37  h() -> 0x63  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/inlineAssembly/transient_storage_simple_reentrancy_lock.sol:22  f(bool): true -> FAILURE  =>  success (no revert)
 test/libsolidity/semanticTests/inlineAssembly/tstore_hidden_staticcall.sol:20  test() -> FAILURE  =>  success (no revert)
-test/libsolidity/semanticTests/literals/ternary_operator_with_literal_types_overflow.sol:16  g() -> FAILURE, hex"4e487b71", 0x11  =>  success (no revert)
-test/libsolidity/semanticTests/literals/ternary_operator_with_literal_types_overflow.sol:17  h() -> FAILURE, hex"4e487b71", 0x11  =>  success (no revert)
 test/libsolidity/semanticTests/memoryManagement/return_variable.sol:28  f() -> 0x0500, 0x0500, 0x0a00  =>  wrong value
 test/libsolidity/semanticTests/memoryManagement/static_memory_array_allocation.sol:22  withoutValue() -> 0x0280  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/memoryManagement/struct_allocation.sol:22  withoutValue() -> 0x60  =>  wrong value (unmapped final verify)
@@ -152,13 +147,13 @@ test/libsolidity/semanticTests/state/block_gaslimit.sol:7  f() -> 20000000  =>  
 test/libsolidity/semanticTests/state/block_gaslimit.sol:8  f() -> 20000000  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/state/block_gaslimit.sol:9  f() -> 20000000  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/state/block_prevrandao.sol:9  f() -> 0xa86c2e601b6c44eb4848f7d23d9df3113fbcac42041c49cbed5000cb4f118777  =>  wrong value (unmapped final verify)
-test/libsolidity/semanticTests/state/block_prevrandao_pre_paris.sol:9  f() -> 200000000  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/msg_sig.sol:10  f() -> 0x26121ff000000000000000000000000000000000000000000000000000000000  =>  wrong value (unmapped final verify)
+test/libsolidity/semanticTests/state/msg_sig.sol:11  g() -> 0xe2179b8e00000000000000000000000000000000000000000000000000000000  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/state/tx_gasprice.sol:7  f() -> 3000000000  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/state/tx_gasprice.sol:8  f() -> 3000000000  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/state/tx_gasprice.sol:9  f() -> 3000000000  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/state/uncalled_blobhash.sol:12  f() -> 0x0100000000000000000000000000000000000000000000000000000000000001  =>  wrong value (unmapped final verify)
 test/libsolidity/semanticTests/tryCatch/assert.sol:17  f(bool): false -> 2  =>  revert: require@L3
-test/libsolidity/semanticTests/tryCatch/assert_pre_byzantium.sol:18  f(bool): false -> 2  =>  revert: require@L3
 test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:153  f1() -> 2  =>  revert: require@L3
 test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:154  f1a() -> 2  =>  revert: require@L3
 test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol:156  f1c() -> 2  =>  revert: require@L3
@@ -184,7 +179,6 @@ test/libsolidity/semanticTests/tryCatch/malformed_panic_4.sol:59  a() -> 0x00  =
 test/libsolidity/semanticTests/tryCatch/malformed_panic_4.sol:60  b() -> 0x00  =>  revert: require@L6
 test/libsolidity/semanticTests/tryCatch/malformed_panic_4.sol:61  c() -> 0x43  =>  revert: require@L6
 test/libsolidity/semanticTests/tryCatch/require.sol:17  f(bool): false -> 2  =>  revert: require@L3
-test/libsolidity/semanticTests/tryCatch/require_pre_byzantium.sol:18  f(bool): false -> 2  =>  revert: require@L3
 test/libsolidity/semanticTests/tryCatch/simple.sol:18  f(bool): false -> 9, 10  =>  revert: require@L3
 test/libsolidity/semanticTests/tryCatch/simple_notuple.sol:18  f(bool): false -> 9  =>  revert: require@L3
 test/libsolidity/semanticTests/types/type_conversion_cleanup.sol:5  test() -> 0xffffffffffffffffffffffffffffffff  =>  revert: Program called an OP_SPLIT operation with an invalid index. stack item length: 14; requested split index: 20.
@@ -195,7 +189,7 @@ test/libsolidity/semanticTests/various/codehash_assembly.sol:22  g() -> 0xc5d246
 test/libsolidity/semanticTests/various/codehash_assembly.sol:23  h() -> true  =>  revert: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115792089237316195423570985008687907853269984665640564039457584007913129639935 -> -1  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 752000 (density control length: 940); operation cost following operation: 752070.
 
-=== STATEFUL SLICE (deploy once, lines in order): 673/755 executed lines matched (89.14%) | 6 matched-with-density-reserve | 52 mismatched | 9 mismatched-with-density-reserve | 14 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | after divergence 25/60 matched | 43 refused-at-compile | 10 refused-at-deploy | 0 skipped | 0 error | 328 fixtures run of 621 with state variables + 5 routed from the pure slice ===
+=== STATEFUL SLICE (deploy once, lines in order): 684/759 executed lines matched (90.12%) | 6 matched-with-density-reserve | 45 mismatched | 9 mismatched-with-density-reserve | 14 matched-under-mock-size-limits | 1 mismatched-under-mock-size-limits | after divergence 21/54 matched | 26 refused-at-compile | 10 refused-at-deploy | 0 skipped | 0 error | 325 fixtures run of 621 with state variables + 5 routed from the pure slice ===
 
 --- STATEFUL FIXTURES SKIPPED (by reason) ---
    30  constructor-params
@@ -203,7 +197,7 @@ test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115
    25  type:array
    23  getter-type:user-defined
    23  type:string-bytes
-   22  constructor-call
+   21  constructor-call
    21  ret-type:array
    20  value:string-or-hex
    18  builtin:storageEmpty
@@ -213,6 +207,7 @@ test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115
    11  ret-type:user-defined
     9  events
     5  no-matching-decl
+    4  evm-version:older
     4  ret-type:address
     4  type:address
     3  arg-arity
@@ -222,17 +217,17 @@ test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115
     1  type:struct
 
 --- STATEFUL LINES (selected fixtures; after-divergence lines counted apart) ---
-  868  selected
-  673  matched
+  849  selected
+  684  matched
     6  matched-with-density-reserve
-   52  mismatched
+   45  mismatched
     9  mismatched-with-density-reserve
    14  matched-under-mock-size-limits
     1  mismatched-under-mock-size-limits
-   25  matched after-divergence
+   21  matched after-divergence
     0  matched-under-mock-size-limits after-divergence
-   35  mismatched after-divergence
-   43  refused-at-compile
+   33  mismatched after-divergence
+   26  refused-at-compile
    10  refused-at-deploy
     0  skipped
     0  error (timeout/worker)
@@ -240,43 +235,37 @@ test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115
 --- STATEFUL LINES SKIPPED (by reason) ---
 
 --- STATEFUL MISMATCH SHAPES ---
-   16  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
+   22  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
     9  expected values, got (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation c
     8  expected values, got (after divergence) (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation c
     7  expected values, got (after divergence) wrong value
-    7  expected values, got wrong value
     6  expected values, got (after divergence) revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
     6  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program attempted to read from an invalid transaction o
     5  expected values, got (after divergence) (with density reserve) revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
-    5  expected values, got build-error: Error: keccakN preimage extraction: no side-car read found in the probe trace.
-    4  expected values, got build-error: Error: Cannot send stateful transaction: state commitments could not be auto-derived. Reason: Ful
-    4  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program called an OP_SPLIT operation with an invalid in
-    3  expected values, got (after divergence) (under mock size limits: input) build-error: Error: Expected N data NFT(s) for category NdNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNa
-    2  expected FAILURE, got success (no revert)
+    5  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program called an OP_SPLIT operation with an invalid in
+    5  expected values, got wrong value
+    3  expected values, got (after divergence) (under mock size limits: input) build-error: Error: Expected N data NFT(s) for category NaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNa
     2  expected values, got (after divergence) (with density reserve) wrong value
-    2  expected values, got build-error: Error: keccakN stateful preimage extraction did not converge.
     2  expected values, got revert: messageBus: BCH-N preflight failed at input N: Tried to read from an invalid stack index. Current stac
-    1  expected FAILURE, got (after divergence) success (no revert)
-    1  expected values, got (after divergence) build-error: Error: keccakN preimage extraction: no side-car read found in the probe trace.
+    1  expected FAILURE, got success (no revert)
     1  expected values, got (after divergence) revert: messageBus: BCH-N preflight failed at input N: Program attempted to read from an invalid transaction U
     1  expected values, got (after divergence) revert: messageBus: BCH-N preflight failed at input N: Tried to read from an invalid stack index. Current stac
-    1  expected values, got (under mock size limits: input) build-error: Error: Expected N data NFT(s) for category NdNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNa
+    1  expected values, got (under mock size limits: input) build-error: Error: Expected N data NFT(s) for category NaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNaNa
     1  expected values, got build-error: Error: Cannot resolve deploy mapping key expression 'map:map(id:__aN)' for collection 'map'.
     1  expected values, got build-error: Error: messageBus: atomic messageEnvelope must be at least N bytes
     1  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program attempted to read from an invalid transaction U
     1  expected values, got revert: messageBus: BCH-N preflight failed at input N: Program called an OP_NUMNBIN operation with an insuffic
 
 --- STATEFUL FAILURE LINES MATCHED (by revert reason) ---
-   28  revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
+   31  revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.
    11  revert: messageBus: BCH-N preflight failed at input N: Program failed an OP_VERIFY operation.; failing require in __Chec
     6  revert: messageBus: BCH-N preflight failed at input N: Program attempted to OP_INVOKE an undefined function identifier. 
     5  revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: N (de
-    1  revert: mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index N: Program fa
+    3  revert: mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index N: Program fa
     1  revert: messageBus: BCH-N preflight failed at input N: Program attempted to read from an invalid transaction output inde
     1  revert: messageBus: BCH-N preflight failed at input N: Program called an OP_SPLIT operation with an invalid index. stack
 
 --- STATEFUL REFUSED (by status and error head, per line) ---
-   18  refused-at-compile: Error: Returning dynamic-array state helper '..' must have one tail return so it can be inlined
    16  refused-at-compile: UndefinedReferenceError: Undefined reference to symbol find at Line N, Column N
     4  refused-at-compile: UndefinedReferenceError: Undefined reference to symbol x at Line N, Column N
     3  refused-at-deploy: build-error: Error: Constructor of '..' creates stateful contract '..' with '..'; a deployment does not create child con
@@ -284,6 +273,7 @@ test/libsolidity/semanticTests/viaYul/exp_neg.sol:26  f(int256,uint256): -1, 115
     3  refused-at-deploy: build-error: Error: Constructor of '..' creates stateful contract '..', '..', '..' with '..'; a deployment does not crea
     2  refused-at-compile: UnsupportedReturnError: Unsupported return: statements of '..' after this call would still run: the assembly return in '
     1  refused-at-compile: AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column N
+    1  refused-at-compile: Error: Returning dynamic-array state helper '..' must have one tail return so it can be inlined
     1  refused-at-compile: UndefinedReferenceError: Undefined reference to symbol s at Line N, Column N
     1  refused-at-compile: UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): '..' has no BCH equivalent (deploying runtime bytecod
     1  refused-at-deploy: build-error: RangeError: Invalid array length
@@ -365,10 +355,10 @@ test/libsolidity/semanticTests/array/copying/array_copy_storage_storage_differen
 test/libsolidity/semanticTests/array/copying/array_copy_storage_storage_different_base_nested.sol:23  test() -> 3, 4  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/array/copying/calldata_1d_array_into_2d_memory_array_element.sol:37  test() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction output index. Transaction output count: 3; requested index: -1.
 test/libsolidity/semanticTests/array/copying/copy_byte_array_to_storage.sol:48  f() -> 0xff  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:70  test1() ->  =>  (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 0000000d5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
-test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:75  test2() ->  =>  (after divergence) (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 0000000d5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
-test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:80  test3() ->  =>  (after divergence) (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 0000000d5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
-test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:85  test4() ->  =>  (after divergence) (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 0000000d5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
+test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:70  test1() ->  =>  (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 000000085a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
+test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:75  test2() ->  =>  (after divergence) (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 000000085a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
+test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:80  test3() ->  =>  (after divergence) (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 000000085a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
+test/libsolidity/semanticTests/array/copying/nested_array_element_storage_to_storage.sol:85  test4() ->  =>  (after divergence) (under mock size limits: input) build-error: Error: Expected 3 data NFT(s) for category 000000085a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a, found 2. Check that all addresses holding data NFTs are included.
 test/libsolidity/semanticTests/array/copying/nested_array_memory_to_storage.sol:45  test1() -> 3  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program called an OP_SPLIT operation with an invalid index. stack item length: 6; requested split index: 132.
 test/libsolidity/semanticTests/array/copying/nested_array_memory_to_storage.sol:49  test3() -> 24  =>  (after divergence) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/array/delete/bytes_delete_element.sol:18  test1() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program called an OP_SPLIT operation with an invalid index. stack item length: 1; requested split index: 94.
@@ -378,23 +368,19 @@ test/libsolidity/semanticTests/array/push/push_no_args_2d.sol:43  ll(uint256): 1
 test/libsolidity/semanticTests/array/push/push_no_args_2d.sol:45  a(uint256,uint256): 1, 84 -> 128  =>  (after divergence) (with density reserve) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/array/push/push_no_args_2d.sol:47  a(uint256,uint256): 2, 0 -> 512  =>  (after divergence) (with density reserve) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/array/reusing_memory.sol:26  f(uint256): 0x34 -> 0x46bddb1178e94d7f2892ff5f366840eb658911794f2c3a44c450aa2c505186c1  =>  build-error: Error: Cannot resolve deploy mapping key expression 'map:map(id:__a0)' for collection 'map'.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_equivalent_solidity_spec.sol:25  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_equivalent_solidity_spec.sol:26  builtinOutput() -> 0x183a6125c38840424c4a85fa12bab2ab606c4b6d0e7cc73c0c06ba5300eab500  =>  (after divergence) build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_equivalent_solidity_spec_comptime.sol:16  builtinMatchesSolidityImplementation() -> true  =>  wrong value
+test/libsolidity/semanticTests/builtinFunctions/erc7201_equivalent_solidity_spec.sol:25  builtinMatchesSolidityImplementation() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_equivalent_solidity_spec.sol:26  builtinOutput() -> 0x183a6125c38840424c4a85fa12bab2ab606c4b6d0e7cc73c0c06ba5300eab500  =>  (after divergence) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/builtinFunctions/erc7201_layout_specifier_slot_match_comptime.sol:19  builtinMatchesSolidityImplementation() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_unicode_string_variable.sol:15  builtinMatchesSolidityImplementation() -> true  =>  build-error: Error: keccak256 stateful preimage extraction did not converge.
-test/libsolidity/semanticTests/builtinFunctions/erc7201_param_with_zero_last_byte_of_inner_hash_comptime.sol:24  builtinMatchesSolidityImplementation() -> true  =>  wrong value
-test/libsolidity/semanticTests/builtinFunctions/keccak256_packed_complex_types.sol:14  f() -> 0xba4f20407251e4607cd66b90bfea19ec6971699c03e4a4f3ea737d5818ac27ae, 0xba4f20407251e4607cd66b90bfea19ec6971699c03e4a4f3ea737d5818ac27ae, 0xe7490fade3a8e31113ecb6c0d2635e28a6f5ca8359a57afe914827f41ddf0848  =>  build-error: Error: keccak256 stateful preimage extraction did not converge.
-test/libsolidity/semanticTests/deployedCodeExclusion/library_function_deployed.sol:31  test() -> true  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
-test/libsolidity/semanticTests/deployedCodeExclusion/static_base_function_deployed.sol:31  test() -> true  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
-test/libsolidity/semanticTests/deployedCodeExclusion/super_function_deployed.sol:31  test() -> true  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
-test/libsolidity/semanticTests/deployedCodeExclusion/virtual_function_deployed.sol:35  test() -> true  =>  build-error: Error: keccak256 preimage extraction: no side-car read found in the probe trace.
+test/libsolidity/semanticTests/builtinFunctions/erc7201_param_unicode_string_variable.sol:15  builtinMatchesSolidityImplementation() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/builtinFunctions/keccak256_packed_complex_types.sol:14  f() -> 0xba4f20407251e4607cd66b90bfea19ec6971699c03e4a4f3ea737d5818ac27ae, 0xba4f20407251e4607cd66b90bfea19ec6971699c03e4a4f3ea737d5818ac27ae, 0xe7490fade3a8e31113ecb6c0d2635e28a6f5ca8359a57afe914827f41ddf0848  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program called an OP_SPLIT operation with an invalid index. stack item length: 2; requested split index: 3.
+test/libsolidity/semanticTests/deployedCodeExclusion/library_function_deployed.sol:31  test() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/deployedCodeExclusion/static_base_function_deployed.sol:31  test() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/deployedCodeExclusion/super_function_deployed.sol:31  test() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
+test/libsolidity/semanticTests/deployedCodeExclusion/virtual_function_deployed.sol:35  test() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/errors/require_error_evaluation_order_revert_strings_strip.sol:22  flip() -> FAILURE, hex"002ff067", 2  =>  success (no revert)
 test/libsolidity/semanticTests/functionCall/call_function_returning_nothing_via_pointer.sol:15  f() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Tried to read from an invalid stack index. Current stack depth: 2; requested depth: 2.
 test/libsolidity/semanticTests/functionCall/call_function_returning_nothing_via_pointer.sol:16  flag() -> true  =>  (after divergence) wrong value
 test/libsolidity/semanticTests/functionCall/calling_nonexisting_contract_throws.sol:28  h() -> 7  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction output index. Transaction output count: 3; requested index: -1.
-test/libsolidity/semanticTests/functionCall/delegatecall_return_value_pre_byzantium.sol:34  assert0_delegated() -> false  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/functionCall/delegatecall_return_value_pre_byzantium.sol:38  assert0_delegated() -> false  =>  (after divergence) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/functionCall/mapping_array_internal_argument.sol:25  get(uint8): 1 -> 21, 22, 42, 43  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction UTXO index. Transaction UTXO count: 2; requested index: 2.
 test/libsolidity/semanticTests/functionCall/mapping_array_internal_argument.sol:27  get(uint8): 1 -> 10, 30, 11, 31  =>  (after divergence) revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction UTXO index. Transaction UTXO count: 2; requested index: 2.
 test/libsolidity/semanticTests/functionCall/mapping_internal_return.sol:21  g() -> 0, 42, 0, 0, 84, 21  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Tried to read from an invalid stack index. Current stack depth: 7; requested depth: 7.
@@ -407,7 +393,7 @@ test/libsolidity/semanticTests/getters/transient_value_types_multi_frame_call.so
 test/libsolidity/semanticTests/getters/transient_value_types_multi_frame_call.sol:21  h() -> -1  =>  (after divergence) wrong value
 test/libsolidity/semanticTests/inheritance/transient_storage_state_variable_abstract_contract.sol:26  f() -> 1, 1, 2, 2  =>  wrong value
 test/libsolidity/semanticTests/inlineAssembly/keccak256_optimizer_cache_bug.sol:19  val() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/libraries/internal_library_function_attached_to_mapping.sol:20  mapValue(uint256): 42 -> 0x24  =>  build-error: Error: Cannot send stateful transaction: state commitments could not be auto-derived. Reason: Full state derivation failed: Duplicate stateful input 1d1e34a34eece24c5b2f9fab0cf62997955df2016f4a94bb26b6c76ba9ca1b43:1 at 1/3; roles entry:0,entry:2 / entry:0,entry:2; entries [{"slotIndex":0,"collection":"map","exists":true,"key":"2a","commitment":"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"},{"slotIndex":2,"collection":"map","exists":true,"key":"42","commitment":"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"}] Use .setState() to provide state values manually.
+test/libsolidity/semanticTests/libraries/internal_library_function_attached_to_mapping.sol:20  mapValue(uint256): 42 -> 0x24  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/modifiers/stacked_return_with_modifiers.sol:20  f() -> 42  =>  (with density reserve) revert: Program attempted an operation that would exceed the operation cost density limit. Maximum operation cost: 1515200 (density control length: 1894); operation cost following operation: 1515204.
 test/libsolidity/semanticTests/modifiers/stacked_return_with_modifiers.sol:21  x() -> 4  =>  (after divergence) (with density reserve) wrong value
 test/libsolidity/semanticTests/reverts/revert_return_area.sol:18  f() -> 0x00, 0x08c379a000000000000000000000000000000000000000000000000000000000  =>  wrong value
@@ -430,22 +416,17 @@ test/libsolidity/semanticTests/storageLayoutSpecifier/dynamic_array_storage_end.
 test/libsolidity/semanticTests/structs/function_type_copy.sol:43  test() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program attempted to read from an invalid transaction output index. Transaction output count: 3; requested index: -1.
 test/libsolidity/semanticTests/structs/struct_memory_to_storage_function_ptr.sol:30  f() -> 42, 23, 34, 42, 42  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program called an OP_SPLIT operation with an invalid index. stack item length: 0; requested split index: 34.
 test/libsolidity/semanticTests/using/library_on_interface.sol:16  x() -> 7  =>  build-error: Error: messageBus: atomic messageEnvelope must be at least 256 bytes
-test/libsolidity/semanticTests/variables/mapping_local_assignment.sol:15  f() -> 42, 0, 0, 21  =>  build-error: Error: Cannot send stateful transaction: state commitments could not be auto-derived. Reason: Full state derivation failed: Duplicate stateful input bd6880e94cda6621e4ecb95b3e6ce4b182cd970d7b9fbe6166f0b06db6ddc110:1 at 2/3; roles entry:1,entry:2 / entry:1,entry:2; entries [{"slotIndex":1,"collection":"m1","exists":true,"key":"01","commitment":"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"},{"slotIndex":2,"collection":"m1","exists":true,"key":"2","commitment":"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"}] Use .setState() to provide state values manually.
-test/libsolidity/semanticTests/variables/mapping_local_compound_assignment.sol:14  f() -> 42, 0, 0, 21  =>  build-error: Error: Cannot send stateful transaction: state commitments could not be auto-derived. Reason: Full state derivation failed: Duplicate stateful input 7ac9e35594151f9319767d83c4dd19545c01165d8637b4e0c495eaf086c6f37e:1 at 2/3; roles entry:1,entry:2 / entry:1,entry:2; entries [{"slotIndex":1,"collection":"m1","exists":true,"key":"01","commitment":"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"},{"slotIndex":2,"collection":"m1","exists":true,"key":"2","commitment":"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"}] Use .setState() to provide state values manually.
-test/libsolidity/semanticTests/variables/mapping_local_tuple_assignment.sol:16  f() -> 42, 0, 0, 21  =>  build-error: Error: Cannot send stateful transaction: state commitments could not be auto-derived. Reason: Full state derivation failed: Duplicate stateful input 2daa65d407c638ba41d892ca4145832dd6c68482d08f6afea81a818dad59de7b:1 at 2/3; roles entry:1,entry:2 / entry:1,entry:2; entries [{"slotIndex":1,"collection":"m1","exists":true,"key":"01","commitment":"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"},{"slotIndex":2,"collection":"m1","exists":true,"key":"2","commitment":"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"}] Use .setState() to provide state values manually.
 test/libsolidity/semanticTests/variables/transient_state_enum_variable.sol:17  f() ->  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/variables/transient_state_variable.sol:20  g() -> 8  =>  wrong value
 test/libsolidity/semanticTests/variables/transient_state_variable_cleanup_tstore.sol:14  f() -> 0xff  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program called an OP_NUM2BIN operation with an insufficient byte length to re-encode the provided number. Minimum necessary byte length: 3. Requested byte length: 2.
 test/libsolidity/semanticTests/various/gasleft_decrease.sol:19  f() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/various/gasleft_decrease.sol:20  g() -> true  =>  (after divergence) revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
-test/libsolidity/semanticTests/various/staticcall_for_view_and_pure.sol:40  fview() -> FAILURE  =>  success (no revert)
-test/libsolidity/semanticTests/various/staticcall_for_view_and_pure.sol:49  fpure() -> FAILURE  =>  (after divergence) success (no revert)
 test/libsolidity/semanticTests/viaYul/msg_sender.sol:9  test() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program called an OP_SPLIT operation with an invalid index. stack item length: 18; requested split index: 20.
 test/libsolidity/semanticTests/viaYul/storage/dirty_storage_bytes_long.sol:18  f() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/viaYul/storage/dirty_storage_dynamic_array.sol:18  f() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 test/libsolidity/semanticTests/viaYul/storage/dirty_storage_struct.sol:21  f() -> true  =>  revert: messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
 
-=== PIPELINE-SPECIFIC EXPECTATIONS (compileViaYul true/false, excluded from both rates): legacy 26/30 | via-IR 94/104 executed lines matched | 43 fixtures run of 84 | 8 twin pairs: 3 legacy, 2 both, 1 neither, 1 unmeasured, 1 via-IR ===
+=== PIPELINE-SPECIFIC EXPECTATIONS (compileViaYul true/false, excluded from both rates): legacy 26/30 | via-IR 94/103 executed lines matched | 42 fixtures run of 84 | 8 twin pairs: 3 legacy, 2 both, 1 neither, 1 unmeasured, 1 via-IR ===
 
 --- PIPELINE-SPECIFIC LINES (pipeline, slice, status) ---
    24  legacy pure matched
@@ -454,7 +435,7 @@ test/libsolidity/semanticTests/viaYul/storage/dirty_storage_struct.sol:21  f() -
     2  legacy stateful matched
     1  legacy stateful mismatched
    89  via-IR pure matched
-    8  via-IR pure mismatched
+    7  via-IR pure mismatched
     3  via-IR pure skipped
     5  via-IR stateful matched
     2  via-IR stateful mismatched
@@ -474,7 +455,6 @@ legacy      uninitializedFunctionPointer/uninitialized_internal_storage_function
 [via-IR] test/libsolidity/semanticTests/array/copying/dirty_memory_bytes_to_storage_copy_ir.sol:18  f() -> 0x6465616462656566000000000000000000000000000000000000000000000010  =>  wrong value
 [legacy] test/libsolidity/semanticTests/cleanup/cleanup_bytes_types_shortening_OldCodeGen.sol:16  f() -> 0xffffffff00000000000000000000000000000000000000000000000000000000  =>  wrong value (unmapped final verify)
 [via-IR] test/libsolidity/semanticTests/functionCall/return_size_bigger_than_expected.sol:30  test() -> 0x20  =>  wrong value
-[via-IR] test/libsolidity/semanticTests/functionCall/return_size_shorter_than_expected.sol:31  test() -> 0x0500  =>  wrong value
 [via-IR] test/libsolidity/semanticTests/functionCall/return_size_shorter_than_expected_evm_version_after_homestead.sol:33  test() -> FAILURE  =>  success (no revert)
 [via-IR] test/libsolidity/semanticTests/modifiers/function_modifier_loop_viair.sol:14  f() -> 1  =>  wrong value (unmapped final verify)
 [via-IR] test/libsolidity/semanticTests/modifiers/function_modifier_multi_invocation_viair.sol:15  f(bool): true -> 1  =>  wrong value (unmapped final verify)

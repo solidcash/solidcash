@@ -18,13 +18,14 @@ import { isMainThread, parentPort, Worker, workerData } from 'worker_threads';
 // deployer funds. `cmp=false` on FAILURE lines, so a call that returns normally shows as a mismatch instead of a
 // failed equality. A spend stopped by the op-cost density limit is retried once behind a deployer's density reserve
 // and scored apart (matched/mismatched-with-density-reserve). A target with a custom storage layout (`layout at`,
-// which solc forbids inheriting from) gets the check functions inside a copy of its own body instead.
+// which solc forbids inheriting from) gets the check functions inside a copy of its own body instead, and so does a
+// derived wrapper refused as IN_TARGET_RETRIES lists. A fixture reading msg.sig/msg.data calls its target as this.f().
 // Stateful slice: a fixture WITH state variables (no constructor parameters, same line restrictions; elementary
 // public getters too; a getter wins over a base function it overrides) gets one wrapper with `__check_<k>` per
-// signature, compiled with forceStateful (a derived wrapper refused by the lifecycle policy or MESSAGE_BUS_REQUIRED is
-// compiled again with the checks inside the target), deployed ONCE through getContractFactory(...).deploy(); its lines
-// then run in file order, one transaction each, so state carries over. A FAILURE line must revert without
-// broadcasting; a reverted value line is re-sent with cmp=false (success = wrong value, state advances as in solc).
+// signature, compiled with forceStateful (in-target retry and self-call as above), deployed ONCE through
+// getContractFactory(...).deploy(); its lines then run in file order, one transaction each, so state carries over.
+// A FAILURE line must revert without broadcasting; a reverted value line is re-sent with cmp=false (success = wrong
+// value, state advances as in solc).
 // Lines after a mismatch, or after a skipped value line of a state-writing function, are tagged afterDivergence. A
 // density-limit stop replays the whole fixture behind the reserve.
 // Routing: a pure fixture whose plain unlock leaves a compiler-owned external-call witness (`__internal__*`) unfilled
@@ -77,12 +78,19 @@ const underMockSizeLimits = ({ size: _size, status, ...rest }, limit, realOutcom
 });
 const withoutSize = ({ size: _size, ...rest }) => rest;
 // Wrapper shapes with the checks inside the target (see wrapSource). A derived wrapper hides the target's call-graph
-// edges, so these refusals of it retry in the target, each recording its shape.
+// edges, and names the target resolves as the root (`C.x`, `this.g`, an inherited overload set) can fail behind it,
+// so these refusals of it retry in the target (every candidate compiles alone), each recording its shape.
 const IN_TARGET_LAYOUT = 'in-target: layout at';
 const IN_TARGET_RETRIES = [
   [/^UnauthorizedLifecycleError: /, 'in-target: lifecycle refusal'],
   [/\[MESSAGE_BUS_REQUIRED\]/, 'in-target: message bus required'],
+  [/^UndefinedReferenceError: /, 'in-target: undefined reference'],
+  [/^AssignTypeError: /, 'in-target: assign type'],
 ];
+// msg.sig and msg.data are the entry's across internal calls, so a fixture reading them calls its target as
+// `this.f(args)`: an external self-call, which runs f as its own entry, as the expectation's direct call does.
+const MSG_FIELD_READER = /\bmsg\s*\.\s*(?:sig|data)\b/;
+const SELF_CALL = 'self-call: reads msg.sig/msg.data';
 // A plain unlock cannot fill compiler-owned external-call witnesses; such a pure fixture routes to the stateful slice.
 const WITNESS_GAP = /^build-error: Error: No value for '__internal__/;
 const ROUTED = 'routed-to-stateful: external-call witnesses';
@@ -181,19 +189,33 @@ async function workerMain() {
     return relaxed.size ? real : underMockSizeLimits(relaxed, size, real.outcome);
   };
 
+  // A derived wrapper refused as IN_TARGET_RETRIES lists is compiled again with its checks inside the target.
+  const compileWrapper = (source, fallback, options) => {
+    let shape;
+    try {
+      return { artifact: compileString(source, options) };
+    } catch (cause) {
+      shape = fallback && IN_TARGET_RETRIES.find(([refusal]) => refusal.test(errHead(cause)))?.[1];
+      if (!shape) return { error: errHead(cause) };
+    }
+    try {
+      return { artifact: compileString(fallback, options), shape };
+    } catch (cause) {
+      return { error: errHead(cause), shape };
+    }
+  };
+
   const runCheck = async (check) => {
     if (check.lines.length === 0) return { compiled: null };
-    let artifact;
-    try {
-      artifact = compileString(check.source, COMPILE_OPTIONS);
-    } catch (cause) {
-      return { compiled: false, error: errHead(cause) };
-    }
-    if (artifact.stateLayout) return { compiled: true, skip: 'stateful-artifact' };
-    if (artifact.constructorInputs?.length) return { compiled: true, skip: 'constructor-inputs' };
+    const { artifact, error, shape } = compileWrapper(check.source, check.fallback?.source, COMPILE_OPTIONS);
+    const tag = shape && { shape };
+    if (!artifact) return { compiled: false, error, ...tag };
+    if (artifact.stateLayout) return { compiled: true, skip: 'stateful-artifact', ...tag };
+    if (artifact.constructorInputs?.length) return { compiled: true, skip: 'constructor-inputs', ...tag };
+    const requireLine = shape ? check.fallback.requireLine : check.requireLine;
     const lines = [];
-    for (const line of check.lines) lines.push(await runLine(artifact, check.requireLine, line));
-    return { compiled: true, lines };
+    for (const line of check.lines) lines.push(await runLine(artifact, requireLine, line));
+    return { compiled: true, lines, ...tag };
   };
 
   // Stateful slice: one deploy, then every runnable line in file order as its own transaction. Each run gets fresh
@@ -309,25 +331,9 @@ async function workerMain() {
     return { compiled: true, outcomes: [...(kept.outcomes ?? []).slice(0, at), ...tagged.slice(at)] };
   };
 
-  // A derived wrapper refused for the target's hidden call-graph edges is compiled again with its checks inside it.
-  const compileStateful = (source, fallback) => {
-    let shape;
-    try {
-      return { artifact: compileString(source, STATEFUL_COMPILE_OPTIONS) };
-    } catch (cause) {
-      shape = fallback && IN_TARGET_RETRIES.find(([refusal]) => refusal.test(errHead(cause)))?.[1];
-      if (!shape) return { error: errHead(cause) };
-    }
-    try {
-      return { artifact: compileString(fallback, STATEFUL_COMPILE_OPTIONS), shape };
-    } catch (cause) {
-      return { error: errHead(cause), shape };
-    }
-  };
-
   const runStatefulJob = async ({ source, fallback, sequence }) => {
-    const { artifact, error, shape } = compileStateful(source, fallback);
-    if (artifact) prepareDeployChecks(artifact, source);
+    const { artifact, error, shape } = compileWrapper(source, fallback, STATEFUL_COMPILE_OPTIONS);
+    if (artifact) prepareDeployChecks(artifact, shape ? fallback : source);
     const result = error ? { compiled: false, error } : await runStatefulArtifact(artifact, sequence);
     return { ...result, ...(shape && { shape }) };
   };
@@ -701,21 +707,25 @@ function selectFixture(src) {
     check.lines.push(line);
   }
   const list = [...checks.values()];
-  const statefulWrapper = buildStatefulWrapper(src, code, target, list);
-  if (stateful) return { target: target.name, stateful: statefulWrapper };
+  const selfCall = MSG_FIELD_READER.test(code);
+  const statefulWrapper = buildStatefulWrapper(src, code, target, list, selfCall);
+  const tag = selfCall && { selfCall: SELF_CALL };
+  if (stateful) return { target: target.name, stateful: statefulWrapper, ...tag };
   // A pure fixture keeps its stateful wrapper as the route for unfilled external-call witnesses.
-  const wrappers = list.map((check) => buildWrapper(src, code, target, check));
-  return { target: target.name, checks: wrappers, route: statefulWrapper };
+  const wrappers = list.map((check) => buildWrapper(src, code, target, check, selfCall));
+  return { target: target.name, checks: wrappers, route: statefulWrapper, ...tag };
 }
 
 const MUTABILITY_RANK = { pure: 0, view: 1, '': 2, payable: 2 };
 const mutabilityRank = (check) => Math.max(...check.decls.map((d) => MUTABILITY_RANK[d.member.fn.mutability]));
 
 // An `external` declaration (contract, not interface) is respelled `public` so the derived wrapper can call it
-// internally; same length, so later offsets stay valid. The respelling is recorded in the results.
-function respellExternal(src, code, decls) {
+// internally; same length, so later offsets stay valid. The respelling is recorded in the results. A self-calling
+// wrapper reaches an external function as solc does, so it respells nothing.
+function respellExternal(src, code, decls, selfCall) {
   let edited = src;
   let rewrote = false;
+  if (selfCall) return { edited, rewrote };
   for (const { contract, member } of decls) {
     if (contract.kind === 'interface' || member.fn.visibility !== 'external') continue;
     const at = /\bexternal\b/.exec(code.slice(member.from, member.to));
@@ -727,16 +737,18 @@ function respellExternal(src, code, decls) {
   return { edited, rewrote };
 }
 
-// One wrapper function: call the target, then require equal returns unless `__cmp` is false.
-function checkFunction(check, name) {
+// One wrapper function: call the target (`this.f(..)` when `selfCall`; a getter reads its variable), then require
+// equal returns unless `__cmp` is false. `this` reads the environment, so a self-calling check is at least view.
+function checkFunction(check, name, selfCall) {
   const { fn } = check;
-  const mutability = ['pure', 'view', ''][mutabilityRank(check)];
+  const self = selfCall && !fn.access;
+  const mutability = ['pure', 'view', ''][Math.max(mutabilityRank(check), self ? 1 : 0)];
   const params = [
     ...fn.params.map((p, k) => `${p.src} __a${k}`),
     ...fn.rets.map((r, k) => `${r.src} __e${k}`),
     ...(fn.rets.length > 0 ? ['bool __cmp'] : []),
   ];
-  const callExpr = fn.access ?? `${check.name}(${fn.params.map((_, k) => `__a${k}`).join(', ')})`;
+  const callExpr = fn.access ?? `${self ? 'this.' : ''}${check.name}(${fn.params.map((_, k) => `__a${k}`).join(', ')})`;
   const callStmt = fn.rets.length === 0 ? `${callExpr};`
     : fn.rets.length === 1 ? `${fn.rets[0].src} __r0 = ${callExpr};`
       : `(${fn.rets.map((r, k) => `${r.src} __r${k}`).join(', ')}) = ${callExpr};`;
@@ -760,22 +772,23 @@ function wrapSource(edited, target, body, inTarget) {
   return { source: `${head}${body}${tail}`, requireLine };
 }
 
-// Wrapper source for one signature (pure slice).
-function buildWrapper(src, code, target, check) {
-  const { edited, rewrote } = respellExternal(src, code, check.decls);
-  const { source, requireLine } = wrapSource(edited, target, checkFunction(check, '__check'), target.layout);
+// Wrapper source for one signature (pure slice); `fallback` is the in-target one for an IN_TARGET_RETRIES refusal.
+function buildWrapper(src, code, target, check, selfCall) {
+  const { edited, rewrote } = respellExternal(src, code, check.decls, selfCall);
+  const body = checkFunction(check, '__check', selfCall);
+  const { source, requireLine } = wrapSource(edited, target, body, target.layout);
   return {
-    sig: check.sig, source, requireLine, lines: check.lines,
-    ...(rewrote && { rewrote: 'external->public' }), ...(target.layout && { shape: IN_TARGET_LAYOUT }),
+    sig: check.sig, source, requireLine, lines: check.lines, ...(rewrote && { rewrote: 'external->public' }),
+    ...(target.layout ? { shape: IN_TARGET_LAYOUT } : { fallback: wrapSource(edited, target, body, true) }),
   };
 }
 
 // Stateful slice: one wrapper with `__check_<k>` per signature, deployed once; `lines` is every line in file order
 // with its check index, whether it carries `cmp`, and whether its function may write state. `inTargetSource` is
-// the fallback for a derived wrapper the lifecycle policy refuses.
-function buildStatefulWrapper(src, code, target, checks) {
-  const { edited, rewrote } = respellExternal(src, code, checks.flatMap((check) => check.decls));
-  const body = checks.map((check, k) => checkFunction(check, `__check_${k}`)).join('\n');
+// the fallback for an IN_TARGET_RETRIES refusal of the derived wrapper.
+function buildStatefulWrapper(src, code, target, checks, selfCall) {
+  const { edited, rewrote } = respellExternal(src, code, checks.flatMap((check) => check.decls), selfCall);
+  const body = checks.map((check, k) => checkFunction(check, `__check_${k}`, selfCall)).join('\n');
   const { source } = wrapSource(edited, target, body, target.layout);
   const lines = checks.flatMap((check, k) => check.lines.map((line) => ({
     ...line, check: k, cmp: check.fn.rets.length > 0, writes: mutabilityRank(check) === 2,
@@ -842,7 +855,8 @@ async function main() {
       if (reason) fixtures.push({ rel, status: 'skipped', reason, ...(detail && { detail }), ...tags });
       continue;
     }
-    const fixture = { rel, status: 'run', target: selected.target, checks: [], lines: [], ...tags };
+    const fixture = { rel, status: 'run', target: selected.target, checks: [], lines: [],
+      ...(selected.selfCall && { selfCall: selected.selfCall }), ...tags };
     fixtures.push(fixture);
     jobs.push({ fixture, checks: selected.checks, stateful: selected.stateful, route: selected.route });
   }
@@ -896,7 +910,7 @@ async function main() {
             return;
           }
           const runnable = job.checks.map((c) => ({
-            source: c.source, requireLine: c.requireLine, lines: c.lines.filter((l) => l.args),
+            source: c.source, requireLine: c.requireLine, fallback: c.fallback, lines: c.lines.filter((l) => l.args),
           }));
           active.postMessage({ id, job: { checks: runnable, route: statefulMessage(job.route) } });
         });
@@ -952,7 +966,7 @@ function recordFixture(job, result) {
     fixture.checks.push({
       sig: check.sig,
       ...(check.rewrote && { rewrote: check.rewrote }),
-      ...(check.shape && { shape: check.shape }),
+      ...((reply?.shape ?? check.shape) && { shape: reply?.shape ?? check.shape }),
       ...(reply && { compiled: reply.compiled }),
       ...(reply?.error && { error: reply.error }),
       ...(reply?.skip && { skip: reply.skip }),
@@ -1036,6 +1050,13 @@ const mockSizeBlocks = (prefix, lines) => {
   ];
 };
 
+// Fixtures whose wrapper calls the target as `this.f(..)`, line by line.
+const selfCallBlock = (prefix, run) => [
+  `--- ${prefix}SELF-CALL WRAPPER (this.f(): reads msg.sig/msg.data; fixture:line  call  =>  status: outcome) ---`,
+  ...run.filter((f) => f.selfCall).flatMap((f) => f.lines
+    .map((l) => `${f.rel}:${l.line}  ${l.call}  =>  ${l.status}: ${divergenceTag(l)}${l.outcome ?? l.reason}`)),
+];
+
 function writeReports(outputDir, meta, candidateCount, fixtures) {
   // The pure slice reports as before: a stateful fixture is one skipped for its state variables (or its routing).
   // Pipeline-specific fixtures are left to pipelineReport, outside both slices' rates.
@@ -1094,6 +1115,7 @@ function writeReports(outputDir, meta, candidateCount, fixtures) {
       .map((l) => errorShape(l.outcome)))), '',
     ...block('WRAPPER INSIDE THE TARGET (fixtures, by reason)', tally(run
       .map((f) => f.checks?.find((c) => c.shape)?.shape).filter(Boolean))), '',
+    ...selfCallBlock('', run), '',
     '--- MATCHED WITH DENSITY RESERVE (fixture:line  call  =>  outcome) ---',
     ...lines.filter((l) => l.status === `matched${DENSITY_RESERVE}`)
       .map((l) => `${l.rel}:${l.line}  ${l.call}  =>  ${l.outcome}`), '',
@@ -1175,6 +1197,7 @@ function statefulReport(fixtures) {
       .filter((l) => l.status?.startsWith('refused')).map((l) => `${l.status}: ${errorShape(l.outcome)}`))), '',
     ...block('STATEFUL WRAPPER INSIDE THE TARGET (fixtures, by reason)', tally(run.filter((f) => f.shape)
       .map((f) => f.shape))), '',
+    ...selfCallBlock('STATEFUL ', run), '',
     '--- STATEFUL LINES ROUTED FROM THE PURE SLICE (external-call witnesses; fixture:line  call  =>  status: outcome) ---',
     ...run.filter((f) => f.routed).flatMap((f) => f.lines
       .map((l) => `${f.rel}:${l.line}  ${l.call}  =>  ${l.status}: ${l.outcome ?? l.reason}`)), '',

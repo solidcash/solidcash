@@ -92,7 +92,8 @@ pure first slice below, and the stateful slice after it.
   a call that returns normally is a mismatch; a FAILURE line needs a VM failure (`FailedTransactionError`), not a
   build error. A target with a custom storage layout (`contract C layout at N`), which solc forbids inheriting
   from, gets the check function inserted into a copy of its own body instead (the same contract plus a public
-  function; storage is untouched); the shape is recorded per check (`shape`) and tallied in the scorecard.
+  function; storage is untouched); the shape is recorded per check (`shape`) and tallied in the scorecard. A
+  derived wrapper refused the way the stateful slice retries (below) is compiled again that way too.
 - **keccak256 side-cars**: keccak256 runs in compute side-cars a deployer funds, so each spend places them first,
   as `conformance/bch.ts` does: `max(1, minInstances)` mutable NFTs (category `ee..ee`) at
   `keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, false)`, read from the artifact's `keccak256`
@@ -124,13 +125,16 @@ pure first slice below, and the stateful slice after it.
   `faithful-probe-trace.ts`, the send discovery probe and the deploy probe take libauth `debug()` traces at or
   below it), so a real-limit run takes the live-network derivation and is still slower than a relaxed one. The
   default `FIXTURE_TIMEOUT_MS` is 600 s (was 120 s).
-- **Limits of the wrapper**: the target is reached through an internal call, so `msg.data` read by an internal
-  function (it sees the wrapper's calldata) and entry-point-only paths can refuse or differ for wrapper reasons;
-  those show up as refusals or mismatches with their reason, not as silent passes. `msg.sig` does not leak the
-  wrapper's selector: in this compiler a public function's `msg.sig` is its own selector however it is reached, and
-  an internal reader gets its public caller's. So `msg_sig_after_internal_call_is_same` (public `foo` calls public
-  `boo`, which returns `msg.sig`) mismatches on the compiler's own rule (`boo`'s selector, solc: the entry's), not
-  on the wrapper.
+- **Limits of the wrapper**: the target is reached through an internal call, so entry-point-only paths can refuse
+  or differ for wrapper reasons; those show up as refusals or mismatches with their reason, not as silent passes.
+- **Self-call for `msg.sig`/`msg.data`**: both are the entry's across internal calls (solc semantics, which the
+  compiler follows), so a target reached from `__check` would see `__check`'s selector and calldata, while the
+  expectation was written for a direct call. A fixture whose code (comments and strings aside) reads either calls
+  its target as `this.f(args)` instead: an external self-call, which the compiler runs as the callee's own entry
+  (its own selector; `msg.data` rebuilt as that selector plus the encoded arguments). Such a wrapper respells no
+  `external` function (`this.f` reaches it as in solc), its checks are at least `view` (`this` reads the
+  environment) and a getter is still read directly. It works in both slices; the fixture records `selfCall`, and
+  the scorecard lists its lines per slice (`SELF-CALL WRAPPER`).
 
 **Stateful slice** (scored in its own section; the pure slice above is unchanged):
 
@@ -151,7 +155,12 @@ pure first slice below, and the stateful slice after it.
   compiler's message-bus auto-selection reads only the root contract's own functions, before inheritance is
   expanded, so behind a derived wrapper the target's call-graph edges are invisible, the wrapper is narrowed to
   direct mode, and there the policy applies; inside the target the edges are seen as when the target compiles
-  alone. The fixture records `shape`, and the scorecard tallies the reasons.
+  alone. So is one refused with `UndefinedReferenceError` or `AssignTypeError`: names the target resolves as the
+  root contract fail behind a derived one (`C.x` in `base_access_to_function_type_variables`, `this.s()` in
+  `skip_dynamic_types_for_structs`, the external function values `this.ext` in `copy_struct_invalid_ir_bug` and
+  `this.g` in `member_external_function_v2`, the `find` overload set `storage_array_ref` spreads over two
+  contracts), and every candidate compiles alone (`results.json` OK). The fixture records `shape`, and the
+  scorecard tallies the reasons. A deploying check's children compile from the source that compiled.
 - **Routed fixtures**: a pure fixture with a line whose plain unlock stops at `No value for '__internal__...'` (a
   compiler-owned witness of an external call or `msg.sender` that only StatefulContract transaction building
   fills) runs again here, as a stateful fixture: one wrapper, deployed once, lines in order. It is scored in this
@@ -266,6 +275,18 @@ through this branch's newer SDK, the same under the relaxed limits). Pure: 1,373
 `all_possible_user_defined_value_types_with_operators` (8, timeouts at 120 s before, 562 s now) is over the input
 limit (12,262 to 12,870 bytes): one reverts on its own under the relaxed limits
 (`mismatched-under-mock-size-limits`), the other 7 stop at the SDK byte gate in both runs and stay plain mismatches.
+
+Self-call and name retries (2026-10-12, corpus 816d9b2a, 8 workers, 642 s for both slices): the 5 fixtures reading
+`msg.sig`/`msg.data` call their target as `this.f()` and all 7 lines match (4 pure `msg.sig` lines mismatched on
+`__check`'s selector before, `abi_decode_slice` was refused with `MsgDataInSubroutineError`, the 2 stateful lines
+of `unused_store_storage_removal_bug` matched already). The in-target retry of `UndefinedReferenceError` and
+`AssignTypeError` measures 23 refused lines: the 21 undefined-reference ones match (`storage_array_ref` 16,
+`base_access_to_function_type_variables` 4, `skip_dynamic_types_for_structs` 1); `copy_struct_invalid_ir_bug`
+fails its `assert` (OP_VERIFY), and `member_external_function_v2` routes to the stateful slice (external-call
+witnesses) and reads output index -1. Pure: 1,375 of 1,475 (93.22%, was 92.94%), 1 line refused at compile.
+Stateful: 706 of 782 (90.28%, was 90.12%), 4 lines refused at compile (was 26: 2 assembly returns, a dynamic-array
+state helper, Yul `create`), after divergence 21 of 54. One more stateful line matches with an unchanged wrapper
+(`erc7201_layout_specifier_slot_match_comptime`, an OP_VERIFY revert in the 6-worker run before).
 
 ## Retained release scorecard (2026-08, 7,343 files)
 

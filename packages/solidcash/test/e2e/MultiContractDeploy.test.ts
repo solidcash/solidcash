@@ -90,13 +90,15 @@ describe('ContractBundle (implicit ArtifactMap context)', () => {
   });
 
   it('refuses childInitialState overrides of authenticated constructor fields', async () => {
+    const fundingUtxo: Utxo = { txid: 'bc3d'.repeat(16), vout: 0, satoshis: 50000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
     await expect(StatefulContract.deployFrom({
       provider,
       factory,
       deployFunctionName: 'deployChild',
       deployFunctionArgs: [new SignatureTemplate(alicePriv), alicePkh],
       childInitialState: { owner: new Uint8Array(20) },
-      fundingUtxo: { txid: 'bc3d'.repeat(16), vout: 0, satoshis: 50000n },
+      fundingUtxo,
       funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
       changeAddress: p2pkh.address,
     })).rejects.toThrow(/cannot override authenticated constructor-genesis field 'owner'/);

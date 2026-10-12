@@ -15,7 +15,8 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
   reconstructed from introspection (no oracle; tx_size estimated since there is no `OP_TXSIZE`). See s12.
 - Owner-update path: an immutable baked owner key (`__blockOracleOwner`) + an injected
   `__updateBlockOracle(sig, ...fields)` gated by the owner signature and the freshness/anti-over-reporting
-  bound `require(tx.time >= number)`, with `number < 500,000,000` so a time-type nLockTime cannot satisfy it.
+  bound `require(tx.time >= number)`, with `number < 500,000,000` so a time-type nLockTime cannot satisfy it,
+  and the non-rewind bounds `number >= block.number`, `timestamp >= block.timestamp` (no replay of an old window).
 - Off-chain keeper: `packages/solidcash/src/oracle/blockOracleUpdater.ts` (Fulcrum
   `blockchain.headers.subscribe` + a single BCHN `getblock` verbosity-2 call: coinbase inline, fees =
   `sum(coinbase outputs) - subsidy(height)`; signed `__updateBlockOracle` when the chain is ahead).
@@ -159,6 +160,8 @@ implied duty**:
 - **Anti-over-reporting (DO emit):** `require(tx.time >= oracleHeight)` (height mode) forces
   `miningHeight >= nLocktime >= oracleHeight`, so the oracle **cannot claim a height above the real chain
   tip**. Cheap, meaningful.
+- **Non-rewind (DO emit):** `require(number >= block.number)` and `require(timestamp >= block.timestamp)`
+  stop the owner from moving either register back to replay an old window. Equal values are admitted.
 - **Anti-staleness (NOT possible):** no covenant can prove a register is recent (no upper bound on mining
   height is readable). Stale data is bounded only by the owner's refresh cadence + the consumer's own
   incentive to use accurate data.

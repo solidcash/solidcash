@@ -19,8 +19,9 @@ import { keyToSlot, SortedList } from '../../src/stateful/SortedList.js';
  * node into it. Whichever arm runs settles, present or absent. Where the targets' nodes coincide (adjacent keys, one
  * gap, one key), the node sits at the slot of the target that runs and the other target's slot is funded, so the
  * covenant is unchanged. The `require` in each arm keeps IfConvertConditionalEntryOp from turning the branch into an
- * unconditional write. The write-first order, and a swap-remove pair under one arm, take the swap-remove alias path:
- * they keep the guarded batch, in which that write takes a ran flag too.
+ * unconditional write. The write-first order, and a swap-remove pair under one arm, make the write the delete's
+ * swap-remove alias: it settles alone too where the keys differ, and where they meet the key's node sits at the
+ * delete's slot.
  */
 
 const SOURCE = `contract MultiTargetDelete {
@@ -361,6 +362,49 @@ describe('a conditional write before a conditional delete in one sorted batch', 
     await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
     await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
   }, 300_000);
+
+  it('refuses an unrun alias write keeping the node its proof copies from the delete slot', async () => {
+    const deployed = await deploy(WRITE_FIRST_SOURCE, 'setOrDrop');
+    const { provider, sc } = deployed;
+    const hex = await capture(provider, () => sc.getFunction('setOrDrop')(7n, 20n, 999n, 0n).send());
+    expectScriptRejection(await outcomeOf(provider, await keptFromDeleteInput(deployed, hex)), 0);
+    await expect(provider.sendRawTransaction(hex)).resolves.toBeTypeOf('string');
+    await expectValues(sc, [[7n, 0n], [20n, 200n]]);
+  }, 300_000);
+
+  it('settles the write arm with the deleted key absent, the keys far apart', async () => {
+    const deployed = await deploy(WRITE_FIRST_SOURCE, 'setOrDrop');
+    const { sc } = deployed;
+    // Both keys absent: the written key is inserted and the deleted key's predecessor kept.
+    const k = await farKey(deployed, []);
+    const j = await farKey(deployed, [k]);
+    await sc.getFunction('setOrDrop')(k, j, 300n, 1n).send();
+    await expectValues(sc, [[j, 300n], [k, 0n], [7n, 70n], [20n, 200n]]);
+    expect((await nodes(deployed)).all).toHaveLength(4);
+  }, 300_000);
+
+  it('settles the delete arm with the written key absent, the keys far apart', async () => {
+    const deployed = await deploy(WRITE_FIRST_SOURCE, 'setOrDrop');
+    const { sc } = deployed;
+    // The deleted key present, then absent. The written key is absent both times: its insert is skipped.
+    const j = await farKey(deployed, [7n]);
+    await sc.getFunction('setOrDrop')(7n, j, 999n, 0n).send();
+    const k = await farKey(deployed, []);
+    const i = await farKey(deployed, [k]);
+    await sc.getFunction('setOrDrop')(k, i, 999n, 0n).send();
+    await expectValues(sc, [[7n, 0n], [j, 0n], [k, 0n], [i, 0n], [20n, 200n]]);
+    // The head, the cleared 7 and 20.
+    expect((await nodes(deployed)).all).toHaveLength(3);
+  }, 300_000);
+
+  it('settles the delete arm of one absent key', async () => {
+    const deployed = await deploy(WRITE_FIRST_SOURCE, 'setOrDrop');
+    const { sc } = deployed;
+    const x = await farKey(deployed, []);
+    await sc.getFunction('setOrDrop')(x, x, 999n, 0n).send();
+    await expectValues(sc, [[x, 0n], [7n, 70n], [20n, 200n]]);
+    expect((await nodes(deployed)).all).toHaveLength(3);
+  }, 300_000);
 });
 
 describe('a swap-remove pair under one arm', () => {
@@ -381,5 +425,42 @@ describe('a swap-remove pair under one arm', () => {
     await refuseForgedKeptWrite(deployed, () => sc.getFunction('moveOut')(7n, 20n, 999n, 0n).send());
     await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
     await expect(sc.getFunction('check')(7n, 70n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('settles the arm taken with either key absent, the keys far apart', async () => {
+    const deployed = await deploy(IN_ARM_SOURCE, 'moveOut');
+    const { sc } = deployed;
+    // The deleted key absent: the written key takes the value and the absent key's predecessor is kept.
+    const k = await farKey(deployed, [20n]);
+    await sc.getFunction('moveOut')(k, 20n, 300n, 1n).send();
+    await expectValues(sc, [[20n, 300n], [k, 0n], [7n, 70n]]);
+    // The written key absent: it is inserted and the deleted key cleared.
+    const j = await farKey(deployed, [7n]);
+    await sc.getFunction('moveOut')(7n, j, 400n, 1n).send();
+    await expectValues(sc, [[j, 400n], [7n, 0n], [20n, 300n]]);
+    expect((await nodes(deployed)).all).toHaveLength(4);
+  }, 300_000);
+
+  it('keeps both nodes where the arm did not run, both keys absent', async () => {
+    const deployed = await deploy(IN_ARM_SOURCE, 'moveOut');
+    const { sc } = deployed;
+    const k = await farKey(deployed, []);
+    const j = await farKey(deployed, [k]);
+    await sc.getFunction('moveOut')(k, j, 999n, 0n).send();
+    await expectValues(sc, [[j, 0n], [k, 0n], [7n, 70n], [20n, 200n]]);
+    expect((await nodes(deployed)).all).toHaveLength(3);
+  }, 300_000);
+
+  it('deletes one key where the arm runs, present or absent, and keeps it where it does not', async () => {
+    const deployed = await deploy(IN_ARM_SOURCE, 'moveOut');
+    const { sc } = deployed;
+    await sc.getFunction('moveOut')(7n, 7n, 300n, 0n).send();
+    await expectValues(sc, [[7n, 70n]]);
+    await sc.getFunction('moveOut')(7n, 7n, 300n, 1n).send();
+    await expectValues(sc, [[7n, 0n], [20n, 200n]]);
+    const x = await farKey(deployed, []);
+    await sc.getFunction('moveOut')(x, x, 300n, 1n).send();
+    await expectValues(sc, [[x, 0n]]);
+    expect((await nodes(deployed)).all).toHaveLength(3);
   }, 300_000);
 });

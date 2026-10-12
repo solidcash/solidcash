@@ -11,7 +11,8 @@ import { getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
 /**
  * A write ahead of a delete of the same mapping is that delete's swap-remove alias write: where the two keys meet, the
  * delete supersedes it. That holds only where the delete runs after it. A write arm whose delete sits in the other arm
- * still sets the key's node, and the delete arm still deletes it; an unconditional swap-remove still ends deleted.
+ * still sets the key's node, and the delete arm still deletes it; an unconditional swap-remove still ends deleted. A
+ * write whose delete sits in a later branch keeps its value where that branch does not delete.
  */
 
 const WRITE_FIRST_SOURCE = `contract SameKeyWriteFirst {
@@ -29,6 +30,18 @@ const SWAP_REMOVE_SOURCE = `contract SameKeySwapRemove {
   function set(int k, int v) external { m[k] = v; require(true); }
   function check(int k, int expected) external { require(m[k] == expected); }
   function swapRemove(int j, int last) external { m[j] = m[last]; delete m[last]; require(true); }
+}`;
+
+// The guard keeps the branch: an arm of entry ops alone is if-converted to a predicated write, with no alias.
+const WRITE_THEN_DROP_SOURCE = `contract SameKeyWriteThenDrop {
+  mapping(int => int) m;
+  function set(int k, int v) external { m[k] = v; require(true); }
+  function check(int k, int expected) external { require(m[k] == expected); }
+  function setThenDrop(int j, int k, int v, int sel) external {
+    m[j] = v;
+    if (sel > 0) { require(k != 3); delete m[k]; }
+    require(true);
+  }
 }`;
 
 type Provider = ReturnType<typeof createTestProvider>;
@@ -71,6 +84,26 @@ async function capture(provider: Provider, run: () => Promise<unknown>): Promise
 const outcomeOf = (provider: Provider, hex: string): Promise<string> => provider.sendRawTransaction(hex)
   .then(() => 'ACCEPTED').catch((e: Error) => e.message);
 
+/** The call writes 300 to key 7, whose one node sits at the delete's slot; that node with another value is refused. */
+async function expectForgedValueRefused(source: string, name: string, args: bigint[]): Promise<void> {
+  const { provider, sc, pinned, cat, deleteSlot } = await deploy(source, name);
+  const hex = await capture(provider, () => sc.getFunction(name)(...args).send());
+  const tx = decodeTransactionUnsafe(hexToBin(hex));
+  const lock = (cashAddressToLockingBytecode(getEntryNftAddress(pinned, cat, 'm')) as { bytecode: Uint8Array })
+    .bytecode;
+  // The key's one node sits at the delete's slot and carries the written value.
+  const node = tx.outputs[deleteSlot];
+  expect(binToHex(node.lockingBytecode)).toBe(binToHex(lock));
+  const nft = node.token!.nft!;
+  expect(binToHex(nft.commitment.slice(64))).toBe(binToHex(bigIntToVmNumber(300n)));
+  tx.outputs[deleteSlot] = { ...node, token: { ...node.token!, nft: {
+    ...nft, commitment: Uint8Array.from([...nft.commitment.slice(0, 64), ...bigIntToVmNumber(4242n)]),
+  } } };
+  expectScriptRejection(await outcomeOf(provider, binToHex(encodeTransaction(tx as Tx))), 0);
+  await expect(provider.sendRawTransaction(hex)).resolves.toBeTypeOf('string');
+  await expect(sc.getFunction('check')(7n, 300n).send()).resolves.toBeDefined();
+}
+
 describe('a write before a delete of the same key in the other arm', () => {
   it('sets the key on the write arm', async () => {
     const { sc } = await deploy(WRITE_FIRST_SOURCE, 'setOrDrop');
@@ -87,22 +120,37 @@ describe('a write before a delete of the same key in the other arm', () => {
   }, 300_000);
 
   it('refuses the write arm setting the key\'s node to another value', async () => {
-    const { provider, sc, pinned, cat, deleteSlot } = await deploy(WRITE_FIRST_SOURCE, 'setOrDrop');
-    const hex = await capture(provider, () => sc.getFunction('setOrDrop')(7n, 7n, 300n, 1n).send());
-    const tx = decodeTransactionUnsafe(hexToBin(hex));
-    const lock = (cashAddressToLockingBytecode(getEntryNftAddress(pinned, cat, 'm')) as { bytecode: Uint8Array })
-      .bytecode;
-    // The key's one node sits at the delete's slot and carries the written value.
-    const node = tx.outputs[deleteSlot];
-    expect(binToHex(node.lockingBytecode)).toBe(binToHex(lock));
-    const nft = node.token!.nft!;
-    expect(binToHex(nft.commitment.slice(64))).toBe(binToHex(bigIntToVmNumber(300n)));
-    tx.outputs[deleteSlot] = { ...node, token: { ...node.token!, nft: {
-      ...nft, commitment: Uint8Array.from([...nft.commitment.slice(0, 64), ...bigIntToVmNumber(4242n)]),
-    } } };
-    expectScriptRejection(await outcomeOf(provider, binToHex(encodeTransaction(tx as Tx))), 0);
-    await expect(provider.sendRawTransaction(hex)).resolves.toBeTypeOf('string');
+    await expectForgedValueRefused(WRITE_FIRST_SOURCE, 'setOrDrop', [7n, 7n, 300n, 1n]);
+  }, 300_000);
+});
+
+describe('a write before a delete of the same key in a later branch', () => {
+  it('sets the key where the delete does not run', async () => {
+    const { sc } = await deploy(WRITE_THEN_DROP_SOURCE, 'setThenDrop');
+    await sc.getFunction('setThenDrop')(7n, 7n, 300n, 0n).send();
     await expect(sc.getFunction('check')(7n, 300n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('deletes the key where the delete runs', async () => {
+    const { sc } = await deploy(WRITE_THEN_DROP_SOURCE, 'setThenDrop');
+    await sc.getFunction('setThenDrop')(7n, 7n, 300n, 1n).send();
+    await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('sets one key and deletes the other only where the delete runs', async () => {
+    const { sc } = await deploy(WRITE_THEN_DROP_SOURCE, 'setThenDrop');
+    await sc.getFunction('setThenDrop')(20n, 7n, 300n, 0n).send();
+    await expect(sc.getFunction('check')(20n, 300n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(7n, 70n).send()).resolves.toBeDefined();
+    await sc.getFunction('setThenDrop')(7n, 20n, 400n, 1n).send();
+    await expect(sc.getFunction('check')(7n, 400n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 0n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('refuses the key\'s node taking another value where the delete does not run', async () => {
+    await expectForgedValueRefused(WRITE_THEN_DROP_SOURCE, 'setThenDrop', [7n, 7n, 300n, 0n]);
   }, 300_000);
 });
 

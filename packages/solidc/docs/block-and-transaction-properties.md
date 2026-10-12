@@ -15,7 +15,7 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
   reconstructed from introspection (no oracle; tx_size estimated since there is no `OP_TXSIZE`). See s12.
 - Owner-update path: an immutable baked owner key (`__blockOracleOwner`) + an injected
   `__updateBlockOracle(sig, ...fields)` gated by the owner signature and the freshness/anti-over-reporting
-  bound `require(tx.time >= number)`.
+  bound `require(tx.time >= number)`, with `number < 500,000,000` so a time-type nLockTime cannot satisfy it.
 - Off-chain keeper: `packages/solidcash/src/oracle/blockOracleUpdater.ts` (Fulcrum
   `blockchain.headers.subscribe` + a single BCHN `getblock` verbosity-2 call: coinbase inline, fees =
   `sum(coinbase outputs) - subsidy(height)`; signed `__updateBlockOracle` when the chain is ahead).
@@ -316,7 +316,11 @@ category, plus `commitment.n == n` + `require(tx.time >= n)`, returning the 32-b
   `Contract`/`TransactionBuilder` path fails loudly ("build the call via StatefulContract").
 - The keeper mints/sweeps `(n->hash)` NFTs **under the contract's own category**
   (`BlockOracleUpdater.mintBlockhashPair` / `sweepBlockhashPair` / `maintainBlockhashWindow`), from a
-  minting baton of that category.
+  minting baton of that category. Genesis must place that baton at the keeper baton covenant
+  (`blockhashKeeperBatonLockingBytecode(category, keeperPubkey)`, audit CRYPTO-4): a bare baton could stand in
+  for the master on the data/entry write and destroy paths, move to any lock, or mint a counterfeit master. A
+  covenant spend needs the keeper's signature, co-spends no token input, recreates the baton at output 0 and
+  mints exactly one capability-none `(n->hash)` NFT at `addr(n)` (output 1, `tx.time >= n`).
 
 The hardened `(n->hash)` covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the
 `artifact.usesBlockhash` marker + `abi.blockhashReads`, and keccak side-car coexistence are in place and

@@ -109,7 +109,7 @@ async function farKey(deployed: Deployed, keys: bigint[]): Promise<bigint> {
     return `${node.utxo.txid}:${node.utxo.vout}`;
   };
   const taken = keys.map(spent);
-  for (let key = 100n; key < 200n; key += 1n) {
+  for (let key = 100n; key < 1000n; key += 1n) {
     if (!list.has(keyToSlot(bigIntToVmNumber(key))) && !taken.includes(spent(key))) return key;
   }
   throw new Error('no key far from the others');
@@ -243,10 +243,12 @@ describe('a write arm covering part of a sorted batch it shares with a delete', 
   it('settles the write that ran and keeps the other, the keys far apart', async () => {
     const deployed = await deploy(PARTIAL_SOURCE, 'dropOrSetOne', 3);
     const { sc } = deployed;
-    const j = await farKey(deployed, [7n]);
-    const i = await farKey(deployed, [7n, j]);
-    await sc.getFunction('dropOrSetOne')(7n, j, i, 300n, 1n).send();
-    for (const [key, value] of [[j, 300n], [i, 0n], [7n, 70n], [20n, 200n]]) {
+    // Both written keys absent, each in a gap of its own. The second write runs; the first's planned relink is
+    // dropped and a later relink moves up.
+    const j = await farKey(deployed, [20n]);
+    const i = await farKey(deployed, [20n, j]);
+    await sc.getFunction('dropOrSetOne')(20n, j, i, 300n, 0n).send();
+    for (const [key, value] of [[i, 300n], [j, 0n], [20n, 200n], [7n, 70n]]) {
       await expect(sc.getFunction('check')(key, value).send()).resolves.toBeDefined();
     }
     expect((await nodes(deployed)).all).toHaveLength(4);

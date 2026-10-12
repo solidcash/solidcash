@@ -3893,8 +3893,26 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('replays an effect-free non-pure constructor helper like its pure twin', () => {
+    // `pure` adds nothing the replay does not already refuse (state, msg/tx/block reads, unresolved names, any
+    // statement beyond locals plus one trailing return), so the genesis is the direct `this.marker = seed` recipe.
+    const artifact = compileString(`contract Unit() { int marker;
+        constructor(int seed) { this.marker = helper(seed); }
+        function helper(int x) internal returns (int) { return x; }
+      }
+      contract Coordinator() {
+        function materialize(int seed) public { Unit child = new Unit(seed); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{
+          genesisState: { fields: [{ name: 'marker', value: { kind: 'handlerInput', inputIndex: 0 } }] },
+        }],
+      });
+  });
+
   it.each([
-    'constructor(int seed) { this.marker = helper(seed); } function helper(int x) internal returns (int) { return x; }',
     'constructor() { this.owner = msg.sender; }',
     'constructor(int seed) { require(this.marker == seed); this.marker = seed; }',
     'constructor(int seed) { require(tx.locktime > seed); this.marker = seed; }',
@@ -4043,8 +4061,20 @@ describe('required kernel admission', () => {
       contract Coordinator() {
         function materialize(int seed) public { Unit unit = new Unit(seed); require(true); }
       }`, KERNEL);
+    // The aggregate is the replayed body's `Pair(seed, 0)`, not the one-argument call read as a `Pair(..)`.
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{ genesisState: { fields: [{
+          name: 'pair', type: 'Pair', value: {
+            kind: 'aggregate', resultType: 'Pair',
+            elements: [
+              { kind: 'handlerInput', inputIndex: 0 },
+              { kind: 'cast', resultType: 'int256', operand: { kind: 'intLiteral', value: '0' } },
+            ],
+          },
+        }] } }],
+      });
   });
 
   it('publishes recursively nested fixed-layout struct recipes with enum and fixed-point leaves', () => {

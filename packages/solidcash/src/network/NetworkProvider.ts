@@ -52,6 +52,11 @@ export default interface NetworkProvider {
   consensusLimits?: ConsensusLimits;
   /** Optional relay-policy behavior. Omitted providers use production policy. */
   policy?: NetworkPolicy;
+  /**
+   * True for an in-process simulator (MockNetworkProvider). The SDK then evaluates on its fast VM paths, which
+   * enforce `consensusLimits` as libauth's own paths do; live providers omit it and keep libauth's paths.
+   */
+  readonly simulator?: boolean;
 
   /**
    * Retrieve all UTXOs (confirmed and unconfirmed) for a given address.

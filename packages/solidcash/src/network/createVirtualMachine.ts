@@ -109,12 +109,24 @@ function installStepTrace(instructionSet: ReturnType<typeof createInstructionSet
     }) as typeof operation;
   }
 }
+
+/**
+ * Whether `provider` evaluates on the SDK's fast VM paths: a simulator at any limits, or a profile above the real
+ * 10,000-byte input limit (no live network; past ordinary capacity libauth's `debug()` throws). Each fast path
+ * enforces the published limits. A live provider keeps libauth's paths.
+ */
+export function usesFastVmPaths(provider: NetworkProvider | undefined): boolean {
+  const limits = provider?.consensusLimits;
+  return limits !== undefined && (provider!.simulator === true || limits.maximumInputBytes > 10_000);
+}
+
 const observerlessVmByProvider = new WeakMap<
 NetworkProvider, Map<string, ReturnType<typeof createVirtualMachineBch2026>>
 >();
 
 function observerlessVmCacheKey(provider: NetworkProvider, standard: boolean): string {
-  return `${standard ? '1' : '0'}:${JSON.stringify(provider.consensusLimits ?? null)}`;
+  const simulator = provider.simulator === true ? 's' : '';
+  return `${standard ? '1' : '0'}${simulator}:${JSON.stringify(provider.consensusLimits ?? null)}`;
 }
 
 function decodeCachedP2sh(
@@ -152,6 +164,7 @@ function installCachedP2shEvaluator(
   const runPhases: NonNullable<typeof instructionSet.evaluate> = (
     program, { stateEvaluate, stateInitialize, stateOverride },
   ) => {
+    bumpFramedCounter('phaseRuns');
     const { unlockingBytecode } = program.transaction.inputs[program.inputIndex]!;
     const { lockingBytecode } = program.sourceOutputs[program.inputIndex]!;
     // The final P2SH push can be several megabytes. The VM treats program bytecode as immutable, and the actual
@@ -907,7 +920,7 @@ function buildVirtualMachineBch2026ForProvider(
   } as never);
   let runPhases: NonNullable<typeof instructionSet.evaluate> | undefined;
   let closes: { last: FailedClose | undefined } | undefined;
-  if (limits !== undefined && limits.maximumInputBytes > 10_000) {
+  if (limits !== undefined && usesFastVmPaths(provider)) {
     // The kernel lane's fast `every` goes first; the framed operation-limit check installed below replaces it with
     // the same libauth-equivalent check, and this one stays in effect wherever that check declines to install.
     installFastBch2026Every(instructionSet, consensus, standard);

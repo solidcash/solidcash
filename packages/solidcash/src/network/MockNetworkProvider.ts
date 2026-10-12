@@ -283,6 +283,8 @@ export default class MockNetworkProvider implements NetworkProvider {
   public vmTarget: VmTarget;
   public consensusLimits: ConsensusLimits;
   public policy: NetworkPolicy;
+  /** Selects the SDK's fast VM paths at any configured limits; each enforces `consensusLimits`. */
+  public readonly simulator = true;
   public readonly statefulSimulation?: 'legacy-mistswap-v1';
 
   // The default hardhat dev mnemonic (a valid BIP-39 phrase); its accounts are the ones getSigners funds.
@@ -367,7 +369,6 @@ export default class MockNetworkProvider implements NetworkProvider {
     } as Parameters<typeof createTxVerifier>[0] & { consensus: typeof overrides };
     const stockVerifier = createTxVerifier(verifierConfig);
     const verifier = this.vmTarget === VmTarget.BCH_2026_05
-      && this.consensusLimits.maximumInputBytes > 10_000
       ? createPreparedBch2026TxVerifier(
         this, verifierConfig, () => this.preparedTransaction, stockVerifier,
       )

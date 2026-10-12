@@ -41,6 +41,18 @@ contract ForeignValues {
   function fireFirst() public { many[0].fire(); }
 }`;
 
+// A struct entering through a public parameter carries a caller-chosen id; the entry pins its function field to
+// this contract's public/external functions of the field's type, as for a top-level fn-ptr parameter.
+const ENTRY = `contract StructEntry {
+  struct Entry { function() external returns (uint256) fn; uint256 extra; }
+  uint256 last;
+  function seven() public returns (uint256) { return 7; }
+  function secret(uint256 v) private pure returns (uint256) { return v * 1000; }
+  function sum(Entry memory e, uint256 expected) public { last = e.fn() + e.extra; require(last == expected); }
+  function viaSelf() public { this.sum(Entry(this.seven, 3), 10); }
+  function useSecret(uint256 v) public { require(secret(v) == v * 1000); require(secret(v + 1) > v); }
+}`;
+
 const OPTIONS = { evmCompat: true };
 const LIMITS = { maximumInputBytes: 10_000, maximumStackItemBytes: 10_000, maximumNftCommitmentBytes: 128 };
 
@@ -60,6 +72,13 @@ const newSigner = async (): Promise<Signer> => {
 const deploy = async (artifact: Artifact, signer: Signer): Promise<Handle> =>
   await getContractFactory(artifact, signer).deploy() as unknown as Handle;
 
+// A body's id as its OP_DEFINE names it (the artifact's invoke debug table).
+const idOf = (artifact: Artifact, name: string): bigint => {
+  const entry = Object.entries(artifact.debug?.invokeDebug ?? {}).find(([, info]) => info.name === name);
+  if (!entry) throw new Error(`no OP_DEFINE for ${name}`);
+  return BigInt(entry[0]);
+};
+
 const foreignPair = async (): Promise<{ tally: Handle; holder: Handle; tallyAddress: Uint8Array }> => {
   const artifacts = compileStringMulti(FOREIGN, OPTIONS);
   const signer = await newSigner();
@@ -73,6 +92,15 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('calls through external 
     const sc = await deploy(compileString(SELF, OPTIONS), await newSigner());
     await sc.checkField(10n).send();
     await expect(sc.checkField(11n).send()).rejects.toThrow();
+  }, 300_000);
+
+  it('pins a caller-supplied struct function field to matching public functions', async () => {
+    const artifact = compileString(ENTRY, OPTIONS);
+    const sc = await deploy(artifact, await newSigner());
+    await expect(sc.sum({ fn: idOf(artifact, 'secret'), extra: 0n }, 7000n).send()).rejects.toThrow();
+    await expect(sc.sum({ fn: 999n, extra: 3n }, 10n).send()).rejects.toThrow();
+    await sc.sum({ fn: idOf(artifact, 'seven'), extra: 3n }, 10n).send();
+    await sc.viaSelf().send();
   }, 300_000);
 
   // Open gap: this form fails on the VM (OP_SPLIT on an empty item, function-level site of checkElements).

@@ -9994,7 +9994,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * A function value an entry point receives is a caller-chosen OP_INVOKE id that could name any OP_DEFINE'd body
    * (private or compiler helpers included). Pin it, and each element of a function-pointer array, to this
-   * contract's public/external functions of the parameter's type: the reach of an EVM external pointer. Parity
+   * contract's public/external functions of the parameter's type: the reach of an EVM external pointer. A struct
+   * parameter's direct function fields are checked the same way; deeper nesting is refused. Parity
    * gap: the invoked body still sees the original msg.sender where the EVM gives address(this). Internal flows
    * (`this.f` passed inside the contract) run the OP_DEFINE'd copy of the function and are not re-checked. A
    * contract that never invokes a function value needs no check; a constructor with no possible target fails.
@@ -10007,6 +10008,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     usage.visit(node.body);
     for (const param of params) {
       if (!usage.names.has(param.name)) continue;
+      const loc: SingleLocationData = { location: param.location, positionHint: PositionHint.START };
+      if (param.type instanceof StructType) {
+        const structType = param.type;
+        structType.fields.forEach((field, fieldIndex) => {
+          if (!containsFunctionType(field.type)) return;
+          if (!(field.type instanceof FunctionType)) {
+            throw new UncheckedFunctionIdParameterError(param, param.name,
+              'carries function ids inside a nested struct or array, which cannot be validated at entry');
+          }
+          const ids = this.entryFunctionIdTargets(node, param, field.type, loc);
+          if (!ids) return;
+          this.emit(encodeInt(BigInt(this.getStackIndex(param.name))), loc);
+          this.emit(Op.OP_PICK, loc);
+          this.pushToStack('(function_id)');
+          this.emitStructFieldExtract(structType, fieldIndex, loc);
+          this.emitFunctionIdMembershipVerify(ids, loc);
+          this.popFromStack();
+        });
+        continue;
+      }
       const elementType = param.type instanceof ArrayType ? param.type.elementType : undefined;
       const fnType = param.type instanceof FunctionType ? param.type
         : elementType instanceof FunctionType ? elementType : undefined;
@@ -10014,21 +10035,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         throw new UncheckedFunctionIdParameterError(param, param.name,
           'carries function ids inside a struct or nested array, which cannot be validated at entry');
       }
-      const ids = (this.entryFunctionPointerTargets ?? [])
-        .filter((target) => implicitlyCastable(target.type, fnType))
-        .map((target) => BigInt(target.id));
-      const loc: SingleLocationData = { location: param.location, positionHint: PositionHint.START };
-      if (ids.length === 0 && node.name === '__construct') {
-        // A deploy argument (a foreign `this.f` included) is never lowered to (address, selector): it names no
-        // body here, so a constructor that reads it fails instead of invoking a caller-chosen id.
-        this.emit(encodeBool(false), loc);
-        this.emit(Op.OP_VERIFY, loc);
-        continue;
-      }
-      if (ids.length === 0) {
-        throw new UncheckedFunctionIdParameterError(param, param.name, 'can only name this contract\'s '
-          + `public/external functions of type ${fnType.toString()}, and none of them is invocable by id`);
-      }
+      const ids = this.entryFunctionIdTargets(node, param, fnType, loc);
+      if (!ids) continue;
       this.emit(encodeInt(BigInt(this.getStackIndex(param.name))), loc);
       this.emit(Op.OP_PICK, loc);
       this.pushToStack('(function_id)');
@@ -10054,6 +10062,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.popFromStack();
     }
+  }
+
+  /** The ids an entry function value of `fnType` may name; undefined when a constructor fails on reading it. */
+  private entryFunctionIdTargets(
+    node: FunctionDefinitionNode, param: ParameterNode, fnType: FunctionType, loc: SingleLocationData,
+  ): bigint[] | undefined {
+    const ids = (this.entryFunctionPointerTargets ?? [])
+      .filter((target) => implicitlyCastable(target.type, fnType))
+      .map((target) => BigInt(target.id));
+    if (ids.length === 0 && node.name === '__construct') {
+      // A deploy argument (a foreign `this.f` included) is never lowered to (address, selector): it names no
+      // body here, so a constructor that reads it fails instead of invoking a caller-chosen id.
+      this.emit(encodeBool(false), loc);
+      this.emit(Op.OP_VERIFY, loc);
+      return undefined;
+    }
+    if (ids.length === 0) {
+      throw new UncheckedFunctionIdParameterError(param, param.name, 'can only name this contract\'s '
+        + `public/external functions of type ${fnType.toString()}, and none of them is invocable by id`);
+    }
+    return ids;
   }
 
   /** Consume the id on top; fail unless its bytes equal one of `ids` (what OP_INVOKE then reads). */

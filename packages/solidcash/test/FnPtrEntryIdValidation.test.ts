@@ -103,6 +103,34 @@ contract FnIdNoTarget() {
     function keep(function() external[] memory fns) public { require(fns.length > 0); }
 }`;
 
+// abi.decode turns caller-chosen bytes into a function value: it is pinned where it is decoded.
+const DECODED = `
+contract FnIdDecoded() {
+    function g(int x) public pure returns (int) { return x + 1; }
+    function secret(int v) private pure returns (int) { return v * 1000; }
+    function run(function(int) external returns (int) cb, int x) public { require(cb(x) == x + 1); }
+    function viaSelf(int x) public { run(this.g, x); require(true); }
+    function runDecoded(int id, int x, int expected) public {
+        function(int) external returns (int) cb = abi.decode(abi.encode(id), (function(int) external returns (int)));
+        require(cb(x) == expected);
+    }
+    function useSecret(int v) public { require(secret(v) == v * 1000); require(secret(v + 1) > v); }
+}`;
+
+// A function value another contract returns is checked where the call yields it.
+const returnedFrom = (ret: string, use: string): string => `
+interface IP { function get(uint id) external returns (${ret}); }
+contract FnIdReturned {
+    function g(uint x) public pure returns (uint) { return x + 1; }
+    function run(function(uint) external returns (uint) cb, uint x) public { require(cb(x) == x + 1); }
+    function viaSelf(uint x) public { run(this.g, x); }
+    function fromCall(address p, uint x) public { ${use} }
+}`;
+const RETURNED = returnedFrom('uint, function(uint) external returns (uint)',
+  '(uint n, function(uint) external returns (uint) f) = IP(p).get(1); require(f(x) == x + n);');
+const RETURNED_ARRAY = returnedFrom('function(uint) external returns (uint)[] memory',
+  'function(uint) external returns (uint)[] memory fs = IP(p).get(1); require(fs[0](x) == x + 1);');
+
 type Unlock = Record<string, (...args: unknown[]) => unknown>;
 type Artifact = ReturnType<typeof compileString>;
 
@@ -184,5 +212,21 @@ describe('entry fn-ptr parameters accept only matching public/external functions
     const artifacts = compileStringMulti(CROSS_ARRAY, { evmCompat: true, enforceFinalRequire: false });
     expect(Object.keys(artifacts)).toEqual(expect.arrayContaining(['C', 'Test']));
     expect(() => compileString(ARRAY_NO_TARGET, {})).toThrow(/none of them is invocable by id/);
+  });
+
+  it('pins a function value decoded by abi.decode', async () => {
+    const artifact = compileString(DECODED, {});
+    const gId = idOf(artifact, 'g');
+    const secretId = idOf(artifact, 'secret');
+    await expect(spend(artifact, 'runDecoded', [gId, 7n, 8n])).resolves.toBeUndefined();
+    await expect(spend(artifact, 'runDecoded', [secretId, 7n, 7000n])).rejects.toThrow(/verification failed/);
+    await expect(spend(artifact, 'runDecoded', [999n, 7n, 8n])).rejects.toThrow(/verification failed/);
+  });
+
+  it('checks a function value an external call returns, refusing one carried in an array', () => {
+    const options = { evmCompat: true, enforceFinalRequire: false };
+    expect(Object.keys(compileStringMulti(RETURNED, options))).toEqual(expect.arrayContaining(['FnIdReturned']));
+    expect(() => compileStringMulti(RETURNED_ARRAY, options))
+      .toThrow(/an external call's return is carried inside an array or struct/);
   });
 });

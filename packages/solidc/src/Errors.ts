@@ -697,6 +697,12 @@ export class UncheckedFunctionIdParameterError extends SolidCashError {
   }
 }
 
+export class UncheckedFunctionIdValueError extends SolidCashError {
+  constructor(node: Node, source: string, reason: string) {
+    super(node, `Function value from ${source} ${reason}`);
+  }
+}
+
 // solc TypeError 4103: an explicitly public/external library function cannot take or return an internal function.
 export class InternalTypeInPublicFunctionError extends ParseError {
   constructor(location?: Location) {

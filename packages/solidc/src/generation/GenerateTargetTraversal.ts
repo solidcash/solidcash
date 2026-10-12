@@ -293,6 +293,7 @@ import {
   UnsupportedEvmAbiEncodingError, UnpinnedExternalCallTargetError, LogicalSenderUnavailableError,
   DirectStaleReadError, ConstructorStaleReadError, UnpublishableLoopGuardError, importedFileCaveat,
   UncheckedFunctionIdParameterError,
+  UncheckedFunctionIdValueError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
@@ -10054,6 +10055,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.popFromStack();
     }
+  }
+
+  /**
+   * Values an abi.decode or an external call's return produce are as caller-chosen as an entry parameter: pin
+   * each function value among the `types.length` values on top to the same allowlist as the entry check.
+   * `produced` is how many tracked items the producer pushed; 0 means no value reached the stack.
+   */
+  private emitProducedFunctionIdChecks(
+    node: Node, types: readonly Type[], source: string, produced = types.length,
+  ): void {
+    if (this.functionValuesNeverInvoked || !types.some((type) => containsFunctionType(type))) return;
+    if (produced === 0) return;
+    if (produced !== types.length || this.stack.slice(0, types.length).some((name) => name !== '(value)')) {
+      throw new UncheckedFunctionIdValueError(node, source, 'is not left on the stack where it can be validated');
+    }
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
+    types.forEach((type, index) => {
+      if (!containsFunctionType(type)) return;
+      if (!(type instanceof FunctionType)) {
+        throw new UncheckedFunctionIdValueError(node, source,
+          'is carried inside an array or struct, which cannot be validated where it is produced');
+      }
+      const ids = (this.entryFunctionPointerTargets ?? [])
+        .filter((target) => implicitlyCastable(target.type, type))
+        .map((target) => BigInt(target.id));
+      if (ids.length === 0) {
+        // No function here is invocable by such an id: a produced one can name no valid target.
+        this.emit(encodeBool(false), loc);
+        this.emit(Op.OP_VERIFY, loc);
+        return;
+      }
+      this.emit(encodeInt(BigInt(types.length - 1 - index)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(function_id)');
+      this.emitFunctionIdMembershipVerify(ids, loc);
+      this.popFromStack();
+    });
   }
 
   /** Consume the id on top; fail unless its bytes equal one of `ids` (what OP_INVOKE then reads). */
@@ -21777,6 +21815,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } finally {
         this.evmDecodeTrusted = trustedBefore;
       }
+      this.emitProducedFunctionIdChecks(node, node.schema, 'abi.decode');
       return node;
     }
 
@@ -21802,6 +21841,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = 0; i < node.schema.length; i++) {
       this.pushToStack('(value)');
     }
+    this.emitProducedFunctionIdChecks(node, node.schema, 'abi.decode');
 
     return node;
   }
@@ -21834,6 +21874,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Stack tracking: pop 1 (blob), push 1 (value)
     this.popFromStack();
     this.pushToStack('(value)');
+    this.emitProducedFunctionIdChecks(node, [node.schema[node.index]], 'abi.decodeAt');
 
     return node;
   }
@@ -23427,6 +23468,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
+    const before = this.stack.length;
+    this.emitExternalFunctionCall(node);
+    const types = node.opaqueReturn ? [] : node.callInfo?.returnTypes
+      ?? (node.type instanceof TupleType ? node.type.elements : node.type ? [node.type] : []);
+    this.emitProducedFunctionIdChecks(node, types, 'an external call\'s return', this.stack.length - before);
+    return node;
+  }
+
+  private emitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
     // A call folded into a deploy genesis is inert here - its effect is emitted by the deploy covenant.
     if (node.foldedIntoDeploy) {
       if (node.foldedCallReverts) this.emitFoldedCallFailure(node);

@@ -1982,6 +1982,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Direct compose-on-alias: the batch writes emitted so far in source order, and the values kept for later reads.
   private composeWritesEmitted: number[] = [];
   private composeKeptValues: Map<number, string> = new Map();
+  // DS-6: the conditional deletes a swap-remove write has staged in so far; later reads of them take the registers.
+  private stagedAliasOwners: Set<number> = new Set();
   // In a constructor, the writes whose value (and, where a read compares keys, key hash) a later genesis read takes,
   // the stack names they are kept under, and each served read's plan.
   private genesisKeptWrites: WeakSet<Node> = new WeakSet();
@@ -8984,6 +8986,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.countSortedEntryAccesses(node);
     this.composeWritesEmitted = [];
     this.composeKeptValues = new Map();
+    this.stagedAliasOwners = new Set();
     this.refuseDirectStaleSortedReads(node);
     this.planGenesisReads(node);
 
@@ -12354,15 +12357,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.preAllocatedEntryWrites.has(slotIndex) || this.pendingEntryWrites.has(slotIndex)) return;
     const keyStackName = `__entry_key_enc_${slotIndex}`;
     const valueStackName = `__entry_value_enc_${slotIndex}`;
-    // An activity-settled delete keeps the node at its own fixed input: its batch proof witness is bound to nothing.
-    const fn = this.currentFunction;
     if (this.framedGroupDelete(slotIndex)) {
       this.emit(encodeInt(0n), locationData);
     } else {
-      if (fn && this.settlesSortedTargetsByActivity(fn)
-        && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slotIndex))) {
-        this.emitFixedEntryInputIndex(slotIndex, locationData);
-      } else this.emitEntryInputIndex(slotIndex, locationData, 0);
+      this.emitCondDeleteSeedInputIndex(slotIndex, locationData);
       this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
     }
     this.pushToStack(keyStackName);
@@ -12371,6 +12369,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingEntryWrites.set(slotIndex, { keyStackName, valueStackName });
     this.preAllocatedEntryWrites.add(slotIndex);
     this.condDeleteSlots.add(slotIndex);
+  }
+
+  /**
+   * The input a conditional delete's registers take their commitment from. An activity-settled delete keeps the node
+   * at its own fixed input: its batch proof witness is bound to nothing.
+   */
+  private emitCondDeleteSeedInputIndex(slotIndex: number, loc: SingleLocationData): void {
+    const fn = this.currentFunction;
+    if (fn && this.settlesSortedTargetsByActivity(fn)
+      && (fn.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(slotIndex))) {
+      this.emitFixedEntryInputIndex(slotIndex, loc);
+    } else this.emitEntryInputIndex(slotIndex, loc, 0);
   }
 
   visitTryCatch(node: TryCatchNode): Node {
@@ -26265,6 +26275,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       return node;
     }
+    if (this.stagedAliasOwners.has(slotIndex)) {
+      this.emitStagedOwnerRead(node, slotIndex, loc);
+      return node;
+    }
     const routeBatch = this.ownsMessageBusParticipantBlock()
       && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(slotIndex)) ?? false)
       && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${slotIndex}`), true) >= 0;
@@ -30148,6 +30162,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
     this.emit(Op.OP_ELSE, loc);
     this.stack = atDecision;
+    this.stagedAliasOwners.add(owner);
+  }
+
+  /**
+   * DS-6: [] -> [value], a read of a conditional delete's entry after a swap-remove write staged in its registers.
+   * Where the keys met, the written value sits there and not in the node the transaction spends, so the read takes
+   * the node's pending commitment, key_enc ++ value_enc, from the input that seeded them, held to the collection.
+   */
+  private emitStagedOwnerRead(node: MappingAccessNode, slotIndex: number, loc: SingleLocationData): void {
+    const collection = node.collection!;
+    const valueType = collection.innermostValueType;
+    this.emitSortedKeyHash(node, slotIndex, loc);
+    this.pushToStack('(__staged_read_hk)');
+    this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack('(sortedaddr)');
+    this.emitSortedEntryAddress(computeCollectionHash(`${collection.name}:${collection.type.toString()}`), loc);
+    this.emitCondDeleteSeedInputIndex(slotIndex, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack();
+    for (const register of [`__entry_key_enc_${slotIndex}`, `__entry_value_enc_${slotIndex}`]) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(register))), loc); this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(value)');
+    }
+    this.emit(Op.OP_CAT, loc);
+    this.popFromStack(3); // [Hk, commitment], untracked as in emitSortedSetRead
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [Hk, slot, next, value]
+    this.emit(Op.OP_2OVER, loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc);
+    if (this.sortedValueKind(valueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emitSortedAbsenceBracket(loc);
+    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
+    this.emitDefaultValue(loc, valueType);
+    this.emit(Op.OP_ENDIF, loc);
+    this.pushToStack('(value)');
   }
 
   /** An activity-settled target's settlement: its own delete site, its write flag, or the plain transition. */

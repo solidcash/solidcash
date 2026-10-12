@@ -10426,7 +10426,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else if (value instanceof HexLiteralNode) {
       source = { push: binToHex(value.value) };
     } else if (value instanceof StringLiteralNode) {
-      source = { push: binToHex(utf8ToBin(value.value)) };
+      source = { push: binToHex(value.solidityBytes ?? utf8ToBin(value.value)) };
     }
     if (source === undefined) return {};
     if (arg instanceof CastNode && arg.expression.type !== undefined) {

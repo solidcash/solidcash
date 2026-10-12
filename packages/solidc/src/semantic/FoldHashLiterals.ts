@@ -30,7 +30,7 @@ export default class FoldHashLiterals extends AstTraversal {
   }
 
   private static literalBytes(expr: ExpressionNode): Uint8Array | undefined {
-    if (expr instanceof StringLiteralNode) return utf8ToBin(expr.value);
+    if (expr instanceof StringLiteralNode) return expr.solidityBytes ?? utf8ToBin(expr.value);
     if (expr instanceof HexLiteralNode) return expr.value;
     return undefined;
   }

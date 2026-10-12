@@ -457,6 +457,12 @@ function readsCache(root: Node, local: string): boolean {
   return executableChildren(root).some((child) => readsCache(child, local));
 }
 
+/** Whether a node may read an entry of `mapping`: it reads or names the mapping, or calls one of `functions`. */
+function mayReadMapping(root: Node, mapping: string, functions: ReadonlySet<string>): boolean {
+  return reaches(root, (node) => ((node instanceof IdentifierNode || node instanceof MappingAccessNode)
+    && node.name === mapping) || (node instanceof FunctionCallNode && functions.has(node.identifier.name)));
+}
+
 /**
  * DS-6: whether a statement holds a delete of `mapping` that a branch arm or switch case guards, by keys that may
  * name the entry `keys` name (no literal key differs). A loop is not looked into.
@@ -780,24 +786,30 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (lastWrite >= 0 && calling.slice(lastWrite + 1).some(Boolean)) closings.set(item, statements[lastWrite]!);
       }
     }
-    // DS-6: a scalar cache the body only writes, whose last write a guarded delete of another key of the mapping
-    // follows, is flushed right after that write and starts at the default. The flush then stays the delete's
-    // swap-remove alias write and keeps its value where the keys meet and the delete does not run.
+    // DS-6: a scalar cache whose last write a guarded delete of another key of the mapping follows is flushed right
+    // after that write. The flush then stays the delete's swap-remove alias write and keeps its value where the keys
+    // meet and the delete does not run. One the body only writes starts at the default. One it also reads keeps its
+    // read, and moves only where nothing after the write reads the mapping: such a read would see the pre-state.
     const writeOnly = new Set<(typeof prepared)[number]>();
     if (this.composesAliases && !this.callsCloseSegments && !this.routeSnapshotKeysOnly) {
+      const functions = new Set([...this.contractFunctionNames, ...this.sourceFunctionNames]);
       for (const item of prepared) {
-        if (item.span !== undefined || !this.scalarMappings.has(item.e.mapping) || isChunkableValueType(item.e.valueType)
-          || statements.some((statement) => readsCache(statement, item.local))) continue;
+        if (item.span !== undefined || !this.scalarMappings.has(item.e.mapping)
+          || isChunkableValueType(item.e.valueType)) continue;
         let lastWrite = -1;
         statements.forEach((statement, index) => {
           if (reaches(statement, (node) => node instanceof AssignNode && node.identifier.name === item.dirty)) {
             lastWrite = index;
           }
         });
-        if (lastWrite < 0 || !statements.slice(lastWrite + 1).some((statement) =>
-          guardedDeleteMayAlias(statement, item.e.mapping, item.e.keys))) continue;
+        const after = statements.slice(lastWrite + 1);
+        if (lastWrite < 0
+          || !after.some((statement) => guardedDeleteMayAlias(statement, item.e.mapping, item.e.keys))) continue;
+        const reads = statements.some((statement) => readsCache(statement, item.local));
+        if (reads && after.some((statement) => readsCache(statement, item.local)
+          || mayReadMapping(statement, item.e.mapping, functions))) continue;
         closings.set(item, statements[lastWrite]!);
-        writeOnly.add(item);
+        if (!reads) writeOnly.add(item);
       }
     }
     // Flushes that close after one statement keep the order the entries were prepared in.

@@ -1985,6 +1985,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private composeKeptValues: Map<number, string> = new Map();
   // DS-6: the conditional deletes a swap-remove write has staged in so far; later reads of them take the registers.
   private stagedAliasOwners: Set<number> = new Set();
+  // DS-6: per owner delete, the framed swap-remove write staged in its registers (emitFramedStagedAliasWrite).
+  private framedStagedAliasWrites: Map<number, number> = new Map();
   // DS-6: per unconditional owner delete, the swap-remove writes whose kept values its reads take until that delete.
   private aliasKeptWrites: Map<number, number[]> = new Map();
   // In a constructor, the writes whose value (and, where a read compares keys, key hash) a later genesis read takes,
@@ -8989,6 +8991,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.composeWritesEmitted = [];
     this.composeKeptValues = new Map();
     this.stagedAliasOwners = new Set();
+    this.framedStagedAliasWrites = new Map();
     this.aliasKeptWrites = new Map();
     this.refuseDirectStaleSortedReads(node);
     this.planGenesisReads(node);
@@ -27159,8 +27162,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // prevents arbitrary main-stack temporaries from redirecting one witness to an adjacent field. Only after all
     // copies are on the main stack do we park the compact per-upsert frame on the altstack. Duplicate `next` for
     // swap-remove because it authenticates both input and output successors. An activity-settled alias write
-    // settles its own transition at the close, insert or update, as any write.
-    const updateOnly = aliasOwner !== undefined && !activityAlias;
+    // settles its own transition at the close, insert or update, as any write, and so does a framed staged one.
+    const updateOnly = aliasOwner !== undefined && !activityAlias && !(staged && this.readsRecordsFromFrame);
     if (inBatch) {
       this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${slotIndex}`, loc);
       this.emitCopyUpsertVMapWitness(`__internal__vmapBatchProof_${slotIndex}`, loc);
@@ -30325,36 +30328,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * DS-6: [v, H] with the write's witnesses parked. Where H meets the owner delete's slot, the key's node at the
    * delete's slot takes v: the delete's registers become its slot and successor with v, which the delete overwrites
    * if it runs after. Elsewhere opens the write's own arm, which closes the conditional. An activity-settled write
-   * parked one successor and is flagged in its own arm alone. A framed frame's node is the one the delete's group
-   * names, whose batch operands carry its successor; a group declared skipped, the kept node bracketing a key the
-   * list does not hold, takes no value and is refused.
+   * parked one successor and is flagged in its own arm alone.
    */
   private emitStagedAliasWrite(
     node: MappingAssignNode | MappingDeleteNode, owner: number, activity: boolean, loc: SingleLocationData,
   ): void {
+    if (this.readsRecordsFromFrame) {
+      this.emitFramedStagedAliasWrite(node, owner, loc);
+      return;
+    }
     this.emit(Op.OP_DUP, loc);
     this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${owner}`, loc);
     this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_IF, loc);
     const atDecision = [...this.stack];
-    if (this.readsRecordsFromFrame) {
-      this.emitCopyUpsertVMapWitness(`__internal__vmapBatchPredOut_${owner}`, loc);
-      this.emit(encodeInt(SKIPPED_TARGET_SENTINEL), loc);
-      this.emit(Op.OP_NUMNOTEQUAL, loc); this.emit(Op.OP_VERIFY, loc);
-      this.emitCopyUpsertVMapWitness(`__internal__vmapBatchNext_${owner}`, loc);
-      this.emit(Op.OP_CAT, loc); // [v, H||next]
-      for (let pair = 0; pair < 2; pair += 1) {
-        this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_2DROP, loc);
-      }
-      this.pushToStack('(value)');
-      this.emitReplace(this.getStackIndex(`__entry_key_enc_${owner}`), node);
-      this.popFromStack();
-      this.emitReplace(this.getStackIndex(`__entry_value_enc_${owner}`), node);
-      this.popFromStack();
-      this.emit(Op.OP_ELSE, loc);
-      this.stack = atDecision;
-      return;
-    }
     // The node is the key's own: an absent key's predecessor sits there instead and keeps its value.
     this.pushToStack('(__upsert_hk)');
     this.emitFixedEntryInputIndex(owner, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
@@ -30382,6 +30369,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
     }
     this.stagedAliasOwners.add(owner);
+  }
+
+  /**
+   * DS-6: emitStagedAliasWrite in a framed frame, whose write parked its slot, proof and one successor. A write whose
+   * group is declared skipped writes through the delete's group, so its key must meet the delete's: the delete's
+   * registers take the node's slot and successor with v, which the delete overwrites if it runs after. A delete group
+   * declared skipped, the kept node bracketing a key the list does not hold, takes nothing, and the write is a no-op
+   * only where the delete runs (`emitFramedStagedAliasPair`). A write whose group is not skipped takes its own arm,
+   * an update or an insert.
+   */
+  private emitFramedStagedAliasWrite(
+    node: MappingAssignNode | MappingDeleteNode, owner: number, loc: SingleLocationData,
+  ): void {
+    const skipped = (slot: number): void => {
+      this.emitCopyUpsertVMapWitness(`__internal__vmapBatchPredOut_${slot}`, loc);
+      this.emit(encodeInt(SKIPPED_TARGET_SENTINEL), loc);
+      this.emit(Op.OP_NUMEQUAL, loc);
+    };
+    skipped(node.entrySlotIndex);
+    this.emit(Op.OP_IF, loc);
+    const atDecision = [...this.stack];
+    this.emit(Op.OP_DUP, loc);
+    this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${owner}`, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    skipped(owner);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.popFromStack();
+    this.emit(Op.OP_ELSE, loc);
+    this.stack = [...atDecision];
+    this.emitCopyUpsertVMapWitness(`__internal__vmapBatchNext_${owner}`, loc);
+    this.emit(Op.OP_CAT, loc); // [v, H||next]
+    this.pushToStack('(value)');
+    this.emitReplace(this.getStackIndex(`__entry_key_enc_${owner}`), node);
+    this.popFromStack();
+    this.emitReplace(this.getStackIndex(`__entry_value_enc_${owner}`), node);
+    this.popFromStack();
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_2DROP, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.stack = atDecision;
+    this.framedStagedAliasWrites.set(owner, node.entrySlotIndex);
   }
 
   /** DS-6: a swap-remove alias write an activity-settled batch settles alone, as its other writes. */
@@ -32645,8 +32675,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * run-time keys, are compared pairwise where the batch ran. A conditional batch that did not run keeps every node
    * it spends, and keys that differ in a literal never agree. A target declared skipped writes nothing, so it meets
    * another's key freely: a swap-remove write whose key meets its delete's writes through the delete's group, if at
-   * all (`emitStagedAliasWrite`), and the delete wins where it runs. A guarded delete declared skipped is not exempt:
-   * at a key another target writes, the written value would survive it.
+   * all (`emitFramedStagedAliasPair`), and the delete wins where it runs. A guarded delete declared skipped is not
+   * exempt: at a key another target writes, the written value would survive it.
    */
   private emitFramedDistinctBatchTargets(
     node: FunctionDefinitionNode, targets: readonly number[], loc: SingleLocationData,
@@ -32671,6 +32701,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitPickTrackedFromBottom(ran, loc);
           this.emit(Op.OP_BOOLAND, loc);
         }
+        const staged = this.framedStagedAliasWrites.get(other) === slot ? [slot, other]
+          : this.framedStagedAliasWrites.get(slot) === other ? [other, slot] : undefined;
+        if (staged !== undefined) {
+          this.emitFramedStagedAliasPair(staged[0]!, staged[1]!, loc);
+          continue;
+        }
         // A target declared skipped names no node of its own: the other target alone writes the entry.
         for (const member of [slot, other]) {
           if (!this.framedSkippableSlots.has(member)) continue;
@@ -32682,6 +32718,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_VERIFY, loc);
       }
     });
+  }
+
+  /**
+   * DS-6: [keysMeet] -> [], the distinct-target check of a staged swap-remove write and its guarded delete
+   * (`emitFramedStagedAliasWrite`). Where the keys meet, a write that runs through its own group is refused beside a
+   * delete group that is not skipped. Beside a skipped one, the kept node bracketing a key the list does not hold, a
+   * write the body reached and skipped is lost unless the delete runs, and one written through its own group survives
+   * a delete that runs.
+   */
+  private emitFramedStagedAliasPair(write: number, owner: number, loc: SingleLocationData): void {
+    const skipped = (slot: number, op: Op): void => {
+      this.emitPickVMapWitness(`__internal__vmapBatchPredOut_${slot}`, loc);
+      this.emit(encodeInt(SKIPPED_TARGET_SENTINEL), loc);
+      this.emit(op, loc);
+    };
+    const ran = (): void => { // the delete's key register is set
+      this.emitPickTrackedFromBottom(this.pendingEntryWrites.get(owner)!.keyStackName, loc);
+      this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+    };
+    skipped(write, Op.OP_NUMNOTEQUAL); this.emit(Op.OP_BOOLAND, loc); // the write's own group, where the keys meet
+    skipped(owner, Op.OP_NUMEQUAL);
+    this.emit(Op.OP_IF, loc);
+    ran(); this.emit(Op.OP_BOOLAND, loc);
+    skipped(write, Op.OP_NUMEQUAL);
+    const flag = GenerateTargetTraversalWithLocation.condSortedWriteFlagName(write);
+    if (this.conditionalSortedWriteFlagSlots.has(write) && this.getStackIndex(flag, true) >= 0) {
+      this.emitPickTrackedFromBottom(flag, loc); this.emit(Op.OP_BOOLAND, loc);
+    }
+    ran(); this.emit(Op.OP_NOT, loc); this.emit(Op.OP_BOOLAND, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_VERIFY, loc);
   }
 
   /**
@@ -32849,8 +32918,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * Entry and exit with the target's proof view on top of the alternate stack. The write segment must end the node
    * at the default value with the slot and successor of the batch operands where the delete ran (its key register
-   * set), at a swap-remove write's value where only that write met its key (`emitStagedAliasWrite`), and at the proof
-   * view where neither did, as a framed write closes against its declared view: another frame
+   * set), at a swap-remove write's value where only that write met its key (`emitFramedStagedAliasWrite`), and at
+   * the proof view where neither did, as a framed write closes against its declared view: another frame
    * may write the node before or after this one, and settlement chains the views. A spent node sits at the
    * collection's address on both sides, one an earlier frame created, named `-(out + 1)`, at its output. With
    * `absentKept`, a group declared skipped (`-2`), the node bracketing a key the list does not hold, ends at the proof

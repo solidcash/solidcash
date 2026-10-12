@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeDataPush, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import {
+  bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructionsMaybeMalformed,
+  encodeDataPush, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin,
+} from '@bitauth/libauth';
 import {
   bytesToHex, concatBytes, decodeIntegerValue, encodeIntegerValue, encodeWitnessBlock, sha256, splitFirstPush,
   type Artifact, type WitnessBlock,
@@ -24,7 +27,9 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * `m[a] = v; if (c > 0) { ..; delete m[k]; }`: the write is the delete's swap-remove alias, which a framed frame
  * skips where the keys meet. That is right only where the delete runs: with `a == k` and the branch not taken the
  * key's node keeps `v`. Where the keys meet, the write lands on the delete's node, which the delete overwrites if it
- * runs; a frame declaring that node unchanged or at another value is refused by its master.
+ * runs; a frame declaring that node unchanged or at another value is refused by its master. At a key the list does
+ * not hold, the write creates the key's node where the delete does not run, and is skipped where it does; a frame
+ * whose plan the branch does not follow is refused.
  */
 
 const BOOK = compileStringMulti('pragma solidcash ^0.13.0;'
@@ -39,6 +44,8 @@ const BOOK = compileStringMulti('pragma solidcash ^0.13.0;'
 const CALLER = encodeLockingBytecodeP2pkh(alicePkh);
 const K = 7n;
 const J = 9n;
+/** A key the list does not hold. */
+const A = 5n;
 
 const slotOf = (key: bigint): Uint8Array => keyToSlotMulti([encodeIntegerValue(key)]);
 
@@ -136,6 +143,24 @@ function restatedVerdict(result: FramedCallResult, key: bigint, value: Uint8Arra
   return vm.stateSuccess(vm.evaluate({ inputIndex: frame.index, sourceOutputs: result.sourceOutputs, transaction }));
 }
 
+/** The master's verdict on a settled call with its guard argument restated as `c`, the frame's records as planned. */
+function restatedGuardVerdict(result: FramedCallResult, c: bigint): unknown {
+  const frame = result.verdicts.find((verdict) => verdict.id === 'master')!;
+  const { payload, rest } = splitFirstPush(result.transaction.inputs[frame.index]!.unlockingBytecode);
+  // The block is followed by the selector, then the arguments last first: `c` leads them.
+  const [selector, , ...others] = decodeAuthenticationInstructions(rest);
+  const unlockingBytecode = concatBytes([
+    encodeDataPush(payload), encodeAuthenticationInstructionsMaybeMalformed([selector!]),
+    encodeDataPush(bigIntToVmNumber(c)), encodeAuthenticationInstructionsMaybeMalformed(others),
+  ]);
+  const transaction = {
+    ...result.transaction,
+    inputs: result.transaction.inputs.map((input, at) => (at === frame.index ? { ...input, unlockingBytecode } : input)),
+  };
+  const vm = compositionMachine();
+  return vm.stateSuccess(vm.evaluate({ inputIndex: frame.index, sourceOutputs: result.sourceOutputs, transaction }));
+}
+
 describe('a write ahead of a guarded delete of the same mapping, called through the SDK', () => {
   let kept: FramedCallResult | undefined;
 
@@ -145,11 +170,13 @@ describe('a write ahead of a guarded delete of the same mapping, called through 
     expect([await heldAt(shared, K), await heldAt(shared, J)]).toStrictEqual([300n, 50n]);
   }, 600_000);
 
-  it('refuses that call with the node declared unchanged or at a forged value', () => {
+  it('refuses that call with the node declared unchanged or at a forged value, or with the delete run', () => {
     expect(kept).toBeDefined();
     expect(restatedVerdict(kept!, K, encodeIntegerValue(300n))).toBe(true);
     expect(restatedVerdict(kept!, K, encodeIntegerValue(70n))).not.toBe(true);
     expect(restatedVerdict(kept!, K, encodeIntegerValue(301n))).not.toBe(true);
+    expect(restatedGuardVerdict(kept!, 0n)).toBe(true);
+    expect(restatedGuardVerdict(kept!, 1n)).not.toBe(true);
   });
 
   it('deletes the key where the keys meet and the delete runs', async () => {
@@ -164,5 +191,26 @@ describe('a write ahead of a guarded delete of the same mapping, called through 
     expect([await heldAt(shared, K), await heldAt(shared, J)]).toStrictEqual([70n, 300n]);
     await settle(shared, 'setThenDrop', [J, 400n, K, 1n]);
     expect([await heldAt(shared, K), await heldAt(shared, J)]).toStrictEqual([0n, 400n]);
+  }, 600_000);
+
+  it('creates the key where the keys meet at a key the list does not hold and the delete does not run', async () => {
+    const shared = await world();
+    const created = await settle(shared, 'setThenDrop', [A, 300n, A, 0n]);
+    expect([await heldAt(shared, A), await heldAt(shared, K), await heldAt(shared, J)]).toStrictEqual([300n, 70n, 50n]);
+    // A forged value, or the delete run after the write it would leave standing.
+    expect(restatedVerdict(created, A, encodeIntegerValue(300n))).toBe(true);
+    expect(restatedVerdict(created, A, encodeIntegerValue(301n))).not.toBe(true);
+    expect(restatedGuardVerdict(created, 0n)).toBe(true);
+    expect(restatedGuardVerdict(created, 1n)).not.toBe(true);
+  }, 600_000);
+
+  it('leaves the key absent where the keys meet at a key the list does not hold and the delete runs', async () => {
+    const shared = await world();
+    const skipped = await settle(shared, 'setThenDrop', [A, 300n, A, 1n]);
+    expect([await heldAt(shared, A), await heldAt(shared, K), await heldAt(shared, J)])
+      .toStrictEqual([undefined, 70n, 50n]);
+    // The write skipped where no delete follows it is lost.
+    expect(restatedGuardVerdict(skipped, 1n)).toBe(true);
+    expect(restatedGuardVerdict(skipped, 0n)).not.toBe(true);
   }, 600_000);
 });

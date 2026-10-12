@@ -12,8 +12,9 @@ import { getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
  * A write ahead of a delete of the same mapping is that delete's swap-remove alias write: where the two keys meet, the
  * delete supersedes it. That holds only where the delete runs after it. A write arm whose delete sits in the other arm
  * still sets the key's node, and the delete arm still deletes it; an unconditional swap-remove still ends deleted. A
- * write whose delete sits in a later branch, a switch case or an else-if arm, on the straight line or in an earlier
- * branch or switch arm, keeps its value where that delete does not run; so does a write before an if-converted delete.
+ * write whose delete sits in a later branch, a switch case or an else-if arm, on the straight line, in a nested block
+ * or in an earlier branch or switch arm, keeps its value where that delete does not run; so does a write before an
+ * if-converted delete. A loop's writes are cached and flushed once, before that delete: the last value is kept.
  */
 
 const WRITE_FIRST_SOURCE = `contract SameKeyWriteFirst {
@@ -106,6 +107,41 @@ const PREDICATED_DROP_SOURCE = `contract SameKeyPredicatedDrop {
   function setThenDrop(int j, int k, int v, int sel) external {
     m[j] = v;
     if (sel > 0) { delete m[k]; }
+    require(true);
+  }
+}`;
+
+const BLOCK_THEN_DROP_SOURCE = `contract SameKeyBlockThenDrop {
+  mapping(int => int) m;
+  function set(int k, int v) external { m[k] = v; require(true); }
+  function check(int k, int expected) external { require(m[k] == expected); }
+  function setThenDrop(int j, int k, int v, int sel) external {
+    { m[j] = v; }
+    if (sel > 0) { require(k != 3); delete m[k]; }
+    require(true);
+  }
+}`;
+
+// The loop writes the key twice: v, then v + 1.
+const LOOP_THEN_DROP_SOURCE = `contract SameKeyLoopThenDrop {
+  mapping(int => int) m;
+  function set(int k, int v) external { m[k] = v; require(true); }
+  function check(int k, int expected) external { require(m[k] == expected); }
+  function setThenDrop(int j, int k, int v, int sel) external {
+    for (int i = 0; i < 2; i++) { m[j] = v + i; }
+    if (sel > 0) { require(k != 3); delete m[k]; }
+    require(true);
+  }
+}`;
+
+// The loop writes the key n times: v up to v + n - 1.
+const RUNTIME_LOOP_THEN_DROP_SOURCE = `contract SameKeyRuntimeLoopThenDrop {
+  mapping(int => int) m;
+  function set(int k, int v) external { m[k] = v; require(true); }
+  function check(int k, int expected) external { require(m[k] == expected); }
+  function setThenDrop(int j, int k, int v, int sel, int n) external {
+    for (int i = 0; i < n; i++) { m[j] = v + i; }
+    if (sel > 0) { require(k != 3); delete m[k]; }
     require(true);
   }
 }`;
@@ -321,6 +357,85 @@ describe('a write before an if-converted delete of the same key', () => {
 
   it('refuses the key\'s node taking another value where the delete does not run', async () => {
     await expectForgedValueRefused(PREDICATED_DROP_SOURCE, 'setThenDrop', [7n, 7n, 300n, 0n], false);
+  }, 300_000);
+});
+
+describe('a write in a nested block before a delete of the same key in a later branch', () => {
+  it('sets the key where the delete does not run', async () => {
+    const { sc } = await deploy(BLOCK_THEN_DROP_SOURCE, 'setThenDrop');
+    await sc.getFunction('setThenDrop')(7n, 7n, 300n, 0n).send();
+    await expect(sc.getFunction('check')(7n, 300n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('deletes the key where the delete runs', async () => {
+    const { sc } = await deploy(BLOCK_THEN_DROP_SOURCE, 'setThenDrop');
+    await sc.getFunction('setThenDrop')(7n, 7n, 300n, 1n).send();
+    await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('refuses the key\'s node taking another value where the delete does not run', async () => {
+    await expectForgedValueRefused(BLOCK_THEN_DROP_SOURCE, 'setThenDrop', [7n, 7n, 300n, 0n]);
+  }, 300_000);
+});
+
+describe('a write in a fixed-bound loop before a delete of the same key in a later branch', () => {
+  it('sets the key to the last iteration\'s value where the delete does not run', async () => {
+    const { sc } = await deploy(LOOP_THEN_DROP_SOURCE, 'setThenDrop');
+    await sc.getFunction('setThenDrop')(7n, 7n, 300n, 0n).send();
+    await expect(sc.getFunction('check')(7n, 301n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('deletes the key where the delete runs', async () => {
+    const { sc } = await deploy(LOOP_THEN_DROP_SOURCE, 'setThenDrop');
+    await sc.getFunction('setThenDrop')(7n, 7n, 300n, 1n).send();
+    await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('sets one key and deletes the other only where the delete runs', async () => {
+    const { sc } = await deploy(LOOP_THEN_DROP_SOURCE, 'setThenDrop');
+    await sc.getFunction('setThenDrop')(20n, 7n, 300n, 0n).send();
+    await expect(sc.getFunction('check')(20n, 301n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(7n, 70n).send()).resolves.toBeDefined();
+    await sc.getFunction('setThenDrop')(7n, 20n, 400n, 1n).send();
+    await expect(sc.getFunction('check')(7n, 401n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 0n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('refuses the key\'s node taking another value where the delete does not run', async () => {
+    await expectForgedValueRefused(LOOP_THEN_DROP_SOURCE, 'setThenDrop', [7n, 7n, 299n, 0n]);
+  }, 300_000);
+});
+
+describe('a write in a runtime loop before a delete of the same key in a later branch', () => {
+  it('sets the key to the last iteration\'s value where the delete does not run', async () => {
+    const { sc } = await deploy(RUNTIME_LOOP_THEN_DROP_SOURCE, 'setThenDrop');
+    await sc.getFunction('setThenDrop')(7n, 7n, 300n, 0n, 3n).send();
+    await expect(sc.getFunction('check')(7n, 302n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('deletes the key where the delete runs', async () => {
+    const { sc } = await deploy(RUNTIME_LOOP_THEN_DROP_SOURCE, 'setThenDrop');
+    await sc.getFunction('setThenDrop')(7n, 7n, 300n, 1n, 2n).send();
+    await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('keeps the key where the loop does not run, and deletes it where only the delete runs', async () => {
+    const { sc } = await deploy(RUNTIME_LOOP_THEN_DROP_SOURCE, 'setThenDrop');
+    await sc.getFunction('setThenDrop')(7n, 7n, 300n, 0n, 0n).send();
+    await expect(sc.getFunction('check')(7n, 70n).send()).resolves.toBeDefined();
+    await sc.getFunction('setThenDrop')(7n, 7n, 300n, 1n, 0n).send();
+    await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(20n, 200n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('refuses the key\'s node taking another value where the delete does not run', async () => {
+    await expectForgedValueRefused(RUNTIME_LOOP_THEN_DROP_SOURCE, 'setThenDrop', [7n, 7n, 299n, 0n, 2n]);
   }, 300_000);
 });
 

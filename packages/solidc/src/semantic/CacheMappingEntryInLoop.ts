@@ -450,6 +450,29 @@ function keyNodeMatches(k: Node | undefined, key: KeyKind): boolean {
   return expressionCanon(k) === key.canon;
 }
 
+/** Whether a node reads a cache local anywhere but as the target a redirected write assigns. */
+function readsCache(root: Node, local: string): boolean {
+  if (root instanceof AssignNode && root.identifier.name === local) return readsCache(root.expression, local);
+  if ((root as { readonly name?: unknown }).name === local) return true;
+  return executableChildren(root).some((child) => readsCache(child, local));
+}
+
+/**
+ * DS-6: whether a statement holds a delete of `mapping` that a branch arm or switch case guards, by keys that may
+ * name the entry `keys` name (no literal key differs). A loop is not looked into.
+ */
+function guardedDeleteMayAlias(node: Node, mapping: string, keys: readonly KeyKind[], guarded = false): boolean {
+  if (node instanceof MappingDeleteNode) {
+    return guarded && node.name === mapping && !keys.some((key, index) => {
+      const other = node.keys[index] === undefined ? null : canonKeyOf(node.keys[index]!, true);
+      return key.kind === 'literal' && other?.key.kind === 'literal' && other.canon !== keyCanon(key);
+    });
+  }
+  if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode) return false;
+  const arms = guarded || node instanceof BranchNode || node instanceof SwitchNode;
+  return executableChildren(node).some((child) => guardedDeleteMayAlias(child, mapping, keys, arms));
+}
+
 function expressionParameterDependencies(node: Node, out = new Set<string>()): Set<string> {
   if (node instanceof IdentifierNode) out.add(node.name);
   if (node instanceof FunctionCallNode) {
@@ -757,6 +780,26 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (lastWrite >= 0 && calling.slice(lastWrite + 1).some(Boolean)) closings.set(item, statements[lastWrite]!);
       }
     }
+    // DS-6: a scalar cache the body only writes, whose last write a guarded delete of another key of the mapping
+    // follows, is flushed right after that write and starts at the default. The flush then stays the delete's
+    // swap-remove alias write and keeps its value where the keys meet and the delete does not run.
+    const writeOnly = new Set<(typeof prepared)[number]>();
+    if (this.composesAliases && !this.callsCloseSegments && !this.routeSnapshotKeysOnly) {
+      for (const item of prepared) {
+        if (item.span !== undefined || !this.scalarMappings.has(item.e.mapping) || isChunkableValueType(item.e.valueType)
+          || statements.some((statement) => readsCache(statement, item.local))) continue;
+        let lastWrite = -1;
+        statements.forEach((statement, index) => {
+          if (reaches(statement, (node) => node instanceof AssignNode && node.identifier.name === item.dirty)) {
+            lastWrite = index;
+          }
+        });
+        if (lastWrite < 0 || !statements.slice(lastWrite + 1).some((statement) =>
+          guardedDeleteMayAlias(statement, item.e.mapping, item.e.keys))) continue;
+        closings.set(item, statements[lastWrite]!);
+        writeOnly.add(item);
+      }
+    }
     // Flushes that close after one statement keep the order the entries were prepared in.
     const flushedAfter = new Map<StatementNode, StatementNode>();
     const anchoredDeclarations = new Map<StatementNode, StatementNode[]>();
@@ -768,7 +811,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       ); // T local = m[k1][k2];
       cacheRead.fromModifier = e.fromModifier;
       cacheRead.location = fn.body.location;
-      const cache = new VariableDefinitionNode(e.valueType, [], local, cacheRead);
+      const cache = new VariableDefinitionNode(e.valueType, [], local,
+        writeOnly.has(item) ? createDefaultValueExpression(e.valueType, fn.body.location) : cacheRead);
       cache.location = fn.body.location;
       const dirtyInit = new BoolLiteralNode(false);
       dirtyInit.location = fn.body.location;

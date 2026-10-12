@@ -1976,8 +1976,8 @@ naming the first owner's input; where the deleted key is the node's own it rebui
 at the default value, which it plans for int and bool values only (its PredOut refresh accepts that relink). Absent
 keys of one gap (either key order) and the node's own key written beside a deleted absent key of its gap settle, and a
 node spent at the delete's slot is refused at the master (AuditDS6ChainOneNode.test.ts). The node's own key deleted
-beside a key of its gap written, one key deleted and written, and the deleted key's node relinked at its old value
-(refused) are in that file too; the SDK's PredOut refresh was fixed for them after the one run, unverified.
+beside a key of its gap written and one key deleted and written settle too, and the deleted key's node relinked at its
+old value is refused (same file).
 
 A write ahead of the delete (the write-first order, a swap-remove pair under one arm, an earlier arm or a cached
 loop's flush) is the delete's swap-remove alias write and settles the same way: it is flagged only where its key

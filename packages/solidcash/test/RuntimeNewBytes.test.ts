@@ -9,8 +9,8 @@ import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 // model's malloc growth primitive) both hold at runtime.
 const SOURCE = `
 contract C() {
-    int counter;
-    function check(int n) {
+    uint counter;
+    function check(uint n) {
         require(n >= 0);
         bytes memory b = new bytes(n);
         require(b.length == n);

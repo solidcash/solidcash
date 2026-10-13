@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ExternalCallAbi } from '@solidcash/utils';
+import { DirectStaleReadError } from '../src/Errors.js';
 import { compileString } from './direct-compile.js';
 
 const SOURCE = `pragma solidcash >=0.8.0;
@@ -924,8 +925,10 @@ describe('Release 0 shared invocation analysis', () => {
     expect(calls?.[0].nestedIterationDomains).toBeUndefined();
   });
 
+  // Native `T[N]` state is a verified-mapping collection (DS-5). Reading the element after a write the outer loop
+  // repeats is refused on the direct convention, so no inner domain is published for it.
   it('withholds an array-state inner domain after a prior element write', () => {
-    const artifact = compileString(`pragma solidcash >=0.8.0;
+    expect(() => compileString(`pragma solidcash >=0.8.0;
       interface ITarget { function step(bigint value); }
       contract ArrayStateBound() {
         bigint[1] public bounds;
@@ -940,11 +943,7 @@ describe('Release 0 shared invocation analysis', () => {
         }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
-    });
-    const steps = artifact.abi.find((fn) => fn.name === 'run')?.externalCalls
-      ?.filter((call) => call.functionName === 'step');
-    expect(steps).toHaveLength(2);
-    expect(steps?.every((call) => call.nestedIterationDomains === undefined)).toBe(true);
+    })).toThrow(DirectStaleReadError);
   });
 
   it('publishes both affine domains for a nested external-call loop', () => {

@@ -96,7 +96,7 @@ export class FramedFunctionCall {
 
   /** Sends the call: composes the root frame, derives it, asks the machine, and broadcasts what it accepted. */
   public async send(): Promise<TransactionDetails> {
-    const result = await this.compose();
+    const result = await this.run(true);
     if (result.broadcast === undefined) {
       // A frame the machine refused is reported the way a refused read is: the entry's own source reason, read from
       // the artifact's publication, rather than the opcode the run stopped on.
@@ -140,6 +140,11 @@ export class FramedFunctionCall {
    * function runs `then`, which sends a writing call. Use `compose()` to preview.
    */
   public async compose(): Promise<FramedCallResult> {
+    return this.run(false);
+  }
+
+  /** Composes the call in its turn. With `publish`, an accepted call is broadcast. */
+  private async run(publish: boolean): Promise<FramedCallResult> {
     const { provider, signer, categoryId, proxyImplementationCategoryId } = this.contract;
     if (signer === undefined) {
       throw new FramedCallError(
@@ -149,13 +154,13 @@ export class FramedFunctionCall {
     // A call through a proxy hop composes at once until the hop's module opts into the queue; any other call waits
     // its turn behind the sends that could touch what it spends.
     if (proxyImplementationCategoryId !== undefined && !proxyHopSendsAreQueued()) {
-      return this.composeNow(provider, signer, false);
+      return this.composeNow(provider, signer, publish);
     }
     const resources = framedSendResources({
       callerLockingBytecode: signer.getLockingBytecode(),
       categoryIds: [categoryId, ...(proxyImplementationCategoryId === undefined ? [] : [proxyImplementationCategoryId])],
     });
-    return framedSendQueue(provider).hold(resources, () => this.composeNow(provider, signer, false));
+    return framedSendQueue(provider).hold(resources, () => this.composeNow(provider, signer, publish));
   }
 
   /**

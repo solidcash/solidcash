@@ -30449,7 +30449,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * A conditional sorted delete of an activity-settled body: the slot witness names the key and the input read is a
    * node of the collection. A present key keeps its node's slot and successor with the default value; an absent
-   * key's input is its predecessor, which must bracket the key and stays as it is.
+   * key's input is its predecessor, which must bracket the key and stays as it is. Where the node is the slot's own,
+   * a present key's next witness must name that successor: no batch transition reads it.
    */
   private emitBoundSortedCondDelete(node: MappingDeleteNode, slotIndex: number, loc: SingleLocationData): void {
     this.emitSortedKeyHash(node, slotIndex, loc);
@@ -30458,7 +30459,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitCopyUpsertVMapWitness(`__internal__vmapBatchSlot_${slotIndex}`, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
     const chained = GenerateTargetTraversalWithLocation.chainedDeleteName(slotIndex);
-    if (this.getStackIndex(chained, true) >= 0) {
+    const chainedSite = this.getStackIndex(chained, true) >= 0;
+    if (chainedSite) {
       // DS-6: the node is the one the proof names. Away from its own input it is a write's that ran on it (the batch
       // transition holds the two to one node), and its own slot spends no node.
       this.emitCopyUpsertVMapWitness(`__internal__vmapBatchProof_${slotIndex}`, loc);
@@ -30490,7 +30492,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUAL, loc); // present
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
-    this.emit(Op.OP_NOTIF, loc); this.emitSortedPredecessorBracket(loc); this.emit(Op.OP_ENDIF, loc);
+    if (chainedSite) {
+      this.emit(Op.OP_NOTIF, loc); this.emitSortedPredecessorBracket(loc); this.emit(Op.OP_ENDIF, loc);
+    } else {
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_OVER, loc);
+      this.emitCopyUpsertVMapWitness(`__internal__vmapBatchNext_${slotIndex}`, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_ELSE, loc); this.emitSortedPredecessorBracket(loc); this.emit(Op.OP_ENDIF, loc);
+    }
     this.emit(Op.OP_DROP, loc); this.emit(Op.OP_CAT, loc); // [Hk, c, coSlot||coNext]
     this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
     this.emit(Op.OP_IF, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_DROP, loc);

@@ -213,7 +213,10 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     const cacheDir = path.join(hre.config.paths.cache, 'solidcash');
     // The disk layer is what makes the cache survive between CLI invocations; without it only one process would
     // benefit. An explicitly configured directory always wins.
-    if (artifactCache) process.env.SOLIDC_COMPILE_CACHE_DIR ??= cacheDir;
+    if (artifactCache) {
+      fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+      process.env.SOLIDC_COMPILE_CACHE_DIR ??= cacheDir;
+    }
     const artifactContextFile = path.join(cacheDir, 'artifact-context');
     const artifactContext = artifactCompileContextIdentity(
       compilerCacheIdentity,

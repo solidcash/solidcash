@@ -6,6 +6,7 @@ import {
 import { compileFile } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Signer } from '../../src/index.js';
+import { effectiveAccelerationContractsRoot } from '../effectiveacceleration-corpus.js';
 import {
   getContractFactory,
   getEntryNftAddress,
@@ -29,19 +30,22 @@ const OPTIONS = {
   maximumInputBytes: 1_000_000,
 } as const;
 
+const contractsRoot = effectiveAccelerationContractsRoot();
 const names = ['UnicrowArbitrator', 'UnicrowClaim', 'Unicrow'] as const;
 const compileArtifacts = (entryPoolCapacity?: number): Record<(typeof names)[number], ReturnType<typeof compileFile>> =>
   Object.fromEntries(names.map((name) => [
     name,
-    compileFile(`../../examples/effectiveacceleration/contracts/unicrow/${name}.sol`, {
+    compileFile(path.join(contractsRoot!, 'unicrow', `${name}.sol`), {
       ...OPTIONS,
       ...(entryPoolCapacity === undefined ? {} : { messageBusEntryPoolCapacity: entryPoolCapacity }),
     }),
   ])) as Record<(typeof names)[number], ReturnType<typeof compileFile>>;
-const artifacts = compileArtifacts();
+let compiled: Record<(typeof names)[number], ReturnType<typeof compileFile>> | undefined;
+// Compile lazily: a skipped run must not touch the corpus.
+const artifacts = (): Record<(typeof names)[number], ReturnType<typeof compileFile>> => (compiled ??= compileArtifacts());
 
-describe('real Unicrow proxy kernel arbitration callback', () => {
-  const setup = async (amounts: bigint[] = [], routeArtifacts = artifacts): Promise<{
+describe.skipIf(contractsRoot === undefined)('real Unicrow proxy kernel arbitration callback', () => {
+  const setup = async (amounts: bigint[] = [], routeArtifacts = artifacts()): Promise<{
     arbitrator: ProxyContract; claim: ProxyContract; unicrow: ProxyContract;
     sellerLock: Uint8Array;
   }> => {

@@ -10,7 +10,7 @@ chunks, or pending vmap compiler/SDK plumbing predate the completed 2026-07-22 v
 defined only by [`verified-mappings.md`](verified-mappings.md); every mapping is vmap and unsupported shapes fail
 closed. Do not use historical opt-out instructions from this log.
 
-Related: `examples/solidity-corpus/ATTENTION.md` (autonomous-grind decisions + soundness caveats),
+Related: `bench/solidity-corpus/ATTENTION.md` (autonomous-grind decisions + soundness caveats),
 `docs/platform-differences.md` (BCH-vs-EVM primitives), `docs/solidity-gap-analysis.md`.
 
 Format per entry: **what**, **why deferred**, **what it'd take**, **revisit if**.
@@ -1648,7 +1648,7 @@ stored value through all neighboring forms.
 
   **Acceptance:** Hardhat artifact lookup automatically chooses a split bundle; four circular Unicrow peer addresses
   predicted from one signer nonce sequence resolve after deployment; forged anchors/categories and physical facet
-  addresses fail; snapshots preserve sequencing; and `examples/effectiveacceleration/test/marketplace.test.ts`
+  addresses fail; snapshots preserve sequencing; and `bench/effectiveacceleration/test/marketplace.test.ts`
   runs unchanged on the BCH HRE.
 
 ## Factory deploy of a stateful child alongside vmap mapping writes (2026-08-07)
@@ -1852,7 +1852,7 @@ size-constrained contract the duplication would be a real trade and would argue 
 as a frame argument instead, the way the parameterized outliner threads altstack depth.
 
 **Acceptance:** a stateful contract whose constructor calls a private `keccak256` helper deploys and reads the
-hash back; `examples/mistswap-native/repro-bento.mjs` deploys BentoBoxMock; `test/PairKashi.test.ts` and
+hash back; `bench/mistswap-native/repro-bento.mjs` deploys BentoBoxMock; `test/PairKashi.test.ts` and
 `test/SushiMakerKashi.test.ts` reach contract behaviour instead of dying in `beforeEach`.
 
 ## MasterChef / MasterChefV2: message-bus preflight OP_VERIFY (2026-08-07)
@@ -1900,3 +1900,122 @@ the co-spend set from the actual argument length.
 
 **Acceptance:** `keccak256(x)` for a 12 KB runtime `x` settles and reads back the same digest `keccak_256`
 computes off-chain; the refusal above still fires when the caller declines to fund the chain.
+
+## View and static calls do not pin the callee's state in direct composition (2026-10-12)
+
+**What:** in Solidity a call through a `view`/`pure` interface declaration (and any `staticcall`) runs as
+STATICCALL, so the callee cannot change state. In the DIRECT composition a plain `I(a).m()` runs in the REGULAR
+mode whatever `m`'s declared mutability (modes come only from explicit spellings: `I(a).m.staticcall()`,
+low-level `staticcall`). Even the explicit STATICCALL check (`emitStaticCallCommitmentPreservation`) pins only the
+callee's master commitment plus `requiredDataNftIndices`, which come from the caller's declared type; for a
+Solidity interface with no state declarations that list is empty, and a state write never changes the master
+commitment, so a "static" call can still change the callee's data NFTs and mapping entries. The message bus marks
+only explicit `.staticcall` edges read-only; the framed composition already routes view/pure interface calls to
+a static frame and its validator (V10) rejects any record change below it.
+
+**Proposed design (direct composition only):** an unpublished `readOnlyDeclared` slot flag for calls through a
+view/pure declaration (no explicit mode; not raw, opaque, fn-ptr or self), kept out of repeated-address batching.
+At the call's verification hook, pin the master commitment and scan the whole transaction for the callee's mutable
+NFTs (category + 0x01): every such input i has an output i with the same category and commitment, and every such
+output j has j below the input count with a matching input (no new entries). Layout-independent, about 45 bytes
+per view call, non-view calls byte-identical, no SDK change. Gaps: nested calls of the callee do not inherit
+read-only; satoshi and fungible-token movements of the callee are not pinned without value/amount checks.
+
+**Why deferred:** it is a semantic-versus-size trade-off on every contract that calls view functions; it needs a
+decision, then an adversarial review like the other covenant changes.
+
+## A framed proxy's `initialize` that calls another contract is not atomic (audit SDKFRAMED-2 residual, 2026-10-12)
+
+**What:** a framed proxy deploy is atomic by default (d9251997a): `initialize` is evaluated off-chain like a framed
+constructor and the proxy genesis mints the records it leaves, so an uninitialized proxy never exists on chain; a
+reverting initializer broadcasts nothing. An initializer that calls another contract changes state a genesis cannot
+mint, so the default refuses it and names `initializeAs: 'hop'`. That opt-in runs the older flow: both geneses and
+the hop are signed and checked before any broadcast (6dad02a18), then relayed as three transactions, so a watcher who
+sees the proxy genesis can race the hop until it confirms. The direct (non-framed) deploy in `sc-deploy.ts` has the
+same unproven-coin shape that SDKFRAMED-1 closed for framed deploys; no audit row names it.
+
+**Proposed design:** validator rules for frames inside a genesis (the proxy master is not an input there), so a
+calling initializer can run as the proxy genesis's own frame.
+
+**Why deferred:** it is a validator protocol extension; the default path no longer needs it.
+
+## Sorted batch targets sharing a node: one key written twice (DS-6 residual, 2026-10-12)
+
+**What:** a direct body such as `if (sel > 0) { delete m[k]; } else { m[j] = v; }` compiles to one linear
+two-target batch. Each target settles alone: the delete at its own site as a lone delete does (06c633c6d), each
+write by its own ran flag (its single-target transition where it ran, its node kept where it did not), and the
+collection counts add per target. Every write's proof must be its own slot's input, so no two targets name one
+node. Where the targets' nodes coincide the SDK spends the node once, at the slot of the target that runs, and funds
+the other target's slot: a funded slot is no node, so its existence-gated checks skip and the counts leave it out.
+The SDK places that node at the first target's slot and, where the probe refuses that, rebuilds with each other
+target as its owner (`sortedNodeOwners`). One key (present or absent), a write landing in the deleted key's gap, a
+deleted key absent in the written key's gap and two distinct absent keys in one gap settle in each arm
+(AuditDS6MultiTargetDelete.test.ts). The last was refused where the absent deleted key sorts before the written one:
+the SDK relinked the gap's predecessor to the lent delete's key (`batchPredecessorCommitment` counted its -3 row as an
+insert), so the rebuilt placement's probe failed too. A -3 row now links nothing.
+
+Writes one call may run both of (`else { m[i] = v; m[j] = w; }`, `chainedActivityPairs`) chain where they ran on
+one proof: the first in batch order spends the node, the others' slots are funded and name its input. As the linear
+batch's rank rows order targets in one gap, each links to the next key above its own (a `below` relation per pair
+that ran, the next key the one no mate lies between), the highest keeps the node's old successor, and only the lowest
+relinks the node (as its own update, or by recreating it). The counts take a chained write's slot as no input and one
+output, so a node spent there is refused. Past a pair a write could be chained by a third mate, so two that ran on one
+proof must hold distinct keys. The SDK adds a group's writes as one owner set to its rebuilds. Two absent keys in one
+gap and a present key with an absent key in its gap settle, in either source order and where the deleted key's node is
+theirs (AuditDS6TwoWritesOneNode.test.ts); three absent keys in one gap in any source order, and a present key with
+two absent keys in its gap, settle too. A forged link (one past a write of the chain), the shared node dropped, a node
+spent at a funded slot and an extra node beside the chain are refused at the master (AuditDS6ChainOneNode.test.ts).
+
+A delete one call may run beside a write of its batch (`if (s > 0) { delete m[k]; m[j] = v; }`,
+`chainedActivityDelete`, one delete per batch) reads the node its proof names. Away from its own input it sets a
+register: its own slot must hold no node of the collection, and a write that ran must name the same proof, so the node
+is that write's group's. The node then settles as the writes leave it, the delete first: a write of the node's own key
+updates it, and the lowest insert relinks it at the value the delete's registers leave (the default where the deleted
+key is the node's, else its own). Its close skips the funded slot. The SDK lends the delete to the writes' owner set,
+naming the first owner's input; where the deleted key is the node's own it rebuilds once more with the node relinked
+at the default value, which it plans for int and bool values only (its PredOut refresh accepts that relink). Absent
+keys of one gap (either key order) and the node's own key written beside a deleted absent key of its gap settle, and a
+node spent at the delete's slot is refused at the master (AuditDS6ChainOneNode.test.ts). The node's own key deleted
+beside a key of its gap written and one key deleted and written settle too, and the deleted key's node relinked at its
+old value is refused (same file).
+
+A write ahead of the delete (the write-first order, a swap-remove pair under one arm, an earlier arm or a cached
+loop's flush) is the delete's swap-remove alias write and settles the same way: it is flagged only where its key
+differs from the delete's, and may then insert. Where the keys meet the node is the delete's, and the write stages
+its value there where the delete may not run after it, so a write arm on one absent key stays refused. A swap-remove
+whose moved key is a state array's last (IterableMapping) keeps the guarded batch. Where the keys meet the alias write
+is no owner and no chain member (the SDK's alias skip); where they differ, a delete that may run beside it (a pair under
+one arm, an earlier arm) chains as above. No test covers that alias pair on one node: the alias tests keep its keys far
+apart.
+
+The three-write body costs 342 B (1391 -> 1733), the delete-then-write body 88 B (597 -> 685); other bodies, the pair's
+included, were byte-identical before the alias path. Alias bodies whose write and delete may run both carry the chained
+delete since (not measured).
+
+Still failing closed: two writes of one key that ran on one node (the runtime alias of `m[i] = v; m[j] = w` with
+`i == j`; plain top-level writes with no delete compose instead, 9b478f894), more than one delete of a batch beside
+its writes, and a deleted node's own key beside an insert where the value kind's default is not empty (the SDK does
+not plan that relink).
+
+**Proposed design:** a runtime alias of two writes settles as the later write alone (its alias row, as the compose
+batch does); deletes past one fold their registers in batch order; the SDK plans the default value of every kind.
+
+**Why deferred:** no tested shape writes one key twice or deletes twice beside its writes.
+
+## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
+
+**What:** a delegated message-bus route binds the proxy's mapping entries and value chunks to the proxy master's lock
+(7d90dd4db), and a routed insert settles (RoutedDelegateProxyRecords.test.ts). Its update case is skipped. Seeding the
+records through a direct delegate fails first: `AutoMarkDelegateFunctions` runs before `SymbolTableTraversal`, where
+a bare `m[k] = v` is still an `ArrayAssignNode`, so a function whose only state writes are bare mapping or array
+writes is never marked delegate and `forward` refuses it. Counting those writes (a00dd2f72 on feat/pcm-anchorscan, not
+merged) gets `forward('seed')` to preflight, where it fails OP_VERIFY at input 2 with no require site (not diagnosed).
+Seeding through a first routed composition instead leaves two CREATE anchors at the proxy's logical address, and a
+second routed composition through that proxy is refused at build ("Logical contract identity ... ambiguous").
+
+**Proposed design:** count bare state writes in the delegate marking once its effect on the delegate variants of
+every contract with bare mapping or array writers is measured; diagnose the direct-delegate chunked write; let a
+routed composition reuse the proxy's anchor instead of minting another.
+
+**Why deferred:** each part changes delegate variants or identity anchoring beyond the merge; the routed insert
+settles.

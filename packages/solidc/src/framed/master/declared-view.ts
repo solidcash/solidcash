@@ -611,7 +611,9 @@ export function declaredRecordsKeptScript(options: DeclaredRecordsKeptOptions): 
       const depth = 12 + 2 * (options.exempt - pair);
       num(2); op(Opcodes.OP_PICK); num(depth); op(Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL); // the pair's input
       num(2); op(Opcodes.OP_PICK); num(depth); op(Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL); // the pair's output
-      op(Opcodes.OP_BOOLOR, Opcodes.OP_BOOLOR);
+      // Both indices must name the exempt pair. Matching only the input let a trailing delete
+      // `{in: D, out: none}` skip the kept check and leave output D compared with nothing.
+      op(Opcodes.OP_BOOLAND, Opcodes.OP_BOOLOR);
     }
     op(Opcodes.OP_IF);
     op(Opcodes.OP_2DROP, Opcodes.OP_2DROP, Opcodes.OP_2DROP);

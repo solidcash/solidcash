@@ -1,4 +1,6 @@
-import { type Type, PrimitiveType, StructType, EnumType } from '@solidcash/utils';
+import {
+  type Type, ArrayType, BytesType, FunctionType, PrimitiveType, StructType, EnumType,
+} from '@solidcash/utils';
 import {
   IdentifierNode,
   FunctionDefinitionNode,
@@ -62,6 +64,8 @@ export type SolidcDiagnosticCode =
   | 'COMPAT_CALL_UNBOUND_ARGUMENTS'
   // A transaction-signature check left in an invoked subroutine, whose covered bytecode no SDK signature matches.
   | 'SIGNATURE_CHECK_IN_SUBROUTINE'
+  // A contract's own code deploys that same contract, so its creation code would have to contain itself.
+  | 'CIRCULAR_CONTRACT_REFERENCE'
   | 'INTERFACE_CONTRACT_BASE'
   | 'SPLIT_CLOSURE_CAPACITY'
   | 'SPLIT_ROOT_CAPACITY'
@@ -181,6 +185,31 @@ export class BlockLayoutUnavailableError extends Error {
   }
 }
 
+/** evmCompat ABI encoding has no word layout for a value of this type yet. */
+export class UnsupportedEvmAbiEncodingError extends Error {
+  constructor(operation: 'abi.encode' | 'abi.encodePacked', type: string, detail = '') {
+    super(`evmCompat ${operation}: unsupported type '${type}'${detail}`);
+    this.name = this.constructor.name;
+  }
+}
+
+/** An external call names a target whose address the covenant cannot pin. */
+export class UnpinnedExternalCallTargetError extends Error {
+  constructor(target: string, functionName: string) {
+    super('external call target address must be a constructor/function parameter or self-pinned state value '
+      + `(target '${target}' in function '${functionName}')`);
+    this.name = this.constructor.name;
+  }
+}
+
+/** A read of logical msg.sender in a function the compiler gave no msg.sender context. */
+export class LogicalSenderUnavailableError extends Error {
+  constructor(functionName: string) {
+    super(`Logical msg.sender context is unavailable while compiling '${functionName}'`);
+    this.name = this.constructor.name;
+  }
+}
+
 /** Code generation lost a compiler-tracked value before a path that still requires it. */
 export class StackVariableUnavailableError extends Error {
   constructor(variable: string, detail = '') {
@@ -194,6 +223,28 @@ export class CompilerRecursionLimitError extends Error {
   constructor() {
     super('Compilation exceeded the recursive traversal limit; simplify deeply nested or recursive type shapes');
     this.name = this.constructor.name;
+  }
+}
+
+// solc TypeError 6480: two or more bases expose one signature and the derived unit does not override it.
+export class AmbiguousOverrideError extends SolidCashError {
+  constructor(node: ContractNode | InterfaceNode, functionName: string) {
+    super(node, `Derived contract must override function "${functionName}". Two or more base classes define `
+      + 'function with same name and parameter types');
+  }
+}
+
+// solc TypeError 7676: the state variables' storage size upper bound reaches 2^256 slots.
+export class ContractStorageTooLargeError extends SolidCashError {
+  constructor(node: ContractNode) {
+    super(node, 'Contract requires too much storage');
+  }
+}
+
+/** A struct contains itself by value (directly, or through fixed-size arrays and other structs), as solc refuses. */
+export class RecursiveStructDefinitionError extends SolidCashError {
+  constructor(node: StructDefinitionNode) {
+    super(node, 'Recursive struct definition');
   }
 }
 
@@ -433,6 +484,67 @@ export class UnequalTypeError extends TypeError {
   }
 }
 
+// solc TypeError 2271: a `.sol` unit applies an operator to operands Solidity does not define it for.
+export class UnsupportedBinaryOperandsError extends SolidCashError {
+  constructor(node: BinaryOpNode, detail = '') {
+    super(node, `Built-in binary operator ${node.operator} cannot be applied to types ${node.left.type} and `
+      + `${node.right.type}.${detail ? ` ${detail}` : ''}`);
+  }
+}
+
+// solc's spelling of a type in a diagnostic; `location` is a reference type's data location suffix.
+export function solidityTypeName(type: Type, location?: string): string {
+  const suffix = location ? ` ${location}` : '';
+  if (type instanceof ArrayType) return `${solidityTypeName(type.elementType)}[${type.bound ?? ''}]${suffix}`;
+  if (type instanceof StructType) return `struct ${type.name}${suffix}`;
+  if (type === PrimitiveType.STRING) return `string${suffix}`;
+  if (type instanceof BytesType && type.bound === undefined) return `bytes${suffix}`;
+  if (type instanceof FunctionType) {
+    const list = (types: Type[]): string => types.map((t) => solidityTypeName(t)).join(',');
+    const mutability = type.stateMutability === 'nonpayable' ? '' : ` ${type.stateMutability}`;
+    const returns = type.returnTypes.length > 0 ? ` returns (${list(type.returnTypes)})` : '';
+    return `function (${list(type.parameterTypes)})${mutability}${type.isExternal ? ' external' : ''}${returns}`;
+  }
+  return type.toString();
+}
+
+// solc's spelling of an exact literal number (`int_const 5`, `rational_const 1 / 10`), long digits abbreviated.
+export function solidityRationalName(numerator: bigint, denominator: bigint): string {
+  let [a, b] = [numerator < 0n ? -numerator : numerator, denominator < 0n ? -denominator : denominator];
+  while (b !== 0n) [a, b] = [b, a % b];
+  const sign = denominator < 0n ? -1n : 1n;
+  const [n, d] = a === 0n ? [numerator, denominator] : [(sign * numerator) / a, (sign * denominator) / a];
+  const readable = (value: bigint): string => {
+    const text = value.toString();
+    return text.length > 32 ? `${text.slice(0, 4)}...(${text.length - 8} digits omitted)...${text.slice(-4)}` : text;
+  };
+  return d === 1n ? `int_const ${readable(n)}` : `rational_const ${readable(n)} / ${readable(d)}`;
+}
+
+// solc's spelling of a string literal: printable ASCII is quoted, anything else is shown as hex.
+export function solidityStringLiteralName(bytes: Uint8Array): string {
+  if (bytes.every((byte) => byte > 0x1f && byte < 0x7f)) {
+    return `literal_string "${Array.from(bytes, (byte) => String.fromCharCode(byte)).join('')}"`;
+  }
+  return `literal_string hex"${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}"`;
+}
+
+// solc TypeError 9574 / 7407: a `.sol` unit binds or assigns a value Solidity does not implicitly convert.
+export class ImplicitConversionError extends SolidCashError {
+  constructor(node: Node, actual: string, expected: string, detail = '') {
+    super(node, `Type ${actual} is not implicitly convertible to expected type ${expected}.`
+      + `${detail ? ` ${detail}` : ''}`);
+  }
+}
+
+// solc TypeError 9553: a `.sol` unit passes an argument Solidity does not implicitly convert to the parameter type.
+export class ArgumentConversionError extends SolidCashError {
+  constructor(node: Node, actual: string, expected: string, detail = '') {
+    super(node, 'Invalid type for argument in function call. Invalid implicit conversion from '
+      + `${actual} to ${expected} requested.${detail ? ` ${detail}` : ''}`);
+  }
+}
+
 export class TernaryTypeMismatchError extends TypeError {
   constructor(node: TernaryOpNode) {
     const ifTrue = node.ifTrue.type;
@@ -577,6 +689,27 @@ export class FunctionTypeNotEncodableError extends SolidCashError {
   }
 }
 
+// A function id an entry point receives is caller-chosen; it must be checkable against the contract's own
+// public/external functions of its type.
+export class UncheckedFunctionIdParameterError extends SolidCashError {
+  constructor(node: Node, name: string, reason: string) {
+    super(node, `Function-pointer parameter '${name}' of an external/public function ${reason}`);
+  }
+}
+
+export class UncheckedFunctionIdValueError extends SolidCashError {
+  constructor(node: Node, source: string, reason: string) {
+    super(node, `Function value from ${source} ${reason}`);
+  }
+}
+
+// solc TypeError 4103: an explicitly public/external library function cannot take or return an internal function.
+export class InternalTypeInPublicFunctionError extends ParseError {
+  constructor(location?: Location) {
+    super('Internal type is not allowed for public or external functions', location);
+  }
+}
+
 export class ConstantModificationError extends SolidCashError {
   constructor(
     node: VariableDefinitionNode | ConstantDefinitionNode,
@@ -597,6 +730,21 @@ export class CalldataModificationError extends SolidCashError {
 export class InvalidDataLocationError extends SolidCashError {
   constructor(node: Node, message: string) {
     super(node, `Invalid data location: ${message}`);
+  }
+}
+
+// solc TypeError 3464.
+export class UninitializedPointerError extends SolidCashError {
+  constructor(node: Node, variable: string, location: string, use: 'accessed' | 'returned') {
+    super(node, `${variable} is of ${location} pointer type and can be ${use} without prior assignment, which would`
+      + ' lead to undefined behaviour');
+  }
+}
+
+// Solidity 0.5+ (solc TypeError 6651): a reference-type parameter, return or local needs an explicit location.
+export class MissingDataLocationError extends ParseError {
+  constructor(allowedLocations: string, declaration: string, location?: Location) {
+    super(`Data location must be ${allowedLocations} for ${declaration}, but none was given`, location);
   }
 }
 
@@ -658,10 +806,12 @@ export class BitshiftBitcountTooLargeError extends SolidCashError {
 
 export class VersionError extends Error {
   constructor(
-    actual: string,
-    constraint: string,
+    readonly actual: string,
+    readonly constraint: string,
+    readonly sourceFile?: string,
   ) {
-    const message = `solidc version ${actual} does not satisfy version constraint ${constraint}`;
+    const provenance = sourceFile ? ` (from pragma in imported file '${sourceFile}')` : '';
+    const message = `solidc version ${actual} does not satisfy version constraint ${constraint}${provenance}`;
     super(message);
 
     this.name = this.constructor.name;
@@ -691,6 +841,20 @@ export class StateVariableNameCollisionError extends ParseError {
     location: Location,
   ) {
     super(`State variable name '${name}' collides with built-in 'this.${name}'`, location);
+  }
+}
+
+/**
+ * A Solidity storage-layout specifier (`contract C layout at <expr>`) that solc rejects. A valid specifier is still
+ * ignored with a warning (state lives in NFT commitments); `rule` is the solc diagnostic the message reproduces.
+ */
+export class StorageLayoutSpecifierError extends ParseError {
+  constructor(
+    public rule: string,
+    message: string,
+    location?: Location,
+  ) {
+    super(`${message} (solc ${rule})`, location);
   }
 }
 
@@ -813,6 +977,17 @@ export class DirectStaleReadError extends SolidCashError {
         + 'read it before the write, or into a local'
       : `a ${update} on \`${entry}\` after its write ${shape} is not supported on the direct convention: `
         + 'update a local and write the entry once');
+  }
+}
+
+/**
+ * A direct body invokes a function that reads a verified-mapping entry after a swap-remove write of its mapping: the
+ * invoked body takes the node the transaction spends, not the value the write left.
+ */
+export class DirectInvokedStaleReadError extends SolidCashError {
+  constructor(public node: Node, entry: string, written: string, callee: string) {
+    super(node, `a read of \`${entry}\` in the invoked function '${callee}' after the write of \`${written}\` is not `
+      + 'supported on the direct convention: read it before the write, or into a local');
   }
 }
 

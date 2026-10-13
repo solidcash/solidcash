@@ -159,6 +159,9 @@ export class ContractNode extends Node implements Named {
   // `transient` state vars (EIP-1153). Kept off `stateVariables` (no persisted UTXO slot) but here so inheritance
   // can merge them; LowerTransientStateVars injects a per-function zero-init local for each after flattening.
   transientStateVars: StateVariableNode[] = [];
+  // Evaluated `layout at <base>` slot (solc 0.8.29 custom storage layout). Shifts the EVM-visible slot of every
+  // persistent state var (inherited ones included), not transient ones. Absent = slot 0.
+  storageLayoutBase?: bigint;
   isAbstract: boolean = false;
   // Set when this contract was lowered from a `library` (docs/library-contracts.md). Surfaced as the artifact
   // `isLibrary` flag; the deployed-library codegen (self-preservation) and SDK co-spend key on it.
@@ -198,9 +201,7 @@ export class ContractNode extends Node implements Named {
   parentInvocations: ParentInvocation[] = [];
   fallbackDef: FunctionDefinitionNode | undefined;
   receiveDef: FunctionDefinitionNode | undefined;
-  // Validation-only provenance for inherited fallback/receive declarations.
-  // These special functions historically are not copied into the flattened BCH
-  // entry points, so retain only override metadata rather than cloning bodies.
+  // Override provenance for inherited fallback/receive declarations (their bodies are copied into the child).
   inheritedSpecialFunctions: Partial<Record<'fallback' | 'receive', {
     origin: string;
     isVirtual: boolean;
@@ -278,6 +279,13 @@ export interface EntryAccessInfo {
   // Message-bus runtime alias canonicalization: this conditional slot is inactive when its complete key equals
   // any earlier slot listed here; the handler invocation uses that earlier slot's journal cache instead.
   runtimeAliasPriorSlots?: number[];
+  // Direct-convention compose-on-alias: earlier fixed batch writes of this collection whose key this write may share
+  // at runtime. It is the alias row (predOut -2) iff its slot hash equals one of theirs; it still runs, reading the
+  // entry's pending value, and the key's last write in source order pins the earliest such slot's output.
+  composeAliasPriorSlots?: number[];
+  // Direct-convention pure sorted read: when its own entry input holds no node of the collection, it proves its key
+  // with this earlier slot's proof input (two slots needing one node). The SDK funds the read's own input.
+  sharedProofPriorSlot?: number;
   // A sorted (vmap) mapping WRITE of an unbounded bytes/string value from a direct function parameter. The entry
   // commitment stores only len ++ sha256(value); the SDK persists the full value as chunks (P5b) using this
   // param's runtime argument. Undefined when the value is a computed expression (chunk persistence guarded off).
@@ -994,6 +1002,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   keccakComputeSites?: string[];
   keccakInLoop?: boolean;       // a keccak256 call is inside a loop -> runtime count exceeds the static count;
   // the SDK should foresee extra side-car strain (deploy more than the syntactic count)
+  /**
+   * keccakInLoop only: the emission index (emitKeccakComputeCall's `i`, pre-order) of each keccak256 call outside
+   * every loop. Each reserves one unbatched fixed keccakSideCar slot with that slotIndex.
+   */
+  keccakFixedSlotIndices?: number[];
   keccakLoopReads?: boolean;    // a stateful dynamic keccak loop reads N trailing side-cars (SDK progressively
   // co-spends N = runtime iteration count into the trailing region [blockSize, ..))
   ecrecoverLoopReads?: boolean; // a dynamic ecrecoverPubKey loop reads one recovery PAIR per iteration from the
@@ -1114,6 +1127,15 @@ export class StateVariableNode extends Node implements Named, Typed {
 export abstract class StatementNode extends Node {
   /** Compiler-generated occurrence counter/guard; only completed route-journal lowering may discharge it. */
   messageBusFixedChunkableWriteGuard?: string;
+  /** Base contract that wrote this statement when its constructor is inlined into a derived one (`super` scope). */
+  baseConstructorOf?: string;
+}
+
+/** A base constructor's own modifiers, expanded with the most-derived (virtual) modifier definitions. */
+export interface PendingConstructorModifiers {
+  invocations: CustomModifierInvocation[];
+  location: Location;
+  qualifiers?: string[];
 }
 
 export class StateAssignNode extends StatementNode {
@@ -1133,6 +1155,14 @@ export class StateAssignNode extends StatementNode {
   accept<T>(visitor: AstVisitor<T>): T {
     return visitor.visitStateAssign(this);
   }
+}
+
+/** Whether a type chain reaches a mapping, through arrays and struct fields. A mapping has no encodable value,
+ * so a mapping-bearing chain can only be addressed as a key path, never stored as one entry value. */
+function chainContainsMapping(type: Type, seen: Set<string> = new Set()): boolean {
+  if (type instanceof MappingType) return true;
+  if (type instanceof ArrayType) return chainContainsMapping(type.elementType, seen);
+  return false;
 }
 
 export class CollectionNode extends Node implements Named {
@@ -1172,8 +1202,18 @@ export class CollectionNode extends Node implements Named {
     const keys: Type[] = [];
     let current: Type = this.type;
     // A mapping whose VALUE is an array stores that array as the entry value blob; its trailing indices are
-    // handled by MappingAccess.arrayIndex / the nested-array RMW lowering, not as collection keys.
+    // handled by MappingAccess.arrayIndex / the nested-array RMW lowering, not as collection keys - unless the
+    // element chain contains a mapping, which has no encodable value, and then the indices DO join the key
+    // space exactly as for an array whose element is a mapping.
     if (current instanceof MappingType) {
+      while (current instanceof MappingType) {
+        keys.push(current.keyType);
+        current = current.valueType;
+      }
+      while (current instanceof ArrayType && chainContainsMapping(current.elementType)) {
+        keys.push(PrimitiveType.BIGINT);
+        current = current.elementType;
+      }
       while (current instanceof MappingType) {
         keys.push(current.keyType);
         current = current.valueType;
@@ -1198,6 +1238,8 @@ export class CollectionNode extends Node implements Named {
   get innermostValueType(): Type {
     let current: Type = this.type;
     if (current instanceof MappingType) {
+      while (current instanceof MappingType) current = current.valueType;
+      while (current instanceof ArrayType && chainContainsMapping(current.elementType)) current = current.elementType;
       while (current instanceof MappingType) current = current.valueType;
       return current;
     }
@@ -1319,6 +1361,10 @@ export class TimeOpNode extends StatementNode {
 
 export class RequireNode extends StatementNode {
   errorDefinition?: ErrorDefinitionNode;
+  // A dynamic string message that may write state. Parse-time only: LowerRequireMessageEffects consumes it.
+  messageExpression?: ExpressionNode;
+  // A bare `return` sealed into `require(false)` (SEM-1). Flow walks still read it as that return.
+  sealedReturn?: boolean;
 
   constructor(
     public expression: ExpressionNode,
@@ -1459,6 +1505,8 @@ export class WhileNode extends StatementNode {
 export class CollectionIterationNode extends StatementNode {
   collection?: CollectionNode;
   collectionIterationIndex: number = -1;
+  /** Bool local set by a lowered `break`. The iteration loop exits once it is true. */
+  breakFlagName?: string;
 
   constructor(
     public mode: CollectionIterationMode,
@@ -1565,6 +1613,8 @@ export class BlockNode extends StatementNode {
   // Scoped blocks are NOT flattened into their parent statement list, so their nested variable scope survives
   // (two sibling blocks may reuse a name; a block local may shadow nothing outside it).
   scoped?: boolean;
+  // An inlined base constructor body still to be wrapped by that constructor's modifiers (modifier expansion).
+  pendingConstructorModifiers?: PendingConstructorModifiers;
 
   constructor(
     public statements?: StatementNode[],
@@ -1809,6 +1859,10 @@ export class CastNode extends ExpressionNode implements Typed {
   // Set when this identity cast came from `T.unwrap(x)`: the runtime target is
   // T's underlying type, but source validation must still require x to be T.
   sourceUdvtUnwrap?: ValueType;
+  // Set by the Yul lowering on a cast to or from the raw 32-byte word a `:=` copies. An integer target is truncated
+  // to its width as two's complement (the EVM cleans the word on use); under evmCompat a bytesN follows the EVM
+  // word layout too (compileEvmWordCast in generation/utils.ts). Native bytesN keeps the checked conversion.
+  evmWord?: boolean;
   constructor(
     public type: Type,
     public expression: ExpressionNode,
@@ -1861,6 +1915,8 @@ export class FunctionCallNode extends ExpressionNode {
   /** Stable first recovery-effect ordinal contributed by this source call within its defining function.
    * A call to a helper contributes the helper's complete formal recovery sequence at this position. */
   recoveryEffectOrdinal?: number;
+  // Lowered from Yul addmod/mulmod: a zero modulus gives 0, as the EVM, instead of failing.
+  yulZeroModulus?: boolean;
 
   constructor(
     public identifier: IdentifierNode,
@@ -1987,9 +2043,19 @@ export class SliceNode extends ExpressionNode {
   }
 }
 
+// Yul builtins that codegen evaluates with EVM semantics over 256-bit words (GenerateTargetTraversal.emitYulWordOp).
+export type YulWordBuiltin =
+  | 'add' | 'sub' | 'mul' | 'div' | 'sdiv' | 'mod' | 'smod' | 'slt' | 'sgt' | 'sar' | 'signextend' | 'shl' | 'shr'
+  | 'exp';
+
 export class BinaryOpNode extends ExpressionNode {
   // Written in source or desugared from it: an integer literal operand takes the bounded operand's type.
   sourceArithmetic?: boolean;
+  // Yul add/sub/mul are 256-bit words and wrap. Checked Solidity arithmetic does not.
+  yulWrapping = false;
+  // Lowered from this Yul builtin: codegen gives it EVM word semantics. The operator is the plain fallback the type
+  // check keeps for a signed operand.
+  yulBuiltin?: YulWordBuiltin;
 
   constructor(
     public left: ExpressionNode,
@@ -2048,6 +2114,9 @@ export class NullaryOpNode extends ExpressionNode {
 }
 
 export class TernaryOpNode extends ExpressionNode {
+  // Written in source: integer literal branches give it their common mobile type (`c ? 63 : 255` is uint8).
+  sourceConditional?: boolean;
+
   constructor(
     public condition: ExpressionNode,
     public ifTrue: ExpressionNode,
@@ -2335,9 +2404,9 @@ export class DecimalLiteralNode extends LiteralNode<string> {
 }
 
 export class StringLiteralNode extends LiteralNode<string> {
-  // Exact byte spelling of a Solidity-compatible ordinary string literal. `\xNN` escapes are raw bytes, so this
-  // can differ from UTF-8 encoding `value` (e.g. "\xff"). Type checking uses it for bytes destinations and to
-  // reject malformed UTF-8 only when the destination is actually string.
+  // Exact bytes of a Solidity-compatible string or unicode literal, `\xNN` escapes as raw bytes. `value` is their
+  // UTF-8 reading when they are valid UTF-8; otherwise (e.g. "\xff") they differ, so byte consumers read this. Type
+  // checking uses it for bytes destinations and to reject malformed UTF-8 only when the destination is string.
   solidityBytes?: Uint8Array;
   solidityInvalidUtf8 = false;
 
@@ -2476,6 +2545,9 @@ export class StringConcatNode extends ExpressionNode {
 }
 
 export class AbiDecodeNode extends ExpressionNode {
+  /** The data comes from the compiler's own encoder, so its words are not re-validated (a split forwarder). */
+  trustedEncoding?: boolean;
+
   constructor(
     public data: ExpressionNode,
     public schema: Type[],
@@ -2788,6 +2860,10 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // Set when this call on a freshly-deployed local was folded into the deploy genesis (no co-spend): the
   // node is inert - skipped by external-call collection and codegen.
   foldedIntoDeploy?: boolean;
+  // The deploy-then-call this node stands for folds to an unconditional failure: the callee's body cannot
+  // complete (it ends in a `revert` on every path), so the statement becomes that failure. Consumed by the
+  // statement visitors, which replace the whole statement with a `revert`.
+  foldedCallReverts?: boolean;
   // EVM-parity expression-form low-level call `(bool, bytes) = addr.call(payload)`: the callee's type/function
   // are unknown at compile time, the return is read as a single opaque bytes blob, identity-bound to addr.
   opaqueReturn?: boolean;
@@ -2797,6 +2873,9 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // An empty-calldata `{value:}` call is a BCH transfer effect, not a selector-bearing graph invocation. The
   // compiler still reconstructs its Solidity `(success, data)` result, but excludes it from callsite metadata.
   rawValueTransferOnly?: boolean;
+  // An option-free empty-calldata call to a constant target that cannot be a P2SH lock: solc's call to an account
+  // without code, so no callee is co-spent and the result is `(true, bytes(""))`. A runtime target keeps its callee.
+  noCodeTarget?: boolean;
   // Set for a same-address varying-method function pointer `f = cond ? c.a : c.b; f(args)`: the RUNTIME selector
   // expression (`cond ? c.a.selector : c.b.selector`). Codegen stashes it into a temp and the covenant asserts
   // the co-spent callee's selector == it (instead of the compile-time witness), binding the co-spent method to
@@ -3101,6 +3180,8 @@ export class MethodCallNode extends ExpressionNode {
 export class EventDefinitionNode extends Node implements Named {
   signature: string = '';
   inheritedFrom?: string;
+  // Set on a library event: it shares SourceFileNode.eventDefinitions with file-level events.
+  declaringLibraryName?: string;
   isAnonymous: boolean = false;
 
   constructor(
@@ -3360,6 +3441,9 @@ export class TypeIntrospectionNode extends ExpressionNode {
   resolvedType?: Type;
   interfaceNode?: InterfaceNode;
   contractName?: string;
+  // Set when the introspected name is a `library`: an inlined library has no deployed artifact, so its creation
+  // code is the empty blob rather than a missing-bytecode error.
+  libraryName?: string;
   precomputedBytes?: Uint8Array;
 
   constructor(
@@ -3562,3 +3646,11 @@ export class ConsoleStatementNode extends Node {
 }
 
 export type ConsoleParameterNode = LiteralNode | IdentifierNode;
+
+/** The exact length of an array type whose bound is past Number.MAX_SAFE_INTEGER (`ArrayType.bound` rounds it). */
+export const exactArrayBounds = new WeakMap<ArrayType, bigint>();
+
+/** A bounded array type's exact length (undefined when unbounded). */
+export function exactArrayLength(type: ArrayType): bigint | undefined {
+  return type.bound === undefined ? undefined : exactArrayBounds.get(type) ?? BigInt(type.bound);
+}

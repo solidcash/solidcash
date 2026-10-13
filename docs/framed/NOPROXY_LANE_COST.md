@@ -457,3 +457,66 @@ nothing until it is measured.
 
 Use the counters before and after any change to the loop, on one title, with `-t '<title>$'`; a full ladder is only
 worth taking once a single title has moved.
+
+---
+
+## 7. One title on both lanes, then the port (2026-10-11)
+
+### The same title, both lanes, at `21409821f`
+
+`take job > take job`, one run per lane, each in its own scratch copy of the worktree with a cold fixture (9 -> 19
+proxied, 22 -> 26 no-proxy), on the same quiet box, with the composer counters, a worker CPU profile, and a trace of
+every broadcast at `MockNetworkProvider.sendRawTransaction` (the only place both lanes broadcast through):
+
+| | proxied (hop) | no-proxy (plain) | ratio |
+|---|---:|---:|---:|
+| title | 70.3 s | 383.1 s | 5.45x |
+| `publishJobPost` composition | 6.9 s | 23.9 s | 3.5x |
+| `takeJob` composition | 47.4 s | 324.6 s | 6.85x |
+| `takeJob` attempts | 62 hop (18 frame derivations) | 92 plain (36 whole, 56 scoped) | |
+| `takeJob` stepped walks / evaluations | 319 / 985 | 1406 / 2242 | |
+
+What this corrects in the sections above:
+
+- **H2 is refuted** on one title: the proxied `takeJob` composes the larger transaction (727 KB, 48 inputs, 66
+  outputs, against 672 KB, 40 and 58). Section 3's size gap compared different titles.
+- **The walks are not the plain loop's per-attempt callee reads.** In the profile, `learnCalleeValue`'s reads are
+  1.2 s of 138.1 s of stepped walks; the rest is `learnComputedValues` inside the derivations, which each attempt runs
+  again, from the root, for every master it passes.
+- **Scoping recovered little.** A derivation that stops at the judged frame cost 1.75 s against 2.15 s for a whole
+  one (-19%): it still runs everything before the frame from the root.
+- Both lanes are VM-bound (77% and 90% of the profile); plans, hosts and the mock node's own checks are negligible.
+
+### The port
+
+The plain path now settles its callee frames through the hop's `settleCallees` (`callInShape`): deepest first, each
+judged from its own subtree against what the frames below it answered, seeded from the call's callee values and read
+back into them. The continuous derivation still learns the entry's own values, and any callee value a settle defers
+or leaves owed. The hooks the plain path sets are opt-in; the proxied `take job` runs with every counter identical
+to before. Two defects made a first version save only 17% (317.2 s):
+
+- the plain plan states its own candidate in a callee's `retval` slot (`calleeRetvalPlaceholder`), which the hop's
+  loop did not recognise, so every returning callee was deferred to the old loop (fixed by `retvalPlaceholder`);
+- a callee that makes calls was left settled once its subtree derived, so a view its body closes after its calls
+  was never read and fell back to a derivation from the root (fixed by `judgeDerivedFrames`).
+
+| `take job`, no-proxy | before | ported |
+|---|---:|---:|
+| title | 383.1 s | 61.1 s |
+| `publishJobPost` / `takeJob` compositions | 23.9 / 324.6 s | 4.9 / 45.3 s |
+| evaluations / stepped walks, whole title | 3047 / 1782 | 1014 / 274 |
+| scoped derivations | 83 | 0 |
+
+The transactions are byte-identical. The proxied `take job`, run beside the ported no-proxy one, took 52.1 s, so the
+no-proxy lane is ~1.2x the proxied one where it was 5.45x. Five more no-proxy titles pass with the port, against the
+no-proxy ladder at `40b437c60` (a loaded box, so indicative): `post thread message > sanity checks` 82.0 s (400.2 s),
+`deliver result` 53.3 s (384.1 s), `approve result` 86.3 s (478.1 s), `refund` 61.1 s (374.6 s), `arbitrate 80-20`
+103.1 s (469.0 s).
+
+### Measuring a lane
+
+- The box varied by 27% between two runs of the proxied title doing identical work (70.3 s, then 51.3 s an hour
+  later): compare lanes measured side by side, and the counters, not one lane across hours.
+- `SOLIDCASH_TX_TRACE` misses the hop's broadcasts (`broadcastHop` sends without `traceBroadcast`), and the composer
+  counters are printed only every 128 plain-path attempts, so a proxied title prints none. A test reads them
+  through `framedComposerCounts()`.

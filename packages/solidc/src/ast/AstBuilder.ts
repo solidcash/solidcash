@@ -1,6 +1,11 @@
 import { ParseTree, ParseTreeVisitor, ParserRuleContext } from 'antlr4';
 import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
+import { parameterTypeToken } from '../semantic/parameterTypeToken.js';
+import { byteElementValue } from '../semantic/byteElementValue.js';
+import { getMaxPushdataEncodedSizeForType } from '../semantic/maxEncodedSize.js';
+import { mayWriteState } from '../semantic/LowerRequireMessageEffects.js';
+import { getFixedWidth, isFixedWidthType } from '../generation/utils.js';
 import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, type Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, implicitlyCastable, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
 import semver from 'semver';
 import {
@@ -116,6 +121,7 @@ import {
   SwitchCaseNode,
   UsingForDirectiveNode,
   type UsingForBinding,
+  exactArrayBounds,
 } from './AST.js';
 import { cloneNode } from './clone.js';
 import { createDefaultValueExpression } from './defaults.js';
@@ -136,11 +142,9 @@ import type {
   BlockContext,
   BlockStatementContext,
   TimeOpStatementContext,
-  ArrayContext,
   LiteralExpressionContext,
   RequireStatementContext,
   PragmaDirectiveContext,
-  InstantiationContext,
   NullaryOpContext,
   UnaryIntrospectionOpContext,
   ConsoleStatementContext,
@@ -217,8 +221,8 @@ import type {
   CallArgumentContext,
   ExpressionListContext,
 } from '../grammar/SolidCashParser.js';
-// Value imports (not type-only): needed for `instanceof` when detecting a tuple-valued ternary.
-import { TernaryOpContext, TupleExpressionContext } from '../grammar/SolidCashParser.js';
+// Value imports (not type-only): `instanceof` for a tuple-valued ternary and an array-literal initializer.
+import { ArrayContext, TernaryOpContext, TupleExpressionContext } from '../grammar/SolidCashParser.js';
 // Imported as values (not `import type`) for runtime `instanceof` in extractLvalue / visitExpressionStatement.
 import {
   ParenthesisedContext, ArrayAccessContext, FieldAccessContext,
@@ -227,10 +231,12 @@ import {
   FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext, LegacyCallOptionCallContext,
   FunctionTypeContext, StructDefinitionContext, GroupedExpressionContext,
   ConstructedExpressionContext, BinaryOpContext, SliceContext, UnaryOpContext,
+  InstantiationContext, IndexedFunctionCallContext, ParenthesizedFunctionCallContext, InstantiationWithOptionsContext,
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
-import { Location, withSourceFile } from './Location.js';
+import { Location, sourceFileOf, withSourceFile } from './Location.js';
 import { buildYulBlock } from './YulAstBuilder.js';
+import { decodeUtf8Exact, stringLiteralBytes } from './stringLiteralBytes.js';
 import { findReservedYulIdentifier, isBchAsmBlock } from './YulAST.js';
 import {
   Modifier,
@@ -238,10 +244,10 @@ import {
   TimeOp,
 } from './Globals.js';
 import { getPragmaName, PragmaName, getVersionOpFromCtx } from './Pragma.js';
-import { version } from '../index.js';
+import { version } from '../version.js';
 import {
-  InvalidArrayBoundError, InvalidDataLocationError, ParseError, StateVariableNameCollisionError,
-  TernaryTypeMismatchError, NestedSelfdestructError,
+  InternalTypeInPublicFunctionError, InvalidArrayBoundError, InvalidDataLocationError, MissingDataLocationError, ParseError,
+  StateVariableNameCollisionError, TernaryTypeMismatchError, NestedSelfdestructError,
   UnsupportedTypeError, VersionError,
 } from '../Errors.js';
 
@@ -253,6 +259,17 @@ const COMPOUND_OPS: Record<string, BinaryOperator> = {
   '&=': BinaryOperator.BIT_AND, '|=': BinaryOperator.BIT_OR, '^=': BinaryOperator.BIT_XOR,
   '<<=': BinaryOperator.SHIFT_LEFT, '>>=': BinaryOperator.SHIFT_RIGHT,
 };
+
+const ANY_DATA_LOCATION = '"storage", "memory" or "calldata"';
+
+// An internal function type anywhere inside `type`, through arrays and struct fields (mappings may be public).
+function containsInternalFunctionType(type: Type, seen = new Set<StructType>()): boolean {
+  if (type instanceof FunctionType) return !type.isExternal;
+  if (type instanceof ArrayType) return containsInternalFunctionType(type.elementType, seen);
+  if (!(type instanceof StructType) || seen.has(type)) return false;
+  seen.add(type);
+  return type.fields.some((field) => containsInternalFunctionType(field.type, seen));
+}
 
 // Arithmetic the source wrote, directly or as a compound/increment: its literal operands take the bounded type.
 function sourceBinaryOp(left: ExpressionNode, operator: BinaryOperator, right: ExpressionNode): BinaryOpNode {
@@ -337,6 +354,33 @@ function isThisState(ctx: ThisExprContext): boolean {
   return ctx.Identifier_list().length === 1 && ctx.expression_list().length === 0 && !ctx.memberName();
 }
 
+const CALLABLE_RULES = new Set([
+  'FunctionDefinitionContext', 'ModifierDefinitionContext', 'ConstructorDefinitionContext',
+  'FreeFunctionDefinitionContext', 'FallbackDefinitionContext', 'ReceiveDefinitionContext',
+]);
+const DECLARED_TYPE_RULES = new Set([
+  'TypeNameContext', 'ArrayTypeContext', 'FunctionArrayTypeContext', 'MappingTypeContext',
+]);
+
+// True when `name` is declared (a type followed by the name: parameter, return or local) anywhere in the callable
+// enclosing `ctx`. Over-approximates scoping: any such declaration may shadow a state variable of that name.
+function declaredInEnclosingCallable(ctx: ParserRuleContext, name: string): boolean {
+  let callable: ParserRuleContext | undefined = ctx;
+  while (callable && !CALLABLE_RULES.has(callable.constructor.name)) callable = callable.parentCtx;
+  const declares = (node: ParseTree): boolean => {
+    if (!(node instanceof ParserRuleContext)) return false;
+    const children = node.children ?? [];
+    if (children.some((child) => child instanceof AnyIdentifierContext && child.getText() === name)
+      && children.some((child) => DECLARED_TYPE_RULES.has(child.constructor.name))) return true;
+    return children.some(declares);
+  };
+  return callable !== undefined && declares(callable);
+}
+
+// BCH 2026 consensus sizes that decide whether a bounded state array is packed or chunk-packed.
+const BOUNDED_ARRAY_COMMITMENT_LIMIT = 128;
+const BOUNDED_ARRAY_STACK_ITEM_LIMIT = 10_000;
+
 export default class AstBuilder
   extends ParseTreeVisitor<Node>
   implements SolidCashVisitor<Node> {
@@ -345,6 +389,16 @@ export default class AstBuilder
   private enumMap: Map<string, EnumType> = new Map();
   // Keep interface/library enum identities qualified when another scope declares the same short enum name.
   private qualifiedEnumMap: Map<string, EnumType> = new Map();
+  // Same-named structs declared in different scopes (`library L { struct S; }` beside
+  // `interface I { struct S; }`) are distinct Solidity types. The bare-name map is last-registration-wins, so
+  // a bare-only lookup rebinds `I.S` to whichever `S` was registered last; the qualified entry keeps each
+  // declaration's own instance reachable.
+  private qualifiedStructMap: Map<string, StructType> = new Map();
+  // Reverse of the qualified struct map: the declaring scope's spelling for a struct type instance, so a
+  // synthesized struct constructor (the read-modify-write rebuild of `s.field = v`) can name the type it
+  // actually means. A bare `S(...)` for a scope-qualified type resolves against the bare-name slot, which may
+  // hold a different scope's same-named struct.
+  private structQualifiedName: Map<StructType, string> = new Map();
   // Library names, so a library-namespaced enum access `L.E.Member` can strip the `L.` to the bare enum.
   private libraryNames: Set<string> = new Set();
   private sourceHasImports = false;
@@ -354,6 +408,10 @@ export default class AstBuilder
   // Contract + interface names, so a contract/interface-namespaced TYPE access `C.T.unwrap` / `I.Enum.Member`
   // strips the `C.`/`I.` to the bare (globally-registered) type, like the library case.
   private contractInterfaceNames: Set<string> = new Set();
+  // Declared member names per contract in this source unit (own functions plus same-file bases). A receiver known
+  // to be contract-typed decides whether a built-in member name (`transfer`, `send`, `split`, ...) is the
+  // receiver type's own member or the built-in, so `(new C()).transfer(x)` must see C's `transfer`.
+  private contractMemberNames: Map<string, Set<string>> = new Map();
   private typeDefMap: Map<string, ValueType> = new Map();
   private pendingParentInvocations: ParentInvocation[] = [];
   private packedStateArrayNames: Set<string> = new Set();
@@ -374,6 +432,16 @@ export default class AstBuilder
   private stateArrayVarTypes: Map<string, ArrayType> = new Map();
   // Entry-NFT state arrays that are represented as CollectionNode rather than packed/chunked StateVariableNode.
   private stateCollectionArrayTypes: Map<string, ArrayType> = new Map();
+  // Dimensions of every unbounded ARRAY collection, keyed by collection name. A sparse entry-NFT collection has
+  // no length cell of its own, so one is synthesized per dimension: the outer dimension is the private scalar
+  // `<name>$len`, and each inner dimension counts per index above it in the companion mapping
+  // `<name>$len$<level>`. See collectionLengthRead / buildCollectionLengthPush.
+  private collectionLengthDepths: Map<string, number> = new Map();
+  // Declarations of collection-model array state vars with an initializer; lowered into the constructor.
+  private collectionInitializers: Map<CollectionNode, StateVariableDeclarationContext> = new Map();
+  // Mappings whose value is an unbounded array whose element chain reaches a mapping: the array a pointer bound
+  // to `m[k]` addresses, whose count is the companion mapping `<name>$len` keyed by the mapping keys.
+  private collectionMappingValueArrays: Set<string> = new Set();
   // State mapping variables -> MappingType, so `using L for mapping(K=>V)` desugars `m.method(args)` to
   // `L.method(m, args)` (m becomes a mapping-storage param, inlined at the call site).
   private mappingStateVarTypes: Map<string, MappingType> = new Map();
@@ -499,6 +567,7 @@ export default class AstBuilder
     private chunkedArrays = true,
     private sourceCode = '',
     private importedFileId?: string,
+    private rootFileId?: string,
   ) {
     super();
     this.sourceContainsSelfdestruct = sourceCode.includes('selfdestruct');
@@ -540,8 +609,48 @@ export default class AstBuilder
   private usesLegacySolidityDefaultFunctionVisibility(): boolean {
     // Unversioned sources retain SolidCash's native implicit-public shorthand. Once a source explicitly selects
     // Solidity, follow its version boundary: visibility became mandatory in Solidity 0.5.
-    return !/pragma\s+solidity\b/.test(this.sourceCode)
-      || /pragma\s+solidity\s+(?:\^|~|=)?\s*0\.[0-4](?:\.|\s|;)/.test(this.sourceCode);
+    return !/pragma\s+solidity\b/.test(this.sourceCode) || this.selectsPreSolidity05();
+  }
+
+  private selectsPreSolidity05(): boolean {
+    return /pragma\s+solidity\s+(?:\^|~|=)?\s*0\.[0-4](?:\.|\s|;)/.test(this.sourceCode);
+  }
+
+  private explicitDataLocationsRequired?: boolean;
+
+  // Data locations became mandatory in Solidity 0.5. Enforced for `.sol` source units unless a pre-0.5 pragma is
+  // selected; string and `.scash` sources (pragma or not) keep SolidCash's implicit location.
+  private requiresExplicitDataLocations(): boolean {
+    this.explicitDataLocationsRequired ??= (this.importedFileId ?? this.rootFileId ?? '').endsWith('.sol')
+      && !this.selectsPreSolidity05();
+    return this.explicitDataLocationsRequired;
+  }
+
+  private requireDataLocation(
+    type: Type, modifiers: string[], allowedLocations: string, declaration: string, location?: Location,
+  ): void {
+    if (!this.requiresExplicitDataLocations()) return;
+    const referenceType = type instanceof ArrayType || type instanceof MappingType || type instanceof StructType
+      || (type instanceof BytesType && type.bound === undefined) || type === PrimitiveType.STRING;
+    if (!referenceType || modifiers.some((modifier) => modifier === Modifier.STORAGE
+      || modifier === Modifier.MEMORY || modifier === Modifier.CALLDATA)) return;
+    throw new MissingDataLocationError(allowedLocations, declaration, location);
+  }
+
+  // Parameters and returns of a function; `storage` is allowed on internal, private, library and free functions.
+  private requireFunctionDataLocations(
+    fn: FunctionDefinitionNode, returnsCtx: ReturnTypeContext | null, storageAllowed: boolean,
+  ): void {
+    if (!this.requiresExplicitDataLocations()) return;
+    const allowed = storageAllowed ? ANY_DATA_LOCATION : '"memory" or "calldata"';
+    const external = fn.modifiers.includes(FunctionModifier.EXTERNAL) ? ' external' : '';
+    for (const parameter of fn.parameters) {
+      this.requireDataLocation(parameter.type, parameter.modifier, allowed, `parameter in${external} function`,
+        parameter.location);
+    }
+    const returnParams = returnsCtx?.returnParam_list() ?? [];
+    fn.returnTypes.forEach((type, i) => this.requireDataLocation(type, fn.returnModifiers[i] ?? [], allowed,
+      'return parameter in function', returnParams[i] ? Location.fromCtx(returnParams[i]) : fn.location));
   }
 
   private validateFunctionTypeModifiers(root: ParseTree): void {
@@ -800,11 +909,38 @@ export default class AstBuilder
     );
     this.fileErrorNames = new Set(errorDefinitions.map((definition) => definition.name));
 
+    // Direct base contract names per contract, for the member-name inheritance closure below.
+    const contractBases = new Map<string, string[]>();
     // Collect contract + interface names before visiting library bodies. A library may use a qualified type from
     // an interface or contract declared elsewhere in the same source unit (`returns (I.Direction)` and
     // `I.Direction.Right`), and reachable library helpers must resolve that qualifier just like contract bodies.
-    for (const cc of ctx.contractDefinition_list()) this.contractInterfaceNames.add(cc.anyIdentifier().getText());
+    for (const cc of ctx.contractDefinition_list()) {
+      const contractName = cc.anyIdentifier().getText();
+      this.contractInterfaceNames.add(contractName);
+      this.contractMemberNames.set(contractName, new Set(
+        cc.functionDefinition_list().map((fn) => fn.functionName().getText()),
+      ));
+      contractBases.set(contractName, cc.inheritanceSpecifier_list()
+        .map((specifier) => specifier.Identifier().getText()));
+    }
     for (const ic of ctx.interfaceDefinition_list()) this.contractInterfaceNames.add(ic.Identifier(0).getText());
+    // A base contract's members are inherited members of the derived contract, so a receiver of the derived
+    // type resolves them the same way.
+    for (const contractName of this.contractMemberNames.keys()) {
+      for (const inherited of [...(contractBases.get(contractName) ?? [])]) {
+        const seen = new Set<string>([contractName]);
+        let pending = [inherited];
+        while (pending.length > 0) {
+          const base = pending.pop()!;
+          if (seen.has(base)) continue;
+          seen.add(base);
+          for (const member of this.contractMemberNames.get(base) ?? []) {
+            this.contractMemberNames.get(contractName)!.add(member);
+          }
+          pending = pending.concat(contractBases.get(base) ?? []);
+        }
+      }
+    }
 
     const interfaceDefinitions = ctx.interfaceDefinition_list().map(
       (i) => this.visitInterfaceDefinition(i),
@@ -862,7 +998,7 @@ export default class AstBuilder
       }
 
       // Library struct definitions
-      this.registerStructDefinitions(libCtx.structDefinition_list(), structDefinitions);
+      this.registerStructDefinitions(libCtx.structDefinition_list(), structDefinitions, libName);
 
       // Library type definitions
       for (const tdCtx of libCtx.typeDefinition_list()) {
@@ -874,6 +1010,7 @@ export default class AstBuilder
       // for `L.E.selector` folds (bare-name registration collides across libraries).
       for (const evCtx of libCtx.eventDefinition_list()) {
         const ev = this.visitEventDefinition(evCtx);
+        ev.declaringLibraryName = libName;
         libraryEventSignatures.set(`${libName}.${ev.name}`, ev.parameters.map((pm) => pm.type.toString()));
         if (ev.isAnonymous) libraryAnonymousEvents.add(`${libName}.${ev.name}`);
         allLibEventDefs.push(ev);
@@ -992,10 +1129,12 @@ export default class AstBuilder
         const dot = name.indexOf('.');
         return dot > 0 && namespaceAliases.has(name.slice(0, dot));
       };
+      // A struct/enum/UDVT parameter is identified by its declaration, not by the bare name its toString()
+      // prints: `a(I.S memory)` and `a(L.S memory)` are distinct overloads even though both render as `S`.
       for (const fn of freeFunctions) {
         functionCounts.set(fn.name, (functionCounts.get(fn.name) ?? 0) + 1);
         const parameterTypes = fn.parameters
-          .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address'))
+          .map((parameter) => parameterTypeToken(parameter.type, true))
           .join(',');
         const signature = `${fn.name}(${parameterTypes})`;
         if (functionSignatures.has(signature)) {
@@ -1459,7 +1598,7 @@ export default class AstBuilder
       const versionToken = constraint.VersionLiteral() ?? constraint.DecimalLiteral();
       const versionConstraint = `${op}${versionToken?.getText() ?? ''}`;
       if (!semver.satisfies(actualVersion, versionConstraint)) {
-        throw new VersionError(actualVersion, versionConstraint);
+        throw new VersionError(actualVersion, versionConstraint, sourceFileOf(Location.fromCtx(ctx)));
       }
     });
   }
@@ -1548,7 +1687,7 @@ export default class AstBuilder
 
     // Collect struct definitions after enums/typedefs (all field types must already be resolvable).
     const structDefinitions: StructDefinitionNode[] = [];
-    this.registerStructDefinitions(ctx.structDefinition_list(), structDefinitions);
+    this.registerStructDefinitions(ctx.structDefinition_list(), structDefinitions, name);
 
     // Contract-level constructor parameters are built AFTER enums/structs/typedefs register so a struct/enum/
     // UDVT-typed parameter (`contract C(Point p)`) resolves to its real type - Solidity parity, a struct is a
@@ -1593,8 +1732,12 @@ export default class AstBuilder
     // Visit state variable declarations and separate into state variables vs collections
     let stateVariables: StateVariableNode[] = [];
     const collections: CollectionNode[] = [];
+    // Source position of each declaration: initializers run in this order (scalars and arrays interleaved).
+    const declarationOrder = new Map<Node, number>();
+    this.collectionInitializers.clear();
     for (const svCtx of ctx.stateVariableDeclaration_list()) {
       const visited = this.visit(svCtx);
+      declarationOrder.set(visited, declarationOrder.size);
       if (visited instanceof CollectionNode) {
         collections.push(visited);
       } else if (visited instanceof ConstantDefinitionNode) {
@@ -1602,6 +1745,61 @@ export default class AstBuilder
       } else {
         stateVariables.push(visited as StateVariableNode);
       }
+    }
+
+    // A sparse entry-NFT collection has no length cell, so an unbounded one (`T[]` whose element is not
+    // chunk-packable - an array of mappings, or a nested array) could offer no `push`/`pop`/`delete`/`.length`.
+    // Give each unbounded ARRAY collection a length authority: the outer dimension a private scalar state var
+    // `<name>$len`, each inner dimension a count per index above it in the companion mapping
+    // `<name>$len$<level>`. Index and element access keep the flat collection, so the element key space and its
+    // encoding are unchanged.
+    this.collectionLengthDepths.clear();
+    this.collectionMappingValueArrays.clear();
+    for (const collection of [...collections]) {
+      if (!(collection.type instanceof ArrayType) || collection.type.bound !== undefined) continue;
+      if (this.isExternalFnPtrTable(collection.type)) continue;
+      const depth = this.arrayDimensions(collection.type);
+      if (depth < 1) continue;
+      this.collectionLengthDepths.set(collection.name, depth);
+      const lengthVar = new StateVariableNode(PrimitiveType.BIGINT, `${collection.name}$len`);
+      lengthVar.visibility = StateVariableVisibility.PRIVATE;
+      lengthVar.location = collection.location;
+      stateVariables.push(lengthVar);
+      for (let level = 1; level < depth; level += 1) {
+        const dimension = this.arrayTypeAtLevel(collection.type, level);
+        if (!dimension || dimension.bound !== undefined) continue; // a bounded dimension folds to its bound
+        // Only the first inner dimension gets an authority: it is a chunk-packed `int` array. A plain entry
+        // mapping would be a SORTED (vmap) collection, and a sorted entry may not be read back after a write
+        // with an expression key - which `b.push(); b[b.length - 1]...` does.
+        if (level !== 1) continue;
+        const authority = new StateVariableNode(new ArrayType(PrimitiveType.BIGINT), `${collection.name}$len$1`);
+        authority.isDynamic = true;
+        authority.visibility = StateVariableVisibility.PRIVATE;
+        authority.location = collection.location;
+        stateVariables.push(authority);
+      }
+    }
+    // A MAPPING whose value is an array of mappings has no entry value either, so an array reached through a
+    // storage pointer bound to `m[k]` counts per mapping key: the companion mapping `<name>$len`.
+    for (const collection of [...collections]) {
+      if (!(collection.type instanceof MappingType)) continue;
+      const keyTypes: Type[] = [];
+      let current: Type = collection.type;
+      while (current instanceof MappingType) { keyTypes.push(current.keyType); current = current.valueType; }
+      if (!(current instanceof ArrayType) || current.bound !== undefined) continue;
+      let element: Type = current.elementType;
+      while (element instanceof ArrayType) element = element.elementType;
+      if (!(element instanceof MappingType)) continue;
+      if (collections.some((other) => other.name === `${collection.name}$len`)) continue;
+      let authorityType: Type = PrimitiveType.BIGINT;
+      for (let key = keyTypes.length - 1; key >= 0; key -= 1) {
+        authorityType = new MappingType(keyTypes[key], authorityType);
+      }
+      const companion = new CollectionNode(authorityType as MappingType, `${collection.name}$len`);
+      companion.visibility = StateVariableVisibility.PRIVATE;
+      companion.location = collection.location;
+      collections.push(companion);
+      this.collectionMappingValueArrays.add(collection.name);
     }
 
     // Flatten state vars of a struct with no single-value representation - a mapping field, or a dynamic
@@ -1835,29 +2033,43 @@ export default class AstBuilder
     }
 
     // Lower inline state-variable initializers `T x = expr;` into constructor assignments `this.x = expr;`,
-    // run at deploy before the user's constructor body. Create a `__construct` if none exists.
-    const initStatements: StatementNode[] = stateVariables
-      .filter((sv) => sv.initializer)
-      .flatMap((sv) => {
-        const markInitializerContext = (node: Node): void => {
-          if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_VALUE) {
-            node.fromStateInitializer = true;
-          }
-          for (const value of Object.values(node)) {
-            if (value instanceof Node) markInitializerContext(value);
-            else if (Array.isArray(value)) {
-              for (const item of value) if (item instanceof Node) markInitializerContext(item);
-            }
-          }
-        };
-        markInitializerContext(sv.initializer!);
-        const assign = new StateAssignNode(sv.name, sv.initializer!);
-        assign.location = sv.location;
-        sv.initializer = undefined;
-        const statements = [...sv.initializerPrelude, assign];
-        sv.initializerPrelude = [];
-        return statements;
-      });
+    // run at deploy in declaration order before the user's constructor body. Create a `__construct` if none exists.
+    const markInitializerContext = (node: Node): void => {
+      if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_VALUE) {
+        node.fromStateInitializer = true;
+      }
+      for (const value of Object.values(node)) {
+        if (value instanceof Node) markInitializerContext(value);
+        else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node) markInitializerContext(item);
+        }
+      }
+    };
+    const stateInitializer = (sv: StateVariableNode): StatementNode[] => {
+      markInitializerContext(sv.initializer!);
+      const assign = new StateAssignNode(sv.name, sv.initializer!);
+      assign.location = sv.location;
+      sv.initializer = undefined;
+      const statements = [...sv.initializerPrelude, assign];
+      sv.initializerPrelude = [];
+      return statements;
+    };
+    const orderOf = (node: Node): number => declarationOrder.get(node) ?? Number.MAX_SAFE_INTEGER;
+    const initStatements: StatementNode[] = [
+      ...stateVariables.filter((sv) => sv.initializer)
+        .map((sv) => ({ order: orderOf(sv), build: (): StatementNode[] => stateInitializer(sv) })),
+      ...collections.filter((collection) => this.collectionInitializers.has(collection))
+        .map((collection) => ({
+          order: orderOf(collection),
+          build: (): StatementNode[] => {
+            const statements = this.buildCollectionInitializer(
+              collection, this.collectionInitializers.get(collection)!,
+            );
+            statements.forEach(markInitializerContext);
+            return statements;
+          },
+        })),
+    ].sort((a, b) => a.order - b.order).flatMap(({ build }) => build());
     if (initStatements.length > 0) {
       if (constructorDef) {
         constructorDef.body.statements = [...initStatements, ...(constructorDef.body.statements ?? [])];
@@ -1906,6 +2118,9 @@ export default class AstBuilder
     this.localArrayVarTypes.clear();
     this.expiredLoopVariableNames.clear();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
+    for (const p of parameters) {
+      this.requireDataLocation(p.type, p.modifier, '"storage" or "memory"', 'constructor parameter', p.location);
+    }
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
       if (p.type instanceof ArrayType) this.localArrayVarTypes.set(p.name, p.type);
@@ -2090,6 +2305,8 @@ export default class AstBuilder
     if (returnTypeCtx) {
       this.applyReturnType(functionDefinition, returnTypeCtx);
     }
+    this.requireFunctionDataLocations(functionDefinition, returnTypeCtx, functionDefinition.modifiers.some(
+      (modifier) => modifier === FunctionModifier.INTERNAL || modifier === FunctionModifier.PRIVATE));
     const externalFunctionReturnIndices = functionDefinition.returnTypes
       .map((type, index) => type instanceof FunctionType && type.isExternal ? index : -1)
       .filter((index) => index >= 0);
@@ -2298,6 +2515,8 @@ export default class AstBuilder
     if (returnTypeCtx) {
       this.applyReturnType(functionDefinition, returnTypeCtx);
     }
+    this.requireFunctionDataLocations(functionDefinition, returnTypeCtx, functionDefinition.modifiers.some(
+      (modifier) => modifier === FunctionModifier.INTERNAL || modifier === FunctionModifier.PRIVATE));
 
     return functionDefinition;
   }
@@ -2382,6 +2601,13 @@ export default class AstBuilder
     const modifierContexts = ctx.functionModifier_list();
     if (modifierContexts && modifierContexts.length > 0) {
       this.parseFunctionModifiers(modifierContexts, functionDefinition);
+      if (this.parsingLibraryFunction && functionDefinition.modifiers.some((modifier) =>
+        modifier === FunctionModifier.PUBLIC || modifier === FunctionModifier.EXTERNAL)) {
+        const internal = functionDefinition.parameters.find((parameter) => containsInternalFunctionType(parameter.type));
+        if (internal || functionDefinition.returnTypes.some((type) => containsInternalFunctionType(type))) {
+          throw new InternalTypeInPublicFunctionError(internal?.location ?? functionDefinition.location);
+        }
+      }
       if (!this.parsingLibraryFunction) {
         const forbidden = functionDefinition.modifiers.find((m) => [
           FunctionModifier.PUBLIC, FunctionModifier.EXTERNAL, FunctionModifier.PRIVATE,
@@ -2412,6 +2638,7 @@ export default class AstBuilder
     if (returnTypeCtx) {
       this.applyReturnType(functionDefinition, returnTypeCtx);
     }
+    this.requireFunctionDataLocations(functionDefinition, returnTypeCtx, true);
     // Record a struct-returning free/library function (the OZ StorageSlot factory is a library function).
     if (functionDefinition.returnTypes?.length === 1 && functionDefinition.returnTypes[0] instanceof StructType) {
       this.functionReturnStructs.set(functionDefinition.name, functionDefinition.returnTypes[0]);
@@ -2434,6 +2661,9 @@ export default class AstBuilder
     const parameters = ctx.parameterList()
       ? ctx.parameterList()!.parameter_list().map((p) => this.visit(p) as ParameterNode)
       : [];
+    for (const p of parameters) {
+      this.requireDataLocation(p.type, p.modifier, ANY_DATA_LOCATION, 'parameter in function', p.location);
+    }
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
       if (p.type instanceof ArrayType) this.localArrayVarTypes.set(p.name, p.type);
@@ -2662,6 +2892,7 @@ export default class AstBuilder
         Location.fromCtx(ctx),
       );
     }
+    this.requireDataLocation(type, modifiers, ANY_DATA_LOCATION, 'variable', Location.fromCtx(ctx));
 
     // `uint x = y = 3;` - the initializer is an assignment chain: run the chain first, then initialize from
     // the first target's value (re-read after its write).
@@ -3034,6 +3265,8 @@ export default class AstBuilder
       return bases.every((b) => !new RegExp(`\\b${b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(text));
     });
     if (!aliasSafe) return null;
+    const ordered = this.desugarComplexTupleInSolcOrder(slots, exprs, bases, loc);
+    if (ordered) return ordered;
     const stmts: StatementNode[] = [];
     slots.forEach((slot, i) => {
       const eCtx = exprs[i];
@@ -3054,6 +3287,201 @@ export default class AstBuilder
       const segs = this.buildTupleSlotSegs(slot);
       stmts.push(this.buildLvalueAssign(base.getText(), false, Location.fromCtx(base), segs, '=', eCtx, loc));
     });
+    const block = new BlockNode(stmts);
+    block.location = loc;
+    return block;
+  }
+
+  // solc's tuple-assignment order: RHS components left to right, then the targets' index keys left to right, then
+  // the stores right to left, so of two aliased targets the leftmost wins. Returns null where sequential
+  // `lv_i = e_i` writes cannot be told apart from that (no effects after the first component or in a key, no key
+  // reading a target, no aliased targets) or a target is not typable at parse time; the sequential form applies.
+  private desugarComplexTupleInSolcOrder(
+    slots: TupleSlotContext[], exprs: ExpressionContext[], bases: string[], loc: Location,
+  ): BlockNode | null {
+    const liveKeys = this.liveTupleKeys(slots);
+    const observable = exprs.some((e, j) => (j > 0 || liveKeys.length > 0) && this.tupleExprHasEffects(e))
+      || liveKeys.some((k) => this.tupleExprHasEffects(k) || this.tupleTextNames(k, bases))
+      || this.tupleSlotsMayAlias(slots);
+    if (!observable) return null;
+    type Store = { kind: 'store', type: Type, segs: LvSeg[], keys: (Type | undefined)[] };
+    type Plan = { kind: 'skip' | 'local' | 'drop' } | Store;
+    const locals = new Set<string>();
+    const plans = slots.map((slot): Plan | null => {
+      if (this.isEmptyTupleSlot(slot)) return { kind: 'skip' };
+      if (/\.push\(\)$/.test(slot.getText())) return null;
+      const name = slot.anyIdentifier(0)!.getText();
+      const segs = this.buildTupleSlotSegs(slot);
+      if (segs.length === 0 && !this.stateVarNames.has(name)) {
+        // A plain local is out of a call's reach: write it in place unless a key or another target reads it. Only
+        // its leftmost occurrence is written (solc stores it last).
+        if (this.storageAliases.has(name) || this.mappingStructStateVars.has(name)
+          || liveKeys.some((k) => this.tupleTextNames(k, [name]))
+          || slots.some((s) => this.isComplexTupleSlot(s) && s.anyIdentifier(0)?.getText() === name)) return null;
+        if (locals.has(name)) return { kind: 'drop' };
+        locals.add(name);
+        return { kind: 'local' };
+      }
+      const { value, keys } = this.tupleTargetTypes(slot, segs);
+      return value && this.tupleKeysTyped(slot, keys) ? { kind: 'store', type: value, segs, keys } : null;
+    });
+    if (plans.some((plan) => plan === null)) return null;
+    const stmts: StatementNode[] = [];
+    const values = slots.map((slot, i): ExpressionNode | undefined => {
+      const plan = plans[i]!;
+      const value = this.visit(exprs[i]) as ExpressionNode;
+      if (plan.kind === 'store') return this.tupleTemp(plan.type, value, stmts, loc);
+      if (plan.kind === 'local') stmts.push(this.plainTupleAssign(slot.anyIdentifier(0)!, value, loc));
+      else {
+        const es = new ExpressionStatementNode(value);
+        es.location = loc;
+        stmts.push(es);
+      }
+      return undefined;
+    });
+    const chains = slots.map((slot, i) => {
+      const plan = plans[i]!;
+      return plan.kind === 'store' ? this.hoistTupleKeys(slot, plan.segs, plan.keys, stmts, loc) : [];
+    });
+    for (let i = slots.length - 1; i >= 0; i -= 1) {
+      if (plans[i]!.kind !== 'store') continue;
+      const base = slots[i].anyIdentifier(0)!;
+      stmts.push(chains[i].length === 0 ? this.plainTupleAssign(base, values[i]!, loc)
+        : this.buildLvalueAssign(base.getText(), false, Location.fromCtx(base), chains[i], '=', undefined, loc, values[i]));
+    }
+    const block = new BlockNode(stmts);
+    block.location = loc;
+    return block;
+  }
+
+  // Whether evaluating a tuple component or index key may have an effect another one could observe: a call, `new`,
+  // `++`/`--` or an embedded assignment. Reads, literals, casts and operators have none.
+  private tupleExprHasEffects(tree: ParseTree): boolean {
+    if (tree instanceof FunctionCallExpressionContext || tree instanceof MethodCallContext
+      || tree instanceof MethodCallNamedContext || tree instanceof LegacyCallOptionCallContext
+      || tree instanceof IndexedFunctionCallContext || tree instanceof ParenthesizedFunctionCallContext
+      || tree instanceof ConstructedExpressionContext || tree instanceof InstantiationWithOptionsContext
+      || tree instanceof AssignmentExpressionContext || tree instanceof PostfixOpContext
+      || tree instanceof PrefixOpContext || (tree instanceof TernaryOpContext && (tree._tOp || tree._fOp))) {
+      return true;
+    }
+    return tree instanceof ParserRuleContext && (tree.children ?? []).some((c) => this.tupleExprHasEffects(c));
+  }
+
+  // Whether the source text of `tree` names any of `names` (whole words; conservative, members match too).
+  private tupleTextNames(tree: ParseTree, names: readonly string[]): boolean {
+    const text = tree.getText();
+    return names.some((n) => new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(text));
+  }
+
+  private tupleKeyLiteral(key: ParseTree): bigint | undefined {
+    const text = key.getText().replace(/_/g, '');
+    return /^(0x[0-9a-fA-F]+|[0-9]+)$/.test(text) ? BigInt(text) : undefined;
+  }
+
+  // The index keys of the tuple's targets that are not number literals, left to right.
+  private liveTupleKeys(slots: TupleSlotContext[]): ExpressionContext[] {
+    return slots.flatMap((s) => (this.isEmptyTupleSlot(s) ? [] : s.expression_list()))
+      .filter((k) => this.tupleKeyLiteral(k) === undefined);
+  }
+
+  // Whether two tuple targets may name one location: the same base (or storage container) and no step telling them
+  // apart (two different members, or two different literal indices).
+  private tupleSlotsMayAlias(slots: TupleSlotContext[]): boolean {
+    const chains = slots.filter((s) => !this.isEmptyTupleSlot(s)).map((s) => {
+      const base = s.anyIdentifier(0)!.getText();
+      const steps = (s.children ?? []).filter((c) => c instanceof AnyIdentifierContext || c instanceof ExpressionContext)
+        .slice(1);
+      return { base, root: this.storageAliases.get(base)?.container ?? base, steps };
+    });
+    const distinct = (x: ParseTree, y: ParseTree): boolean => {
+      if (x instanceof AnyIdentifierContext && y instanceof AnyIdentifierContext) return x.getText() !== y.getText();
+      const [a, b] = [this.tupleKeyLiteral(x), this.tupleKeyLiteral(y)];
+      return x instanceof ExpressionContext && y instanceof ExpressionContext && a !== undefined && b !== undefined
+        && a !== b;
+    };
+    return chains.some((a, i) => chains.slice(i + 1).some((b) => a.root === b.root
+      && (a.base !== b.base || !a.steps.some((step, p) => p < b.steps.length && distinct(step, b.steps[p])))));
+  }
+
+  // Parse-time value type of a tuple target (`a[i]`, `m[k].f`, `s.x`, a plain state var) and the type of each index
+  // key on its chain; a step that cannot be resolved leaves the types after it undefined.
+  private tupleTargetTypes(slot: TupleSlotContext, segs: LvSeg[]): { value?: Type, keys: (Type | undefined)[] } {
+    const base = slot.anyIdentifier(0)!.getText();
+    const index = this.evmCompat ? new IntType(false, 256) : PrimitiveType.BIGINT;
+    let cur: Type | undefined = this.storageAliases.has(base) ? undefined
+      : this.localArrayVarTypes.get(base) ?? this.localStructTypes.get(base) ?? this.mappingStateVarTypes.get(base)
+        ?? this.stateCollectionArrayTypes.get(base) ?? this.stateVarTypes.get(base);
+    const keys: (Type | undefined)[] = [];
+    for (const seg of segs) {
+      if (seg.member !== undefined) {
+        cur = cur instanceof StructType ? cur.fields.find((f) => f.name === seg.member)?.type : undefined;
+        continue;
+      }
+      keys.push(cur instanceof ArrayType ? index : cur instanceof MappingType ? cur.keyType : undefined);
+      cur = cur instanceof ArrayType ? cur.elementType : cur instanceof MappingType ? cur.valueType : undefined;
+    }
+    const value = cur ?? this.resolveTupleSlotType(slot);
+    const plain = value !== undefined
+      && !(value instanceof StructType || value instanceof ArrayType || value instanceof MappingType);
+    return { value: plain ? value : undefined, keys };
+  }
+
+  private tupleKeysTyped(slot: TupleSlotContext, keys: (Type | undefined)[]): boolean {
+    return slot.expression_list().every((k, i) => this.tupleKeyLiteral(k) !== undefined || keys[i] !== undefined);
+  }
+
+  // Evaluate a target's non-literal index keys into temps now (solc evaluates them after the RHS, before any store)
+  // and return its chain reading them back.
+  private hoistTupleKeys(
+    slot: TupleSlotContext, segs: LvSeg[], keys: (Type | undefined)[], stmts: StatementNode[], loc: Location,
+  ): LvSeg[] {
+    const keyCtxs = slot.expression_list();
+    let k = -1;
+    return segs.map((seg) => {
+      if (seg.key === undefined) return seg;
+      k += 1;
+      if (this.tupleKeyLiteral(keyCtxs[k]) !== undefined) return seg;
+      const temp = this.tupleTemp(keys[k]!, this.visit(keyCtxs[k]) as ExpressionNode, stmts, loc);
+      return { key: () => cloneNode(temp) as ExpressionNode };
+    });
+  }
+
+  // Declare `type __ctup_N = value` and return a read of it.
+  private tupleTemp(type: Type, value: ExpressionNode, stmts: StatementNode[], loc: Location): IdentifierNode {
+    const name = `__ctup_${this.nestedLvalueCounter++}`;
+    const def = new VariableDefinitionNode(type, [], name, value);
+    def.location = loc;
+    stmts.push(def);
+    const read = new IdentifierNode(name);
+    read.location = loc;
+    return read;
+  }
+
+  private plainTupleAssign(base: AnyIdentifierContext, value: ExpressionNode, loc: Location): AssignNode {
+    const target = new IdentifierNode(base.getText());
+    target.location = Location.fromCtx(base);
+    const assign = new AssignNode(target, value);
+    assign.location = loc;
+    return assign;
+  }
+
+  // `(x, y, ..) = (a, b, ..)` over state vars in solc's order where sequential writes would differ from it (a
+  // repeated target, or a later component with effects or reading an earlier target): every component into a temp
+  // left to right, then the writes right to left. Null otherwise, or when a target type is not a plain value.
+  private desugarStateTupleInSolcOrder(names: string[], exprs: ExpressionContext[], loc: Location): BlockNode | null {
+    const observable = new Set(names).size < names.length
+      || exprs.some((e, j) => j > 0 && (this.tupleExprHasEffects(e) || this.tupleTextNames(e, names.slice(0, j))));
+    const types = names.map((name) => this.stateVarTypes.get(name));
+    if (!observable || types.some((t) => t === undefined
+      || t instanceof StructType || t instanceof ArrayType || t instanceof MappingType)) return null;
+    const stmts: StatementNode[] = [];
+    const temps = exprs.map((e, i) => this.tupleTemp(types[i]!, this.visit(e) as ExpressionNode, stmts, loc));
+    for (let i = names.length - 1; i >= 0; i -= 1) {
+      const assign = new StateAssignNode(names[i], temps[i]);
+      assign.location = loc;
+      stmts.push(assign);
+    }
     const block = new BlockNode(stmts);
     block.location = loc;
     return block;
@@ -3091,14 +3519,26 @@ export default class AstBuilder
     const tmpNames = slots.map(() => `__ctup_${this.nestedLvalueCounter++}`);
     const declElements = slots.map((s, i) => (this.isEmptyTupleSlot(s)
       ? { skip: true } : { name: tmpNames[i], type: slotTypes[i]! }));
+    // solc evaluates the index keys after the RHS, left to right, then stores right to left (of two aliased targets
+    // the leftmost wins). Keys are hoisted only where their timing is observable and can be typed.
+    const bases = slots.filter((s) => !this.isEmptyTupleSlot(s)).map((s) => s.anyIdentifier(0)!.getText());
+    const keyTypes = this.liveTupleKeys(slots).some((k) => this.tupleExprHasEffects(k) || this.tupleTextNames(k, bases))
+      ? slots.map((s) => (this.isEmptyTupleSlot(s) ? [] : this.tupleTargetTypes(s, this.buildTupleSlotSegs(s)).keys))
+      : undefined;
+    const hoist = keyTypes !== undefined && slots.every((s, i) => this.isEmptyTupleSlot(s)
+      || this.tupleKeysTyped(s, keyTypes[i]));
+    const ordered = hoist || (keyTypes === undefined && this.tupleSlotsMayAlias(slots));
     const decl = new TupleAssignmentNode(declElements, this.visit(exprs[0]) as ExpressionNode, true);
     decl.location = loc;
     const stmts: StatementNode[] = [decl];
+    const writes: StatementNode[] = [];
+    const chains = slots.map((slot, i) => (hoist && !this.isEmptyTupleSlot(slot)
+      ? this.hoistTupleKeys(slot, this.buildTupleSlotSegs(slot), keyTypes![i], stmts, loc) : undefined));
     slots.forEach((slot, i) => {
       if (this.isEmptyTupleSlot(slot)) return;
       const base = slot.anyIdentifier(0)!;
       let rawName = base.getText();
-      let segs = this.buildTupleSlotSegs(slot);
+      let segs = chains[i] ?? this.buildTupleSlotSegs(slot);
       // Expand an indexed storage-pointer base (`T storage t = coll[k]; t.f`): buildLvalueAssign only substitutes
       // whole-var (keys-0) aliases, so route through the container + prepend the alias index (`coll[k].f`).
       const alias = this.storageAliases.get(rawName);
@@ -3108,8 +3548,9 @@ export default class AstBuilder
       }
       const value = new IdentifierNode(tmpNames[i]);
       value.location = loc;
-      stmts.push(this.buildLvalueAssign(rawName, false, Location.fromCtx(base), segs, '=', undefined, loc, value));
+      writes.push(this.buildLvalueAssign(rawName, false, Location.fromCtx(base), segs, '=', undefined, loc, value));
     });
+    stmts.push(...(ordered ? writes.reverse() : writes));
     const block = new BlockNode(stmts);
     block.location = loc;
     return block;
@@ -3334,10 +3775,12 @@ export default class AstBuilder
       return block;
     }
     // `(x, y) = (a, b)` where every target is a state variable: the tuple codegen assigns into stack slots,
-    // which state vars do not have. Desugar to sequential state assigns - clobber-safe because a state read
-    // always reads the input commitment, so a swap `(x, y) = (y, x)` still exchanges correctly.
+    // which state vars do not have. Desugar to sequential state assigns, which match solc unless a target repeats
+    // or a later component has effects or reads an earlier target (a read after a write sees the new value).
     if (exprs.length > 1
       && elements.every((e) => e.existing && e.name !== undefined && this.stateVarNames.has(e.name))) {
+      const ordered = this.desugarStateTupleInSolcOrder(elements.map((e) => e.name!), exprs, Location.fromCtx(ctx));
+      if (ordered) return ordered;
       const stmts: StatementNode[] = elements.map((e, i) => {
         const sa = new StateAssignNode(e.name!, this.visit(exprs[i]) as ExpressionNode);
         sa.location = Location.fromCtx(ctx);
@@ -3369,6 +3812,8 @@ export default class AstBuilder
           assign.location = loc;
           return assign;
         });
+        // solc stores right to left: a repeated target keeps its leftmost value.
+        if (new Set(elements.map((e) => e.name)).size < elements.length) writes.reverse();
         const block = new BlockNode([capture, ...writes]);
         block.location = loc;
         return block;
@@ -3615,10 +4060,24 @@ export default class AstBuilder
     // else: require(cond, <any other expression>) - a dynamic string message (a variable, member access, function
     // call, ternary, string.concat, ...). Solidity treats require as a plain function taking `string memory`; BCH
     // has no dynamic on-chain reason string, so the message is dropped and the require still reverts on false
-    // (same as revert(expression)). The condition still fully covers correctness.
+    // (same as revert(expression)). The condition still fully covers correctness. solc still evaluates the message
+    // after the condition, so one that may write state is kept for LowerRequireMessageEffects.
     const require = new RequireNode(expression, message, errorName, args);
     require.location = Location.fromCtx(ctx);
+    const dynamicMessage = rm && !rm.StringLiteral() && !rm.expressionList() ? rm.expression() : null;
+    if (dynamicMessage) require.messageExpression = this.requireMessageEffect(dynamicMessage);
     return require;
+  }
+
+  // A dynamic require message holding a call or an assignment, else undefined. One that does not build is dropped.
+  private requireMessageEffect(ctx: ExpressionContext): ExpressionNode | undefined {
+    if (!/[(=]|\+\+|--/.test(ctx.getText())) return undefined;
+    try {
+      const expression = this.visit(ctx) as ExpressionNode;
+      return mayWriteState(expression) ? expression : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   visitIfStatement(ctx: IfStatementContext): BranchNode {
@@ -4407,7 +4866,10 @@ export default class AstBuilder
         }
       }
       if (arg instanceof StringLiteralNode) {
-        const lit = new IntLiteralNode(computeErc7201SlotNumber(arg.value));
+        if (arg.solidityInvalidUtf8) {
+          throw new ParseError('erc7201(...) expects a valid UTF-8 string namespace id', Location.fromCtx(ctx));
+        }
+        const lit = new IntLiteralNode(computeErc7201SlotNumber(arg.solidityBytes ?? arg.value));
         lit.location = Location.fromCtx(ctx);
         // Type it as the uint256 slot number (arithmetic/comparison/slot contexts the spec uses).
         const cast = new CastNode(parseType('uint256'), lit, false);
@@ -4435,7 +4897,8 @@ export default class AstBuilder
         at(new FunctionCallNode(at(new IdentifierNode('keccak256')), [value]));
       const innerHash = callKeccak(at(new CastNode(new BytesType(), arg, false)));
       const innerNumber = at(new CastNode(uint256, innerHash, false));
-      const decremented = at(new BinaryOpNode(innerNumber, BinaryOperator.MINUS, at(new IntLiteralNode(1n))));
+      // Source arithmetic, as the spec writes it: `- 1` stays uint256, so bytes32() re-encodes a top-bit-set word.
+      const decremented = at(sourceBinaryOp(innerNumber, BinaryOperator.MINUS, at(new IntLiteralNode(1n))));
       const encodedWord = at(new CastNode(bytes32, decremented, false));
       const encoded = at(new BytesConcatNode([encodedWord]));
       const outerHash = callKeccak(encoded);
@@ -4687,6 +5150,13 @@ export default class AstBuilder
 
   visitUnaryOp(ctx: UnaryOpContext): ExpressionNode {
     const operator = ctx._op.text as UnaryOperator;
+    // `.length` of an unbounded array collection reads its synthesized length authority (see
+    // collectionLengthDepths). Resolved from the RECEIVER context, before the sub-expression is visited, so its
+    // index expressions are visited exactly once.
+    if (operator === UnaryOperator.SIZE) {
+      const lengthRead = this.collectionLengthFromReceiver(ctx.expression(), Location.fromCtx(ctx));
+      if (lengthRead) return lengthRead;
+    }
     let expression = this.visit(ctx.expression());
     if (operator === UnaryOperator.REVERSE && this.isContractMemberCall(ctx.expression(), 'reverse')) {
       return this.buildContractMemberCall(ctx, ctx.expression(), expression as ExpressionNode, 'reverse', []);
@@ -4763,6 +5233,12 @@ export default class AstBuilder
       return receiver.expressionList_list().length === 0 && callee.length === 1 && !call.callOptions()
         && call.expressionList()?.callArgument_list().length === 1 && this.contractInterfaceNames.has(callee[0].getText());
     }
+    if (receiver instanceof InstantiationContext) {
+      // `(new C()).m(..)`: the receiver is a fresh C, a contract-typed value, so `m` is C's own member when C
+      // declares one (`(new C()).transfer(5)` calls C.transfer, not the address built-in). A name C does not
+      // declare keeps the built-in, exactly as an address-typed receiver would.
+      return this.contractMemberNames.get(receiver.Identifier().getText())?.has(name) === true;
+    }
     return receiver instanceof IdentifierContext && this.isContractTypedName(receiver.anyIdentifier().getText());
   }
 
@@ -4803,6 +5279,7 @@ export default class AstBuilder
     const ifFalse = this.visit(ctx._ifFalse);
     const ternary = new TernaryOpNode(condition, ifTrue, ifFalse);
     ternary.location = Location.fromCtx(ctx);
+    ternary.sourceConditional = true;
     if (!this.evmCompat
       && ((ifTrue instanceof IntLiteralNode && ifFalse instanceof HexLiteralNode)
         || (ifFalse instanceof IntLiteralNode && ifTrue instanceof HexLiteralNode))) {
@@ -5001,22 +5478,28 @@ export default class AstBuilder
     }
     const stringValue = parts.join('');
     const stringLiteral = new StringLiteralNode(stringValue, quote);
-    if (this.evmCompat) {
-      stringLiteral.solidityBytes = Uint8Array.from(solidityByteParts.flatMap((bytes) => [...bytes]));
-      try {
-        new TextDecoder('utf-8', { fatal: true }).decode(stringLiteral.solidityBytes);
-      } catch {
-        stringLiteral.solidityInvalidUtf8 = true;
-        stringLiteral.type = new BytesType(stringLiteral.solidityBytes.length);
-      }
+    if (this.evmCompat && !AstBuilder.setSolidityBytes(stringLiteral, solidityByteParts)) {
+      stringLiteral.solidityInvalidUtf8 = true;
+      stringLiteral.type = new BytesType(stringLiteral.solidityBytes!.length);
     }
     stringLiteral.location = location;
     return stringLiteral;
   }
 
+  // Record solc's bytes for a literal and, when they are valid UTF-8, make `value` their reading, so consumers that
+  // UTF-8-encode `value` agree with them (`"\xc3\xa9"` is "\u00e9", not "\u00c3\u00a9"). False on invalid UTF-8.
+  private static setSolidityBytes(literal: StringLiteralNode, parts: readonly Uint8Array[]): boolean {
+    literal.solidityBytes = Uint8Array.from(parts.flatMap((bytes) => [...bytes]));
+    const decoded = decodeUtf8Exact(literal.solidityBytes);
+    if (decoded === undefined) return false;
+    literal.value = decoded;
+    return true;
+  }
+
   createUnicodeLiteral(ctx: LiteralContext): StringLiteralNode {
     const location = Location.fromCtx(ctx);
     let quoteChar = '"';
+    const solidityByteParts: Uint8Array[] = [];
     const stringValue = ctx.UnicodeLiteral_list().map((token) => {
       const rawText = token.getText();
       // rawText is like: unicode"..." or unicode'...'
@@ -5025,9 +5508,18 @@ export default class AstBuilder
       if (this.evmCompat && inner.includes('\ufffd')) {
         throw new ParseError('String literal contains an invalid UTF-8 sequence', location);
       }
-      return this.processEscapes(inner, location);
+      const value = this.processEscapes(inner, location);
+      if (this.evmCompat) {
+        const bytes = stringLiteralBytes(inner);
+        if (bytes === undefined) throw new ParseError('Invalid string escape sequence', location);
+        solidityByteParts.push(bytes);
+      }
+      return value;
     }).join('');
     const stringLiteral = new StringLiteralNode(stringValue, quoteChar);
+    if (this.evmCompat && !AstBuilder.setSolidityBytes(stringLiteral, solidityByteParts)) {
+      throw new ParseError('String literal contains an invalid UTF-8 sequence', location);
+    }
     stringLiteral.location = location;
     return stringLiteral;
   }
@@ -5069,36 +5561,13 @@ export default class AstBuilder
         location,
       );
     }
-    const bytes: number[] = [];
-    const simpleEscapes: Record<string, number> = {
-      n: 0x0a, r: 0x0d, t: 0x09, '\\': 0x5c, '\'': 0x27, '"': 0x22,
-    };
-    for (let i = 0; i < raw.length; i++) {
-      if (raw[i] !== '\\') {
-        bytes.push(raw.charCodeAt(i));
-        continue;
-      }
-      const next = raw[i + 1];
-      if (next === 'x' && /^[0-9a-fA-F]{2}$/.test(raw.slice(i + 2, i + 4))) {
-        bytes.push(parseInt(raw.slice(i + 2, i + 4), 16));
-        i += 3;
-      } else if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(raw.slice(i + 2, i + 6))) {
-        bytes.push(...new TextEncoder().encode(String.fromCodePoint(parseInt(raw.slice(i + 2, i + 6), 16))));
-        i += 5;
-      } else if (next === '\n') {
-        i++;
-      } else if (next === '\r') {
-        i += raw[i + 2] === '\n' ? 2 : 1;
-      } else if (next in simpleEscapes) {
-        bytes.push(simpleEscapes[next]);
-        i++;
-      } else {
-        // processEscapes provides the existing, more specific diagnostic for malformed/unknown escapes.
-        this.processEscapes(raw, location);
-        throw new ParseError('Invalid string escape sequence', location);
-      }
+    const bytes = stringLiteralBytes(raw);
+    if (bytes === undefined) {
+      // processEscapes provides the existing, more specific diagnostic for malformed/unknown escapes.
+      this.processEscapes(raw, location);
+      throw new ParseError('Invalid string escape sequence', location);
     }
-    return Uint8Array.from(bytes);
+    return bytes;
   }
 
   private processEscapes(raw: string, location?: Location): string {
@@ -5157,7 +5626,8 @@ export default class AstBuilder
       throw new ParseError('Date should be in format `YYYY-MM-DDThh:mm:ss`', Location.fromCtx(ctx));
     }
 
-    const timestamp = Math.round(Date.parse(stringValue) / 1000);
+    // Date literals are always in UTC, so we append 'Z' to the string
+    const timestamp = Math.round(Date.parse(`${stringValue}Z`) / 1000);
 
     if (Number.isNaN(timestamp)) {
       throw new ParseError(`Incorrectly formatted date "${stringValue}"`, Location.fromCtx(ctx));
@@ -5393,6 +5863,7 @@ export default class AstBuilder
         node.visibility = visibility;
         node.visibilityExplicit = visibilityExplicit;
         node.immutable = isImmutable;
+        this.readStateVariableInitializer(ctx, node);
         node.location = Location.fromCtx(ctx);
         return markOverride(node);
       }
@@ -5407,6 +5878,7 @@ export default class AstBuilder
         node.visibility = visibility;
         node.visibilityExplicit = visibilityExplicit;
         node.immutable = isImmutable;
+        this.readStateVariableInitializer(ctx, node);
         node.location = Location.fromCtx(ctx);
         return markOverride(node);
       }
@@ -5416,13 +5888,22 @@ export default class AstBuilder
       // field - this backs `arr.length`, whole-array copy/reads, and array-element external calls IFoo(arr[i]).m()
       // over a fixed token set (StableSwap). Native (non-compat) keeps the collection model, which has no bare
       // array reference / `.length`; kept gated because switching to it REMOVES those features. See docs/arrays.md.
+      // A blob too large for one data-NFT commitment chunk-packs instead (same element codegen); it is zero-filled
+      // at genesis so it always holds N elements.
       if (this.evmCompat && arrayT.bound !== undefined && isChunkPackableElementType(arrayT.elementType)) {
         const node = new StateVariableNode(arrayT, name);
-        node.isPacked = true;
+        const chunked = this.chunkedArrays && this.boundedArrayExceedsCommitment(arrayT);
+        if (chunked) node.isDynamic = true;
+        else node.isPacked = true;
         node.visibility = visibility;
         node.visibilityExplicit = visibilityExplicit;
         node.immutable = isImmutable;
+        this.readStateVariableInitializer(ctx, node);
         node.location = Location.fromCtx(ctx);
+        // `__gap` reservations are dropped from evmCompat BCH state (compiler.ts), so they get no zero-fill.
+        if (chunked && !node.initializer && name !== '__gap') {
+          node.initializer = createDefaultValueExpression(arrayT, node.location);
+        }
         return markOverride(node);
       }
 
@@ -5432,6 +5913,8 @@ export default class AstBuilder
       node.visibilityExplicit = visibilityExplicit;
       node.immutable = isImmutable;
       node.location = Location.fromCtx(ctx);
+      // The initializer needs the contract's collection tables; visitContract lowers it (buildCollectionInitializer).
+      if (ctx.expression?.()) this.collectionInitializers.set(node, ctx);
       return markOverride(node);
     }
 
@@ -5502,28 +5985,113 @@ export default class AstBuilder
     node.visibilityExplicit = visibilityExplicit;
     node.immutable = isImmutable;
     node.isTransient = isTransient; // lowered to a per-function local in visitContract
-    const initCtx = ctx.expression?.();
-    if (initCtx) {
-      let qualifiedInitializerRead: StateAccessNode | undefined;
-      if ((ctx as any)._sop) {
-        const loc = Location.fromCtx(ctx);
-        const { links, valueCtx } = this.unrollAssignChain(
-          initCtx, (ctx as any)._sop.text, (ctx as any).assignChain(),
-        );
-        node.initializerPrelude = this.buildAssignChainStatements(links, valueCtx, loc);
-        const outerTarget = this.extractLvalue(initCtx);
-        if (outerTarget && !outerTarget.isThis && outerTarget.segs.length === 1
-          && outerTarget.segs[0].member
-          && (outerTarget.rawName === this.currentContractName
-            || this.currentContractBaseNames.has(outerTarget.rawName))) {
-          qualifiedInitializerRead = new StateAccessNode(outerTarget.segs[0].member);
-          qualifiedInitializerRead.location = loc;
-        }
-      }
-      node.initializer = qualifiedInitializerRead ?? this.visit(initCtx) as ExpressionNode;
-    }
+    this.readStateVariableInitializer(ctx, node);
     node.location = Location.fromCtx(ctx);
     return markOverride(node);
+  }
+
+  // True when a bounded array's packed blob cannot fit one data-NFT commitment (the 128-byte consensus limit) but
+  // its largest value can be reassembled on the stack by a chunk read (10,000-byte stack items). Fixed-width blobs
+  // have an exact size (count push + N * width); others use the layout's estimate. An unresolved element name (an
+  // import placeholder) has no reliable size, so it keeps the packed form.
+  private boundedArrayExceedsCommitment(type: ArrayType): boolean {
+    const unresolved = (t: Type): boolean => (t instanceof ArrayType ? unresolved(t.elementType)
+      : t instanceof AddressType && t.interfaceName !== undefined && !this.contractInterfaceNames.has(t.interfaceName));
+    if (type.bound === undefined || unresolved(type)) return false;
+    const element = type.elementType;
+    const countBytes = type.bound <= 16 ? 1 : 1 + Math.ceil((type.bound.toString(2).length + 1) / 8);
+    const maxBytes = isFixedWidthType(element)
+      ? countBytes + type.bound * getFixedWidth(element)
+      : getMaxPushdataEncodedSizeForType(type);
+    return maxBytes > BOUNDED_ARRAY_COMMITMENT_LIMIT && maxBytes <= BOUNDED_ARRAY_STACK_ITEM_LIMIT;
+  }
+
+  // `T x = expr;` (or a chain `T x = a = expr;`): record the initializer and the chain's prelude on the node.
+  // visitContract lowers them into the constructor, ahead of its body.
+  private readStateVariableInitializer(ctx: StateVariableDeclarationContext, node: StateVariableNode): void {
+    const initCtx = ctx.expression?.();
+    if (!initCtx) return;
+    let qualifiedInitializerRead: StateAccessNode | undefined;
+    if ((ctx as any)._sop) {
+      const loc = Location.fromCtx(ctx);
+      const { links, valueCtx } = this.unrollAssignChain(
+        initCtx, (ctx as any)._sop.text, (ctx as any).assignChain(),
+      );
+      node.initializerPrelude = this.buildAssignChainStatements(links, valueCtx, loc);
+      const outerTarget = this.extractLvalue(initCtx);
+      if (outerTarget && !outerTarget.isThis && outerTarget.segs.length === 1
+        && outerTarget.segs[0].member
+        && (outerTarget.rawName === this.currentContractName
+          || this.currentContractBaseNames.has(outerTarget.rawName))) {
+        qualifiedInitializerRead = new StateAccessNode(outerTarget.segs[0].member);
+        qualifiedInitializerRead.location = loc;
+      }
+    }
+    node.initializer = qualifiedInitializerRead ?? this.visit(initCtx) as ExpressionNode;
+  }
+
+  // Initializer of a collection-model array state var: an array literal becomes element writes `x[i]... = e`
+  // (an unbounded outer dimension also sets its length authority `x$len`); `new T[](n)` sets `x$len = n`. Any
+  // other initializer, or one that sizes an inner dynamic dimension (no settable count), is refused.
+  private buildCollectionInitializer(
+    collection: CollectionNode, ctx: StateVariableDeclarationContext,
+  ): StatementNode[] {
+    const { name } = collection;
+    const type = collection.type as ArrayType;
+    const loc = Location.fromCtx(ctx);
+    const refusal = (reason: string): ParseError => new ParseError(
+      `Initializer of array state variable '${name}' is not supported by its entry-collection storage: ${reason}`,
+      loc,
+    );
+    const literalAt = (value: number): IntLiteralNode => {
+      const node = new IntLiteralNode(BigInt(value));
+      node.location = loc;
+      return node;
+    };
+    const setLength = (length: ExpressionNode): StatementNode => {
+      if (!this.collectionLengthDepths.has(name)) throw refusal('the array has no length authority');
+      const node = new StateAssignNode(this.collectionLengthAuthorityName(name, 0), length);
+      node.location = loc;
+      return node;
+    };
+    if ((ctx as any)._sop) throw refusal('an assignment chain is not supported');
+    const initCtx = ctx.expression()!;
+    const literal = unwrapParens(initCtx);
+    if (!(literal instanceof ArrayContext)) {
+      const value = this.visit(initCtx);
+      if (!(value instanceof NewArrayNode) || type.bound !== undefined) {
+        throw refusal('only an array literal or `new T[](n)` is supported');
+      }
+      if (this.collectionDimensionIsUnbounded(name, 1)) {
+        throw refusal('the lengths of its inner dynamic arrays cannot be initialized');
+      }
+      return [setLength(value.size)];
+    }
+    const statements: StatementNode[] = [];
+    const writeLiteral = (arrayCtx: ArrayContext, keys: ExpressionNode[]): void => {
+      const dimension = this.arrayTypeAtLevel(type, keys.length)!;
+      const elements = arrayCtx.expression_list();
+      if (dimension.bound !== undefined && elements.length > dimension.bound) {
+        throw refusal(`the literal has more than ${dimension.bound} elements`);
+      }
+      if (dimension.bound === undefined) {
+        if (keys.length > 0) throw refusal('an inner dynamic array length cannot be initialized');
+        statements.push(setLength(literalAt(elements.length)));
+      }
+      elements.forEach((elementCtx, index) => {
+        const elementKeys = [...keys.map((key) => cloneNode(key) as ExpressionNode), literalAt(index)];
+        const nested = unwrapParens(elementCtx);
+        if (nested instanceof ArrayContext && dimension.elementType instanceof ArrayType) {
+          writeLiteral(nested, elementKeys);
+          return;
+        }
+        const assign = new MappingAssignNode(name, elementKeys, this.visit(elementCtx) as ExpressionNode);
+        assign.location = loc;
+        statements.push(assign);
+      });
+    };
+    writeLiteral(literal, []);
+    return statements;
   }
 
   visitStateAccess(ctx: ThisExprContext): StateAccessNode {
@@ -5598,8 +6166,14 @@ export default class AstBuilder
     // qualifier before lvalue classification; otherwise the generic member fallback mistakes `C` for a mapping.
     if (!isThis && (rawName === this.currentContractName || this.currentContractBaseNames.has(rawName))
       && segs[0]?.member) {
+      const ownQualifier = rawName === this.currentContractName;
       rawName = segs[0].member;
       segs = segs.slice(1);
+      // `C.x op= v` under a same-named parameter/return/local writes the state variable, as `this.x op= v` does.
+      const stateType = this.stateVarTypes.get(rawName);
+      if (ownQualifier && segs.length === 0 && valueCtx && this.stateVarNames.has(rawName)
+        && !(stateType instanceof ArrayType || stateType instanceof StructType)
+        && declaredInEnclosingCallable(valueCtx, rawName)) isThis = true;
     }
     // Recursively-flattened struct state: collapse leading members that descend through flattened struct
     // fields into the name (`str.nstr.nestedValue` -> rawName `str__nstr`, member `nestedValue`), so the
@@ -5680,6 +6254,8 @@ export default class AstBuilder
           block.location = loc;
           return block;
         }
+        const valueCopied = this.decomposeStructValueToStateWrites(rawName, t, valueCtx, loc);
+        if (valueCopied) return valueCopied;
         const decomposed = this.decomposeStructCtorToStateWrites(rawName, t, valueCtx, loc);
         if (decomposed) return decomposed;
       }
@@ -5930,11 +6506,16 @@ export default class AstBuilder
     // Local struct ARRAY-field element write `s.arr[i] op= v` / nested `s.arr[i][j] op= v` (member then index/es):
     // struct fields have no in-place element write, so read-modify-rebuild via buildLocalStructArrayFieldWrite.
     // A multi-index write lowers the temp element write to a MappingAssign (DesugarNestedArrayWrite handles it).
-    if (!isThis && fieldName && members.length === 1 && keyFns.length >= 1
-      && segs.length === keyFns.length + 1 && segs[0].member !== undefined && this.localStructTypes.has(rawName)) {
-      const field = this.localStructTypes.get(rawName)!.fields.find((f) => f.name === fieldName);
+    if (!isThis && fieldName && members.length >= 1 && keyFns.length >= 1
+      && segs.length === members.length + keyFns.length && segs[0].member !== undefined
+      && segs[members.length]?.key !== undefined && this.localStructTypes.has(rawName)) {
+      // The array field may be a direct field or sit behind a nested field chain (`s.d.y[i]`); chainStructTypes
+      // lists one struct per member, base first, so its last entry declares the array field.
+      const chainTypes = this.chainStructTypes(this.localStructTypes.get(rawName)!, members);
+      const field = chainTypes?.[chainTypes.length - 1]?.fields
+        .find((f) => f.name === members[members.length - 1]);
       if (field && field.type instanceof ArrayType) {
-        return this.buildLocalStructArrayFieldWrite(rawName, fieldName, field.type,
+        return this.buildLocalStructArrayFieldWrite(rawName, members, field.type,
           keyFns, op, valueCtx, loc, valueNode);
       }
     }
@@ -5942,11 +6523,14 @@ export default class AstBuilder
     // STATE-struct ARRAY-field element write `m_x.a[i] op= v`: a whole-value struct state var has no in-place
     // element write - read the struct into a temp, write the element on the temp, write the struct back:
     // `X __t = m_x; __t.a[i] = v; m_x = __t;` (mirrors the mapping-entry roundtrip below).
-    if (!isThis && !isIncDec && fieldName && members.length === 1 && keyFns.length === 1
-      && segs.length === 2 && segs[0].member !== undefined
+    if (!isThis && !isIncDec && fieldName && members.length >= 1 && keyFns.length >= 1
+      && segs.length === members.length + keyFns.length && segs[0].member !== undefined
+      && segs[members.length]?.key !== undefined
       && !this.localStructTypes.has(rawName) && this.stateStructVars.has(rawName)) {
       const structT = this.stateStructVars.get(rawName)!;
-      const field = structT.fields.find((f) => f.name === fieldName);
+      const chainTypes = this.chainStructTypes(structT, members);
+      const field = chainTypes?.[chainTypes.length - 1]?.fields
+        .find((f) => f.name === members[members.length - 1]);
       if (field && field.type instanceof ArrayType) {
         const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
         const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
@@ -5955,8 +6539,8 @@ export default class AstBuilder
         const decl = new VariableDefinitionNode(structT, [], tmpName, stateRead);
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
-        const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
-          [() => keyFns[0]()], op, valueCtx, loc, valueNode);
+        const inner = this.buildLocalStructArrayFieldWrite(tmpName, members, field.type,
+          keyFns.map((fn) => fn), op, valueCtx, loc, valueNode);
         const back = new StateAssignNode(rawName, idAt(tmpName));
         back.location = loc;
         const block = new BlockNode([decl, ...(inner.statements ?? []), back]);
@@ -5964,6 +6548,7 @@ export default class AstBuilder
         return block;
       }
     }
+
 
     // State mapping -> struct -> array-field element write `m[i].arr[j] op= v` (index, member, index): the mapping
     // value struct has no in-place element write, so read the entry struct into a temp, write the array element
@@ -5982,7 +6567,7 @@ export default class AstBuilder
         const decl = new VariableDefinitionNode(structT, [], tmpName, mapRead);
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
-        const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
+        const inner = this.buildLocalStructArrayFieldWrite(tmpName, [fieldName], field.type,
           [() => keyFns[1]()], op, valueCtx, loc, valueNode);
         const back = new MappingAssignNode(rawName, [mapKey()], idAt(tmpName));
         back.location = loc;
@@ -6009,7 +6594,7 @@ export default class AstBuilder
         const decl = new VariableDefinitionNode(structT, [], tmpName, elemRead);
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
-        const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
+        const inner = this.buildLocalStructArrayFieldWrite(tmpName, [fieldName], field.type,
           [() => keyFns[1]()], op, valueCtx, loc, valueNode);
         const back = new ArrayAssignNode(rawName, keyFns[0](), idAt(tmpName));
         back.location = loc;
@@ -6057,7 +6642,7 @@ export default class AstBuilder
         const decl = new VariableDefinitionNode(structT, [], tmpName, mapRead);
         decl.location = loc;
         this.localStructTypes.set(tmpName, structT); // so the array-field write helper resolves the temp's type
-        const inner = this.buildLocalStructArrayFieldWrite(tmpName, fieldName, field.type,
+        const inner = this.buildLocalStructArrayFieldWrite(tmpName, [fieldName], field.type,
           [() => keyFns[0]()], op, valueCtx, loc, valueNode);
         const back = new MappingAssignNode(alias.container, [mapKey()], idAt(tmpName));
         back.location = loc;
@@ -6185,7 +6770,7 @@ export default class AstBuilder
         decl.location = loc;
         this.localStructTypes.set(tmpName, mappingArrayStruct);
         const inner = this.buildLocalStructArrayFieldWrite(
-          tmpName, fieldName!, field.type, [fieldIndex], op, valueCtx, loc, valueNode,
+          tmpName, [fieldName!], field.type, [fieldIndex], op, valueCtx, loc, valueNode,
         );
         const back = new MappingAssignNode(name, mapKeys(), idAt(tmpName));
         back.arrayIndex = outerIndex();
@@ -6346,6 +6931,20 @@ export default class AstBuilder
 
   visitDeleteLocal(ctx: DeleteLocalContext): StatementNode {
     const name = ctx.Identifier().getText();
+    // `delete a` on an unbounded array collection resets the length to zero. The element entries stay (Solc does
+    // not clear a mapping inside an array either); the next push resets the new element's inner counts.
+    if (this.collectionLengthDepths.has(name)) {
+      const loc = Location.fromCtx(ctx);
+      const zero = new IntLiteralNode(0n);
+      zero.location = loc;
+      const reset = new StateAssignNode(this.collectionLengthAuthorityName(name, 0), zero);
+      reset.location = loc;
+      const clear = this.collectionLengthInnerClear(name, loc);
+      if (!clear) return reset;
+      const block = new BlockNode([reset, clear]);
+      block.location = loc;
+      return block;
+    }
     // `delete s` on a flattened struct state var: reset every VALUE leaf to its default. Mapping leaves
     // persist (Solidity: delete does not touch mappings inside structs); array leaves are skipped too
     // (collection-model deletes have their own statement forms).
@@ -6503,7 +7102,13 @@ export default class AstBuilder
         fieldAccess(cloneNode(structExpr) as ExpressionNode, head), this.resolveFieldStruct(t, head)!,
         rest, finalValue, nameLoc, loc,
       );
-    const ctorId = new IdentifierNode(t.name);
+    // Name the type with its declaring scope only when the bare spelling would resolve to a DIFFERENT
+    // declaration (two scopes declaring the same struct name). Otherwise keep the bare name, so the emitted
+    // constructor is spelled exactly as before and no unrelated resolution changes.
+    const qualifiedName = this.structQualifiedName.get(t);
+    const ctorId = new IdentifierNode(
+      qualifiedName !== undefined && this.structMap.get(t.name) !== t ? qualifiedName : t.name,
+    );
     ctorId.location = nameLoc;
     const ctor = new FunctionCallNode(
       ctorId,
@@ -6560,13 +7165,18 @@ export default class AstBuilder
   // block: `T tmp = sv.field; tmp[idx] = value; sv.field = tmp;`. `structVarName` must be registered in
   // localStructTypes. Returned as a block so flattenStatements splices the three statements at the call scope.
   private buildLocalStructArrayFieldWrite(
-    structVarName: string, fieldName: string, arrayFieldType: Type, indexVisits: Array<() => ExpressionNode>,
+    structVarName: string, memberChain: string[], arrayFieldType: Type, indexVisits: Array<() => ExpressionNode>,
     op: string, valueCtx: ExpressionContext | undefined, loc: Location, valueNode?: ExpressionNode,
   ): BlockNode {
     const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
     const tmpName = `__nlv_${this.nestedLvalueCounter++}`;
-    const sField = new FieldAccessNode(idAt(structVarName), fieldName);
-    sField.location = loc;
+    // The array field may sit behind a nested field chain (`s.d.y[i]`), so read the chain, not just one member.
+    let sField: ExpressionNode = idAt(structVarName);
+    for (const member of memberChain) {
+      const fa = new FieldAccessNode(sField, member);
+      fa.location = loc;
+      sField = fa;
+    }
     const decl = new VariableDefinitionNode(arrayFieldType, [], tmpName, sField);
     decl.location = loc;
     // Nested element access `tmp[k0]..[kn]` (one level per key), for both the compound-op read and the write.
@@ -6584,14 +7194,27 @@ export default class AstBuilder
       ? new ArrayAssignNode(tmpName, indexVisits[0](), value)
       : new MappingAssignNode(tmpName, indexVisits.map((iv) => iv()), value);
     elemAssign.location = loc;
-    const rebuild = this.buildStructFieldRebuild(structVarName, loc, [fieldName], false, loc, () => idAt(tmpName))!;
+    const rebuild = this.buildStructFieldRebuild(structVarName, loc, memberChain, false, loc, () => idAt(tmpName))!;
     const block = new BlockNode([decl, elemAssign, rebuild]);
     block.location = loc;
     return block;
   }
 
-  visitDeleteState(ctx: DeleteStateContext): DeleteStateNode {
-    const node = new DeleteStateNode(ctx.Identifier().getText());
+  visitDeleteState(ctx: DeleteStateContext): StatementNode {
+    const name = ctx.Identifier().getText();
+    if (this.collectionLengthDepths.has(name)) {
+      const loc = Location.fromCtx(ctx);
+      const zero = new IntLiteralNode(0n);
+      zero.location = loc;
+      const reset = new StateAssignNode(this.collectionLengthAuthorityName(name, 0), zero);
+      reset.location = loc;
+      const clear = this.collectionLengthInnerClear(name, loc);
+      if (!clear) return reset;
+      const block = new BlockNode([reset, clear]);
+      block.location = loc;
+      return block;
+    }
+    const node = new DeleteStateNode(name);
     node.location = Location.fromCtx(ctx);
     return node;
   }
@@ -6725,8 +7348,12 @@ export default class AstBuilder
       elementType = this.resolveType(elemName) ?? new AddressType(false, elemName);
     }
     const bound = this.resolveArrayBound(ctx);
-    return new ArrayType(elementType, bound);
+    const type = new ArrayType(elementType, bound);
+    if (bound !== undefined && !Number.isSafeInteger(bound)) exactArrayBounds.set(type, this.exactArrayBound!);
+    return type;
   }
+
+  private exactArrayBound?: bigint;
 
   // Resolve an array dimension `[expr]` to a number. The dimension is a compile-time-constant expression: a
   // numeric/hex literal, a named integer constant (`int constant N = 3; T[N]`), or arithmetic over those
@@ -6752,6 +7379,7 @@ export default class AstBuilder
     if (value >= (1n << 256n)) {
       throw new ParseError('Array length too large, maximum is 2**256 - 1', Location.fromCtx(ctx));
     }
+    this.exactArrayBound = value;
     return Number(value);
   }
 
@@ -6897,26 +7525,36 @@ export default class AstBuilder
   // resolution can see forward and self / mutually recursive references (`struct S{T[] x;} struct T{...}`,
   // `struct R{R[] c;}`), then resolve each struct's fields into the pre-registered type in place (same object,
   // so references already handed out observe the filled fields).
-  private registerStructDefinitions(ctxList: StructDefinitionContext[], out: StructDefinitionNode[]): void {
-    this.registerStructNames(ctxList);
-    this.buildStructFields(ctxList, out);
+  private registerStructDefinitions(
+    ctxList: StructDefinitionContext[], out: StructDefinitionNode[], scope?: string,
+  ): void {
+    this.registerStructNames(ctxList, scope);
+    this.buildStructFields(ctxList, out, scope);
   }
 
   // Register struct NAMES (empty placeholders) so a struct's fields can forward-reference a struct declared
   // later. Split from buildStructFields so a caller can register UDVT names in between, letting a field type
   // resolve a user-defined value type declared after the struct (`struct S { U u; } type U is address;`).
-  private registerStructNames(ctxList: StructDefinitionContext[]): void {
+  private registerStructNames(ctxList: StructDefinitionContext[], scope?: string): void {
     for (const sdCtx of ctxList) {
       const name = sdCtx.anyIdentifier().getText();
-      this.structMap.set(name, new StructType(name, []));
+      const type = new StructType(name, []);
+      this.structMap.set(name, type);
+      if (scope !== undefined) {
+        this.qualifiedStructMap.set(`${scope}.${name}`, type);
+        this.structQualifiedName.set(type, `${scope}.${name}`);
+      }
     }
   }
 
-  private buildStructFields(ctxList: StructDefinitionContext[], out: StructDefinitionNode[]): void {
+  private buildStructFields(
+    ctxList: StructDefinitionContext[], out: StructDefinitionNode[], scope?: string,
+  ): void {
     for (const sdCtx of ctxList) {
       const sd = this.visitStructDefinition(sdCtx);
       out.push(sd);
-      this.structMap.get(sd.name)!.fields = sd.fields;
+      const declared = scope !== undefined ? this.qualifiedStructMap.get(`${scope}.${sd.name}`) : undefined;
+      (declared ?? this.structMap.get(sd.name)!).fields = sd.fields;
     }
   }
 
@@ -7101,7 +7739,7 @@ export default class AstBuilder
 
     // Interface-level struct definitions (must be registered before collection type resolution)
     const structDefs: StructDefinitionNode[] = [];
-    this.registerStructDefinitions(ctx.structDefinition_list(), structDefs);
+    this.registerStructDefinitions(ctx.structDefinition_list(), structDefs, ctx.Identifier(0).getText());
 
     // Interface-level type definitions
     const typeDefs: TypeDefinitionNode[] = [];
@@ -7200,10 +7838,14 @@ export default class AstBuilder
     }
 
     // The current contract name may qualify its own state (`C.a`, including `C.a[i]` and `C.a.length`).
-    // This is a scope qualifier, not a struct/member base; reduce it to the ordinary bare state read.
+    // This is a scope qualifier, not a struct/member base; reduce it to the ordinary bare state read. When a
+    // parameter, return or local of the same name could capture that bare read, address the state directly.
     if (expression instanceof IdentifierNode && expression.name === this.currentContractName
       && this.stateVarNames.has(fieldName)) {
-      const state = new IdentifierNode(fieldName);
+      const stateType = this.stateVarTypes.get(fieldName);
+      const shadowed = !(stateType instanceof ArrayType || stateType instanceof StructType)
+        && declaredInEnclosingCallable(ctx, fieldName);
+      const state = shadowed ? new StateAccessNode(fieldName) : new IdentifierNode(fieldName);
       state.location = Location.fromCtx(ctx);
       return state;
     }
@@ -7532,9 +8174,27 @@ export default class AstBuilder
     if (typeText === 'address') return new AddressType(false);
     // Library-qualified type (Solidity `Library.Type`): library types are registered bare, so resolve post-dot.
     if (typeText.includes('.')) {
+      // A qualified name denotes the type declared in THAT scope first: two scopes may declare the same struct
+      // or enum name with different members, and the bare map holds only the last one registered.
+      const scoped = this.qualifiedStructMap.get(typeText) ?? this.qualifiedEnumMap.get(typeText);
+      if (scoped) return scoped;
       const bare = typeText.slice(typeText.lastIndexOf('.') + 1);
       const qualified = this.structMap.get(bare) ?? this.enumMap.get(bare) ?? this.typeDefMap.get(bare);
       if (qualified) return qualified;
+    }
+    // A bare struct name inside a contract that inherits a base declaring the same struct name denotes the
+    // INHERITED declaration: Solidity resolves a name through the contract's own scope and then its bases
+    // before file scope. The bare map is last-registration-wins across all scopes, so consulting it first can
+    // bind `S` inside `contract C is I` to an unrelated library's `S`.
+    // A bare struct name inside a contract that inherits a base declaring the same struct name denotes the
+    // INHERITED declaration: Solidity resolves a name through the contract's own scope and then its bases
+    // before file scope. The bare map is last-registration-wins across all scopes, so consulting it first can
+    // bind `S` inside `contract C is I` to an unrelated library's `S`.
+    if (this.evmCompat && this.currentContractName !== undefined) {
+      for (const scope of [this.currentContractName, ...(this.currentContractBaseNames ?? [])]) {
+        const scoped = this.qualifiedStructMap.get(`${scope}.${typeText}`);
+        if (scoped) return scoped;
+      }
     }
     const structType = this.structMap.get(typeText);
     if (structType) return structType;
@@ -8248,6 +8908,20 @@ export default class AstBuilder
     value: ExpressionNode, noArg: boolean, ctx: ParserRuleContext,
   ): StatementNode {
     const loc = Location.fromCtx(ctx);
+    if (!member) {
+      const lengthTarget = this.collectionLengthTarget(rawName, keyFns);
+      if (lengthTarget) {
+        // An array whose element is a mapping has no element VALUE to append: Solidity refuses `array.push(map)`
+        // ("Storage arrays with nested mappings do not support .push(<arg>)"); only the no-arg form that grows the
+        // length is valid.
+        if (!noArg && this.collectionElementContainsMapping(lengthTarget.name)) {
+          throw new ParseError(
+            'Storage arrays with nested mappings do not support .push(<arg>)', Location.fromCtx(ctx),
+          );
+        }
+        return this.buildCollectionLengthPush(lengthTarget, loc);
+      }
+    }
     if (!member && keyFns.length === 0) this.validateArrayLengthMutation(rawName, isThis, ctx);
     if (!member && keyFns.length >= 1) {
       const node = new MappingAssignNode(rawName, keyFns.map((fn) => fn()), value);
@@ -8290,6 +8964,10 @@ export default class AstBuilder
     ctx: ParserRuleContext,
   ): StatementNode {
     const loc = Location.fromCtx(ctx);
+    if (!member) {
+      const lengthTarget = this.collectionLengthTarget(rawName, keyFns);
+      if (lengthTarget) return this.buildCollectionLengthPop(lengthTarget, loc);
+    }
     if (!member && keyFns.length === 0) this.validateArrayLengthMutation(rawName, isThis, ctx);
     if (!member && keyFns.length >= 1) {
       const placeholder = new IntLiteralNode(0n); placeholder.location = loc;
@@ -8301,6 +8979,245 @@ export default class AstBuilder
     const node = (isThis || this.packedStateArrayNames.has(rawName))
       ? new StateArrayPopNode(rawName) : new ArrayPopNode(rawName);
     node.location = loc; return node;
+  }
+
+  /** Number of array dimensions wrapped around the element type (0 for a non-array type). */
+  private arrayDimensions(type: Type): number {
+    let depth = 0;
+    let current: Type = type;
+    while (current instanceof ArrayType) { depth += 1; current = current.elementType; }
+    return depth;
+  }
+
+  /** The array type of the `level`-th dimension (level 0 is the declared array type itself). */
+  private arrayTypeAtLevel(type: ArrayType, level: number): ArrayType | undefined {
+    let current: Type = type;
+    for (let i = 0; i < level && current instanceof ArrayType; i += 1) current = current.elementType;
+    return current instanceof ArrayType ? current : undefined;
+  }
+
+  /** True when the element type left after every array dimension of a collection array is a mapping. */
+  private collectionElementContainsMapping(name: string): boolean {
+    if (this.collectionMappingValueArrays.has(name)) return true;
+    const type = this.stateCollectionArrayTypes.get(name);
+    if (!type) return false;
+    let current: Type = type;
+    while (current instanceof ArrayType) current = current.elementType;
+    return current instanceof MappingType;
+  }
+
+  /**
+   * An external function-pointer table (`function(..) external[]`) has no collection length authority: the fn-ptr
+   * lowering moves it to chunk-backed `address[]` (+ `bytes[]` selector) state arrays whose own length headers
+   * count it, so its push (value kept), pop, delete and `.length` take the ordinary array forms.
+   */
+  private isExternalFnPtrTable(type: ArrayType): boolean {
+    return type.elementType instanceof FunctionType && type.elementType.isExternal;
+  }
+
+  /** True when dimension `level` of an unbounded collection array is itself an unbounded array dimension. */
+  private collectionDimensionIsUnbounded(name: string, level: number): boolean {
+    const type = this.stateCollectionArrayTypes.get(name);
+    const dimension = type ? this.arrayTypeAtLevel(type, level) : undefined;
+    return dimension !== undefined && dimension.bound === undefined;
+  }
+
+  /** The synthesized name of the length authority for dimension `level` of an unbounded array collection. */
+  private collectionLengthAuthorityName(name: string, level: number): string {
+    return level === 0 ? `${name}$len` : `${name}$len$${level}`;
+  }
+
+  /**
+   * Read the length of the dimension `level` of an unbounded array collection (`level` is the number of array
+   * indices already applied). Returns undefined when the name is not a collection array or when that dimension is
+   * absent or bounded - a bounded dimension folds to its declared bound in SymbolTableTraversal instead.
+   */
+  private collectionLengthRead(
+    name: string, indexKeys: Array<() => ExpressionNode>, loc: Location,
+  ): ExpressionNode | undefined {
+    // An array stored under a mapping key counts per mapping key in the companion mapping `<name>$len`.
+    if (this.collectionMappingValueArrays.has(name)) {
+      const read = new MappingAccessNode(`${name}$len`, indexKeys.map((key) => key()));
+      read.location = loc;
+      return read;
+    }
+    const type = this.stateCollectionArrayTypes.get(name);
+    if (!type || this.isExternalFnPtrTable(type)) return undefined;
+    const level = indexKeys.length;
+    const dimension = this.arrayTypeAtLevel(type, level);
+    if (!dimension || dimension.bound !== undefined) return undefined;
+    const authority = this.collectionLengthAuthorityName(name, level);
+    if (level === 0) {
+      const read = new StateAccessNode(authority);
+      read.location = loc;
+      return read;
+    }
+    // Only the first inner dimension has an authority; a deeper `.length` has none in this model.
+    if (level !== 1) return undefined;
+    const base = new StateAccessNode(authority);
+    base.location = loc;
+    const read = new ArrayAccessNode(base, indexKeys[0]());
+    read.location = loc;
+    return read;
+  }
+
+  /**
+   * `.length` on a parsed receiver: `a`, `a[i]` (an index chain into a collection array), or a storage-pointer
+   * local bound to one (`mapping(K=>V)[] storage b = a[i]; b.length`). Returns undefined for anything else, so
+   * every other `.length` keeps the handling it had.
+   */
+  private collectionLengthFromReceiver(ctx: ExpressionContext, loc: Location): ExpressionNode | undefined {
+    const receiver = this.extractLvalue(ctx);
+    if (!receiver) return undefined;
+    if (receiver.segs.some((seg) => seg.member !== undefined)) return undefined;
+    const keys = receiver.segs.filter((seg) => seg.key !== undefined).map((seg) => seg.key!);
+    const direct = this.collectionLengthRead(receiver.rawName, keys, loc);
+    if (direct) return direct;
+    const alias = this.storageAliases.get(receiver.rawName);
+    if (!alias) return undefined;
+    return this.collectionLengthRead(
+      alias.container, alias.keys.map((key) => (): ExpressionNode => cloneNode(key) as ExpressionNode), loc,
+    );
+  }
+
+  /**
+   * The unbounded collection array and dimension a `push`/`pop` target addresses: the collection itself
+   * (`a.push()`, dimension 0) or a storage-pointer local to one of its elements (`b.push()` where
+   * `b = a[i]`, dimension 1). Undefined for a member (struct-field) target, for a packed/chunked state array,
+   * and for an index chain that reaches past the array dimensions into the element.
+   */
+  private collectionLengthTarget(
+    rawName: string, keyFns: Array<() => ExpressionNode>,
+  ): { name: string; level: number; keys: Array<() => ExpressionNode> } | undefined {
+    const alias = this.storageAliases.get(rawName);
+    const aliased = alias !== undefined && this.stateCollectionArrayTypes.has(alias.container);
+    const mappingAliased = alias !== undefined && this.collectionMappingValueArrays.has(alias.container);
+    const name = aliased ? alias!.container : rawName;
+    const keys: Array<() => ExpressionNode> = aliased
+      ? alias!.keys.map((key) => (): ExpressionNode => cloneNode(key) as ExpressionNode)
+      : keyFns;
+    if (mappingAliased || this.collectionMappingValueArrays.has(name)) {
+      const mappingName = mappingAliased ? alias!.container : name;
+      const mappingKeys: Array<() => ExpressionNode> = mappingAliased
+        ? alias!.keys.map((key) => (): ExpressionNode => cloneNode(key) as ExpressionNode)
+        : keyFns;
+      if (mappingKeys.length === 0) return undefined;
+      return { name: mappingName, level: 0, keys: mappingKeys };
+    }
+    const depth = this.collectionLengthDepths.get(name);
+    if (depth === undefined) return undefined;
+    const level = keys.length;
+    if (level >= depth) return undefined;
+    if (!this.collectionDimensionIsUnbounded(name, level)) return undefined;
+    return { name, level, keys };
+  }
+
+  /** `delete` of an unbounded collection array also drops every inner count it owns (`<name>$len$1`). */
+  private collectionLengthInnerClear(name: string, loc: Location): StatementNode | undefined {
+    if (this.collectionMappingValueArrays.has(name)) return undefined;
+    if (!this.collectionDimensionIsUnbounded(name, 1)) return undefined;
+    const node = new DeleteStateNode(this.collectionLengthAuthorityName(name, 1));
+    node.location = loc;
+    return node;
+  }
+
+  /** The length authority an increment/decrement of `target` writes, plus a read of its current value. */
+  private collectionLengthCell(
+    target: { name: string; level: number; keys: Array<() => ExpressionNode> }, loc: Location,
+  ): { read: () => ExpressionNode; write: (value: ExpressionNode) => StatementNode } {
+    if (this.collectionMappingValueArrays.has(target.name)) {
+      const authority = `${target.name}$len`;
+      return {
+        read: () => {
+          const node = new MappingAccessNode(authority, target.keys.map((key) => key()));
+          node.location = loc;
+          return node;
+        },
+        write: (value) => {
+          const node = new MappingAssignNode(authority, target.keys.map((key) => key()), value);
+          node.location = loc;
+          return node;
+        },
+      };
+    }
+    const authority = this.collectionLengthAuthorityName(target.name, target.level);
+    if (target.level === 0) {
+      return {
+        read: () => { const node = new StateAccessNode(authority); node.location = loc; return node; },
+        write: (value) => { const node = new StateAssignNode(authority, value); node.location = loc; return node; },
+      };
+    }
+    return {
+      read: () => {
+        const base = new StateAccessNode(authority);
+        base.location = loc;
+        const node = new ArrayAccessNode(base, target.keys[0]());
+        node.location = loc;
+        return node;
+      },
+      write: (value) => {
+        const node = new StateArrayAssignNode(authority, target.keys[0](), value);
+        node.location = loc;
+        return node;
+      },
+    };
+  }
+
+  /**
+   * `push()` on an unbounded array collection: raise the dimension's count and reset the next inner dimension's
+   * count at the new index, so the pushed element starts as a fresh empty array (Solidity semantics). The pushed
+   * index is the pre-increment count, held in a local so no cell is read after being written.
+   */
+  private buildCollectionLengthPush(
+    target: { name: string; level: number; keys: Array<() => ExpressionNode> }, loc: Location,
+  ): BlockNode {
+    const cell = this.collectionLengthCell(target, loc);
+    const countName = `__len_${this.nestedLvalueCounter++}`;
+    const readCount = new VariableDefinitionNode(PrimitiveType.BIGINT, [], countName, cell.read());
+    readCount.location = loc;
+    readCount.allowUnused = true;
+    const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
+    const one = new IntLiteralNode(1n);
+    one.location = loc;
+    const bump = cell.write(new BinaryOpNode(idAt(countName), BinaryOperator.PLUS, one));
+    const statements: StatementNode[] = [readCount, bump];
+    const next = target.level + 1;
+    if (!this.collectionMappingValueArrays.has(target.name)
+      && next === 1 && this.collectionDimensionIsUnbounded(target.name, next)) {
+      // The pushed element starts as a fresh empty inner array: reset its count at the index just created.
+      const zero = new IntLiteralNode(0n);
+      zero.location = loc;
+      const clear = new StateArrayAssignNode(
+        this.collectionLengthAuthorityName(target.name, next), idAt(countName), zero,
+      );
+      clear.location = loc;
+      statements.push(clear);
+    }
+    const block = new BlockNode(statements);
+    block.location = loc;
+    return block;
+  }
+
+  /** `pop()` on an unbounded array collection: require a non-empty dimension, then lower its count by one. */
+  private buildCollectionLengthPop(
+    target: { name: string; level: number; keys: Array<() => ExpressionNode> }, loc: Location,
+  ): BlockNode {
+    const cell = this.collectionLengthCell(target, loc);
+    const countName = `__len_${this.nestedLvalueCounter++}`;
+    const readCount = new VariableDefinitionNode(PrimitiveType.BIGINT, [], countName, cell.read());
+    readCount.location = loc;
+    readCount.allowUnused = true;
+    const idAt = (n: string): IdentifierNode => { const i = new IdentifierNode(n); i.location = loc; return i; };
+    const zero = new IntLiteralNode(0n);
+    zero.location = loc;
+    const guard = new RequireNode(new BinaryOpNode(idAt(countName), BinaryOperator.GT, zero));
+    guard.location = loc;
+    const one = new IntLiteralNode(1n);
+    one.location = loc;
+    const drop = cell.write(new BinaryOpNode(idAt(countName), BinaryOperator.MINUS, one));
+    const block = new BlockNode([readCount, guard, drop]);
+    block.location = loc;
+    return block;
   }
 
   private validateArrayLengthMutation(rawName: string, isThis: boolean, ctx: ParserRuleContext): void {
@@ -8493,6 +9410,14 @@ export default class AstBuilder
       if (opText && chain) {
         const { links, valueCtx } = this.unrollAssignChain(exprCtx, opText, chain);
         stmts.push(...this.buildAssignChainStatements(links, valueCtx, loc));
+      } else if (!consume) {
+        // A branch with no assignment TAIL is still an expression the arm must evaluate - `cond ? c = s :
+        // (c = s);` and `cond ? (c = s).f : ..;` carry the assignment inside a parenthesised expression
+        // (`parenExpression`'s AssignmentExpression), and `cond ? f() : c = s;` carries an ordinary call.
+        // Building the arm without it silently dropped that branch's whole effect.
+        const statement = new ExpressionStatementNode(this.visit(exprCtx) as ExpressionNode);
+        statement.location = loc;
+        stmts.push(statement);
       }
       if (consume) stmts.push(consume(exprCtx));
       const b = new BlockNode(stmts);
@@ -8655,6 +9580,88 @@ export default class AstBuilder
     const block = new BlockNode(stmts);
     block.location = loc;
     return block;
+  }
+
+  /**
+   * Whole assign of a struct VALUE - a calldata/memory/local struct of the SAME type (`s = src`) - to a flattened
+   * struct state var. The var has no single-value slot, so this is the value-source mirror of the state-to-state
+   * copy above: the same per-field writes over the flattened leaves, each value read off the source. Fails closed
+   * (returns undefined, so the previous path reports) when the source type differs or a field has no copy form.
+   */
+  private decomposeStructValueToStateWrites(
+    varName: string, t: StructType, valueCtx: ExpressionContext, loc: Location,
+  ): Node | undefined {
+    const rhs = this.extractLvalue(valueCtx);
+    if (rhs === null || rhs.isThis || rhs.segs.length !== 0 || this.mappingStructStateVars.has(rhs.rawName)) {
+      return undefined;
+    }
+    if (this.localStructTypes.get(rhs.rawName) !== t) return undefined;
+    const readBase = (): ExpressionNode => {
+      const id = new IdentifierNode(rhs.rawName);
+      id.location = loc;
+      return id;
+    };
+    const statements = this.flattenedStructCopyWrites(varName, t, readBase, loc);
+    if (!statements) return undefined;
+    const block = new BlockNode(statements);
+    block.location = loc;
+    return block;
+  }
+
+  /** The per-field writes of a flattened struct copy from a source read through `readBase()`. */
+  private flattenedStructCopyWrites(
+    flatPrefix: string, t: StructType, readBase: () => ExpressionNode, loc: Location,
+  ): StatementNode[] | undefined {
+    const statements: StatementNode[] = [];
+    for (const field of t.fields) {
+      if (field.type instanceof MappingType) continue; // a mapping field has no copy form
+      const fieldRead = (): ExpressionNode => {
+        const access = new FieldAccessNode(readBase(), field.name);
+        access.location = loc;
+        return access;
+      };
+      if (field.type instanceof StructType) {
+        if (!this.structNeedsFieldFlattening(field.type)) {
+          const write = new StateAssignNode(`${flatPrefix}__${field.name}`, fieldRead());
+          write.location = loc;
+          statements.push(write);
+          continue;
+        }
+        const nested = this.flattenedStructCopyWrites(`${flatPrefix}__${field.name}`, field.type, fieldRead, loc);
+        if (!nested) return undefined;
+        statements.push(...nested);
+        continue;
+      }
+      if (field.type instanceof ArrayType) {
+        const bound = field.type.bound;
+        const dynamicChunked = bound === undefined && this.chunkedArrays
+          && isChunkPackableElementType(field.type.elementType);
+        if (bound === undefined) {
+          if (!dynamicChunked) return undefined; // an entry-backed dynamic array has no whole-copy form
+          const write = new StateAssignNode(`${flatPrefix}__${field.name}`, fieldRead());
+          write.location = loc;
+          statements.push(write);
+          continue;
+        }
+        for (let index = 0; index < bound; index += 1) {
+          const key = (): IntLiteralNode => {
+            const literal = new IntLiteralNode(BigInt(index));
+            literal.location = loc;
+            return literal;
+          };
+          const read = new ArrayAccessNode(fieldRead(), key());
+          read.location = loc;
+          const write = new MappingAssignNode(`${flatPrefix}__${field.name}`, [key()], read);
+          write.location = loc;
+          statements.push(write);
+        }
+        continue;
+      }
+      const write = new StateAssignNode(`${flatPrefix}__${field.name}`, fieldRead());
+      write.location = loc;
+      statements.push(write);
+    }
+    return statements;
   }
 
   // All `.push` statement forms. Single pushes keep their original construction; chained forms desugar via
@@ -9471,7 +10478,7 @@ export default class AstBuilder
     const suffix = stamp(new SliceNode(read(), iPlus1, len));
     // Compound `op=`: the new byte is the old byte `data[i]` combined with v under the base operator.
     const newByte = op === '='
-      ? value
+      ? byteElementValue(value)
       : stamp(sourceBinaryOp(stamp(new ArrayAccessNode(read(), indexFn())), COMPOUND_OPS[op], value));
     const cat1 = stamp(new BinaryOpNode(prefix, BinaryOperator.PLUS, newByte));
     const cat2 = stamp(new BinaryOpNode(cat1, BinaryOperator.PLUS, suffix));

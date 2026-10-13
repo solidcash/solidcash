@@ -91,6 +91,7 @@ import { createVirtualMachineBch2026ForProvider } from '../../network/createVirt
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { providerUnixLocktime } from '../../stateful/soft-state-overlays.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
+import { requireFramedFunderSighash } from '../sighash.js';
 import { traceBroadcast } from '../../tx-trace.js';
 import {
   deployMaster,
@@ -107,14 +108,16 @@ import {
   type FramedDeploymentSet,
 } from '../deploy/index.js';
 import {
-  chainSharedNodeViews, placeOwnWrites, producedCallResults, reachedCallResults, samePlannedSites, withChainEnds,
-  withCreatedChainEnds, type PlacedLaidWrite,
+  chainSharedNodeViews, placeOwnWrites, producedCallResults, reachedCallResults, samePlannedSites, settleCallees,
+  withChainEnds, withCreatedChainEnds, type PlacedLaidWrite,
 } from '../proxy/deploy.js';
+import { EnclosingValueLearned } from '../proxy/enclosed-values.js';
 import {
   declaredRunWidth, hopEntryWrites, type HopEntryWrites, type LaidHopEntryWrites,
 } from '../proxy/entry-writes.js';
 import { FramedProxyDeployError } from '../proxy/errors.js';
 import { declareUnstatedCalls } from '../proxy/planning-refusal.js';
+import type { EnclosingRoot } from '../proxy/reentry.js';
 import { skippedEmits, type WriteActivationFacts } from '../proxy/write-activation.js';
 import { deploymentActivationFacts } from './activation-facts.js';
 import {
@@ -128,8 +131,10 @@ import {
   FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
 } from './loop-turns.js';
 import {
-  NO_CALLEE_VALUES, FramedCalleeError, calleeFrames, calleeValuesOwed, calleeWrites, deriveThroughFrame,
-  learnCalleeValue, planEntryCallees, scopedCalleeFrame, type CalleeValues, type PlannedCallees,
+  NO_CALLEE_VALUES, FramedCalleeError, calleeFrames, calleeRetvalPlaceholder, calleeSettlementSeed,
+  calleeValuesOfSettlement,
+  calleeValuesOwed, calleeWrites, deriveThroughFrame, learnCalleeValue, planEntryCallees, scopedCalleeFrame,
+  type CalleeValues, type PlannedCallees,
 } from './callees.js';
 import { bumpFramedCounter } from '../composer/counters.js';
 import { deploymentStateValues } from '../proxy/external-calls.js';
@@ -190,6 +195,8 @@ export interface FramedCallOptions {
   readonly callerLockingBytecode: Uint8Array;
   readonly funder: Unlocker;
   readonly changeAddress?: string | Uint8Array;
+  /** When false, the call is derived and judged and nothing is broadcast. `compose()` uses that. */
+  readonly publish?: boolean;
   readonly fee?: bigint;
   readonly vm?: CallMachine;
   readonly validatorProgram?: Uint8Array;
@@ -694,6 +701,7 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
 
 /** Calls an entry on a deployed framed contract, evaluates it, and broadcasts it when every participant agrees. */
 export async function callFramedEntry(options: FramedCallOptions): Promise<FramedCallResult> {
+  requireFramedFunderSighash(options.funder);
   return callInShape(options, { listedSends: undefined, skippedPayees: new Set(), payeeListedSends: new Map() });
 }
 
@@ -786,7 +794,7 @@ async function callInShape(
   }
   const published = publishedEntryOf(artifact, functionName);
 
-  const { framedValidator } = await import('solidc');
+  const { framedValidator } = await import('solidc/runtime');
   const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
   const machine = options.vm ?? createVirtualMachineBch2026ForProvider(provider);
   const category = new Uint8Array(hexToBin(categoryId));
@@ -1796,8 +1804,85 @@ async function callInShape(
     if (answered === undefined) unscopedFrames.add(frameMaster);
     return answered;
   };
+  // The callee frames are settled one frame at a time, as the hop settles its own (`settleCallees`): deepest first,
+  // each frame judged from the derivation of its own subtree against what the frames below it handed back, instead of
+  // the composition being derived again, from the root, for every value one of them hands back. The settle starts
+  // from what the call learned so far, and what it learns is the callee values the rest of this loop reads. A frame
+  // it does not settle - one whose refusal it deferred, or whose budget ran out - still owes its values, which are
+  // learned from the composition as before (`scopedCalleeValue`, `learnCalleeValue`), as they are when a settle
+  // refuses, learns nothing new or leaves a value owed. A value that resets the callee values (a typed call's) is
+  // settled again.
+  let perFrame: 'ready' | 'stalled' | 'unavailable' = 'ready';
+  const learnedCalleeCount = (values: CalleeValues): number => values.retvals.size + (values.writeValues?.size ?? 0)
+    + [...values.views.values(), ...values.events.values()]
+      .reduce((count, known) => count + known.filter((item) => item !== undefined).length, 0);
+  // A callee frame that re-enters the root's own contract starts from what the root wrote before the call that leads
+  // to it, so the root is derived up to that call first (`deriveReentryWriters`).
+  const enclosingRoot = (plan: CompositionDraftPlan): EnclosingRoot | undefined => {
+    const rootMaster = plan.masters.find((candidate) => candidate.master === MASTER_ID);
+    return rootMaster === undefined ? undefined
+      : { request: root, calls: rootMaster.calls, recordCategory: binToHex(category) };
+  };
+  const settleCalleeFrames = async (
+    planned: PlannedCallees,
+  ): Promise<CalleeValues | EnclosingValueLearned | undefined> => {
+    try {
+      const settlement = await settleCallees({
+        vm: machine,
+        artifacts: frameArtifacts,
+        callees: planned.callees,
+        maximumCommitmentBytes,
+        seed: calleeSettlementSeed(planned, calleeValues, maximumCommitmentBytes),
+        // A frame a stopped plan states only the first calls of is never settled on that plan.
+        only: new Set(planned.callees.flatMap((callee, index) => (callee.truncated === true ? [] : [index]))),
+        deferFailures: true,
+        compose: composeCandidate,
+        enclosingRoot,
+        judgeSubtreeViewsOnly: true,
+        returnOnWriteValue: true,
+        retvalPlaceholder: calleeRetvalPlaceholder,
+        judgeDerivedFrames: true,
+        planFor: (retvals, views, writeValues, events) => buildPlan(
+          learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees,
+          { retvals, views, events, ...(writeValues.size === 0 ? {} : { writeValues }) }, learnedTypedValues,
+        ),
+      });
+      return calleeValuesOfSettlement(planned, settlement, maximumCommitmentBytes);
+    } catch (error) {
+      if (error instanceof EnclosingValueLearned) return error;
+      // A frame the settle cannot judge is the composition's to name: it is derived below as it always was.
+      return undefined;
+    }
+  };
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
     bumpFramedCounter('attempts');
+    if (perFrame === 'stalled' && calleeValues === NO_CALLEE_VALUES) perFrame = 'ready';
+    if (calleePlan !== undefined && perFrame === 'ready' && calleeValuesOwed(calleePlan, calleeValues)) {
+      const frames = await settleCalleeFrames(calleePlan);
+      if (frames instanceof EnclosingValueLearned) {
+        // As below: a chunking value a frame's close exposed plans the call again from it, once.
+        if (prior.writeValues.has(frames.master)) {
+          perFrame = 'unavailable';
+        } else {
+          return callInShape(options, shape, {
+            ...prior, writeValues: new Map([...prior.writeValues, [frames.master, frames.value]]),
+          });
+        }
+      } else if (frames === undefined) {
+        perFrame = 'unavailable';
+      } else {
+        const exposed = [...frames.writeValues ?? []].filter(([namedMaster]) => !prior.writeValues.has(namedMaster));
+        if (exposed.length > 0) {
+          return callInShape(options, shape, { ...prior, writeValues: new Map([...prior.writeValues, ...exposed]) });
+        }
+        // A settle that learns nothing new, or leaves a value owed, is not run again before the values are reset: the
+        // frames it could not settle are left to the composition, which a settle seeded the same way would not move.
+        if (learnedCalleeCount(frames) <= learnedCalleeCount(calleeValues) || calleeValuesOwed(calleePlan, frames)) {
+          perFrame = 'stalled';
+        }
+        calleeValues = frames;
+      }
+    }
     const plan = buildPlan(
       learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees, calleeValues,
       learnedTypedValues,
@@ -2202,7 +2287,7 @@ async function callInShape(
   ]);
   // A refused call has no transaction to broadcast: every output and signature would describe a state the entry
   // never computed.
-  const broadcast = accepted ? await broadcastCall({
+  const broadcast = !accepted || options.publish === false ? undefined : await broadcastCall({
     provider,
     callerUtxo: options.callerUtxo,
     callerLockingBytecode: options.callerLockingBytecode,
@@ -2212,7 +2297,7 @@ async function callInShape(
     draft,
     liveUtxos,
     containerInputs,
-  }) : undefined;
+  });
 
   return {
     transaction,
@@ -2266,6 +2351,7 @@ export type FramedValueSendOptions = Omit<FramedCallOptions, 'functionName' | 'a
  * run, and a fallback that is not payable refuses the value, so both are refused by name.
  */
 export async function sendFramedValue(options: FramedValueSendOptions): Promise<FramedCallResult> {
+  requireFramedFunderSighash(options.funder);
   const body = valueEntryOf(options.artifact, 'a value sent to it');
   return callFramedEntry({ ...options, functionName: body.name, args: [] });
 }

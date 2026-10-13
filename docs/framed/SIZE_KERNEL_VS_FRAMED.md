@@ -44,7 +44,7 @@ Per-call deployment UTXOs are 17 to 21 (state records plus the default 12 master
 
 ## Solidity corpus
 
-`examples/solidity-corpus` compiles `/Code/solidity/test/libsolidity/semanticTests` and `syntaxTests`: 5,202 files. Each file was compiled twice with `compileFile`, 8 second timeout, zero timeouts. Direct options are `evmCompat: true`. Per-call adds `composition: 'framed'`. Artifacts are paired by source path and contract name.
+`bench/solidity-corpus` compiles `/Code/solidity/test/libsolidity/semanticTests` and `syntaxTests`: 5,202 files. Each file was compiled twice with `compileFile`, 8 second timeout, zero timeouts. Direct options are `evmCompat: true`. Per-call adds `composition: 'framed'`. Artifacts are paired by source path and contract name.
 
 | | direct | framed |
 |---|---:|---:|

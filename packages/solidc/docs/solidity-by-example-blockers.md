@@ -1,10 +1,10 @@
 # solidity-by-example corpus: compiler blockers
 
 A coverage run of the [solidity-by-example](https://github.com/solidity-by-example/solidity-by-example.github.io)
-corpus (152 standalone contracts under `examples/solidity-by-example/contracts/src/`, all `^0.8.26`, MIT)
+corpus (152 standalone contracts under `bench/solidity-by-example/contracts/src/`, all `^0.8.26`, MIT)
 through `solidc` with `evmCompat`. Goal: surface the blockers to prioritize compiler work.
 
-Re-run: `node examples/solidity-by-example/bench.mjs` (scorecard) then `categorize.mjs` (buckets).
+Re-run: `node bench/solidity-by-example/bench.mjs` (scorecard) then `categorize.mjs` (buckets).
 
 ## Baseline
 

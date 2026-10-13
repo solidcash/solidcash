@@ -204,19 +204,15 @@
           "name": "support.function.opcode.scash"
         },
         {
-          "match": "\\b(?:create2|create|verbatim_[A-Za-z0-9_]*|pc|datasize|dataoffset|datacopy|linkersymbol|byte)\\b(?=\\s*\\()",
+          "match": "\\b(?:create2|create|verbatim[_A-Za-z0-9]*|pc|datasize|dataoffset|datacopy|linkersymbol|callcode|selfdestruct)\\b(?=\\s*\\()",
           "name": "invalid.illegal.unsupported-builtin.scash"
         },
         {
-          "match": "\\bleave\\b",
-          "name": "invalid.illegal.unsupported-builtin.scash"
-        },
-        {
-          "match": "\\b(?:let|function|if|switch|case|default|for|break|continue)\\b",
+          "match": "\\b(?:let|function|if|switch|case|default|for|break|continue|leave)\\b",
           "name": "keyword.control.assembly.scash"
         },
         {
-          "match": "\\b(?:addmod|add|sub|mulmod|mul|div|sdiv|mod|smod|exp|and|or|xor|not|shl|shr|sar|lt|gt|slt|sgt|eq|iszero|mstore8|mstore|mload|keccak256|return|revert|sstore|sload|tstore|tload|caller|callvalue|origin|chainid|number|timestamp|coinbase|difficulty|prevrandao|gasprice|gaslimit|gas|basefee|blobbasefee|balance|selfbalance|extcodesize|extcodehash|address|codesize|calldataload|calldatasize|calldatacopy|returndatasize|returndatacopy|blockhash|log0|log1|log2|log3|log4|staticcall|delegatecall|call|selfdestruct)\\b(?=\\s*\\()",
+          "match": "\\b(?:addmod|add|sub|mulmod|mul|div|sdiv|mod|smod|exp|and|or|xor|not|shl|shr|sar|lt|gt|slt|sgt|eq|iszero|mstore8|mstore|mload|mcopy|msize|keccak256|erc7201|return|revert|sstore|sload|tstore|tload|caller|callvalue|origin|chainid|number|timestamp|coinbase|difficulty|prevrandao|gasprice|gaslimit|gas|basefee|blobbasefee|balance|selfbalance|extcodesize|extcodehash|address|codesize|codecopy|extcodecopy|calldataload|calldatasize|calldatacopy|returndatasize|returndatacopy|blockhash|blobhash|log0|log1|log2|log3|log4|staticcall|delegatecall|call|byte|signextend|pop|stop|invalid|clz)\\b(?=\\s*\\()",
           "name": "support.function.builtin.assembly.scash"
         },
         {
@@ -368,6 +364,14 @@
           "name": "keyword.control.import.scash"
         },
         {
+          "match": "\\b_\\b",
+          "name": "keyword.control.placeholder.scash"
+        },
+        {
+          "match": "\\b(type)\\b(?=\\s*\\()",
+          "name": "storage.type.declaration.scash"
+        },
+        {
           "match": "\\b(from|as|using|for|is|global)\\b",
           "name": "keyword.other.declaration.scash"
         }
@@ -390,13 +394,13 @@
       ]
     },
     "storage": {
-      "match": "\\b(?:public|private|internal|external|pure|view|payable|constant|immutable|transient|memory|storage|calldata|indexed|anonymous|abstract|virtual|override|enumerable|packed|upgrade|selfdestruct|split|merge|unsafe)\\b",
+      "match": "\\b(?:public|private|internal|external|pure|view|payable|constant|immutable|transient|memory|storage|calldata|indexed|anonymous|abstract|virtual|override|enumerable|packed|upgrade|selfdestruct|deploy|split|merge|unsafe|delegate)\\b",
       "name": "storage.modifier.scash"
     },
     "control": {
       "patterns": [
         {
-          "match": "\\b(?:if|else|for|while|do|switch|case|default|break|continue|try|catch|return|returns|revert|throw|require|assert|emit|delete|unchecked|new)\\b",
+          "match": "\\b(?:if|else|for|while|do|switch|case|default|break|continue|try|catch|return|returns|revert|throw|require|assert|emit|delete|unchecked|new|of|in|now)\\b",
           "name": "keyword.control.scash"
         }
       ]

@@ -20,11 +20,20 @@ const CONTEXT = '__internal__msgSig';
  * Overloaded pre-semantic targets remain untouched rather than being guessed by name.
  */
 export default class LowerInternalMsgSigContext extends AstTraversal {
+  /** Names a call in this contract reaches, so their invoked bodies read the calling entry's selector. */
+  private invoked = new Set<string>();
+
   /**
    * @param forwardsCallerSelector an entry passes its own msg.sig rather than its selector, so its framed
    * subroutine, reached by an internal call, passes on the selector its caller gave it.
+   * @param forwardsInvokedSelector the same for an entry an internal call reaches: its invoked body passes on the
+   * selector its caller gave it.
    */
-  constructor(private readonly forwardsCallerSelector = false, private readonly evmCompat = false) {
+  constructor(
+    private readonly forwardsCallerSelector = false,
+    private readonly evmCompat = false,
+    private readonly forwardsInvokedSelector = false,
+  ) {
     super();
   }
 
@@ -55,6 +64,15 @@ export default class LowerInternalMsgSigContext extends AstTraversal {
       }
     }
     if (tainted.size === 0) return node;
+
+    this.invoked = new Set();
+    if (this.forwardsInvokedSelector) {
+      for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]) {
+        this.walk(fn?.body, (call) => {
+          if (call instanceof FunctionCallNode && !call.fromThisCall) this.invoked.add(call.identifier.name);
+        });
+      }
+    }
 
     for (const name of tainted) {
       const fn = unique.get(name)!;
@@ -100,7 +118,8 @@ export default class LowerInternalMsgSigContext extends AstTraversal {
     if (node instanceof FunctionCallNode && tainted.has(node.identifier.name)
       && unique.has(node.identifier.name)) {
       const value = tainted.has(caller.name) ? new IdentifierNode(CONTEXT)
-        : this.forwardsCallerSelector ? new NullaryOpNode(NullaryOperator.MSG_SIG) : this.selector(caller, node);
+        : this.forwardsCallerSelector || this.invoked.has(caller.name)
+          ? new NullaryOpNode(NullaryOperator.MSG_SIG) : this.selector(caller, node);
       value.location = node.location;
       node.parameters.push(value);
     }

@@ -10,7 +10,7 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
-import { createDataNftUnlocker } from './covenant-helpers.js';
+import { createDataNftUnlocker, directConventionMasterLock } from './covenant-helpers.js';
 import type { EntryNftInfo, ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { shouldKeepPersistAtLayoutBase } from './early-value-chunk-helpers.js';
 import {
@@ -119,9 +119,11 @@ export function externalEntryLockingBytecode(
     // collection still identifies an entry slot without ambiguity; refuse to guess when several exist.
     : group.compilerRoute?.abiFunction?.entryAccesses === undefined && collections.length === 1
       ? collections[0] : undefined;
+  const owner = group.logicalContract?.inner ?? group.externalContract?.inner;
   return collection?.signature ? scriptToLockingBytecode(
     buildEntryNftCovenantScript(
       hexToBin(group.categoryId), computeCollectionHash(collection.signature),
+      owner ? directConventionMasterLock(owner) : undefined,
     ),
     group.logicalContract?.inner?.addressType
       ?? group.externalContract?.inner?.addressType

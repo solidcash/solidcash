@@ -1,15 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import path from 'path';
-import { fileURLToPath } from 'url';
-import {
-  decodeAuthenticationInstructions, hexToBin, OpcodesBCH, vmNumberToBigInt,
-} from '@bitauth/libauth';
 import { compileFile, compileFileMulti } from '../src/compileFile.js';
+import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corpus.js';
 
-const marketplaceV1 = path.resolve(
-  fileURLToPath(new URL('.', import.meta.url)),
-  '../../../examples/effectiveacceleration/contracts/MarketplaceV1.sol',
-);
+const contractsRoot = effectiveAccelerationContractsRoot();
+const marketplaceV1 = (): string => path.join(contractsRoot!, 'MarketplaceV1.sol');
 
 const JOBS_LENGTH_MINUS_ONE = 'binop:-(unop:.length(state:jobs),lit:1)';
 
@@ -36,16 +31,16 @@ const eaOpts = {
   ecrecover: 'p2pkh' as const,
 };
 
-describe('MarketplaceV1 publishJobPost upsert keys', () => {
+describe.skipIf(contractsRoot === undefined)('MarketplaceV1 publishJobPost upsert keys', () => {
   it('publishes jobs.length-1 as fixedKeySources on publishJobPost', () => {
-    expectPublishJobPostKeys(compileFile(marketplaceV1, {
+    expectPublishJobPostKeys(compileFile(marketplaceV1(), {
       evmCompat: true,
       optimizeForCompilationSpeed: true,
     }));
   });
 
   it('keeps jobs.length-1 on compileFileMulti and the delegate-capable artifact', () => {
-    const art = compileFileMulti(marketplaceV1, eaOpts).MarketplaceV1;
+    const art = compileFileMulti(marketplaceV1(), eaOpts).MarketplaceV1;
     expect(art).toBeDefined();
     expectPublishJobPostKeys(art!);
     // Initializer inference can make the primary artifact itself the delegate implementation. Only standalone
@@ -54,7 +49,7 @@ describe('MarketplaceV1 publishJobPost upsert keys', () => {
   });
 
   it('classifies empty-commitment immutables from output j, not the zeroAmount boolean', () => {
-    const art = compileFileMulti(marketplaceV1, eaOpts).MarketplaceV1;
+    const art = compileFileMulti(marketplaceV1(), eaOpts).MarketplaceV1;
     // `publishJobPost(string,bytes32,bool,string[],address,uint256,uint32,string,address,address[])`; the
     // source compiles evmCompat, so the body is keyed by the keccak256 selector (D27).
     const hex = (art?.delegateArtifact ?? art)?.functionBodies?.['3a080839'];
@@ -84,32 +79,16 @@ describe('MarketplaceV1 publishJobPost upsert keys', () => {
   });
 
   it('adds ceil(jobsLen/120) before the whitelist upsert predecessor check', () => {
-    const art = compileFile(marketplaceV1, eaOpts);
+    const art = compileFile(marketplaceV1(), eaOpts);
     const target = art.delegateArtifact ?? art;
     // `updateJobWhitelist(uint256,address[],address[])`, keyed by its evmCompat keccak256 selector (D27).
     const hex = target.functionBodies?.bdb10816;
     expect(typeof hex).toBe('string');
     const body = hex as string;
-    const whitelistHash = '09e7d00ab6cd5795b2a4fa3db718efbdb374cbaf';
-    const hashHelpers = Object.entries(target.debug.invokeDebug ?? {})
-      .filter(([, debug]) => debug.bytecode.includes(whitelistHash))
-      .map(([id]) => BigInt(id));
-    expect(hashHelpers.length).toBeGreaterThan(0);
-    const instructions = decodeAuthenticationInstructions(hexToBin(body));
-    const readNumber = (instruction: { opcode: number; data?: Uint8Array }): bigint | undefined => {
-      if (instruction.opcode === OpcodesBCH.OP_0) return 0n;
-      if (instruction.opcode >= OpcodesBCH.OP_1 && instruction.opcode <= OpcodesBCH.OP_16) {
-        return BigInt(instruction.opcode - OpcodesBCH.OP_1 + 1);
-      }
-      if (!instruction.data) return undefined;
-      const value = vmNumberToBigInt(instruction.data, { requireMinimalEncoding: false });
-      return typeof value === 'bigint' ? value : undefined;
-    };
-    // Address construction can be outlined independently of its caller. Prove the publishJobPost body invokes
-    // the helper which owns the whitelist collection hash, and retains the predecessor displacement
-    // ceil(jobsLen/120): encodeInt(119) ADD encodeInt(120) DIV.
-    expect(instructions.some((instruction, index) => instruction.opcode === OpcodesBCH.OP_INVOKE
-      && hashHelpers.includes(readNumber(instructions[index - 1]) ?? 0xffff_ffffn))).toBe(true);
+    // A delegate's records are bound to the proxy master's lock, so it builds the whitelist entry address inline:
+    // the shared address helper binds the executing input's lock. The body pushes the whitelist collection hash
+    // itself and retains the predecessor displacement ceil(jobsLen/120): encodeInt(119) ADD encodeInt(120) DIV.
+    expect(body).toContain('1409e7d00ab6cd5795b2a4fa3db718efbdb374cbaf');
     expect(body).toContain('017793017896');
   });
 

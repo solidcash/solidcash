@@ -70,7 +70,7 @@ incomplete.
 
 ### 2.1 The harness is relaxed, so size is off the critical path
 
-| Limit | Real BCH-2026 | Root `solidcash.config.ts` (used by `vitest.marketplace.config.ts`) | `examples/effectiveacceleration/solidcash.config.ts` |
+| Limit | Real BCH-2026 | Root `solidcash.config.ts` (used by `vitest.marketplace.config.ts`) | `bench/effectiveacceleration/solidcash.config.ts` |
 | --- | --- | --- | --- |
 | Unlocking bytecode per input | 10,000 B | 10,000,000 B | 10,000,000 B |
 | Transaction | 100,000 B relay, 1,000,000 B consensus | 100,000,000 B | 10,000,000 B |
@@ -214,7 +214,7 @@ directory. Removing the batch entry point is surgery across that surface, not de
     involved.
 - **Two harnesses are in use:**
   - The root `vitest.marketplace.config.ts` runs the upstream file through a symlink.
-  - The Codex goal names `examples/effectiveacceleration/test/marketplace.test.ts`. That copy deletes one line
+  - The Codex goal names `bench/effectiveacceleration/test/marketplace.test.ts`. That copy deletes one line
     (upstream `test:1477`, an un-awaited `registerPublicKey`) and uses different consensus overrides.
   - "Unchanged" only strictly holds for the first.
 - `kernel-beta-manifest.json` pins `censusCommit` `95fbe8f3c`, not the tip.

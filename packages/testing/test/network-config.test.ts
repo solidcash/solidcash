@@ -48,4 +48,31 @@ describe('configured SolidHat networks', () => {
     }));
     await expect(mixed.network.connect('mainnet')).rejects.toThrow('requires an explicit mnemonic');
   });
+
+  it('TOOLS-7 a shared mnemonic cannot sign on two live chains', () => {
+    const phrase = 'test test test test test test test test test test test junk';
+    expect(() => createHardhatRuntimeEnvironment(resolveConfig({
+      mnemonic: phrase,
+      networks: {
+        chipnet: { type: 'electrum', network: 'chipnet' },
+        mainnet: { type: 'electrum', network: 'mainnet' },
+      },
+    }))).toThrow(/needs its own mnemonic/);
+    expect(() => createHardhatRuntimeEnvironment(resolveConfig({
+      mnemonic: phrase,
+      networks: {
+        chipnet: { type: 'electrum', network: 'chipnet' },
+        chipnetRpc: {
+          type: 'bitcoin-rpc', network: 'chipnet',
+          rpc: { url: 'http://127.0.0.1:8332', user: 'alice', password: 'secret' },
+        },
+      },
+    }))).not.toThrow();
+    expect(() => createHardhatRuntimeEnvironment(resolveConfig({
+      networks: {
+        chipnet: { type: 'electrum', network: 'chipnet', mnemonic: phrase },
+        mainnet: { type: 'electrum', network: 'mainnet', mnemonic: `${phrase} main` },
+      },
+    }))).not.toThrow();
+  });
 });

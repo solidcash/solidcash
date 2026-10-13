@@ -18,10 +18,10 @@ import {
   AddressType,
   FunctionType,
   MappingType,
-  isFixedWidthType,
   Op,
   asmToScript,
 } from '@solidcash/utils';
+import { isDynamicallyEncodedElementType } from '../generation/utils.js';
 import {
   AssignNode,
   AssignmentExpressionNode,
@@ -113,11 +113,17 @@ import {
   FunctionModifier,
   TryCatchNode,
   type EmitInfo,
+  exactArrayLength,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
   InvalidParameterTypeError,
   UnequalTypeError,
+  UnsupportedBinaryOperandsError,
+  ImplicitConversionError,
+  ArgumentConversionError,
+  solidityRationalName,
+  solidityTypeName,
   SignedExponentError,
   UnsupportedTypeError,
   MultiDimArrayValueAccessError,
@@ -170,7 +176,9 @@ import {
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
 import { Class, GlobalFunction, Modifier } from '../ast/Globals.js';
-import { getCompileTimeByteLength, isNumericType, literalTypeBesideBounded, resultingTypeForBinaryOp } from '../utils.js';
+import {
+  getCompileTimeByteLength, isNumericType, literalMobileType, literalTypeBesideBounded, resultingTypeForBinaryOp,
+} from '../utils.js';
 import { analyzeAssemblyStack, getStackEffect } from '../asmStackEffects.js';
 import { ImportedLocations } from './ImportedLocations.js';
 import { generatedOriginOf } from '../ast/Location.js';
@@ -180,6 +188,76 @@ import { generatedOriginOf } from '../ast/Location.js';
  * predecessor's output, the linear rank and rows, and the created-record count.
  */
 const FRAMED_DERIVED_BATCH_PARAMETER = /^__internal__vmapBatch/;
+
+const LITERAL_PRECISION = 'Precision of rational constants is limited to 4096 bits.';
+
+// The comparable-by-reference kind of a type that Solidity cannot compare with an operator, if any.
+function referenceKind(type: Type | undefined): string | undefined {
+  if (type instanceof MappingType) return 'mapping';
+  if (type instanceof StructType) return `struct ${type.name}`;
+  if (type instanceof ArrayType) return 'array';
+  if ((type instanceof BytesType && type.bound === undefined) || type === PrimitiveType.STRING) return 'bytes';
+  return undefined;
+}
+
+function bitLength(value: bigint): number {
+  return (value < 0n ? -value : value).toString(2).length;
+}
+
+// The exact value of a literal integer expression (+ - * / ** << >>, as solc evaluates it), 'huge' once it cannot
+// stay within solc's 4096-bit limit, or undefined when the expression is not literal.
+function literalRational(node: Node): { numerator: bigint; denominator: bigint } | 'huge' | undefined {
+  if (node instanceof IntLiteralNode) return { numerator: node.value, denominator: 1n };
+  if (node instanceof UnaryOpNode && node.operator === UnaryOperator.NEGATE) {
+    const inner = literalRational(node.expression);
+    return inner === undefined || inner === 'huge' ? inner : { numerator: -inner.numerator, denominator: inner.denominator };
+  }
+  if (!(node instanceof BinaryOpNode)) return undefined;
+  const left = literalRational(node.left);
+  const right = literalRational(node.right);
+  if (left === undefined || right === undefined) return undefined;
+  if (left === 'huge' || right === 'huge') return 'huge';
+  const integral = (r: { numerator: bigint; denominator: bigint }): bigint | undefined =>
+    (r.numerator % r.denominator === 0n ? r.numerator / r.denominator : undefined);
+  switch (node.operator) {
+    case BinaryOperator.PLUS:
+    case BinaryOperator.MINUS: {
+      const sign = node.operator === BinaryOperator.PLUS ? 1n : -1n;
+      return { numerator: left.numerator * right.denominator + sign * right.numerator * left.denominator,
+        denominator: left.denominator * right.denominator };
+    }
+    case BinaryOperator.MUL:
+      return { numerator: left.numerator * right.numerator, denominator: left.denominator * right.denominator };
+    case BinaryOperator.DIV:
+      if (right.numerator === 0n) return undefined;
+      return { numerator: left.numerator * right.denominator * (right.numerator < 0n ? -1n : 1n),
+        denominator: left.denominator * (right.numerator < 0n ? -right.numerator : right.numerator) };
+    case BinaryOperator.POW: {
+      const exponent = integral(right);
+      if (exponent === undefined || exponent < 0n) return undefined;
+      if (exponent > 4096n && bitLength(left.numerator) + bitLength(left.denominator) > 2) return 'huge';
+      return { numerator: left.numerator ** exponent, denominator: left.denominator ** exponent };
+    }
+    case BinaryOperator.SHIFT_LEFT:
+    case BinaryOperator.SHIFT_RIGHT: {
+      const base = integral(left);
+      const amount = integral(right);
+      if (base === undefined || amount === undefined || amount < 0n) return undefined;
+      if (node.operator === BinaryOperator.SHIFT_RIGHT) return { numerator: base >> amount, denominator: 1n };
+      return amount > 4096n && base !== 0n ? 'huge' : { numerator: base << amount, denominator: 1n };
+    }
+    default:
+      return undefined;
+  }
+}
+
+// The exact value of a decimal literal (`0.1` is 1/10), or undefined for a spelling it does not cover.
+function decimalRational(text: string): { numerator: bigint; denominator: bigint } | undefined {
+  const match = text.replaceAll('_', '').match(/^(-?)(\d*)\.?(\d*)$/);
+  if (!match || match[2] + match[3] === '') return undefined;
+  const magnitude = BigInt(match[2] + match[3]);
+  return { numerator: match[1] ? -magnitude : magnitude, denominator: 10n ** BigInt(match[3].length) };
+}
 
 export default class TypeCheckTraversal extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
@@ -666,7 +744,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (node.type.elementType instanceof StructType) {
         // Validate each field of the struct
         for (const field of node.type.elementType.fields) {
-          if (!isValidStateType(field.type)) {
+          if (!isValidStateType(field.type, new Set(), true)) {
             throw new UnsupportedStructFieldTypeError(node, field.type);
           }
         }
@@ -688,11 +766,14 @@ export default class TypeCheckTraversal extends AstTraversal {
       const innerValue = node.innermostValueType;
       if (innerValue instanceof StructType) {
         for (const field of innerValue.fields) {
-          if (!isValidStateType(field.type)) {
+          if (!isValidStateType(field.type, new Set(), true)) {
             throw new UnsupportedStructFieldTypeError(node, field.type);
           }
         }
-      } else if (!isValidStateType(innerValue)) {
+      } else if (!isValidStateType(innerValue) && !isValidCollectionElementType(innerValue)) {
+        // A mapping nested in an array is not a standalone encodable value, but it IS addressable as a key path:
+        // `mapping(K => mapping(K2 => V)[])` is the collection model's shape for an array of mappings under a
+        // mapping key, exactly as `mapping(K2 => V)[]` is for a top-level one.
         throw new UnsupportedMappingValueTypeError(node, innerValue);
       }
     }
@@ -748,10 +829,29 @@ export default class TypeCheckTraversal extends AstTraversal {
         const arrType = node.collection.innermostValueType as ArrayType;
         node.type = arrType.elementType;
       } else {
-        node.type = node.collection.innermostValueType;
+        // A mapping read consumes ONE level of value type per key used, not the innermost value: `m[k]` on
+        // `mapping(K => mapping(K2 => V))` is the storage pointer `mapping(K2 => V)`, which is what a
+        // storage-alias initializer (`mapping(..) storage r = m[k]`) or a helper's `return m[k]` needs. Using
+        // `innermostValueType` here typed it `V` and rejected exactly those (AssignTypeError). Only a read whose
+        // keys reach the leaf (keys.length == depth) still lands on the innermost value; that length-equality
+        // case is unchanged, so single-level mappings are untouched.
+        node.type = this.mappingValueTypeAfterKeys(node.collection, node.keys.length)
+          ?? node.collection.innermostValueType;
       }
     }
     return node;
+  }
+
+  // The value type after consuming `keyCount` MAPPING levels of `collection`, or undefined when a level is not a
+  // mapping (an array dimension, whose indices the collection model folds into the key space) before the count is
+  // reached - the caller then falls back to the innermost value.
+  private mappingValueTypeAfterKeys(collection: CollectionNode, keyCount: number): Type | undefined {
+    let current: Type = collection.type;
+    for (let i = 0; i < keyCount; i += 1) {
+      if (!(current instanceof MappingType)) return undefined;
+      current = current.valueType;
+    }
+    return current;
   }
 
   visitMappingAssign(node: MappingAssignNode): Node {
@@ -893,7 +993,7 @@ export default class TypeCheckTraversal extends AstTraversal {
           continue;
         }
         if (field.type instanceof ArrayType && field.type.elementType instanceof MappingType) continue;
-        if (!isValidStateType(field.type)) {
+        if (!isValidStateType(field.type, new Set(), true)) {
           throw new UnsupportedStructFieldTypeError(node, field.type);
         }
       }
@@ -1050,9 +1150,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.stateVariable?.type instanceof FixedType && node.expression instanceof DecimalLiteralNode) {
       node.expression.type = node.stateVariable.type;
     }
-    // Chunk-packed array write: encode an array literal RHS as a blob (pushdata(count) ++ tight_elements)
-    // so the codegen can strip the count prefix and store only the tight blob in chunks. See docs/arrays.md.
-    if (node.stateVariable?.isDynamic && node.stateVariable.type instanceof ArrayType
+    // Chunk-packed or packed array write: encode an array literal RHS as a blob (pushdata(count) ++ tight_elements),
+    // the on-stack form both stores take (chunks strip the count prefix). Unflagged, the literal left N separate
+    // items and the count became the stored field. See docs/arrays.md.
+    if ((node.stateVariable?.isDynamic || node.stateVariable?.isPacked) && node.stateVariable.type instanceof ArrayType
       && node.expression instanceof ArrayNode) {
       node.expression.blobEncoded = true;
       if (node.expression.elements.length === 0) {
@@ -1117,6 +1218,8 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.expression.type = node.type;
       }
       expectAssignable(node, node.expression.type, node.type);
+      this.validateSolidityLiteralBinding(node, node.expression, node.type);
+      this.validateSolidityFunctionArrayLiteral(node, node.expression, node.type, node);
       this.checkIntLiteralRange(node, node.expression, node.type);
     }
 
@@ -1242,6 +1345,9 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.maybeCoerceStringToBytesN(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceBytesWiden(node.expression, node.identifier.type);
     expectAssignable(node, node.expression.type, node.identifier.type);
+    this.validateSolidityLiteralBinding(node.expression, node.expression, node.identifier.type);
+    this.validateSolidityFunctionArrayLiteral(node.expression, node.expression, node.identifier.type,
+      node.identifier.definition?.definition);
     this.checkIntLiteralRange(node, node.expression, node.identifier.type!);
     // Pack a non-empty literal at the DECLARED element width, not the literals' inferred width - same reason
     // as visitVariableDefinition. After expectAssignable so a real type mismatch still throws.
@@ -1707,8 +1813,8 @@ export default class TypeCheckTraversal extends AstTraversal {
         + 'address (wrap the hash explicitly, e.g. new LockingBytecodeP2PKH(hash)).');
     }
 
-    // Warn if integer literal exceeds target type's range
-    if (node.expression instanceof IntLiteralNode) {
+    // Warn if integer literal exceeds target type's range (an assembly word truncates to it instead)
+    if (node.expression instanceof IntLiteralNode && !node.evmWord) {
       const litValue = node.expression.value;
       if (node.type instanceof IntType) {
         if (litValue < node.type.minValue || litValue > node.type.maxValue) {
@@ -1758,6 +1864,10 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitFunctionCall(node: FunctionCallNode): Node {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters);
+    if ((node.identifier.name === GlobalFunction.ADDMOD || node.identifier.name === GlobalFunction.MULMOD)
+      && !node.resolvedFunction && !node.identifier.definition?.definition && this.inSolidityUnit(node)) {
+      this.validateSolidityBuiltinArguments(node);
+    }
 
     if (this.evmCompat && this.isEvmCreate2AddressHash(node)) {
       const loc = this.diagLine(node.location);
@@ -1783,11 +1893,9 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (matches.length === 1) {
         [selected] = matches;
       } else {
-        const exactMatches = matches.filter((f) => {
-          const argTypes = argsFor(f).map((arg) => arg.type!);
-          const paramTypes = declaredParamTypes(f);
-          return argTypes.every((argType, i) => argType.toString() === paramTypes[i]?.toString());
-        });
+        const exactMatches = narrowExactOverloads(
+          matches, argsFor(matches[0]).map((arg) => arg.type!), (f) => declaredParamTypes(f),
+        );
         if (exactMatches.length === 1) [selected] = exactMatches;
         else throw new AmbiguousOverloadError(node);
       }
@@ -1832,11 +1940,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.resolvedFunction = matches[0];
       } else {
         // Try exact match (no implicit casting needed)
-        const exactMatches = matches.filter((f) => {
-          const funcParamTypes = declaredParamTypes(f);
-          return argTypes.length === funcParamTypes.length
-            && argTypes.every((argType, i) => argType?.toString() === funcParamTypes[i]?.toString());
-        });
+        const exactMatches = narrowExactOverloads(matches, argTypes, declaredParamTypes);
         if (exactMatches.length === 1) {
           node.resolvedFunction = exactMatches[0];
         } else {
@@ -1983,6 +2087,16 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
+  // A literal number the source passes to addmod/mulmod must convert to uint256 (solc TypeError 9553).
+  private validateSolidityBuiltinArguments(node: FunctionCallNode): void {
+    for (const argument of node.parameters) {
+      if (!(argument instanceof DecimalLiteralNode)
+        && !(argument instanceof BinaryOpNode && argument.sourceArithmetic)) continue;
+      const mismatch = this.solidityLiteralMismatch(argument, new IntType(false, 256));
+      if (mismatch) throw new ArgumentConversionError(argument, mismatch[0], 'uint256', mismatch[1]);
+    }
+  }
+
   private isEvmCreate2AddressHash(node: FunctionCallNode): boolean {
     if (node.identifier.name !== GlobalFunction.KECCAK256 || node.parameters.length !== 1) return false;
     const encoded = node.parameters[0];
@@ -2084,11 +2198,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       } else if (matches.length === 1) {
         node.call.resolvedFunction = matches[0];
       } else {
-        const exactMatches = matches.filter((f) => {
-          const funcParamTypes = declaredParamTypes(f);
-          return argTypes.length === funcParamTypes.length
-            && argTypes.every((argType, i) => argType?.toString() === funcParamTypes[i]?.toString());
-        });
+        const exactMatches = narrowExactOverloads(matches, argTypes, declaredParamTypes);
         if (exactMatches.length === 1) {
           node.call.resolvedFunction = exactMatches[0];
         } else {
@@ -2188,7 +2298,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitTupleIndexOp(node: TupleIndexOpNode): Node {
-    node.tuple = this.visit(node.tuple);
+    node.tuple = this.visitIndexedBase(node.tuple);
 
     // bytes[k] with a literal index parses as a tuple-index op: a single byte (Solidity bytes1).
     if (node.tuple.type instanceof BytesType) {
@@ -2226,13 +2336,14 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.start = this.visit(node.start);
     node.end = this.visit(node.end);
 
-    // An array `T[start:end]` slices a fixed-width-ELEMENT array (uint256[], int8[], bytes32[], uint256[N][], ..)
-    // into a sub-array. Struct-element arrays use pushdata (not packed offsets) so they are not sliceable this way;
-    // bytes/string keep their existing byte-level slice.
+    // An array `T[start:end]` slices an array into a sub-array: a fixed-stride element (uint256[], bytes32[],
+    // uint256[3][], ..) is a scaled byte-range of the row blob, and a statically encoded framed element (a struct
+    // whose fields are all statically encoded, plain `int`) is a scan of the element frames. A DYNAMICALLY
+    // encoded element (`string`, unbounded `bytes`, an unbounded array - or a composite holding one) has no such
+    // access in Solidity (TypeError 2148) and is refused here; bytes/string keep their byte-level slice.
     const et = node.element.type;
     this.expectNoContractReceiver(node, et, 'slice');
-    const sliceableArray = et instanceof ArrayType
-      && isFixedWidthType(et.elementType) && !(et.elementType instanceof StructType);
+    const sliceableArray = et instanceof ArrayType && !isDynamicallyEncodedElementType(et.elementType);
     if (!sliceableArray) {
       expectAnyOfTypes(node, et, [new BytesType(), PrimitiveType.STRING]);
     }
@@ -2589,6 +2700,85 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
   }
 
+  // Compiler-generated source is native SolidCash: it carries no file stamp, so the root's `.sol` must not reach it.
+  private inSolidityUnit(node: Node): boolean {
+    if (generatedOriginOf(node.location)) return false;
+    return (node.location?.sourceFileId ?? this.rootFileId).endsWith('.sol');
+  }
+
+  // solc's conversion of an exact literal number to an integer type: integral and in range. Returns the literal's
+  // solc name and the reason when it does not convert.
+  private solidityLiteralMismatch(expr: ExpressionNode, target: Type | undefined): [string, string] | undefined {
+    if (!(target instanceof IntType)) return undefined;
+    const value = expr instanceof DecimalLiteralNode ? decimalRational(expr.value) : literalRational(expr);
+    if (value === undefined || value === 'huge') return undefined;
+    const name = solidityRationalName(value.numerator, value.denominator);
+    if (value.numerator % value.denominator !== 0n) return [name, ''];
+    const integer = value.numerator / value.denominator;
+    if (integer < 0n && !target.signed) return [name, 'Cannot implicitly convert signed literal to unsigned type.'];
+    if (integer < target.minValue || integer > target.maxValue) {
+      return [name, `Literal is too large to fit in ${target}.`];
+    }
+    return undefined;
+  }
+
+  // Literal arithmetic a `.sol` unit binds or assigns to an integer (solc TypeError 9574 / 7407).
+  private validateSolidityLiteralBinding(node: Node, expr: ExpressionNode, target: Type | undefined): void {
+    if (!(expr instanceof BinaryOpNode) || !expr.sourceArithmetic || !this.inSolidityUnit(node)) return;
+    const mismatch = this.solidityLiteralMismatch(expr, target);
+    if (mismatch) throw new ImplicitConversionError(node, mismatch[0], solidityTypeName(target!), mismatch[1]);
+  }
+
+  // solc converts an array literal to a memory array only between identical base types: a function-typed literal
+  // keeps its elements' common mutability, which must equal the target's (TypeError 9574 / 7407).
+  private validateSolidityFunctionArrayLiteral(node: Node, expr: ExpressionNode, target: Type | undefined,
+    declaration: Node | undefined): void {
+    const memory = (declaration instanceof VariableDefinitionNode || declaration instanceof ParameterNode)
+      && declaration.modifier.includes(Modifier.MEMORY);
+    if (!memory || !(expr instanceof ArrayNode) || !(expr.type instanceof ArrayType) || !(target instanceof ArrayType)
+      || !this.inSolidityUnit(node)) return;
+    const literal = expr.type.elementType;
+    if (literal instanceof FunctionType && target.elementType instanceof FunctionType
+      && literal.stateMutability !== target.elementType.stateMutability) {
+      throw new ImplicitConversionError(node, `${solidityTypeName(literal)}[${expr.elements.length}] memory`,
+        solidityTypeName(target, Modifier.MEMORY));
+    }
+  }
+
+  // solc's operand rules (TypeError 2271) for what a `.sol` unit writes, where native SolidCash is wider: reference
+  // values of one kind do not compare, a shift amount is unsigned, and literal arithmetic is exact within 4096 bits.
+  private validateSolidityBinaryOperands(node: BinaryOpNode): void {
+    const { left, right, operator } = node;
+    const comparison = [BinaryOperator.EQ, BinaryOperator.NE, BinaryOperator.LT, BinaryOperator.LE,
+      BinaryOperator.GT, BinaryOperator.GE].includes(operator);
+    const kind = referenceKind(left.type);
+    if (comparison && kind !== undefined && kind === referenceKind(right.type)) {
+      throw new UnsupportedBinaryOperandsError(node);
+    }
+    const shift = operator === BinaryOperator.SHIFT_LEFT || operator === BinaryOperator.SHIFT_RIGHT;
+    if (shift && right.type instanceof IntType && right.type.signed && literalRational(right) === undefined) {
+      throw new UnsupportedBinaryOperandsError(node);
+    }
+    if (operator === BinaryOperator.POW || shift) {
+      const amount = literalRational(right);
+      const baseIsLiteral = literalRational(left) !== undefined;
+      if (amount === 'huge') {
+        throw new UnsupportedBinaryOperandsError(node, baseIsLiteral ? LITERAL_PRECISION : 'Exponent too large.');
+      }
+      if (amount !== undefined && amount.numerator % amount.denominator !== 0n) {
+        throw new UnsupportedBinaryOperandsError(node, baseIsLiteral ? '' : 'Exponent is fractional.');
+      }
+      if (amount !== undefined && operator === BinaryOperator.POW && !baseIsLiteral && amount.numerator >= 1n << 256n) {
+        throw new UnsupportedBinaryOperandsError(node, 'Exponent too large.');
+      }
+    }
+    const value = literalRational(node);
+    if (value === 'huge'
+      || (value !== undefined && (bitLength(value.numerator) > 4096 || bitLength(value.denominator) > 4096))) {
+      throw new UnsupportedBinaryOperandsError(node, LITERAL_PRECISION);
+    }
+  }
+
   visitBinaryOp(node: BinaryOpNode): Node {
     // Visit non-decimal side first so its type is available for propagation
     const leftIsDecimal = node.left instanceof DecimalLiteralNode;
@@ -2618,6 +2808,8 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.right = this.visit(node.right);
     }
 
+    if (node.sourceArithmetic && this.inSolidityUnit(node)) this.validateSolidityBinaryOperands(node);
+
     // Solidity hex number literals (`0x100...`) are big-endian integers, not byte strings. On a hex-vs-int
     // pairing (e.g. `x >= 0x100000000000000000000000000000000`), reinterpret the literal as its integer
     // value. Only fires on that pairing, which would otherwise be a type error, so it never changes working code.
@@ -2628,11 +2820,14 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.right = this.hexLiteralToInt(node.right);
       }
       // A string literal compared against bytesN (`id == "abc"`): coerce the literal to a padded bytesN value.
-      node.left = this.maybeCoerceStringToBytesN(node.left, node.right.type);
-      node.right = this.maybeCoerceStringToBytesN(node.right, node.left.type);
-      // A literal 0 compared against bytesN (`data[i] == 0`): coerce it to the zero-filled bytesN value.
-      node.left = this.maybeCoerceZeroToBytes(node.left, node.right.type);
-      node.right = this.maybeCoerceZeroToBytes(node.right, node.left.type);
+      // Never for `++`: a concatenated literal keeps its own bytes rather than the other operand's width.
+      if (node.operator !== BinaryOperator.PLUS) {
+        node.left = this.maybeCoerceStringToBytesN(node.left, node.right.type);
+        node.right = this.maybeCoerceStringToBytesN(node.right, node.left.type);
+        // A literal 0 compared against bytesN (`data[i] == 0`): coerce it to the zero-filled bytesN value.
+        node.left = this.maybeCoerceZeroToBytes(node.left, node.right.type);
+        node.right = this.maybeCoerceZeroToBytes(node.right, node.left.type);
+      }
       // A hex literal compared against an address (`a == 0x1234..`, a 20-byte address literal): cast it to the
       // address type so both sides match (the literal becomes an address value at the VM level).
       node.left = this.maybeCoerceHexToAddress(node.left, node.right.type);
@@ -2672,6 +2867,32 @@ export default class TypeCheckTraversal extends AstTraversal {
         if (!(other.type instanceof IntType)) continue;
         const widened = literalTypeBesideBounded(literal.value, other.type);
         if (widened !== undefined) literal.type = widened;
+      }
+    }
+
+    // A Yul word builtin yields a uint256 word (a bool for slt/sgt) from unsigned integer operands of any width. A
+    // signed operand holds its sign-magnitude value, not its word: sar/signextend/shl/shr read any other operand via
+    // a checked uint256 cast (a negative one fails closed), the rest keep their plain operator (a known divergence).
+    if (node.yulBuiltin) {
+      const isWord = (t?: Type): boolean => isNumericType(t) && !(t instanceof IntType && t.signed)
+        && t !== PrimitiveType.BIGINT;
+      const asWord = (e: ExpressionNode): ExpressionNode => {
+        if (isWord(e.type)) return e;
+        const cast = new CastNode(new IntType(false, 256), e, false);
+        cast.location = e.location;
+        return this.visit(cast) as ExpressionNode;
+      };
+      if (node.yulBuiltin === 'sar' || node.yulBuiltin === 'signextend' || node.yulBuiltin === 'shl'
+        || node.yulBuiltin === 'shr') {
+        node.left = asWord(node.left);
+        node.right = asWord(node.right);
+      } else if (!isWord(node.left.type) || !isWord(node.right.type)) {
+        node.yulBuiltin = undefined;
+      }
+      if (node.yulBuiltin) {
+        node.type = node.operator === BinaryOperator.LT || node.operator === BinaryOperator.GT
+          ? PrimitiveType.BOOL : new IntType(false, 256);
+        return node;
       }
     }
 
@@ -2916,12 +3137,13 @@ export default class TypeCheckTraversal extends AstTraversal {
         return node;
       }
       case UnaryOperator.SIZE:
+        // evmCompat `.length` is uint256, so `length - 1` on an empty array underflows instead of wrapping.
         if (node.expression.type instanceof ArrayType) {
-          node.type = PrimitiveType.BIGINT;
+          node.type = this.strictSolidityValidation ? new IntType(false, 256) : PrimitiveType.BIGINT;
           return node;
         }
         expectAnyOfTypes(node, node.expression.type, [new BytesType(), PrimitiveType.STRING]);
-        node.type = PrimitiveType.BIGINT;
+        node.type = this.strictSolidityValidation ? new IntType(false, 256) : PrimitiveType.BIGINT;
         return node;
       case UnaryOperator.REVERSE:
         this.expectNoContractReceiver(node, node.expression.type, 'reverse');
@@ -2964,8 +3186,11 @@ export default class TypeCheckTraversal extends AstTraversal {
       case NullaryOperator.OUTPUT_COUNT:
       case NullaryOperator.VERSION:
       case NullaryOperator.LOCKTIME:
-      case NullaryOperator.MSG_VALUE:
         node.type = PrimitiveType.BIGINT;
+        return node;
+      case NullaryOperator.MSG_VALUE:
+        // evmCompat msg.value is uint256, so `cost - msg.value` reverts when msg.value is larger.
+        node.type = this.strictSolidityValidation ? new IntType(false, 256) : PrimitiveType.BIGINT;
         return node;
       case NullaryOperator.BYTECODE:
         node.type = new BytesType();
@@ -3179,6 +3404,37 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
+  // An inline array literal indexed in place (`[1, 2, 3][i]`) is a `T[n] memory` value: one count-prefixed blob,
+  // the form both index reads split. All-constant integer elements take Solidity's element type, their common
+  // mobile type (`uint8` for `[1, 2, 3]`), and pack at its width.
+  private visitIndexedBase(base: ExpressionNode): ExpressionNode {
+    if (!(base instanceof ArrayNode)) return this.visit(base) as ExpressionNode;
+    base.blobEncoded = true;
+    const array = this.visit(base) as ExpressionNode;
+    if (array instanceof ArrayNode && array.type instanceof ArrayType) {
+      const element = array.type.elementType === PrimitiveType.INT ? this.inlineArrayMobileType(array) : undefined;
+      array.type = new ArrayType(element ?? array.type.elementType, array.elements.length);
+    }
+    return array;
+  }
+
+  // The first element's mobile type, widened to a later element's mobile type when that element does not fit and
+  // the current type converts to it implicitly (Solidity's inline-array common type). Undefined: none applies.
+  private inlineArrayMobileType(array: ArrayNode): IntType | undefined {
+    let common: IntType | undefined;
+    for (const element of array.elements) {
+      const rational = this.evalLiteralRational(element);
+      if (!rational || rational.numerator % rational.denominator !== 0n) return undefined;
+      const value = rational.numerator / rational.denominator;
+      const mobile = literalMobileType(value);
+      if (!mobile) return undefined;
+      if (common && value >= common.minValue && value <= common.maxValue) continue;
+      if (common && !implicitlyCastable(common, mobile)) return undefined;
+      common = mobile;
+    }
+    return common;
+  }
+
   visitNewArray(node: NewArrayNode): Node {
     node.size = this.visit(node.size);
     node.type = node.rawBytes ? new BytesType() : new ArrayType(node.elementType);
@@ -3186,7 +3442,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitArrayAccess(node: ArrayAccessNode): Node {
-    node.array = this.visit(node.array);
+    node.array = this.visitIndexedBase(node.array);
     node.index = this.visit(node.index);
     const rationalIndex = this.evmCompat ? this.evalLiteralRational(node.index) : undefined;
     const constantIndex = rationalIndex?.denominator === 1n ? rationalIndex.numerator : undefined;
@@ -3216,7 +3472,7 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     expectInt(node as any, node.index.type);
     if (node.array.type.bound !== undefined && constantIndex !== undefined
-      && constantIndex >= BigInt(node.array.type.bound)) {
+      && constantIndex >= exactArrayLength(node.array.type)!) {
       throw new IndexOutOfBoundsError(node as any);
     }
     node.type = node.array.type.elementType;
@@ -3358,6 +3614,13 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (mixesIntegerAndBytes) {
       throw new TernaryTypeMismatchError(node);
     }
+    // Integer literal branches take Solidity's type, their common mobile type (`c ? 63 : 255` is uint8), so
+    // arithmetic on the conditional is checked at that width even when its condition is a literal.
+    const mobile = this.conditionalMobileType(node);
+    if (mobile) {
+      node.type = mobile;
+      return node;
+    }
     if (implicitlyCastable(node.ifTrue.type, node.ifFalse.type)) {
       node.type = node.ifFalse.type;
     } else if (implicitlyCastable(node.ifFalse.type, node.ifTrue.type)) {
@@ -3367,6 +3630,25 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     return node;
+  }
+
+  // A source conditional of literal-valued branches: the wider of their mobile types when both share a signedness.
+  // Mixed signs have no common type (a solc error), so like any other conditional that one keeps its old typing.
+  private conditionalMobileType(node: TernaryOpNode): IntType | undefined {
+    if (!node.sourceConditional) return undefined;
+    const ifTrue = this.literalBranchMobileType(node.ifTrue);
+    const ifFalse = this.literalBranchMobileType(node.ifFalse);
+    if (!ifTrue || !ifFalse || ifTrue.signed !== ifFalse.signed) return undefined;
+    return ifTrue.bits >= ifFalse.bits ? ifTrue : ifFalse;
+  }
+
+  // An integer literal's (or literal-only expression's) mobile type, or that of a nested such conditional.
+  private literalBranchMobileType(branch: ExpressionNode): IntType | undefined {
+    if (branch instanceof TernaryOpNode) return this.conditionalMobileType(branch);
+    if (branch.type !== PrimitiveType.INT) return undefined;
+    const rational = this.evalLiteralRational(branch);
+    if (!rational || rational.numerator % rational.denominator !== 0n) return undefined;
+    return literalMobileType(rational.numerator / rational.denominator);
   }
 
   visitIdentifier(node: IdentifierNode): Node {
@@ -3527,6 +3809,31 @@ function declaredParamTypes(f: FunctionDefinitionNode): Type[] {
   return f.parameters.filter((p) => !p.name.startsWith('__internal__')).map((p) => p.type!);
 }
 
+// The overload candidates whose declared parameter types are spelled exactly like the argument types (the
+// no-implicit-cast tie-break). Two scopes may declare the same struct/enum/value-type NAME, so their spelled
+// signatures are identical while the types remain distinct Solidity types; where that happens, keep only the
+// candidates whose nominal parameter type is the SAME declared type instance as the argument, so a call selects
+// the overload declared in the argument's own scope. Falls back to the spelled set when no candidate is nominal.
+function narrowExactOverloads(
+  matches: FunctionDefinitionNode[], argTypes: (Type | undefined)[],
+  paramTypesOf: (f: FunctionDefinitionNode) => (Type | undefined)[],
+): FunctionDefinitionNode[] {
+  const spelled = matches.filter((f) => {
+    const paramTypes = paramTypesOf(f);
+    return argTypes.length === paramTypes.length
+      && argTypes.every((argType, i) => argType?.toString() === paramTypes[i]?.toString());
+  });
+  if (spelled.length <= 1) return spelled;
+  const nominal = (type: Type | undefined): boolean => type instanceof StructType
+    || type instanceof EnumType || type instanceof ValueType;
+  const byIdentity = spelled.filter((f) => {
+    const paramTypes = paramTypesOf(f);
+    return argTypes.every((argType, i) => (!nominal(argType) || !nominal(paramTypes[i]))
+      ? true : argType === paramTypes[i]);
+  });
+  return byIdentity.length > 0 ? byIdentity : spelled;
+}
+
 // Declared parameter signature (types only) - used to detect a contract function shadowing a same-signature
 // free function.
 function declaredSig(f: FunctionDefinitionNode): string {
@@ -3637,10 +3944,11 @@ const inferPaddedBytesType = (node: FunctionCallNode): Type => {
   return new BytesType();
 };
 
-// allowExternalFnPtr: set ONLY for a bare top-level state variable. A self-ref external pointer (`this.f`) is a
-// functionId at runtime (identical to an internal pointer), so a top-level `function(..) external` state var is
-// sound; but a nested one (struct field / array element / mapping value) is deliberately NOT relaxed here (the
-// recursive calls do not propagate the flag) - that shape is untested and its rejection is codified.
+// allowExternalFnPtr: set ONLY for a bare top-level state variable or a struct field. A self-ref external pointer
+// (`this.f`) is a functionId at runtime (identical to an internal pointer), so such a `function(..) external` slot
+// is sound: a struct field still holding one after the fn-ptr lowering passes is a self-ref field (foreign values
+// become interface-typed or blob fields). An array element / mapping value is NOT relaxed (the flag does not
+// propagate through them).
 function isValidStateType(type: Type, seen: Set<string> = new Set(), allowExternalFnPtr = false): boolean {
   if (type === PrimitiveType.BIGINT || type === PrimitiveType.BOOL) return true;
   if (type === PrimitiveType.STRING) return true;
@@ -3664,7 +3972,7 @@ function isValidStateType(type: Type, seen: Set<string> = new Set(), allowExtern
     // back-edge to an already-visited struct is valid; guard against the cycle to avoid infinite recursion.
     if (seen.has(type.name)) return true;
     seen.add(type.name);
-    return type.fields.every((f) => isValidStateType(f.type, seen));
+    return type.fields.every((f) => isValidStateType(f.type, seen, true));
   }
   if (type instanceof ArrayType) return isValidStateType(type.elementType, seen);
   return false;

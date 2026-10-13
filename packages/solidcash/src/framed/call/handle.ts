@@ -36,6 +36,7 @@ import { callFramedProxyEntry } from '../proxy/deploy.js';
 import { readFramedEntry, FramedReadError, type FramedReadResult } from '../read/index.js';
 import { FramedCompositionRefusedError, type CompositionRefusal } from '../composer/index.js';
 import { framedSendQueue, framedSendResources, proxyHopSendsAreQueued } from '../queue/index.js';
+import { coinsAvailableForCallerFee } from '../../stateful/genesis-reservations.js';
 
 /** The handle a call is made through: the deployed artifact, its category, its provider and its signer. */
 export interface FramedHandleContract {
@@ -132,7 +133,12 @@ export class FramedFunctionCall {
     return args;
   }
 
-  /** Composes and derives the call without requiring it to be accepted, for a caller that wants the verdicts. */
+  /**
+   * Derives the call and returns its verdicts. Nothing is broadcast.
+   *
+   * Awaiting the call object itself does send: `await call`, `Promise.all`, or returning the call from an async
+   * function runs `then`, which sends a writing call. Use `compose()` to preview.
+   */
   public async compose(): Promise<FramedCallResult> {
     const { provider, signer, categoryId, proxyImplementationCategoryId } = this.contract;
     if (signer === undefined) {
@@ -143,25 +149,28 @@ export class FramedFunctionCall {
     // A call through a proxy hop composes at once until the hop's module opts into the queue; any other call waits
     // its turn behind the sends that could touch what it spends.
     if (proxyImplementationCategoryId !== undefined && !proxyHopSendsAreQueued()) {
-      return this.composeNow(provider, signer);
+      return this.composeNow(provider, signer, false);
     }
     const resources = framedSendResources({
       callerLockingBytecode: signer.getLockingBytecode(),
       categoryIds: [categoryId, ...(proxyImplementationCategoryId === undefined ? [] : [proxyImplementationCategoryId])],
     });
-    return framedSendQueue(provider).hold(resources, () => this.composeNow(provider, signer));
+    return framedSendQueue(provider).hold(resources, () => this.composeNow(provider, signer, false));
   }
 
   /**
    * Resolves the arguments, then picks the caller's coin and composes over it, or simulates without one. A queued
    * call runs this in its turn, so resolving them never moves it ahead of a call made before it.
    */
-  private async composeNow(provider: NetworkProvider, signer: Signer): Promise<FramedCallResult> {
+  private async composeNow(
+    provider: NetworkProvider, signer: Signer, publish = true,
+  ): Promise<FramedCallResult> {
     const args = await this.resolvedArguments();
     const callerUtxo = await callerCoin(provider, signer);
     if (callerUtxo === undefined) {
+      if (!publish) return this.composeWith(provider, signer, STAND_IN_COIN, args, false);
       try {
-        return await this.composeWith(simulationProvider(provider), signer, STAND_IN_COIN, args);
+        return await this.composeWith(simulationProvider(provider), signer, STAND_IN_COIN, args, true);
       } catch (error) {
         if (!(error instanceof SimulationAccepted)) throw error;
         throw new FramedCallError(
@@ -169,12 +178,13 @@ export class FramedFunctionCall {
         );
       }
     }
-    return this.composeWith(provider, signer, callerUtxo, args);
+    return this.composeWith(provider, signer, callerUtxo, args, publish);
   }
 
-  /** Composes the call with `args` over the caller's coin `callerUtxo`, reading and broadcasting through `provider`. */
+  /** Composes the call with `args` over the caller's coin `callerUtxo`. `publish` sends an accepted call. */
   private async composeWith(
     provider: NetworkProvider, signer: Signer, callerUtxo: Utxo, args: readonly FunctionArgument[],
+    publish = true,
   ): Promise<FramedCallResult> {
     const { artifact, categoryId, proxyImplementationCategoryId } = this.contract;
     if (proxyImplementationCategoryId !== undefined) {
@@ -193,6 +203,7 @@ export class FramedFunctionCall {
         callerLockingBytecode: signer.getLockingBytecode(),
         funder: signer.unlockP2PKH(),
         changeAddress: signer.getAddress(),
+        ...(publish ? {} : { publish: false }),
         ...(this.value > 0n ? { value: this.value } : {}),
       });
     }
@@ -206,6 +217,7 @@ export class FramedFunctionCall {
       callerLockingBytecode: signer.getLockingBytecode(),
       funder: signer.unlockP2PKH(),
       changeAddress: signer.getAddress(),
+      ...(publish ? {} : { publish: false }),
       ...(this.value > 0n ? { value: this.value } : {}),
     });
   }
@@ -223,7 +235,10 @@ export class FramedFunctionCall {
     });
   }
 
-  /** Awaiting a call runs it: a read resolves to the entry's value, a writing call to its receipt. */
+  /**
+   * Awaiting a call sends it. `Promise.all([...calls])`, or returning the call from an async function, does the
+   * same. A read resolves to the entry's value. A writing call resolves to its receipt. `compose()` does not send.
+   */
   public then<TResult1 = TransactionDetails | StateValue, TResult2 = never>(
     onFulfilled?: ((value: TransactionDetails | StateValue) => TResult1 | PromiseLike<TResult1>) | null,
     onRejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
@@ -263,7 +278,13 @@ export class FramedFunctionCall {
 /** The caller's own coin: the largest tokenless UTXO at the signer's address, which pays the call's fee. */
 async function callerCoin(provider: NetworkProvider, signer: Signer): Promise<Utxo | undefined> {
   const utxos = await provider.getUtxos(signer.getAddress());
-  const spendable = utxos.filter((utxo) => utxo.token === undefined);
+  const tokenless = utxos.filter((utxo) => utxo.token === undefined);
+  const spendable = coinsAvailableForCallerFee(utxos);
+  if (spendable.length === 0 && tokenless.length > 0) {
+    throw new FramedCallError(
+      `the caller's address ${signer.getAddress()} holds only reserved genesis coins, which cannot pay a call`,
+    );
+  }
   return spendable.sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))[0];
 }
 

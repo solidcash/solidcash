@@ -11,12 +11,13 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-import { framedLifecycle, framedValidator } from 'solidc';
+import { framedLifecycle, framedValidator } from 'solidc/runtime';
 import type { Artifact } from '@solidcash/utils';
 import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type SignatureTemplate from '../../SignatureTemplate.js';
 import { createSighashPreimage } from '../../utils.js';
+import { requireFramedFunderSighash } from '../sighash.js';
 import { deployMaster } from './material.js';
 import { readFramedDeployment } from './records.js';
 
@@ -61,7 +62,7 @@ function lifecycleUnlocker(
     generateUnlockingBytecode: ({ transaction, sourceOutputs, inputIndex }) => {
       const args = [encodeDataPush(Uint8Array.of(mode))];
       if (count !== undefined && admin !== undefined) {
-        const preimage = createSighashPreimage(transaction, sourceOutputs, inputIndex, code, admin.getHashType());
+        const preimage = createSighashPreimage(transaction, sourceOutputs, inputIndex, code, admin.sighashType);
         const signature = admin.generateSignature(hash256(preimage));
         args.push(encodeDataPush(bigIntToVmNumber(BigInt(count))), encodeDataPush(signature));
       }
@@ -121,6 +122,13 @@ export async function resizeFramedPool(
     throw new FramedResizeError(`contract "${artifact.contractName}" is not a stateful contract`);
   }
   if (!Number.isInteger(count) || count < 1) throw new FramedResizeError(`a ${kind} counts at least one master`);
+  requireFramedFunderSighash(options.admin);
+  requireFramedFunderSighash(options.funder);
+  if (kind === 'merge' && options.fundingUtxos.some((utxo) => utxo.token !== undefined)) {
+    throw new FramedResizeError(
+      'a merge is funded by tokenless coins; a token on a funding input would be burned',
+    );
+  }
   const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
   const deployed = deployMaster(artifact, hexToBin(categoryId), validatorProgram);
   const { masters } = await readFramedDeployment(provider, categoryId, artifact.stateLayout);

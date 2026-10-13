@@ -12,7 +12,7 @@ import {
   VALUE_HEAD_SIZE,
   parseValueChunkCommitment,
 } from '@solidcash/utils';
-import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import {
   isP2sh32LockingBytecode,
@@ -237,6 +237,12 @@ export function extractFailingP2sh32OutputPin(
  */
 export let lastExtractedComputedValue: Uint8Array | undefined;
 
+function ownerMasterLock(owner: { lockingBytecode: string } | undefined): Uint8Array | undefined {
+  if (!owner) return undefined;
+  const lock = hexToBin(owner.lockingBytecode);
+  return lock.length === 35 ? lock : undefined;
+}
+
 export function extractAllRouteValueChunks(
   trace: AuthenticationProgramStateCommon[],
   pin?: { outputIndex: number; commitment: string; lockingBytecode?: Uint8Array },
@@ -330,6 +336,7 @@ export function extractAllRouteValueChunks(
     ...candidateValues,
     ...(historicalCandidate && historicalCandidate.length > VALUE_HEAD_SIZE ? [historicalCandidate] : []),
   ];
+  const masterLock = ownerMasterLock(stateOwner);
   let selected = selectHashedValueForChunkPin(
     stacks,
     pin?.lockingBytecode,
@@ -338,6 +345,7 @@ export function extractAllRouteValueChunks(
     producerAuthenticatedCandidate,
     valueChunkWrites === undefined,
     exactWrite,
+    masterLock,
   );
   const persistedWrite = valueChunkWrites === undefined
     ? undefined : selectPersistedValueChunkWrite(valueChunkWrites, categoryId, persistedStagingSession);
@@ -388,7 +396,7 @@ export function extractAllRouteValueChunks(
       categoryId === undefined || write.categoryId.toLowerCase() === categoryId.toLowerCase()
     )));
     if (selection.status === 'exact') {
-      rememberValueChunkUnlockRecipe(selection.write, selected.value, redeemLock);
+      rememberValueChunkUnlockRecipe(selection.write, selected.value, redeemLock, masterLock);
     } else if (selection.status === 'absent' && categoryId) {
       // Compatibility only for descriptor-free artifacts.
       legacyRememberValueChunkLock(categoryId, redeemLock);
@@ -399,7 +407,7 @@ export function extractAllRouteValueChunks(
   }
   const lock = redeemLock ?? selected.lockingBytecode;
   return applyRedeemLockToChunks(
-    chunksFromJobEventsValue(selected.value, lock, categoryId),
+    chunksFromJobEventsValue(selected.value, lock, categoryId, masterLock),
     lock,
   ).map((chunk, index) => ({
     outputIndex: base + index,
@@ -534,8 +542,9 @@ export function deriveRouteValueChunks(
       ...('alternateStack' in state
         ? [(state as { alternateStack?: Uint8Array[] }).alternateStack ?? []] : []),
     ]);
+    const pinMasterLock = ownerMasterLock(group.valueChunkStateOwner);
     const matches = localSelection.writes.filter((write) => selectHashedValueForChunkPin(
-      stacks, pin.lockingBytecode, 0, [], undefined, false, write,
+      stacks, pin.lockingBytecode, 0, [], undefined, false, write, pinMasterLock,
     ) !== undefined);
     return matches.length === 1 ? matches[0] : undefined;
   })();

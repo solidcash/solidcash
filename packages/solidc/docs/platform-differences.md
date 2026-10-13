@@ -152,7 +152,8 @@ its underlying type's. An array of dynamic elements is already length-prefixed p
 readable. The decoder dispatches per argument on the artifact's `notation` field, so the two frames never mix
 within one parameter.
 - The `contract C layout at <expr>` storage-layout-offset clause is not supported (ignored, warned) - BCH storage
-  is not a linear slot array to offset.
+  is not a linear slot array to offset. A specifier solc rejects (a base slot that is not a compile-time constant,
+  not an integer, not evaluable or outside uint256, or inheriting a contract with a custom layout) is still refused.
 
 > Anchors in the compiler: `FoldHashLiterals.ts` (real-keccak literal fold), `state.ts` `computeErc7201Slot`
 > (the EIP-7201 formula), `keccak-compute-library.ts` (runtime keccak side-car). See also
@@ -179,6 +180,13 @@ Not asked for above but essential context for why the primitives above matter:
   `gas()` etc. lower to the nearest analogue or are rejected.
 - **`msg.data` / calldata** is reconstructed from the input's unlocking bytecode where sound, not a first-class
   ABI blob; some `abi.decode(msg.data...)` forms are restricted. See the inline-assembly and corpus notes.
+- **A failed call cannot be caught.** A transaction either satisfies every input's script or is invalid, so there
+  is no point at which a reverted `this.g()` or `IFoo(a).g()` could hand control back: `try/catch` compiles, but a
+  failing call fails the whole spend and a `catch` body never runs. Code that relies on catching (e.g. decoding a
+  revert reason) behaves differently; the corpus semantic runner counts 30 such lines (`tryCatch/*`).
+- **Chain and fee fields differ.** `block.chainid`, `block.gaslimit`, `block.prevrandao`, `tx.gasprice`,
+  `blobhash` and similar return BCH definitions (see the block and transaction property docs), so expectations
+  that hard-code EVM values do not hold.
 
 ---
 

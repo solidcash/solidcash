@@ -1,8 +1,11 @@
 # EVM ABI byte-parity (evmCompat mode)
 
-Status: SPEC (design). Grounded against `/Code/solidity` @ 0.8.36 (`libsolidity/codegen/ABIFunctions.cpp`,
-`libsolidity/ast/Types.cpp`, `docs/abi-spec.rst`, `libsolutil/FunctionSelector.h`) and the current SolidCash
-codegen. Nothing here is implemented yet.
+Status: IMPLEMENTED under `evmCompat` (word primitives, head/tail, packed, canonical selectors, decode with
+clean-encoding validation), and kept as the design record. Grounded against `/Code/solidity` @ 0.8.36
+(`libsolidity/codegen/ABIFunctions.cpp`, `libsolidity/ast/Types.cpp`, `docs/abi-spec.rst`,
+`libsolutil/FunctionSelector.h`). Byte parity is checked by the differential suite in
+`packages/solidcash/test/conformance/` (solc on the EVM against solidc on the BCH VM). Section 8.1 was superseded by
+the `addressForm` option.
 
 ## 0. Goal and scope
 
@@ -259,6 +262,9 @@ still hashes the caller's string verbatim (solc does not normalize it), and a no
 
 ## 7. abi.decode (inverse + validation)
 
+Implemented: each value-type word is validated as listed below (`emitEvmWordToValue`), and a decode of data the
+compiler encoded itself (a split forwarder's facet return) is marked trusted and skips it.
+
 Mirror `tupleDecoder` (`ABIFunctions.cpp:192-260`):
 
 - Head-fits check: revert if `dataEnd - headStart < headSize`.
@@ -275,6 +281,10 @@ reads EVM head/tail with these validations.
 ## 8. Type gaps (deliberate, documented divergences)
 
 ### 8.1 address = full locking bytecode (variable length)
+
+SUPERSEDED: the form is now the `addressForm` option (`'hash' | 'bytecode'`). Under `evmCompat` the default is
+`'hash'`, which encodes an address as its 20-byte identity in one left-padded word (for a P2SH32 lock that is
+HASH160 of the lock, which cannot be reversed); `'bytecode'` keeps the whole lock as described below.
 
 A SolidCash `address` is the entire scriptPubKey (P2PKH `76a914<20>88ac` = 25B, P2SH32 `aa20<32>87` = 35B,
 P2SH20 = 23B, or an arbitrary covenant script) - not a hash, not a fixed width (`AddressType`, utils/types.ts:10,

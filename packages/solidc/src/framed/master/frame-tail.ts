@@ -803,6 +803,15 @@ export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
     Opcodes.OP_1, Opcodes.OP_PICK, Opcodes.OP_INPUTBYTECODE,
     ...dropFirstPushScript(), ...splitFirstPushScript(),
     Opcodes.OP_0, Opcodes.OP_EQUALVERIFY,
+    // The redeem runs only when this input's lock is P2SH32 of it. Require that, and require the pin push to
+    // open with the 33-byte push opcode. A bare lock replaying the unlocking is not a validator.
+    Opcodes.OP_DUP,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
+    ...encodeDataPush(new Uint8Array([0x21])), Opcodes.OP_EQUALVERIFY,
+    Opcodes.OP_DUP, Opcodes.OP_HASH256,
+    ...encodeDataPush(new Uint8Array([0xaa, 0x20])), Opcodes.OP_SWAP, Opcodes.OP_CAT,
+    ...encodeDataPush(new Uint8Array([0x87])), Opcodes.OP_CAT,
+    ...encodeDataPush(scriptNumber(3)), Opcodes.OP_PICK, Opcodes.OP_UTXOBYTECODE, Opcodes.OP_EQUALVERIFY,
     // `push(pin(c)) || program`. The push is 34 bytes; the program after it must hash to the reserved slot, four
     // items below the computed hash.
     ...encodeDataPush(scriptNumber(VALIDATOR_PIN_PUSH_LENGTH)), Opcodes.OP_SPLIT,

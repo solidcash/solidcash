@@ -4,6 +4,7 @@
     "noEmit": true,
     "types": ["vitest/globals", "node"],
     "skipLibCheck": true,
+    "module": "esnext",
     "moduleResolution": "bundler",
     "composite": false,
     "incremental": false,

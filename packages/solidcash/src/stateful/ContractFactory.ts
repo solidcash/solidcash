@@ -100,24 +100,38 @@ export async function selectGenesisFundingUtxo(
  */
 export async function selectGenesisFundingUtxoForCost(
   signer: Signer, cost: bigint, excludedOutpoints: ReadonlySet<string> = new Set(),
+  options?: { readonly fanOut?: boolean },
 ): Promise<Utxo> {
   const { genesisOutpointKey, isReservedGenesisOutpoint } = await import('./genesis-reservations.js');
   const { TransactionBuilder } = await import('../TransactionBuilder.js');
   // A reserved outpoint is one a caller derived a create address from: spending it here would destroy a prediction.
   const excluded = (u: Utxo): boolean => excludedOutpoints.has(genesisOutpointKey(u.txid, u.vout))
     || isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout));
-  const findGenesisUtxo = (us: Utxo[]): Utxo | undefined => us
-    .filter((u) => u.vout === 0 && !u.token && u.satoshis >= cost && !excluded(u))
-    .sort(compareGenesisFundingFreshness)[0];
-
-  const existing = findGenesisUtxo(await signer.getUtxos());
+  const listed = await signer.getUtxos();
+  const genesisCandidates = listed.filter((u) => u.vout === 0 && !u.token && u.satoshis >= cost && !excluded(u));
+  const verified: Utxo[] = [];
+  const rejected: { readonly coin: Utxo; readonly reason: string }[] = [];
+  for (const utxo of genesisCandidates) {
+    const reason = await genesisCoinRefusal(signer, utxo);
+    if (reason === undefined) verified.push(utxo);
+    else rejected.push({ coin: utxo, reason });
+  }
+  const existing = [...verified].sort(compareGenesisFundingFreshness)[0];
   if (existing) return existing;
+  if (options?.fanOut === false) {
+    throw new Error(
+      `Signer at ${signer.getAddress()} has no existing vout-0 coin to reserve. `
+      + 'A nonce read does not fan out; a deploy creates fresh coins.',
+    );
+  }
 
-  // Fan out a fresh vout-0 funding coin from the signer's spendable (token-free) UTXOs.
+  // Fan out a fresh vout-0 funding coin from coins proven to pay the signer.
   const fee = 1000n;
-  const spendable = (await signer.getUtxos())
-    .filter((u) => !u.token && !excluded(u))
-    .sort((a, b) => (b.satoshis > a.satoshis ? 1 : -1));
+  const spendable: Utxo[] = [];
+  for (const utxo of listed.filter((u) => !u.token && !excluded(u))) {
+    if (await genesisCoinRefusal(signer, utxo) === undefined) spendable.push(utxo);
+  }
+  spendable.sort((a, b) => (b.satoshis > a.satoshis ? 1 : -1));
   const chosen: Utxo[] = [];
   let total = 0n;
   for (const u of spendable) {
@@ -126,6 +140,14 @@ export async function selectGenesisFundingUtxoForCost(
     if (total >= cost + fee) break;
   }
   if (total < cost + fee) {
+    if (rejected.length > 0) {
+      const { coin, reason } = rejected[0]!;
+      throw new Error(
+        `Genesis funding outpoint ${coin.txid}:${coin.vout} is not an output at the signer's lock (${reason}). `
+        + 'A provider-listed coin cannot fund a token category unless its raw transaction (or a simulator\'s own '
+        + `ledger) pays ${signer.getAddress()} with the stated value and no token.`,
+      );
+    }
     throw new Error(
       `Signer at ${signer.getAddress()} has insufficient funds (${total} sats) to fan out a genesis funding UTXO `
       + `(need >= ${cost + fee}). A token genesis requires a fresh vout-0 UTXO; fund the account before deploying.`,
@@ -136,11 +158,22 @@ export async function selectGenesisFundingUtxoForCost(
   tb.addOutput({ to: signer.getAddress(), amount: total - fee }); // vout 0 = the fresh genesis funding coin
   await tb.send();
 
-  const created = findGenesisUtxo(await signer.getUtxos());
-  if (!created) {
-    throw new Error(`Fan-out did not yield a genesis-valid vout-0 UTXO at ${signer.getAddress()}.`);
+  const createdCandidates = (await signer.getUtxos())
+    .filter((u) => u.vout === 0 && !u.token && u.satoshis >= cost && !excluded(u));
+  for (const utxo of [...createdCandidates].sort(compareGenesisFundingFreshness)) {
+    if (await genesisCoinRefusal(signer, utxo) === undefined) return utxo;
   }
-  return created;
+  throw new Error(`Fan-out did not yield a genesis-valid vout-0 UTXO at ${signer.getAddress()}.`);
+}
+
+/**
+ * Why `utxo` cannot fund a genesis for `signer`, or undefined once it is proven a plain payment of the stated value
+ * to the signer's lock (SDKFRAMED-1): from the raw transaction that hashes to its txid, or a simulator's own ledger.
+ * The deployment proves its coin with the same check, so selection and deployment refuse the same coins.
+ */
+async function genesisCoinRefusal(signer: Signer, utxo: Utxo): Promise<string | undefined> {
+  const { ownCoinRefusal } = await import('../framed/deploy/own-coin.js');
+  return ownCoinRefusal(signer.provider, utxo, signer.getLockingBytecode(), { role: 'funder', tokenFree: true });
 }
 
 /** Prefer the coin most recently funded for this deployment, independent of provider UTXO ordering. */

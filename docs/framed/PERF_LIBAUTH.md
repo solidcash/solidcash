@@ -73,7 +73,7 @@ In-place `OP_DEFINE` x441 is the same speed on stock and the fork (under 1 ms). 
 
 At 4 KB bodies that is about 250 times. SDK overrides do not touch the clone. A debug trace that clones every step pays this. A single `stateEvaluate` clones once, at the start, so a normal framed execution does not.
 
-## What the fork makes redundant
+## What the fork makes redundant (superseded by the 2026-10-10 addendum at the end)
 
 Keep the SDK overrides until the resolved `@bitauth/libauth` is the fork. Removing them on stock `3.1.0-next.8` regresses dup, split, and pick above 4 KB (the stock-off column).
 
@@ -108,3 +108,38 @@ That doc records the proxied framed lane (take job 62.208 s, approve result 131.
 percent VM), the kernel proxied lane (take job 126.242 s, approve result 111.212 s, no CPU profile), and
 the no-proxy framed sanity titles (approve sanity 1044.307 s, refund sanity 718.767 s, worker CPU 89.5
 percent VM). Kernel transaction bytes, fee, and input counts were not collected on that kernel run.
+
+## Addendum (2026-10-10): the fork is now the resolved package, and it has grown
+
+The decision above chose an upstream PR. The repo instead pinned the fork's committed dist build: `package.json`
+resolves `@bitauth/libauth` to `git+https://github.com/mainnet-pat/libauth.git#vm-performance-dist` (`5b2e5e4ea`,
+2026-10-08), the committed build of branch `vm-performance` at `c705e4b4`. That series is wider than the four
+`perf-vm-fixes` commits the table above measured. It also caches the OP_ACTIVEBYTECODE encoding per instruction list and
+code separator (`0768b3f5`), pushes OP_INPUTBYTECODE's unlocking bytecode without a copy (`006372b8`), decodes each
+OP_INVOKE body once (`f75a8886`), shares the function table between a clone and its source (`66a81eb3`), decodes and
+encodes small VM numbers with Number arithmetic (`17789703`, `72958b9a`), and allocates each push once (`06d82b98`).
+The installed build is byte-identical to that branch's `build/`.
+
+Re-evaluated against that build, the `installXXX` overrides in
+`packages/solidcash/src/network/createVirtualMachine.ts`:
+
+| override | the fork build | action |
+|---|---|---|
+| the duplicating operations (OP_DUP, OP_IFDUP, OP_OVER, OP_2DUP, OP_3DUP, OP_2OVER, OP_TUCK) | covered (`b3371211`) | removed |
+| OP_DEFINE's compact body | covered (`da4cc27a`: `createOpDefine` stores `functionBody.slice()`) | removed |
+| OP_SPLIT's views | covered (`da4cc27a`) | kept, for the split trace |
+| OP_PICK | covered (`b3371211`) | kept, for the pick trace |
+| OP_ACTIVEBYTECODE's cached encoding | covered (`0768b3f5`) | removed |
+| OP_INPUTBYTECODE's push without a copy | covered (`006372b8`) | removed |
+| OP_INVOKE's decoded-body cache | covered (`f75a8886`) | kept: the install also carries the invoke traces |
+| OP_INVOKE's return probe, `invokeTrace`, `invoke-boundary` | not covered | kept (read by `preflight.ts`) |
+| the per-operation limit check (`every`) | not covered: libauth still measures the cost and re-runs every check | kept |
+| the P2SH decode cache, the failed-close recorder, the step trace, the sparse-probe branch skips | not covered | kept |
+
+`installZeroCopyStackOperations` is now `installStackOperationTraces`: it installs only OP_PICK and OP_SPLIT, so the
+last reads of a mis-indexed slot and the operands and frames of a failing split are still named under
+`SOLIDC_DEBUG_SPLIT_FAILURE`, while every other stack operation is libauth's own.
+
+Two residual notes. The pin names a mutable branch, so the fork's coverage is not pinned by content: a moved branch
+would silently change what the removals relied on. And `installCachedInvokeEvaluator` still reimplements OP_INVOKE; the
+invoke traces it carries would need re-homing onto libauth's `opInvoke` before that install can go.

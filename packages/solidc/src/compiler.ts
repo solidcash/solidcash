@@ -125,6 +125,7 @@ import {
   WhileNode, DoWhileNode, TernaryOpNode, UnaryOpNode, BreakNode, ContinueNode,
   type ExternalCallExpression,
   BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility, StructDefinitionNode,
+  exactArrayLength,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { Class, GlobalFunction } from './ast/Globals.js';
@@ -235,7 +236,7 @@ import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
 import DesugarLocalBytesElementWrite from './semantic/DesugarLocalBytesElementWrite.js';
 import CacheDynamicArrayInLoop from './semantic/CacheDynamicArrayInLoop.js';
-import CacheMappingEntryInLoop from './semantic/CacheMappingEntryInLoop.js';
+import CacheMappingEntryInLoop, { CloseDirectEntryCaches } from './semantic/CacheMappingEntryInLoop.js';
 import DesugarDynamicArrayCopyCast from './semantic/DesugarDynamicArrayCopyCast.js';
 import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.js';
 import {
@@ -260,15 +261,19 @@ import FoldConstantBoolBranches from './semantic/FoldConstantBoolBranches.js';
 import LowerStorageSlotPointers from './semantic/LowerStorageSlotPointers.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
+import lowerRequireMessageEffects from './semantic/LowerRequireMessageEffects.js';
 import autoMarkDelegateFunctions from './semantic/AutoMarkDelegateFunctions.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
+import { validateStorageLayoutSpecifiers } from './semantic/ValidateStorageLayoutSpecifiers.js';
 import { ImportResolver } from './ImportResolver.js';
+import { createMapResolver } from './createMapResolver.js';
+import { assertNoAmbiguousOverrides } from './semantic/AmbiguousOverrides.js';
 import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
   CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
   SortedMappingCodegenPendingError, BlockLayoutUnavailableError, StackVariableUnavailableError,
-  UnboundReturnCallError, UnpublishableLoopGuardError,
+  UnboundReturnCallError, UnpublishableLoopGuardError, RecursiveStructDefinitionError, ContractStorageTooLargeError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -596,6 +601,11 @@ type InternalCompilerOptions = CompilerOptions & {
    */
   __referencedChildOptions?: CompilerOptions;
   __messageBusExplicitlyDisabled?: boolean;
+  /**
+   * Set when graph-free auto-selection chose the direct path for a caller who never asked for it. A later
+   * refusal must then offer `messageBus: true` instead of telling the caller to omit an option they omitted.
+   */
+  __messageBusAutoNarrowed?: boolean;
   __messageBusMode?: MessageBusMode;
   /**
    * Disk hits rebuild the delegate from caller options, which have not been through graph-free narrowing.
@@ -1248,6 +1258,25 @@ export function parseImportedFileCached(
   return ast;
 }
 
+/** Options of the string entry points, which can also resolve imports from an in-memory map of sources. */
+export interface CompileStringOptions extends CompileOptions {
+  /**
+   * Import sources keyed by path, for filesystem-free import resolution (shorthand for
+   * `importResolver: createMapResolver(files)`). A relative import resolves against the importing file's path.
+   */
+  files?: Record<string, string>;
+}
+
+/** Turn the `files` shorthand into the import resolver it stands for. */
+function withFilesResolver<T extends CompileStringOptions>(options: T): Omit<T, 'files'> {
+  const { files, ...remaining } = options;
+  if (files === undefined) return remaining;
+  if (remaining.importResolver !== undefined) {
+    throw new Error('Pass either files or importResolver to the compiler, not both');
+  }
+  return { ...remaining, importResolver: createMapResolver(files) };
+}
+
 export interface SplitCompileOptions extends CompileOptions {
   /**
    * Maximum redeem-script bytes for each generated shard, honoured literally.
@@ -1394,12 +1423,33 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
  * Execution-affecting CompilerOptions (+ feature identity bits) must change this key;
  * observation-only knobs (e.g. SOLIDC_COMPILE_CACHE_DIR) must not.
  */
+/** Read straight from the environment and change emitted bytecode, so they belong in the cache key. */
+const BYTECODE_CHANGING_ENV = [
+  'SOLIDC_DEBUG_STREAM_PICK_OFFSET',
+  'SOLIDC_ROUTE_ABI_TAIL',
+  'SOLIDC_ROW_ASSERT',
+  'SOLIDC_ROW_HEAD_CHECK',
+  'SOLIDC_ROW_STACK_CLEAN',
+] as const;
+
+function bytecodeChangingEnvIdentity(): string {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+  if (!env) return '';
+  const bits: Record<string, string> = {};
+  for (const name of BYTECODE_CHANGING_ENV) {
+    const value = env[name];
+    if (value !== undefined && value !== '') bits[name] = value;
+  }
+  return Object.keys(bits).length > 0 ? `\x00${JSON.stringify(bits)}` : '';
+}
+
 export function buildArtifactCacheKey(
   code: string, options: CompilerOptions, primaryContractName: string | undefined,
 ): string {
   const closure = importClosureFingerprint(code, options.rootFileId, options.importResolver);
   return `artifact-v5\x00${COMPILER_CACHE_BUILD_ID}\x00${primaryContractName ?? ''}`
-    + `\x00${closure}\x00${code}\x00${JSON.stringify(cacheableCompilerOptions(options))}`;
+    + `\x00${closure}\x00${code}\x00${JSON.stringify(cacheableCompilerOptions(options))}`
+    + bytecodeChangingEnvIdentity();
 }
 
 function buildMultiArtifactCacheKey(
@@ -2391,6 +2441,10 @@ function compileWithExternalAdmissionFallback(
   // `admitExternalHandlers` false refuses every external handler, so the attributed answer is kept only when it
   // admits at least as many handlers. A per-handler refusal that somehow reshaped the route into a smaller one
   // therefore loses to the answer that shipped, and a contract can only gain handlers here.
+  // Each successful compileOnce leaves its own span analysis pending for the final publish gate, so refusedAll
+  // replaces attributed's. Restore it when attributed is returned, or the handlers attributed admits (an
+  // effect-free external one, say) are gated against refusedAll's refusals.
+  const attributedAnalysis = pendingSpanAdmissionAnalysis;
   let refusedAll: Artifact | undefined;
   try {
     refusedAll = compileOnce(false, false, false, false);
@@ -2399,6 +2453,7 @@ function compileWithExternalAdmissionFallback(
   }
   if (attributed !== undefined
     && (refusedAll === undefined || admittedHandlerCount(attributed) >= admittedHandlerCount(refusedAll))) {
+    pendingSpanAdmissionAnalysis = attributedAnalysis;
     return attributed;
   }
   if (mergedCompilerOptions.__messageBusVerifierProgram && attributed === undefined && firstError) {
@@ -3007,7 +3062,8 @@ function withoutUpgradesFrom(options: CompileOptions): CompileOptions {
   return Object.defineProperties({}, descriptors) as CompileOptions;
 }
 
-export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
+export function compileString(code: string, options: CompileStringOptions = {}): Artifact {
+  const compilerOptions: CompileOptions = withFilesResolver(options);
   // SOLIDC env registry: when SOLIDC_STRICT_UNKNOWN_ENV=1 (CI), refuse unknown SOLIDC_* before any compile work.
   enforceSolidcEnvPolicy();
   clearDefineFrameValidations();
@@ -3200,7 +3256,7 @@ function parseAndResolve(
     : code;
   // Lexing + parsing
   let ast = parseCode(parseSource, errorListener, mergedCompilerOptions.evmCompat,
-    mergedCompilerOptions.chunkedArrays);
+    mergedCompilerOptions.chunkedArrays, undefined, mergedCompilerOptions.rootFileId);
   // Hardhat's console library is a compiler/runtime debugging hook, not a source dependency that SolidCash
   // should parse or link. Its calls are represented by ConsoleStatementNode and already emit no BCH bytecode,
   // while retaining artifact log metadata for the SDK debugger. Accept both Solidity import spellings without
@@ -3228,6 +3284,14 @@ function parseAndResolve(
   // (`Todo[]` where `Todo` is imported) parses to a named AddressType placeholder. Now that imported struct
   // definitions are merged (and the primary is chosen), re-resolve those placeholders to the real StructType.
   if (hadImports) reresolveImportedStructTypes(ast);
+  assertNoRecursiveStructDefinitions(ast);
+  if ((mergedCompilerOptions.rootFileId ?? '').endsWith('.sol')) {
+    assertNoAmbiguousOverrides([
+      ...(ast.contract ? [ast.contract] : []), ...(ast.importedContracts ?? []), ...(ast.interfaceDefinitions ?? []),
+    ]);
+  }
+  // Before any lowering, with every file's declarations known: hoisted message effects lower like source statements.
+  lowerRequireMessageEffects(ast);
   profileLog('parseAndResolve', parseResolveStarted, {
     files: parseProfileTotals.files - filesBefore,
     sllFails: parseProfileTotals.sllFails - sllBefore,
@@ -4254,6 +4318,24 @@ function narrowGraphFreeAutoMessageBus(ast: Ast, options: CompilerOptions): void
   options.messageBus = false;
   options.messageBusKernel = false;
   internal.__messageBusExplicitlyDisabled = true;
+  internal.__messageBusAutoNarrowed = true;
+}
+
+/** The root's transitive contract bases by name through `implements`; interfaces and expanded roots yield none. */
+function inheritedSourceContracts(ast: Ast): ContractNode[] {
+  const byName = new Map(ast.importedContracts.map((imported) => [imported.name, imported]));
+  const bases: ContractNode[] = [];
+  const seen = new Set([ast.contract.name]);
+  const pending = [...ast.contract.implements];
+  while (pending.length > 0) {
+    const name = pending.shift()!;
+    const base = byName.get(name);
+    if (!base || seen.has(name)) continue;
+    seen.add(name);
+    bases.push(base);
+    pending.push(...base.implements);
+  }
+  return bases;
 }
 
 /**
@@ -4263,19 +4345,30 @@ function narrowGraphFreeAutoMessageBus(ast: Ast, options: CompilerOptions): void
  * semantics and do not justify speculative route synthesis. Typed external calls and non-delegate low-level
  * calls do: their caller needs call-manifest planning, repeated-owner batching, or an atomic graph route.
  * A graph-free contract can still be compiled as a leaf participant by explicitly requesting `messageBus: true`.
+ * Before inheritance expansion, the root's transitive bases contribute their members to the same walk.
  */
 function hasMessageBusGraphEdge(ast: Ast): boolean {
   const { contract } = ast;
-  const contractFunctions = [
-    ...contract.functions, contract.constructorDef, contract.fallbackDef, contract.receiveDef,
-  ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+  // Overridden base members join conservatively: they stay reachable through `super.f` / `Base.f`.
+  const bases = inheritedSourceContracts(ast);
+  const hierarchy = [contract, ...bases];
+  const baseNames = new Set(bases.map((base) => base.name));
+  const inheritedMemberName = (name: string): string => {
+    const dot = name.indexOf('.');
+    const qualifier = name.slice(0, Math.max(dot, 0));
+    return dot > 0 && (baseNames.has(qualifier) || (qualifier === 'super' && bases.length > 0))
+      ? name.slice(dot + 1) : name;
+  };
+  const contractFunctions = hierarchy.flatMap((owner) => [
+    ...owner.functions, owner.constructorDef, owner.fallbackDef, owner.receiveDef,
+  ]).filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
   const functions = [...contractFunctions,
     ...visibleFreeFunctionsForContract(contractFunctions, ast.freeFunctions)];
   const byName = new Map<string, FunctionDefinitionNode[]>();
   for (const fn of functions) (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
   const reachableFunctions = new Set<FunctionDefinitionNode>();
   const candidatesFor = (call: FunctionCallNode): FunctionDefinitionNode[] =>
-    (byName.get(call.identifier.name) ?? []).filter((candidate) =>
+    (byName.get(inheritedMemberName(call.identifier.name)) ?? []).filter((candidate) =>
       candidate.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length
         === call.parameters.length);
   const walkReachable = (value: unknown, visit: (node: Node) => void): void => {
@@ -4295,14 +4388,16 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   // Public/external entries, constructor, fallback, and receive can execute. An internal helper only justifies an
   // automatic route when one of those roots can call it. Before semantic resolution, arity distinguishes
   // overloads with different signatures; ambiguous same-arity calls retain every candidate.
+  const specialFunctions = new Set(hierarchy.flatMap((owner) => [
+    owner.constructorDef, owner.fallbackDef, owner.receiveDef,
+  ]));
   for (const fn of contractFunctions) {
-    if (fn.isEntryPoint || fn === contract.constructorDef
-      || fn === contract.fallbackDef || fn === contract.receiveDef) addClosure(fn);
+    if (fn.isEntryPoint || specialFunctions.has(fn)) addClosure(fn);
   }
   // Preserve graph edges in constructor initializers and other executable members. Modifier definitions are
   // handled separately below: an unused modifier has no execution path and must not enable a graph route.
   const otherMembers: Node[] = [];
-  for (const [key, member] of Object.entries(contract)) {
+  for (const [key, member] of hierarchy.flatMap((owner) => Object.entries(owner))) {
     if (key === 'functions' || key === 'constructorDef' || key === 'fallbackDef' || key === 'receiveDef'
       || key === 'modifierDefinitions') continue;
     if (member instanceof Node) otherMembers.push(member);
@@ -4320,9 +4415,12 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   // Modifier bodies and their invocation arguments are executable only when attached to a reachable function.
   // A modifier can call an internal helper whose own modifier adds another edge, so close this graph to a fixed
   // point rather than admitting every declaration or looking only at source entry points.
-  const modifierByName = new Map([
+  const modifiersByName = new Map([
     ...ast.libraryModifierDefinitions, ...contract.modifierDefinitions,
-  ].map((modifier) => [modifier.name, modifier]));
+  ].map((modifier) => [modifier.name, [modifier]]));
+  for (const modifier of bases.flatMap((base) => base.modifierDefinitions)) {
+    (modifiersByName.get(modifier.name) ?? modifiersByName.set(modifier.name, []).get(modifier.name)!).push(modifier);
+  }
   const activeModifiers = new Set<ModifierDefinitionNode>();
   const activeModifierArgs = new Set<Node>();
   let changed = true;
@@ -4338,10 +4436,11 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
           activeModifierArgs.add(arg);
           addMemberCalls(arg);
         }
-        const modifier = modifierByName.get(invocation.name);
-        if (!modifier || activeModifiers.has(modifier)) continue;
-        activeModifiers.add(modifier);
-        addMemberCalls(modifier);
+        for (const modifier of modifiersByName.get(inheritedMemberName(invocation.name)) ?? []) {
+          if (activeModifiers.has(modifier)) continue;
+          activeModifiers.add(modifier);
+          addMemberCalls(modifier);
+        }
       }
     }
     changed = priorReachableCount !== reachableFunctions.size
@@ -4349,12 +4448,13 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   }
   otherMembers.push(...activeModifiers, ...activeModifierArgs);
   const reachableFunctionList = functions.filter((fn) => reachableFunctions.has(fn));
+  // Root declarations come last so they win a name collision with a base.
+  const declarationOwners = [...bases].reverse().concat(contract);
+  const stateDeclarations = declarationOwners.flatMap((owner) => [...owner.parameters, ...owner.stateVariables]);
   // A function-pointer DECLARATION is not a call. Broaden the closure only for an invocation whose local target
   // may be any same-contract helper; otherwise an unused pointer makes unrelated dormant foreign-call helpers
   // turn an ordinary leaf into a speculative graph route. Track named bindings by lexical scope/source order.
-  const statePointerBindings = new Map<string, FunctionType | undefined>([
-    ...contract.parameters, ...contract.stateVariables,
-  ].map((declaration) => [
+  const statePointerBindings = new Map<string, FunctionType | undefined>(stateDeclarations.map((declaration) => [
     declaration.name, declaration.type instanceof FunctionType ? declaration.type : undefined,
   ]));
   let opaqueLocalDispatch = false;
@@ -4418,20 +4518,26 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   if (externalPointerCall) return true;
   const surveyedFunctions = opaqueLocalDispatch ? functions : reachableFunctionList;
   const interfaceNames = new Set(ast.interfaceDefinitions.map((iface) => iface.name));
+  // A cast receiver names the type it converts to. A call through a cast to a contract declared in this
+  // compilation - a sibling in the file, an imported contract, or the compiled contract itself - reaches a
+  // caller-chosen address exactly like an interface-typed receiver does, so it is a graph edge for the same
+  // reason. A library name is not: its calls lower to local or delegate code, never to a co-spent callee.
+  const castReceiverNames = new Set<string>([
+    contract.name,
+    ...ast.importedContracts.map((imported) => imported.name),
+    ...interfaceNames,
+  ]);
   // A call through an interface-typed variable parses as a namespaced FunctionCallNode (`sink.note`), not a
   // MethodCallNode. Detect it from declared receiver types before semantic lowering, while allowing a parameter
   // or local declaration to shadow a same-named contract state variable with an ordinary type.
-  const typedStateReceivers = new Map([
-    ...contract.parameters, ...contract.stateVariables,
-  ].map((declaration) => [
+  const typedStateReceivers = new Map(stateDeclarations.map((declaration) => [
     declaration.name,
     declaration.type instanceof AddressType && declaration.type.interfaceName !== undefined,
   ]));
-  const addressStateReceivers = new Set([
-    ...contract.parameters, ...contract.stateVariables,
-  ].filter((declaration) => declaration.type instanceof AddressType).map((declaration) => declaration.name));
+  const addressStateReceivers = new Set(stateDeclarations
+    .filter((declaration) => declaration.type instanceof AddressType).map((declaration) => declaration.name));
   const stateReceiverTypes = new Map<string, Type>([
-    ...contract.parameters, ...contract.stateVariables, ...contract.collections,
+    ...stateDeclarations, ...declarationOwners.flatMap((owner) => owner.collections),
   ].map((declaration): [string, Type] => [declaration.name, declaration.type]));
   const indexedElementType = (type: Type | undefined): Type | undefined => {
     if (type instanceof MappingType) return type.valueType;
@@ -4511,7 +4617,7 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
     const matchesType = (target: string | undefined): boolean => target === typeName
       || (target === 'uint' && typeName === 'uint256')
       || (target === 'int' && typeName === 'int256');
-    const directives = [...ast.usingForDirectives, ...contract.usingForDirectives];
+    const directives = [...ast.usingForDirectives, ...hierarchy.flatMap((owner) => owner.usingForDirectives)];
     const candidates = directives.filter((directive) => matchesType(directive.targetTypeName))
       .flatMap((directive) => directive.libraryName
         ? [`${directive.libraryName}.${method}`]
@@ -4622,7 +4728,8 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
       || (node instanceof LowLevelCallStatementNode && node.callMode !== 'delegatecall')
       || (node instanceof MethodCallNode && node.methodName !== 'delegatecall'
         && ((node.object instanceof InstantiationNode)
-          || (node.object instanceof FunctionCallNode && interfaceNames.has(node.object.identifier.name))
+          || (node.object instanceof FunctionCallNode
+            && castReceiverNames.has(node.object.identifier.name))
           // `this.sink.note(...)` is a MethodCallNode on a StateAccessNode, not a namespaced
           // FunctionCallNode. Its explicit state qualification cannot be shadowed by a local.
           || (node.object instanceof StateAccessNode
@@ -7148,11 +7255,15 @@ function synthesizeMessageBusRoute(
       fn.messageBusRejectionReason = 'KERNEL_FOREIGN_DELEGATE';
       continue;
     }
-    // An upgrade authorization must cover every output. Admit only the proven topology here: each reachable
+    // A lifecycle authorization must cover every output. Admit only the proven topology here: each reachable
     // signature check consumes an immutable detached root parameter, or the unique scalar signature field in a
     // finite struct rooted at that parameter. The generated wrapper constrains its witness to SIGHASH_ALL.
+    const fencesLifecycleSignatures = fn.modifiers.includes(FunctionModifier.UPGRADE)
+      || fn.modifiers.includes(FunctionModifier.DEPLOY)
+      || fn.modifiers.includes(FunctionModifier.SPLIT)
+      || fn.modifiers.includes(FunctionModifier.MERGE);
     if (compilerOptions.messageBusKernel === true
-      && fn.modifiers.includes(FunctionModifier.UPGRADE)
+      && fencesLifecycleSignatures
       && fn.messageBusUsesTransactionSignature === true) {
       if (!allOutputParameters) {
         fn.messageBusEligible = false;
@@ -11934,13 +12045,12 @@ function synthesizeMessageBusRoute(
         require(tx.inputs[activeVerifier].tokenCategory.slice(32, 33) == hex"01");
         require(tx.inputs[activeVerifier].nftCommitment.length >= 6);
         require(tx.inputs[activeVerifier].nftCommitment.slice(0, 4) == hex"4c335631");
-        bigint activeVerifierOutput = -1;
-        for (bigint verifierOutput = 0; verifierOutput < tx.outputs.length; verifierOutput = verifierOutput + 1) {
-          if (tx.outputs[verifierOutput].lockingBytecode == tx.inputs[activeVerifier].lockingBytecode
-            && tx.outputs[verifierOutput].tokenCategory == tx.inputs[activeVerifier].tokenCategory) {
-            activeVerifierOutput = verifierOutput;
-          }
-        }
+        // The verifier covenant recreates itself at its own input index. Searching for the last output
+        // with the same lock lets an extra output carry an attacker-chosen binding digest.
+        require(activeVerifier < tx.outputs.length);
+        bigint activeVerifierOutput = activeVerifier;
+        require(tx.outputs[activeVerifierOutput].lockingBytecode == tx.inputs[activeVerifier].lockingBytecode
+          && tx.outputs[activeVerifierOutput].tokenCategory == tx.inputs[activeVerifier].tokenCategory);
         ${kernelLifecycleHandlers.size > 0 ? `require(activeVerifierOutput >= 0);
         require(tx.outputs[activeVerifierOutput].nftCommitment.length == 40);
         require(tx.outputs[activeVerifierOutput].nftCommitment.slice(0, 38) == bytes.concat(
@@ -12203,7 +12313,9 @@ function synthesizeMessageBusRoute(
           || callManifest.slice(0, 8) == hex"4c33425553340000"${directParticipantMode
     ? '\n          || callManifest.slice(0, 8) == hex"4c33425553350000"' : ''}));`
     : 'require(callManifest.length >= 15 && callManifest.slice(0, 8) == hex"4c33425553310000");'}
-        require(int(bytes.concat(callManifest.slice(8, 12), hex"00000000")) == callManifest.length);
+        require(${compilerOptions.evmCompat
+    ? 'bigint(int(bytes.concat(callManifest.slice(8, 12), hex"00000000"))) == bigint(callManifest.length)'
+    : 'int(bytes.concat(callManifest.slice(8, 12), hex"00000000")) == callManifest.length'});
         bigint participantCount = int(bytes.concat(callManifest.slice(12, 13), hex"00"));
         require(participantCount >= 2 && participantCount <= 8);
         bigint cursor = 13;
@@ -12638,7 +12750,9 @@ function synthesizeMessageBusRoute(
             require(directPushCount >= 2 && directPreviousAt >= 5
               && directUnlock.slice(directPreviousAt, directLastAt) == rowArguments);
             if (directPushCount > 2) {
-              require(int(bytes.concat(directFirstPayload, hex"00")) == tx.inputs.length);
+              require(${compilerOptions.evmCompat
+    ? 'bigint(int(bytes.concat(directFirstPayload, hex"00"))) == bigint(tx.inputs.length)'
+    : 'int(bytes.concat(directFirstPayload, hex"00")) == tx.inputs.length'});
             }
           }` : ''}
           if (rowSignatureFrame.length > 0) {
@@ -13266,7 +13380,31 @@ function synthesizeMessageBusRoute(
   const lifecycleRouteLocals = kernelLifecycleHandlers.size > 0
     ? `bigint __message_bus_active_lifecycle_mode = 0;
        bigint __message_bus_active_lifecycle_count = 0;` : '';
-  const atomicVerifierInvocation = `
+  // A negative verifier index is the standalone, manifest-free path. Refuse it whenever this transport's envelope
+  // reader would find an envelope, so a routed callee cannot run outside a manifest that callers rely on (KB-3).
+  const standaloneEnvelopeAbsent = proxyForwardEnvelopeTransport ? `
+          bytes standaloneUnlock = bytes.concat(tx.inputs[0].unlockingBytecode, hex"00000000000000000000000000");
+          bigint standalonePushAt = 1;
+          bigint standaloneIndexOpcode = int(bytes.concat(standaloneUnlock.slice(0, 1), hex"00"));
+          if (standaloneIndexOpcode >= 1 && standaloneIndexOpcode <= 3) {
+            standalonePushAt = 1 + standaloneIndexOpcode;
+          }
+          require(standaloneUnlock.slice(standalonePushAt, standalonePushAt + 1) != hex"4d"
+            || standaloneUnlock.slice(standalonePushAt + 3, standalonePushAt + 8) != hex"534342314d");`
+    : rootEnvelopeTransport ? `
+          bytes standaloneUnlock = bytes.concat(tx.inputs[0].unlockingBytecode, hex"000000000000000000000000");
+          require(standaloneUnlock.slice(0, 6) != hex"04534342314d"
+            || standaloneUnlock.slice(8, 12) != hex"4c334331");`
+      : `
+          if (tx.inputs.length > 1) {
+            require(bytes.concat(tx.inputs[tx.inputs.length - 2].unlockingBytecode, hex"00").slice(0, 1)
+              != hex"4d");
+          }`;
+  const standaloneEnvelopeRefusal = !(useBoundRoute && !graphExecutionContext) ? '' : `
+        if (__internal__activeVerifierIndex < 0
+          && tx.inputs[${atomicParticipantInput}].outpointIndex != 4294967295) {${standaloneEnvelopeAbsent}
+        }`;
+  const atomicVerifierInvocation = `${standaloneEnvelopeRefusal}
         if (${useBoundRoute && !graphExecutionContext ? '__internal__activeVerifierIndex >= 0 && ' : ''}
           tx.inputs[${atomicParticipantInput}].outpointIndex != 4294967295) {
           bytes __internal__atomicBindingDigest = __message_bus_verify_atomic(
@@ -14384,9 +14522,15 @@ function compileResolvedAst(
     if (!ast.libraryContract) {
       // A standalone interface, a file-level enum/struct, or an inline-only library has no executable contract;
       // emit a minimal ABI-only declaration artifact (like solc: ABI + empty bytecode) instead of erroring.
+      // The file's free functions are still semantically validated below, so give them the return desugarings the
+      // executable path applies: an unmodified `b = expr;` on a named return reads a symbol this branch would
+      // otherwise never declare. Run before validation, exactly as the executable lane does.
+      ast = ast.accept(new NamedReturnTransformation()) as Ast;
       // Inline-only library functions still require source-level parameter/return location validation before
       // this early declaration-artifact return.
-      ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.evmCompat ?? false)) as Ast;
+      ast = ast.accept(new ValidateDataLocations(
+        mergedCompilerOptions.evmCompat ?? false, mergedCompilerOptions.rootFileId,
+      )) as Ast;
       // Interfaces/declaration-only files still require semantic validation (X184). A generic-storage library,
       // however, has already representation-lowered its storage pointer names for later import/inlining; running
       // the ordinary contract symbol pass here mistakes those placeholders for unresolved source identifiers.
@@ -14463,6 +14607,7 @@ function compileResolvedAst(
     ast = expandInheritance(ast, mergedCompilerOptions.evmCompat ?? false);
   }
   detectMappingArrayPagination(ast.contract);
+  assertStorageWithinEvmSlots(ast.contract);
 
   // OpenZeppelin upgradeable bases reserve future EVM storage slots with private fixed arrays named `__gap`.
   // They carry no runtime value and are never read; materializing them in CashToken commitments can consume
@@ -14474,13 +14619,13 @@ function compileResolvedAst(
 
   // Validate source-level location and modifier rules before storage/memory pointer lowerings erase the
   // declarations that carry them. This mirrors solc's declaration type checking and keeps lowerings simpler.
-  ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.evmCompat ?? false)) as Ast;
+  ast = ast.accept(new ValidateDataLocations(
+    mergedCompilerOptions.evmCompat ?? false, mergedCompilerOptions.rootFileId,
+  )) as Ast;
   ast = ast.accept(new OptimizeFixedArrayValues()) as Ast;
 
   // Every mapping uses the authenticated vmap backend. There is no omission-prone legacy mapping fallback.
-  for (const col of ast.contract.collections) {
-    if (col.type instanceof MappingType) col.sorted = true;
-  }
+  for (const col of ast.contract.collections) col.sorted = true;
 
   // A standalone abstract contract has no deployable bytecode; emit an ABI-only declaration artifact (solc
   // parity - abstract contracts have an ABI + empty bytecode), like interface / decl-only files.
@@ -15306,6 +15451,7 @@ function compileResolvedAst(
   if (needsMsgSigContext) {
     ast = ast.accept(new LowerInternalMsgSigContext(
       mergedCompilerOptions.composition === 'framed', mergedCompilerOptions.evmCompat === true,
+      mergedCompilerOptions.messageBus !== true,
     )) as Ast;
   }
 
@@ -15457,8 +15603,11 @@ function compileResolvedAst(
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
   // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache. A framed body keeps the
   // cache inside the segments its own accesses run in, so the upsert lands where the source writes the entry.
+  // Without the message bus no route clones a body after this pass, so a mapping the body composes stays uncached.
   if (needsLoop || needsCollectionJournal) {
-    ast = ast.accept(new CacheMappingEntryInLoop(false, mergedCompilerOptions.composition === 'framed')) as Ast;
+    ast = ast.accept(new CacheMappingEntryInLoop(
+      false, mergedCompilerOptions.composition === 'framed', !mergedCompilerOptions.messageBus,
+    )) as Ast;
   }
 
   // A conditional `delete m[k]` inside a branch does not delete on the taken path (the covenant can't statically
@@ -15526,9 +15675,7 @@ function compileResolvedAst(
   // Storage-lowering passes can synthesize mappings after the source collections were normalized above
   // (notably assembly sstore/sload and ERC-7201 storage pointers). Keep the backend invariant global: every
   // mapping, including compiler-generated mappings, uses authenticated vmap storage.
-  for (const col of ast.contract.collections) {
-    if (col.type instanceof MappingType) col.sorted = true;
-  }
+  for (const col of ast.contract.collections) col.sorted = true;
 
   restoreParkedFunctions(ast, cheapAdmissionPostStubPark);
   // Internal helper expansion may splice externally calling statements into an entry after the first source
@@ -15553,6 +15700,11 @@ function compileResolvedAst(
       admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
     );
   }
+  // DS-6: with the bus on, a direct body's read-modify-write cache before a guarded delete is flushed after its last
+  // write only now, past every route clone of that body (CloseDirectEntryCaches).
+  if (mergedCompilerOptions.messageBus && mergedCompilerOptions.composition !== 'framed') {
+    ast = ast.accept(new CloseDirectEntryCaches()) as Ast;
+  }
 
   // Propagate logical msg.sender use through the named internal-call closure before the body-local semantic
   // survey injects entry-point context. Modifier expansion commonly leaves `entry -> _checkOwner -> _msgSender`;
@@ -15562,7 +15714,9 @@ function compileResolvedAst(
   if (!(rootSourceCoversProgram(ast) && !code.includes('msg.sender'))) {
     const byName = new Map<string, FunctionDefinitionNode[]>();
     const directSenderNames = new Set<string>();
-    for (const fn of ast.contract.functions) {
+    // A library call (`L.f()`, run on the caller's frame as a delegatecall is) reads the caller's msg.sender too.
+    const senderScope = [...ast.contract.functions, ...ast.freeFunctions];
+    for (const fn of senderScope) {
       const group = byName.get(fn.name) ?? [];
       group.push(fn);
       byName.set(fn.name, group);
@@ -15573,7 +15727,7 @@ function compileResolvedAst(
       if (direct) directSenderNames.add(fn.name);
     }
     if (directSenderNames.size > 0) {
-      for (const fn of ast.contract.functions) {
+      for (const fn of senderScope) {
         if ([...collectNamedFunctionClosure(fn, byName)].some((name) => directSenderNames.has(name))) {
           fn.usesMsgSender = true;
         }
@@ -18285,7 +18439,8 @@ function validateInheritedPrivateFunctionAccess(ast: Ast): void {
  * Abstract contracts are excluded (not deployable). `compileString` is unchanged (single primary artifact).
  * See docs/multi-contract-artifacts.md.
  */
-export function compileStringMulti(code: string, compilerOptions: CompileOptions = {}): ArtifactMap {
+export function compileStringMulti(code: string, options: CompileStringOptions = {}): ArtifactMap {
+  const compilerOptions: CompileOptions = withFilesResolver(options);
   const { upgradesFrom } = compilerOptions;
   return withCompilerWarnings(compilerOptions.suppressWarnings, () => {
     const artifacts = compileStringMultiUnchecked(code, withoutUpgradesFrom(compilerOptions));
@@ -18403,6 +18558,7 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
 
 type PlannedFunction = {
   name: string;
+  parameters: number;
   closure: Set<string>;
   footprint: SplitStateFootprint;
 };
@@ -18426,7 +18582,10 @@ const LIFECYCLE_MODIFIERS = new Set([
  * entry points retain their existing Artifact return type and bytecode. The splitter operates on fresh ASTs for
  * every shard, so the normal mutating compiler pipeline remains isolated per artifact.
  */
-export function compileStringSplit(code: string, compilerOptions: SplitCompileOptions = {}): SplitArtifactBundle {
+export function compileStringSplit(
+  code: string, options: SplitCompileOptions & CompileStringOptions = {},
+): SplitArtifactBundle {
+  const compilerOptions: SplitCompileOptions = withFilesResolver(options);
   return withCompilerWarnings(
     compilerOptions.suppressWarnings,
     () => compileStringSplitUnchecked(code, compilerOptions),
@@ -18484,6 +18643,7 @@ function compileStringSplitUnchecked(
     ? functions.filter((fn) => isMovableSplitEntry(fn, moveReadOnlyEntries)
       && !rootFunctionNames.has(fn.name)) : []).map((fn) => ({
     name: fn.name,
+    parameters: fn.parameters.length,
     closure: collectNamedFunctionClosure(fn, byName),
     footprint: analyseFunctionFootprint(fn, byName, splitFootprintCache),
   }));
@@ -19220,8 +19380,10 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
       fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.OVERRIDE);
     }
   }
-  const planned = new Set(plans.map((p) => p.name));
-  for (const fn of contract.functions) if (planned.has(fn.name)) {
+  const planned = new Set(plans.map((p) => `${p.name}/${p.parameters}`));
+  // Match the planned entry by name and arity. An internal overload kept in the name closure must stay
+  // internal; promoting every function of that name would publish it as a delegate.
+  for (const fn of contract.functions) if (planned.has(`${fn.name}/${fn.parameters.length}`)) {
     fn.modifiers = fn.modifiers.filter((m) => ![
       FunctionModifier.INTERNAL, FunctionModifier.PRIVATE, FunctionModifier.EXTERNAL, FunctionModifier.PUBLIC,
       FunctionModifier.PURE, FunctionModifier.VIEW, FunctionModifier.DELEGATE,
@@ -19316,6 +19478,7 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, {
       const guard = new RequireNode(ok); guard.location = fn.location;
       const bytes = new IdentifierNode(dataName); bytes.location = fn.location;
       const decode = new AbiDecodeNode(bytes, fn.returnTypes); decode.location = fn.location;
+      decode.trustedEncoding = true;
       let returnStatement: ReturnNode;
       const statements: StatementNode[] = [capture, guard];
       if (fn.returnTypes.length === 1) {
@@ -19451,7 +19614,12 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new DesugarDynamicArrayCopyCast()) as Ast;
     singleAst = singleAst.accept(new CoalesceStateArrayStructFieldWrites()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
-    singleAst = singleAst.accept(new CacheMappingEntryInLoop(false, compilerOptions.composition === 'framed')) as Ast;
+    singleAst = singleAst.accept(new CacheMappingEntryInLoop(
+      false, compilerOptions.composition === 'framed', !compilerOptions.messageBus,
+    )) as Ast;
+    if (compilerOptions.messageBus && compilerOptions.composition !== 'framed') {
+      singleAst = singleAst.accept(new CloseDirectEntryCaches()) as Ast;
+    }
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp(
       compilerOptions.messageBusKernel === true,
     )) as Ast;
@@ -19474,8 +19642,19 @@ function compileReferencedContracts(
       .flatMap((directive) => directive.functionBindings?.map((binding) => binding.funcName) ?? []);
     (singleAst as SourceFileNode).freeFunctions = reachableFreeFunctions(contract, ast.freeFunctions, usingRoots);
     (singleAst as SourceFileNode).constantDefinitions = ast.constantDefinitions; // library constants those fns read
+    // The standalone compile is preferred below. When it fails, these bytes are what gets embedded. A modifier
+    // that was never expanded would ship the child with the guard missing and no error (SEM-2).
+    const childContract = singleAst.contract;
+    const hasCustomModifiers = childContract.modifierDefinitions.length > 0
+      || singleAst.libraryModifierDefinitions.length > 0
+      || childContract.functions.some((fn) => fn.customModifiers.length > 0)
+      || (childContract.constructorDef?.customModifiers.length ?? 0) > 0
+      || (childContract.fallbackDef?.customModifiers.length ?? 0) > 0
+      || (childContract.receiveDef?.customModifiers.length ?? 0) > 0
+      || singleAst.freeFunctions.some((fn) => fn.customModifiers.length > 0);
+    if (hasCustomModifiers) singleAst = expandModifiers(singleAst);
     for (const col of singleAst.contract.collections) {
-      if (col.type instanceof MappingType) col.sorted = true;
+      col.sorted = true;
     }
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
     singleAst = singleAst.accept(new TypeCheckTraversal(
@@ -19519,14 +19698,33 @@ function compileReferencedContracts(
     // standalone compile, which is the artifact a caller deploys and predicts the address from. A child the source
     // cannot compile on its own (an unrelated file-level helper embedding its own runtimeCode, say) has no such
     // artifact to differ from, so it keeps the bytes generated here.
-    compiledBytecodes.set(
-      contractName,
-      compileReferencedContractStandalone(code, contractName, childOptions)
-        ?? scriptToBytecode(optimisationResult.script),
-    );
+    const standalone = compileReferencedContractStandalone(code, contractName, childOptions);
+    if (standalone.bytecode === undefined) {
+      // The bytes generated here never expanded the child's modifiers: embedding them would drop its guards.
+      const host = unexpandedModifierHost(contract, new Set([ast.contract.name, ...contractMap.keys()]));
+      if (host !== undefined) {
+        throw standalone.error ?? new Error(`Contract '${contractName}' cannot be embedded: its standalone compile `
+          + `is unavailable and '${host}' carries modifiers the embedded pipeline does not expand`);
+      }
+    }
+    compiledBytecodes.set(contractName, standalone.bytecode ?? scriptToBytecode(optimisationResult.script));
   }
 
   return compiledBytecodes;
+}
+
+/** The name of a body of `contract` that still carries a modifier invocation, or undefined when none does. */
+function unexpandedModifierHost(contract: ContractNode, contractNames: Set<string>): string | undefined {
+  for (const fn of [...contract.functions, contract.fallbackDef, contract.receiveDef]) {
+    if (fn !== undefined && fn.customModifiers.length > 0) return fn.name;
+  }
+  const ctor = contract.constructorDef;
+  if (ctor === undefined) return undefined;
+  // A constructor's base-contract invocations share the modifier list; only a non-contract name is a modifier.
+  const pending = (ctor.body.statements ?? []).some((statement) =>
+    statement instanceof BlockNode && statement.pendingConstructorModifiers !== undefined);
+  if (pending || ctor.customModifiers.some((invocation) => !contractNames.has(invocation.name))) return 'constructor';
+  return undefined;
 }
 
 // Referenced-contract wrappers must carry the file-level helpers that child actually calls (including transitive
@@ -19606,10 +19804,11 @@ function publicCompilerOptions(options: CompilerOptions): CompilerOptions {
 const referencedContractCompileStack: string[] = [];
 
 /**
- * The bytes of `contractName`'s standalone compile, nested inside the compile that embeds it, or undefined when the
- * source does not compile with that contract selected. It goes through the same entry a primary does, so the
- * embedded bytes cannot drift from the artifact. The artifact cache is keyed exactly as that standalone compile, so
- * a child the caller compiled already is reused and the admission passes of one enclosing compile build it once.
+ * The bytes of `contractName`'s standalone compile, nested inside the compile that embeds it, or the error when the
+ * source does not compile with that contract selected (neither for a creation cycle). It goes through the same
+ * entry a primary does, so the embedded bytes cannot drift from the artifact. The artifact cache is keyed exactly as
+ * that standalone compile, so a child the caller compiled already is reused and the admission passes of one
+ * enclosing compile build it once.
  *
  * The bytes are the artifact's published `bytecode`, the program the SDK deploys and derives the address from. A
  * kernel artifact publishes its plan digest there (`<SCKP digest> OP_DROP` after the program), which the debug copy
@@ -19617,9 +19816,9 @@ const referencedContractCompileStack: string[] = [];
  */
 function compileReferencedContractStandalone(
   code: string, contractName: string, options: CompilerOptions,
-): Uint8Array | undefined {
+): { bytecode?: Uint8Array; error?: Error } {
   // A contract that creates itself, directly or through another, has no standalone compile to embed.
-  if (referencedContractCompileStack.includes(contractName)) return undefined;
+  if (referencedContractCompileStack.includes(contractName)) return {};
   // The enclosing compile may have recorded its own admission analysis; the nested one starts by clearing it.
   const enclosingAdmissionAnalysis = pendingSpanAdmissionAnalysis;
   referencedContractCompileStack.push(contractName);
@@ -19630,9 +19829,9 @@ function compileReferencedContractStandalone(
       suppressWarnings: true,
       __artifactCache: true,
     } as CompileOptions));
-    return scriptToBytecode(asmToScript(artifact.bytecode));
-  } catch {
-    return undefined;
+    return { bytecode: scriptToBytecode(asmToScript(artifact.bytecode)) };
+  } catch (error) {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
   } finally {
     referencedContractCompileStack.pop();
     pendingSpanAdmissionAnalysis = enclosingAdmissionAnalysis;
@@ -20601,6 +20800,7 @@ export function parseCode(
   evmCompat = false,
   chunkedArrays = true,
   importedFileId?: string,
+  rootFileId?: string,
 ): Ast {
   // Solidity corpus files append diagnostic expectations after `// ----`; that trailer is test metadata, not
   // source text, and often repeats the SPDX spelling inside warning prose.
@@ -20657,35 +20857,40 @@ export function parseCode(
     );
   }
 
-  // Solidity's storage-layout specifier sets an EVM storage base slot;
-  // it has no meaning on the UTXO model, so drop the clause so the contract parses. Anchored to a
+  // Solidity's storage-layout specifier sets an EVM storage base slot. NFT-commitment state has no slot space, so
+  // drop the clause so the contract parses and keep only its evaluated base (ContractNode.storageLayoutBase, set
+  // below), which shifts the EVM-visible slot numbers. Anchored to a
   // contract header (so a `layout at .. {` inside a string / body is not touched) and stopping at
   // the body `{`. The clause may span lines and contain NatSpec comments; blank its non-newline characters so
   // downstream source locations keep their original line numbers. Native generated helpers have no such
   // clause; skip the two regex walks unless the source actually contains one.
   // Current Solidity grammar places the clause BEFORE inheritance (`contract C layout at 42 is A`); preserve the
   // `is A` tail rather than consuming it as part of the layout expression. Retain the older post-inheritance
-  // spelling below for compatibility with sources SolidCash already accepted.
+  // spelling below for compatibility with sources SolidCash already accepted. solc's checks on the clause run first.
+  let layoutBases: Map<string, bigint> | undefined;
   if (code.includes('layout at')) {
+    const bases = withSourceFile(importedFileId, () => validateStorageLayoutSpecifiers(code));
+    layoutBases = bases;
+    const warnUnevaluated = (header: string): void => {
+      const name = /\bcontract\s+(\w+)/.exec(header)?.[1];
+      if (name !== undefined && !bases.has(name)) {
+        console.log(`Warning: the \`layout at\` base slot of contract ${name} could not be evaluated - its EVM `
+          + 'slot numbers (.slot, sload/sstore) are not offset by it.');
+      }
+    };
     code = code.replace(
       // eslint-disable-next-line max-len
       /(\bcontract\s+\w+\b)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+)([^{};]+?)(\s+is\s+[^{}]*?)(?=\s*\{)/g,
       (_m, header, layoutPrefix, expr, inheritance) => {
-        if (/\berc7201\b/.test(expr)) {
-          console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
-            + 'base slot on the UTXO model, so the layout specifier is ignored.');
-        }
+        warnUnevaluated(header);
         return header + (layoutPrefix + expr).replace(/[^\r\n]/g, ' ') + inheritance;
       },
     );
     code = code.replace(
       // eslint-disable-next-line max-len
       /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+([^{};]+?))(?=\s*\{)/g,
-      (_m, header, clause, expr) => {
-        if (/\berc7201\b/.test(expr)) {
-          console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
-            + 'base slot on the UTXO model, so the layout specifier is ignored.');
-        }
+      (_m, header, clause) => {
+        warnUnevaluated(header);
         return header + clause.replace(/[^\r\n]/g, ' ');
       },
     );
@@ -20763,7 +20968,7 @@ export function parseCode(
     // AST building
     const astStarted = compilerProfileEnabled() ? Date.now() : 0;
     const built = new AstBuilder(
-      parseTree, evmCompat, chunkedArrays, code, importedFileId,
+      parseTree, evmCompat, chunkedArrays, code, importedFileId, rootFileId,
     ).build() as Ast;
     if (compilerProfileEnabled()) {
       profileLog('parseCode:file', parseStarted, {
@@ -20783,6 +20988,12 @@ export function parseCode(
     parseProfileTotals.ms += ms;
     if (sllFailed) parseProfileTotals.sllFails += 1;
   }
+  if (layoutBases?.size) {
+    for (const contract of [ast.contract, ...ast.importedContracts]) {
+      const base = contract ? layoutBases.get(contract.name) : undefined;
+      if (base !== undefined) contract.storageLayoutBase = base;
+    }
+  }
   return ast;
 }
 
@@ -20790,6 +21001,57 @@ export function parseCode(
 // merged at parse time) to the real StructType, now that imports are merged. Scoped to the main contract's
 // state variables + collections (the array-bearing declarations); a non-struct placeholder (interface array
 // or a typo) is left untouched and validated downstream as before.
+/**
+ * solc caps a contract's storage at 2^256 slots, counting each state variable's size upper bound (no packing): a value,
+ * mapping or dynamic array is one slot, a static array its length times its element, a struct the sum of its fields.
+ */
+function assertStorageWithinEvmSlots(contract: ContractNode): void {
+  const slots = (type: Type, active: Set<StructType>): bigint => {
+    if (type instanceof ArrayType && type.bound !== undefined) {
+      return exactArrayLength(type)! * slots(type.elementType, active);
+    }
+    if (!(type instanceof StructType) || active.has(type)) return 1n;
+    const nested = new Set(active).add(type);
+    return type.fields.reduce((total, field) => total + slots(field.type, nested), 0n);
+  };
+  let total = BigInt(contract.collections.length);
+  for (const variable of contract.stateVariables) {
+    total += slots(variable.type, new Set());
+    if (total >= 1n << 256n) throw new ContractStorageTooLargeError(contract);
+  }
+}
+
+/**
+ * solc refuses a struct that contains itself by value: directly, or through fixed-size arrays and other structs held
+ * by value. A dynamic array or mapping ends that chain. Struct names shared by two definitions are not followed, so
+ * same-named structs of different contracts cannot be mistaken for one another.
+ */
+function assertNoRecursiveStructDefinitions(ast: Ast): void {
+  const definitions = [
+    ...(ast.structDefinitions ?? []),
+    ...(ast.contract?.structDefinitions ?? []),
+    ...(ast.importedContracts ?? []).flatMap((contract) => contract.structDefinitions ?? []),
+  ];
+  const counts = new Map<string, number>();
+  for (const definition of definitions) counts.set(definition.name, (counts.get(definition.name) ?? 0) + 1);
+  const byName = new Map(definitions.filter((definition) => counts.get(definition.name) === 1)
+    .map((definition) => [definition.name, definition]));
+  const reaches = (type: Type, target: string, seen: Set<string>): boolean => {
+    if (type instanceof ArrayType) return type.bound !== undefined && reaches(type.elementType, target, seen);
+    const name = type instanceof StructType || type instanceof AddressType ? (type as { name?: string }).name : undefined;
+    if (name === undefined || !byName.has(name)) return false;
+    if (name === target) return true;
+    if (seen.has(name)) return false;
+    seen.add(name);
+    return byName.get(name)!.fields.some((field) => reaches(field.type, target, seen));
+  };
+  for (const definition of byName.values()) {
+    if (definition.fields.some((field) => reaches(field.type, definition.name, new Set()))) {
+      throw new RecursiveStructDefinitionError(definition);
+    }
+  }
+}
+
 function reresolveImportedStructTypes(ast: Ast): void {
   const contract = ast.contract;
   if (!contract) return;

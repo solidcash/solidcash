@@ -195,6 +195,11 @@ export interface MappingDeleteRequest {
    * tail for `string`, the minimal zero for an int, and so on.
    */
   readonly encodeDefault: () => Uint8Array;
+  /**
+   * True for a delete a branch guards, which a framed body settles without creating a node (DS-6): at a key the list
+   * does not hold, run or not, it keeps the node that brackets the key.
+   */
+  readonly guarded?: boolean;
 }
 
 /**
@@ -203,10 +208,17 @@ export interface MappingDeleteRequest {
  * This is the delete-side counterpart of `planMappingWrite`. A write of `undefined` removes a key by relinking the
  * predecessor around it — the list removal the direct convention performs — while a framed body never unlinks a
  * node, so the plan that agrees with the emitted bytes is an in-place write of the default tail. An absent key is
- * an insert of the default node, exactly as the upsert's absent branch does. The returned plan's `removed` is
- * therefore always false: the node stays.
+ * an insert of the default node, exactly as the upsert's absent branch does, unless the delete is `guarded`: then
+ * its one written node is the predecessor, kept. The returned plan's `removed` is therefore always false.
  */
 export function planMappingDelete(request: MappingDeleteRequest): MappingWritePlan {
+  const slot = keyToSlotMulti([...request.keys]);
+  const nodes = readInventory(request.inventory);
+  if (request.guarded === true && findNode(nodes, slot) === undefined) {
+    const predecessor = requirePredecessor(nodes, slot);
+    const kept = { slot: predecessor.slot, existed: true, before: predecessor.commitment, after: predecessor.commitment };
+    return { slot, existed: false, removed: false, predecessor, written: [kept] };
+  }
   return planMappingWrite({
     keys: request.keys,
     value: request.encodeDefault(),

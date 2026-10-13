@@ -1,7 +1,8 @@
-import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { createVirtualMachineBch2023 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-vm.js';
 import { createVirtualMachineBch2025 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2025/bch-2025-vm.js';
 import { createVirtualMachineBchSpec } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-vm.js';
+import { AuthenticationErrorBch2025Additions } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2025/bch-2025-errors.js';
 import { AuthenticationErrorCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/errors.js';
 import type { AuthenticationInstruction } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-types.js';
 import { decodeAuthenticationInstructions, encodeAuthenticationInstruction } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
@@ -12,8 +13,11 @@ import { walletTemplateToCompilerConfiguration } from '@bitauth/libauth/build/li
 import type { WalletTemplate, WalletTemplateScriptUnlocking } from '@bitauth/libauth/build/lib/engine/types/template-types.js';
 import { type Artifact, type FunctionDebugInformation, type LogData, type LogEntry, Op, PrimitiveType, type RequireStatement, type StackItem, asmToBytecode, bytecodeToAsm, decodeBool, decodeInt, decodeString } from '@solidcash/utils';
 import { findLastIndex, toRegExp } from './utils.js';
-import { FailedRequireError, FailedTransactionError, FailedTransactionEvaluationError } from './Errors.js';
-import { getBitauthUri } from './libauth-template/LibauthTemplate.js';
+import {
+  type CallStackEntry, FailedRequireError, FailedTransactionError, FailedTransactionEvaluationError,
+  getLocationDataForInstructionPointer, getRequireLocationData,
+} from './Errors.js';
+import { getBitauthUri } from './libauth-template/bitauth-uri.js';
 import { createVirtualMachineBch2026ForProvider } from './network/createVirtualMachine.js';
 import { VmTarget } from './interfaces.js';
 import type NetworkProvider from './network/NetworkProvider.js';
@@ -36,7 +40,7 @@ type VM = AuthenticationVirtualMachine<
  * accept/reject gate for `.build()` on a `recursiveStateHandler` function, and `TransactionBuilder.send()`
  * propagates it for a standard non-covenant transaction.
  *
- * At `@mem-cash/validation` 0.0.8 - the version `packages/solidcash/package.json` declares - MockNetworkProvider's
+ * At `@mem-cash/validation` 0.0.10 - the version `packages/solidcash/package.json` declares - MockNetworkProvider's
  * `consensusLimits` reach the decider, so a bare VM here was wrong in BOTH directions. Measured:
  *
  * - FAIL-OPEN: `decrement(3).build()` was ADMITTED under `operationCostBudgetPerByte: 150` while the decider
@@ -156,9 +160,18 @@ const debugSingleScenario = (
   // https://libauth.org/types/AuthenticationVirtualMachine.html#__type.debug
   // We additionally check controlStack.length === 0 to avoid matching OP_INVOKE function entries,
   // which also start at ip=0 but have a function frame on the control stack.
-  const lockingScriptDebugResult = fullDebugSteps.slice(
+  const lockingSteps = fullDebugSteps.slice(
     findLastIndex(fullDebugSteps, (state) => state.ip === 0 && state.controlStack.length === 0),
   );
+  // Drop a deployer's `<salt> OP_DROP` from main-script steps so their pointers match the artifact's.
+  const saltLength = deployerSaltLength(artifact, lockingSteps[0]);
+  const inMainScript = (step: AuthenticationProgramStateCommon): boolean =>
+    !step.controlStack.some((item) => typeof item === 'object' && item !== null);
+  const lockingScriptDebugResult = saltLength === 0 ? lockingSteps : lockingSteps
+    .filter((step) => !inMainScript(step) || step.ip >= saltLength)
+    .map((step) => (inMainScript(step)
+      ? { ...step, ip: step.ip - saltLength, instructions: step.instructions.slice(saltLength) }
+      : step));
 
   // The controlStack determines whether the current debug step is in the executed branch
   // It also tracks loop / function usage, but for the purpose of determining whether a step was executed,
@@ -216,7 +229,7 @@ const debugSingleScenario = (
     return undefined;
   };
 
-  type InvokeDebug = FunctionDebugInformation & { bytecode: string };
+  type InvokeDebug = FunctionDebugInformation & { bytecode: string; name?: string };
   const invokeDebug = (artifact?.debug as (NonNullable<Artifact['debug']> & {
     invokeDebug?: Record<string, InvokeDebug>;
   }) | undefined)?.invokeDebug ?? {};
@@ -258,6 +271,52 @@ const debugSingleScenario = (
     ));
     const matches = Object.values(invokeDebug).filter((debug) => debug.bytecode === activeBytecode);
     return matches.length === 1 ? matches[0] : undefined;
+  };
+
+  // The steps that invoked each function frame between the entry function and `failedStep`, innermost first. Going
+  // back from the failure, the first step below the current frame depth is the one about to run its OP_INVOKE.
+  const invocationChain = (failedStep: AuthenticationProgramStateCommon): AuthenticationProgramStateCommon[] => {
+    const chain: AuthenticationProgramStateCommon[] = [];
+    const entryDepth = entryPointFuncSelector === undefined ? 0 : 1;
+    let depth = functionFrameDepth(failedStep);
+    for (let index = executedDebugSteps.lastIndexOf(failedStep) - 1; index >= 0 && depth > entryDepth; index -= 1) {
+      const step = executedDebugSteps[index];
+      const stepDepth = functionFrameDepth(step);
+      if (stepDepth >= depth) continue;
+      chain.push(step);
+      depth = stepDepth;
+    }
+    return chain;
+  };
+
+  // Bodies the compiler made (helpers, outlined spans) are not functions the user wrote
+  const isUserFunctionBody = (debug: InvokeDebug | undefined): boolean => debug?.name !== undefined
+    && !/^(compiler helper|outlined source span) /.test(debug.name);
+
+  // A failing require inside a function, then each call that led to it. Frames of bodies that are not user functions
+  // are left out; a failure inside one gets no call stack.
+  const requireCallStack = (
+    failedStep: AuthenticationProgramStateCommon, failedDebug: InvokeDebug, failingIp: number, requireLine: number,
+  ): CallStackEntry[] => {
+    if (!artifact || !isUserFunctionBody(failedDebug)) return [];
+    const sourceName = `${artifact.contractName}.scash`;
+    const failing = getRequireLocationData(artifact, failingIp, failedDebug.sourceMap, requireLine);
+    const callStack: CallStackEntry[] = [
+      { functionName: failedDebug.name, sourceName, line: failing.lineNumber, statement: failing.statement },
+    ];
+    const entryDepth = entryPointFuncSelector === undefined ? 0 : 1;
+    for (const callerStep of invocationChain(failedStep)) {
+      const isEntryFrame = functionFrameDepth(callerStep) <= entryDepth;
+      const callerDebug = isEntryFrame ? undefined : activeBodyDebug(callerStep);
+      if (!isEntryFrame && !isUserFunctionBody(callerDebug)) continue;
+      const sourceMap = callerDebug?.sourceMap ?? getFunctionSourceMap(artifact, entryPointFuncSelector);
+      const callSite = getLocationDataForInstructionPointer(artifact, callerStep.ip, sourceMap);
+      if (callSite.lineNumber <= 0) continue;
+      callStack.push({
+        functionName: callerDebug?.name, sourceName, line: callSite.lineNumber, statement: callSite.statement.trim(),
+      });
+    }
+    return callStack;
   };
 
   // Returns the logs array for a debug step - either from the function body's debug info
@@ -306,7 +365,12 @@ const debugSingleScenario = (
     }
   }
 
-  const lastExecutedDebugStep = executedDebugSteps[executedDebugSteps.length - 1];
+  // Instructions in a branch that is not taken are skipped, but still cost operations, so a resource limit can be
+  // reached on one of them. Evaluation stops at the step that raised an error, so that step is kept even if skipped.
+  const finalDebugStep = lockingScriptDebugResult[lockingScriptDebugResult.length - 1];
+  const lastExecutedDebugStep = finalDebugStep?.error
+    ? finalDebugStep
+    : executedDebugSteps[executedDebugSteps.length - 1];
 
   // If an error is present in the last step, that means a require statement in the middle of the function failed
   if (lastExecutedDebugStep.error) {
@@ -337,11 +401,15 @@ const debugSingleScenario = (
     // Resolve the instruction pointer against the bytecode currently active in the VM. OP_INVOKE replaces
     // `instructions`, so nested and recursive calls cannot be attributed from frame depth alone.
     const invokedDebug = activeBodyDebug(lastExecutedDebugStep);
-    const requireStatement = invokedDebug
-      ? invokedDebug.requires.find((entry) => entry.ip === requireStatementIp)
-      : isEntryPointBodyStep(lastExecutedDebugStep)
-        ? findRequireStatement(artifact, requireStatementIp, entryPointFuncSelector)
-        : undefined;
+    // A resource limit can run out on any instruction, including the one a require statement ends in, so it is never
+    // attributed to that require: its condition did not fail, the transaction ran out of budget
+    const requireStatement = isResourceLimitError(error)
+      ? undefined
+      : invokedDebug
+        ? invokedDebug.requires.find((entry) => entry.ip === requireStatementIp)
+        : isEntryPointBodyStep(lastExecutedDebugStep)
+          ? findRequireStatement(artifact, requireStatementIp, entryPointFuncSelector)
+          : undefined;
     const functionSourceMap = invokedDebug?.sourceMap ?? getFunctionSourceMap(artifact, entryPointFuncSelector);
 
     if (requireStatement) {
@@ -349,11 +417,15 @@ const debugSingleScenario = (
       // OP_CHECKSIG may be cleanup code (OP_NIP) mapped to the function declaration line,
       // while the OP_CHECKSIG itself maps to the correct require statement line.
       // In optimised code (CHECKSIGVERIFY), requireStatementIp == failingIp anyway.
+      const callStack = invokedDebug
+        ? requireCallStack(lastExecutedDebugStep, invokedDebug, failingIp, requireStatement.line)
+        : [];
       throw new FailedRequireError(
         artifact, failingIp, requireStatement, inputIndex, getBitauthUri(template, false), error,
         functionSourceMap,
         isNullFail && failingInstruction?.opcode === Op.OP_CHECKSIGVERIFY,
         lastExecutedDebugStep.stack,
+        callStack,
       );
     }
 
@@ -579,6 +651,19 @@ const logDebugSteps = (
   });
 };
 
+// generateTemplateLockScript opens a salted contract's script with `<salt> OP_DROP`, which the artifact's pointers
+// do not count. Only that exact shape is recognised, so every other script is left as it is.
+const deployerSaltLength = (
+  artifact: Artifact | undefined, entry: AuthenticationProgramStateCommon | undefined,
+): number => {
+  if (!artifact || !entry) return 0;
+  const [push, drop] = entry.instructions;
+  if (!push || !('data' in push) || drop?.opcode !== Op.OP_DROP) return 0;
+  const bytecode = artifact.debug ? hexToBin(artifact.debug.bytecode) : asmToBytecode(artifact.bytecode);
+  const own = artifact.constructorInputs.length + decodeAuthenticationInstructions(bytecode).length;
+  return entry.instructions.length === own + 2 ? 2 : 0;
+};
+
 const getFinalExecutedVerifyIp = (executedDebugSteps: AuthenticationProgramStateCommon[]): number => {
   // Map every executed debug step to its corresponding instruction
   // (note that the last executed step(s) may not have a corresponding instruction and will be `undefined`)
@@ -659,3 +744,13 @@ const verifyFullTransaction = (template: WalletTemplate, provider?: NetworkProvi
 const isSignatureCheckWithoutVerify = (instruction: AuthenticationInstruction): boolean => {
   return [Op.OP_CHECKSIG, Op.OP_CHECKMULTISIG, Op.OP_CHECKDATASIG].includes(instruction.opcode);
 };
+
+// Budgets that are counted per operation, so they can run out on the instruction a require statement ends in
+const RESOURCE_LIMIT_ERRORS: string[] = [
+  AuthenticationErrorBch2025Additions.excessiveOperationCost,
+  AuthenticationErrorBch2025Additions.excessiveHashing,
+  AuthenticationErrorCommon.exceededMaximumSignatureCheckCount,
+  AuthenticationErrorCommon.exceededMaximumOperationCount,
+];
+
+const isResourceLimitError = (error: string): boolean => RESOURCE_LIMIT_ERRORS.some((limit) => error.includes(limit));

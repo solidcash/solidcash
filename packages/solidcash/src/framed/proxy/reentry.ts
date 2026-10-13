@@ -40,7 +40,7 @@ function encloses(callees: readonly HopCallee[], outer: number, inner: number): 
 }
 
 /** The frame itself and every frame it enters, in placement order. */
-function subtreeOf(callees: readonly HopCallee[], index: number): readonly number[] {
+export function subtreeOf(callees: readonly HopCallee[], index: number): readonly number[] {
   return callees.flatMap((_callee, at) => (at === index || encloses(callees, index, at) ? [at] : []));
 }
 

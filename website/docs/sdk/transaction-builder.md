@@ -73,6 +73,10 @@ transactionBuilder.addInput(utxo: Utxo, unlocker: Unlocker, options?: InputOptio
 
 Adds a single input UTXO to the transaction that can be unlocked using the provided unlocker. The unlocker can be derived from a `SignatureTemplate` or a `Contract` instance's spending functions. The `InputOptions` object can be used to specify the sequence number of the input.
 
+When the UTXO states its `lockingBytecode`, building the transaction checks it against the lock a contract, P2PKH or
+placeholder unlocker spends, and refuses a mismatch with an `UnlockerLockingBytecodeMismatchError` instead of
+producing a transaction the network would reject.
+
 :::note
 It is possible to create custom unlockers by implementing the `Unlocker` interface. Most use cases however are covered by the `SignatureTemplate` and `Contract` classes.
 :::
@@ -204,7 +208,7 @@ is calculated, later inputs/outputs of that asset are rejected so the computed c
 transactionBuilder.setLocktime(locktime: number): this
 ```
 
-Sets the locktime for the transaction to set a transaction-level absolute timelock (see [Timelock documentation][bitcoin-wiki-timelocks] for more information). The locktime can be set to a specific block height or a unix timestamp.
+Sets the locktime for the transaction to set a transaction-level absolute timelock (see [Timelock documentation][bitcoin-wiki-timelocks] for more information). The locktime can be set to a specific block height or a unix timestamp. It has to be an integer between 0 and 4294967295.
 
 #### Example
 ```ts
@@ -217,12 +221,26 @@ transactionBuilder.setLocktime((Date.now() / 1000) + 24 * 60 * 60);
 transactionBuilder.getTransactionSize(): bigint
 ```
 
-Returns the size of the transaction in bytes.
+Returns the size of the transaction in bytes. Inputs with a placeholder P2PKH unlocker are counted at the size they
+take up once the wallet signs them.
 
 #### Example
 ```ts
 const transactionSize = transactionBuilder.getTransactionSize();
 console.log(`Transaction size: ${transactionSize} bytes`);
+```
+
+### calculateTransactionFee()
+```ts
+transactionBuilder.calculateTransactionFee(): { feeSats: bigint, feeSatsPerByte: number }
+```
+
+Calculates the transaction fee in satoshis and the fee per byte, at the size `getTransactionSize()` reports.
+
+#### Example
+```ts
+const { feeSats, feeSatsPerByte } = transactionBuilder.calculateTransactionFee();
+console.log(`Transaction fee: ${feeSats} satoshis (${feeSatsPerByte} sats/byte)`);
 ```
 
 ## Completing the Transaction

@@ -12,12 +12,20 @@ import {
   buildEntryNftCovenantScript,
   buildEventNftCovenantScript,
   buildInitialStateCommitments,
+  buildValueChunkCommitment,
+  chunkCountForLength,
   computeCollectionHash,
   computeEventNameHash,
+  dynamicLenKey,
   Op,
+  parsePushdataCommitment,
+  sha256,
   type Artifact,
   type StateLayout,
+  type StateVariableInfo,
   splitValueIntoChunks,
+  splitValueIntoValueChunks,
+  VALUE_INLINE_LIMIT,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
@@ -30,8 +38,10 @@ import {
 import {
   createDataNftUnlocker,
   createEntryNftUnlocker,
+  directConventionMasterLock,
   getDynamicChunkAddress,
   getEntryNftAddress,
+  getValueChunkLockingBytecode,
 } from './covenant-helpers.js';
 import { reduceProbeTrace } from './faithful-probe-trace.js';
 import { evalComputedKey } from './route-expression-key.js';
@@ -52,6 +62,43 @@ import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.j
 
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
 
+type ValueChunkRun = { lockingBytecode: Uint8Array; commitments: string[] };
+
+/**
+ * The value-chunk runs a constructor probe's sorted-mapping pins ask for. A value over 60 bytes keeps its continuation
+ * NFTs at the address of (category, collection, slot, sha256(value)), which the pin finds by scanning every output;
+ * its frame at each OP_OUTPUTBYTECODE is [value, address, expectedCount, matches, i, i]. An address counts only when it
+ * is a constructor target's address for that value, bound to `masterLock` (the probe master's, as the pin binds it).
+ * Keyed by locking bytecode.
+ */
+function observeValueChunkRuns(
+  trace: readonly AuthenticationProgramStateCommon[],
+  categoryId: string,
+  targets: ReadonlyArray<{ collection: string; slot: Uint8Array }>,
+  masterLock: Uint8Array | undefined,
+): Map<string, ValueChunkRun> {
+  const runs = new Map<string, ValueChunkRun>();
+  if (targets.length === 0) return runs;
+  for (const state of trace) {
+    if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTBYTECODE || state.stack.length < 6) continue;
+    const [value, lockingBytecode, expectedCount] = state.stack.slice(-6, -3);
+    if (value.length <= VALUE_INLINE_LIMIT || lockingBytecode.length !== 35) continue;
+    const lockHex = binToHex(lockingBytecode);
+    if (runs.has(lockHex)) continue;
+    const chunks = splitValueIntoValueChunks(value);
+    if (decodeScriptNumber(expectedCount) !== BigInt(chunks.length)) continue;
+    const root = sha256(value);
+    if (!targets.some(({ collection, slot }) => binsAreEqual(
+      getValueChunkLockingBytecode(categoryId, collection, slot, root, masterLock), lockingBytecode,
+    ))) continue;
+    runs.set(lockHex, {
+      lockingBytecode: lockingBytecode.slice(),
+      commitments: chunks.map((chunk, index) => buildValueChunkCommitment(index, chunk)),
+    });
+  }
+  return runs;
+}
+
 export async function deriveDeployCommitments<T extends Artifact>(
   contract: Contract<T>,
   artifact: T,
@@ -66,7 +113,8 @@ export async function deriveDeployCommitments<T extends Artifact>(
     entryCommitments: string[];
     trailingEntryCommitments: string[];
     eventCommitments: string[];
-    dynamicChunkCommitments: Record<string, string>;
+    dynamicChunkCommitments: Record<string, string[]>;
+    valueChunkOutputs: Array<{ lockingBytecode: Uint8Array; commitment: string }>;
     transferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }>;
   }> {
   const constructorAbi = artifact.abi.find((f) => f.name === '__construct');
@@ -82,6 +130,16 @@ export async function deriveDeployCommitments<T extends Artifact>(
   const unplannedCause = loopWrite === undefined ? ''
     : ` The constructor writes verified mapping '${loopWrite.collection}' in a runtime loop, whose nodes a deployment `
       + 'cannot plan.';
+  // A stateful `new` in the constructor mints its child inside the genesis transaction, which carries no child
+  // genesis input or outputs: the probe would read a missing input, so refuse with the cause instead.
+  const constructorChildren = [...new Set((constructorAbi?.deployTargets ?? []).map((target) => target.contractName))];
+  if (constructorChildren.length > 0) {
+    throw new Error(
+      `Constructor of '${artifact.contractName}' creates stateful contract `
+      + `${constructorChildren.map((name) => `'${name}'`).join(', ')} with 'new'; a deployment does not create child `
+      + 'contracts in its genesis transaction. Create them from a function after deployment.',
+    );
+  }
 
   // Explicit initial state seeds fields the constructor does not write (for example compiler-injected immutable
   // block-oracle ownership). Constructor execution still derives and authenticates its writes over this pre-state.
@@ -190,6 +248,10 @@ export async function deriveDeployCommitments<T extends Artifact>(
       rows: Uint8Array.from(linearRows.flatMap((row) => [...row.slot, ...row.next])),
     });
   }
+  // Every (collection, slot) a constructor vmap write targets; a value over 60 bytes there pins a value-chunk run.
+  const valueChunkTargets = [...constructorTargetSlots].map(([index, slot]) => ({
+    collection: entryAccesses[index].collection, slot,
+  }));
   const internalInitArgs: FunctionArgument[] = [];
   for (const input of constructorAbi?.inputs.slice(visibleInputs.length) ?? []) {
     if (input.name === '__internal__msgSenderCategory') internalInitArgs.push(new Uint8Array(32));
@@ -317,13 +379,30 @@ export async function deriveDeployCommitments<T extends Artifact>(
   // its equality check. An empty placeholder therefore aborts before the trace can reveal the expected value.
   // Seed a structurally valid prefix; the first trace replaces it with the authenticated full commitment.
   const eventCommits: string[] = Array.from({ length: emitCount }, () => '00'.repeat(32));
-  const dynamicChunkCommits: Record<string, string> = {};
-  let reservedChunkNames: string[] = [];
+  // A value the SDK cannot replay is learned chunk by chunk: one probe reveals one chunk of its run.
+  const dynamicChunkCommits: Record<string, string[]> = {};
+  let reservedChunkSlots: Array<{ name: string; chunkIndex: number; outputIndex: number }> = [];
+  // The run's width is ceil(len/120) of the length header the constructor pins in the variable's data NFT, which the
+  // covenant verifies before the chunks. Until that header is learned, reserve a single chunk.
+  const unresolvedRunWidth = (variable: StateVariableInfo): number => {
+    try {
+      const header = parsePushdataCommitment(currentCommitments[variable.nftIndex], stateLayout, variable.nftIndex);
+      return chunkCountForLength(Number(header[dynamicLenKey(variable.name)] ?? 0n));
+    } catch {
+      return 1;
+    }
+  };
+  let extraChunkProbes = 0;
+  // A long vmap value's chunk run is learned whole from its pin (keyed by lock). Each probe that learns one is
+  // budgeted on top, at most the base budget again; the runs the converged probe's pins ask for are the live ones.
+  const valueChunkRuns = new Map<string, ValueChunkRun>();
+  let liveValueChunkRuns = new Map<string, ValueChunkRun>();
+  let valueChunkProbes = 0;
   let transferOuts: Array<{
     lockingBytecode: Uint8Array; amount: bigint;
   }> = [];
 
-  for (let iter = 0; iter < maxDeployIterations; iter++) {
+  for (let iter = 0; iter < maxDeployIterations + extraChunkProbes + valueChunkProbes; iter++) {
     // Rebuild synthetic data NFTs with current commitments
     const iterDataNfts: Utxo[] = Array.from(
       { length: stateLayout.dataNftCount }, (_, i) => ({
@@ -395,7 +474,9 @@ export async function deriveDeployCommitments<T extends Artifact>(
         (candidate) => candidate.name === access.collection,
       )?.signature ?? access.collection;
       const entryLockingBytecode = scriptToLockingBytecode(
-        buildEntryNftCovenantScript(hexToBin(categoryId), computeCollectionHash(collectionSig)),
+        buildEntryNftCovenantScript(
+          hexToBin(categoryId), computeCollectionHash(collectionSig), directConventionMasterLock(contract),
+        ),
         contract.addressType,
       );
       probeBuilder.addInput(
@@ -463,7 +544,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
       )?.signature ?? access.collection;
       const collectionHash = computeCollectionHash(collectionSig);
       const covenantScript = buildEntryNftCovenantScript(
-        hexToBin(categoryId), collectionHash,
+        hexToBin(categoryId), collectionHash, directConventionMasterLock(contract),
       );
       const lockingBytecode = scriptToLockingBytecode(
         covenantScript, contract.addressType,
@@ -530,7 +611,8 @@ export async function deriveDeployCommitments<T extends Artifact>(
 
     // Dynamic constructor writes trail the fixed block. Direct parameter assignments (the Solidity-compatible
     // pattern used by ERC20(name, symbol)) are known exactly, so use their real commitments in every probe.
-    reservedChunkNames = [];
+    reservedChunkSlots = [];
+    extraChunkProbes = 0;
     for (const variable of stateLayout.variables ?? []) {
       if (!variable.dynamic || !constructorAbi?.dynamicWrites?.includes(variable.name)) continue;
       const normalized = variable.name.replace(/^_+/, '');
@@ -541,20 +623,24 @@ export async function deriveDeployCommitments<T extends Artifact>(
         ?? (inputIndex >= 0 ? options.initArgs?.[inputIndex] : undefined);
       const value = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
       if (value === undefined) {
-        reservedChunkNames.push(variable.name);
-        probeBuilder.addOutput({
-          to: addressToLockScript(getDynamicChunkAddress(
-            contract, categoryId, variable.name, variable.type,
-          )),
-          amount: dataNftAmount,
-          token: {
-            category: categoryId, amount: 0n,
-            nft: {
-              capability: 'mutable' as const,
-              commitment: dynamicChunkCommits[variable.name] ?? '',
+        const width = unresolvedRunWidth(variable);
+        extraChunkProbes += Math.max(0, width - 1);
+        for (let chunkIndex = 0; chunkIndex < width; chunkIndex++) {
+          reservedChunkSlots.push({ name: variable.name, chunkIndex, outputIndex: probeBuilder.outputs.length });
+          probeBuilder.addOutput({
+            to: addressToLockScript(getDynamicChunkAddress(
+              contract, categoryId, variable.name, variable.type,
+            )),
+            amount: dataNftAmount,
+            token: {
+              category: categoryId, amount: 0n,
+              nft: {
+                capability: 'mutable' as const,
+                commitment: dynamicChunkCommits[variable.name]?.[chunkIndex] ?? '',
+              },
             },
-          },
-        });
+          });
+        }
         continue;
       }
       const lockingBytecode = addressToLockScript(getDynamicChunkAddress(
@@ -573,6 +659,17 @@ export async function deriveDeployCommitments<T extends Artifact>(
               ),
             },
           },
+        });
+      }
+    }
+
+    // Value-chunk runs trail the positional layout: their pins find them by address.
+    for (const run of valueChunkRuns.values()) {
+      for (const commitment of run.commitments) {
+        probeBuilder.addOutput({
+          to: run.lockingBytecode,
+          amount: dataNftAmount,
+          token: { category: categoryId, amount: 0n, nft: { capability: 'mutable' as const, commitment } },
         });
       }
     }
@@ -647,6 +744,17 @@ export async function deriveDeployCommitments<T extends Artifact>(
           throw error;
         }
       }
+    }
+
+    // A long value's chunk pin runs before its entry pin, and its frame holds the whole value: learn the runs first.
+    liveValueChunkRuns = observeValueChunkRuns(
+      fullTrace, categoryId, valueChunkTargets, directConventionMasterLock(contract),
+    );
+    const newValueChunkRuns = [...liveValueChunkRuns].filter(([lockHex]) => !valueChunkRuns.has(lockHex));
+    if (newValueChunkRuns.length > 0 && valueChunkProbes < maxDeployIterations) {
+      for (const [lockHex, run] of newValueChunkRuns) valueChunkRuns.set(lockHex, run);
+      valueChunkProbes += 1;
+      continue;
     }
 
     // Keep the faithful trace above for computed keccak preimages and diagnostics, but give all output-pin
@@ -795,15 +903,15 @@ export async function deriveDeployCommitments<T extends Artifact>(
       }
     }
 
-    // Extract transfer outputs
-    if (reservedChunkNames.length > 0) {
-      const chunkBase = (constructorAbi?.blockLayout?.blockSize
-        ?? (1 + stateLayout.dataNftCount + entryOutputCount + transferCount + emitCount))
-        + sortedCollections.length;
-      const chunkRange = { min: chunkBase, max: chunkBase + reservedChunkNames.length };
-      for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(probeTrace, chunkRange, true)) {
-        const name = reservedChunkNames[outputIndex - chunkBase];
-        if (name !== undefined) dynamicChunkCommits[name] = commitment;
+    // Extract the reserved dynamic chunk commitments
+    if (reservedChunkSlots.length > 0) {
+      const chunkRange = {
+        min: reservedChunkSlots[0].outputIndex, max: reservedChunkSlots[reservedChunkSlots.length - 1].outputIndex + 1,
+      };
+      const learnedChunks = extractCommitmentMapFromTrace(probeTrace, chunkRange, true);
+      for (const { name, chunkIndex, outputIndex } of reservedChunkSlots) {
+        const commitment = learnedChunks.get(outputIndex);
+        if (commitment !== undefined) (dynamicChunkCommits[name] ??= [])[chunkIndex] = commitment;
       }
     }
 
@@ -843,7 +951,8 @@ export async function deriveDeployCommitments<T extends Artifact>(
     // the derivation is cycling without converging.
     const deployKey = stateCommitments.join('|') + '||' + entryCommits.join('|')
       + '||' + trailingEntryCommits.join('|') + '||' + eventCommits.join('|')
-      + '||' + reservedChunkNames.map((name) => dynamicChunkCommits[name] ?? '').join('|');
+      + '||' + reservedChunkSlots.map(({ name, chunkIndex }) => dynamicChunkCommits[name]?.[chunkIndex] ?? '').join('|')
+      + '||' + [...valueChunkRuns.keys()].join('|');
     if (seenDeployKeys.has(deployKey)) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_DEPLOY === '1') {
@@ -862,9 +971,8 @@ export async function deriveDeployCommitments<T extends Artifact>(
   }
 
   if (!deployConverged) {
-    throw new Error(
-      `Constructor commitment derivation did not converge after ${maxDeployIterations} probes.${unplannedCause}`,
-    );
+    const probes = maxDeployIterations + extraChunkProbes + valueChunkProbes;
+    throw new Error(`Constructor commitment derivation did not converge after ${probes} probes.${unplannedCause}`);
   }
 
   // Conditional constructor writes reserve fixed entry outputs even when their branch is not taken. The batch
@@ -899,7 +1007,13 @@ export async function deriveDeployCommitments<T extends Artifact>(
     entryCommitments: entryCommits,
     trailingEntryCommitments: trailingEntryCommits,
     eventCommitments: eventCommits,
-    dynamicChunkCommitments: { ...dynamicChunkCommits },
+    // Each unresolved run as the converged probe laid it out.
+    dynamicChunkCommitments: reservedChunkSlots.reduce<Record<string, string[]>>((runs, { name, chunkIndex }) => {
+      (runs[name] ??= []).push(dynamicChunkCommits[name]?.[chunkIndex] ?? '');
+      return runs;
+    }, {}),
+    valueChunkOutputs: [...valueChunkRuns].filter(([lockHex]) => liveValueChunkRuns.has(lockHex))
+      .flatMap(([, run]) => run.commitments.map((commitment) => ({ lockingBytecode: run.lockingBytecode, commitment }))),
     transferOutputs: transferOuts,
   };
 }

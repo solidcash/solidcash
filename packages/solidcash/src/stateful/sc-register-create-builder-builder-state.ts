@@ -23,6 +23,7 @@ import type { OnChainState } from './StateReader.js';
 import { providerUnixLocktime } from './soft-state-overlays.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { pinExactSortedBatchEntry } from './writer-event-delegate-layout.js';
+import { activityBatchWriteSlots, guardedBatchWriteSlots } from './conditional-sorted-activity.js';
 import { chunksFromValue } from './early-value-chunk-helpers.js';
 import {
   sameDerivedChunkOutputObservation,
@@ -125,6 +126,11 @@ export function registerCreateBuilderBuilderState(
     .filter((slot: any) => slot.kind === 'entry' && slot.conditional === true)
     .map((slot: any) => slot.slotIndex)
     .filter((slotIndex: any): slotIndex is number => slotIndex !== undefined));
+  // A write sharing a batch with a delete keeps its node where it did not run, which the covenant pins: its output
+  // stays derivable.
+  const guardedWrites = new Set([
+    ...guardedBatchWriteSlots(entryAbiFunction), ...activityBatchWriteSlots(entryAbiFunction),
+  ]);
   for (const [slotIndex, commitment] of batchTargetPlaceholders) {
     builder.setEntryRawCommitment(slotIndex, commitment);
     // A placeholder only exists for a lane the batch publishes as active (inactive and alias-skipped lanes
@@ -133,7 +139,7 @@ export function registerCreateBuilderBuilderState(
     // A cache flush's target is exact only on its dirty arm. Leave a conditional target probe-derivable so
     // the no-op arm can be recognized by the absence of its covenant output pin. Linear sorted batches seed
     // every reached key unconditionally; pin those known nodes even when the layout slot is conditional.
-    if (pinExactSortedBatchEntry({
+    if (!guardedWrites.has(slotIndex) && pinExactSortedBatchEntry({
       exact: exactBatchTargetSlots.has(slotIndex),
       conditionalLayoutSlot: conditionalEntrySlots.has(slotIndex),
       linearSortedBatch: entryAbiFunction?.sortedBatchInfo?.some((batch: any) => (
@@ -338,9 +344,17 @@ export function registerCreateBuilderBuilderState(
   // P5b COMPUTED values: register the collections whose value chunks must be DERIVED from the trace (the covenant
   // pins them but the SDK has no value param to build them). The auto-derivation reads nNew from the entry's len4
   // and progressively extracts the pinned chunk commitments (like dynamicChunkVars).
+  const ownerMasterLock = ((): Uint8Array | undefined => {
+    const hex = host.inner?.lockingBytecode;
+    if (typeof hex !== 'string') return undefined;
+    const lock = hexToBin(hex);
+    return lock.length === 35 ? lock : undefined;
+  })();
   const ordinaryProductions = params.ordinaryTransportedRoute ? transportedProductions : [];
   for (const production of ordinaryProductions) {
-    const chunks = chunksFromValue(production.value, { write: production.write });
+    const chunks = ownerMasterLock
+      ? chunksFromValue(production.value, { write: production.write, masterLock: ownerMasterLock })
+      : [];
     const localBase = production.write.outputBase - (overrides?.blockBase ?? 0);
     if (chunks.length !== production.write.outputCount || chunks.length === 0 || localBase < 0) {
       throw new Error('Ordinary routed value production has no exact continuation band.');
@@ -388,7 +402,8 @@ export function registerCreateBuilderBuilderState(
     const value = production.value as Uint8Array;
     const resource = valueChunkWriteResourceIdentity(write);
     const localBase = write.outputBase - blockBase;
-    const chunks = value instanceof Uint8Array ? chunksFromValue(value, { write }) : [];
+    const chunks = value instanceof Uint8Array && ownerMasterLock
+      ? chunksFromValue(value, { write, masterLock: ownerMasterLock }) : [];
     if (transportedByResource.has(resource) || write.categoryId.toLowerCase() !== host.categoryId.toLowerCase()
       || !Number.isSafeInteger(localBase) || localBase < 0 || chunks.length !== write.outputCount
       || chunks.length === 0) {

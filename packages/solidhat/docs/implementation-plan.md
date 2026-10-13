@@ -16,7 +16,7 @@ but do not block or expand this scope.
 
 1. Inventory artifact data for constructors, functions, structs, arrays, events, errors, state, lifecycle, selectors,
    and source identity.
-2. Inventory TypeChain imports and runtime factory uses in `examples/effectiveacceleration`.
+2. Inventory TypeChain imports and runtime factory uses in `bench/effectiveacceleration`.
 3. Define the minimum internal model needed to generate those types without changing the public ABI.
 4. Diagnose unsupported or ambiguous SolidCash constructs explicitly.
 5. Add fixtures for overloads, nested tuples/arrays, aliases, enums, events, errors, and stateful contracts.

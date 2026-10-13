@@ -1,6 +1,6 @@
 import { generateLibauthSourceOutputs } from 'solidcash/dist/utils.js';
 import {
-  HashType,
+  SighashType,
   SignatureAlgorithm,
   SignatureTemplate,
   TransactionBuilder,
@@ -41,12 +41,12 @@ describe('SignatureTemplate', () => {
     });
 
     it('rejects unknown sighash flag bits', () => {
-      expect(() => new SignatureTemplate(alicePriv, 0x41 as HashType))
+      expect(() => new SignatureTemplate(alicePriv, 0x41 as SighashType))
         .toThrow('Invalid hash type flags: unknown bits 0x40');
     });
 
     it('rejects the contradictory UTXOS and ANYONECANPAY combination', () => {
-      const invalid = HashType.SIGHASH_ALL | HashType.SIGHASH_UTXOS | HashType.SIGHASH_ANYONECANPAY;
+      const invalid = SighashType.SIGHASH_ALL | SighashType.SIGHASH_UTXOS | SighashType.SIGHASH_ANYONECANPAY;
       expect(() => new SignatureTemplate(alicePriv, invalid))
         .toThrow('SIGHASH_UTXOS and SIGHASH_ANYONECANPAY cannot be combined');
     });
@@ -65,16 +65,10 @@ describe('SignatureTemplate', () => {
       expect(signature).toEqual(hexToBin('3045022100fa1d6a159a124e99479f78152422d55ff3c16f7fac5ae47fa291907f8f47613f02200d6c906f667b3712860b6f5a1f296ecb7dcd44da83c6a1eb45869b61c6b8dadb61'));
     });
 
-    it('should append the correct hash type when fork ID is true', () => {
-      const signatureTemplate = new SignatureTemplate(alicePriv, HashType.SIGHASH_SINGLE);
-      const signature = signatureTemplate.generateSignature(hexToBin('0000000000000000000000'), true);
+    it('should append the configured sighash type, always including the BCH fork ID', () => {
+      const signatureTemplate = new SignatureTemplate(alicePriv, SighashType.SIGHASH_SINGLE);
+      const signature = signatureTemplate.generateSignature(hexToBin('0000000000000000000000'));
       expect(signature).toEqual(hexToBin('bcac180e17de108003cce026708bd2af54b860dad2626cee157f4ed5abd993b9085d615015f905978adc51e8878226280ddd27d899f086519c0978e53332d79943'));
-    });
-
-    it('should append the correct hash type when fork ID is false', () => {
-      const signatureTemplate = new SignatureTemplate(alicePriv, HashType.SIGHASH_SINGLE);
-      const signature = signatureTemplate.generateSignature(hexToBin('0000000000000000000000'), false);
-      expect(signature).toEqual(hexToBin('bcac180e17de108003cce026708bd2af54b860dad2626cee157f4ed5abd993b9085d615015f905978adc51e8878226280ddd27d899f086519c0978e53332d79903'));
     });
   });
 
@@ -94,10 +88,10 @@ describe('SignatureTemplate', () => {
     });
   });
 
-  describe('getPublicKey', () => {
+  describe('publicKey', () => {
     it('should generate a correct public key', () => {
       const signatureTemplate = new SignatureTemplate(alicePriv);
-      expect(signatureTemplate.getPublicKey()).toEqual(alicePub);
+      expect(signatureTemplate.publicKey).toEqual(alicePub);
     });
   });
 

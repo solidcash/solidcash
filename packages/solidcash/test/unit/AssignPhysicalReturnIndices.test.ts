@@ -340,6 +340,9 @@ describe('materialized low-level-call block identity', () => {
 describe('generic persisted value-chunk write identity', () => {
   const categoryId = 'ab'.repeat(32);
   const slot = new Uint8Array(32).fill(7);
+  const masterLock = Uint8Array.from({ length: 35 }, (_, index) => (
+    index === 0 ? 0xaa : index === 1 ? 0x20 : index === 34 ? 0x87 : 0x5a
+  ));
   const signature = 'notices:mapping(int => Notice[])';
   const makeGroup = (
     name: string, collectionSignature = signature, insert = false, valueType = 'Notice[]',
@@ -947,23 +950,25 @@ describe('generic persisted value-chunk write identity', () => {
     const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
     legacyRememberValueChunkValue(categoryId, value);
     legacyRememberValueChunkLock(categoryId, getValueChunkLockingBytecode(
-      categoryId, renamed.collection, slot, sha256Sync(value),
+      categoryId, renamed.collection, slot, sha256Sync(value), masterLock,
     ));
     expect(renamed).toMatchObject({
       collectionSignature: signature, keySlot: binToHex(slot), operation: 'update',
       outputBase: 4, outputCount: 3,
     });
-    const exact = persistedValueChunkWriteState(renamed);
+    const exact = persistedValueChunkWriteState(renamed, masterLock);
     expect(exact?.width).toBeGreaterThan(0);
     expect(exact?.value).toEqual(value);
     expect(exact?.recipe).toMatchObject({
       collection: renamed.collection, categoryId, slot, root: sha256Sync(value),
     });
     expect(binToHex(persistUpdateRedeemLock(categoryId, undefined, renamed)!))
-      .toBe(binToHex(getValueChunkLockingBytecode(categoryId, renamed.collection, slot, sha256Sync(value))));
-    expect(rememberValueChunkUnlockRecipe(renamed, value, exact?.lockingBytecode)).toBe(true);
-    expect(binToHex(persistValueChunkLock(categoryId, value, renamed)!)).toBe(
-      binToHex(getValueChunkLockingBytecode(categoryId, renamed.collection, slot, sha256Sync(value))),
+      .toBe(binToHex(getValueChunkLockingBytecode(
+        categoryId, renamed.collection, slot, sha256Sync(value), masterLock,
+      )));
+    expect(rememberValueChunkUnlockRecipe(renamed, value, exact?.lockingBytecode, masterLock)).toBe(true);
+    expect(binToHex(persistValueChunkLock(categoryId, value, renamed, masterLock)!)).toBe(
+      binToHex(getValueChunkLockingBytecode(categoryId, renamed.collection, slot, sha256Sync(value), masterLock)),
     );
     const digestLock = persistUpdateDigestLock(categoryId, [], renamed);
     expect(digestLock?.length).toBe(35);
@@ -977,12 +982,12 @@ describe('generic persisted value-chunk write identity', () => {
 
     const [decoy] = describeValueChunkWrites(makeGroup('publishJobEvent', 'other:mapping(int => Notice[])'));
     expect(persistedValueChunkWriteState(decoy)).toBeUndefined();
-    expect(rememberValueChunkUnlockRecipe(decoy, value, exact?.lockingBytecode)).toBe(false);
-    expect(persistValueChunkLock(categoryId, value, decoy)).not.toEqual(exact?.lockingBytecode);
+    expect(rememberValueChunkUnlockRecipe(decoy, value, exact?.lockingBytecode, masterLock)).toBe(false);
+    expect(persistValueChunkLock(categoryId, value, decoy, masterLock)).not.toEqual(exact?.lockingBytecode);
     const malformedDescriptor = { ...renamed, collectionHash: '00'.repeat(32) };
-    expect(persistValueChunkLock(categoryId, value, malformedDescriptor)).toBeUndefined();
+    expect(persistValueChunkLock(categoryId, value, malformedDescriptor, masterLock)).toBeUndefined();
     expect(persistUpdateDigestLock(categoryId, [], malformedDescriptor)).toBeUndefined();
-    expect(persistValueChunkLock(categoryId, value, null)).toBeUndefined();
+    expect(persistValueChunkLock(categoryId, value, null, masterLock)).toBeUndefined();
     expect(persistUpdateRedeemLock(categoryId, exact?.lockingBytecode, null)).toBeUndefined();
     expect(persistUpdateDigestLock(categoryId, [], null)).toBeUndefined();
     expect(selectPersistedValueChunkWrite([decoy], categoryId)).toBeUndefined();
@@ -3674,7 +3679,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(binToHex(legacyJobEventsPersistUpdateDigestLock(
       'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0',
     ) ?? new Uint8Array())).toBe(
-      'aa2047362c5b4a0c597c12b75c90f68f6933b2e86c63eb6ce7ed46e083407361b7b587',
+      'aa20618aeef2a12e8f9dcb793a856b66176776fa5bbc7b02fe77cd5aca369d6c4fd687',
     );
     const entryLock = hexToBin('aa2047362c5b4a0c597c12b75c90f68f6933b2e86c63eb6ce7ed46e083407361b7b587');
     const persistVLock = hexToBin('aa20a8ff6e94d0a3199b8457333ae32c3f788fb420b10695af6f27e92a793e8af34987');
@@ -3690,6 +3695,7 @@ describe('assignPhysicalReturnIndices', () => {
     const computedPersistLock = legacyJobEventsPersistValueChunkLock(
       'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0',
       persistV,
+      hexToBin('aa20' + '11'.repeat(32) + '87'),
     );
     expect(computedPersistLock?.length).toBe(35);
     expect(binToHex(computedPersistLock ?? new Uint8Array()).startsWith('aa20')).toBe(true);

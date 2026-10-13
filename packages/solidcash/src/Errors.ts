@@ -84,6 +84,22 @@ export class FailedTransactionEvaluationError extends FailedTransactionError {
   }
 }
 
+/** One frame of a failing require's call stack: the function it is in, and the line it failed or called at. */
+export interface CallStackEntry {
+  /** Absent for the contract function the transaction entered. */
+  functionName?: string;
+  sourceName: string;
+  line: number;
+  statement: string;
+}
+
+const formatCallStack = (callStack: readonly CallStackEntry[]): string => callStack
+  .map(({ functionName, sourceName, line, statement }) => {
+    const location = functionName ? `${functionName} (${sourceName}:${line})` : `${sourceName}:${line}`;
+    return `  at ${location} - ${statement}`;
+  })
+  .join('\n');
+
 export class FailedRequireError extends FailedTransactionError {
   readonly errorArgs?: readonly unknown[];
 
@@ -97,8 +113,9 @@ export class FailedRequireError extends FailedTransactionError {
     functionSourceMap?: string,
     preferDirectCheckSigPredicate = false,
     stackAtFailure?: readonly Uint8Array[],
+    public callStack: readonly CallStackEntry[] = [],
   ) {
-    const { statement, lineNumber } = getLocationDataForInstructionPointer(
+    const { statement, lineNumber } = getRequireLocationData(
       artifact, failingInstructionPointer, functionSourceMap, requireStatement.line,
     );
     const failingStatement = preferDirectCheckSigPredicate
@@ -108,7 +125,10 @@ export class FailedRequireError extends FailedTransactionError {
     const baseMessageWithRequireMessage = `${baseMessage} with the following message: ${requireStatement.message}`;
     const fullMessage = `${requireStatement.message ? baseMessageWithRequireMessage : baseMessage}.\nFailing statement: ${failingStatement}`;
 
-    super(fullMessage, bitauthUri);
+    // A single-entry call stack adds nothing over the headline, so it is only shown for nested calls
+    const callStackMessage = callStack.length >= 2 ? `\n${formatCallStack(callStack)}` : '';
+
+    super(fullMessage + callStackMessage, bitauthUri);
     const types = requireStatement.errorArgumentTypes;
     if (types && stackAtFailure && stackAtFailure.length >= types.length) {
       try {
@@ -146,7 +166,26 @@ const directCheckSigPredicate = (statement: string): string | undefined => {
   return undefined;
 };
 
-const getLocationDataForInstructionPointer = (
+// A require statement's own opcodes can be optimised away (e.g. a final `require(ok)` where `ok` is already on top of
+// the stack), in which case the failing opcode belongs to an earlier statement. We then use the require's own line.
+export const getRequireLocationData = (
+  artifact: Artifact,
+  instructionPointer: number,
+  functionSourceMap: string | undefined,
+  requireLine: number,
+): { lineNumber: number, statement: string } => {
+  const locationData = getLocationDataForInstructionPointer(
+    artifact, instructionPointer, functionSourceMap, requireLine,
+  );
+  const statementEndLine = locationData.lineNumber + locationData.statement.split('\n').length - 1;
+  if (requireLine <= 0 || (locationData.lineNumber > 0 && statementEndLine >= requireLine)) return locationData;
+
+  const line = artifact.source.split('\n')[requireLine - 1];
+  if (line === undefined) return locationData;
+  return { lineNumber: requireLine, statement: line.trim().replace(/;$/, '') };
+};
+
+export const getLocationDataForInstructionPointer = (
   artifact: Artifact,
   instructionPointer: number,
   functionSourceMap?: string,
@@ -201,5 +240,58 @@ export class OutputBchChangeLockedError extends Error {
 export class OutputTokenChangeLockedError extends Error {
   constructor(category: string) {
     super(`Tried to add a token input or output with category ${category} after a change output with the same category was already added`);
+  }
+}
+
+export class OutputTokenCommitmentTooLongError extends Error {
+  constructor(commitment: string, maximumSize: number) {
+    super(`Provided token commitment ${commitment} is longer than the maximum size of ${maximumSize} bytes`);
+  }
+}
+
+export class TransactionInputsRequiredError extends Error {
+  constructor() {
+    super('Transaction must have at least one input');
+  }
+}
+
+export class TransactionOutputsRequiredError extends Error {
+  constructor() {
+    super('Transaction must have at least one output');
+  }
+}
+
+export class TransactionFeeTooHighError extends Error {
+  constructor(fee: bigint, maximumFee: bigint) {
+    super(`Transaction fee of ${fee} is higher than max fee of ${maximumFee}`);
+  }
+}
+
+export class TransactionFeePerByteTooHighError extends Error {
+  constructor(feePerByte: number, maximumFeePerByte: number) {
+    super(
+      `Transaction fee per byte of ${feePerByte} is higher than max fee per byte of ${maximumFeePerByte}. `
+      + 'This may indicate a missing change output. Set maximumFeeSatsPerByte to override.',
+    );
+  }
+}
+
+export class InputMissingLockingBytecodeError extends Error {
+  constructor() {
+    super('Input UTXO is missing its lockingBytecode. UTXOs fetched from a network provider include it automatically; '
+      + 'when constructing UTXOs manually, set lockingBytecode to the hex-encoded locking script of the output.');
+  }
+}
+
+export class UnlockerLockingBytecodeMismatchError extends Error {
+  constructor(
+    public inputIndex: number,
+    utxoLockScript: string,
+    unlockerLockScript: string,
+    unlockerDescription: string,
+  ) {
+    super(`Input #${inputIndex} is locked by ${utxoLockScript}, which does not match the provided unlocker `
+      + `(${unlockerDescription}, corresponding to ${unlockerLockScript}). This transaction would be rejected by the `
+      + 'network. Make sure to use an unlocker that matches the address/contract holding the UTXO.');
   }
 }

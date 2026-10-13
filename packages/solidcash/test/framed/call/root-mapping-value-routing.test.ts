@@ -231,6 +231,8 @@ async function deployWorld(): Promise<World> {
       proxyDeploy: { fundingUtxo: funding(proxyId!), funder, changeAddress, threadCount: 5 },
       initialize: { functionName: 'initialize', args: [...initArgs] },
       callerLockingBytecode: ALICE_LOCK,
+      // An initializer here may call the sink, which only a separate hop can carry.
+      initializeAs: 'hop',
       callerFunding: { utxo: funding(initTxid!), funder: callerFunder, changeAddress },
       externals: { ISink: sinkExternal },
       vm: compositionMachine(),

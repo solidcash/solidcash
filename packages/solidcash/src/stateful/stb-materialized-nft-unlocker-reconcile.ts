@@ -150,9 +150,8 @@ export function reconcileMaterializedEntryNftUnlockers(
     if (masterInputIndex < 0) continue;
     const descriptors = groups.flatMap((group) => {
       if (group.categoryId !== categoryId) return [];
-      const delegateGroup = group.delegateCallGroupIndex === undefined
-        ? undefined : host.lowLevelCallUtxoGroups[group.delegateCallGroupIndex];
-      const entryContract = delegateGroup ? groupContract(delegateGroup) : groupContract(group);
+      // A delegated group's entries bind its proxy master's lock, not the implementation's.
+      const entryContract = groupContract(group);
       if (!entryContract?.addressType) return [];
       return (group.stateLayout?.collections ?? []).flatMap((collection) => (
         typeof collection.signature === 'string'

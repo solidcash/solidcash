@@ -58,7 +58,7 @@
   resolved "https://registry.yarnpkg.com/@bcoe/v8-coverage/-/v8-coverage-1.0.2.tgz#bbe12dca5b4ef983a0d0af4b07b9bc90ea0ababa"
   integrity sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA==
 
-"@bitauth/libauth@^3.1.0-next.8", "@bitauth/libauth@git+https://github.com/mainnet-pat/libauth.git#vm-performance-dist":
+"@bitauth/libauth@git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8":
   version "3.1.0-next.8"
   resolved "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
 
@@ -1683,46 +1683,46 @@
     npmlog "^4.1.2"
     write-file-atomic "^2.3.0"
 
-"@mem-cash/core@0.0.7":
-  version "0.0.7"
-  resolved "https://registry.npmjs.org/@mem-cash/core/-/core-0.0.7.tgz#b270383ccc1b014511b6dfb3dd4d397e9a6ab9fb"
-  integrity sha512-LhtJzkVm79bNe5nE90SSUXDS2hVuqHOpFUM0RTMr5tJTND2Uz1YjGeLX5lNmrsq7lImdGlqipNPchdOULdI7eg==
+"@mem-cash/core@0.0.10":
+  version "0.0.10"
+  resolved "https://registry.npmjs.org/@mem-cash/core/-/core-0.0.10.tgz#3165ae9f69274f90df739edc0b405401d12d111c"
+  integrity sha512-f3hTyHCimWU1ZUPB7dOHSzTI0Fiwu4+Wudz3nZr0ADa8DOszVZEsMq/uFXD/wonWO03MGVFj0yjCm1X+x7e5UA==
   dependencies:
-    "@bitauth/libauth" "^3.1.0-next.8"
-    "@mem-cash/storage" "0.0.7"
-    "@mem-cash/types" "0.0.7"
+    "@bitauth/libauth" "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
+    "@mem-cash/storage" "0.0.10"
+    "@mem-cash/types" "0.0.10"
 
-"@mem-cash/electrum@^0.0.7":
-  version "0.0.7"
-  resolved "https://registry.npmjs.org/@mem-cash/electrum/-/electrum-0.0.7.tgz#5120888d328f9f49976fcaec26c73940ec06b38c"
-  integrity sha512-w8a9gqxioJrGYlpH93HPAU0AMZ5oe1ZXkLxH2tLUt3PDxGZx+IbgjTJ4wUsThwH6lx9U1bIJVJOJqy5xf0239A==
+"@mem-cash/electrum@^0.0.10":
+  version "0.0.10"
+  resolved "https://registry.npmjs.org/@mem-cash/electrum/-/electrum-0.0.10.tgz#be9d22daeebcfa4ec6aaf2f0aa0483fd1523763c"
+  integrity sha512-OhqiCPIRs984gv2d5C9TXn45BgTU99vbXg6DAUJymQaFceyjqtCtg6UlJxLNjSAvQf4g3DxYX4sjpGNLjKWEKg==
   dependencies:
-    "@bitauth/libauth" "^3.1.0-next.8"
-    "@mem-cash/core" "0.0.7"
-    "@mem-cash/storage" "0.0.7"
-    "@mem-cash/types" "0.0.7"
+    "@bitauth/libauth" "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
+    "@mem-cash/core" "0.0.10"
+    "@mem-cash/storage" "0.0.10"
+    "@mem-cash/types" "0.0.10"
 
-"@mem-cash/storage@0.0.7":
-  version "0.0.7"
-  resolved "https://registry.npmjs.org/@mem-cash/storage/-/storage-0.0.7.tgz#f68cd81b14c227549c53b3b46f7db9011d0200cf"
-  integrity sha512-3lw4yGrm9I59bv56I5Jg41o8/mpHJOqNzonylTHRTOoD9vXD78hxpGkAlB01uBBlRro3om254b3VBvoEfPBeWw==
+"@mem-cash/storage@0.0.10":
+  version "0.0.10"
+  resolved "https://registry.npmjs.org/@mem-cash/storage/-/storage-0.0.10.tgz#49437090b9c2bd1ab69c06127d0d8c2015de626e"
+  integrity sha512-YNkfPmNbM+ZamJdctHiPyQuIO3YBERRXvYt2AChFUs5irGVxwhDVSySjkhj1eO4RTAkpAZnO7o4qY3veGXuuFQ==
   dependencies:
-    "@bitauth/libauth" "^3.1.0-next.8"
-    "@mem-cash/types" "0.0.7"
+    "@bitauth/libauth" "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
+    "@mem-cash/types" "0.0.10"
 
-"@mem-cash/types@0.0.7":
-  version "0.0.7"
-  resolved "https://registry.npmjs.org/@mem-cash/types/-/types-0.0.7.tgz#4ba5a6113701b8808941ac2c407f9b1880f8d773"
-  integrity sha512-30YUjguNWMY8lP1buzgaFdrIzNy4OZ2IQY0NtuwGBtKmGbNvGUhDNfPzZ4ba9qkUo0pM2Wxs18az9+H8FCkt8w==
+"@mem-cash/types@0.0.10":
+  version "0.0.10"
+  resolved "https://registry.npmjs.org/@mem-cash/types/-/types-0.0.10.tgz#595b2f830fe9885f6564177502c3ea309e8e18a4"
+  integrity sha512-t9X5ivy9E11zEyRwvgCKqrUu8rxShiywKGSpIQN5B0hMuKuI/KzLSPMSoZDIOF09wYhphdPKpJHIilP9YwSwQA==
   dependencies:
-    "@bitauth/libauth" "^3.1.0-next.8"
+    "@bitauth/libauth" "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
 
-"@mem-cash/validation@^0.0.8":
-  version "0.0.8"
-  resolved "https://registry.npmjs.org/@mem-cash/validation/-/validation-0.0.8.tgz#bad108eafc58a2d4b693a7d5bef62b77daa640f0"
-  integrity sha512-ZFcnGChD6H4/6rXXlkGHrecEajinAII348GjYJ2EsvwFlN7hqsTMqSTfFSQGx5GtJWgLZp48mpZ3f3IU25CoiQ==
+"@mem-cash/validation@^0.0.10":
+  version "0.0.10"
+  resolved "https://registry.npmjs.org/@mem-cash/validation/-/validation-0.0.10.tgz#ec5d79fa17901689737932ad15d8677d90f47e44"
+  integrity sha512-u10PX92iA4uYathh8GkmItVGesTcDzkXIlQz6xWhjEuOw5LFNHm0DzvhXmwnQkiGovxVZqxD+VwSIxucnxmwsQ==
   dependencies:
-    "@bitauth/libauth" "^3.1.0-next.8"
+    "@bitauth/libauth" "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
 
 "@monsterbitar/isomorphic-ws@^5.3.0":
   version "5.3.1"

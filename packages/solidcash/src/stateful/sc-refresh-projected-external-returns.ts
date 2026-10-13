@@ -9,7 +9,7 @@ import type { FunctionArgument } from '../Argument.js';
 import type { Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { tryCashAddressToLockScript } from '../utils.js';
-import { getDataNftLockingBytecode, getEntryNftLockingBytecode } from './covenant-helpers.js';
+import { directConventionMasterLock, getDataNftLockingBytecode, getEntryNftLockingBytecode } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { decodeEntryCommitment } from './SortedList.js';
@@ -58,7 +58,7 @@ export async function refreshProjectedExternalReturns(
       if (lockingBytecode) controlledLocks.add(binToHex(lockingBytecode));
     };
     control(tryCashAddressToLockScript(callee.inner.tokenAddress));
-    control(getDataNftLockingBytecode(group.categoryId));
+    control(getDataNftLockingBytecode(group.categoryId, directConventionMasterLock(callee.inner)));
     for (const collection of callee.inner.artifact.stateLayout?.collections ?? []) {
       control(getEntryNftLockingBytecode(callee.inner, group.categoryId, collection.signature));
     }
@@ -123,6 +123,7 @@ export async function refreshProjectedExternalReturns(
       network: baseProvider.network,
       consensusLimits: baseProvider.consensusLimits,
       policy: baseProvider.policy,
+      simulator: baseProvider.simulator,
       getUtxos: async (address) => projectedAt(address) ?? baseProvider.getUtxos(address),
       getUtxosForLockingBytecode: async (lockingBytecode) => projectedAt(lockingBytecode)
         ?? baseProvider.getUtxosForLockingBytecode(lockingBytecode),

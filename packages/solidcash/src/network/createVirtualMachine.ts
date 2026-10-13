@@ -2,10 +2,10 @@ import { isPayToScriptHash20, isPayToScriptHash32 } from '@bitauth/libauth/build
 import { ripemd160, secp256k1, sha1, sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
-import { conditionallyEvaluate, incrementOperationCount, pushToStack, pushToStackChecked, pushToStackVmNumber, useFourStackItems, useOneStackItem, useOneVmNumber, useThreeStackItems, useTwoStackItems } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/combinators.js';
+import { conditionallyEvaluate, incrementOperationCount, pushToStack, pushToStackChecked, pushToStackVmNumber, useOneStackItem, useOneVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/combinators.js';
 import { applyError, AuthenticationErrorCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/errors.js';
-import { useTransactionInput, useTransactionOutput, useTransactionUtxo } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/inspection.js';
-import { authenticationInstructionsAreMalformed, decodeAuthenticationInstructions, disassembleAuthenticationInstructionMalformed, encodeAuthenticationInstructions, isWitnessProgram, stackItemIsTruthy } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import { useTransactionOutput, useTransactionUtxo } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/inspection.js';
+import { authenticationInstructionsAreMalformed, decodeAuthenticationInstructions, disassembleAuthenticationInstructionMalformed, isWitnessProgram, stackItemIsTruthy } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { createVirtualMachine } from '@bitauth/libauth/build/lib/vm/virtual-machine.js';
 import { AuthenticationErrorBch2025 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2025/bch-2025-errors.js';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
@@ -109,12 +109,24 @@ function installStepTrace(instructionSet: ReturnType<typeof createInstructionSet
     }) as typeof operation;
   }
 }
+
+/**
+ * Whether `provider` evaluates on the SDK's fast VM paths: a simulator at any limits, or a profile above the real
+ * 10,000-byte input limit (no live network; past ordinary capacity libauth's `debug()` throws). Each fast path
+ * enforces the published limits. A live provider keeps libauth's paths.
+ */
+export function usesFastVmPaths(provider: NetworkProvider | undefined): boolean {
+  const limits = provider?.consensusLimits;
+  return limits !== undefined && (provider!.simulator === true || limits.maximumInputBytes > 10_000);
+}
+
 const observerlessVmByProvider = new WeakMap<
 NetworkProvider, Map<string, ReturnType<typeof createVirtualMachineBch2026>>
 >();
 
 function observerlessVmCacheKey(provider: NetworkProvider, standard: boolean): string {
-  return `${standard ? '1' : '0'}:${JSON.stringify(provider.consensusLimits ?? null)}`;
+  const simulator = provider.simulator === true ? 's' : '';
+  return `${standard ? '1' : '0'}${simulator}:${JSON.stringify(provider.consensusLimits ?? null)}`;
 }
 
 function decodeCachedP2sh(
@@ -152,6 +164,7 @@ function installCachedP2shEvaluator(
   const runPhases: NonNullable<typeof instructionSet.evaluate> = (
     program, { stateEvaluate, stateInitialize, stateOverride },
   ) => {
+    bumpFramedCounter('phaseRuns');
     const { unlockingBytecode } = program.transaction.inputs[program.inputIndex]!;
     const { lockingBytecode } = program.sourceOutputs[program.inputIndex]!;
     // The final P2SH push can be several megabytes. The VM treats program bytecode as immutable, and the actual
@@ -410,56 +423,6 @@ function installCachedInvokeEvaluator(
 }
 
 /**
- * OP_ACTIVEBYTECODE as libauth builds it (`incrementOperationCount(conditionallyEvaluate(...))`), but encoding the
- * active instructions once per instruction array and code-separator offset instead of on every execution. The cached
- * evaluators above decode each program and OP_DEFINE body once, and nothing rewrites an instruction array in place.
- * The cached encoding itself is pushed, not a copy of it (22-140 KB per execution for an outlined contract): no
- * operation writes a stack item in place, which libauth's own pushes already rely on, since they push the data of the
- * cached redeem script's instructions to every run (see `installZeroCopyStackOperations`).
- */
-function installCachedActiveBytecode(
-  instructionSet: ReturnType<typeof createInstructionSetBch2026>,
-  maximumStackItemLength: number | undefined,
-): void {
-  type State = Parameters<(typeof instructionSet.operations)[number]>[0];
-  const encodings = new WeakMap<object, Map<number, Uint8Array>>();
-  const activeBytecode = (state: State): State => {
-    let byOffset = encodings.get(state.instructions);
-    if (byOffset === undefined) {
-      byOffset = new Map();
-      encodings.set(state.instructions, byOffset);
-    }
-    let bytecode = byOffset.get(state.lastCodeSeparator);
-    if (bytecode === undefined) {
-      bytecode = encodeAuthenticationInstructions(state.instructions.slice(state.lastCodeSeparator + 1));
-      byOffset.set(state.lastCodeSeparator, bytecode);
-    }
-    return pushToStackChecked(state, bytecode, { maximumStackItemLength });
-  };
-  instructionSet.operations[OpcodesBch2026.OP_ACTIVEBYTECODE] = incrementOperationCount(
-    conditionallyEvaluate(activeBytecode),
-  ) as (typeof instructionSet.operations)[number];
-}
-
-/**
- * OP_INPUTBYTECODE as libauth builds it (`incrementOperationCount(conditionallyEvaluate(...))`, the same length check
- * and pushed-byte accounting), pushing the input's unlocking bytecode instead of a copy of it. A P2SH input's unlocking
- * bytecode carries its whole redeem script, so the copy was the operation. The VM treats transaction bytecode as
- * immutable (the P2SH evaluator above decodes the unlocking bytecode into views of it), the token commitment
- * operations below push transaction bytes the same way, and no operation writes a stack item in place.
- */
-function installZeroCopyInputBytecode(
-  instructionSet: ReturnType<typeof createInstructionSetBch2026>,
-  maximumStackItemLength: number | undefined,
-): void {
-  type State = Parameters<(typeof instructionSet.operations)[number]>[0];
-  instructionSet.operations[OpcodesBch2026.OP_INPUTBYTECODE] = incrementOperationCount(conditionallyEvaluate(
-    (state: State) => useTransactionInput(state, (next, [input]) =>
-      pushToStackChecked(next, input!.unlockingBytecode, { maximumStackItemLength })),
-  )) as (typeof instructionSet.operations)[number];
-}
-
-/**
  * libauth's BCH-2026 check after every operation: the BCH-2025 checks (operation cost, hashing, stack depth, control
  * stack depth, signature checks), then the memory-slot check, in that order and with libauth's messages. libauth runs
  * it as two nested closures that read each limit off the consensus object and pass the costs through an options
@@ -630,33 +593,18 @@ function samePlainData(copy: unknown, value: unknown): boolean {
 }
 
 /**
- * libauth's stack operations without their defensive copies: the duplicating operations push the item they
- * duplicate, and OP_SPLIT pushes two views of its operand. No operation writes a stack item in place (each builds
- * its result in a fresh array) and a state clone copies the stack shallowly, so an aliased or viewed item is never
- * seen to change. Wrapping, errors and pushed-byte accounting are libauth's, item for item.
+ * The two stack operations the SDK traces, replacing libauth's own: libauth already pushes the item that its
+ * duplicating operations duplicate and the views OP_SPLIT returns, so only OP_PICK records its last reads (to
+ * name a mis-indexed slot) and OP_SPLIT names the operands and frames of a failing split
+ * (`SOLIDC_DEBUG_SPLIT_FAILURE`). Both keep libauth's wrapping, errors and pushed-byte accounting, item for item.
  */
-function installZeroCopyStackOperations(instructionSet: ReturnType<typeof createInstructionSetBch2026>): void {
+function installStackOperationTraces(instructionSet: ReturnType<typeof createInstructionSetBch2026>): void {
   type State = Parameters<(typeof instructionSet.operations)[number]>[0];
   const set = (opcode: number, operation: (state: State) => State): void => {
     instructionSet.operations[opcode] = incrementOperationCount(
       conditionallyEvaluate(operation),
     ) as (typeof instructionSet.operations)[number];
   };
-  set(OpcodesBch2026.OP_DUP, (state) => useOneStackItem(state, (next, [item]) =>
-    pushToStack(next, [item!, item!], { pushedBytes: item!.length })));
-  set(OpcodesBch2026.OP_IFDUP, (state) => useOneStackItem(state, (next, [item]) => (stackItemIsTruthy(item!)
-    ? pushToStack(next, [item!, item!], { pushedBytes: item!.length })
-    : pushToStack(next, [item!], { pushedBytes: 0 }))));
-  set(OpcodesBch2026.OP_OVER, (state) => useTwoStackItems(state, (next, [a, b]) =>
-    pushToStack(next, [a!, b!, a!], { pushedBytes: a!.length })));
-  set(OpcodesBch2026.OP_2DUP, (state) => useTwoStackItems(state, (next, [a, b]) =>
-    pushToStack(next, [a!, b!, a!, b!], { pushedBytes: a!.length + b!.length })));
-  set(OpcodesBch2026.OP_3DUP, (state) => useThreeStackItems(state, (next, [a, b, c]) =>
-    pushToStack(next, [a!, b!, c!, a!, b!, c!], { pushedBytes: a!.length + b!.length + c!.length })));
-  set(OpcodesBch2026.OP_2OVER, (state) => useFourStackItems(state, (next, [a, b, c, d]) =>
-    pushToStack(next, [a!, b!, c!, d!, a!, b!], { pushedBytes: a!.length + b!.length })));
-  set(OpcodesBch2026.OP_TUCK, (state) => useTwoStackItems(state, (next, [a, b]) =>
-    pushToStack(next, [b!, a!, b!], { pushedBytes: b!.length })));
   set(OpcodesBch2026.OP_PICK, (state) => useOneVmNumber(state, (next, [depth]) => {
     const item = next.stack[next.stack.length - 1 - Number(depth)];
     if (invokeTraceEnabled) {
@@ -740,22 +688,6 @@ function installZeroCopyStackOperations(instructionSet: ReturnType<typeof create
       });
     });
   });
-  // A view must not become an OP_DEFINE body: libauth's state clone deep-copies the function table, and a view
-  // carries its whole underlying buffer into that copy. A defined body is stored compact instead.
-  const define = instructionSet.operations[OpcodesBch2026.OP_DEFINE]!;
-  instructionSet.operations[OpcodesBch2026.OP_DEFINE] = ((state: State): State => {
-    const before = state.functionCount;
-    // OP_DEFINE pops the identifier first, so the new entry's key is the current top item's.
-    const identifier = state.stack[state.stack.length - 1];
-    const next = define(state) as State;
-    if (next.functionCount === before || identifier === undefined) return next;
-    const key = functionTableKeyOf(identifier);
-    const body = next.functionTable[key];
-    if (body !== undefined && (body.byteOffset !== 0 || body.byteLength !== body.buffer.byteLength)) {
-      next.functionTable[key] = body.slice();
-    }
-    return next;
-  }) as (typeof instructionSet.operations)[number];
 }
 
 interface InactiveBranchTargets {
@@ -988,7 +920,7 @@ function buildVirtualMachineBch2026ForProvider(
   } as never);
   let runPhases: NonNullable<typeof instructionSet.evaluate> | undefined;
   let closes: { last: FailedClose | undefined } | undefined;
-  if (limits !== undefined && limits.maximumInputBytes > 10_000) {
+  if (limits !== undefined && usesFastVmPaths(provider)) {
     // The kernel lane's fast `every` goes first; the framed operation-limit check installed below replaces it with
     // the same libauth-equivalent check, and this one stays in effect wherever that check declines to install.
     installFastBch2026Every(instructionSet, consensus, standard);
@@ -996,9 +928,7 @@ function buildVirtualMachineBch2026ForProvider(
       instructionSet, provider!, limits.maximumInputBytes, observer?.onPhaseComplete,
     );
     installCachedInvokeEvaluator(instructionSet);
-    installCachedActiveBytecode(instructionSet, consensus.maximumStackItemLength);
-    installZeroCopyInputBytecode(instructionSet, consensus.maximumStackItemLength);
-    installZeroCopyStackOperations(instructionSet);
+    installStackOperationTraces(instructionSet);
     installOperationLimitCheck(instructionSet, consensus, standard);
     closes = installFailedCloseRecorder(instructionSet);
 

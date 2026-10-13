@@ -145,6 +145,13 @@ export interface FramedGenesisOptions {
    * here: the artifact's own, and for a proxy, every sorted collection of the implementation it fronts.
    */
   readonly headCollections?: readonly FramedGenesisHeadCollection[];
+  /**
+   * Record commitments already computed, one per data NFT, in index order.
+   *
+   * A proxy has no constructor. Its genesis mints these bytes directly, so `initialize` is the record the chain
+   * publishes rather than a later transaction that rewrites an uninitialized one.
+   */
+  readonly recordCommitments?: readonly string[];
   readonly maximumNftCommitmentBytes?: number;
   /** A bound on the learning iterations. Defaults to one per data NFT plus a convergence run. */
   readonly maximumIterations?: number;
@@ -292,7 +299,13 @@ export function deriveFramedGenesis(options: FramedGenesisOptions): FramedGenesi
   }
 
   const master = deployMaster(artifact, options.category, options.validatorProgram);
-  const zeroCommitments = buildInitialStateCommitments(
+  if (options.recordCommitments !== undefined && options.recordCommitments.length !== stateLayout.dataNftCount) {
+    throw new FramedGenesisError(
+      `artifact "${artifact.contractName}" publishes ${stateLayout.dataNftCount} data NFT(s), but `
+      + `${options.recordCommitments.length} record commitment(s) were given`,
+    );
+  }
+  const zeroCommitments = options.recordCommitments ?? buildInitialStateCommitments(
     stateLayout, options.initialState ?? {}, options.maximumNftCommitmentBytes,
   );
   const constructorAbi = artifact.abi.find((candidate) => candidate.name === '__construct');

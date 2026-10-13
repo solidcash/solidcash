@@ -15,13 +15,14 @@ import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * A proxy deployment on the framed path: two genesis transactions and one initialize hop.
+ * A proxy deployment on the framed path: two genesis transactions, the proxy's minted as its initialize left it.
  *
  * The implementation is a real contract with an `initialize` entry; the proxy is the one shape the convention
  * compiles for a forwarder — a single `address implementation` field and a fallback that delegatecalls it with the
  * call data it received. Both genesis transactions go through the shipped deployment entry point, which selects the
- * framed genesis from the artifact; the initialize hop goes through the shipped composer and derivation. The
- * machine is then asked about every participant of the composition.
+ * framed genesis from the artifact; the initialize hop is derived through the shipped composer and derivation, and
+ * the machine is asked about every participant of the composition. The hop is never broadcast: the proxy's genesis
+ * mints the records it left.
  *
  * The tests also pin where a framed deployment mints its records: each sits at the data-NFT covenant its category
  * derives, and the machine accepts the record's own spend under that covenant beside the masters and the validator
@@ -67,7 +68,7 @@ async function deployFresh(): Promise<{
   const proxyFunding = { txid: '22'.repeat(31) + 'dd', vout: 0, satoshis: 500_000n };
   await provider.addUtxo(funding.address, implFunding);
   await provider.addUtxo(funding.address, proxyFunding);
-  // The hop broadcasts, so each composition's facet input needs a live UTXO at the facet's lock.
+  // Each composition's facet input needs a live UTXO at the facet's lock.
   await fundShippedFacets(provider);
   const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
 
@@ -130,6 +131,8 @@ describe('a framed proxy deployment', () => {
     const proxyLayout = artifacts.Proxy!.stateLayout!;
 
     expect(deployment.proxy.categoryId).toBe(proxyCategory);
+    // The proxy's genesis is what put the initialized state on chain; no hop follows it.
+    expect(deployment.initialize.broadcast.txid).toBe(deployment.proxy.tx.txid);
     expect(deployment.proxy.tx.outputs.length).toBe(GENESIS_OUTPUTS);
     const recordOut = deployment.proxy.tx.outputs[RECORD_OUTPUT]!;
     expect(recordOut.token!.nft!.capability).toBe('mutable');

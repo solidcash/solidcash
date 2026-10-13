@@ -52,7 +52,7 @@ import {
   TryCatchNode,
 } from '../ast/AST.js';
 import { NullaryOperator, UnaryOperator } from '../ast/Operator.js';
-import { StructType, MappingType, PrimitiveType } from '@solidcash/utils';
+import { StructType, MappingType, ArrayType, PrimitiveType } from '@solidcash/utils';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
 import { normalizeVoidInlineReturns } from './EarlyReturnTransformation.js';
 import { Modifier } from '../ast/Globals.js';
@@ -61,6 +61,14 @@ import { cloneNode } from '../ast/clone.js';
 import { substituteInFunction } from './InheritanceExpansionTransformation.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
+import {
+  pointerRootName,
+  rewriteStoragePointerLength,
+  rewriteStoragePointerNode,
+  storagePointerTargets,
+  type StoragePointerBinding,
+  type StoragePointerTargets,
+} from './storagePointerBinding.js';
 import { readsMessageField } from './selfMessageCall.js';
 import { checksTransactionSignature, namesCalledFrom } from './transactionSignatureCheck.js';
 
@@ -130,6 +138,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private ambiguousInlineKeys: Set<string> = new Set();
   private inlinedFns: Set<string> = new Set();
   private collectionNames: Set<string> = new Set();
+  // Container kinds of the contract being inlined into, for rewriting a bound storage pointer's pushes, pops and
+  // `.length` onto the caller's array.
+  private pointerTargets?: StoragePointerTargets;
   private mappingNames: Set<string> = new Set();
   private sortedCollectionNames: Set<string> = new Set();
   private transitiveSortedWriters: Set<string> = new Set();
@@ -142,8 +153,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   // Value-returning functions with a single `return <expr>` body and a storage-pointer param: inlined in
   // EXPRESSION position (they have no standalone value representation). exprStack guards against recursion.
   private exprInlinableFns: Map<string, FunctionDefinitionNode> = new Map();
-  // Ambiguity among the expression-inlinable subset only. A same-arity overload with no reducible single-return
-  // body cannot be selected by this path and therefore must not make the one eligible overload ambiguous.
+  // Same-name, same-arity overloads, eligible or not. A memory overload that is not a single-return storage
+  // helper still shares the name the expression path looks up, so it must make that key ambiguous.
   private exprAmbiguousInlineKeys: Set<string> = new Set();
   private exprStack: string[] = [];
   private bodyNodes = new WeakMap<FunctionDefinitionNode, Node[]>();
@@ -182,6 +193,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     }
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
+    this.pointerTargets = storagePointerTargets(node);
     // Mapping (not array) collections: an element write-back for a struct storage-pointer bound to `m[k]` is a
     // MappingAssign, but an array element `arr[i]` is a StateArrayAssign - keep them apart so neither gets the
     // other's node (an array accessed as `arr[i]` parses to a MappingAccessNode too).
@@ -354,18 +366,19 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // mapping` helper `at(mapping storage a, uint i) returns (uint) { return a[i]; }`) are inlined in expression
     // position: the call is replaced by the substituted return expression (`m.at(k)` -> `L.at(m, k)` -> `m[k]`).
     this.exprInlinableFns = new Map();
-    const exprEligible: FunctionDefinitionNode[] = [];
     for (const fn of [...node.functions, ...this.freeFns]) {
       if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
       if (this.isSingleReturnStoragePointerFn(fn)) this.exprInlinableFns.set(fn.name, fn);
-      if (this.isSingleReturnStoragePointerFn(fn)) exprEligible.push(fn);
     }
-    this.exprAmbiguousInlineKeys = collectAmbiguousInlineKeys(exprEligible);
+    this.exprAmbiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     if (this.inlinedFns.size === 0 && this.exprInlinableFns.size === 0) return node;
 
     // Inline calls in every function body AND the constructor/fallback/receive - a constructor calling an
     // inherited `_mint`-style entry-reading helper is the common ERC20 pattern, and the helper is dropped below.
-    for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]) {
+    // Free functions take the same substitution: one helper calling another (`post()` calling a helper with a
+    // child deployment) leaves a dangling name when the callee is dropped as inlined but only contract bodies
+    // were rewritten.
+    for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef, ...this.freeFns]) {
       if (fn?.body) {
         fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [inlineKey(fn.name, fn.parameters.length)]);
       }
@@ -374,7 +387,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // the two function sets are disjoint - void vs value-returning). Traverse via the visitor so a call in any
     // expression slot (`return f(..)`, `x = f(..)`, `f(..)[k]`) is replaced.
     if (this.exprInlinableFns.size > 0) {
-      for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]) {
+      for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef, ...this.freeFns]) {
         if (fn?.body) { this.exprStack = []; fn.body = this.visit(fn.body) as BlockNode; }
       }
       for (const name of this.exprInlinableFns.keys()) this.inlinedFns.add(name);
@@ -551,6 +564,27 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     let found = false;
     this.walk(body, (n) => {
       if (!found && n instanceof AssignNode && n.identifier.name === name) found = true;
+    });
+    return found;
+  }
+
+  // H7: whether `name` is written by this function or by anything it calls. A nested helper is inlined (or
+  // invoked) after the value parameter has been renamed, so a write that is not in the callee's own body still
+  // mutates the caller's variable. Aliasing then reads the post-mutation value; bind a temp instead.
+  private writesNameInClosure(
+    fn: FunctionDefinitionNode | undefined, name: string, seen = new Set<string>(),
+  ): boolean {
+    if (!fn?.body) return false;
+    const key = inlineKey(fn.name, fn.parameters.length);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    if (this.isWritten(fn.body, name)) return true;
+    let found = false;
+    this.walk(fn.body, (node) => {
+      if (found || !(node instanceof FunctionCallNode)) return;
+      const callee = this.funcByKey.get(inlineKey(node.identifier.name, node.parameters.length))
+        ?? this.funcByName.get(node.identifier.name);
+      if (callee && this.writesNameInClosure(callee, name, seen)) found = true;
     });
     return found;
   }
@@ -769,6 +803,18 @@ export default class InlineStoragePointerCalls extends AstTraversal {
           } else {
             subs.set(p.name, cloneNode(arg) as ExpressionNode);
           }
+        } else if (p.type instanceof ArrayType) {
+          // An ARRAY storage pointer aliases a collection path exactly as a mapping pointer does: binding it to
+          // the path lets a push, pop, `.length` and every keyed access be rewritten onto the caller's array.
+          const path = this.collectionPath(arg);
+          if (path) {
+            collectionPaths.set(p.name, path);
+            subs.set(p.name, cloneNode(arg) as ExpressionNode);
+          } else if (arg instanceof IdentifierNode) {
+            rename.set(p.name, arg.name);
+          } else {
+            subs.set(p.name, cloneNode(arg) as ExpressionNode);
+          }
         } else if (arg instanceof IdentifierNode) {
           // A bare state-var argument is aliased by NAME (covers reads and writes, incl. mapping-assign
           // targets whose container is a string field).
@@ -784,7 +830,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
           subs.set(p.name, cloneNode(arg) as ExpressionNode);
         }
       } else if (arg instanceof IdentifierNode && !this.isReassigned(callee.body, p.name)
-        && !this.isWritten(callee.body, arg.name)) {
+        && !this.writesNameInClosure(callee, arg.name)) {
         // Substitute a simple identifier value arg by NAME (no local binding): a mapping key that is a caller
         // PARAMETER stays a parameter in the inlined body, so the SDK resolves it from call args (a `__sp0_k = k`
         // binding would make the key an opaque expression it cannot locate). Guarded on the param not being
@@ -1024,6 +1070,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private rewriteCollectionPointerWrites(
     node: Node, paths: Map<string, { name: string; keys: ExpressionNode[] }>,
     flattenedStructPaths: Map<string, { name: string; keys: ExpressionNode[] }> = new Map(),
+    // A node this call just produced: walk its children, but never rewrite the node itself again.
+    skipSelf = false,
   ): Node {
     const rooted = (
       path: { name: string; keys: ExpressionNode[] }, tail: ExpressionNode, location: Node['location'],
@@ -1045,6 +1093,39 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     };
     const keys = (path: { keys: ExpressionNode[] }): ExpressionNode[] =>
       path.keys.map((key) => cloneNode(key) as ExpressionNode);
+
+    // `.length` names its receiver, not the node, so resolve it from the SIZE operand.
+    if (!skipSelf && this.pointerTargets && node instanceof UnaryOpNode && node.operator === UnaryOperator.SIZE) {
+      const root = pointerRootName(node.expression);
+      const rootPath = root ? paths.get(root) : undefined;
+      if (rootPath) {
+        const binding: StoragePointerBinding = {
+          parameter: root!,
+          name: rootPath.name,
+          keys: rootPath.keys.map((key) => cloneNode(key) as ExpressionNode),
+        };
+        const replaced = rewriteStoragePointerLength(
+          node.expression, binding, this.pointerTargets, node.location,
+        );
+        if (replaced) {
+          return this.rewriteCollectionPointerWrites(replaced as Node, paths, flattenedStructPaths, true);
+        }
+      }
+    }
+    const pointerName = (node as unknown as { name?: unknown }).name;
+    const pointerPath = !skipSelf && typeof pointerName === 'string' ? paths.get(pointerName) : undefined;
+    if (pointerPath && this.pointerTargets) {
+      const binding: StoragePointerBinding = {
+        parameter: pointerName as string,
+        name: pointerPath.name,
+        keys: pointerPath.keys.map((key) => cloneNode(key) as ExpressionNode),
+      };
+      const replaced = rewriteStoragePointerNode(node, binding, this.pointerTargets);
+      // Rewrite the replacement's children too: a prefixed key may itself read the pointer (`p[p.length - 1]`).
+      if (replaced) {
+        return this.rewriteCollectionPointerWrites(replaced as Node, paths, flattenedStructPaths, true);
+      }
+    }
 
     const flattenedName = (node as unknown as { name?: unknown }).name;
     const fieldPath = typeof flattenedName === 'string' ? flattened(flattenedName) : undefined;

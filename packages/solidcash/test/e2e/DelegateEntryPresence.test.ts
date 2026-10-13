@@ -17,7 +17,7 @@ import {
 } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv } from '../fixture/vars.js';
-import { createTestProvider } from '../test-util.js';
+import { addProvenUtxo, createTestProvider } from '../test-util.js';
 
 /**
  * A direct delegate executor spends the proxy's entries after its own co-spent implementation block. The checks an
@@ -82,9 +82,7 @@ async function harness(): Promise<{
 }> {
   const provider = createTestProvider();
   const signer = new Signer(alicePriv, provider);
-  for (const seed of Array.from({ length: 24 }, (_unused, index) => (index + 1).toString(16).padStart(2, '0'))) {
-    await provider.addUtxo(signer.getAddress(), { txid: seed.repeat(32), vout: 0, satoshis: 1_000_000n });
-  }
+  for (let index = 0; index < 24; index += 1) await addProvenUtxo(provider, signer.getAddress());
   const network = provider as unknown as Network;
   const send = network.sendRawTransaction.bind(network);
   const signerLock = addressToLockScript(signer.getAddress());

@@ -27,10 +27,14 @@ const fixture = (): {
     keySlot: '43'.repeat(32), entryAccessSlot: 0, routeSlot: 0,
     operation: 'update', outputBase: 7, outputCount: 2,
   };
-  const lock = persistValueChunkLock(write.categoryId, value, write)!;
+  const masterLock = Uint8Array.from({ length: 35 }, (_, index) => (
+    index === 0 ? 0xaa : index === 1 ? 0x20 : index === 34 ? 0x87 : 0x42
+  ));
+  const lock = persistValueChunkLock(write.categoryId, value, write, masterLock)!;
   const group = {
     categoryId: write.categoryId, blockLayout: { slots: [] },
     valueChunkOutputBase: 7, valueChunkOutputCount: 2, valueChunkWrites: [write],
+    valueChunkStateOwner: { categoryId: write.categoryId, lockingBytecode: binToHex(masterLock) },
   } as unknown as ExternalCallUtxoGroup;
   const outputs = new Map<number, Chunk>();
   const stb = {

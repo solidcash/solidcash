@@ -185,6 +185,9 @@ export async function assembleCreateBuilderNestedComposeSlots(
   const sharedPriorDelegateFunctionArgs = params.sharedPriorDelegateFunctionArgs as
     FunctionArgument[] | undefined;
   const sharedLogicalArtifact = params.sharedLogicalArtifact as Artifact;
+  // A delegated callee's records belong to its proxy. A direct delegate and a compiler route alike bind them to the
+  // proxy master's lock.
+  const recordContract = callee.inner;
   const directInvocationRows = params.directInvocationRows as any[] | undefined;
   const valueChunkWriteStagingSession = params.valueChunkWriteStagingSession as
     ValueChunkWriteStagingSession;
@@ -415,15 +418,11 @@ export async function assembleCreateBuilderNestedComposeSlots(
             // The entry covenant derives its locking bytecode from
             // the ABI collection identifier (the source name), not
             // the descriptive state-layout signature.
-            // A proxy owns the category/state, while its delegate implementation owns the entry
-            // covenant bytecode which authenticates that state. Resolve and unlock vmap entries with
-            // the implementation contract, retaining the proxy category.
-            const entryContract = proxyCallee?.implementation.inner ?? callee.inner;
             if (timingEnabled && nested.callsiteId === 6) console.error('nested-entry-address-start', {
               collection: access.collection,
             });
             const address = getEntryNftAddress(
-              entryContract, callee.categoryId, access.collection,
+              recordContract, callee.categoryId, access.collection,
             );
             if (timingEnabled && nested.callsiteId === 6) console.error('nested-entry-address-complete', {
               collection: access.collection,
@@ -480,7 +479,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
               if (storedLength > 60) {
                 const root = tail.slice(4, 36);
                 const chunkAddress = getValueChunkAddress(
-                  entryContract, callee.categoryId, access.collection, proofEntry.slot, root,
+                  recordContract, callee.categoryId, access.collection, proofEntry.slot, root,
                 );
                 const expectedChunks = Math.ceil((storedLength - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
                 const byIndex = new Map<number, { chunkIndex: number; chunkData: Uint8Array }>();
@@ -609,10 +608,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         }
         childBlockInputs.push(entry ? {
           ...entry,
-          unlocker: createEntryNftUnlocker(
-            proxyCallee?.implementation.inner ?? callee.inner,
-            0, callee.categoryId, access!.collection,
-          ),
+          unlocker: createEntryNftUnlocker(recordContract, 0, callee.categoryId, access!.collection),
         } : takeFunder());
       } else if (slot.kind === 'returnEvent') {
         // Preserve the compiler's fixed block position even though
@@ -641,7 +637,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
         .map((variable) => variable.name),
     ];
     let dynamicChunkOffset = insertBase;
-    const dynamicContract = proxyCallee?.implementation.inner ?? callee.inner;
     for (const name of routeDynamicNames) {
       const variable = (childLayout.variables ?? []).find((candidate) => (
         candidate.dynamic && candidate.name === name
@@ -650,7 +645,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         throw new Error(`Nested compiler route references unknown dynamic state '${name}'`);
       }
       const chunkAddress = getDynamicChunkAddress(
-        dynamicContract, callee.categoryId, variable.name, variable.type,
+        recordContract, callee.categoryId, variable.name, variable.type,
       );
       const chunks = (await nestedAddressUtxos(chunkAddress))
         .filter((utxo) => utxo.token?.category === callee.categoryId
@@ -675,10 +670,10 @@ export async function assembleCreateBuilderNestedComposeSlots(
         }
         const unlocker = activeWrite
           ? createDynamicChunkUnlocker(
-            dynamicContract, 0, callee.categoryId, variable.name, variable.type,
+            recordContract, 0, callee.categoryId, variable.name, variable.type,
           )
           : createReadOnlyDynamicChunkUnlocker(
-            dynamicContract, 0, callee.categoryId, variable.name, variable.type,
+            recordContract, 0, callee.categoryId, variable.name, variable.type,
           );
         childBlockInputs[dynamicChunkOffset] = { ...utxo, unlocker };
         childDynamicChunkResources.push({
@@ -1144,8 +1139,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
         (output) => !targets.has(bytesToSlotValue(output.slot).toString()),
       );
       const entryLockingBytecode = createEntryNftUnlocker(
-        proxyCallee?.implementation.inner ?? callee.inner,
-        0, callee.categoryId, batch.collection,
+        recordContract, 0, callee.categoryId, batch.collection,
       ).generateLockingBytecode();
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_INPUTS === '1') {
@@ -1296,12 +1290,8 @@ export async function assembleCreateBuilderNestedComposeSlots(
           if (access) {
             childBatchEntryLockingBytecodes.set(
               layoutSlot.offset,
-              createEntryNftUnlocker(
-                proxyCallee?.implementation.inner ?? callee.inner,
-                0,
-                callee.categoryId,
-                access.collection,
-              ).generateLockingBytecode(),
+              createEntryNftUnlocker(recordContract, 0, callee.categoryId, access.collection)
+                .generateLockingBytecode(),
             );
           }
         }

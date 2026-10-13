@@ -80,7 +80,7 @@ exceeded by 5 to 2257 units. The mechanism is measured, not guessed:
 
 Neither is a product defect at this revision, and the second failure is a decision conflict:
 
-- The file loads `examples/effectiveacceleration/artifacts/solidcash/FakeToken.json` when it exists and returns
+- The file loads `bench/effectiveacceleration/artifacts/solidcash/FakeToken.json` when it exists and returns
   early when it does not. The copy in the worktree was generated 2026-10-03 and still carried the legacy
   `per-call` convention label, which no routing predicate accepts after the rename, so the deploy fell into the
   direct probe and the constructor aborted at instruction 15 (`Failed to derive initial state commitments`).
@@ -117,7 +117,7 @@ would have to be reverted when model B lands.
 
 ## Environment note
 
-`examples/effectiveacceleration/artifacts/**` is generated and untracked. The copies on disk predated the rename
+`bench/effectiveacceleration/artifacts/**` is generated and untracked. The copies on disk predated the rename
 and carried `composition.convention: per-call`; the gate recipe's "fixtures recompiled first" applies to them as
 well as to `.marketplace`. They were regenerated in place for the runs this note reports.
 

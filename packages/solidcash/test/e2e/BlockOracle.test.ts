@@ -306,13 +306,15 @@ describe('block.* owner-update path e2e', () => {
   });
 
   it('rejects an over-reported height (nLocktime < number violates the freshness bound)', async () => {
+    // One past the tip: not below the stored number (the rewind check runs first), but above nLocktime.
+    const tip = await provider.getBlockHeight();
     const sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.__updateBlockOracle(new SignatureTemplate(alicePriv), 100001n, 1700000000n)
-      .setState({ __block_number: 100001n, __block_timestamp: 1700000000n })
-      .setLocktime(100000) // < number -> require(tx.time >= number) fails (and 100000 <= tip, so final)
+    await expect(sc.__updateBlockOracle(new SignatureTemplate(alicePriv), BigInt(tip + 1), 1700000000n)
+      .setState({ __block_number: BigInt(tip + 1), __block_timestamp: 1700000000n })
+      .setLocktime(tip) // < number -> require(tx.time >= number) fails (and the tip is final)
       .send()).rejects.toThrow(preflightFailure(
       "Program called an OP_CHECKLOCKTIMEVERIFY operation that requires a locktime greater than the transaction's "
-      + 'locktime. Transaction locktime: 100000; required locktime: 100001.',
+      + `locktime. Transaction locktime: ${tip}; required locktime: ${tip + 1}.`,
     ));
   });
 });

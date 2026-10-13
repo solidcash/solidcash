@@ -32,6 +32,7 @@ export interface LoadCreateBuilderExternalReadsHost {
   ): Promise<Utxo | undefined>;
   getUtxos(address: string): Promise<Utxo[]>;
   keysMatch(a: unknown, b: unknown, keyType: string): boolean;
+  externalMasterLock?(categoryId: string): Uint8Array | undefined;
 }
 
 export interface LoadCreateBuilderExternalReadsOverrides {
@@ -105,7 +106,10 @@ export async function loadCreateBuilderExternalReads(
         const utxo = await host.findExternalDataNft(dataNftAddress, externalCategoryId, er.nftIndex ?? 0);
 
         if (utxo) {
-          const unlocker = createReadOnlyDataNftUnlocker(host.unlockerContract, externalCategoryId);
+          // Bind the external's master, as its discovery address does: the reader's own lock is not the record's.
+          const unlocker = createReadOnlyDataNftUnlocker(
+            host.unlockerContract, externalCategoryId, host.externalMasterLock?.(externalCategoryId), false,
+          );
           externalReadUtxos.push({ ...utxo, unlocker });
         } else {
           throw new Error(
@@ -126,7 +130,10 @@ export async function loadCreateBuilderExternalReads(
         }
 
         const collectionHash = computeCollectionHash(collectionSignature);
-        const entryCovenantScript = buildEntryNftCovenantScript(hexToBin(externalCategoryId), collectionHash);
+        const externalLock = host.externalMasterLock?.(externalCategoryId);
+        const entryCovenantScript = buildEntryNftCovenantScript(
+          hexToBin(externalCategoryId), collectionHash, externalLock,
+        );
         const entryAddress = scriptToAddress(
           entryCovenantScript, host.network, host.addressType, true,
         );
@@ -183,6 +190,7 @@ export async function loadCreateBuilderExternalReads(
         if (entryUtxo) {
           const unlocker = createReadOnlyEntryNftUnlocker(
             host.unlockerContract, externalCategoryId, collectionSignature,
+            host.externalMasterLock?.(externalCategoryId), false,
           );
           externalReadUtxos.push({ ...entryUtxo, unlocker });
         }

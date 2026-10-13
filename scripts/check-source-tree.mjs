@@ -12,7 +12,7 @@ const authored = new Set([
   'vscode-solidcash/src/resolver.js',
   'vscode-solidcash/src/scanner.js',
 ]);
-const sourceAreas = ['packages', 'examples', 'scripts', 'vscode-solidcash', 'website'];
+const sourceAreas = ['packages', 'examples', 'bench', 'scripts', 'vscode-solidcash', 'website'];
 const generated = (path) => /(?:\.js(?:\.map)?|\.d\.(?:ts|mts|cts)(?:\.map)?)$/.test(path)
   && !authored.has(path)
   && (sourceAreas.some((area) => path.startsWith(`${area}/`)) || !path.includes('/'));

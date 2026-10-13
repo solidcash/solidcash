@@ -66,8 +66,9 @@ function settle(artifact: Artifact, spend: Spend, e: Uint8Array): true | string 
   const redeem = scriptToBytecode(asmToScript(artifact.bytecode));
   const lock = encodeLockingBytecodeP2sh32(hash256(redeem));
   const collection = artifact.stateLayout!.collections!.find((candidate) => candidate.name === spend.collection)!;
+  // A direct contract's node covenant names the master's lock (CRYPTO-4).
   const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY,
-    computeCollectionHash(collection.signature)));
+    computeCollectionHash(collection.signature), lock));
   const entryLock = encodeLockingBytecodeP2sh32(hash256(entryRedeem));
   const slot = keyToSlotMulti([...spend.keys]);
   const inputs = artifact.abi.find((candidate) => candidate.name === 'f')!.inputs;

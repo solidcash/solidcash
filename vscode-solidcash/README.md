@@ -12,10 +12,11 @@ BCH units and cryptographic types, state collections, lifecycle modifiers, trans
 introspection, ABI helpers, and locking-bytecode constructors.
 
 Inside `assembly { ... }` blocks it highlights Bitcoin Script opcodes, the Yul control keywords and
-`:=` / `->`, the supported Yul builtins (`sload`, `mstore`, `iszero`, `caller`, `log0`, ...) and the
-`.slot` / `.offset` accessors. Builtins the compiler rejects (`create`, `create2`, `verbatim_*`, `pc`,
-`datasize`, `dataoffset`, `datacopy`, `linkersymbol`, `leave`, `byte`) are scoped as invalid, so they
-read as errors before you compile. Nested Yul blocks keep assembly scoping.
+`:=` / `->`, the supported Yul builtins (`sload`, `mstore`, `iszero`, `caller`, `log0`, `msize`,
+`mcopy`, `clz`, `signextend`, `erc7201`, `byte`, `leave`, ...) and the `.slot` / `.offset` accessors.
+Builtins the compiler rejects (`create`, `create2`, `verbatim_*`, `pc`, `datasize`, `dataoffset`,
+`datacopy`, `linkersymbol`, `callcode`, `selfdestruct`) are scoped as invalid, so they read as errors
+before you compile. Nested Yul blocks keep assembly scoping.
 
 ### Hover documentation
 
@@ -35,6 +36,8 @@ Hovering a token shows a short description with a link to the matching page on
   entry
 - member operations (`.lockingBytecode`, `.nftCommitment`, `.transferNft`, `.delegatecall`,
   `.entries`, ...), ABI helpers, value and time units
+- mapping iteration in all three spellings (`for (v of m)`, `for (k in m)`, `for (k, v of m.entries)`),
+  the modifier placeholder `_`, and the `type(T).min` / `type(IToken).interfaceId` expression form
 - verified mappings (vmaps), including authenticated absence reads, `enumerable` iteration, and Solidity-compatible
   `delete` semantics
 - Bitcoin Script opcodes inside `assembly { ... }` blocks
@@ -95,4 +98,7 @@ The extension structure and TextMate scope conventions were informed by the MIT-
 [Solidity VS Code extension](https://github.com/juanfranblanco/vscode-solidity). The supported
 language tokens are derived from `packages/solidc/src/grammar/SolidCash.g4` in this repository, the
 builtin signatures from `packages/solidc/src/ast/Globals.ts`, and the descriptions from the
-`website/docs` and `packages/solidc/docs` pages they link to.
+`website/docs` and `packages/solidc/docs` pages they link to. `test/coverage.mjs` re-derives every
+keyword, type, unit, global, builtin, opcode and Yul construct from those compiler files and from
+`semantic/InlineAssemblyDiagnostics.ts`, `asmStackEffects.ts` and `semantic/TypeCheckTraversal.ts`, and
+fails when the grammar or the hover database misses one (or documents something the compiler lacks).

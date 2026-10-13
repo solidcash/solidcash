@@ -154,7 +154,7 @@ merge: `/tmp/claude-0/-Code-cashscript/7d9e436e-7b78-4478-a4be-bd9ecdc098ab/scra
 - Deliverable: `docs/framed/PERF_KERNEL_VS_FRAMED.md`.
 
 ### W3. Artifact sizes: kernel vs framed
-- Goal: compile the marketplace, the MistSwap fixtures and the solidity corpus (`examples/solidity-corpus`) under both
+- Goal: compile the marketplace, the MistSwap fixtures and the solidity corpus (`bench/solidity-corpus`) under both
   conventions at HEAD; compare whole bytecode, summed function bodies, per-entry master program size, the largest
   input script per deployment (BCH limit 10,000 bytes per input; mocknet relaxes it), UTXOs per deployment and per
   call, and refused entries.

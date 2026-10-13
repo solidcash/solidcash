@@ -2,6 +2,7 @@ import {
   Node,
   SourceFileNode,
   ContractNode,
+  type InterfaceNode,
   FunctionDefinitionNode,
   ParameterNode,
   FunctionModifier,
@@ -52,6 +53,10 @@ import {
   ArrayPushNode,
   ArrayAssignNode,
   ArrayDeleteNode,
+  StateArrayPushNode,
+  StateArrayPopNode,
+  StateArrayAssignNode,
+  StateArrayDeleteNode,
   TryCatchNode,
   RevertNode,
   ConstantDefinitionNode,
@@ -102,6 +107,14 @@ import {
 import AstTraversal from '../ast/AstTraversal.js';
 import { Modifier } from '../ast/Globals.js';
 import { cloneNode } from '../ast/clone.js';
+import { UnaryOperator } from '../ast/Operator.js';
+import {
+  rewriteStoragePointerLength,
+  rewriteStoragePointerNode,
+  storagePointerBindingFor,
+  storagePointerTargets,
+  type StoragePointerTargets,
+} from './storagePointerBinding.js';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
 
 // Internal name a parent's overridden function is preserved under, so `super.f()` / `Base.f()` can
@@ -332,6 +345,9 @@ export default function expandInheritance(ast: SourceFileNode, evmCompat = false
   // ancestor into the primary. So compute the primary's linearization up front and skip those names.
   const primaryLinearization = ast.contract.implements.length > 0
     ? computeLinearization(ast.contract, contractMap, originalImplements) : [ast.contract.name];
+  if (ast.contract.implements.length > 0) {
+    assertLinearizableWithInterfaces(ast.contract, contractMap, interfaceMap, originalImplements);
+  }
   const primaryAncestors = new Set(primaryLinearization);
 
   // Flatten IMPORTED contracts that carry their own inheritance and are USED/instantiated independently (not a
@@ -427,6 +443,39 @@ function computeLinearization(
   };
 
   return linearize(contract.name);
+}
+
+// Solidity linearizes interfaces together with contracts. The expansion order above leaves interfaces out (they carry
+// no code), so check the whole hierarchy separately: solc refuses one with no C3 linearization.
+function assertLinearizableWithInterfaces(
+  contract: ContractNode,
+  contractMap: Map<string, ContractNode>,
+  interfaceMap: Map<string, InterfaceNode>,
+  originalImplements: Map<string, string[]>,
+): void {
+  const parentsOf = (name: string): string[] => {
+    const iface = interfaceMap.get(name);
+    if (iface) return iface.parents.filter((n) => interfaceMap.has(n));
+    const bases = originalImplements.get(name)
+      ?? (name === contract.name ? contract.implements : (contractMap.get(name)?.implements ?? []));
+    return bases.filter((n) => contractMap.has(n) || interfaceMap.has(n));
+  };
+  const memo = new Map<string, string[]>();
+  const linearize = (name: string, stack: Set<string>): string[] => {
+    const known = memo.get(name);
+    if (known) return known;
+    // A cycle is reported by computeLinearization or the interface-inheritance check; do not recurse into it.
+    if (stack.has(name)) return [name];
+    const parents = parentsOf(name);
+    const nextStack = new Set(stack).add(name);
+    const reversed = [...parents].reverse();
+    const result = parents.length === 0
+      ? [name]
+      : [name, ...c3Merge([...reversed.map((p) => linearize(p, nextStack)), [...reversed]], contract)];
+    memo.set(name, result);
+    return result;
+  };
+  linearize(contract.name, new Set());
 }
 
 // Merge step of C3: repeatedly take the head of some sequence that appears in no sequence's tail.
@@ -1046,12 +1095,14 @@ function inlineParentConstructors(
     const evaluatedArgs = bindInvocationArgs(invocation, ctorParams, ancestorName);
     const clonedCtor = ancestor.constructorDef ? cloneNode(ancestor.constructorDef) : undefined;
     if (clonedCtor) {
-      substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, evaluatedArgs[i]])));
+      const ancestorSubs = new Map(ctorParams.map((p, i) => [p.name, evaluatedArgs[i]]));
+      const storage = storagePointerContext(contract, ctorParams, ancestorSubs);
+      substituteInFunction(clonedCtor, ancestorSubs, storage);
+      // The ancestor constructor (incl. inlined state-var initializers) legitimately touches the ancestor's OWN
+      // private state; tag its accesses so the flattened child does not trip the private-access check.
+      tagModifierStateAccess(clonedCtor.body.statements ?? [], ancestorName);
+      parentStmts.push(...inlinedBaseConstructorBody(clonedCtor, ancestor, ancestorSubs, storage));
     }
-    // The ancestor constructor (incl. inlined state-var initializers) legitimately touches the ancestor's OWN
-    // private state; tag its accesses so the flattened child does not trip the private-access check.
-    if (clonedCtor) tagModifierStateAccess(clonedCtor.body.statements ?? [], ancestorName);
-    parentStmts.push(...(clonedCtor?.body.statements ?? []));
   }
 
   // Solidity evaluates/runs sibling base constructors from right to left (`is A, B, C` -> C, B, A).
@@ -1067,11 +1118,15 @@ function inlineParentConstructors(
     if (!invocation && ctorParams.length > 0) continue;
     const clonedCtor = parent.constructorDef ? cloneNode(parent.constructorDef) : undefined;
     const evaluatedArgs = invocation ? bindInvocationArgs(invocation, ctorParams, parentName) : [];
-    if (invocation && clonedCtor) {
-      substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, evaluatedArgs[i]])));
+    const parentSubs = new Map<string, ExpressionNode>(
+      invocation ? ctorParams.map((p, i) => [p.name, evaluatedArgs[i]]) : [],
+    );
+    const storage = invocation ? storagePointerContext(contract, ctorParams, parentSubs) : undefined;
+    if (invocation && clonedCtor) substituteInFunction(clonedCtor, parentSubs, storage);
+    if (clonedCtor) {
+      tagModifierStateAccess(clonedCtor.body.statements ?? [], parentName);
+      parentStmts.push(...inlinedBaseConstructorBody(clonedCtor, parent, parentSubs, storage));
     }
-    if (clonedCtor) tagModifierStateAccess(clonedCtor.body.statements ?? [], parentName);
-    parentStmts.push(...(clonedCtor?.body.statements ?? []));
   }
   if (parentStmts.length === 0) return;
 
@@ -1083,6 +1138,42 @@ function inlineParentConstructors(
   }
   contract.constructorDef.body.statements = [...parentStmts, ...(contract.constructorDef.body.statements ?? [])];
   contract.constructorDef.constructorPreludeLength += parentStmts.length;
+}
+
+// A base constructor's statements inlined into a derived constructor keep the base that wrote them (its `super`
+// resolves from there) and stay wrapped by that constructor's own modifiers, which modifier expansion applies with
+// the most-derived (virtual) definitions. A root base never reroutes its `m(args)` invocations, so they join here.
+function inlinedBaseConstructorBody(
+  ctor: FunctionDefinitionNode,
+  base: ContractNode,
+  subs: Map<string, ExpressionNode>,
+  storage?: StoragePointerContext,
+): StatementNode[] {
+  const statements = ctor.body.statements ?? [];
+  const prelude = statements.slice(0, ctor.constructorPreludeLength);
+  let own = statements.slice(ctor.constructorPreludeLength);
+  const modifierNames = new Set(base.modifierDefinitions.map((modifier) => modifier.name));
+  const invocations = [
+    ...ctor.customModifiers,
+    ...base.parentInvocations.filter((pi) => modifierNames.has(pi.parentName))
+      .map((pi) => ({ name: pi.parentName, args: pi.args.map((arg) => cloneNode(arg)), location: pi.location })),
+  ].sort((a, b) => a.location.start.line - b.location.start.line
+    || a.location.start.column - b.location.start.column);
+  if (invocations.length > 0) {
+    for (const invocation of invocations) {
+      invocation.args = invocation.args.map((arg) => substituteInExpression(arg, subs, storage));
+      tagModifierStateAccess(invocation.args, base.name);
+    }
+    const body = new BlockNode(own);
+    body.location = ctor.body.location ?? ctor.location;
+    body.scoped = true;
+    body.pendingConstructorModifiers = {
+      invocations, location: ctor.location, qualifiers: ctor.allowedModifierQualifiers,
+    };
+    own = [body];
+  }
+  for (const statement of [...prelude, ...own]) statement.baseConstructorOf ??= base.name;
+  return [...prelude, ...own];
 }
 
 /**
@@ -1119,8 +1210,8 @@ function mergeParent(
 
   // 1. Merge functions (with optional substitution)
   mergeFunctions(child, parent, subs, isAncestor);
-  mergeSpecialFunction(child, parent, 'fallbackDef', 'fallback');
-  mergeSpecialFunction(child, parent, 'receiveDef', 'receive');
+  mergeSpecialFunction(child, parent, 'fallbackDef', 'fallback', subs, isAncestor);
+  mergeSpecialFunction(child, parent, 'receiveDef', 'receive', subs, isAncestor);
 
   // 2. Merge constructor params only if no explicit invocation
   if (!invocation) {
@@ -1185,6 +1276,8 @@ function mergeSpecialFunction(
   parent: ContractNode,
   key: 'fallbackDef' | 'receiveDef',
   label: string,
+  subs?: Map<string, ExpressionNode>,
+  isAncestor?: (ancestor: string, descendant: string) => boolean,
 ): void {
   const parentFunction = parent[key];
   const inherited = parent.inheritedSpecialFunctions[label as 'fallback' | 'receive'];
@@ -1193,10 +1286,31 @@ function mergeSpecialFunction(
   const isVirtual = parentFunction
     ? parentFunction.modifiers.includes(FunctionModifier.VIRTUAL)
     : inherited!.isVirtual;
+  const inheritCopy = (): void => {
+    child.inheritedSpecialFunctions[label as 'fallback' | 'receive'] = { origin, isVirtual };
+    if (!parentFunction) return;
+    // Solidity inherits fallback/receive like any function: the derived contract runs the base body.
+    const cloned = cloneNode(parentFunction);
+    cloned.inheritedFrom = origin;
+    if (subs) {
+      substituteInFunction(cloned, subs, storagePointerContext(child, effectiveConstructorParams(parent), subs));
+    }
+    child[key] = cloned;
+  };
   const childFunction = child[key];
   if (!childFunction) {
-    child.inheritedSpecialFunctions[label as 'fallback' | 'receive'] = { origin, isVirtual };
+    inheritCopy();
     return;
+  }
+  // A copy inherited from an earlier base: a shared or more-derived origin wins, two unrelated ones need an override.
+  const childOrigin = childFunction.inheritedFrom;
+  if (childOrigin !== undefined) {
+    if (childOrigin === origin || isAncestor?.(origin, childOrigin)) return;
+    if (isAncestor?.(childOrigin, origin)) {
+      inheritCopy();
+      return;
+    }
+    throw new DiamondInheritanceError(child, 'Function', label, childOrigin, origin);
   }
   if (!childFunction.modifiers.includes(FunctionModifier.OVERRIDE)) {
     throw new MissingOverrideError(child, label, parent.name);
@@ -1306,6 +1420,7 @@ function mergeFunctions(
   subs?: Map<string, ExpressionNode>,
   isAncestor?: (ancestor: string, descendant: string) => boolean,
 ): void {
+  const storage = subs ? storagePointerContext(child, effectiveConstructorParams(parent), subs) : undefined;
   const childFuncMap = new Map(child.functions.map((f) => [functionSignature(f), f]));
 
   for (const parentFunc of parent.functions) {
@@ -1364,7 +1479,7 @@ function mergeFunctions(
         if (isAncestor(childOrigin, parentOrigin)) {
           const cloned = cloneNode(parentFunc);
           if (!cloned.inheritedFrom) cloned.inheritedFrom = parent.name;
-          if (subs) substituteInFunction(cloned, subs);
+          if (subs) substituteInFunction(cloned, subs, storage);
           child.functions[child.functions.indexOf(existingFunc)] = cloned;
           childFuncMap.set(functionSignature(cloned), cloned);
           continue;
@@ -1408,7 +1523,7 @@ function mergeFunctions(
         cloned.inheritedFrom = parent.name;
       }
       if (subs) {
-        substituteInFunction(cloned, subs);
+        substituteInFunction(cloned, subs, storage);
       }
       child.functions.push(cloned);
       childFuncMap.set(functionSignature(cloned), cloned);
@@ -1441,7 +1556,9 @@ function preserveOverriddenFunction(
   if (!cloned.modifiers.includes(FunctionModifier.INTERNAL)) {
     cloned.modifiers.push(FunctionModifier.INTERNAL);
   }
-  if (subs) substituteInFunction(cloned, subs);
+  if (subs) {
+    substituteInFunction(cloned, subs, storagePointerContext(child, parentFunc.parameters, subs));
+  }
   child.functions.push(cloned);
 }
 
@@ -1535,9 +1652,15 @@ function resolveSuperAndBaseCalls(
   const entryRoots = new Set<string>();
   for (const special of [contract.constructorDef, contract.fallbackDef, contract.receiveDef]) {
     if (!special?.body) continue;
-    new SuperCallRewriter(
-      makeResolve(contract.name, entryRoots), isDiscardedBaseReference, entryRoots,
-    ).visit(special.body);
+    // An inlined base constructor statement resolves `super` from the base that wrote it.
+    special.body.statements = (special.body.statements ?? []).map((statement) => {
+      if (statement instanceof PlaceholderStatementNode) return statement;
+      const writer = statement.baseConstructorOf ?? special.inheritedFrom;
+      const definingContract = writer !== undefined && indexOf.has(writer) ? writer : contract.name;
+      return new SuperCallRewriter(
+        makeResolve(definingContract, entryRoots), isDiscardedBaseReference, entryRoots,
+      ).visit(statement) as StatementNode;
+    });
   }
   // Modifier bodies are expanded only after inheritance flattening. Resolve their super/Base calls now while
   // the linearization and preserved implementations are still available, and conservatively retain any base
@@ -1841,6 +1964,15 @@ function flattenedIndexedSubstitution(
   return undefined;
 }
 
+/** The base name an index chain (`p`, `p[i]`, `p[i][j]`) is rooted at. */
+function pointerRootName(expr: ExpressionNode): string | undefined {
+  if (expr instanceof IdentifierNode) return expr.name;
+  if (expr instanceof MappingAccessNode) return expr.name;
+  if (expr instanceof ArrayAccessNode) return pointerRootName(expr.array);
+  if (expr instanceof TupleIndexOpNode) return pointerRootName(expr.tuple);
+  return undefined;
+}
+
 /**
  * Recursively substitute IdentifierNode references in an expression tree.
  * Returns a new expression if substitution occurred, otherwise returns the original.
@@ -1848,6 +1980,7 @@ function flattenedIndexedSubstitution(
 export function substituteInExpression(
   expr: ExpressionNode,
   subs: Map<string, ExpressionNode>,
+  storage?: StoragePointerContext,
 ): ExpressionNode {
   if (expr instanceof IdentifierNode) {
     const replacement = subs.get(expr.name);
@@ -1858,18 +1991,28 @@ export function substituteInExpression(
   }
 
   if (expr instanceof BinaryOpNode) {
-    expr.left = substituteInExpression(expr.left, subs);
-    expr.right = substituteInExpression(expr.right, subs);
+    expr.left = substituteInExpression(expr.left, subs, storage);
+    expr.right = substituteInExpression(expr.right, subs, storage);
     return expr;
   }
 
   if (expr instanceof UnaryOpNode) {
-    expr.expression = substituteInExpression(expr.expression, subs);
+    // `.length` of a bound storage pointer reads that array's count authority. Resolved from the RAW receiver,
+    // before the identifier substitution replaces it with the caller's argument expression.
+    if (expr.operator === UnaryOperator.SIZE && storage) {
+      const root = pointerRootName(expr.expression);
+      const binding = root ? storagePointerBindingFor(root, storage.params, subs) : undefined;
+      if (binding) {
+        const length = rewriteStoragePointerLength(expr.expression, binding, storage.targets, expr.location);
+        if (length) return length;
+      }
+    }
+    expr.expression = substituteInExpression(expr.expression, subs, storage);
     return expr;
   }
 
   if (expr instanceof CastNode) {
-    expr.expression = substituteInExpression(expr.expression, subs);
+    expr.expression = substituteInExpression(expr.expression, subs, storage);
     return expr;
   }
 
@@ -1881,7 +2024,7 @@ export function substituteInExpression(
       qualified.location = callee.location;
       expr.identifier = qualified;
     }
-    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs, storage));
     return expr;
   }
 
@@ -1889,89 +2032,89 @@ export function substituteInExpression(
     // A method call still in its source form - a using-for library call whose receiver type was unknown at parse
     // time, as on an inherited mapping (`_balances[account].add(amount)`) - keeps its receiver and arguments as
     // ordinary expressions. Skipping them left a substituted parameter dangling inside the call.
-    expr.object = substituteInExpression(expr.object, subs);
-    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
-    if (expr.callOptions?.value) expr.callOptions.value = substituteInExpression(expr.callOptions.value, subs);
-    if (expr.callOptions?.gas) expr.callOptions.gas = substituteInExpression(expr.callOptions.gas, subs);
-    if (expr.callOptions?.salt) expr.callOptions.salt = substituteInExpression(expr.callOptions.salt, subs);
-    if (expr.runtimeSelector) expr.runtimeSelector = substituteInExpression(expr.runtimeSelector, subs);
+    expr.object = substituteInExpression(expr.object, subs, storage);
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs, storage));
+    if (expr.callOptions?.value) expr.callOptions.value = substituteInExpression(expr.callOptions.value, subs, storage);
+    if (expr.callOptions?.gas) expr.callOptions.gas = substituteInExpression(expr.callOptions.gas, subs, storage);
+    if (expr.callOptions?.salt) expr.callOptions.salt = substituteInExpression(expr.callOptions.salt, subs, storage);
+    if (expr.runtimeSelector) expr.runtimeSelector = substituteInExpression(expr.runtimeSelector, subs, storage);
     return expr;
   }
 
   if (expr instanceof TernaryOpNode) {
-    expr.condition = substituteInExpression(expr.condition, subs);
-    expr.ifTrue = substituteInExpression(expr.ifTrue, subs);
-    expr.ifFalse = substituteInExpression(expr.ifFalse, subs);
+    expr.condition = substituteInExpression(expr.condition, subs, storage);
+    expr.ifTrue = substituteInExpression(expr.ifTrue, subs, storage);
+    expr.ifFalse = substituteInExpression(expr.ifFalse, subs, storage);
     return expr;
   }
 
   if (expr instanceof ArrayNode) {
-    expr.elements = expr.elements.map((e) => substituteInExpression(e, subs));
+    expr.elements = expr.elements.map((e) => substituteInExpression(e, subs, storage));
     return expr;
   }
 
   if (expr instanceof ArrayAccessNode) {
-    expr.array = substituteInExpression(expr.array, subs);
-    expr.index = substituteInExpression(expr.index, subs);
+    expr.array = substituteInExpression(expr.array, subs, storage);
+    expr.index = substituteInExpression(expr.index, subs, storage);
     return expr;
   }
 
   if (expr instanceof SliceNode) {
-    expr.element = substituteInExpression(expr.element, subs);
-    expr.start = substituteInExpression(expr.start, subs);
-    expr.end = substituteInExpression(expr.end, subs);
+    expr.element = substituteInExpression(expr.element, subs, storage);
+    expr.start = substituteInExpression(expr.start, subs, storage);
+    expr.end = substituteInExpression(expr.end, subs, storage);
     return expr;
   }
 
   if (expr instanceof TupleIndexOpNode) {
-    expr.tuple = substituteInExpression(expr.tuple, subs);
+    expr.tuple = substituteInExpression(expr.tuple, subs, storage);
     return expr;
   }
 
   if (expr instanceof AbiEncodeNode) {
-    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs, storage));
     return expr;
   }
 
   if (expr instanceof AbiEncodePackedNode) {
-    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs, storage));
     return expr;
   }
 
   if (expr instanceof AbiEncodeWithSelectorNode) {
-    expr.selector = substituteInExpression(expr.selector, subs);
-    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    expr.selector = substituteInExpression(expr.selector, subs, storage);
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs, storage));
     return expr;
   }
 
   if (expr instanceof AbiEncodeWithSignatureNode) {
-    expr.signature = substituteInExpression(expr.signature, subs);
-    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    expr.signature = substituteInExpression(expr.signature, subs, storage);
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs, storage));
     return expr;
   }
 
   if (expr instanceof AbiDecodeNode) {
-    expr.data = substituteInExpression(expr.data, subs);
+    expr.data = substituteInExpression(expr.data, subs, storage);
     return expr;
   }
 
   if (expr instanceof AbiDecodeAtNode) {
-    expr.data = substituteInExpression(expr.data, subs);
+    expr.data = substituteInExpression(expr.data, subs, storage);
     return expr;
   }
 
   if (expr instanceof InstantiationNode) {
-    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs, storage));
     return expr;
   }
 
   if (expr instanceof FieldAccessNode) {
-    expr.expression = substituteInExpression(expr.expression, subs);
+    expr.expression = substituteInExpression(expr.expression, subs, storage);
     return expr;
   }
 
   if (expr instanceof ContractReferenceNode) {
-    expr.constructorArgs = expr.constructorArgs.map((a) => substituteInExpression(a, subs));
+    expr.constructorArgs = expr.constructorArgs.map((a) => substituteInExpression(a, subs, storage));
     return expr;
   }
 
@@ -1980,47 +2123,52 @@ export function substituteInExpression(
   }
 
   if (expr instanceof MappingAccessNode) {
+    const binding = storage ? storagePointerBindingFor(expr.name, storage.params, subs) : undefined;
+    if (binding) {
+      const rewritten = rewriteStoragePointerNode(expr, binding, storage!.targets);
+      if (rewritten) return substituteInExpression(rewritten as ExpressionNode, subs, storage);
+    }
     const flattened = flattenedIndexedSubstitution(expr.name, subs);
     if (flattened) {
       expr.name = flattened.name;
       expr.keys = [...flattened.keys, ...expr.keys];
     }
-    expr.keys = expr.keys.map((k) => substituteInExpression(k, subs));
+    expr.keys = expr.keys.map((k) => substituteInExpression(k, subs, storage));
     return expr;
   }
 
   if (expr instanceof AbiEncodeCallNode) {
-    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs, storage));
     return expr;
   }
 
   if (expr instanceof BytesConcatNode) {
-    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs, storage));
     return expr;
   }
 
   if (expr instanceof StringConcatNode) {
-    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs, storage));
     return expr;
   }
 
   if (expr instanceof AddressSendExpressionNode) {
-    expr.addressExpression = substituteInExpression(expr.addressExpression, subs);
-    expr.amount = substituteInExpression(expr.amount, subs);
+    expr.addressExpression = substituteInExpression(expr.addressExpression, subs, storage);
+    expr.amount = substituteInExpression(expr.amount, subs, storage);
     return expr;
   }
 
   if (expr instanceof LowLevelCallNode) {
-    expr.targetExpression = substituteInExpression(expr.targetExpression, subs);
-    expr.data = substituteInExpression(expr.data, subs);
+    expr.targetExpression = substituteInExpression(expr.targetExpression, subs, storage);
+    expr.data = substituteInExpression(expr.data, subs, storage);
     if (expr.callOptions?.value) {
-      expr.callOptions.value = substituteInExpression(expr.callOptions.value, subs);
+      expr.callOptions.value = substituteInExpression(expr.callOptions.value, subs, storage);
     }
     if (expr.callOptions?.gas) {
-      expr.callOptions.gas = substituteInExpression(expr.callOptions.gas, subs);
+      expr.callOptions.gas = substituteInExpression(expr.callOptions.gas, subs, storage);
     }
     if (expr.callOptions?.salt) {
-      expr.callOptions.salt = substituteInExpression(expr.callOptions.salt, subs);
+      expr.callOptions.salt = substituteInExpression(expr.callOptions.salt, subs, storage);
     }
     return expr;
   }
@@ -2037,68 +2185,121 @@ export function substituteInExpression(
 /**
  * Apply substitution to all statements in a function body.
  */
+/**
+ * The storage-reference parameters of one substitution, plus the container kinds of the contract they are bound
+ * in. A parameter in this set that the substitution map binds to a storage key path (`A(m[1])`) makes the parent
+ * body name the caller's container, so its keyed accesses, pushes, pops, deletes and `.length` are rewritten onto
+ * that container with the pointer's keys in front of their own.
+ */
+export interface StoragePointerContext {
+  params: ReadonlySet<string>;
+  targets: StoragePointerTargets;
+}
+
+/** The storage-pointer context for `params` substituted into `contract`, or undefined when there is none. */
+function storagePointerContext(
+  contract: ContractNode, params: readonly ParameterNode[], subs: Map<string, ExpressionNode>,
+): StoragePointerContext | undefined {
+  const names = new Set(
+    params.filter((parameter) => parameter.modifier.includes(Modifier.STORAGE)
+      && subs.has(parameter.name)).map((parameter) => parameter.name),
+  );
+  if (names.size === 0) return undefined;
+  return { params: names, targets: storagePointerTargets(contract) };
+}
+
+/** Statements already rewritten from a bound storage pointer, so a container named like its own parameter is
+ * not rewritten in a loop. */
+const rewrittenPointerNodes = new WeakSet<object>();
+
 export function substituteInFunction(
   func: FunctionDefinitionNode,
   subs: Map<string, ExpressionNode>,
+  storage?: StoragePointerContext,
 ): void {
-  substituteInBlock(func.body, subs);
+  substituteInBlock(func.body, subs, storage);
 }
 
-function substituteInBlock(block: BlockNode, subs: Map<string, ExpressionNode>): void {
+function substituteInBlock(
+  block: BlockNode, subs: Map<string, ExpressionNode>, storage?: StoragePointerContext,
+): void {
   if (!block.statements) return;
-  block.statements = block.statements.map((stmt) => substituteInStatement(stmt, subs));
+  block.statements = block.statements.map((stmt) => substituteInStatement(stmt, subs, storage));
 }
 
 function substituteInStatement(
   stmt: StatementNode,
   subs: Map<string, ExpressionNode>,
+  storage?: StoragePointerContext,
 ): StatementNode {
+  // A statement that NAMES a bound storage pointer is rewritten onto the caller's container before the generic
+  // branches run; the rewrite's own expressions are then substituted by the recursive call. A rewritten node is
+  // not rewritten again - the caller's container may itself be named like the parameter it was bound from.
+  if (storage && !rewrittenPointerNodes.has(stmt)) {
+    const named = (stmt as unknown as { name?: unknown }).name;
+    const namedBinding = typeof named === 'string'
+      ? storagePointerBindingFor(named, storage.params, subs) : undefined;
+    if (namedBinding) {
+      const rewritten = rewriteStoragePointerNode(stmt, namedBinding, storage.targets);
+      if (rewritten) {
+        rewrittenPointerNodes.add(rewritten);
+        return substituteInStatement(rewritten as StatementNode, subs, storage);
+      }
+    }
+    if (stmt instanceof DeleteLocalNode) {
+      const deleted = storagePointerBindingFor(stmt.identifier.name, storage.params, subs);
+      if (deleted) {
+        const rewritten = rewriteStoragePointerNode(stmt, deleted, storage.targets);
+        if (rewritten) return substituteInStatement(rewritten as StatementNode, subs, storage);
+      }
+    }
+  }
   if (stmt instanceof VariableDefinitionNode) {
-    if (stmt.expression) stmt.expression = substituteInExpression(stmt.expression, subs);
+    if (stmt.expression) stmt.expression = substituteInExpression(stmt.expression, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof AssignNode) {
-    stmt.expression = substituteInExpression(stmt.expression, subs);
+    stmt.expression = substituteInExpression(stmt.expression, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof BranchNode) {
-    stmt.condition = substituteInExpression(stmt.condition, subs);
-    substituteInBlock(stmt.ifBlock, subs);
-    if (stmt.elseBlock) substituteInBlock(stmt.elseBlock, subs);
+    stmt.condition = substituteInExpression(stmt.condition, subs, storage);
+    substituteInBlock(stmt.ifBlock, subs, storage);
+    if (stmt.elseBlock) substituteInBlock(stmt.elseBlock, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof DoWhileNode) {
-    stmt.condition = substituteInExpression(stmt.condition, subs);
-    substituteInBlock(stmt.block as BlockNode, subs);
+    stmt.condition = substituteInExpression(stmt.condition, subs, storage);
+    substituteInBlock(stmt.block as BlockNode, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof WhileNode) {
-    stmt.condition = substituteInExpression(stmt.condition, subs);
-    substituteInBlock(stmt.block, subs);
+    stmt.condition = substituteInExpression(stmt.condition, subs, storage);
+    substituteInBlock(stmt.block, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof RequireNode) {
-    stmt.expression = substituteInExpression(stmt.expression, subs);
+    stmt.expression = substituteInExpression(stmt.expression, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof AssertNode) {
-    stmt.expression = substituteInExpression(stmt.expression, subs);
+    stmt.expression = substituteInExpression(stmt.expression, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof TimeOpNode) {
-    stmt.expression = substituteInExpression(stmt.expression, subs);
+    stmt.expression = substituteInExpression(stmt.expression, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof StateAssignNode) {
-    stmt.expression = substituteInExpression(stmt.expression, subs);
+    stmt.expression = substituteInExpression(stmt.expression, subs, storage);
     return stmt;
   }
 
@@ -2108,8 +2309,8 @@ function substituteInStatement(
       stmt.name = flattened.name;
       stmt.keys = [...flattened.keys, ...stmt.keys];
     }
-    stmt.keys = stmt.keys.map((k) => substituteInExpression(k, subs));
-    stmt.expression = substituteInExpression(stmt.expression, subs);
+    stmt.keys = stmt.keys.map((k) => substituteInExpression(k, subs, storage));
+    stmt.expression = substituteInExpression(stmt.expression, subs, storage);
     return stmt;
   }
 
@@ -2119,8 +2320,8 @@ function substituteInStatement(
       stmt.name = flattened.name;
       stmt.keys = [...flattened.keys, ...stmt.keys];
     }
-    stmt.keys = stmt.keys.map((k) => substituteInExpression(k, subs));
-    stmt.expression = substituteInExpression(stmt.expression, subs);
+    stmt.keys = stmt.keys.map((k) => substituteInExpression(k, subs, storage));
+    stmt.expression = substituteInExpression(stmt.expression, subs, storage);
     return stmt;
   }
 
@@ -2130,34 +2331,34 @@ function substituteInStatement(
       stmt.name = flattened.name;
       stmt.keys = [...flattened.keys, ...stmt.keys];
     }
-    stmt.keys = stmt.keys.map((k) => substituteInExpression(k, subs));
+    stmt.keys = stmt.keys.map((k) => substituteInExpression(k, subs, storage));
     return stmt;
   }
 
   if (stmt instanceof EmitStatementNode) {
-    stmt.args = stmt.args.map((a) => substituteInExpression(a, subs));
+    stmt.args = stmt.args.map((a) => substituteInExpression(a, subs, storage));
     return stmt;
   }
 
   if (stmt instanceof TransferStatementNode) {
-    stmt.lockingBytecode = substituteInExpression(stmt.lockingBytecode, subs);
-    stmt.amount = substituteInExpression(stmt.amount, subs);
+    stmt.lockingBytecode = substituteInExpression(stmt.lockingBytecode, subs, storage);
+    stmt.amount = substituteInExpression(stmt.amount, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof TokenContainerMethodStatementNode) {
-    stmt.tokenContainerKeyExpression = substituteInExpression(stmt.tokenContainerKeyExpression, subs);
-    stmt.args = stmt.args.map((a) => substituteInExpression(a, subs));
+    stmt.tokenContainerKeyExpression = substituteInExpression(stmt.tokenContainerKeyExpression, subs, storage);
+    stmt.args = stmt.args.map((a) => substituteInExpression(a, subs, storage));
     return stmt;
   }
 
   if (stmt instanceof ReturnNode) {
-    stmt.expressions = stmt.expressions.map((e) => substituteInExpression(e, subs));
+    stmt.expressions = stmt.expressions.map((e) => substituteInExpression(e, subs, storage));
     return stmt;
   }
 
   if (stmt instanceof RevertNode) {
-    stmt.args = stmt.args.map((a) => substituteInExpression(a, subs));
+    stmt.args = stmt.args.map((a) => substituteInExpression(a, subs, storage));
     return stmt;
   }
 
@@ -2169,76 +2370,98 @@ function substituteInStatement(
       qualified.location = callee.location;
       stmt.call.identifier = qualified;
     }
-    stmt.call.parameters = stmt.call.parameters.map((p) => substituteInExpression(p, subs));
+    stmt.call.parameters = stmt.call.parameters.map((p) => substituteInExpression(p, subs, storage));
     return stmt;
   }
 
   if (stmt instanceof MethodCallStatementNode) {
-    stmt.call = substituteInExpression(stmt.call, subs) as MethodCallNode;
+    stmt.call = substituteInExpression(stmt.call, subs, storage) as MethodCallNode;
     return stmt;
   }
 
   if (stmt instanceof TupleAssignmentNode) {
     if (stmt.tupleExpressions) {
-      stmt.tupleExpressions = stmt.tupleExpressions.map((e) => substituteInExpression(e, subs));
+      stmt.tupleExpressions = stmt.tupleExpressions.map((e) => substituteInExpression(e, subs, storage));
     } else {
-      stmt.tuple = substituteInExpression(stmt.tuple, subs);
+      stmt.tuple = substituteInExpression(stmt.tuple, subs, storage);
     }
     return stmt;
   }
 
   if (stmt instanceof ArrayPushNode) {
-    stmt.value = substituteInExpression(stmt.value, subs);
+    stmt.value = substituteInExpression(stmt.value, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof ArrayAssignNode) {
-    stmt.index = substituteInExpression(stmt.index, subs);
-    stmt.value = substituteInExpression(stmt.value, subs);
+    stmt.index = substituteInExpression(stmt.index, subs, storage);
+    stmt.value = substituteInExpression(stmt.value, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof ArrayDeleteNode) {
-    stmt.index = substituteInExpression(stmt.index, subs);
+    stmt.index = substituteInExpression(stmt.index, subs, storage);
+    return stmt;
+  }
+
+  // A struct-field array statement (`p.keys.push(k)` -> `p__keys`) carries its operands like the plain forms.
+  if (stmt instanceof StateArrayPushNode) {
+    stmt.value = substituteInExpression(stmt.value, subs, storage);
+    return stmt;
+  }
+
+  if (stmt instanceof StateArrayAssignNode) {
+    stmt.index = substituteInExpression(stmt.index, subs, storage);
+    stmt.value = substituteInExpression(stmt.value, subs, storage);
+    return stmt;
+  }
+
+  if (stmt instanceof StateArrayDeleteNode) {
+    stmt.index = substituteInExpression(stmt.index, subs, storage);
+    return stmt;
+  }
+
+  if (stmt instanceof StateArrayPopNode) {
+    if (stmt.resizeTo) stmt.resizeTo = substituteInExpression(stmt.resizeTo, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof TryCatchNode) {
-    stmt.expression = substituteInExpression(stmt.expression, subs);
-    substituteInBlock(stmt.tryBlock, subs);
+    stmt.expression = substituteInExpression(stmt.expression, subs, storage);
+    substituteInBlock(stmt.tryBlock, subs, storage);
     for (const clause of stmt.catchClauses) {
-      substituteInBlock(clause.block, subs);
+      substituteInBlock(clause.block, subs, storage);
     }
     return stmt;
   }
 
   if (stmt instanceof SwitchNode) {
-    stmt.expression = substituteInExpression(stmt.expression, subs);
+    stmt.expression = substituteInExpression(stmt.expression, subs, storage);
     for (const c of stmt.cases) {
-      c.value = substituteInExpression(c.value, subs);
-      substituteInBlock(c.body, subs);
+      c.value = substituteInExpression(c.value, subs, storage);
+      substituteInBlock(c.body, subs, storage);
     }
-    if (stmt.defaultCase) substituteInBlock(stmt.defaultCase, subs);
+    if (stmt.defaultCase) substituteInBlock(stmt.defaultCase, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof UncheckedNode) {
-    substituteInBlock(stmt.block, subs);
+    substituteInBlock(stmt.block, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof CollectionIterationNode) {
-    substituteInBlock(stmt.body, subs);
+    substituteInBlock(stmt.body, subs, storage);
     return stmt;
   }
 
   if (stmt instanceof DeleteLocalNode) {
-    stmt.identifier = substituteInExpression(stmt.identifier, subs) as IdentifierNode;
+    stmt.identifier = substituteInExpression(stmt.identifier, subs, storage) as IdentifierNode;
     return stmt;
   }
 
   if (stmt instanceof BlockNode) {
-    substituteInBlock(stmt, subs);
+    substituteInBlock(stmt, subs, storage);
     return stmt;
   }
 

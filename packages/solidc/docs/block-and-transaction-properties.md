@@ -15,7 +15,8 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
   reconstructed from introspection (no oracle; tx_size estimated since there is no `OP_TXSIZE`). See s12.
 - Owner-update path: an immutable baked owner key (`__blockOracleOwner`) + an injected
   `__updateBlockOracle(sig, ...fields)` gated by the owner signature and the freshness/anti-over-reporting
-  bound `require(tx.time >= number)`.
+  bound `require(tx.time >= number)`, with `number < 500,000,000` so a time-type nLockTime cannot satisfy it,
+  and the non-rewind bounds `number >= block.number`, `timestamp >= block.timestamp` (no replay of an old window).
 - Off-chain keeper: `packages/solidcash/src/oracle/blockOracleUpdater.ts` (Fulcrum
   `blockchain.headers.subscribe` + a single BCHN `getblock` verbosity-2 call: coinbase inline, fees =
   `sum(coinbase outputs) - subsidy(height)`; signed `__updateBlockOracle` when the chain is ahead).
@@ -159,6 +160,8 @@ implied duty**:
 - **Anti-over-reporting (DO emit):** `require(tx.time >= oracleHeight)` (height mode) forces
   `miningHeight >= nLocktime >= oracleHeight`, so the oracle **cannot claim a height above the real chain
   tip**. Cheap, meaningful.
+- **Non-rewind (DO emit):** `require(number >= block.number)` and `require(timestamp >= block.timestamp)`
+  stop the owner from moving either register back to replay an old window. Equal values are admitted.
 - **Anti-staleness (NOT possible):** no covenant can prove a register is recent (no upper bound on mining
   height is readable). Stale data is bounded only by the owner's refresh cadence + the consumer's own
   incentive to use accurate data.
@@ -316,7 +319,11 @@ category, plus `commitment.n == n` + `require(tx.time >= n)`, returning the 32-b
   `Contract`/`TransactionBuilder` path fails loudly ("build the call via StatefulContract").
 - The keeper mints/sweeps `(n->hash)` NFTs **under the contract's own category**
   (`BlockOracleUpdater.mintBlockhashPair` / `sweepBlockhashPair` / `maintainBlockhashWindow`), from a
-  minting baton of that category.
+  minting baton of that category. Genesis must place that baton at the keeper baton covenant
+  (`blockhashKeeperBatonLockingBytecode(category, keeperPubkey)`, audit CRYPTO-4): a bare baton could stand in
+  for the master on the data/entry write and destroy paths, move to any lock, or mint a counterfeit master. A
+  covenant spend needs the keeper's signature, co-spends no token input, recreates the baton at output 0 and
+  mints exactly one capability-none `(n->hash)` NFT at `addr(n)` (output 1, `tx.time >= n`).
 
 The hardened `(n->hash)` covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the
 `artifact.usesBlockhash` marker + `abi.blockhashReads`, and keccak side-car coexistence are in place and

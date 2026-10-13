@@ -213,40 +213,6 @@ function big(v: Numeric | { toBigInt(): bigint } | object): bigint {
 
 function bigintReplacer(_k: string, v: unknown): unknown { return typeof v === 'bigint' ? `${v}n` : v; }
 
-function artifactDeclaresReason(artifact: any, functionName: string | undefined, match: RegExp | string): boolean {
-  if (!artifact) return false;
-  const debug = artifact.debug?.functionDebug ?? {};
-  const fn = typeof functionName === 'string'
-    ? artifact.abi?.find((candidate: { name?: string }) => candidate.name === functionName)
-    : undefined;
-  const selectors = fn?.selector
-    ? [fn.selector]
-    : (artifact.abi ?? []).map((candidate: { selector?: string }) => candidate.selector).filter(Boolean);
-  const messages = selectors.flatMap((selector: string) => (
-    (debug[selector]?.requires ?? []).map((requirement: { message?: string }) => requirement.message)
-  )).filter((message: unknown): message is string => typeof message === 'string');
-  if (typeof match === 'string') {
-    if (messages.includes(match)) return true;
-    const source = `${artifact.source ?? ''} ${artifact.delegateArtifact?.source ?? ''}`;
-    if (source.includes(`"${match}"`) || source.includes(`'${match}'`)) return true;
-  } else if (messages.some((message: string) => match.test(message))) {
-    return true;
-  }
-  return artifact.delegateArtifact
-    ? artifactDeclaresReason(artifact.delegateArtifact, functionName, match)
-    : false;
-}
-
-function delegatedSourceDeclaresReason(transaction: any, match: RegExp | string): boolean {
-  if (typeof transaction?.declaresRevertReason === 'function' && transaction.declaresRevertReason(match)) return true;
-  const parentArtifact = transaction?.parentContract?.inner?.artifact;
-  if (artifactDeclaresReason(parentArtifact, transaction?.functionName, match)) return true;
-  const calls = transaction?.callInfos ?? [];
-  return calls.some((call: any) => artifactDeclaresReason(
-    call.contract?.inner?.artifact, call.functionName, match,
-  ));
-}
-
 function errorMessage(error: unknown): string {
   return String((error as { message?: unknown })?.message ?? error);
 }
@@ -486,14 +452,16 @@ class EmitAssertion implements PromiseLike<void> {
                   }
                   continue;
                 }
-                if (got === undefined) continue;
+                if (got === undefined) {
+                  throw new Error(`event '${this.event}' arg '${k}' is missing`);
+                }
                 const ga = typeof got === 'bigint' ? got : (got as any)?.toString?.() ?? got;
                 const ea = typeof v === 'bigint' ? v : (v as any)?.toString?.() ?? v;
                 if (String(ga) !== String(ea) && ga !== ea) {
-                  // Loose match on cashaddr vs locking-bytecode address forms.
-                  if (typeof ga === 'string' && typeof ea === 'string' && (ga.includes(':') || ea.includes(':'))) {
-                    continue;
-                  }
+                  const [left, right] = normalizeAddressPair(got, v);
+                  const leftText = left instanceof Uint8Array ? binToHex(left) : String(left);
+                  const rightText = right instanceof Uint8Array ? binToHex(right) : String(right);
+                  if (leftText === rightText) continue;
                   // BigNumber / bigint string equality
                   try {
                     if (BigInt(String(ga)) === BigInt(String(ea))) continue;
@@ -548,14 +516,9 @@ class EmitAssertion implements PromiseLike<void> {
             `cannot verify absence of event '${this.event}': transaction ${receipt.txid} has no decoded events`,
           );
         }
-        if (args && Object.keys(args).length > 0) {
-          throw new Error(
-            `cannot verify event '${this.event}' arguments: transaction ${receipt.txid} has no decoded events`,
-          );
-        }
-        // Without decoded logs we cannot verify args; accept the emit for suite progress when
-        // the transaction mined (MistSwap ERC20 Transfer after StatefulFunctionCall send).
-        return;
+        throw new Error(
+          `cannot verify event '${this.event}': transaction ${receipt.txid} has no decoded events`,
+        );
       }
       await Promise.resolve(base.toEmit(this.contract, this.event, args));
     };
@@ -816,8 +779,35 @@ class Assertion {
 
   // --- revert (async) ---
   get reverted(): Promise<void> {
-    const e = ensureVitest();
-    return Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeReverted());
+    const run = async (): Promise<void> => {
+      let succeeded = false;
+      try {
+        const resolved = await Promise.resolve(this.actual);
+        if (resolved && typeof resolved.debug === 'function') resolved.debug();
+        else if (resolved && typeof resolved.send === 'function') await resolved.send();
+        else await resolved;
+        succeeded = true;
+      } catch (error) {
+        const message = errorMessage(error);
+        if (/could not be auto-derived|Cannot send stateful transaction|state commitments could not|Insufficient fund/i
+          .test(message)) {
+          throw error;
+        }
+        const named = error as { name?: string; reason?: unknown; errorArgs?: unknown };
+        const evidence = /OP_VERIFY|FailedRequire|revert |script failed|evaluation failed|frame "/i.test(message)
+          || named.name === 'FailedRequireError'
+          || named.name === 'FailedTransactionError'
+          || named.reason !== undefined
+          || named.errorArgs !== undefined;
+        if (!evidence) {
+          throw new Error(`Expected a contract revert, but the failure was not a VM or require failure: ${message}`);
+        }
+        if (this.negate) throw new Error(`expected transaction not to revert, but it did: ${message}`);
+        return;
+      }
+      if (succeeded && !this.negate) throw new Error('Expected transaction to be reverted, but it succeeded.');
+    };
+    return run();
   }
 
   revertedWith(reason: RegExp | string): Promise<void> {
@@ -957,7 +947,7 @@ class Assertion {
         const msg = String(err?.message ?? err);
         const re = matcher instanceof RegExp ? matcher : new RegExp(matcher.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
         const boundsAlias = matcher === 'value out-of-bounds' && /(?:out of range|out-of-bounds)/i.test(msg);
-        if (!re.test(msg) && !boundsAlias && !delegatedSourceDeclaresReason(this.actual, matcher)) {
+        if (!re.test(msg) && !boundsAlias) {
           throw new Error(`expected rejection matching ${matcher}, got: ${msg}`);
         }
       },
@@ -1028,9 +1018,17 @@ class Assertion {
   }
 }
 
-/** chai-style `expect`, backed by Vitest. */
+/** chai-style `expect`, backed by Vitest. Unknown properties throw instead of asserting nothing. */
 export function expect(actual: any): Assertion {
-  return new Assertion(actual);
+  const assertion = new Assertion(actual);
+  return new Proxy(assertion, {
+    get(target, prop, receiver) {
+      if (typeof prop !== 'symbol' && !(prop in target)) {
+        throw new Error(`unknown assertion property '${String(prop)}'`);
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
 }
 
 /**

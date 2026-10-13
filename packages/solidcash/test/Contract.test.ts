@@ -11,7 +11,7 @@ import { ElectrumNetworkProvider } from '../src/network/electrum/index.js';
 import { MockNetworkProvider } from '../src/network/mock/index.js';
 import {
   aliceAddress,
-  alicePkh, alicePriv, alicePub, bobPriv,
+  alicePkh, alicePriv, alicePub, bobPriv, bobPub,
 } from './fixture/vars.js';
 import { generateLibauthSourceOutputs } from '../src/utils.js';
 import { createTestProvider } from './test-util.js';
@@ -253,11 +253,13 @@ describe('Contract', () => {
       expect(() => instance.unlock.spend(alicePub, new SignatureTemplate(alicePriv), 0n)).toThrow();
       expect(() => bbInstance.unlock.spend(hexToBin('e803'), 1000n)).toThrow();
       expect(() => bbInstance.unlock.spend(hexToBin('e803000000'), 1000n)).toThrow();
+      expect(() => instance.unlock.spend(alicePkh, placeholder(65)))
+        .toThrow("Found type 'bytes20' where type 'pubkey' was expected");
     });
 
     it('can call spend with incorrect arguments', () => {
       expect(() => instance.unlock.spend(alicePub, new SignatureTemplate(bobPriv))).not.toThrow();
-      expect(() => instance.unlock.spend(alicePkh, placeholder(65))).not.toThrow();
+      expect(() => instance.unlock.spend(bobPub, placeholder(65))).not.toThrow();
       expect(() => bbInstance.unlock.spend(hexToBin('e8031234'), 1000n)).not.toThrow();
     });
 

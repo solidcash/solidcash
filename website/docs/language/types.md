@@ -68,9 +68,9 @@ Bounded integers are range-checked whenever a value **lands in a bounded slot**:
 assignment to a bounded variable/state variable/parameter/return, or a write into a fixed-width array. A
 violation fails the script rather than silently wrapping.
 
-Arithmetic *intermediates* are not checked per operation. The BCH VM has a single big-number type, so
-intermediates do not overflow at 256 bits; the bound is checked when the result is stored. This matches
-Solidity's observable behaviour for `a = b + c` while avoiding redundant per-operation checks.
+Arithmetic on bounded integers is also checked per operation, as in Solidity 0.8: an operation whose result
+leaves the range of its type fails the script, even before the result is stored. Shifts are the exception, again as
+in Solidity: `x << n` truncates to the type of `x` (`uint8(200) << 4 == 128`) and never fails.
 
 `unchecked { }` replaces the range check with wraparound modulo 2^N, matching Solidity:
 
@@ -240,8 +240,10 @@ they extract the embedded 20-byte hash at offset 3 of the P2PKH form. Both warn,
 lossy and meaningless for a non-P2PKH address. Compare addresses as addresses wherever you can.
 :::
 
-Members: `.transfer(amount)`, `.send(amount)`, `.call(data)`, `.staticcall(data)`, `.delegatecall(data)`,
-`.code`, `.codehash`. See [Contract Calls](/docs/language/advanced-features#external-contract-interaction).
+Members: `.balance`, `.transfer(amount)`, `.send(amount)`, `.call(data)`, `.staticcall(data)`,
+`.delegatecall(data)`, `.code`, `.codehash`. `.balance` sums the satoshi container of the matching inputs
+(the contract's own balance is also `this.balance`, and `this.outState.balance` reads the outputs). See
+[Contract Calls](/docs/language/advanced-features#external-contract-interaction).
 
 ## Enums
 

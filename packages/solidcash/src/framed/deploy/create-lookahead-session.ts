@@ -68,7 +68,7 @@ export function createLookaheadForAddress(address: string): CreateLookahead | un
 export async function topUpCreateLookahead(signer: Signer, wanted: number): Promise<void> {
   const lookahead = openCreateLookahead(signer);
   try {
-    await lookahead.reserve(wanted);
+    await lookahead.reserve(wanted, { fanOut: false });
   } catch {
     // The look-ahead keeps whatever it reserved before the pool ran out; the caller is told when it predicts past it.
   }

@@ -272,9 +272,22 @@ export function createCovenantContractUnlocker(
 // Address helpers
 // ---------------------------------------------------------------------------
 
+function contractMasterLock(contract: Contract<any, any>): Uint8Array | undefined {
+  const encoded = contract.lockingBytecode;
+  if (!isHex(encoded)) return undefined;
+  const lock = hexToBin(encoded);
+  return lock.length === 35 ? lock : undefined;
+}
+
+/** P2SH32 master lock for a direct contract. A framed artifact keeps the category-only covenant. */
+export function directConventionMasterLock(contract: Contract<any, any>): Uint8Array | undefined {
+  if (contract.artifact.composition?.convention === 'framed') return undefined;
+  return contractMasterLock(contract);
+}
+
 export function getDataNftAddress(contract: Contract<any, any>, categoryId: string): string {
   validateCategoryId(categoryId);
-  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId));
+  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId), contractMasterLock(contract));
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
@@ -320,7 +333,9 @@ export function getEntryNftAddress(
   validateCategoryId(categoryId);
   const collectionSignature = resolveCollectionSignature(contract.artifact, collectionNameOrSignature);
   const collectionHash = computeCollectionHash(collectionSignature);
-  const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
+  const covenantScript = buildEntryNftCovenantScript(
+    hexToBin(categoryId), collectionHash, directConventionMasterLock(contract),
+  );
   const entryAddress = scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ENTRY_ADDR === '1') {
@@ -337,9 +352,11 @@ export function getEntryNftAddress(
 
 // Locking-bytecode (bytes) forms of the sub-NFT addresses, used as address-model handles
 // baked into a reader's constructor args (the read covenant checks OP_UTXOBYTECODE == this value).
-export function getDataNftLockingBytecode(categoryId: string): Uint8Array {
+export function getDataNftLockingBytecode(categoryId: string, masterLock?: Uint8Array): Uint8Array {
   validateCategoryId(categoryId);
-  const lockingBytecode = scriptToLockingBytecode(buildDataNftCovenantScript(hexToBin(categoryId)), 'p2sh32');
+  const lockingBytecode = scriptToLockingBytecode(
+    buildDataNftCovenantScript(hexToBin(categoryId), masterLock), 'p2sh32',
+  );
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ENTRY_ADDR === '1') {
     console.error('data-nft-addr', JSON.stringify({
@@ -356,7 +373,9 @@ export function getEntryNftLockingBytecode(
   validateCategoryId(categoryId);
   const collectionSignature = resolveCollectionSignature(contract.artifact, collectionNameOrSignature);
   const collectionHash = computeCollectionHash(collectionSignature);
-  return scriptToLockingBytecode(buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash), 'p2sh32');
+  return scriptToLockingBytecode(buildEntryNftCovenantScript(
+    hexToBin(categoryId), collectionHash, directConventionMasterLock(contract),
+  ), 'p2sh32');
 }
 
 // Chunk-collection address for a dynamic-storage var (string / unbounded bytes). Chunks are entry NFTs
@@ -366,7 +385,9 @@ export function getDynamicChunkAddress(
 ): string {
   validateCategoryId(categoryId);
   const collectionHash = computeCollectionHash(dynamicChunkSignature(varName, varType));
-  const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
+  const covenantScript = buildEntryNftCovenantScript(
+    hexToBin(categoryId), collectionHash, directConventionMasterLock(contract),
+  );
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
@@ -377,18 +398,22 @@ export function getValueChunkAddress(
 ): string {
   validateCategoryId(categoryId);
   const collectionHash = computeCollectionHash(valueChunkSignature(collection));
-  const covenantScript = buildValueChunkCovenantScript(hexToBin(categoryId), collectionHash, slot, root);
+  const covenantScript = buildValueChunkCovenantScript(
+    hexToBin(categoryId), collectionHash, slot, root, directConventionMasterLock(contract),
+  );
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
 // No contract parameter: unlike getValueChunkAddress this needs no network/addressType, and a route's chunks
 // belong to the CALLEE, so there is no caller contract that would be correct to take.
 export function getValueChunkLockingBytecode(
-  categoryId: string, collection: string, slot: Uint8Array, root: Uint8Array,
+  categoryId: string, collection: string, slot: Uint8Array, root: Uint8Array, masterLock?: Uint8Array,
 ): Uint8Array {
   validateCategoryId(categoryId);
   const collectionHash = computeCollectionHash(valueChunkSignature(collection));
-  return scriptToLockingBytecode(buildValueChunkCovenantScript(hexToBin(categoryId), collectionHash, slot, root), 'p2sh32');
+  return scriptToLockingBytecode(
+    buildValueChunkCovenantScript(hexToBin(categoryId), collectionHash, slot, root, masterLock), 'p2sh32',
+  );
 }
 
 export function getEventNftAddress(
@@ -415,7 +440,7 @@ export function getTokenContainerAddress(
   validateCategoryId(categoryId);
   validateCategoryId(tokenContainerCategoryId, 'tokenContainerCategoryId');
   const covenantScript = buildTokenContainerCovenantScript(
-    hexToBin(categoryId), hexToBin(tokenContainerCategoryId),
+    hexToBin(categoryId), hexToBin(tokenContainerCategoryId), directConventionMasterLock(contract),
   );
   // Always use P2SH32 for token containers so the in-script derivation
   // (which uses OP_HASH256) produces matching locking bytecodes
@@ -424,7 +449,9 @@ export function getTokenContainerAddress(
 
 export function getSatoshiContainerAddress(contract: Contract<any, any>, categoryId: string): string {
   validateCategoryId(categoryId);
-  const covenantScript = buildSatoshiContainerCovenantScript(hexToBin(categoryId));
+  const covenantScript = buildSatoshiContainerCovenantScript(
+    hexToBin(categoryId), directConventionMasterLock(contract),
+  );
   // Always use P2SH32 for satoshi containers so the in-script derivation
   // (which uses OP_HASH256) produces matching locking bytecodes
   return scriptToAddress(covenantScript, contract.provider.network, 'p2sh32', true);
@@ -563,7 +590,7 @@ export function createDataNftUnlocker(
 ): ContractUnlocker {
   validateMasterInputIndex(masterInputIndex);
   validateCategoryId(categoryId);
-  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId));
+  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId), contractMasterLock(contract));
   return createCovenantContractUnlocker(
     contract,
     `DataNft_${categoryId.slice(0, 8)}`,
@@ -579,7 +606,7 @@ export function createRelocatedDataNftUnlocker(
   validateMasterInputIndex(masterInputIndex);
   validateMasterInputIndex(outputIndex);
   validateCategoryId(categoryId);
-  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId));
+  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId), contractMasterLock(contract));
   return createCovenantContractUnlocker(
     contract,
     `DataNft_${categoryId.slice(0, 8)}`,
@@ -598,7 +625,7 @@ export function createDestroyDataNftUnlocker(
 ): ContractUnlocker {
   validateMasterInputIndex(masterInputIndex);
   validateCategoryId(categoryId);
-  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId));
+  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId), contractMasterLock(contract));
   return createCovenantContractUnlocker(
     contract,
     `DataNft_${categoryId.slice(0, 8)}`,
@@ -608,11 +635,16 @@ export function createDestroyDataNftUnlocker(
   );
 }
 
+/** `masterLock` (with `bindContract` false) names the master an external record binds, not `contract`'s own. */
 export function createReadOnlyDataNftUnlocker(
   contract: Contract<any, any>, categoryId: string,
+  masterLock?: Uint8Array,
+  bindContract = masterLock === undefined,
 ): ContractUnlocker {
   validateCategoryId(categoryId);
-  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId));
+  const covenantScript = buildDataNftCovenantScript(
+    hexToBin(categoryId), bindContract ? contractMasterLock(contract) : masterLock,
+  );
   return createCovenantContractUnlocker(
     contract,
     `DataNft_${categoryId.slice(0, 8)}`,
@@ -629,7 +661,9 @@ export function createEntryNftUnlocker(
   validateCategoryId(categoryId);
   const collectionSignature = resolveCollectionSignature(contract.artifact, collectionNameOrSignature);
   const collectionHash = computeCollectionHash(collectionSignature);
-  const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
+  const covenantScript = buildEntryNftCovenantScript(
+    hexToBin(categoryId), collectionHash, directConventionMasterLock(contract),
+  );
   return createCovenantContractUnlocker(
     contract,
     `EntryNft_${categoryId.slice(0, 8)}`,
@@ -647,7 +681,9 @@ export function createDynamicChunkUnlocker(
   validateMasterInputIndex(masterInputIndex);
   validateCategoryId(categoryId);
   const collectionHash = computeCollectionHash(dynamicChunkSignature(varName, varType));
-  const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
+  const covenantScript = buildEntryNftCovenantScript(
+    hexToBin(categoryId), collectionHash, directConventionMasterLock(contract),
+  );
   return createCovenantContractUnlocker(
     contract,
     `ChunkNft_${categoryId.slice(0, 8)}`,
@@ -667,7 +703,9 @@ export function createValueChunkUnlocker(
   validateMasterInputIndex(masterInputIndex);
   validateCategoryId(categoryId);
   const collectionHash = computeCollectionHash(valueChunkSignature(collection));
-  const covenantScript = buildValueChunkCovenantScript(hexToBin(categoryId), collectionHash, slot, root);
+  const covenantScript = buildValueChunkCovenantScript(
+    hexToBin(categoryId), collectionHash, slot, root, directConventionMasterLock(contract),
+  );
   const unlocker = createCovenantContractUnlocker(
     contract,
     `ValueChunkNft_${categoryId.slice(0, 8)}`,
@@ -689,7 +727,9 @@ export function createReadOnlyDynamicChunkUnlocker(
   validateMasterInputIndex(masterInputIndex);
   validateCategoryId(categoryId);
   const collectionHash = computeCollectionHash(dynamicChunkSignature(varName, varType));
-  const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
+  const covenantScript = buildEntryNftCovenantScript(
+    hexToBin(categoryId), collectionHash, directConventionMasterLock(contract),
+  );
   return createCovenantContractUnlocker(
     contract,
     `ChunkNft_${categoryId.slice(0, 8)}`,
@@ -701,11 +741,16 @@ export function createReadOnlyDynamicChunkUnlocker(
 
 export function createReadOnlyEntryNftUnlocker(
   contract: Contract<any, any>, categoryId: string, collectionNameOrSignature: string,
+  masterLock?: Uint8Array,
+  bindContract = masterLock === undefined,
 ): ContractUnlocker {
   validateCategoryId(categoryId);
   const collectionSignature = resolveCollectionSignature(contract.artifact, collectionNameOrSignature);
   const collectionHash = computeCollectionHash(collectionSignature);
-  const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
+  const covenantScript = buildEntryNftCovenantScript(
+    hexToBin(categoryId), collectionHash,
+    bindContract ? directConventionMasterLock(contract) : masterLock,
+  );
   return createCovenantContractUnlocker(
     contract,
     `EntryNft_${categoryId.slice(0, 8)}`,
@@ -752,7 +797,7 @@ export function createTokenContainerUnlocker(
   validateCategoryId(categoryId);
   validateCategoryId(tokenContainerCategoryId, 'tokenContainerCategoryId');
   const covenantScript = buildTokenContainerCovenantScript(
-    hexToBin(categoryId), hexToBin(tokenContainerCategoryId),
+    hexToBin(categoryId), hexToBin(tokenContainerCategoryId), directConventionMasterLock(contract),
   );
   // Always use P2SH32 for token containers (matches in-script OP_HASH256 derivation)
   return createCovenantContractUnlocker(
@@ -770,7 +815,9 @@ export function createSatoshiContainerUnlocker(
 ): ContractUnlocker {
   validateMasterInputIndex(masterInputIndex);
   validateCategoryId(categoryId);
-  const covenantScript = buildSatoshiContainerCovenantScript(hexToBin(categoryId));
+  const covenantScript = buildSatoshiContainerCovenantScript(
+    hexToBin(categoryId), directConventionMasterLock(contract),
+  );
   // Always use P2SH32 for satoshi containers (matches in-script OP_HASH256 derivation)
   return createCovenantContractUnlocker(
     contract,

@@ -10,6 +10,7 @@ import {
   type AbiFunction,
 } from '@solidcash/utils';
 import { scriptToLockingBytecode } from '../utils.js';
+import { directConventionMasterLock } from './covenant-helpers.js';
 
 export type FinalizeCreateBuilderEntryDeleteSlotsHost = {
   readonly categoryId: string;
@@ -97,7 +98,9 @@ export function finalizeCreateBuilderEntryDeleteSlots(
   if (entryNfts.length > 0 && stateLayout.collections) {
     for (const coll of stateLayout.collections) {
       const collectionHash = computeCollectionHash(coll.signature);
-      const covenantScript = buildEntryNftCovenantScript(hexToBin(host.categoryId), collectionHash);
+      const covenantScript = buildEntryNftCovenantScript(
+        hexToBin(host.categoryId), collectionHash, directConventionMasterLock(host.inner),
+      );
       entryNftLockingBytecodes.set(coll.name, scriptToLockingBytecode(
         covenantScript, host.inner.addressType,
       ));

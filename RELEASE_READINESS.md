@@ -735,7 +735,7 @@ it must not silently compile to incorrect covenant behavior.
     zero timed out. The complete 30-second/eight-worker primary sweep compiled 2,622 with 72 named diagnostics
     and 111 timeouts; isolated 30-second/four-worker and 120-second/four-worker tiers resolved every timeout.
   - Negative result: all 2,158 checked; 1,835 rejected, 323 over-accepted, zero unchecked, zero timeouts. The
-    conservative screening inventory is [`NEGATIVE_AUDIT.md`](examples/solidity-corpus/NEGATIVE_AUDIT.md).
+    conservative screening inventory is [`NEGATIVE_AUDIT.md`](bench/solidity-corpus/NEGATIVE_AUDIT.md).
 - [x] Make the corpus command deterministic and record its Solidity corpus revision and tool versions.
   - The scoped runner uses stable file ordering, isolated reusable workers, a per-fixture timeout, configurable
     worker count/negative checking, a resumable fresh-worker retry tier, and writes the corpus revision,
@@ -756,9 +756,9 @@ it must not silently compile to incorrect covenant behavior.
     228-case strictness-review queue, led by 78 data-location/storage-reference cases. Five uninitialized-storage-
     pointer cases now reject after branch/zero-iteration-loop definite-assignment tracking. No case is waived yet.
 - [x] Keep the corpus README, scorecard, and progress log numerically consistent.
-  - Current source material: [`examples/solidity-corpus/README.md`](examples/solidity-corpus/README.md),
-    [`scorecard.txt`](examples/solidity-corpus/scorecard.txt), and
-    [`PROGRESS.md`](examples/solidity-corpus/PROGRESS.md).
+  - Current source material: [`bench/solidity-corpus/README.md`](bench/solidity-corpus/README.md),
+    [`scorecard.txt`](bench/solidity-corpus/scorecard.txt), and
+    [`PROGRESS.md`](bench/solidity-corpus/PROGRESS.md).
 
 ### CI and release gates
 
@@ -784,7 +784,7 @@ it must not silently compile to incorrect covenant behavior.
   (9 files, 94 passed), and solidcash `e2e` + `unit` (334 files, 2,748 passed). This historical snapshot predates
   the required BCHN application smoke added below; the full BCHN diagnostic matrix remained out of scope.
   - One real gate defect found and FIXED: `spellcheck` reported 18 issues in 18 files, and every one was in a
-    GITIGNORED path - generated `examples/effectiveacceleration/artifacts-real/**` output and the local `/codex/`
+    GITIGNORED path - generated `bench/effectiveacceleration/artifacts-real/**` output and the local `/codex/`
     scratch directory. A clean clone does not contain them, so the gate was red locally while being green for
     the release it is meant to certify, which is the worst of both. `.cspell.json` now sets `"useGitignore":
     true`, so the gate checks the repository rather than the workspace. It also drops the run from 2,198 files
@@ -1104,9 +1104,9 @@ Primary evidence:
 - [`packages/solidc/docs/external-contract-calls.md`](packages/solidc/docs/external-contract-calls.md)
 - [`packages/solidc/docs/buffered-state-and-message-bus-research.md`](packages/solidc/docs/buffered-state-and-message-bus-research.md)
 - [`packages/solidc/docs/sorted-mapping-c2.md`](packages/solidc/docs/sorted-mapping-c2.md)
-- [`examples/solidity-corpus/README.md`](examples/solidity-corpus/README.md)
-- [`examples/solidity-corpus/scorecard.txt`](examples/solidity-corpus/scorecard.txt)
-- [`examples/solidity-corpus/PROGRESS.md`](examples/solidity-corpus/PROGRESS.md)
+- [`bench/solidity-corpus/README.md`](bench/solidity-corpus/README.md)
+- [`bench/solidity-corpus/scorecard.txt`](bench/solidity-corpus/scorecard.txt)
+- [`bench/solidity-corpus/PROGRESS.md`](bench/solidity-corpus/PROGRESS.md)
 - [`examples/testing-suite/HARDHAT-PARITY.md`](examples/testing-suite/HARDHAT-PARITY.md)
 - [`package.json`](package.json)
 - [`.github/workflows/github-actions.yml`](.github/workflows/github-actions.yml)

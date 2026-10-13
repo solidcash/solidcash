@@ -1,6 +1,8 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { hashTransactionUiOrder } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import type { Output as LibauthOutput } from '@bitauth/libauth/build/lib/message/transaction-types.js';
+import { verifyTransactionTokens } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-tokens.js';
+import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
   checkAbsurdFee, checkCoinbaseMaturity, checkDustOutputs, checkInputValueRanges,
   checkLocktimeFinality, checkMinRelayFee, checkNullPrevout, checkSequenceLocks,
@@ -37,12 +39,12 @@ const toVmOutputs = (sourceOutputs: readonly SourceOutput[]): LibauthOutput[] =>
 }));
 
 /**
- * Prepared-transaction adapter for mem-cash 0.0.8's verification pipeline.
+ * Prepared-transaction adapter for mem-cash 0.0.10's verification pipeline.
  *
  * The core node has already decoded the raw transaction once to resolve its source outputs. SDK builders can
  * additionally provide that same decoded transaction, avoiding the verifier's second decode/re-encode cycle.
- * Every pre-VM check and its ordering mirrors mem-cash 0.0.8; calls without an exact prepared match delegate to
- * the stock verifier. This adapter is only selected for oversized BCH-2026 mock profiles at its call site.
+ * Every pre-VM check and its ordering mirrors mem-cash 0.0.10; calls without an exact prepared match delegate to
+ * the stock verifier. This adapter is selected for every BCH-2026 mock profile at its call site.
  */
 export function createPreparedBch2026TxVerifier(
   provider: NetworkProvider,
@@ -58,6 +60,8 @@ export function createPreparedBch2026TxVerifier(
   if (minRelayFeePerKb <= 0n) throw new Error('minRelayFeePerKb must be positive');
   if (maxFee <= 0n) throw new Error('maxFee must be positive');
 
+  const maximumTokenCommitmentLength = provider.consensusLimits?.maximumNftCommitmentBytes
+    ?? ConsensusBch2026.maximumTokenCommitmentLength;
   const vm = createVirtualMachineBch2026ForProvider(provider, undefined, { standard });
   const consensusVm = standard
     ? createVirtualMachineBch2026ForProvider(provider, undefined, { standard: false })
@@ -159,8 +163,11 @@ export function createPreparedBch2026TxVerifier(
     }
     const pipeline = preVmPipeline(prepared, sourceOutputs, chainState);
     if (!pipeline.ok) return toFailure(pipeline);
-    if (!consumePreparedCovenantValidation(provider, prepared, sourceOutputs, pipeline.txid)) {
-      const vmOutputs = toVmOutputs(sourceOutputs);
+    const vmOutputs = toVmOutputs(sourceOutputs);
+    // A receipt covers the inputs' evaluation only: the token rules, commitment length included, are checked here
+    // as `verify` checks them, and a refusal takes the full pass so its error is the one `verify` gives.
+    if (!consumePreparedCovenantValidation(provider, prepared, sourceOutputs, pipeline.txid)
+      || verifyTransactionTokens(pipeline.decoded, vmOutputs, { maximumTokenCommitmentLength }) !== true) {
       const resolved = { sourceOutputs: vmOutputs, transaction: pipeline.decoded };
       const result = vm.verify(resolved);
       if (result !== true) {

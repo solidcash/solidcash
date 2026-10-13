@@ -6,7 +6,7 @@ Updated: 2026-09-15 (Europe/Berlin)
 
 Work in `/Code/cashscript/.worktrees/kernel-beta-candidate` on branch
 `grok/message-bus-kernel-beta`. Make all 66 unchanged titles in
-`examples/effectiveacceleration/test/marketplace.test.ts` green on mock BCH-2026 while preserving
+`bench/effectiveacceleration/test/marketplace.test.ts` green on mock BCH-2026 while preserving
 `artifact.messageBus.convention === 'kernel-row-loop'` and the graph-handler `OP_INVOKE` boundary.
 
 Do not edit Marketplace/Unicrow Solidity or the Marketplace suite. Do not use chipnet, Hardhat, a 10k-P2SH

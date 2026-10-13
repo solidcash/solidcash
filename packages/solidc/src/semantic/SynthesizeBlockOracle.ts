@@ -34,9 +34,12 @@ import AstTraversal from '../ast/AstTraversal.js';
  * becomes stateful so the read rides the master spend. block.basefee = Floor(1000*totalFees/size).
  *
  * Owner duty to refresh: a baked owner key (`__blockOracleOwner`, an immutable pubkey register seeded at
- * genesis) + an injected `__updateBlockOracle(sig, ...fields)` that requires the owner signature and the
- * freshness/anti-over-reporting bound `tx.time >= number` (the owner cannot report a height above the
- * chain), then writes each register. block.chainid is a separate baked constant (NOT here).
+ * genesis) + an injected `__updateBlockOracle(sig, ...fields)` that requires the owner signature. A height
+ * register must be a block-height (`< 500000000`, so a time-type nLockTime cannot satisfy CLTV), must not
+ * rewind, and must satisfy `tx.time >= number` (the owner cannot report a height above the chain). A timestamp
+ * register must not rewind (no replay of an old window). A timestamp-only update also requires a time-type
+ * locktime and `tx.time >=` the new timestamp. Then each register is written. block.chainid is a separate
+ * baked constant (NOT here).
  *
  * Runs before semantic analysis so injected decls/reads/writes resolve normally. `block.timestamp` always
  * lowers to the injected `__block_timestamp` oracle register; the compat-only tx.locktime mapping was removed.
@@ -244,6 +247,14 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     if (varName) {
       this.used.add(varName);
       this.fnUsesOracle = true;
+      if (node.operator === NullaryOperator.BLOCK_TIMESTAMP) {
+        this.warnShim('block.timestamp', 'Warning: block.timestamp is the last value the oracle owner wrote, '
+          + 'not the chain clock. A deadline stays open until that owner updates it.');
+      }
+      if (node.operator === NullaryOperator.BLOCK_NUMBER) {
+        this.warnShim('block.number', 'Warning: block.number is the last height the oracle owner wrote. '
+          + 'It is checked against the chain when the owner updates it, and it can lag the tip.');
+      }
       return this.stateAccess(varName, node);
     }
     // block.prevrandao: BCH has no randomness source. Lowered (in codegen) to a transaction-local value -
@@ -368,13 +379,47 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     )) as FunctionCallNode;
     body.push(this.at(new RequireNode(checkSig, 'block oracle: owner signature required')) as RequireNode);
 
-    // Anti-over-reporting: bind the written height to the chain (tx.time >= number). Height-only, since
-    // nLocktime is height XOR time; if block.number is unused there is no native temporal anchor.
+    // CLTV treats a time-type operand as a timestamp whenever nLockTime is time-type, so a bare
+    // `tx.time >= number` accepts any height in [500000000, MTP] (CRYPTO-5). Require a real block height,
+    // and refuse a rewind, before that check. A timestamp has no CLTV anchor; it still may not move backwards.
     if (this.used.has('__block_number')) {
+      const setNumber = (): IdentifierNode => this.at(new IdentifierNode(setterParam('__block_number'))) as IdentifierNode;
+      body.push(this.compareRequire(
+        setNumber(), BinaryOperator.LT, this.at(new IntLiteralNode(500_000_000n)) as IntLiteralNode,
+        'block oracle: number is not a block height',
+      ));
+      body.push(this.compareRequire(
+        setNumber(), BinaryOperator.GE, this.stateAccessRaw('__block_number'),
+        'block oracle: number rewound',
+      ));
       body.push(this.at(new TimeOpNode(
-        TimeOp.CHECK_LOCKTIME, this.at(new IdentifierNode(setterParam('__block_number'))) as IdentifierNode,
+        TimeOp.CHECK_LOCKTIME, setNumber(),
         'block oracle: number exceeds chain height',
       )) as TimeOpNode);
+    }
+    // Non-rewind for the timestamp too, so the owner cannot replay an old window.
+    if (this.used.has('__block_timestamp')) {
+      body.push(this.compareRequire(
+        this.at(new IdentifierNode(setterParam('__block_timestamp'))) as IdentifierNode,
+        BinaryOperator.GE, this.stateAccessRaw('__block_timestamp'),
+        'block oracle: timestamp rewound',
+      ));
+      // A height update already spends a height-type locktime, so the same transaction cannot also CLTV a
+      // timestamp. A timestamp-only update must use a time-type locktime and cannot publish a time the chain
+      // has not reached.
+      if (!this.used.has('__block_number')) {
+        const locktime = this.at(new NullaryOpNode(NullaryOperator.LOCKTIME)) as NullaryOpNode;
+        const timeType = this.at(new IntLiteralNode(500_000_000n)) as IntLiteralNode;
+        const timeTyped = this.at(new BinaryOpNode(locktime, BinaryOperator.GE, timeType)) as BinaryOpNode;
+        body.push(this.at(new RequireNode(
+          timeTyped, 'block oracle: timestamp needs a time-type locktime',
+        )) as RequireNode);
+        body.push(this.at(new TimeOpNode(
+          TimeOp.CHECK_LOCKTIME,
+          this.at(new IdentifierNode(setterParam('__block_timestamp'))) as IdentifierNode,
+          'block oracle: timestamp is ahead of the chain',
+        )) as TimeOpNode);
+      }
     }
 
     for (const varName of fields) {
@@ -396,6 +441,13 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       updateFn.modifiers.push(FunctionModifier.DELEGATE);
     }
     node.functions.push(updateFn);
+  }
+
+  private compareRequire(
+    left: IdentifierNode, operator: BinaryOperator, right: IntLiteralNode | StateAccessNode, message: string,
+  ): RequireNode {
+    const condition = this.at(new BinaryOpNode(left, operator, right)) as BinaryOpNode;
+    return this.at(new RequireNode(condition, message)) as RequireNode;
   }
 
   private stateAccess(name: string, src: NullaryOpNode): StateAccessNode {

@@ -383,7 +383,7 @@ describe('struct field types: struct arrays and forward / recursive references',
 
   it('still rejects a directly recursive fixed struct array', () => {
     expect(() => compileString('contract C { struct S { uint x; S[1] child; } }',
-      { evmCompat: true })).toThrow(/not supported as a struct field|recursive struct/);
+      { evmCompat: true })).toThrow(/not supported as a struct field|recursive struct/i);
   });
 });
 
@@ -419,8 +419,8 @@ describe('view-function state-effect validation', () => {
 
 describe('tuple assignment to state variables ((x, y) = (a, b))', () => {
   // The tuple codegen assigns into stack slots, which state vars lack. A tuple assignment whose targets are all
-  // state vars desugars to sequential state assigns - byte-identical to the manual form, and a swap stays
-  // correct because a state read always reads the input commitment.
+  // state vars desugars to sequential state assigns, byte-identical to the manual form when no component reads a
+  // target. A read after a pending write sees the new value, so a swap captures its components first.
   const bc = (body: string): string => compileString(
     `contract C() { uint256 x; uint256 y; function f(uint256 a, uint256 b) { ${body} } }`,
     { evmCompat: true, forceStateful: true },
@@ -430,8 +430,8 @@ describe('tuple assignment to state variables ((x, y) = (a, b))', () => {
     expect(bc('(x, y) = (a, b);')).toBe(bc('x = a; y = b;'));
   });
 
-  it('(x, y) = (y, x) swap matches x = y; y = x (input-read semantics)', () => {
-    expect(bc('(x, y) = (y, x);')).toBe(bc('x = y; y = x;'));
+  it('(x, y) = (y, x) is not the sequential x = y; y = x (that reads the pending write)', () => {
+    expect(bc('(x, y) = (y, x);')).not.toBe(bc('x = y; y = x;'));
   });
 
   it('(x, y) = f() captures the multi-return before writing state', () => {
@@ -737,10 +737,19 @@ describe('fixed-width-element array slice arr[start:end] (VM-verified in solidca
     expect(cc('contract C { function f(uint256[] calldata b) external pure returns (bytes memory) {'
       + ' return abi.encode(b[1:3], b[:], b[2:]); } }')).toBe('C');
   });
-  it('still rejects a slice of a struct-element array (pushdata, not packed offsets)', () => {
-    expect(() => cc('contract C { struct S { uint256 a; }'
-      + ' function f(S[] calldata b) external pure returns (S[] memory) { return b[1:2]; } }'))
-      .toThrow(/slice/);
+  it('slices a framed struct-element array as a scan of its rows', () => {
+    // A struct row is pushdata-encoded field by field, so it has no fixed stride and is addressed by scanning the
+    // element frames - the same primitive the variable-width element read/write paths use for that element. The
+    // frame range it keeps is covered by solidc/test/CalldataArraySlice.test.ts and, value-exactly, by
+    // solidcash/test/e2e/CalldataStructArraySlice.test.ts.
+    expect(cc('contract C { struct S { uint256 a; }'
+      + ' function f(S[] calldata b, uint256 s, uint256 e) external pure returns (S[] memory) { return b[s:e]; } }'))
+      .toBe('C');
+  });
+  it('still rejects a slice whose source is not a dynamic calldata array', () => {
+    expect(() => cc('contract C { struct S { uint256 a; } function f(S[] calldata b) external {'
+      + ' S[] memory m = b; S[] memory n = m[0:1]; require(n.length == 1); } }'))
+      .toThrow(/Index range access is only supported for dynamic calldata arrays/);
   });
 });
 
@@ -946,6 +955,18 @@ describe('foreign external fn-ptr ARRAY dispatch table (fixed method on runtime 
     { evmCompat: true });
     const fire = art.abi.find((f) => f.name === 'fire')!;
     expect(fire.externalCalls!.some((e) => e.loopArrayVar === 'fns' && e.functionName === 'ping')).toBe(true);
+  });
+
+  // A this-qualified element write is claimed by the inline pass (no selector array, fixed-method call).
+  it('this.fns[i] = IFoo(a).ping fills the fixed-method table', () => {
+    const art = compileString(`${IF} contract C { function(uint) external[] fns;`
+      + ' function reg(uint i, address a) public { this.fns[i] = IFoo(a).ping; }'
+      + ' function fire(uint v) public { fns[0](v); } }', { evmCompat: true });
+    const stateVars = art.stateLayout!.variables.map((v) => `${v.name}:${v.type}`);
+    expect(stateVars).toContain('fns:address[]');
+    expect(stateVars.some((v) => v.startsWith('__fnsel_fns:'))).toBe(false);
+    const fire = art.abi.find((f) => f.name === 'fire')!;
+    expect(fire.externalCalls!.some((e) => !e.loopArrayVar && e.functionName === 'ping')).toBe(true);
   });
 });
 

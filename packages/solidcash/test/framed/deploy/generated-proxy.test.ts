@@ -51,7 +51,7 @@ const NO_IMPLEMENTATION_FIELD = 'pragma solidcash ^0.13.0;'
   + '   function initialize(address expected) { require(msg.sender == expected); this.version = 7; }'
   + ' }';
 
-/** Funds the two genesis UTXOs and returns the deployer's own lock and funder. */
+/** Funds the two genesis UTXOs, and returns the deployer's own lock and funder; the proxy's genesis is initialized. */
 async function funded(network: MockNetworkProvider): Promise<{
   readonly funder: ReturnType<Contract['unlock']['spend']>;
   readonly implFunding: { txid: string; vout: number; satoshis: bigint };
@@ -137,9 +137,9 @@ describe('a generated proxy', () => {
       .toStrictEqual([`${artifacts.Impl!.contractName}.initialize()`, `${proxy.contractName}.__fallback()`]);
     expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(deployment.initialize.accepted).toBe(true);
-    // The caller offered no coin, so the hop is only derived and nothing is broadcast for it. It spends the proxy's
-    // master, its validator and facet, the implementation's master and the record, then the deployer's own coin.
-    expect(deployment.initialize.broadcast).toBeUndefined();
+    // The derived hop spends the proxy's master, its validator and facet, the implementation's master and the
+    // record, then the deployer's own coin. It is never broadcast: the proxy's genesis mints what it wrote.
+    expect(deployment.initialize.broadcast.txid).toBe(deployment.proxy.tx.txid);
     expect(deployment.initialize.transaction.inputs.length).toBe(6);
 
     // The entry computed the state it wrote: the flag set and the version written, with the address still there.
@@ -152,13 +152,14 @@ describe('a generated proxy', () => {
     expect(bytesToHex(deployment.initialize.transaction.outputs[recordIndex]!.token!.nft!.commitment))
       .toBe(bytesToHex(written));
 
-    // The proxy's record still holds what its genesis minted (the implementation's address, nothing initialized),
-    // because the derived hop never ran on chain; read back through the shipped decoder.
+    // The proxy's record holds what the entry wrote, minted by its genesis and read back through the shipped decoder.
+    // There is no later hop, so the chain is never left at the uninitialized commitment for someone else to take.
     const discovery = await readFramedDeployment(network, deployment.proxy.categoryId, proxy.stateLayout!);
     expect(discovery.records.length).toBe(1);
     const recordState = new Uint8Array(Buffer.from(discovery.records[0]!.token!.nft!.commitment, 'hex'));
+    expect(bytesToHex(recordState)).toBe(bytesToHex(written));
     expect(bytesToHex(recordState)).toBe(bytesToHex(commitment(proxy.stateLayout!, {
-      implementation: deployment.implementation.address, initialized: 0n, version: 0n,
+      implementation: deployment.implementation.address, initialized: 1n, version: 7n,
     })));
   });
 

@@ -261,7 +261,8 @@ describe('internal fn-ptr memory array', () => {
 
 describe('internal fn-ptr state var', () => {
   // Internal fn-ptr STATE vars: an uninitialized one REVERTS when called (no function-0 dispatch); a set
-  // one persists across txs and dispatches to the stored functionId.
+  // one persists across txs and dispatches to the stored functionId. The genesis value is the invalid id
+  // 0x7fffffff (INVALID_FUNCTION_POINTER_ID, as for `delete`), an int on the wire like every set id.
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   let nonce = 0x300;
@@ -282,14 +283,14 @@ describe('internal fn-ptr state var', () => {
     it('calling an uninitialized void internal fn-ptr state var reverts', async () => {
       const c = await dep('contract Test { function() internal x; function f() public returns (int) { x(); return 2; } }', {});
       await fund(c); await expect(c.f().send()).rejects.toThrow(preflightFailure(
-        'Program attempted to OP_INVOKE an undefined function identifier. Function identifier: 0x.',
+        'Program attempted to OP_INVOKE an undefined function identifier. Function identifier: 0xffffff7f.',
       ));
     });
 
     it('calling an uninitialized int-typed internal fn-ptr state var reverts', async () => {
       const c = await dep('contract Test { function(int) internal returns(int) x; function f() public returns (int) { return x(5); } }', {});
       await fund(c); await expect(c.f().send()).rejects.toThrow(preflightFailure(
-        'Program attempted to OP_INVOKE an undefined function identifier. Function identifier: 0x.',
+        'Program attempted to OP_INVOKE an undefined function identifier. Function identifier: 0xffffff7f.',
       ));
     });
 
@@ -297,7 +298,7 @@ describe('internal fn-ptr state var', () => {
       const c = await dep(`contract Test { function(int) internal returns(int) x; int public r;
         function a(int v) public returns (int) { return v + 1; }
         function set() public { x = a; require(true); }
-        function run() public { this.r = x(7); } }`, { x: new Uint8Array(), __fnsel_x: new Uint8Array(4), r: 0n });
+        function run() public { this.r = x(7); } }`, { r: 0n });
       await fund(c); await c.set().send();
       await fund(c); await c.run().send();
       expect(Number((await c.getState()).r)).toBe(8);

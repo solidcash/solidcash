@@ -293,7 +293,7 @@ The target was validated as a manual pattern before building. e2e: push-in-loop 
 access only; `this.V` whole-reads (StateAccessNode) inside a loop-cached fn are not redirected (corpus uses
 bare access).
 
-### Corpus impact (examples/solidity-by-example, single-wall unless noted)
+### Corpus impact (bench/solidity-by-example, single-wall unless noted)
 - P2a: Structs (`push` x3), MyToken (verify - two-string-WRITE already compiles but is W5; if it READS two
   strings it is W1). + ArrayReplaceFromEnd once P2b lands.
 - P2c: ArrayRemoveByShifting, MerkleTree.

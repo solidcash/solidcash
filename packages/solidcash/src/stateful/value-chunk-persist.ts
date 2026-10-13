@@ -246,11 +246,16 @@ export class CompositionSettlementSession {
     root: Uint8Array;
     collection: string;
     categoryId: string;
+    /** Executing 35-byte master lock, when the stored chunk covenant was bound to it. */
+    masterLock?: Uint8Array;
   }>();
 
   readonly persistedValueChunkWrites = new Map<string, {
     value: Uint8Array; lockingBytecode: Uint8Array; width: number;
-    recipe: { slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string };
+    recipe: {
+      slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string;
+      masterLock?: Uint8Array;
+    };
   }>();
 
   readonly valueChunkWriteStaging = new ValueChunkWriteStagingSession();
@@ -576,18 +581,19 @@ function jobEventsSlotCandidates(): Uint8Array[] {
 }
 
 /** Recover slot+root so the next UPDATE can spend persist chunks with a real unlocker. */
-export function rememberJobEventsUnlockRecipe(categoryId: string): boolean {
+export function rememberJobEventsUnlockRecipe(categoryId: string, masterLock?: Uint8Array): boolean {
   const value = settlement().persistedJobEventsValues.get(categoryId);
   const lock = settlement().persistedJobEventsLocks.get(categoryId);
   if (!value || !lock) return false;
   const root = sha256Sync(value);
+  const bound = masterLock?.length === 35 ? masterLock : undefined;
   for (const slot of jobEventsSlotCandidates()) {
     for (const collection of LEGACY_JOB_EVENTS_COLLECTION_ALIASES) {
       try {
-        const expected = getValueChunkLockingBytecode(categoryId, collection, slot, root);
+        const expected = getValueChunkLockingBytecode(categoryId, collection, slot, root, bound);
         if (binToHex(expected) === binToHex(lock)) {
           settlement().persistedJobEventsRecipes.set(categoryId, {
-            slot, root, collection, categoryId,
+            slot, root, collection, categoryId, ...(bound ? { masterLock: bound } : {}),
           });
           return true;
         }
@@ -599,6 +605,7 @@ export function rememberJobEventsUnlockRecipe(categoryId: string): boolean {
 
 export function persistedJobEventsUnlockRecipe(categoryId: string): {
   slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string;
+  masterLock?: Uint8Array;
 } | undefined {
   // The caller selected a concrete persist owner. A recipe learned for another category is not its authority.
   return settlement().persistedJobEventsRecipes.get(categoryId);
@@ -622,18 +629,20 @@ export function persistedCompatibilityContinuation(categoryId: string): {
 }
 
 /**
- * Dest-15 UPDATE dest-20 lock: emitValueChunkP2sh32(master category, H(0), sha256(v)).
- * Do not use a persist unlock recipe — that recipe matches the dummy
- * `aa20||sha256(v)||87` first-publish lock, not dest 15's pin.
+ * Continuation lock for one compiler-described value. The covenant binds `masterLock`, the executing
+ * contract's 35-byte locking bytecode. Omitting it used to publish the category-only walk, which a long
+ * non-master redeem can spend and which the route's lock check rejects. A non-35-byte lock fails closed.
  */
 export function persistValueChunkLock(
   categoryId: string | undefined,
-  value?: Uint8Array,
-  write?: ValueChunkWriteDescriptor | null,
+  value: Uint8Array | undefined,
+  write: ValueChunkWriteDescriptor | null | undefined,
+  masterLock: Uint8Array,
 ): Uint8Array | undefined {
   if (!categoryId || !/^[0-9a-f]{64}$/i.test(categoryId) || !value || value.length === 0) {
     return undefined;
   }
+  if (!masterLock || masterLock.length !== 35) return undefined;
   const root = sha256Sync(value);
   // Missing and ambiguous descriptors fail closed. Historical schema recovery is
   // available only through the explicitly named legacy adapter below.
@@ -641,7 +650,7 @@ export function persistValueChunkLock(
   if (write.categoryId.toLowerCase() !== categoryId.toLowerCase()) return undefined;
   try {
     return getValueChunkLockingBytecode(
-      categoryId, write.collection, hexToBin(write.keySlot), root,
+      categoryId, write.collection, hexToBin(write.keySlot), root, masterLock,
     );
   } catch {
     return undefined;
@@ -651,16 +660,18 @@ export function persistValueChunkLock(
 /** Explicit adapter for descriptor-free plans using the historical JobEvent collection schema. */
 export function legacyJobEventsPersistValueChunkLock(
   categoryId: string | undefined,
-  value?: Uint8Array,
+  value: Uint8Array | undefined,
+  masterLock: Uint8Array,
 ): Uint8Array | undefined {
   if (!categoryId || !/^[0-9a-f]{64}$/i.test(categoryId) || !value || value.length === 0) {
     return undefined;
   }
+  if (!masterLock || masterLock.length !== 35) return undefined;
   const root = sha256Sync(value);
   const slot = keyToSlot(new Uint8Array());
   for (const collection of LEGACY_JOB_EVENTS_COLLECTION_ALIASES) {
     try {
-      return getValueChunkLockingBytecode(categoryId, collection, slot, root);
+      return getValueChunkLockingBytecode(categoryId, collection, slot, root, masterLock);
     } catch { /* collection rejected */ }
   }
   return undefined;
@@ -690,6 +701,7 @@ export function rememberJobEventsValue(
   categoryId: string,
   value: Uint8Array,
   session?: CompositionSettlementSession,
+  masterLock?: Uint8Array,
 ): void {
   const apply = (): void => {
     if (value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return;
@@ -703,7 +715,7 @@ export function rememberJobEventsValue(
     if (isCreatedPersistValue(authoritative) && !settlement().persistedCreatedValues.has(categoryId)) {
       settlement().persistedCreatedValues.set(categoryId, authoritative);
     }
-    rememberJobEventsUnlockRecipe(categoryId);
+    rememberJobEventsUnlockRecipe(categoryId, masterLock);
   };
   if (session) runWithCompositionSettlementSession(session, apply);
   else apply();
@@ -735,6 +747,7 @@ export function rememberJobEventsLock(
   categoryId: string,
   lock: Uint8Array,
   session?: CompositionSettlementSession,
+  masterLock?: Uint8Array,
 ): void {
   const apply = (): void => {
     if (lock.length !== 35 || lock[0] !== 0xaa || lock[1] !== 0x20 || lock[34] !== 0x87) return;
@@ -750,7 +763,7 @@ export function rememberJobEventsLock(
     if (hex.includes('4372656174') || hex.includes('00004cb4')) {
       settlement().createdDigestLocks.add(categoryId);
     }
-    rememberJobEventsUnlockRecipe(categoryId);
+    rememberJobEventsUnlockRecipe(categoryId, masterLock);
   };
   if (session) runWithCompositionSettlementSession(session, apply);
   else apply();
@@ -927,17 +940,20 @@ export function rememberValueChunkUnlockRecipe(
   write: ValueChunkWriteDescriptor,
   value = stagedValueChunkWrite(write) ?? settlement().persistedJobEventsValues.get(write.categoryId),
   lockingBytecode = settlement().persistedJobEventsLocks.get(write.categoryId),
+  masterLock?: Uint8Array,
 ): boolean {
   if (!value || !lockingBytecode || !validValueChunkWriteIdentity(write)) return false;
   try {
     const slot = hexToBin(write.keySlot);
     const root = sha256Sync(value);
+    const bound = masterLock?.length === 35 ? masterLock : undefined;
     const expected = getValueChunkLockingBytecode(
-      write.categoryId, write.collection, slot, root,
+      write.categoryId, write.collection, slot, root, bound,
     );
     if (binToHex(expected) !== binToHex(lockingBytecode)) return false;
     const recipe = {
       slot, root, collection: write.collection, categoryId: write.categoryId,
+      ...(bound ? { masterLock: bound } : {}),
     };
     settlement().persistedJobEventsRecipes.set(write.categoryId, recipe);
     settlement().persistedValueChunkWrites.set(valueChunkWriteIdentity(write), {
@@ -957,20 +973,26 @@ export function commitStagedValueChunkWrite(
   write: ValueChunkWriteDescriptor,
   lockingBytecode: Uint8Array,
   session = settlement().valueChunkWriteStaging,
+  masterLock?: Uint8Array,
 ): boolean {
   const value = session.get(write);
-  if (!value || !rememberValueChunkUnlockRecipe(write, value, lockingBytecode)) return false;
+  if (!value || !rememberValueChunkUnlockRecipe(write, value, lockingBytecode, masterLock)) return false;
   session.delete(write);
   const identity = valueChunkWriteIdentity(write);
   settlement().readyValueChunkWrites.add(identity);
   return true;
 }
 
-/** Authenticate retained observations against one exact compiler/planner write identity. */
+/**
+ * Authenticate retained observations against one exact compiler/planner write identity. A chunk covenant bound to
+ * the executing contract's lock authenticates only when that 35-byte `masterLock` is given.
+ */
 export function persistedValueChunkWriteState(
   write: ValueChunkWriteDescriptor,
+  masterLock?: Uint8Array,
 ): { value: Uint8Array; lockingBytecode: Uint8Array; width: number; recipe: {
     slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string;
+    masterLock?: Uint8Array;
   } } | undefined {
   const identity = valueChunkWriteIdentity(write);
   const cached = settlement().persistedValueChunkWrites.get(identity);
@@ -981,7 +1003,7 @@ export function persistedValueChunkWriteState(
   if (currentValue && currentLock) candidates.push({ value: currentValue, lockingBytecode: currentLock });
   for (let index = candidates.length - 1; index >= 0; index -= 1) {
     const { value, lockingBytecode } = candidates[index];
-    if (!rememberValueChunkUnlockRecipe(write, value, lockingBytecode)) continue;
+    if (!rememberValueChunkUnlockRecipe(write, value, lockingBytecode, masterLock)) continue;
     return settlement().persistedValueChunkWrites.get(identity);
   }
   return undefined;
@@ -1014,10 +1036,11 @@ export function persistUpdateRedeemLock(
   sessionLock?: Uint8Array,
   write?: ValueChunkWriteDescriptor | null,
   allowLegacyFallback = false,
+  masterLock?: Uint8Array,
 ): Uint8Array | undefined {
   if (write === null) return undefined;
   if (write) {
-    const exact = persistedValueChunkWriteState(write)?.lockingBytecode;
+    const exact = persistedValueChunkWriteState(write, masterLock)?.lockingBytecode;
     if (!exact) return undefined;
     if (sessionLock && sessionLock.length === 35 && sessionLock[0] === 0xaa && sessionLock[34] === 0x87
       && binToHex(sessionLock) === binToHex(exact)) return sessionLock;
@@ -1034,7 +1057,11 @@ export function persistUpdateRedeemLock(
   const recipe = persistedJobEventsUnlockRecipe(categoryId);
   if (recipe?.categoryId.toLowerCase() === categoryId.toLowerCase()) {
     try {
-      return getValueChunkLockingBytecode(categoryId, recipe.collection, recipe.slot, recipe.root);
+      const bound = masterLock?.length === 35 ? masterLock : recipe.masterLock;
+      return getValueChunkLockingBytecode(
+        categoryId, recipe.collection, recipe.slot, recipe.root,
+        bound?.length === 35 ? bound : undefined,
+      );
     } catch { /* invalid recipe */ }
   }
   return persistedCompatibilityValueChunkLock(categoryId);

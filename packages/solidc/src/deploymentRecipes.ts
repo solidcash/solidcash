@@ -623,7 +623,8 @@ export function childDeploymentValueRecipe(
       kind: 'unary', operator: expression.operator as '!' | '-', resultType: resultType!, operand,
     } : undefined;
   }
-  if (expression instanceof BinaryOpNode && binaryOperators.has(expression.operator)) {
+  // A Yul word builtin (BinaryOpNode.yulBuiltin) has EVM semantics no recipe operator states.
+  if (expression instanceof BinaryOpNode && binaryOperators.has(expression.operator) && !expression.yulBuiltin) {
     const left = childDeploymentValueRecipe(
       expression.left, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
       undefined, structStack, helperFunctions, helperStack,

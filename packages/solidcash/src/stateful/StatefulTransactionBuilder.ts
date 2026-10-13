@@ -1532,6 +1532,7 @@ export class StatefulTransactionBuilder {
   private _nestedEmitEventsHost(): NestedEmitEventsHost {
     return {
       ...this._scaledPreserveEmitHost(),
+      categoryId: this.categoryId,
       pendingValueChunkPredecessors: this.pendingValueChunkPredecessors,
       forcedChunkableValueWriteBandStart: this.forcedChunkableValueWriteBandStart,
       detachedEventReceipts: this.detachedEventReceipts,
@@ -5515,6 +5516,11 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /** The raw entry NFT commitment currently planned for a slot's output, if any. */
+  getEntryRawCommitment(slotIndex: number): string | undefined {
+    return this.entryRawCommitments.get(slotIndex);
+  }
+
   /** Mark an entry slot's commitment as known exactly (injected), so auto-derivation must not re-derive it. */
   pinEntrySlot(slotIndex: number): this { this.pinnedEntrySlots.add(slotIndex); return this; }
 
@@ -6211,17 +6217,27 @@ export class StatefulTransactionBuilder {
     ) ?? null;
   }
 
+  /** Executing contract's 35-byte locking bytecode, when this builder can bind a value chunk to it. */
+  ownerMasterLock(): Uint8Array | undefined {
+    const lock = this.masterUtxo?.lockingBytecode;
+    return lock?.length === 35 ? lock : undefined;
+  }
+
   /** Resolve an exact collection lock, retaining schema inference only for descriptor-free legacy plans. */
   private _persistValueChunkLock(
     categoryId?: string, value?: Uint8Array,
   ): Uint8Array | undefined {
     const write = this._persistedValueChunkWrite(categoryId);
-    const exact = persistValueChunkLock(categoryId, value, write);
+    const owner = (write?.categoryId ?? categoryId)?.toLowerCase();
+    const masterLock = this.ownerMasterLock();
+    if (!masterLock) return undefined;
+    if (owner && owner !== this.categoryId.toLowerCase()) return undefined;
+    const exact = persistValueChunkLock(categoryId, value, write, masterLock);
     if (exact || write !== undefined) return exact;
     if (this._hasChunkableValueWriteMetadata() || !this._permitsLegacyNamedValueChunkFallback()) {
       return undefined;
     }
-    return legacyJobEventsPersistValueChunkLock(categoryId, value);
+    return legacyJobEventsPersistValueChunkLock(categoryId, value, masterLock);
   }
 
   /** Exact staged value, with category-wide storage retained only for descriptor-free legacy plans. */
@@ -6915,9 +6931,9 @@ export class StatefulTransactionBuilder {
     // X121: read the provider's limits. Unlike the tracer above this THROWS, so it decides ACCEPT/REJECT, and
     // a bare VM here decides against a configuration the provider may not be running.
     //
-    // VERSION-DEPENDENT, and the pin is `@mem-cash/validation` 0.0.8 - the version
-    // `packages/solidcash/package.json` declares (`^0.0.8`, which for a 0.0.x range means exactly 0.0.8) and
-    // `yarn.lock` resolves. At 0.0.8 `TxVerifierConfig.consensus` exists and MockNetworkProvider's overrides
+    // VERSION-DEPENDENT, and the pin is `@mem-cash/validation` 0.0.10 - the version
+    // `packages/solidcash/package.json` declares (`^0.0.10`, which for a 0.0.x range means exactly 0.0.10)
+    // and `yarn.lock` resolves. At 0.0.8 and later `TxVerifierConfig.consensus` exists and the overrides
     // reach the decider, so this factory AGREES with it on every shape measured, while a bare VM diverges in
     // BOTH directions: it accepts what the provider refuses under a strict profile (P2PKH and recursion at
     // `operationCostBudgetPerByte: 150`) and refuses what the provider accepts under the relaxed default

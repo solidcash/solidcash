@@ -380,6 +380,8 @@ export function selectHashedValueForChunkPin(
   allowUnauthenticatedFallback = true,
   /** Exact compiler-described resource whose covenant locking bytecode is the observed pin. */
   exactWrite?: ValueChunkWriteDescriptor,
+  /** Executing contract's 35-byte locking bytecode. The pin is the bound chunk lock, not this master. */
+  masterLock?: Uint8Array,
 ): { value: Uint8Array; lockingBytecode: Uint8Array } | undefined {
   // Sparse probe states share immutable stack-item byte arrays. Large routed scripts can remain on the stack for
   // hundreds of observed operations; hashing each repeated reference turned one logical candidate into gigabytes
@@ -410,8 +412,8 @@ export function selectHashedValueForChunkPin(
       : 0
   );
   const exactPinLockFor = (value: Uint8Array): Uint8Array | undefined => {
-    if (!exactWrite || !pinIsP2sh32) return undefined;
-    const derived = persistValueChunkLock(exactWrite.categoryId, value, exactWrite);
+    if (!exactWrite || !pinIsP2sh32 || !masterLock || masterLock.length !== 35) return undefined;
+    const derived = persistValueChunkLock(exactWrite.categoryId, value, exactWrite, masterLock);
     return derived && binsAreEqual(derived, pinLock!) ? derived : undefined;
   };
   // A compiler-described value-chunk pin commits to the covenant script, not directly to sha256(value). The
@@ -609,15 +611,24 @@ export function extractIdentityScanValueChunkPin(
 export function chunksFromValue(
   value: Uint8Array,
   authority: {
-    lockingBytecode?: Uint8Array;
+    lockingBytecode: Uint8Array;
     write?: ValueChunkWriteDescriptor | null;
     categoryId?: string;
+    masterLock?: Uint8Array;
+  } | {
+    lockingBytecode?: undefined;
+    write?: ValueChunkWriteDescriptor | null;
+    categoryId?: string;
+    /** Required when the chunk lock is derived from the compiler write instead of supplied. */
+    masterLock: Uint8Array;
   },
 ): AuthenticatedValueChunk[] {
   if (value.length <= VALUE_HEAD_SIZE) return [];
   const categoryId = authority.categoryId ?? authority.write?.categoryId;
   const lock = authority.lockingBytecode
-    ?? persistValueChunkLock(categoryId, value, authority.write);
+    ?? (authority.masterLock
+      ? persistValueChunkLock(categoryId, value, authority.write, authority.masterLock)
+      : undefined);
   if (!lock) return [];
   return splitValueIntoValueChunks(value).map((data, index) => ({
     commitment: buildValueChunkCommitment(index, data),
@@ -632,10 +643,12 @@ export function chunksFromJobEventsValue(
   value: Uint8Array,
   lockingBytecode?: Uint8Array,
   categoryId?: string,
+  masterLock?: Uint8Array,
 ): AuthenticatedValueChunk[] {
   if (value.length <= VALUE_HEAD_SIZE) return [];
   const lock = lockingBytecode
-    ?? legacyJobEventsPersistValueChunkLock(categoryId, value)
+    ?? (masterLock?.length === 35
+      ? legacyJobEventsPersistValueChunkLock(categoryId, value, masterLock) : undefined)
     ?? (categoryId ? persistedCompatibilityValueChunkLock(categoryId) : undefined)
     ?? p2sh32LockFromValueRoot(sha256Sync(value));
   return chunksFromValue(value, { lockingBytecode: lock, categoryId });

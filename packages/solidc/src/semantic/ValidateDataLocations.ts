@@ -1,24 +1,49 @@
 import {
-  ArrayType, BytesType, FunctionType, MappingType, PrimitiveType, StructType, type Type,
+  ArrayType, BytesType, FunctionType, IntType, MappingType, PrimitiveType, StructType, type Type,
 } from '@solidcash/utils';
 import {
   AbiDecodeNode, ArrayAccessNode, AssemblyStatementNode, AssignNode, BranchNode, ContractNode, ExpressionNode,
   FunctionCallNode,
-  FunctionDefinitionNode, FunctionModifier, IdentifierNode, Node, NullaryOpNode, SliceNode, SourceFileNode,
+  FunctionDefinitionNode, FunctionModifier, HexLiteralNode, IdentifierNode, ModifierDefinitionNode, Node,
+  NullaryOpNode, ParameterNode, SliceNode,
+  SourceFileNode,
   StateAssignNode, StringLiteralNode, TupleAssignmentNode, ReturnNode, TupleIndexOpNode, VariableDefinitionNode,
   TryCatchNode,
   WhileNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import PointerAssignmentAnalysis from './PointerAssignmentAnalysis.js';
 import { Modifier } from '../ast/Globals.js';
 import { NullaryOperator } from '../ast/Operator.js';
 import {
-  ImmutableStateVariableAssignmentError, InvalidDataLocationError, InvalidImmutableTypeError,
-  InvalidModifierCombinationError,
+  ArgumentConversionError, ImmutableStateVariableAssignmentError, ImplicitConversionError, InvalidDataLocationError,
+  InvalidImmutableTypeError, InvalidModifierCombinationError, solidityStringLiteralName, solidityTypeName,
   UnsupportedAbiV1TypeError,
 } from '../Errors.js';
 
 type Context = 'parameter' | 'return' | 'local';
+
+// solc copies into a storage array only from a static array no longer than the target; a dynamic target takes any.
+function fitsStorageArray(source: ArrayType, target: ArrayType): boolean {
+  if (target.bound !== undefined && (source.bound === undefined || source.bound > target.bound)) return false;
+  return !(source.elementType instanceof ArrayType && target.elementType instanceof ArrayType)
+    || fitsStorageArray(source.elementType, target.elementType);
+}
+
+// solc converts to a memory array only between identical types. Only differences SolidCash types keep are compared.
+function differsForMemoryCopy(source: Type, target: Type): boolean {
+  if (source instanceof ArrayType && target instanceof ArrayType) {
+    return source.bound !== target.bound || differsForMemoryCopy(source.elementType, target.elementType);
+  }
+  if (source instanceof IntType && target instanceof IntType) {
+    return source.bits !== target.bits || source.signed !== target.signed;
+  }
+  if (source instanceof BytesType && target instanceof BytesType) return source.bound !== target.bound;
+  if (source instanceof FunctionType && target instanceof FunctionType) {
+    return source.stateMutability !== target.stateMutability;
+  }
+  return false;
+}
 
 /** Validate Solidity data-location and function-modifier rules before any lowering erases storage pointers. */
 export default class ValidateDataLocations extends AstTraversal {
@@ -34,14 +59,72 @@ export default class ValidateDataLocations extends AstTraversal {
   private currentFunctionHasAssembly = false;
   private immutableStateNames = new Set<string>();
   private functionDefinitions = new Map<string, FunctionDefinitionNode[]>();
+  private libraryModifierDefinitions: ModifierDefinitionNode[] = [];
+  private modifierDefinitions = new Map<string, ModifierDefinitionNode>();
+  private pointerAssignments = new PointerAssignmentAnalysis({
+    modifier: (name) => this.modifierDefinitions.get(name),
+    functions: (name) => this.functionDefinitions.get(name) ?? [],
+    isStateName: (name) => this.stateTypes.has(name),
+  });
+
   private solidityLegacyNow = false;
 
-  constructor(private evmCompat = false) {
+  constructor(private evmCompat = false, private rootFileId = '') {
     super();
+  }
+
+  private inSolidityUnit(node: Node): boolean {
+    return (node.location?.sourceFileId ?? this.rootFileId).endsWith('.sol');
+  }
+
+  // The declared type of a name in scope: a local or parameter shadows a state variable.
+  private namedType(name: string): Type | undefined {
+    return this.bindingTypes.has(name) ? this.bindingTypes.get(name) : this.stateTypes.get(name);
+  }
+
+  // solc's location suffix of a named reference: a state variable is a storage ref, a storage local a pointer.
+  private namedLocation(name: string): string | undefined {
+    if (!this.bindingLocations.has(name)) return this.stateTypes.has(name) ? 'storage ref' : undefined;
+    const location = this.bindingLocations.get(name);
+    return location === Modifier.STORAGE ? 'storage pointer' : location;
+  }
+
+  // solc's array conversions for a `.sol` unit binding or assigning a named array: a storage target copies from a
+  // static array no longer than itself, a memory target needs the identical type.
+  private validateSolidityArrayCopy(node: Node, target: Type | undefined, targetLocation: string | undefined,
+    source: ExpressionNode): void {
+    if (!this.inSolidityUnit(node) || !(source instanceof IdentifierNode) || !(target instanceof ArrayType)) return;
+    const sourceType = this.namedType(source.name);
+    if (!(sourceType instanceof ArrayType)) return;
+    const refused = targetLocation === 'storage ref' ? !fitsStorageArray(sourceType, target)
+      : targetLocation === Modifier.MEMORY && differsForMemoryCopy(sourceType, target);
+    if (refused) {
+      throw new ImplicitConversionError(node, solidityTypeName(sourceType, this.namedLocation(source.name)),
+        solidityTypeName(target, targetLocation));
+    }
+  }
+
+  // solc TypeError 9553 for a `.sol` unit argument: a memory or calldata reference never becomes a storage pointer,
+  // and a literal never becomes calldata.
+  private validateSolidityArgument(argument: ExpressionNode, parameter: ParameterNode, expected?: string,
+    actual?: string): void {
+    if (!this.inSolidityUnit(argument)) return;
+    if (expected === Modifier.STORAGE && (actual === Modifier.MEMORY || actual === Modifier.CALLDATA)) {
+      throw new ArgumentConversionError(argument, solidityTypeName(this.sliceSourceType(argument) ?? parameter.type,
+        actual), solidityTypeName(parameter.type, 'storage pointer'));
+    }
+    const literal = argument instanceof StringLiteralNode
+      ? argument.solidityBytes ?? new TextEncoder().encode(argument.value)
+      : argument instanceof HexLiteralNode && argument.isHexStringLiteral ? argument.value : undefined;
+    if (expected === Modifier.CALLDATA && literal) {
+      throw new ArgumentConversionError(argument, solidityStringLiteralName(literal),
+        solidityTypeName(parameter.type, Modifier.CALLDATA));
+    }
   }
 
   visitSourceFile(node: SourceFileNode): Node {
     this.solidityLegacyNow = node.solidityLegacyNow;
+    this.libraryModifierDefinitions = node.libraryModifierDefinitions;
     if (node.abiCoderVersion === 'v1') this.validateAbiV1Source(node);
     for (const fn of [
       ...node.freeFunctions,
@@ -116,7 +199,11 @@ export default class ValidateDataLocations extends AstTraversal {
     const previousAbstract = this.currentContractIsAbstract;
     const previousImmutableStateNames = this.immutableStateNames;
     const previousStateTypes = this.stateTypes;
+    const previousModifierDefinitions = this.modifierDefinitions;
     this.currentContractIsAbstract = node.isAbstract;
+    // Same resolution as modifier expansion: the last definition of a name wins.
+    this.modifierDefinitions = new Map([...node.modifierDefinitions, ...this.libraryModifierDefinitions]
+      .map((modifier) => [modifier.name, modifier] as const));
     if (this.evmCompat) {
       for (const state of node.stateVariables) {
         const nonValueType = state.type instanceof ArrayType
@@ -170,6 +257,7 @@ export default class ValidateDataLocations extends AstTraversal {
     this.currentContractIsAbstract = previousAbstract;
     this.immutableStateNames = previousImmutableStateNames;
     this.stateTypes = previousStateTypes;
+    this.modifierDefinitions = previousModifierDefinitions;
     return node;
   }
 
@@ -245,6 +333,7 @@ export default class ValidateDataLocations extends AstTraversal {
     this.initializedStoragePointerLocals = new Set();
     this.currentFunctionHasAssembly = this.containsAssembly(node.body);
     node.body = this.visit(node.body) as typeof node.body;
+    this.pointerAssignments.check(node);
     this.currentFunction = previous;
     this.bindingLocations = previousLocations;
     this.bindingTypes = previousTypes;
@@ -282,6 +371,7 @@ export default class ValidateDataLocations extends AstTraversal {
     if (location === Modifier.STORAGE && node.expression) {
       this.validateStoragePointerSource(node.name, node.type, node.expression);
     }
+    if (node.expression) this.validateSolidityArrayCopy(node, node.type, location, node.expression);
     const visited = super.visitVariableDefinition(node) as VariableDefinitionNode;
     this.bindingLocations.set(node.name, location);
     this.bindingTypes.set(node.name, node.type);
@@ -332,6 +422,8 @@ export default class ValidateDataLocations extends AstTraversal {
               `cannot pass ${actualLocation} reference to calldata parameter '${callee.parameters[index].name}'`,
             );
           }
+          this.validateSolidityArgument(node.parameters[index], callee.parameters[index], expectedLocation,
+            actualLocation);
         }
       }
     }
@@ -398,6 +490,10 @@ export default class ValidateDataLocations extends AstTraversal {
       && this.bindingLocations.get(node.expression.name) !== Modifier.CALLDATA) {
       throw new InvalidDataLocationError(node,
         `cannot rebind calldata local '${node.identifier.name}' from non-calldata binding '${node.expression.name}'`);
+    }
+    if (!node.isReferenceDataWrite) {
+      this.validateSolidityArrayCopy(node.expression, this.namedType(node.identifier.name),
+        this.namedLocation(node.identifier.name), node.expression);
     }
     if (this.bindingLocations.get(node.identifier.name) === Modifier.STORAGE) {
       this.validateStoragePointerSource(
@@ -518,9 +614,13 @@ export default class ValidateDataLocations extends AstTraversal {
       || (type instanceof BytesType && type.bound === undefined) || type === PrimitiveType.STRING;
   }
 
-  private containsMapping(type: Type): boolean {
-    return type instanceof MappingType
-      || (type instanceof ArrayType && this.containsMapping(type.elementType));
+  // A (nested) mapping, through arrays and struct fields: such a value can only live in storage (solc TypeError 4061).
+  private containsMapping(type: Type, seen = new Set<StructType>()): boolean {
+    if (type instanceof MappingType) return true;
+    if (type instanceof ArrayType) return this.containsMapping(type.elementType, seen);
+    if (!(type instanceof StructType) || seen.has(type)) return false;
+    seen.add(type);
+    return type.fields.some((field) => this.containsMapping(field.type, seen));
   }
 
   private locations(modifiers: string[]): string[] {

@@ -1,0 +1,92 @@
+pragma solidcash ^0.13.0;
+
+import { add } from "./math.scash";
+
+// Exercises the constructs the coverage check added: the newly recognized Yul builtins inside `assembly`,
+// mapping iteration in all three spellings, the modifier placeholder, the `type(T)` expression form, and the
+// units / casts / member operations the hover database documents.
+/// A user-defined value type: the `type Name is Base;` declaration form.
+type Price is int;
+
+contract Registry {
+    enumerable mapping(address holder => int balance) public balances;
+    int total;
+    bytes32 internal namespace;
+
+    event Recorded(address indexed holder, int balance);
+
+    modifier checked(sig signature, pubkey admin) {
+        require(checkSig(signature, admin));
+        _;
+    }
+
+    /// Records a balance and folds it into the running total.
+    function record(sig signature, pubkey admin, address holder, int amount) public checked(signature, admin) {
+        this.balances[holder] = amount;
+        this.total = add(this.total, amount) + int(type(int16).max);
+        emit Recorded(holder, amount);
+        require(this.total >= amount);
+    }
+
+    /// Walks the mapping in every spelling the language allows.
+    function summarize() public returns (int sum) {
+        for (int balance of this.balances) {
+            sum = sum + balance;
+        }
+        for (address holder in this.balances) {
+            sum = sum + int(holder.length);
+        }
+        for (address holder, int balance of this.balances.entries) {
+            sum = sum + balance;
+        }
+        sum = sum + int(this.category.length);
+        require(sum >= 0);
+    }
+
+    /// A Yul block using the builtins the coverage check added.
+    function hash(bytes32 label) public returns (bytes32 result) {
+        bytes32 slot = namespace;
+        assembly {
+            // A local Yul function with a top-level `leave` (dead code after it is dropped).
+            function head(word) -> first { first := byte(0, word) leave first := 9 }
+            let cursor := msize()
+            mcopy(cursor, 0, 32)
+            codecopy(0, 0, 8)
+            pop(mload(cursor))
+            let wide := signextend(0, 0xff)
+            let zeros := clz(8)
+            let derived := erc7201("solidcash.registry")
+            let first := head(label)
+            if iszero(wide) { invalid() }
+            if iszero(zeros) { first := 1 }
+            result := keccak256(cursor, 32)
+            slot := derived
+        }
+        namespace = slot;
+        require(result != label);
+    }
+
+    /// Token-container aggregates and the address / contract balance members.
+    function funds(bytes32 category, address payable recipient) public returns (int) {
+        int held = this.tokens[category].nftCount;
+        int spent = int(address(this).balance) + int(recipient.balance);
+        int output = this.outState.tokens[category].nftCount;
+        this.total = this.total + held + spent + output;
+        require(this.total >= held);
+        return this.total;
+    }
+
+    /// Type-introspection members, units, casts and the remaining member operations.
+    function constants() public pure returns (int) {
+        int bits_ = 2 bits;
+        int wei_ = 1 wei;
+        int ages = int(4 weeks);
+        int lo = type(int16).min;
+        int hi = type(uint16).max;
+        bytes20 hashOfZero = unsafe_bytes20(0x00);
+        bytes25 lock = new LockingBytecodeP2PKH(hashOfZero);
+        Price price = Price.wrap(5);
+        require(type(Registry).name.length > 0);
+        return bits_ + wei_ + ages + lo + hi + int(lock.length) + Price.unwrap(price);
+    }
+}

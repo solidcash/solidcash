@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
-const corpusDir = new URL('../examples/solidity-corpus/', import.meta.url);
+const corpusDir = new URL('../bench/solidity-corpus/', import.meta.url);
 const [baseline, metadata, scorecard] = await Promise.all([
   readFile(new URL('release-baseline.json', corpusDir), 'utf8').then(JSON.parse),
   readFile(new URL('run-metadata.json', corpusDir), 'utf8').then(JSON.parse),

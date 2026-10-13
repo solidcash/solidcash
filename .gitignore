@@ -169,5 +169,10 @@ manual-test.ts
 .worktrees
 packages/solidcash/.regtest-progress.json
 
+# The effectiveacceleration bench's build products
+/bench/effectiveacceleration/artifacts/
+/bench/effectiveacceleration/cache/
+/bench/effectiveacceleration/typechain-types/
+
 # transient probe dir written by scripts/release-docs-snippets.ts
 /.docs-check/

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { KECCAK256_COMPUTE_STATEFUL_COVENANT } from '@solidcash/utils';
+import { asmToScript, scriptToBytecode } from '@solidcash/utils';
+import { KECCAK256_COMPUTE_STATEFUL_COVENANT } from '../../utils/src/keccak-compute-library.js';
 import { compileString } from './direct-compile.js';
 
 // keccak256 is the compute-and-commit model: each call co-spends its own side-car (slot-framed) that
@@ -78,7 +79,7 @@ describe('keccak256 compute-model selection (soundness gate)', () => {
     expect(lib(a).minInstances).toBe(2); // mixed loop shapes retain one physical slot per syntactic call
   });
 
-  it('a stateless dynamic keccak loop flags keccakLoopReads and compares the covenant (no per-iteration hash)', () => {
+  it('a stateless dynamic keccak loop flags keccakLoopReads, binds the side-car lock and compares the covenant', () => {
     const a = compileString(
       'contract C { function f(bytes32 x, int n, bytes32 t) public pure { bytes32 h = x;'
       + ' for (int i = 0; i < n; i++) { h = keccak256(h); } require(h == t); } }',
@@ -86,8 +87,11 @@ describe('keccak256 compute-model selection (soundness gate)', () => {
     // Dynamic (runtime-bound) loop -> the SDK progressively co-spends N absolute-forward side-cars.
     expect(fn(a).keccakLoopReads).toBe(true);
     expect(a.stateLayout).toBeUndefined(); // stateless (no block layout)
-    // The loop embeds the covenant constant and byte-compares it, instead of re-hashing it every iteration
-    // (which would blow the per-input hash-density budget at ~5 iters).
-    expect(a.bytecode.includes(KECCAK256_COMPUTE_STATEFUL_COVENANT)).toBe(true);
+    // Each iteration requires the side-car input's lock to be P2SH32 of the revealed redeem, then byte-compares
+    // the revealed covenant. Covenant bytes alone let a bare lock choose the digest; a fixed shared-lock compare
+    // would refuse a category-branded side-car.
+    const hex = Buffer.from(scriptToBytecode(asmToScript(a.bytecode))).toString('hex');
+    expect(hex).toContain('6cc788'); // OP_FROMALTSTACK OP_UTXOBYTECODE OP_EQUALVERIFY: the saved index's lock
+    expect(hex).toContain(KECCAK256_COMPUTE_STATEFUL_COVENANT);
   });
 });

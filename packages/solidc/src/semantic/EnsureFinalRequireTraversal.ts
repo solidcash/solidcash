@@ -43,6 +43,7 @@ import {
 } from '../ast/AST.js';
 import { YulFunctionCallNode, YulNode } from '../ast/YulAST.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { bareReturnIsUnguarded } from './EarlyReturnTransformation.js';
 import { hasAuthorizingSignatureGuard, hasUnconditionalAuthorizingSignatureGuard, keyIsCallerChosen } from './SymbolTableTraversal.js';
 import {
   EmptyFunctionError, FinalRequireStatementError, MissingReturnError, ReturnInExternalFunctionError,
@@ -298,6 +299,28 @@ function ensureFinalStatementIsRequire(
 
   if (!finalStatement) return;
 
+  // SEM-1: an early `return;` ends its path before any later require, so each one must be verified on its own path.
+  // A final branch/switch/try/unchecked is checked arm by arm below; a final bare return by the final-statement rule.
+  const recursesIntoFinal = finalStatement instanceof BranchNode || finalStatement instanceof SwitchNode
+    || finalStatement instanceof TryCatchNode || finalStatement instanceof UncheckedNode
+    || finalStatement instanceof ReturnNode;
+  const unverifiedReturn = firstUnverifiedReturn(
+    recursesIntoFinal ? statementsWithoutLogs.slice(0, -1) : statementsWithoutLogs,
+  );
+  if (unverifiedReturn) {
+    warnOrThrowUnverified(unverifiedReturn, strict);
+    return;
+  }
+
+  // A bare return no earlier require/revert gates, the rule EarlyReturnTransformation seals by. It also catches a
+  // return after an if/else whose only check sits in a loop that can run zero times.
+  if (bareReturnIsUnguarded(statementsWithoutLogs)) {
+    const returning = statementsWithoutLogs.find((statement) => statement instanceof ReturnNode
+      || statement instanceof BranchNode) ?? finalStatement;
+    warnOrThrowUnverified(returning, strict);
+    return;
+  }
+
   // An unconditional require/assert/revert/timeop anywhere in this scope gates the whole path (codegen
   // appends OP_1 after trailing statements), so the path is verified even when it doesn't END in a require
   // - e.g. Solidity's `require(authorized); _mint(...)`. Generalizes the if-without-else case.
@@ -389,6 +412,46 @@ function hasPriorUnconditionalRequire(statements: StatementNode[] = []): boolean
     }
   }
   return false;
+}
+
+// The first return reached with no require/assert/revert/timeop before it on its path, scanning in order and
+// stopping at the first statement that validates every path.
+function firstUnverifiedReturn(statements: StatementNode[] = []): ReturnNode | undefined {
+  for (const s of statements) {
+    if (s instanceof ConsoleStatementNode) continue;
+    if (s instanceof DoWhileNode || s instanceof WhileNode || s instanceof CollectionIterationNode) {
+      const body = s instanceof CollectionIterationNode ? s.body : s.block;
+      const found = firstUnverifiedReturn(body.statements ?? []);
+      if (found) return found;
+      continue;
+    }
+    if (everyPathValidates(s)) return undefined;
+    const found = unverifiedReturnIn(s);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function unverifiedReturnIn(s: StatementNode): ReturnNode | undefined {
+  if (s instanceof ReturnNode) return s;
+  if (s instanceof UncheckedNode) return firstUnverifiedReturn(s.block.statements);
+  if (s instanceof BranchNode) {
+    return firstUnverifiedReturn(s.ifBlock.statements) ?? firstUnverifiedReturn(s.elseBlock?.statements);
+  }
+  if (s instanceof SwitchNode) {
+    for (const c of s.cases) {
+      const found = firstUnverifiedReturn(c.body.statements);
+      if (found) return found;
+    }
+    return firstUnverifiedReturn(s.defaultCase?.statements);
+  }
+  if (s instanceof TryCatchNode) {
+    for (const block of [s.tryBlock, ...s.catchClauses.map((clause) => clause.block)]) {
+      const found = firstUnverifiedReturn(block.statements);
+      if (found) return found;
+    }
+  }
+  return undefined;
 }
 
 /**

@@ -189,6 +189,19 @@ import 'solidcash/vitest';
 For a complete project environment, use [SolidHat](/docs/tooling/solidhat). For direct test harness use, see
 [`@solidcash/testing`](/docs/tooling/testing-framework).
 
+## Browser bundling
+
+The SDK bundles for the browser: no entry reaches the compiler. `compileFile*` reads the filesystem, and the compiler
+core hashes through `node:crypto` and keeps a disk cache, so compilation stays a Node.js step and a browser
+application supplies compiled artifacts. The proxy helper is the one exception: `buildProxyArtifact` compiles the
+generated proxy and refuses in a browser bundle, where a deployment behind a proxy takes the artifact as
+`proxyArtifact` instead.
+
+A bundler also has to preserve top-level await. `@bitauth/libauth` instantiates its WebAssembly crypto behind a
+module-level `await`; Rollup, Vite and webpack handle that by default, and esbuild does it with `splitting: true`. A
+single-file esbuild bundle makes every module initializer asynchronous and loses their order, which deadlocks the
+import cycles in the SDK instead of evaluating them.
+
 ## Advanced non-SolidCash scripts
 
 `TransactionBuilder` and providers can be used without the compiler. A hand-written script can either be described

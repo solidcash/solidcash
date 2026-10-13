@@ -55,8 +55,10 @@ export default class InlineMappingReturnFunctions extends AstTraversal {
     };
     if (node.contract) collect(node.contract.functions);
     collect(node.freeFunctions);
+    // A same-name, same-arity function that is not itself a mapping-return candidate is still an overload.
+    // Looking the candidate up by name would splice it in place of that other function.
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys(
-      [...(node.contract?.functions ?? []), ...(node.freeFunctions ?? [])].filter((f) => this.isCandidate(f)),
+      [...(node.contract?.functions ?? []), ...(node.freeFunctions ?? [])],
     );
     if (this.candidates.size === 0) return node;
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;

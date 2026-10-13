@@ -10,9 +10,10 @@ import { createTestProvider, getSigners } from '../test-util.js';
 // genuine callee could still run its function with other arguments. The covenant now reads the callee's argument
 // pushes from the end of its unlocking (the last pushes before the redeem script, whatever hidden witnesses precede
 // them) and requires each to be the payload's: under evmCompat both `encodeWithSelector` and `encodeCall` carry the
-// EVM head/tail encoding, so each argument is one decoded word (an address word to a lock of that 20-byte identity).
-// An argument the compiler sees but cannot bind that way - notably an ABI-dynamic value, which is not one word - is
-// refused at compile time; a payload whose encoding it cannot see keeps the pin alone.
+// EVM head/tail encoding, so each argument is one decoded word (an address word to a lock of that 20-byte identity),
+// and a string/bytes argument the value of the tail its head offset word names. An argument the compiler sees but
+// cannot bind that way - an ABI-dynamic array or struct - is refused at compile time; a payload whose encoding it
+// cannot see keeps the pin alone.
 const OPTIONS = { evmCompat: true, forceStateful: true, messageBus: false } as any;
 const limits = { maximumInputBytes: 100_000, maximumTransactionBytes: 10_000_000, maximumNftCommitmentBytes: 128 };
 
@@ -64,6 +65,10 @@ contract Vault {
   }
   function shift(int256 delta) external {
     (bool ok, ) = address(config.ledger).call{value: 0}(abi.encodeWithSelector(ILedger.adjust.selector, delta));
+    require(ok);
+  }
+  function memo(string calldata text, uint256 n) external {
+    (bool ok, ) = address(notebook).call{value: 0}(abi.encodeWithSignature("note(string,uint256)", text, n));
     require(ok);
   }
 }`;
@@ -152,9 +157,20 @@ describe('Solidity-compat low-level call: the callee runs with the payload\'s ar
     expect((await ledger.getState()).balance).toBe(0n);
   });
 
-  it('refuses an encodeCall payload whose argument cannot be bound', () => {
-    // The merged evmCompat flag EVM-frames `abi.encodeCall` too, so a dynamic argument is no single word and the
-    // pin cannot bind it. The compile is refused by name, as the encodeWithSelector spelling is below.
+  it('binds a string argument: the payload\'s memo settles, another memo or count is refused', async () => {
+    const { vault, notebook, bob } = await setup();
+    // Same length, other content: the tail's value, not only its length word, is bound.
+    await expect(vault.connect(bob).memo('hello', 3n).withCall(notebook, 'note', ['hellp', 3n]).send())
+      .rejects.toThrow(refusedAtInput0);
+    await expect(vault.connect(bob).memo('hello', 3n).withCall(notebook, 'note', ['hello', 4n]).send())
+      .rejects.toThrow(refusedAtInput0);
+    expect((await notebook.getState()).noted).toBe(0n);
+    await vault.connect(bob).memo('hello', 3n).withCall(notebook, 'note', ['hello', 3n]).send();
+    expect((await notebook.getState()).noted).toBe(8n);
+  });
+
+  it('compiles an encodeCall payload with a string argument', () => {
+    // The merged evmCompat flag EVM-frames `abi.encodeCall` too; its string binds through the head offset word.
     expect(() => compileString(`
 pragma solidity ^0.8.0;
 ${INTERFACE}
@@ -164,7 +180,7 @@ contract Relay {
     (bool ok, ) = address(notebook).call{value: 0}(abi.encodeCall(INotebook.note, (text, n)));
     require(ok);
   }
-}`, OPTIONS)).toThrow(/COMPAT_CALL_UNBOUND_ARGUMENTS.*argument 0 \('string'\) is ABI-dynamic/);
+}`, OPTIONS)).not.toThrow();
   });
 });
 
@@ -178,12 +194,12 @@ contract Vault {
   ${body}
 }`;
 
-  it('refuses an ABI-dynamic argument in an EVM-encoded payload', () => {
-    expect(() => compileString(vault(`function relay(string calldata text, uint256 n) external {
-      (bool ok, ) = address(ledger).call{value: 0}(abi.encodeWithSelector(INotebook.note.selector, text, n));
+  it('refuses an ABI-dynamic array argument in an EVM-encoded payload', () => {
+    expect(() => compileString(vault(`function relay(uint256[] calldata values) external {
+      (bool ok, ) = address(ledger).call{value: 0}(abi.encodeWithSignature("tally(uint256[])", values));
       require(ok);
       count = count + 1;
-    }`), OPTIONS)).toThrow(/COMPAT_CALL_UNBOUND_ARGUMENTS.*argument 0 \('string'\) is ABI-dynamic/);
+    }`), OPTIONS)).toThrow(/COMPAT_CALL_UNBOUND_ARGUMENTS.*argument 0 \('[^']*\[\]'\) is ABI-dynamic/);
   });
 
   it('compiles payloads that carry no argument', () => {

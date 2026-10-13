@@ -351,9 +351,9 @@ its arguments, and every route through the bundle now settles.
    `beforeAll` an explicit 180 s budget, since compiling the whole port overruns the suite's 10 s
    `hookTimeout`; and provision
    **two** plain funder UTXOs per top-up, because a facet call co-spends master + facet and the builder now
-   wants one plain funder per covenant input. The mock provider also now requires `@mem-cash/validation` 0.0.8
-   exactly - 0.0.7 silently ignores published consensus limits, which would let shapes pass `.build()` and fail
-   `.send()`.
+   wants one plain funder per covenant input. The mock provider also now requires `@mem-cash/validation` 0.0.10
+   exactly (0.0.8 before it) - 0.0.7 silently ignores published consensus limits, which would let shapes pass
+   `.build()` and fail `.send()`.
 
 ## 5. The inheritance rebuild, and what the built-in splitter needed
 

@@ -68,7 +68,10 @@ describe('direct convention: a collection write co-spends only the data NFTs it 
     const lock = (cashAddressToLockingBytecode(address) as { bytecode: Uint8Array }).bytecode;
     const [node] = await provider.getUtxos(address);
     expect(node).toBeDefined();
-    const redeem = scriptToBytecode(buildDataNftCovenantScript(hexToBin(cat)));
+    const masterLock = hexToBin(pinned.lockingBytecode);
+    const redeem = scriptToBytecode(buildDataNftCovenantScript(
+      hexToBin(cat), masterLock.length === 35 ? masterLock : undefined,
+    ));
     const template = tx.outputs.find((o) => o.token?.nft?.capability === 'mutable')!;
 
     const txid = (0x9000 + Math.floor(Math.random() * 0x6fff)).toString(16).padStart(64, '0');

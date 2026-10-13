@@ -3,7 +3,7 @@
  */
 
 import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
-import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { TransactionBuilderOptions } from '../TransactionBuilder.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type { Contract } from '../Contract.js';
@@ -27,6 +27,7 @@ import {
 } from './value-chunk-persist.js';
 
 export interface EnsurePersistedValueChunkInputsHost {
+  ownerMasterLock?(): Uint8Array | undefined;
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly builderOptions: TransactionBuilderOptions;
@@ -81,9 +82,17 @@ export async function ensurePersistedValueChunkInputs(
   const selectedWriter = host.chunkableValueWriteGroups();
   const publish = selectedWriter.external ?? selectedWriter.lowLevel;
   const contract = publish?.externalContract?.inner as Contract<any, any> | undefined;
+  const contractLock = ((): Uint8Array | undefined => {
+    const fromHost = host.ownerMasterLock?.();
+    if (fromHost?.length === 35) return fromHost;
+    const hex = contract?.lockingBytecode;
+    if (typeof hex !== 'string') return undefined;
+    const lock = hexToBin(hex);
+    return lock.length === 35 ? lock : undefined;
+  })();
   if (persistValue && persistLock) {
-    if (write) rememberValueChunkUnlockRecipe(write, persistValue, persistLock);
-    else if (write === undefined) rememberJobEventsUnlockRecipe(categoryId);
+    if (write) rememberValueChunkUnlockRecipe(write, persistValue, persistLock, contractLock);
+    else if (write === undefined) rememberJobEventsUnlockRecipe(categoryId, contractLock);
   }
   const storedRecipe = write === null
     ? undefined

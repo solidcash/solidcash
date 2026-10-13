@@ -2242,6 +2242,15 @@ function emitCollectRecordEntry(e: Emitter): void {
   takeRawField(e, 2);
   e.script(takeLengthPrefixedField32());
   e.script(takeLengthPrefixedField32());
+  // A created-form entry (in == 0xffff) is keyed by its output alone, the same key a kept record at that
+  // input index uses. Refuse one whose output index is still an input: it would start that record's chain
+  // from zeros. Honest creates are appended past the inputs. The record key stays four bytes.
+  e.count(4).op(O.OP_PICK);
+  e.push(INDEX_NONE_RAW).op(O.OP_EQUAL, O.OP_IF);
+  e.count(3).op(O.OP_PICK);
+  e.unsignedByteOnTop();
+  e.op(O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL, O.OP_VERIFY);
+  e.op(O.OP_ENDIF);
   // `[.., count, in, out, viewIn, viewOut, rest]`. The views are read before the key is appended, because the marker
   // sits between the two keys and needs the end view.
 

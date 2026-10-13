@@ -15,7 +15,7 @@
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { validatorAddress, type Artifact } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from 'solidc/runtime';
 import type { Utxo } from '../../interfaces.js';
 import type Signer from '../../Signer.js';
 import { selectGenesisFundingUtxo, selectGenesisFundingUtxoForCost } from '../../stateful/ContractFactory.js';
@@ -23,6 +23,7 @@ import {
   genesisOutpointKey, releaseGenesisOutpoint, reserveGenesisOutpoint,
 } from '../../stateful/genesis-reservations.js';
 import { deployMaster } from './material.js';
+import { ownCoinRefusal } from './own-coin.js';
 
 /** Raised when a create address cannot be predicted from the UTXOs that are reserved. */
 export class CreateAddressError extends Error {
@@ -109,13 +110,17 @@ export class CreateLookahead {
    * selection until `release`. The first call fixes the base nonce, so the nonces a caller predicts on stay stable
    * across top-ups.
    */
-  public async reserve(count: number): Promise<readonly Utxo[]> {
+  public async reserve(count: number, options?: { readonly fanOut?: boolean }): Promise<readonly Utxo[]> {
     if (!Number.isInteger(count) || count < 1) {
       throw new CreateAddressError(`reserve a positive whole number of creates: got ${count}`);
     }
     if (this.base === undefined) this.base = Number(this.signer._getTransactionNonceState());
     while (this.reserved.length < count) {
-      const utxo = await this.select();
+      const utxo = await this.select(options?.fanOut !== false);
+      // A predicted address is `addrV` of this coin's txid, so the coin is proven at the signer's own lock first.
+      const refusal = await ownCoinRefusal(
+        this.signer.provider, utxo, this.signer.getLockingBytecode(), { role: 'signer', tokenFree: true });
+      if (refusal !== undefined) throw new CreateAddressError(refusal);
       reserveGenesisOutpoint(genesisOutpointKey(utxo.txid, utxo.vout));
       this.reserved.push(utxo);
     }
@@ -147,13 +152,16 @@ export class CreateLookahead {
     this.base = undefined;
   }
 
-  private async select(): Promise<Utxo> {
+  private async select(fanOut: boolean): Promise<Utxo> {
     const excluded = new Set(this.reserved.map((utxo) => genesisOutpointKey(utxo.txid, utxo.vout)));
     if (this.artifact === undefined) {
       // The coin a create is predicted from must be as fundable as any other genesis coin, so the selection — and
       // its fan-out — is the shipped one, sized by the floor a caller without an artifact can state.
+      // A nonce read passes fanOut false so the read cannot sign a consolidation.
       try {
-        return await selectGenesisFundingUtxoForCost(this.signer, CREATE_FUNDING_FLOOR, excluded);
+        return await selectGenesisFundingUtxoForCost(
+          this.signer, CREATE_FUNDING_FLOOR, excluded, { fanOut },
+        );
       } catch (cause) {
         throw this.insufficientFundingError(cause);
       }

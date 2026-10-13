@@ -464,12 +464,12 @@ Foundational seams FIRST (D2/D3), then the helpers that bind to them, then polis
   `solidcash` bin (`dist/cli.js`). Updated the testing-suite (aliases -> `@solidcash/testing[/chai|/network-helpers]`,
   demo imports, config, package.json dep, README). Rebuilt solidcash + `@solidcash/testing` clean; testing-suite
   17/17 green; CLI works; lint clean; SDK sanity green. Regenerated (un-staled) artifacts kept.
-- 2026-07-19: **Real-world drop-in validation - EA `marketplace.test.ts` (`examples/effectiveacceleration`).**
+- 2026-07-19: **Real-world drop-in validation - EA `marketplace.test.ts` (`bench/effectiveacceleration`).**
   Copied EffectiveAcceleration's Hardhat project and ran its 3357-line, 66-test `marketplace.test.ts` under
   `@solidcash/testing` with ZERO test edits (pure vitest `resolve.alias` + a `vitest.setup.ts` `initHre()`).
   All 66 tests LOAD + RUN under our harness; they fail uniformly at the contract layer
   (`getContractFactory("Unicrow")` -> no artifact) - the Hardhat/ethers/chai plumbing is proven; remaining =
-  porting ~6 contracts to `.scash`. Details + roadmap: `examples/effectiveacceleration/PROGRESS.md`.
+  porting ~6 contracts to `.scash`. Details + roadmap: the bench's `PROGRESS.md`, since removed (git history).
   **Portbacks landed:** `ethers.getContractFactory("Name")`/`getContractAt`/`deployContract` resolve artifacts
   BY NAME from `config.paths.artifacts` (`loadArtifactByName`); config-driven LAZY `ethers`/`network`/`config`/
   `run`/`hre` exports (Proxies over the active HRE singleton, so a setup-file `initHre()` applies);

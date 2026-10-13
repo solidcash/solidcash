@@ -9,7 +9,7 @@ export {
   ensureMessageBusAdmissionStamp,
   getArtifactCacheHitCount,
   resetPendingSpanAdmissionAnalysis,
-  type CompileOptions, type SplitCompileOptions,
+  type CompileOptions, type CompileStringOptions, type SplitCompileOptions,
 } from './compiler.js';
 export {
   assertNoUnknownSolidcEnvKeys,
@@ -85,7 +85,7 @@ export { createMapResolver } from './createMapResolver.js';
 export * from './ast/Location.js';
 export * from './ast/error-listeners.js';
 
-export const version = '0.13.1';
+export { version } from './version.js';
 
 // Composition conventions and the validator decision procedure a composition is checked against.
 export * as composition from './framed/master/composition.js';

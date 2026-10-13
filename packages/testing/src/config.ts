@@ -6,6 +6,7 @@
  */
 import { pathToFileURL } from 'url';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 import type { TypegenTarget } from './typegen.js';
 
@@ -29,6 +30,11 @@ export interface NetworkConfig {
     enforceDust: boolean;
     enforceProductionInputLimit: boolean;
   }>;
+  /**
+   * Signing phrase for this network. A live chain does not share the top-level mnemonic with a different
+   * live chain: a BCH signature carries no chain id.
+   */
+  mnemonic?: string;
 }
 
 export interface AccountsConfig {
@@ -144,7 +150,7 @@ export function resolveConfig(config: SolidcashConfig = {}, baseDir?: string): R
       // artifacts and build-info can coexist in the same root.
       artifacts: resolvePath(config.paths?.artifacts, 'artifacts'),
       tests: resolvePath(config.paths?.tests, 'test'),
-      cache: resolvePath(config.paths?.cache, 'cache'),
+      cache: resolvePath(config.paths?.cache, join(homedir(), '.cache', 'solidcash')),
     },
     networks: { mock: { type: 'mock' }, ...config.networks },
     defaultNetwork: config.defaultNetwork ?? 'mock',
@@ -181,8 +187,17 @@ function parentDirectories(start: string): string[] {
   }
 }
 
-/** Locate the nearest SolidCash config, or an explicitly opted-in Hardhat config. */
+/** A directory that bounds config discovery: the nearest package or git root, else `start` itself. */
+function projectRoot(start: string): string {
+  for (const current of parentDirectories(start)) {
+    if (existsSync(join(current, 'package.json')) || existsSync(join(current, '.git'))) return current;
+  }
+  return resolve(start);
+}
+
+/** Locate the nearest SolidCash config inside the project, or an explicitly opted-in Hardhat config. */
 export function findConfigFile(dir: string = process.cwd()): string | undefined {
+  const root = projectRoot(dir);
   for (const current of parentDirectories(dir)) {
     for (const name of CONFIG_BASENAMES) {
       const candidate = join(current, name);
@@ -196,17 +211,20 @@ export function findConfigFile(dir: string = process.cwd()): string | undefined 
         .replace(/\/\/.*$/gm, '');
       if (/\bsolidcash\s*:/.test(source) || /\bwithSolidCash\s*\(/.test(source)) return candidate;
     }
+    if (current === root) break;
   }
   return undefined;
 }
 
 /** Locate the nearest Hardhat config, including one which has not opted into SolidCash yet. */
 export function findHardhatConfigFile(dir: string = process.cwd()): string | undefined {
+  const root = projectRoot(dir);
   for (const current of parentDirectories(dir)) {
     for (const name of HARDHAT_CONFIG_BASENAMES) {
       const candidate = join(current, name);
       if (existsSync(candidate)) return candidate;
     }
+    if (current === root) break;
   }
   return undefined;
 }
@@ -266,7 +284,7 @@ export async function migrateHardhatConfig(dir: string = process.cwd()): Promise
     '  // Hardhat solidity.settings are intentionally not translated. Set SolidCash compiler options here.',
     '  compiler: { evmCompat: true },',
   ];
-  if (migrated.mnemonic) lines.push(`  mnemonic: ${JSON.stringify(migrated.mnemonic)},`);
+  if (migrated.mnemonic) lines.push('  mnemonic: process.env.SOLIDCASH_MNEMONIC,');
   if (migrated.accounts) lines.push(
     `  accounts: ${JSON.stringify(migrated.accounts, null, 2).replace(/\n/g, '\n  ')},`,
   );

@@ -328,8 +328,8 @@ describe('composite sub-slot field access (sload/sstore on a value-field struct 
 });
 
 describe('EVM storage-layout specifier tolerated (contract C layout at expr)', () => {
-  // `contract C [is ..] layout at <slot>` sets an EVM storage base slot - meaningless on the UTXO model, so the
-  // clause is dropped under evmCompat and the contract compiles as if it were absent.
+  // `contract C [is ..] layout at <slot>` sets an EVM storage base slot. The clause is dropped; its base only shifts
+  // EVM-visible slot numbers (assembly `.slot`, literal sload/sstore), so without those it compiles as if absent.
   it('drops the layout clause (with and without inheritance)', () => {
     expect(compileString('contract C layout at 42 { function f(uint256 e) { require(e == e); } }',
       { evmCompat: true }).contractName).toBe('C');
@@ -857,7 +857,7 @@ describe('Yul assignment to a named storage return slot', () => {
       + ' function pointer() internal view returns (S storage result) {'
       + ' assembly { for {} eq(0, 0) { result.slot := s.slot } {} } } }',
       { evmCompat: true },
-    )).toThrow(/Unsupported inline assembly/);
+    )).toThrow(/can be returned without prior assignment/);
   });
 
   it('recognizes a for-loop initializer as definite named-return initialization', () => {
@@ -884,7 +884,7 @@ describe('Yul assignment to a named storage return slot', () => {
       + ' function pointer(uint choice) internal view returns (S storage result) { assembly {'
       + ' switch choice case 0 { result.slot := s.slot } } } }',
       { evmCompat: true },
-    )).toThrow(/Unsupported inline assembly|Expected variable|Unsupported return/);
+    )).toThrow(/can be returned without prior assignment/);
   });
 });
 
@@ -912,7 +912,7 @@ describe('Yul initialization of local storage-pointer aliases', () => {
       'contract C { struct S { bool flag; } S s; function f(bool choose) internal pure { S storage p;'
       + ' assembly { if choose { p.slot := s.slot } } p; } }',
       { evmCompat: true },
-    )).toThrow(/Unsupported inline assembly/);
+    )).toThrow(/can be accessed without prior assignment/);
   });
 });
 

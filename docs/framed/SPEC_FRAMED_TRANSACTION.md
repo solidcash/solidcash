@@ -1602,7 +1602,7 @@ These surfaced from code surveys before any implementation. Each would otherwise
 
 Sections 16-23 settle the open points on the 66 critical path. Section 22 lists every cross-contract edge the tests
 exercise, and section 23 every edge case, each with the rule that covers it. Sources:
-- the contracts in `examples/effectiveacceleration/contracts`;
+- the contracts in the sibling `effectiveacceleration.ai/contract/contracts` (referenced, not copied);
 - `marketplace.test.ts`;
 - a code survey of today's record formats.
 
@@ -1807,14 +1807,17 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
   - it returns the callee's result unchanged;
   - upgrades are admin-only, and the 66 never upgrade.
 - **Cost.** A proxied entry takes two masters: the proxy's and the implementation's.
-- **`deployProxy`** runs as three transactions, none of which calls another contract:
+- **`deployProxy`** runs as two transactions, neither of which calls another contract:
   1. deploy the implementation (its category genesis and master pool);
-  2. deploy the proxy (its genesis, master and validator pools, and records with `implementation` set);
-  3. call `initialize` through the proxy: a `ROOT` frame on the proxy master that delegatecalls the implementation.
-- **`initialize`.**
+  2. deploy the proxy (its genesis, master and validator pools), its records minted as `initialize` leaves them.
+- **`initialize`** is the proxy's constructor frame: a `ROOT` frame on the proxy master that delegatecalls the
+  implementation, derived off chain against a probe of the proxy's genesis (records with `implementation` set,
+  collections empty) that is never broadcast. The proxy is never on chain uninitialized (audits F11, SDKFRAMED-2).
   - `msg.sender` inside it is the deployer, by `DELEGATE` passthrough, so `__Ownable_init(msg.sender)` is right.
   - The `Initializable` flag lives in the proxy's records, so a second `initialize` reverts (title #8).
-  - Atomic initialization (audit F11) is a security follow-up; the tests have no front-runner.
+  - An initializer that calls another contract changes state the proxy's genesis cannot mint, so it is refused
+    unless the deployer asks for a separate hop (`initializeAs: 'hop'`): the uninitialized genesis, then a third
+    transaction, broadcast back to back; anyone can race that hop until it confirms.
 - **The fixture** is 14 transactions with no cross-contract call (EVAL 2.2): four Unicrow deploys, two
   `deployProxy`, `setMarketplaceDataAddress`, the FakeToken deploy, and token transfers and approvals.
   - FakeToken mints 3e26 to the deployer, in its constructor only.

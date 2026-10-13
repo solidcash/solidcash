@@ -209,10 +209,10 @@ describe('selfdestruct caller-controlled destination warning (no-auth footgun, n
         + ' require(checkDataSig(ds, m, pk)); selfdestruct(to); } }')).toBe(true);
     });
 
-    it('stays silent on checkDataSig against the constructor key', () => {
+    it('WARNS on checkDataSig against the constructor key, because a data signature binds no transaction', () => {
       expect(warns('contract C(pubkey admin) { int n;'
         + ' function kill(datasig ds, bytes m, pubkey pk, address to) external {'
-        + ' require(checkDataSig(ds, m, admin)); selfdestruct(to); } }')).toBe(false);
+        + ' require(checkDataSig(ds, m, admin)); selfdestruct(to); } }')).toBe(true);
     });
 
     it('WARNS on checkMultiSig against a caller-supplied key list', () => {

@@ -24,6 +24,7 @@ import {
   getDynamicChunkAddress,
   getEntryNftLockingBytecode,
   getValueChunkAddress,
+  resolveCollectionSignature,
 } from './covenant-helpers.js';
 import { selectedMessageBusResourceMetadata } from './message-bus-resource-routing.js';
 import {
@@ -223,6 +224,9 @@ export async function loadCreateBuilderDynamicChunks(
     ? nestedDelegateProxyGroupByLowLevel.get(delegateRouteGroupIndex) : undefined;
   const delegateStateCategoryId = delegateProxyGroupIndex === undefined
     ? host.categoryId : externalCallUtxoGroups[delegateProxyGroupIndex].categoryId;
+  // A delegate route writes its proxy's entries, which bind the proxy master's lock, not the implementation's.
+  const delegateStateContract = delegateProxyGroupIndex === undefined
+    ? host.inner : externalCallUtxoGroups[delegateProxyGroupIndex].externalContract.inner;
   const delegateRouteAbi = delegateRouteGroup?.compilerRoute?.abiFunction;
   const delegateRouteRows = delegateRouteGroup?.compilerRoute?.rowArguments;
   const selectedRowsFor = (
@@ -287,9 +291,9 @@ export async function loadCreateBuilderDynamicChunks(
       lockingBytecode: entryNftLockingBytecodes.get(name)
       ?? (delegatedLoop && delegateRouteGroup
         ? getEntryNftLockingBytecode(
-          delegateRouteGroup.externalContract.inner,
+          delegateStateContract,
           delegateStateCategoryId,
-          signature ?? name,
+          signature ?? resolveCollectionSignature(delegateRouteGroup.externalContract.inner.artifact, name),
         )
         : undefined)
       ?? getEntryNftLockingBytecode(host.inner, host.categoryId, signature ?? name),

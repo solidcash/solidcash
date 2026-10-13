@@ -6,9 +6,9 @@ import {
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import type NetworkProvider from '../../src/network/NetworkProvider.js';
 
-// The provider VM pushes duplicated items without copying them and splits into views. Each program below runs on
-// libauth's own VM and on the provider VM; the final stacks, errors and counters must agree (the configured maxima
-// differ, since this provider publishes its own limits).
+// The provider VM installs only its OP_PICK and OP_SPLIT traces, so the operations below are libauth's own. Each
+// program runs on libauth's VM and on the provider VM; the final stacks, errors and counters must agree (the
+// configured maxima differ, since this provider publishes its own limits).
 const OP = {
   DROP: 0x75, DUP: 0x76, IFDUP: 0x73, OVER: 0x78, PICK: 0x79, TUCK: 0x7d, TWODUP: 0x6e, THREEDUP: 0x6f,
   TWOOVER: 0x70, SPLIT: 0x7f, CAT: 0x7e, DEFINE: 0x89, INVOKE: 0x8a, ZERO: 0x00, ONE: 0x51, TWO: 0x52, THREE: 0x53,

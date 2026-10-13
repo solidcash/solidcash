@@ -18,7 +18,11 @@ import {
   type VmResourceUsage,
   isContractUnlocker,
   isCovenantUnlocker,
+  isP2PKHUnlocker,
+  isPlaceholderUnlocker,
+  isStandardUnlocker,
 } from './interfaces.js';
+import { PLACEHOLDER_P2PKH_UNLOCKING_SIZE } from './constants.js';
 import type { NetworkProvider } from './network/index.js';
 import { traceBroadcast } from './tx-trace.js';
 import {
@@ -29,10 +33,13 @@ import {
 } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
-  pushDataBytes, buildKeccakComputeSidecar, extractKeccakPreimageFromTrace,
-  OP_INPUTBYTECODE, leSmallNumber,
+  pushDataBytes, buildKeccakComputeSidecar, extractKeccakPreimageFromTrace, scanKeccakPreimageReads,
+  learnKeccakPreimages, OP_INPUTBYTECODE, leSmallNumber,
 } from './keccak/keccakComputeSidecar.js';
-import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from './ecrecover/ecrecoverComputeSidecar.js';
+import {
+  buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, computeEcrecoverWitness,
+  extractEcrecoverArgBlobsFromTrace, probeEcrecoverSplit,
+} from './ecrecover/ecrecoverComputeSidecar.js';
 import type { EcrecoverWitness } from './ecrecover/ecrecoverRecovery.js';
 import {
   solidCashOutputToLibauthOutput,
@@ -44,8 +51,16 @@ import {
   validateChangeLocks,
   getOutputSize,
   calculateDust,
+  formatLockingBytecode,
 } from './utils.js';
-import { FailedTransactionError } from './Errors.js';
+import {
+  FailedTransactionError,
+  TransactionFeePerByteTooHighError,
+  TransactionFeeTooHighError,
+  TransactionInputsRequiredError,
+  TransactionOutputsRequiredError,
+  UnlockerLockingBytecodeMismatchError,
+} from './Errors.js';
 import type { DebugResults } from './debugging.js';
 import { debugLibauthTemplate, getLibauthTemplate, getBitauthUri } from './libauth-template/LibauthTemplate.js';
 import { getWcContractInfo, type WcSourceOutput, type WcTransactionOptions } from './walletconnect-utils.js';
@@ -77,6 +92,15 @@ let keccakProbeVm: ReturnType<typeof createVirtualMachineBch2026> | undefined;
  */
 /** Budget/standardness cap on runtime keccak side-cars per transaction (matches the pure dynamic-loop path). */
 const MAX_KECCAK_LOOP_ITERS = 64;
+
+function describeUnlocker(unlocker: Unlocker): string {
+  if (isContractUnlocker(unlocker)) {
+    return `unlocker for function "${unlocker.abiFunction.name}" of contract "${unlocker.contract.name}"`;
+  }
+  if (isP2PKHUnlocker(unlocker)) return `P2PKH unlocker for public key ${binToHex(unlocker.template.publicKey)}`;
+  if (isPlaceholderUnlocker(unlocker)) return 'placeholder P2PKH unlocker';
+  return 'custom unlocker';
+}
 
 function bytesEqual(a: Uint8Array | undefined, b: Uint8Array): boolean {
   return a !== undefined && a.length === b.length && a.every((byte, i) => byte === b[i]);
@@ -245,7 +269,11 @@ export class TransactionBuilder {
     const sidecarOutpoints = new Set(utxos.map((u) => `${u.txid}:${u.vout}`));
     if (this.inputs.some((i) => sidecarOutpoints.has(`${i.txid}:${i.vout}`))) return this; // already co-spent
 
-    const sidecar = utxos[0];
+    // A token at this public lock is not the library side-car. Skip it instead of spending utxos[0].
+    const sidecar = utxos.find((utxo) => utxo.token === undefined);
+    if (sidecar === undefined) {
+      throw new Error('External-library side-car UTXO not found; deploy it before spending a library contract.');
+    }
     const unlocker: Unlocker = {
       generateUnlockingBytecode: () => scriptToBytecode([sidecarRedeem]), // PUSHDATA(redeem)
       generateLockingBytecode: () => sidecarLock,
@@ -270,7 +298,8 @@ export class TransactionBuilder {
     const utxos = await this.provider.getUtxosForLockingBytecode(lock);
     // Pick a side-car UTXO not already co-spent (an N-call function co-spends N distinct side-cars at this
     // address, one per keccak256 call - deploy one mutable-NFT side-car per call).
-    const sidecar = utxos.find((u) => !this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout));
+    const sidecar = utxos.find((u) => u.token?.nft?.capability === 'mutable'
+      && !this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout));
     if (!sidecar) {
       throw new Error('keccak256 compute side-car UTXO not available; deploy one mutable-NFT side-car per '
         + 'batch of up to three keccak256 calls in the spent function.');
@@ -334,7 +363,8 @@ export class TransactionBuilder {
    * Transparent recovery co-spend, auto-invoked by send(): for every contract input whose spent function uses
    * ecrecoverPubKey (`abiFunction.ecrecoverCompute`), resolve each call's (hash, v, r, s) direct params, compute the
    * GLV recovery witnesses, and co-spend the recovery side-car PAIR (A checkpoints, B commits the pubkey). The split
-   * point is a witnessed liveness parameter the SDK sizes deterministically; see docs/ecrecover.md.
+   * point is a witnessed liveness parameter the SDK sizes deterministically; see docs/ecrecover.md. Arguments the
+   * params cannot supply (a helper's recovery, a computed argument) are read off a VM probe.
    */
   async addRequiredEcrecoverComputeCoSpends(): Promise<this> {
     for (const input of [...this.inputs]) {
@@ -366,15 +396,21 @@ export class TransactionBuilder {
       };
       const calls = abiFn.ecrecoverArgParams ?? [];
       const evmFlags = abiFn.ecrecoverEvmFlags ?? [];
-      const evmPreimages: Uint8Array[] = [];   // uncompressed keys for the trailing keccak side-cars (one per evm call)
-      for (let c = 0; c < calls.length; c++) {
-        const [hp, vp, rp, sp] = calls[c];
+      const direct = calls.map(([hp, vp, rp, sp]) => {
         const hash = bytesAt(hp), r = bytesAt(rp), s = bytesAt(sp), vRaw = paramAt(vp);
         const v = typeof vRaw === 'bigint' ? Number(vRaw) : (vRaw instanceof Uint8Array ? vRaw[0] : NaN);
-        if (!hash || !r || !s || Number.isNaN(v)) {
-          throw new Error('ecrecoverPubKey requires direct (hash, v, r, s) parameters for the auto co-spend; '
-            + 'a computed argument needs an explicit recovery co-spend.');
-        }
+        return hash && r && s && !Number.isNaN(v) ? { hash, v, r, s } : undefined;
+      });
+      // evmFlags spans every recovery in the entry's closure; a recovery inside a helper or library publishes no
+      // arg params and a computed argument publishes null. Those read their arguments off a VM probe instead.
+      const recoveries = Math.max(calls.length, evmFlags.length);
+      if (direct.length < recoveries || direct.some((args) => args === undefined)) {
+        await this.addTracedEcrecoverComputeCoSpends(input, salt, recoveries, evmFlags);
+        continue;
+      }
+      const evmPreimages: Uint8Array[] = [];   // uncompressed keys for the trailing keccak side-cars (one per evm call)
+      for (let c = 0; c < direct.length; c++) {
+        const { hash, v, r, s } = direct[c]!;
         const wit = computeEcrecoverWitness(hash, v, r, s);
         await this.addEcrecoverComputeCoSpend(wit, salt);
         if (evmFlags[c]) evmPreimages.push(wit.uncompressedPubkey);
@@ -392,7 +428,8 @@ export class TransactionBuilder {
       this.provider.getUtxosForLockingBytecode(lockA), this.provider.getUtxosForLockingBytecode(lockB),
     ]);
     const free = (utxos: Utxo[]): Utxo | undefined => utxos.find(
-      (u) => !this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout),
+      (u) => u.token?.nft?.capability === 'mutable'
+        && !this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout),
     );
     const scA = free(utxosA), scB = free(utxosB);
     if (!scA || !scB) {
@@ -407,6 +444,87 @@ export class TransactionBuilder {
     const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(wit, chunkA, salt, scA, scB);
     this.addInput(scA, unlockerA); this.addOutput(recreateA);   // A: checkpoint
     this.addInput(scB, unlockerB); this.addOutput(recreateB);   // B: recovered pubkey
+  }
+
+  /**
+   * Recovery co-spend for arguments `ecrecoverArgParams` cannot supply. Each probe lays out all n pairs, then one keccak
+   * side-car per evm recovery, at the stateless tail (the direct path's layout): real side-cars for the recoveries
+   * learned so far, placeholders for the rest. It evaluates the contract input and reads each reached recovery's
+   * argBlob at its A side-car read; pair k sits at base + 2k, the compiler's stable recovery ordinal. A learned pair
+   * lets the next probe run on to the following recovery. A recovery no probe reaches is never read, so its pair
+   * reuses a learned witness; when none is reached nothing is co-spent and send() reports the contract's own failure.
+   */
+  private async addTracedEcrecoverComputeCoSpends(
+    input: UnlockableUtxo, salt: Uint8Array, n: number, evmFlags: readonly boolean[],
+  ): Promise<void> {
+    const evmCount = evmFlags.slice(0, n).filter(Boolean).length;
+    const [utxosA, utxosB, utxosK] = await Promise.all([
+      this.provider.getUtxosForLockingBytecode(ecrecoverComputeLockingBytecode(salt, 'A')),
+      this.provider.getUtxosForLockingBytecode(ecrecoverComputeLockingBytecode(salt, 'B')),
+      evmCount > 0 ? this.provider.getUtxosForLockingBytecode(keccakComputeLockingBytecode(salt))
+        : Promise.resolve([] as Utxo[]),
+    ]);
+    const spent = (u: Utxo): boolean => this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout);
+    const freeA = utxosA.filter((u) => !spent(u)), freeB = utxosB.filter((u) => !spent(u));
+    const freeK = utxosK.filter((u) => !spent(u));
+    if (freeA.length < n || freeB.length < n || freeK.length < evmCount) {
+      throw new Error(`ecrecover needs ${n} A + ${n} B${evmCount > 0 ? ` + ${evmCount} keccak` : ''} side-car UTXOs; `
+        + `found ${freeA.length} A + ${freeB.length} B${evmCount > 0 ? ` + ${freeK.length} keccak` : ''}. Deploy a `
+        + 'recovery pair per recovery in the spent function (plus a keccak side-car per ecrecoverEvm).');
+    }
+    const contractIdx = this.inputs.indexOf(input);
+    const base = this.inputs.length;
+    const aInputs = new Map(Array.from({ length: n }, (_, k): [number, number] => [base + 2 * k, k]));
+    const witnesses: (EcrecoverWitness | undefined)[] = Array.from({ length: n }, () => undefined);
+    const pairs = new Map<number, ReturnType<typeof buildEcrecoverComputeSidecars>>();
+    const layOut = (): void => {
+      for (let k = 0; k < n; k++) {
+        const wit = witnesses[k];
+        if (wit && !pairs.has(k)) {
+          const chunkA = probeEcrecoverSplit(wit, salt, freeA[k], freeB[k]);
+          pairs.set(k, buildEcrecoverComputeSidecars(wit, chunkA, salt, freeA[k], freeB[k]));
+        }
+        const pair = pairs.get(k) ?? buildEcrecoverComputePlaceholders(salt, freeA[k], freeB[k]);
+        this.addInput(freeA[k], pair.unlockerA); this.addOutput(pair.recreateA);
+        this.addInput(freeB[k], pair.unlockerB); this.addOutput(pair.recreateB);
+      }
+      for (let k = 0, e = 0; k < n; k++) {
+        if (!evmFlags[k]) continue;
+        const preimage = witnesses[k]?.uncompressedPubkey ?? new Uint8Array(64);
+        const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, freeK[e]);
+        this.addInput(freeK[e], unlocker); this.addOutput(recreate);
+        e += 1;
+      }
+    };
+    keccakProbeVm ??= createVirtualMachineBch2026();
+    const savedInputs = [...this.inputs];
+    const savedOutputs = [...this.outputs];
+    try {
+      for (let round = 0; round < n && witnesses.some((wit) => wit === undefined); round++) {
+        this.inputs = [...savedInputs];
+        this.outputs = [...savedOutputs];
+        layOut();
+        const transaction = this.buildLibauthTransaction(true);
+        const sourceOutputs = generateLibauthSourceOutputs(this.inputs);
+        const trace = keccakProbeVm.debug({ inputIndex: contractIdx, sourceOutputs, transaction }) as unknown[];
+        let learned = false;
+        for (const [k, argBlob] of extractEcrecoverArgBlobsFromTrace(trace, aInputs)) {
+          if (witnesses[k]) continue;
+          witnesses[k] = computeEcrecoverWitness(
+            argBlob.slice(0, 32), argBlob[32], argBlob.slice(33, 65), argBlob.slice(65, 97),
+          );
+          learned = true;
+        }
+        if (!learned) break;
+      }
+    } finally {
+      this.inputs = savedInputs;
+      this.outputs = savedOutputs;
+    }
+    const reached = witnesses.find((wit) => wit !== undefined);
+    if (!reached) return;
+    for (let k = 0; k < n; k++) witnesses[k] ??= reached;
+    layOut();
   }
 
   /**
@@ -492,6 +610,8 @@ export class TransactionBuilder {
    * resolved preimages (placeholders for the not-yet-resolved), the contract input is evaluated, and the arg is
    * read off the stack at that call's OP_INPUTBYTECODE step (captured before the binding OP_EQUALVERIFY aborts).
    * Nulls resolve one per probe in call order, so a resolved call's real side-car lets execution reach the next.
+   * A probe that learns nothing ends probing: the calls it never reached keep the empty placeholder, so the
+   * transaction reports the contract's own failure (or succeeds when a short-circuit skips them).
    */
   private async resolveKeccakPreimages(
     input: UnlockableUtxo, salt: Uint8Array, params: readonly (string | null)[],
@@ -522,21 +642,18 @@ export class TransactionBuilder {
     const savedInputs = [...this.inputs];
     const savedOutputs = [...this.outputs];
     try {
-      // Each probe co-spends N side-cars (real preimage/commitment for resolved calls, placeholders for the
-      // rest) and reads the LAST in-range side-car read off the contract's trace: the call whose binding
-      // OP_EQUALVERIFY aborts on the placeholder. Nested calls abort inner-to-outer, so one null resolves per
-      // probe (by its slot index, not emission order). Loop until every preimage is known.
+      // Each probe co-spends N side-cars (real preimage/commitment for resolved calls, the empty placeholder and
+      // its real digest for the rest) and learns from the contract's in-range side-car reads: the last is the
+      // call whose binding OP_EQUALVERIFY aborts on the placeholder. Nested calls abort inner-to-outer, so a null
+      // resolves per probe (by its ordinal, not emission order). Loop until every preimage is known.
       let guard = 0;
       while (preimages.some((p) => p === null)) {
         if (guard++ > n) throw new Error('keccak256 preimage extraction did not converge.');
         this.inputs = [...savedInputs];
         this.outputs = [...savedOutputs];
         for (let j = 0; j < batchCount; j++) {
-          const batch = preimages.slice(j * 3, Math.min(n, j * 3 + 3));
-          const pms = batch.map((resolved) => resolved ?? new Uint8Array(0));
-          const commit = Uint8Array.from(batch.flatMap(
-            (resolved) => [...(resolved ? keccak_256(resolved) : new Uint8Array(32))],
-          ));
+          const pms = preimages.slice(j * 3, Math.min(n, j * 3 + 3)).map((resolved) => resolved ?? new Uint8Array(0));
+          const commit = Uint8Array.from(pms.flatMap((pm) => [...keccak_256(pm)]));
           this.inputs.push({
             ...scUtxos[j],
             unlocker: {
@@ -557,14 +674,13 @@ export class TransactionBuilder {
         const transaction = this.buildLibauthTransaction(true);
         const sourceOutputs = generateLibauthSourceOutputs(this.inputs);
         const trace = keccakProbeVm.debug({ inputIndex: contractIdx, sourceOutputs, transaction }) as unknown[];
-        const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, base, n, batchCount);
-        preimages[callIndex] = preimage;
+        if (!learnKeccakPreimages(preimages, scanKeccakPreimageReads(trace, base, n, batchCount))) break;
       }
     } finally {
       this.inputs = savedInputs;
       this.outputs = savedOutputs;
     }
-    return preimages as Uint8Array[];
+    return preimages.map((preimage) => preimage ?? new Uint8Array(0));
   }
 
   /**
@@ -853,7 +969,9 @@ export class TransactionBuilder {
 
   addOutputs(outputs: Output[]): this {
     outputs.forEach((output) => {
-      validateOutput(output, this.provider.policy?.enforceDust ?? true);
+      validateOutput(
+        output, this.provider.policy?.enforceDust ?? true, this.provider.consensusLimits?.maximumNftCommitmentBytes,
+      );
       validateChangeLocks(this.changeLocks, output.token?.category);
     });
     this.outputs = this.outputs.concat(outputs);
@@ -923,9 +1041,29 @@ export class TransactionBuilder {
     return this;
   }
 
+  /**
+   * Build the transaction (skipping fee and burn checks) and return its encoded byte length. Inputs with a
+   * placeholder unlocker are counted at the size they take up once the wallet signs them.
+   */
   getTransactionSize(): bigint {
     const transaction = this.buildLibauthTransaction(true);
-    return BigInt(encodeTransaction(transaction).byteLength);
+    return BigInt(this.getEncodedTransactionSize(transaction));
+  }
+
+  // Placeholder unlockers serialise as an empty unlocking script, so their eventual signed size is added here
+  private getEncodedTransactionSize(transaction: LibauthTransaction): number {
+    const placeholderInputCount = this.inputs.filter((input) => isPlaceholderUnlocker(input.unlocker)).length;
+    return encodeTransaction(transaction).byteLength + placeholderInputCount * PLACEHOLDER_P2PKH_UNLOCKING_SIZE;
+  }
+
+  /** The transaction fee in satoshis and per byte, at the size `getTransactionSize()` reports. */
+  calculateTransactionFee(): { feeSats: bigint, feeSatsPerByte: number } {
+    const transactionSize = this.getTransactionSize();
+    const totalInputAmount = this.inputs.reduce((total, input) => total + input.satoshis, 0n);
+    const totalOutputAmount = this.outputs.reduce((total, output) => total + output.amount, 0n);
+    const feeSats = totalInputAmount - totalOutputAmount;
+    const feeSatsPerByte = Number((Number(feeSats) / Number(transactionSize)).toFixed(2));
+    return { feeSats, feeSatsPerByte };
   }
 
   // TODO: allow uint8array for chunks
@@ -934,7 +1072,15 @@ export class TransactionBuilder {
     return this;
   }
 
+  /**
+   * Set the `nLockTime` of the transaction (a block height or UNIX timestamp).
+   * @throws If the locktime is not an unsigned 32-bit integer.
+   */
   setLocktime(locktime: number): this {
+    if (!Number.isInteger(locktime) || locktime < 0 || locktime > 0xffffffff) {
+      throw new Error(`Locktime ${locktime} should be an integer between 0 and 4294967295`);
+    }
+
     this.locktime = locktime;
     return this;
   }
@@ -952,18 +1098,16 @@ export class TransactionBuilder {
     }
 
     if (this.options.maximumFeeSatoshis !== undefined && fee > this.options.maximumFeeSatoshis) {
-      throw new Error(`Transaction fee of ${fee} is higher than max fee of ${this.options.maximumFeeSatoshis}`);
+      throw new TransactionFeeTooHighError(fee, this.options.maximumFeeSatoshis);
     }
 
     const maxFeePerByte = this.options.maximumFeeSatsPerByte ?? DEFAULT_MAX_FEE_SATS_PER_BYTE;
-    const transactionSize = encodeTransaction(transaction).byteLength;
+    const transactionSize = this.getEncodedTransactionSize(transaction);
     const feePerByte = Number(fee) / transactionSize;
 
+    // The limit is checked against the exact fee per byte, which is only rounded (away from the limit) for display
     if (feePerByte > maxFeePerByte) {
-      throw new Error(
-        `Transaction fee per byte of ${feePerByte.toFixed(2)} is higher than max fee per byte of ${maxFeePerByte}. `
-        + 'This may indicate a missing change output. Set maximumFeeSatsPerByte to override.',
-      );
+      throw new TransactionFeePerByteTooHighError(Math.ceil(feePerByte * 100) / 100, maxFeePerByte);
     }
   }
 
@@ -1035,6 +1179,27 @@ export class TransactionBuilder {
     }
   }
 
+  // A UTXO that states its locking bytecode must be spent with an unlocker for that lock, or the network rejects the
+  // transaction. Checked against the source outputs being signed, after any rebinding of the unlockers.
+  private checkInputLockingBytecodes(sourceOutputs: LibauthTransaction['outputs']): void {
+    this.inputs.forEach((input, inputIndex) => {
+      const stated = input.lockingBytecode as Uint8Array | string | undefined;
+      if (stated === undefined) return;
+      if (!isStandardUnlocker(input.unlocker) && !isPlaceholderUnlocker(input.unlocker)) return;
+
+      const utxoLockingBytecode = typeof stated === 'string' ? hexToBin(stated) : stated;
+      const unlockerLockingBytecode = sourceOutputs[inputIndex].lockingBytecode;
+      if (binToHex(utxoLockingBytecode) === binToHex(unlockerLockingBytecode)) return;
+
+      throw new UnlockerLockingBytecodeMismatchError(
+        inputIndex,
+        formatLockingBytecode(utxoLockingBytecode, this.provider.network),
+        formatLockingBytecode(unlockerLockingBytecode, this.provider.network),
+        describeUnlocker(input.unlocker),
+      );
+    });
+  }
+
   /** Validate token conservation without regenerating unlocking bytecode. */
   validateTokenConservation(): void {
     this.checkFungibleTokenBurn();
@@ -1065,6 +1230,7 @@ export class TransactionBuilder {
     // Generate source outputs from inputs (for signing with SIGHASH_UTXOS)
     const sourceOutputs = generateLibauthSourceOutputs(this.inputs);
     this.lastBuiltSourceOutputs = sourceOutputs;
+    if (!skipChecks) this.checkInputLockingBytecodes(sourceOutputs);
 
     const inputScripts = this.inputs.map((input, inputIndex) => (
       input.unlocker.generateUnlockingBytecode({ transaction, sourceOutputs, inputIndex })
@@ -1087,10 +1253,10 @@ export class TransactionBuilder {
 
   build(): string {
     if (this.inputs.length === 0) {
-      throw new Error('Transaction must have at least one input');
+      throw new TransactionInputsRequiredError();
     }
     if (this.outputs.length === 0) {
-      throw new Error('Transaction must have at least one output');
+      throw new TransactionOutputsRequiredError();
     }
 
     const transaction = this.buildLibauthTransaction();
@@ -1108,7 +1274,7 @@ export class TransactionBuilder {
       .map((input) => 'contract' in input.unlocker ? input.unlocker.contract.artifact.compiler.version : null)
       .filter((version) => version !== null);
 
-    if (!contractVersions.every((version) => semver.satisfies(version, '>=0.11.0'))) {
+    if (!contractVersions.every((version) => semver.satisfies(version, '>=0.11.0', { includePrerelease: true }))) {
       console.warn('For the best debugging experience, please recompile your contract with solidc version 0.11.0 or newer.');
     }
 
@@ -1273,14 +1439,8 @@ export class TransactionBuilder {
       );
     }
 
-    try {
-      return raw ? await this.getTxDetails(txid, raw) : await this.getTxDetails(txid);
-    } catch (e: any) {
-      const reason = e.error ?? e.message;
-      let bitauthUri: string;
-      try { bitauthUri = this.getSanitizedBitauthUri(); } catch { bitauthUri = ''; }
-      throw new FailedTransactionError(reason, bitauthUri);
-    }
+    // The transaction was broadcast, so failing to retrieve it afterwards is not a failed transaction
+    return raw ? this.getTxDetails(txid, raw) : this.getTxDetails(txid);
   }
 
   private async getTxDetails(txid: string): Promise<TransactionDetails>;
@@ -1313,8 +1473,7 @@ export class TransactionBuilder {
       }
     }
 
-    // Should not happen
-    throw new Error(`Could not retrieve transaction details for txid '${txid}' after 1200 retries (~10 minutes). The transaction may not have been accepted by the network.`);
+    throw new Error(`Transaction ${txid} was broadcast, but its details could not be retrieved for over 10 minutes`);
   }
 
   generateWcTransactionObject(options?: WcTransactionOptions): WcTransactionObject {

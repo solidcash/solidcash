@@ -1,5 +1,5 @@
 import { type AbiFunction, type AbiInput, type Artifact, Op, bytecodeToScript, decodeInt, formatBitAuthScript } from '@solidcash/utils';
-import { HashType, type LibauthTokenDetails, SignatureAlgorithm, type TokenDetails, VmTarget } from '../interfaces.js';
+import { type LibauthTokenDetails, SighashType, SignatureAlgorithm, type TokenDetails, VmTarget } from '../interfaces.js';
 import { decodeCashAddress } from '@bitauth/libauth/build/lib/address/cash-address.js';
 import { assertSuccess } from '@bitauth/libauth/build/lib/format/error.js';
 import { hexToBin, binToHex, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -33,24 +33,27 @@ export const getSignatureAlgorithmName = (signatureAlgorithm: SignatureAlgorithm
   return signatureAlgorithmNames[signatureAlgorithm];
 };
 
-export const getHashTypeName = (hashType: HashType): string => {
-  const hashtypeNames = {
-    [HashType.SIGHASH_ALL]: 'all_outputs',
-    [HashType.SIGHASH_ALL | HashType.SIGHASH_ANYONECANPAY]: 'all_outputs_single_input',
-    [HashType.SIGHASH_ALL | HashType.SIGHASH_UTXOS]: 'all_outputs_all_utxos',
-    [HashType.SIGHASH_ALL | HashType.SIGHASH_ANYONECANPAY | HashType.SIGHASH_UTXOS]: 'all_outputs_single_input_INVALID_all_utxos',
-    [HashType.SIGHASH_SINGLE]: 'corresponding_output',
-    [HashType.SIGHASH_SINGLE | HashType.SIGHASH_ANYONECANPAY]: 'corresponding_output_single_input',
-    [HashType.SIGHASH_SINGLE | HashType.SIGHASH_UTXOS]: 'corresponding_output_all_utxos',
-    [HashType.SIGHASH_SINGLE | HashType.SIGHASH_ANYONECANPAY | HashType.SIGHASH_UTXOS]: 'corresponding_output_single_input_INVALID_all_utxos',
-    [HashType.SIGHASH_NONE]: 'no_outputs',
-    [HashType.SIGHASH_NONE | HashType.SIGHASH_ANYONECANPAY]: 'no_outputs_single_input',
-    [HashType.SIGHASH_NONE | HashType.SIGHASH_UTXOS]: 'no_outputs_all_utxos',
-    [HashType.SIGHASH_NONE | HashType.SIGHASH_ANYONECANPAY | HashType.SIGHASH_UTXOS]: 'no_outputs_single_input_INVALID_all_utxos',
+export const getSighashTypeName = (sighashType: SighashType): string => {
+  const sighashTypeNames = {
+    [SighashType.SIGHASH_ALL]: 'all_outputs',
+    [SighashType.SIGHASH_ALL | SighashType.SIGHASH_ANYONECANPAY]: 'all_outputs_single_input',
+    [SighashType.SIGHASH_ALL | SighashType.SIGHASH_UTXOS]: 'all_outputs_all_utxos',
+    [SighashType.SIGHASH_ALL | SighashType.SIGHASH_ANYONECANPAY | SighashType.SIGHASH_UTXOS]: 'all_outputs_single_input_INVALID_all_utxos',
+    [SighashType.SIGHASH_SINGLE]: 'corresponding_output',
+    [SighashType.SIGHASH_SINGLE | SighashType.SIGHASH_ANYONECANPAY]: 'corresponding_output_single_input',
+    [SighashType.SIGHASH_SINGLE | SighashType.SIGHASH_UTXOS]: 'corresponding_output_all_utxos',
+    [SighashType.SIGHASH_SINGLE | SighashType.SIGHASH_ANYONECANPAY | SighashType.SIGHASH_UTXOS]: 'corresponding_output_single_input_INVALID_all_utxos',
+    [SighashType.SIGHASH_NONE]: 'no_outputs',
+    [SighashType.SIGHASH_NONE | SighashType.SIGHASH_ANYONECANPAY]: 'no_outputs_single_input',
+    [SighashType.SIGHASH_NONE | SighashType.SIGHASH_UTXOS]: 'no_outputs_all_utxos',
+    [SighashType.SIGHASH_NONE | SighashType.SIGHASH_ANYONECANPAY | SighashType.SIGHASH_UTXOS]: 'no_outputs_single_input_INVALID_all_utxos',
   };
 
-  return hashtypeNames[hashType];
+  return sighashTypeNames[sighashType];
 };
+
+/** @deprecated Renamed to `getSighashTypeName`. */
+export const getHashTypeName = getSighashTypeName;
 
 export const addHexPrefixExceptEmpty = (value: string): string => {
   return value.length > 0 ? `0x${value}` : '';
@@ -67,11 +70,15 @@ export const formatParametersForDebugging = (
   return typesAndArguments.map(([input, arg]) => {
     const varName = variablePrefix + input.name;
     if (arg instanceof SignatureTemplate) {
-      const signatureAlgorithmName = getSignatureAlgorithmName(arg.getSignatureAlgorithm());
-      const hashtypeName = getHashTypeName(arg.getHashType(false));
-      return `<${varName}.${signatureAlgorithmName}.${hashtypeName}> // ${input.type}`;
+      const signatureAlgorithmName = getSignatureAlgorithmName(arg.signatureAlgorithm);
+      const sighashTypeName = getSighashTypeName(arg.sighashType);
+      return `<${varName}.${signatureAlgorithmName}.${sighashTypeName}> // ${input.type}`;
     }
     if (isDeferredSignatureArgument(arg)) return `<${varName}> // ${input.type} (finalized signatures)`;
+    if (arg === undefined) {
+      throw new Error(`No value for '${input.name}' (${input.type}): compiler-owned inputs such as external-call `
+        + 'witnesses are filled by StatefulContract transaction building, not by a plain unlock');
+    }
 
     const typeStr = input.type === 'bytes' ? `bytes${arg.length}` : input.type;
 

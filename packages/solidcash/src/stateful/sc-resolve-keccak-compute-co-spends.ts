@@ -4,13 +4,16 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
+  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH_LEGACY,
   keccakComputeLockingBytecode,
   keccakComputeLockingBytecodeLegacy,
   type AbiFunction, type Artifact,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
+import type {
+  ContractUnlocker, Output, UnlockableUtxo, Unlocker, Utxo,
+} from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { buildKeccakComputeSidecar } from '../keccak/keccakComputeSidecar.js';
 import { addressToLockScript } from '../utils.js';
@@ -19,6 +22,8 @@ import {
   hasOutpoint,
 } from './stateful-abi-resolve.js';
 import { artifactAddressForm, sortedAddressPairPacked } from './solidityAbi.js';
+import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
+import { returnOutputIdxFromUnlocker } from './stb-delegate-loop-entries.js';
 
 export interface ResolveKeccakComputeCoSpendsHost {
   readonly categoryId: string;
@@ -47,6 +52,10 @@ export type ResolveKeccakProbeCtx = {
   dataNftUtxos: Utxo[];
   dataNftUnlockers: Unlocker[];
   frontRegionInputs?: UnlockableUtxo[];
+  /** Read-only trailing run in transaction order: collection-iteration entries, then dynamic chunk runs. */
+  trailingReadInputs?: readonly UnlockableUtxo[];
+  /** The first read-only dynamic chunk, which an explicit dynamic chunk base addresses. */
+  firstDynamicReadInput?: Utxo;
   locktime?: number;
   deferUnresolved?: boolean;
   artifactBytecode?: string;
@@ -54,6 +63,53 @@ export type ResolveKeccakProbeCtx = {
   /** Compiler-selected direct parameter preimages decoded from the authenticated message-bus batch. */
   plannedPreimages?: readonly (Uint8Array | null)[];
 };
+
+const PROBE_FILLER_LOCK = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
+
+/**
+ * The trailing read run an isolated keccak probe appends after its fixed inputs, and the master unlocker that
+ * addresses it. A hashed chunk-backed value (string/bytes state) is read from that run before its side-car, so a
+ * probe without it aborts at the chunk read and never learns the preimage. The run starts where the compiler
+ * places it (master + (trailingBase ?? blockSize), one lower when an unmaterialized returnEvent compacts the
+ * frame), behind neutral fillers; an explicit `__internal__dynamicChunkInputBase` witness, which the finalized
+ * transaction otherwise supplies, is set to the probe's first read chunk. Unchanged when it cannot be placed.
+ */
+export function keccakProbeTrailingRun(
+  abiFunction: AbiFunction, stateInputUnlocker: Unlocker, fixedInputCount: number,
+  trailingReadInputs: readonly UnlockableUtxo[] = [], firstDynamicReadInput?: Utxo,
+): { inputs: UnlockableUtxo[]; unlocker: Unlocker } {
+  const unchanged = { inputs: [], unlocker: stateInputUnlocker };
+  const layout = abiFunction.blockLayout;
+  if (!layout || trailingReadInputs.length === 0) return unchanged;
+  const returnOutputIdx = returnOutputIdxFromUnlocker(stateInputUnlocker as Partial<ContractUnlocker>);
+  const compact = layout.trailingBase === undefined && returnOutputIdx !== undefined && returnOutputIdx < 0
+    && layout.slots.some((slot) => slot.kind === 'returnEvent') ? 1 : 0;
+  const start = (layout.trailingBase ?? layout.blockSize) - compact;
+  if (start < fixedInputCount) return unchanged;
+  const fillers = Array.from({ length: start - fixedInputCount }, (_, index): UnlockableUtxo => ({
+    txid: `${'fe'.repeat(28)}${index.toString(16).padStart(8, '0')}`,
+    vout: 0,
+    satoshis: 1000n,
+    unlocker: {
+      generateLockingBytecode: () => PROBE_FILLER_LOCK,
+      generateUnlockingBytecode: () => Uint8Array.of(0x01, 0x51),
+    },
+  }));
+  const inputs = [...fillers, ...trailingReadInputs];
+  const master = stateInputUnlocker as Partial<ContractUnlocker>;
+  const witness = master.abiFunction?.inputs
+    .findIndex((input) => input.name === '__internal__dynamicChunkInputBase') ?? -1;
+  if (witness < 0) return { inputs, unlocker: stateInputUnlocker };
+  const firstRead = firstDynamicReadInput === undefined ? -1 : trailingReadInputs.findIndex((input) => (
+    input.txid === firstDynamicReadInput.txid && input.vout === firstDynamicReadInput.vout));
+  if (firstRead < 0 || master.contract === undefined
+    || master.params?.length !== master.abiFunction!.inputs.length) return unchanged;
+  const params = [...master.params];
+  params[witness] = resolveDynamicChunkInputBase(
+    start + firstRead, 0, (abiFunction.dynamicWrites?.length ?? 0) > 0,
+  );
+  return { inputs, unlocker: master.contract.createAbiUnlocker(master.abiFunction!)(...params) };
+}
 
 export type ResolveKeccakComputeCoSpendsResult = {
   coSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }>;

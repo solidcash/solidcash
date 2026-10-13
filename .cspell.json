@@ -486,10 +486,10 @@
         "**/build/**",
         "**/.docusaurus/**",
         "**/grammar/**",
-        "examples/solidity-corpus/results.json",
-        "examples/solidity-corpus/current.txt",
-        "examples/solidity-corpus/progress.txt",
-        "examples/solidity-corpus/err.txt",
+        "bench/solidity-corpus/results.json",
+        "bench/solidity-corpus/current.txt",
+        "bench/solidity-corpus/progress.txt",
+        "bench/solidity-corpus/err.txt",
         // Generated release fixtures embed upstream source/debug text; spellcheck their maintained source instead.
         "packages/solidcash/test/fixture/mistswap-artifacts/**",
         // Do not spellcheck vendor code

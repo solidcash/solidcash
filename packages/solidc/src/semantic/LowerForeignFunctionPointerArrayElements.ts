@@ -31,6 +31,8 @@ import {
   StatementNode,
   WhileNode,
   DoWhileNode,
+  DeleteLocalNode,
+  DeleteStateNode,
 } from '../ast/AST.js';
 import { ArrayType, FunctionType, AddressType, BytesType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -58,8 +60,9 @@ type TableInfo = { kind: 'fixed' | 'varying'; iface: string; method: string; ret
  *   live element, the shape of the array-element call `IFace(arr[i]).m()` in a loop). A broadcast cannot
  *   return a value (rejected).
  *
- * Mutations stay in LOCKSTEP with the selector array: a varying table's element assign / pop / delete rewrites
- * to a two-statement block mutating both arrays; classification scans pushes AND element assigns.
+ * Mutations stay in LOCKSTEP with the selector array: a varying table's element assign / pop / element or whole
+ * delete rewrites to a two-statement block mutating both arrays; classification scans pushes AND element assigns.
+ * A no-arg push (a zero element) leaves the table to LowerReceivedFnPtrArray, which refuses it.
  */
 export default class LowerForeignFunctionPointerArrayElements extends AstTraversal {
   private typeNames = new Set<string>();
@@ -275,6 +278,20 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     return this.twoStatementBlock(addrPop, selPop, at);
   }
 
+  // `delete fns` on a varying table -> `{ delete fns; delete __fnsel_fns; }`.
+  visitDeleteLocal(node: DeleteLocalNode): Node {
+    const name = node.identifier.name;
+    if (this.tables.get(name)?.kind !== 'varying') return super.visitDeleteLocal(node);
+    return this.twoStatementBlock(node, this.copyLoc(new DeleteStateNode(this.selArrayName(name)), node), node);
+  }
+
+  visitDeleteState(node: DeleteStateNode): Node {
+    if (this.tables.get(node.name)?.kind !== 'varying') return super.visitDeleteState(node);
+    const selDelete = this.copyLoc(new DeleteStateNode(this.selArrayName(node.name)), node);
+    selDelete.fromModifier = node.fromModifier;
+    return this.twoStatementBlock(node, selDelete, node);
+  }
+
   visitStateArrayDelete(node: StateArrayDeleteNode): Node {
     return this.rewriteDelete(node.name, node.index, node) ?? super.visitStateArrayDelete(node);
   }
@@ -407,11 +424,12 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     return { iface: base.identifier.name, method: expr.name };
   }
 
-  // Invoke cb(value) for every WRITE (push or element assign, either flavor) whose target is `arrName`.
+  // Invoke cb(value) for every WRITE (push or element assign, either flavor) whose target is `arrName`; a no-arg
+  // push passes its placeholder, which is no fn-ptr value.
   private forEachWriteTo(node: Node, arrName: string, cb: (val: ExpressionNode) => void): void {
     const walk = (n: Node): void => {
-      if (n instanceof StateArrayPushNode && n.name === arrName && !n.noArg) cb(n.value);
-      else if (n instanceof ArrayPushNode && n.name === arrName && !n.noArg) cb(n.value);
+      if (n instanceof StateArrayPushNode && n.name === arrName) cb(n.value);
+      else if (n instanceof ArrayPushNode && n.name === arrName) cb(n.value);
       else if (n instanceof StateArrayAssignNode && n.name === arrName) cb(n.value);
       else if (n instanceof ArrayAssignNode && n.name === arrName) cb(n.value);
       else if (n instanceof MappingAssignNode && n.name === arrName && n.keys.length === 1

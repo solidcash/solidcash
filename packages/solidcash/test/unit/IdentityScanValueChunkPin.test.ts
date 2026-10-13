@@ -55,17 +55,20 @@ describe('identity-scan value-chunk pin', () => {
       outputBase: 7,
       outputCount: 2,
     };
-    const pin = persistValueChunkLock(categoryId, value, write)!;
+    const masterLock = Uint8Array.from({ length: 35 }, (_, index) => (
+      index === 0 ? 0xaa : index === 1 ? 0x20 : index === 34 ? 0x87 : 0x42
+    ));
+    const pin = persistValueChunkLock(categoryId, value, write, masterLock)!;
 
     expect(pin).not.toEqual(p2sh32(sha256Sync(value)));
     expect(selectHashedValueForChunkPin(
-      [[decoy], [value]], pin, 2, [], undefined, false, write,
+      [[decoy], [value]], pin, 2, [], undefined, false, write, masterLock,
     )).toEqual({ value, lockingBytecode: pin });
     expect(selectHashedValueForChunkPin(
-      [[decoy]], pin, 2, [], undefined, false, write,
+      [[decoy]], pin, 2, [], undefined, false, write, masterLock,
     )).toBeUndefined();
     expect(selectHashedValueForChunkPin(
-      [[value]], pin, 2, [], undefined, false, { ...write, keySlot: '43'.repeat(32) },
+      [[value]], pin, 2, [], undefined, false, { ...write, keySlot: '43'.repeat(32) }, masterLock,
     )).toBeUndefined();
   });
 

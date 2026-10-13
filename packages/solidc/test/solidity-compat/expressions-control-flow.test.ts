@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { computeFunctionSelectorHex } from '@solidcash/utils';
 import { compileString } from './helpers.js';
 
 // Focused regression guards derived from the Solidity compiler corpus.
@@ -183,8 +184,12 @@ describe('cycle-safe AST metadata walks', () => {
   it('handles a self-function reference passed to abi.encode', () => {
     expect(ok('contract C { function f() public view { abi.encode(this.f); } }')).toBe('C');
     expect(ok('contract C { function f() public view { abi.encode(this.f, this.f); } }')).toBe('C');
-    expect(() => ok('contract C { function f() public view returns (bytes memory) {'
-      + ' return abi.encode(this.f); } }')).toThrow(/unsupported type.*function/i);
+    // A used encoding is Solidity's external-function word: the contract's 20-byte identity, f's selector, then
+    // 8 zero bytes.
+    const used = compileString('contract C { function f() public view returns (bytes memory) {'
+      + ' return abi.encode(this.f); } }', { evmCompat: true });
+    const word = `${computeFunctionSelectorHex('f()', true)}(7e08)?0{16}`;
+    expect(used.debug?.bytecode ?? '').toMatch(new RegExp(word));
   });
 
   it('handles comparisons of self-function references', () => {

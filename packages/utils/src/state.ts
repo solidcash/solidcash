@@ -5,7 +5,7 @@ import { bytecodeToAsm, Op, type Script, scriptToBytecode } from './script.js';
 import { encodeInt, encodeIntAsFixedBytes, decodeIntFixedWidth } from './data.js';
 import {
   ArrayType, BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
-  canonicalSelectorType, type Type,
+  canonicalSelectorType, INVALID_FUNCTION_POINTER_ID, type Type,
 } from './types.js';
 import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -118,6 +118,61 @@ export type StateValue = PrimitiveStateValue | StateRecord | StateValue[];
 export interface StateRecord { [key: string]: StateValue; }
 
 /**
+ * `[authorityIndex]` stays. The authority is a 35-byte P2SH32 whose final redeem push is longer than 128
+ * bytes. The redeem is the push that reaches the end of the unlocking; every push in front, of any size, is an
+ * argument and is skipped. A pad in front of `OP_DROP OP_1` leaves a 2-byte redeem, and the keeper baton is a
+ * one-byte redeem. The walk parses a 512-byte head at a time, so a contract-sized redeem is not copied on every
+ * argument.
+ */
+function bindMintingAuthorityLock(masterLock?: Uint8Array): Script {
+  if (masterLock !== undefined) {
+    if (masterLock.length !== 35) throw new Error('minting authority lock must be 35 bytes');
+    // [index] stays. A one-byte proxy redeem is a real master when this covenant was built for its lock.
+    return [Op.OP_DUP, Op.OP_UTXOBYTECODE, masterLock, Op.OP_EQUALVERIFY];
+  }
+  // [bytes, count] -> [bytes past count, the unsigned little-endian value of the first count bytes]
+  const readUnsigned: Script = [Op.OP_SPLIT, Op.OP_SWAP, new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
+  return [
+    Op.OP_DUP, Op.OP_UTXOBYTECODE, Op.OP_SIZE, encodeInt(35n), Op.OP_NUMEQUALVERIFY, Op.OP_DROP,
+    // [index, tail, head], the whole unlocking starting as the tail.
+    Op.OP_DUP, Op.OP_INPUTBYTECODE, Op.OP_0,
+    Op.OP_BEGIN,
+    // A head too short for a push header takes the tail back and is cut to 512 bytes again.
+    Op.OP_SIZE, Op.OP_3, Op.OP_LESSTHAN,
+    Op.OP_IF,
+    Op.OP_SWAP, Op.OP_CAT,
+    Op.OP_SIZE, encodeInt(512n), Op.OP_GREATERTHAN,
+    Op.OP_IF, encodeInt(512n), Op.OP_SPLIT, Op.OP_SWAP, Op.OP_ELSE, Op.OP_0, Op.OP_SWAP, Op.OP_ENDIF,
+    Op.OP_ENDIF,
+    // [index, tail, rest, length]. OP_1NEGATE to OP_16 carry no data, and any other opcode is not a push.
+    Op.OP_1, ...readUnsigned,
+    Op.OP_DUP, encodeInt(75n), Op.OP_GREATERTHAN,
+    Op.OP_IF,
+    Op.OP_DUP, encodeInt(78n), Op.OP_LESSTHAN,
+    Op.OP_IF, encodeInt(75n), Op.OP_SUB, ...readUnsigned,
+    Op.OP_ELSE, encodeInt(79n), encodeInt(97n), Op.OP_WITHIN, Op.OP_VERIFY, Op.OP_0,
+    Op.OP_ENDIF,
+    Op.OP_ENDIF,
+    // [index, tail, rest, length, length - |rest|]
+    Op.OP_SWAP, Op.OP_SIZE, Op.OP_ROT, Op.OP_TUCK, Op.OP_SWAP, Op.OP_SUB,
+    Op.OP_DUP, Op.OP_0, Op.OP_LESSTHAN,
+    Op.OP_IF,
+    // The push ends inside the head: an argument.
+    Op.OP_DROP, Op.OP_SPLIT, Op.OP_NIP, Op.OP_0,
+    Op.OP_ELSE,
+    // [index, tail, rest, length, over]. Reaching the end it is the redeem; ending inside the tail, an argument.
+    Op.OP_ROT, Op.OP_DROP, Op.OP_ROT, Op.OP_SIZE, Op.OP_ROT, Op.OP_TUCK, Op.OP_NUMEQUAL,
+    Op.OP_IF,
+    Op.OP_2DROP, encodeInt(128n), Op.OP_GREATERTHAN, Op.OP_VERIFY, Op.OP_1,
+    Op.OP_ELSE,
+    Op.OP_SPLIT, Op.OP_NIP, Op.OP_NIP, Op.OP_0, Op.OP_0,
+    Op.OP_ENDIF,
+    Op.OP_ENDIF,
+    Op.OP_UNTIL,
+  ];
+}
+
+/**
  * Build the data-NFT covenant script seeded with a specific token category.
  *
  * Dual-path covenant:
@@ -130,7 +185,7 @@ export interface StateRecord { [key: string]: StateValue; }
  *
  * @param categoryId - 32-byte token category ID
  */
-export function buildDataNftCovenantScript(categoryId: Uint8Array): Script {
+export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: Uint8Array): Script {
   // OP_UTXOTOKENCATEGORY pushes category bytes in internal (reversed) byte order.
   // The caller passes display-order bytes, so reverse them to match the VM.
   const catInternal = categoryId.slice().reverse();
@@ -143,6 +198,7 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array): Script {
     Op.OP_IF,
     Op.OP_DROP,
     Op.OP_SWAP, // outputIndex, masterInputIndex
+    ...bindMintingAuthorityLock(masterLock),
     Op.OP_UTXOTOKENCATEGORY,
     encodeInt(32n),
     Op.OP_SPLIT,
@@ -191,6 +247,8 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array): Script {
     Op.OP_IF,
     // === Destroy path (flag=2): verify master only, no output preservation ===
     Op.OP_DROP, // drop original flag
+    // A second minting baton (the block-oracle keeper) must not burn this record.
+    ...bindMintingAuthorityLock(masterLock),
     // Verify minting NFT at masterInputIndex
     Op.OP_UTXOTOKENCATEGORY,
     encodeInt(32n),
@@ -237,6 +295,9 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array): Script {
     // === Original two-path logic (flag=0 or flag=1) ===
     Op.OP_IF,
     // === Write path (flag=1): verify minting NFT at masterInputIndex ===
+    // The block-oracle keeper is a second minting NFT at its own short lock. Its unlocking is a few
+    // bytes; the contract master reveals its redeem. Require a P2SH32 lock and that long unlocking.
+    ...bindMintingAuthorityLock(masterLock),
     // Part 1: verify minting NFT of expected category at masterInputIndex
     Op.OP_UTXOTOKENCATEGORY,
     encodeInt(32n),
@@ -310,8 +371,8 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array): Script {
  *
  * @param categoryIdHex - Hex-encoded 32-byte token category ID
  */
-export function buildDataNftCovenantBytecode(categoryIdHex: string): string {
-  return binToHex(scriptToBytecode(buildDataNftCovenantScript(hexToBin(categoryIdHex))));
+export function buildDataNftCovenantBytecode(categoryIdHex: string, masterLock?: Uint8Array): string {
+  return binToHex(scriptToBytecode(buildDataNftCovenantScript(hexToBin(categoryIdHex), masterLock)));
 }
 
 /** Maximum byte length for vmNumberToBigInt (defense against oversized values).
@@ -319,10 +380,13 @@ export function buildDataNftCovenantBytecode(categoryIdHex: string): string {
  *  128-byte commitment limit (a sign-magnitude number can be up to commitmentLimit bytes). */
 const VM_NUMBER_MAX_BYTE_LENGTH = 150;
 
-/** Check if a type string represents an int-like type (int, int8, uint256, fixed128x18, etc.) */
+/**
+ * Check if a type string represents an int-like type (int, int8, uint256, fixed128x18, etc.). A function pointer
+ * (`function(...)...`) is its integer functionId on the wire, as in the compiler's emitPushdataEncode.
+ */
 function isIntLikeType(type: string): boolean {
   return type === 'bigint' || type === 'int' || type === 'uint' || type === 'fixed' || type === 'ufixed'
-    || /^u?int\d+$/.test(type) || /^u?fixed\d+x\d+$/.test(type);
+    || /^u?int\d+$/.test(type) || /^u?fixed\d+x\d+$/.test(type) || type.startsWith('function(');
 }
 
 /** Parse a bounded int/fixed type string and return its min/max range, or undefined for unbounded 'bigint'. */
@@ -394,6 +458,8 @@ export function getDefaultStateValue(
     }
     return arr;
   }
+  // An unset function pointer holds the compiler's invalid functionId (emitDefaultValue), not the valid id 0.
+  if (type.startsWith('function(')) return INVALID_FUNCTION_POINTER_ID;
   if (isIntLikeType(type)) return 0n;
   if (type === 'bool') return false;
   const match = type.match(/^bytes(\d+)$/);
@@ -1333,10 +1399,11 @@ export function buildPushdataCommitment(
     if (field.dynamic) {
       // Dynamic var: the data-NFT field is a uint32 length header (A$len); the value lives in chunks.
       // Use an explicit <name>$len (set during auto-derivation) if present, else compute it from the value.
+      // An absent value has no chunks yet: length 0, even for a bounded array whose default holds N elements.
       const lenKey = dynamicLenKey(field.name);
       const len = values[lenKey] !== undefined
         ? Number(values[lenKey] as bigint)
-        : dynamicValueByteLength(values[field.name] ?? getDefaultStateValue(field.type, layout.structs), field.type);
+        : values[field.name] === undefined ? 0 : dynamicValueByteLength(values[field.name], field.type);
       parts.push(encodePushdataValue(BigInt(len), DYNAMIC_LEN_TYPE));
       continue;
     }
@@ -1891,7 +1958,9 @@ export function computeCollectionHash(collectionSignature: string): Uint8Array {
  * @param categoryId - 32-byte token category ID
  * @param collectionHash - 20-byte hash derived from collection signature
  */
-export function buildEntryNftCovenantScript(categoryId: Uint8Array, collectionHash: Uint8Array): Script {
+export function buildEntryNftCovenantScript(
+  categoryId: Uint8Array, collectionHash: Uint8Array, masterLock?: Uint8Array,
+): Script {
   const catInternal = categoryId.slice().reverse();
   return [
     // Stack: <masterInputIndex | 0> <flag>
@@ -1908,7 +1977,8 @@ export function buildEntryNftCovenantScript(categoryId: Uint8Array, collectionHa
     Op.OP_SWAP, // <masterInputIndex | 0> <entryCategoryBase> <flag>
     Op.OP_IF,
     // === Write path (flag=1): verify minting NFT at masterInputIndex ===
-    Op.OP_SWAP,
+    Op.OP_SWAP, // [entryCategoryBase, masterInputIndex]
+    ...bindMintingAuthorityLock(masterLock),
     Op.OP_UTXOTOKENCATEGORY,
     encodeInt(32n),
     Op.OP_SPLIT,
@@ -1950,7 +2020,7 @@ export function buildEntryNftCovenantScript(categoryId: Uint8Array, collectionHa
     Op.OP_OUTPUTVALUE,
     Op.OP_EQUALVERIFY,
     Op.OP_ENDIF,
-    // Embed collection hash (makes address unique per collection)
+    // Embed collection hash (makes address unique per collection).
     collectionHash,
     Op.OP_DROP,
     Op.OP_1,
@@ -1973,8 +2043,11 @@ export function computeValueChunkDomain(
 /** Entry-NFT spend rules salted by a vmap value version. The salts only domain-separate the P2SH32 address. */
 export function buildValueChunkCovenantScript(
   categoryId: Uint8Array, collectionHash: Uint8Array, slot: Uint8Array, root: Uint8Array,
+  masterLock?: Uint8Array,
 ): Script {
-  return buildEntryNftCovenantScript(categoryId, computeValueChunkDomain(collectionHash, slot, root));
+  return buildEntryNftCovenantScript(
+    categoryId, computeValueChunkDomain(collectionHash, slot, root), masterLock,
+  );
 }
 
 export function buildEntryNftCovenantBytecode(categoryIdHex: string, collectionSignature: string): string {
@@ -2042,10 +2115,11 @@ export function computeEvmFunctionSelector(signature: string): Uint8Array {
  * Verified byte-identical to the spec's reference values (erc7201("example.main") = 0x183a..b500). Returns the
  * 32-byte big-endian slot; `computeErc7201SlotNumber` returns its uint256 value = the slot key Ethereum uses.
  */
-export function computeErc7201Slot(namespaceId: string): Uint8Array {
+export function computeErc7201Slot(namespaceId: string | Uint8Array): Uint8Array {
   const MAX_U256 = (1n << 256n) - 1n;
   const beToBig = (b: Uint8Array): bigint => { let n = 0n; for (const x of b) n = (n << 8n) | BigInt(x); return n; };
-  const n = (beToBig(keccak_256(utf8ToBin(namespaceId))) - 1n) & MAX_U256; // uint256(keccak256(id)) - 1
+  const id = typeof namespaceId === 'string' ? utf8ToBin(namespaceId) : namespaceId; // a string id is its UTF-8
+  const n = (beToBig(keccak_256(id)) - 1n) & MAX_U256;                    // uint256(keccak256(id)) - 1
   const enc = new Uint8Array(32);                                          // abi.encode(uint256) = 32-byte big-endian
   let v = n;
   for (let i = 31; i >= 0; i -= 1) { enc[i] = Number(v & 0xffn); v >>= 8n; }
@@ -2055,7 +2129,7 @@ export function computeErc7201Slot(namespaceId: string): Uint8Array {
 }
 
 /** ERC-7201 slot as its big-endian uint256 value (the Ethereum storage-slot key). See computeErc7201Slot. */
-export function computeErc7201SlotNumber(namespaceId: string): bigint {
+export function computeErc7201SlotNumber(namespaceId: string | Uint8Array): bigint {
   let n = 0n;
   for (const x of computeErc7201Slot(namespaceId)) n = (n << 8n) | BigInt(x);
   return n;
@@ -2203,30 +2277,78 @@ export function buildAnonymousEventNftCovenantBytecode(categoryIdHex: string): s
  * No compiler reconstruction: the consumer reads by category + commitment.n, never rebuilds this address.
  */
 export function buildBlockhashOracleCovenantScript(categoryId: Uint8Array, n: bigint): Script {
+  const { head, tail } = blockhashOracleCovenantParts(categoryId);
+  return [...head, encodeInt(n + 256n), ...tail];
+}
+
+// The oracle covenant around its only n-dependent push, `n + 256`. The keeper baton rebuilds addr(n) from these.
+function blockhashOracleCovenantParts(categoryId: Uint8Array): { head: Script; tail: Script } {
   const catInternal = categoryId.slice().reverse();
-  return [
-    // self-pin: this input's token category == categoryId, capability 'none' (immutable)
-    Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY,
-    encodeInt(32n), Op.OP_SPLIT, Op.OP_SWAP, // [flag, capOrEmpty, cat32]
-    catInternal, Op.OP_EQUALVERIFY,
-    encodeInt(0n), Op.OP_EQUALVERIFY,        // capability empty (none)
-    // flag (from unlocking): wipe (1) vs read (0)
-    Op.OP_IF,
-    encodeInt(n + 256n), Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP, // wipe: tx.time >= n + 256
-    Op.OP_ELSE,
-    // read: self-preserve (bytecode + category + commitment) at the same output index
-    Op.OP_INPUTINDEX, Op.OP_UTXOBYTECODE, Op.OP_INPUTINDEX, Op.OP_OUTPUTBYTECODE, Op.OP_EQUALVERIFY,
-    Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, Op.OP_INPUTINDEX, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY,
-    Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_INPUTINDEX, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
-    Op.OP_ENDIF,
-    Op.OP_1,
-  ];
+  return {
+    head: [
+      // self-pin: this input's token category == categoryId, capability 'none' (immutable)
+      Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY,
+      encodeInt(32n), Op.OP_SPLIT, Op.OP_SWAP, // [flag, capOrEmpty, cat32]
+      catInternal, Op.OP_EQUALVERIFY,
+      encodeInt(0n), Op.OP_EQUALVERIFY,        // capability empty (none)
+      // flag (from unlocking): wipe (1) vs read (0)
+      Op.OP_IF,
+    ],
+    tail: [
+      Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP, // wipe: tx.time >= n + 256
+      Op.OP_ELSE,
+      // read: self-preserve (bytecode + category + commitment) at the same output index
+      Op.OP_INPUTINDEX, Op.OP_UTXOBYTECODE, Op.OP_INPUTINDEX, Op.OP_OUTPUTBYTECODE, Op.OP_EQUALVERIFY,
+      Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, Op.OP_INPUTINDEX, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY,
+      Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_INPUTINDEX, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
+      Op.OP_ENDIF,
+      Op.OP_1,
+    ],
+  };
 }
 
 /** p2sh32 locking bytecode for the (n -> hash) oracle UTXO of block `n`. */
 export function blockhashOracleLockingBytecode(categoryId: Uint8Array, n: bigint): Uint8Array {
   const scriptHash = sha256(sha256(scriptToBytecode(buildBlockhashOracleCovenantScript(categoryId, n))));
   return Uint8Array.from([0xaa, 0x20, ...scriptHash, 0x87]);
+}
+
+/**
+ * The blockhash keeper's minting baton of the consumer's own category (audit CRYPTO-4). A bare baton could stand
+ * in for the master on the data/entry write and destroy paths, move to any lock, or mint a counterfeit master.
+ * Under this covenant it can only mint (n -> hash) oracles. A spend needs the keeper's signature and this shape:
+ *  - input 0 is the baton; at most one other input, carrying no token, so no record or master co-spends;
+ *  - output 0 recreates the baton (same lock and token category);
+ *  - output 1 is a capability-none NFT of the category with a 36-byte n(4 LE)||hash commitment, at addr(n),
+ *    with tx.time >= n;
+ *  - an optional output 2 carries no token.
+ */
+export function buildBlockhashKeeperBatonScript(categoryId: Uint8Array, keeperPublicKey: Uint8Array): Script {
+  const { head, tail } = blockhashOracleCovenantParts(categoryId);
+  return [
+    keeperPublicKey, Op.OP_CHECKSIGVERIFY,
+    Op.OP_INPUTINDEX, Op.OP_NOT, Op.OP_VERIFY,
+    Op.OP_TXINPUTCOUNT, Op.OP_DUP, Op.OP_3, Op.OP_LESSTHAN, Op.OP_VERIFY,
+    Op.OP_2, Op.OP_NUMEQUAL, Op.OP_IF, Op.OP_1, Op.OP_UTXOTOKENCATEGORY, Op.OP_0, Op.OP_EQUALVERIFY, Op.OP_ENDIF,
+    Op.OP_TXOUTPUTCOUNT, Op.OP_DUP, Op.OP_2, Op.OP_4, Op.OP_WITHIN, Op.OP_VERIFY,
+    Op.OP_3, Op.OP_NUMEQUAL, Op.OP_IF, Op.OP_2, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_0, Op.OP_EQUALVERIFY, Op.OP_ENDIF,
+    Op.OP_0, Op.OP_OUTPUTBYTECODE, Op.OP_0, Op.OP_UTXOBYTECODE, Op.OP_EQUALVERIFY,
+    Op.OP_0, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_0, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
+    Op.OP_1, Op.OP_OUTPUTTOKENCATEGORY, categoryId.slice().reverse(), Op.OP_EQUALVERIFY,
+    Op.OP_1, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_SIZE, encodeInt(36n), Op.OP_NUMEQUALVERIFY,
+    Op.OP_4, Op.OP_SPLIT, Op.OP_DROP, Op.OP_BIN2NUM, Op.OP_CHECKLOCKTIMEVERIFY, // [n]
+    // addr(n) = p2sh32(head || push(n + 256) || tail); n + 256 >= 256 is a 2..4-byte direct push.
+    encodeInt(256n), Op.OP_ADD, Op.OP_SIZE, Op.OP_SWAP, Op.OP_CAT,
+    scriptToBytecode(head), Op.OP_SWAP, Op.OP_CAT, scriptToBytecode(tail), Op.OP_CAT, Op.OP_HASH256,
+    Uint8Array.of(0xaa, 0x20), Op.OP_SWAP, Op.OP_CAT, Uint8Array.of(0x87), Op.OP_CAT,
+    Op.OP_1, Op.OP_OUTPUTBYTECODE, Op.OP_EQUAL,
+  ];
+}
+
+/** p2sh32 locking bytecode of the keeper baton covenant. */
+export function blockhashKeeperBatonLockingBytecode(categoryId: Uint8Array, keeperPublicKey: Uint8Array): Uint8Array {
+  const redeem = scriptToBytecode(buildBlockhashKeeperBatonScript(categoryId, keeperPublicKey));
+  return Uint8Array.from([0xaa, 0x20, ...hash256(redeem), 0x87]);
 }
 
 /** Build the (n,hash) commitment: n as 4 little-endian bytes followed by the 32-byte hash. */
@@ -2276,12 +2398,14 @@ export function isComputedBlockhashKey(key: string): boolean {
 export function buildTokenContainerCovenantScript(
   categoryId: Uint8Array,
   tokenContainerCategoryId: Uint8Array,
+  masterLock?: Uint8Array,
 ): Script {
   const catInternal = categoryId.slice().reverse();
   return [
     // Stack: <masterInputIndex | mergeOutputIndex> <flag>
     Op.OP_IF,
-    // Master path: verify minting NFT at masterInputIndex
+    // Master path: the contract's own locking bytecode, not a second minting NFT of this category.
+    ...bindMintingAuthorityLock(masterLock),
     Op.OP_UTXOTOKENCATEGORY,
     encodeInt(32n),
     Op.OP_SPLIT,
@@ -2375,12 +2499,15 @@ export function buildTokenContainerCovenantBytecode(
  *
  * @param categoryId - 32-byte master contract's token category (also used as salt for unique address)
  */
-export function buildSatoshiContainerCovenantScript(categoryId: Uint8Array): Script {
+export function buildSatoshiContainerCovenantScript(
+  categoryId: Uint8Array, masterLock?: Uint8Array,
+): Script {
   const catInternal = categoryId.slice().reverse();
   return [
     // Stack: <masterInputIndex | mergeOutputIndex> <flag>
     Op.OP_IF,
-    // === Master path (flag=1): verify minting NFT at masterInputIndex ===
+    // === Master path (flag=1): the contract's own locking bytecode, not a keeper baton ===
+    ...bindMintingAuthorityLock(masterLock),
     Op.OP_UTXOTOKENCATEGORY,
     encodeInt(32n),
     Op.OP_SPLIT,

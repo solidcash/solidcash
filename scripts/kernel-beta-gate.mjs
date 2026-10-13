@@ -184,6 +184,32 @@ if (!allowDirty && git('status', '--porcelain').length > 0) {
   throw new Error('kernel beta gate requires a clean checkout (use --allow-dirty only for local diagnosis)');
 }
 
+/**
+ * The sibling EffectiveAcceleration checkout. An entry whose `sourceRoot` is 'eacc' keeps its maintained source
+ * there rather than in this repo, and is hashed under a checkout-independent label so the pinned digests do not
+ * depend on where that checkout is mounted.
+ */
+const effectiveAccelerationRoot = () => {
+  const fromEnv = process.env.EACC_CONTRACTS_DIR;
+  if (fromEnv !== undefined && fromEnv !== '') return resolve(fromEnv);
+  let dir = root;
+  for (;;) {
+    const candidate = join(dir, 'effectiveacceleration.ai');
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) {
+      throw new Error('effectiveacceleration.ai was not found above this checkout; set EACC_CONTRACTS_DIR to it');
+    }
+    dir = parent;
+  }
+};
+const maintainedSource = (entry) => (entry.sourceRoot === 'eacc'
+  ? join(effectiveAccelerationRoot(), 'contract', entry.source)
+  : resolve(root, entry.source));
+const maintainedSourceLabel = (entry, absolute) => (entry.sourceRoot === 'eacc'
+  ? `effectiveacceleration.ai/${relative(effectiveAccelerationRoot(), absolute).replaceAll('\\', '/')}`
+  : relative(root, absolute).replaceAll('\\', '/'));
+
 const sha256File = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
 const resolveImport = (from, specifier) => {
   if (specifier.startsWith('.')) return resolve(dirname(from), specifier);
@@ -198,7 +224,7 @@ const resolveImport = (from, specifier) => {
   }
   throw new Error(`cannot resolve import '${specifier}' from ${from}`);
 };
-const sourceClosureSha256 = (entrySource) => {
+const sourceClosureSha256 = (entrySource, label) => {
   const seen = new Set();
   const files = [];
   const visit = (source) => {
@@ -206,8 +232,8 @@ const sourceClosureSha256 = (entrySource) => {
     if (seen.has(absolute)) return;
     seen.add(absolute);
     const contents = readFileSync(absolute, 'utf8');
-    const relativePath = relative(root, absolute).replaceAll('\\', '/');
-    const display = relativePath === '..' || relativePath.startsWith('../') ? absolute : relativePath;
+    const logicalPath = label(absolute);
+    const display = logicalPath === '..' || logicalPath.startsWith('..') ? absolute : logicalPath;
     files.push({ display, contents });
     const imports = [...contents.matchAll(/^\s*import\s+(?:[^;]*?\s+from\s+)?["']([^"']+)["']\s*;/gm)]
       .map((match) => match[1]).sort();
@@ -221,13 +247,13 @@ const sourceClosureSha256 = (entrySource) => {
 };
 const verifySourceFingerprints = () => {
   for (const entry of manifest.coldCompiles) {
-    const source = resolve(root, entry.source);
+    const source = maintainedSource(entry);
     if (!existsSync(source)) throw new Error(`${entry.name}: maintained source is missing at ${source}`);
     const digest = sha256File(source);
     if (digest !== entry.sourceSha256) {
       throw new Error(`${entry.name}: source digest ${digest} does not match ${entry.sourceSha256}`);
     }
-    const closureDigest = sourceClosureSha256(source);
+    const closureDigest = sourceClosureSha256(source, (absolute) => maintainedSourceLabel(entry, absolute));
     if (closureDigest !== entry.sourceClosureSha256) {
       throw new Error(`${entry.name}: source closure digest ${closureDigest} `
         + `does not match ${entry.sourceClosureSha256}`);
@@ -295,7 +321,7 @@ const profile = (entry, mode) => {
     '--max-old-space-size=8192',
     resolve(root, 'scripts/profile-marketplace-compile.mjs'),
     `--${mode}`,
-    '--source', resolve(root, entry.source),
+    '--source', maintainedSource(entry),
     '--contract', entry.contract,
   ], { capture: true, env: coldEnv, timeout: 10 * 60 * 1000 });
   if (captured.stderr.trim().length > 0) {

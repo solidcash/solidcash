@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import path from 'path';
-import {
-  decodeAuthenticationInstructions, hexToBin, OpcodesBCH, vmNumberToBigInt,
-} from '@bitauth/libauth';
 import { compileFile, compileFileMulti } from '../src/compileFile.js';
 import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corpus.js';
 
@@ -88,26 +85,10 @@ describe.skipIf(contractsRoot === undefined)('MarketplaceV1 publishJobPost upser
     const hex = target.functionBodies?.bdb10816;
     expect(typeof hex).toBe('string');
     const body = hex as string;
-    const whitelistHash = '09e7d00ab6cd5795b2a4fa3db718efbdb374cbaf';
-    const hashHelpers = Object.entries(target.debug.invokeDebug ?? {})
-      .filter(([, debug]) => debug.bytecode.includes(whitelistHash))
-      .map(([id]) => BigInt(id));
-    expect(hashHelpers.length).toBeGreaterThan(0);
-    const instructions = decodeAuthenticationInstructions(hexToBin(body));
-    const readNumber = (instruction: { opcode: number; data?: Uint8Array }): bigint | undefined => {
-      if (instruction.opcode === OpcodesBCH.OP_0) return 0n;
-      if (instruction.opcode >= OpcodesBCH.OP_1 && instruction.opcode <= OpcodesBCH.OP_16) {
-        return BigInt(instruction.opcode - OpcodesBCH.OP_1 + 1);
-      }
-      if (!instruction.data) return undefined;
-      const value = vmNumberToBigInt(instruction.data, { requireMinimalEncoding: false });
-      return typeof value === 'bigint' ? value : undefined;
-    };
-    // Address construction can be outlined independently of its caller. Prove the publishJobPost body invokes
-    // the helper which owns the whitelist collection hash, and retains the predecessor displacement
-    // ceil(jobsLen/120): encodeInt(119) ADD encodeInt(120) DIV.
-    expect(instructions.some((instruction, index) => instruction.opcode === OpcodesBCH.OP_INVOKE
-      && hashHelpers.includes(readNumber(instructions[index - 1]) ?? 0xffff_ffffn))).toBe(true);
+    // A delegate's records are bound to the proxy master's lock, so it builds the whitelist entry address inline:
+    // the shared address helper binds the executing input's lock. The body pushes the whitelist collection hash
+    // itself and retains the predecessor displacement ceil(jobsLen/120): encodeInt(119) ADD encodeInt(120) DIV.
+    expect(body).toContain('1409e7d00ab6cd5795b2a4fa3db718efbdb374cbaf');
     expect(body).toContain('017793017896');
   });
 

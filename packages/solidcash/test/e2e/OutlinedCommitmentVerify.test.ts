@@ -1,13 +1,19 @@
 import { describe, it, expect } from 'vitest';
+import {
+  binToHex, decodeAuthenticationInstructions, hexToBin, OpcodesBCH, type AuthenticationProgramStateCommon,
+} from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/stateful/index.js';
+import { findRedeemScriptStart } from '../../src/stateful/trace-commitment-helpers.js';
 import { fundedSigner } from '../test-util.js';
 
-// A state write checks the new data-NFT commitment with OP_OUTPUTTOKENCOMMITMENT then OP_EQUALVERIFY. Outlining can
-// split that pair so the EQUALVERIFY opens an OP_INVOKE helper. The SDK probe took that helper's ip-0 step for the
-// redeem-script start and sliced the introspection away, so it kept the old commitment and the covenant's check
-// failed (solc semanticTests functionCall/inheritance/base_base_overload.sol and
-// modifiers/function_return_parameter_complex.sol).
+// A state write checks the new data-NFT commitment with OP_OUTPUTTOKENCOMMITMENT then OP_EQUALVERIFY, and the pair
+// can straddle an OP_INVOKE boundary. When the EQUALVERIFY opened an outlined helper, the SDK probe took that
+// helper's ip-0 step for the redeem-script start and sliced the introspection away, so it kept the old commitment
+// and the covenant's check failed (solc semanticTests functionCall/inheritance/base_base_overload.sol and
+// modifiers/function_return_parameter_complex.sol). The data-NFT preservation after the EQUALVERIFY now opens with
+// an OP_INVOKE (its master-lock-bound covenant check), so these sources split the pair the other way: the
+// introspection closes an invoked helper. The probe's slice rule is pinned on a synthetic trace.
 const options = { evmCompat: true, forceStateful: true };
 
 // One-field writes through explicit base overloads re-encode the untouched field from the current commitment.
@@ -75,17 +81,31 @@ contract Probe is Counter {
   }
 }`;
 
-// The shape under test: some OP_DEFINE'd body opens with OP_EQUALVERIFY (0x88).
-const hasEqualVerifyLedHelper = (bytecode: string): boolean => {
-  const tokens = bytecode.split(' ');
-  return tokens.some((token, index) => token === 'OP_DEFINE' && /^88[0-9a-f]*$/.test(tokens[index - 2] ?? ''));
+type Instruction = { opcode: number; data?: Uint8Array };
+const decode = (bytecode: Uint8Array): Instruction[] => decodeAuthenticationInstructions(bytecode);
+const pushKey = (instruction?: Instruction): string =>
+  `${instruction?.opcode}:${binToHex(instruction?.data ?? new Uint8Array())}`;
+
+// The shape under test: an OP_DEFINE'd body ends with OP_OUTPUTTOKENCOMMITMENT, and OP_EQUALVERIFY follows its
+// OP_INVOKE.
+const hasCommitmentClosingHelper = (bytecodeHex: string): boolean => {
+  const top = decode(hexToBin(bytecodeHex));
+  const defined = top.flatMap((instruction, index) => (instruction.opcode === OpcodesBCH.OP_DEFINE
+    ? [{ id: pushKey(top[index - 1]), body: decode(top[index - 2]?.data ?? new Uint8Array()) }]
+    : []));
+  const closing = new Set(defined
+    .filter(({ body }) => body.at(-1)?.opcode === OpcodesBCH.OP_OUTPUTTOKENCOMMITMENT)
+    .map(({ id }) => id));
+  return [top, ...defined.map(({ body }) => body)].some((body) => body.some((instruction, index) =>
+    instruction.opcode === OpcodesBCH.OP_INVOKE && closing.has(pushKey(body[index - 1]))
+    && body[index + 1]?.opcode === OpcodesBCH.OP_EQUALVERIFY));
 };
 
 type Handle = Record<string, (...args: Array<bigint | boolean>) => { send: () => Promise<unknown> }>;
 
 const deploy = async (source: string): Promise<Handle> => {
   const artifact = compileString(source, options);
-  expect(hasEqualVerifyLedHelper(artifact.bytecode)).toBe(true);
+  expect(hasCommitmentClosingHelper(artifact.debug?.bytecode ?? '')).toBe(true);
   const contract = await getContractFactory(artifact, await fundedSigner(8)).deploy();
   return contract as unknown as Handle;
 };
@@ -115,5 +135,16 @@ describe('state commitment verified in an outlined helper (VM-verified, stateful
     await sc.readX(1n, true).send();
     await sc.callNested(5n, true).send();
     await sc.readX(5n, true).send();
+  });
+
+  it('an invoked body\'s ip-0 step never anchors the redeem-script slice', () => {
+    const redeem = [OpcodesBCH.OP_1, OpcodesBCH.OP_OUTPUTTOKENCOMMITMENT].map((opcode) => ({ opcode }));
+    const helper = [OpcodesBCH.OP_EQUALVERIFY, OpcodesBCH.OP_1, OpcodesBCH.OP_DROP].map((opcode) => ({ opcode }));
+    const step = (instructions: Instruction[], ip: number, functionCount: number): AuthenticationProgramStateCommon =>
+      ({ instructions, ip, functionCount }) as unknown as AuthenticationProgramStateCommon;
+    // Sparse: the redeem's ip-0 step is not observed, only its introspection and a helper opening with EQUALVERIFY.
+    expect(findRedeemScriptStart([step(redeem, 1, 2), step(helper, 0, 2)])).toBe(-1);
+    // Full: a longer helper body entered at ip 0 after the OP_DEFINEs is not the redeem script.
+    expect(findRedeemScriptStart([step(redeem, 0, 0), step(redeem, 1, 2), step(helper, 0, 2)])).toBe(0);
   });
 });

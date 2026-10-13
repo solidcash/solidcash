@@ -86,23 +86,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     );
   }
 
-  // The category is the funding coin's txid, so the coin is proven at the funder's own lock before anything is
-  // signed: a coin a provider lists there but that sits at another lock would hand the category to its owner.
   const funderLock = options.funder.generateLockingBytecode();
-  const coinRefusal = await ownCoinRefusal(
-    options.provider, options.fundingUtxo, funderLock, { role: 'funder', tokenFree: true });
-  if (coinRefusal !== undefined) throw new FramedDeployError(coinRefusal);
-
-  const categoryId = options.fundingUtxo.txid;
-  const category = new Uint8Array(hexToBin(categoryId));
-  const validatorProgram = framedValidator.buildValidatorProgram();
-  // A framed handle's sync call surface needs the framed call engine loaded before the deployment returns; start
-  // the load now so it overlaps the genesis derivation and funding below, and await it before building the handle.
-  const framedCallEngine = loadFramedCallHandle();
-  // A framed artifact publishes no `constructorInputs`, so the factory path that splits a call's arguments
-  // between the constructor and the initial state cannot see that this contract takes any: the values arrive as
-  // `initArgs`. A caller that reaches `StatefulContract.deploy` directly passes them as the constructor args.
-  const constructorValues = constructorArgs.length > 0 ? constructorArgs : (options.initArgs ?? []);
   // The constructor's own frame is entered by the deployer. A body that reads `msg.sender` therefore resolves to the
   // deployer's lock, not the placeholder a frame with no stated caller uses: a constructor that writes
   // `balances[msg.sender]` (a token's mint) or `owner = msg.sender` would otherwise seed the placeholder. The lock the
@@ -118,6 +102,22 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       + 'Pass senderLockingBytecode, or fund the deployment with a P2PKH unlocker.',
     );
   }
+  // The category is the funding coin's txid, so the coin is proven at the funder's own lock before anything is
+  // signed: a coin a provider lists there but that sits at another lock would hand the category to its owner.
+  const coinRefusal = await ownCoinRefusal(
+    options.provider, options.fundingUtxo, funderLock, { role: 'funder', tokenFree: true });
+  if (coinRefusal !== undefined) throw new FramedDeployError(coinRefusal);
+
+  const categoryId = options.fundingUtxo.txid;
+  const category = new Uint8Array(hexToBin(categoryId));
+  const validatorProgram = framedValidator.buildValidatorProgram();
+  // A framed handle's sync call surface needs the framed call engine loaded before the deployment returns; start
+  // the load now so it overlaps the genesis derivation and funding below, and await it before building the handle.
+  const framedCallEngine = loadFramedCallHandle();
+  // A framed artifact publishes no `constructorInputs`, so the factory path that splits a call's arguments
+  // between the constructor and the initial state cannot see that this contract takes any: the values arrive as
+  // `initArgs`. A caller that reaches `StatefulContract.deploy` directly passes them as the constructor args.
+  const constructorValues = constructorArgs.length > 0 ? constructorArgs : (options.initArgs ?? []);
   // Every sorted collection an entry can write needs its empty head sentinel minted here, because a first insert
   // splices beside it and a head is minted only at genesis. A collection the constructor's own plan writes carries
   // the head that plan relinked, and the genesis filters that one out; a caller that names extra collections (a

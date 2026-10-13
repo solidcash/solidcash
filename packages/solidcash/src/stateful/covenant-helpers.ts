@@ -635,11 +635,16 @@ export function createDestroyDataNftUnlocker(
   );
 }
 
+/** `masterLock` (with `bindContract` false) names the master an external record binds, not `contract`'s own. */
 export function createReadOnlyDataNftUnlocker(
   contract: Contract<any, any>, categoryId: string,
+  masterLock?: Uint8Array,
+  bindContract = masterLock === undefined,
 ): ContractUnlocker {
   validateCategoryId(categoryId);
-  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId), contractMasterLock(contract));
+  const covenantScript = buildDataNftCovenantScript(
+    hexToBin(categoryId), bindContract ? contractMasterLock(contract) : masterLock,
+  );
   return createCovenantContractUnlocker(
     contract,
     `DataNft_${categoryId.slice(0, 8)}`,

@@ -956,7 +956,7 @@ describe('generic persisted value-chunk write identity', () => {
       collectionSignature: signature, keySlot: binToHex(slot), operation: 'update',
       outputBase: 4, outputCount: 3,
     });
-    const exact = persistedValueChunkWriteState(renamed);
+    const exact = persistedValueChunkWriteState(renamed, masterLock);
     expect(exact?.width).toBeGreaterThan(0);
     expect(exact?.value).toEqual(value);
     expect(exact?.recipe).toMatchObject({
@@ -3679,7 +3679,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(binToHex(legacyJobEventsPersistUpdateDigestLock(
       'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0',
     ) ?? new Uint8Array())).toBe(
-      'aa2047362c5b4a0c597c12b75c90f68f6933b2e86c63eb6ce7ed46e083407361b7b587',
+      'aa200a2bbe79261c69b06744ddcc8b6003fb31c2029cfe4e63f3f5f82ce788c1480287',
     );
     const entryLock = hexToBin('aa2047362c5b4a0c597c12b75c90f68f6933b2e86c63eb6ce7ed46e083407361b7b587');
     const persistVLock = hexToBin('aa20a8ff6e94d0a3199b8457333ae32c3f788fb420b10695af6f27e92a793e8af34987');
@@ -3695,7 +3695,7 @@ describe('assignPhysicalReturnIndices', () => {
     const computedPersistLock = legacyJobEventsPersistValueChunkLock(
       'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0',
       persistV,
-      hexToBin('aa' + '11'.repeat(32) + '87'),
+      hexToBin('aa20' + '11'.repeat(32) + '87'),
     );
     expect(computedPersistLock?.length).toBe(35);
     expect(binToHex(computedPersistLock ?? new Uint8Array()).startsWith('aa20')).toBe(true);

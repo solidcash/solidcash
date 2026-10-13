@@ -102,10 +102,10 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
       expect(size, `${name} is ${size} B, over the ${MAX_INPUT_BYTESIZE} B per-input limit`)
         .toBeLessThanOrEqual(MAX_INPUT_BYTESIZE);
     }
-    // The current planner needs at most five spendable inputs (fewer than four before the October hardening
-    // added per-entry covenant checks). Exact byte snapshots are deliberately avoided: security checks change
-    // shard sizes, while deployability and route coverage are the invariants.
-    expect(rows.length).toBeLessThanOrEqual(5);
+    // The planner needs four spendable inputs since the per-entry covenant hardening: the root and three facets
+    // total more than three inputs can carry. Exact byte snapshots are deliberately avoided: security checks
+    // change shard sizes, while deployability and route coverage are the invariants.
+    expect(rows.length).toBeLessThan(5);
     expect(rows.reduce((a, [, s]) => a + s, 0)).toBeGreaterThan(MAX_INPUT_BYTESIZE);
   });
 

@@ -1,4 +1,5 @@
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { bytesEqual } from '@solidcash/utils';
 import { isContractUnlocker } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 
@@ -19,6 +20,18 @@ export function buildParticipantProbeProgram(
     const params = [...unlocker.params];
     let changed = false;
     for (const [parameterIndex, parameter] of unlocker.abiFunction.inputs.entries()) {
+      if (parameter.name === '__internal__blockOracleInputIndex') {
+        // A composed index names the one oracle input of the aggregate, possibly in another participant's
+        // block. The probe reads the copy this participant's own block carries.
+        const lock = unlocker.contract.blockOracleLock;
+        const local = lock === undefined ? -1
+          : program.sourceOutputs.findIndex((output) => bytesEqual(output.lockingBytecode, lock));
+        if (local >= 0 && params[parameterIndex] !== BigInt(local)) {
+          params[parameterIndex] = BigInt(local);
+          changed = true;
+        }
+        continue;
+      }
       const dynamic = parameter.name === '__internal__dynamicChunkInputBase';
       const dynamicOutput = parameter.name === '__internal__dynamicChunkOutputBase';
       if (!dynamic && !dynamicOutput && parameter.name !== '__internal__graphSelfIdentityInput') continue;

@@ -22,6 +22,7 @@ import {
 import { reassertRoutedReadOnlyDynamicChunkTwins } from '../stateful/mutable-output-reassert.js';
 import { resolveMaterializedDynamicWriteOutputBase } from '../stateful/stb-reconcile-dynamic-chunk-output-witnesses.js';
 import { resolvePhysicalPredOutWitnesses } from './compose-predout-witness.js';
+import { shareBlockOracleInput } from './compose-block-oracle.js';
 import {
   chunksFromValue, persistValueChunkLock, valueChunkIndexFromCommitment, valueChunkWriteResourceIdentity,
   type ValueChunkWriteDescriptor,
@@ -352,6 +353,8 @@ export async function assembleAtomicComposition(
     participant: number; variable: string; resolved: number; total: number;
   }> = [];
   const aggregateOutpoints = new Map<string, { participant: number; localIndex: number }>();
+  // Block-oracle lock -> the one aggregate input every reader slices (see compose-block-oracle.ts).
+  const keptBlockOracleInputs = new Map<string, number>();
   const registerAggregateInput = (
     input: Pick<Utxo, 'txid' | 'vout'>, participant: number, localIndex: number, role: string,
   ): void => {
@@ -506,11 +509,16 @@ export async function assembleAtomicComposition(
         local.inputs[0], contract.inner, local.outputs, categories[participant.participant],
         aggregate.outputs.length, participant.blockLayout?.trailingBase,
       );
-      for (let localIndex = 0; localIndex < local.inputs.length; localIndex += 1) {
-        registerAggregateInput(local.inputs[localIndex], participant.participant, localIndex, 'direct participant block');
+      const directBlock = await shareBlockOracleInput(
+        provider, local, aggregate.inputs.length, keptBlockOracleInputs,
+      );
+      for (let localIndex = 0; localIndex < directBlock.inputs.length; localIndex += 1) {
+        registerAggregateInput(
+          directBlock.inputs[localIndex], participant.participant, localIndex, 'direct participant block',
+        );
       }
-      aggregate.addInputs(local.inputs);
-      aggregate.addOutputs(local.outputs as Output[]);
+      aggregate.addInputs(directBlock.inputs);
+      aggregate.addOutputs(directBlock.outputs);
       continue;
     }
     const returnBlob = participantReturnBlob(participant.participant, results);
@@ -2345,12 +2353,13 @@ export async function assembleAtomicComposition(
         categories[participant.participant], aggregate.outputs.length,
       );
     }
-    for (let localIndex = 0; localIndex < local.inputs.length; localIndex++) {
-      const input = local.inputs[localIndex];
+    const block = await shareBlockOracleInput(provider, local, aggregate.inputs.length, keptBlockOracleInputs);
+    for (let localIndex = 0; localIndex < block.inputs.length; localIndex++) {
+      const input = block.inputs[localIndex];
       registerAggregateInput(input, participant.participant, localIndex, 'participant block');
     }
-    aggregate.addInputs(local.inputs);
-    aggregate.addOutputs(local.outputs as Output[]);
+    aggregate.addInputs(block.inputs);
+    aggregate.addOutputs(block.outputs);
   }
 
   // Resolve all collected claims together, then validate every write before applying any.

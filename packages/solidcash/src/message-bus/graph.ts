@@ -389,7 +389,7 @@ export interface AtomicTokenSlotEffect {
 export interface AtomicSidecarSlotEffect {
   participant: number;
   offset: number;
-  kind: 'blockhashOracle' | 'keccakSideCar' | 'ecrecoverSideCar';
+  kind: 'blockhashOracle' | 'blockInfoOracle' | 'keccakSideCar' | 'ecrecoverSideCar';
   lockingBytecodeHex: string;
   tokenCategoryHex: string;
   inputCommitmentHex: string;
@@ -612,7 +612,7 @@ export function finalizeAtomicInvocationGraph(
     const slots = participant.blockLayout!.slots;
     return slots.some((slot) => ![
       'master', 'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer',
-      'transfer', 'tcTransfer', 'event', 'returnEvent', 'blockhashOracle', 'keccakSideCar',
+      'transfer', 'tcTransfer', 'event', 'returnEvent', 'blockhashOracle', 'blockInfoOracle', 'keccakSideCar',
       'ecrecoverSideCar', 'deploy', 'deployDataNft', 'trailing', 'lowLevelCall', 'identityAnchor',
       'lifecycleMaster',
     ].includes(slot.kind));
@@ -1148,7 +1148,8 @@ export function finalizeAtomicInvocationGraph(
       return {
         kind: 6, owner: effect.participant, consumer: effect.participant,
         slot: effect.offset,
-        mode: { blockhashOracle: 0, keccakSideCar: 1, ecrecoverSideCar: 2 }[effect.kind],
+        // The verifier authenticates every kind-6 row alike; both block oracles share mode 0.
+        mode: { blockhashOracle: 0, blockInfoOracle: 0, keccakSideCar: 1, ecrecoverSideCar: 2 }[effect.kind],
         sourceOffset: effect.offset, targetOffset: effect.offset, selectorHex: '00000000',
         position: effect.offset, parent: 0xffff, depth: 0, subtreeEnd: effect.offset,
         subjectHex: effect.lockingBytecodeHex.toLowerCase(),

@@ -154,8 +154,10 @@ export function deriveFullPhase2IterationProbe(
   // transfer values are verified there, so use the faithful reduced debug trace until those outputs have
   // converged. This remains bounded by the kernel's 64-iteration admission limit.
   const hasRuntimeLoopTransfers = stb.getRuntimeLoopTransferOutputs().length > 0;
+  // A chunked runtime event's records are read off the verifier's stacks there as well.
+  const hasChunkedRuntimeEvents = stb.getRuntimeLoopEventOutputs().some((event) => event.chunked);
   const fullTrace2 = evaluateProbeTrace(
-    host.inner.provider, probeProgram, hasRuntimeLoopTransfers,
+    host.inner.provider, probeProgram, hasRuntimeLoopTransfers || hasChunkedRuntimeEvents,
   );
   const faithfulProbeHadError = fullTrace2.some((state) => state.error !== undefined);
   if (debugTargetsThisDerivation) {

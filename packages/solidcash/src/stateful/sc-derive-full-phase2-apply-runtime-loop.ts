@@ -8,6 +8,7 @@ import { Op } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { decodeScriptNumber, extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
+import { extractRuntimeEffectStreamRuns } from './runtime-effect-stream-trace.js';
 import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.js';
 
 export type DeriveFullPhase2RuntimeLoopHost = {
@@ -57,6 +58,18 @@ export function deriveFullPhase2ApplyRuntimeLoop(
   // Runtime-loop event outputs immediately follow the mapping-entry family. Their count and event
   // covenants are fixed before the first probe; only source-evaluated commitments need convergence.
   const runtimeLoopEvents = stb.getRuntimeLoopEventOutputs();
+  // A chunked row's record count follows the payload the covenant computed: re-plan it from the records its effect
+  // verifier read, and leave this trace's other observations to the next probe of the new layout.
+  if (runtimeLoopEvents.some((event) => event.chunked)) {
+    let replanned = false;
+    for (const run of extractRuntimeEffectStreamRuns(fullTrace2)) {
+      if (stb.applyRuntimeLoopEventStream(run.base, run.records)) replanned = true;
+    }
+    if (replanned) {
+      phaseCheckpoint('runtime-loop-events');
+      return { commitmentProgress: commitmentProgress + 1 };
+    }
+  }
   if (runtimeLoopEvents.length > 0) {
     for (let eventIndex = 0; eventIndex < runtimeLoopEvents.length; eventIndex += 1) {
       const outputIndex = stb.getRuntimeLoopEventOutputIndex(eventIndex);
@@ -67,7 +80,7 @@ export function deriveFullPhase2ApplyRuntimeLoop(
       const commitment = commitmentMap.get(outputIndex)
         ?? host.extractExpectedOutputCommitmentFromTrace(fullTrace2, outputIndex, actual);
       if (commitment === undefined || commitment === runtimeLoopEvents[eventIndex].commitment) continue;
-      if (runtimeLoopEvents[eventIndex].commitment.length > 0) {
+      if (runtimeLoopEvents[eventIndex].commitment.length > 0 && !runtimeLoopEvents[eventIndex].chunked) {
         throw new Error(`Runtime event ${eventIndex} trace commitment does not match compiler metadata`);
       }
       stb.setRuntimeLoopEventRawCommitment(eventIndex, commitment);

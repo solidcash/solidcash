@@ -352,6 +352,9 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment?: string;
     /** Zero-based selected route row which produced this occurrence; -1 for a direct non-route call. */
     rowIndex: number;
+    /** Record of a chunked site: its head, or (`continuation`) a later chunk under the continuation covenant. */
+    chunked?: true;
+    continuation?: true;
   }>;
   /** Plain-BCH outputs produced by lowered runtime counter loops. Recipient and amount begin as probe
    * placeholders and are replaced from the covenant trace before the transaction is returned. */

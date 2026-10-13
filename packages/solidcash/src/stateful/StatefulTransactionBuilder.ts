@@ -953,7 +953,7 @@ export class StatefulTransactionBuilder {
 
   private runtimeLoopEventOutputs: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment: string;
-    rowIndex: number;
+    rowIndex: number; chunked?: true; continuation?: true;
   }> = [];
 
   private runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[] = [];
@@ -5767,9 +5767,68 @@ export class StatefulTransactionBuilder {
 
   getRuntimeLoopEventOutputs(): ReadonlyArray<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment: string;
-    rowIndex: number;
+    rowIndex: number; chunked?: true; continuation?: true;
   }> {
     return this.runtimeLoopEventOutputs;
+  }
+
+  /**
+   * Replace the planned records of the chunked row whose stream starts at output `base` with the ordered records
+   * its effect verifier read there (`extractRuntimeEffectStreamRuns`). A record at a head lock the row planned
+   * starts an event; any other continues the event before it. Returns whether the plan changed.
+   */
+  applyRuntimeLoopEventStream(
+    base: number, records: readonly { commitment: string; lockingBytecode: Uint8Array }[],
+  ): boolean {
+    const outputs = this.runtimeLoopEventOutputs;
+    let first = -1;
+    try {
+      first = outputs.findIndex((_output, index) => this.getRuntimeLoopEventOutputIndex(index) === base);
+    } catch {
+      return false;
+    }
+    if (first < 0 || records.length === 0) return false;
+    const { rowIndex } = outputs[first];
+    let end = first;
+    while (end < outputs.length && outputs[end].rowIndex === rowIndex) end += 1;
+    const planned = outputs.slice(first, end);
+    if (!planned.every((output) => output.chunked)) return false;
+    const heads = new Map(planned.filter((output) => !output.continuation)
+      .map((output) => [binToHex(output.lockingBytecode), output]));
+    const learned: typeof outputs = [];
+    for (const record of records) {
+      const head = heads.get(binToHex(record.lockingBytecode));
+      const previous = learned.at(-1);
+      if (head !== undefined) {
+        learned.push({
+          eventSignature: head.eventSignature, lockingBytecode: head.lockingBytecode,
+          ...(head.categoryId !== undefined && { categoryId: head.categoryId }),
+          commitment: record.commitment, rowIndex, chunked: true,
+        });
+      } else if (previous !== undefined) {
+        learned.push({
+          eventSignature: previous.eventSignature, lockingBytecode: Uint8Array.from(record.lockingBytecode),
+          ...(previous.categoryId !== undefined && { categoryId: previous.categoryId }),
+          commitment: record.commitment, rowIndex, chunked: true, continuation: true,
+        });
+      } else {
+        return false;
+      }
+    }
+    if (learned.length === planned.length && learned.every((output, index) =>
+      output.commitment === planned[index].commitment
+      && binToHex(output.lockingBytecode) === binToHex(planned[index].lockingBytecode))) return false;
+    const segments = this.runtimeLoopTrailingSegments;
+    const own = segments.find((segment) => segment.kind === 'events'
+      && segment.offset === first && segment.count === planned.length);
+    if (segments.length > 0 && own === undefined) return false;
+    const delta = learned.length - planned.length;
+    for (const segment of segments) {
+      if (segment !== own && segment.kind === 'events' && segment.offset >= end) segment.offset += delta;
+    }
+    if (own !== undefined) own.count = learned.length;
+    outputs.splice(first, planned.length, ...learned);
+    return true;
   }
 
   setRuntimeLoopEventRawCommitment(index: number, commitment: string): this {
@@ -7056,7 +7115,7 @@ export class StatefulTransactionBuilder {
     const sigByLbc = new Map<string, string>();
     for (const [sig, lbc] of this.eventNftLockingBytecodes) sigByLbc.set(binToHex(lbc), sig);
     for (const event of this.runtimeLoopEventOutputs) {
-      sigByLbc.set(binToHex(event.lockingBytecode), event.eventSignature);
+      if (!event.continuation) sigByLbc.set(binToHex(event.lockingBytecode), event.eventSignature);
     }
     const structCandidates: Array<Artifact['structs'] | undefined> = [
       this.stateLayout.structs,

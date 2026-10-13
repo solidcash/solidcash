@@ -147,7 +147,7 @@ export interface AssembleAtomicCompositionContext {
   categories: readonly string[];
   logicalIdentities: Map<number, ResolvedLogicalIdentity>;
   runtimeEventSlots: Map<number, Array<{
-    participant: number; offset: number; runtimeRow: number; eventSignature: string;
+    participant: number; offset: number; runtimeRow: number; eventSignature: string; chunked?: true;
   }>>;
   sidecarSlots: readonly {
     participant: number; offset: number; kind: AtomicSidecarSlotEffect['kind'];
@@ -1219,7 +1219,7 @@ export async function assembleAtomicComposition(
     // This is resource geometry, independent of contract/function/event names.
     const runtimeEvents = (local as TransactionBuilder & {
       __messageBusRuntimeLoopEvents?: readonly {
-        eventSignature: string; rowIndex: number; offset: number;
+        eventSignature: string; rowIndex: number; offset: number; chunked?: true;
       }[];
     }).__messageBusRuntimeLoopEvents ?? [];
     runtimeEventSlots.set(participant.participant,
@@ -1228,6 +1228,7 @@ export async function assembleAtomicComposition(
         offset: event.offset,
         runtimeRow: event.rowIndex,
         eventSignature: event.eventSignature,
+        ...(event.chunked && { chunked: true as const }),
       })));
     // Event effects are fixed-point claims just like return values and mutable resources. Once a prior pass
     // has authenticated an event commitment, feed it back into the exact compiler-published participant slot;

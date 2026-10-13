@@ -12,6 +12,7 @@ import {
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';
 import { tryParseEventCommitment } from '../stateful/StateReader.js';
+import { eventContinuationLockingBytecode } from '../stateful/event-chunks.js';
 import { scriptToLockingBytecode } from '../utils.js';
 import { findMessageBusHandlerForInvocation } from './graph-handler-join.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
@@ -69,7 +70,20 @@ export function eventLockingBytecodes(
   ctx: ComposeEventHelpersContext,
   participant: PlanParticipant,
 ): string[] {
-  return eventCandidates(ctx, participant).map((candidate) => candidate.lockingBytecode);
+  const locks = eventCandidates(ctx, participant).map((candidate) => candidate.lockingBytecode);
+  // A chunked runtime event continues at its continuation covenant, right after its head.
+  const continuations = new Set<string>();
+  for (const invocationIndex of participant.invocations) {
+    const handler = findMessageBusHandlerForInvocation(participant.artifact, ctx.plan.invocations[invocationIndex]);
+    for (const signature of (handler?.runtimeLoopEvents ?? []).flatMap((loop) => loop.chunked ? loop.eventSignatures : [])) {
+      const event = participant.artifact.events?.find((candidate) => candidate.signature === signature);
+      if (!event) continue;
+      continuations.add(binToHex(eventContinuationLockingBytecode(
+        ctx.categories[participant.participant], signature, event.anonymous === true,
+      )));
+    }
+  }
+  return [...locks, ...[...continuations].filter((lock) => !locks.includes(lock))];
 }
 
 export function eventLockingBytecodeAtOffset(

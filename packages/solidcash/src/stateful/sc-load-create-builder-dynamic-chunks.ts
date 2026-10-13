@@ -308,6 +308,8 @@ export async function loadCreateBuilderDynamicChunks(
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment?: string;
     /** Zero-based selected route row which produced this occurrence; -1 for a direct non-route call. */
     rowIndex: number;
+    /** A chunked site's head; its continuation records are learned from the trace. */
+    chunked?: true;
   }> = [];
   const runtimeLoopEventSegments: Array<{ rowIndex: number; offset: number; count: number }> = [];
   const runtimeLoopEffectOccurrences: Array<{
@@ -531,6 +533,7 @@ export async function loadCreateBuilderDynamicChunks(
           const outputIndex = runtimeLoopEventOutputs.length;
           runtimeLoopEventOutputs.push({
             eventSignature, lockingBytecode, rowIndex, ...(commitment !== undefined && { commitment }),
+            ...(loop.chunked && { chunked: true as const }),
           });
           if (loop.effectSequence !== undefined && loop.effectOrder?.[siteIndex] !== undefined) {
             runtimeLoopEffectOccurrences.push({

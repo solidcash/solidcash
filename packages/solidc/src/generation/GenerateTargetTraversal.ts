@@ -4030,7 +4030,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // too.
     // A master may be entered by a user, by another master as a callee, or as the delegate target of a proxy's
     // fallback, whose frame runs on the caller's records with the caller's `msg.sender` and `address(this)`.
-    const frameKinds = [FrameKind.ROOT, FrameKind.CALL, FrameKind.STATIC, FrameKind.DELEGATE];
+    // Absent keeps the historical four. A per-entry public shard passes a set that includes INTERNAL.
+    const requestedFrameKinds = (this.compilerOptions as { __functionSplitFrameKinds?: readonly number[] })
+      .__functionSplitFrameKinds;
+    const frameKinds = requestedFrameKinds !== undefined
+      ? [...requestedFrameKinds]
+      : [FrameKind.ROOT, FrameKind.CALL, FrameKind.STATIC, FrameKind.DELEGATE];
     const dispatchBodyCount = entries.length + (node.constructorDef ? 1 : 0);
     // A forwarding fallback's one parameter is the frame's whole call-data band, which the head leaves as one
     // item, and any other fallback is reached through the dispatcher, so neither leaves a selector to drop.
@@ -34229,8 +34234,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const [nftIdx, compactOffset] of this.compactOffsetMap) {
       const fields = nftFields.get(nftIdx);
       const hasWrite = fields?.some((sv) => this.pendingStateWrites.has(`${sv.nftIndex}:${sv.fieldIndex}`));
+      // A scalar the body wrote before its last call is closed: the slot still holds that earlier value, and a
+      // frame of this contract below the call may have rewritten the record. The end segment keeps the view the
+      // chain carried in, so rebuilding from the slot would publish the pre-call value over that write.
+      const closedByLaterCall = this.framedMaster && hasWrite === true && fields !== undefined
+        && this.framedRecordWrittenAtEnd(fields) === 'none';
 
-      if (hasWrite && fields) {
+      if (hasWrite && fields && !closedByLaterCall) {
         // Written NFT: reconstruct commitment from field values and verify
         const sortedFields = [...fields].sort((a, b) => a.fieldIndex - b.fieldIndex);
         // A written record is closed where the transaction's declaration of it stands. One the end takes as written,

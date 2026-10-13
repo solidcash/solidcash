@@ -1,6 +1,7 @@
 #! /usr/bin/env node
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
+  type Artifact,
   asmToScript,
   calculateBytesize,
   type CompilerOptions,
@@ -26,7 +27,7 @@ program
   .option('-A, --asm', 'Compile the contract to ASM format rather than a full artifact.')
   .option('-c, --opcount', 'Display the number of opcodes in the compiled bytecode.')
   .option('-s, --size', 'Display the size in bytes of the compiled bytecode.')
-  .option('--split', 'Emit a state-local one-hop root/facet bundle (explicit; never enabled silently).')
+  .option('--split [mode]', 'Split mode: off, size, or func. A bare --split is refused.')
   .option('--suppress-warnings', 'Suppress non-fatal compiler warnings.')
   .option('--no-source-map', 'Skip bytecode source maps (faster compile; weaker debug attribution).')
   .option('--no-message-bus', 'Disable inferred atomic message-bus composition (fails if the contract requires it).')
@@ -49,7 +50,9 @@ run();
 function run(): void {
   ensure(program.args.length === 1, 'Please provide exactly one source file');
   ensure(!(opts.asm && opts.hex), 'Flags --asm and --hex cannot be used together');
-  ensure(!opts.split || !(opts.asm || opts.hex), '--split cannot be used with --asm or --hex');
+  const splitMode = readSplitMode(opts.split);
+  ensure(splitMode === undefined || splitMode === 'off' || !(opts.asm || opts.hex),
+    '--split size and --split func cannot be used with --asm or --hex');
   ensure(!(opts.asm || opts.hex) || !opts.output, 'Flags --asm or --hex cannot be used with --output');
   ensure(!opts.args || opts.asm || opts.hex, '--args can only be used with --asm or --hex');
 
@@ -71,10 +74,17 @@ function run(): void {
   };
 
   try {
-    if (opts.split) {
-      const bundle = compileFileSplit(sourceFile, { ...compilerOptions, forceSplit: true });
+    if (splitMode === 'size' || splitMode === 'func') {
+      const bundle = splitMode === 'func'
+        ? compileFileSplit(sourceFile, { ...compilerOptions, split: 'func', composition: 'framed' })
+        : compileFileSplit(sourceFile, { ...compilerOptions, split: 'size', forceSplit: true });
       if (opts.opcount || opts.size) {
-        const rows = [['root', bundle.root], ...Object.entries(bundle.facets)] as const;
+        const rows: readonly (readonly [string, Artifact])[] = bundle.format === 'solidcash-split-v2'
+          ? [
+            ['logical', bundle.logical],
+            ...bundle.shards.map((shard): [string, Artifact] => [shard.function, shard.artifact]),
+          ]
+          : [['root', bundle.root], ...Object.entries(bundle.facets)];
         for (const [name, item] of rows) {
           const shardScript = asmToScript(item.bytecode);
           if (opts.opcount) console.log(`${name} opcode count:`, countOpcodes(shardScript));
@@ -139,6 +149,13 @@ function run(): void {
   } catch (e: any) {
     abort(e.message);
   }
+}
+
+/** `undefined` is a normal artifact. Bare `--split` and any other word are refused by name. */
+function readSplitMode(value: unknown): 'off' | 'size' | 'func' | undefined {
+  if (value === undefined || value === false) return undefined;
+  if (value === 'off' || value === 'size' || value === 'func') return value;
+  abort('split requires a mode: off, size, or func');
 }
 
 function ensure(condition: boolean, msg: string, code?: number): void {

@@ -287,6 +287,12 @@ export function checkV5(state: DerivationState): void {
           if (calleeBlock.value !== callerBlock.value) check('V5', 'V5_VALUE_MISMATCH', callee);
           if (!bytesEqual(calleeBlock.sender, callerBlock.sender)) check('V5', 'V5_SENDER_MISMATCH', callee);
           if (!bytesEqual(calleeBlock.self, callerBlock.self)) check('V5', 'V5_SELF_NOT_CALLER_SELF', callee);
+          // The call record names the helper master's lock. A same-category master at another lock is a
+          // different shard. Self is checked first so a wrong address is still `V5_SELF_NOT_CALLER_SELF`.
+          const calleeLock = inputAt(state.transaction, callee)?.lockingBytecode;
+          if (calleeLock === undefined || !bytesEqual(calleeLock, call.target)) {
+            check('V5', 'V5_INTERNAL_LOCK_MISMATCH', callee);
+          }
           if (!sameCategory(ownCategory(state, callee), contextCategory(state, caller))) {
             check('V5', 'V5_INTERNAL_CATEGORY_MISMATCH', callee);
           }

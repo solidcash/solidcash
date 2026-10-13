@@ -1,4 +1,10 @@
 export * from './artifact.js';
+export {
+  functionSplitLoaderLock,
+  functionSplitLoaderScript,
+  isRejectedFunctionLoader,
+  publishedRedeemLock,
+} from './function-split.js';
 export * from './kernel-capability-schema.js';
 export * from './handler-frame-abi.js';
 export * from './block-layout.js';

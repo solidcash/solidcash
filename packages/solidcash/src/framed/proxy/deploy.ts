@@ -44,7 +44,7 @@ import {
   computeCollectionHash, decodeTranscript, dynamicChunkSignature, frameKindName, getDefaultStateValue,
   sha256,
   validatorRedeemScript,
-  type Artifact, type RecordEntry, type StateValue, type StructDefinitionInfo,
+  type Artifact, type FunctionSplitBundle, type RecordEntry, type StateValue, type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { framedValidator } from 'solidc/runtime';
 import { requireFramedFunderSighash } from '../sighash.js';
@@ -78,6 +78,7 @@ import {
 } from '../call/loop-turns.js';
 import type { HopCallInputs } from './call-resolution.js';
 import { eventLockingBytecode, eventSentinel } from '../deploy/genesis.js';
+import { masterForEntry, requireFunctionSplitShard } from '../deploy/entry-pool.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import { ownCoinRefusal } from '../deploy/own-coin.js';
 import {
@@ -3333,11 +3334,18 @@ function implementationLoopTurns(inputs: HopCallInputs): EntryLoopTurns {
  * a proxy's delegate runs with the same sender as the fallback that entered it.
  */
 function calleeSender(
-  callees: readonly HopCallee[], rootAddress: Uint8Array, callee: HopCallee,
+  callees: readonly HopCallee[],
+  rootSelf: Uint8Array,
+  rootSender: Uint8Array,
+  callee: HopCallee,
 ): Uint8Array {
   const caller = callee.enteredBy === null ? undefined : callees[callee.enteredBy];
-  if (caller === undefined) return rootAddress;
-  if (callee.kind === FrameKind.DELEGATE) return calleeSender(callees, rootAddress, caller);
+  // A call's sender is the address of the frame that entered it. INTERNAL inherits that sender, the way a
+  // delegate does. A root-entered internal frame inherits the root's sender, which is the user lock.
+  if (caller === undefined) return callee.kind === FrameKind.INTERNAL ? rootSender : rootSelf;
+  if (callee.kind === FrameKind.DELEGATE || callee.kind === FrameKind.INTERNAL) {
+    return calleeSender(callees, rootSelf, rootSender, caller);
+  }
   return caller.selfAddress;
 }
 
@@ -4249,7 +4257,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     const argumentPushes = callTo.get(callee.master)?.argumentPushes ?? [];
     // A callee's own sender is the contract that calls it: the caller's own address for a call, and the caller's
     // sender for a delegate frame, which preserves it.
-    const sender = calleeSender(callees, proxyMaster.address, callee);
+    const sender = calleeSender(callees, proxyMaster.address, options.callerLockingBytecode, callee);
     // A frame that makes k calls closes k + 1 segments, each declaring its own records kept. Each of the frame's
     // own writes lands in the segment its source fixes, which the artifact publishes per write: the records it
     // spends are kept at the commitment they were spent with before that segment and at the written one after it.
@@ -5082,6 +5090,15 @@ export interface FramedProxyCallOptions {
    * proxy, which the implementation's frame takes as `msg.value`. Only a payable entry takes one.
    */
   readonly value?: bigint;
+  /**
+   * The implementation's per-entry bundle.
+   *
+   * The fallback forwards calldata onto the shard whose salt is the selector. An unknown selector fails closed.
+   * The proxy's address is unchanged: the delegate frame still runs on the proxy's records.
+   */
+  readonly split?: FunctionSplitBundle;
+  /** Which overload `functionName` is, when the bundle has more than one shard of that name. */
+  readonly selector?: string;
 }
 
 /** A proxied call's outcome, shaped the way the direct call path's is so a handle can treat them alike. */
@@ -5133,6 +5150,15 @@ export async function callFramedProxyEntry(
 ): Promise<FramedProxyCallResult> {
   requireFramedFunderSighash(options.funder);
   const { provider, implementationArtifact } = options;
+  let splitShard;
+  try {
+    splitShard = options.split === undefined
+      ? undefined
+      : requireFunctionSplitShard(options.split, options.functionName, options.selector);
+  } catch (error) {
+    throw new FramedProxyDeployError((error as Error).message);
+  }
+  const implementationProgram = splitShard?.artifact ?? implementationArtifact;
   const proxyArtifact = options.proxyArtifact ?? buildProxyArtifact(implementationArtifact);
   requireProxyShape(proxyArtifact);
   requireSharedLayout(implementationArtifact, proxyArtifact);
@@ -5191,13 +5217,6 @@ export async function callFramedProxyEntry(
   });
   const implementationPools = await readFramedDeployment(
     provider, options.implementationCategoryId, implementationArtifact.stateLayout!);
-  const implementationMasterUtxo = implementationPools.masters[0];
-  if (implementationMasterUtxo === undefined) {
-    throw new FramedProxyDeployError(
-      `category ${options.implementationCategoryId} holds no implementation master, which the forwarded frame `
-      + 'runs from',
-    );
-  }
   const recordCommitments = proxyPools.records.map((record, nftIndex) => {
     const commitment = record.token?.nft?.commitment;
     if (commitment === undefined) {
@@ -5212,7 +5231,25 @@ export async function callFramedProxyEntry(
   const proxyCategory = hexToBin(options.proxyCategoryId);
   const implementationCategory = hexToBin(options.implementationCategoryId);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
-  const implementationMaster = deployMaster(implementationArtifact, implementationCategory, validatorProgram);
+  const implementationMaster = deployMaster(implementationProgram, implementationCategory, validatorProgram);
+  let implementationMasterUtxo = implementationPools.masters[0];
+  if (splitShard !== undefined) {
+    try {
+      implementationMasterUtxo = masterForEntry({
+        masters: implementationPools.masters,
+        filledLock: implementationMaster.lockingBytecode,
+        functionName: options.functionName,
+      });
+    } catch (error) {
+      throw new FramedProxyDeployError((error as Error).message);
+    }
+  }
+  if (implementationMasterUtxo === undefined) {
+    throw new FramedProxyDeployError(
+      `category ${options.implementationCategoryId} holds no implementation master, which the forwarded frame `
+      + 'runs from',
+    );
+  }
   const vm = options.vm ?? await providerMachine(provider);
   const maximumCommitmentBytes = provider.consensusLimits?.maximumNftCommitmentBytes
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;

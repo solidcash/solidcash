@@ -14,7 +14,9 @@ import type { FunctionArgument } from '../Argument.js';
 import type { ContractUnlocker, Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import { isContractUnlocker } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { withCompilerRouteMessageEnvelope, withProxyForwardMessageEnvelope } from '../Contract.js';
+import {
+  type Contract, withCompilerRouteMessageEnvelope, withProxyForwardMessageEnvelope,
+} from '../Contract.js';
 import { addressToLockScript } from '../utils.js';
 import {
   decodeAuthenticatedProducerResultVector, StatefulContract, StatefulFunctionCall,

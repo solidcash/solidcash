@@ -600,9 +600,8 @@ export async function expandCreateBuilderLateTransitive(
                 }
                 return encoded;
               });
-              const entryAddress = getEntryNftAddress(
-                selectedContract.inner, callee.categoryId, access.collection,
-              );
+              // A proxied callee's entries bind its proxy master's lock, not the implementation's.
+              const entryAddress = getEntryNftAddress(callee.inner, callee.categoryId, access.collection);
               const list = SortedList.fromUtxos((await nestedAddressUtxos(entryAddress)).filter((utxo) => (
                 utxo.token?.category === callee.categoryId
                   && utxo.token?.nft?.capability === 'mutable'
@@ -622,9 +621,7 @@ export async function expandCreateBuilderLateTransitive(
               const blockOffset = lateBlockInputs.length;
               lateBlockInputs.push({
                 ...proof.utxo,
-                unlocker: createEntryNftUnlocker(
-                  selectedContract.inner, blockOffset, callee.categoryId, access.collection,
-                ),
+                unlocker: createEntryNftUnlocker(callee.inner, blockOffset, callee.categoryId, access.collection),
               });
               const batchOwned = selectedFn.sortedBatchInfo
                 ?.some((batch) => batch.slotIndices.includes(routeSlot)) === true;
@@ -689,7 +686,7 @@ export async function expandCreateBuilderLateTransitive(
               (output) => !targets.has(bytesToSlotValue(output.slot).toString()),
             );
             const lockingBytecode = createEntryNftUnlocker(
-              selectedContract.inner, 0, callee.categoryId, batch.collection,
+              callee.inner, 0, callee.categoryId, batch.collection,
             ).generateLockingBytecode();
             for (const [ordinal, output] of predecessorOutputs.entries()) {
               const outputBlockSlot = batchInsertBase + batchTrailingCount + ordinal;

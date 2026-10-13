@@ -215,8 +215,8 @@ export function outputForUnpairedBlockInput(input: {
 }
 
 /**
- * Lock of one transported value-chunk production. The executing contract's locking bytecode is the only
- * authority: a missing or non-35-byte lock does not fall back to the category-only walk.
+ * Lock of one transported value-chunk production. The record master's locking bytecode (a delegate's proxy) is the
+ * only authority: a missing or non-35-byte lock does not fall back to the category-only walk.
  */
 export function publishedTransportedValueChunkLock(
   production: {
@@ -224,9 +224,9 @@ export function publishedTransportedValueChunkLock(
     value: Uint8Array;
     write: ValueChunkWriteDescriptor | null | undefined;
   },
-  executionLockingBytecode: string,
+  masterLockingBytecode: string,
 ): Uint8Array | undefined {
-  const masterLock = hexToBin(executionLockingBytecode);
+  const masterLock = hexToBin(masterLockingBytecode);
   if (masterLock.length !== 35) return undefined;
   return persistValueChunkLock(
     production.stateOwner.categoryId, production.value, production.write, masterLock,
@@ -545,6 +545,8 @@ export async function assembleAtomicComposition(
     }
     const executionLockingBytecode = descriptor.executor?.inner.lockingBytecode
       ?? contract.inner.lockingBytecode;
+    // A delegate executor writes its proxy's chunks, which bind the proxy master's lock, not the executor's.
+    const recordLockingBytecode = contract.inner.lockingBytecode;
     retainTerminalValueChunkProductions(valueChunkProductions, {
       rows: routeRows,
       executionLockingBytecode,
@@ -564,7 +566,7 @@ export async function assembleAtomicComposition(
       .filter((slot) => slot.kind === 'trailing')
       .sort((left, right) => left.offset - right.offset);
     const transportedValueChunks = [...valueChunkProductions.values()].map((production) => {
-      const lockingBytecode = publishedTransportedValueChunkLock(production, executionLockingBytecode);
+      const lockingBytecode = publishedTransportedValueChunkLock(production, recordLockingBytecode);
       if (!lockingBytecode) {
         throw new Error('messageBus: transported value production has no continuation covenant');
       }

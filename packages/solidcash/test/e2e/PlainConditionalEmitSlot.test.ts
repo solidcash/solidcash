@@ -10,7 +10,9 @@ import {
   getEventNftAddress,
   readEventsFromChain,
 } from '../../src/stateful/index.js';
-import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
+import {
+  createFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos,
+} from '../test-util.js';
 
 /**
  * SEC-10 off the bus. The one-armed conditional emit slot is reserved by `collectEmitStatements` and its
@@ -43,6 +45,14 @@ contract TwoArmedPlain() {
 const raw = (builder: TransactionBuilder): string =>
   binToHex(encodeTransaction(builder.buildLibauthTransaction()));
 
+/** build() leaves the fee to its caller: pay it past the block, so the covenant, not relay policy, decides. */
+const payFeePastBlock = async (
+  provider: ReturnType<typeof createTestProvider>, builder: TransactionBuilder,
+): Promise<void> => {
+  const { utxo, unlocker } = await createFeeFunder(provider, 20_000n);
+  builder.addInput(utxo, unlocker);
+};
+
 describe('SEC-10 off the bus: plain stateful conditional emit', () => {
   const artifact = compileString(SOURCE);
 
@@ -71,6 +81,7 @@ describe('SEC-10 off the bus: plain stateful conditional emit', () => {
     const salted = contract.withCategory(hexToBin(categoryId));
     const sc = StatefulContract.withCategory(contract, categoryId);
     const builder = await (sc as any).bump(4n).build();
+    await payFeePastBlock(provider, builder);
     (builder as any).outputs[2] = {
       to: getEventNftAddress(salted, categoryId, two.events![0].signature),
       amount: 1000n,
@@ -100,6 +111,7 @@ describe('SEC-10 off the bus: plain stateful conditional emit', () => {
     const salted = contract.withCategory(hexToBin(categoryId));
     const sc = StatefulContract.withCategory(contract, categoryId);
     const builder = await (sc as any).bump(x).build();
+    await payFeePastBlock(provider, builder);
 
     const fn = (artifact.abi as any[]).find((entry) => entry.name === 'bump');
     const eventSlot = fn.blockLayout.slots.find((slot: any) => slot.kind === 'event');

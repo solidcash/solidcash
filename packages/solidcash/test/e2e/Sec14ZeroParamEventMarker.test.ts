@@ -86,11 +86,14 @@ async function run(source: string, x: bigint, divert: boolean): Promise<Row> {
   const before = builder.outputs[offset];
   const slot = `${before?.token?.nft?.capability ?? '-'}/${before?.token?.nft?.commitment ?? ''}`;
 
+  // build() leaves the fee to its caller. A funding input past the block pays it in every row, and the diversion's
+  // sink from the same input, so a row is decided by the covenant rather than by relay policy.
+  const { utxo, unlocker } = await createFeeFunder(provider, divert ? 200_000n : 20_000n);
+  builder.addInput(utxo, unlocker);
+
   if (divert) {
     // Everything the not-taken binding asserts is "the commitment at this index is empty". Replace the reserved
     // event output with a plain P2SH carrying no token at all and far past the honest 1200-satoshi bound.
-    const { utxo, unlocker } = await createFeeFunder(provider, 200_000n);
-    builder.addInput(utxo, unlocker);
     const sink = new Contract(
       compileString('contract Sink() { function f() { require(true); } }'), [], { provider },
     );

@@ -12,7 +12,9 @@ import {
   readEventsFromChain,
 } from '../../src/stateful/index.js';
 import { alicePriv } from '../fixture/vars.js';
-import { createTestProvider, expectScriptRejection, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
+import {
+  createFeeFunder, createTestProvider, expectScriptRejection, getTxOutputs, setupStatefulUtxos,
+} from '../test-util.js';
 
 /**
  * X12 - the `emit`-funder delegate class.
@@ -161,6 +163,9 @@ describe('X12: emit funder inside a delegated call', () => {
 
     const sc2 = StatefulContract.withCategory(contract, categoryId);
     const builder: any = await (sc2 as any).setX(24n).build();
+    // build() leaves the fee to its caller: pay it past the block, so the covenant, not relay policy, decides.
+    const { utxo, unlocker } = await createFeeFunder(provider, 20_000n);
+    builder.addInput(utxo, unlocker);
     const eventOut = builder.outputs.find((o: any) => o.token?.nft?.capability === 'none');
     eventOut.token.nft.commitment = binToHex(new Uint8Array([0x03, 0x3f, 0x42, 0x0f]));
     const outcome = await provider.sendRawTransaction(raw(builder))

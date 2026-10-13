@@ -61,7 +61,7 @@ export function deriveFullPhase2ApplyRuntimeLoop(
   // covenants are fixed before the first probe; only source-evaluated commitments need convergence.
   const runtimeLoopEvents = stb.getRuntimeLoopEventOutputs();
   // A chunked row's record count follows the payload the covenant computed: when the probe fails, re-plan it from
-  // the records its effect verifier read (this trace when it kept the verifier's stacks, else a filtered
+  // the records its effect verifier read (this trace when it kept every verifier step whole, else a filtered
   // re-evaluation), and leave this trace's other observations to the next probe.
   if (runtimeLoopEvents.some((event) => event.chunked) && fullTrace2.some((state) => state.error !== undefined)) {
     const apply = (runs: readonly RuntimeEffectStreamRun[]): boolean => runs.reduce(

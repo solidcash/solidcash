@@ -116,6 +116,7 @@ export function reconcileDynamicChunkOutputWitnesses(
   lowLevelGroups: readonly ExternalCallUtxoGroup[],
   rootStateCategoryId: string,
   builder: TransactionBuilder,
+  rootStateContract: Contract | undefined,
 ): readonly ExternalCallUtxoGroup[] {
   const changed: ExternalCallUtxoGroup[] = [];
   for (const outputOwner of groups) {
@@ -129,7 +130,8 @@ export function reconcileDynamicChunkOutputWitnesses(
     const next = BigInt(resolveMaterializedDynamicWriteOutputBase({
       route,
       stateLayout: carrier.stateLayout,
-      contract: carrier.externalContract.inner,
+      // The chunks bind the record master's lock: the proxy's, not its delegate's.
+      contract: outputOwner.externalContract.inner,
       categoryId: outputOwner.categoryId,
       outputs: builder.outputs,
     }));
@@ -145,11 +147,15 @@ export function reconcileDynamicChunkOutputWitnesses(
     if (!route?.inputs.some((input) => input.name === '__internal__dynamicChunkOutputBase')) continue;
     // A root proxy implementation has no external-call output owner. Its direct-dynamic lock/category
     // identifies the run within this local transaction; duplicate runs fail the canonical-index proof.
+    // A delegate writes the root's records, which bind the root master's lock.
+    const delegated = carrier.callMode === 'delegatecall';
+    const recordOwner = delegated ? rootStateContract : carrier.externalContract.inner;
+    if (!recordOwner) throw new Error(`Delegate route ${route.name} has no root state contract for its chunks`);
     const next = BigInt(resolveMaterializedDynamicWriteOutputBase({
       route,
       stateLayout: carrier.stateLayout,
-      contract: carrier.externalContract.inner,
-      categoryId: carrier.callMode === 'delegatecall' ? rootStateCategoryId : carrier.categoryId,
+      contract: recordOwner,
+      categoryId: delegated ? rootStateCategoryId : carrier.categoryId,
       outputs: builder.outputs,
     }));
     if (carrier.internalArgs?.__internal__dynamicChunkOutputBase === next) continue;

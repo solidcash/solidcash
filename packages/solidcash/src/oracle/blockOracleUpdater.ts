@@ -4,7 +4,7 @@ import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
 import {
   type Artifact, blockhashCommitmentNumber, blockhashOracleLockingBytecode,
   buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
-  blockOracleRedeemScript, blockOracleUpdateUnlocking, encodeBlockOracleCommitment, blockOracleFieldBytes,
+  blockOracleRedeemScript, blockOracleUpdateUnlocking, encodeBlockOracleCommitment, blockOracleFieldValue,
   buildPushdataCommitment, scriptToBytecode, encodeInt, hash160, hash256, type StateVariableInfo,
   blockhashKeeperBatonLockingBytecode, buildBlockhashKeeperBatonScript,
 } from '@solidcash/utils';
@@ -106,14 +106,6 @@ function finalTimestamp(fields: BlockOracleFields): bigint {
   return fields.timestamp < last ? fields.timestamp : last;
 }
 
-/** A 5-byte commitment field as the uint32 its first four little-endian bytes hold. */
-function fieldValue(commitment: Uint8Array, field: 'number' | 'timestamp'): bigint {
-  const bytes = blockOracleFieldBytes(commitment, field);
-  let value = 0n;
-  for (let index = 0; index < 4; index += 1) value |= BigInt(bytes[index] ?? 0) << BigInt(8 * index);
-  return value;
-}
-
 export interface BlockOracleUpdaterConfig {
   contract: Contract;
   categoryId: string;
@@ -163,12 +155,12 @@ export class BlockOracleUpdater {
 
   /** Current block-info oracle height from the oracle commitment (0 if absent). */
   async oracleHeight(): Promise<bigint> {
-    return fieldValue(await this.currentCommitment(), 'number');
+    return blockOracleFieldValue(await this.currentCommitment(), 'number');
   }
 
   /** Current block-info oracle timestamp from the oracle commitment (0 if absent). */
   async oracleTimestamp(): Promise<bigint> {
-    return fieldValue(await this.currentCommitment(), 'timestamp');
+    return blockOracleFieldValue(await this.currentCommitment(), 'timestamp');
   }
 
   /**
@@ -342,8 +334,8 @@ export class BlockOracleUpdater {
     let blockInfoTxid: string | null = null;
     if (BlockOracleUpdater.usesBlockInfo(artifact)) {
       const commitment = await this.currentCommitment();
-      const storedTimestamp = fieldValue(commitment, 'timestamp');
-      let number = fieldValue(commitment, 'number');
+      const storedTimestamp = blockOracleFieldValue(commitment, 'timestamp');
+      let number = blockOracleFieldValue(commitment, 'number');
       const hash: string = await this.cfg.rpc.request('getblockhash', tip);
       const fields = await fetchBlockOracleFields(this.cfg.rpc, hash);
       // nLockTime is a height or a time, so the number and the timestamp move in separate updates.

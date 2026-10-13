@@ -103,6 +103,14 @@ export function blockOracleFieldBytes(commitment: Uint8Array, field: BlockOracle
   return commitment.slice(offset, offset + BLOCK_ORACLE_FIELD_WIDTH);
 }
 
+/** Numeric field as the uint32 its first four little-endian bytes hold. */
+export function blockOracleFieldValue(commitment: Uint8Array, field: BlockOracleField): bigint {
+  const bytes = blockOracleFieldBytes(commitment, field);
+  let value = 0n;
+  for (let index = 0; index < 4; index += 1) value |= BigInt(bytes[index] ?? 0) << BigInt(8 * index);
+  return value;
+}
+
 function preserveOutput(includeCommitment: boolean): Script {
   const script: Script = [
     Op.OP_INPUTINDEX, Op.OP_UTXOBYTECODE, Op.OP_INPUTINDEX, Op.OP_OUTPUTBYTECODE, Op.OP_EQUALVERIFY,

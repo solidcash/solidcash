@@ -1635,7 +1635,15 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('admits a synthesized block-oracle updater at the entry-point synthesis boundary', () => {
+  // The raw-covenant oracle rework (2aeaee406) synthesizes no __updateBlockOracle entry and no __block_*
+  // registers. Every surface reads one shared commitment, so there is no oracle owner to assign or refuse.
+  const expectSharedOracle = (artifact: ReturnType<typeof compileString>): void => {
+    expect(artifact.usesBlockOracle).toBe(true);
+    expect(artifact.abi.map((entry) => entry.name)).not.toContain('__updateBlockOracle');
+    expect(artifact.stateLayout?.variables.map((variable) => variable.name) ?? []).not.toContain('__block_number');
+  };
+
+  it('synthesizes no block-oracle updater at the entry-point synthesis boundary', () => {
     const artifact = compileString(`contract C(pubkey owner) {
       mapping(int => int) values;
       function set(int key) public {
@@ -1643,21 +1651,12 @@ describe('required kernel admission', () => {
         require(true);
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    const updater = artifact.messageBus?.handlers.find((handler) =>
-      handler.name === '__updateBlockOracle');
-    expect(updater).toMatchObject({ eligible: true });
-    expect(updater?.rejectionReason).toBeUndefined();
-    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
-      name: expect.stringMatching(/^__message_bus_sig_\d+_0_rows$/),
-      type: 'sig[]',
-    }));
-    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers ?? [])
-      .not.toContain('delegate');
-    expect(Object.values(artifact.debug.invokeDebug ?? {}))
-      .toContainEqual(expect.objectContaining({ name: '__updateBlockOracle' }));
+    expectSharedOracle(artifact);
+    expect(artifact.messageBus?.handlers.map((handler) => handler.name) ?? [])
+      .not.toContain('__updateBlockOracle');
   });
 
-  it('inherits delegate execution for a synthesized block-oracle updater', () => {
+  it('adds no block-oracle updater to a Solidity initializer surface', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract C {
         bool initialized;
@@ -1669,79 +1668,45 @@ describe('required kernel admission', () => {
     `, {
       ...KERNEL, evmCompat: true, maximumInputBytes: 1_000_000,
     });
-    const updater = artifact.messageBus?.handlers.find((handler) =>
-      handler.name === '__updateBlockOracle');
-    expect(updater).toMatchObject({
-      eligible: true,
-      usesTransactionSignature: true,
-      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
-    });
-    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers)
-      .toContain('delegate');
-    const signingBody = Object.values(artifact.debug.invokeDebug ?? {})
-      .find((entry) => entry.name === '__message_bus_handler___updateBlockOracle');
-    expect(signingBody).toBeDefined();
-    expect(updater?.transactionSignaturePolicy?.coveredBytecodes).toEqual([{
-      parameterIndex: 0, leafIndex: 0, bytecode: signingBody!.bytecode,
-    }]);
-    expect(updater?.signatureBytecode).toBeUndefined();
-    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === '__message_bus1')?.writes)
-      .toContain('state:__block_number');
+    expectSharedOracle(artifact);
+    expect(artifact.invocationAnalysis?.functions.flatMap((fn) => fn.writes ?? []) ?? [])
+      .not.toContain('state:__block_number');
   });
 
-  it('does not infer oracle ownership from one delegate member on a mixed execution surface', () => {
-    const artifact = compileString(`contract C() {
+  // These mixed direct/delegate surfaces used to pick, or refuse, one owner for the injected registers.
+  it.each([
+    ['one delegate member on a mixed execution surface', `contract C() {
       int stored;
       function delegated(int next) public delegate { this.stored = next; require(true); }
       function height() public view returns (uint) { return block.number; }
-    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers ?? [])
-      .not.toContain('delegate');
-  });
-
-  it('assigns a mixed contract oracle updater to its only delegate consumer', () => {
-    const artifact = compileString(`contract C() {
+    }`],
+    ['a mixed contract whose only oracle consumer is delegate', `contract C() {
       int stored;
       function delegated() public delegate { this.stored = block.number; require(true); }
       function inspect() public view returns (int) { return this.stored; }
-    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers)
-      .toContain('delegate');
-  });
-
-  it('counts a fallback oracle read as a direct consumer on a mixed surface', () => {
-    const artifact = compileString(`contract C() {
+    }`],
+    ['a fallback oracle read beside a delegate member', `contract C() {
       int stored;
       fallback(bytes input) external {
         this.stored = block.number + input.length;
         require(true);
       }
       function delegated(int next) public delegate { this.stored = next; require(true); }
-    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers ?? [])
-      .not.toContain('delegate');
-  });
-
-  it('refuses one oracle register reached through both direct and delegate roots via a shared helper', () => {
-    expect(() => compileString(`contract C() {
-      int stored;
+    }`],
+    ['one helper read reached through both direct and delegate roots', `contract C() {
+      uint stored;
       function height() internal view returns (uint) { return block.number; }
       function delegated() public delegate { this.stored = height(); require(true); }
       function direct() public view returns (uint) { return height(); }
-    }`, { ...KERNEL, maximumInputBytes: 1_000_000 })).toThrow(
-      /block-oracle state from both direct and delegate execution surfaces/,
-    );
-  });
-
-  it('treats a constructor oracle read as direct ownership beside a delegate consumer', () => {
-    expect(() => compileString(`contract C() {
+    }`],
+    ['a constructor oracle read beside a delegate consumer', `contract C() {
       uint stored;
       function height() internal view returns (uint) { return block.number; }
       constructor() { this.stored = height(); }
       function delegated() public delegate { this.stored = block.number; require(true); }
-    }`, { ...KERNEL, maximumInputBytes: 1_000_000 })).toThrow(
-      /block-oracle state from both direct and delegate execution surfaces/,
-    );
+    }`],
+  ])('compiles %s against the shared oracle with no owner', (_label, source) => {
+    expectSharedOracle(compileString(source, { ...KERNEL, maximumInputBytes: 1_000_000 }));
   });
 
   it.each([

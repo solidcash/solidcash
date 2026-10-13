@@ -128,6 +128,7 @@ import {
   type MessageBusRuntimeAbiFunction,
 } from './kernel-route-planning.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
+import { readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
 import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type {
@@ -6766,6 +6767,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       abiFunction,
     );
     timing('state-loaded');
+    // A block.timestamp recipe reads `__block_timestamp`, the shared oracle's field. This state has no such register.
+    const oracleLock = this.inner.artifact.usesBlockOracle === true ? this.inner.blockOracleLock : undefined;
+    const oracleTimestamp = oracleLock === undefined
+      ? undefined : await readBlockOracleTimestamp(this.inner.provider, oracleLock);
+    const recipeState: Record<string, StateValue> = oracleTimestamp === undefined
+      ? onChainState.state : { ...onChainState.state, __block_timestamp: oracleTimestamp };
 
     const statefulCall = (name: string): FunctionArgument[] | undefined => (
       functionName === name ? args
@@ -8219,10 +8226,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   if (writes.length > 0) {
                     kernelEncodedValue = foldRouteStoredValues({
                       writes, collection, targetSlot: slot, incomingEntries, artifact: entryArtifact,
-                      state: onChainState.state as Record<string, StateValue>,
+                      state: recipeState,
                       encode: ({ row, access: rowAccess }, entries) => this._encodeStoredValueSource(
                         rowAccess, collection.valueType, [...row.args], row.handler, entryArtifact,
-                        onChainState.state as Record<string, unknown>, undefined, entries,
+                        recipeState, undefined, entries,
                       ),
                     });
                   }
@@ -8231,8 +8238,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   entryArtifact, collection.valueType, stateLayout.structs,
                 );
                 const legacyTimestamp = legacyCompatibility
-                  && typeof onChainState.state.__block_timestamp === 'bigint'
-                  ? onChainState.state.__block_timestamp : undefined;
+                  && typeof recipeState.__block_timestamp === 'bigint'
+                  ? recipeState.__block_timestamp : undefined;
                 const foldParams: Parameters<typeof foldLeadingRouteArrayPushes>[0] = {
                   rowArguments: selectedRows,
                   collection: access.collection,
@@ -8241,8 +8248,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   timestamp: legacyTimestamp,
                   legacyJobEventCompatibility: legacyCompatibility,
                   resolveElement: (row, rowAccess, elementType) => this._encodeStoredElementSource(
-                    rowAccess, elementType, [...row.args], row.handler, entryArtifact,
-                    onChainState.state as Record<string, unknown>,
+                    rowAccess, elementType, [...row.args], row.handler, entryArtifact, recipeState,
                   ),
                   // path-effect activation/settle-time ExecutionContext: per-row activations; prefer settle-time ExecutionContext when registered.
                   resolveRowActivationEnv: createFoldRowActivationEnvResolver(),

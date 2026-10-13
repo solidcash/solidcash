@@ -2335,6 +2335,8 @@ describe('messageBus.compose atomic transaction', () => {
     }`, { forceStateful: true, messageBus: true });
     const handler = sinkArtifact.messageBus?.handlers.find((candidate) => candidate.name === 'recover');
     expect(handler?.ecrecoverArgParams).toEqual([[null, 'v', 'r', 's']]);
+    // Recipe mode replays the computed hash from the compiler's operand tree, never from a VM trace.
+    expect(handler?.computeSideCarRecipes?.ecrecover).toMatchObject([{ kind: 'args4' }]);
 
     const callerBase = new Contract(callerArtifact, [], { provider });
     const callerSetup = await setupStatefulUtxos(

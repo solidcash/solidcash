@@ -1,0 +1,11 @@
+contract UpgradeMapping(pubkey admin) {
+    mapping(int => int) balances;
+
+    function set(int key, int value) {
+        this.balances[key] = value;
+    }
+
+    function migrate(sig s) upgrade {
+        require(checkSig(s, admin));
+    }
+}

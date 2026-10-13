@@ -1993,8 +1993,9 @@ included, were byte-identical before the alias path. Alias bodies whose write an
 delete since (not measured).
 
 Still failing closed: two writes of one key that ran on one node (the runtime alias of `m[i] = v; m[j] = w` with
-`i == j`), more than one delete of a batch beside its writes, and a deleted node's own key beside an insert where the
-value kind's default is not empty (the SDK does not plan that relink).
+`i == j`; plain top-level writes with no delete compose instead, 9b478f894), more than one delete of a batch beside
+its writes, and a deleted node's own key beside an insert where the value kind's default is not empty (the SDK does
+not plan that relink).
 
 **Proposed design:** a runtime alias of two writes settles as the later write alone (its alias row, as the compose
 batch does); deletes past one fold their registers in batch order; the SDK plans the default value of every kind.

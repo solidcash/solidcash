@@ -183,8 +183,8 @@ describe('events wider than one NFT commitment', () => {
     expect(streamed?.emits).toBeUndefined();
     const legacy = compileProduction(source, { ...options, messageBusKernel: false });
     expect(legacy.messageBus?.handlers.find((handler) => handler.name === 'emitWide')?.eligible ?? false).toBe(false);
-    for (const artifact of [kernel, legacy]) {
-      expect((artifact.abi as any[]).find((entry) => entry.name === 'emitWide').blockLayout.slots
+    for (const compiled of [kernel, legacy]) {
+      expect((compiled.abi as any[]).find((entry) => entry.name === 'emitWide').blockLayout.slots
         .some((slot: any) => slot.kind === 'eventChunk')).toBe(true);
     }
   });

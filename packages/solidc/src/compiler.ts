@@ -3749,13 +3749,19 @@ function topLevelEmits(body: BlockNode): { emits: EmitStatementNode[]; returnBef
         if (returned) returnBeforeLast = true;
       } else if (statement instanceof BlockNode) {
         visit(statement.statements ?? []);
-      } else {
-        walkInvocationAst(statement, (node) => { if (node instanceof ReturnNode) returned = true; });
+      } else if (containsReturn(statement)) {
+        returned = true;
       }
     }
   };
   visit(body.statements ?? []);
   return { emits, returnBeforeLast };
+}
+
+function containsReturn(statement: Node): boolean {
+  let found = false;
+  walkInvocationAst(statement, (node) => { if (node instanceof ReturnNode) found = true; });
+  return found;
 }
 
 /**

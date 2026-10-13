@@ -73,7 +73,8 @@ export function mergePublishedMessageBusHandlerMetadata(
   // authentication deliberately checks this identity before trusting runtime row metadata.
   if (published === undefined || (published.dynamicReads === undefined
     && published.dynamicWrites === undefined && !streamed)) return callable;
-  const { emits: _emits, ...withoutEmits } = callable;
+  const withoutEmits: AbiFunction = { ...callable };
+  delete withoutEmits.emits;
   return {
     ...(streamed ? withoutEmits : callable),
     ...(published.dynamicReads !== undefined && { dynamicReads: published.dynamicReads }),

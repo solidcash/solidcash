@@ -6055,6 +6055,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               lastTrace,
               lastFailProbeOutputs,
               retainDiagnosticTrace,
+              emitInfos,
+              eventBlockLayout,
             },
           );
           lastTrace = cleaned.lastTrace;

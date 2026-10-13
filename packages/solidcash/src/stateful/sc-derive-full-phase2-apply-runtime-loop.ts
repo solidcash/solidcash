@@ -8,6 +8,7 @@ import { Op } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { decodeScriptNumber, extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
+import { extractRuntimeEffectStreamRuns, type RuntimeEffectStreamRun } from './runtime-effect-stream-trace.js';
 import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.js';
 
 export type DeriveFullPhase2RuntimeLoopHost = {
@@ -17,6 +18,8 @@ export type DeriveFullPhase2RuntimeLoopHost = {
     actualCommitment: string,
   ) => string | undefined;
   parseNftCapability: (catBytes: Uint8Array) => 'none' | 'mutable' | 'minting';
+  /** The effect verifier runs of this iteration's probe program (`traceRuntimeEffectStreamRuns`). */
+  traceRuntimeEffectStreams: () => RuntimeEffectStreamRun[];
 };
 
 export type DeriveFullPhase2RuntimeLoopDerivedFlags = {
@@ -57,6 +60,20 @@ export function deriveFullPhase2ApplyRuntimeLoop(
   // Runtime-loop event outputs immediately follow the mapping-entry family. Their count and event
   // covenants are fixed before the first probe; only source-evaluated commitments need convergence.
   const runtimeLoopEvents = stb.getRuntimeLoopEventOutputs();
+  // A chunked row's record count follows the payload the covenant computed: when the probe fails, re-plan it from
+  // the records its effect verifier read (this trace when it kept the verifier's stacks, else a filtered
+  // re-evaluation), and leave this trace's other observations to the next probe.
+  if (runtimeLoopEvents.some((event) => event.chunked) && fullTrace2.some((state) => state.error !== undefined)) {
+    const apply = (runs: readonly RuntimeEffectStreamRun[]): boolean => runs.reduce(
+      (changed, run) => stb.applyRuntimeLoopEventStream(run.base, run.records) || changed, false,
+    );
+    const observed = extractRuntimeEffectStreamRuns(fullTrace2);
+    const replanned = apply(observed) || (observed.length === 0 && apply(host.traceRuntimeEffectStreams()));
+    if (replanned) {
+      phaseCheckpoint('runtime-loop-events');
+      return { commitmentProgress: commitmentProgress + 1 };
+    }
+  }
   if (runtimeLoopEvents.length > 0) {
     for (let eventIndex = 0; eventIndex < runtimeLoopEvents.length; eventIndex += 1) {
       const outputIndex = stb.getRuntimeLoopEventOutputIndex(eventIndex);
@@ -67,7 +84,7 @@ export function deriveFullPhase2ApplyRuntimeLoop(
       const commitment = commitmentMap.get(outputIndex)
         ?? host.extractExpectedOutputCommitmentFromTrace(fullTrace2, outputIndex, actual);
       if (commitment === undefined || commitment === runtimeLoopEvents[eventIndex].commitment) continue;
-      if (runtimeLoopEvents[eventIndex].commitment.length > 0) {
+      if (runtimeLoopEvents[eventIndex].commitment.length > 0 && !runtimeLoopEvents[eventIndex].chunked) {
         throw new Error(`Runtime event ${eventIndex} trace commitment does not match compiler metadata`);
       }
       stb.setRuntimeLoopEventRawCommitment(eventIndex, commitment);

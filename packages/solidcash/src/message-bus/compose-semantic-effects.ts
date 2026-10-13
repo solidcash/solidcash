@@ -48,7 +48,9 @@ export interface ObserveComposeSemanticEffectsContext {
   valueSlots: readonly { participant: number; offset: number }[];
   tokenSlots: readonly { participant: number; offset: number }[];
   sidecarSlots: readonly { participant: number; offset: number; kind: AtomicSidecarSlotEffect['kind'] }[];
-  eventSlots: () => readonly { participant: number; offset: number; runtimeRow?: number; eventSignature?: string }[];
+  eventSlots: () => readonly {
+    participant: number; offset: number; runtimeRow?: number; eventSignature?: string; chunked?: true;
+  }[];
   incompleteParticipants: ReadonlySet<number>;
   valueChunkConvergence: { ownedOutputs: readonly number[] };
   eventLockingBytecodes: (participant: PlanParticipant) => string[];
@@ -469,9 +471,15 @@ export function observeComposeSemanticEffects(
           || callsiteLock !== undefined || activeTemplate);
     });
     const inactive = indices.map((index) => ctx.provisional.outputs[index]).find((output) => !output.token);
+    // A chunk of a chunked event need not parse as any schema, and a short one can parse as the wrong one.
+    const chunkedTargets = new Set((eventSlotsByParticipant.get(participant.participant) ?? [])
+      .filter((slot) => slot.chunked).map((slot) => participantBase + slot.offset));
     if (!inactive && targets.some((target) => !active.includes(target))) {
       throw new Error('messageBus: event-frame relocation has no canonical inactive output');
     }
+    // A chunked stream the trace has not read yet (its builder learns the record count) has nothing to relocate.
+    if (!inactive && targets.length === 0 && active.length > 0
+      && indices.every((index) => chunkedTargets.has(index))) continue;
     if (!inactive && targets.length === 0 && active.length > 0) {
       throw new Error('messageBus: inactive event frame has no canonical empty output');
     }
@@ -488,7 +496,8 @@ export function observeComposeSemanticEffects(
       // A flattened route trace can expose a sibling event identity beside the reached handler's payload.
       // Prefer the unique event schema published by the selected handlers; retain the trace for genuinely
       // ambiguous same-schema events, where the commitment alone cannot identify a named covenant.
-      const decodedLock = ctx.eventLockingBytecodeForCommitment(participant, expectation.commitment);
+      const decodedLock = chunkedTargets.has(target)
+        ? undefined : ctx.eventLockingBytecodeForCommitment(participant, expectation.commitment);
       const callsiteLock = ctx.eventLockingBytecodeAtOffset(participant, target - participantBase);
       const current = targetTemplates.get(target);
       const currentLock = typeof current?.to === 'string'

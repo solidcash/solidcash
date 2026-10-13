@@ -70,7 +70,7 @@ export interface CreateComposeAssemblyRuntimeInput {
   preparedResults: Readonly<Record<number, string>>;
   logicalIdentities: Map<number, ResolvedLogicalIdentity>;
   runtimeEventSlots: Map<number, Array<{
-    participant: number; offset: number; runtimeRow: number; eventSignature: string;
+    participant: number; offset: number; runtimeRow: number; eventSignature: string; chunked?: true;
   }>>;
   sidecarSlots: readonly {
     participant: number; offset: number; kind: AtomicSidecarSlotEffect['kind'];

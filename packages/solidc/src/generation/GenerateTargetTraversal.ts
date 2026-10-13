@@ -19497,6 +19497,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         || !this.stack.includes(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_COUNT)) {
         throw new Error('Runtime counter-loop event emitted without an active event journal');
       }
+      if (node.runtimeLoopEventChunked) {
+        this.emitChunkedRuntimeLoopEventRecords(eventDef, node, locationData);
+        return node;
+      }
       // Frame the arbitrary event commitment as one script push and append its compiler-constructed P2SH32
       // event lock. Keep each record as a distinct alt-stack item: a single concatenated vector could exceed
       // BCH's stack-item limit even though every individual NFT commitment is valid.
@@ -19549,6 +19553,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     return node;
+  }
+
+  /** The covenant suffix a wide event's continuation chunks sit under (`computeEventContinuationHash`). */
+  private eventContinuationCovenantSuffix(eventDef: EventDefinitionNode): Uint8Array {
+    const hash = computeEventContinuationHash(eventDef.signature, eventDef.isAnonymous);
+    return new Uint8Array([0x88, 0x00, 0x88, 0x14, ...hash, 0x75, 0x02, 0x90, 0x00, 0xb2, 0x75, 0x51]);
   }
 
   private eventCovenantSuffix(eventDef: EventDefinitionNode): Uint8Array {
@@ -19652,9 +19662,75 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
   }
 
-  /** Push the exact P2SH32 lock for an event emitted by the active state owner. */
+  /**
+   * `[payload] -> []`: one effect record per commitment-sized chunk of the payload, in order, so the chunks settle
+   * at consecutive stream outputs: the head under the event covenant, the rest under its continuation covenant.
+   * The effect verifier binds each record to its output, so a forged or reordered chunk is refused.
+   */
+  private emitChunkedRuntimeLoopEventRecords(
+    eventDef: EventDefinitionNode, node: Node, loc: SingleLocationData,
+  ): void {
+    const chunkBytes = BigInt(this.compilerOptions.commitmentLimit ?? EVENT_CHUNK_BYTES);
+    const count = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_COUNT;
+    const head = '(stream_head_lock)';
+    const continuation = '(stream_continuation_lock)';
+    this.stack[0] = '(stream_rest)';
+    this.emitExpectedEventLockingBytecode(eventDef, loc);
+    this.stack[0] = head;
+    this.emitExpectedEventLockingBytecode(eventDef, loc, this.eventContinuationCovenantSuffix(eventDef));
+    this.stack[0] = continuation;
+    this.emit(Op.OP_ROT, loc);
+    this.stack.splice(0, 3, '(stream_rest)', continuation, head);
+    // [rest] -> [tail]: the next chunk (the whole rest when it fits), framed as one push beside its lock, tagged as
+    // an event record and parked on the alt stack; the event count moves on.
+    const takeChunk = (lockName: string): void => {
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(encodeInt(chunkBytes), loc);
+      this.emit(Op.OP_GREATERTHAN, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(encodeInt(chunkBytes), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.pushToStack('(stream_chunk)');
+      this.emitPushdataEncode(new BytesType(), loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(lockName))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_CAT, loc);
+      this.emit(new Uint8Array([0x01]), loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_CAT, loc);
+      this.emit(Op.OP_TOALTSTACK, loc);
+      this.popFromStack();
+      this.emit(encodeInt(BigInt(this.getStackIndex(count))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(stream_count_prior)');
+      this.emit(Op.OP_1ADD, loc);
+      this.emitReplace(this.getStackIndex(count), node);
+      this.popFromStack();
+    };
+    takeChunk(head);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_0NOTEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    takeChunk(continuation);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.popFromStack(3);
+  }
+
+  /** Push the exact P2SH32 lock for an event emitted by the active state owner (`suffix` closes the covenant). */
   private emitExpectedEventLockingBytecode(
     eventDef: EventDefinitionNode, locationData: SingleLocationData,
+    suffix: Uint8Array = this.eventCovenantSuffix(eventDef),
   ): void {
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
@@ -19677,7 +19753,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
     this.popFromStack(2);
     this.pushToStack('(runtime_event_script)');
-    this.emit(this.eventCovenantSuffix(eventDef), locationData);
+    this.emit(suffix, locationData);
     this.pushToStack('(runtime_event_suffix)');
     this.emit(Op.OP_CAT, locationData);
     this.popFromStack(2);
@@ -44665,8 +44741,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     const definition = node.emitInfos?.find((info) => info.emitIndex === emitIndex)?.eventDefinition;
     if (definition === undefined) throw new Error(`Wide emit ${emitIndex} in '${node.name}' has no event definition`);
-    const hash = computeEventContinuationHash(definition.signature, definition.isAnonymous);
-    const continuationSuffix = new Uint8Array([0x88, 0x00, 0x88, 0x14, ...hash, 0x75, 0x02, 0x90, 0x00, 0xb2, 0x75, 0x51]);
+    const continuationSuffix = this.eventContinuationCovenantSuffix(definition);
     const p2sh32 = (): void => {
       this.emit(Op.OP_HASH256, loc);
       this.emit(P2SH32_LBC_PREFIX, loc);

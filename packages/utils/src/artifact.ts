@@ -249,6 +249,11 @@ export interface RuntimeLoopEventAbi {
   effectSequence?: number;
   /** Per-site order among all event and transfer effects in this segment. */
   effectOrder?: readonly number[];
+  /**
+   * Each occurrence settles as consecutive records, one per commitment-sized chunk of its payload: the head at the
+   * event covenant, the rest at its continuation covenant. The record count is learned from the trace.
+   */
+  chunked?: true;
 }
 
 export interface RuntimeLoopIterationDomainAbi {

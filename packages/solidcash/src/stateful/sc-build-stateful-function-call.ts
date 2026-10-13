@@ -87,6 +87,7 @@ export async function buildStatefulFunctionCall(
           eventSignature: event.eventSignature,
           rowIndex: event.rowIndex,
           offset: stb.getRuntimeLoopEventOutputIndex(eventIndex),
+          ...(event.chunked && { chunked: true as const }),
         }))),
       });
     }

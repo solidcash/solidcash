@@ -868,6 +868,8 @@ export class FunctionDefinitionNode extends Node implements Named {
 
   messageBusEligible?: boolean;
   messageBusRejectionReason?: string;
+  /** Kernel route: this handler's emits settle as chunked records on its runtime effect stream, not in windows. */
+  messageBusEventStream?: true;
   /** Stable index of this eligible handler in the route's eligible dispatch set, the ordinal witness names use.
    * Published on the handler so the SDK never re-derives the filtered-list ordering. */
   messageBusWitnessOrdinal?: number;
@@ -3282,6 +3284,8 @@ export interface RuntimeLoopEventInfo {
   iterationBreakCondition?: ExpressionNode;
   /** Function-local execution segment shared by every runtime effect produced at this source position. */
   effectSequence?: number;
+  /** Each occurrence settles as its payload's commitment-sized chunks: the head, then continuation records. */
+  chunked?: true;
 }
 
 export interface RuntimeLoopTransferInfo {
@@ -3322,6 +3326,8 @@ export class EmitStatementNode extends StatementNode {
   emitIndex: number = 0;
   /** Runtime event site within a lowered counter-keyed mapping loop; excluded from fixed event slots. */
   runtimeLoopEvent?: { loopIndex: number; siteIndex: number };
+  /** The runtime event pushes one record per commitment-sized chunk of its payload (head, then continuations). */
+  runtimeLoopEventChunked?: true;
   /** Source predicate controlling this runtime event, evaluated by the SDK to plan the exact output stream. */
   runtimeLoopEventCondition?: ExpressionNode;
   /** SDK-visible replay recipe when the executable argument itself must retain source state semantics. */

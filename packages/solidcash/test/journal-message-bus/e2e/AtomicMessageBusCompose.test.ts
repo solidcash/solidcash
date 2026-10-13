@@ -1344,8 +1344,10 @@ describe('messageBus.compose atomic transaction', () => {
     const calleeSetup = await setupStatefulUtxos(provider, calleeBase, calleeArtifact.stateLayout!, {}, {
       saltContract: true,
       extraOutputs: (categoryId) => {
+        // Record covenants bind the master's lock: seed them for the category-pinned master.
+        const pinned = calleeBase.withCategory(hexToBin(categoryId));
         const outputs = [{
-          address: getEntryNftAddress(calleeBase, categoryId, 'items'),
+          address: getEntryNftAddress(pinned, categoryId, 'items'),
           satoshis: 10_000n,
           token: {
             amount: 0n,
@@ -1355,7 +1357,7 @@ describe('messageBus.compose atomic transaction', () => {
             },
           },
         }, {
-          address: getEntryNftAddress(calleeBase, categoryId, 'fees'),
+          address: getEntryNftAddress(pinned, categoryId, 'fees'),
           satoshis: 10_000n,
           token: {
             amount: 0n,
@@ -1368,7 +1370,7 @@ describe('messageBus.compose atomic transaction', () => {
             },
           },
         }];
-        const chunkAddress = getValueChunkAddress(calleeBase, categoryId, 'items', slot, valueDigest);
+        const chunkAddress = getValueChunkAddress(pinned, categoryId, 'items', slot, valueDigest);
         splitValueIntoValueChunks(encodedItems).forEach((chunk, index) => outputs.push({
           address: chunkAddress,
           satoshis: 10_000n,
@@ -1377,7 +1379,7 @@ describe('messageBus.compose atomic transaction', () => {
             nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(index, chunk) },
           },
         }));
-        const feeChunkAddress = getValueChunkAddress(calleeBase, categoryId, 'fees', feeSlot, feeDigest);
+        const feeChunkAddress = getValueChunkAddress(pinned, categoryId, 'fees', feeSlot, feeDigest);
         splitValueIntoValueChunks(feeValue).forEach((chunk, index) => outputs.push({
           address: feeChunkAddress,
           satoshis: 10_000n,

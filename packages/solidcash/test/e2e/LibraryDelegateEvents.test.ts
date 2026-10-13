@@ -82,10 +82,9 @@ describe('a library facet event under its consumer\'s category', () => {
         await mutate(tx);
         return send(binToHex(encodeTransaction(tx)));
       };
-      // A further consumer-category immutable carrier at `lock`, paid for by a fresh anyone-can-spend coin added as
-      // an input (with change back to it), so no honest output changes and only the census can refuse it.
+      // A fresh anyone-can-spend coin added as an input, so a tamper can add outputs without changing an honest one.
       let coins = 0;
-      const addCarrier = async (tx: Tx, template: Tx['outputs'][number], lock: Uint8Array): Promise<void> => {
+      const addCoin = async (tx: Tx): Promise<bigint> => {
         coins += 1;
         const coin = { txid: binToHex(sha256.hash(utf8ToBin(`carrier coin ${coins}`))), vout: 0, satoshis: 10_000n };
         await provider.addUtxo('51', coin);
@@ -93,13 +92,19 @@ describe('a library facet event under its consumer\'s category', () => {
           outpointTransactionHash: hexToBin(coin.txid), outpointIndex: 0,
           sequenceNumber: tx.inputs[0].sequenceNumber, unlockingBytecode: new Uint8Array(),
         });
+        return coin.satoshis;
+      };
+      // A further consumer-category immutable carrier at `lock`, paid for by a fresh coin (with change back to it), so
+      // no honest output changes and only the census can refuse it.
+      const addCarrier = async (tx: Tx, template: Tx['outputs'][number], lock: Uint8Array): Promise<void> => {
+        const satoshis = await addCoin(tx);
         const nft = template.token!.nft!;
         tx.outputs.push({
           lockingBytecode: lock.slice(),
           valueSatoshis: template.valueSatoshis,
           token: { ...template.token!, nft: { ...nft, commitment: nft.commitment.slice() } },
         });
-        tx.outputs.push({ lockingBytecode: hexToBin('51'), valueSatoshis: coin.satoshis - template.valueSatoshis - 1_000n });
+        tx.outputs.push({ lockingBytecode: hexToBin('51'), valueSatoshis: satoshis - template.valueSatoshis - 1_000n });
       };
       // The consumer's census defers to the facet entry at its derived slot (master, data NFTs, then the facet), so it
       // is the facet input that refuses each carrier.
@@ -115,11 +120,19 @@ describe('a library facet event under its consumer\'s category', () => {
 
       // A second copy of the event, past its declared output.
       await expect(tamper(bump, (tx) => addCarrier(tx, event, event.lockingBytecode))).rejects.toThrow(refused);
-      // The event moved off its declared output.
-      await expect(tamper(bump, (tx) => {
-        const last = tx.outputs.length - 1;
-        [tx.outputs[at], tx.outputs[last]] = [tx.outputs[last], tx.outputs[at]];
+      // The event moved off its declared output: a plain output takes its place and the event follows the last one.
+      await expect(tamper(bump, async (tx) => {
+        const satoshis = await addCoin(tx);
+        const [moved] = tx.outputs.splice(at, 1, { lockingBytecode: hexToBin('51'), valueSatoshis: satoshis - 1_000n });
+        tx.outputs.push(moved);
       })).rejects.toThrow(refused);
+      // Swapped with the last output, which is only a move when the event is not itself the last output.
+      if (at < honest.outputs.length - 1) {
+        await expect(tamper(bump, (tx) => {
+          const last = tx.outputs.length - 1;
+          [tx.outputs[at], tx.outputs[last]] = [tx.outputs[last], tx.outputs[at]];
+        })).rejects.toThrow(refused);
+      }
       // An extra carrier at a key's lock beside the genuine event.
       await expect(tamper(bump, (tx) => addCarrier(tx, event, encodeLockingBytecodeP2pkh(alicePkh))))
         .rejects.toThrow(refused);

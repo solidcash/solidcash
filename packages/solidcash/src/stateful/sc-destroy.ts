@@ -10,6 +10,8 @@ import {
   assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder, type FinalizedByteSubject,
 } from '../message-bus/preflight.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+import { getDustThreshold } from '../network/dust-threshold.js';
+import { addressToLockScript } from '../utils.js';
 import {
   createAnonymousEventNftUnlocker,
   createDestroyDataNftUnlocker,
@@ -180,7 +182,10 @@ export async function buildDestroyTransactionHex(
         + `Available fee value: ${totalInputSats - masterAmount} satoshis.`,
       );
     }
-    if (reclaimed > 0n) {
+    // An automatic fee leaves a sub-dust remainder to the fee: a reclaim output that small does not relay.
+    const keepReclaim = reclaimed > 0n && (feeOverride !== undefined
+      || reclaimed >= getDustThreshold({ lockingBytecode: addressToLockScript(recipient) }));
+    if (keepReclaim) {
       builder.outputs[builder.outputs.length - 1] = {
         ...builder.outputs[builder.outputs.length - 1], amount: reclaimed,
       };
@@ -189,7 +194,7 @@ export async function buildDestroyTransactionHex(
     }
     const hex = builder.build();
     return {
-      hex, reclaimed: reclaimed > 0n ? reclaimed : 0n, subjects: inputSubjectsOfBuilder(builder), builder,
+      hex, reclaimed: keepReclaim ? reclaimed : 0n, subjects: inputSubjectsOfBuilder(builder), builder,
     };
   }
 

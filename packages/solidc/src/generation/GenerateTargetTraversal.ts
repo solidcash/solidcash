@@ -48841,7 +48841,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc);
-    this.emitForeignContainerKeep(loc);
+    if (this.currentFunctionIsDelegate) {
+      // The proxy's sender anchor sits at an anyone-can-spend lock; the SDK recreates it at any free index.
+      this.emitOwnScidAnchorInputFlag(category, loc);
+      this.emit(Op.OP_NOTIF, loc);
+      this.emitForeignContainerKeep(loc);
+      this.emit(Op.OP_ENDIF, loc);
+    } else {
+      this.emitForeignContainerKeep(loc);
+    }
     this.emit(Op.OP_ELSE, loc);
     this.emit(encodeInt(33n), loc);
     this.emit(Op.OP_NUMEQUAL, loc);
@@ -48885,6 +48893,56 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_DROP, loc);
     this.popFromStack();
+  }
+
+  /**
+   * `[index]` -> `[index, isAnchor]`, untracked directly above the tracked `category`. True for an amount-free
+   * immutable NFT of `category` whose commitment is a logical-identity anchor (`SCID` v1, at least 40 bytes) ending
+   * in the master input's lock: what the own-category immutable output pin exempts.
+   */
+  private emitOwnScidAnchorInputFlag(category: string, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(category) + 2)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);                   // [index, ownImmutableOrFt]
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOTOKENAMOUNT, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_BOOLAND, loc);                 // [index, ownAmountFree]
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);     // [index, commitment]
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(40n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(5n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(new Uint8Array([0x53, 0x43, 0x49, 0x44, 0x01]), loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(35n), loc);
+    this.emit(Op.OP_SUB, loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc);                     // [index, last35]
+    this.emitMasterInputIndex(loc, 2);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUAL, loc);                   // [index, isAnchor]
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**

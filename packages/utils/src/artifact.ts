@@ -337,6 +337,7 @@ export type BlockSlotKind =
   | 'dataNft'
   | 'readOnlyDataNft'
   | 'blockhashOracle'
+  | 'blockInfoOracle'
   | 'keccakSideCar'
   | 'ecrecoverSideCar'
   | 'entry'
@@ -824,6 +825,8 @@ export interface AbiFunction {
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
   // the (n->hash) oracle UTXO as a trailing input.
   blockhashReads?: readonly string[];
+  /** The body slices the block-info oracle commitment. The SDK co-spends that UTXO and fills its input index. */
+  usesBlockOracle?: boolean;
   blockLayout?: FunctionBlockLayout;
   isFallback?: boolean;
   isReceive?: boolean;
@@ -2115,6 +2118,10 @@ export interface Artifact {
    */
   delegateProxyStateOutputCountPinned?: boolean;
   usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
+  /** A function reads the block-info oracle commitment. The update is not an entry of this contract. */
+  usesBlockOracle?: boolean;
+  /** Offsets of the 35-byte oracle-lock sentinel in the published bytecode. The offset is the push opcode. */
+  blockOracleLockSlots?: readonly number[];
   // Same source compiled with its proxy-implementable functions in delegate mode (state writes retargeted to a
   // co-spent proxy master). Present when the contract can serve as a proxy implementation; the SDK deploys and
   // calls this variant behind a proxy, so source never needs an explicit `delegate` modifier. One level deep.

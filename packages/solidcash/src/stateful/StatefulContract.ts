@@ -37,6 +37,7 @@ import {
   type EventDefinitionAbi,
   type FunctionBlockLayout,
   isComputedBlockhashKey,
+  blockOracleReadUnlocking,
   encodePushdataValue,
   getDefaultStateValue,
   keccakComputeLockingBytecode,
@@ -11378,6 +11379,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // the consecutive blockhashOracle slots. Only consumed at builder construction, so resolving them late is
     // safe.
     let blockhashCoSpendUtxos: UnlockableUtxo[] = [];
+    let blockInfoCoSpendUtxos: UnlockableUtxo[] = [];
     let blockhashCoSpendSlotOrdinals: number[] | undefined;
     let maxBhLocktime = 0; // require(tx.time >= n) - the SDK sets the locktime so the derivation probe passes
     // keccak256 compute side-cars co-spent at the keccakSideCar slots; parallel commitments (R_i) drive the
@@ -12154,7 +12156,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : this.paramBlockhashN(selection.readKey, selection.rowArgs, selection.handler);
         if (n === null) throw new Error(`blockhash: could not resolve message-bus batch row read "${selection.readKey}"`);
         const coSpend = await resolveBlockhashCoSpend(this.inner.provider, this.categoryId, n);
-        if (!coSpend) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO at addr(${n})`);
+        if (!coSpend) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO for block ${n}`);
         resolved.push(coSpend);
         graphPrior.push({
           slotOrdinal: selection.slotOrdinal, utxo: coSpend.utxo, unlocker: coSpend.unlocker,
@@ -12171,6 +12173,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
       blockhashCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       maxBhLocktime = resolved.reduce((m, cs) => Math.max(m, cs.locktime), 0);
+    }
+    if (abiFunction?.usesBlockOracle === true
+      && abiFunction.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')) {
+      const lock = this.inner.blockOracleLock;
+      if (lock === undefined) {
+        throw new Error(`${this.inner.name} reads the block oracle, and no oracle lock was provided`);
+      }
+      const found = await this.inner.provider.getUtxosForLockingBytecode(lock);
+      const oracle = found.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+      if (oracle?.token?.category === undefined) throw new Error('block oracle UTXO is not available');
+      const category = hexToBin(oracle.token.category);
+      blockInfoCoSpendUtxos = [{
+        ...oracle,
+        unlocker: {
+          generateLockingBytecode: (): Uint8Array => lock,
+          generateUnlockingBytecode: (): Uint8Array => blockOracleReadUnlocking(category),
+        },
+      }];
     }
 
     // Recovery runs first because an EVM projection contributes its verified uncompressed public key to the
@@ -12555,6 +12575,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         satoshiContainerUtxo,
         satoshiContainerLockingBytecode,
         blockhashCoSpendUtxos,
+        blockInfoCoSpendUtxos,
         blockhashCoSpendSlotOrdinals,
         keccakComputeCoSpendUtxos,
         keccakComputeCommitments,

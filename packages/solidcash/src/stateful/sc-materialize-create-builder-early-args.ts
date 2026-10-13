@@ -200,6 +200,13 @@ export async function materializeCreateBuilderEarlyArgs(
       BigInt((overrides?.blockBase ?? 0) + bhSlot.offset),
     );
   }
+  const infoSlot = abiFunction?.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle');
+  if (infoSlot && abiFunction?.inputs.some((input) => input.name === '__internal__blockOracleInputIndex')) {
+    nextFinalArgs = materializeInternalFunctionArgument(
+      nextFinalArgs, abiFunction.inputs, '__internal__blockOracleInputIndex',
+      BigInt((overrides?.blockBase ?? 0) + infoSlot.offset),
+    );
+  }
 
   return {
     finalArgs: nextFinalArgs,

@@ -28,6 +28,7 @@ export interface MaterializeOwnerFrontOutputsHost {
   readonly delegateComputeResources: boolean;
   readonly compilerRouteDelegateBlock: boolean;
   readonly blockhashCoSpendUtxos: readonly UnlockableUtxo[];
+  readonly blockInfoCoSpendUtxos?: readonly UnlockableUtxo[];
   readonly blockhashCoSpendSlotOrdinals?: readonly number[];
   readonly keccakComputeCoSpendUtxos: readonly UnlockableUtxo[];
   readonly keccakComputeCommitments: readonly string[];
@@ -120,7 +121,8 @@ export function materializeOwnerFrontOutputs(
     const blockhashOrdinals = host.blockhashCoSpendSlotOrdinals
     ?? host.blockhashCoSpendUtxos.map((_utxo, index) => index);
     const fixedComputeSlots = host.blockLayout.slots.filter((slot) => (
-      slot.kind === 'blockhashOracle' || slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar'
+      slot.kind === 'blockhashOracle' || slot.kind === 'blockInfoOracle'
+      || slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar'
     )).sort((left, right) => left.offset - right.offset);
     let blockhashOrdinal = 0;
     for (const slot of fixedComputeSlots) {
@@ -131,6 +133,13 @@ export function materializeOwnerFrontOutputs(
       if (slot.kind === 'blockhashOracle') {
         const activeIndex = blockhashOrdinals.indexOf(blockhashOrdinal++);
         output = activeIndex >= 0 ? blockhashOutput(activeIndex) : undefined;
+      } else if (slot.kind === 'blockInfoOracle') {
+        const oracle = host.blockInfoCoSpendUtxos?.[0];
+        output = oracle === undefined ? undefined : {
+          to: oracle.unlocker.generateLockingBytecode(),
+          amount: oracle.satoshis,
+          token: oracle.token,
+        };
       } else if (slot.kind === 'keccakSideCar') {
         output = keccakOutput(slot.slotIndex ?? 0);
       } else {
@@ -142,6 +151,13 @@ export function materializeOwnerFrontOutputs(
   // Legacy layouts emit their active compute resources densely; they do not publish inactive coordinates.
     for (let index = 0; index < host.blockhashCoSpendUtxos.length; index++) {
       builder.addOutput(blockhashOutput(index)!);
+    }
+    for (const oracle of host.blockInfoCoSpendUtxos ?? []) {
+      builder.addOutput({
+        to: oracle.unlocker.generateLockingBytecode(),
+        amount: oracle.satoshis,
+        token: oracle.token,
+      });
     }
     if (ownsFrontComputeResources) {
       for (let index = 0; index < host.keccakComputeCoSpendUtxos.length; index++) {

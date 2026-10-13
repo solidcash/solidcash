@@ -13,6 +13,11 @@ import {
   decodeInt,
   encodeInt,
   encodeString,
+  BLOCK_ORACLE_LOCK_SENTINEL,
+  BLOCK_ORACLE_FIELD_WIDTH,
+  BLOCK_ORACLE_COINBASE_OFFSET,
+  blockOracleFieldOffset,
+  type BlockOracleField,
   Op,
   type OpOrData,
   PrimitiveType,
@@ -14968,13 +14973,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     if (node.identifier.name === GlobalFunction.BLOCKHASH) {
-      // The (n->hash) oracle NFT is BRANDED to the contract's OWN category (master-bound, per
-      // docs/block-and-transaction-properties.md s3): there is no separate oracle category and no compile-time
-      // option. Read the co-spent oracle UTXO and return its hash:
-      //   require(tx.time >= n); base(category(oracle)) == base(category(master)); commitment = n(4 LE)||hash,
-      //   n == arg. Soundness: the oracle rides the contract's own category (only the owner mints it), so a
-      //   co-spent UTXO with that category carries a genuine (n,hash); the n-check disambiguates the block.
-      // blockhash forces the contract stateful (usesBlockhash), so the covenant runs on the master (category).
+      // One covenant per master category. The co-spent NFT carries that same category (capability
+      // none) and commitment = n(4 LE)||hash. require(tx.time >= n) and commitment.n == the argument.
       const loc = { location: node.location, positionHint: PositionHint.START };
       // SDK auto-injection keys on blockhashReads: a direct-identifier n is recorded by param name (the SDK
       // reads that arg to resolve addr(n)). ANY computed n (block.number - K, arbitrary arithmetic) is recorded
@@ -15009,12 +15009,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit([encodeInt(BigInt(offsetDepth)), Op.OP_PICK, Op.OP_ADD], loc);
       }
       if (readOrdinal > 0) this.emit([encodeInt(BigInt(readOrdinal)), Op.OP_ADD], loc); // base + ordinal -> [n, idx]
-      this.emit([
-        Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, // [n, idx, oracleCategory]
-      ], loc);
-      this.emitVerifyCatBaseEqMaster(loc, 2); // base(oracle category) == base(contract's own category) -> [n, idx]
-      // The category check accepts any own-category coin. The oracle address is the only one whose covenant
-      // is the (n -> hash) record, so the input's lock has to be that address.
+      this.emit([Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY], loc);
+      this.emitVerifyCatBaseEqMaster(loc, 2);
+      // The category check accepts any own-category coin. Only the category's blockhash oracle lock runs the
+      // (n -> hash) record covenant, so the input's lock has to be that one.
       this.emitBindBlockhashOracleLock(loc);
       this.emit([
         Op.OP_UTXOTOKENCOMMITMENT, encodeInt(4n), Op.OP_SPLIT, // [n, n4, hash32]
@@ -17499,6 +17497,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit([Op.OP_SWAP, encodeInt(1000n), Op.OP_MUL, Op.OP_SWAP, Op.OP_DIV], loc); // [gasprice]
   }
 
+  /** Slice one field out of the co-spent block-oracle commitment. The lock pin is a sentinel deployment fills. */
+  private emitBlockOracleField(field: BlockOracleField | 'coinbase', locationData: SingleLocationData): void {
+    const idxDepth = this.getStackIndex('__internal__blockOracleInputIndex');
+    this.emit([
+      encodeInt(BigInt(idxDepth)), Op.OP_PICK,
+      Op.OP_DUP, Op.OP_UTXOBYTECODE,
+      BLOCK_ORACLE_LOCK_SENTINEL, Op.OP_EQUALVERIFY,
+      Op.OP_UTXOTOKENCOMMITMENT,
+    ], locationData);
+    if (field === 'coinbase') {
+      this.emit([
+        encodeInt(BigInt(BLOCK_ORACLE_COINBASE_OFFSET)), Op.OP_SPLIT, Op.OP_NIP,
+        encodeInt(1n), Op.OP_SPLIT, Op.OP_SWAP, Op.OP_BIN2NUM, Op.OP_SPLIT, Op.OP_DROP,
+      ], locationData);
+    } else {
+      this.emit([
+        encodeInt(BigInt(blockOracleFieldOffset(field))), Op.OP_SPLIT, Op.OP_NIP,
+        encodeInt(BigInt(BLOCK_ORACLE_FIELD_WIDTH)), Op.OP_SPLIT, Op.OP_DROP,
+        Op.OP_BIN2NUM,
+      ], locationData);
+    }
+    this.pushToStack('(value)');
+  }
+
   visitNullaryOp(node: NullaryOpNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
@@ -17533,6 +17555,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       case NullaryOperator.TX_GASPRICE:
         this.emitTxGasprice(locationData);
         break;
+      case NullaryOperator.BLOCK_NUMBER:
+        this.emitBlockOracleField('number', locationData);
+        return node;
+      case NullaryOperator.BLOCK_TIMESTAMP:
+        this.emitBlockOracleField('timestamp', locationData);
+        return node;
+      case NullaryOperator.BLOCK_DIFFICULTY:
+        this.emitBlockOracleField('difficulty', locationData);
+        return node;
+      case NullaryOperator.BLOCK_SIZE:
+        this.emitBlockOracleField('size', locationData);
+        return node;
+      case NullaryOperator.BLOCK_TOTAL_FEES:
+        this.emitBlockOracleField('totalFees', locationData);
+        return node;
+      case NullaryOperator.BLOCK_COINBASE:
+        this.emitBlockOracleField('coinbase', locationData);
+        return node;
       default:
         this.emit(compileNullaryOp(node.operator), locationData);
         break;
@@ -50488,36 +50528,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `[n, idx]` stays. The input at idx must be locked by the (n -> hash) oracle address of this contract's
-   * category. A same-category coin at another lock is not that record.
+   * `[n, idx]` stays. The input at idx must be locked by the blockhash oracle lock of this contract's category.
+   * A same-category coin at another lock is not a (n -> hash) record.
    */
   private emitBindBlockhashOracleLock(loc: SingleLocationData): void {
     const category = Uint8Array.from({ length: 32 }, (_byte, index) => index + 1);
-    const raw = scriptToBytecode(buildBlockhashOracleCovenantScript(category, 0n));
+    const raw = scriptToBytecode(buildBlockhashOracleCovenantScript(category));
     const categoryPush = Uint8Array.from([0x20, ...category.slice().reverse()]);
-    const numberPush = scriptToBytecode([encodeInt(256n)]);
     const categoryAt = raw.findIndex((_byte, index) =>
       categoryPush.every((byte, offset) => raw[index + offset] === byte));
-    const numberAt = raw.findIndex((_byte, index) =>
-      numberPush.every((byte, offset) => raw[index + offset] === byte));
-    if (categoryAt < 0 || numberAt < categoryAt + categoryPush.length) {
-      throw new Error('Internal error: blockhash oracle covenant placeholders were not found.');
+    if (categoryAt < 0) {
+      throw new Error('Internal error: the blockhash oracle covenant category push was not found.');
     }
     const head = raw.slice(0, categoryAt);
-    const mid = raw.slice(categoryAt + categoryPush.length, numberAt);
-    const tail = raw.slice(numberAt + numberPush.length);
-    // [n, idx, n+256] as the script push that the covenant bakes in.
-    this.emit(Op.OP_OVER, loc);
-    this.emit(encodeInt(256n), loc);
-    this.emit(Op.OP_ADD, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_SIZE, loc);
-    this.emit(Op.OP_NIP, loc);
-    this.emit(encodeInt(1n), loc);
-    this.emit(Op.OP_NUM2BIN, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_CAT, loc);
-    this.emit(Op.OP_TOALTSTACK, loc);
+    const tail = raw.slice(categoryAt + categoryPush.length);
     // [n, idx, 0x20 || category]. The token category's first 32 bytes are already the covenant's internal order.
     // idx is the one untracked item above the tracked n.
     this.emitMasterInputIndex(loc, 1);
@@ -50528,11 +50552,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, loc);
     this.emit(head, loc);
     this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_CAT, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc);
-    this.emit(mid, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_CAT, loc);
     this.emit(tail, loc);
     this.emit(Op.OP_CAT, loc);

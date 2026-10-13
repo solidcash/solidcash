@@ -842,6 +842,7 @@ export class StatefulTransactionBuilder {
   private tokenContainerTransferInsertionCounter = 0;
   private readOnlyDataNftUtxos: UnlockableUtxo[];
   private blockhashCoSpendUtxos: UnlockableUtxo[];
+  private blockInfoCoSpendUtxos: UnlockableUtxo[] = [];
   private blockhashCoSpendSlotOrdinals?: number[];
   private keccakComputeCoSpendUtxos: UnlockableUtxo[];
   private keccakComputeCommitments: string[];
@@ -1057,6 +1058,7 @@ export class StatefulTransactionBuilder {
     this.categoryId = options.categoryId;
     this.readOnlyDataNftUtxos = options.readOnlyDataNftUtxos ?? [];
     this.blockhashCoSpendUtxos = options.blockhashCoSpendUtxos ?? [];
+    this.blockInfoCoSpendUtxos = options.blockInfoCoSpendUtxos ?? [];
     this.blockhashCoSpendSlotOrdinals = options.blockhashCoSpendSlotOrdinals;
     this.keccakComputeCoSpendUtxos = options.keccakComputeCoSpendUtxos ?? [];
     this.keccakComputeCommitments = options.keccakComputeCommitments ?? [];
@@ -1796,6 +1798,7 @@ export class StatefulTransactionBuilder {
       delegateComputeResources: this.delegateComputeResources,
       compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
       blockhashCoSpendUtxos: this.blockhashCoSpendUtxos,
+      blockInfoCoSpendUtxos: this.blockInfoCoSpendUtxos,
       blockhashCoSpendSlotOrdinals: this.blockhashCoSpendSlotOrdinals,
       keccakComputeCoSpendUtxos: this.keccakComputeCoSpendUtxos,
       keccakComputeCommitments: this.keccakComputeCommitments,
@@ -2828,6 +2831,7 @@ export class StatefulTransactionBuilder {
       get dataNftUtxos() { return self.dataNftUtxos; },
       get readOnlyDataNftUtxos() { return self.readOnlyDataNftUtxos; },
       get blockhashCoSpendUtxos() { return self.blockhashCoSpendUtxos; },
+      get blockInfoCoSpendUtxos() { return self.blockInfoCoSpendUtxos; },
       get blockhashCoSpendSlotOrdinals() { return self.blockhashCoSpendSlotOrdinals; },
       get keccakComputeCoSpendUtxos() { return self.keccakComputeCoSpendUtxos; },
       get keccakLoopSideCars() { return self.keccakLoopSideCars; },

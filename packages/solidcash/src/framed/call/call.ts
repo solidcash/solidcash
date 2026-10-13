@@ -69,6 +69,7 @@ import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/c
 import {
   FrameKind,
   INDEX_NONE,
+  blockOracleReadUnlocking,
   bytesEqual,
   computeFunctionSelector,
   computeFunctionSignature,
@@ -87,6 +88,7 @@ import {
 import {
   encodeFunctionArgument, type FunctionArgument,
 } from '../../Argument.js';
+import { bindBlockOracleLock } from '../../oracle/block-oracle-lock.js';
 import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
@@ -425,7 +427,7 @@ function entryArgumentPushes(
   return [
     new Uint8Array(hexToBin(entry.selector)),
     ...args.map((value, index) => {
-      const input = entry.inputs[index];
+      const input = entry.inputs.filter((candidate) => candidate.name !== '__internal__blockOracleInputIndex')[index];
       if (input === undefined) throw new FramedCallError(`entry "${functionName}" has no parameter ${index}`);
       return encodeFunctionArgument(value, input.type, structs) as Uint8Array;
     }).reverse(),
@@ -770,6 +772,10 @@ async function callInShape(
   // A shard that names a helper lock is replaced, once the validator program is known, by the clone whose
   // sentinel already holds that lock.
   let artifact = splitShard?.artifact ?? options.artifact;
+  const providerOracleLock = (provider as { blockOracleLock?: Uint8Array }).blockOracleLock;
+  if (providerOracleLock !== undefined && artifact.usesBlockOracle === true) {
+    bindBlockOracleLock(artifact, providerOracleLock);
+  }
   const stateLayout = artifact.stateLayout;
   if (stateLayout === undefined) {
     throw new FramedCallError(`artifact "${artifact.contractName}" is not a stateful contract`);
@@ -925,7 +931,7 @@ async function callInShape(
     ? [valueSendCallData(artifact)]
     : entryArgumentPushes(entry, args, structs, functionName);
   // A sole-entry root does not push the selector. Callee frames still do: their arms equal-verify the salt.
-  const argumentPushes = splitShard !== undefined && entry.name !== FALLBACK_ENTRY
+  let argumentPushes = splitShard !== undefined && entry.name !== FALLBACK_ENTRY
     ? selectorPushes.slice(1)
     : selectorPushes;
   // The events, sends and hashes a loop of the entry repeats, as many as the loop turns over the call's own facts.
@@ -940,6 +946,32 @@ async function callInShape(
     throw error;
   }
   // The compute side-cars the entry's keccak256 and recovery calls read, one per call after the master.
+  const BLOCK_ORACLE_INPUT = `${MASTER_ID}:block-oracle`;
+  const readsBlockOracle = artifact.abi.some((candidate) =>
+    candidate.name === functionName && candidate.usesBlockOracle === true);
+  // Fetched here: the plan builder that places the input is synchronous.
+  const blockOracleInput: DraftInput | undefined = readsBlockOracle
+    ? await (async (): Promise<DraftInput> => {
+      const lock = providerOracleLock;
+      if (lock === undefined) {
+        throw new FramedCallError(
+          `entry "${functionName}" reads the block oracle, and no oracle lock was provided`,
+        );
+      }
+      const utxos = await provider.getUtxosForLockingBytecode(lock);
+      const oracle = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+      if (oracle?.token?.category === undefined) {
+        throw new FramedCallError('block oracle UTXO is not available');
+      }
+      const oracleCategory = hexToBin(oracle.token.category);
+      return {
+        source: mutableSource(
+          lock, oracle.satoshis, oracleCategory, hexToBin(oracle.token.nft?.commitment ?? ''),
+        ),
+        unlockingBytecode: blockOracleReadUnlocking(oracleCategory),
+      };
+    })()
+    : undefined;
   const sideCars = await entrySideCars({
     provider,
     master: MASTER_ID,
@@ -1184,7 +1216,9 @@ async function callInShape(
     state: [...new Set([
       ...recordIds, ...mappingIds, ...ownCalleeBlocks.flatMap((block) => block.state),
     ])],
-    ...(sideCars.ids.length === 0 ? {} : { recovery: { [MASTER_ID]: sideCars.ids } }),
+    ...(sideCars.ids.length === 0 && !readsBlockOracle ? {} : {
+      recovery: { [MASTER_ID]: [...sideCars.ids, ...(readsBlockOracle ? [BLOCK_ORACLE_INPUT] : [])] },
+    }),
   }, ...otherCalleeBlocks, ...payees.flatMap((payee, index) => (payee.shared.length > 0 ? [] : [{
     contract: payeeBlocks[index]!,
     masters: [receiveMasterId(index)],
@@ -1199,6 +1233,14 @@ async function callInShape(
   const facets = validatorFacetsOf({ id: VALIDATOR_ID, covers: [], settles: [], redeemScript: validatorRedeem });
   const layout = layoutTransaction(blocks, new Map([[VALIDATOR_ID, facets]]));
   const masterIndex = participant(layout, MASTER_ID).index;
+  if (readsBlockOracle) {
+    const encoded = encodeFunctionArgument(BigInt(participant(layout, BLOCK_ORACLE_INPUT).index), 'int');
+    if (!(encoded instanceof Uint8Array)) {
+      throw new FramedCallError('the block oracle input index did not encode');
+    }
+    const at = splitShard !== undefined && entry.name !== FALLBACK_ENTRY ? 0 : 1;
+    argumentPushes = [...argumentPushes.slice(0, at), encoded, ...argumentPushes.slice(at)];
+  }
   // The trailing region is events first, then the created mapping nodes. An entry that emits declares one output
   // per emit, in emit order, at the covenant the body rebuilds; each output's commitment is the payload the body
   // computes, so the frame starts it from a sentinel the body's own comparison fails against and the derivation
@@ -1661,6 +1703,7 @@ async function callInShape(
     }
     if (laid !== undefined) Object.assign(inputs, laid.inputs);
     Object.assign(inputs, sideCars.inputs);
+    if (blockOracleInput !== undefined) inputs[BLOCK_ORACLE_INPUT] = blockOracleInput;
     Object.assign(inputs, callees?.inputs ?? {});
     payees.forEach((payee, index) => {
       inputs[receiveMasterId(index)] = {

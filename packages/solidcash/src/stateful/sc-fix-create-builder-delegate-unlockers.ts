@@ -800,6 +800,10 @@ export async function fixCreateBuilderDelegateUnlockers(
         }
         const runtimeCardinality = resolveDelegateRuntimeCardinality(inp.name, activeEntryDelegate);
         if (runtimeCardinality !== undefined) return runtimeCardinality;
+        if (inp.name === '__internal__blockOracleInputIndex') {
+          const info = (bFunc as AbiFunction).blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle');
+          return BigInt(masterInputIndex + (info?.offset ?? 0));
+        }
         if (inp.name === '__internal__graphSelfIdentityInput') {
           // Only a forwarding proxy presents its CREATE lock as address(this). A delegate of the same
           // contract keeps -1 so hash160(self) still matches the input that is executing.

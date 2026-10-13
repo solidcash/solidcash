@@ -1,4 +1,5 @@
 export * from './artifact.js';
+export * from './block-oracle.js';
 export {
   functionSplitLoaderLock,
   functionSplitLoaderScript,

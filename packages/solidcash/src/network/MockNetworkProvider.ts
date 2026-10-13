@@ -1,7 +1,11 @@
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
-import { hash256, sha256 } from '@solidcash/utils';
+import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import {
+  encodeBlockOracleCommitment, blockOracleLockingBytecode, hash160, hash256, sha256,
+  type BlockOracleCommitmentFields,
+} from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
 import { type Utxo, Network, VmTarget, type TokenDetails } from '../interfaces.js';
@@ -376,6 +380,76 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.indexer = createIndexer({ verifier });
     storeGeneration(this.indexer.storage);
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
+    this.installBlockOracle();
+  }
+
+  /** Compressed key the mock oracle's commitment names. Tests sign updates with it. */
+  readonly blockOracleOwnerKey = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x44 : 0x11));
+  blockOracleLock!: Uint8Array;
+  blockOracleCategory!: Uint8Array;
+  private blockOracleOutpoint = { txid: `${'b0'.repeat(31)}b1`, vout: 0 };
+
+  /** Mint the one block-info NFT this provider's readers slice. */
+  private installBlockOracle(): void {
+    this.blockOracleCategory = sha256(new TextEncoder().encode('solidcash-block-info-oracle-v1'));
+    this.blockOracleLock = blockOracleLockingBytecode(this.blockOracleCategory);
+    const pubkey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
+    const commitment = encodeBlockOracleCommitment(hash160(pubkey), {
+      number: BigInt(this.blockHeight),
+      timestamp: BigInt(this.getBlockTime()),
+      difficulty: 0n,
+      size: 1000n,
+      totalFees: 0n,
+      coinbase: hexToBin(`76a914${'00'.repeat(20)}88ac`),
+    });
+    this.indexer.addUtxo({
+      txid: this.blockOracleOutpoint.txid,
+      vout: 0,
+      satoshis: 10_000n,
+      scriptHash: binToHex(sha256(this.blockOracleLock)),
+      height: 100,
+      lockingBytecode: this.blockOracleLock,
+      tokenData: {
+        category: binToHex(this.blockOracleCategory),
+        amount: 0n,
+        nft: { capability: 'mutable', commitment: binToHex(commitment) },
+      },
+    });
+  }
+
+  /** Write the provider's current height and time into the oracle commitment. The owner hash stays. */
+  refreshBlockOracle(): void {
+    this.setBlockOracleFields({
+      number: BigInt(this.blockHeight),
+      timestamp: BigInt(this.getBlockTime()),
+      difficulty: 0n,
+      size: 1000n,
+      totalFees: 0n,
+      coinbase: hexToBin(`76a914${'00'.repeat(20)}88ac`),
+    });
+  }
+
+  /** Replace the block fields. The owner hash already in the commitment stays, so the same key can sign. */
+  setBlockOracleFields(fields: BlockOracleCommitmentFields): void {
+    const pubkey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
+    const commitment = encodeBlockOracleCommitment(hash160(pubkey), fields);
+    const { txid, vout } = this.blockOracleOutpoint;
+    const storage = this.indexer.storage as {
+      getUtxoByOutpoint?: (key: string) => { scriptHash: string; height: number; isCoinbase?: boolean } | undefined;
+      _test?: { utxo: { remove: (id: { txid: string; vout: number }) => void } };
+    };
+    storage._test?.utxo.remove({ txid, vout });
+    this.indexer.addUtxo({
+      txid, vout, satoshis: 10_000n,
+      scriptHash: binToHex(sha256(this.blockOracleLock)),
+      height: storage.getUtxoByOutpoint?.(`${txid}:${vout}`)?.height ?? 100,
+      lockingBytecode: this.blockOracleLock,
+      tokenData: {
+        category: binToHex(this.blockOracleCategory),
+        amount: 0n,
+        nft: { capability: 'mutable', commitment: binToHex(commitment) },
+      },
+    });
   }
 
   async getUtxos(address: string): Promise<Utxo[]> {

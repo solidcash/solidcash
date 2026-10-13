@@ -13,7 +13,7 @@ import {
   deriveLogicalCreateAddress,
   upgrades,
 } from '../../src/stateful/index.js';
-import { alicePub } from '../fixture/vars.js';
+
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 
 const SOURCE = `
@@ -170,9 +170,7 @@ describe('split contract SDK', () => {
         function set(uint next) external { value = next + block.timestamp; require(next > 0); }
       }
     `, { forceSplit: true, evmCompat: true, messageBus: false });
-    const deployed = await SplitContractBundle.from(compiled, signer).deploy([7n], {
-      initialState: { __block_timestamp: 0n, __blockOracleOwner: alicePub },
-    });
+    const deployed = await SplitContractBundle.from(compiled, signer).deploy([7n]);
     expect((await deployed.root.getState()).value).toBe(7n);
   });
 

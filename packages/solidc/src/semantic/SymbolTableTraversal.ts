@@ -3838,6 +3838,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.pushToStack(idxParam);
     }
 
+    // block.* reads slice one shared oracle commitment. The index is the co-spend, filled by the SDK.
+    if (node.usesBlockOracle) {
+      const idxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__blockOracleInputIndex');
+      idxParam.location = node.location;
+      node.parameters.push(idxParam);
+      this.symbolTables[0].set(Symbol.variable(idxParam));
+      const sym = this.symbolTables[0].get('__internal__blockOracleInputIndex');
+      if (sym) sym.references.push({ name: '__internal__blockOracleInputIndex' } as IdentifierNode);
+      this.pushToStack(idxParam);
+    }
+
     // An upgrade intentionally changes the master locking bytecode, so ordinary self-preservation cannot bind
     // it. Carry the SDK-selected replacement bytecode as an authenticated covenant argument instead. This must
     // be compiler-owned: a wallet signature may legally use SIGHASH_NONE and cannot be the security boundary.
@@ -18171,6 +18182,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const bhSlots = Math.max(1, node.blockhashSlotCount ?? 0);
       for (let i = 0; i < bhSlots; i++) slots.push({ kind: 'blockhashOracle', offset: offset++ });
     }
+    if (node.usesBlockOracle) slots.push({ kind: 'blockInfoOracle', offset: offset++ });
 
     // keccak256 compute side-cars: each call rides its OWN consecutive side-car - a self-preserving 1:1
     // input/output slot (sibling of blockhashOracle). The side-car computes keccak256 in its own budget and

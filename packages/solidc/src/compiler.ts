@@ -14,7 +14,8 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
-  type AbiFunctionReference, type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType,
+  type AbiFunctionReference, type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode,
+  findBlockOracleLockSlots, BytesType,
   type CompilerOptions,
   FixedType, IntType,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSelectorHex,
@@ -15814,14 +15815,21 @@ function compileResolvedAst(
   if (ast.freeFunctions.length > 0 || ast.declaredLibraryNames.length > 0) {
     ast = ast.accept(new SynthesizeLibraryDelegateCalls(mergedCompilerOptions.evmCompat === true)) as Ast;
   }
-  // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
+  // Oracle-backed block.* reads stay reads of the shared covenant commitment. No state is injected.
   const blockOracle = new SynthesizeBlockOracle(
     mergedCompilerOptions.evmCompat ?? false,
     oracleDelegateExecutionContext,
   );
-  // Yul context builtins become ordinary block.* reads and gasleft() only after assembly lowering. The initial
-  // source survey cannot see those generated AST nodes, so resurvey only sources which actually had assembly.
-  if (needsBlockOracle || (needsInlineAssembly && surveyOptionalLowerings(ast).needsBlockOracle)) {
+  // A split root's forwarder no longer contains the read, but the prepare pass already marked the function.
+  // Re-run so that mark is cleared. Yul builtins become block.* reads only after assembly lowering, which the
+  // initial survey cannot see, so sources that had assembly are resurveyed.
+  const oracleAlreadyMarked = ast.contract.usesBlockOracle
+    || ast.contract.functions.some((fn) => fn.usesBlockOracle === true)
+    || ast.contract.constructorDef?.usesBlockOracle === true
+    || ast.contract.fallbackDef?.usesBlockOracle === true
+    || ast.contract.receiveDef?.usesBlockOracle === true;
+  if (needsBlockOracle || oracleAlreadyMarked
+    || (needsInlineAssembly && surveyOptionalLowerings(ast).needsBlockOracle)) {
     ast = ast.accept(blockOracle) as Ast;
   }
 
@@ -18330,6 +18338,14 @@ function compileResolvedAst(
   }
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
+  if (ast.contract.usesBlockOracle) {
+    const slots = findBlockOracleLockSlots(asmToBytecode(artifact.bytecode));
+    if (slots.length === 0) {
+      throw new Error(`'${artifact.contractName}' reads the block oracle but did not publish its lock pin`);
+    }
+    artifact.usesBlockOracle = true;
+    artifact.blockOracleLockSlots = slots;
+  }
   const boundVerifierProgram = mergedCompilerOptions.__messageBusVerifierProgram ?? singlePassVerifierProgram;
   if (boundVerifierProgram && artifact.messageBus?.route.inputs.some((input) =>
     input.name === '__internal__activeVerifierIndex')) {
@@ -19582,11 +19598,9 @@ function prepareSplitAst(
   if (!(rootSourceCoversProgram(ast) && !code.includes('assembly'))) {
     ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
   }
-  // Sharding must happen after storage-shaping synthesis. Otherwise a block.* read moved into a facet injects
-  // oracle registers only there, changing delegate offsets and leaving the root unable to materialize that state.
-  // Match the ordinary pipeline's block-oracle synthesis so split roots append the same canonical register
-  // order (__block_number before __block_timestamp) as their unsplit baseline. block.timestamp always lowers
-  // to the __block_timestamp oracle register.
+  // Sharding must happen after storage-shaping synthesis. A block.* read stays a read of the shared
+  // covenant; the pass marks the function and injects no state. Running it on the complete function set
+  // keeps that mark on the same functions the unsplit pipeline marks.
   if (!(rootSourceCoversProgram(ast) && !code.includes('block.') && !code.includes('now'))) {
     ast = ast.accept(new SynthesizeBlockOracle(
       options.evmCompat ?? false,

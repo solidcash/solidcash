@@ -7,7 +7,8 @@
  * change made one of them stale.
  *
  * SCOPE, deliberately narrow so the gate stays trustworthy rather than noisy:
- *  - Only fenced `solidity` / `scash` / `sol` blocks are considered.
+ *  - Only fenced `solidity` / `scash` / `sol` blocks are considered, titled ones (```solidity title="...") included.
+ *  - The deliberately historical blocks in HISTORICAL are counted and skipped: they show old syntax on purpose.
  *  - Only blocks that DECLARE a `contract`, `library` or `interface` are compiled. The rest are fragments
  *    (a single function, a type, a few statements) that were never meant to stand alone, and compiling them
  *    would report failures that say nothing about the docs being correct.
@@ -38,20 +39,36 @@ const markdownFiles = (dir: string): string[] => {
 
 interface Failure { file: string; line: number; reason: string }
 
+// A fence's language, then an optional meta string such as `title="..."`. Group 1 is the meta, group 2 the code.
+const fenceOf = (languages: string): RegExp => (
+  new RegExp(`\`\`\`(?:${languages})(?:[ \\t]+([^\\n]*))?\\n([\\s\\S]*?)\`\`\``, 'g')
+);
+
+// Historical blocks kept on purpose (pre-0.7 syntax), keyed by docs-relative file and exact fence meta.
+const HISTORICAL = new Set([
+  'releases/migration-notes.md title="Mecenas.scash v0.6.0"',
+  'releases/migration-notes.md title="Mecenas.scash 0.7.0"',
+]);
+
 const files = markdownFiles(DOCS);
 let blocks = 0;
 let standalone = 0;
 let compiled = 0;
 let skippedImports = 0;
+let skippedHistorical = 0;
 const failures: Failure[] = [];
 
 for (const file of files) {
   const source = fs.readFileSync(file, 'utf8');
-  const fence = /```(?:solidity|scash|sol)\n([\s\S]*?)```/g;
+  const fence = fenceOf('solidity|scash|sol');
   let match: RegExpExecArray | null;
   while ((match = fence.exec(source)) !== null) {
     blocks += 1;
-    const code = match[1];
+    const code = match[2];
+    if (HISTORICAL.has(`${path.relative(DOCS, file).split(path.sep).join('/')} ${match[1]?.trim()}`)) {
+      skippedHistorical += 1;
+      continue;
+    }
     if (!/\b(?:contract|library|interface)\s+\w+/.test(code)) continue;
     standalone += 1;
     if (/^\s*import\s/m.test(code)) { skippedImports += 1; continue; }
@@ -72,8 +89,12 @@ for (const file of files) {
 console.log(
   `docs snippets: ${files.length} files, ${blocks} blocks, ${standalone} standalone, `
   + `${compiled} compiled, ${skippedImports} skipped (import a file the docs do not ship), `
-  + `${failures.length} failed`,
+  + `${skippedHistorical} skipped (historical), ${failures.length} failed`,
 );
+if (skippedHistorical !== HISTORICAL.size) {
+  console.error(`\nExpected ${HISTORICAL.size} historical blocks, found ${skippedHistorical}: update HISTORICAL.`);
+  process.exit(1);
+}
 if (failures.length > 0) {
   console.error('\nSnippets that no longer compile:');
   for (const f of failures) console.error(`  ${f.file}:${f.line}  ${f.reason}`);
@@ -101,12 +122,12 @@ const isOwnSpecifier = (specifier: string): boolean =>
 const documentedNames = new Map<string, Set<string>>();
 for (const file of files) {
   const source = fs.readFileSync(file, 'utf8');
-  const fence = /```(?:ts|typescript|js|javascript)\n([\s\S]*?)```/g;
+  const fence = fenceOf('ts|typescript|js|javascript');
   let block: RegExpExecArray | null;
   while ((block = fence.exec(source)) !== null) {
     const imports = /import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g;
     let imported: RegExpExecArray | null;
-    while ((imported = imports.exec(block[1])) !== null) {
+    while ((imported = imports.exec(block[2])) !== null) {
       const pkg = imported[2];
       if (!isOwnSpecifier(pkg)) continue;
       if (!documentedNames.has(pkg)) documentedNames.set(pkg, new Set());

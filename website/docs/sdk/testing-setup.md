@@ -121,7 +121,8 @@ contract Example() {
 
 ```ts title="Example test file"
 import artifact from '../artifacts/example.artifact.js';
-import { Contract, MockNetworkProvider, TransactionBuilder, randomUtxo } from 'solidcash';
+import { Contract, TransactionBuilder, randomUtxo } from 'solidcash';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 import 'solidcash/vitest';
 
 describe('Example contract', () => {

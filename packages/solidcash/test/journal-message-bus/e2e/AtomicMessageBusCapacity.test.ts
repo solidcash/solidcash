@@ -89,29 +89,33 @@ interface CapacityReading {
 // the intervening compiler commits that shrank the verifier/route took kernel 3_597_958 -> 3_068_177 and
 // transactionBytes 23_195 -> 23_121; legacy 6_168_252 -> 6_113_134 and 23_692 -> 23_485.) The title still
 // asserts the same property (the same two-party composition, pinned byte-for-byte against the stock VM).
+// Refreshed after the October 2026 covenant hardening (container sums, foreign-token keep, record census), with its
+// scans listing the slots they act on: kernel transactionBytes 23_158 -> 24_122 and legacy 23_595 -> 24_586; the
+// participant inputs carry the checks (kernel 447_944 -> 504_357 and 402_175 -> 489_563; legacy 430_505 ->
+// 493_027 and 423_138 -> 507_380) and their longer scripts raise their maximums. The worst input stays a verifier.
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 23_158, callManifestBytes: 294,
+    transactionBytes: 24_122, callManifestBytes: 294,
     worstOperationCost: 3_068_177, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.4241093940064138,
     inputOperationCosts: [
-      447_944, 402_175, 695, 3_068_177, 3_037_456, 27_321,
+      504_357, 489_563, 695, 3_068_177, 3_037_456, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_018_400, 1_500_800, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_383_200, 1_907_200, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 23_595, callManifestBytes: 294,
-    worstOperationCost: 6_113_134, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.8450091230786243,
+    transactionBytes: 24_586, callManifestBytes: 294,
+    worstOperationCost: 6_113_136, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.8450093995355523,
     inputOperationCosts: [
-      430_505, 423_138, 695, 6_113_134, 6_020_080, 27_321,
+      493_027, 507_380, 695, 6_113_136, 6_020_085, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_947_200, 1_921_600, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_320_800, 2_340_800, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });
@@ -307,7 +311,6 @@ describe('atomic single-transaction capacity', () => {
     { count: 4, messageBusKernel: false, convention: 'legacy' },
     { count: 6, messageBusKernel: true, convention: 'kernel' },
     { count: 7, messageBusKernel: true, convention: 'kernel' },
-    { count: 8, messageBusKernel: true, convention: 'kernel' },
   ])('classifies a $count-participant $convention chain at the stock operation-density boundary', async ({
     count, messageBusKernel,
   }) => {
@@ -316,6 +319,15 @@ describe('atomic single-transaction capacity', () => {
     expect(encodeTransaction(transaction).length).toBeLessThanOrEqual(100_000);
     expect(stockVmErrors(builder)).toContainEqual(expect.stringMatching(/operation cost density limit/));
   }, 600_000);
+
+  // Each participant's covenant carries the October hardening (container sums, foreign-token keep, record census),
+  // so eight participants no longer fit a standard transaction: 102,186 B when this row moved.
+  it('classifies an 8-participant kernel chain over the standard size and the stock operation-density boundary',
+    async () => {
+      const builder = await buildChain(8, true);
+      expect(encodeTransaction(builder.buildLibauthTransaction()).length).toBeGreaterThan(100_000);
+      expect(stockVmErrors(builder)).toContainEqual(expect.stringMatching(/operation cost density limit/));
+    }, 600_000);
 
   // The same cost reduction that lowered the two-party pins moved the 4- and 5-participant kernel chains under
   // the stock density ceiling, so they are classified as accepted rather than listed in the refusal table.

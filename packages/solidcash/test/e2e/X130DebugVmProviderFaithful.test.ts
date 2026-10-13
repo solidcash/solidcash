@@ -166,31 +166,31 @@ describe('X130 - the debug VM decides on the published limits (@mem-cash/validat
     ).toBe('0.0.10');
   });
 
-  it('1. FAIL-OPEN CLOSED: .build() refuses depth 3 at 140 x density, and so does the decider', async () => {
+  it('1. FAIL-OPEN CLOSED: .build() refuses depth 3 at 30 x density, and so does the decider', async () => {
     // The exact shape X121 row 6 pinned as still-admitted. `.build()` now refuses it.
-    // The budget is calibrated against this shape's operation cost, so it moves whenever codegen does: helper
-    // ids drawn from the single-byte pool shortened the recursive body enough that 150 x density no longer
-    // refuses it. 140 restores the refusal; row 1b's 800 is still the accepting contrast.
-    const provider = budgetProfile(140);
+    // The budget is calibrated against this shape's operation cost, so it moves whenever codegen does. The October
+    // covenant hardening lengthened the script, which raised the shape's density budget past its cost at 140. 30
+    // sits far below its cost per byte, so drift does not flip it; row 1b's 800 is still the accepting contrast.
+    const provider = budgetProfile(30);
     const { builder, error } = await buildOutcome(provider, 3n);
     expect(builder, '.build() still admits a shape the decider refuses').toBeUndefined();
     expect(error).toMatch(/Recursive state invocation 'decrement' does not fit or fails its concrete BCH VM/);
     expect(error).toMatch(/exceed the operation cost density limit/);
-    const density = assertDensityCeiling(error!, 140);
+    const density = assertDensityCeiling(error!, 30);
 
-    // And the DECIDER refuses that shape at the same published 140 x density, measured on the funded bytes
+    // And the DECIDER refuses that shape at the same published 30 x density, measured on the funded bytes
     // rather than inherited from another row. Density control length is `41 + unlockingBytecodeLength`, so the
     // send path's fully signed input is a byte or two off the build path's; the BUDGET is what must agree.
     const { builder: funded, error: sendError } = await sendCapturingPreflightInput(
       await recursionContract(provider), 3n,
     );
     expect(funded).toBeDefined();
-    assertDensityCeiling(sendError!, 140);
+    assertDensityCeiling(sendError!, 30);
     let submitError: string | undefined;
     try { await provider.sendRawTransaction(funded!.build()); } catch (e) { submitError = (e as Error).message; }
     expect(submitError, 'the decider accepted a shape .build() refused').toBeDefined();
     expect(submitError).toMatch(/mandatory-script-verify-flag-failed/);
-    assertDensityCeiling(submitError!, 140);
+    assertDensityCeiling(submitError!, 30);
     expect(density).toBeGreaterThan(0);
   });
 
@@ -223,15 +223,15 @@ describe('X130 - the debug VM decides on the published limits (@mem-cash/validat
     expect(sendError, 'the decider refused a depth .build() now admits').toBeUndefined();
   });
 
-  it('2b. GUARD: lowering only the attacked field to 800 refuses depth 40 again, quoting 800 x density', async () => {
-    // Differs from row 2 in `operationCostBudgetPerByte` alone. It also reproduces the pre-repair verdict
-    // exactly - the stock 800 is what a bare VM applied - so row 2 is the published value being read, not the
-    // gate being removed.
-    const provider = budgetProfile(STOCK_BUDGET_PER_BYTE);
+  it('2b. GUARD: lowering only the attacked field to 400 refuses depth 40 again, quoting 400 x density', async () => {
+    // Differs from row 2 in `operationCostBudgetPerByte` alone, so row 2 is the published value being read, not
+    // the gate being removed. This was the stock 800 until the October covenant hardening lengthened the script
+    // enough that depth 40 fits 800 x density; 400 is about half the shape's cost per byte.
+    const provider = budgetProfile(400);
     const { builder, error } = await buildOutcome(provider, 40n);
     expect(builder).toBeUndefined();
     expect(error).toMatch(/exceed the operation cost density limit/);
-    assertDensityCeiling(error!, STOCK_BUDGET_PER_BYTE);
+    assertDensityCeiling(error!, 400);
   });
 
   it('3. SECOND DIMENSION: a published maximumStackItemBytes of 8 refuses the 65-byte signature', async () => {

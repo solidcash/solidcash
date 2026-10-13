@@ -10,7 +10,7 @@ import {
   getContractFactory,
   StatefulContract,
 } from '../../src/stateful/index.js';
-import { fundedSigner, createTestProvider, expectOverOperationCostBudget, densityReserve } from '../test-util.js';
+import { fundedSigner, createTestProvider, densityReserve } from '../test-util.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
@@ -242,14 +242,12 @@ describe('internal fn-ptr memory array', () => {
   const artifact = compileString(SRC, { forceStateful: true });
 
   describe('function_memory_array corpus: runtime-indexed internal fn-ptr memory array', () => {
-    // STILL OVER BUDGET, and this is the one shape a density reserve cannot rescue. Found on BCHN v29 first and
-    // only then reproduced on mocknet, because the mock used to publish a relaxed budget. Five dispatches over a
-    // ten-element table, against three over three in `FunctionPointerArrayCall` - which a 256-byte reserve does
-    // fix. Measured here: 256, 512 and the 520-byte salt CAP all still fail, so the shortfall exceeds the
-    // 416,000 units the maximum reserve can buy. Closing this one needs a cheaper fn-ptr table, not more bytes.
-    it('arr[i](x) is over the BCH-2026 operation-cost budget even at the maximum density reserve', async () => {
+    // Five dispatches over a ten-element table. This was over the real budget even at the 520-byte salt cap; the
+    // October covenant hardening lengthened the script, which buys more density budget than the dispatches cost,
+    // so it now fits at that reserve. The pin is restored to its positive assertion, as the pin asked.
+    it('arr[i](x) fits the BCH-2026 operation-cost budget at the maximum density reserve', async () => {
       const sc = await getContractFactory(artifact, await fundedSigner()).deploy({ salt: densityReserve(520) });
-      await expectOverOperationCostBudget(sc.ok());
+      await expect(sc.ok()).resolves.toBeDefined();
     });
 
     it('a wrong expectation reverts (dispatch is real per-index, not constant-folded)', async () => {

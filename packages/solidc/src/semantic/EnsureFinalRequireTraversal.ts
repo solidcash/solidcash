@@ -58,6 +58,7 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
     private enforceFinalRequire: boolean = true,
     private allowUnsafeOperations: boolean = false,
     private lifecycleAuthorization: boolean = true,
+    private topologyAuthorization: boolean = true,
   ) {
     super();
   }
@@ -132,7 +133,9 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
     // An upgrade swaps in caller-supplied bytecode and a deploy emits a child from caller-supplied arguments;
     // either must authenticate against a key the caller cannot choose or it is a permissionless takeover. The
     // kernel lane manages lifecycle authority through its own signature policy, so this check is disabled there.
-    checkLifecycleAuthorization(node, this.allowUnsafeOperations, this.lifecycleAuthorization);
+    checkLifecycleAuthorization(
+      node, this.allowUnsafeOperations, this.lifecycleAuthorization, this.topologyAuthorization,
+    );
 
     const visibility = node.visibility;
     const hasReturnTypes = node.returnTypes.length > 0;
@@ -272,13 +275,16 @@ function checkUnauthenticatedSelfdestruct(node: FunctionDefinitionNode, allowUns
  * permissionless takeover or topology manipulation. Require an unconditional trusted-key check by default; the
  * explicit unsafe compiler option retains a warning-only escape (mirroring selfdestruct).
  */
-function checkLifecycleAuthorization(node: FunctionDefinitionNode, allowUnsafe: boolean, enabled: boolean): void {
-  if (!enabled) return;
+function checkLifecycleAuthorization(
+  node: FunctionDefinitionNode, allowUnsafe: boolean, enabled: boolean, topologyEnabled: boolean,
+): void {
   const isUpgrade = node.modifiers.includes(FunctionModifier.UPGRADE);
   const isDeploy = node.modifiers.includes(FunctionModifier.DEPLOY);
   const isSplit = node.modifiers.includes(FunctionModifier.SPLIT);
   const isMerge = node.modifiers.includes(FunctionModifier.MERGE);
   if (!isUpgrade && !isDeploy && !isSplit && !isMerge) return;
+  // DX-9: a message-bus build keeps the kernel's deploy authority, but an upgrade, split or merge still needs a key.
+  if (!enabled && !(topologyEnabled && (isUpgrade || isSplit || isMerge))) return;
 
   if (hasUnconditionalAuthorizingSignatureGuard(node)) return;
 

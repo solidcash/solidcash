@@ -3538,7 +3538,7 @@ function compileDetachedMessageBusVerifierUncached(
   ast = ast.accept(new TypeCheckTraversal(
     true, false, compilerOptions.rootFileId, compilerOptions.composition === 'framed',
   )) as Ast;
-  ast = ast.accept(new EnsureFinalRequireTraversal(false, true, false)) as Ast;
+  ast = ast.accept(new EnsureFinalRequireTraversal(false, true, false, false)) as Ast;
   const traversal = new GenerateTargetTraversal({
     ...compilerOptions,
     messageBus: false,

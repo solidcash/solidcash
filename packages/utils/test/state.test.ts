@@ -37,6 +37,7 @@ import {
   StateLayout,
   StateRecord,
   Op,
+  Script,
   scriptToBytecode,
   StructDefinitionInfo,
 } from '../src/index.js';
@@ -480,6 +481,22 @@ describe('decodePushdataValue bounds checking', () => {
   });
 });
 
+// The branches of the OP_IF at ifIdx and the script after its OP_ENDIF, skipping nested blocks (the authority walk).
+function ifBlock(script: Script, ifIdx: number): { ifPath: Script; elsePath: Script; after: Script } {
+  if (script[ifIdx] !== Op.OP_IF && script[ifIdx] !== Op.OP_NOTIF) throw new Error(`no OP_IF at ${ifIdx}`);
+  let depth = 0;
+  let elseIdx = -1;
+  for (let i = ifIdx; i < script.length; i++) {
+    if (script[i] === Op.OP_IF || script[i] === Op.OP_NOTIF) depth++;
+    if (script[i] === Op.OP_ELSE && depth === 1) elseIdx = i;
+    if (script[i] === Op.OP_ENDIF && --depth === 0) {
+      const split = elseIdx < 0 ? i : elseIdx;
+      return { ifPath: script.slice(ifIdx + 1, split), elsePath: script.slice(split + 1, i), after: script.slice(i + 1) };
+    }
+  }
+  throw new Error(`no OP_ENDIF closes the OP_IF at ${ifIdx}`);
+}
+
 describe('buildDataNftCovenantScript (tri-path)', () => {
   const categoryId = new Uint8Array(32).fill(0xab);
 
@@ -531,11 +548,9 @@ describe('buildDataNftCovenantScript (tri-path)', () => {
 
   it('should have destroy path (flag=2) that skips output preservation', () => {
     const script = buildDataNftCovenantScript(categoryId);
-    // The flag=2 dispatch is nested in the ELSE of the flag=3 dispatch.
-    const explicitElseIdx = script.indexOf(Op.OP_ELSE);
-    const destroyIfIdx = script.indexOf(Op.OP_IF, explicitElseIdx + 1);
-    const destroyElseIdx = script.indexOf(Op.OP_ELSE, destroyIfIdx + 1);
-    const destroyPath = script.slice(destroyIfIdx + 1, destroyElseIdx);
+    // The flag=2 dispatch opens the ELSE of the flag=3 dispatch at script[3].
+    const { elsePath: legacy } = ifBlock(script, 3);
+    const { ifPath: destroyPath } = ifBlock(legacy, legacy.indexOf(Op.OP_IF));
 
     // Destroy path: OP_DROP, verify master minting NFT, verify this input's category
     expect(destroyPath[0]).toBe(Op.OP_DROP);
@@ -547,15 +562,12 @@ describe('buildDataNftCovenantScript (tri-path)', () => {
 
   it('should enforce exact satoshi preservation in common section (flag=0/1)', () => {
     const script = buildDataNftCovenantScript(categoryId);
-    // The common section should contain UTXOVALUE and OUTPUTVALUE for exact satoshi check
-    expect(script).toContain(Op.OP_UTXOVALUE);
-    expect(script).toContain(Op.OP_OUTPUTVALUE);
-
     // Verify satoshi check is in the ELSE branch (flag=0/1), not in the IF branch (flag=2)
-    const explicitElseIdx = script.indexOf(Op.OP_ELSE);
-    const destroyIfIdx = script.indexOf(Op.OP_IF, explicitElseIdx + 1);
-    const destroyElseIdx = script.indexOf(Op.OP_ELSE, destroyIfIdx + 1);
-    const destroyPath = script.slice(destroyIfIdx + 1, destroyElseIdx);
+    const { elsePath: legacy } = ifBlock(script, 3);
+    const { ifPath: destroyPath, elsePath: commonPath } = ifBlock(legacy, legacy.indexOf(Op.OP_IF));
+    // The common section should contain UTXOVALUE and OUTPUTVALUE for exact satoshi check
+    expect(commonPath).toContain(Op.OP_UTXOVALUE);
+    expect(commonPath).toContain(Op.OP_OUTPUTVALUE);
     expect(destroyPath).not.toContain(Op.OP_UTXOVALUE);
     expect(destroyPath).not.toContain(Op.OP_OUTPUTVALUE);
   });
@@ -586,20 +598,20 @@ describe('buildEntryNftCovenantScript (dual-path)', () => {
 
   it('should contain self-preservation in read-only path but not in write path', () => {
     const script = buildEntryNftCovenantScript(categoryId, collectionHash);
-    const elseIdx = script.indexOf(Op.OP_ELSE);
-    const endifIdx = script.indexOf(Op.OP_ENDIF);
-    const readOnlyPath = script.slice(elseIdx + 1, endifIdx);
+    const { ifPath: writePath, elsePath: readOnlyPath } = ifBlock(script, script.indexOf(Op.OP_IF));
     // Read-only path should include self-preservation and commitment preservation
     expect(readOnlyPath).toContain(Op.OP_UTXOBYTECODE);
     expect(readOnlyPath).toContain(Op.OP_OUTPUTBYTECODE);
     expect(readOnlyPath).toContain(Op.OP_UTXOTOKENCOMMITMENT);
     expect(readOnlyPath).toContain(Op.OP_OUTPUTTOKENCOMMITMENT);
+    // Write path may delete the entry: no output pins (its OP_UTXOBYTECODE reads the authority input)
+    expect(writePath).not.toContain(Op.OP_OUTPUTBYTECODE);
+    expect(writePath).not.toContain(Op.OP_OUTPUTTOKENCOMMITMENT);
   });
 
   it('should embed collection hash after OP_ENDIF', () => {
     const script = buildEntryNftCovenantScript(categoryId, collectionHash);
-    const endifIdx = script.indexOf(Op.OP_ENDIF);
-    const afterEndif = script.slice(endifIdx + 1);
+    const { after: afterEndif } = ifBlock(script, script.indexOf(Op.OP_IF));
     const found = afterEndif.some(
       (el) => el instanceof Uint8Array && el.length === 20 && el.every((b, i) => b === collectionHash[i]),
     );
@@ -608,9 +620,7 @@ describe('buildEntryNftCovenantScript (dual-path)', () => {
 
   it('should enforce exact satoshi preservation in read-only path', () => {
     const script = buildEntryNftCovenantScript(categoryId, collectionHash);
-    const elseIdx = script.indexOf(Op.OP_ELSE);
-    const endifIdx = script.indexOf(Op.OP_ENDIF);
-    const readOnlyPath = script.slice(elseIdx + 1, endifIdx);
+    const { elsePath: readOnlyPath } = ifBlock(script, script.indexOf(Op.OP_IF));
     // Read-only path should include exact satoshi preservation
     expect(readOnlyPath).toContain(Op.OP_UTXOVALUE);
     expect(readOnlyPath).toContain(Op.OP_OUTPUTVALUE);
@@ -618,9 +628,7 @@ describe('buildEntryNftCovenantScript (dual-path)', () => {
 
   it('should not enforce satoshi preservation in write path', () => {
     const script = buildEntryNftCovenantScript(categoryId, collectionHash);
-    const ifIdx = script.indexOf(Op.OP_IF);
-    const elseIdx = script.indexOf(Op.OP_ELSE);
-    const writePath = script.slice(ifIdx + 1, elseIdx);
+    const { ifPath: writePath } = ifBlock(script, script.indexOf(Op.OP_IF));
     // Write path should NOT include satoshi preservation opcodes
     expect(writePath).not.toContain(Op.OP_UTXOVALUE);
     expect(writePath).not.toContain(Op.OP_OUTPUTVALUE);
@@ -672,26 +680,21 @@ describe('buildSatoshiContainerCovenantScript', () => {
 
   it('should verify minting NFT in master path', () => {
     const script = buildSatoshiContainerCovenantScript(categoryId);
-    const ifIdx = 0;
-    const elseIdx = script.indexOf(Op.OP_ELSE);
-    const masterPath = script.slice(ifIdx + 1, elseIdx);
+    const { ifPath: masterPath } = ifBlock(script, 0);
     expect(masterPath).toContain(Op.OP_UTXOTOKENCATEGORY);
     expect(masterPath).toContain(Op.OP_2); // minting capability check
   });
 
   it('should preserve locking bytecode in merge path', () => {
     const script = buildSatoshiContainerCovenantScript(categoryId);
-    const elseIdx = script.indexOf(Op.OP_ELSE);
-    const endifIdx = script.indexOf(Op.OP_ENDIF);
-    const mergePath = script.slice(elseIdx + 1, endifIdx);
+    const { elsePath: mergePath } = ifBlock(script, 0);
     expect(mergePath).toContain(Op.OP_OUTPUTBYTECODE);
     expect(mergePath).toContain(Op.OP_UTXOBYTECODE);
   });
 
   it('should embed category ID as salt after OP_ENDIF', () => {
     const script = buildSatoshiContainerCovenantScript(categoryId);
-    const endifIdx = script.indexOf(Op.OP_ENDIF);
-    const afterEndif = script.slice(endifIdx + 1);
+    const { after: afterEndif } = ifBlock(script, 0);
     const found = afterEndif.some(
       (el) => el instanceof Uint8Array && el.length === 32 && el.every((b, i) => b === categoryId[i]),
     );

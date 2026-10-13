@@ -26370,7 +26370,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
     }
+    // Callers hold the category tracked or untracked, as the shared helper leaves the tracker alone. The inline
+    // build renames the tracked top, which for an untracked category is a caller's value (a route's return blob).
+    const tracked = [...this.stack];
     this.emitEntryP2sh32(collectionHash, loc);
+    this.stack.splice(0, this.stack.length, ...tracked);
   }
 
   /**

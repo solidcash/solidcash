@@ -11380,6 +11380,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // safe.
     let blockhashCoSpendUtxos: UnlockableUtxo[] = [];
     let blockInfoCoSpendUtxos: UnlockableUtxo[] = [];
+    let delegateBlockInfoOracle = false;
     let blockhashCoSpendSlotOrdinals: number[] | undefined;
     let maxBhLocktime = 0; // require(tx.time >= n) - the SDK sets the locktime so the derivation probe passes
     // keccak256 compute side-cars co-spent at the keccakSideCar slots; parallel commitments (R_i) drive the
@@ -12174,11 +12175,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       blockhashCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       maxBhLocktime = resolved.reduce((m, cs) => Math.max(m, cs.locktime), 0);
     }
-    if (abiFunction?.usesBlockOracle === true
-      && abiFunction.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')) {
-      const lock = this.inner.blockOracleLock;
+    const readsOracleSlot = (fn: AbiFunction | undefined): boolean => fn?.usesBlockOracle === true
+      && fn.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle') === true;
+    // A forwarder slices no oracle itself, but the implementation it delegates to may. That reader pins the lock
+    // its own contract was built with. Outside a compiler route its recreate rides the implementation band.
+    const oracleDelegate = readsOracleSlot(abiFunction) ? undefined : lowLevelCallUtxoGroups.find((group) =>
+      group.callMode === 'delegatecall' && readsOracleSlot(group.compilerRoute?.abiFunction
+        ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+          .find((candidate) => candidate.name === group.functionName)));
+    delegateBlockInfoOracle = oracleDelegate !== undefined && oracleDelegate.compilerRoute === undefined;
+    if (readsOracleSlot(abiFunction) || oracleDelegate !== undefined) {
+      const reader = oracleDelegate?.externalContract.inner ?? this.inner;
+      const lock = reader.blockOracleLock;
       if (lock === undefined) {
-        throw new Error(`${this.inner.name} reads the block oracle, and no oracle lock was provided`);
+        throw new Error(`${reader.name} reads the block oracle, and no oracle lock was provided`);
       }
       const found = await this.inner.provider.getUtxosForLockingBytecode(lock);
       const oracle = found.find((utxo) => utxo.token?.nft?.capability === 'mutable');
@@ -12576,6 +12586,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         satoshiContainerLockingBytecode,
         blockhashCoSpendUtxos,
         blockInfoCoSpendUtxos,
+        delegateBlockInfoOracle,
         blockhashCoSpendSlotOrdinals,
         keccakComputeCoSpendUtxos,
         keccakComputeCommitments,

@@ -62,7 +62,7 @@ export function projectCreateBuilderDelegateSlots(params: {
     }[]).find((f) => f.name === g.functionName);
     const extra = (gFn?.blockLayout?.slots ?? []).filter((s) => s.kind !== 'master' && s.kind !== 'dataNft');
     const projectableKinds = new Set<BlockSlotKind>([
-      'blockhashOracle', 'keccakSideCar', 'ecrecoverSideCar',
+      'blockhashOracle', 'blockInfoOracle', 'keccakSideCar', 'ecrecoverSideCar',
       'entry', 'tokenContainer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent',
     ]);
     if (extra.length === 0 || !extra.every((slot) => projectableKinds.has(slot.kind))) continue;

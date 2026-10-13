@@ -82,11 +82,6 @@ const config: Config = {
       ],
       copyright: `<b>Donations:</b> bitcoincash:qzlhhdh5ma2ehcxmwqx3xfc6fla3854p3c8zu625kl`,
     },
-    algolia: {
-      apiKey: '',
-      appId: '',
-      indexName: 'solidcash'
-    },
   },
   presets: [
     [

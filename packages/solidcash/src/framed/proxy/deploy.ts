@@ -74,7 +74,7 @@ import {
 } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
 import {
-  bindProviderBlockOracle, entryReadsBlockOracle, framedBlockOracle, type FramedBlockOracle,
+  bindProviderBlockOracle, blockOracleClock, entryReadsBlockOracle, framedBlockOracle, type FramedBlockOracle,
 } from '../call/block-oracle.js';
 import {
   FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
@@ -5298,6 +5298,8 @@ export async function callFramedProxyEntry(
   const maximumCommitmentBytes = provider.consensusLimits?.maximumNftCommitmentBytes
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
   const recordAmounts = proxyPools.records.map((record) => record.satoshis);
+  // Read once: the hop co-spends this oracle, and a stored clock value is the time it holds.
+  const blockOracle = await hopBlockOracle(provider, oracleLock, implementationArtifact, options.functionName);
 
   // The mapping nodes the entry only reads, planned the way a proxied callee's are: from the proxy's own nodes and
   // records, read with the proxy's layout, and the call data the frame receives. Each is named by its collection and
@@ -5340,6 +5342,7 @@ export async function callFramedProxyEntry(
     activationFacts: { stateValues: liveDeployment.state, selfAddress: proxyMaster.address, readMappingValue },
     // A key the write reads out of another mapping is the value the proxy's node holds, the node `readNodes` declares.
     readMappingValue,
+    ...(blockOracle === undefined ? {} : { blockClock: blockOracleClock(blockOracle) }),
   } as const;
   // An entry whose element the artifact cannot state still writes the value's byte length into the record, so the
   // run it grows is re-planned from the commitment the plan states: the first attempt lays it at the live width,
@@ -5453,7 +5456,7 @@ export async function callFramedProxyEntry(
   // The compute side-cars the implementation's own entry reads, built once over the live pool for the whole hop.
   const implementationSideCars = withBlockOracle(await implementationFrameSideCars(
     provider, implementationArtifact, options.functionName, args, loopTurns.hashes,
-  ), await hopBlockOracle(provider, oracleLock, implementationArtifact, options.functionName));
+  ), blockOracle);
   // A frame below the entry may call back into the root, a receiver's hook or a borrower's repayment: it runs on
   // the root's own records, which the root's frames name as the proxy's record participants.
   const reentrantRoot = {

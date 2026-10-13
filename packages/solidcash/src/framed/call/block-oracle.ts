@@ -1,5 +1,5 @@
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { blockOracleReadUnlocking, type Artifact } from '@solidcash/utils';
+import { blockOracleFieldBytes, blockOracleReadUnlocking, type Artifact } from '@solidcash/utils';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { bindBlockOracleLock } from '../../oracle/block-oracle-lock.js';
@@ -21,6 +21,17 @@ export function bindProviderBlockOracle(provider: NetworkProvider, artifact: Art
 /** Whether the entry `functionName` slices the block oracle. */
 export function entryReadsBlockOracle(artifact: Artifact, functionName: string): boolean {
   return artifact.abi.some((candidate) => candidate.name === functionName && candidate.usesBlockOracle === true);
+}
+
+/**
+ * The oracle's timestamp under the register name an artifact still publishes a clock read as
+ * (`state:__block_timestamp`), so a stored value's source resolves to what the body slices.
+ */
+export function blockOracleClock(oracle: FramedBlockOracle): Readonly<Record<string, bigint>> {
+  const bytes = blockOracleFieldBytes(hexToBin(oracle.utxo.token?.nft?.commitment ?? ''), 'timestamp');
+  let timestamp = 0n;
+  for (let index = bytes.length - 1; index >= 0; index -= 1) timestamp = (timestamp << 8n) | BigInt(bytes[index]!);
+  return { __block_timestamp: timestamp };
 }
 
 /** The live oracle at `lock`, which a reader picks as the first mutable NFT there. */

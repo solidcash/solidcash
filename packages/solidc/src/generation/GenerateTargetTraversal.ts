@@ -48,6 +48,8 @@ import {
   type Type,
   StructType,
   computeEventNameHash,
+  computeEventContinuationHash,
+  EVENT_CHUNK_BYTES,
   computeCollectionHash,
   computeCollectionSignature,
   valueChunkSignature,
@@ -3056,7 +3058,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         'entry',
         'tokenContainer',
         'keccakSideCar', 'ecrecoverSideCar',
-        'transfer', 'tcTransfer', 'event', 'returnEvent',
+        'transfer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent',
       ]).has(kind);
     // X12. A SPLIT FACET is delegateOnly: the SDK never co-spends or materializes its own data NFTs, so
     // nothing occupies those positions after the facet's input and an implementation-relative offset that
@@ -3502,7 +3504,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const layout = this.currentFunction.blockLayout;
     if (!layout) return 0;
     const outputOnly = new Set<BlockSlotKind>([
-      'transfer', 'tcTransfer', 'event', 'returnEvent', 'deployDataNft',
+      'transfer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent', 'deployDataNft',
     ]);
     return layout.slots.filter((s) => outputOnly.has(s.kind) && s.offset < offset).length;
   }
@@ -44243,6 +44245,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.popFromStack();
       }
 
+      const chunkCount = node.emitInfos?.find((info) => info.emitIndex === emitIndex)?.chunkCount ?? 1;
+      if (chunkCount > 1) {
+        if (resolveGraphEvent || frameShadowed || graphHandlerEventWidth > 0 || this.framedMaster
+          || node.messageBusRoute || node.graphEmissionHandler) {
+          throw new SolidcDiagnosticError(
+            'EVENT_PAYLOAD_EXCEEDS_COMMITMENT',
+            `emit ${emitIndex} in '${node.name}' can encode more than one 128-byte NFT commitment; its continuation `
+            + 'chunks have a layout only on a direct stateful call, not on a message-bus route or a framed frame',
+            { functionName: node.name, emitIndex, chunkCount },
+          );
+        }
+        this.emitWideEventVerification(node, emitIndex, chunkCount, stackName, identityStackName, locationData);
+        if (isConditionalEmit) {
+          this.emit(Op.OP_ELSE, locationData);
+          this.emitNotTakenEventSlotBinding(emitIndex, locationData);
+          for (let chunk = 1; chunk < chunkCount; chunk += 1) {
+            this.emitUnusedEventChunkBinding(node, emitIndex, chunk, locationData);
+          }
+          this.emit(Op.OP_ENDIF, locationData);
+        }
+        continue;
+      }
+
       if (!resolveGraphEvent) {
         // 1. Verify output commitment: the event's output carries the encoded blob
         const blobIdx = this.getStackIndex(stackName);
@@ -44470,6 +44495,178 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ELSE, locationData);
     this.emit(Op.OP_DROP, locationData);
     this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /**
+   * A wide emit, whose payload can exceed one 128-byte commitment. Chunk 0 sits at the emit's `event` slot under
+   * the event covenant, chunk i at its `eventChunk` slot under the continuation covenant; each used chunk output is
+   * an own-category immutable NFT carrying exactly that chunk. A chunk slot the payload does not reach holds no
+   * token or does not exist, so neither a carrier nor a forged continuation can sit there. A payload wider than
+   * the reserved chunks leaves a last chunk no commitment can equal, and is refused.
+   *
+   * Leaves the tracked stack unchanged.
+   */
+  private emitWideEventVerification(
+    node: FunctionDefinitionNode, emitIndex: number, chunkCount: number,
+    stackName: string, identityStackName: string, loc: SingleLocationData,
+  ): void {
+    const definition = node.emitInfos?.find((info) => info.emitIndex === emitIndex)?.eventDefinition;
+    if (definition === undefined) throw new Error(`Wide emit ${emitIndex} in '${node.name}' has no event definition`);
+    const hash = computeEventContinuationHash(definition.signature, definition.isAnonymous);
+    const continuationSuffix = new Uint8Array([0x88, 0x00, 0x88, 0x14, ...hash, 0x75, 0x02, 0x90, 0x00, 0xb2, 0x75, 0x51]);
+    const p2sh32 = (): void => {
+      this.emit(Op.OP_HASH256, loc);
+      this.emit(P2SH32_LBC_PREFIX, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_CAT, loc);
+      this.emit(P2SH32_LBC_SUFFIX, loc);
+      this.emit(Op.OP_CAT, loc);
+    };
+    // [category, lock, continuation lock]: both covenants share `prefix <category>`.
+    this.emitRecordsCategoryBase(loc, 0, true);
+    this.pushToStack('(event_category)');
+    this.emit(new Uint8Array([0xc0, 0xce, 0x01, 0x20, 0x7f, 0x7c, 0x20]), loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.pushToStack('(event_script_head)');
+    this.emit(Op.OP_DUP, loc);
+    this.pushToStack('(event_lock)');
+    this.emit(encodeInt(BigInt(this.getStackIndex(identityStackName))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_CAT, loc);
+    p2sh32();
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(continuationSuffix, loc);
+    this.emit(Op.OP_CAT, loc);
+    p2sh32();
+    this.stack[0] = '(event_continuation_lock)';
+    this.stack[1] = '(event_lock)';
+
+    const chunkBytes = BigInt(this.compilerOptions.commitmentLimit ?? EVENT_CHUNK_BYTES);
+    this.emit(encodeInt(BigInt(this.getStackIndex(stackName))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(event_rest)');
+    for (let chunk = 0; chunk < chunkCount; chunk += 1) {
+      if (chunk < chunkCount - 1) {
+        // [rest] -> [tail, chunk]: the next chunkBytes, or the whole rest beside an empty tail.
+        this.emit(Op.OP_SIZE, loc);
+        this.emit(encodeInt(chunkBytes), loc);
+        this.emit(Op.OP_GREATERTHAN, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emit(encodeInt(chunkBytes), loc);
+        this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(Op.OP_0, loc);
+        this.emit(Op.OP_ENDIF, loc);
+        this.emit(Op.OP_SWAP, loc);
+        this.pushToStack('(event_chunk)');
+      } else {
+        this.stack[0] = '(event_chunk)';
+      }
+      if (chunk === 0) {
+        this.emitWideEventChunkCheck(node, emitIndex, chunk, '(event_lock)', loc);
+        continue;
+      }
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_0NOTEQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      const unused = [...this.stack];
+      this.emitWideEventChunkCheck(node, emitIndex, chunk, '(event_continuation_lock)', loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.stack = unused;
+      this.emit(Op.OP_DROP, loc);
+      this.popFromStack();
+      this.emitUnusedEventChunkBinding(node, emitIndex, chunk, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
+    for (const name of ['(event_continuation_lock)', '(event_lock)', '(event_category)']) {
+      const index = this.getStackIndex(name);
+      this.emit(encodeInt(BigInt(index)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(index);
+    }
+  }
+
+  /** Push the output index of chunk `chunk` of wide emit `emitIndex`: its `event` slot plus the chunk ordinal. */
+  private emitEventChunkOutputIndex(
+    node: FunctionDefinitionNode, emitIndex: number, chunk: number, loc: SingleLocationData,
+  ): void {
+    if (chunk > 0) {
+      const slots = node.blockLayout?.slots ?? [];
+      const head = slots.find((slot) => slot.kind === 'event' && slot.slotIndex === emitIndex);
+      const own = slots.find((slot) => slot.kind === 'eventChunk' && slot.slotIndex === emitIndex
+        && slot.chunk === chunk);
+      if (head === undefined || own === undefined || own.offset !== head.offset + chunk) {
+        throw new Error(`Block slot not found: eventChunk[${emitIndex}.${chunk}] while compiling '${node.name}'`);
+      }
+    }
+    this.emitBlockSlotIndex('event', emitIndex, loc);
+    if (chunk > 0) {
+      this.emit(encodeInt(BigInt(chunk)), loc);
+      this.emit(Op.OP_ADD, loc);
+    }
+    this.pushToStack('(event_output)');
+  }
+
+  /**
+   * `[chunk] -> []`: the chunk's output carries exactly it, at `lockName`, as this category's immutable NFT with
+   * no fungible amount and at most the dust bound. Keeps `<chunk> <index> OTC EQUALVERIFY` for derivation.
+   */
+  private emitWideEventChunkCheck(
+    node: FunctionDefinitionNode, emitIndex: number, chunk: number, lockName: string, loc: SingleLocationData,
+  ): void {
+    this.emitEventChunkOutputIndex(node, emitIndex, chunk, loc);
+    this.emit(Op.OP_TUCK, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.stack.splice(0, 2, '(event_output)');
+    const pickOver = (name: string): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
+      this.emit(Op.OP_PICK, loc);
+    };
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.pushToStack('(value)');
+    pickOver(lockName);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack();
+    // The category with no capability byte: this category's immutable NFT.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.pushToStack('(value)');
+    pickOver('(event_category)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack();
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.emit(encodeInt(1200n), loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.popFromStack();
+  }
+
+  /** A chunk slot the payload does not reach holds no token, or does not exist. Leaves the tracked stack unchanged. */
+  private emitUnusedEventChunkBinding(
+    node: FunctionDefinitionNode, emitIndex: number, chunk: number, loc: SingleLocationData,
+  ): void {
+    this.emitEventChunkOutputIndex(node, emitIndex, chunk, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.popFromStack();
   }
 
   /**
@@ -47901,7 +48098,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // index it checks. Without this the pin admits a position no honest emit can occupy and refuses the one
     // it does.
     const allowedOffsets = (node.blockLayout?.slots ?? [])
-      .filter((slot) => slot.kind === 'event')
+      .filter((slot) => slot.kind === 'event' || slot.kind === 'eventChunk')
       .map((slot) => (this.usesDelegateExecutorBlockBase() && this.currentContractIsSplitFacet
         ? slot.offset - this.countDataNftSlotsBefore(slot.offset) : slot.offset));
     // A B-side return event is also an own-category immutable NFT, but its index is WITNESSED, not the layout

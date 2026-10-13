@@ -57,7 +57,7 @@ export async function allocateCreateBuilderSharedFunders(
     );
     if (!bLayout.slots.some((s) => fullBlockKinds.has(s.kind))) continue;
     for (const s of bLayout.slots) {
-      if (['transfer', 'tcTransfer', 'event', 'returnEvent'].includes(s.kind)) totalBFunders++;
+      if (['transfer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent'].includes(s.kind)) totalBFunders++;
       if (s.kind === 'blockhashOracle') totalBFunders++;
       // entry/TC/SC funders also needed when UTXO doesn't exist, but we can't
       // cheaply check on-chain state here. Conservatively over-allocate:

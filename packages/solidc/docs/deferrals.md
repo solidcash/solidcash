@@ -1724,48 +1724,50 @@ internal vector".
 
 ## Event payloads larger than one 128-byte NFT commitment (2026-08-07)
 
-**STILL DEFERRED.** An event whose encoded arguments exceed the 128-byte token-commitment limit is rejected by
-the network, not by the compiler:
+**RESOLVED for direct stateful calls (2026-10-13); STILL DEFERRED on message-bus routes, framed frames, runtime
+counter-loop events and nested / delegate callees.** Before, an event whose encoded arguments exceed the commitment
+limit was rejected by the network (`excessive token commitment length`, measured on MistSwap
+`Timelock.queueTransaction` at 129 B), and later by the SDK at `addOutput`; the pre-scan had pinned `chunkCount` to 1.
 
-```
-Transaction violates token validation: excessive token commitment length ... Excessive token commitment length: 129
-```
+As built:
 
-Measured on MistSwap `Timelock.queueTransaction` (6 tests). Its event is
-`QueueTransaction(bytes32 txHash, address target, uint value, string signature, bytes data, uint eta)`, and the
-test passes `signature = "transferOwnership(address)"` (26 B) plus 32 B of `data`, which lands at 129 - one byte
-over.
+- `allocateEmitSlots` sets each emit's `chunkCount = ceil(maxSize / commitmentLimit)` (`getEventChunkCount` over
+  `getMaxPushdataEncodedSizeForType`; a zero-parameter event is its 1-byte marker). The emit keeps its ordinal
+  `emitIndex`; `computeBlockLayout` follows its `event` slot with `chunkCount - 1` consecutive output-only
+  `eventChunk` slots (`slotIndex` = the emit, `chunk` = 1.., `conditional`). A narrow event's layout and code are
+  unchanged.
+- `emitWideEventVerification` splits the payload into `commitmentLimit`-byte chunks. Chunk 0 sits at the `event`
+  slot under the event covenant, chunk i at `event + i` under the continuation covenant
+  (`computeEventContinuationHash`: the named covenant over the hash of `<signature>#continuation`, or `#continuation`
+  for anonymous events). Each used chunk output must carry exactly its chunk as an own-category immutable NFT with no
+  FT amount and at most 1200 sat; a chunk slot the payload does not reach must hold no token or not exist, so no
+  empty-commitment carrier fits there; the last slot takes the whole rest, so a payload wider than the reservation is
+  refused. A not-taken conditional emit binds chunk 0 as before (SEC-10) and its chunk slots token-free. The
+  own-category immutable pin and the split-facet delegate offsets admit `eventChunk` offsets.
+- SDK: `eventChunk` is an output-only slot (funding input, pass-through when nested). The owner materializer splits
+  the learned payload over the chunk slots (token-free dummies where it ends); phase-2 derivation learns each chunk
+  at its output and stores the joined payload under the emit index; receipts, `queryFilter` and `readEventsFromChain`
+  (with `getEventNftContinuationAddress`) join a head commitment with the continuation NFTs right after it.
+- Unbounded `string` / `bytes` / dynamic arrays still count as 9 bytes, so for them the reservation is a capacity,
+  not a bound: a wider payload is refused by the covenant (and the SDK refuses the oversized commitment).
 
-THE SCAFFOLDING IS HALF-PRESENT AND INCONSISTENT. `collectEmitStatements` already computes
-`chunkCount = maxSize > 128 ? ceil(maxSize / 128) : 1` and advances the AST node's `emitIndex` by `chunkCount`.
-Nothing else honours it:
+Still deferred:
 
-- `computeBlockLayout` reserves ONE `event` slot per `emitInfos` ENTRY, not per chunk, so the AST's emit indices
-  run past the reserved slots.
-- The renumber right after the pre-scan (`emitInfos.forEach((info, idx) => { info.emitIndex = idx; })`) rewrites
-  only the ARRAY entries, never the AST nodes, so the two views agree only while every chunkCount is 1.
-- `GenerateTargetTraversal` has no `chunkCount` reference at all: `emitEventCovenantVerification` verifies exactly
-  one output commitment at `event + emitIndex` and never splits a blob.
-
-Consequence: making the size estimate more accurate ACTIVATES the broken path. Raising the address width from 9
-to its real 36 bytes (correct, and needed for state packing) pushed one MistSwap event to chunkCount 2 and the
-compile died with `Block slot not found: event[3] while compiling 'withdrawAndHarvest'` in
-`mocks/ComplexRewarder.sol`. The address width is therefore split into two constants in `SymbolTableTraversal`
-- `ADDRESS_MAX_ENCODED_BYTES` (36, state packing) and `ADDRESS_EVENT_CHUNK_BYTES` (9, event chunking) - with the
-second pinned to the old value purely so this path stays dormant.
-
-Note the estimate cannot be made sound for `string` / unbounded `bytes` parameters anyway (both estimated at 9),
-so a static chunk count is a lower bound in general; a complete answer needs the SDK to size the event region
-from the actual argument values at build time, the way dynamic storage chunking already does
-(`chunkCountForLength` / `splitValueIntoChunks` in `packages/utils/src/state.ts`).
-
-**What it would take:** reserve `sum(chunkCount)` event slots, keep the AST emit indices and the emitInfos view
-in one numbering, split the blob across the reserved outputs in code generation, reassemble in the SDK's event
-decoder, and then let both address widths converge on 36.
-
-**Acceptance:** an event with >128 bytes of arguments emits N chunk outputs and round-trips through the SDK
-decoder; `ComplexRewarder.withdrawAndHarvest` compiles with the true address width; `test/Timelock.test.ts`
-queue/cancel/execute pass unmodified.
+- Message-bus routes (kernel and legacy): route synthesis refuses a handler that emits a wide event, by event name
+  (`event-wider-than-one-commitment`, published as `KERNEL_LAYOUT` under the kernel), and codegen throws
+  `EVENT_PAYLOAD_EXCEEDS_COMMITMENT` if a wide emit still reaches a route, graph handler or framed frame. What is
+  missing: the graph frame's `eventWidth` counts one output per emit, `emitGraphEventOutputIndex` matches one
+  commitment per row window, compose-assemble places one event output per emit, and the callManifest census admits
+  one immutable output per event. This blocks `KernelRealUnicrowArbitration` / `KernelRealUnicrowProxyArbitration`
+  (`Arbitrated` 389 B, `Claim` 167 B, `ClaimMultiple(ClaimEvent[])` 1 + 167 B per escrow).
+- `ClaimMultiple` also needs a payload bound the estimate cannot give (a dynamic array of structs): a declared bound
+  or a runtime-sized continuation region.
+- Framed convention (`collectEmitStatements` keeps `chunkCount` 1) and runtime counter-loop event records (one
+  commitment per record): an oversized payload is refused by the provider at build time.
+- Nested external-call and delegatecall callees: their unused chunk slots get funding inputs and token-free
+  pass-through outputs, so payloads that fit one commitment keep working, but a nested payload that needs chunks is
+  not learned or materialized and the callee covenant refuses it.
+- `destroy()` does not collect continuation chunk UTXOs (anyone can spend them after 144 blocks).
 
 ## keccak256 inside an internal helper of a STATEFUL contract (2026-08-07) - RESOLVED
 

@@ -200,6 +200,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
             else ctx.bBlockInputs.push(await makeFunder());
             break;
           case 'event':
+          case 'eventChunk':
             // Event NFT output slots need a funder input
             ctx.bBlockInputs.push(await makeFunder());
             break;

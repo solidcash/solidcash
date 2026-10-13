@@ -5,6 +5,7 @@ import {
   type AbiFunction,
   type AbiInput,
   type Artifact,
+  type EventDefinitionAbi,
   buildCovenantArtifact,
   buildDataNftCovenantScript,
   buildTokenContainerCovenantScript,
@@ -14,6 +15,7 @@ import {
   buildEventNftCovenantScript,
   buildAnonymousEventNftCovenantScript,
   computeCollectionHash,
+  computeEventContinuationHash,
   computeEventNameHash,
   dynamicChunkSignature,
   valueChunkSignature,
@@ -432,6 +434,20 @@ export function getAnonymousEventNftAddress(
   validateCategoryId(categoryId);
   const covenantScript = buildAnonymousEventNftCovenantScript(hexToBin(categoryId));
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
+}
+
+/** The address holding a wide event's continuation chunks (anonymous events share one). */
+export function getEventNftContinuationAddress(
+  contract: Contract<any, any>, categoryId: string, eventNameOrSignature: string,
+): string {
+  validateCategoryId(categoryId);
+  const eventSignature = resolveEventSignature(contract.artifact, eventNameOrSignature);
+  const events: readonly EventDefinitionAbi[] = contract.artifact.events ?? [];
+  const anonymous = events.find((event) => event.signature === eventSignature)?.anonymous === true;
+  const hash = computeEventContinuationHash(eventSignature, anonymous);
+  return scriptToAddress(
+    buildEventNftCovenantScript(hexToBin(categoryId), hash), contract.provider.network, 'p2sh32', true,
+  );
 }
 
 export function getTokenContainerAddress(

@@ -445,7 +445,7 @@ export function externalCallEventDestinations(
     if (base < 0) continue;
     const layout = group.blockLayout ?? group.compilerRoute?.abiFunction.blockLayout;
     for (const slot of layout?.slots ?? []) {
-      if (slot.kind === 'event') destinations.push(base + slot.offset);
+      if (slot.kind === 'event' || slot.kind === 'eventChunk') destinations.push(base + slot.offset);
     }
   }
   return destinations;
@@ -511,7 +511,7 @@ export function lowLevelCallImmutableEventDestinations(
     const categoryId = lowLevelCallStateOwnerCategory(groupIndex, group, proxyGroups);
     const layout = group.blockLayout ?? group.compilerRoute?.abiFunction.blockLayout;
     for (const slot of layout?.slots ?? []) {
-      if (slot.kind === 'event' || slot.kind === 'returnEvent') {
+      if (slot.kind === 'event' || slot.kind === 'eventChunk' || slot.kind === 'returnEvent') {
         destinations.push({ categoryId, destination: base + slot.offset });
       }
     }

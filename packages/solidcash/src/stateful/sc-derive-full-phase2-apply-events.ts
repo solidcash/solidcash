@@ -208,8 +208,11 @@ export function deriveFullPhase2ApplyDynamicRescanAndEvents(
         });
       }
       if (commitment === undefined) continue;
-      latestEventCommits[selectedOrdinal] = commitment;
-      stb.setEventRawCommitment(emitInfo.emitIndex, commitment);
+      const payload = joinLearnedEventChunks(stb, fullTrace2, eventBlockLayout, emitInfo.emitIndex, {
+        commitment, outputIndex, slotOffset: slot?.offset,
+      });
+      latestEventCommits[selectedOrdinal] = payload;
+      stb.setEventRawCommitment(emitInfo.emitIndex, payload);
       commitmentProgress += 1;
     }
   }
@@ -220,4 +223,37 @@ export function deriveFullPhase2ApplyDynamicRescanAndEvents(
     commitmentProgress,
     latestEventCommits,
   };
+}
+
+/**
+ * A wide emit's payload: chunk 0 learned at its event output, then each continuation chunk the probe pinned at the
+ * following `eventChunk` outputs (or the one learned before, until the probe reaches it). A chunk shorter than the
+ * commitment limit ends the payload.
+ */
+function joinLearnedEventChunks(
+  stb: StatefulTransactionBuilder,
+  trace: AuthenticationProgramStateCommon[],
+  layout: FunctionBlockLayout | undefined,
+  emitIndex: number,
+  head: { commitment: string; outputIndex: number; slotOffset: number | undefined },
+): string {
+  const chunkSlots = (layout?.slots ?? [])
+    .filter((slot) => slot.kind === 'eventChunk' && slot.slotIndex === emitIndex)
+    .sort((left, right) => (left.chunk ?? 0) - (right.chunk ?? 0));
+  if (chunkSlots.length === 0 || head.slotOffset === undefined) return head.commitment;
+  const fullChunk = 2 * stb.getEventChunkBytes();
+  const previous = stb.getEventRawCommitment(emitIndex) ?? '';
+  let payload = head.commitment;
+  let continues = head.commitment.length === fullChunk;
+  for (const chunkSlot of chunkSlots) {
+    if (!continues) break;
+    const index = head.outputIndex + chunkSlot.offset - head.slotOffset;
+    const chunk = chunkSlot.chunk ?? 0;
+    const learned = extractCommitmentMapFromTrace(trace, { min: index, max: index + 1 }, true).get(index)
+      ?? previous.slice(chunk * fullChunk, (chunk + 1) * fullChunk);
+    if (learned === '') break;
+    payload += learned;
+    continues = learned.length === fullChunk;
+  }
+  return payload;
 }

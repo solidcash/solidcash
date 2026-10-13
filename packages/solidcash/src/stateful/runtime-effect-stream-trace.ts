@@ -29,10 +29,15 @@ function parseEventRecord(body: Uint8Array): RuntimeEffectStreamRecord | undefin
   const opcode = body[0]!;
   let start = 1;
   let length = 0;
-  if (opcode <= 75) length = opcode;
-  else if (opcode === 76) { start = 2; length = body[1]!; }
-  else if (opcode === 77) { start = 3; length = body[1]! | (body[2]! << 8); }
-  else if (opcode === 78) { start = 5; length = (body[1]! | (body[2]! << 8) | (body[3]! << 16) | (body[4]! << 24)) >>> 0; }
+  if (opcode <= 75) {
+    length = opcode;
+  } else if (opcode === 76) {
+    start = 2; length = body[1]!;
+  } else if (opcode === 77) {
+    start = 3; length = body[1]! | (body[2]! << 8);
+  } else if (opcode === 78) {
+    start = 5; length = (body[1]! | (body[2]! << 8) | (body[3]! << 16) | (body[4]! << 24)) >>> 0;
+  }
   const lock = body.subarray(start + length);
   if (start + length > body.length || lock.length !== 35
     || lock[0] !== 0xaa || lock[1] !== 0x20 || lock[34] !== 0x87) return undefined;

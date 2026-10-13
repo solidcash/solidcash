@@ -423,12 +423,17 @@ const generateTemplateLockScript = (
   contract: Contract,
   constructorArguments: EncodedFunctionArgument[],
 ): WalletTemplateScriptLocking => {
+  // The deployed script's category self-pin, as Contract composes it. Without it the template master sits at
+  // another lock, and every record bound to the real master lock reads as foreign.
+  const pin = contract.isStateful && contract.category && contract.category.length > 0
+    ? Uint8Array.from([...contract.category.slice().reverse(), 0x02]) : undefined;
   return {
     lockingType: contract.addressType === 'p2s' ? 'standard' : contract.addressType,
     name: contract.artifact.contractName,
     script: [
       // A deployer's salt (a density reserve) opens the deployed script; debugSingleScenario strips it again.
       ...(contract.salt ? ['// salt', `<0x${binToHex(contract.salt)}>`, 'OP_DROP', ''] : []),
+      ...(pin ? ['// category pin', `<0x${binToHex(pin)}>`, 'OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY', ''] : []),
       `// "${contract.artifact.contractName}" contract constructor parameters`,
       formatParametersForDebugging(contract.artifact.constructorInputs, constructorArguments),
       '',

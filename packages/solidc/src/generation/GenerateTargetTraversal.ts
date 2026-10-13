@@ -49045,9 +49045,83 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitTakeFirst32(loc);
     const category = '(__foreign_container_category)';
     this.pushToStack(category);
-    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    // Every stepped instruction is priced, taken or not. List the inputs holding a token other than an own
+    // mutable record, then run the keep rules on those alone. [category] -> [category, ownMutable]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(new Uint8Array([0x01]), loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emitListIndicesByTokenCategory(false, () => {
+      // [ownMutable, list, index, tokenCategory] -> [ownMutable, list, index, listed]
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(4n), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_NOT, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_BOOLAND, loc);
+    }, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emitForEachListedIndex(() => this.emitForeignInputKeep(category, loc), loc);
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
+  }
+
+  /**
+   * `[...]` -> `[..., list]`: the 3-byte indices of the inputs (or outputs) whose token category `listed` accepts.
+   * `listed` turns `[list, index, tokenCategory]` into `[list, index, flag]`.
+   */
+  private emitListIndicesByTokenCategory(isOutput: boolean, listed: () => void, loc: SingleLocationData): void {
+    this.emit(Op.OP_0, loc);
+    this.emit(isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT, loc);
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(isOutput ? Op.OP_OUTPUTTOKENCATEGORY : Op.OP_UTXOTOKENCATEGORY, loc);
+    listed();
+    this.emit(Op.OP_IF, loc);
+    // [list, index] -> [list ++ index, index]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+  }
+
+  /**
+   * `[..., list]` -> `[...]`. Runs `body` on `[..., index]` for each listed 3-byte index, with the rest of the list
+   * on the alt stack. `body` leaves `[..., index]`.
+   */
+  private emitForEachListedIndex(body: () => void, loc: SingleLocationData): void {
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    body();
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DROP, loc);
+  }
+
+  /** `[index]` stays, untracked directly above the tracked `category`. The keep rules for one input. */
+  private emitForeignInputKeep(category: string, loc: SingleLocationData): void {
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_UTXOBYTECODE, loc);
     this.emit(Op.OP_SIZE, loc);
@@ -49104,12 +49178,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_NOT, loc);
-    this.emit(Op.OP_UNTIL, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.popFromStack();
   }
 
   /**
@@ -49399,79 +49467,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc);
     this.pushToStack('(__mutable_base)');
-    this.emit(Op.OP_0, loc);
-    this.emit(Op.OP_BEGIN, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_SIZE, loc);
-    this.emit(Op.OP_NIP, loc);
-    this.emit(encodeInt(33n), loc);
-    this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_NIP, loc);
+    // [base, locks]. Built once, not once per output.
+    this.emitMintableRecordLocks(loc);
+    // [base, locks, ownMutable]
+    this.emit(Op.OP_OVER, loc);
     this.emit(new Uint8Array([0x01]), loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emitTakeFirst32(loc);
-    this.emit(encodeInt(3n), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc);
-    // The helper verifies the allow-bit itself and puts i back. A second VERIFY would consume i.
-    this.emitMutableOutputAllowed(loc);
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_1ADD, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
-    this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_CAT, loc);
+    // Every stepped instruction is priced, taken or not. List the own mutable outputs, then check those alone.
+    this.emitListIndicesByTokenCategory(true, () => {
+      // [ownMutable, list, index, tokenCategory] -> [ownMutable, list, index, listed]
+      this.emit(encodeInt(3n), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUAL, loc);
+    }, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emitForEachListedIndex(() => this.emitMutableOutputAllowed(loc), loc);
     this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_DROP, loc);
     this.popFromStack();
   }
 
-  /**
-   * `[base, i]` -> `[base, i]`. `i` stays on the alt stack so a lock rebuild cannot become the next index.
-   * Output i must match a mutable input's lock and category, or a lock this contract may mint.
-   * `OP_IF` already consumes the comparison, so the match arm must not drop again before it replaces
-   * `allowed`: that drop takes `j`, and the following `NIP` then takes `base`.
-   */
-  private emitMutableOutputAllowed(loc: SingleLocationData): void {
-    // [base, i] -> [base], alt [i]
-    this.emit(Op.OP_TOALTSTACK, loc);
+  /** `[base]` -> `[base, locks]`: each lock this contract may mint a record at, 35 bytes apiece. */
+  private emitMintableRecordLocks(loc: SingleLocationData): void {
     this.emit(Op.OP_0, loc);
-    const copyOutputIndex = (): void => {
-      this.emit(Op.OP_FROMALTSTACK, loc);
-      this.emit(Op.OP_DUP, loc);
-      this.emit(Op.OP_TOALTSTACK, loc);
-    };
-    // [base, allowed]. A rebuilt lock replaces one untracked copy; the tracked base stays put.
-    const admit = (build: () => void): void => {
+    // [base, locks]. A rebuilt lock replaces one untracked copy; the tracked base stays put.
+    const append = (build: () => void): void => {
       const saved = this.stack.slice();
       this.emit(Op.OP_OVER, loc);
       build();
       this.stack.splice(0, this.stack.length, ...saved);
-      copyOutputIndex();
-      this.emit(Op.OP_OUTPUTBYTECODE, loc);
-      this.emit(Op.OP_EQUAL, loc);
-      this.emit(Op.OP_BOOLOR, loc);
+      this.emit(Op.OP_CAT, loc);
     };
     if (this.dataNftCount > 0) {
-      admit(() => {
+      append(() => {
         if (this.directConvention && !this.framedMaster) {
           this.emitRecordMasterLockUnder(loc);
           this.emitDataNftLbc(loc, true);
@@ -49481,62 +49509,77 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const collection of this.collectionDefinitions) {
       const signature = this.vmapCollectionSignature(collection.name);
       if (signature === undefined) continue;
-      admit(() => this.emitSortedEntryAddress(computeCollectionHash(signature), loc));
+      append(() => this.emitSortedEntryAddress(computeCollectionHash(signature), loc));
     }
     for (const sv of this.stateVariables) {
       if (!sv.isDynamic) continue;
       const chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()));
-      admit(() => this.emitSortedEntryAddress(chunkHash, loc));
+      append(() => this.emitSortedEntryAddress(chunkHash, loc));
     }
     const chunkBase = '__internal__valueChunkOutputBase';
     if (this.getStackIndex(chunkBase, true) >= 0) {
-      // [base, allowed, blob]. Each 35-byte lock is admitted. A short remainder is the cleared witness.
+      // The value-chunk locks a long write appended. A short remainder is the cleared witness, so it goes last.
       this.emitPickTrackedFromBottom(chunkBase, loc);
-      this.emit(Op.OP_BEGIN, loc);
-      this.emit(Op.OP_DUP, loc);
-      this.emit(Op.OP_SIZE, loc);
-      this.emit(Op.OP_NIP, loc);
-      this.emit(encodeInt(35n), loc);
-      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
-      this.emit(Op.OP_IF, loc);
-      this.emit(encodeInt(35n), loc);
-      this.emit(Op.OP_SPLIT, loc);
-      this.emit(Op.OP_SWAP, loc);
-      copyOutputIndex();
-      this.emit(Op.OP_OUTPUTBYTECODE, loc);
-      this.emit(Op.OP_EQUAL, loc);
-      this.emit(Op.OP_ROT, loc);
-      this.emit(Op.OP_SWAP, loc);
-      this.emit(Op.OP_BOOLOR, loc);
-      this.emit(Op.OP_SWAP, loc);
-      this.emit(encodeBool(false), loc);
-      this.emit(Op.OP_ELSE, loc);
-      this.emit(Op.OP_DROP, loc);
-      this.emit(encodeBool(true), loc);
-      this.emit(Op.OP_ENDIF, loc);
-      this.emit(Op.OP_UNTIL, loc);
+      this.emit(Op.OP_CAT, loc);
     }
-    // Most outputs sit at a lock this contract mints. Only one at none of them scans for a mutable input with
-    // its lock and category, so the scan is not paid once per output over every input.
+  }
+
+  /**
+   * `[locks, i]` stays, untracked above the tracked base. Output i must sit at one of `locks`, or match a mutable
+   * input's lock and category. `OP_IF` already consumes the comparison, so the match arm must not drop again
+   * before it replaces `found`.
+   */
+  private emitMutableOutputAllowed(loc: SingleLocationData): void {
+    // [locks, i, found, rest]
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(35n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    // [i, found, rest] -> [i, found, rest', lock] -> [i, found', rest']
+    this.emit(encodeInt(35n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    // [locks, i, found]. Only an output at none of them scans for a mutable input with its lock and category.
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_NOTIF, loc);
     this.emit(Op.OP_TXINPUTCOUNT, loc);
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_1SUB, loc);
-    // [base, allowed, j] -> [base, allowed, j, lockEq]
-    copyOutputIndex();
+    // [i, found, j] -> [i, found, j, lockEq]
+    this.emit(encodeInt(2n), loc);
+    this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_OUTPUTBYTECODE, loc);
     this.emit(Op.OP_OVER, loc);
     this.emit(Op.OP_UTXOBYTECODE, loc);
     this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    copyOutputIndex();
+    this.emit(encodeInt(2n), loc);
+    this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
     this.emit(Op.OP_OVER, loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    // IF consumed the bit. [base, allowed, j] -> [base, 1, j]
+    // [i, found, j] -> [i, 1, j]
     this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_1, loc);
     this.emit(Op.OP_SWAP, loc);
@@ -49548,7 +49591,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_VERIFY, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc);
   }
 
   /**

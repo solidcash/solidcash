@@ -13,8 +13,9 @@ import { createTestProvider } from '../test-util.js';
  * A negative `int` index into a mapping's array value or a state array, on the direct convention.
  *
  * The element read checks only `index < length`, then splits the value at `index * width`, or scans a variable-width
- * value for `index` elements: a negative index splits at a negative offset, or counts down past zero and spends the
- * whole operation budget, so the call fails rather than reading another element.
+ * value for `index` elements: a negative index splits at a negative offset, or counts down past the last element,
+ * which the scan refuses because each skipped element has to be present. The call fails rather than reading another
+ * element.
  */
 
 const P = 'pragma solidcash ^0.13.0;';
@@ -22,6 +23,8 @@ const KIND = Uint8Array.from([0x3c, 0x61, 0x86, 0xab]);
 const NOTE = Uint8Array.from([0x52, 0x0e, 0x97]);
 /** The machine's refusal of a split at `index * width` for a negative index. */
 const SPLIT = 'OP_SPLIT operation with an invalid index. stack item length: 4; requested split index: -4';
+/** The element scan's refusal of a skip past the last element. */
+const MISSING_ELEMENT = 'Program failed an OP_VERIFY operation.';
 
 let fundingNonce = 0x7a10;
 
@@ -58,7 +61,7 @@ describe('a negative direct index into a value the contract holds', () => {
       constructor(bytes v) { this.notes[7].push(v); }
       function check(uint k, int i, bytes e) { require(this.notes[k][i] == e); } }`, [NOTE]);
     await check(7n, 0n, NOTE);
-    await expect(check(7n, -1n, NOTE)).rejects.toThrow('operation cost density limit');
+    await expect(check(7n, -1n, NOTE)).rejects.toThrow(MISSING_ELEMENT);
   });
 
   it('refuses a negative index into a state array', async () => {

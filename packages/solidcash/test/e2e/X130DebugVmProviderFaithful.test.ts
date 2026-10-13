@@ -270,13 +270,14 @@ describe('X130 - the debug VM decides on the published limits (@mem-cash/validat
   it('5. NOT WIDENED for a provider that publishes no limits: the stock 800 comes straight back', async () => {
     // Every live network (Electrum, regtest, FullStack, Bitcoin RPC) publishes no `consensusLimits`, so this is
     // the behaviour they all get: `createVirtualMachineBch2026ForProvider` early-returns libauth's own factory
-    // and the debug VM is byte-identical to the pre-repair one. Clearing the field on a provider that WOULD
-    // have admitted depth 40 (row 2) is what isolates the published limits as the only thing that changed.
+    // and the debug VM is byte-identical to the pre-repair one. Depth 46 is the smallest the stock 800 refuses
+    // (measured: 45 fits by 6,144 units, 46 is 15,963 over; depth 40 fits since the hardening scans list their
+    // slots), and row 2's relaxed profile admits it, so the published limits are the only thing that changed.
     const provider = new MockNetworkProvider();
     const sc = await recursionContract(provider) as unknown as Recursor;
     (provider as unknown as { consensusLimits: unknown }).consensusLimits = undefined;
     let error: string | undefined;
-    try { await sc.decrement(40n).build(); } catch (e) { error = (e as Error).message; }
+    try { await sc.decrement(46n).build(); } catch (e) { error = (e as Error).message; }
     expect(error, 'a limits-less provider must decide exactly as the bare VM did').toBeDefined();
     assertDensityCeiling(error!, STOCK_BUDGET_PER_BYTE);
   });

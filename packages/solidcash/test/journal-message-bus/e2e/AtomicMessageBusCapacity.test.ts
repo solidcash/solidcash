@@ -93,29 +93,31 @@ interface CapacityReading {
 // scans listing the slots they act on: kernel transactionBytes 23_158 -> 24_122 and legacy 23_595 -> 24_586; the
 // participant inputs carry the checks (kernel 447_944 -> 504_357 and 402_175 -> 489_563; legacy 430_505 ->
 // 493_027 and 423_138 -> 507_380) and their longer scripts raise their maximums. The worst input stays a verifier.
+// Re-measured at feat/per-call-fix 263f87a47 (the pins above were copied without a run): kernel transactionBytes
+// 24_227, legacy 24_698; only the two participant inputs moved, worst input and ratio unchanged.
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_122, callManifestBytes: 294,
+    transactionBytes: 24_227, callManifestBytes: 294,
     worstOperationCost: 3_068_177, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.4241093940064138,
     inputOperationCosts: [
-      504_357, 489_563, 695, 3_068_177, 3_037_456, 27_321,
+      500_946, 489_717, 695, 3_068_177, 3_037_456, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_383_200, 1_907_200, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_460_000, 1_914_400, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_586, callManifestBytes: 294,
+    transactionBytes: 24_698, callManifestBytes: 294,
     worstOperationCost: 6_113_136, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.8450093995355523,
     inputOperationCosts: [
-      493_027, 507_380, 695, 6_113_136, 6_020_085, 27_321,
+      486_028, 507_420, 695, 6_113_136, 6_020_085, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_320_800, 2_340_800, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_407_200, 2_344_000, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });

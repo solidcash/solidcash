@@ -1772,15 +1772,19 @@ As built on kernel routes (2026-10-13, the runtime effect stream):
 - SDK: batch rows take that metadata (`mergePublishedMessageBusHandlerMetadata`) and plan one head record per site.
   When a phase-2 probe fails, `extractRuntimeEffectStreamRuns` reads each verifier run where it introspects a
   record's category (the record on the stack, the run's unchecked records on the alt stack), from the probe trace or,
-  when that kept no such state, from `traceRuntimeEffectStreamRuns` (one re-evaluation that keeps only those states;
-  forcing a full faithful trace instead ran the real Unicrow participants out of a 4 GB heap).
+  when that kept no such state or trimmed one, from `traceRuntimeEffectStreamRuns` (one re-evaluation that keeps only
+  those states; forcing a full faithful trace instead ran the real Unicrow participants out of a 4 GB heap). The
+  bounded collector keeps only its latest 96 observations whole and the verifier makes 8 per record, so a probe that
+  runs past a 12-record run trims its first step; reading the next step learned an 11-record prefix and the count
+  flipped 12/11 until derivation reported an oscillation (nine Unicrow escrows, 2026-10-13).
   `applyRuntimeLoopEventStream` replaces the row's planned records (count, locks, commitments) and shifts the later
   event segments. Compose counts continuation locks as event locks, never decodes a chunk by schema in the
   relocation, and relocates nothing for a stream its trace has not read yet. Receipts skip continuation outputs as
   heads.
 - Test: `packages/solidcash/test/e2e/KernelStreamedWideEvents.test.ts` (head and continuation in order, a forged
-  chunk and a reordered pair refused, a dynamic-array record count learned): green on the forced-faithful version;
-  the filtered re-evaluation that replaced it and the Unicrow targets are not yet measured.
+  chunk and a reordered pair refused, a dynamic-array record count learned) and the real Unicrow arbitration titles
+  (10/10, nine escrows included) green on the filtered re-evaluation; `test/unit/RuntimeEffectStreamTrace.test.ts`
+  pins the trimmed-step refusal.
 
 Still deferred:
 

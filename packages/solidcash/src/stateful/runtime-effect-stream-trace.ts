@@ -43,7 +43,9 @@ function parseEventRecord(body: Uint8Array): RuntimeEffectStreamRecord | undefin
  * Event records of each effect verifier run in `trace`, read where it introspects an event record's category:
  * `[ownerCategory, base, remaining, bchTotal, index, record, index]` on the stack (`index = base + remaining - 1`)
  * and the run's `remaining - 1` unchecked tagged records on top of the alt stack. Only states that retain both
- * stacks qualify; per run, the state with the most unchecked records wins.
+ * stacks qualify; per run, the state with the most unchecked records wins. A bounded probe trace keeps only its
+ * latest states whole: once it trimmed a verifier step to `[bchTotal, index, record, index]`, a later step holds
+ * only a prefix of that run, so the trace yields no runs and the caller re-evaluates.
  */
 export function extractRuntimeEffectStreamRuns(
   trace: readonly AuthenticationProgramStateCommon[],
@@ -54,7 +56,12 @@ export function extractRuntimeEffectStreamRuns(
     if (state.controlStack.some((flag) => flag === false)) continue;
     const { stack } = state;
     const alternate = state.alternateStack ?? [];
-    if (stack.length < 7 || stack[stack.length - 7]!.length !== 32) continue;
+    if (stack.length < 7) {
+      if (stack.length >= 3 && binToHex(stack[stack.length - 1]!) === binToHex(stack[stack.length - 3]!)
+        && parseEventRecord(stack[stack.length - 2]!) !== undefined) return [];
+      continue;
+    }
+    if (stack[stack.length - 7]!.length !== 32) continue;
     const index = stack[stack.length - 1]!;
     if (binToHex(index) !== binToHex(stack[stack.length - 3]!)) continue;
     const current = parseEventRecord(stack[stack.length - 2]!);

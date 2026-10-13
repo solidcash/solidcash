@@ -3447,6 +3447,7 @@ function buildFunctionAbiMetadata(
         ...(eventSites.some((emit) => emit.runtimeLoopEffectOrder !== undefined) && {
           effectOrder: eventSites.map((emit, index) => emit.runtimeLoopEffectOrder ?? index),
         }),
+        ...(loop.chunked && { chunked: true as const }),
       };
     });
   })();

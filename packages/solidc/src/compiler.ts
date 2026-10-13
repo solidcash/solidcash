@@ -102,7 +102,7 @@ let pendingSpanAdmissionAnalysis: AdmissionDecisionSet | undefined;
 import {
   type Ast, AssignNode, AssignmentExpressionNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode,
   ContractReferenceNode,
-  EmitStatementNode,
+  EmitStatementNode, type EventDefinitionNode,
   ExpressionNode, FieldAccessNode, LiteralNode,
   FunctionCallNode, FunctionDefinitionNode, IndirectCallNode, InterfaceFunctionNode, InterfaceNode,
   ExternalCallMode, ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode,
@@ -3705,15 +3705,101 @@ function noteKernelLayoutGate(fn: { name: string }, gate: string, detail?: Recor
   console.error('message-bus-layout-gate', JSON.stringify({ handler: fn.name, gate, ...detail }));
 }
 
-/** Names of the events visible to `ast` whose payload can exceed one NFT commitment of `chunkBytes`. */
-function wideEventNames(ast: Ast, chunkBytes: number): Set<string> {
-  const events = [
+/** Event definitions visible to `ast`. */
+function visibleEventDefinitions(ast: Ast): EventDefinitionNode[] {
+  return [
     ...ast.contract.eventDefinitions, ...ast.eventDefinitions,
     ...ast.interfaceDefinitions.flatMap((definition) => definition.eventDefinitions),
     ...ast.importedContracts.flatMap((contract) => contract.eventDefinitions),
   ];
-  return new Set(events.filter((event) => getEventChunkCount(event.parameters, chunkBytes) > 1)
+}
+
+/** Names of the events visible to `ast` whose payload can exceed one NFT commitment of `chunkBytes`. */
+function wideEventNames(ast: Ast, chunkBytes: number): Set<string> {
+  return new Set(visibleEventDefinitions(ast)
+    .filter((event) => getEventChunkCount(event.parameters, chunkBytes) > 1)
     .map((event) => event.name));
+}
+
+/** True when `type` holds a dynamic array, so no static bound limits its encoded size. */
+function holdsDynamicArray(type: Type, seen = new Set<object>()): boolean {
+  if (type instanceof ArrayType) return type.bound === undefined || holdsDynamicArray(type.elementType, seen);
+  if (!(type instanceof StructType) || seen.has(type)) return false;
+  seen.add(type);
+  return type.fields.some((field) => holdsDynamicArray(field.type, seen));
+}
+
+/** Names of the events visible to `ast` a dynamic array can grow past any one commitment (`getEventChunkCount`
+ * counts such a parameter as 9 bytes). */
+function unboundedEventNames(ast: Ast): Set<string> {
+  return new Set(visibleEventDefinitions(ast)
+    .filter((event) => event.parameters.some((parameter) => holdsDynamicArray(parameter.type)))
+    .map((event) => event.name));
+}
+
+/** Emits `body` reaches through nested blocks alone, in source order, and whether a return precedes the last. */
+function topLevelEmits(body: BlockNode): { emits: EmitStatementNode[]; returnBeforeLast: boolean } {
+  const emits: EmitStatementNode[] = [];
+  let returned = false;
+  let returnBeforeLast = false;
+  const visit = (statements: readonly Node[]): void => {
+    for (const statement of statements) {
+      if (statement instanceof EmitStatementNode) {
+        emits.push(statement);
+        if (returned) returnBeforeLast = true;
+      } else if (statement instanceof BlockNode) {
+        visit(statement.statements ?? []);
+      } else {
+        walkInvocationAst(statement, (node) => { if (node instanceof ReturnNode) returned = true; });
+      }
+    }
+  };
+  visit(body.statements ?? []);
+  return { emits, returnBeforeLast };
+}
+
+/**
+ * Whether a kernel route can settle every emit of `fn` on its runtime effect stream: each one sits in `fn`'s own
+ * body outside branches, loops and try blocks with no return before the last, no helper emits, and no counter loop
+ * already orders a stream of its own. Each emit then always pushes its records, so a builder plans one per site.
+ */
+function streamsEveryEmit(fn: FunctionDefinitionNode, byName: Map<string, FunctionDefinitionNode[]>): boolean {
+  if (!fn.body || (fn.runtimeLoopEvents?.length ?? 0) > 0 || (fn.runtimeLoopTransfers?.length ?? 0) > 0) {
+    return false;
+  }
+  const helperEmits = [...collectNamedFunctionClosure(fn, byName)].some((name) => name !== fn.name
+    && (byName.get(name) ?? []).some((helper) => {
+      let found = false;
+      walkInvocationAst(helper.body, (node) => { if (node instanceof EmitStatementNode) found = true; });
+      return found;
+    }));
+  if (helperEmits) return false;
+  const { emits, returnBeforeLast } = topLevelEmits(fn.body);
+  let total = 0;
+  walkInvocationAst(fn.body, (node) => { if (node instanceof EmitStatementNode) total += 1; });
+  return emits.length > 0 && emits.length === total && !returnBeforeLast;
+}
+
+/** Signatures of an admitted stream handler's emits in source order; undefined for any other handler. */
+function streamedEventSignatures(fn: FunctionDefinitionNode): string[] | undefined {
+  if (fn.messageBusEventStream !== true || fn.messageBusEligible !== true || !fn.body) return undefined;
+  const signatures: string[] = [];
+  walkInvocationAst(fn.body, (node) => {
+    if (node instanceof EmitStatementNode) signatures.push(node.eventDefinition?.signature ?? node.eventName);
+  });
+  return signatures;
+}
+
+/** Kernel stream clone: its top-level emits become chunked records of one exact-count runtime event segment. */
+function streamHandlerEmits(handler: FunctionDefinitionNode, cheap: boolean): void {
+  // The records share the route's trailing band; reserve the default wide band beside any other stream.
+  handler.runtimeCounterLoopOutputCapacity = Math.max(handler.runtimeCounterLoopOutputCapacity ?? 0, 64);
+  if (cheap || !handler.body) return;
+  topLevelEmits(handler.body).emits.forEach((emit, siteIndex) => {
+    emit.runtimeLoopEvent = { loopIndex: 0, siteIndex };
+    emit.runtimeLoopEventChunked = true;
+  });
+  handler.runtimeLoopEvents = [{ loopIndex: 0, repeatCount: 1, chunked: true }];
 }
 
 /** True when `body` holds an emit of an event named in `names`. */
@@ -5692,6 +5778,9 @@ function synthesizeMessageBusRoute(
     contract.stateVariables.map((state) => state.name),
   ));
   const wideEvents = wideEventNames(ast, compilerOptions.commitmentLimit ?? 128);
+  // The kernel also streams a payload a dynamic array can grow past one commitment; the legacy route keeps its count.
+  const streamedEvents = compilerOptions.messageBusKernel === true
+    ? new Set([...wideEvents, ...unboundedEventNames(ast)]) : wideEvents;
   const dynamicState = new Set(contract.stateVariables.filter((state) => state.isDynamic
     || state.isPacked
     || state.type === PrimitiveType.STRING
@@ -7254,6 +7343,7 @@ function synthesizeMessageBusRoute(
   };
   const kernelAllOutputSignatureParameters = new Map<FunctionDefinitionNode, number[]>();
   for (const fn of functions) {
+    fn.messageBusEventStream = undefined;
     fn.messageBusUsesTransactionSignature = reachesTransactionSignatureCheck(fn);
     const allOutputProof = compilerOptions.messageBusKernel === true
       && fn.messageBusUsesTransactionSignature === true
@@ -7312,13 +7402,20 @@ function synthesizeMessageBusRoute(
       }
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
-    // A payload wider than one NFT commitment continues in outputs no route frame reserves: refuse the handler
-    // here, by name, rather than publish a route whose event output the network rejects.
-    if (emitsWideEvent(fn, signatureClosureByName, wideEvents)) {
-      noteKernelLayoutGate(fn, 'event-wider-than-one-commitment');
-      fn.messageBusEligible = false;
-      fn.messageBusRejectionReason = 'event-wider-than-one-commitment';
-      continue;
+    // A payload wider than one NFT commitment continues in outputs no route frame reserves. A kernel handler whose
+    // emits all stream settles them as chunked records on its runtime effect stream; refuse any other wide emitter
+    // by name rather than publish a route whose event output the network rejects. A payload only a dynamic array
+    // widens otherwise keeps its window, refused at run time past one commitment.
+    if (emitsWideEvent(fn, signatureClosureByName, streamedEvents)) {
+      if (compilerOptions.messageBusKernel === true && streamsEveryEmit(fn, signatureClosureByName)) {
+        fn.messageBusEventStream = true;
+        fn.runtimeCounterLoopOutputCapacity = Math.max(fn.runtimeCounterLoopOutputCapacity ?? 0, 64);
+      } else if (emitsWideEvent(fn, signatureClosureByName, wideEvents)) {
+        noteKernelLayoutGate(fn, 'event-wider-than-one-commitment');
+        fn.messageBusEligible = false;
+        fn.messageBusRejectionReason = 'event-wider-than-one-commitment';
+        continue;
+      }
     }
     if (compilerOptions.messageBusKernel === true
       && footprint.writes.some((resource) => resource.startsWith('state:'))
@@ -14497,6 +14594,7 @@ function cloneMessageBusHandler(
   // body (no OP_INVOKE hidden context) while still treating it as a graph emission handler.
   handler.isFallback = false;
   handler.isReceive = false;
+  if (source.messageBusEventStream === true) streamHandlerEmits(handler, cheap);
   return handler;
 }
 
@@ -17898,7 +17996,7 @@ function compileResolvedAst(
             });
           // path-effect activation: stamp bool-param BranchNode activations onto event schedule entries.
           const emitActivations = pathEffectBoolParamActivationsForEmits(fn);
-          const events = (sourceAbi?.emits ?? []).map((emit, index) => {
+          const events = (streamedEventSignatures(fn) === undefined ? sourceAbi?.emits ?? [] : []).map((emit, index) => {
             const emitIndex = emit.emitIndex ?? index;
             const activation = emitActivations.get(emitIndex);
             return {
@@ -17948,10 +18046,13 @@ function compileResolvedAst(
         ...(() => {
           const sourceAbi = artifact.abi.find((candidate) =>
             candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined));
+          // A stream handler's emits settle as chunked runtime records in source order, not in event windows.
+          const streamed = streamedEventSignatures(fn);
           return {
-            ...(sourceAbi?.emits?.length ? { emits: sourceAbi.emits } : {}),
-            ...(sourceAbi?.runtimeLoopEvents?.length
-              ? { runtimeLoopEvents: sourceAbi.runtimeLoopEvents } : {}),
+            ...(streamed === undefined && sourceAbi?.emits?.length ? { emits: sourceAbi.emits } : {}),
+            ...(streamed !== undefined
+              ? { runtimeLoopEvents: [{ repeatCount: 1, eventSignatures: streamed, chunked: true as const }] }
+              : sourceAbi?.runtimeLoopEvents?.length ? { runtimeLoopEvents: sourceAbi.runtimeLoopEvents } : {}),
             ...(sourceAbi?.runtimeLoopTransfers?.length
               ? { runtimeLoopTransfers: sourceAbi.runtimeLoopTransfers } : {}),
             ...(sourceAbi?.transfers?.length ? { transfers: sourceAbi.transfers } : {}),

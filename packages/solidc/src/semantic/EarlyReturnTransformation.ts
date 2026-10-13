@@ -29,8 +29,10 @@ import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { UnsupportedReturnError } from '../Errors.js';
 import { computeBranchOps } from './branchOps.js';
 
-/** Whether the function being nested ends a covenant path at a bare return, so `sealUnguardedBareReturn` applies. */
-let sealingBareReturns = true;
+// True while nesting an entry point the final-require check verifies, in a mode where a bare return ends the covenant
+// path. An internal return goes back to its caller, a state-writing entry ends under its state covenant, and a framed
+// body still runs its frame tail, so none of them is sealed.
+let sealingBareReturns = false;
 
 /**
  * Transforms early return statements into nested if-else structures.
@@ -92,7 +94,7 @@ export default class EarlyReturnTransformation extends AstTraversal {
     // Transform the body statements to nest early returns
     if (node.body.statements) {
       const sealing = sealingBareReturns;
-      sealingBareReturns = this.sealBareReturns;
+      sealingBareReturns = this.sealBareReturns && node.sealsUnguardedReturns === true;
       try {
         node.body.statements = transformStatements(node.body.statements);
       } finally {

@@ -2,6 +2,7 @@ import {
   beforeAll, describe, expect, it,
 } from 'vitest';
 import { compileFile } from 'solidc';
+import { hexToBin } from '@bitauth/libauth';
 import { URL } from 'url';
 import type { Utxo } from '../../src/interfaces.js';
 import {
@@ -48,7 +49,8 @@ describe('BchNativeQuarantine inheritance', () => {
     }, {
       saltContract: true,
       extraOutputs: (category) => [{
-        address: getTokenContainerAddress(inner, category, category),
+        // The container binds the master lock, which is the category-pinned contract's.
+        address: getTokenContainerAddress(inner.withCategory(hexToBin(category)), category, category),
         satoshis: 1_200n,
         token: { amount: 1_000n },
       }],

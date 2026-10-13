@@ -168,9 +168,9 @@ async function deployAll(opts?: { premint?: bigint; quarantineBlocks?: bigint })
     master.registerLibrary(name, facets[name]);
   }
 
-  // Premint the backing FT into the master's token container.
+  // Premint the backing FT into the master's token container, which binds the pinned master lock.
   const ft = await genesisFtContainer(
-    provider, masterContract, masterCat, [opts?.premint ?? PREMINT],
+    provider, master.inner, masterCat, [opts?.premint ?? PREMINT],
   );
 
   const signers = {

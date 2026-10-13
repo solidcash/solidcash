@@ -69,7 +69,10 @@ describe('MinimalNativeToken bytecode budget', () => {
     }, {
       saltContract: true,
       extraOutputs: (category) => [{
-        address: getTokenContainerAddress(inner, category, category), satoshis: 1_200n, token: { amount: 1_000n },
+        // The container binds the master lock, which is the category-pinned contract's.
+        address: getTokenContainerAddress(inner.withCategory(hexToBin(category)), category, category),
+        satoshis: 1_200n,
+        token: { amount: 1_000n },
       }, {
         address: bob.getAddress(), satoshis: 100_000n, token: { amount: 5n },
       }],
@@ -124,7 +127,10 @@ describe('MinimalNativeToken bytecode budget', () => {
     }, {
       saltContract: true,
       extraOutputs: (category) => [{
-        address: getTokenContainerAddress(inner, category, category), satoshis: 1_200n, token: { amount: 1_000n },
+        // The container binds the master lock, which is the category-pinned contract's.
+        address: getTokenContainerAddress(inner.withCategory(hexToBin(category)), category, category),
+        satoshis: 1_200n,
+        token: { amount: 1_000n },
       }, {
         address: bob.getAddress(), satoshis: 100_000n, token: { amount: 5n },
       }],

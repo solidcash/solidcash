@@ -48864,8 +48864,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(32n), loc);
     this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    if (this.currentFunctionIsDelegate) {
-      // The proxy's sender anchor sits at an anyone-can-spend lock; the SDK recreates it at any free index.
+    // A caller co-spends its own sender anchor for its callee, as a proxy does for its delegate.
+    if (this.currentFunctionIsDelegate || this.lowLevelCallCount > 0 || this.externalCallSlots.length > 0) {
+      // The sender anchor sits at an anyone-can-spend lock; the SDK recreates it at any free index.
       this.emitOwnScidAnchorInputFlag(category, loc);
       this.emit(Op.OP_NOTIF, loc);
       this.emitForeignContainerKeep(loc);

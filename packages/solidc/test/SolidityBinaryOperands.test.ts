@@ -16,6 +16,7 @@ contract C {
 describe('binary operands in a .sol unit', () => {
   it.each([
     ['bytes compared with ==', 'function f() public view returns (bool) { return b1 == b2; }', 'bytes and bytes.'],
+    ['bytes compared with !=', 'function f() public view returns (bool) { return b1 != b2; }', 'bytes and bytes.'],
     ['structs compared with ==', 'function f() public view returns (bool) { return s1 == s2; }', 'cannot be applied'],
     ['a signed shift amount', 'function f(int256 a, int256 n) public pure returns (int256) { return a >> n; }',
       'int256 and int256.'],

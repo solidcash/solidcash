@@ -66,7 +66,9 @@ async function deploy(): Promise<Deployment> {
   const { categoryId } = await setupStatefulUtxos(
     provider, contract, artifact.stateLayout!, {}, { saltContract: true },
   );
-  return { provider, contract, categoryId, sc: StatefulContract.withCategory(contract, categoryId) };
+  // Entry covenants bind the master's lock, so derive them from the category-pinned master.
+  const sc = StatefulContract.withCategory(contract, categoryId);
+  return { provider, contract: sc.inner, categoryId, sc };
 }
 
 /** Derive and capture a transaction without broadcasting it, leaving every input unspent. */

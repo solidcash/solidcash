@@ -2210,7 +2210,8 @@ describe('kernel loop message-bus compose', () => {
     await expect(contract.call.seed(key, value).send()).resolves.toBeDefined();
 
     const slot = keyToSlotMulti([bigIntToVmNumber(key)]);
-    const oldChunkAddress = getValueChunkAddress(inner, categoryId, 'payloads', slot, sha256.hash(value));
+    // Value-chunk covenants bind the master's lock: read them at the category-pinned master's address.
+    const oldChunkAddress = getValueChunkAddress(contract.inner, categoryId, 'payloads', slot, sha256.hash(value));
     const oldChunks = await provider.getUtxos(oldChunkAddress);
     expect(oldChunks.length).toBeGreaterThan(1);
 
@@ -2566,9 +2567,11 @@ describe('kernel scalar-signature rows', () => {
       { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
+    // A published timestamp must not pass the time-type locktime (CRYPTO-5), and a final locktime sits below the
+    // mock chain's median time. Publish the latest time the transaction can prove.
     const call = contract.batch([{
       function: '__updateBlockOracle',
-      args: [new SignatureTemplate(alicePriv), 1_700_000_000n],
+      args: [new SignatureTemplate(alicePriv), 1_699_999_999n],
     }]);
     const builder = await call.build();
     const vm = createVirtualMachineBch2026ForProvider(provider);
@@ -2580,7 +2583,7 @@ describe('kernel scalar-signature rows', () => {
     }
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({
-      __block_timestamp: 1_700_000_000n,
+      __block_timestamp: 1_699_999_999n,
     });
   }, 180_000);
 
@@ -3922,7 +3925,7 @@ describe('kernel composite counter-key settlement', () => {
 
     const collectionLocks = ['a', 'b'].map((name) => {
       const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === name)!;
-      return binToHex(addressToLockScript(getEntryNftAddress(inner, categoryId, collection.signature)));
+      return binToHex(addressToLockScript(getEntryNftAddress(contract.inner, categoryId, collection.signature)));
     });
     const crossCollectionOutputs = collectionLocks.map((lock) => transaction.outputs
       .map((output, index) => ({ output, index }))
@@ -6085,7 +6088,8 @@ describe('kernel composite counter-key settlement', () => {
       .toEqual([0, 0, 0, 1]);
 
     const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === 'slots')!;
-    const entryLock = addressToLockScript(getEntryNftAddress(inner, categoryId, collection.signature));
+    // Entry covenants bind the master's lock: the entry outputs sit at the category-pinned master's address.
+    const entryLock = addressToLockScript(getEntryNftAddress(contract.inner, categoryId, collection.signature));
     const hostile = builder.buildLibauthTransaction();
     const entryOutput = hostile.outputs.find((output) =>
       binToHex(output.lockingBytecode) === binToHex(entryLock)

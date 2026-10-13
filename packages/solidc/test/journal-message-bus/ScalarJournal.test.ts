@@ -36,7 +36,8 @@ describe('Release 1 scalar journal lowering', () => {
     // discriminating once the contract-level script itself was outlined: the hand-duplicated variant now has
     // its repeated span shared too, and compiles SMALLER than the journalized one (482 vs 554 bytes) without
     // either shape having regressed - both shrank. A budget on the shipped shape is what still catches growth.
-    expect(journalized.debug.bytecode.length / 2).toBeLessThan(610);
+    // Every stateful entry now also sums its satoshi container and scans for foreign containers (about 515 B).
+    expect(journalized.debug.bytecode.length / 2).toBeLessThan(1_200);
   });
 
   it('marks only recursion which survives tail-cycle lowering for concrete SDK preflight', () => {

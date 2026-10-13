@@ -1250,7 +1250,8 @@ describe('messageBus.compose atomic transaction', () => {
         { collection: 'first', value: 11n },
         { collection: 'second', value: 22n },
       ].map(({ collection, value }) => ({
-        address: getEntryNftAddress(calleeBase, categoryId, collection),
+        // Entry covenants bind the master's lock: seed them for the category-pinned master.
+        address: getEntryNftAddress(calleeBase.withCategory(hexToBin(categoryId)), categoryId, collection),
         satoshis: 10_000n,
         token: {
           amount: 0n,
@@ -3254,8 +3255,9 @@ describe('messageBus.compose atomic transaction', () => {
     const initial = Uint8Array.from({ length: 160 }, (_, index) => 255 - index);
     const calleeSetup = await setupStatefulUtxos(provider, calleeBase, calleeArtifact.stateLayout!, { note: initial }, {
       saltContract: true,
+      // Chunk covenants bind the master's lock: seed them for the category-pinned master.
       extraOutputs: (categoryId) => [initial.slice(0, 120), initial.slice(120)].map((chunk, index) => ({
-        address: getDynamicChunkAddress(calleeBase, categoryId, 'note', 'bytes'),
+        address: getDynamicChunkAddress(calleeBase.withCategory(hexToBin(categoryId)), categoryId, 'note', 'bytes'),
         satoshis: 1200n,
         token: {
           amount: 0n,

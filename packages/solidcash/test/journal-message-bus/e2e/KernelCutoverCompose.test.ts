@@ -137,7 +137,8 @@ describe('kernel cutover token-container compose', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    const token = await genesisFtContainer(provider, inner, categoryId, [100n]);
+    // Containers bind the master's lock: fund them for the category-pinned master.
+    const token = await genesisFtContainer(provider, contract.inner, categoryId, [100n]);
     const first = 25n;
     const second = 40n;
     const call = contract.batch([

@@ -72,6 +72,9 @@ describe('kernel whole-struct state getters', () => {
         Record record;
         function read() public view returns (Record memory) { return record; }
       }`, OPTIONS);
-    expect(artifact.debug.bytecode).toContain(binToHex(scriptToBytecode(compileAddressToEvmIdentity())));
+    // The 12-zero-byte prefix check may be outlined into its own helper once the contract pushes that word twice.
+    const zeroWord = binToHex(scriptToBytecode([new Uint8Array(12)]));
+    const [head, tail] = binToHex(scriptToBytecode(compileAddressToEvmIdentity())).split(zeroWord);
+    expect(artifact.debug.bytecode).toMatch(new RegExp(`${head}(?:${zeroWord}|(?:5[1-9a-f]|60|01[0-9a-f]{2})8a)${tail}`));
   });
 });

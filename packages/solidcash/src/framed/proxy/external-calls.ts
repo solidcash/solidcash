@@ -1561,9 +1561,11 @@ async function planEntryCalls(
       reentry = true;
     } else {
       // A call back to the hop's own root enters the root's deployment again. A proxy hop names that root.
-      // A direct call names it by address: the target is address(this), so the root external is the deployment
-      // the caller already runs, and the shard swap below selects the callee entry's master.
-      const callsSelf = ctx.selfAddress !== undefined && bytesEqual(target, ctx.selfAddress);
+      // A split direct call names it by address: the target is address(this), so the root external is the
+      // deployment the caller already runs, and the shard swap below selects the callee entry's master. A monolith
+      // has no second master to give it, so its call to address(this) meets the refusal below.
+      const callsSelf = ctx.split !== undefined && ctx.selfAddress !== undefined
+        && bytesEqual(target, ctx.selfAddress);
       reentry = targetsRoot(ctx.root, target) || callsSelf;
       external = reentry && ctx.root !== undefined ? ctx.root.external : resolveExternal(ctx, row, target);
       // A same-category call spends the callee entry's shard. The address stays addrV; the lock is the shard's.

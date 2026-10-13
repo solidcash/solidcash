@@ -135,8 +135,15 @@ export function reassertMaterializedBatchPredecessorOutputs(
     const plannedPredecessors = (directParticipant && carrier.delegateCallGroupIndex === undefined
       ? carrier.plannedEntryInserts ?? [] : [])
       .flatMap((planned) => {
-        const input = carrier.blockInputs?.[planned.blockSlot];
+        // Cold keys sharing one proof input back the later entry slot with a funder. P' recreates the proof
+        // input's entry, as the materializer places it, and never sits at a lock no entry of this category holds.
+        const proofOffset = planned.slotIndex === undefined ? undefined
+          : (carrier.internalArgs?.[`__internal__vmapBatchProof_${planned.slotIndex}`]
+            ?? carrier.compilerRoute?.internalArgs?.[`__internal__vmapBatchProof_${planned.slotIndex}`]);
+        const input = typeof proofOffset === 'bigint' && proofOffset >= 0n
+          ? carrier.blockInputs?.[Number(proofOffset)] : carrier.blockInputs?.[planned.blockSlot];
         if (!input?.unlocker || planned.outputBlockSlot < 0 || planned.commitment === undefined) return [];
+        if (input.token?.category !== carrier.categoryId || input.token.nft?.capability !== 'mutable') return [];
         return [{
           outputBlockSlot: planned.outputBlockSlot,
           lockingBytecode: input.unlocker.generateLockingBytecode(),

@@ -68,6 +68,8 @@ export type SolidcDiagnosticCode =
   | 'SPLIT_CLOSURE_CAPACITY'
   | 'SPLIT_ROOT_CAPACITY'
   | 'SPLIT_LAYOUT_CONFLICT'
+  | 'SPLIT_FUNC_REQUIRES_FRAMED'
+  | 'SPLIT_SIZE_REFUSES_FRAMED'
   // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
   | 'KERNEL_LAYOUT'
   | 'KERNEL_UNBOUNDED_KEY'

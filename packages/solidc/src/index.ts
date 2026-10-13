@@ -80,7 +80,9 @@ export {
   type PathEffectSchedule,
   type PublishedChildDeploymentSite,
 } from './finalized-typed-effect-ir.js';
-export { type ArtifactMap, type SplitArtifactBundle, type SplitManifest } from '@solidcash/utils';
+export {
+  type ArtifactMap, type FunctionSplitBundle, type SplitArtifactBundle, type SplitManifest,
+} from '@solidcash/utils';
 export { createMapResolver } from './createMapResolver.js';
 export * from './ast/Location.js';
 export * from './ast/error-listeners.js';

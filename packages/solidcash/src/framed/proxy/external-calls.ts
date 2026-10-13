@@ -70,6 +70,7 @@ import {
   type FrameKindValue,
   type StateLayout,
   type StateValue,
+  type FunctionSplitBundle,
   type StateVariableInfo,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../../Argument.js';
@@ -82,6 +83,7 @@ import { externalReturnsForCallsites } from '../../stateful/external-returns-for
 import { mappingKeySlotCandidates } from '../../stateful/mapping-key-lookup.js';
 import type { DraftCall } from '../composer/draft.js';
 import { deploymentBlockId, readPublishedStopSites } from '../composer/index.js';
+import { masterForEntry, prepareFunctionSplitDeployment } from '../deploy/entry-pool.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import {
   chunkRecordLockingBytecode, readFramedDeployment, stateRecordLockingBytecode,
@@ -1208,6 +1210,19 @@ interface PlanContext {
   readonly stop: { blocked?: HopPlanBlock };
   /** The entry's own site the plan is asked to stop before (`HopExternalPlanOptions.stopBefore`). */
   readonly stopBefore?: number;
+  /** The per-entry bundle a same-category call resolves a shard from. Absent on a monolith. */
+  readonly split?: FunctionSplitBundle;
+  /** The category whose calls `split` retargets onto shards. */
+  readonly splitCategoryId?: string;
+  /**
+   * The caller's own `address(this)`.
+   *
+   * A call whose target is this address spends another master of the same category. It is the root's own
+   * deployment, reached again, rather than a second contract of the same name.
+   */
+  readonly selfAddress?: Uint8Array;
+  /** Masters already claimed, keyed by category, so a later frame does not spend them again. */
+  readonly takenMasters: Map<string, Set<string>>;
 }
 
 /** The addresses of the contracts a plan can reach: the caller's named externals, then the latest registrations. */
@@ -1388,6 +1403,31 @@ interface PlannedEntryCalls {
  * for the calls are the execution's own, which a site the plan places nothing for leaves out: `callBases` maps
  * each published site to the first call the plan states for it, or `-1` when it states none.
  */
+/** The cut artifact plus the ABI row the planner needs. The published cut strips that row. */
+function helperArtifactWithStub(
+  artifact: Artifact,
+  functionName: string,
+  selector: string,
+  row: ExternalCallAbi,
+): Artifact {
+  const inputs = (row.argSources ?? []).map((source, index) => ({
+    name: `arg${index}`,
+    type: source.type ?? 'int',
+  }));
+  return {
+    ...artifact,
+    abi: [
+      ...artifact.abi.filter((fn) => fn.name !== functionName),
+      {
+        name: functionName,
+        selector: selector.replace(/^0x/i, '').toLowerCase(),
+        inputs,
+        outputs: [],
+      },
+    ],
+  };
+}
+
 async function planEntryCalls(
   ctx: PlanContext,
   caller: HopCallInputs,
@@ -1487,9 +1527,55 @@ async function planEntryCalls(
       sites.push(undefined);
       continue;
     }
-    // A call back to the hop's own root enters the root's deployment again, as a callee behind its proxy.
-    const reentry = targetsRoot(ctx.root, target);
-    const external = reentry ? ctx.root!.external : resolveExternal(ctx, row, target);
+    // A cut helper's target is its filled lock, not addrV, so it is not a registered external. The stub row
+    // lets the existing planner place the cut; the frame kind is INTERNAL, which the ABI cannot state.
+    const internalCut = call.interfaceName === '__FunctionSplitInternal';
+    let external: FramedProxyExternal;
+    let reentry = false;
+    let forcedKind: FrameKindValue | undefined;
+    if (internalCut) {
+      if (ctx.split === undefined || ctx.splitCategoryId === undefined) {
+        throw new FramedProxyDeployError(
+          `${where} is an internal helper cut, which this call places only for a function split`,
+        );
+      }
+      const matches = ctx.split.internalCuts.filter((cut) =>
+        cut.name === call.functionName || cut.name.startsWith(`${call.functionName}(`));
+      if (matches.length !== 1) {
+        throw new FramedProxyDeployError(`${where} matches ${matches.length} internal helper cuts`);
+      }
+      const cut = matches[0]!;
+      const prepared = prepareFunctionSplitDeployment(
+        ctx.split, hexToBin(ctx.splitCategoryId), ctx.validatorProgram,
+      );
+      const helper = prepared.cutArtifacts.get(cut.name);
+      if (helper === undefined) {
+        throw new FramedProxyDeployError(`${where} has no filled helper lock`);
+      }
+      external = {
+        artifact: helperArtifactWithStub(helper, call.functionName, call.selector, row),
+        categoryId: ctx.splitCategoryId,
+      };
+      forcedKind = FrameKind.INTERNAL;
+      // The cut is another master of the contract this hop already places, not a second deployment of it.
+      reentry = true;
+    } else {
+      // A call back to the hop's own root enters the root's deployment again. A proxy hop names that root.
+      // A direct call names it by address: the target is address(this), so the root external is the deployment
+      // the caller already runs, and the shard swap below selects the callee entry's master.
+      const callsSelf = ctx.selfAddress !== undefined && bytesEqual(target, ctx.selfAddress);
+      reentry = targetsRoot(ctx.root, target) || callsSelf;
+      external = reentry && ctx.root !== undefined ? ctx.root.external : resolveExternal(ctx, row, target);
+      // A same-category call spends the callee entry's shard. The address stays addrV; the lock is the shard's.
+      if (ctx.split !== undefined && external.categoryId === ctx.splitCategoryId) {
+        const shard = ctx.split.shards.find((candidate) =>
+          candidate.selector.toLowerCase() === call.selector.toLowerCase());
+        if (shard === undefined) {
+          throw new FramedProxyDeployError(`function "${call.functionName}" has no shard`);
+        }
+        external = { ...external, artifact: shard.artifact };
+      }
+    }
     const entry = entryRowOf(external.artifact, row.functionName);
     // A body the compiler refused publishes no call sites, so the hop could declare no record for it and would
     // settle its frame against a program whose calls stay unbound. The refusal is named here, before any frame is
@@ -1503,9 +1589,10 @@ async function planEntryCalls(
     }
     // An address the caller holds as the identity a call result carried reaches the callee as the lock it names.
     const lockOf = (carried: Uint8Array): Uint8Array => lockOfIdentity(carried, reachableAddresses(ctx));
-    const resolved = turns.map((turn) => (
-      resolvePublishedCall(effective, external.artifact, siteCaller, siteResolver, turn, lockOf)
-    ));
+    const resolved = turns.map((turn) => {
+      const stated = resolvePublishedCall(effective, external.artifact, siteCaller, siteResolver, turn, lockOf);
+      return forcedKind === undefined ? stated : { ...stated, kind: forcedKind };
+    });
     // A callee behind its own proxy is two contracts, and the hop's own implementation is one the composition
     // fixes: a call back to the root itself is placed on the root's own deployment, and any other reach of the
     // implementation is refused by name here, before any live record is read.
@@ -2109,6 +2196,8 @@ function calleeRecordSet(
 ): readonly HopCalleeRecord[] {
   const cached = ctx.records.get(categoryId);
   if (cached !== undefined) return cached;
+  const ownCategory = ctx.selfAddress !== undefined
+    && bytesEqual(validatorAddress(hexToBin(categoryId), ctx.validatorProgram), ctx.selfAddress);
   const records = Array.from({ length: layout.dataNftCount }, (_unused, nftIndex): HopCalleeRecord => {
     const utxo = deployment.records[nftIndex];
     const commitment = utxo?.token?.nft?.commitment;
@@ -2118,7 +2207,8 @@ function calleeRecordSet(
       );
     }
     return {
-      id: `${block}-record-${nftIndex}`,
+      // The root already names its own records `record-N`. A same-category callee spends those inputs.
+      id: ownCategory ? `record-${nftIndex}` : `${block}-record-${nftIndex}`,
       commitment: new Uint8Array(hexToBin(commitment)),
       satoshis: utxo.satoshis,
       lockingBytecode: stateRecordLockingBytecode(categoryId),
@@ -2186,7 +2276,7 @@ async function placeCalleeMasters(
   const deployment = await deploymentOf(ctx, categoryId, layout);
   const base = ctx.masterSlots.get(categoryId) ?? 0;
   const needed = base + resolved.length;
-  if (deployment.masters.length < needed) {
+  if (ctx.split === undefined && deployment.masters.length < needed) {
     throw new FramedProxyDeployError(
       `${where} reaches "${contract}", which this hop already places; its category ${categoryId} holds `
       + `${deployment.masters.length} master(s), so it cannot be entered ${needed} time(s)`,
@@ -2209,8 +2299,29 @@ async function placeCalleeMasters(
     const calleeIndex = ctx.callees.length;
     const master = `callee-master-${calleeIndex + 1}`;
     const path = calleePath(reach.callerPath, reach.site, occurrence);
-    const masterUtxo = deployment.masters[base + position]!;
     const deployed = deployMaster(external.artifact, category, ctx.validatorProgram);
+    let masterUtxo = deployment.masters[base + position];
+    if (ctx.split !== undefined) {
+      const taken = ctx.takenMasters.get(categoryId) ?? new Set<string>();
+      try {
+        masterUtxo = masterForEntry({
+          masters: deployment.masters,
+          filledLock: deployed.lockingBytecode,
+          functionName: entry.name,
+          taken,
+        });
+      } catch (error) {
+        throw new FramedProxyDeployError((error as Error).message);
+      }
+      taken.add(`${masterUtxo.txid}:${masterUtxo.vout}`);
+      ctx.takenMasters.set(categoryId, taken);
+    }
+    if (masterUtxo === undefined) {
+      throw new FramedProxyDeployError(
+        `${where} reaches "${contract}", which this hop already places; its category ${categoryId} holds `
+        + `${deployment.masters.length} master(s), so it cannot be entered ${needed} time(s)`,
+      );
+    }
     // The nodes the entry only reads, from the reach's own call data; they lead any batch's groups.
     const readNodes = calleeReadNodesOrNone({
       artifact: external.artifact, functionName: entry.name, args: call.argumentValues,
@@ -2951,6 +3062,12 @@ export interface HopExternalPlanOptions {
    * calls before it are placed and nothing the execution reaches from it on. Absent plans every site.
    */
   readonly stopBefore?: number;
+  /** The per-entry bundle a call back to `splitCategoryId` spends a shard of. */
+  readonly split?: FunctionSplitBundle;
+  /** The category `split` belongs to. A call to any other category keeps the callee's own artifact. */
+  readonly splitCategoryId?: string;
+  /** Outpoints already claimed before this plan, keyed by category. */
+  readonly takenMasters?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** The hop's own root as a call back to it reaches it, or undefined for a plan that admits no such call. */
@@ -3016,6 +3133,11 @@ export async function planHopExternalCalls(
     reachedResults: options.reachedResults ?? new Map(),
     stop: {},
     ...(options.stopBefore === undefined ? {} : { stopBefore: options.stopBefore }),
+    ...(options.split === undefined ? {} : { split: options.split, splitCategoryId: options.splitCategoryId }),
+    ...(options.selfAddress === undefined ? {} : { selfAddress: options.selfAddress }),
+    takenMasters: new Map(
+      [...(options.takenMasters ?? [])].map(([category, taken]) => [category, new Set(taken)]),
+    ),
   };
   for (const sideCars of ctx.sideCars.values()) {
     for (const [id, utxo] of Object.entries(sideCars.utxos)) ctx.utxos.set(id, utxo);

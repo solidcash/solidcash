@@ -25,7 +25,7 @@ import { encodeLockingBytecodeP2sh32, lockingBytecodeToCashAddress } from '@bita
 import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { framedValidator } from 'solidc/runtime';
-import type { Artifact } from '@solidcash/utils';
+import { bytesEqual, type Artifact } from '@solidcash/utils';
 import type { ConstructorArgument } from '../../Argument.js';
 import { Contract } from '../../Contract.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
@@ -33,7 +33,7 @@ import { getNetworkPrefix } from '../../utils.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
 import { deriveFramedGenesis } from './genesis.js';
-import { resolveMasterPoolSize } from './pool.js';
+import { MasterPoolDeployment, resolveMasterPoolSize } from './pool.js';
 import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
 import { loadFramedCallHandle } from '../../stateful/framed-call-loader.js';
 
@@ -127,6 +127,21 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     throw new FramedDeployError(`validatorCount must be a positive integer, got ${options.validatorCount}`);
   }
   const pool = resolveMasterPoolSize({ masters: options.threadCount, validators: options.validatorCount });
+  if (options.functionSplit !== undefined && options.functionSplit.logicalContractName !== artifact.contractName) {
+    throw new FramedDeployError(
+      `function split bundle is ${options.functionSplit.logicalContractName}, not ${artifact.contractName}`,
+    );
+  }
+  // A function-split genesis mints one pool per entry lock. A monolith genesis mints the one filled master.
+  const splitPools = options.functionSplit === undefined ? undefined : MasterPoolDeployment.createFunctionSplit({
+    bundle: options.functionSplit, category, validatorProgram, size: pool,
+  });
+  if (splitPools !== undefined && !bytesEqual(splitPools.getAddress(), genesis.master.address)) {
+    throw new FramedDeployError(
+      `function split shards of ${artifact.contractName} do not share the genesis addrV`,
+    );
+  }
+  const entryLocks = splitPools?.getEntryLocks() ?? [genesis.master.lockingBytecode];
 
   const { TransactionBuilder } = await import('../../TransactionBuilder.js');
   const builder = new TransactionBuilder({
@@ -141,12 +156,14 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       ? output : { ...output, amount: satoshisAtLeastDust(output.amount, output) });
   };
 
-  for (let index = 0; index < pool.masters; index += 1) {
-    addFunded({
-      to: genesis.master.lockingBytecode,
-      amount: masterAmount,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-    });
+  for (const lock of entryLocks) {
+    for (let index = 0; index < pool.masters; index += 1) {
+      addFunded({
+        to: lock,
+        amount: masterAmount,
+        token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+      });
+    }
   }
   // The validator pool: `pool.validators` UTXOs at addrV(category), recreated in place by every composition, so
   // the pool bounds how many compositions the contract can root at once.
@@ -240,8 +257,12 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     .reduce((sum, output) => sum + output.amount, 0n);
   const finalChange = options.fundingUtxo.satoshis - nonChangeTotal - fee;
   if (finalChange < 0n) {
+    const pools = entryLocks.length === 1
+      ? `the pool of ${pool.masters} master(s) and ${pool.validators} validator(s)`
+      : `the pool of ${pool.masters} master(s) at each of ${entryLocks.length} entry locks `
+        + `and ${pool.validators} validator(s)`;
     throw new FramedDeployError(
-      `Insufficient funding for the pool of ${pool.masters} master(s) and ${pool.validators} validator(s): `
+      `Insufficient funding for ${pools}: `
       + `${options.fundingUtxo.satoshis} satoshis provided, but the genesis requires `
       + `${nonChangeTotal + fee} (outputs ${nonChangeTotal}, fee ${fee}).`,
     );

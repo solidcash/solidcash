@@ -190,6 +190,12 @@ export interface CompilerOptions {
    * convention is published on `artifact.composition`.
    */
   composition?: 'direct' | 'framed';
+  /**
+   * How a split compile places code. `off` is one artifact. `size` is the state-affinity packer
+   * (`state-affinity-best-fit-v2`). `func` is one framed master per ABI entry (`per-entry-v1`).
+   * Omitted on {@link compileStringSplit} means `size`. A boolean is not a mode.
+   */
+  split?: 'off' | 'size' | 'func';
   // Limit eager/lazy proxy implementation variants in large multi-contract projects. Omitted preserves the
   // default behavior; when supplied, only matching contract names receive `delegateArtifact`.
   delegateArtifactContracts?: readonly string[];
@@ -1880,6 +1886,18 @@ export interface CompositionPlaceholders {
   templateHashOffset?: number;
 }
 
+/**
+ * One push of a helper-lock sentinel in a function-split master.
+ *
+ * `offset` is the push opcode. The 35-byte payload starts at `offset + 1` and is still the compile-time
+ * sentinel; deployment replaces that payload with the filled P2SH32 of the named helper. The name is the
+ * helper's profile key, `name(types)`.
+ */
+export interface InternalHelperLockSlot {
+  readonly name: string;
+  readonly offset: number;
+}
+
 /** One external call of a framed entry, as published: the call's index and what it targets. */
 export interface PublishedCallSite {
   /**
@@ -2118,6 +2136,11 @@ export interface Artifact {
     balanceReaders?: readonly string[];
     /** The source's pool resizes, served beside the head (spec R2b); absent when it declares none. */
     lifecycle?: PublishedFramedLifecycle;
+    /**
+     * Helper-lock sentinels this master pushes. Deployment replaces each payload with that helper's filled
+     * lock. Absent when the master calls no cut helper.
+     */
+    internalHelperLocks?: readonly InternalHelperLockSlot[];
   };
   messageBus?: {
     version: 1;
@@ -2508,6 +2531,78 @@ export interface SplitArtifactBundle {
   manifest: SplitManifest;
 }
 
+/** Frame kinds a function shard's master head admits. */
+export type FunctionSplitFrameKind = 'ROOT' | 'CALL' | 'STATIC' | 'DELEGATE' | 'INTERNAL';
+
+/**
+ * One ABI entry's master under `split: 'func'`.
+ *
+ * `lock` is the P2SH32 of the published redeem script. That script still holds the category and address
+ * placeholders, so genesis fills them and mints the P2SH32 of the filled program. `mastersByLock` groups
+ * those filled locks. The commitment is not part of either lock.
+ */
+export interface FunctionSplitShard {
+  /** ABI selector, 8 hex characters, no `0x` prefix. Overloads of one name differ here. */
+  selector: string;
+  /** Source function name. Two shards may share it when they are overloads. */
+  function: string;
+  acceptedFrameKinds: readonly FunctionSplitFrameKind[];
+  artifact: Artifact;
+  /** P2SH32 of {@link artifact}'s published redeem script, hex. */
+  lock: string;
+  /** Whole-spend bytes the capacity check measured: redeem script plus the spend reserve. */
+  wholeSpendBytes: number;
+}
+
+/**
+ * A helper master cut out of an over-cap caller.
+ *
+ * It has no ABI row and no selector in {@link FunctionSplitBundle.abi}. Its head admits only `INTERNAL`.
+ */
+export interface FunctionSplitInternalCut {
+  name: string;
+  artifact: Artifact;
+  /** P2SH32 of the helper redeem script, hex, placeholders still empty. */
+  lock: string;
+  wholeSpendBytes: number;
+  /** Selectors of the entries whose call record names this helper. */
+  callerSelectors: readonly string[];
+}
+
+/**
+ * One function's loader. The script pushes that function's code hash and selector, and the lock is the
+ * P2SH32 of that script. Locks differ per function. The commitment is not an input to the lock.
+ */
+export interface FunctionSplitLoader {
+  selector: string;
+  /** `hash256` of the shard redeem script, hex. */
+  codeHash: string;
+  /** Loader redeem script, hex. */
+  script: string;
+  /** P2SH32 of {@link script}, hex. */
+  lock: string;
+}
+
+/**
+ * A framed per-entry split. Tooling branches on `format`; this is not a size-split bundle.
+ *
+ * `logical` is the monolithic framed artifact of the same source, with no executed kernel route.
+ * `internalCuts` is empty unless a measured caller was over the whole-spend cap and a helper was cut.
+ */
+export interface FunctionSplitBundle {
+  format: 'solidcash-split-v2';
+  algorithm: 'per-entry-v1';
+  composition: 'framed';
+  logicalContractName: string;
+  abi: readonly AbiFunction[];
+  stateLayoutFingerprint: string;
+  logical: Artifact;
+  shards: readonly FunctionSplitShard[];
+  internalCuts: readonly FunctionSplitInternalCut[];
+  loaders: readonly FunctionSplitLoader[];
+  messageBus: { available: false };
+}
+
 /** How a published occurrence bound reads back, with the unknown legs made explicit. */
 export interface OccurrenceBound {
   kind: 'once' | 'conditional' | 'loop';
@@ -2667,7 +2762,9 @@ export function describeProvenance(provenance: ReadValueProvenance): string {
   }
 }
 
-export function formatSplitArtifactBundle(bundle: SplitArtifactBundle, format: 'json' | 'ts'): string {
+export function formatSplitArtifactBundle(
+  bundle: SplitArtifactBundle | FunctionSplitBundle, format: 'json' | 'ts',
+): string {
   if (format === 'ts') {
     const normalised = JSON.parse(JSON.stringify(bundle));
     return `export default ${stringifyAsTs(normalised)} as const;\n`;

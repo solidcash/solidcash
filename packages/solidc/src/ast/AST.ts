@@ -173,6 +173,9 @@ export class ContractNode extends Node implements Named {
   // output-only block slots are therefore one position lower per data NFT than the layout offset says. A plain
   // contract that merely HAS `delegate` functions is not delegate-only and keeps its data-NFT positions.
   isSplitFacet: boolean = false;
+  // A per-entry function shard keeps the logical state declarations and must not regain them as extra
+  // dispatchable getters. The logical artifact owns that surface.
+  suppressSynthesizedGetters: boolean = false;
   // Set by SynthesizeBlockOracle when any function reads blockhash(n). The (n->hash) oracle is branded to the
   // contract's OWN category (master-bound, per docs/block-and-transaction-properties.md s3), so a blockhash
   // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against).

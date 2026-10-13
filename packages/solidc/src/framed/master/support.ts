@@ -3640,7 +3640,9 @@ function deriveEntryCallSites(
     const args = encodeSiteArguments(slot, interfaces);
     if ('reason' in args) return { calls: [], reason: args.reason };
     calls.push({
-      kind: isReadCall(slot, interfaces) ? FrameKind.STATIC : FrameKind.CALL,
+      // A cut helper is an INTERNAL frame of this contract. CALL and ROOT spends of that master fail in its head.
+      kind: slot.interfaceName === '__FunctionSplitInternal' ? FrameKind.INTERNAL
+        : (isReadCall(slot, interfaces) ? FrameKind.STATIC : FrameKind.CALL),
       selector,
       target: target.bytes,
       ...(slot.condition === undefined ? {} : { conditional: true }),

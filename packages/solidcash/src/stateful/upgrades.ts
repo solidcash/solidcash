@@ -731,7 +731,9 @@ async function framedGenesisHalf(
   // also funds are counted beside it, so a leaner signer is still offered a coin the whole genesis can spend.
   const pool = resolveMasterPoolSize({ masters: rest.threadCount, validators: rest.validatorCount });
   const selected = fundingUtxo
-    ?? await selectGenesisFundingUtxo(signer, artifact, excluded, 1, poolGenesisSatoshis(pool));
+    ?? await selectGenesisFundingUtxo(
+      signer, artifact, excluded, 1, poolGenesisSatoshis(pool, 1200n, rest.functionSplit?.shards.length ?? 1),
+    );
   return {
     ...rest,
     fundingUtxo: selected,

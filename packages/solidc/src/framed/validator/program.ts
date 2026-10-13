@@ -126,6 +126,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V5_SELF_NOT_TARGET',
   'V5_SELF_NOT_CALLER_SELF',
   'V5_DELEGATE_TARGET_MISMATCH',
+  'V5_INTERNAL_LOCK_MISMATCH',
   'V5_RETVAL_MISMATCH',
   'V5_ARGS_HASH_MISMATCH',
   'V5_MASTER_UNREACHED_BY_A_CALL',
@@ -981,10 +982,9 @@ function emitDelegateEdge(e: Emitter): void {
   e.count(1).op(O.OP_PICK);
   e.count(13).op(O.OP_PICK, O.OP_EQUALVERIFY);
 
-  // The callee's own code is the implementation the call names: the address of the callee master's own category is
-  // the target the call recorded. Only the DELEGATE kind binds a target this way; an INTERNAL frame is a facet of
-  // its caller's contract rather than a proxied hop, and the head does not emit it, so it is left to the rules that
-  // do decide it.
+  // DELEGATE names the callee by the address of the callee master's own category. INTERNAL names the helper
+  // master by the lock the call recorded. That lock comparison is part of this program, so publishing it moves
+  // `addrV`. Self is compared above, before either target check.
   e.count(9).op(O.OP_PICK);
   e.count(FrameKind.DELEGATE).op(O.OP_NUMEQUAL, O.OP_IF);
   e.count(6).op(O.OP_PICK, O.OP_UTXOTOKENCATEGORY);
@@ -992,6 +992,11 @@ function emitDelegateEdge(e: Emitter): void {
   e.count(32).op(O.OP_SPLIT, O.OP_DROP);
   e.push(Uint8Array.from([TokenCapability.MUTABLE])).op(O.OP_CAT);
   e.script(addressFromPinScript({ fromAltStack: true }));
+  e.count(9).op(O.OP_PICK, O.OP_EQUALVERIFY);
+  e.op(O.OP_ENDIF);
+  e.count(9).op(O.OP_PICK);
+  e.count(FrameKind.INTERNAL).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.count(6).op(O.OP_PICK, O.OP_UTXOBYTECODE);
   e.count(9).op(O.OP_PICK, O.OP_EQUALVERIFY);
   e.op(O.OP_ENDIF);
 }

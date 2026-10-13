@@ -37,12 +37,12 @@ beforeAll(() => {
 });
 
 describe('BchNative with npm OpenZeppelin ERC20', () => {
-  it('composes with the unmodified OZ 5.0.2 implementation below 9.1 KB', () => {
-    // The evmCompat event notation writes each Transfer/Approval `uint256` as its packed 32 big-endian bytes
-    // instead of the platform's shared little-endian push, which costs the emitted sites 34 bytes (8_990 ->
-    // 9_024). 9_100 keeps the budget meaningful and well inside the 10_000-byte P2SH script limit; the 9_000
-    // shard budget in the facet test below is what decides whether the contract needs a split.
-    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_100);
+  it('composes with the unmodified OZ 5.0.2 implementation below 9.5 KB', () => {
+    // 9_100 held (9_024) before the October per-entry hardening. Its checks, the return and event pins and the
+    // one-target transitions are shared helpers now (9_417); 9_100 again needs the two-target transition and the
+    // batch write tails shared across entries. 9_500 stays well inside the 10_000-byte P2SH script limit; the
+    // 9_000 shard budget in the facet test below is what decides whether the contract needs a split.
+    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_500);
     expect(artifact.contractName).toBe('OzNativeToken');
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of [

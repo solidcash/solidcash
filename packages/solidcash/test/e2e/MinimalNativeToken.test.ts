@@ -22,9 +22,9 @@ describe('MinimalNativeToken bytecode budget', () => {
   it('keeps full ERC20 allowances and immediate BchNative below 8 KB', () => {
     const artifact = compileFile(source, { messageBus: false });
     const artifactBytes = scriptToBytecode(asmToScript(artifact.bytecode)).length;
-    // Pinned to the build with the per-entry covenant hardening, its checks shared as one helper each; the 8 KB
-    // title stays the budget.
-    expect(artifactBytes).toBe(7908);
+    // Pinned to the build with the per-entry covenant hardening, its checks, return and event pins and one-target
+    // transitions shared as one helper each; the 8 KB title stays the budget.
+    expect(artifactBytes).toBe(7503);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')).toBeUndefined();
 
@@ -51,7 +51,7 @@ describe('MinimalNativeToken bytecode budget', () => {
       { provider: new MockNetworkProvider() },
     );
     // The deployed locking bytecode tracks the artifact bytecode above.
-    expect(deployed.bytecode.length / 2).toBe(7908);
+    expect(deployed.bytecode.length / 2).toBe(7503);
 
     expect(artifact.events.map((event) => event.name).sort()).toEqual(['Approval', 'Transfer']);
 

@@ -9457,6 +9457,7 @@ describe('required kernel admission', () => {
     }
   });
 
+  // Measured 51 s alone: two full kernel pipelines (admission 26.6 s, binder 24.5 s), each ~18 s of lowering.
   it('keeps resource recurrence sources fenced and exactly replays truncating and local deltas', () => {
     const artifact = compileString(`event Tick(int value);
       contract C() {
@@ -9511,7 +9512,7 @@ describe('required kernel admission', () => {
     }
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'resourceDependent'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-  });
+  }, 120_000);
 
   it('publishes quadratic-counter event prefixes across affine loop domains and source phases', () => {
     const artifact = compileString(`event Phase(int value);

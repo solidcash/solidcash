@@ -201,6 +201,75 @@ const reachedSignature65Recovery = (func: FunctionDefinitionNode, sourceSite: st
     && signatureWord('s', 32n, 64n) && signatureV();
 };
 
+type ComputeOperand = ComputeSideCarRecipesAbi['keccak'][number];
+
+/**
+ * A sole recovery whose operands the body computes from its own unwritten visible arguments has no pre-call
+ * predicate. Publish those operands (casts and `.reverse()` over arguments); the A/B covenant still binds the
+ * replayed blob to the value the body computes.
+ */
+const bodyRecoveryRecipe = (
+  func: FunctionDefinitionNode,
+  replayable: (node: ComputeOperand | undefined) => node is ComputeOperand,
+  typed: (node: ComputeOperand) => ComputeOperand,
+): ComputeSideCarRecipesAbi | undefined => {
+  if ((func.keccakPreimageParams?.length ?? 0) !== 0 || func.ecrecoverCallCount !== 1
+    || (func.ecrecoverEvmCallCount ?? 0) !== 0) return undefined;
+  const skipped = new Set(['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+    'referencedContract', 'stateVariable', 'collection']);
+  const recoveries: FunctionCallNode[] = [];
+  const written = new Set<string>();
+  const visited = new Set<Node>();
+  const walk = (node: Node): void => {
+    if (visited.has(node)) return;
+    visited.add(node);
+    if (node instanceof FunctionCallNode && (node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
+      || node.identifier.name === GlobalFunction.ECRECOVER_P2PKH)) recoveries.push(node);
+    if (node instanceof AssignNode) written.add(node.identifier.name);
+    if (node instanceof ArrayAssignNode || node instanceof VariableDefinitionNode) written.add(node.name);
+    if (node instanceof TupleAssignmentNode) {
+      for (const element of node.elements) if (element.name) written.add(element.name);
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (skipped.has(key)) continue;
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+    }
+  };
+  walk(func.body);
+  // Direct-argument recoveries already resolve from `ecrecoverArgParams`.
+  if (recoveries.length !== 1 || recoveries[0].parameters.length !== 4
+    || recoveries[0].parameters.every((parameter) => parameter instanceof IdentifierNode)) return undefined;
+  const visible = func.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  const operand = (expression: ExpressionNode): ComputeOperand | undefined => {
+    if (expression instanceof IdentifierNode) {
+      const paramIndex = visible.findIndex((parameter) => parameter.name === expression.name);
+      return paramIndex < 0 || written.has(expression.name) ? undefined
+        : { kind: 'source', source: { kind: 'forward', paramIndex } };
+    }
+    if (expression instanceof CastNode) {
+      const inner = operand(expression.expression);
+      return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
+    }
+    if (expression instanceof UnaryOpNode && expression.operator === UnaryOperator.REVERSE) {
+      const inner = operand(expression.expression);
+      return inner && { kind: 'unary', operator: UnaryOperator.REVERSE, expression: inner };
+    }
+    return undefined;
+  };
+  const args = recoveries[0].parameters.map(operand);
+  if (args.some((arg) => arg === undefined)) return undefined;
+  const recipeArgs = (args as ComputeOperand[]).map(typed);
+  if (!recipeArgs.every(replayable)) return undefined;
+  return {
+    version: 1,
+    keccak: [],
+    ecrecover: [{
+      kind: 'args4', args: recipeArgs as [ComputeOperand, ComputeOperand, ComputeOperand, ComputeOperand],
+    }],
+  };
+};
+
 /**
  * Publish compute operands only when one source predicate carries the complete, unambiguous call family.
  * `preCallRequires` are compiler-serialized from source `require` statements at their actual program point and
@@ -252,6 +321,7 @@ const computeSideCarRecipesOf = (
     if (node.kind === 'bytesConcat' || node.kind === 'abiEncode') {
       return node.args !== undefined && node.args.every(replayable);
     }
+    if (node.kind === 'unary') return node.operator === UnaryOperator.REVERSE && replayable(node.expression);
     return node.kind === 'call' && node.name === 'keccak256'
       && node.args?.length === 1 && replayable(node.args[0]);
   };
@@ -312,7 +382,7 @@ const computeSideCarRecipesOf = (
       candidates.push({ version: 1, keccak, ecrecover });
     }
   }
-  if (candidates.length === 0) return undefined;
+  if (candidates.length === 0) return bodyRecoveryRecipe(func, replayable, typed);
   const first = JSON.stringify(candidates[0]);
   if (!candidates.every((candidate) => JSON.stringify(candidate) === first)) return undefined;
   return candidates[0];

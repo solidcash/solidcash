@@ -3831,8 +3831,9 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Seed fixed-size array element writes whose ABI valueSource is a compile-time integer.
-   * Mapping (vmap) writes use native slot||next||value commitments and must not go through setEntry.
+   * Seed an unsorted (legacy) fixed-size array's element writes whose ABI valueSource is a compile-time integer.
+   * Sorted (vmap) writes, mappings and DS-5 arrays alike, use native slot||next||value commitments and must not
+   * go through setEntry.
    */
   seedOptimisticArrayElementWrites(): boolean {
     if (this.entryUpdates.size > 0) return false;
@@ -3845,7 +3846,7 @@ export class StatefulTransactionBuilder {
       const access = accesses[slotIndex];
       if (!access.operations.includes('write') || access.operations.includes('delete')) continue;
       const collection = this.stateLayout.collections?.find((candidate) => candidate.name === access.collection);
-      if (collection === undefined || collection.kind !== 'array') continue;
+      if (collection === undefined || collection.kind !== 'array' || collection.sorted) continue;
       const valueType = collection.valueType ?? collection.elementType ?? 'int';
       const entryDelta = access.valueSource?.match(/^binop:([+-])\(entry,lit:(-?[0-9]+)\)$/);
       let value: bigint | undefined;

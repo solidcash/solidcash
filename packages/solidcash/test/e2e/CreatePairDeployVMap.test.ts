@@ -33,7 +33,10 @@ describe('createPair deployDataNft + dual getPair (factory wall)', () => {
     const dd = (cp.blockLayout?.slots ?? []).filter((s: any) => s.kind === 'deployDataNft');
     expect(cp.deployTargets?.[0]?.dataNftCount).toBe(pairArt.stateLayout.dataNftCount);
     expect(dd.length).toBe(pairArt.stateLayout.dataNftCount);
-    expect(cp.blockLayout.blockSize).toBe(13);
+    // PairCreated's widest payload (3 x 36 B address + 34 B uint256 = 142 B) exceeds one 128 B commitment, so its
+    // event slot is followed by one conditional eventChunk slot.
+    expect(cp.blockLayout.slots.filter((s: any) => s.kind === 'eventChunk')).toHaveLength(1);
+    expect(cp.blockLayout.blockSize).toBe(14);
   });
 
   // These unreleased, vendored artifacts embed the superseded entry-covenant P2SH32 address and cannot be

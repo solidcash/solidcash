@@ -79,45 +79,33 @@ interface CapacityReading {
   inputMaximumOperationCosts: number[];
 }
 
-// Exact stock-VM snapshot of the finalized two-party bytes. Refreshed again after the 2026-10-08 security audit
-// added its runtime range checks to the emitted verifier/route bytecode, which widened every participant's
-// unlocking script: kernel transactionBytes moved 23_121 -> 23_158 and legacy 23_485 -> 23_595, and the two
-// leader-per-participant inputs grew with it (kernel 437_852 -> 447_944 and 399_373 -> 402_175; legacy
-// 426_810 -> 430_505 and 420_385 -> 423_138), so their derived maximum costs rose the same way. The worst
-// input and the worstRatio are unchanged (kernel 3_068_177 / 0.4241, legacy 6_113_134 / 0.8450), so the added
-// bytes stay inside the pinned bounds with the same headroom. (The previous refresh recorded the reverse move:
-// the intervening compiler commits that shrank the verifier/route took kernel 3_597_958 -> 3_068_177 and
-// transactionBytes 23_195 -> 23_121; legacy 6_168_252 -> 6_113_134 and 23_692 -> 23_485.) The title still
-// asserts the same property (the same two-party composition, pinned byte-for-byte against the stock VM).
-// Refreshed after the October 2026 covenant hardening (container sums, foreign-token keep, record census), with its
-// scans listing the slots they act on: kernel transactionBytes 23_158 -> 24_122 and legacy 23_595 -> 24_586; the
-// participant inputs carry the checks (kernel 447_944 -> 504_357 and 402_175 -> 489_563; legacy 430_505 ->
-// 493_027 and 423_138 -> 507_380) and their longer scripts raise their maximums. The worst input stays a verifier.
-// Re-measured at feat/per-call-fix 263f87a47 (the pins above were copied without a run): kernel transactionBytes
-// 24_227, legacy 24_698; only the two participant inputs moved, worst input and ratio unchanged.
+// Exact stock-VM snapshot of the finalized two-party bytes; the property is the bounds asserted before it (the
+// chain fits the stock limits). Measured at feat/per-call-fix ac92c7446, after the merged slot passes: kernel
+// transactionBytes 24_227 -> 24_303, legacy 24_698 -> 24_747; the participant inputs moved, the worst input stays a
+// verifier (kernel unchanged, legacy 6_113_136 -> 6_113_248).
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_227, callManifestBytes: 294,
+    transactionBytes: 24_303, callManifestBytes: 294,
     worstOperationCost: 3_068_177, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.4241093940064138,
     inputOperationCosts: [
-      500_946, 489_717, 695, 3_068_177, 3_037_456, 27_321,
+      487_031, 478_356, 695, 3_068_177, 3_037_456, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_460_000, 1_914_400, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_485_600, 1_949_600, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_698, callManifestBytes: 294,
-    worstOperationCost: 6_113_136, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.8450093995355523,
+    transactionBytes: 24_747, callManifestBytes: 294,
+    worstOperationCost: 6_113_248, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.8450248811235209,
     inputOperationCosts: [
-      486_028, 507_420, 695, 6_113_136, 6_020_085, 27_321,
+      475_756, 501_059, 695, 6_113_248, 6_020_083, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_407_200, 2_344_000, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_420_000, 2_370_400, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });

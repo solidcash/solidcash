@@ -14,7 +14,9 @@ import type { FunctionArgument } from '../Argument.js';
 import type { ContractUnlocker, Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import { isContractUnlocker } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { withCompilerRouteMessageEnvelope, withProxyForwardMessageEnvelope } from '../Contract.js';
+import {
+  type Contract, withCompilerRouteMessageEnvelope, withProxyForwardMessageEnvelope,
+} from '../Contract.js';
 import { addressToLockScript } from '../utils.js';
 import {
   decodeAuthenticatedProducerResultVector, StatefulContract, StatefulFunctionCall,
@@ -422,6 +424,7 @@ export async function assembleAtomicComposition(
     categoryId: string,
     physicalOutputBase: number,
     trailingBase: number | undefined,
+    recordContract: Contract,
     selectedDynamicWrites?: ReadonlySet<string>,
   ): void => {
     if (!input || !isContractUnlocker(input.unlocker)) return;
@@ -435,7 +438,8 @@ export async function assembleAtomicComposition(
     const localOutputBase = resolveMaterializedDynamicWriteOutputBase({
       route,
       stateLayout: routeLayout,
-      contract: unlocker.contract,
+      // The chunks bind the record master's lock: a delegated route's proxy, not its executor.
+      contract: recordContract,
       categoryId,
       outputs,
       // The compiler owns the dynamic writer's trailing band. Restrict provisional commitment
@@ -502,7 +506,7 @@ export async function assembleAtomicComposition(
       actualSizes.push(blockSize);
       recordPhysicalDynamicOutputWitness(
         local.inputs[0], local.outputs, categories[participant.participant], aggregate.outputs.length,
-        participant.blockLayout?.trailingBase,
+        participant.blockLayout?.trailingBase, contract.inner,
       );
       for (let localIndex = 0; localIndex < local.inputs.length; localIndex += 1) {
         registerAggregateInput(local.inputs[localIndex], participant.participant, localIndex, 'direct participant block');
@@ -2334,7 +2338,7 @@ export async function assembleAtomicComposition(
     const routeInput = routeInputOffset === null ? undefined : local.inputs[routeInputOffset];
     recordPhysicalDynamicOutputWitness(
       routeInput, local.outputs, categories[participant.participant], aggregate.outputs.length,
-      participant.blockLayout?.trailingBase, selectedDynamicWrites,
+      participant.blockLayout?.trailingBase, contract.inner, selectedDynamicWrites,
     );
     if (participant.executionKind === 1 && routeInputOffset !== null) {
       recordPhysicalPredOutWitnesses(

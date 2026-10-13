@@ -75,12 +75,11 @@ export function claimedFixedContinuationCoverage(options: {
         || binToHex(computeCollectionHash(write.collectionSignature)) !== claim.collectionHash) {
         throw new Error('Transported carrier has conflicting fixed continuation writes.');
       }
-      const ownerContract = group.logicalContract?.inner ?? group.externalContract?.inner;
-      const ownerLock = typeof ownerContract?.lockingBytecode === 'string'
-        ? hexToBin(ownerContract.lockingBytecode) : undefined;
+      // The claim's state owner holds the minting baton: a delegate carrier's executor is not its master.
+      const ownerLock = hexToBin(claim.owner.lockingBytecode);
       const expectedLock = getValueChunkLockingBytecode(
         claim.owner.categoryId, write.collection, hexToBin(claim.keySlot), hexToBin(claim.digest),
-        ownerLock?.length === 35 ? ownerLock : undefined,
+        ownerLock.length === 35 ? ownerLock : undefined,
       );
       const parts: string[] = [];
       let complete = true;

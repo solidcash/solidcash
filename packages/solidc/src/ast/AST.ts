@@ -1363,6 +1363,8 @@ export class RequireNode extends StatementNode {
   errorDefinition?: ErrorDefinitionNode;
   // A dynamic string message that may write state. Parse-time only: LowerRequireMessageEffects consumes it.
   messageExpression?: ExpressionNode;
+  // A bare `return` sealed into `require(false)` (SEM-1). Flow walks still read it as that return.
+  sealedReturn?: boolean;
 
   constructor(
     public expression: ExpressionNode,

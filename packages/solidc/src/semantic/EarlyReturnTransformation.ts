@@ -227,6 +227,7 @@ function sealUnguardedBareReturn(statements: StatementNode[], alreadyGated: bool
       && !statementsIncludeRequire(sealed.slice(0, index))) {
       const failure = new RequireNode(new BoolLiteralNode(false));
       failure.location = statement.location;
+      failure.sealedReturn = true;
       sealed[index] = failure;
     }
     break;

@@ -159,6 +159,9 @@ describe('October 2026 critical holes', () => {
     unprefixed.set(victim, 12);
     const prefixed = new Uint8Array(32);
     prefixed.set(victim, 12);
+    const p2pkh = Uint8Array.of(0x76, 0xa9, 0x14, ...victim, 0x88, 0xac);
+    // OP_DROP OP_DROP <victim> OP_DROP OP_1: anyone can spend it, and bytes 3..23 are the victim.
+    const crafted25 = Uint8Array.of(0x75, 0x75, 0x14, ...victim, 0x75, 0x51);
     const spend = (address: Uint8Array): true | string => {
       const transaction: VmTransaction = {
         version: 2, locktime: 0,
@@ -170,7 +173,9 @@ describe('October 2026 critical holes', () => {
     };
     expect(spend(victim), 'KB-2 authorized 20-byte identity').toBe(true);
     expect(spend(prefixed), 'KB-2 authorized zero-prefixed word').toBe(true);
+    expect(spend(p2pkh), 'KB-2 authorized P2PKH of the identity').toBe(true);
     expect(spend(crafted), 'KB-2 crafted 71-byte lock').not.toBe(true);
+    expect(spend(crafted25), 'KB-2 crafted 25-byte lock').not.toBe(true);
     expect(spend(unprefixed), 'KB-2 32-byte word without a zero prefix').not.toBe(true);
   });
 

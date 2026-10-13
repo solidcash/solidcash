@@ -1267,14 +1267,23 @@ export interface CompileStringOptions extends CompileOptions {
   files?: Record<string, string>;
 }
 
-/** Turn the `files` shorthand into the import resolver it stands for. */
+/**
+ * Turn the `files` shorthand into the import resolver it stands for. Other options keep their descriptors, as in
+ * withoutUpgradesFrom: a rest copy would read every accessor before the pass-token sanitation boundary.
+ */
 function withFilesResolver<T extends CompileStringOptions>(options: T): Omit<T, 'files'> {
-  const { files, ...remaining } = options;
+  if (!Object.prototype.hasOwnProperty.call(options, 'files')) return options as Omit<T, 'files'>;
+  const { files } = options;
+  const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(options);
+  delete descriptors.files;
+  const remaining = Object.defineProperties({}, descriptors) as Omit<T, 'files'>;
   if (files === undefined) return remaining;
   if (remaining.importResolver !== undefined) {
     throw new Error('Pass either files or importResolver to the compiler, not both');
   }
-  return { ...remaining, importResolver: createMapResolver(files) };
+  return Object.defineProperty(remaining, 'importResolver', {
+    value: createMapResolver(files), enumerable: true, writable: true, configurable: true,
+  });
 }
 
 export interface SplitCompileOptions extends CompileOptions {

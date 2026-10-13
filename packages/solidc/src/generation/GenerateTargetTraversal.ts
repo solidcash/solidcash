@@ -8926,6 +8926,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Only the band lies below it at runtime here; the positional items under the band are dropped later.
       this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(chunkLockList);
+    } else if (!this.isDefineSubTraversal && this.chunkLockListAboveFrame(node)) {
+      // A direct entry without the witness: start the list right above its frame. The model holds it from here,
+      // so every later depth counts it and no bottom ordinal below it moves.
+      this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(chunkLockList);
     }
 
     // An aggregate route can retain runtime-only values below its compiler-modelled frame. Capture the
@@ -46974,6 +46979,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return bandNames !== undefined && !bandNames.includes(VALUE_CHUNK_LOCK_LIST)
       && this.collectionDefinitions.some((collection) => collection.sorted
         && this.isChunkableValue(collection.innermostValueType));
+  }
+
+  /**
+   * True when a direct entry pins the value chunks of a counter loop whose runtime-typed old value kept the
+   * value-chunk lock witness off its ABI. The entry then keeps its lock list in an item it pushes above its frame.
+   */
+  private chunkLockListAboveFrame(node: FunctionDefinitionNode): boolean {
+    if (!this.directConvention || this.framedMaster || this.isCompilerMessageBusRoute(node)) return false;
+    const names = node.parameters.map((parameter) => parameter.name);
+    if (names.includes(VALUE_CHUNK_LOCK_LIST)) return false;
+    return (node.entryAccesses ?? []).some((access) => access.inLoop === true
+      && access.operations.includes('write')
+      && names.some((name) => name.startsWith('__internal__vmapCounterOld_')
+        && name.endsWith(`_${access.collection}`))
+      && this.collectionDefinitions.some((collection) => collection.name === access.collection
+        && collection.sorted && this.isChunkableValue(collection.innermostValueType)));
   }
 
   /** One-based bottom ordinal of the route's value-chunk lock list, as an invoked handler addresses it. */

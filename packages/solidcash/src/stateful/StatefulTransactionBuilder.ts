@@ -1879,6 +1879,7 @@ export class StatefulTransactionBuilder {
   private _finalizeBuildStampHost(): FinalizeBuildStampHost {
     return {
       categoryId: this.categoryId,
+      rootStateContract: isContractUnlocker(this.masterUtxo.unlocker) ? this.masterUtxo.unlocker.contract : undefined,
       composedParticipant: this.composedParticipant,
       allInputs: this.allInputs,
       entryNfts: this.entryNfts,

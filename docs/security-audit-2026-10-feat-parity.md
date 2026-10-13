@@ -1,8 +1,8 @@
 # October 2026 security audit: fixes on feat/parity
 
 The audit report (`SECURITY-AUDIT-2026-10.md` and `docs/security-audit-2026-10/`) lives on feat/per-call, where a
-separate worker implements its response. This file lists the rows fixed on feat/parity so the two lines can be
-reconciled when they meet. None of these commits are on feat/per-call.
+separate worker implements its response. This file lists the rows fixed on feat/parity; feat/per-call-merge brought
+them onto feat/per-call on 2026-10-13 (see "Integration into feat/per-call").
 
 | Row | Severity | Fix | Commits | Tests |
 |---|---|---|---|---|
@@ -35,6 +35,30 @@ DS-7, DS-8, SEM-1, CRYPTO-4 and DX-8 also have a fix in the per-call worker's tr
   changes the data and entry covenant bytecode; here the keeper baton is confined by its own covenant and contract
   bytecode is unchanged.
 - DX-8: per-call pins each implementation record at its own index; here the records are conserved in order.
+
+## Integration into feat/per-call (2026-10-13)
+
+feat/per-call at d6821a812 already failed 53 SDK and 19 compiler tests (delegates and proxies, token containers,
+sorted read-after-write, the keccak loop, external state reads, return indices); the merge added about 20 more. The
+integration fixed them on feat/per-call-merge:
+
+| Fix | Commits |
+|---|---|
+| A direct delegate binds the proxy's entry, value-chunk, container and nested record locks; a delegated route and its handlers bind the proxy's records too | 3896432d8 95bc01372 7d90dd4db |
+| A direct delegate keeps the proxy's token containers (the foreign scan runs there, VM-proven drain closed) and admits the proxy's own sender anchor | 1408b8c2d 607051ea2 |
+| A direct delegate's event pin exempts the proxy's own SCID anchor, read at the proxy master's lock | d1c7dbdc1 |
+| DX-8 keeps the conservation chain only; the own-index delegate pin is dropped | 2d1e64297 |
+| KB-2: a P2PKH lock is an address identity again; a 23-byte identity must be a P2SH20 template | 6031e8d74 d68ca8994 687ed9151 |
+| The minting-authority walk takes the push reaching the end as the redeem | 2282e25d8 30af5abdc 112e4281f |
+| An activity-settled delete binds its present node's next witness (DS-6) | 7a1f6a4e0 |
+| The own-coin proof and per-call's funding hardening reconciled; fixtures funded with proven coins | 3d5471181 67260c100 |
+| ARITH-4: a static `abi.decode` ignores bytes after its last word again, as solc does (the last word is still read as exactly 32 bytes) | 39670ebad |
+| Message-bus builds keep the kernel's deploy authority (user decision, 2026-10-13); upgrade, split and merge still need a trusted key there (DX-9) | e231d3090 735180ab3 |
+
+Not merged: a00dd2f72 (delegate marking of bare mapping and array writes), see deferrals.md, "A routed update of a
+proxy's records". Direct delegates and delegated routes now inline the container and entry address builds (size not
+measured). In a delegate body the foreign scan also refuses a forwarder that draws on one of the proxy's containers
+in the same transaction; no test does that.
 
 ## Residuals and findings
 

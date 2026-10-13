@@ -1724,9 +1724,10 @@ internal vector".
 
 ## Event payloads larger than one 128-byte NFT commitment (2026-08-07)
 
-**RESOLVED for direct stateful calls (2026-10-13); STILL DEFERRED on message-bus routes, framed frames, runtime
-counter-loop events and nested / delegate callees.** Before, an event whose encoded arguments exceed the commitment
-limit was rejected by the network (`excessive token commitment length`, measured on MistSwap
+**RESOLVED for direct stateful calls (2026-10-13) and for kernel route handlers whose emits all stream (2026-10-13,
+runtime effect stream, see below); STILL DEFERRED on legacy routes, other kernel handler shapes, framed frames,
+runtime counter-loop events and nested / delegate callees.** Before, an event whose encoded arguments exceed the
+commitment limit was rejected by the network (`excessive token commitment length`, measured on MistSwap
 `Timelock.queueTransaction` at 129 B), and later by the SDK at `addOutput`; the pre-scan had pinned `chunkCount` to 1.
 
 As built:
@@ -1751,13 +1752,47 @@ As built:
 - Unbounded `string` / `bytes` / dynamic arrays still count as 9 bytes, so for them the reservation is a capacity,
   not a bound: a wider payload is refused by the covenant (and the SDK refuses the oversized commitment).
 
+As built on kernel routes (2026-10-13, the runtime effect stream):
+
+- Admission (`synthesizeMessageBusRoute`): a kernel handler that emits a wide event, or one a dynamic array can
+  widen (`unboundedEventNames`; `getEventChunkCount` counts such a parameter as 9 B), streams when `streamsEveryEmit`
+  holds: every emit it reaches sits in its own body outside branches, loops and try blocks, no return precedes the
+  last, no helper emits, and no counter loop runs a stream of its own. Any other wide emitter keeps
+  `event-wider-than-one-commitment`; one only a dynamic array widens keeps its window, refused at run time past 128 B.
+- `cloneMessageBusHandler` turns every emit of a stream handler's route clone into a chunked runtime event
+  (`runtimeLoopEventChunked`, one `repeatCount: 1` segment marked `chunked`) and reserves the 64-output trailing band
+  (`runtimeCounterLoopOutputCapacity`). The direct entry is untouched. The emits take no window, so a route whose
+  other handlers emit nothing loses its 255 event windows.
+- Codegen `emitChunkedRuntimeLoopEventRecords` splits the payload in a loop and pushes one `0x01 || pushdata(chunk) ||
+  lock35` record per `commitmentLimit`-byte chunk, the head under the event covenant and the rest under the
+  continuation covenant. `emitRuntimeLoopEffectVerification` binds each record to its output, so a forged or
+  reordered chunk is refused; the stream's span bound is the trailing capacity.
+- Artifact: the handler entry publishes `runtimeLoopEvents: [{ repeatCount: 1, eventSignatures, chunked: true }]` and
+  no `emits`; its path-effect schedule lists no event.
+- SDK: batch rows take that metadata (`mergePublishedMessageBusHandlerMetadata`) and plan one head record per site.
+  Phase-2 derivation then probes with the faithful trace; `extractRuntimeEffectStreamRuns` reads each verifier run
+  where it introspects a record's category (the record on the stack, the run's unchecked records on the alt stack),
+  and `applyRuntimeLoopEventStream` replaces the row's planned records (count, locks, commitments) and shifts the
+  later event segments. Compose counts continuation locks as event locks, never decodes a chunk by schema in the
+  relocation, and relocates nothing for a stream its trace has not read yet. Receipts skip continuation outputs as
+  heads.
+- Test: `packages/solidcash/test/e2e/KernelStreamedWideEvents.test.ts` (head and continuation in order, a forged
+  chunk and a reordered pair refused, a dynamic-array record count learned).
+
 Still deferred:
 
-- Message-bus routes (kernel and legacy): route synthesis refuses a handler that emits a wide event, by event name
-  (`event-wider-than-one-commitment`, published as `KERNEL_LAYOUT` under the kernel), and codegen throws
-  `EVENT_PAYLOAD_EXCEEDS_COMMITMENT` if a wide emit still reaches a route, graph handler or framed frame. This blocks
-  `KernelRealUnicrowArbitration` / `KernelRealUnicrowProxyArbitration` (`Arbitrated` 4+ chunks, `Claim` 2,
-  `ClaimMultiple(ClaimEvent[])` 1 + 167 B per escrow).
+- Legacy routes, and kernel handlers outside the stream shape above (a conditional or looped emit, an emit in a
+  helper, a handler that already runs a counter-loop stream or runtime transfers): route synthesis refuses a handler
+  that emits a wide event, by event name (`event-wider-than-one-commitment`, published as `KERNEL_LAYOUT` under the
+  kernel), and codegen throws `EVENT_PAYLOAD_EXCEEDS_COMMITMENT` if a wide window emit still reaches a route, graph
+  handler or framed frame. A conditional stream emit needs a published condition (the builder plans one head per
+  site and only grows it); a mixed event/transfer stream needs the learner to read transfer records too.
+- The record count is read off the verifier's stacks, so it needs a probe that reaches the handler's end and keeps
+  both stacks there (the faithful trace, or the bounded collector's recent window). A compose pass whose isolated
+  participant probe stops earlier leaves the count to a later pass.
+- Unbounded `string` / `bytes` event parameters still count as 9 B on routes and are not streamed.
+- Byte identity: a route with a stream handler changes (trailing band, fewer windows), including a kernel handler that
+  emits a dynamic-array event at its top level, which was a narrow window before.
 - Investigated 2026-10-13, nothing landed: making the graph frame's `eventWidth` count chunk outputs is the wrong
   layout for the kernel. A kernel route reserves `sites = messageBusMaximumRows = 255` windows
   (`planGraphEffectFrames`; `computeBlockLayout` pushes `sites * eventWidth` event slots ahead of `returnEvent` and
@@ -1766,21 +1801,6 @@ Still deferred:
   a `fixedSuffix` proxy never trims), so a width of `w` chunks adds `255 * (w - 1)` funder/pad pairs to EVERY
   transaction on that route, narrow rows included (UnicrowArbitrator, Unicrow `Pay`/`Release`/`Refund`: about 3x
   the block). It also cannot express `ClaimMultiple`, whose chunk count is the payload's own.
-- Design to build instead: put a wide emit's commitments on the kernel's runtime effect stream in the trailing band.
-  `emitRuntimeLoopEffectVerification` already verifies ordered `pushdata(commitment) || lock35` records as
-  own-category immutable NFTs (amount 0, at most 1200 sat) at consecutive trailing outputs, and graph.ts already
-  admits kind-2 rows at `trailing` slots with a `runtimeRow`. A wide emit takes no window slot (as a counter-loop
-  emit) and pushes `ceil(len / 128)` records (head under the event covenant, then the `<signature>#continuation`
-  covenant), so head and chunks are adjacent (readers unchanged), there are no unused chunk slots, a dynamic payload
-  (`ClaimMultiple`) works, and its bound is the trailing capacity the covenant already enforces. The callManifest
-  census needs no change (one kind-2 row per physical event output). Missing: codegen to split the payload into
-  records inside a graph handler (today only counter-loop emits feed the stream), and SDK runtime-event planning
-  that learns the record count from the trace (records are planned from `RuntimeLoopEventAbi` repeat sources
-  today). Window-based helpers that assume one output per emit (`selectedGraphEventOffsets`, graph.ts kind-2
-  `parent`, `eventLockingBytecodeAtOffset`) stay as they are; `eventLockingBytecodeForCommitment` must not be asked
-  to identify a continuation chunk by schema.
-- `ClaimMultiple` counts as 9 B, so its handler is admitted as a narrow emit and refused at run time once the
-  payload passes 128 B; the six `claimMultiple` titles stay red until the runtime-stream design lands.
 - Framed convention (`collectEmitStatements` keeps `chunkCount` 1) and runtime counter-loop event records (one
   commitment per record): an oversized payload is refused by the provider at build time.
 - Nested external-call and delegatecall callees: their unused chunk slots get funding inputs and token-free

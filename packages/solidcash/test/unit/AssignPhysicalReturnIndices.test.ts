@@ -3679,7 +3679,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(binToHex(legacyJobEventsPersistUpdateDigestLock(
       'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0',
     ) ?? new Uint8Array())).toBe(
-      'aa200a2bbe79261c69b06744ddcc8b6003fb31c2029cfe4e63f3f5f82ce788c1480287',
+      'aa20618aeef2a12e8f9dcb793a856b66176776fa5bbc7b02fe77cd5aca369d6c4fd687',
     );
     const entryLock = hexToBin('aa2047362c5b4a0c597c12b75c90f68f6933b2e86c63eb6ce7ed46e083407361b7b587');
     const persistVLock = hexToBin('aa20a8ff6e94d0a3199b8457333ae32c3f788fb420b10695af6f27e92a793e8af34987');

@@ -1420,12 +1420,33 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
  * Execution-affecting CompilerOptions (+ feature identity bits) must change this key;
  * observation-only knobs (e.g. SOLIDC_COMPILE_CACHE_DIR) must not.
  */
+/** Read straight from the environment and change emitted bytecode, so they belong in the cache key. */
+const BYTECODE_CHANGING_ENV = [
+  'SOLIDC_DEBUG_STREAM_PICK_OFFSET',
+  'SOLIDC_ROUTE_ABI_TAIL',
+  'SOLIDC_ROW_ASSERT',
+  'SOLIDC_ROW_HEAD_CHECK',
+  'SOLIDC_ROW_STACK_CLEAN',
+] as const;
+
+function bytecodeChangingEnvIdentity(): string {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+  if (!env) return '';
+  const bits: Record<string, string> = {};
+  for (const name of BYTECODE_CHANGING_ENV) {
+    const value = env[name];
+    if (value !== undefined && value !== '') bits[name] = value;
+  }
+  return Object.keys(bits).length > 0 ? `\x00${JSON.stringify(bits)}` : '';
+}
+
 export function buildArtifactCacheKey(
   code: string, options: CompilerOptions, primaryContractName: string | undefined,
 ): string {
   const closure = importClosureFingerprint(code, options.rootFileId, options.importResolver);
   return `artifact-v5\x00${COMPILER_CACHE_BUILD_ID}\x00${primaryContractName ?? ''}`
-    + `\x00${closure}\x00${code}\x00${JSON.stringify(cacheableCompilerOptions(options))}`;
+    + `\x00${closure}\x00${code}\x00${JSON.stringify(cacheableCompilerOptions(options))}`
+    + bytecodeChangingEnvIdentity();
 }
 
 function buildMultiArtifactCacheKey(
@@ -7192,11 +7213,15 @@ function synthesizeMessageBusRoute(
       fn.messageBusRejectionReason = 'KERNEL_FOREIGN_DELEGATE';
       continue;
     }
-    // An upgrade authorization must cover every output. Admit only the proven topology here: each reachable
+    // A lifecycle authorization must cover every output. Admit only the proven topology here: each reachable
     // signature check consumes an immutable detached root parameter, or the unique scalar signature field in a
     // finite struct rooted at that parameter. The generated wrapper constrains its witness to SIGHASH_ALL.
+    const fencesLifecycleSignatures = fn.modifiers.includes(FunctionModifier.UPGRADE)
+      || fn.modifiers.includes(FunctionModifier.DEPLOY)
+      || fn.modifiers.includes(FunctionModifier.SPLIT)
+      || fn.modifiers.includes(FunctionModifier.MERGE);
     if (compilerOptions.messageBusKernel === true
-      && fn.modifiers.includes(FunctionModifier.UPGRADE)
+      && fencesLifecycleSignatures
       && fn.messageBusUsesTransactionSignature === true) {
       if (!allOutputParameters) {
         fn.messageBusEligible = false;
@@ -11978,13 +12003,12 @@ function synthesizeMessageBusRoute(
         require(tx.inputs[activeVerifier].tokenCategory.slice(32, 33) == hex"01");
         require(tx.inputs[activeVerifier].nftCommitment.length >= 6);
         require(tx.inputs[activeVerifier].nftCommitment.slice(0, 4) == hex"4c335631");
-        bigint activeVerifierOutput = -1;
-        for (bigint verifierOutput = 0; verifierOutput < tx.outputs.length; verifierOutput = verifierOutput + 1) {
-          if (tx.outputs[verifierOutput].lockingBytecode == tx.inputs[activeVerifier].lockingBytecode
-            && tx.outputs[verifierOutput].tokenCategory == tx.inputs[activeVerifier].tokenCategory) {
-            activeVerifierOutput = verifierOutput;
-          }
-        }
+        // The verifier covenant recreates itself at its own input index. Searching for the last output
+        // with the same lock lets an extra output carry an attacker-chosen binding digest.
+        require(activeVerifier < tx.outputs.length);
+        bigint activeVerifierOutput = activeVerifier;
+        require(tx.outputs[activeVerifierOutput].lockingBytecode == tx.inputs[activeVerifier].lockingBytecode
+          && tx.outputs[activeVerifierOutput].tokenCategory == tx.inputs[activeVerifier].tokenCategory);
         ${kernelLifecycleHandlers.size > 0 ? `require(activeVerifierOutput >= 0);
         require(tx.outputs[activeVerifierOutput].nftCommitment.length == 40);
         require(tx.outputs[activeVerifierOutput].nftCommitment.slice(0, 38) == bytes.concat(
@@ -12247,7 +12271,9 @@ function synthesizeMessageBusRoute(
           || callManifest.slice(0, 8) == hex"4c33425553340000"${directParticipantMode
     ? '\n          || callManifest.slice(0, 8) == hex"4c33425553350000"' : ''}));`
     : 'require(callManifest.length >= 15 && callManifest.slice(0, 8) == hex"4c33425553310000");'}
-        require(int(bytes.concat(callManifest.slice(8, 12), hex"00000000")) == callManifest.length);
+        require(${compilerOptions.evmCompat
+    ? 'bigint(int(bytes.concat(callManifest.slice(8, 12), hex"00000000"))) == bigint(callManifest.length)'
+    : 'int(bytes.concat(callManifest.slice(8, 12), hex"00000000")) == callManifest.length'});
         bigint participantCount = int(bytes.concat(callManifest.slice(12, 13), hex"00"));
         require(participantCount >= 2 && participantCount <= 8);
         bigint cursor = 13;
@@ -12682,7 +12708,9 @@ function synthesizeMessageBusRoute(
             require(directPushCount >= 2 && directPreviousAt >= 5
               && directUnlock.slice(directPreviousAt, directLastAt) == rowArguments);
             if (directPushCount > 2) {
-              require(int(bytes.concat(directFirstPayload, hex"00")) == tx.inputs.length);
+              require(${compilerOptions.evmCompat
+    ? 'bigint(int(bytes.concat(directFirstPayload, hex"00"))) == bigint(tx.inputs.length)'
+    : 'int(bytes.concat(directFirstPayload, hex"00")) == tx.inputs.length'});
             }
           }` : ''}
           if (rowSignatureFrame.length > 0) {
@@ -13310,7 +13338,31 @@ function synthesizeMessageBusRoute(
   const lifecycleRouteLocals = kernelLifecycleHandlers.size > 0
     ? `bigint __message_bus_active_lifecycle_mode = 0;
        bigint __message_bus_active_lifecycle_count = 0;` : '';
-  const atomicVerifierInvocation = `
+  // A negative verifier index is the standalone, manifest-free path. Refuse it whenever this transport's envelope
+  // reader would find an envelope, so a routed callee cannot run outside a manifest that callers rely on (KB-3).
+  const standaloneEnvelopeAbsent = proxyForwardEnvelopeTransport ? `
+          bytes standaloneUnlock = bytes.concat(tx.inputs[0].unlockingBytecode, hex"00000000000000000000000000");
+          bigint standalonePushAt = 1;
+          bigint standaloneIndexOpcode = int(bytes.concat(standaloneUnlock.slice(0, 1), hex"00"));
+          if (standaloneIndexOpcode >= 1 && standaloneIndexOpcode <= 3) {
+            standalonePushAt = 1 + standaloneIndexOpcode;
+          }
+          require(standaloneUnlock.slice(standalonePushAt, standalonePushAt + 1) != hex"4d"
+            || standaloneUnlock.slice(standalonePushAt + 3, standalonePushAt + 8) != hex"534342314d");`
+    : rootEnvelopeTransport ? `
+          bytes standaloneUnlock = bytes.concat(tx.inputs[0].unlockingBytecode, hex"000000000000000000000000");
+          require(standaloneUnlock.slice(0, 6) != hex"04534342314d"
+            || standaloneUnlock.slice(8, 12) != hex"4c334331");`
+      : `
+          if (tx.inputs.length > 1) {
+            require(bytes.concat(tx.inputs[tx.inputs.length - 2].unlockingBytecode, hex"00").slice(0, 1)
+              != hex"4d");
+          }`;
+  const standaloneEnvelopeRefusal = !(useBoundRoute && !graphExecutionContext) ? '' : `
+        if (__internal__activeVerifierIndex < 0
+          && tx.inputs[${atomicParticipantInput}].outpointIndex != 4294967295) {${standaloneEnvelopeAbsent}
+        }`;
+  const atomicVerifierInvocation = `${standaloneEnvelopeRefusal}
         if (${useBoundRoute && !graphExecutionContext ? '__internal__activeVerifierIndex >= 0 && ' : ''}
           tx.inputs[${atomicParticipantInput}].outpointIndex != 4294967295) {
           bytes __internal__atomicBindingDigest = __message_bus_verify_atomic(
@@ -14526,9 +14578,7 @@ function compileResolvedAst(
   ast = ast.accept(new OptimizeFixedArrayValues()) as Ast;
 
   // Every mapping uses the authenticated vmap backend. There is no omission-prone legacy mapping fallback.
-  for (const col of ast.contract.collections) {
-    if (col.type instanceof MappingType) col.sorted = true;
-  }
+  for (const col of ast.contract.collections) col.sorted = true;
 
   // A standalone abstract contract has no deployable bytecode; emit an ABI-only declaration artifact (solc
   // parity - abstract contracts have an ABI + empty bytecode), like interface / decl-only files.
@@ -15574,9 +15624,7 @@ function compileResolvedAst(
   // Storage-lowering passes can synthesize mappings after the source collections were normalized above
   // (notably assembly sstore/sload and ERC-7201 storage pointers). Keep the backend invariant global: every
   // mapping, including compiler-generated mappings, uses authenticated vmap storage.
-  for (const col of ast.contract.collections) {
-    if (col.type instanceof MappingType) col.sorted = true;
-  }
+  for (const col of ast.contract.collections) col.sorted = true;
 
   restoreParkedFunctions(ast, cheapAdmissionPostStubPark);
   // Internal helper expansion may splice externally calling statements into an entry after the first source
@@ -16173,7 +16221,7 @@ function compileResolvedAst(
   const finalRequireStarted = Date.now();
   ast = ast.accept(new EnsureFinalRequireTraversal(
     mergedCompilerOptions.enforceFinalRequire, mergedCompilerOptions.allowUnsafeOperations,
-    !(mergedCompilerOptions.messageBus || mergedCompilerOptions.messageBusKernel),
+    true,
   )) as Ast;
   profileLog('resolved:finalRequire', finalRequireStarted, { contract: contractName });
 
@@ -18452,6 +18500,7 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
 
 type PlannedFunction = {
   name: string;
+  parameters: number;
   closure: Set<string>;
   footprint: SplitStateFootprint;
 };
@@ -18536,6 +18585,7 @@ function compileStringSplitUnchecked(
     ? functions.filter((fn) => isMovableSplitEntry(fn, moveReadOnlyEntries)
       && !rootFunctionNames.has(fn.name)) : []).map((fn) => ({
     name: fn.name,
+    parameters: fn.parameters.length,
     closure: collectNamedFunctionClosure(fn, byName),
     footprint: analyseFunctionFootprint(fn, byName, splitFootprintCache),
   }));
@@ -19272,8 +19322,10 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
       fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.OVERRIDE);
     }
   }
-  const planned = new Set(plans.map((p) => p.name));
-  for (const fn of contract.functions) if (planned.has(fn.name)) {
+  const planned = new Set(plans.map((p) => `${p.name}/${p.parameters}`));
+  // Match the planned entry by name and arity. An internal overload kept in the name closure must stay
+  // internal; promoting every function of that name would publish it as a delegate.
+  for (const fn of contract.functions) if (planned.has(`${fn.name}/${fn.parameters.length}`)) {
     fn.modifiers = fn.modifiers.filter((m) => ![
       FunctionModifier.INTERNAL, FunctionModifier.PRIVATE, FunctionModifier.EXTERNAL, FunctionModifier.PUBLIC,
       FunctionModifier.PURE, FunctionModifier.VIEW, FunctionModifier.DELEGATE,
@@ -19527,8 +19579,19 @@ function compileReferencedContracts(
       .flatMap((directive) => directive.functionBindings?.map((binding) => binding.funcName) ?? []);
     (singleAst as SourceFileNode).freeFunctions = reachableFreeFunctions(contract, ast.freeFunctions, usingRoots);
     (singleAst as SourceFileNode).constantDefinitions = ast.constantDefinitions; // library constants those fns read
+    // The standalone compile is preferred below. When it fails, these bytes are what gets embedded. A modifier
+    // that was never expanded would ship the child with the guard missing and no error (SEM-2).
+    const childContract = singleAst.contract;
+    const hasCustomModifiers = childContract.modifierDefinitions.length > 0
+      || singleAst.libraryModifierDefinitions.length > 0
+      || childContract.functions.some((fn) => fn.customModifiers.length > 0)
+      || (childContract.constructorDef?.customModifiers.length ?? 0) > 0
+      || (childContract.fallbackDef?.customModifiers.length ?? 0) > 0
+      || (childContract.receiveDef?.customModifiers.length ?? 0) > 0
+      || singleAst.freeFunctions.some((fn) => fn.customModifiers.length > 0);
+    if (hasCustomModifiers) singleAst = expandModifiers(singleAst);
     for (const col of singleAst.contract.collections) {
-      if (col.type instanceof MappingType) col.sorted = true;
+      col.sorted = true;
     }
     singleAst = singleAst.accept(new SymbolTableTraversal(compilerOptions)) as Ast;
     singleAst = singleAst.accept(new TypeCheckTraversal(
@@ -19537,7 +19600,7 @@ function compileReferencedContracts(
     )) as Ast;
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(
       compilerOptions.enforceFinalRequire, compilerOptions.allowUnsafeOperations,
-      !(compilerOptions.messageBus || compilerOptions.messageBusKernel),
+      true,
     )) as Ast;
     if (compilerOptions.enforceLocktimeGuard) {
       singleAst = singleAst.accept(new InjectLocktimeGuardTraversal()) as Ast;

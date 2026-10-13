@@ -9,6 +9,7 @@ import type { Utxo } from '../interfaces.js';
 import { scriptToLockingBytecode } from '../utils.js';
 import {
   createTokenContainerUnlocker,
+  directConventionMasterLock,
   getTokenContainerAddress,
 } from './covenant-helpers.js';
 import type { TokenContainerInfo } from './external-call-utxo-group.js';
@@ -61,6 +62,7 @@ export async function loadCreateBuilderTokenContainers(
 
       const covenantScript = buildTokenContainerCovenantScript(
         hexToBin(host.categoryId), hexToBin(tokenContainerCategoryId),
+        directConventionMasterLock(host.inner as any),
       );
       const lockingBytecode = scriptToLockingBytecode(covenantScript, host.inner.addressType);
       tokenContainerLockingBytecodes.set(tokenContainerCategoryId, lockingBytecode);

@@ -4,7 +4,7 @@
  */
 
 import type { Artifact, ExternalCallAbi } from '@solidcash/utils';
-import type { AddressType, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
+import type { AddressType, Output, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
 import type { FramedGenesisHeadCollection } from '../framed/deploy/genesis.js';
 import type { FunctionArgument, ConstructorArgument } from '../Argument.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
@@ -29,6 +29,16 @@ export interface DeployOptions {
    * layout does not carry, since a head is minted only at genesis.
    */
   headCollections?: readonly FramedGenesisHeadCollection[];
+  /**
+   * Record commitments the genesis mints in place of encoding `initialState`. One hex string per data NFT.
+   * A proxy deployment passes the commitments `initialize` already computed.
+   */
+  recordCommitments?: readonly string[];
+  /**
+   * Sorted-collection head commitments `initialize` already computed, keyed by collection name.
+   * Genesis mints these instead of the empty head sentinel.
+   */
+  writtenHeadCommitments?: Readonly<Record<string, string>>;
   changeAddress: string;
   masterAmount?: bigint;   // default 1200n
   dataNftAmount?: bigint;  // default 1200n per data NFT
@@ -51,6 +61,13 @@ export interface DeployOptions {
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
   /** Internal SDK composition: immutable category-bearing logical identity outputs minted by genesis. */
   identityAnchors?: Array<{ to: string | Uint8Array; commitment: string; amount?: bigint }>;
+  /**
+   * When false, the genesis transaction is built and its txid is returned, but nothing is broadcast.
+   * A proxy deployment uses that to learn `initialize` before any uninitialized proxy can hit the chain.
+   */
+  broadcast?: boolean;
+  /** Outputs minted in the genesis after the records, such as an initialize hop's new chunks and events. */
+  extraOutputs?: readonly Output[];
 }
 
 export interface DeployResult<T extends Artifact = Artifact> {

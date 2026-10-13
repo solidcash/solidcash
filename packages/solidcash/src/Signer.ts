@@ -1,7 +1,7 @@
 import { encodeCashAddress } from '@bitauth/libauth/build/lib/address/cash-address.js';
 import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { binToBase64 } from '@bitauth/libauth/build/lib/format/base64.js';
-import { hexToBin, isHex, flattenBinArray } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex, hexToBin, isHex, flattenBinArray } from '@bitauth/libauth/build/lib/format/hex.js';
 import { bigIntToCompactUint } from '@bitauth/libauth/build/lib/format/number.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { hash160, hash256 } from '@solidcash/utils';
@@ -20,6 +20,14 @@ export interface TransactionNonceReservation {
 // Reads of a signer's nonce precede the create addresses its deployments will land at: one getNonce() call is
 // followed by four getCreateAddress predictions, so one read reserves that window of genesis-eligible UTXOs.
 const CREATE_LOOKAHEAD_WINDOW = 4;
+
+/** Keep a secret field readable and omit it from enumeration, JSON, and default logs. */
+function hideSecret(target: object, key: string): void {
+  const value = (target as Record<string, unknown>)[key];
+  Object.defineProperty(target, key, {
+    value, enumerable: false, writable: false, configurable: true,
+  });
+}
 
 /**
  * A signer encapsulates a private key and provides:
@@ -65,6 +73,16 @@ export default class Signer {
     this._sigTemplate = new SignatureTemplate(this.privateKey);
     this.publicKey = secp256k1.derivePublicKeyCompressed(this.privateKey) as Uint8Array;
     this.pkh = hash160(this.publicKey);
+    hideSecret(this, 'privateKey');
+  }
+
+  /** JSON and logs keep the address material and omit the private key. */
+  toJSON(): { readonly publicKey: string } {
+    return { publicKey: binToHex(this.publicKey) };
+  }
+
+  [Symbol.for('nodejs.util.inspect.custom')](): string {
+    return `Signer { publicKey: ${binToHex(this.publicKey)} }`;
   }
 
   /** Get the signer's P2PKH address for a given network. */

@@ -166,9 +166,10 @@ export function reassertPersistedValueChunkOneToOnes(
             inputLock: inputLock && inputLock.length === 35 && inputLock[0] === 0xaa
               ? inputLock : undefined,
           });
-        const persistChunks = persistValue
+        const persistChunkLock = destLock ?? persistRecipeLock;
+        const persistChunks = persistValue && persistChunkLock
           ? chunksFromValue(persistValue, {
-            lockingBytecode: destLock ?? persistRecipeLock,
+            lockingBytecode: persistChunkLock,
             write: host.persistedValueChunkWrite(persistCat),
             categoryId: persistCat,
           }) : [];

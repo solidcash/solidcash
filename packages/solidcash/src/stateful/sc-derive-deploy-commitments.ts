@@ -30,6 +30,7 @@ import {
 import {
   createDataNftUnlocker,
   createEntryNftUnlocker,
+  directConventionMasterLock,
   getDynamicChunkAddress,
   getEntryNftAddress,
 } from './covenant-helpers.js';
@@ -395,7 +396,9 @@ export async function deriveDeployCommitments<T extends Artifact>(
         (candidate) => candidate.name === access.collection,
       )?.signature ?? access.collection;
       const entryLockingBytecode = scriptToLockingBytecode(
-        buildEntryNftCovenantScript(hexToBin(categoryId), computeCollectionHash(collectionSig)),
+        buildEntryNftCovenantScript(
+          hexToBin(categoryId), computeCollectionHash(collectionSig), directConventionMasterLock(contract),
+        ),
         contract.addressType,
       );
       probeBuilder.addInput(
@@ -463,7 +466,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
       )?.signature ?? access.collection;
       const collectionHash = computeCollectionHash(collectionSig);
       const covenantScript = buildEntryNftCovenantScript(
-        hexToBin(categoryId), collectionHash,
+        hexToBin(categoryId), collectionHash, directConventionMasterLock(contract),
       );
       const lockingBytecode = scriptToLockingBytecode(
         covenantScript, contract.addressType,

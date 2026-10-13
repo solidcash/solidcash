@@ -218,6 +218,34 @@ describe('InjectLocktimeGuardTraversal', () => {
     expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
+  it('still injects when the only tx.time check follows a return', () => {
+    const src = `
+      contract T() {
+        function spend() {
+          int x = tx.locktime;
+          require(x >= 100);
+          return;
+          require(tx.time >= 100);
+        }
+      }`;
+    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+  });
+
+  it('still injects when a branch returns before the tx.time check', () => {
+    const src = `
+      contract T() {
+        function spend(bigint x) {
+          int t = tx.locktime;
+          if (x < 0) {
+            return;
+          }
+          require(tx.time >= 100);
+          require(t >= 100);
+        }
+      }`;
+    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+  });
+
   it('does not inject when enforceLocktimeGuard is disabled', () => {
     const src = `
       contract T() {

@@ -20,6 +20,30 @@ const extractAddressHash = (offset: bigint): Script => [
   encodeInt(offset), Op.OP_SPLIT, Op.OP_NIP, encodeInt(20n), Op.OP_SPLIT, Op.OP_DROP,
 ];
 
+/** Big-endian two's-complement bytes of `byteLen`. A negative value is shifted by 2^bits first. */
+function evmTwosIntToBytes(bits: number, byteLen: number, signed: boolean): Script {
+  const widen: Script = signed
+    ? [Op.OP_DUP, encodeInt(0n), Op.OP_LESSTHAN, encodeInt(1n << BigInt(bits)), Op.OP_MUL, Op.OP_ADD]
+    : [];
+  return [
+    ...widen,
+    encodeInt(BigInt(byteLen + 1)), Op.OP_NUM2BIN,
+    encodeInt(BigInt(byteLen)), Op.OP_SPLIT, Op.OP_DROP,
+    Op.OP_REVERSEBYTES,
+  ];
+}
+
+/** Big-endian two's-complement `byteLen` bytes back to a signed integer. */
+function evmTwosBytesToSigned(byteLen: number): Script {
+  const bits = byteLen * 8;
+  return [
+    Op.OP_REVERSEBYTES,
+    new Uint8Array([0x00]), Op.OP_CAT, Op.OP_BIN2NUM,
+    Op.OP_DUP, encodeInt(1n << BigInt(bits - 1)), Op.OP_GREATERTHANOREQUAL,
+    Op.OP_IF, encodeInt(1n << BigInt(bits)), Op.OP_SUB, Op.OP_ENDIF,
+  ];
+}
+
 /** Convert a native BCH address or a Solidity ABI address word into the canonical 20-byte identity. */
 export function compileAddressToEvmIdentity(): Script {
   return [
@@ -33,9 +57,9 @@ export function compileAddressToEvmIdentity(): Script {
     Op.OP_ELSE,
     Op.OP_SIZE, encodeInt(32n), Op.OP_EQUAL,
     Op.OP_IF,
-    // Graph arguments and constructed address arrays can retain the right-aligned Solidity ABI word.
-    // This is an address conversion, not bytes32-to-bytes20 truncation: discard the 12-byte left padding.
-    encodeInt(12n), Op.OP_SPLIT, Op.OP_NIP,
+    // A 32-byte word is an address only when its first 12 bytes are zero. Taking the last 20 of an
+    // unprefixed word would let one word pose as many addresses.
+    encodeInt(12n), Op.OP_SPLIT, Op.OP_SWAP, new Uint8Array(12), Op.OP_EQUALVERIFY,
     Op.OP_ELSE,
     Op.OP_SIZE, encodeInt(23n), Op.OP_EQUAL,
     Op.OP_IF,
@@ -45,7 +69,9 @@ export function compileAddressToEvmIdentity(): Script {
     Op.OP_IF,
     Op.OP_HASH160,
     Op.OP_ELSE,
-    ...extractAddressHash(3n),
+    // Any other length is not a locking-bytecode template. A 71-byte bare multisig used to fall through
+    // to "bytes 3..23", so a crafted lock compared equal to a victim's 20-byte identity.
+    Op.OP_0, Op.OP_VERIFY,
     Op.OP_ENDIF,
     Op.OP_ENDIF,
     Op.OP_ENDIF,
@@ -93,7 +119,9 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
   if (from instanceof BytesType && to === PrimitiveType.STRING) return [];
 
   if (from === PrimitiveType.BIGINT && to instanceof BytesType && to.bound !== undefined) {
-    return [encodeInt(BigInt(to.bound)), Op.OP_NUM2BIN, ...(solidityCompat ? [Op.OP_REVERSEBYTES] : [])];
+    return solidityCompat
+      ? evmTwosIntToBytes(to.bound * 8, to.bound, true)
+      : [encodeInt(BigInt(to.bound)), Op.OP_NUM2BIN];
   }
   // int -> unbounded bytes: no-op (VM number is already bytes)
   if (from === PrimitiveType.BIGINT && to instanceof BytesType && to.bound === undefined) return [];
@@ -121,14 +149,19 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
     }
     return [];
   }
-  // IntType -> BytesType: same as int -> bytes
+  // IntType -> BytesType. evmCompat writes two's complement, big-endian, so the high half of a uintN fits
+  // and intN(-1) is 0xff..ff. Native casts keep sign-magnitude NUM2BIN.
   if (from instanceof IntType && to instanceof BytesType && to.bound !== undefined) {
-    return [encodeInt(BigInt(to.bound)), Op.OP_NUM2BIN, ...(solidityCompat ? [Op.OP_REVERSEBYTES] : [])];
+    return solidityCompat
+      ? evmTwosIntToBytes(from.bits, to.bound, from.signed)
+      : [encodeInt(BigInt(to.bound)), Op.OP_NUM2BIN];
   }
   // BytesType -> IntType: bytes are read as a script number. For an UNSIGNED target, sign-pad a 0x00 high byte
   // first so a value with the top bit set (e.g. uint256(keccak256(...))) reads as positive, not negative - a bare
-  // BIN2NUM would read it as a negative number and fail the caller's >= 0 bounds check. Signed targets read as-is.
+  // BIN2NUM would read it as a negative number and fail the caller's >= 0 bounds check. A signed evmCompat target
+  // reinterprets the bytes as two's complement (int8(bytes1(0x80)) is -128, not 0).
   if (from instanceof BytesType && to instanceof IntType) {
+    if (solidityCompat && to.signed && from.bound !== undefined) return evmTwosBytesToSigned(from.bound);
     const endian = solidityCompat && from.bound !== undefined ? [Op.OP_REVERSEBYTES] : [];
     return to.signed
       ? [...endian, Op.OP_BIN2NUM]
@@ -186,11 +219,16 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
   // bool -> BytesType: no-op (bool 0/1 is already valid bytes)
   if (from === PrimitiveType.BOOL && to instanceof BytesType) return [];
 
-  // BytesType -> BytesType: equal bounds or an unbounded side is a no-op (same representation).
+  // BytesType -> BytesType: equal bounds or an unbounded target is a no-op (same representation).
   // Shrinking keeps the leftmost M bytes (Solidity left-aligned truncation); widening right-pads
   // with (M-N) zero bytes. e.g. bytes4(keccak256(x)) -> first 4 bytes of the hash.
+  // Dynamic bytes -> bytesM pads with M zero bytes, then keeps the first M (Solidity >= 0.8.5).
   if (from instanceof BytesType && to instanceof BytesType) {
-    if (from.bound === undefined || to.bound === undefined || from.bound === to.bound) return [];
+    if (to.bound === undefined || from.bound === to.bound) return [];
+    if (from.bound === undefined) {
+      const width = encodeInt(BigInt(to.bound));
+      return [encodeInt(0n), width, Op.OP_NUM2BIN, Op.OP_CAT, width, Op.OP_SPLIT, Op.OP_DROP];
+    }
     if (to.bound < from.bound) return [encodeInt(BigInt(to.bound)), Op.OP_SPLIT, Op.OP_DROP];
     return [new Uint8Array(to.bound - from.bound), Op.OP_CAT];
   }

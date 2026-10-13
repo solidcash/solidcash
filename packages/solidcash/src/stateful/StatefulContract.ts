@@ -166,6 +166,7 @@ import {
   createReadOnlyEntryNftUnlocker,
   resolveCategoryFromLockingBytecode,
   resolveCategoryFromAddress,
+  directConventionMasterLock,
 } from './covenant-helpers.js';
 
 const signerUtxoSnapshots = new WeakMap<object, Map<string, Map<string, Utxo>>>();
@@ -11225,6 +11226,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       findExternalDataNft: (...a: any[]) => (this as any)._findExternalDataNft(...a),
       getUtxos: (address) => this.inner.provider.getUtxos(address),
       keysMatch: (...a: any[]) => (this as any)._keysMatch(...a),
+      externalMasterLock: (categoryId: string) => {
+        for (const ext of this._externalRegistry.values()) {
+          if (ext.categoryId !== categoryId) continue;
+          return directConventionMasterLock(ext.inner);
+        }
+        return undefined;
+      },
     };
     const externalReadUtxos = await loadCreateBuilderExternalReadsImpl(
       externalReadsHost,
@@ -12255,7 +12263,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       name: v.name,
       type: v.type,
       lockingBytecode: scriptToLockingBytecode(
-        buildEntryNftCovenantScript(hexToBin(this.categoryId), computeCollectionHash(dynamicChunkSignature(v.name, v.type))),
+        buildEntryNftCovenantScript(
+          hexToBin(this.categoryId),
+          computeCollectionHash(dynamicChunkSignature(v.name, v.type)),
+          directConventionMasterLock(this.inner),
+        ),
         this.inner.addressType,
       ),
       ...(delegateDynamicWrites.has(v.name) && { delegate: true }),
@@ -12896,7 +12908,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * Get the token-aware address for external data NFTs.
    */
   private _getExternalDataNftAddress(externalCategoryId: string): string {
-    const covenantScript = buildDataNftCovenantScript(hexToBin(externalCategoryId));
+    let masterLock: Uint8Array | undefined;
+    for (const ext of this._externalRegistry.values()) {
+      if (ext.categoryId !== externalCategoryId) continue;
+      masterLock = directConventionMasterLock(ext.inner);
+      break;
+    }
+    const covenantScript = buildDataNftCovenantScript(hexToBin(externalCategoryId), masterLock);
     return scriptToAddress(covenantScript, this.inner.provider.network, this.inner.addressType, true);
   }
 

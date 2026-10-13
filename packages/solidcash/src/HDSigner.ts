@@ -17,6 +17,14 @@ function hdKeyNetwork(network: Network): HdKeyNetwork {
   return network === Network.MAINNET ? 'mainnet' : 'testnet';
 }
 
+/** Keep a secret field readable and omit it from enumeration, JSON, and default logs. */
+function hideHdSecret(target: object, key: string): void {
+  const value = (target as Record<string, unknown>)[key];
+  Object.defineProperty(target, key, {
+    value, enumerable: false, writable: false, configurable: true,
+  });
+}
+
 /**
  * A hierarchical-deterministic (BIP-32 / BIP-39) signer. Extends {@link Signer}, so it derives a P2PKH
  * address, looks up UTXOs, unlocks funder inputs, and signs messages exactly like a single-key signer - it
@@ -40,6 +48,17 @@ export class HDSigner extends Signer {
     this.node = node;
     this.derivationPath = path;
     this.mnemonic = mnemonic;
+    hideHdSecret(this, 'node');
+    hideHdSecret(this, 'mnemonic');
+  }
+
+  /** JSON and logs name the path and the public key, and omit the mnemonic and the xprv node. */
+  toJSON(): { readonly publicKey: string; readonly derivationPath: string | null } {
+    return { ...super.toJSON(), derivationPath: this.derivationPath };
+  }
+
+  [Symbol.for('nodejs.util.inspect.custom')](): string {
+    return `HDSigner { derivationPath: ${this.derivationPath ?? 'xprv'} }`;
   }
 
   /** Internal factory from an already-derived node (used by signersFromMnemonic). */

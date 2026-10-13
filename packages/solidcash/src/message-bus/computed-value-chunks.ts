@@ -125,7 +125,9 @@ export interface IndexedComputedValueChunkValueObservation extends ComputedValue
  * present in the same executing frame. The final transaction still has to pass the complete BCH VM preflight.
  */
 export function matchComputedValueChunkStack(
-  stack: readonly Uint8Array[], writes: readonly ValueChunkWriteDescriptor[],
+  stack: readonly Uint8Array[],
+  writes: readonly ValueChunkWriteDescriptor[],
+  masterLock: Uint8Array,
 ): ComputedValueChunkValueObservation[] {
   // `emitSortedValueChunkPin` reaches its terminal count equality with the compact suffix
   // `[completeValue, persistenceLock, expectedCount, actualCount]`. Other values and P2SH32 locks may remain
@@ -148,7 +150,7 @@ export function matchComputedValueChunkStack(
   for (const write of writes) {
     const chunkCount = Math.ceil((value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
     if (!counts.has(chunkCount)) continue;
-    const lockingBytecode = persistValueChunkLock(write.categoryId, value, write);
+    const lockingBytecode = persistValueChunkLock(write.categoryId, value, write, masterLock);
     if (!lockingBytecode || binToHex(lockingBytecode) !== lockHex) continue;
     found.push({ write, value: value.slice(), lockingBytecode, chunkCount });
   }
@@ -162,7 +164,7 @@ export function matchComputedValueChunkStack(
         candidates: stack.filter((candidate) => candidate.length > VALUE_INLINE_LIMIT).map((candidate) => ({
           bytes: candidate.length,
           value: binToHex(candidate),
-          lock: binToHex(persistValueChunkLock(write.categoryId, candidate, write) ?? new Uint8Array()),
+          lock: binToHex(persistValueChunkLock(write.categoryId, candidate, write, masterLock) ?? new Uint8Array()),
         })),
       })),
       matches: found.map((match) => ({
@@ -177,7 +179,9 @@ export function matchComputedValueChunkStack(
 
 /** Match a complete value while generated read reconstruction verifies one of its continuation chunks. */
 export function matchComputedValueChunkReconstructionStack(
-  stack: readonly Uint8Array[], writes: readonly ValueChunkWriteDescriptor[],
+  stack: readonly Uint8Array[],
+  writes: readonly ValueChunkWriteDescriptor[],
+  masterLock: Uint8Array,
 ): ComputedValueChunkValueObservation[] {
   const locks = new Set(stack.filter(isP2sh32).map(binToHex));
   if (locks.size === 0) return [];
@@ -187,7 +191,7 @@ export function matchComputedValueChunkReconstructionStack(
       if (value.length <= VALUE_INLINE_LIMIT) continue;
       const chunkCount = Math.ceil((value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
       if (chunkCount < 1 || chunkCount > write.outputCount) continue;
-      const lockingBytecode = persistValueChunkLock(write.categoryId, value, write);
+      const lockingBytecode = persistValueChunkLock(write.categoryId, value, write, masterLock);
       if (!lockingBytecode || !locks.has(binToHex(lockingBytecode))) continue;
       found.push({ write, value: value.slice(), lockingBytecode, chunkCount });
     }
@@ -216,6 +220,8 @@ export function discoverMessageBusComputedValueChunkValues(
   }
   const observations = new Map<string, IndexedComputedValueChunkValueObservation>();
   for (const [inputIndex, writes] of byInput) {
+    const ownerLock = sourceOutputs[inputIndex]?.lockingBytecode;
+    const masterLock = ownerLock instanceof Uint8Array && ownerLock.length === 35 ? ownerLock : undefined;
     const recordObservation = (
       observation: ComputedValueChunkValueObservation, requiresMaterialization: boolean,
     ): void => {
@@ -235,7 +241,8 @@ export function discoverMessageBusComputedValueChunkValues(
         ? state.ip : state.instructions[state.ip - 1]?.opcode === Op.OP_EQUALVERIFY ? state.ip - 1 : -1;
       if (verifyIp < 1 || state.instructions[verifyIp - 1]?.opcode !== Op.OP_DROP
         || state.controlStack.some((frame) => frame === false)) return;
-      for (const observation of matchComputedValueChunkStack(state.stack, writes)) {
+      if (!masterLock) return;
+      for (const observation of matchComputedValueChunkStack(state.stack, writes, masterLock)) {
         let actualCount = -1;
         try {
           actualCount = Number(vmNumberToBigInt(state.stack[state.stack.length - 1]!));
@@ -251,7 +258,8 @@ export function discoverMessageBusComputedValueChunkValues(
         if (state.instructions[state.ip]?.opcode === Op.OP_EQUALVERIFY
           && state.instructions[state.ip - 1]?.opcode === Op.OP_CAT
           && !state.controlStack.some((frame) => frame === false)) {
-          for (const observation of matchComputedValueChunkReconstructionStack(state.stack, writes)) {
+          if (!masterLock) return;
+          for (const observation of matchComputedValueChunkReconstructionStack(state.stack, writes, masterLock)) {
             recordObservation(observation, true);
           }
         }
@@ -482,6 +490,8 @@ export function convergeMessageBusComputedValueChunkOutputs(
       const inputWrites = describedWrites.filter((write) => (
         write.outputCount > 0 && owners.get(write.outputBase)?.has(inputIndex)
       ));
+      const ownerLock = sourceOutputs[inputIndex]?.lockingBytecode;
+      const masterLock = ownerLock instanceof Uint8Array && ownerLock.length === 35 ? ownerLock : undefined;
       const vm = createVirtualMachineBch2026ForProvider(builder.provider, {
         opcodes: new Set([Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUALVERIFY]),
         beforeOperation: (unknownState) => {
@@ -495,9 +505,9 @@ export function convergeMessageBusComputedValueChunkOutputs(
               roundConfirmedByInput.set(inputIndex, confirmed);
             }
           }
-          if (opcode === Op.OP_EQUALVERIFY && state.instructions[state.ip - 1]?.opcode === Op.OP_DROP
+          if (masterLock && opcode === Op.OP_EQUALVERIFY && state.instructions[state.ip - 1]?.opcode === Op.OP_DROP
             && !state.controlStack.some((frame) => frame === false)) {
-            for (const observation of matchComputedValueChunkStack(state.stack, inputWrites)) {
+            for (const observation of matchComputedValueChunkStack(state.stack, inputWrites, masterLock)) {
               traceComputedValueChunkObservation(inputIndex, observation);
               const chunks = chunksFromValue(observation.value, {
                 lockingBytecode: observation.lockingBytecode,

@@ -28,6 +28,7 @@ import type { EntryNftInfo, ExternalCallUtxoGroup } from './external-call-utxo-g
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { cloneToken } from './stb-output-utils.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
+import { directConventionMasterLock } from './covenant-helpers.js';
 import {
   canonicalWriterReturnCommitment,
   isCompilerDescribedMintingBandWriter,
@@ -184,7 +185,10 @@ export function materializeExternalCallOutputs(
         dynamicChunkSignature(variable.name, variable.type),
       );
       const lockingBytecode = scriptToLockingBytecode(
-        buildEntryNftCovenantScript(hexToBin(group.categoryId), collectionHash),
+        buildEntryNftCovenantScript(
+          hexToBin(group.categoryId), collectionHash,
+          group.externalContract?.inner ? directConventionMasterLock(group.externalContract.inner) : undefined,
+        ),
         group.externalContract?.inner?.addressType ?? 'p2sh32',
       );
       for (const [index, chunk] of splitValueIntoChunks(raw).entries()) {

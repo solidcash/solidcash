@@ -137,8 +137,9 @@ describe('a generated proxy', () => {
       .toStrictEqual([`${artifacts.Impl!.contractName}.initialize()`, `${proxy.contractName}.__fallback()`]);
     expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(deployment.initialize.accepted).toBe(true);
-    // The caller offered no coin, so the hop is only derived and nothing is broadcast for it. It spends the proxy's
-    // master, its validator and facet, the implementation's master and the record, then the deployer's own coin.
+    // No caller coin was offered, so `initialize.broadcast` is unset. The geneses are still published, with the
+    // initialized record already in the proxy genesis. The derived hop spends the proxy's master, its validator
+    // and facet, the implementation's master and the record, then the deployer's own coin.
     expect(deployment.initialize.broadcast).toBeUndefined();
     expect(deployment.initialize.transaction.inputs.length).toBe(6);
 
@@ -152,14 +153,12 @@ describe('a generated proxy', () => {
     expect(bytesToHex(deployment.initialize.transaction.outputs[recordIndex]!.token!.nft!.commitment))
       .toBe(bytesToHex(written));
 
-    // The proxy's record still holds what its genesis minted (the implementation's address, nothing initialized),
-    // because the derived hop never ran on chain; read back through the shipped decoder.
+    // The proxy genesis itself carries the initialized record. There is no later hop, so the chain cannot be left
+    // at the uninitialized commitment for someone else to initialize.
     const discovery = await readFramedDeployment(network, deployment.proxy.categoryId, proxy.stateLayout!);
     expect(discovery.records.length).toBe(1);
     const recordState = new Uint8Array(Buffer.from(discovery.records[0]!.token!.nft!.commitment, 'hex'));
-    expect(bytesToHex(recordState)).toBe(bytesToHex(commitment(proxy.stateLayout!, {
-      implementation: deployment.implementation.address, initialized: 0n, version: 0n,
-    })));
+    expect(bytesToHex(recordState)).toBe(bytesToHex(written));
   });
 
   it('settles an initialize that emits, and lists the payload the entry computed', async () => {

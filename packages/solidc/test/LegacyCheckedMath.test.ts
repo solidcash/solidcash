@@ -23,4 +23,18 @@ describe('legacy checked-math proof', () => {
   it('rejects a near-match with different behavior', () => {
     expect(marked('require((c = a + b) > b, "different at a == 0");')).toBeUndefined();
   });
+
+  it('does not treat a signed wrapper as native checked math', () => {
+    const ast = parseCode(`
+      pragma solidity 0.6.12;
+      library ArbitraryName {
+        function op(int256 a, int256 b) internal pure returns (int256 c) {
+          require((c = a + b) >= b, "overflow");
+        }
+      }
+      contract C { function f() external { require(true); } }
+    `, undefined, true);
+    ast.accept(new MarkLegacyCheckedMath());
+    expect(ast.freeFunctions[0].nativeCheckedMath).toBeUndefined();
+  });
 });

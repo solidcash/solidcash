@@ -2932,12 +2932,13 @@ export default class TypeCheckTraversal extends AstTraversal {
         return node;
       }
       case UnaryOperator.SIZE:
+        // evmCompat `.length` is uint256, so `length - 1` on an empty array underflows instead of wrapping.
         if (node.expression.type instanceof ArrayType) {
-          node.type = PrimitiveType.BIGINT;
+          node.type = this.strictSolidityValidation ? new IntType(false, 256) : PrimitiveType.BIGINT;
           return node;
         }
         expectAnyOfTypes(node, node.expression.type, [new BytesType(), PrimitiveType.STRING]);
-        node.type = PrimitiveType.BIGINT;
+        node.type = this.strictSolidityValidation ? new IntType(false, 256) : PrimitiveType.BIGINT;
         return node;
       case UnaryOperator.REVERSE:
         this.expectNoContractReceiver(node, node.expression.type, 'reverse');
@@ -2980,8 +2981,11 @@ export default class TypeCheckTraversal extends AstTraversal {
       case NullaryOperator.OUTPUT_COUNT:
       case NullaryOperator.VERSION:
       case NullaryOperator.LOCKTIME:
-      case NullaryOperator.MSG_VALUE:
         node.type = PrimitiveType.BIGINT;
+        return node;
+      case NullaryOperator.MSG_VALUE:
+        // evmCompat msg.value is uint256, so `cost - msg.value` reverts when msg.value is larger.
+        node.type = this.strictSolidityValidation ? new IntType(false, 256) : PrimitiveType.BIGINT;
         return node;
       case NullaryOperator.BYTECODE:
         node.type = new BytesType();

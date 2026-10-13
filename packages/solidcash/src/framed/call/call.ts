@@ -91,6 +91,7 @@ import { createVirtualMachineBch2026ForProvider } from '../../network/createVirt
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { providerUnixLocktime } from '../../stateful/soft-state-overlays.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
+import { requireFramedFunderSighash } from '../sighash.js';
 import { traceBroadcast } from '../../tx-trace.js';
 import {
   deployMaster,
@@ -194,6 +195,8 @@ export interface FramedCallOptions {
   readonly callerLockingBytecode: Uint8Array;
   readonly funder: Unlocker;
   readonly changeAddress?: string | Uint8Array;
+  /** When false, the call is derived and judged and nothing is broadcast. `compose()` uses that. */
+  readonly publish?: boolean;
   readonly fee?: bigint;
   readonly vm?: CallMachine;
   readonly validatorProgram?: Uint8Array;
@@ -698,6 +701,7 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
 
 /** Calls an entry on a deployed framed contract, evaluates it, and broadcasts it when every participant agrees. */
 export async function callFramedEntry(options: FramedCallOptions): Promise<FramedCallResult> {
+  requireFramedFunderSighash(options.funder);
   return callInShape(options, { listedSends: undefined, skippedPayees: new Set(), payeeListedSends: new Map() });
 }
 
@@ -2283,7 +2287,7 @@ async function callInShape(
   ]);
   // A refused call has no transaction to broadcast: every output and signature would describe a state the entry
   // never computed.
-  const broadcast = accepted ? await broadcastCall({
+  const broadcast = !accepted || options.publish === false ? undefined : await broadcastCall({
     provider,
     callerUtxo: options.callerUtxo,
     callerLockingBytecode: options.callerLockingBytecode,
@@ -2293,7 +2297,7 @@ async function callInShape(
     draft,
     liveUtxos,
     containerInputs,
-  }) : undefined;
+  });
 
   return {
     transaction,
@@ -2347,6 +2351,7 @@ export type FramedValueSendOptions = Omit<FramedCallOptions, 'functionName' | 'a
  * run, and a fallback that is not payable refuses the value, so both are refused by name.
  */
 export async function sendFramedValue(options: FramedValueSendOptions): Promise<FramedCallResult> {
+  requireFramedFunderSighash(options.funder);
   const body = valueEntryOf(options.artifact, 'a value sent to it');
   return callFramedEntry({ ...options, functionName: body.name, args: [] });
 }

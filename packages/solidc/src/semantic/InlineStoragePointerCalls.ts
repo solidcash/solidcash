@@ -153,8 +153,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   // Value-returning functions with a single `return <expr>` body and a storage-pointer param: inlined in
   // EXPRESSION position (they have no standalone value representation). exprStack guards against recursion.
   private exprInlinableFns: Map<string, FunctionDefinitionNode> = new Map();
-  // Ambiguity among the expression-inlinable subset only. A same-arity overload with no reducible single-return
-  // body cannot be selected by this path and therefore must not make the one eligible overload ambiguous.
+  // Same-name, same-arity overloads, eligible or not. A memory overload that is not a single-return storage
+  // helper still shares the name the expression path looks up, so it must make that key ambiguous.
   private exprAmbiguousInlineKeys: Set<string> = new Set();
   private exprStack: string[] = [];
   private bodyNodes = new WeakMap<FunctionDefinitionNode, Node[]>();
@@ -366,13 +366,11 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // mapping` helper `at(mapping storage a, uint i) returns (uint) { return a[i]; }`) are inlined in expression
     // position: the call is replaced by the substituted return expression (`m.at(k)` -> `L.at(m, k)` -> `m[k]`).
     this.exprInlinableFns = new Map();
-    const exprEligible: FunctionDefinitionNode[] = [];
     for (const fn of [...node.functions, ...this.freeFns]) {
       if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
       if (this.isSingleReturnStoragePointerFn(fn)) this.exprInlinableFns.set(fn.name, fn);
-      if (this.isSingleReturnStoragePointerFn(fn)) exprEligible.push(fn);
     }
-    this.exprAmbiguousInlineKeys = collectAmbiguousInlineKeys(exprEligible);
+    this.exprAmbiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     if (this.inlinedFns.size === 0 && this.exprInlinableFns.size === 0) return node;
 
     // Inline calls in every function body AND the constructor/fallback/receive - a constructor calling an
@@ -566,6 +564,27 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     let found = false;
     this.walk(body, (n) => {
       if (!found && n instanceof AssignNode && n.identifier.name === name) found = true;
+    });
+    return found;
+  }
+
+  // H7: whether `name` is written by this function or by anything it calls. A nested helper is inlined (or
+  // invoked) after the value parameter has been renamed, so a write that is not in the callee's own body still
+  // mutates the caller's variable. Aliasing then reads the post-mutation value; bind a temp instead.
+  private writesNameInClosure(
+    fn: FunctionDefinitionNode | undefined, name: string, seen = new Set<string>(),
+  ): boolean {
+    if (!fn?.body) return false;
+    const key = inlineKey(fn.name, fn.parameters.length);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    if (this.isWritten(fn.body, name)) return true;
+    let found = false;
+    this.walk(fn.body, (node) => {
+      if (found || !(node instanceof FunctionCallNode)) return;
+      const callee = this.funcByKey.get(inlineKey(node.identifier.name, node.parameters.length))
+        ?? this.funcByName.get(node.identifier.name);
+      if (callee && this.writesNameInClosure(callee, name, seen)) found = true;
     });
     return found;
   }
@@ -811,7 +830,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
           subs.set(p.name, cloneNode(arg) as ExpressionNode);
         }
       } else if (arg instanceof IdentifierNode && !this.isReassigned(callee.body, p.name)
-        && !this.isWritten(callee.body, arg.name)) {
+        && !this.writesNameInClosure(callee, arg.name)) {
         // Substitute a simple identifier value arg by NAME (no local binding): a mapping key that is a caller
         // PARAMETER stays a parameter in the inlined body, so the SDK resolves it from call args (a `__sp0_k = k`
         // binding would make the key an opaque expression it cannot locate). Guarded on the param not being

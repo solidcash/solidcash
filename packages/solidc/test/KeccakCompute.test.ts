@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { KECCAK256_COMPUTE_STATEFUL_COVENANT } from '@solidcash/utils';
+import { KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK } from '../../utils/src/keccak-compute-library.js';
 import { compileString } from './direct-compile.js';
 
 // keccak256 is the compute-and-commit model: each call co-spends its own side-car (slot-framed) that
@@ -86,8 +86,9 @@ describe('keccak256 compute-model selection (soundness gate)', () => {
     // Dynamic (runtime-bound) loop -> the SDK progressively co-spends N absolute-forward side-cars.
     expect(fn(a).keccakLoopReads).toBe(true);
     expect(a.stateLayout).toBeUndefined(); // stateless (no block layout)
-    // The loop embeds the covenant constant and byte-compares it, instead of re-hashing it every iteration
-    // (which would blow the per-input hash-density budget at ~5 iters).
-    expect(a.bytecode.includes(KECCAK256_COMPUTE_STATEFUL_COVENANT)).toBe(true);
+    // The loop binds the side-car input's lock to the shared stateful keccak lock. Comparing the covenant
+    // bytes taken from the unlocking let a bare lock choose the digest.
+    const lockHex = Buffer.from(KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK).toString('hex');
+    expect(a.bytecode.includes(lockHex)).toBe(true);
   });
 });

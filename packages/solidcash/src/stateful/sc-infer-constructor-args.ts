@@ -7,6 +7,7 @@ import type { Artifact } from '@solidcash/utils';
 import type { ConstructorArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
 import {
+  directConventionMasterLock,
   getDataNftLockingBytecode,
   getEntryNftLockingBytecode,
 } from './covenant-helpers.js';
@@ -88,6 +89,6 @@ export function inferConstructorArgs(
     if (ref.kind === 'entryNft') {
       return getEntryNftLockingBytecode(extContract, spec.categoryId, ref.collection!);
     }
-    return getDataNftLockingBytecode(spec.categoryId);
+    return getDataNftLockingBytecode(spec.categoryId, directConventionMasterLock(extContract));
   });
 }

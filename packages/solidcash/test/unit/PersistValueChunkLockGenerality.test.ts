@@ -14,6 +14,9 @@ const candidateCategory = '22'.repeat(32);
 const collectionSignature = 'records:mapping(uint256 => Record[])';
 const keySlot = '33'.repeat(32);
 const value = new Uint8Array(96).fill(0x44);
+const masterLock = Uint8Array.from({ length: 35 }, (_, index) => (
+  index === 0 ? 0xaa : index === 1 ? 0x20 : index === 34 ? 0x87 : 0x42
+));
 
 const write: ValueChunkWriteDescriptor = {
   categoryId: ownerCategory,
@@ -31,8 +34,8 @@ const write: ValueChunkWriteDescriptor = {
 describe('persist value-chunk lock generality', () => {
   it('fails closed for an unmatched kernel candidate instead of synthesizing a legacy schema lock', () => {
     const kernelArtifact = { messageBus: { convention: 'kernel-row-loop' as const } };
-    const candidate = persistValueChunkLock(candidateCategory, value);
-    const legacy = legacyJobEventsPersistValueChunkLock(candidateCategory, value);
+    const candidate = persistValueChunkLock(candidateCategory, value, undefined, masterLock);
+    const legacy = legacyJobEventsPersistValueChunkLock(candidateCategory, value, masterLock);
 
     expect(permitsLegacyNamedValueChunkFallback([{
       logicalArtifact: kernelArtifact as never,
@@ -51,10 +54,10 @@ describe('persist value-chunk lock generality', () => {
       collectionHash: binToHex(computeCollectionHash(collectionSignature)),
     };
     const expected = getValueChunkLockingBytecode(
-      ownerCategory, write.collection, Uint8Array.from({ length: 32 }, () => 0x33), sha256Sync(value),
+      ownerCategory, write.collection, Uint8Array.from({ length: 32 }, () => 0x33), sha256Sync(value), masterLock,
     );
 
-    expect(persistValueChunkLock(candidateCategory, value, exact)).toBeUndefined();
-    expect(persistValueChunkLock(ownerCategory, value, exact)).toEqual(expected);
+    expect(persistValueChunkLock(candidateCategory, value, exact, masterLock)).toBeUndefined();
+    expect(persistValueChunkLock(ownerCategory, value, exact, masterLock)).toEqual(expected);
   });
 });

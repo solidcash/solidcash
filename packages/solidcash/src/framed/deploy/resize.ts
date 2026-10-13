@@ -17,6 +17,7 @@ import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type SignatureTemplate from '../../SignatureTemplate.js';
 import { createSighashPreimage } from '../../utils.js';
+import { requireFramedFunderSighash } from '../sighash.js';
 import { deployMaster } from './material.js';
 import { readFramedDeployment } from './records.js';
 
@@ -121,6 +122,13 @@ export async function resizeFramedPool(
     throw new FramedResizeError(`contract "${artifact.contractName}" is not a stateful contract`);
   }
   if (!Number.isInteger(count) || count < 1) throw new FramedResizeError(`a ${kind} counts at least one master`);
+  requireFramedFunderSighash(options.admin);
+  requireFramedFunderSighash(options.funder);
+  if (kind === 'merge' && options.fundingUtxos.some((utxo) => utxo.token !== undefined)) {
+    throw new FramedResizeError(
+      'a merge is funded by tokenless coins; a token on a funding input would be burned',
+    );
+  }
   const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
   const deployed = deployMaster(artifact, hexToBin(categoryId), validatorProgram);
   const { masters } = await readFramedDeployment(provider, categoryId, artifact.stateLayout);

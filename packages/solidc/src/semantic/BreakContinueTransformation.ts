@@ -17,6 +17,8 @@ import {
   ExpressionNode,
   FunctionDefinitionNode,
   SwitchNode,
+  UncheckedNode,
+  CollectionIterationNode,
 } from '../ast/AST.js';
 import { PrimitiveType } from '@solidcash/utils';
 import { UnaryOperator, BinaryOperator } from '../ast/Operator.js';
@@ -118,6 +120,15 @@ function transformStatementList(
         if (clause.block.statements) {
           clause.block.statements = transformStatementList(clause.block.statements, insideLoop);
         }
+      }
+      result.push(stmt);
+    } else if (stmt instanceof CollectionIterationNode) {
+      result.push(...transformCollectionIteration(stmt));
+    } else if (stmt instanceof UncheckedNode) {
+      // unchecked is not a loop. A break or continue inside it still belongs to the enclosing loop,
+      // and a loop nested inside it has to be lowered on its own.
+      if (stmt.block.statements) {
+        stmt.block.statements = transformStatementList(stmt.block.statements, insideLoop);
       }
       result.push(stmt);
     } else if (stmt instanceof BlockNode && Array.isArray(stmt.statements)) {
@@ -282,6 +293,28 @@ function transformWhileLoop(loop: WhileNode): StatementNode[] {
   return result;
 }
 
+/**
+ * A for-of loop is not a while. Its `break` has to set a flag the iteration covenant checks, and its
+ * `continue` only skips the rest of this element. Breaks inside it do not belong to an outer loop.
+ */
+function transformCollectionIteration(loop: CollectionIterationNode): StatementNode[] {
+  const statements = loop.body.statements ?? [];
+  const hasBreak = containsBreakOrContinue(statements, 'break');
+  const hasContinue = containsBreakOrContinue(statements, 'continue');
+  if (!hasBreak && !hasContinue) {
+    loop.body.statements = transformStatementList(statements, true);
+    return [loop];
+  }
+  const breakFlagName = hasBreak ? `csBreak${breakFlagCounter++}` : undefined;
+  loop.breakFlagName = breakFlagName;
+  loop.body = new BlockNode(nestBreakContinue(statements, breakFlagName));
+  loop.body.location = loop.location;
+  const result: StatementNode[] = [];
+  if (breakFlagName) result.push(createBoolVarDef(breakFlagName, false, loop.location));
+  result.push(loop);
+  return result;
+}
+
 // --- Core Nesting Logic -------------------------------------------------
 
 /**
@@ -378,6 +411,10 @@ function nestBreakContinue(
       result.push(...transformWhileLoop(stmt));
       continue;
     }
+    if (stmt instanceof CollectionIterationNode) {
+      result.push(...transformCollectionIteration(stmt));
+      continue;
+    }
 
     // A switch break is local to the switch, but a continue still targets the enclosing loop.
     // Use one iteration-local flag so every non-continuing case reaches the outer block tail.
@@ -417,6 +454,39 @@ function nestBreakContinue(
       }
       result.push(newBranch);
       continue;
+    }
+
+    // `unchecked` does not start a loop, so its break and continue belong to this one. Keep the
+    // arithmetic block, and keep the statements after it out of that block so they stay checked.
+    if (stmt instanceof UncheckedNode
+      && (blockContainsBreakContinue(stmt.block, 'break') || blockContainsBreakContinue(stmt.block, 'continue'))) {
+      const hasContinue = blockContainsBreakContinue(stmt.block, 'continue');
+      const continueFlagName = hasContinue ? `csContinue${continueFlagCounter++}` : undefined;
+      if (continueFlagName) result.push(createBoolVarDef(continueFlagName, false, stmt.location));
+      const rewritten = hasContinue
+        ? transformSwitchContinues(stmt.block.statements ?? [], continueFlagName!)
+        : (stmt.block.statements ?? []);
+      stmt.block = new BlockNode(nestBreakContinue(rewritten, breakFlagName));
+      stmt.block.location = stmt.location;
+      result.push(stmt);
+      if (remaining.length > 0) {
+        // `!continue && !break` is a binary AND; `!break` alone is unary. Both are branch conditions.
+        let guard: ExpressionNode | undefined = continueFlagName
+          ? createNot(createIdentifier(continueFlagName, stmt.location), stmt.location)
+          : undefined;
+        if (breakFlagName) {
+          const notBreak = createNot(createIdentifier(breakFlagName, stmt.location), stmt.location);
+          guard = guard ? createAnd(guard, notBreak, stmt.location) : notBreak;
+        }
+        if (guard) {
+          const tail = new BlockNode(nestBreakContinue(remaining, breakFlagName));
+          tail.location = stmt.location;
+          const branch = new BranchNode(guard, tail);
+          branch.location = stmt.location;
+          result.push(branch);
+        }
+      }
+      break;
     }
 
     // Modifier expansion and return-in-loop lowering can leave a lexical block inside this loop with a
@@ -540,6 +610,7 @@ function containsBreakOrContinue(
       if (blockContainsBreakContinue(s.tryBlock, kind)) return true;
     }
     if (s instanceof BlockNode && blockContainsBreakContinue(s, kind)) return true;
+    if (s instanceof UncheckedNode && blockContainsBreakContinue(s.block, kind)) return true;
     if (kind === 'continue' && s instanceof SwitchNode && switchContainsContinue(s)) return true;
     // Don't recurse into nested loops - their break/continue is scoped to them
   }

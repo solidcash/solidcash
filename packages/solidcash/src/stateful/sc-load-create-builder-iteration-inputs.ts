@@ -15,6 +15,7 @@ import { scriptToAddress } from '../utils.js';
 import {
   createReadOnlyDynamicChunkUnlocker,
   createReadOnlyEntryNftUnlocker,
+  directConventionMasterLock,
   getDynamicChunkAddress,
 } from './covenant-helpers.js';
 import {
@@ -71,7 +72,9 @@ export async function loadCreateBuilderIterationInputs(
 
       // Get all entry NFTs for this collection from on-chain state
       const collectionHash = computeCollectionHash(coll.signature);
-      const entryCovenantScript = buildEntryNftCovenantScript(hexToBin(host.categoryId), collectionHash);
+      const entryCovenantScript = buildEntryNftCovenantScript(
+        hexToBin(host.categoryId), collectionHash, directConventionMasterLock(host.inner as any),
+      );
       const entryAddress = scriptToAddress(entryCovenantScript, host.inner.provider.network, host.inner.addressType, true);
       const utxos = await host.inner.provider.getUtxos(entryAddress);
       const entryUtxos = utxos.filter((u: any) =>

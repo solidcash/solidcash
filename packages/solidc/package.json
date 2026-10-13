@@ -51,7 +51,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#vm-performance-dist",
+    "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8",
     "@noble/hashes": "^2.0.0",
     "@solidcash/utils": "^0.13.1",
     "antlr4": "^4.13.2",

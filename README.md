@@ -102,8 +102,11 @@ A stateful contract compiles under one of two composition conventions, selected 
   `msg.sender` is **not authenticated**: for an external call the emitted check takes the locking bytecode of the
   only co-spent minting token of the category the caller supplies, and never proves that contract made the call
   (audit finding F1); a nested kernel row binds the caller slot by block offset, `require(sourceOffset < ownerSize)`
-  (F10). Do not treat `msg.sender` as an authorization check under this convention - use a signature
-  (`checkSig`) or a framed contract instead. `docs/framed/TRIAGE_SECURITY.md` records the findings.
+  (F10). The same convention exposes satoshi and token containers, mapping-entry NFTs, and shared keccak,
+  ecrecover, and library side-cars to any spend that co-spends a minting NFT of the contract category or that
+  reaches the side-car's public lock. Those holes do not need `msg.sender`. Do not treat `msg.sender` as an
+  authorization check under this convention - use a signature (`checkSig`) or a framed contract instead.
+  `docs/framed/TRIAGE_SECURITY.md` records the findings.
 - **`framed`** binds the sender on chain at the validator (V5 in `packages/solidc/src/framed/.../validator/program.ts`;
   master head at `master-head.ts`), at the cost of a larger deployment (one UTXO per master and validator, 12
   masters and 4 validators by default) and larger scripts.

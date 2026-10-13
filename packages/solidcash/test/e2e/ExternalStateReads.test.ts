@@ -214,7 +214,7 @@ describe('Cross-Contract External State Reads', () => {
         provider, counterContract, counterStateLayout, { counter: 5n }, { saltContract: true },
       ));
 
-      readerContract = new Contract(readerArtifact, [getDataNftLockingBytecode(counterCategoryId)], { provider });
+      readerContract = new Contract(readerArtifact, [getDataNftLockingBytecode(counterCategoryId, hexToBin(counterContract.lockingBytecode))], { provider });
       ({ categoryId: readerCategoryId } = await setupStatefulUtxos(
         provider, readerContract, readerStateLayout, { total: 0n }, { saltContract: true },
       ));
@@ -226,7 +226,7 @@ describe('Cross-Contract External State Reads', () => {
       expect(readerArtifact.constructorInputs[0].type).toBe('bytes');
 
       const encodedArg = readerContract.encodedConstructorArgs[0];
-      expect(binToHex(encodedArg)).toBe(binToHex(getDataNftLockingBytecode(counterCategoryId)));
+      expect(binToHex(encodedArg)).toBe(binToHex(getDataNftLockingBytecode(counterCategoryId, hexToBin(counterContract.lockingBytecode))));
     });
 
     it('should build a transaction that includes external read UTXOs', async () => {
@@ -273,7 +273,7 @@ describe('Cross-Contract External State Reads', () => {
       counterCategoryId = counterSetup.categoryId;
       [counterDataNftUtxo] = counterSetup.dataNftUtxos;
 
-      readerContract = new Contract(readerArtifact, [getDataNftLockingBytecode(counterCategoryId)], { provider });
+      readerContract = new Contract(readerArtifact, [getDataNftLockingBytecode(counterCategoryId, hexToBin(counterContract.lockingBytecode))], { provider });
       const readerSetup = await setupStatefulUtxos(
         provider, readerContract, readerStateLayout, { total: 0n }, { saltContract: true },
       );
@@ -353,7 +353,7 @@ describe('Cross-Contract External State Reads', () => {
 
     const readerArtifact = compileString(READER_CONTRACT);
     const readerContract = new Contract(
-      readerArtifact, [getDataNftLockingBytecode(counterCategoryId)], { provider },
+      readerArtifact, [getDataNftLockingBytecode(counterCategoryId, hexToBin(counterContract.lockingBytecode))], { provider },
     );
     const readerCategoryId = 'd3cd'.repeat(16);
     const readerSaltedContract = readerContract.withCategory(hexToBin(readerCategoryId));
@@ -448,8 +448,8 @@ describe('Cross-Contract External State Reads', () => {
       const provider = createTestProvider();
       const artifact = compileString(READER_CONTRACT);
       const counterCategoryId = 'aacd'.repeat(16);
-
-      const counterAddr = getDataNftLockingBytecode(counterCategoryId);
+      const counter = new Contract(compileString(COUNTER_CONTRACT), [], { provider });
+      const counterAddr = getDataNftLockingBytecode(counterCategoryId, hexToBin(counter.lockingBytecode));
       const contract = new Contract(artifact, [counterAddr], { provider });
 
       // Verify constructor arg is stored correctly (address model: the callee data-NFT lbc)
@@ -487,7 +487,7 @@ describe('Cross-Contract External State Reads', () => {
         provider, calleeContract, calleeArtifact.stateLayout!, { reg0: 7n, reg1: 99n }, { saltContract: true },
       );
 
-      const bigAddr = getDataNftLockingBytecode(calleeCategory);
+      const bigAddr = getDataNftLockingBytecode(calleeCategory, hexToBin(calleeContract.lockingBytecode));
       const readerContract = new Contract(readerArtifact, [bigAddr], { provider });
       const { categoryId: readerCategory } = await setupStatefulUtxos(
         provider, readerContract, readerArtifact.stateLayout!, { seen: 0n }, { saltContract: true },

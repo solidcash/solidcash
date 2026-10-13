@@ -155,6 +155,24 @@ async function sendTransaction(transaction: unknown): Promise<void> {
 type TestFramework = typeof vi;
 const testFramework: TestFramework = (globalThis as any).vi ?? (globalThis as any).jest;
 
+/** A harness, funding, or planner failure is not a contract revert. */
+function isConstructionFailure(error: { message?: string }): boolean {
+  return /could not be auto-derived|Cannot send stateful transaction|state commitments could not|Insufficient fund/i
+    .test(String(error?.message ?? ''));
+}
+
+/**
+ * Evidence the failure came from the contract or the VM: a require error, a frame refusal, or a failing opcode.
+ * A bare network or builder error does not qualify.
+ */
+function isContractRevertEvidence(error: {
+  message?: string; name?: string; reason?: unknown; errorArgs?: unknown;
+}): boolean {
+  if (error?.name === 'FailedRequireError' || error?.name === 'FailedTransactionError') return true;
+  if (error?.reason !== undefined || error?.errorArgs !== undefined) return true;
+  return /OP_VERIFY|FailedRequire|revert |script failed|evaluation failed|frame "/i.test(String(error?.message ?? ''));
+}
+
 // Extend Vitest with the custom matchers, this file needs to be imported in the vitest.setup.ts file or the test file
 expect.extend({
   toLog(
@@ -248,6 +266,12 @@ expect.extend({
       const message = (): string => 'Expected transaction to be reverted, but it succeeded.';
       return { message, pass: false };
     } catch (transactionError: any) {
+      if (isConstructionFailure(transactionError)) throw transactionError;
+      if (!isContractRevertEvidence(transactionError)) {
+        const message = (): string => 'Expected a contract revert, but the failure was not a VM or require failure: '
+          + `${transactionError?.message ?? transactionError}`;
+        return { message, pass: false };
+      }
       const receivedText = `Revert reason: ${this.utils.printReceived(transactionError?.message ?? '')}`;
       const message = (): string => `Expected transaction NOT to be reverted, but it reverted.\n${receivedText}`;
       return { message, pass: true };

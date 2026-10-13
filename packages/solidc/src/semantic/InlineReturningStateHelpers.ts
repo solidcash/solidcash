@@ -860,18 +860,22 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     name: string, arity: number, want: number, args?: ExpressionNode[],
   ): FunctionDefinitionNode | undefined {
     const all = this.overloadsByKey.get(inlineKey(name, arity)) ?? [];
-    // Only overloads this pass can actually inline participate. A declaration/body that has the requested
-    // return arity but no linearizable tail return is not a competing candidate (e.g. an empty bytes32 overload
-    // beside a reducible uint storage-pointer helper).
-    let matches = all.filter((f) => (this.eligible(f) || this.eligibleStoragePtr(f))
-      && (want < 0 ? f.returnTypes.length >= 2 : f.returnTypes.length === want));
+    // Every same-arity overload competes, including one this pass cannot inline. Ignoring that sibling
+    // selected the storage helper for a memory argument and dropped the sibling's require.
+    let matches = all.filter((f) => (want < 0 ? f.returnTypes.length >= 2 : f.returnTypes.length === want));
     if (args) {
       const typed = matches.filter((f) => args.every((arg, i) => {
         if (!(arg instanceof IdentifierNode)) return true;
         const actual = this.currentValueTypes.get(arg.name);
         return !actual || actual.toString() === f.parameters[i]?.type.toString();
       }));
-      if (typed.length > 0) matches = typed;
+      if (typed.length === 1) matches = typed;
+      else if (typed.length > 1) {
+        const inlineable = typed.filter((f) => this.eligible(f) || this.eligibleStoragePtr(f));
+        // A non-inlineable sibling is still an overload. Do not substitute a different body for it.
+        if (inlineable.length !== typed.length) return undefined;
+        matches = inlineable;
+      }
     }
     return matches.length === 1 ? matches[0] : undefined;
   }
@@ -1452,7 +1456,13 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // overload, and a wrong (2-return) pick would fail the `returnTypes.length === 1` gate before disambiguation.
     let callee = this.lookupOverload(name, arity) ?? this.funcByName.get(name);
     if (callee && this.inlinedFns.has(name) && this.ambiguousInlineKeys.has(inlineKey(name, arity))) {
-      callee = this.pickOverloadByReturnArity(name, arity, 1, node.parameters as ExpressionNode[]) ?? callee;
+      const picked = this.pickOverloadByReturnArity(name, arity, 1, node.parameters as ExpressionNode[]);
+      // Only a unique eligible overload may be substituted. A memory overload that shares the arity is not
+      // an invitation to splice the storage body and drop its require.
+      if (!picked || !(this.eligible(picked) || this.eligibleStoragePtr(picked))) {
+        throw new AmbiguousInlineOverloadError(node, name, arity);
+      }
+      callee = picked;
     }
     if (callee) this.reorderNamedTail(node, callee);
     // A helper reached only on the right side of Solidity's short-circuit `&&`/`||` cannot be hoisted before the
@@ -1688,7 +1698,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         const relocatableMemoryArg = arg instanceof IdentifierNode
           && this.definedAsLocal(arg.name)
           && (p.modifier.includes(Modifier.MEMORY) || this.isMemoryLocated(p.type));
-        if (arg instanceof IdentifierNode && !this.isWritten(callee.body, p.name) && !relocatableMemoryArg) {
+        if (arg instanceof IdentifierNode && !this.isWritten(callee.body, p.name)
+          && !this.writesNameInClosure(callee, arg.name) && !relocatableMemoryArg) {
           rename.set(p.name, arg.name);
           aliasedValueParams.add(p.name);
         } else {
@@ -1798,6 +1809,26 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       || (type instanceof BytesType && type.bound === undefined)
       || type instanceof ArrayType
       || type instanceof StructType;
+  }
+
+  // A nested call can write the caller's variable after this parameter is renamed to it. That write is not
+  // in this body yet, so a name alias would observe the value after the nested update.
+  private writesNameInClosure(
+    fn: FunctionDefinitionNode | undefined, name: string, seen = new Set<string>(),
+  ): boolean {
+    if (!fn?.body) return false;
+    const key = inlineKey(fn.name, fn.parameters.length);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    if (this.isWritten(fn.body, name)) return true;
+    let found = false;
+    this.walk(fn.body, (node) => {
+      if (found || !(node instanceof FunctionCallNode)) return;
+      const callee = this.lookupOverload(node.identifier.name, node.parameters.length)
+        ?? this.funcByName.get(node.identifier.name);
+      if (callee && this.writesNameInClosure(callee, name, seen)) found = true;
+    });
+    return found;
   }
 
   // The body writes storage pointer `name` (an AssignNode target, or a state/mapping/array/field assign on it).

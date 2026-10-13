@@ -18503,14 +18503,15 @@ function isCompileTimeExpression(
  * `pk` also supplied a matching `s`. When the same caller chooses `pk` the check is self-authorizing and
  * authorizes nobody - measured: a proxy taking `(address impl, pubkey pk, sig s)` compiled with no C1
  * diagnostic and a stranger settled 5 -> 999. So a signature check counts as an access guard only when its
- * key is one the caller cannot choose. Key operand: arg 1 of checkSig / checkMultiSig, arg 2 of checkDataSig
- * (a missing operand contributes no guard - fail closed).
+ * key is one the caller cannot choose. Key operand: arg 1 of checkSig / checkMultiSig.
+ * checkDataSig signs a message, not the transaction, so it authorizes neither a lifecycle entry nor a
+ * selfdestruct (a missing operand contributes no guard - fail closed).
  *
  * Module-scope and exported because EnsureFinalRequireTraversal's selfdestruct diagnostic asks the same
  * question (SEC-16); a second copy would drift.
  */
 const SIGNATURE_GUARD_KEY_ARG: Record<string, number> = {
-  checkSig: 1, checkMultiSig: 1, checkDataSig: 2,
+  checkSig: 1, checkMultiSig: 1,
 };
 
 /**
@@ -18843,7 +18844,8 @@ export function hasAuthorizingSignatureGuard(
  * True when `fn` carries a trusted-key signature check directly in its top-level statement list (or inside a
  * transparent `unchecked` block), so the check runs unconditionally and authorizes every lifecycle effect in the
  * body. A guard nested in a branch, loop or switch is conditional and does not count. Reuses SEC-16's trusted-key
- * definition: the key operand of checkSig/checkMultiSig/checkDataSig must be one the caller cannot choose.
+ * definition: the key operand of checkSig/checkMultiSig must be one the caller cannot choose.
+ * checkDataSig is not a transaction signature and is not credited.
  */
 export function hasUnconditionalAuthorizingSignatureGuard(fn: FunctionDefinitionNode): boolean {
   const isTrusted = (expression: ExpressionNode): boolean => {

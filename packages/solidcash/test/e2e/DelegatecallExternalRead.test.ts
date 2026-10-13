@@ -79,7 +79,7 @@ describe('a read beside a delegatecall', () => {
     const counter = await deploy(provider, counterArtifact, [], { counter: 7n });
     const other = await deploy(provider, counterArtifact, [], { counter: 9n });
     const proxy = await deploy(
-      provider, proxyArtifact, [impl.locking, getDataNftLockingBytecode(counter.category)], { counter: 5n },
+      provider, proxyArtifact, [impl.locking, getDataNftLockingBytecode(counter.category, hexToBin(counter.locking))], { counter: 5n },
     );
     const input = hexToBin(implArtifact.abi.find((entry) => entry.name === 'increment')!.selector!);
 
@@ -91,7 +91,7 @@ describe('a read beside a delegatecall', () => {
       const builder: any = await (reader as any).look(input).withDelegatecall(impl.sc, 'increment', []).build();
       const index = builder.inputs.findIndex((utxo: any) => utxo.token?.category === source.category);
       const read = builder.inputs[index];
-      const lock = getDataNftLockingBytecode(source.category);
+      const lock = getDataNftLockingBytecode(source.category, hexToBin(source.locking));
       const to = typeof builder.outputs[0].to === 'string' ? Buffer.from(lock).toString('hex') : lock;
       builder.outputs.splice(index, builder.outputs.length - index, {
         to, amount: BigInt(read.satoshis), token: read.token,

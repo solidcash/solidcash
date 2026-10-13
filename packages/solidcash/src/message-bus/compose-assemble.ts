@@ -24,6 +24,7 @@ import { resolveMaterializedDynamicWriteOutputBase } from '../stateful/stb-recon
 import { resolvePhysicalPredOutWitnesses } from './compose-predout-witness.js';
 import {
   chunksFromValue, persistValueChunkLock, valueChunkIndexFromCommitment, valueChunkWriteResourceIdentity,
+  type ValueChunkWriteDescriptor,
 } from '../stateful/StatefulTransactionBuilder.js';
 import { isValidComputedValueChunkCommitmentEncoding } from '../stateful/computed-value-chunk-pin.js';
 import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
@@ -184,6 +185,52 @@ export interface AssembleAtomicCompositionContext {
   eventLockingBytecodes: (participant: PlanParticipant) => string[];
   /** Written by assemble; read by outer _build after the last assemble call. */
   predOutClaimsSlot: { current?: AssemblePredOutClaimsByParticipant };
+}
+
+/**
+ * SDKCORE-1. An unpaired block slot is alignment padding. Only the balanced dummy funder is recreated
+ * at OP_TRUE, which the later trim drops. Any other input is recreated at its own lock, value, and token.
+ * Paying that input's full value to OP_TRUE would let anyone sweep it.
+ */
+export function outputForUnpairedBlockInput(input: {
+  satoshis: bigint;
+  token?: Output['token'];
+  unlocker: { generateLockingBytecode(): Uint8Array };
+}): Output {
+  const lock = input.unlocker.generateLockingBytecode();
+  if (input.token === undefined && binToHex(lock) === BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX) {
+    return { to: Uint8Array.of(0x51), amount: input.satoshis };
+  }
+  const token = input.token;
+  return {
+    to: lock,
+    amount: input.satoshis,
+    ...(token === undefined ? {} : {
+      token: {
+        ...token,
+        ...(token.nft === undefined ? {} : { nft: { ...token.nft } }),
+      },
+    }),
+  };
+}
+
+/**
+ * Lock of one transported value-chunk production. The executing contract's locking bytecode is the only
+ * authority: a missing or non-35-byte lock does not fall back to the category-only walk.
+ */
+export function publishedTransportedValueChunkLock(
+  production: {
+    stateOwner: { categoryId: string };
+    value: Uint8Array;
+    write: ValueChunkWriteDescriptor | null | undefined;
+  },
+  executionLockingBytecode: string,
+): Uint8Array | undefined {
+  const masterLock = hexToBin(executionLockingBytecode);
+  if (masterLock.length !== 35) return undefined;
+  return persistValueChunkLock(
+    production.stateOwner.categoryId, production.value, production.write, masterLock,
+  );
 }
 
 export async function assembleAtomicComposition(
@@ -496,9 +543,11 @@ export async function assembleAtomicComposition(
         valueChunkProductions.set(identity, production);
       }
     }
+    const executionLockingBytecode = descriptor.executor?.inner.lockingBytecode
+      ?? contract.inner.lockingBytecode;
     retainTerminalValueChunkProductions(valueChunkProductions, {
       rows: routeRows,
-      executionLockingBytecode: descriptor.executor?.inner.lockingBytecode ?? contract.inner.lockingBytecode,
+      executionLockingBytecode,
       fixedChunkableWriteSelectors: participant.artifact.messageBus?.fixedChunkableWritePolicy?.selectors,
     });
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -515,9 +564,7 @@ export async function assembleAtomicComposition(
       .filter((slot) => slot.kind === 'trailing')
       .sort((left, right) => left.offset - right.offset);
     const transportedValueChunks = [...valueChunkProductions.values()].map((production) => {
-      const lockingBytecode = persistValueChunkLock(
-        production.stateOwner.categoryId, production.value, production.write,
-      );
+      const lockingBytecode = publishedTransportedValueChunkLock(production, executionLockingBytecode);
       if (!lockingBytecode) {
         throw new Error('messageBus: transported value production has no continuation covenant');
       }
@@ -1498,10 +1545,7 @@ export async function assembleAtomicComposition(
     }
     while (local.outputs.length < blockSize && local.outputs.length < local.inputs.length) {
       const input = local.inputs[local.outputs.length];
-      local.addOutput({
-        to: Uint8Array.of(0x51),
-        amount: input.satoshis,
-      });
+      local.addOutput(outputForUnpairedBlockInput(input));
     }
     if (local.inputs.length !== blockSize || local.outputs.length !== blockSize) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

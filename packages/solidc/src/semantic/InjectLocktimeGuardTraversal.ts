@@ -1,12 +1,22 @@
 import { PrimitiveType } from '@solidcash/utils';
 import {
   BlockNode,
+  BranchNode,
+  BreakNode,
+  CollectionIterationNode,
+  ContinueNode,
   ContractNode,
+  DoWhileNode,
   FunctionDefinitionNode,
   IntLiteralNode,
   Node,
   NullaryOpNode,
+  ReturnNode,
+  RevertNode,
+  SwitchNode,
   TimeOpNode,
+  UncheckedNode,
+  WhileNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { TimeOp } from '../ast/Globals.js';
@@ -46,9 +56,9 @@ export default class InjectLocktimeGuardTraversal extends AstTraversal {
   visitBlock(node: BlockNode): Node {
     const previous = this.hasTimeCheckOnPath;
 
-    // Check whether there are any locktime checks on the same execution path, BEFORE entering the block body.
-    // So even if there are locktime checks after the `tx.locktime` access, it counts as a locktime check
-    if (node.statements?.some(isLocktimeCheck)) {
+    // A later check still covers an earlier `tx.locktime` read, but only when every path actually reaches it.
+    // A check after `return` used to suppress the guard for a read that executed and then left.
+    if (blockHasCoveringLocktimeCheck(node.statements)) {
       this.hasTimeCheckOnPath = true;
     }
     super.visitBlock(node);
@@ -71,6 +81,65 @@ function isLocktimeCheck(statement: Node): boolean {
     if (statement.timeOp === TimeOp.CHECK_LOCKTIME) return true;
     if (statement.timeOp === TimeOp.CHECK_SEQUENCE) {
       return statement.expression instanceof IntLiteralNode && statement.expression.value < 2_147_483_648;
+    }
+  }
+  return false;
+}
+
+/** A check counts only when no earlier statement can leave the block before it runs. */
+function blockHasCoveringLocktimeCheck(statements: Node[] | undefined): boolean {
+  if (!statements) return false;
+  for (const statement of statements) {
+    if (isLocktimeCheck(statement)) return true;
+    if (skipsRestOfBlock(statement)) return false;
+  }
+  return false;
+}
+
+function skipsRestOfBlock(statement: Node): boolean {
+  if (statement instanceof ReturnNode || statement instanceof RevertNode
+    || statement instanceof BreakNode || statement instanceof ContinueNode) return true;
+  if (statement instanceof BranchNode) {
+    if (blockSkipsRest(statement.ifBlock)) return true;
+    return statement.elseBlock !== undefined && blockSkipsRest(statement.elseBlock);
+  }
+  if (statement instanceof UncheckedNode || statement instanceof BlockNode) {
+    const block = statement instanceof UncheckedNode ? statement.block : statement;
+    return blockSkipsRest(block);
+  }
+  // `break` leaves the loop and still runs the statements after it. `return` does not.
+  if (statement instanceof WhileNode || statement instanceof DoWhileNode) return blockCanReturn(statement.block);
+  if (statement instanceof CollectionIterationNode) return blockCanReturn(statement.body);
+  if (statement instanceof SwitchNode) {
+    if (statement.cases.some((item) => blockCanReturn(item.body))) return true;
+    return statement.defaultCase !== undefined && blockCanReturn(statement.defaultCase);
+  }
+  return false;
+}
+
+function blockSkipsRest(block: BlockNode): boolean {
+  for (const statement of block.statements ?? []) {
+    if (skipsRestOfBlock(statement)) return true;
+  }
+  return false;
+}
+
+function blockCanReturn(block: BlockNode): boolean {
+  for (const statement of block.statements ?? []) {
+    if (statement instanceof ReturnNode || statement instanceof RevertNode) return true;
+    if (statement instanceof BranchNode) {
+      if (blockCanReturn(statement.ifBlock)) return true;
+      if (statement.elseBlock && blockCanReturn(statement.elseBlock)) return true;
+    } else if (statement instanceof WhileNode || statement instanceof DoWhileNode) {
+      if (blockCanReturn(statement.block)) return true;
+    } else if (statement instanceof UncheckedNode || statement instanceof BlockNode) {
+      const block = statement instanceof UncheckedNode ? statement.block : statement;
+      if (blockCanReturn(block)) return true;
+    } else if (statement instanceof CollectionIterationNode) {
+      if (blockCanReturn(statement.body)) return true;
+    } else if (statement instanceof SwitchNode) {
+      if (statement.cases.some((item) => blockCanReturn(item.body))) return true;
+      if (statement.defaultCase && blockCanReturn(statement.defaultCase)) return true;
     }
   }
   return false;

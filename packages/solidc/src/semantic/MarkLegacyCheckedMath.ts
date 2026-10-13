@@ -49,6 +49,8 @@ export default class MarkLegacyCheckedMath extends AstTraversal {
 
     if (fn.parameters.length === 2
       && fn.parameters[0].type instanceof IntType && fn.parameters[1].type instanceof IntType
+      && !fn.parameters[0].type.signed && !fn.parameters[1].type.signed
+      && !(fn.returnTypes[0] as IntType).signed
       && fn.parameters[0].type.toString() === fn.returnTypes[0].toString()
       && fn.parameters[1].type.toString() === fn.returnTypes[0].toString()
       && statements.length === 1 && statements[0] instanceof RequireNode) {

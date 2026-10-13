@@ -8,6 +8,7 @@
  * funding selection until it is released, so a later send cannot spend a coin an address was already derived from.
  */
 
+import type { Utxo } from '../interfaces.js';
 import { onMockNetworkProviderReset } from '../network/mock-reset.js';
 
 const reserved = new Set<string>();
@@ -20,6 +21,15 @@ export function genesisOutpointKey(txid: string, vout: number): string {
 /** True when genesis funding selection must treat this outpoint as unavailable. */
 export function isReservedGenesisOutpoint(outpoint: string): boolean {
   return reserved.has(outpoint);
+}
+
+/**
+ * Tokenless coins a call or hop may spend as its fee. A reserved genesis outpoint is a predicted category,
+ * so spending it as a fee kills that address (SDKFRAMED-3).
+ */
+export function coinsAvailableForCallerFee(utxos: readonly Utxo[]): Utxo[] {
+  return utxos.filter((utxo) => utxo.token === undefined
+    && !isReservedGenesisOutpoint(genesisOutpointKey(utxo.txid, utxo.vout)));
 }
 
 /** Hold an outpoint out of genesis funding selection. Reserving twice is a no-op. */

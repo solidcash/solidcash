@@ -9,6 +9,7 @@ import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import { scriptToLockingBytecode } from '../utils.js';
 import {
   createSatoshiContainerUnlocker,
+  directConventionMasterLock,
   getSatoshiContainerAddress,
 } from './covenant-helpers.js';
 
@@ -61,7 +62,9 @@ export async function loadCreateBuilderSatoshiContainer(
     );
     satoshiContainerUtxo = { ...containerUtxo, unlocker: satoshiContainerUnlocker };
 
-    const covenantScript = buildSatoshiContainerCovenantScript(hexToBin(host.categoryId));
+    const covenantScript = buildSatoshiContainerCovenantScript(
+      hexToBin(host.categoryId), directConventionMasterLock(host.inner as any),
+    );
     satoshiContainerLockingBytecode = scriptToLockingBytecode(
       covenantScript, host.inner.addressType,
     );

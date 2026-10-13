@@ -580,8 +580,8 @@ describe('buildEntryNftCovenantScript (dual-path)', () => {
     expect(script).toContain(Op.OP_ENDIF);
   });
 
-  it('should use the factored 104-byte category-pinned form', () => {
-    expect(scriptToBytecode(buildEntryNftCovenantScript(categoryId, collectionHash))).toHaveLength(104);
+  it('should use the category-pinned form', () => {
+    expect(scriptToBytecode(buildEntryNftCovenantScript(categoryId, collectionHash))).toHaveLength(256);
   });
 
   it('should contain self-preservation in read-only path but not in write path', () => {

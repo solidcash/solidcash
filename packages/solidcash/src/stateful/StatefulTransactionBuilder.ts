@@ -6211,17 +6211,27 @@ export class StatefulTransactionBuilder {
     ) ?? null;
   }
 
+  /** Executing contract's 35-byte locking bytecode, when this builder can bind a value chunk to it. */
+  ownerMasterLock(): Uint8Array | undefined {
+    const lock = this.masterUtxo?.lockingBytecode;
+    return lock?.length === 35 ? lock : undefined;
+  }
+
   /** Resolve an exact collection lock, retaining schema inference only for descriptor-free legacy plans. */
   private _persistValueChunkLock(
     categoryId?: string, value?: Uint8Array,
   ): Uint8Array | undefined {
     const write = this._persistedValueChunkWrite(categoryId);
-    const exact = persistValueChunkLock(categoryId, value, write);
+    const owner = (write?.categoryId ?? categoryId)?.toLowerCase();
+    const masterLock = this.ownerMasterLock();
+    if (!masterLock) return undefined;
+    if (owner && owner !== this.categoryId.toLowerCase()) return undefined;
+    const exact = persistValueChunkLock(categoryId, value, write, masterLock);
     if (exact || write !== undefined) return exact;
     if (this._hasChunkableValueWriteMetadata() || !this._permitsLegacyNamedValueChunkFallback()) {
       return undefined;
     }
-    return legacyJobEventsPersistValueChunkLock(categoryId, value);
+    return legacyJobEventsPersistValueChunkLock(categoryId, value, masterLock);
   }
 
   /** Exact staged value, with category-wide storage retained only for descriptor-free legacy plans. */

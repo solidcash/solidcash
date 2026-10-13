@@ -189,6 +189,51 @@ export function nestedStatementLists(statement: StatementNode): StatementNode[][
   return [];
 }
 
+function statementsIncludeRequire(statements: StatementNode[]): boolean {
+  for (const statement of statements) {
+    if (statement instanceof RequireNode || statement instanceof RevertNode) return true;
+    if (statement instanceof UncheckedNode && statementsIncludeRequire(statement.block.statements ?? [])) return true;
+  }
+  return false;
+}
+
+/**
+ * A bare `return` ends a covenant path. It is unguarded when no require or revert before it, in this list or in
+ * the returning arm, has already gated that path. A later require does not cover it (SEM-1).
+ */
+export function bareReturnIsUnguarded(statements: StatementNode[]): boolean {
+  const substantive = statements.filter((statement) => !(statement instanceof ConsoleStatementNode));
+  for (let index = 0; index < substantive.length; index += 1) {
+    const statement = substantive[index];
+    const gated = statementsIncludeRequire(substantive.slice(0, index));
+    if (statement instanceof ReturnNode && statement.expressions.length === 0) return !gated;
+    if (!(statement instanceof BranchNode) || gated) continue;
+    const armUnguarded = (block: BlockNode | undefined): boolean => !!block
+      && blockEndsWithReturn(block)
+      && bareReturnIsUnguarded(block.statements ?? []);
+    if (armUnguarded(statement.ifBlock) || armUnguarded(statement.elseBlock)) return true;
+  }
+  return false;
+}
+
+/** A bare return that skips the only require must fail closed. A return after a require stays a success. */
+function sealUnguardedBareReturn(statements: StatementNode[], alreadyGated: boolean): StatementNode[] {
+  if (alreadyGated) return statements;
+  const sealed = [...statements];
+  for (let index = sealed.length - 1; index >= 0; index -= 1) {
+    const statement = sealed[index];
+    if (statement instanceof ConsoleStatementNode) continue;
+    if (statement instanceof ReturnNode && statement.expressions.length === 0
+      && !statementsIncludeRequire(sealed.slice(0, index))) {
+      const failure = new RequireNode(new BoolLiteralNode(false));
+      failure.location = statement.location;
+      sealed[index] = failure;
+    }
+    break;
+  }
+  return sealed;
+}
+
 /** True when a statement is a return or holds one in a list it runs. */
 export function holdsReturn(statement: StatementNode): boolean {
   return statement instanceof ReturnNode
@@ -351,9 +396,9 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
         // Into: if (cond) { ...return; } else { remaining... }
 
         // First recursively transform the if block
-        const transformedIfStatements = stmt.ifBlock.statements
+        const transformedIfStatements = sealUnguardedBareReturn(stmt.ifBlock.statements
           ? nestEarlyReturns(stmt.ifBlock.statements)
-          : [];
+          : [], statementsIncludeRequire(result));
         const transformedIfBlock = new BlockNode(transformedIfStatements);
         transformedIfBlock.location = stmt.ifBlock.location;
         transformedIfBlock.symbolTable = stmt.ifBlock.symbolTable;
@@ -382,9 +427,9 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
 
       // If the else-block returns but not the if-block, handle similarly
       if (stmt.elseBlock && blockEndsWithReturn(stmt.elseBlock) && remaining.length > 0) {
-        const transformedElseStatements = stmt.elseBlock.statements
+        const transformedElseStatements = sealUnguardedBareReturn(stmt.elseBlock.statements
           ? nestEarlyReturns(stmt.elseBlock.statements)
-          : [];
+          : [], statementsIncludeRequire(result));
         const transformedElseBlock = new BlockNode(transformedElseStatements);
         transformedElseBlock.location = stmt.elseBlock.location;
         transformedElseBlock.symbolTable = stmt.elseBlock.symbolTable;

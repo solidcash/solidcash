@@ -20,6 +20,7 @@ afterEach(() => {
 describe('Hardhat config compatibility', () => {
   it('finds an opted-in Hardhat config upward and resolves paths relative to it', async () => {
     const root = tempDir();
+    fs.writeFileSync(path.join(root, 'package.json'), '{"name":"app"}\n');
     const child = path.join(root, 'packages', 'app');
     fs.mkdirSync(child, { recursive: true });
     const configFile = path.join(root, 'hardhat.config.mjs');
@@ -56,6 +57,7 @@ describe('Hardhat config compatibility', () => {
     const output = fs.readFileSync(generated, 'utf8');
     expect(output).toContain('contracts');
     expect(output).toContain('compiler: { evmCompat: true }');
-    expect(output).toContain('mnemonic: "test words"');
+    expect(output).toContain('mnemonic: process.env.SOLIDCASH_MNEMONIC');
+    expect(output).not.toContain('test words');
   });
 });

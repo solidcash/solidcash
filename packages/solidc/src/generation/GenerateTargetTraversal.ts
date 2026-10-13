@@ -23,7 +23,10 @@ import {
   normaliseScript,
   scriptToBytecode,
   buildDataNftCovenantScript,
+  buildBlockhashOracleCovenantScript,
   buildEntryNftCovenantScript,
+  buildSatoshiContainerCovenantScript,
+  buildTokenContainerCovenantScript,
   VALUE_CHUNK_DOMAIN_TAG,
   VALUE_HEAD_SIZE,
   VALUE_CHUNK_SIZE,
@@ -56,6 +59,7 @@ import {
   ValueType,
   EnumType,
   FunctionType,
+  implicitlyCastable,
   type BlockLayoutSlot,
   type BlockSlotKind,
   resolveLibraries,
@@ -285,6 +289,7 @@ import {
   BlockLayoutUnavailableError, StackVariableUnavailableError, SolidcDiagnosticError,
   UnsupportedEvmAbiEncodingError, UnpinnedExternalCallTargetError, LogicalSenderUnavailableError,
   DirectStaleReadError, ConstructorStaleReadError, UnpublishableLoopGuardError, importedFileCaveat,
+  UncheckedFunctionIdParameterError, UncheckedFunctionIdValueError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
@@ -466,6 +471,32 @@ const P2SH32_LBC_SUFFIX = hexToBin('87');    // OP_EQUAL
 const UNROLL_DEEP_REPLACE = false;
 
 /** Split a byte array on each occurrence of `delim`, returning the pieces between/around delimiters. */
+/** prefix / middle / suffix around the two reversed category pushes of the satoshi-container covenant. */
+function satoshiContainerPieces(): { prefix: Uint8Array; middle: Uint8Array; suffix: Uint8Array } {
+  const placeholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
+  const covenant = scriptToBytecode(buildSatoshiContainerCovenantScript(placeholder));
+  const delim = Uint8Array.from([0x20, ...placeholder.slice().reverse()]);
+  const segments = splitOnDelimiter(covenant, delim);
+  if (segments.length !== 3) {
+    throw new Error(`satoshi container covenant has ${segments.length - 1} category pushes`);
+  }
+  return { prefix: segments[0], middle: segments[1], suffix: segments[2] };
+}
+
+/** prefix / mid / suffix around the master category and the token category of the token-container covenant. */
+function tokenContainerPieces(): { prefix: Uint8Array; mid: Uint8Array; suffix: Uint8Array } {
+  const master = Uint8Array.from({ length: 32 }, (_value, index) => index);
+  const token = Uint8Array.from({ length: 32 }, (_value, index) => 0x40 + index);
+  const covenant = scriptToBytecode(buildTokenContainerCovenantScript(master, token));
+  const masterDelim = Uint8Array.from([0x20, ...master.slice().reverse()]);
+  const tokenDelim = Uint8Array.from([0x20, ...token]);
+  const atMaster = splitOnDelimiter(covenant, masterDelim);
+  if (atMaster.length !== 2) throw new Error(`token container covenant has ${atMaster.length - 1} master categories`);
+  const atToken = splitOnDelimiter(atMaster[1], tokenDelim);
+  if (atToken.length !== 2) throw new Error(`token container covenant has ${atToken.length - 1} token categories`);
+  return { prefix: atMaster[0], mid: atToken[0], suffix: atToken[1] };
+}
+
 function splitOnDelimiter(bytes: Uint8Array, delim: Uint8Array): Uint8Array[] {
   const out: Uint8Array[] = [];
   let start = 0;
@@ -999,6 +1030,27 @@ class IdentifierUsageCollector extends AstTraversal {
   }
 }
 
+// The type of `this.f` as a value, as type checking assigns it (declared parameters only).
+function functionValueType(fn: FunctionDefinitionNode): FunctionType {
+  const stateMutability = fn.modifiers.includes(FunctionModifier.PAYABLE) ? 'payable'
+    : fn.modifiers.includes(FunctionModifier.PURE) ? 'pure'
+      : fn.modifiers.includes(FunctionModifier.VIEW) ? 'view' : 'nonpayable';
+  return new FunctionType(
+    fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).map((parameter) => parameter.type),
+    fn.returnTypes,
+    true,
+    stateMutability,
+  );
+}
+
+function containsFunctionType(type: Type, seen = new Set<StructType>()): boolean {
+  if (type instanceof FunctionType) return true;
+  if (type instanceof ArrayType) return containsFunctionType(type.elementType, seen);
+  if (!(type instanceof StructType) || seen.has(type)) return false;
+  seen.add(type);
+  return type.fields.some((field) => containsFunctionType(field.type, seen));
+}
+
 /**
  * How a compiler-constructed graph emission row becomes authenticated.
  *
@@ -1256,6 +1308,9 @@ const isAggregate = (type: unknown): boolean =>
 
 /** The name a batch derivation's emitted key is tracked under: its target and its position among that target's keys. */
 const framedBatchKeyName = (slot: number, keyIndex: number): string => `(framed_batch_key_${slot}_${keyIndex})`;
+
+/** A one-target conditional delete settled by its own site, not by the batch proof transition. */
+const CONDITIONAL_DELETE_ACTIVITY = '(conditional delete)';
 
 export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private locationData: FullLocationData = []; // detailed location data needed for sourcemap creation
@@ -2272,6 +2327,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // one "batch ran" flag gates whole-batch node preservation on the arm not taken: the direct epilogue, or a framed
   // master's batch transition.
   private conditionalSortedBatchFlags: Map<number, readonly number[]> = new Map();
+  // Flagged writes whose not-taken preservation the activity-settled batch verifier already emitted (DS-6).
+  private activityKeptWriteSlots: Set<number> = new Set();
   // Dynamic (chunk-backed) writes whose value+A$len slots were pushed before a conditional (branch/switch) with
   // the current value, so a conditionally-taken write replaces them in place (survives the branch) - by var name.
   private preAllocatedDynamicWrites: Set<string> = new Set();
@@ -3486,6 +3543,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const functionsById = new Map(allFunctions
       .filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn]));
     const indirect = this.functionReferenceIds(node.contract);
+    this.functionValuesNeverInvoked = !allFunctions.some((fn) => fn.body !== undefined
+      && this.containsIndirectCall(fn.body))
+      && !node.contract.stateVariables.some((variable) => containsFunctionType(variable.type))
+      && !node.contract.collections.some((collection) => containsFunctionType(collection.valueType));
     const indirectRecovery = allFunctions.find((fn) => fn.functionId !== undefined
       && indirect.has(fn.functionId)
       && Math.max(fn.recoveryEffectCount ?? 0, fn.ecrecoverCallCount ?? 0) > 0);
@@ -4713,6 +4774,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // numbers are exactly the low ones the single-byte pool is drawn from.
     const invokedFunctionIds = this.collectInvokedFunctionIds(node);
     this.invokedFunctionIdsCache = { node, ids: invokedFunctionIds };
+    const indirectIds = this.functionReferenceIds(node);
+    this.entryFunctionPointerTargets = contractFunctionsForIds
+      .filter((fn) => fn.isEntryPoint && fn.functionId !== undefined
+        && invokedFunctionIds.has(fn.functionId) && indirectIds.has(fn.functionId))
+      .map((fn) => ({ id: fn.functionId!, type: functionValueType(fn) }));
     for (const fn of contractFunctionsForIds) {
       if (fn.functionId === undefined) continue;
       if (fn.isEntryPoint && !invokedFunctionIds.has(fn.functionId)) continue;
@@ -5427,6 +5493,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Memo for the contract-level call, which visitContract and emitFunctionDefinesAndDispatch both need and which
   // walks the whole contract AST. Keyed on the node so a different contract never reads a stale set.
   private invokedFunctionIdsCache?: { node: Node; ids: Set<number> };
+  // Public/external functions OP_DEFINE'd under their own id: the only ids an entry-supplied pointer may name.
+  private entryFunctionPointerTargets?: Array<{ id: number; type: FunctionType }>;
+  // No body OP_INVOKEs a runtime function value and no state holds one: an entry-supplied id is never invoked.
+  private functionValuesNeverInvoked = false;
 
   // Several generation analyses ask for the same function body's direct invocation set. The AST is immutable for
   // the lifetime of this traversal, so retain completed top-level scans without sharing them across compilations.
@@ -6602,6 +6672,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
     subTraversal.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
     subTraversal.constructorParameterCount = 0; // sub-traversal has no constructor params
+    // The BoringMath lowering is decided on the contract traversal. A helper body is compiled here, so it
+    // must see the same set or it OP_INVOKEs a function whose OP_DEFINE this traversal omitted (ARITH-5).
+    subTraversal.nativeLegacyMathFunctions = this.nativeLegacyMathFunctions;
     subTraversal.userFunctionDefs = this.userFunctionDefs;
     subTraversal.isDefineSubTraversal = true;
     subTraversal.upgradeSignatureFenceIds = this.upgradeSignatureFenceIds;
@@ -6989,8 +7062,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
       subTraversal.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
       subTraversal.constructorParameterCount = 0; // no data pushes in sub-traversal output
+      // Entry bodies are compiled here, after the contract traversal skipped the BoringMath OP_DEFINE. Without
+      // this set the call still OP_INVOKEs that omitted id (ARITH-5: to64(2^64) never reaches the range check).
+      subTraversal.nativeLegacyMathFunctions = this.nativeLegacyMathFunctions;
       subTraversal.userFunctionDefs = this.userFunctionDefs;
       subTraversal.isDefineSubTraversal = false; // full entry-point compilation (removeFinalVerify + cleanStack)
+      subTraversal.entryFunctionPointerTargets = this.entryFunctionPointerTargets;
+      subTraversal.functionValuesNeverInvoked = this.functionValuesNeverInvoked;
       subTraversal.upgradeSignatureFenceIds = this.upgradeSignatureFenceIds;
       subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
       subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
@@ -8214,6 +8292,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.conditionalSortedWriteFlagSlots = new Set();
     this.framedSkippableSlots = new Set();
     this.conditionalSortedBatchFlags = new Map();
+    this.activityKeptWriteSlots = new Set();
     this.preAllocatedDynamicWrites = new Set();
     this.conditionalTransferIndices = new Set();
     this.conditionalEmitIndices = new Set();
@@ -8509,6 +8588,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     } else {
       node.parameters = this.visitList(node.parameters) as ParameterNode[];
+      if (this.compilerOptions.enforceFunctionParameterTypes) {
+        this.enforceCanonicalCompositeParameters(node);
+      }
+    }
+
+    // Discard an attacker-supplied chunk-base witness before any long write appends to it. The witness then
+    // accumulates every 35-byte value-chunk lock this function pins, and nothing else.
+    const chunkLockList = '__internal__valueChunkOutputBase';
+    if (!this.isDefineSubTraversal && this.getStackIndex(chunkLockList, true) >= 0) {
+      const clearLoc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+      this.emit(Op.OP_0, clearLoc);
+      this.emitReplace(this.getStackIndex(chunkLockList) + 1, node);
     }
 
     // An aggregate route can retain runtime-only values below its compiler-modelled frame. Capture the
@@ -9153,6 +9244,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }).__kernelReadCarrierAuthorizationBox;
       if (box) box.codegenMatchedKernelJournalDispositionCommitment = dispositionDigest;
     }
+    if (!this.isDefineSubTraversal && node.isEntryPoint) this.emitEntryFunctionIdChecks(node);
     this.refuseStaleSortedReads(node);
     node.body = this.visit(node.body) as BlockNode;
     this.emitRepeatedSortedUpsertLoopCensuses(node);
@@ -9610,6 +9702,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMintingNftUniqueness(node);
           this.emitDelegateSelfPreservation(node);
           this.emitDelegateMintingNftUniqueness(node);
+          // A delegate that writes entries or places a low-level call changes same-category outputs on purpose.
+          // Freezing every own-category commitment rejects those honest spends. A delegate that only touches
+          // proxy scalars still has to keep its own records.
+          if (!this.isCompilerMessageBusRoute(node)
+            && (node.entryAccesses?.length ?? 0) === 0 && (node.lowLevelCalls?.length ?? 0) === 0) {
+            this.emitDelegateOwnCategoryPreservation(node);
+          }
         } else if (isUpgrade) {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -9640,6 +9739,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
           this.emitDelegateSelfPreservation(node);
+          // A delegate that writes entries or places a low-level call changes same-category outputs on purpose.
+          // Freezing every own-category commitment rejects those honest spends. A delegate that only touches
+          // proxy scalars still has to keep its own records.
+          if (!this.isCompilerMessageBusRoute(node)
+            && (node.entryAccesses?.length ?? 0) === 0 && (node.lowLevelCalls?.length ?? 0) === 0) {
+            this.emitDelegateOwnCategoryPreservation(node);
+          }
         } else if (isUpgrade) {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -9674,6 +9780,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (skipRetirement) {
           this.emit(Op.OP_ENDIF, { location: node.body.location, positionHint: PositionHint.END });
         }
+      }
+      if (!this.framedMaster && !this.functionHasDelegatecall && isStatefulContract && unsafeTier === null
+        && !isSelfdestruct && !this.graphTransferFlagActive) {
+        this.emitSatoshiContainerAggregate({ location: node.body.location, positionHint: PositionHint.END });
+      }
+      if (!this.framedMaster && !this.functionHasDelegatecall && !this.currentFunctionIsDelegate
+        && isStatefulContract && unsafeTier === null && !isSelfdestruct) {
+        // A function that never names `tokens[...]` still has to keep every other container. Gating this scan
+        // on the function's own slots let `touch()` drain a fungible or NFT container.
+        this.emitForeignFungiblePreservation({ location: node.body.location, positionHint: PositionHint.END });
       }
       // SEC-10/SEC-11: an own-category IMMUTABLE (0x00) NFT output - what an event NFT is - may only sit at an
       // event block-layout offset (or the witnessed return-event index). Without this any spender mints forged
@@ -9864,6 +9980,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else if (effectiveType instanceof FixedType) {
       this.emit(Op.OP_PICK, loc);
       this.emitFixedBoundsCheck(effectiveType, loc);
+      this.emit(Op.OP_DROP, loc);
+    }
+  }
+
+  /**
+   * A struct or array parameter is one blob. Walk it with the same widths a later read uses and require the
+   * walk to end on an empty remainder. Runs as soon as the parameters are seeded, before a state read is pushed
+   * above them. A bytesN prefix other than its width would otherwise be stored, and the next field would start
+   * inside that payload.
+   */
+  private enforceCanonicalCompositeParameters(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    for (const parameter of node.parameters) {
+      const effectiveType = parameter.type instanceof ValueType ? parameter.type.underlyingType : parameter.type;
+      if (!(effectiveType instanceof StructType) && !(effectiveType instanceof ArrayType)) continue;
+      const stackIndex = this.getStackIndex(parameter.name);
+      this.emit(encodeInt(BigInt(stackIndex)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emitPushdataSkip(effectiveType, loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
       this.emit(Op.OP_DROP, loc);
     }
   }
@@ -11161,6 +11299,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const current = pending.pop()!;
       if (seen.has(current)) continue;
       seen.add(current);
+      if (current instanceof IndirectCallNode) return true;
       if (current instanceof FunctionCallNode && current.resolvedFunction?.functionId === undefined
         && current.identifier?.type instanceof FunctionType) return true;
       for (const key in current) {
@@ -12674,9 +12813,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitReplace(this.getStackIndex('(__iter_i)') + 1, node);
     this.popFromStack(); // pop the picked+incremented value after replace
 
-    // Continue loop (push false = 0)
-    this.emit(encodeBool(false), endLocationData);
-    this.pushToStack('(loop_continue)');
+    this.emitCollectionIterationStep(node, endLocationData);
 
     this.emit(Op.OP_ELSE, endLocationData);
 
@@ -12845,8 +12982,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitReplace(this.getStackIndex('(__iter_i)'), node);
     this.popFromStack();
 
-    this.emit(encodeBool(false), endLocationData);
-    this.pushToStack('(loop_continue)');
+    this.emitCollectionIterationStep(node, endLocationData);
     this.emit(Op.OP_ELSE, endLocationData);
     this.stack = [...stackBeforeBody];
     this.emit(encodeBool(true), endLocationData);
@@ -12909,6 +13045,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * inputIndex = OP_INPUTINDEX + blockLayout entry offset
    *            + sum(prior _collectionIterCount_0..N-1) + i
    */
+  /**
+   * Push the OP_UNTIL step for one collection-iteration element. A lowered `break` sets `breakFlagName`;
+   * once that bool is true the loop exits instead of walking the next entry. `continue` never reaches here:
+   * it only skips the rest of the element body.
+   */
+  private emitCollectionIterationStep(node: CollectionIterationNode, endLocationData: SingleLocationData): void {
+    if (node.breakFlagName) {
+      const flagIndex = this.getStackIndex(node.breakFlagName);
+      this.emit(encodeInt(BigInt(flagIndex)), endLocationData);
+      this.emit(Op.OP_PICK, endLocationData);
+      this.emit(Op.OP_IF, endLocationData);
+      this.emit(encodeBool(true), endLocationData);
+      this.emit(Op.OP_ELSE, endLocationData);
+      this.emit(encodeBool(false), endLocationData);
+      this.emit(Op.OP_ENDIF, endLocationData);
+    } else {
+      this.emit(encodeBool(false), endLocationData);
+    }
+    this.pushToStack('(loop_continue)');
+  }
+
   private emitCollectionIterInputIndex(iterIdx: number, locationData: SingleLocationData): void {
     // With 1:1 block layout, iteration entries start after the fixed block
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
@@ -13476,17 +13633,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.type instanceof FixedType && !node.isUnsafe) {
       this.emitFixedBoundsCheck(node.type, { location: node.location, positionHint: PositionHint.END });
     }
-    // Emit range check for int -> enum casts (Solidity checks the value is a valid enum member)
+    // Emit range check for int -> enum casts. `unchecked` disables arithmetic overflow, not this check:
+    // an out-of-range member is still not that enum.
     if (node.type instanceof EnumType && !node.isUnsafe) {
-      this.emitEnumBoundsCheck(node.type, { location: node.location, positionHint: PositionHint.END });
+      this.emitEnumBoundsCheck(node.type, { location: node.location, positionHint: PositionHint.END }, true);
     }
     return node;
   }
 
   // Verify a value cast to an enum is an actual member. Contiguous enums use a cheap range check; non-contiguous
   // ones (`enum E { A, B = 5 }`) would admit gap values with a range check, so verify exact membership instead.
-  private emitEnumBoundsCheck(type: EnumType, locationData: SingleLocationData): void {
-    if (this.uncheckedDepth > 0) return;
+  // `force` checks the member even inside `unchecked`. Casts and abi.decode both pass it.
+  private emitEnumBoundsCheck(type: EnumType, locationData: SingleLocationData, force = false): void {
+    if (!force && this.uncheckedDepth > 0) return;
     const values = type.members.map((m) => m.value);
     const min = values.reduce((a, b) => (b < a ? b : a), values[0]);
     const max = values.reduce((a, b) => (b > a ? b : a), values[0]);
@@ -13669,6 +13828,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(i + 1)), loc);
       this.emit(Op.OP_SWAP, loc);
     }
+    // Save the side-car index. The loop used to read only the unlocking, so a bare lock could carry the real
+    // covenant bytes and choose the digest. The index is consumed after the preimage bind, the same way the
+    // ecrecover loop compares that input's lock to the shared stateful keccak lock.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
     this.emit(Op.OP_INPUTBYTECODE, loc);            // [arg, ordinal?, U]
     if (!this.keccakLoopActive) this.emit(Op.OP_NIP, loc); // [arg, U]
     this.emitGenericPushdataDecode(raw, loc);       // [arg, pad, rest]
@@ -13700,15 +13864,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_TOALTSTACK, loc);
     this.emit(Op.OP_FROMALTSTACK, loc);
     dropFirst(3);                                   // strip redeem PUSHDATA2 prefix -> [redeem]
+    // The loop used to skip this. Hashing the covenant body each iteration is what blows the budget;
+    // this is one HASH256 of the redeem, and without it a bare lock replays the unlocking and picks the digest.
+    this.emitBindAltStackedRedeemLock(loc);
     dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH); // strip OP_PUSHBYTES_32 || salt(32) -> [covenant]
     // Absolute-forward reads (block-layout slot OR dynamic loop: input idx == output idx) use the STATEFUL covenant
     // (self-preserve via OP_INPUTINDEX); the count-relative stateless single/multi call uses offset-from-end.
     const absoluteForward = this.framedMaster || fn.blockLayout != null || this.keccakLoopActive
       || basisSlot !== undefined;
     if (this.keccakLoopActive) {
-      // Dynamic loop: compare the covenant bytecode DIRECTLY (it is a compile-time constant) instead of hashing it.
-      // Re-hashing the ~2.4KB covenant every iteration would blow the per-input hash-density budget (~5 iters); a
-      // byte compare has no hashing cost, lifting the loop's practical iteration cap.
+      // Dynamic loop: compare the revealed covenant bytes. Hashing the covenant each iteration blows the
+      // per-input hash budget. The revealed redeem is what the side-car lock commits to, including a
+      // category-branded stateful lock. A shared-lock compare rejects that honest side-car.
       this.emit(hexToBin(KECCAK256_COMPUTE_STATEFUL_COVENANT), loc);
     } else {
       this.emit(Op.OP_HASH256, loc);                // single/multi call: compare the 32-byte hash (tight script)
@@ -13956,7 +14123,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(ECRECOVER_COMPUTE_B_SHARED_LOCK, loc);
       this.emit(Op.OP_EQUALVERIFY, loc);                            // B integrity
     } else {
-      slotIdx('A'); this.emit(Op.OP_INPUTBYTECODE, loc);                 // [argBlob, U_A]
+      slotIdx('A');
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+      this.emit(Op.OP_INPUTBYTECODE, loc);                 // [argBlob, U_A]
       if (offCurveProof) {
         // An honest pad is zeros; one whose first word is not stands for the proof, answered after the projection.
         this.emitGenericPushdataDecode(raw, loc);                        // [argBlob, pad, restA]
@@ -13978,14 +14147,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_FROMALTSTACK, loc);                                // [rest2 = sharedBlob||aBlob||redeem]
       this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // drop sharedBlob
       this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // drop aBlob -> [redeempush]
-      dropFirst(3); dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantA
+      dropFirst(3);
+      this.emitBindAltStackedRedeemLock(loc);
+      dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantA
       this.emit(Op.OP_HASH256, loc);
       this.emit(hexToBin(ECRECOVER_COMPUTE_A_COVENANT_HASH), loc);
       this.emit(Op.OP_EQUALVERIFY, loc);                                // A integrity
       // 3. side-car B integrity (its unlock = <pad><argBlob><sharedBlob><Cblob><Zinv><redeem>)
-      slotIdx('B'); this.emit(Op.OP_INPUTBYTECODE, loc);                 // [U_B]
+      slotIdx('B');
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+      this.emit(Op.OP_INPUTBYTECODE, loc);                 // [U_B]
       for (let k = 0; k < 5; k++) { this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc); } // drop pad,argBlob,shared,C,Zinv
-      dropFirst(3); dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantB
+      dropFirst(3);
+      this.emitBindAltStackedRedeemLock(loc);
+      dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantB
       this.emit(Op.OP_HASH256, loc);
       this.emit(hexToBin(ECRECOVER_COMPUTE_B_COVENANT_HASH), loc);
       this.emit(Op.OP_EQUALVERIFY, loc);                                // B integrity
@@ -14012,7 +14187,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // (invalid transaction input index under compose). Loop counter PICKs previously compensated with extra=1;
       // with Q tracked, getStackIndex already accounts for it so extra stays 0.
       this.pushToStack('(value)'); // recovered Q stays live until compress(P) == Q
-      keccakIdx(false, 0); this.emit(Op.OP_INPUTBYTECODE, loc);    // [Q, U_k]
+      keccakIdx(false, 0);
+      if (!loop) { this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc); }
+      this.emit(Op.OP_INPUTBYTECODE, loc);    // [Q, U_k]
       this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);    // [Q, restK]  (drop the budget pad)
       if (statefulEvmKeccak) {
         // The recovery preimage is appended after all ordinary keccak calls and shares their 3-way batch. Decode
@@ -14057,7 +14234,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_EQUALVERIFY, loc);                                   // keccak integrity
       } else {
         this.emit(Op.OP_FROMALTSTACK, loc);                                  // [redeempush]
-        dropFirst(3); dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH);       // -> keccak covenant
+        dropFirst(3);
+        this.emitBindAltStackedRedeemLock(loc);
+        dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH);       // -> keccak covenant
         this.emit(Op.OP_HASH256, loc);
         this.emit(hexToBin(statefulEvmKeccak
           ? KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH : KECCAK256_COMPUTE_COVENANT_HASH), loc);
@@ -14219,6 +14398,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, // [n, idx, oracleCategory]
       ], loc);
       this.emitVerifyCatBaseEqMaster(loc, 2); // base(oracle category) == base(contract's own category) -> [n, idx]
+      // The category check accepts any own-category coin. The oracle address is the only one whose covenant
+      // is the (n -> hash) record, so the input's lock has to be that address.
+      this.emitBindBlockhashOracleLock(loc);
       this.emit([
         Op.OP_UTXOTOKENCOMMITMENT, encodeInt(4n), Op.OP_SPLIT, // [n, n4, hash32]
         Op.OP_SWAP, Op.OP_BIN2NUM, // [n, hash32, commitment.n]
@@ -14272,17 +14454,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const targetFunc = node.resolvedFunction;
     if (targetFunc && targetFunc.functionId !== undefined) {
       if (this.nativeLegacyMathFunctions.has(targetFunc) && node.parameters.length === 1) {
-        const cast = new CastNode(targetFunc.returnTypes[0], node.parameters[0], false);
-        cast.location = node.location;
-        return this.visitCast(cast);
+        // The wrapper's require is the check. An evmCompat narrowing cast truncates with OP_MOD and then
+        // the bounds check passes, so to64(2^64) would become 0 (ARITH-5). Reject the original value.
+        const savedUnchecked = this.uncheckedDepth;
+        this.uncheckedDepth = 0;
+        node.parameters[0] = this.visit(node.parameters[0]);
+        const returnType = targetFunc.returnTypes[0];
+        if (returnType instanceof IntType) {
+          this.emitDecodedNumericRangeCheck(returnType, {
+            location: node.location, positionHint: PositionHint.END,
+          });
+        }
+        this.uncheckedDepth = savedUnchecked;
+        return node;
       }
       if (this.nativeLegacyMathFunctions.has(targetFunc) && node.parameters.length === 2) {
+        const savedUnchecked = this.uncheckedDepth;
+        this.uncheckedDepth = 0;
         const operator = targetFunc.nativeCheckedMath === '+' ? BinaryOperator.PLUS
           : targetFunc.nativeCheckedMath === '-' ? BinaryOperator.MINUS : BinaryOperator.MUL;
         const binary = new BinaryOpNode(node.parameters[0], operator, node.parameters[1]);
         binary.location = node.location;
         binary.type = node.type;
-        return this.visitBinaryOp(binary);
+        const result = this.visitBinaryOp(binary);
+        this.uncheckedDepth = savedUnchecked;
+        return result;
       }
       return this.visitUserFunctionCall(node, targetFunc);
     }
@@ -14317,8 +14513,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     node.parameters = this.visitList(node.parameters);
 
-    // A direct upgrade's authorizing signature must sign all outputs, binding its replacement bytecode and minted
-    // data-NFT run; a message-bus upgrade fences its signatures in the route.
+    // A direct lifecycle signature must sign all outputs. A message-bus route fences its signatures in the route.
     if (node.identifier.name === GlobalFunction.CHECKSIG && this.fencesUpgradeSignatures()) {
       this.emitUpgradeSighashAllFence({ location: node.location, positionHint: PositionHint.END });
     }
@@ -14333,13 +14528,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
-  // Whether this body's transaction signatures must sign all outputs: a direct upgrade, or a subroutine one reaches.
-  // A message-bus upgrade fences its signatures in the route, and framed refuses upgrade entries.
+  // Whether this body's transaction signatures must sign all outputs: a direct upgrade, deploy, split, or merge,
+  // or a subroutine one of those reaches. A message-bus route fences its signatures in the route.
   private fencesUpgradeSignatures(): boolean {
     const fn = this.currentFunction;
     if (!fn || this.framedMaster || this.currentFunctionIsMessageBusRoute
       || fn.messageBusUpgradeRoute === true || fn.messageBusEligible === true) return false;
-    return fn.modifiers.includes(FunctionModifier.UPGRADE)
+    const lifecycle = fn.modifiers.includes(FunctionModifier.UPGRADE)
+      || fn.modifiers.includes(FunctionModifier.DEPLOY)
+      || fn.modifiers.includes(FunctionModifier.SPLIT)
+      || fn.modifiers.includes(FunctionModifier.MERGE);
+    return lifecycle
       || (this.isDefineSubTraversal && fn.functionId !== undefined && this.upgradeSignatureFenceIds.has(fn.functionId));
   }
 
@@ -16168,6 +16367,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
       this.pushToStack('(count)');
       this.pushToStack('(elements)');
+      // 0 <= start <= end <= count. The result count is end - start, so a larger end used to report phantom
+      // elements. [start, span, count, elements], elements on top.
+      this.emitFramedSliceBounds(locationData);
       this.emit(Op.OP_NIP, locationData); // [start, end - start, elements]
       this.removeFromStack(1); // the count of the source is not needed; the result count is end - start
       this.emit(Op.OP_ROT, locationData); // [end - start, elements, start]
@@ -16338,16 +16540,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // An imported Solidity address is one 20-byte identity carried in two physical forms (DECISIONS D13): a frame's
     // sender, origin and self and every stored address are full locks, while an evm-abi-v1 result decodes to the
     // identity. Comparing the bytes made a stored sender, read back through another contract's result, unequal to
-    // the `msg.sender` it was recorded from, so both operands are normalized to the identity first, as the kernel
-    // lane does (231810f30). The native language keeps its exact-byte address equality.
+    // the `msg.sender` it was recorded from, so both operands are normalized to the identity first. A 32-byte word
+    // is that identity only when its first 12 bytes are zero. The graph-call lane still takes the last 20 of a
+    // script hash; this comparison does not. The native language keeps its exact-byte address equality.
     if ((this.compilerOptions.evmCompat)
       && (node.operator === BinaryOperator.EQ || node.operator === BinaryOperator.NE)
       && node.left.type instanceof AddressType && node.right.type instanceof AddressType) {
       const identityLocation = { location: node.location, positionHint: PositionHint.END };
       node.left = this.visit(node.left);
-      this.emitGraphAddressIdentity(identityLocation);
+      for (const operation of compileAddressToEvmIdentity()) this.emit(operation, identityLocation);
       node.right = this.visit(node.right);
-      this.emitGraphAddressIdentity(identityLocation);
+      for (const operation of compileAddressToEvmIdentity()) this.emit(operation, identityLocation);
       this.emit(compileBinaryOp(node.operator, false), identityLocation);
       this.popFromStack(2);
       this.pushToStack('(value)');
@@ -16449,7 +16652,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Emit overflow/underflow check for bounded integer arithmetic. A left shift truncates instead, as in Solidity.
     if (node.type instanceof IntType) {
       if (node.operator === BinaryOperator.SHIFT_LEFT) this.emitShiftTruncation(node.type, locationData);
-      else this.emitIntBoundsCheck(node.type, locationData);
+      else {
+        if (node.yulWrapping) this.uncheckedDepth += 1;
+        this.emitIntBoundsCheck(node.type, locationData);
+        if (node.yulWrapping) this.uncheckedDepth -= 1;
+      }
     }
     // FixedType scale adjustments and bounds checks
     if (node.type instanceof FixedType) {
@@ -17111,6 +17318,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     //     Decrement counter, skip one element
     this.emit(Op.OP_1SUB, locationData);
     this.emit(Op.OP_SWAP, locationData);
+    // [counter, blob]. Skipping an empty blob used to invent a zero element, so a count past the real
+    // frames still succeeded. Each counted element has to be present.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_GREATERTHAN, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
     this.emitPushdataSkip(elemType, locationData);
     this.emit(Op.OP_SWAP, locationData);
     this.emit(encodeBool(false), locationData); // continue
@@ -17147,6 +17362,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitPushdataDecode(elemType, locationData);
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_NIP, locationData);
+  }
+
+  /** [start, span, count, elements] stays. Requires 0 <= start and start + span <= count. */
+  private emitFramedSliceBounds(loc: SingleLocationData): void {
+    this.emit(encodeInt(2n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(encodeInt(2n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
   }
 
   /** Split [elements_blob, index] into [encoded_prefix, element_and_suffix]. */
@@ -20812,6 +21050,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Decode each in order (the last word is the remaining blob). Pure-emit; the caller tracks the net effect.
   // Dynamic types (string / unbounded bytes) are not yet supported here.
   private emitEvmAbiDecode(schema: readonly Type[], loc: SingleLocationData): void {
+    // A longer remainder is not a uint256: BIN2NUM would accept a value above the word, and a short or
+    // zero-prefixed tail would be a second encoding of the same tuple. Every field this decoder reads is
+    // one word, so the blob is exactly 32*N bytes. A 32-byte word cannot exceed the 256-bit range.
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(BigInt(32 * schema.length)), loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
     for (let i = 0; i < schema.length; i += 1) {
       if (i === schema.length - 1) {
         this.emitEvmWordToValue(schema[i], loc); // the remaining blob is exactly the last 32-byte word
@@ -21446,6 +21690,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = 0; i < node.schema.length; i++) {
       this.pushToStack('(value)');
     }
+    this.emitProducedFunctionIdChecks(node, node.schema, 'abi.decode');
 
     return node;
   }
@@ -21478,7 +21723,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Stack tracking: pop 1 (blob), push 1 (value)
     this.popFromStack();
     this.pushToStack('(value)');
-
+    this.emitProducedFunctionIdChecks(node, [node.schema[node.index]], 'abi.decodeAt');
     return node;
   }
 
@@ -21637,7 +21882,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
       this.pushToStack('(value)');
     } else if (type instanceof BytesType && type.bound !== undefined && type.bound >= 2 && type.bound <= 75) {
-      // Fixed-size bytes (2-75): <N> OP_SWAP OP_CAT
+      // Fixed-size bytes (2-75): the raw value is N bytes, then `<N> OP_SWAP OP_CAT`.
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(encodeInt(BigInt(type.bound)), locationData);
+      this.emit(Op.OP_NUMEQUALVERIFY, locationData);
       this.emit(new Uint8Array([type.bound]), locationData);
       this.pushToStack('(value)');
       this.emit(Op.OP_SWAP, locationData);
@@ -21645,7 +21893,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
       this.pushToStack('(value)');
     } else if (type === PrimitiveType.PUBKEY) {
-      // pubkey is 33 bytes: <33> OP_SWAP OP_CAT
+      // pubkey is 33 raw bytes, then `<33> OP_SWAP OP_CAT`.
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(encodeInt(33n), locationData);
+      this.emit(Op.OP_NUMEQUALVERIFY, locationData);
       this.emit(new Uint8Array([33]), locationData);
       this.pushToStack('(value)');
       this.emit(Op.OP_SWAP, locationData);
@@ -21835,6 +22086,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(32n), locationData);
     this.emit(Op.OP_NUMEQUAL, locationData);
     this.emit(Op.OP_IF, locationData);
+    // Graph call targets are 32-byte script hashes, not ABI words. The last 20 bytes are the identity.
+    // Requiring a 12-zero prefix rejects those hashes. The cast path still requires the prefix.
     this.emit(encodeInt(12n), locationData);
     this.emit(Op.OP_SPLIT, locationData);
     this.emit(Op.OP_NIP, locationData);
@@ -21996,17 +22249,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUAL, locationData);
       this.emit(Op.OP_SWAP, locationData);
     } else if (type instanceof BytesType && type.bound !== undefined && type.bound >= 2 && type.bound <= 75) {
-      // Fixed-size bytes: skip 1-byte length prefix, then extract N bytes
-      this.emit(encodeInt(1n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_NIP, locationData); // drop length byte
+      // Fixed-size bytes: the prefix byte is the width, then exactly N data bytes.
+      this.emitExactPushPrefix(type.bound, locationData);
       this.emit(encodeInt(BigInt(type.bound)), locationData);
       this.emit(Op.OP_SPLIT, locationData);
     } else if (type === PrimitiveType.PUBKEY) {
-      // pubkey is 33 bytes: skip 1-byte length prefix, extract 33
-      this.emit(encodeInt(1n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_NIP, locationData);
+      // pubkey is 33 bytes: prefix byte 33, then exactly 33 data bytes.
+      this.emitExactPushPrefix(33, locationData);
       this.emit(encodeInt(33n), locationData);
       this.emit(Op.OP_SPLIT, locationData);
     } else {
@@ -22021,6 +22270,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after: [decoded_value]
    */
   private emitPushdataDecodeLastField(type: Type, locationData: SingleLocationData): void {
+    // A function pointer is its integer functionId on the wire, including when it is the last field.
+    if (type instanceof FunctionType) type = PrimitiveType.BIGINT;
     // StructType: take the remainder as-is (struct is always last)
     if (type instanceof StructType) {
       return; // blob on stack is already the struct
@@ -22035,19 +22286,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(new Uint8Array([0x51]), locationData);
       this.emit(Op.OP_EQUAL, locationData);
     } else if (type instanceof BytesType && type.bound !== undefined && type.bound >= 2 && type.bound <= 75) {
-      // Skip length prefix byte, rest is the data
-      this.emit(encodeInt(1n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_NIP, locationData);
+      // `<N> ++ N bytes`, and nothing after it. A longer tail is not a bytesN.
+      this.emitExactPushLastField(type.bound, locationData);
     } else if (type === PrimitiveType.PUBKEY) {
-      this.emit(encodeInt(1n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_NIP, locationData);
+      this.emitExactPushLastField(33, locationData);
     } else {
       // Generic: parse pushdata header, extract value, drop remainder (should be empty)
       this.emitGenericPushdataDecode(type, locationData);
       this.emit(Op.OP_DROP, locationData); // drop remainder (empty)
     }
+  }
+
+  /**
+   * Consume a direct push prefix and require it to name `width` bytes.
+   * Stack before: [blob] -> Stack after: [data_and_remainder]
+   */
+  private emitExactPushPrefix(width: number, locationData: SingleLocationData): void {
+    this.emit(encodeInt(1n), locationData);
+    this.emit(Op.OP_SPLIT, locationData); // [prefix, rest]
+    this.emit(Op.OP_SWAP, locationData); // [rest, prefix]
+    this.emit(new Uint8Array([width]), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+  }
+
+  /**
+   * Last field of a fixed push: the remainder is exactly `<width> ++ width bytes`.
+   * Stack before: [blob] -> Stack after: [width bytes]
+   */
+  private emitExactPushLastField(width: number, locationData: SingleLocationData): void {
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(encodeInt(BigInt(width + 1)), locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.emitExactPushPrefix(width, locationData);
   }
 
   /**
@@ -22151,6 +22421,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = 0; i < fieldIndex; i += 1) this.emitPushdataSkip(type.fields[i].type, locationData);
   }
 
+  /** `[blob]` -> `[after]`. The first byte must be `width`, and the next `width` bytes are the value. */
+  private emitVerifyFixedPushSkip(width: number, locationData: SingleLocationData): void {
+    this.emit(encodeInt(1n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(new Uint8Array([width]), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(encodeInt(BigInt(width)), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_NIP, locationData);
+  }
+
   private emitPushdataSkip(type: Type, locationData: SingleLocationData): void {
     if (type instanceof StructType || type instanceof ArrayType) {
       const key = type instanceof StructType
@@ -22178,15 +22460,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SPLIT, locationData);
       this.emit(Op.OP_NIP, locationData);
     } else if (type instanceof BytesType && type.bound !== undefined && type.bound >= 2 && type.bound <= 75) {
-      // Fixed-size bytes: always N+1 bytes (1 length byte + N data bytes)
-      this.emit(encodeInt(BigInt(type.bound + 1)), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_NIP, locationData);
+      // Prefix byte N, then N data bytes. Taking N+1 bytes from the front let a longer
+      // payload shift every field that follows it.
+      this.emitVerifyFixedPushSkip(type.bound, locationData);
     } else if (type === PrimitiveType.PUBKEY) {
-      // pubkey: 1+33 = 34 bytes
-      this.emit(encodeInt(34n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_NIP, locationData);
+      this.emitVerifyFixedPushSkip(33, locationData);
     } else {
       // Generic: parse pushdata header, skip the data
       this.emitGenericPushdataSkip(type, locationData);
@@ -22260,6 +22538,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack before: [value, remainder] -> Stack after: [value, remainder]
    */
   private emitPushdataDecodedBoundsCheck(type: Type, locationData: SingleLocationData): void {
+    if (type instanceof EnumType) {
+      // A decoded enum is a member even inside `unchecked`. The cast path keeps its own gate.
+      this.emit(Op.OP_SWAP, locationData); // [remainder, value]
+      this.emitEnumBoundsCheck(type, locationData, true);
+      this.emit(Op.OP_SWAP, locationData); // [value, remainder]
+      return;
+    }
     if (!(type instanceof IntType) && !(type instanceof FixedType)) return;
     this.emit(Op.OP_SWAP, locationData); // [remainder, value]
     this.emitDecodedNumericRangeCheck(type, locationData);
@@ -22274,7 +22559,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitGenericPushdataDecode(type: Type, locationData: SingleLocationData): void {
     this.bumpSubroutineUse(GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID);
     const isIntLike = type === PrimitiveType.INT || type === PrimitiveType.BIGINT
-      || type instanceof IntType || type instanceof FixedType;
+      || type instanceof IntType || type instanceof FixedType || type instanceof EnumType;
 
     // Use the shared OP_DEFINE subroutine when available. This helper is a pure data-stack
     // transformation and does not read the delegate proxy index off the altstack, so delegate
@@ -22813,7 +23098,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(external_out_collection_category)');
     this.emit(Op.OP_DUP, loc);
     this.pushToStack('(external_out_collection_address)');
-    this.emitSortedEntryAddress(computeCollectionHash(info.collectionSignature), loc);
+    this.emitEntryP2sh32(
+      computeCollectionHash(info.collectionSignature), loc, { output: '(external_out_collection_master)' },
+    );
     this.stack[0] = '(external_out_collection_address)';
 
     this.emitDefaultValue(loc, info.valueType);
@@ -23057,6 +23344,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
+    if (this.functionValuesNeverInvoked) return this.emitExternalFunctionCall(node);
+    const before = this.stack.length;
+    const result = this.emitExternalFunctionCall(node);
+    const types = node.opaqueReturn ? [] : node.callInfo?.returnTypes
+      ?? (node.type instanceof TupleType ? node.type.elements : node.type ? [node.type] : []);
+    this.emitProducedFunctionIdChecks(node, types, 'an external call\'s return', this.stack.length - before);
+    return result;
+  }
+
+  private emitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
     // A call folded into a deploy genesis is inert here - its effect is emitted by the deploy covenant.
     if (node.foldedIntoDeploy) return node;
     // A call an argument expression makes was already lowered into its own site for the call it feeds; visiting it
@@ -24656,7 +24953,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(external_out_dynamic_category)');
     this.emit(Op.OP_DUP, loc);
     this.pushToStack('(external_out_dynamic_address)');
-    this.emitSortedEntryAddress(chunkHash, loc);
+    this.emitEntryP2sh32(chunkHash, loc, { output: '(external_out_dynamic_master)' });
     this.stack[0] = '(external_out_dynamic_address)';
 
     // expected = ceil(length / DYNAMIC_CHUNK_SIZE); then initialize the scan. A dynamic state value keeps every
@@ -24802,30 +25099,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitCompatLowLevelCallPin(data, target, callInputParam, locationData);
       return;
     }
-    // Visit the data expression FIRST while the tracked stack is in a known
+    // Visit the target and the payload FIRST while the tracked stack is in a known
     // state.  Visiting after pushing untracked values (inputIndex, ubcode)
     // would cause getStackIndex to return wrong positions.
+    // A non-compat call still names a target. The payload check reads only the unlocking, so a bare-lock
+    // coin can satisfy it. Require that input's lock to be the target. An empty literal payload runs no
+    // callee, and the co-spent coin is not that target's lock.
+    const pinTarget = target !== undefined && !this.isEmptyLiteralPayload(data);
+    if (pinTarget) this.visit(target);
     this.visit(data);
-    this.popFromStack(); // untrack the data value (stays on real stack)
-    // Real stack: [..., data]  (1 untracked)
+    this.popFromStack(pinTarget ? 2 : 1); // untracked, left on the real stack
+    // Real stack: [..., target?, data]
 
     // Get call input index (1 untracked push). Prefer the runtime witness when present so a multi-UTXO
     // callee band can sit after the caller's trailing resources (dynamic chunks / vmap batch preds).
     // Fall back to the fixed block-layout slot only for legacy artifacts that still publish one.
     //
-    // `data` sits untracked on the real stack (1 deep), so OP_PICK depth is trackedIndex + 1.
+    // `data` (and maybe `target`) sit untracked on the real stack, so OP_PICK depth adds that many.
+    const untracked = pinTarget ? 2 : 1;
     const paramName = this.lowLevelCallCount === 1
       ? '__internal__callInputIndex' : `__internal__callInputIndex${callIndex}`;
     const paramIdx = this.getStackIndex(paramName, true);
     if (paramIdx >= 0) {
-      this.emit(encodeInt(BigInt(paramIdx + 1)), locationData);
+      this.emit(encodeInt(BigInt(paramIdx + untracked)), locationData);
       this.emit(Op.OP_PICK, locationData);
     } else if (this.currentFunction.blockLayout) {
       this.emitBlockSlotIndex('lowLevelCall', callIndex, locationData);
     } else {
       throw new Error(`Low-level call index parameter '${paramName}' is missing from the stack`);
     }
-    // Real stack: [..., data, inputIdx]
+    // Real stack: [..., target?, data, inputIdx]
+    if (pinTarget) {
+      // [target, data, idx, lock] must equal target. Depth 3 is target.
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(Op.OP_UTXOBYTECODE, locationData);
+      this.emit(encodeInt(3n), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.emit(Op.OP_ROT, locationData);
+      this.emit(Op.OP_DROP, locationData); // [data, idx]
+    }
 
     // Read target's unlocking bytecode
     this.emit(Op.OP_INPUTBYTECODE, locationData);
@@ -25594,6 +25907,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /**
+   * An integer mapping key is hashed from the raw parameter bytes. `OP_NUM2BIN` in the bounds check accepts a
+   * non-minimal encoding, so `5` and `0x0500` would otherwise land in different slots. Require the bytes to
+   * already be the minimal script number before they are hashed. Stack unchanged.
+   */
+  private emitMinimalIntegerKey(type: Type | undefined, loc: SingleLocationData): void {
+    // Solidity ABI words are 32-byte big-endian. They are not minimal script numbers, and the evmCompat
+    // key hash is defined on those words. The minimal-encoding pin is for native script-number keys.
+    if (this.compilerOptions.evmCompat) return;
+    let current = type;
+    while (current instanceof ValueType) current = current.underlyingType;
+    const integer = current instanceof IntType || current === PrimitiveType.INT || current === PrimitiveType.BIGINT;
+    if (!integer) return;
+    // DUP BIN2NUM EQUALVERIFY would consume the key. OVER keeps it: [key, num, key] then EQUALVERIFY.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+  }
+
   /** Normalize a typed Solidity mapping key without changing its stack depth. */
   private emitMappingKeyIdentity(type: Type | undefined, loc: SingleLocationData): void {
     while (type instanceof ValueType) type = type.underlyingType;
@@ -25670,6 +26003,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         node.keys[i] = this.visit(node.keys[i]); // pushes + tracks the key value on top
       }
       this.emitMappingKeyIdentity(node.collection?.allKeyTypes[i] ?? keyNode.type, loc);
+      this.emitMinimalIntegerKey(node.collection?.allKeyTypes[i] ?? keyNode.type, loc);
       this.emit(Op.OP_SHA256, loc);            // H(key_i) - the top tracked item is now H(key_i)
       if (i > 0) {
         this.emit(Op.OP_CAT, loc);             // acc(below) ++ H(key_i)(top) -> the new accumulator on top
@@ -26256,6 +26590,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(vc_chunkaddr)');
     this.emitValueChunkP2sh32(chunkHash, '(vc_slot)', '(vc_digest)', loc);
     this.stack[0] = '(vc_chunkaddr)'; // the helper renamed the top to '(value)'
+    // Append this lock to the chunk-base witness. The first long write replaces the cleared witness.
+    // A later long write concatenates, so every lock stays admitted. A new stack slot would shift the
+    // fixed depths of the entry-output commitment check.
+    const chunkBase = '__internal__valueChunkOutputBase';
+    if (this.getStackIndex(chunkBase, true) >= 0) {
+      const bottom = this.stack.length - this.getStackIndex(chunkBase);
+      this.emit(encodeInt(BigInt(this.getStackIndex(chunkBase))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(35n), loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(encodeInt(35n), loc);
+      this.emit(Op.OP_MOD, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_NUMEQUAL, loc);
+      this.emit(Op.OP_BOOLAND, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex('(vc_chunkaddr)') + 1)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_CAT, loc);
+      this.emitReplaceAtBottomOrdinal(bottom, loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex('(vc_chunkaddr)'))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emitReplaceAtBottomOrdinal(bottom, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
 
     this.emit(encodeInt(BigInt(this.getStackIndex(vName))), loc);
     this.emit(Op.OP_PICK, loc);
@@ -27315,6 +27681,124 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * the reads between them, so the mark counts as the write, under the key `-1 - slot`, with the dirty flag as the
    * value that says at run time whether it ran.
    */
+  /**
+   * A function value an entry point receives is a caller-chosen OP_INVOKE id. Pin it to this contract's
+   * public and external functions of the parameter's type. Ids nested in a struct stay refused. A contract
+   * that never invokes a function value needs no check.
+   */
+  private emitEntryFunctionIdChecks(node: FunctionDefinitionNode): void {
+    const params = node.parameters.filter((param) => containsFunctionType(param.type));
+    if (params.length === 0 || !node.body || this.functionValuesNeverInvoked) return;
+    const usage = new IdentifierUsageCollector();
+    usage.visit(node.body);
+    for (const param of params) {
+      if (!usage.names.has(param.name)) continue;
+      const elementType = param.type instanceof ArrayType ? param.type.elementType : undefined;
+      const fnType = param.type instanceof FunctionType ? param.type
+        : elementType instanceof FunctionType ? elementType : undefined;
+      const loc: SingleLocationData = { location: param.location ?? node.location, positionHint: PositionHint.START };
+      if (!fnType) {
+        throw new UncheckedFunctionIdParameterError(param, param.name,
+          'carries function ids inside a struct or nested array, which cannot be validated at entry');
+      }
+      const ids = (this.entryFunctionPointerTargets ?? [])
+        .filter((target) => implicitlyCastable(target.type, fnType))
+        .map((target) => BigInt(target.id));
+      if (ids.length === 0 && node.name === '__construct') {
+        this.emit(encodeBool(false), loc);
+        this.emit(Op.OP_VERIFY, loc);
+        continue;
+      }
+      if (ids.length === 0) {
+        throw new UncheckedFunctionIdParameterError(param, param.name, 'can only name this contract\'s '
+          + `public or external functions of type ${fnType.toString()}, and none is invocable by id`);
+      }
+      this.emit(encodeInt(BigInt(this.getStackIndex(param.name))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(function_id)');
+      if (fnType === param.type) {
+        this.emitFunctionIdMembershipVerify(ids, loc);
+      } else {
+        this.emitPushdataDecode(PrimitiveType.BIGINT, loc);
+        this.emit(Op.OP_NIP, loc);
+        this.emit(Op.OP_BEGIN, loc);
+        this.emit(Op.OP_SIZE, loc);
+        this.emit(Op.OP_0NOTEQUAL, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emitPushdataDecode(fnType, loc);
+        this.emit(Op.OP_SWAP, loc);
+        this.emitFunctionIdMembershipVerify(ids, loc);
+        this.emit(encodeBool(false), loc);
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(encodeBool(true), loc);
+        this.emit(Op.OP_ENDIF, loc);
+        this.emit(Op.OP_UNTIL, loc);
+        this.emit(Op.OP_DROP, loc);
+      }
+      this.popFromStack();
+    }
+  }
+
+  /** Consume the id on top; fail unless its bytes equal one of `ids`. */
+  private emitFunctionIdMembershipVerify(ids: bigint[], loc: SingleLocationData): void {
+    if (ids.length === 1) {
+      this.emit(encodeInt(ids[0]), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      return;
+    }
+    ids.forEach((id, index) => {
+      const last = index === ids.length - 1;
+      if (!last) this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(id), loc);
+      this.emit(Op.OP_EQUAL, loc);
+      if (last) {
+        this.emit(Op.OP_BOOLOR, loc);
+        this.emit(Op.OP_VERIFY, loc);
+        return;
+      }
+      if (index > 0) {
+        this.emit(Op.OP_ROT, loc);
+        this.emit(Op.OP_BOOLOR, loc);
+      }
+      this.emit(Op.OP_SWAP, loc);
+    });
+  }
+
+  /**
+   * Values an abi.decode or an external call produces are as caller-chosen as an entry parameter. Pin each
+   * function value among the `types.length` values on top to the entry allowlist.
+   */
+  private emitProducedFunctionIdChecks(
+    node: Node, types: readonly Type[], source: string, produced = types.length,
+  ): void {
+    if (this.functionValuesNeverInvoked || !types.some((type) => containsFunctionType(type))) return;
+    if (produced === 0) return;
+    if (produced !== types.length || this.stack.slice(0, types.length).some((name) => name !== '(value)')) {
+      throw new UncheckedFunctionIdValueError(node, source, 'is not left on the stack where it can be validated');
+    }
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
+    types.forEach((type, index) => {
+      if (!containsFunctionType(type)) return;
+      if (!(type instanceof FunctionType)) {
+        throw new UncheckedFunctionIdValueError(node, source,
+          'is carried inside an array or struct, which cannot be validated where it is produced');
+      }
+      const ids = (this.entryFunctionPointerTargets ?? [])
+        .filter((target) => implicitlyCastable(target.type, type))
+        .map((target) => BigInt(target.id));
+      if (ids.length === 0) {
+        this.emit(encodeBool(false), loc);
+        this.emit(Op.OP_VERIFY, loc);
+        return;
+      }
+      this.emit(encodeInt(BigInt(types.length - 1 - index)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(function_id)');
+      this.emitFunctionIdMembershipVerify(ids, loc);
+      this.popFromStack();
+    });
+  }
+
   private refuseStaleSortedReads(fn: FunctionDefinitionNode): void {
     this.sortedKeptWrites = new WeakSet();
     this.sortedServedReads = new WeakSet();
@@ -29056,10 +29540,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Verify an atomic fixed-write vmap transition using only stack-neutral, freshly-introspected fields. Keeping no
    * parsed commitment fields across checks avoids coupling this verifier to the body's tracked-stack lifetime.
    */
+  /**
+   * A direct body whose conditional deletes each own a one-target sorted batch. Its batches settle by what ran.
+   * The old guard compared a spender-chosen input commitment with a spender-chosen slot witness and, when that
+   * failed, skipped every batch check and every collection count.
+   */
+  private settlesSortedTargetsByActivity(node: FunctionDefinitionNode): boolean {
+    if (!this.directConvention || this.framedMaster || this.readsRecordsFromFrame
+      || this.isCompilerMessageBusRoute(node)) return false;
+    const batches = node.sortedBatchInfo ?? [];
+    const deletes = (node.blockLayout?.slots ?? []).flatMap((slot) => (
+      slot.kind === 'entry' && slot.softDelete && slot.slotIndex !== undefined
+        && batches.some((batch) => batch.slotIndices.includes(slot.slotIndex!))
+        ? [slot.slotIndex] : []));
+    return deletes.length > 0 && deletes.every((slot) => batches.some((batch) => (
+      batch.slotIndices.length === 1 && batch.slotIndices[0] === slot)));
+  }
+
+  /** An activity-settled target's settlement: its delete site, its write flag, or the plain transition. */
+  private sortedTargetActivity(slot: number): string | undefined {
+    if (this.condDeleteSlots.has(slot)) return CONDITIONAL_DELETE_ACTIVITY;
+    const flag = GenerateTargetTraversalWithLocation.condSortedWriteFlagName(slot);
+    return this.conditionalSortedWriteFlagSlots.has(slot) && this.getStackIndex(flag, true) >= 0 ? flag : undefined;
+  }
+
   private emitGuardedSortedBatchTransitionVerification(node: FunctionDefinitionNode): void {
     const targets = new Set(node.sortedBatchInfo!.flatMap((batch) => batch.slotIndices));
-    const guard = [...targets].every((slot) => node.blockLayout?.slots.some(
-      (layout) => layout.kind === 'entry' && layout.slotIndex === slot && layout.conditional,
+    // An activity-settled body runs every check. The guard's two inputs are both the spender's.
+    const guard = !this.settlesSortedTargetsByActivity(node) && [...targets].every((slot) => (
+      node.blockLayout?.slots.some((layout) => layout.kind === 'entry' && layout.slotIndex === slot && layout.conditional)
     )) ? node.blockLayout?.slots.find((layout) => layout.kind === 'entry' && layout.softDelete) : undefined;
     const loc = { location: node.location, positionHint: PositionHint.END } as SingleLocationData;
     this.restoreVMapWitnessSnapshots(node, loc);
@@ -30160,6 +30669,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const batch of node.sortedBatchInfo ?? []) {
       const collectionHash = computeCollectionHash(this.entrySlots[batch.slotIndices[0]].collectionSignature);
       const targets = batch.slotIndices;
+      const activity = this.settlesSortedTargetsByActivity(node) && targets.length === 1
+        ? this.sortedTargetActivity(targets[0]) : undefined;
       const aliasWrite = targets.find((slot) => {
         const owner = this.entrySlots[slot]?.aliasCondDeleteSlot;
         return owner !== undefined && targets.includes(owner);
@@ -30181,8 +30692,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         bin(Op.OP_NUMEQUAL); bin(Op.OP_EQUALVERIFY);
       } else if (targets.length === 1 && this.readsRecordsFromFrame) {
         this.emitFramedSingleTargetTransition(targets[0], collectionHash, loc);
+      } else if (targets.length === 1 && activity === CONDITIONAL_DELETE_ACTIVITY) {
+        // The delete site binds the slot witness to the key and the input to the collection address when the
+        // delete runs. The soft-delete close checks the output either way. Counting happens below, from the
+        // input's lock, so a plain input cannot mint a node by switching the old guard off.
       } else if (targets.length === 1) {
         const slot = targets[0];
+        const writeFlag = activity !== undefined;
+        if (writeFlag) {
+          // A write that ran takes the transition. One that did not keeps the node it spent.
+          this.emit(encodeInt(BigInt(this.getStackIndex(activity!))), loc);
+          bin(Op.OP_PICK);
+          bin(Op.OP_IF);
+          arg(`__internal__vmapBatchPredOut_${slot}`);
+          this.emit(encodeInt(-2n), loc);
+          bin(Op.OP_NUMNOTEQUAL);
+          bin(Op.OP_VERIFY);
+        }
+        // -2 is the inactive-row sentinel of a message-bus route. A direct function has no such row, and
+        // accepting it skipped the transition, so the spender could mint or rewrite any node.
+        // -2 stays valid on a delegate: a direct delegate build of a runtime loop uses it for an
+        // inactive iteration. A plain direct function has no such row.
+        if (!this.isCompilerMessageBusRoute() && !this.currentFunctionIsDelegate) {
+          arg(`__internal__vmapBatchPredOut_${slot}`);
+          this.emit(encodeInt(-2n), loc);
+          bin(Op.OP_NUMNOTEQUAL);
+          bin(Op.OP_VERIFY);
+        }
         const directProofField = (field: 'slot' | 'next' | 'value', extra = 0): void => {
           commitmentField(() => {
             proofIndex(slot, extra);
@@ -30216,6 +30752,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
         bin(Op.OP_ENDIF);
         bin(Op.OP_ENDIF);
+        if (writeFlag) {
+          bin(Op.OP_ELSE);
+          this.emitEntryPreservationBody(slot, loc);
+          bin(Op.OP_ENDIF);
+          this.activityKeptWriteSlots.add(slot);
+        }
       } else if (batch.linear && targets.length === 2) {
         // For two fixed targets, the two authenticated slot hashes themselves define the complete sorted row
         // order. The rank permutation and packed row witness used by larger batches add no information here.
@@ -30604,15 +31146,70 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // is one recreated non-target predecessor. Read-only accesses to this collection are preserved separately.
       // A direct singleton and a linear two-target batch have no inactive/alias (-2) rows; nonlinear batches keep the
       // general sentinel and duplicate accounting below.
-      const directSmallCensus = (targets.length === 1 || (targets.length === 2 && batch.linear === true))
+      const readSlots = this.entrySlots.flatMap((info, i) => (info.collection === batch.collection
+        && !targets.includes(i) && !info.operations.includes('write')
+        && !info.operations.includes('delete') ? [i] : []));
+      // A pure read's fixed input is never a target's proof input: the census would count that input twice.
+      // Routes are included: a route proof index is the same spender-chosen offset.
+      if (this.directConvention && activity !== CONDITIONAL_DELETE_ACTIVITY) {
+        for (const read of readSlots) {
+          for (const target of targets) {
+            this.emitFixedEntryInputIndex(read, loc);
+            this.pushToStack('(read_input)');
+            proofIndex(target);
+            bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_VERIFY);
+            this.popFromStack();
+          }
+        }
+      }
+      const directSmallCensus = activity === undefined
+        && (targets.length === 1 || (targets.length === 2 && batch.linear === true))
         && aliasWrite === undefined && this.directConvention
         && !this.isCompilerMessageBusRoute(node)
         && !runtimeCollections.has(batch.collection)
-        && !this.entrySlots.some((info, i) => info.collection === batch.collection
-          && !targets.includes(i) && !info.operations.includes('write')
-          && !info.operations.includes('delete'));
+        && readSlots.length === 0;
+      const addr = `(__vmap_batch_addr_${batch.collection})`;
+      const pushAddr = (): void => {
+        this.emitMasterInputIndex(loc); bin(Op.OP_UTXOTOKENCATEGORY);
+        this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
+        this.pushToStack(addr);
+        this.emitSortedEntryAddress(collectionHash, loc);
+        this.stack[0] = addr;
+      };
+      // A read that did not run never pinned its input. Count a pure-read slot only at the entry address.
+      const readSlotIsNode = (slot: number): void => {
+        this.emitFixedEntryInputIndex(slot, loc); bin(Op.OP_UTXOBYTECODE);
+        if (this.isCompilerMessageBusRoute()) {
+          this.emit(encodeInt(BigInt(this.getStackIndex(addr) + 1)), loc); bin(Op.OP_PICK);
+        } else this.emitPickTrackedFromBottom(addr, loc);
+        bin(Op.OP_EQUAL);
+      };
+      // A conditional delete counts the node its input actually is. A flagged write counts its transition where
+      // the write ran and the kept node otherwise. Neither count is the spender's predOut witness.
+      const countByActivity = (outputs: boolean): void => {
+        if (activity === CONDITIONAL_DELETE_ACTIVITY) {
+          readSlotIsNode(targets[0]);
+          return;
+        }
+        this.emit(encodeInt(BigInt(this.getStackIndex(activity!))), loc);
+        bin(Op.OP_PICK);
+        bin(Op.OP_IF);
+        if (outputs) {
+          arg(`__internal__vmapBatchPredOut_${targets[0]}`);
+          bin(Op.OP_0); bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_1ADD);
+        } else {
+          arg(`__internal__vmapBatchProof_${targets[0]}`);
+          bin(Op.OP_0); bin(Op.OP_GREATERTHAN);
+        }
+        bin(Op.OP_ELSE);
+        readSlotIsNode(targets[0]);
+        bin(Op.OP_ENDIF);
+      };
+      if (readSlots.length > 0 || activity !== undefined) pushAddr();
       const expected = `(__vmap_batch_expected_${batch.collection})`;
-      if (directSmallCensus) {
+      if (activity !== undefined) {
+        countByActivity(true);
+      } else if (directSmallCensus) {
         // Every active write contributes one output and each nonnegative predOut one recreated predecessor.
         for (const slot of targets) {
           arg(`__internal__vmapBatchPredOut_${slot}`);
@@ -30652,7 +31249,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitPickVMapWitness(vmapRuntimeOutputCountName(batch.collection), loc);
         this.emit(Op.OP_ADD, loc);
       }
-      for (let i = 0; !directSmallCensus && i < targets.length; i++) {
+      for (let i = 0; !directSmallCensus && activity === undefined && i < targets.length; i++) {
         const slot = targets[i];
         arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP);
         bin(Op.OP_0); bin(Op.OP_GREATERTHANOREQUAL); // [pout, include]
@@ -30668,11 +31265,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           replaceNamed(expected);
         }
       }
-      for (let i = 0; i < this.entrySlots.length; i++) {
-        const info = this.entrySlots[i];
-        if (info.collection !== batch.collection || targets.includes(i)
-          || info.operations.includes('write') || info.operations.includes('delete')) continue;
-        this.emitSlotExistsCheck('entry', i, loc);
+      for (const slot of readSlots) {
+        readSlotIsNode(slot);
         if (linearRoute) addParked();
         else {
           arg(expected, 1); bin(Op.OP_ADD);
@@ -30681,7 +31275,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       const inputExpected = `(__vmap_batch_input_expected_${batch.collection})`;
-      if (directSmallCensus) {
+      if (activity !== undefined) {
+        countByActivity(false);
+      } else if (directSmallCensus) {
         arg(`__internal__vmapBatchProof_${targets[0]}`);
         if (targets.length === 1) {
           bin(Op.OP_0); bin(Op.OP_GREATERTHAN);
@@ -30701,7 +31297,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(0n), loc);
       }
       this.pushToStack(inputExpected);
-      for (let i = 0; !directSmallCensus && i < targets.length; i++) {
+      for (let i = 0; !directSmallCensus && activity === undefined && i < targets.length; i++) {
         const slot = targets[i];
         arg(`__internal__vmapBatchProof_${slot}`); bin(Op.OP_DUP);
         bin(Op.OP_0); bin(Op.OP_GREATERTHAN); // [proof, include]
@@ -30717,11 +31313,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           replaceNamed(inputExpected);
         }
       }
-      for (let i = 0; i < this.entrySlots.length; i++) {
-        const info = this.entrySlots[i];
-        if (info.collection !== batch.collection || targets.includes(i)
-          || info.operations.includes('write') || info.operations.includes('delete')) continue;
-        this.emitSlotExistsCheck('entry', i, loc);
+      for (const slot of readSlots) {
+        readSlotIsNode(slot);
         if (linearRoute) addParked();
         else {
           arg(inputExpected, 1); bin(Op.OP_ADD);
@@ -30735,12 +31328,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         cardinalityScanned.add(batch.collection);
       }
 
-      const addr = `(__vmap_batch_addr_${batch.collection})`;
-      this.emitMasterInputIndex(loc); bin(Op.OP_UTXOTOKENCATEGORY);
-      this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
-      this.pushToStack(addr);
-      this.emitSortedEntryAddress(collectionHash, loc);
-      this.stack[0] = addr;
+      if (readSlots.length === 0 && activity === undefined) pushAddr();
       const countOpts = linearRoute ? { expectedOnAltstack: true } : undefined;
       this.emitVerifyChunkUtxoCount(inputExpected, false, loc, addr, countOpts);
       this.emitVerifyChunkUtxoCount(expected, true, loc, addr, countOpts);
@@ -36791,10 +37379,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_OUTPUTBYTECODE, loc);
         if (this.currentFunctionIsDelegate) {
           this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', loc);
+          this.emit(Op.OP_DUP, loc);
+          this.emit(Op.OP_UTXOBYTECODE, loc);
+          this.emit(Op.OP_SWAP, loc);
           this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
           this.emitTakeFirst32(loc);
           this.pushToStack('(dyn_chunkaddr_check)');
-          this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, chunkHash), loc);
+          this.emitEntryP2sh32(chunkHash, loc, 'under');
           this.popFromStack();
         } else {
           // One more untracked item (the band coordinate) sits above the address when the declared index is on top.
@@ -36852,10 +37443,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       if (this.currentFunctionIsDelegate) {
         this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', loc);
+        this.emit(Op.OP_DUP, loc);
+        this.emit(Op.OP_UTXOBYTECODE, loc);
+        this.emit(Op.OP_SWAP, loc);
         this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
         this.emitTakeFirst32(loc);
         this.pushToStack('(dyn_chunkaddr)');
-        this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, chunkHash), loc);
+        this.emitEntryP2sh32(chunkHash, loc, 'under');
         this.stack[0] = '(dyn_chunkaddr)';
       }
 
@@ -38204,6 +38798,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.untrackFrameOperand();
       return;
     }
+    // The direct path used to require only that the input lock equal the output lock, so a forged
+    // own-category NFT at any other lock was read as the data record. Hold the input to the data-NFT covenant.
+    // The output comparison below then holds the output to the same lock.
+    // A delegate's master is the proxy, whose redeem may be a single OP_1. The covenant binds that lock,
+    // so the same shape cannot authorize a different contract's record.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack('(datanft_cat)');
+    this.emitDataNftLbc(loc, true);
+    this.stack[0] = '(datanft_lock)';
+    emitIndex('in');
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(datanft_lock)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
     emitIndex('in');
     this.emit(Op.OP_UTXOBYTECODE, loc);
     this.trackFrameOperand();
@@ -39561,9 +40176,199 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The data NFT covenant script has 4 category embeddings:
    * segment0 + 0x20 + cat + segment1 + 0x20 + cat + segment2 + 0x20 + cat + segment3 + 0x20 + cat + segment4
    */
-  private emitDataNftLbc(locationData: SingleLocationData): void {
+  /**
+   * Hash a covenant whose placeholders are already encoded on the stack.
+   * `stackOrder` is bottom-to-top. A constant token is emitted as its push, including the length opcode.
+   * Stack before: encoded placeholders. Stack after: the P2SH32 locking bytecode.
+   */
+  private emitBoundCovenantP2sh32(
+    covenant: Uint8Array,
+    markers: ReadonlyArray<{ token: string; bytes: Uint8Array }>,
+    stackOrder: readonly string[],
+    constants: Readonly<Record<string, Uint8Array>>,
+    locationData: SingleLocationData,
+  ): void {
+    type Piece = { segment: Uint8Array; token?: string };
+    const pieces: Piece[] = [];
+    let cursor = 0;
+    const matches = (at: number, needle: Uint8Array): boolean => at + needle.length <= covenant.length
+      && needle.every((byte, index) => covenant[at + index] === byte);
+    while (cursor < covenant.length) {
+      let found = -1;
+      let token: string | undefined;
+      let width = 0;
+      for (let at = cursor; at < covenant.length && found < 0; at++) {
+        for (const marker of markers) {
+          if (!matches(at, marker.bytes)) continue;
+          found = at;
+          token = marker.token;
+          width = marker.bytes.length;
+          break;
+        }
+      }
+      if (found < 0) {
+        pieces.push({ segment: covenant.slice(cursor) });
+        break;
+      }
+      pieces.push({ segment: covenant.slice(cursor, found), token });
+      cursor = found + width;
+    }
+    for (const name of new Set([...stackOrder, ...Object.keys(constants)])) {
+      if (!pieces.some((piece) => piece.token === name)) {
+        throw new Error(`covenant splice is missing ${name}`);
+      }
+    }
+    const first = pieces[0]?.segment ?? new Uint8Array();
+    if (first.length > 0) this.emit(first, locationData);
+    for (let index = 0; index < pieces.length; index++) {
+      const piece = pieces[index];
+      if (!piece.token) continue;
+      const constant = constants[piece.token];
+      if (constant !== undefined) this.emit(constant, locationData);
+      else {
+        const depth = stackOrder.length - stackOrder.indexOf(piece.token);
+        this.emit(encodeInt(BigInt(depth)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+      }
+      this.emit(Op.OP_CAT, locationData);
+      const following = pieces[index + 1]?.segment ?? new Uint8Array();
+      if (following.length > 0) {
+        this.emit(following, locationData);
+        this.emit(Op.OP_CAT, locationData);
+      }
+    }
+    for (let count = 0; count < stackOrder.length; count++) this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_HASH256, locationData);
+    this.emit(P2SH32_LBC_PREFIX, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(P2SH32_LBC_SUFFIX, locationData);
+    this.emit(Op.OP_CAT, locationData);
+  }
+
+  /** `[rawLock, rawCategory]` -> `[encLock, encCategory]`. Both items are untracked by this helper. */
+  private encodeLockAndCategory(locationData: SingleLocationData): void {
+    this.emit(hexToBin('20'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(hexToBin('23'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+  }
+
+  private emitDataNftLbc(locationData: SingleLocationData, bindMasterLock = false): void {
     // Auto-derived from buildDataNftCovenantScript so this mirror can never drift from state.ts.
-    this.emitP2sh32FromCovenant(buildDataNftCovenantScript, locationData);
+    if (!bindMasterLock) {
+      this.emitP2sh32FromCovenant(buildDataNftCovenantScript, locationData);
+      return;
+    }
+    // Real stack: [masterLock, category]. The lock is the untracked item under the tracked category.
+    const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_v, i) => i);
+    const lockPlaceholder = Uint8Array.from({ length: 35 }, (_v, i) => 0x80 + i);
+    const covenant = scriptToBytecode(buildDataNftCovenantScript(categoryPlaceholder, lockPlaceholder));
+    const categoryDelim = Uint8Array.from([0x20, ...categoryPlaceholder.slice().reverse()]);
+    const lockDelim = Uint8Array.from([0x23, ...lockPlaceholder]);
+    type Piece = { segment: Uint8Array; token?: 'category' | 'lock' };
+    const pieces: Piece[] = [];
+    let cursor = 0;
+    const matches = (at: number, needle: Uint8Array): boolean => at + needle.length <= covenant.length
+      && needle.every((byte, index) => covenant[at + index] === byte);
+    while (cursor < covenant.length) {
+      let found = -1;
+      let token: 'category' | 'lock' | undefined;
+      let width = 0;
+      for (let at = cursor; at < covenant.length && found < 0; at++) {
+        if (matches(at, categoryDelim)) { found = at; token = 'category'; width = categoryDelim.length; }
+        else if (matches(at, lockDelim)) { found = at; token = 'lock'; width = lockDelim.length; }
+      }
+      if (found < 0) { pieces.push({ segment: covenant.slice(cursor) }); break; }
+      pieces.push({ segment: covenant.slice(cursor, found), token });
+      cursor = found + width;
+    }
+    // [lock, category] -> [lock, encCategory]
+    this.emit(hexToBin('20'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    // [encCategory, encLock]
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(hexToBin('23'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(pieces[0].segment, locationData);
+    for (let index = 0; index < pieces.length; index++) {
+      const piece = pieces[index];
+      if (!piece.token) continue;
+      // [encLock, encCategory, body]. OVER copies the category. PICK 2 copies the lock.
+      this.emit(piece.token === 'category' ? Op.OP_OVER : encodeInt(2n), locationData);
+      if (piece.token === 'lock') this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      const following = pieces[index + 1]?.segment ?? new Uint8Array();
+      if (following.length > 0) {
+        this.emit(following, locationData);
+        this.emit(Op.OP_CAT, locationData);
+      }
+    }
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_HASH256, locationData);
+    this.emit(P2SH32_LBC_PREFIX, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(P2SH32_LBC_SUFFIX, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
+  /**
+   * Value-chunk address bound to the executing master's 35-byte lock. The category stays the tracked top.
+   * Encoding the category leaves the lock between that encoding and the slot, so each pick is one deeper
+   * than the category-only form (whose +1 only clears the untracked domain prefix).
+   */
+  private emitBoundValueChunkP2sh32(
+    collectionHash: Uint8Array, slotName: string, rootName: string, locationData: SingleLocationData,
+  ): void {
+    this.emit(Op.OP_INPUTINDEX, locationData);
+    this.emit(Op.OP_UTXOBYTECODE, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(hexToBin('20'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Uint8Array.from([...VALUE_CHUNK_DOMAIN_TAG, ...collectionHash]), locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex(slotName) + 2)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex(rootName) + 2)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_HASH256, locationData);
+    this.emit(hexToBin('20'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    // [lock, encCategory, encDomain] -> [encLock, encCategory, encDomain]
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_ROT, locationData);
+    this.emit(hexToBin('23'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_ROT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_ROT, locationData);
+    this.emit(Op.OP_ROT, locationData);
+    const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
+    const domainPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => 0x40 + index);
+    const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
+    const covenant = scriptToBytecode(buildEntryNftCovenantScript(
+      categoryPlaceholder, domainPlaceholder, lockPlaceholder,
+    ));
+    this.emitBoundCovenantP2sh32(covenant, [
+      { token: 'category', bytes: Uint8Array.from([0x20, ...categoryPlaceholder.slice().reverse()]) },
+      { token: 'domain', bytes: Uint8Array.from([0x20, ...domainPlaceholder]) },
+      { token: 'lock', bytes: Uint8Array.from([0x23, ...lockPlaceholder]) },
+    ], ['lock', 'category', 'domain'], {}, locationData);
   }
 
   /**
@@ -39621,6 +40426,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         stackTop: this.stack.slice(0, 6),
         functionId: this.currentFunction.functionId,
       }));
+    }
+    if (this.directConvention && !this.framedMaster) {
+      this.emitBoundValueChunkP2sh32(collectionHash, slotName, rootName, locationData);
+      return;
     }
     this.emit(hexToBin('20'), locationData); this.emit(Op.OP_SWAP, locationData); this.emit(Op.OP_CAT, locationData);
     this.emit(Uint8Array.from([...VALUE_CHUNK_DOMAIN_TAG, ...collectionHash]), locationData);
@@ -39690,7 +40499,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Keeping the salt separate lets cross-definition outlining share the surrounding reconstruction instead of
    * treating each covenant tail as one unrelated data push.
    */
-  private emitEntryP2sh32(collectionHash: Uint8Array, locationData: SingleLocationData): void {
+  private emitEntryP2sh32(
+    collectionHash: Uint8Array,
+    locationData: SingleLocationData,
+    lock?: { stack: string } | { output: string } | { input: string } | 'under',
+  ): void {
+    if (this.directConvention && !this.framedMaster) {
+      this.emitBoundEntryP2sh32(collectionHash, locationData, lock);
+      return;
+    }
     const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
     const hashPlaceholder = Uint8Array.from({ length: 20 }, (_value, index) => 0xa0 + index);
     const covenant = scriptToBytecode(buildEntryNftCovenantScript(categoryPlaceholder, hashPlaceholder));
@@ -39737,6 +40554,55 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
     this.emit(P2SH32_LBC_SUFFIX, locationData);
     this.emit(Op.OP_CAT, locationData);
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
+  /**
+   * Entry address bound to a 35-byte master lock. The category is the tracked top item.
+   * `under` means the raw lock is already the untracked item beneath it. A stack, input, or output source
+   * copies that master lock. The default is the executing input, which is this contract's own master.
+   */
+  private emitBoundEntryP2sh32(
+    collectionHash: Uint8Array,
+    locationData: SingleLocationData,
+    lock?: { stack: string } | { output: string } | { input: string } | 'under',
+  ): void {
+    if (lock === 'under') {
+      // [lock, category] already.
+    } else if (lock !== undefined && 'stack' in lock) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(lock.stack))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+    } else if (lock !== undefined && 'output' in lock) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(lock.output))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+    } else if (lock !== undefined && 'input' in lock) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(lock.input))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_UTXOBYTECODE, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+    } else {
+      this.emit(Op.OP_INPUTINDEX, locationData);
+      this.emit(Op.OP_UTXOBYTECODE, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+    }
+    this.encodeLockAndCategory(locationData);
+    const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
+    const hashPlaceholder = Uint8Array.from({ length: 20 }, (_value, index) => 0xa0 + index);
+    const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
+    const covenant = scriptToBytecode(buildEntryNftCovenantScript(
+      categoryPlaceholder, hashPlaceholder, lockPlaceholder,
+    ));
+    this.emitBoundCovenantP2sh32(covenant, [
+      { token: 'category', bytes: Uint8Array.from([0x20, ...categoryPlaceholder.slice().reverse()]) },
+      { token: 'hash', bytes: Uint8Array.from([0x14, ...hashPlaceholder]) },
+      { token: 'lock', bytes: Uint8Array.from([0x23, ...lockPlaceholder]) },
+    ], ['lock', 'category'], {
+      hash: Uint8Array.from([0x14, ...collectionHash]),
+    }, locationData);
     this.popFromStack();
     this.pushToStack('(value)');
   }
@@ -39875,11 +40741,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let nftIdx = 0; nftIdx < dataNftCount; nftIdx++) {
       const extra = 1 + nftIdx;
 
-      // locking bytecode == data NFT p2sh32 lbc (from child category)
-      this.emit(encodeInt(BigInt(this.getStackIndex(categoryName))), locationData);
+      // locking bytecode == data NFT p2sh32 lbc (child category, bound to the child master lock)
+      this.emit(encodeInt(BigInt(this.getStackIndex(masterLbcName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex(categoryName) + 1)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(value)');
-      this.emitDataNftLbc(locationData);
+      this.emitDataNftLbc(locationData, true);
       emitOutIndex(extra);
       this.emit(Op.OP_OUTPUTBYTECODE, locationData);
       this.pushToStack('(value)');
@@ -39952,7 +40820,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(this.getStackIndex(categoryName))), locationData);
         this.emit(Op.OP_PICK, locationData);
         this.pushToStack('(value)');
-        this.emitEntryP2sh32(computeCollectionHash(collectionSignature), locationData);
+        this.emitEntryP2sh32(computeCollectionHash(collectionSignature), locationData, { stack: masterLbcName });
         authenticatedEntryLbcExtra.set(collectionSignature, extra);
       } else {
         emitOutIndex(authenticatedExtra);
@@ -40029,6 +40897,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // capabilities across the whole transaction so this child's genesis set is exact.
     this.emitDeployCapabilityOutputCount(categoryName, 0x02, 1, locationData);
     this.emitDeployCapabilityOutputCount(categoryName, 0x01, dataNftCount + entryNftCount, locationData);
+    // Capability counts miss immutable NFTs and pure fungible outputs, both of which are a 32-byte category.
+    this.emitDeployChildCategoryBound(categoryName, 1 + dataNftCount + entryNftCount, locationData);
 
     // Loop deploy: increment the runtime deploy counter (deploys-fired-so-far) in place, so the next iteration's
     // genesis lands at the next slot. Mirrors the in-place stack-var update in visitDeleteLocal.
@@ -40178,12 +41048,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (let nftIdx = 0; nftIdx < dataNftCount; nftIdx++) {
         const nftOutputOffset = deployOffset + 1 + nftIdx;
 
-        // Compute data NFT P2SH32 locking bytecode from child category
-        const catIdx3 = this.getStackIndex(categoryStackName);
-        this.emit(encodeInt(BigInt(catIdx3)), locationData);
+        // Compute data NFT P2SH32 locking bytecode from the child category and the child master lock.
+        this.emit(encodeInt(BigInt(this.getStackIndex(masterLbcStackName))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(encodeInt(BigInt(this.getStackIndex(categoryStackName) + 1)), locationData);
         this.emit(Op.OP_PICK, locationData);
         this.pushToStack('(value)');
-        this.emitDataNftLbc(locationData);
+        this.emitDataNftLbc(locationData, true);
         // Stack: [..., dataNftLbc]
 
         // Verify data NFT output locking bytecode
@@ -40307,7 +41178,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(encodeInt(BigInt(entryCategoryIndex)), locationData);
           this.emit(Op.OP_PICK, locationData);
           this.pushToStack('(value)');
-          this.emitEntryP2sh32(computeCollectionHash(collectionSignature), locationData);
+          this.emitEntryP2sh32(
+            computeCollectionHash(collectionSignature), locationData, { stack: masterLbcStackName },
+          );
           authenticatedEntryLbcOffsets.set(collectionSignature, entryOutputOffset);
         } else {
           if (!this.emitGraphDeployOutputIndex(authenticatedOffset, locationData)) {
@@ -40367,6 +41240,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitDeployCapabilityOutputCount(graphCategory, 0x02, 1, locationData, fixedIndex);
       this.emitDeployCapabilityOutputCount(
         graphCategory, 0x01, dataNftCount + genesisEntries.length, locationData, fixedIndex,
+      );
+      this.emitDeployChildCategoryBound(
+        graphCategory, 1 + dataNftCount + genesisEntries.length, locationData, fixedIndex,
       );
     }
 
@@ -40439,6 +41315,78 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, locationData);
     this.popFromStack();
 
+    this.emit(encodeInt(BigInt(expected)), locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_DROP, locationData);
+    this.popFromStack();
+  }
+
+  /**
+   * Every output whose category base is the child category is one of the declared genesis NFTs, and it carries
+   * no fungible amount. Immutable NFTs and pure fungible outputs share a 32-byte category, so the capability
+   * counts above do not see them.
+   */
+  private emitDeployChildCategoryBound(
+    categoryStackName: string | undefined,
+    expected: number,
+    locationData: SingleLocationData,
+    fixedDeployIndex?: number,
+  ): void {
+    if (fixedDeployIndex !== undefined) {
+      this.emitBlockSlotIndex('deploy', fixedDeployIndex, locationData);
+      this.emit(Op.OP_OUTPOINTTXHASH, locationData);
+    } else {
+      this.emit(encodeInt(BigInt(this.getStackIndex(categoryStackName!))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+    }
+    this.pushToStack('(deploy_child_base)');
+    this.emit(encodeInt(0n), locationData);
+    this.pushToStack('(deploy_base_count)');
+    this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+    this.pushToStack('(deploy_output_index)');
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_LESSTHAN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(encodeBool(true), locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.pushToStack('(deploy_prefix)');
+    this.emit(encodeInt(BigInt(this.getStackIndex('(deploy_child_base)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_EQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_1ADD, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+    this.emit(encodeBool(false), locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_UNTIL, locationData);
+    this.popFromStack();
     this.emit(encodeInt(BigInt(expected)), locationData);
     this.emit(Op.OP_NUMEQUALVERIFY, locationData);
     this.popFromStack();
@@ -41196,11 +42144,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_FROMALTSTACK, locationData);
       this.pushToStack(stackName);
 
-      // For conditional emits, check if the blob slot is non-empty (active)
+      // A reached emit whose payload is all zero bytes is still reached. The not-taken blob is the empty
+      // push; truthiness treated `false` and `0` as skipped and then required an empty commitment (FW-3).
       if (isConditionalEmit) {
         const checkIdx = this.getStackIndex(stackName);
         this.emit(encodeInt(BigInt(checkIdx)), locationData);
         this.emit(Op.OP_PICK, locationData);
+        this.emit(Op.OP_SIZE, locationData);
+        this.emit(Op.OP_NIP, locationData);
+        this.emit(Op.OP_0NOTEQUAL, locationData);
         this.pushToStack('(cond_check)');
         this.emit(Op.OP_IF, locationData);
         this.popFromStack();
@@ -42994,8 +43946,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, locationData); // drop _returnOutputIdx
 
     this.emit(Op.OP_ELSE, locationData);
-    // Standalone call: just drop _returnOutputIdx
+    // Standalone call (DX-4): refuse every own-category return carrier (none-capability, OP_TRUE lock), the
+    // fingerprint the caller's return read and uniqueness count accept. A spender passing -1 beside a
+    // self-minted carrier would otherwise hand the caller an unauthenticated return value.
     this.emit(Op.OP_DROP, locationData);
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_EQUAL, locationData);
+    this.emit(Op.OP_OVER, locationData);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.emit(hexToBin('51'), locationData);
+    this.emit(Op.OP_EQUAL, locationData);
+    this.emit(Op.OP_BOOLAND, locationData);
+    this.emit(Op.OP_NOT, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_NOT, locationData);
+    this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_2DROP, locationData);
     this.emit(Op.OP_ENDIF, locationData);
 
     // Clean up __returnBlob from tracked stack
@@ -44198,6 +45176,97 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Uses OP_INPUTINDEX (not emitMasterInputIndex) because this refers to the
    * delegate's own UTXO, not the proxy's.
    */
+  /**
+   * The delegate master is co-spent, so its own data, entry, and fungible tokens are open to the same flag
+   * the master would authorize. Every input of this category is recreated at its own index, and no output of
+   * this category appears without that input.
+   */
+  private emitDelegateOwnCategoryPreservation(node: FunctionDefinitionNode): void {
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+    this.emit(Op.OP_INPUTINDEX, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emitDelegateCategorySide(loc, false);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emitDelegateCategorySide(loc, true);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_2DUP, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_DROP, loc);
+  }
+
+  /** `[i]` stays. When this side's category base is the delegate's, require the other side to match it. */
+  private emitDelegateCategorySide(loc: SingleLocationData, isOutput: boolean): void {
+    const category = isOutput ? Op.OP_OUTPUTTOKENCATEGORY : Op.OP_UTXOTOKENCATEGORY;
+    const otherCategory = isOutput ? Op.OP_UTXOTOKENCATEGORY : Op.OP_OUTPUTTOKENCATEGORY;
+    const bytecode = isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE;
+    const otherBytecode = isOutput ? Op.OP_UTXOBYTECODE : Op.OP_OUTPUTBYTECODE;
+    const commitment = isOutput ? Op.OP_OUTPUTTOKENCOMMITMENT : Op.OP_UTXOTOKENCOMMITMENT;
+    const otherCommitment = isOutput ? Op.OP_UTXOTOKENCOMMITMENT : Op.OP_OUTPUTTOKENCOMMITMENT;
+    this.emit(Op.OP_DUP, loc);
+    this.emit(category, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(isOutput ? Op.OP_TXINPUTCOUNT : Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(bytecode, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(otherBytecode, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(category, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(otherCategory, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(commitment, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(otherCommitment, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
   private emitDelegateSelfPreservation(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
 
@@ -44685,7 +45754,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(32n), loc);
       this.emit(Op.OP_SPLIT, loc);
       this.emit(Op.OP_DROP, loc); // C
-      this.emitDataNftLbc(loc);
+      this.emit(Op.OP_INPUTINDEX, loc);
+      this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emitDataNftLbc(loc, true);
       this.emit(Op.OP_EQUAL, loc);
       this.popFromStack(); // (upgrade_data_category), now the canonical locking-bytecode comparison
       this.emit(Op.OP_BOOLAND, loc);
@@ -44854,18 +45926,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_0NOTEQUAL, loc);
     this.emit(Op.OP_BOOLAND, loc);                 // [cat, base, j, isEventCapableNft]
-    // Logical contract identity anchors use the disjoint `SCID` commitment
-    // envelope. They can be relocated by return/event outputs and are not
-    // event records, so do not subject them to event-slot positioning.
-    this.emit(Op.OP_OVER, loc);
-    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
-    this.emit(new Uint8Array(4), loc);
-    this.emit(Op.OP_CAT, loc);
-    this.emit(encodeInt(4n), loc);
+    // A logical-identity anchor is `SCID` + version 0x01, at least 40 bytes, and its last 35 bytes are this
+    // contract's master lock. A commitment that only begins with the four letters SCID is not that anchor:
+    // an event argument can encode those bytes, and exempting it would let a forged log skip this pin.
+    this.emit(Op.OP_OVER, loc);                    // [cat, base, j, flag, j]
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);   // [cat, base, j, flag, commitment]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(40n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);      // [cat, base, j, flag, commitment, longEnough]
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(5n), loc);
     this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(new Uint8Array([0x53, 0x43, 0x49, 0x44]), loc);
+    this.emit(Op.OP_DROP, loc);                    // first five bytes
+    this.emit(new Uint8Array([0x53, 0x43, 0x49, 0x44, 0x01]), loc);
     this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(35n), loc);
+    this.emit(Op.OP_SUB, loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc);                     // last 35 bytes, the pinned master lock
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);                    // base, the master input
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUAL, loc);                   // [cat, base, j, flag, isAnchor]
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_NOT, loc);
     this.emit(Op.OP_BOOLAND, loc);                 // [cat, base, j, isSerializedEventCandidate]
     // An anyone-can-spend (OP_TRUE) carrier is not a readable log. A log is read back at its EVENT NFT COVENANT
@@ -45965,6 +47062,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitConditionalSortedWritePreservation(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     for (const i of [...this.conditionalSortedWriteFlagSlots].sort((a, b) => a - b)) {
+      if (this.activityKeptWriteSlots.has(i)) continue;
       const flagName = GenerateTargetTraversalWithLocation.condSortedWriteFlagName(i);
       const flagIndex = this.getStackIndex(flagName, true);
       if (flagIndex < 0) continue;
@@ -45997,6 +47095,177 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * A public call still authorizes a satoshi-container spend: the container covenant's master path checks only
+   * that a minting NFT of the category is present. Sum every input and output locked to the container and
+   * require the inputs not to exceed the outputs plus the amounts this call actually transfers. Stack neutral.
+   */
+  private emitSatoshiContainerAggregate(loc: SingleLocationData): void {
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack('(__sc_cat)');
+    this.emitSatoshiContainerLbc(loc);
+    this.emitLockedValueSum(false, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emitLockedValueSum(true, loc);
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    // [lock, inSum, outSum]. inSum and outSum are untracked, so a transfer amount sits two deeper than the model.
+    for (const transfer of this.pendingTransfers) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(transfer.amountStackName) + 2)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_ADD, loc);
+    }
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
+  }
+
+  /** `[lock]` -> `[lock, sum]` of the satoshi value at that lock. The sum is untracked. */
+  private emitLockedValueSum(isOutput: boolean, loc: SingleLocationData): void {
+    this.emit(Op.OP_0, loc);
+    this.emit(isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(isOutput ? Op.OP_OUTPUTVALUE : Op.OP_UTXOVALUE, loc);
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+  }
+
+  /**
+   * A token container holds a foreign category behind this contract's container lock, and its master path does
+   * not preserve the tokens. Any such input must be recreated at the same index with the same lock, category
+   * and at least the same amount. Stack neutral.
+   */
+  private emitForeignFungiblePreservation(loc: SingleLocationData): void {
+    // Own-category 33-byte records move in a composed transaction. A foreign 33-byte category is an NFT
+    // container only when its lock is the container covenant for that category; a callee's value chunk is
+    // also a 35-byte lock, and the callee's script accounts for consuming it.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    const category = '(__foreign_container_category)';
+    this.pushToStack(category);
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(35n), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    // [index, catSize]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emitForeignContainerKeep(loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeInt(33n), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    // [index, foreignId]. Keep the id: the container lock is derived from it.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(category) + 3)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_IF, loc);
+    // [index, foreignId]. UTXOTOKENCATEGORY is internal order; the container salt is display order.
+    this.emit(Op.OP_REVERSEBYTES, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(category) + 2)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emitTokenContainerLbc(loc);
+    // [index, containerLock]
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emitForeignContainerKeep(loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
+  }
+
+  /**
+   * [index] stays. The output at that index keeps this input's lock and category, and at least its token amount.
+   * The function's own container slots are skipped: a declared transfer may draw that container down, and
+   * emitTokenContainerPreservation accounts for the decrease.
+   */
+  private emitForeignContainerKeep(loc: SingleLocationData): void {
+    const ownedContainer = this.tokenContainerSlots.length > 0;
+    if (ownedContainer) {
+      this.emit(Op.OP_0, loc);
+      for (let slot = 0; slot < this.tokenContainerSlots.length; slot += 1) {
+        this.emit(Op.OP_OVER, loc);
+        // Untracked above the frame: the scan index, the skip flag, and the copied index.
+        this.emitBlockSlotIndex('tokenContainer', slot, loc, 3);
+        this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_BOOLOR, loc);
+      }
+      this.emit(Op.OP_NOT, loc);
+      this.emit(Op.OP_IF, loc);
+    }
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOTOKENAMOUNT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    if (ownedContainer) this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
    * Direct convention: an entry node's write path admits any spend beside the master, so a function that no
    * own-category count covers pins each sorted collection's inputs to the fixed slots naming a node at its address,
    * and, for a collection it does not write, its outputs to the same count (each such node is preserved). A
@@ -46005,15 +47274,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDirectCollectionCensus(node: FunctionDefinitionNode): void {
     if (this.isDefineSubTraversal || this.framedMaster || this.readsRecordsFromFrame) return;
     if (this.compilerOptions.composition === 'framed') return;
-    if ((this.compilerOptions as { __messageBusExplicitlyDisabled?: boolean }).__messageBusExplicitlyDisabled !== true) {
-      return;
-    }
+    // The census used to run only when the message bus was explicitly disabled. A default (bus-enabled)
+    // build then left every un-accessed record spendable beside a public call. It runs for both.
     const loc = { location: node.body.location, positionHint: PositionHint.END };
+    // Handler-managed slots are removed from the route's batch list because the outlined handler settles
+    // them. Leaving them here makes the route require zero inputs at that address and rejects the spend.
+    const handlerManaged = new Set((node.messageBusHandlerManagedEntrySlots ?? []).flatMap((slotIndex) => {
+      const name = this.entrySlots[slotIndex]?.collection;
+      return name === undefined ? [] : [name];
+    }));
     const counted = new Set([
       ...(node.sortedBatchInfo ?? []).map((batch) => batch.collection),
       ...this.vmapRuntimeCollections(node),
       ...(node.collectionIterations ?? []).map((iteration) => iteration.collection),
       ...this.entrySlots.filter((slot) => slot.inLoop).map((slot) => slot.collection),
+      ...handlerManaged,
     ]);
     for (const collection of this.collectionDefinitions) {
       if (!collection.sorted || counted.has(collection.name)) continue;
@@ -46048,10 +47323,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.dataNftCount > 0) {
       const addr = '(__data_census_addr)';
       const expected = '(__data_census_expected)';
-      this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emitMasterInputIndex(loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
       this.emitTakeFirst32(loc);
       this.pushToStack(addr);
-      this.emitDataNftLbc(loc);
+      this.emitDataNftLbc(loc, true);
       this.stack[0] = addr;
       this.emit(encodeInt(BigInt(this.compactOffsetMap.size)), loc);
       this.pushToStack(expected);
@@ -46060,6 +47339,324 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_2DROP, loc);
       this.popFromStack(2);
     }
+    // A dynamic variable the function does not write still sits at its own entry address. The entry covenant
+    // spends it beside any master, so pin the input count at that address to the output count.
+    for (const sv of this.stateVariables) {
+      if (!sv.isDynamic || this.pendingDynamicWrites.has(sv.name)) continue;
+      const chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()));
+      const addr = `(__chunk_census_${sv.name})`;
+      this.emitMasterInputIndex(loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emitTakeFirst32(loc);
+      this.pushToStack(addr);
+      this.emitSortedEntryAddress(chunkHash, loc);
+      this.stack[0] = addr;
+      // Same count is not enough: flag=1 recreates the chunk at this lock with any commitment, and a later
+      // read accepts it. Each spent chunk must come back at its own index with the same commitment.
+      this.emitPreserveUnaccessedChunk(addr, loc);
+      this.emitCountAtLock(false, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emitCountAtLock(true, loc);
+      this.emit(Op.OP_ROT, loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.popFromStack();
+    }
+    // A mutable NFT of this contract at a lock nothing here counts (a P2PKH, for example) is a forged record.
+    // Locks of mutable inputs, and the collection, data, and chunk locks this contract can mint, are the set.
+    this.emitAuthorizeMutableOutputs(loc);
+  }
+
+  /** `[addr]` stays. An input locked to addr must be recreated at that index with the same commitment. */
+  private emitPreserveUnaccessedChunk(addr: string, loc: SingleLocationData): void {
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(addr) + 2)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+  }
+
+  /**
+   * `[ ]` -> `[ ]`. Every own-category mutable output must sit at a mutable input's lock or at a lock this
+   * contract is allowed to mint (a collection, its data record, or a dynamic chunk).
+   */
+  private emitAuthorizeMutableOutputs(loc: SingleLocationData): void {
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack('(__mutable_base)');
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(33n), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(new Uint8Array([0x01]), loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emitTakeFirst32(loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    // The helper verifies the allow-bit itself and puts i back. A second VERIFY would consume i.
+    this.emitMutableOutputAllowed(loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
+  }
+
+  /**
+   * `[base, i]` -> `[base, i]`. `i` stays on the alt stack so a lock rebuild cannot become the next index.
+   * Output i must match a mutable input's lock and category, or a lock this contract may mint.
+   * `OP_IF` already consumes the comparison, so the match arm must not drop again before it replaces
+   * `allowed`: that drop takes `j`, and the following `NIP` then takes `base`.
+   */
+  private emitMutableOutputAllowed(loc: SingleLocationData): void {
+    // [base, i] -> [base], alt [i]
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_0, loc);
+    const copyOutputIndex = (): void => {
+      this.emit(Op.OP_FROMALTSTACK, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_TOALTSTACK, loc);
+    };
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    // [base, allowed, j] -> [base, allowed, j, lockEq]
+    copyOutputIndex();
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    copyOutputIndex();
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    // IF consumed the bit. [base, allowed, j] -> [base, 1, j]
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    // [base, allowed]. A rebuilt lock replaces one untracked copy; the tracked base stays put.
+    const admit = (build: () => void): void => {
+      const saved = this.stack.slice();
+      this.emit(Op.OP_OVER, loc);
+      build();
+      this.stack.splice(0, this.stack.length, ...saved);
+      copyOutputIndex();
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_BOOLOR, loc);
+    };
+    if (this.dataNftCount > 0) {
+      admit(() => {
+        if (this.directConvention && !this.framedMaster) {
+          this.emit(Op.OP_INPUTINDEX, loc);
+          this.emit(Op.OP_UTXOBYTECODE, loc);
+          this.emit(Op.OP_SWAP, loc);
+          this.emitDataNftLbc(loc, true);
+        } else this.emitDataNftLbc(loc);
+      });
+    }
+    for (const collection of this.collectionDefinitions) {
+      const signature = this.vmapCollectionSignature(collection.name);
+      if (signature === undefined) continue;
+      admit(() => this.emitSortedEntryAddress(computeCollectionHash(signature), loc));
+    }
+    for (const sv of this.stateVariables) {
+      if (!sv.isDynamic) continue;
+      const chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()));
+      admit(() => this.emitSortedEntryAddress(chunkHash, loc));
+    }
+    const chunkBase = '__internal__valueChunkOutputBase';
+    if (this.getStackIndex(chunkBase, true) >= 0) {
+      // [base, allowed, blob]. Each 35-byte lock is admitted. A short remainder is the cleared witness.
+      this.emitPickTrackedFromBottom(chunkBase, loc);
+      this.emit(Op.OP_BEGIN, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(encodeInt(35n), loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(encodeInt(35n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_SWAP, loc);
+      copyOutputIndex();
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_ROT, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_BOOLOR, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(encodeBool(false), loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emit(encodeBool(true), loc);
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_UNTIL, loc);
+    }
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+  }
+
+  /**
+   * `[n, idx]` stays. The input at idx must be locked by the (n -> hash) oracle address of this contract's
+   * category. A same-category coin at another lock is not that record.
+   */
+  private emitBindBlockhashOracleLock(loc: SingleLocationData): void {
+    const category = Uint8Array.from({ length: 32 }, (_byte, index) => index + 1);
+    const raw = scriptToBytecode(buildBlockhashOracleCovenantScript(category, 0n));
+    const categoryPush = Uint8Array.from([0x20, ...category.slice().reverse()]);
+    const numberPush = scriptToBytecode([encodeInt(256n)]);
+    const categoryAt = raw.findIndex((_byte, index) =>
+      categoryPush.every((byte, offset) => raw[index + offset] === byte));
+    const numberAt = raw.findIndex((_byte, index) =>
+      numberPush.every((byte, offset) => raw[index + offset] === byte));
+    if (categoryAt < 0 || numberAt < categoryAt + categoryPush.length) {
+      throw new Error('Internal error: blockhash oracle covenant placeholders were not found.');
+    }
+    const head = raw.slice(0, categoryAt);
+    const mid = raw.slice(categoryAt + categoryPush.length, numberAt);
+    const tail = raw.slice(numberAt + numberPush.length);
+    // [n, idx, n+256] as the script push that the covenant bakes in.
+    this.emit(Op.OP_OVER, loc);
+    this.emit(encodeInt(256n), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(1n), loc);
+    this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    // [n, idx, 0x20 || category]. The token category's first 32 bytes are already the covenant's internal order.
+    // idx is the one untracked item above the tracked n.
+    this.emitMasterInputIndex(loc, 1);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.emit(hexToBin('20'), loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(head, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(mid, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(tail, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_HASH256, loc);
+    this.emit(P2SH32_LBC_PREFIX, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(P2SH32_LBC_SUFFIX, loc);
+    this.emit(Op.OP_CAT, loc);
+    // [n, idx, lock, actual]
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+  }
+
+  /**
+   * The side-car index was saved on the alt stack before its unlocking was read. `[redeem]` and that index
+   * become `[redeem]` after the input's lock is required to be P2SH32 of the redeem. Hashing the covenant
+   * bytes inside the unlocking does not make those bytes execute.
+   */
+  private emitBindAltStackedRedeemLock(loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_HASH256, loc);
+    this.emit(P2SH32_LBC_PREFIX, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(P2SH32_LBC_SUFFIX, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+  }
+
+  /** `[addr]` -> `[addr, count]` of inputs or outputs locked to addr. The count is untracked. */
+  private emitCountAtLock(isOutput: boolean, loc: SingleLocationData): void {
+    this.emit(Op.OP_0, loc);
+    this.emit(isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
   }
 
   /** [addr, expected] -> [addr, expected]: the inputs (outputs) locked to addr number exactly expected. */
@@ -46775,7 +48372,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!this.currentFunction.blockLayout) {
       this.emit(Op.OP_INPUTINDEX, locationData);
       this.emit(Op.OP_UTXOVALUE, locationData);
-      this.pushToStack('(value)');
+      // visitNullaryOp records the value. A second push here made the uint256 check read an empty stack.
       return;
     }
     // Get own category (32 bytes, strip capability flag)
@@ -47333,9 +48930,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       return;
     }
-    const prefix = hexToBin('63ce01207f5288');   // 7 bytes
-    const middle = hexToBin('8867767676cdc0c788ccc0c6a269d1c0ce88d3c0d0a269c0c7c38c6576c09c6476c75279879169688c76009f66757568'); // 48 bytes
-    const suffix = hexToBin('7551');             // 2 bytes
+    if (this.directConvention && !this.framedMaster) {
+      // [category] -> [lock, category], then the covenant that requires this executing master lock.
+      this.emit(Op.OP_INPUTINDEX, locationData);
+      this.emit(Op.OP_UTXOBYTECODE, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.encodeLockAndCategory(locationData);
+      const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
+      const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
+      const covenant = scriptToBytecode(buildSatoshiContainerCovenantScript(categoryPlaceholder, lockPlaceholder));
+      this.emitBoundCovenantP2sh32(covenant, [
+        { token: 'category', bytes: Uint8Array.from([0x20, ...categoryPlaceholder.slice().reverse()]) },
+        { token: 'lock', bytes: Uint8Array.from([0x23, ...lockPlaceholder]) },
+      ], ['lock', 'category'], {}, locationData);
+      this.popFromStack();
+      this.pushToStack('(value)');
+      return;
+    }
+    const { prefix, middle, suffix } = satoshiContainerPieces();
     const pushdata32 = hexToBin('20');           // OP_PUSHBYTES_32
     const p2sh32Prefix = P2SH32_LBC_PREFIX;      // OP_HASH256 + OP_PUSHBYTES_32
     const p2sh32Suffix = P2SH32_LBC_SUFFIX;     // OP_EQUAL
@@ -47400,6 +49012,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.invokeSubroutineIfDefined(GenerateTargetTraversalWithLocation.TOKEN_LBC_SUBROUTINE_ID, locationData)) {
       return;
     }
+    if (this.directConvention && !this.framedMaster) {
+      // [masterCat, tcCat] -> [encLock, encMaster, encToken]
+      this.emit(hexToBin('20'), locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(hexToBin('20'), locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_INPUTINDEX, locationData);
+      this.emit(Op.OP_UTXOBYTECODE, locationData);
+      this.emit(hexToBin('23'), locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      this.emit(Op.OP_ROT, locationData);
+      this.emit(Op.OP_ROT, locationData);
+      const master = Uint8Array.from({ length: 32 }, (_value, index) => index);
+      const token = Uint8Array.from({ length: 32 }, (_value, index) => 0x40 + index);
+      const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
+      const covenant = scriptToBytecode(buildTokenContainerCovenantScript(master, token, lockPlaceholder));
+      this.emitBoundCovenantP2sh32(covenant, [
+        { token: 'master', bytes: Uint8Array.from([0x20, ...master.slice().reverse()]) },
+        { token: 'token', bytes: Uint8Array.from([0x20, ...token]) },
+        { token: 'lock', bytes: Uint8Array.from([0x23, ...lockPlaceholder]) },
+      ], ['lock', 'master', 'token'], {}, locationData);
+      return;
+    }
     // Token container covenant script (must match buildTokenContainerCovenantScript in state.ts):
     // OP_IF UTXOTOKENCATEGORY <32> SPLIT OP_2 EQUALVERIFY <masterCat> EQUALVERIFY
     //   OP_ELSE DUP DUP DUP OUTPUTBYTECODE INPUTINDEX UTXOBYTECODE EQUALVERIFY
@@ -47408,27 +49048,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     //     OUTPUTTOKENCATEGORY INPUTINDEX UTXOTOKENCATEGORY EQUALVERIFY
     //     single-input constraint loop
     //   OP_ENDIF <tcCat> DROP OP_1
-    const prefix = new Uint8Array([0x63, 0xce, 0x01, 0x20, 0x7f, 0x52, 0x88]);
+    const { prefix, mid, suffix } = tokenContainerPieces();
     const categoryPushPrefix = new Uint8Array([0x20]);
-    // mid: EQUALVERIFY ELSE DUP DUP DUP OUTPUTBYTECODE INPUTINDEX UTXOBYTECODE EQUALVERIFY
-    //   OUTPUTVALUE INPUTINDEX UTXOVALUE GREATERTHANOREQUAL VERIFY
-    //   OUTPUTTOKENAMOUNT INPUTINDEX UTXOTOKENAMOUNT GREATERTHANOREQUAL VERIFY
-    //   OUTPUTTOKENCATEGORY INPUTINDEX UTXOTOKENCATEGORY EQUALVERIFY
-    //   single-input constraint loop ENDIF
-    const mid = new Uint8Array([
-      0x88, 0x67, 0x76, 0x76, 0x76, 0xcd, 0xc0, 0xc7, 0x88,
-      0xcc, 0xc0, 0xc6, 0xa2, 0x69,
-      0xd3, 0xc0, 0xd0, 0xa2, 0x69,
-      0xd1, 0xc0, 0xce, 0x88,
-      // Single-input constraint: INPUTINDEX UTXOBYTECODE TXINPUTCOUNT 1SUB BEGIN
-      0xc0, 0xc7, 0xc3, 0x8c, 0x65,
-      // DUP INPUTINDEX NUMEQUAL NOTIF DUP UTXOBYTECODE 2 PICK EQUAL NOT VERIFY ENDIF
-      0x76, 0xc0, 0x9c, 0x64, 0x76, 0xc7, 0x52, 0x79, 0x87, 0x91, 0x69, 0x68,
-      // 1SUB DUP 0 LESSTHAN UNTIL DROP DROP ENDIF
-      0x8c, 0x76, 0x00, 0x9f, 0x66, 0x75, 0x75, 0x68,
-    ]);
     const tcCatPushPrefix = new Uint8Array([0x20]);
-    const suffix = new Uint8Array([0x75, 0x51]);
 
     // Stack: [masterCat, tcCat]
     // Build: prefix + 0x20 + masterCat + mid + 0x20 + tcCat + suffix
@@ -47773,75 +49395,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
       // 2 untracked (tcCategoryId, stateCategoryId)
 
-      // Build the container covenant script bytes at runtime
-      // Must match buildTokenContainerCovenantScript in state.ts
-      //
-      // prefix (before masterCat push): OP_IF(0x63) UTXOTOKENCATEGORY(0xce) <32>(0x0120)
-      //   SPLIT(0x7f) OP_2(0x52) EQUALVERIFY(0x88) + categoryPushPrefix(0x20)
-      const prefix = new Uint8Array([0x63, 0xce, 0x01, 0x20, 0x7f, 0x52, 0x88]);
-      const categoryPushPrefix = new Uint8Array([0x20]);
-
-      // mid (after masterCat, before tcCat): EQUALVERIFY ELSE DUP DUP DUP OUTPUTBYTECODE INPUTINDEX
-      //   UTXOBYTECODE EQUALVERIFY OUTPUTVALUE INPUTINDEX UTXOVALUE GREATERTHANOREQUAL VERIFY
-      //   OUTPUTTOKENAMOUNT INPUTINDEX UTXOTOKENAMOUNT GREATERTHANOREQUAL VERIFY
-      //   OUTPUTTOKENCATEGORY INPUTINDEX UTXOTOKENCATEGORY EQUALVERIFY
-      //   single-input constraint loop ENDIF
-      const mid = new Uint8Array([
-        0x88, 0x67, 0x76, 0x76, 0x76, 0xcd, 0xc0, 0xc7, 0x88,
-        0xcc, 0xc0, 0xc6, 0xa2, 0x69,
-        0xd3, 0xc0, 0xd0, 0xa2, 0x69,
-        0xd1, 0xc0, 0xce, 0x88,
-        // Single-input constraint: INPUTINDEX UTXOBYTECODE TXINPUTCOUNT 1SUB BEGIN
-        0xc0, 0xc7, 0xc3, 0x8c, 0x65,
-        // DUP INPUTINDEX NUMEQUAL NOTIF DUP UTXOBYTECODE 2 PICK EQUAL NOT VERIFY ENDIF
-        0x76, 0xc0, 0x9c, 0x64, 0x76, 0xc7, 0x52, 0x79, 0x87, 0x91, 0x69, 0x68,
-        // 1SUB DUP 0 LESSTHAN UNTIL DROP DROP ENDIF
-        0x8c, 0x76, 0x00, 0x9f, 0x66, 0x75, 0x75, 0x68,
-      ]);
-      const tcCatPushPrefix = new Uint8Array([0x20]);
-
-      // suffix (after tcCat): DROP(0x75) OP_1(0x51)
-      const suffix = new Uint8Array([0x75, 0x51]);
-
-      // Build: prefix + categoryPushPrefix + masterCat + mid + tcCatPushPrefix + tcCat + suffix
-      this.emit(prefix, locationData);
-      this.emit(categoryPushPrefix, locationData);
-      // 4 untracked (tcCat, masterCat, prefix, catPushPrefix)
-
-      // Roll masterCat to top (it's at index 2: tcCat=3, masterCat=2, prefix=1, catPushPrefix=0)
-      this.emit(encodeInt(2n), locationData);
-      this.emit(Op.OP_ROLL, locationData);
-      // Now: tcCat, prefix, catPushPrefix, masterCat
-      this.emit(Op.OP_CAT, locationData); // catPushPrefix + masterCat
-      this.emit(Op.OP_CAT, locationData); // prefix + (catPushPrefix + masterCat)
-      // 2 untracked: tcCat, (prefix+catPushPrefix+masterCat)
-
-      this.emit(mid, locationData);
-      this.emit(Op.OP_CAT, locationData); // ... + mid
-      // 2 untracked: tcCat, (prefix+catPushPrefix+masterCat+mid)
-
-      this.emit(tcCatPushPrefix, locationData);
-      // 3 untracked: tcCat, (...), tcCatPushPrefix
-
-      // Roll tcCat to top (it's at index 2)
-      this.emit(encodeInt(2n), locationData);
-      this.emit(Op.OP_ROLL, locationData);
-      // 3 untracked: (...), tcCatPushPrefix, tcCat
-      this.emit(Op.OP_CAT, locationData); // tcCatPushPrefix + tcCat
-      this.emit(Op.OP_CAT, locationData); // full prefix stuff + tcCatPushPrefix + tcCat
-      // 1 untracked
-
-      this.emit(suffix, locationData);
-      this.emit(Op.OP_CAT, locationData); // full script
-      // 1 untracked
-
-      // Hash to P2SH32
-      this.emit(Op.OP_HASH256, locationData);
-      this.emit(P2SH32_LBC_PREFIX, locationData);
+      // [tcCat, masterCat] -> the same locking bytecode emitTokenContainerLbc derives.
       this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_CAT, locationData);
-      this.emit(P2SH32_LBC_SUFFIX, locationData);
-      this.emit(Op.OP_CAT, locationData);
+      this.emitTokenContainerLbc(locationData);
       // 1 untracked (expected locking bytecode)
 
       // Get actual container input's locking bytecode

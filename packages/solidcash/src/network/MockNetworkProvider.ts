@@ -1,7 +1,7 @@
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
-import { sha256 } from '@solidcash/utils';
+import { hash256, sha256 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
 import { type Utxo, Network, VmTarget, type TokenDetails } from '../interfaces.js';
@@ -778,8 +778,22 @@ export default class MockNetworkProvider implements NetworkProvider {
       const key = this.signerKey(mnemonic, opts.path, index);
       if (this.fundedSignerKeys.has(key)) continue;
       // Model prefunding as a fan-out transaction. Only vout 0 is a CashTokens genesis candidate; sibling
-      // outputs are category-neutral and can safely fill vmap/output-only block slots.
-      const fundingTxid = this.nextFundingTxid();
+      // outputs are category-neutral and can safely fill vmap/output-only block slots. The raw transaction
+      // is what genesis selection checks, so the txid has to be the hash of outputs that pay this signer.
+      const lockingBytecode = signer.getLockingBytecode();
+      const raw = encodeTransaction({
+        version: 2,
+        locktime: 0,
+        inputs: [{
+          outpointIndex: 0,
+          outpointTransactionHash: hexToBin(this.nextFundingTxid()),
+          sequenceNumber: 0xffffffff,
+          unlockingBytecode: Uint8Array.of(0x51),
+        }],
+        outputs: Array.from({ length: fundingUtxos }, () => ({ lockingBytecode, valueSatoshis: satoshis })),
+      });
+      const fundingTxid = binToHex(hash256(raw).reverse());
+      this.indexer.storage.storeRawTx(fundingTxid, binToHex(raw));
       for (let i = 0; i < fundingUtxos; i++) {
         await this.addUtxo(signer.getAddress(), { txid: fundingTxid, vout: i, satoshis });
       }

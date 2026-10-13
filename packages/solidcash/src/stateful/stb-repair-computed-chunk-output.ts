@@ -317,7 +317,11 @@ export function repairComputedChunkOutput(
             const chunkCount = Math.ceil((value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
             let outputBase = write.outputBase >= 0 ? write.outputBase : compilerValueChunkOutputBase;
             if (outputBase === undefined || !counts.has(chunkCount)) continue;
-            const lockingBytecode = persistValueChunkLock(write.categoryId, value, write);
+            const repairOwnerLock = sourceOutputs[inputIndex]?.lockingBytecode;
+            const masterLock = repairOwnerLock instanceof Uint8Array && repairOwnerLock.length === 35
+              ? repairOwnerLock : undefined;
+            const lockingBytecode = masterLock
+              ? persistValueChunkLock(write.categoryId, value, write, masterLock) : undefined;
             if (!lockingBytecode || !locks.has(binToHex(lockingBytecode))) continue;
             const chunks = chunksFromValue(value, { lockingBytecode, write, categoryId: write.categoryId });
             const isExistingResourceRun = (start: number): boolean => chunks.every((chunk, chunkIndex) => {

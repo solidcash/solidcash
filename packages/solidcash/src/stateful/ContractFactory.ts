@@ -1,6 +1,7 @@
-import { type Artifact, asmToBytecode } from '@solidcash/utils';
+import { type Artifact, asmToBytecode, hash256 } from '@solidcash/utils';
 import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { decodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import Signer from '../Signer.js';
 import type { ConstructorArgument } from '../Argument.js';
@@ -100,24 +101,37 @@ export async function selectGenesisFundingUtxo(
  */
 export async function selectGenesisFundingUtxoForCost(
   signer: Signer, cost: bigint, excludedOutpoints: ReadonlySet<string> = new Set(),
+  options?: { readonly fanOut?: boolean },
 ): Promise<Utxo> {
   const { genesisOutpointKey, isReservedGenesisOutpoint } = await import('./genesis-reservations.js');
   const { TransactionBuilder } = await import('../TransactionBuilder.js');
   // A reserved outpoint is one a caller derived a create address from: spending it here would destroy a prediction.
   const excluded = (u: Utxo): boolean => excludedOutpoints.has(genesisOutpointKey(u.txid, u.vout))
     || isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout));
-  const findGenesisUtxo = (us: Utxo[]): Utxo | undefined => us
-    .filter((u) => u.vout === 0 && !u.token && u.satoshis >= cost && !excluded(u))
-    .sort(compareGenesisFundingFreshness)[0];
-
-  const existing = findGenesisUtxo(await signer.getUtxos());
+  const listed = await signer.getUtxos();
+  const genesisCandidates = listed.filter((u) => u.vout === 0 && !u.token && u.satoshis >= cost && !excluded(u));
+  const verified: Utxo[] = [];
+  const rejected: Utxo[] = [];
+  for (const utxo of genesisCandidates) {
+    if (await genesisOutputPaysSigner(signer, utxo)) verified.push(utxo);
+    else rejected.push(utxo);
+  }
+  const existing = [...verified].sort(compareGenesisFundingFreshness)[0];
   if (existing) return existing;
+  if (options?.fanOut === false) {
+    throw new Error(
+      `Signer at ${signer.getAddress()} has no existing vout-0 coin to reserve. `
+      + 'A nonce read does not fan out; a deploy creates fresh coins.',
+    );
+  }
 
-  // Fan out a fresh vout-0 funding coin from the signer's spendable (token-free) UTXOs.
+  // Fan out a fresh vout-0 funding coin from coins the raw transaction actually pays to the signer.
   const fee = 1000n;
-  const spendable = (await signer.getUtxos())
-    .filter((u) => !u.token && !excluded(u))
-    .sort((a, b) => (b.satoshis > a.satoshis ? 1 : -1));
+  const spendable: Utxo[] = [];
+  for (const utxo of listed.filter((u) => !u.token && !excluded(u))) {
+    if (await genesisOutputPaysSigner(signer, utxo)) spendable.push(utxo);
+  }
+  spendable.sort((a, b) => (b.satoshis > a.satoshis ? 1 : -1));
   const chosen: Utxo[] = [];
   let total = 0n;
   for (const u of spendable) {
@@ -126,6 +140,14 @@ export async function selectGenesisFundingUtxoForCost(
     if (total >= cost + fee) break;
   }
   if (total < cost + fee) {
+    if (rejected.length > 0) {
+      const coin = rejected[0]!;
+      throw new Error(
+        `Genesis funding outpoint ${coin.txid}:${coin.vout} is not an output at the signer's lock. `
+        + `A provider-listed coin cannot fund a token category unless its raw transaction pays `
+        + `${signer.getAddress()} with the stated value and no token.`,
+      );
+    }
     throw new Error(
       `Signer at ${signer.getAddress()} has insufficient funds (${total} sats) to fan out a genesis funding UTXO `
       + `(need >= ${cost + fee}). A token genesis requires a fresh vout-0 UTXO; fund the account before deploying.`,
@@ -136,11 +158,38 @@ export async function selectGenesisFundingUtxoForCost(
   tb.addOutput({ to: signer.getAddress(), amount: total - fee }); // vout 0 = the fresh genesis funding coin
   await tb.send();
 
-  const created = findGenesisUtxo(await signer.getUtxos());
-  if (!created) {
-    throw new Error(`Fan-out did not yield a genesis-valid vout-0 UTXO at ${signer.getAddress()}.`);
+  const createdCandidates = (await signer.getUtxos())
+    .filter((u) => u.vout === 0 && !u.token && u.satoshis >= cost && !excluded(u));
+  for (const utxo of [...createdCandidates].sort(compareGenesisFundingFreshness)) {
+    if (await genesisOutputPaysSigner(signer, utxo)) return utxo;
   }
-  return created;
+  throw new Error(`Fan-out did not yield a genesis-valid vout-0 UTXO at ${signer.getAddress()}.`);
+}
+
+/**
+ * The raw transaction must be the txid, and `vout` must be a plain payment of the stated value to the signer.
+ * A provider list that names some other output is not a coin this key can spend (SDKFRAMED-1).
+ */
+async function genesisOutputPaysSigner(signer: Signer, utxo: Utxo): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await signer.provider.getRawTransaction(utxo.txid);
+  } catch {
+    return false;
+  }
+  if (!raw) return false;
+  const bytes = hexToBin(raw);
+  if (binToHex(hash256(bytes).reverse()) !== utxo.txid.toLowerCase()) return false;
+  const decoded = decodeTransaction(bytes);
+  if (typeof decoded === 'string') return false;
+  const output = decoded.outputs[utxo.vout];
+  if (!output || output.token !== undefined || output.valueSatoshis !== utxo.satoshis) return false;
+  const lock = signer.getLockingBytecode();
+  if (output.lockingBytecode.length !== lock.length) return false;
+  for (let index = 0; index < lock.length; index += 1) {
+    if (output.lockingBytecode[index] !== lock[index]) return false;
+  }
+  return true;
 }
 
 /** Prefer the coin most recently funded for this deployment, independent of provider UTXO ordering. */

@@ -153,6 +153,54 @@ describe('chai empty-address and event predicates', () => {
     ).rejects.toThrow(/has no decoded events/);
   });
 
+  it('does not accept an emit when a mined receipt has no decoded events', async () => {
+    await vitestExpect(
+      expect({ txid: 'ab' }).to.emit({}, 'JobEvent'),
+    ).rejects.toThrow(/has no decoded events/);
+  });
+
+  it('fails a withArgs cash address that is not the event argument', async () => {
+    const receipt = {
+      txid: 'ab',
+      events: [{ event: 'Transfer', args: { to: 'bchtest:qpcn7sy4mgy9glvkjxj3r5y0s9rhy5lwtymfzfnde8' } }],
+    };
+    const contract = { artifact: { events: [{ name: 'Transfer', parameters: [{ name: 'to' }] }] } };
+    await vitestExpect(
+      expect(receipt).to.emit(contract, 'Transfer').withArgs('bchtest:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'),
+    ).rejects.toThrow(/expected bchtest:qq/);
+  });
+
+  it('fails a withArgs key the event did not carry', async () => {
+    const receipt = {
+      txid: 'ab',
+      events: [{ event: 'Transfer', args: { amount: 1n } }],
+    };
+    const contract = { artifact: { events: [{ name: 'Transfer', parameters: [{ name: 'to' }, { name: 'amount' }] }] } };
+    await vitestExpect(
+      expect(receipt).to.emit(contract, 'Transfer').withArgs('bchtest:qpcn7sy4mgy9glvkjxj3r5y0s9rhy5lwtymfzfnde8', 1n),
+    ).rejects.toThrow(/arg 'to' is missing/);
+  });
+
+  it('does not treat a source-declared reason as a rejection', async () => {
+    const failing = Promise.reject(new Error('could not fund the call'));
+    Object.assign(failing, {
+      functionName: 'withdraw',
+      parentContract: {
+        inner: { artifact: { source: 'require(false, "Ownable: caller is not the owner");' } },
+      },
+    });
+    await vitestExpect(
+      expect(failing).to.be.rejectedWith('Ownable: caller is not the owner'),
+    ).rejects.toThrow(/expected rejection matching/);
+  });
+
+  it('does not treat a construction failure as a contract revert', async () => {
+    const transaction = {
+      send: async () => { throw new Error('could not be auto-derived'); },
+    };
+    await vitestExpect(expect(transaction).to.be.reverted).rejects.toThrow(/could not be auto-derived/);
+  });
+
   it('negates the next emit without reversing a preceding withArgs check', async () => {
     const receipt = {
       txid: 'ab',

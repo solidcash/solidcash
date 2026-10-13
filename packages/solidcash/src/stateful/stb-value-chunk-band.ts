@@ -75,6 +75,7 @@ export interface ValueChunkBandHost extends ScaledPreserveEmitHost {
   ): void;
   stagedValueChunkWrite(categoryId?: string): Uint8Array | undefined;
   persistValueChunkLock(categoryId?: string, value?: Uint8Array): Uint8Array | undefined;
+  ownerMasterLock?(): Uint8Array | undefined;
   persistedValueChunkWrite(categoryId?: string): ValueChunkWriteDescriptor | null | undefined;
   persistedValueChunkValue(categoryId?: string): Uint8Array | undefined;
   persistUpdateDigestLock(categoryId?: string): Uint8Array | undefined;
@@ -169,7 +170,7 @@ export function materializeValueChunkBand(
     ?? host.stagedValueChunkWrite(categoryId);
   const stagedLock = host.persistValueChunkLock(stateOwnerCategory, stagedValue)
     ?? host.persistValueChunkLock(categoryId, stagedValue);
-  const fromStaged = stagedValue
+  const fromStaged = stagedValue && stagedLock
     ? chunksFromValue(stagedValue, {
       lockingBytecode: stagedLock,
       write: host.persistedValueChunkWrite(stateOwnerCategory),
@@ -180,9 +181,11 @@ export function materializeValueChunkBand(
     ? (host.persistedValueChunkValue(stateOwnerCategory)
       ?? host.persistedValueChunkValue(categoryId))
     : undefined;
-  const fromValue = persistedValue
+  const persistedLock = persistedValue
+    ? host.persistValueChunkLock(stateOwnerCategory, persistedValue) : undefined;
+  const fromValue = persistedValue && persistedLock
     ? chunksFromValue(persistedValue, {
-      lockingBytecode: host.persistValueChunkLock(stateOwnerCategory, persistedValue),
+      lockingBytecode: persistedLock,
       write: host.persistedValueChunkWrite(stateOwnerCategory),
       categoryId: stateOwnerCategory,
     })
@@ -354,7 +357,7 @@ export function ensureLiveValueChunkBand(
     : (shouldRematerializePersistUpdateForHost(host)
       ? persistUpdateRedeemLock(
         persistTokenCategory, host.valueChunkRedeemLock,
-        persistedWrite, allowLegacyPersistFallback,
+        persistedWrite, allowLegacyPersistFallback, host.ownerMasterLock?.(),
       )
       : undefined);
   const stagedValue = host.stagedValueChunkWrite(categoryId)
@@ -373,14 +376,14 @@ export function ensureLiveValueChunkBand(
     ? (host.persistedValueChunkValue(persistTokenCategory)
       ?? host.persistedValueChunkValue(categoryId))
     : undefined;
-  const fromValue = persistedValue
+  const fromValue = persistedValue && redeemLock
     ? chunksFromValue(persistedValue, {
       lockingBytecode: redeemLock,
       write: host.persistedValueChunkWrite(persistTokenCategory),
       categoryId: persistTokenCategory,
     })
     : [];
-  const fromStaged = stagedValue
+  const fromStaged = stagedValue && redeemLock
     ? chunksFromValue(stagedValue, {
       lockingBytecode: redeemLock,
       write: host.persistedValueChunkWrite(persistTokenCategory),
@@ -545,7 +548,7 @@ export function persistPlacedValueChunkBand(
     const authenticatedLock = redeemLock ?? chunks[0]?.lockingBytecode;
     if (staged && authenticatedLock) {
       commitStagedValueChunkWrite(
-        selection.write, authenticatedLock, host.valueChunkWriteStagingSession,
+        selection.write, authenticatedLock, host.valueChunkWriteStagingSession, host.ownerMasterLock?.(),
       );
     }
     host.valueChunkWriteStagingSession?.delete(selection.write);
@@ -554,12 +557,13 @@ export function persistPlacedValueChunkBand(
     // Compatibility only for descriptor-free artifacts.
     if (spends.length > 0) settlement().persistedJobEventsSpends.set(categoryId, spends);
     const staged = settlement().stagedJobEventsValues.get(categoryId);
-    if (redeemLock) rememberJobEventsLock(categoryId, redeemLock);
-    else if (chunks[0]) rememberJobEventsLock(categoryId, chunks[0].lockingBytecode);
+    const placedMasterLock = host.ownerMasterLock?.();
+    if (redeemLock) rememberJobEventsLock(categoryId, redeemLock, undefined, placedMasterLock);
+    else if (chunks[0]) rememberJobEventsLock(categoryId, chunks[0].lockingBytecode, undefined, placedMasterLock);
     if (staged) {
-      rememberJobEventsValue(categoryId, staged);
+      rememberJobEventsValue(categoryId, staged, undefined, placedMasterLock);
     }
-    rememberJobEventsUnlockRecipe(categoryId);
+    rememberJobEventsUnlockRecipe(categoryId, placedMasterLock);
     settlement().stagedJobEventsValues.delete(categoryId);
     markPersistedCompatibilityValueChunkReady(categoryId);
   }

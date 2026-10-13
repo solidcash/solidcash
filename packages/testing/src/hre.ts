@@ -41,6 +41,36 @@ import { solidcashArtifactsPath } from './artifact-paths.js';
 const DEFAULT_MNEMONIC = MockNetworkProvider.DEFAULT_MNEMONIC;
 const HARDHAT_ACCOUNT_BRANCH = "m/44'/60'/0'/0";
 
+function liveSigningChain(name: string, netCfg: NetworkConfig | undefined): string | undefined {
+  const type = netCfg?.type;
+  if (type !== 'electrum' && type !== 'bitcoin-rpc') return undefined;
+  const inferred = name === 'mainnet' || name === 'chipnet' || name === 'testnet3' || name === 'testnet4'
+    ? name : undefined;
+  const chain = netCfg?.network ?? inferred;
+  if (chain === undefined || chain === 'regtest') return undefined;
+  return chain;
+}
+
+/** A phrase that signs on two live chains is refused. BCH signatures carry no chain id. */
+function assertLiveMnemonicsAreChainSpecific(config: ResolvedConfig): void {
+  const chainsByPhrase = new Map<string, string[]>();
+  for (const [name, netCfg] of Object.entries(config.networks)) {
+    const chain = liveSigningChain(name, netCfg);
+    if (chain === undefined) continue;
+    const phrase = netCfg.mnemonic ?? config.mnemonic;
+    if (phrase === undefined) continue;
+    const chains = chainsByPhrase.get(phrase) ?? [];
+    if (!chains.includes(chain)) chains.push(chain);
+    chainsByPhrase.set(phrase, chains);
+    if (chains.length > 1) {
+      throw new Error(
+        `Network "${name}" needs its own mnemonic. A shared phrase would sign on ${chains.join(' and ')},`
+        + ' and a BCH signature carries no chain id.',
+      );
+    }
+  }
+}
+
 // StatefulContract is the single heaviest SDK module (~759 KB and its transitive graph). The HRE only needs it
 // when a contract is attached/deployed (`Contract`/`getContractAt`), so it is loaded lazily and cached. `initHre`
 // awaits this before publishing the HRE, keeping the module out of the entry package's import graph.
@@ -69,7 +99,12 @@ export function createProvider(name: string, netCfg: NetworkConfig | undefined):
       rpcPassword: netCfg?.rpc?.password,
     });
     case 'electrum': {
-      const network = configuredNetwork ?? Networks.MAINNET;
+      if (configuredNetwork === undefined) {
+        throw new Error(
+          `Network "${name}" is not a known BCH network. Set network to mainnet, testnet3, testnet4, or chipnet.`,
+        );
+      }
+      const network = configuredNetwork;
       if (network === Networks.REGTEST) {
         throw new Error('ElectrumNetworkProvider does not support regtest; use type "regtest" or "bitcoin-rpc".');
       }
@@ -546,15 +581,18 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
     const candidateConfig = config.networks[candidate];
     const selectedNetwork = candidateConfig.network ?? candidate;
     if ((candidateConfig.type === 'electrum' || candidateConfig.type === 'bitcoin-rpc')
-      && selectedNetwork !== Networks.REGTEST && !config.mnemonic) {
+      && selectedNetwork !== Networks.REGTEST && !config.mnemonic && !candidateConfig.mnemonic) {
       throw new Error(
         `Network "${candidate}" is live and requires an explicit mnemonic; refusing to use the public mock mnemonic.`,
       );
     }
     return candidateConfig;
   };
+  assertLiveMnemonicsAreChainSpecific(config);
   const selectedConfig = validateNetwork(name);
-  const mnemonic = config.mnemonic ?? DEFAULT_MNEMONIC;
+  const mnemonicFor = (netCfg: NetworkConfig | undefined): string =>
+    netCfg?.mnemonic ?? config.mnemonic ?? DEFAULT_MNEMONIC;
+  const mnemonic = mnemonicFor(selectedConfig);
   const ethersOpts: EthersOptions = {
     artifactsDir: config.paths.artifacts,
     // Keep getSigners() and the hardhat-shaped config.networks.*.accounts.path view identical. Ported suites
@@ -573,7 +611,8 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
 
   const connect = async (n?: string): Promise<NetworkConnection> => {
     const cn = n ?? name;
-    const conn = buildConnection(cn, validateNetwork(cn), mnemonic, ethersOpts);
+    const cnCfg = validateNetwork(cn);
+    const conn = buildConnection(cn, cnCfg, mnemonicFor(cnCfg), ethersOpts);
     await conn.ethers.getSigners(config.accounts?.count ?? 20);
     setActiveProvider(conn.provider as unknown as nh.TestNetworkProvider);
     return conn;

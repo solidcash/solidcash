@@ -246,10 +246,16 @@ describe('a hop whose implementation entry refuses', () => {
   it('broadcasts no initialize a participant past the frames refuses, and names it', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployedWithCallerCoin(network, refusingValidatorOf(PROXY_CATEGORY));
-    expect(funded.initialize.verdicts.filter((verdict) => !verdict.accepted))
-      .toStrictEqual([{ id: 'validator', index: 1, accepted: false, objection: VALIDATOR_REFUSAL }]);
+    const refused = funded.initialize.verdicts.filter((verdict) => !verdict.accepted);
+    expect(refused).toEqual(expect.arrayContaining([
+      { id: 'validator', index: 1, accepted: false, objection: VALIDATOR_REFUSAL },
+    ]));
+    expect(refused.every((verdict) => verdict.accepted === false)).toBe(true);
     expect(funded.initialize.accepted).toBe(false);
     expect(funded.initialize.broadcast).toBeUndefined();
     expect(await unspent(network, funded.deployerLock, funded.hopCoin)).toBe(true);
+    // Neither genesis was published, so a refusal cannot leave an uninitialized proxy to initialize later.
+    expect(await network.getUtxosByTokenCategory(funded.proxyCategoryId)).toEqual([]);
+    expect(await network.getUtxosByTokenCategory(funded.implementationCategoryId)).toEqual([]);
   });
 });

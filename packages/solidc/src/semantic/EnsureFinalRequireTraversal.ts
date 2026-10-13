@@ -43,6 +43,7 @@ import {
 } from '../ast/AST.js';
 import { YulFunctionCallNode, YulNode } from '../ast/YulAST.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { bareReturnIsUnguarded } from './EarlyReturnTransformation.js';
 import { hasAuthorizingSignatureGuard, hasUnconditionalAuthorizingSignatureGuard, keyIsCallerChosen } from './SymbolTableTraversal.js';
 import {
   EmptyFunctionError, FinalRequireStatementError, MissingReturnError, ReturnInExternalFunctionError,
@@ -129,8 +130,8 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
     checkUnauthenticatedSelfdestruct(node, this.allowUnsafeOperations);
 
     // An upgrade swaps in caller-supplied bytecode and a deploy emits a child from caller-supplied arguments;
-    // either must authenticate against a key the caller cannot choose or it is a permissionless takeover. The
-    // kernel lane manages lifecycle authority through its own signature policy, so this check is disabled there.
+    // either must authenticate against a key the caller cannot choose or it is a permissionless takeover.
+    // The rule holds in message-bus builds too: a route does not add a trusted key the source omitted.
     checkLifecycleAuthorization(node, this.allowUnsafeOperations, this.lifecycleAuthorization);
 
     const visibility = node.visibility;
@@ -297,6 +298,14 @@ function ensureFinalStatementIsRequire(
   const finalStatement = statementsWithoutLogs[statementsWithoutLogs.length - 1];
 
   if (!finalStatement) return;
+
+  // A bare return before the only require ends that path with success. The later require does not gate it.
+  if (bareReturnIsUnguarded(statementsWithoutLogs)) {
+    const returning = statementsWithoutLogs.find((statement) => statement instanceof ReturnNode
+      || statement instanceof BranchNode) ?? finalStatement;
+    warnOrThrowUnverified(returning, strict);
+    return;
+  }
 
   // An unconditional require/assert/revert/timeop anywhere in this scope gates the whole path (codegen
   // appends OP_1 after trailing statements), so the path is verified even when it doesn't END in a require

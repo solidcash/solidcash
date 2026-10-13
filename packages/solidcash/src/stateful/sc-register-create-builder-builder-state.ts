@@ -338,9 +338,17 @@ export function registerCreateBuilderBuilderState(
   // P5b COMPUTED values: register the collections whose value chunks must be DERIVED from the trace (the covenant
   // pins them but the SDK has no value param to build them). The auto-derivation reads nNew from the entry's len4
   // and progressively extracts the pinned chunk commitments (like dynamicChunkVars).
+  const ownerMasterLock = ((): Uint8Array | undefined => {
+    const hex = host.inner?.lockingBytecode;
+    if (typeof hex !== 'string') return undefined;
+    const lock = hexToBin(hex);
+    return lock.length === 35 ? lock : undefined;
+  })();
   const ordinaryProductions = params.ordinaryTransportedRoute ? transportedProductions : [];
   for (const production of ordinaryProductions) {
-    const chunks = chunksFromValue(production.value, { write: production.write });
+    const chunks = ownerMasterLock
+      ? chunksFromValue(production.value, { write: production.write, masterLock: ownerMasterLock })
+      : [];
     const localBase = production.write.outputBase - (overrides?.blockBase ?? 0);
     if (chunks.length !== production.write.outputCount || chunks.length === 0 || localBase < 0) {
       throw new Error('Ordinary routed value production has no exact continuation band.');
@@ -388,7 +396,8 @@ export function registerCreateBuilderBuilderState(
     const value = production.value as Uint8Array;
     const resource = valueChunkWriteResourceIdentity(write);
     const localBase = write.outputBase - blockBase;
-    const chunks = value instanceof Uint8Array ? chunksFromValue(value, { write }) : [];
+    const chunks = value instanceof Uint8Array && ownerMasterLock
+      ? chunksFromValue(value, { write, masterLock: ownerMasterLock }) : [];
     if (transportedByResource.has(resource) || write.categoryId.toLowerCase() !== host.categoryId.toLowerCase()
       || !Number.isSafeInteger(localBase) || localBase < 0 || chunks.length !== write.outputCount
       || chunks.length === 0) {

@@ -611,6 +611,18 @@ export class FunctionTypeNotEncodableError extends SolidCashError {
   }
 }
 
+export class UncheckedFunctionIdParameterError extends SolidCashError {
+  constructor(node: Node, name: string, detail: string) {
+    super(node, `Function parameter '${name}' ${detail}`);
+  }
+}
+
+export class UncheckedFunctionIdValueError extends SolidCashError {
+  constructor(node: Node, source: string, detail: string) {
+    super(node, `A function id from ${source} ${detail}`);
+  }
+}
+
 export class ConstantModificationError extends SolidCashError {
   constructor(
     node: VariableDefinitionNode | ConstantDefinitionNode,

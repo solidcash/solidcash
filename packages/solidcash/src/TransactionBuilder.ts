@@ -269,7 +269,11 @@ export class TransactionBuilder {
     const sidecarOutpoints = new Set(utxos.map((u) => `${u.txid}:${u.vout}`));
     if (this.inputs.some((i) => sidecarOutpoints.has(`${i.txid}:${i.vout}`))) return this; // already co-spent
 
-    const sidecar = utxos[0];
+    // A token at this public lock is not the library side-car. Skip it instead of spending utxos[0].
+    const sidecar = utxos.find((utxo) => utxo.token === undefined);
+    if (sidecar === undefined) {
+      throw new Error('External-library side-car UTXO not found; deploy it before spending a library contract.');
+    }
     const unlocker: Unlocker = {
       generateUnlockingBytecode: () => scriptToBytecode([sidecarRedeem]), // PUSHDATA(redeem)
       generateLockingBytecode: () => sidecarLock,
@@ -294,7 +298,8 @@ export class TransactionBuilder {
     const utxos = await this.provider.getUtxosForLockingBytecode(lock);
     // Pick a side-car UTXO not already co-spent (an N-call function co-spends N distinct side-cars at this
     // address, one per keccak256 call - deploy one mutable-NFT side-car per call).
-    const sidecar = utxos.find((u) => !this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout));
+    const sidecar = utxos.find((u) => u.token?.nft?.capability === 'mutable'
+      && !this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout));
     if (!sidecar) {
       throw new Error('keccak256 compute side-car UTXO not available; deploy one mutable-NFT side-car per '
         + 'batch of up to three keccak256 calls in the spent function.');
@@ -423,7 +428,8 @@ export class TransactionBuilder {
       this.provider.getUtxosForLockingBytecode(lockA), this.provider.getUtxosForLockingBytecode(lockB),
     ]);
     const free = (utxos: Utxo[]): Utxo | undefined => utxos.find(
-      (u) => !this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout),
+      (u) => u.token?.nft?.capability === 'mutable'
+        && !this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout),
     );
     const scA = free(utxosA), scB = free(utxosB);
     if (!scA || !scB) {

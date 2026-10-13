@@ -2174,6 +2174,13 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
     const operand = (a: YulExpressionNode): ExpressionNode => (isBytes32Word(a)
       ? loc(new CastNode(UINT256, lowerValue(a), false), call)
       : lowerValue(a));
+    // add/sub/mul wrap mod 2^256, including when one operand is a literal. div/mod keep their checked form.
+    if (name === 'add' || name === 'sub' || name === 'mul') {
+      const word = (a: YulExpressionNode): ExpressionNode => loc(new CastNode(UINT256, operand(a), false), call);
+      const wrapped = loc(new BinaryOpNode(word(args[0]), ARITH_OPS[name], word(args[1])), call);
+      wrapped.yulWrapping = true;
+      return wrapped;
+    }
     return loc(new BinaryOpNode(operand(args[0]), ARITH_OPS[name], operand(args[1])), call);
   }
   if (name in BITWISE_OPS && args.length === 2) {

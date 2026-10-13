@@ -1484,6 +1484,8 @@ export class WhileNode extends StatementNode {
 export class CollectionIterationNode extends StatementNode {
   collection?: CollectionNode;
   collectionIterationIndex: number = -1;
+  /** Bool local set by a lowered `break`. The iteration loop exits once it is true. */
+  breakFlagName?: string;
 
   constructor(
     public mode: CollectionIterationMode,
@@ -2015,6 +2017,8 @@ export class SliceNode extends ExpressionNode {
 export class BinaryOpNode extends ExpressionNode {
   // Written in source or desugared from it: an integer literal operand takes the bounded operand's type.
   sourceArithmetic?: boolean;
+  // Yul add/sub/mul are 256-bit words and wrap. Checked Solidity arithmetic does not.
+  yulWrapping = false;
 
   constructor(
     public left: ExpressionNode,

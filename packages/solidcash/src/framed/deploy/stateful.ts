@@ -24,8 +24,10 @@
 import { encodeLockingBytecodeP2sh32, lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { decodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { framedValidator } from 'solidc/runtime';
 import type { Artifact } from '@solidcash/utils';
+import type { TransactionDetails } from '../../interfaces.js';
 import type { ConstructorArgument } from '../../Argument.js';
 import { Contract } from '../../Contract.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
@@ -44,6 +46,15 @@ export class FramedDeployError extends Error {
   public constructor(message: string) {
     super(message);
   }
+}
+
+/** The genesis transaction's bytes and txid, without broadcasting it. */
+function unbroadcastGenesis(builder: { build: () => string }): TransactionDetails {
+  const hex = builder.build();
+  const bytes = hexToBin(hex);
+  const decoded = decodeTransaction(bytes);
+  if (typeof decoded === 'string') throw new FramedDeployError(decoded);
+  return { ...decoded, txid: binToHex(hash256(bytes).reverse()), hex };
 }
 
 /** The byte length of the transaction the builder would broadcast, which sizes the default fee. */
@@ -89,6 +100,15 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // not decide it; a deployment that states none takes the funder's lock when it is a P2PKH lock.
   const funderLock = options.funder.generateLockingBytecode();
   const senderLockingBytecode = options.senderLockingBytecode ?? (funderLock.length === 25 ? funderLock : undefined);
+  const constructorReadsSender = artifact.abi.some(
+    (entry) => entry.name === '__construct' && entry.usesMsgSender === true,
+  );
+  if (constructorReadsSender && senderLockingBytecode === undefined) {
+    throw new FramedDeployError(
+      `the constructor of "${artifact.contractName}" reads msg.sender, and no 25-byte P2PKH sender lock is known. `
+      + 'Pass senderLockingBytecode, or fund the deployment with a P2PKH unlocker.',
+    );
+  }
   // Every sorted collection an entry can write needs its empty head sentinel minted here, because a first insert
   // splices beside it and a head is minted only at genesis. A collection the constructor's own plan writes carries
   // the head that plan relinked, and the genesis filters that one out; a caller that names extra collections (a
@@ -106,6 +126,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     constructorArgs: constructorValues,
     ...(senderLockingBytecode === undefined ? {} : { senderLockingBytecode }),
     ...(options.initialState === undefined ? {} : { initialState: options.initialState }),
+    ...(options.recordCommitments === undefined ? {} : { recordCommitments: options.recordCommitments }),
     ...(headCollections.length === 0 ? {} : { headCollections }),
     ...(options.provider.consensusLimits?.maximumNftCommitmentBytes === undefined
       ? {} : { maximumNftCommitmentBytes: options.provider.consensusLimits.maximumNftCommitmentBytes }),
@@ -210,7 +231,13 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     addFunded({
       to: entryRecordLockingBytecode(categoryId, signature),
       amount: dataNftAmount,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: entry.commitment } },
+      token: {
+        category: categoryId, amount: 0n,
+        nft: {
+          capability: 'mutable',
+          commitment: options.writtenHeadCommitments?.[entry.collection] ?? entry.commitment,
+        },
+      },
     });
   }
   // The chunk records the constructor's frame wrote, each at the value's own collection covenant carrying the
@@ -221,6 +248,12 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       amount: dataNftAmount,
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: chunk.commitment } },
     });
+  }
+
+  // An initialize hop's new chunks and events are minted here, so the proxy genesis is already the initialized
+  // state and a later refusal cannot leave an uninitialized proxy on the chain.
+  for (const extra of options.extraOutputs ?? []) {
+    addFunded(extra);
   }
 
   // Immutable CREATE identity anchors: category-bearing discovery records the factory path expects to find at the
@@ -254,7 +287,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     builder.outputs.pop();
   }
 
-  const tx = await builder.send();
+  const tx = options.broadcast === false ? unbroadcastGenesis(builder) : await builder.send();
 
   // A framed artifact bakes its constructor arguments into the filled program the genesis published rather than
   // into the handle's redeem script, so the handle is built without repeating them.

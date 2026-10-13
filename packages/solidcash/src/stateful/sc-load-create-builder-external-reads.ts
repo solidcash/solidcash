@@ -32,6 +32,7 @@ export interface LoadCreateBuilderExternalReadsHost {
   ): Promise<Utxo | undefined>;
   getUtxos(address: string): Promise<Utxo[]>;
   keysMatch(a: unknown, b: unknown, keyType: string): boolean;
+  externalMasterLock?(categoryId: string): Uint8Array | undefined;
 }
 
 export interface LoadCreateBuilderExternalReadsOverrides {
@@ -126,7 +127,10 @@ export async function loadCreateBuilderExternalReads(
         }
 
         const collectionHash = computeCollectionHash(collectionSignature);
-        const entryCovenantScript = buildEntryNftCovenantScript(hexToBin(externalCategoryId), collectionHash);
+        const externalLock = host.externalMasterLock?.(externalCategoryId);
+        const entryCovenantScript = buildEntryNftCovenantScript(
+          hexToBin(externalCategoryId), collectionHash, externalLock,
+        );
         const entryAddress = scriptToAddress(
           entryCovenantScript, host.network, host.addressType, true,
         );
@@ -183,6 +187,7 @@ export async function loadCreateBuilderExternalReads(
         if (entryUtxo) {
           const unlocker = createReadOnlyEntryNftUnlocker(
             host.unlockerContract, externalCategoryId, collectionSignature,
+            host.externalMasterLock?.(externalCategoryId), false,
           );
           externalReadUtxos.push({ ...entryUtxo, unlocker });
         }

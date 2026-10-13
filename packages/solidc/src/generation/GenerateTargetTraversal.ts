@@ -1499,6 +1499,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * did not touch rebuilds the record: the record's value there is the one the frame left.
    */
   private framedRecordSegment = new Map<number, number>();
+  /** The last segment each record block offset was written in. A later touch of it is a read past a call. */
+  private framedRecordWriteSegment = new Map<number, number>();
   /**
    * The segment a record read resolves against while a site is emitted for a known segment rather than the one the
    * body is currently in (a record rebuilt for a segment the body has already left).
@@ -8552,6 +8554,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.framedLoweredSites = new Set<ExternalFunctionCallNode>();
     this.framedArgumentCallValues = new Map<ExternalFunctionCallNode, string>();
     this.framedRecordSegment = new Map();
+    this.framedRecordWriteSegment = new Map();
     this.framedReadSegment = undefined;
     this.framedBatchWriteSegment = 0;
     this.framedBatchWriteRuntime = false;
@@ -23813,7 +23816,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private framedFieldWritten(sv: StateVariableNode, key: string, node: Node): void {
     if (this.framedMaster && this.readsRecordsFromFrame) {
       const blockOffset = this.compactOffsetMap.get(sv.nftIndex);
-      if (blockOffset !== undefined) this.framedRecordSegment.set(blockOffset, this.framedSegmentIndex);
+      if (blockOffset !== undefined) {
+        this.framedRecordSegment.set(blockOffset, this.framedSegmentIndex);
+        this.framedRecordWriteSegment.set(blockOffset, this.framedSegmentIndex);
+      }
     }
     this.framedStaleWrites.delete(key);
     this.framedFieldSet(key);
@@ -34275,11 +34281,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const [nftIdx, compactOffset] of this.compactOffsetMap) {
       const fields = nftFields.get(nftIdx);
       const hasWrite = fields?.some((sv) => this.pendingStateWrites.has(`${sv.nftIndex}:${sv.fieldIndex}`));
-      // A scalar the body wrote before its last call is closed: the slot still holds that earlier value, and a
-      // frame of this contract below the call may have rewritten the record. The end segment keeps the view the
-      // chain carried in, so rebuilding from the slot would publish the pre-call value over that write.
+      // A scalar the body wrote before a call and read again past it is closed: the slot still holds the pre-call
+      // value, and a frame of this contract below the call may have rewritten the record. The segment of that read
+      // keeps the view the chain carried in. A record last touched where it was written keeps the rebuild below.
+      const touchedAt = this.framedRecordSegment.get(compactOffset);
+      const writtenAt = this.framedRecordWriteSegment.get(compactOffset);
       const closedByLaterCall = this.framedMaster && hasWrite === true && fields !== undefined
-        && this.framedRecordWrittenAtEnd(fields) === 'none';
+        && this.framedRecordWrittenAtEnd(fields) === 'none'
+        && touchedAt !== undefined && writtenAt !== undefined && touchedAt > writtenAt;
 
       if (hasWrite && fields && !closedByLaterCall) {
         // Written NFT: reconstruct commitment from field values and verify
@@ -34421,6 +34430,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.pushToStack('(value)');
           this.emit(Op.OP_EQUALVERIFY, locationData);
           this.popFromStack(2);
+        } else if (closedByLaterCall) {
+          // Held where the body last read it, which is past every write it made.
+          const previousReadSegment = this.framedReadSegment;
+          this.framedReadSegment = touchedAt;
+          this.emitDataNftCommitmentPreservation(compactOffset, locationData);
+          this.framedReadSegment = previousReadSegment;
         } else {
           this.emitDataNftCommitmentPreservation(compactOffset, locationData);
         }

@@ -4689,7 +4689,8 @@ function participantUtxo(
   const pool = id === PROXY_MASTER_ID || id === IMPLEMENTATION_MASTER_ID ? pools.masters
     : id === VALIDATOR_ID ? pools.validators
       : undefined;
-  return pool?.[0];
+  // A split implementation holds one pool per entry lock, so the master is the one at the lock the plan spends.
+  return pool?.find(sameLock) ?? pool?.[0];
 }
 
 /**

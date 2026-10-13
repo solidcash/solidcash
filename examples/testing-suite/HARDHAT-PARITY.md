@@ -214,9 +214,9 @@ Height advancement exists; **timestamp/time control does NOT** (mock block time 
   duration.{seconds..years}`. mock is now indexer-authoritative for block time (`setNextBlockTimestamp` is a
   mem-cash pending value; `increase`/`increaseTo` are immediate + mine). **These drive Solidity `block.timestamp`
   / `block.number`** (the Hardhat surface) via the oracle bridge below - NOT `tx.locktime`. DONE.
-- [x] **block.* oracle bridge**: `mockBlockOracleRpc(provider)` sources height/time from the mock chain so a
-  `BlockOracleUpdater` propagates harness time-travel into a contract's `__block_timestamp`/`__block_number`
-  registers. Proven by `test/block-timestamp.test.ts` (TimeVault withdraw locks then unlocks). DONE.
+- [x] **block.* oracle bridge**: the mock chain writes its height/time into the shared block-oracle commitment
+  that `block.*` readers co-spend; `mockBlockOracleRpc(provider)` lets a `BlockOracleUpdater` run against the
+  mock chain. Proven by `test/block-timestamp.test.ts` (TimeVault withdraw locks then unlocks). DONE.
 - [x] **Raw RPC shim**: intercept `provider.send("evm_increaseTime"|"evm_mine"|"evm_setNextBlockTimestamp")` so
   ported EA/MS time-travel calls (which call raw RPC) run verbatim. P1. DONE: MockNetworkProvider.send handles
   evm_snapshot/revert/mine/increaseTime/setNextBlockTimestamp/setAutomine + eth_blockNumber/chainId; hex-quantity

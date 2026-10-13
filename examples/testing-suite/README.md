@@ -51,7 +51,7 @@ standalone `solidcash.config.ts` instead; the Hardhat config is never modified.
   `.waitForDeployment()`, `upgrades.deployProxy(...)`.
 - **Fixtures**: `loadFixture(namedFixture)` snapshots the chain and restores it between tests.
 - **Time travel**: `time.increase(sec)` / `time.increaseTo(ts)` / `mine(n)` / `mineUpTo(h)`. These drive Solidity
-  `block.timestamp` / `block.number` (via the `mockBlockOracleRpc` + `BlockOracleUpdater` bridge) - see
+  `block.timestamp` / `block.number` (the mock chain writes them into the block oracle readers co-spend) - see
   `test/block-timestamp.test.ts`.
 - **Matchers**: `import { expect } from '@solidcash/testing/chai'` (or aliased `'chai'`) for
   `.to.be.revertedWith(...)`, `.to.emit(c, e).withArgs(...)`, `.to.equal(...)` (BigInt), `.changeBchBalance(...)`,

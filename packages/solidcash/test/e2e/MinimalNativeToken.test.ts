@@ -34,16 +34,18 @@ describe('MinimalNativeToken bytecode budget', () => {
       'transfer', 'approve', 'allowance', 'transferFrom',
       'wrap', 'withdraw',
     ]) expect(abi).toContain(name);
-    for (const name of ['deposit', 'claimDeposit', 'cancelDeposit', '__updateBlockOracle']) {
+    for (const name of ['deposit', 'claimDeposit', 'cancelDeposit']) {
       expect(abi).not.toContain(name);
     }
+    // Immediate BchNative has no quarantine timing, so it reads no block oracle and has no lock pin to bind.
+    expect(artifact.usesBlockOracle).toBeUndefined();
+    expect(artifact.blockOracleLockSlots).toBeUndefined();
     expect(abi).not.toContain('setQuarantineBlocks');
     expect(abi).not.toContain('quarantineBlocks');
     expect(abi).not.toContain('name');
     expect(abi).not.toContain('symbol');
     expect(abi).not.toContain('decimals');
     expect(artifact.stateLayout?.variables.map((entry) => entry.name)).not.toContain('quarantineBlocks');
-    expect(artifact.stateLayout?.variables.map((entry) => entry.name)).not.toContain('__block_number');
     expect(artifact.stateLayout?.collections.map((entry) => entry.name)).not.toContain('pendingDeposits');
 
     const deployed = new Contract(

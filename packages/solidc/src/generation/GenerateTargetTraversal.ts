@@ -47586,8 +47586,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SUB, loc);
     this.emit(Op.OP_SPLIT, loc);
     this.emit(Op.OP_NIP, loc);                     // last 35 bytes, the pinned master lock
-    this.emit(encodeInt(3n), loc);
-    this.emit(Op.OP_PICK, loc);                    // base, the master input
+    // A direct delegate's base is its implementation input; the pinned category, so the anchor, is the proxy's.
+    if (this.usesDelegateExecutorBlockBase()) {
+      this.emitMasterInputIndex(loc, 2);           // flag and suffix sit untracked above [cat, base, j]
+    } else {
+      this.emit(encodeInt(3n), loc);
+      this.emit(Op.OP_PICK, loc);                  // base, the master input
+    }
     this.emit(Op.OP_UTXOBYTECODE, loc);
     this.emit(Op.OP_EQUAL, loc);                   // [cat, base, j, flag, isAnchor]
     this.emit(Op.OP_ELSE, loc);

@@ -2796,8 +2796,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** `[category]` -> `[lock, category]`: the lock of the input holding this body's minting baton. */
-  private emitRecordMasterLockUnder(locationData: SingleLocationData): void {
-    this.emitRecordMasterLock(locationData);
+  private emitRecordMasterLockUnder(locationData: SingleLocationData, untracked = 0): void {
+    this.emitRecordMasterLock(locationData, untracked);
     this.emit(Op.OP_SWAP, locationData);
   }
 
@@ -26452,8 +26452,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // ===== Mapping (Entry NFT) Support =====
 
-  /** Transform the category id on top into this collection's entry P2SH32, sharing the baked covenant per contract. */
-  private emitSortedEntryAddress(collectionHash: Uint8Array, loc: SingleLocationData): void {
+  /**
+   * Transform the category id on top into this collection's entry P2SH32, sharing the baked covenant per contract.
+   * `untracked` counts the items above the tracked frame, the category included when untracked: a handler picks
+   * the proxy master by its distance from the top.
+   */
+  private emitSortedEntryAddress(collectionHash: Uint8Array, loc: SingleLocationData, untracked = 0): void {
     // The shared body binds the executing input's lock, or takes it on top. A delegate binds the proxy master's,
     // which emitBoundEntryP2sh32 feeds.
     const id = this.recordsBelongToProxyMaster()
@@ -26461,7 +26465,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (id !== undefined) {
       this.bumpSubroutineUse(id);
       if (this.subroutineDefined.get(id)) {
-        if (this.lockParameterisedHelperIds.has(id)) this.emitRecordMasterLock(loc);
+        if (this.lockParameterisedHelperIds.has(id)) this.emitRecordMasterLock(loc, untracked);
         this.emit(encodeInt(id), loc);
         this.emit(Op.OP_INVOKE, loc);
         return;
@@ -26471,7 +26475,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Callers hold the category tracked or untracked, as the shared helper leaves the tracker alone. The inline
     // build renames the tracked top, which for an untracked category is a caller's value (a route's return blob).
     const tracked = [...this.stack];
-    this.emitEntryP2sh32(collectionHash, loc);
+    this.emitEntryP2sh32(collectionHash, loc, undefined, untracked);
     this.stack.splice(0, this.stack.length, ...tracked);
   }
 
@@ -27781,11 +27785,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_FROMALTSTACK, loc);
       this.emit(Op.OP_EQUALVERIFY, loc);
 
-      // Collection-specific entry address -> [v, Hk, addr].
+      // Collection-specific entry address -> [v, Hk, addr]. Hk stays untracked beneath the tracked category.
       this.emitMasterInputIndex(loc, 1); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
       this.emitTakeFirst32(loc);
       this.pushToStack('(batchaddr)');
-      this.emitSortedEntryAddress(collectionHash, loc);
+      this.emitSortedEntryAddress(collectionHash, loc, 1);
       this.popFromStack();
 
       // The proof index may alias another logical slot's physical input. Authenticate its address and require it is
@@ -27950,11 +27954,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       });
     }
 
-    // 3. entry address -> [v, Hk32, entryAddr]
+    // 3. entry address -> [v, Hk32, entryAddr]. Hk32 stays untracked beneath the tracked category.
     this.emitMasterInputIndex(loc, 1); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc);
     this.pushToStack('(sortedaddr)');
-    this.emitSortedEntryAddress(collectionHash, loc);
+    this.emitSortedEntryAddress(collectionHash, loc, 1);
     this.popFromStack();
 
     // 4. co-spent entry input[slot]: bytecode == entryAddr, read [coSlot|coNext|coValue]
@@ -28022,7 +28026,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitMasterInputIndex(loc, 5); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc);
     this.pushToStack('(__new_entry_category)');
-    this.emitSortedEntryAddress(collectionHash, loc);
+    this.emitSortedEntryAddress(collectionHash, loc, 5);
     // Chunkable-array mapping NEWs that sit after route-preserved sibling dyn chunks prefer the authenticated
     // absolute base. Ordinary mapping INSERTs keep reconstruct-from-trailingBase (registerUser / initialize).
     const preferAbsoluteDynBase = (this.currentFunction.entryAccesses ?? [])
@@ -42543,9 +42547,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     collectionHash: Uint8Array,
     locationData: SingleLocationData,
     lock?: { stack: string } | { output: string } | { input: string } | 'under',
+    untracked = 0,
   ): void {
     if (this.directConvention && !this.framedMaster) {
-      this.emitBoundEntryP2sh32(collectionHash, locationData, lock);
+      this.emitBoundEntryP2sh32(collectionHash, locationData, lock, untracked);
       return;
     }
     const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
@@ -42599,16 +42604,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Entry address bound to a 35-byte master lock. The category is the tracked top item.
-   * `under` means the raw lock is already the untracked item beneath it. A stack, input, or output source
-   * copies that master lock. The default is this body's master: the executing input, or a delegate's proxy.
+   * Entry address bound to a 35-byte master lock. The category is the top item, tracked unless `untracked`, the
+   * count of items above the tracked frame, includes it. `under` means the raw lock is already the untracked item
+   * beneath it. A stack, input, or output source copies that master lock. The default is this body's master: the
+   * executing input, or a delegate's proxy.
    */
   private emitBoundEntryP2sh32(
     collectionHash: Uint8Array,
     locationData: SingleLocationData,
     lock?: { stack: string } | { output: string } | { input: string } | 'under',
+    untracked = 0,
   ): void {
-    if (this.invokeLockedEntryAddress(collectionHash, locationData, lock)) {
+    if (this.invokeLockedEntryAddress(collectionHash, locationData, lock, untracked)) {
       this.popFromStack();
       this.pushToStack('(value)');
       return;
@@ -42616,21 +42623,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (lock === 'under') {
       // [lock, category] already.
     } else if (lock !== undefined && 'stack' in lock) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(lock.stack))), locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex(lock.stack) + untracked)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.emit(Op.OP_SWAP, locationData);
     } else if (lock !== undefined && 'output' in lock) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(lock.output))), locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex(lock.output) + untracked)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.emit(Op.OP_OUTPUTBYTECODE, locationData);
       this.emit(Op.OP_SWAP, locationData);
     } else if (lock !== undefined && 'input' in lock) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(lock.input))), locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex(lock.input) + untracked)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.emit(Op.OP_UTXOBYTECODE, locationData);
       this.emit(Op.OP_SWAP, locationData);
     } else {
-      this.emitRecordMasterLockUnder(locationData);
+      this.emitRecordMasterLockUnder(locationData, untracked);
     }
     this.encodeLockAndCategory(locationData);
     this.emitBoundEntryCovenant(collectionHash, locationData);
@@ -42647,6 +42654,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     collectionHash: Uint8Array,
     locationData: SingleLocationData,
     lock?: { stack: string } | { output: string } | { input: string } | 'under',
+    untracked = 0,
   ): boolean {
     if (lock === undefined && !this.recordsBelongToProxyMaster()) return false;
     const hashHex = binToHex(collectionHash);
@@ -42660,10 +42668,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (lock === 'under') {
       this.emit(Op.OP_SWAP, locationData);
     } else if (lock === undefined) {
-      this.emitRecordMasterLock(locationData);
+      this.emitRecordMasterLock(locationData, untracked);
     } else {
       const source = 'stack' in lock ? lock.stack : 'output' in lock ? lock.output : lock.input;
-      this.emit(encodeInt(BigInt(this.getStackIndex(source))), locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex(source) + untracked)), locationData);
       this.emit(Op.OP_PICK, locationData);
       if ('output' in lock) this.emit(Op.OP_OUTPUTBYTECODE, locationData);
       if ('input' in lock) this.emit(Op.OP_UTXOBYTECODE, locationData);

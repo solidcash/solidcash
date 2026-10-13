@@ -1953,6 +1953,9 @@ export class StatefulTransactionBuilder {
       externalIdentityAnchorUtxos: this.externalIdentityAnchorUtxos,
       logicalIdentityUtxo: this.logicalIdentityUtxo,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
+      runtimeLoopOrComposed: this.getComposedBlockBase() > 0 || this.runtimeLoopTrailingSegments.length > 0
+        || this.runtimeLoopEventOutputs.length > 0 || this.runtimeLoopTransferOutputs.length > 0,
+      masterUnlocker: () => this.masterUtxo.unlocker,
       getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       getValueChunkVars: () => this.getValueChunkVars(),
       valueChunkRawCommitments: this.valueChunkRawCommitments,

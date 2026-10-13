@@ -29,7 +29,7 @@ import {
 import { isValidComputedValueChunkCommitmentEncoding } from '../stateful/computed-value-chunk-pin.js';
 import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import type { ResolvedLogicalIdentity } from '../stateful/logical-identity.js';
+import { isScidIdentityCommitment, type ResolvedLogicalIdentity } from '../stateful/logical-identity.js';
 import {
   createDestroyDataNftUnlocker, createMessageBusVerifierUnlocker,
   getDynamicChunkAddress, getMessageBusEnvelopeTransport,
@@ -187,16 +187,18 @@ export interface AssembleAtomicCompositionContext {
   predOutClaimsSlot: { current?: AssemblePredOutClaimsByParticipant };
 }
 
+export interface UnpairedBlockInput {
+  satoshis: bigint;
+  token?: Output['token'];
+  unlocker: { generateLockingBytecode(): Uint8Array };
+}
+
 /**
  * SDKCORE-1. An unpaired block slot is alignment padding. Only the balanced dummy funder is recreated
  * at OP_TRUE, which the later trim drops. Any other input is recreated at its own lock, value, and token.
  * Paying that input's full value to OP_TRUE would let anyone sweep it.
  */
-export function outputForUnpairedBlockInput(input: {
-  satoshis: bigint;
-  token?: Output['token'];
-  unlocker: { generateLockingBytecode(): Uint8Array };
-}): Output {
+export function outputForUnpairedBlockInput(input: UnpairedBlockInput): Output {
   const lock = input.unlocker.generateLockingBytecode();
   if (input.token === undefined && binToHex(lock) === BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX) {
     return { to: Uint8Array.of(0x51), amount: input.satoshis };
@@ -212,6 +214,47 @@ export function outputForUnpairedBlockInput(input: {
       },
     }),
   };
+}
+
+/** Index of an output that already recreates `input`'s SCID identity anchor: same lock and token. */
+function recreatedIdentityAnchorIndex(input: UnpairedBlockInput, outputs: readonly Output[]): number | undefined {
+  const token = input.token;
+  const nft = token?.nft;
+  if (token === undefined || nft?.capability !== 'none' || !isScidIdentityCommitment(nft.commitment)) {
+    return undefined;
+  }
+  const lock = binToHex(input.unlocker.generateLockingBytecode());
+  const index = outputs.findIndex((output) => output.token?.nft?.capability === 'none'
+    && output.token.category.toLowerCase() === token.category.toLowerCase()
+    && output.token.nft.commitment.toLowerCase() === nft.commitment.toLowerCase()
+    && output.token.amount === token.amount
+    && binToHex(typeof output.to === 'string' ? addressToLockScript(output.to) : output.to) === lock);
+  return index < 0 ? undefined : index;
+}
+
+/**
+ * Pad the next unpaired block input. An SCID identity anchor the local build already recreated at an earlier slot
+ * is not minted again: it moves to its own slot and that slot takes its input's pad, or, if that input holds a
+ * token, it stays and its own slot keeps only the value.
+ */
+export function padUnpairedBlockInput(local: {
+  readonly inputs: readonly UnpairedBlockInput[];
+  outputs: Output[];
+  addOutput(output: Output): unknown;
+}): void {
+  const input = local.inputs[local.outputs.length];
+  const replica = recreatedIdentityAnchorIndex(input, local.outputs);
+  if (replica === undefined) {
+    local.addOutput(outputForUnpairedBlockInput(input));
+    return;
+  }
+  const displaced = local.inputs[replica];
+  if (displaced.token === undefined) {
+    local.outputs[replica] = outputForUnpairedBlockInput(displaced);
+    local.addOutput(outputForUnpairedBlockInput(input));
+  } else {
+    local.addOutput({ to: input.unlocker.generateLockingBytecode(), amount: input.satoshis });
+  }
 }
 
 /**
@@ -1546,8 +1589,7 @@ export async function assembleAtomicComposition(
       }
     }
     while (local.outputs.length < blockSize && local.outputs.length < local.inputs.length) {
-      const input = local.inputs[local.outputs.length];
-      local.addOutput(outputForUnpairedBlockInput(input));
+      padUnpairedBlockInput(local);
     }
     if (local.inputs.length !== blockSize || local.outputs.length !== blockSize) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

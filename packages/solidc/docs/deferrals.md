@@ -2005,20 +2005,19 @@ batch does); deletes past one fold their registers in batch order; the SDK plans
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 
 **What:** a delegated message-bus route binds the proxy's mapping entries and value chunks to the proxy master's lock
-(7d90dd4db), and a routed insert settles (RoutedDelegateProxyRecords.test.ts). Its update case is skipped. Seeding the
-records through a direct delegate fails first: `AutoMarkDelegateFunctions` runs before `SymbolTableTraversal`, where
-a bare `m[k] = v` is still an `ArrayAssignNode`, so a function whose only state writes are bare mapping or array
-writes is never marked delegate and `forward` refuses it. Counting those writes (a00dd2f72 on feat/pcm-anchorscan, not
-merged) gets `forward('seed')` to preflight, where it fails OP_VERIFY at input 2 with no require site (not diagnosed).
-Seeding through a first routed composition instead leaves two CREATE anchors at the proxy's logical address, and a
-second routed composition through that proxy is refused at build ("Logical contract identity ... ambiguous").
+(7d90dd4db). A routed insert settles, and so does a routed update seeded by a first routed insert
+(RoutedDelegateProxyRecords.test.ts): the second CREATE anchor that refused it ("Logical contract identity ...
+ambiguous") was the SDKCORE-1 pad mirroring an anchor the local build had already recreated, fixed in a35cff73b.
+Seeding the records through a direct delegate still fails: `AutoMarkDelegateFunctions` runs before
+`SymbolTableTraversal`, where a bare `m[k] = v` is still an `ArrayAssignNode`, so a function whose only state writes
+are bare mapping or array writes is never marked delegate and `forward` refuses it. Counting those writes (a00dd2f72 on
+feat/pcm-anchorscan, not merged) gets `forward('seed')` to preflight, where it fails OP_VERIFY at input 2 with no
+require site (not diagnosed).
 
 **Proposed design:** count bare state writes in the delegate marking once its effect on the delegate variants of
-every contract with bare mapping or array writers is measured; diagnose the direct-delegate chunked write; let a
-routed composition reuse the proxy's anchor instead of minting another.
+every contract with bare mapping or array writers is measured; diagnose the direct-delegate chunked write.
 
-**Why deferred:** each part changes delegate variants or identity anchoring beyond the merge; the routed insert
-settles.
+**Why deferred:** both parts change delegate variants beyond the merge; routed inserts and updates settle.
 
 ## An in-place upgrade of a contract that keeps records (CRYPTO-4 residual, 2026-10-13)
 

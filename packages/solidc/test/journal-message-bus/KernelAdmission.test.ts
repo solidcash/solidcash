@@ -784,9 +784,9 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  // An upgradable contract keeps no record: CRYPTO-4 binds each to the master lock an upgrade leaves.
   it('admits append-only in-place upgrades with compiler-authored lifecycle authority', () => {
     const artifact = compileString(`contract C() {
-      int count;
       function migrate() upgrade { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     const upgrade = artifact.messageBus?.handlers.find((handler) =>
@@ -823,8 +823,7 @@ describe('required kernel admission', () => {
 
   it('refuses upgrades on a delegate-owned route until proxy replacement semantics are explicit', () => {
     expect(denied(`contract C() {
-      int count;
-      function update(int next) public delegate { this.count = next; require(true); }
+      function update(int next) public delegate { require(next >= 0); }
       function replace() upgrade { require(true); }
     }`, 'replace')).toMatchObject({
       eligible: false, rejectionReason: 'KERNEL_FOREIGN_DELEGATE',

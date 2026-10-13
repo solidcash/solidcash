@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { decodeAuthenticationInstructions, hexToBin } from '@bitauth/libauth';
-import { bytecodeToAsm, messageBusVerifierLockingBytecode } from '@solidcash/utils';
+import {
+  asmToBytecode, bytecodeToAsm, messageBusVerifierCovenantBytecode, messageBusVerifierLockingBytecode,
+} from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../src/compiler.js';
 
 describe('message-bus compilation selection', () => {
@@ -26,8 +28,12 @@ describe('message-bus compilation selection', () => {
     expect(automatic.messageBus).toBeUndefined();
     expect(automatic.compiler.options?.messageBus).toBe(false);
     expect(automatic.bytecode).toBe(direct.bytecode);
-    expect(automatic.bytecode.length).toBeLessThan(optedIn.bytecode.length);
     expect(optedIn.messageBus).toBeDefined();
+    // A bus spend runs its master beside the verifier side-car, while a direct master carries every check
+    // inline (the reaudit's per-entry container checks among them), so lean is measured against both.
+    const bytes = (asm: string): number => asmToBytecode(asm).length;
+    const sidecar = messageBusVerifierCovenantBytecode(optedIn.messageBus!.verifierProgram!).length;
+    expect(bytes(automatic.bytecode)).toBeLessThan(bytes(optedIn.bytecode) + sidecar);
   });
 
   it('keeps a local helper call on the direct route', () => {

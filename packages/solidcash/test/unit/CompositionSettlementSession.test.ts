@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { binToHex } from '@bitauth/libauth';
 import { sha256 } from '@solidcash/utils';
 import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
 import { keyToSlot } from '../../src/stateful/SortedList.js';
@@ -31,6 +32,9 @@ import {
   markPersistedCompatibilityValueChunkReady,
   StatefulTransactionBuilder,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
+
+// A direct writer's value-chunk covenant binds its 35-byte master lock.
+const masterLock = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x5a), 0x87]);
 
 describe('composition settlement session CompositionSettlementSession', () => {
   afterEach(() => {
@@ -325,7 +329,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
     };
     const contract = {
       get provider() { legacyUnlockerProviders += 1; return provider; },
-      addressType: 'p2sh32', artifact: {},
+      addressType: 'p2sh32', artifact: {}, lockingBytecode: binToHex(masterLock),
     };
     const host = {
       externalCallUtxoGroups: [{
@@ -373,7 +377,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
     expect((placed[0] as { token: { category: string } }).token.category).toBe(categoryId);
     expect((placed[0] as { unlocker: { generateLockingBytecode(): Uint8Array } })
       .unlocker.generateLockingBytecode()).toEqual(
-      getValueChunkLockingBytecode(categoryId, 'jobEvents', slot, root),
+      getValueChunkLockingBytecode(categoryId, 'jobEvents', slot, root, masterLock),
     );
     provider.network = 'regtest';
     await runWithCompositionSettlementSession(session, () => ensurePersistedValueChunkInputs(legacyHost as never));
@@ -387,7 +391,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
     const foreign = 'bb'.repeat(32);
     const slot = keyToSlot(new Uint8Array());
     const root = sha256(new Uint8Array(80));
-    const lock = getValueChunkLockingBytecode(selected, 'jobEvents', slot, root);
+    const lock = getValueChunkLockingBytecode(selected, 'jobEvents', slot, root, masterLock);
     session.persistedJobEventsRecipes.set(selected, {
       slot, root, collection: 'jobEvents', categoryId: selected,
     });
@@ -402,7 +406,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
       },
     ]);
     const provider = { network: 'chipnet', getUtxos: async () => [] };
-    const contract = { provider, addressType: 'p2sh32', artifact: {} };
+    const contract = { provider, addressType: 'p2sh32', artifact: {}, lockingBytecode: binToHex(masterLock) };
     let placed: Array<{ txid: string; token: { category: string } }> = [];
     const host = {
       externalCallUtxoGroups: [{

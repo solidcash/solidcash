@@ -117,8 +117,12 @@ describe('selected satoshi-container resources', () => {
   it.each([true, undefined])('refuses an absent active container with selection=%s', async (selected) => {
     const getUtxos = vi.fn(async () => []);
     const route: MessageBusRuntimeAbiFunction = { ...active, messageBusActiveSatoshiContainer: selected };
+    // A direct contract's container covenant binds its 35-byte master lock.
+    const inner = {
+      addressType: 'p2sh32', provider: { getUtxos }, artifact: {}, lockingBytecode: `aa20${'5a'.repeat(32)}87`,
+    };
     await expect(loadCreateBuilderSatoshiContainer({
-      categoryId: '11'.repeat(32), inner: { addressType: 'p2sh32', provider: { getUtxos } },
+      categoryId: '11'.repeat(32), inner,
     }, { abiFunction: route, overrides: undefined })).rejects.toThrow(/Satoshi container UTXO not found/);
     expect(getUtxos).toHaveBeenCalledOnce();
   });

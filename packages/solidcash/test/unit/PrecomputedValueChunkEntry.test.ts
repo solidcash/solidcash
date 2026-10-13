@@ -44,9 +44,10 @@ function fixture(overrides: Record<string, unknown> = {}): {
     builder, entryRawCommitments, pinnedEntrySlots,
     register: (placement = {}) => registerCreateBuilderBuilderState({
       categoryId: '12'.repeat(32),
+      // Continuation locks bind the owner's 35-byte master lock.
       inner: { artifact: { stateLayout: { collections: [{
         name: 'records', signature: 'records:mapping(uint256 => bytes)',
-      }] } }, provider: { network: 'chipnet' }, addressType: 'p2sh32' },
+      }] } }, provider: { network: 'chipnet' }, addressType: 'p2sh32', lockingBytecode: `aa20${'5a'.repeat(32)}87` },
     }, {
       builder, oldDynamicChunkCommitments: new Map(), oldDynamicChunkCounts: new Map(),
       overrides: placement.blockBase === undefined ? undefined : { blockBase: placement.blockBase },

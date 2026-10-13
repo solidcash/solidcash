@@ -6694,7 +6694,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     };
     // The mock chain has no keeper. Refresh the state owner before reading it; nested participants are refreshed
     // lazily below, preserving one block context without scanning unrelated deployments on every SDK call.
-    await syncMockParticipantOracle(this);
+    // The owner's signed update is the keeper's write. A tip refresh first would make its final time a rewind.
+    if (functionName !== '__updateBlockOracle') await syncMockParticipantOracle(this);
     const stateLayout = this.inner.stateLayout!;
 
     if (mockStorage?._test) {

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { AbiFunction, Artifact } from '@solidcash/utils';
 import type { StatefulContract } from '../../src/stateful/StatefulContract.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../src/stateful/SortedList.js';
+import { getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
 import { deriveDirectCollectionLengthResult } from '../../src/message-bus/compute-recipe-producer-state.js';
 
 const category = 'ab'.repeat(32);
@@ -28,10 +29,14 @@ describe('direct collection-length compute producer', () => {
       slot, new Uint8Array(32), Uint8Array.from([5, 0, 0, 0, 0x52, 11, 0, 12, 0]),
     ));
     let queried = 0;
+    // Direct entry covenants bind a 35-byte master lock. A proxy's records bind the proxy's, not the executor's.
+    const ownerLock = `aa20${'5a'.repeat(32)}87`;
+    let ownerEntryAddress = '';
     const provider = {
       network: 'regtest',
-      getUtxos: async () => {
+      getUtxos: async (address: string) => {
         queried += 1;
+        if (address !== ownerEntryAddress) return [];
         return [
           { txid: '11'.repeat(32), vout: 0, satoshis: 1000n,
             token: { category: 'cd'.repeat(32), nft: { capability: 'mutable', commitment } } },
@@ -40,13 +45,21 @@ describe('direct collection-length compute producer', () => {
         ];
       },
     };
+    ownerEntryAddress = getEntryNftAddress({
+      artifact, provider, addressType: 'p2sh32', lockingBytecode: ownerLock,
+    } as never, category, collection.signature);
     const owner = {
       categoryId: category,
-      inner: { name: 'Proxy', artifact: { contractName: 'Proxy' }, provider, addressType: 'p2sh32' },
+      inner: {
+        name: 'Proxy', artifact: { contractName: 'Proxy' }, provider, addressType: 'p2sh32', lockingBytecode: ownerLock,
+      },
     } as unknown as StatefulContract;
     const executor = {
       categoryId: 'ef'.repeat(32),
-      inner: { name: 'SelectedImplementation', artifact, provider, addressType: 'p2sh32' },
+      inner: {
+        name: 'SelectedImplementation', artifact, provider, addressType: 'p2sh32',
+        lockingBytecode: `aa20${'6b'.repeat(32)}87`,
+      },
     } as unknown as StatefulContract;
     expect(await deriveDirectCollectionLengthResult({
       artifact, abiFunction, args: [7n], owner, executor, hasPriorOwnerWrite: false,

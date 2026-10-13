@@ -29,6 +29,8 @@ export function mockBlockOracleRpc(provider: BlockTimeProvider): RpcLike {
           return {
             height,
             time,
+            // The mock stamps the last 11 headers with the tip time, so that is also its median time past.
+            mediantime: time,
             bits: '1d00ffff',
             size: 1000,
             tx: [{ vout: [{ value: 50, scriptPubKey: { hex: coinbaseHex } }] }],

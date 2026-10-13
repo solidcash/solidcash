@@ -418,6 +418,7 @@ export async function assembleAtomicComposition(
   };
   const recordPhysicalDynamicOutputWitness = (
     input: UnlockableUtxo | undefined,
+    recordOwner: ContractUnlocker['contract'],
     outputs: readonly Output[],
     categoryId: string,
     physicalOutputBase: number,
@@ -435,7 +436,8 @@ export async function assembleAtomicComposition(
     const localOutputBase = resolveMaterializedDynamicWriteOutputBase({
       route,
       stateLayout: routeLayout,
-      contract: unlocker.contract,
+      // A chunk lock binds the record master's lock: a delegate's proxy, not the executing implementation.
+      contract: recordOwner,
       categoryId,
       outputs,
       // The compiler owns the dynamic writer's trailing band. Restrict provisional commitment
@@ -501,8 +503,8 @@ export async function assembleAtomicComposition(
       }
       actualSizes.push(blockSize);
       recordPhysicalDynamicOutputWitness(
-        local.inputs[0], local.outputs, categories[participant.participant], aggregate.outputs.length,
-        participant.blockLayout?.trailingBase,
+        local.inputs[0], contract.inner, local.outputs, categories[participant.participant],
+        aggregate.outputs.length, participant.blockLayout?.trailingBase,
       );
       for (let localIndex = 0; localIndex < local.inputs.length; localIndex += 1) {
         registerAggregateInput(local.inputs[localIndex], participant.participant, localIndex, 'direct participant block');
@@ -2333,7 +2335,7 @@ export async function assembleAtomicComposition(
     const routeInputOffset = participant.executionKind === 1 ? participant.executorOffset : 0;
     const routeInput = routeInputOffset === null ? undefined : local.inputs[routeInputOffset];
     recordPhysicalDynamicOutputWitness(
-      routeInput, local.outputs, categories[participant.participant], aggregate.outputs.length,
+      routeInput, contract.inner, local.outputs, categories[participant.participant], aggregate.outputs.length,
       participant.blockLayout?.trailingBase, selectedDynamicWrites,
     );
     if (participant.executionKind === 1 && routeInputOffset !== null) {

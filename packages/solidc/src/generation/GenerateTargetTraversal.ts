@@ -449,6 +449,8 @@ const GRAPH_DEPLOY_SITE = '__internal__graphDeploySite';
 // Handler-local execution bit for a single compiler-admitted conditional deployment occurrence. The route's
 // GRAPH_DEPLOY_SITE records dispatch ownership; this distinct bit records whether source control flow executed `new`.
 const GRAPH_CONDITIONAL_DEPLOY_REACHED = '__internal__handlerConditionalDeployReached';
+// Total value loop `new C{value: V}()` deploys sent from the satoshi container, for the container aggregate.
+const LOOP_VALUE_SENT = '(loop value sent)';
 // SEC-16. Route-local reached-site mask for token-transfer graph frames. A reached handler binds every slot in
 // its own window (including inactive/suffix slots); the route uses this mask to bind every window no row reached.
 // The low 8 bits are the reached-site mask; higher 16-bit fields count NFT occurrences per physical container.
@@ -9426,6 +9428,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.framedMaster) this.markConditionalTransferIndices(node.body);
       this.transfersPreallocatedAtFunctionStart = true;
     }
+    // Loop value deploys have no transfer register. Their counter*V totals here for the container aggregate.
+    if (deploySurvey.hasLoopValue && !this.isDefineSubTraversal) {
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(LOOP_VALUE_SENT);
+    }
 
     // The legacy message-bus dispatcher is a tree of nested selector branches whose leaves inline complete
     // handlers. Event indices belong to the dispatcher-wide semantic frame, not to the mutable list of leaves
@@ -12548,6 +12555,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_MUL, loc);
     this.popFromStack(2);
     this.pushToStack('(value)');
+    if (this.getStackIndex(LOOP_VALUE_SENT, true) >= 0) {
+      this.emit(Op.OP_DUP, loc);
+      this.pushToStack('(value)');
+      this.emit(encodeInt(BigInt(this.getStackIndex(LOOP_VALUE_SENT))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_ADD, loc);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      this.emitReplace(this.getStackIndex(LOOP_VALUE_SENT), this.loopValueTransferNode);
+      this.popFromStack();
+    }
     // containerOutput + counter*V
     this.emit(Op.OP_ADD, loc);
     this.popFromStack(2);
@@ -25524,9 +25543,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SPLIT, loc);
     this.emit(Op.OP_DROP, loc);
     this.pushToStack('(external_out_dynamic_category)');
-    this.emit(Op.OP_DUP, loc);
+    // Bound chunks take the owner master's lock. The length header's output is a data NFT at another lock.
+    const boundChunks = this.directConvention && !this.framedMaster;
+    if (boundChunks) {
+      this.emitExternalOutStateOutputIndex(info.externalOutStateSlotIndex, undefined, loc);
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);
+      this.emit(Op.OP_OVER, loc);
+    } else {
+      this.emit(Op.OP_DUP, loc);
+    }
     this.pushToStack('(external_out_dynamic_address)');
-    this.emitEntryP2sh32(chunkHash, loc, { output: '(external_out_dynamic_master)' });
+    this.emitEntryP2sh32(chunkHash, loc, boundChunks ? 'under' : undefined);
     this.stack[0] = '(external_out_dynamic_address)';
 
     // expected = ceil(length / DYNAMIC_CHUNK_SIZE); then initialize the scan. A dynamic state value keeps every
@@ -48998,6 +49025,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // [lock, inSum, outSum]. inSum and outSum are untracked, so a transfer amount sits two deeper than the model.
     for (const transfer of this.pendingTransfers) {
       this.emit(encodeInt(BigInt(this.getStackIndex(transfer.amountStackName) + 2)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_ADD, loc);
+    }
+    if (this.getStackIndex(LOOP_VALUE_SENT, true) >= 0) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(LOOP_VALUE_SENT) + 2)), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
     }

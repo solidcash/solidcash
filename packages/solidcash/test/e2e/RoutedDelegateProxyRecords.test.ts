@@ -143,14 +143,13 @@ describe('a routed delegate binds the proxy records to the proxy master lock', (
     expect(await records(f)).toEqual({ amount: 10n, note: binToHex(FIRST), atExecutorLock: 0 });
   }, 300_000);
 
-  // Deferred (deferrals.md, "A routed update of a proxy's records"): `seed` is not offered as a direct delegate,
-  // and a second routed composition through the proxy finds two identity anchors.
-  it.skip('settles a routed update that spends a delegate-written entry and its value chunks', async () => {
+  // A first routed insert writes the records, so the second composition also re-spends the proxy's identity anchor.
+  it('settles a routed update that spends a delegate-written entry and its value chunks', async () => {
     const f = await setup();
-    await expect(f.deployed.forward('seed', [1n, 10n, FIRST]).send()).resolves.toBeDefined();
+    await routedRecord(f, 1n, 10n, FIRST);
     expect(await records(f)).toEqual({ amount: 10n, note: binToHex(FIRST), atExecutorLock: 0 });
     await routedRecord(f, 1n, 20n, SECOND);
     expect(await records(f)).toEqual({ amount: 20n, note: binToHex(SECOND), atExecutorLock: 0 });
-    expect((await f.proxy.getState()).counter).toBe(1n);
+    expect((await f.proxy.getState()).counter).toBe(2n);
   }, 300_000);
 });

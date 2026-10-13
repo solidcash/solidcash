@@ -93,12 +93,9 @@ describe('affine void recursive event settlement', () => {
     await expect(contract.call.descend(126n, 0n, 0n, 2n, 1n).build()).resolves.toBeDefined();
     await expect(contract.call.descend(128n, 0n, 0n, 2n, 1n).build())
       .rejects.toThrow(/exceeds its compiler-published maximum/);
-    const inexact = await contract.call.descend(5n, 10n, 20n, 2n, 3n).build();
-    expect(vm.stateSuccess(vm.evaluate({
-      inputIndex: 0,
-      sourceOutputs: generateLibauthSourceOutputs(inexact.inputs),
-      transaction: inexact.buildLibauthTransaction(),
-    }))).not.toBe(true);
+    // descend(5, stride 2) never lands on 0, so the affine frame guard refuses it during derivation.
+    await expect(contract.call.descend(5n, 10n, 20n, 2n, 3n).build())
+      .rejects.toThrow(/recursive affine frame count must be exact/);
   }, 180_000);
 
   it('reconstructs independent affine parameters during non-void unwind', async () => {
@@ -281,13 +278,9 @@ describe('affine void recursive event settlement', () => {
     await expect(contract.call.descend(2n, 0n).build()).rejects.toThrow(/step must be non-zero|Division by zero/);
     await expect(contract.call.descend(128n, 2n).build())
       .rejects.toThrow(/exceeds its compiler-published maximum/);
-    const inexact = await contract.call.descend(5n, 2n).build();
-    const inexactTransaction = inexact.buildLibauthTransaction();
-    expect(vm.stateSuccess(vm.evaluate({
-      inputIndex: 0,
-      sourceOutputs: generateLibauthSourceOutputs(inexact.inputs),
-      transaction: inexactTransaction,
-    }))).not.toBe(true);
+    // descend(5, stride 2) never lands on 0, so the affine frame guard refuses it during derivation.
+    await expect(contract.call.descend(5n, 2n).build())
+      .rejects.toThrow(/recursive affine frame count must be exact/);
   }, 180_000);
 
   it('reconstructs multiple affine parameters across descent and unwind', async () => {
@@ -395,12 +388,9 @@ describe('affine void recursive event settlement', () => {
     await expect(contract.call.descend(126n, 0n, 2n, 0n).build()).resolves.toBeDefined();
     await expect(contract.call.descend(128n, 0n, 2n, 0n).build())
       .rejects.toThrow(/exceeds its compiler-published maximum/);
-    const inexact = await contract.call.descend(5n, 10n, 2n, 1n).build();
-    expect(vm.stateSuccess(vm.evaluate({
-      inputIndex: 0,
-      sourceOutputs: generateLibauthSourceOutputs(inexact.inputs),
-      transaction: inexact.buildLibauthTransaction(),
-    }))).not.toBe(true);
+    // descend(5, stride 2) never lands on 0, so the affine frame guard refuses it during derivation.
+    await expect(contract.call.descend(5n, 10n, 2n, 1n).build())
+      .rejects.toThrow(/recursive affine frame count must be exact/);
   }, 180_000);
 
   it('fences checked regrouping while bigint progression remains unrestricted', async () => {

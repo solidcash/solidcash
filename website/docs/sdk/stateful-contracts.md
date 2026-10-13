@@ -258,7 +258,7 @@ await sc.call.sendFunds(sig, recipient, 5000n)
 
 ## Upgrading
 
-Deploy a new version while preserving the category ID and state:
+Move a contract that keeps no state records to a new version while preserving the category ID:
 
 ```typescript
 import newArtifact from './CounterV2.artifact.js';
@@ -273,9 +273,10 @@ const { contract: upgraded, tx } = await StatefulContract.upgrade({
 });
 ```
 
-The new artifact can append state variables. Existing layout positions and values are preserved, new fields receive
-their type defaults, and additional data-NFT outputs require `fundingUtxo` plus `funder`. The category stays stable
-while the physical contract address changes. See
+The compiler refuses `upgrade` in a contract that keeps state variables, mappings or arrays, or satoshi or token
+containers, because those records are bound to the master's exact lock. The new artifact may declare state: its
+fields receive their type defaults, and the new data-NFT outputs require `fundingUtxo` plus `funder`. The category
+stays stable while the physical contract address changes. See
 [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) for the complete migration and proxy APIs.
 
 ## Destroying

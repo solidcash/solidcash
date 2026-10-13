@@ -160,8 +160,8 @@ describe('events wider than one NFT commitment', () => {
     expectScriptRejection(outcome, 0);
   }, 300_000);
 
-  it('refuses a message-bus route for a wide event at compile time and keeps its direct layout', () => {
-    const routed = compileProduction(`contract WideRoute {
+  it('streams a wide event on the kernel route, refuses it on the legacy route, and keeps its direct layout', () => {
+    const source = `contract WideRoute {
       int last;
       event Wide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e);
       function emitWide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e) public {
@@ -173,10 +173,19 @@ describe('events wider than one NFT commitment', () => {
         last = value;
         require(last == value);
       }
-    }`, { forceStateful: true, messageBus: true, maximumInputBytes: 1_000_000, optimizeForCompilationSpeed: true });
-    expect(routed.messageBus?.handlers.find((handler) => handler.name === 'emitWide'))
-      .toMatchObject({ eligible: false });
-    expect((routed.abi as any[]).find((entry) => entry.name === 'emitWide').blockLayout.slots
-      .some((slot: any) => slot.kind === 'eventChunk')).toBe(true);
+    }`;
+    const options = {
+      forceStateful: true, messageBus: true, maximumInputBytes: 1_000_000, optimizeForCompilationSpeed: true,
+    } as const;
+    const kernel = compileProduction(source, options);
+    const streamed = kernel.messageBus?.handlers.find((handler) => handler.name === 'emitWide');
+    expect(streamed).toMatchObject({ eligible: true, runtimeLoopEvents: [{ repeatCount: 1, chunked: true }] });
+    expect(streamed?.emits).toBeUndefined();
+    const legacy = compileProduction(source, { ...options, messageBusKernel: false });
+    expect(legacy.messageBus?.handlers.find((handler) => handler.name === 'emitWide')?.eligible ?? false).toBe(false);
+    for (const artifact of [kernel, legacy]) {
+      expect((artifact.abi as any[]).find((entry) => entry.name === 'emitWide').blockLayout.slots
+        .some((slot: any) => slot.kind === 'eventChunk')).toBe(true);
+    }
   });
 });

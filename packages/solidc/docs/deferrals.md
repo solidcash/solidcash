@@ -1770,14 +1770,17 @@ As built on kernel routes (2026-10-13, the runtime effect stream):
 - Artifact: the handler entry publishes `runtimeLoopEvents: [{ repeatCount: 1, eventSignatures, chunked: true }]` and
   no `emits`; its path-effect schedule lists no event.
 - SDK: batch rows take that metadata (`mergePublishedMessageBusHandlerMetadata`) and plan one head record per site.
-  Phase-2 derivation then probes with the faithful trace; `extractRuntimeEffectStreamRuns` reads each verifier run
-  where it introspects a record's category (the record on the stack, the run's unchecked records on the alt stack),
-  and `applyRuntimeLoopEventStream` replaces the row's planned records (count, locks, commitments) and shifts the
-  later event segments. Compose counts continuation locks as event locks, never decodes a chunk by schema in the
+  When a phase-2 probe fails, `extractRuntimeEffectStreamRuns` reads each verifier run where it introspects a
+  record's category (the record on the stack, the run's unchecked records on the alt stack), from the probe trace or,
+  when that kept no such state, from `traceRuntimeEffectStreamRuns` (one re-evaluation that keeps only those states;
+  forcing a full faithful trace instead ran the real Unicrow participants out of a 4 GB heap).
+  `applyRuntimeLoopEventStream` replaces the row's planned records (count, locks, commitments) and shifts the later
+  event segments. Compose counts continuation locks as event locks, never decodes a chunk by schema in the
   relocation, and relocates nothing for a stream its trace has not read yet. Receipts skip continuation outputs as
   heads.
 - Test: `packages/solidcash/test/e2e/KernelStreamedWideEvents.test.ts` (head and continuation in order, a forged
-  chunk and a reordered pair refused, a dynamic-array record count learned).
+  chunk and a reordered pair refused, a dynamic-array record count learned): green on the forced-faithful version;
+  the filtered re-evaluation that replaced it and the Unicrow targets are not yet measured.
 
 Still deferred:
 
@@ -1787,9 +1790,9 @@ Still deferred:
   kernel), and codegen throws `EVENT_PAYLOAD_EXCEEDS_COMMITMENT` if a wide window emit still reaches a route, graph
   handler or framed frame. A conditional stream emit needs a published condition (the builder plans one head per
   site and only grows it); a mixed event/transfer stream needs the learner to read transfer records too.
-- The record count is read off the verifier's stacks, so it needs a probe that reaches the handler's end and keeps
-  both stacks there (the faithful trace, or the bounded collector's recent window). A compose pass whose isolated
-  participant probe stops earlier leaves the count to a later pass.
+- The record count is read off the verifier's stacks, so it needs a participant probe that reaches the handler's
+  end; a compose pass whose isolated participant probe stops earlier leaves the count to a later pass. Compose's own
+  event discovery still falls back to a complete trace of a participant input when a slot is unread, as before.
 - Unbounded `string` / `bytes` event parameters still count as 9 B on routes and are not streamed.
 - Byte identity: a route with a stream handler changes (trailing band, fewer windows), including a kernel handler that
   emits a dynamic-array event at its top level, which was a narrow window before.

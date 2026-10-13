@@ -636,6 +636,12 @@ const MESSAGE_BUS_OWNER_INPUT = '__internal__messageBusOwnerInput';
 const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 /** The value-chunk lock list the mutable-output check admits: the chunk-base witness, or a route-owned item. */
 const VALUE_CHUNK_LOCK_LIST = '__internal__valueChunkOutputBase';
+/** Tracked items of the slot scans (emitSlotScans). */
+const SCAN_SATOSHI_LOCK = '(__scan_satoshi_lock)';
+const SCAN_OWN_MUTABLE = '(__scan_own_mutable)';
+const SCAN_MINTABLE_LOCKS = '(__scan_mintable_locks)';
+const SCAN_IN_SUM = '(__scan_in_sum)';
+const SCAN_OUT_SUM = '(__scan_out_sum)';
 /** Tracked-local name for the entry-time copy of the participant owner (see messageBusOwnerAltAnchor). */
 const OWNER_ANCHOR_LOCAL = '(message_bus_owner)';
 const PROXY_MASTER_ANCHOR_LOCAL = '(message_bus_proxy_master)';
@@ -1614,6 +1620,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sharedEntryChecks = new Map<string, SharedEntryCheck>();
   /** Set on a shared check's body traversal: the check stays inline there, and picks its master as recorded. */
   private sharedCheckBody: { masterOrdinal: number | undefined } | undefined;
+  /** Set by the direct census: the output pass of the slot scans runs the mutable-output check. */
+  private mutableOutputCheckPending = false;
   private structSkipIds = new Map<string, bigint>();
   private structSkipTypes = new Map<string, StructType | ArrayType>();
   private structFieldPrefixIds = new Map<string, bigint>();
@@ -10088,18 +10096,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_ENDIF, { location: node.body.location, positionHint: PositionHint.END });
         }
       }
-      if (!this.framedMaster && !this.functionHasDelegatecall && isStatefulContract && unsafeTier === null
-        && !isSelfdestruct && !this.graphTransferFlagActive) {
-        this.emitSatoshiContainerAggregate({ location: node.body.location, positionHint: PositionHint.END });
-      }
-      if (!this.framedMaster && !this.functionHasDelegatecall
+      const scansSatoshi = !this.framedMaster && !this.functionHasDelegatecall && isStatefulContract
+        && unsafeTier === null && !isSelfdestruct && !this.graphTransferFlagActive;
+      // A function that never names `tokens[...]` still has to keep every other container. Gating this scan
+      // on the function's own slots let `touch()` drain a fungible or NFT container. The forwarder skips it, so a
+      // direct delegate scans the proxy's containers, whose locks bind the proxy master.
+      const scansForeign = !this.framedMaster && !this.functionHasDelegatecall
         && (!this.currentFunctionIsDelegate || this.recordsBelongToProxyMaster())
-        && isStatefulContract && unsafeTier === null && !isSelfdestruct) {
-        // A function that never names `tokens[...]` still has to keep every other container. Gating this scan
-        // on the function's own slots let `touch()` drain a fungible or NFT container. The forwarder skips it, so a
-        // direct delegate scans the proxy's containers, whose locks bind the proxy master.
-        this.emitForeignFungiblePreservation({ location: node.body.location, positionHint: PositionHint.END });
-      }
+        && isStatefulContract && unsafeTier === null && !isSelfdestruct;
+      // A caller co-spends its own sender anchor for its callee, as a proxy does for its delegate.
+      const admitAnchor = this.currentFunctionIsDelegate || this.lowLevelCallCount > 0
+        || this.externalCallSlots.length > 0;
+      const scansMutable = this.mutableOutputCheckPending;
+      this.mutableOutputCheckPending = false;
+      this.emitSlotScans(scansSatoshi, scansForeign ? admitAnchor : undefined, scansMutable,
+        { location: node.body.location, positionHint: PositionHint.END });
       // SEC-10/SEC-11: an own-category IMMUTABLE (0x00) NFT output - what an event NFT is - may only sit at an
       // event block-layout offset (or the witnessed return-event index). Without this any spender mints forged
       // logs at any other index. Scoped to contracts that DECLARE an event: the forged output is only readable
@@ -49349,50 +49360,171 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * A public call still authorizes a satoshi-container spend: the container covenant's master path checks only
-   * that a minting NFT of the category is present. Sum every input and output locked to the container and
-   * require the inputs not to exceed the outputs plus the amounts this call actually transfers. Stack neutral.
+   * The checks that walk every input and output: the satoshi-container aggregate, the foreign-token scan (unless
+   * `admitAnchor` is undefined) and the census's mutable-output check. The VM prices every instruction it steps
+   * over, taken or not, so one pass per side classifies each slot once: a slot none of them acts on (a token-less
+   * pad) costs one short test, and each check's rules run on the slots it acts on. Stack neutral.
    */
-  private emitSatoshiContainerAggregate(loc: SingleLocationData): void {
-    if (this.pendingTransfers.length === 0 && this.invokeSharedEntryCheck(
-      'satoshiContainers', (t, l) => t.emitSatoshiContainerAggregate(l), loc,
-    )) return;
-    this.emitMasterInputIndex(loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emitTakeFirst32(loc);
-    this.pushToStack('(__sc_cat)');
-    this.emitSatoshiContainerLbc(loc);
-    this.emitLockedValueSum(false, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emitLockedValueSum(true, loc);
-    this.emit(Op.OP_ROT, loc);
-    this.emit(Op.OP_SWAP, loc);
-    // [lock, inSum, outSum]. inSum and outSum are untracked, so a transfer amount sits two deeper than the model.
+  private emitSlotScans(
+    sat: boolean, admitAnchor: boolean | undefined, mutable: boolean, loc: SingleLocationData,
+  ): void {
+    if (sat || admitAnchor !== undefined) this.emitInputSlotScan(sat, admitAnchor, loc);
+    if (sat || mutable) this.emitOutputSlotScan(sat, mutable, loc);
+    if (!sat) return;
+    // [inSum, outSum]. A public call still authorizes a satoshi-container spend: the container covenant's master
+    // path checks only that a minting NFT of the category is present. The inputs at the container lock may not
+    // exceed its outputs plus the amounts this call actually transfers.
     for (const transfer of this.pendingTransfers) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(transfer.amountStackName) + 2)), loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(transfer.amountStackName))), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
     }
     if (this.getStackIndex(LOOP_VALUE_SENT, true) >= 0) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(LOOP_VALUE_SENT) + 2)), loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(LOOP_VALUE_SENT))), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
     }
     this.emit(Op.OP_LESSTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.popFromStack();
+    this.popFromStack(2);
   }
 
-  /** `[lock]` -> `[lock, sum]` of the satoshi value at that lock. The sum is untracked. */
-  private emitLockedValueSum(isOutput: boolean, loc: SingleLocationData): void {
-    this.emit(Op.OP_0, loc);
-    this.emit(isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT, loc);
+  /** `[]` -> `[inSum]` with `sat`, else `[]`: the input pass of emitSlotScans. */
+  private emitInputSlotScan(sat: boolean, admitAnchor: boolean | undefined, loc: SingleLocationData): void {
+    // The function's own container slots are its own; the shared body has none.
+    if ((admitAnchor === undefined || this.tokenContainerSlots.length === 0) && this.invokeSharedEntryCheck(
+      `inputScans:${sat}:${admitAnchor ?? '-'}`, (t, l) => t.emitInputSlotScanBody(sat, admitAnchor, l), loc,
+    )) {
+      if (sat) this.pushToStack(SCAN_IN_SUM);
+      return;
+    }
+    this.emitInputSlotScanBody(sat, admitAnchor, loc);
+  }
+
+  /**
+   * The inputs at the container lock are summed. A token container holds a foreign category behind this contract's
+   * container lock, and its master path does not preserve the tokens: any such input must be recreated at the same
+   * index with the same lock, category and at least the same amount. Own-category 33-byte records move in a
+   * composed transaction. A foreign category, fungible or NFT, is this contract's to keep only at its own container
+   * lock for that category: a co-composed participant's container or value chunk is also a 35-byte lock, and that
+   * participant's script accounts for it. The pass lists the inputs holding a token other than an own mutable
+   * record, and the keep rules run on those after it. `admitAnchor`: an own sender anchor input is not kept.
+   */
+  private emitInputSlotScanBody(sat: boolean, admitAnchor: boolean | undefined, loc: SingleLocationData): void {
+    const foreign = admitAnchor !== undefined;
+    const anchor = admitAnchor === true;
+    const category = '(__foreign_container_category)';
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack(category);
+    if (sat) this.emitScanSatoshiLock(category, loc);
+    if (foreign) {
+      this.emitScanOwnMutable(category, loc);
+      // The keep list waits on the alt stack: the sum sits directly below the index.
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_TOALTSTACK, loc);
+    }
+    if (sat) {
+      this.emit(Op.OP_0, loc);
+      this.pushToStack(SCAN_IN_SUM);
+    }
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emitSkipToScannedSlot(false, sat, foreign, loc);
+    if (sat) this.emitAddScannedValue(false, loc);
+    if (foreign) {
+      // [index] -> [index, listed]: a token other than an own mutable record.
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(SCAN_OWN_MUTABLE) + 3)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_NOT, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_BOOLAND, loc);
+      this.emit(Op.OP_IF, loc);
+      // alt [list] -> alt [list ++ index]
+      this.emit(Op.OP_FROMALTSTACK, loc);
+      this.emit(Op.OP_OVER, loc);
+      this.emit(encodeInt(3n), loc);
+      this.emit(Op.OP_NUM2BIN, loc);
+      this.emit(Op.OP_CAT, loc);
+      this.emit(Op.OP_TOALTSTACK, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    if (foreign) {
+      this.emit(Op.OP_FROMALTSTACK, loc);
+      this.emitForEachListedIndex(() => this.emitForeignInputKeep(category, anchor, loc), loc);
+    }
+    this.emitDropScanFrame(category, sat ? SCAN_IN_SUM : undefined, loc);
+  }
+
+  /** Push the tracked satoshi container lock of the tracked 32-byte `category`. */
+  private emitScanSatoshiLock(category: string, loc: SingleLocationData): void {
+    this.emit(encodeInt(BigInt(this.getStackIndex(category))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(__scan_container_category)');
+    this.emitSatoshiContainerLbc(loc);
+    this.stack[0] = SCAN_SATOSHI_LOCK;
+  }
+
+  /** Push the tracked own mutable category, the tracked 32-byte `category` ++ 0x01. */
+  private emitScanOwnMutable(category: string, loc: SingleLocationData): void {
+    this.emit(encodeInt(BigInt(this.getStackIndex(category))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack(SCAN_OWN_MUTABLE);
+    this.emit(new Uint8Array([0x01]), loc);
+    this.emit(Op.OP_CAT, loc);
+  }
+
+  /**
+   * `[n]` -> `[i]`, untracked: the next index below n a scan acts on, or 0. `tokens` tests any token on an input, an
+   * own mutable record on an output; `sat` the container lock.
+   */
+  private emitSkipToScannedSlot(isOutput: boolean, sat: boolean, tokens: boolean, loc: SingleLocationData): void {
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_1SUB, loc);
+    if (tokens) {
+      this.emit(Op.OP_DUP, loc);
+      if (isOutput) {
+        this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+        this.emit(encodeInt(BigInt(this.getStackIndex(SCAN_OWN_MUTABLE) + 2)), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_EQUAL, loc);
+      } else {
+        this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+        this.emit(Op.OP_SIZE, loc);
+        this.emit(Op.OP_NIP, loc);
+      }
+    }
+    if (sat) {
+      this.emit(tokens ? Op.OP_OVER : Op.OP_DUP, loc);
+      this.emit(isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(SCAN_SATOSHI_LOCK) + (tokens ? 3 : 2))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUAL, loc);
+      if (tokens) this.emit(Op.OP_BOOLOR, loc);
+    }
+    // [i, acts] -> [i, acts || i == 0]
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+    this.emit(Op.OP_UNTIL, loc);
+  }
+
+  /** `[sum, i]` stays, `sum` tracked: slot i's satoshi value is added when it sits at the container lock. */
+  private emitAddScannedValue(isOutput: boolean, loc: SingleLocationData): void {
     this.emit(Op.OP_DUP, loc);
     this.emit(isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE, loc);
-    this.emit(encodeInt(3n), loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(SCAN_SATOSHI_LOCK) + 2)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_IF, loc);
@@ -49402,87 +49534,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ADD, loc);
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_NOT, loc);
-    this.emit(Op.OP_UNTIL, loc);
-    this.emit(Op.OP_DROP, loc);
   }
 
-  /**
-   * A token container holds a foreign category behind this contract's container lock, and its master path does
-   * not preserve the tokens. Any such input must be recreated at the same index with the same lock, category
-   * and at least the same amount. Stack neutral.
-   */
-  private emitForeignFungiblePreservation(loc: SingleLocationData): void {
-    // A caller co-spends its own sender anchor for its callee, as a proxy does for its delegate.
-    const admitAnchor = this.currentFunctionIsDelegate || this.lowLevelCallCount > 0
-      || this.externalCallSlots.length > 0;
-    // The function's own container slots are its own; the shared body has none.
-    if (this.tokenContainerSlots.length === 0 && this.invokeSharedEntryCheck(
-      `foreignTokens:${admitAnchor}`, (t, l) => t.emitForeignTokenScan(admitAnchor, l), loc,
-    )) return;
-    this.emitForeignTokenScan(admitAnchor, loc);
-  }
-
-  /** The scan of emitForeignFungiblePreservation. `admitAnchor`: an own sender anchor input is not kept. */
-  private emitForeignTokenScan(admitAnchor: boolean, loc: SingleLocationData): void {
-    // Own-category 33-byte records move in a composed transaction. A foreign category, fungible or NFT, is this
-    // contract's to keep only at its own container lock for that category: a co-composed participant's
-    // container or value chunk is also a 35-byte lock, and that participant's script accounts for it.
-    this.emitMasterInputIndex(loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emitTakeFirst32(loc);
-    const category = '(__foreign_container_category)';
-    this.pushToStack(category);
-    // Every stepped instruction is priced, taken or not. List the inputs holding a token other than an own
-    // mutable record, then run the keep rules on those alone. [category] -> [category, ownMutable]
-    this.emit(Op.OP_DUP, loc);
-    this.emit(new Uint8Array([0x01]), loc);
-    this.emit(Op.OP_CAT, loc);
-    this.emitListIndicesByTokenCategory(false, () => {
-      // [ownMutable, list, index, tokenCategory] -> [ownMutable, list, index, listed]
-      this.emit(Op.OP_DUP, loc);
-      this.emit(encodeInt(4n), loc);
-      this.emit(Op.OP_PICK, loc);
-      this.emit(Op.OP_EQUAL, loc);
-      this.emit(Op.OP_NOT, loc);
-      this.emit(Op.OP_SWAP, loc);
-      this.emit(Op.OP_SIZE, loc);
-      this.emit(Op.OP_NIP, loc);
-      this.emit(Op.OP_BOOLAND, loc);
-    }, loc);
-    this.emit(Op.OP_NIP, loc);
-    this.emitForEachListedIndex(() => this.emitForeignInputKeep(category, admitAnchor, loc), loc);
-    this.emit(Op.OP_DROP, loc);
-    this.popFromStack();
-  }
-
-  /**
-   * `[...]` -> `[..., list]`: the 3-byte indices of the inputs (or outputs) whose token category `listed` accepts.
-   * `listed` turns `[list, index, tokenCategory]` into `[list, index, flag]`.
-   */
-  private emitListIndicesByTokenCategory(isOutput: boolean, listed: () => void, loc: SingleLocationData): void {
-    this.emit(Op.OP_0, loc);
-    this.emit(isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT, loc);
-    this.emit(Op.OP_BEGIN, loc);
-    this.emit(Op.OP_1SUB, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(isOutput ? Op.OP_OUTPUTTOKENCATEGORY : Op.OP_UTXOTOKENCATEGORY, loc);
-    listed();
-    this.emit(Op.OP_IF, loc);
-    // [list, index] -> [list ++ index, index]
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(3n), loc);
-    this.emit(Op.OP_NUM2BIN, loc);
-    this.emit(Op.OP_ROT, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_CAT, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_NOT, loc);
-    this.emit(Op.OP_UNTIL, loc);
-    this.emit(Op.OP_DROP, loc);
+  /** Drop the tracked items from `bottom` up to the top, keeping the top one when `keep` names it. */
+  private emitDropScanFrame(bottom: string, keep: string | undefined, loc: SingleLocationData): void {
+    const count = this.getStackIndex(bottom) + 1;
+    for (let dropped = keep === undefined ? 0 : 1; dropped < count; dropped += 1) {
+      if (keep === undefined) {
+        this.emit(Op.OP_DROP, loc);
+        this.popFromStack();
+      } else {
+        this.emit(Op.OP_NIP, loc);
+        this.nipFromStack();
+      }
+    }
   }
 
   /**
@@ -49785,8 +49850,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         (t, l) => t.emitUnwrittenChunkCensus(chunkHash, l), loc)) this.emitUnwrittenChunkCensus(chunkHash, loc);
     }
     // A mutable NFT of this contract at a lock nothing here counts (a P2PKH, for example) is a forged record.
-    // Locks of mutable inputs, and the collection, data, and chunk locks this contract can mint, are the set.
-    this.emitAuthorizeMutableOutputs(loc);
+    // Locks of mutable inputs, and the collection, data, and chunk locks this contract can mint, are the set. The
+    // check runs in the output pass of the slot scans.
+    this.mutableOutputCheckPending = true;
   }
 
   /** The data-record address holds exactly `expected` inputs and as many outputs. Stack neutral. */
@@ -49864,43 +49930,64 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
   }
 
-  /**
-   * `[ ]` -> `[ ]`. Every own-category mutable output must sit at a mutable input's lock or at a lock this
-   * contract is allowed to mint (a collection, its data record, or a dynamic chunk).
-   */
-  private emitAuthorizeMutableOutputs(loc: SingleLocationData): void {
-    const signatures = this.collectionDefinitions.map((collection) => this.vmapCollectionSignature(collection.name));
+  /** `[]` -> `[outSum]` with `sat`, else `[]`: the output pass of emitSlotScans. */
+  private emitOutputSlotScan(sat: boolean, mutable: boolean, loc: SingleLocationData): void {
+    const signatures = mutable
+      ? this.collectionDefinitions.map((collection) => this.vmapCollectionSignature(collection.name))
+      : undefined;
     // The value-chunk locks a long write appended are this function's own.
-    if (this.getStackIndex('__internal__valueChunkOutputBase', true) < 0
-      && this.invokeSharedEntryCheck(`mutableOutputs:${signatures.join(',')}`,
-        (t, l) => t.emitMutableOutputCheck(signatures, l), loc)) return;
-    this.emitMutableOutputCheck(signatures, loc);
+    if ((!mutable || this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) < 0) && this.invokeSharedEntryCheck(
+      `outputScans:${sat}:${signatures?.join(',') ?? '-'}`, (t, l) => t.emitOutputSlotScanBody(sat, signatures, l), loc,
+    )) {
+      if (sat) this.pushToStack(SCAN_OUT_SUM);
+      return;
+    }
+    this.emitOutputSlotScanBody(sat, signatures, loc);
   }
 
-  /** emitAuthorizeMutableOutputs with each collection's address signature, undefined for none. */
-  private emitMutableOutputCheck(signatures: readonly (string | undefined)[], loc: SingleLocationData): void {
+  /**
+   * The outputs at the container lock are summed. With `signatures` (each collection's address signature, undefined
+   * for none), every own-category mutable output must sit at a mutable input's lock or at a lock this contract is
+   * allowed to mint (a collection, its data record, or a dynamic chunk).
+   */
+  private emitOutputSlotScanBody(
+    sat: boolean, signatures: readonly (string | undefined)[] | undefined, loc: SingleLocationData,
+  ): void {
+    const base = '(__mutable_base)';
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc);
-    this.pushToStack('(__mutable_base)');
-    // [base, locks]. Built once, not once per output.
-    this.emitMintableRecordLocks(signatures, loc);
-    // [base, locks, ownMutable]
-    this.emit(Op.OP_OVER, loc);
-    this.emit(new Uint8Array([0x01]), loc);
-    this.emit(Op.OP_CAT, loc);
-    // Every stepped instruction is priced, taken or not. List the own mutable outputs, then check those alone.
-    this.emitListIndicesByTokenCategory(true, () => {
-      // [ownMutable, list, index, tokenCategory] -> [ownMutable, list, index, listed]
-      this.emit(encodeInt(3n), loc);
+    this.pushToStack(base);
+    if (signatures !== undefined) {
+      // [base, locks]. Built once, not once per output.
+      this.emitMintableRecordLocks(signatures, loc);
+      this.pushToStack(SCAN_MINTABLE_LOCKS);
+    }
+    if (sat) this.emitScanSatoshiLock(base, loc);
+    if (signatures !== undefined) this.emitScanOwnMutable(base, loc);
+    if (sat) {
+      this.emit(Op.OP_0, loc);
+      this.pushToStack(SCAN_OUT_SUM);
+    }
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emitSkipToScannedSlot(true, sat, signatures !== undefined, loc);
+    if (sat) this.emitAddScannedValue(true, loc);
+    if (signatures !== undefined) {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(SCAN_OWN_MUTABLE) + 2)), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_EQUAL, loc);
-    }, loc);
-    this.emit(Op.OP_NIP, loc);
-    this.emitForEachListedIndex(() => this.emitMutableOutputAllowed(loc), loc);
+      this.emit(Op.OP_IF, loc);
+      this.emitMutableOutputAllowed(this.getStackIndex(SCAN_MINTABLE_LOCKS) + 1, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
     this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.popFromStack();
+    this.emitDropScanFrame(base, sat ? SCAN_OUT_SUM : undefined, loc);
   }
 
   /** `[base]` -> `[base, locks]`: each lock this contract may mint a record at, 35 bytes apiece. */
@@ -49940,13 +50027,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `[locks, i]` stays, untracked above the tracked base. Output i must sit at one of `locks`, or match a mutable
-   * input's lock and category. `OP_IF` already consumes the comparison, so the match arm must not drop again
-   * before it replaces `found`.
+   * `[locks, .., i]` stays, untracked above the tracked base; `locksDepth` is the depth of `locks` below i. Output i
+   * must sit at one of `locks`, or match a mutable input's lock and category. `OP_IF` already consumes the
+   * comparison, so the match arm must not drop again before it replaces `found`.
    */
-  private emitMutableOutputAllowed(loc: SingleLocationData): void {
-    // [locks, i, found, rest]
-    this.emit(Op.OP_OVER, loc);
+  private emitMutableOutputAllowed(locksDepth: number, loc: SingleLocationData): void {
+    // [i, found, rest]
+    this.emit(encodeInt(BigInt(locksDepth)), loc);
+    this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_BEGIN, loc);

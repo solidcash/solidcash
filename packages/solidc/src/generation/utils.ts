@@ -69,9 +69,16 @@ export function compileAddressToEvmIdentity(): Script {
     Op.OP_IF,
     Op.OP_HASH160,
     Op.OP_ELSE,
+    Op.OP_SIZE, encodeInt(25n), Op.OP_EQUAL,
+    Op.OP_IF,
+    // P2PKH `76a914 <20> 88ac`: its hash, once both ends match the template.
+    encodeInt(3n), Op.OP_SPLIT, Op.OP_SWAP, Uint8Array.of(0x76, 0xa9, 0x14), Op.OP_EQUALVERIFY,
+    encodeInt(20n), Op.OP_SPLIT, Uint8Array.of(0x88, 0xac), Op.OP_EQUALVERIFY,
+    Op.OP_ELSE,
     // Any other length is not a locking-bytecode template. A 71-byte bare multisig used to fall through
     // to "bytes 3..23", so a crafted lock compared equal to a victim's 20-byte identity.
     Op.OP_0, Op.OP_VERIFY,
+    Op.OP_ENDIF,
     Op.OP_ENDIF,
     Op.OP_ENDIF,
     Op.OP_ENDIF,

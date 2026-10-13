@@ -1278,6 +1278,12 @@ function sortedFlowChildren(node: Node): Node[] {
   return out;
 }
 
+/** True when a block ends in a return, including a bare return sealed into `require(false)` (SEM-1). */
+function endsInReturn(block: BlockNode | undefined): boolean {
+  const last = (block?.statements ?? []).at(-1);
+  return last instanceof ReturnNode || (last instanceof RequireNode && last.sealedReturn === true);
+}
+
 /**
  * Walks a body in execution order: branch arms, loops, early exits and lazily evaluated operands join their paths,
  * and each node's access applies once its children ran.
@@ -1285,8 +1291,6 @@ function sortedFlowChildren(node: Node): Node[] {
 function walkSortedFlow<F>(root: Node, start: F, hooks: SortedFlowHooks<F>): void {
   const loops: { breaks: (F | undefined)[]; continues: (F | undefined)[] }[] = [];
   const copy = (flow: F | undefined): F | undefined => (flow === undefined ? undefined : hooks.copy(flow));
-  const endsInReturn = (block: BlockNode | undefined): boolean =>
-    (block?.statements ?? []).at(-1) instanceof ReturnNode;
   const walk = (node: Node, flow: F | undefined, scope: SortedFlowScope): F | undefined => {
     if (node instanceof BlockNode) {
       let current = flow;
@@ -28422,8 +28426,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return out;
     };
-    const endsInReturn = (block: BlockNode | undefined): boolean =>
-      (block?.statements ?? []).at(-1) instanceof ReturnNode;
     const uses = new Map<string, number>();
     const survey = (node: Node): void => {
       if (node instanceof IdentifierNode) uses.set(node.name, (uses.get(node.name) ?? 0) + 1);

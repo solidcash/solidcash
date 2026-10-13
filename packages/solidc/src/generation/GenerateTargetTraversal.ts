@@ -8926,6 +8926,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Only the band lies below it at runtime here; the positional items under the band are dropped later.
       this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(chunkLockList);
+    } else if (!this.isDefineSubTraversal && this.chunkLockListAboveFrame(node)) {
+      // A direct entry without the witness: start the list right above its frame. The model holds it from here,
+      // so every later depth counts it and no bottom ordinal below it moves.
+      this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(chunkLockList);
     }
 
     // An aggregate route can retain runtime-only values below its compiler-modelled frame. Capture the
@@ -26858,11 +26863,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 2. Entry address = base(master category) wrapped in the collection's entry covenant. Track the categoryId so
     // emitP2sh32FromCovenant's popFromStack consumes IT (not a real tracked var), then untrack the address.
-    this.emitMasterInputIndex(loc);
+    // Hk32 stays untracked beneath the tracked category, as at the upsert sites.
+    this.emitMasterInputIndex(loc, 1);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc); // [Hk32, categoryId]
     this.pushToStack('(sortedaddr)');
-    this.emitSortedEntryAddress(collectionHash, loc); // [Hk32, entryAddr]
+    this.emitSortedEntryAddress(collectionHash, loc, 1); // [Hk32, entryAddr]
     this.popFromStack();
 
     // 3. input[slot] bytecode == entryAddr (a real entry of this collection; omission -> mismatch -> revert),
@@ -46973,6 +46979,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return bandNames !== undefined && !bandNames.includes(VALUE_CHUNK_LOCK_LIST)
       && this.collectionDefinitions.some((collection) => collection.sorted
         && this.isChunkableValue(collection.innermostValueType));
+  }
+
+  /**
+   * True when a direct entry pins the value chunks of a counter loop whose runtime-typed old value kept the
+   * value-chunk lock witness off its ABI. The entry then keeps its lock list in an item it pushes above its frame.
+   */
+  private chunkLockListAboveFrame(node: FunctionDefinitionNode): boolean {
+    if (!this.directConvention || this.framedMaster || this.isCompilerMessageBusRoute(node)) return false;
+    const names = node.parameters.map((parameter) => parameter.name);
+    if (names.includes(VALUE_CHUNK_LOCK_LIST)) return false;
+    return (node.entryAccesses ?? []).some((access) => access.inLoop === true
+      && access.operations.includes('write')
+      && names.some((name) => name.startsWith('__internal__vmapCounterOld_')
+        && name.endsWith(`_${access.collection}`))
+      && this.collectionDefinitions.some((collection) => collection.name === access.collection
+        && collection.sorted && this.isChunkableValue(collection.innermostValueType)));
   }
 
   /** One-based bottom ordinal of the route's value-chunk lock list, as an invoked handler addresses it. */

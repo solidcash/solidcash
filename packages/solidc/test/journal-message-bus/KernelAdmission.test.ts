@@ -1065,10 +1065,9 @@ describe('required kernel admission', () => {
       const artifact = compileString(`contract C() {
         struct Authorization { sig proof; pubkey key; }
         struct Auth { Authorization authorization; int nonce; }
-        int marker;
         ${support}
         function migrate(Auth auth, int next) public upgrade ${customModifier} {
-          ${body} this.marker = next; require(true);
+          ${body} require(next >= 0);
         }
       }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate')).toMatchObject({
@@ -1083,12 +1082,11 @@ describe('required kernel admission', () => {
   it('proves one immutable nested sig[] leaf through its exact CHECKMULTISIG helper body', () => {
     const artifact = compileString(`contract C() {
       struct Auth { sig[] proofs; pubkey[] authorities; int nonce; }
-      int marker;
       function authorize(Auth selected) internal {
         require(checkMultiSig(selected.proofs, selected.authorities));
       }
       function migrate(Auth auth, int next) public upgrade {
-        authorize(auth); this.marker = next; require(true);
+        authorize(auth); require(next >= 0);
       }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });

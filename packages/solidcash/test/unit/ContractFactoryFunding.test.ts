@@ -78,7 +78,6 @@ describe('ContractFactory genesis funding selection', () => {
   });
 
   it('refuses when every listed genesis coin pays some other lock', async () => {
-    const signer = new Signer(alicePriv, { network: Network.MOCKNET } as NetworkProvider);
     const foreign = coin(encodeLockingBytecodeP2pkh(bobPkh), 1_000_000n, 5);
     const raws = new Map([[foreign.utxo.txid, foreign.raw]]);
     const funded = new Signer(alicePriv, providerFor([foreign.utxo], raws));

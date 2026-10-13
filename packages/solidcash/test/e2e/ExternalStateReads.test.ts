@@ -360,7 +360,9 @@ describe('Cross-Contract External State Reads', () => {
 
     const readerArtifact = compileString(READER_CONTRACT);
     const readerContract = new Contract(
-      readerArtifact, [getDataNftLockingBytecode(counterCategoryId, hexToBin(counterContract.lockingBytecode))], { provider },
+      readerArtifact,
+      [getDataNftLockingBytecode(counterCategoryId, hexToBin(counterContract.lockingBytecode))],
+      { provider },
     );
     const readerCategoryId = 'd3cd'.repeat(16);
     const readerSaltedContract = readerContract.withCategory(hexToBin(readerCategoryId));

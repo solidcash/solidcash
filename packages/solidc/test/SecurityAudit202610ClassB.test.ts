@@ -61,7 +61,9 @@ function pushesOf(values: readonly Uint8Array[]): Uint8Array {
   return new Uint8Array(values.flatMap((value) => [...encodeDataPush(value)]));
 }
 
-function redeemUnlock(fn: AbiFunction, redeem: Uint8Array, values: Record<string, Uint8Array>, dispatch: boolean): Uint8Array {
+function redeemUnlock(
+  fn: AbiFunction, redeem: Uint8Array, values: Record<string, Uint8Array>, dispatch: boolean,
+): Uint8Array {
   const args = fn.inputs.map((entry) => {
     const value = values[entry.name];
     if (value === undefined) throw new Error(`no value for ${fn.name}.${entry.name}`);

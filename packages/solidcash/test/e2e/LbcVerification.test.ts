@@ -223,7 +223,9 @@ contract Reader(bytes counterAddr) {
       );
 
       readerContract = new Contract(
-        readerArtifact, [getDataNftLockingBytecode(counterCategoryId, hexToBin(counterContract.lockingBytecode))], { provider },
+        readerArtifact,
+        [getDataNftLockingBytecode(counterCategoryId, hexToBin(counterContract.lockingBytecode))],
+        { provider },
       );
       ({ categoryId: readerCategoryId } = await setupStatefulUtxos(
         provider, readerContract, readerArtifact.stateLayout!, { lastSeen: 0n }, { saltContract: true },

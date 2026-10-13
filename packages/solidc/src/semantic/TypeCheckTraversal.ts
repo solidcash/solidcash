@@ -2700,7 +2700,9 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
   }
 
+  // Compiler-generated source is native SolidCash: it carries no file stamp, so the root's `.sol` must not reach it.
   private inSolidityUnit(node: Node): boolean {
+    if (generatedOriginOf(node.location)) return false;
     return (node.location?.sourceFileId ?? this.rootFileId).endsWith('.sol');
   }
 

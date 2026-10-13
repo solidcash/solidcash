@@ -10,7 +10,7 @@ import {
 } from '@solidcash/utils';
 import type { Contract } from '../Contract.js';
 import type { Utxo, Unlocker, GenerateUnlockingBytecodeOptions } from '../interfaces.js';
-import { createSighashPreimage, toSigningSerializationType } from '../utils.js';
+import { calculateDust, createSighashPreimage, toSigningSerializationType } from '../utils.js';
 import { readFramedState, type FramedState } from '../framed/deploy/records.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
@@ -25,10 +25,10 @@ import type NetworkProvider from '../network/NetworkProvider.js';
  *    last final second (median time past - 1) is ahead of its timestamp.
  *  - n->hash oracle (blockhash(n)): present iff the artifact stamps usesBlockhash. Mints the per-block
  *    (n->hash) NFT at the master category's one oracle lock through the keeper baton covenant (audit
- *    CRYPTO-4), and sweeps the one that aged out of the 256-block window.
+ *    CRYPTO-4), and sweeps the pairs that aged out of the 256-block window.
  *
  * The keeper/operator private key signs both (the owner hash in the oracle commitment for block-info, and
- * the n->hash mint).
+ * the n->hash mint). Its P2PKH pays the block-info update fees and takes the swept dust.
  */
 
 // Any JSON-RPC client exposing `request(method, ...params)` (BchnRpcClient satisfies this).
@@ -48,6 +48,12 @@ export interface BlockOracleFields {
 
 // EVM-parity blockhash window.
 export const BLOCKHASH_WINDOW = 256;
+
+// Relay fee of one block-info update, paid by a coin at the keeper's P2PKH. The oracle keeps its value.
+const UPDATE_FEE = 2_000n;
+
+// Most aged-out pairs one sweep spends, so a backlog still sweeps as a standard-size transaction.
+const MAX_SWEEP_PAIRS = 100;
 
 // User-land defaults: mainnet -> public BCHN, regtest -> the docker stack (see docker-compose.regtest.yml).
 export const DEFAULT_RPC_URL: Record<string, string> = {
@@ -121,6 +127,27 @@ export interface BlockOracleUpdaterConfig {
   blockhashOracleMaster?: { utxo: Utxo; unlocker: Unlocker };
 }
 
+/** Unlocks the block-info oracle update path: the keeper signs, and `newCommitment` replaces the record. */
+export function blockOracleUpdateUnlocker(
+  categoryId: Uint8Array, lock: Uint8Array, keeperKey: Uint8Array, newCommitment: Uint8Array,
+): Unlocker {
+  const pubkey = secp256k1.derivePublicKeyCompressed(keeperKey) as Uint8Array;
+  const redeem = blockOracleRedeemScript(categoryId);
+  return {
+    generateLockingBytecode: (): Uint8Array => lock,
+    generateUnlockingBytecode: ({ transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions)
+    : Uint8Array => {
+      // SIGHASH_ALL | SIGHASH_UTXOS. The preimage and the signature byte both include the fork-id flag.
+      const sighashType = 0x21;
+      const signature = secp256k1.signMessageHashSchnorr(keeperKey, hash256(
+        createSighashPreimage(transaction, sourceOutputs, inputIndex, redeem, sighashType),
+      )) as Uint8Array;
+      const signed = Uint8Array.from([...signature, toSigningSerializationType(sighashType)]);
+      return blockOracleUpdateUnlocking(categoryId, pubkey, signed, newCommitment);
+    },
+  };
+}
+
 /** Unlocks the keeper baton covenant (audit CRYPTO-4) with `<keeper signature> <redeem>`. */
 export function blockhashKeeperBatonUnlocker(categoryId: string, keeperKey: Uint8Array): Unlocker {
   const keeper = new SignatureTemplate(keeperKey);
@@ -167,6 +194,7 @@ export class BlockOracleUpdater {
    * Push a signed update of the oracle commitment. The owner hash already in it must match `keeperKey`.
    * `locktime` defaults to the new block number: a height-type locktime CLTVs the number and keeps the
    * stored timestamp, a time-type one CLTVs the timestamp and keeps the stored number (audit CRYPTO-5/6).
+   * The oracle keeps its value: a coin at the keeper's P2PKH pays the fee and takes the change.
    */
   async pushUpdate(fields: BlockOracleFields, locktime = Number(fields.number)): Promise<string> {
     const { TransactionBuilder } = await import('../TransactionBuilder.js');
@@ -184,37 +212,35 @@ export class BlockOracleUpdater {
     if (oracle === undefined) throw new Error('block oracle UTXO is not available');
     const pubkey = secp256k1.derivePublicKeyCompressed(this.cfg.keeperKey) as Uint8Array;
     const newCommitment = encodeBlockOracleCommitment(hash160(pubkey), fields);
-    const redeem = blockOracleRedeemScript(category);
-    const unlocker: Unlocker = {
-      generateLockingBytecode: () => lock,
-      generateUnlockingBytecode: ({ transaction, sourceOutputs, inputIndex }) => {
-        // SIGHASH_ALL | SIGHASH_UTXOS. The preimage and the signature byte both include the fork-id flag.
-        const sighashType = 0x21;
-        const signatureByte = toSigningSerializationType(sighashType);
-        const signature = secp256k1.signMessageHashSchnorr(this.cfg.keeperKey, hash256(
-          createSighashPreimage(transaction, sourceOutputs, inputIndex, redeem, sighashType),
-        )) as Uint8Array;
-        const signed = new Uint8Array(signature.length + 1);
-        signed.set(signature);
-        signed[signature.length] = signatureByte;
-        return blockOracleUpdateUnlocking(category, pubkey, signed, newCommitment);
-      },
-    };
+    const funding = await this.feeCoin(UPDATE_FEE);
     const tx = await new TransactionBuilder({ provider })
-      .addInput(oracle, unlocker)
+      .addInput(oracle, blockOracleUpdateUnlocker(category, lock, this.cfg.keeperKey, newCommitment))
+      .addInput(funding, new SignatureTemplate(this.cfg.keeperKey).unlockP2PKH())
       .addOutput({
         to: lock,
-        // The covenant does not pin the satoshi value. The difference is the relay fee.
-        amount: oracle.satoshis > 2_000n ? oracle.satoshis - 2_000n : oracle.satoshis,
+        amount: oracle.satoshis,
         token: {
           category: oracle.token!.category,
           amount: oracle.token!.amount,
           nft: { capability: 'mutable', commitment: binToHex(newCommitment) },
         },
       })
+      .addOutput({ to: this.keeperP2pkh(), amount: funding.satoshis - UPDATE_FEE })
       .setLocktime(locktime)
       .send();
     return tx.txid;
+  }
+
+  // The largest token-free coin at the keeper's P2PKH, when it pays `fee` and leaves change above dust.
+  private async feeCoin(fee: bigint): Promise<Utxo> {
+    const to = this.keeperP2pkh();
+    const [coin] = (await this.cfg.contract.provider.getUtxosForLockingBytecode(to))
+      .filter((utxo) => utxo.token === undefined)
+      .sort((a, b) => Number(b.satoshis - a.satoshis));
+    if (coin === undefined || coin.satoshis - fee < BigInt(calculateDust({ to, amount: coin.satoshis }))) {
+      throw new Error(`the keeper's P2PKH holds no coin that pays the ${fee}-satoshi oracle update fee`);
+    }
+    return coin;
   }
 
   private async currentCommitment(): Promise<Uint8Array> {
@@ -270,19 +296,24 @@ export class BlockOracleUpdater {
   }
 
   /**
-   * Sweep (burn) the (n->hash) oracle UTXO that aged out of the 256-block window, reclaiming its dust to
-   * the keeper's P2PKH. Best-effort: returns null if no record of block n is live. Spends the covenant wipe
-   * path (flag 1) under tx.time >= n+256 - mineable once the chain reaches n+256. The covenant also lets
-   * anyone wipe, so this is a keeper convenience (reclaim dust), not a liveness dependency.
+   * Sweep (burn) the (n->hash) oracle UTXOs of block n and older, which aged out of the 256-block window, and
+   * reclaim their dust to the keeper's P2PKH in one batch that pays its fee at 1 sat/byte. Best-effort: returns
+   * null if no such pair is live, or if the batch cannot leave an output above dust (a later batch takes them).
+   * Spends the covenant wipe path (flag 1) under tx.time >= n+256 - mineable once the chain reaches n+256. The
+   * covenant also lets anyone wipe, so this is a keeper convenience (reclaim dust), not a liveness dependency.
    */
   async sweepBlockhashPair(n: bigint): Promise<string | null> {
     const catHex = this.cfg.blockhashOracleCategory;
     if (!catHex) throw new Error('blockhashOracleCategory is required to sweep (n->hash) pairs');
     const category = hexToBin(catHex);
     const lock = blockhashOracleLockingBytecode(category);
-    const utxos = (await this.cfg.contract.provider.getUtxosForLockingBytecode(lock))
-      .filter((utxo) => blockhashCommitmentNumber(hexToBin(utxo.token?.nft?.commitment ?? '')) === n);
-    if (utxos.length === 0) return null;
+    // The wipe path spends only a capability-none NFT of the category, so anything else at the lock stays.
+    const wanted = catHex.toLowerCase();
+    const pairs = (await this.cfg.contract.provider.getUtxosForLockingBytecode(lock))
+      .filter(({ token }) => token !== undefined && token.category.toLowerCase() === wanted
+        && token.nft?.capability === 'none' && blockhashCommitmentNumber(hexToBin(token.nft.commitment)) <= n)
+      .slice(0, MAX_SWEEP_PAIRS);
+    if (pairs.length === 0) return null;
 
     const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(category));
     const wipeUnlock = scriptToBytecode([encodeInt(1n), redeem]);
@@ -293,20 +324,21 @@ export class BlockOracleUpdater {
 
     const { TransactionBuilder } = await import('../TransactionBuilder.js');
     const builder = new TransactionBuilder({ provider: this.cfg.contract.provider, allowImplicitNftBurn: true });
-    let reclaimed = 0n;
-    for (const utxo of utxos) {
-      builder.addInput(utxo, unlocker);
-      reclaimed += utxo.satoshis;
-    }
-    const fee = 1000n;
-    const tx = await builder
-      .addOutput({ to: this.keeperP2pkh(), amount: reclaimed - fee })
-      .setLocktime(Number(n + BigInt(BLOCKHASH_WINDOW)))
-      .send();
+    for (const utxo of pairs) builder.addInput(utxo, unlocker);
+    const to = this.keeperP2pkh();
+    const reclaimed = pairs.reduce((sum, utxo) => sum + utxo.satoshis, 0n);
+    const dust = BigInt(calculateDust({ to, amount: reclaimed }));
+    if (reclaimed < dust) return null;
+    builder.addOutput({ to, amount: reclaimed }).setLocktime(Number(n + BigInt(BLOCKHASH_WINDOW)));
+    // The wipe unlocking carries no signature, so this size is final.
+    const amount = reclaimed - builder.getTransactionSize();
+    if (amount < dust) return null;
+    builder.outputs[0] = { to, amount };
+    const tx = await builder.send();
     return tx.txid;
   }
 
-  // The keeper's own P2PKH locking bytecode (reclaim destination for swept dust).
+  // The keeper's own P2PKH locking bytecode: it pays block-info update fees and takes swept dust.
   private keeperP2pkh(): Uint8Array {
     const pub = secp256k1.derivePublicKeyCompressed(this.cfg.keeperKey);
     if (typeof pub === 'string') throw new Error(`invalid keeper key: ${pub}`);
@@ -315,7 +347,7 @@ export class BlockOracleUpdater {
 
   /**
    * Maintain the project-global (n->hash) oracle on a new tip: mint the tip's (n, hash) pair and sweep the
-   * pair that just aged out of the 256-block window (best-effort dust reclaim).
+   * pairs that aged out of the 256-block window (best-effort dust reclaim).
    */
   private async maintainBlockhashWindow(tip: number): Promise<void> {
     const hashHex: string = await this.cfg.rpc.request('getblockhash', tip);

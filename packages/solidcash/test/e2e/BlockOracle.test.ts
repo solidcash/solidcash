@@ -15,7 +15,7 @@ import { Utxo } from '../../src/interfaces.js';
 import {
   createTestProvider, createFeeFunder, setupStatefulUtxos, fundedSigner,
 } from '../test-util.js';
-import { alicePriv, bobPriv, aliceAddress } from '../fixture/vars.js';
+import { alicePriv, bobPriv, aliceAddress, bobAddress } from '../fixture/vars.js';
 import {
   buildBlockhashOracleCovenantScript, blockhashOracleLockingBytecode,
   buildBlockhashCommitment, scriptToBytecode, encodeInt, keccakComputeLockingBytecode,
@@ -351,6 +351,8 @@ describe('block.* owner-update path e2e', () => {
     const impostor = new BlockOracleUpdater({
       contract, categoryId: '00'.repeat(32), keeperKey: bobPriv, rpc: fakeRpc(100000),
     });
+    // The impostor can pay the fee, so the refusal is the owner check.
+    await provider.addUtxo(bobAddress, randomUtxo({ satoshis: 100000n }));
     await expect(impostor.pushUpdate({
       number: 100000n, timestamp: 1700000000n, difficulty: 0n, size: 1n, totalFees: 0n,
       coinbase: hexToBin('00'),
@@ -467,6 +469,7 @@ describe('block.* off-chain keeper (updater)', () => {
     const impostor = new BlockOracleUpdater({
       contract, categoryId: '00'.repeat(32), keeperKey: bobPriv, rpc: fakeRpc(133700),
     });
+    await provider.addUtxo(bobAddress, randomUtxo({ satoshis: 100000n }));
     await expect(impostor.syncOnce()).rejects.toThrow(/OP_VERIFY|EQUALVERIFY|NULLFAIL|signature/);
   });
 });

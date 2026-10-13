@@ -11,7 +11,7 @@ import { createTxVerifier } from '@mem-cash/validation';
 import { type Utxo, Network, VmTarget, type TokenDetails } from '../interfaces.js';
 import type NetworkProvider from './NetworkProvider.js';
 import type { ConsensusLimits, LedgerOutput, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
-import { addressToLockScript, randomUtxo } from '../utils.js';
+import { addressToLockScript, publicKeyToP2PKHLockingBytecode, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
 import { createPreparedBch2026TxVerifier } from './createPreparedTxVerifier.js';
@@ -243,6 +243,9 @@ interface Outpoint { readonly txid: string; readonly vout: number }
 /** Where a fresh mock chain mints its block oracle. */
 const MOCK_BLOCK_ORACLE_OUTPOINT: Outpoint = { txid: `${'b0'.repeat(31)}b1`, vout: 0 };
 
+/** The coin a fresh mock chain gives the oracle owner's P2PKH, which pays its keeper's update fees. */
+const MOCK_BLOCK_ORACLE_FEE_COIN: Outpoint = { txid: `${'b0'.repeat(31)}b2`, vout: 0 };
+
 /**
  * Write counters for indexer stores. mem-cash calls its storage by property lookup, so wrapping the writer methods
  * and the `_test` helpers (which edit the internals directly) sees every change to the UTXO set.
@@ -390,18 +393,25 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.installBlockOracle();
   }
 
-  /** Compressed key the mock oracle's commitment names. Tests sign updates with it. */
+  /** Compressed key the mock oracle's commitment names. Tests sign updates with it, and its P2PKH pays their fees. */
   readonly blockOracleOwnerKey = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x44 : 0x11));
   blockOracleLock!: Uint8Array;
   blockOracleCategory!: Uint8Array;
   /** The outpoint the mock last wrote the oracle at. */
   private blockOracleOutpoint: Outpoint = MOCK_BLOCK_ORACLE_OUTPOINT;
 
-  /** Mint the one block-info NFT this provider's readers slice. */
+  /** Mint the one block-info NFT this provider's readers slice, and fund its owner's update fees. */
   private installBlockOracle(): void {
     this.blockOracleCategory = sha256(new TextEncoder().encode('solidcash-block-info-oracle-v1'));
     this.blockOracleLock = blockOracleLockingBytecode(this.blockOracleCategory);
     this.writeBlockOracle(MOCK_BLOCK_ORACLE_OUTPOINT, this.tipBlockOracleFields());
+    const owner = publicKeyToP2PKHLockingBytecode(
+      secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array,
+    );
+    this.indexer.addUtxo({
+      ...MOCK_BLOCK_ORACLE_FEE_COIN, satoshis: 100_000_000n, scriptHash: binToHex(sha256(owner)), height: 100,
+      lockingBytecode: owner,
+    });
   }
 
   private tipBlockOracleFields(): BlockOracleCommitmentFields {

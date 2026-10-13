@@ -284,6 +284,9 @@ describe('a proxied entry that appends an element the artifact does not state', 
 
     const { deployment, network, layout, funding } = await deploy(FIXTURE_SHAPED_SOURCE, []);
     expect(deployment.initialize.accepted).toBe(true);
+    // The mock chain writes each block's time into the oracle the entry co-spends, so the clock field is the time
+    // of the last block.
+    const clock = BigInt(network.getBlockTime());
 
     const result = await callFramedProxyEntry({
       provider: network,
@@ -318,7 +321,7 @@ describe('a proxied entry that appends an element the artifact does not state', 
     const job = decoded[0] as unknown as Record<string, unknown>;
     expect(job.title).toBe(TITLE);
     expect(job.amount).toBe(7n);
-    expect(job.timestamp).toBe(0n);
+    expect(job.timestamp).toBe(clock);
     expect([...(job.roles as { creator: Uint8Array }).creator]).toStrictEqual([...funding.deployerLock]);
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });

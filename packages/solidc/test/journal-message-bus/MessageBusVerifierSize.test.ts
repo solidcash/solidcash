@@ -22,14 +22,15 @@ describe('atomic verifier bytecode specialization', () => {
     // facilities produce the default kernel participant below; the exact pair remains a drift tripwire,
     // while the bounds retain deliberate headroom below BCH's deployment limit. Re-pinned after the October
     // hardening (feat/parity and the reaudit, whose stateful entries now also sum their satoshi container and
-    // scan for foreign containers): +357 B in both conventions, and the bus tax grew 39 B.
+    // scan for foreign containers): +357 B in both conventions, and the bus tax grew 39 B. Again when those scans
+    // listed the slots they act on in one classifying pass per side: direct +46 B, composed +104 B.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 497,
-      composed: 1777,
-      frameworkTax: 1280,
+      direct: 543,
+      composed: 1881,
+      frameworkTax: 1338,
     });
-    expect(composed).toBeLessThanOrEqual(1800);
-    expect(composed - direct).toBeLessThanOrEqual(1300);
+    expect(composed).toBeLessThanOrEqual(1900);
+    expect(composed - direct).toBeLessThanOrEqual(1360);
     expect(sidecar).toBeLessThanOrEqual(10_000);
   });
 

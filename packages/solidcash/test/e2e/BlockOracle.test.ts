@@ -259,6 +259,44 @@ describe('block.* oracle reads e2e', () => {
   });
 });
 
+// A read inside an internal helper: the caller carries the oracle index and forwards it on the call.
+const INTERNAL_READER = `
+contract InternalReader() {
+    function readTime(int expected) internal {
+        require(block.timestamp == expected);
+    }
+    function check(int expected) {
+        readTime(expected);
+    }
+}`;
+
+describe('block.* read behind an internal call e2e', () => {
+  const spend = async (expected: bigint): Promise<string> => {
+    const provider = createTestProvider();
+    seedBlock(provider);
+    const contract = new Contract(compileString(INTERNAL_READER), [], { provider });
+    const utxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+    const feeFunder = await createFeeFunder(provider, 20000n);
+    const tx = await new TransactionBuilder({ provider })
+      .addInput(utxo, contract.unlock.check(expected))
+      .addInput(feeFunder.utxo, feeFunder.unlocker)
+      .addOutput({ to: contract.address, amount: 110000n })
+      .send();
+    return tx.txid;
+  };
+
+  it('gives the caller the oracle index and forwards it to the reader', async () => {
+    const check = compileString(INTERNAL_READER).abi.find((fn) => fn.name === 'check');
+    expect(check?.usesBlockOracle).toBe(true);
+    expect(check?.inputs.map((input) => input.name)).toContain('__internal__blockOracleInputIndex');
+    expect(await spend(BLOCK.timestamp)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('rejects a wrong timestamp read through the forwarded index', async () => {
+    await expect(spend(BLOCK.timestamp + 1n)).rejects.toThrow(/OP_VERIFY|non-truthy/);
+  });
+});
+
 // The owner is the first 20 bytes of the oracle commitment. An update is a spend of that covenant, signed by
 // the key named there, with tx.time >= the new block number. It is not a function of the reader.
 const READ_BACK = `

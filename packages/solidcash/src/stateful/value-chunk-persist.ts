@@ -983,9 +983,13 @@ export function commitStagedValueChunkWrite(
   return true;
 }
 
-/** Authenticate retained observations against one exact compiler/planner write identity. */
+/**
+ * Authenticate retained observations against one exact compiler/planner write identity. A chunk covenant bound to
+ * the executing contract's lock authenticates only when that 35-byte `masterLock` is given.
+ */
 export function persistedValueChunkWriteState(
   write: ValueChunkWriteDescriptor,
+  masterLock?: Uint8Array,
 ): { value: Uint8Array; lockingBytecode: Uint8Array; width: number; recipe: {
     slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string;
     masterLock?: Uint8Array;
@@ -999,7 +1003,7 @@ export function persistedValueChunkWriteState(
   if (currentValue && currentLock) candidates.push({ value: currentValue, lockingBytecode: currentLock });
   for (let index = candidates.length - 1; index >= 0; index -= 1) {
     const { value, lockingBytecode } = candidates[index];
-    if (!rememberValueChunkUnlockRecipe(write, value, lockingBytecode)) continue;
+    if (!rememberValueChunkUnlockRecipe(write, value, lockingBytecode, masterLock)) continue;
     return settlement().persistedValueChunkWrites.get(identity);
   }
   return undefined;
@@ -1036,7 +1040,7 @@ export function persistUpdateRedeemLock(
 ): Uint8Array | undefined {
   if (write === null) return undefined;
   if (write) {
-    const exact = persistedValueChunkWriteState(write)?.lockingBytecode;
+    const exact = persistedValueChunkWriteState(write, masterLock)?.lockingBytecode;
     if (!exact) return undefined;
     if (sessionLock && sessionLock.length === 35 && sessionLock[0] === 0xaa && sessionLock[34] === 0x87
       && binToHex(sessionLock) === binToHex(exact)) return sessionLock;

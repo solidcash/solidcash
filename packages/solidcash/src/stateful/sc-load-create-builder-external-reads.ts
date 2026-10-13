@@ -106,7 +106,10 @@ export async function loadCreateBuilderExternalReads(
         const utxo = await host.findExternalDataNft(dataNftAddress, externalCategoryId, er.nftIndex ?? 0);
 
         if (utxo) {
-          const unlocker = createReadOnlyDataNftUnlocker(host.unlockerContract, externalCategoryId);
+          // Bind the external's master, as its discovery address does: the reader's own lock is not the record's.
+          const unlocker = createReadOnlyDataNftUnlocker(
+            host.unlockerContract, externalCategoryId, host.externalMasterLock?.(externalCategoryId), false,
+          );
           externalReadUtxos.push({ ...utxo, unlocker });
         } else {
           throw new Error(

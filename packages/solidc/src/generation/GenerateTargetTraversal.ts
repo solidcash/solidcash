@@ -21476,12 +21476,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Decode each in order. Pure-emit; the caller tracks the net effect.
   // Dynamic types (string / unbounded bytes) are not yet supported here.
   private emitEvmAbiDecode(schema: readonly Type[], loc: SingleLocationData): void {
-    // A longer remainder is not a uint256: BIN2NUM would accept a value above the word, and a short or
-    // zero-prefixed tail would be a second encoding of the same tuple. Every field this decoder reads is
-    // one word, so the blob is exactly 32*N bytes. A 32-byte word cannot exceed the 256-bit range.
-    this.emit(Op.OP_SIZE, loc);
-    this.emit(encodeInt(BigInt(32 * schema.length)), loc);
-    this.emit(Op.OP_NUMEQUALVERIFY, loc);
     for (let i = 0; i < schema.length; i += 1) {
       if (i === schema.length - 1) {
         // As solc: a short blob reverts (OP_SPLIT), trailing bytes are ignored. Trusted blobs are exact.

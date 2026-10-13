@@ -16291,7 +16291,10 @@ function compileResolvedAst(
 
   // Early return transformation (rewrites return statements into nested if-else). A return a later pass placed is
   // nested too, and the transformation refuses one it cannot end a path at.
-  if (needsEarlyReturn || holdsUnconfinedReturn(ast)) ast = ast.accept(new EarlyReturnTransformation()) as Ast;
+  // A framed body's bare return ends the frame, whose tail still runs, so it is not sealed (SEM-1 is direct-only).
+  if (needsEarlyReturn || holdsUnconfinedReturn(ast)) {
+    ast = ast.accept(new EarlyReturnTransformation(false, mergedCompilerOptions.composition !== 'framed')) as Ast;
+  }
 
   // Compile referenced contracts in dependency order
   const referencedStarted = Date.now();

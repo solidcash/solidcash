@@ -65,9 +65,10 @@ describe('conditional value-transfer in a nested else-if (runtime co-spend)', ()
     // derivation (it expects the ABI transferCount of 1 and cannot find it) - a PRE-EXISTING SDK behavior for any
     // non-firing conditional transfer: a single flat `if (c==1) this.transfer(..)` called with c!=1 rejects the
     // same way. That the nested else-if matches the flat case confirms the covenant treats the slot as conditional
-    // (it does not force a transfer on the untaken path).
+    // (it does not force a transfer on the untaken path). The satoshi-container aggregate now refuses the probe's
+    // placeholder transfer first, since no executed transfer accounts for the container's decrease.
     const c = await deployFresh();
     await expect(c.call.sendCond(new SignatureTemplate(alicePriv), 3n, bobPkh).send())
-      .rejects.toThrow(/transfer amounts could not be auto-derived/);
+      .rejects.toThrow(/transfer amounts could not be auto-derived|Program failed an OP_VERIFY operation/);
   });
 });

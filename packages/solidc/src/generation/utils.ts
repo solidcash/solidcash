@@ -16,10 +16,6 @@ import {
 import { UnaryOperator, BinaryOperator, NullaryOperator } from '../ast/Operator.js';
 import { GlobalFunction, TimeOp } from '../ast/Globals.js';
 
-const extractAddressHash = (offset: bigint): Script => [
-  encodeInt(offset), Op.OP_SPLIT, Op.OP_NIP, encodeInt(20n), Op.OP_SPLIT, Op.OP_DROP,
-];
-
 /** Big-endian two's-complement bytes of `byteLen`. A negative value is shifted by 2^bits first. */
 function evmTwosIntToBytes(bits: number, byteLen: number, signed: boolean): Script {
   const widen: Script = signed
@@ -63,7 +59,9 @@ export function compileAddressToEvmIdentity(): Script {
     Op.OP_ELSE,
     Op.OP_SIZE, encodeInt(23n), Op.OP_EQUAL,
     Op.OP_IF,
-    ...extractAddressHash(2n),
+    // P2SH20 `a914 <20> 87`: its hash, once both ends match the template.
+    encodeInt(2n), Op.OP_SPLIT, Op.OP_SWAP, Uint8Array.of(0xa9, 0x14), Op.OP_EQUALVERIFY,
+    encodeInt(20n), Op.OP_SPLIT, Uint8Array.of(0x87), Op.OP_EQUALVERIFY,
     Op.OP_ELSE,
     Op.OP_SIZE, encodeInt(35n), Op.OP_EQUAL,
     Op.OP_IF,

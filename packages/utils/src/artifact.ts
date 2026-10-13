@@ -334,6 +334,8 @@ export type BlockSlotKind =
   | 'transfer'
   | 'tcTransfer'
   | 'event'
+  /** Continuation chunk `chunk` (>= 1) of the wide emit at `slotIndex`; follows that emit's `event` slot. */
+  | 'eventChunk'
   | 'returnEvent'
   | 'deploy'
   /** Child data-NFT genesis outputs that follow a `deploy` slot (factory createPair-style). */
@@ -349,7 +351,8 @@ export type BlockSlotKind =
 export interface BlockLayoutSlot {
   kind: BlockSlotKind;
   offset: number;           // compile-time offset from block start (= from master)
-  slotIndex?: number;       // for entry/tokenContainer/transfer/event/tcTransfer
+  slotIndex?: number;       // for entry/tokenContainer/transfer/event/eventChunk/tcTransfer
+  chunk?: number;           // eventChunk: the payload chunk this output carries (>= 1)
   nftIndex?: number;        // for dataNft/readOnlyDataNft
   conditional?: boolean;    // true if slot may be inactive (in if/else branch)
   // entry: a branch delete lowered to an existence-gated soft-delete write (SDK derives it as a write, not a drop)

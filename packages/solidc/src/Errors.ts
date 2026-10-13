@@ -70,6 +70,8 @@ export type SolidcDiagnosticCode =
   | 'SPLIT_CLOSURE_CAPACITY'
   | 'SPLIT_ROOT_CAPACITY'
   | 'SPLIT_LAYOUT_CONFLICT'
+  // An event payload wider than one NFT commitment, emitted where its continuation chunks have no layout.
+  | 'EVENT_PAYLOAD_EXCEEDS_COMMITMENT'
   // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
   | 'KERNEL_LAYOUT'
   | 'KERNEL_UNBOUNDED_KEY'

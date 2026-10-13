@@ -140,6 +140,7 @@ import SymbolTableTraversal, {
 } from './semantic/SymbolTableTraversal.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
 import { publishStoredValueSources } from './semantic/stored-value-source.js';
+import { getEventChunkCount } from './semantic/maxEncodedSize.js';
 import EnsureFinalRequireTraversal, {
   rejectFreeFunctionMissingReturns,
 } from './semantic/EnsureFinalRequireTraversal.js';
@@ -3695,6 +3696,35 @@ function noteKernelLayoutGate(fn: { name: string }, gate: string, detail?: Recor
   console.error('message-bus-layout-gate', JSON.stringify({ handler: fn.name, gate, ...detail }));
 }
 
+/** Names of the events visible to `ast` whose payload can exceed one NFT commitment of `chunkBytes`. */
+function wideEventNames(ast: Ast, chunkBytes: number): Set<string> {
+  const events = [
+    ...ast.contract.eventDefinitions, ...ast.eventDefinitions,
+    ...ast.interfaceDefinitions.flatMap((definition) => definition.eventDefinitions),
+    ...ast.importedContracts.flatMap((contract) => contract.eventDefinitions),
+  ];
+  return new Set(events.filter((event) => getEventChunkCount(event.parameters, chunkBytes) > 1)
+    .map((event) => event.name));
+}
+
+/** True when `body` holds an emit of an event named in `names`. */
+function emitsNamedEvent(body: unknown, names: ReadonlySet<string>): boolean {
+  let found = false;
+  walkInvocationAst(body, (node) => {
+    if (node instanceof EmitStatementNode && names.has(node.eventName)) found = true;
+  });
+  return found;
+}
+
+/** True when `fn` or a helper it reaches emits an event named in `wide` (by name, so any overload counts). */
+function emitsWideEvent(
+  fn: FunctionDefinitionNode, byName: Map<string, FunctionDefinitionNode[]>, wide: ReadonlySet<string>,
+): boolean {
+  if (wide.size === 0) return false;
+  return [...collectNamedFunctionClosure(fn, byName)].some((name) =>
+    (name === fn.name ? [fn] : byName.get(name) ?? []).some((candidate) => emitsNamedEvent(candidate.body, wide)));
+}
+
 /** Map admission reasons onto the shared frozen KERNEL_* catalog. */
 function kernelAdmissionReason(reason: string): string {
   return normalizeKernelAdmissionReason(reason);
@@ -5652,6 +5682,7 @@ function synthesizeMessageBusRoute(
   const footprintCache = createFootprintAnalysisCache(new Set(
     contract.stateVariables.map((state) => state.name),
   ));
+  const wideEvents = wideEventNames(ast, compilerOptions.commitmentLimit ?? 128);
   const dynamicState = new Set(contract.stateVariables.filter((state) => state.isDynamic
     || state.isPacked
     || state.type === PrimitiveType.STRING
@@ -7272,6 +7303,14 @@ function synthesizeMessageBusRoute(
       }
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
+    // A payload wider than one NFT commitment continues in outputs no route frame reserves: refuse the handler
+    // here, by name, rather than publish a route whose event output the network rejects.
+    if (emitsWideEvent(fn, signatureClosureByName, wideEvents)) {
+      noteKernelLayoutGate(fn, 'event-wider-than-one-commitment');
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'event-wider-than-one-commitment';
+      continue;
+    }
     if (compilerOptions.messageBusKernel === true
       && footprint.writes.some((resource) => resource.startsWith('state:'))
       && footprint.writes.some((resource) => resource.startsWith('collection:'))
@@ -18810,7 +18849,8 @@ function compileStringSplitUnchecked(
           const layout = handler?.blockLayout;
           const dataOffsets = (layout?.slots ?? [])
             .filter((slot) => slot.kind === 'dataNft').map((slot) => slot.offset);
-          const delegateEventOffsets = (layout?.slots ?? []).filter((slot) => slot.kind === 'event')
+          const delegateEventOffsets = (layout?.slots ?? [])
+            .filter((slot) => slot.kind === 'event' || slot.kind === 'eventChunk')
             .map((slot) => slot.offset - dataOffsets.filter((offset) => offset < slot.offset).length);
           const censusedCollectionSignatures = [...new Set((handler?.sortedBatchInfo ?? [])
             .map((batch) => {
@@ -18894,7 +18934,8 @@ function compileStringSplitUnchecked(
     const layout = handler?.blockLayout;
     const dataOffsets = (layout?.slots ?? [])
       .filter((slot) => slot.kind === 'dataNft').map((slot) => slot.offset);
-    const delegateEventOffsets = (layout?.slots ?? []).filter((slot) => slot.kind === 'event')
+    const delegateEventOffsets = (layout?.slots ?? [])
+      .filter((slot) => slot.kind === 'event' || slot.kind === 'eventChunk')
       .map((slot) => slot.offset - dataOffsets.filter((offset) => offset < slot.offset).length);
     // A sorted batch emits both exact collection-address input and output scans in the facet. The root may
     // leave only these collections out of its global mutable-NFT equality; the facet settles their count.

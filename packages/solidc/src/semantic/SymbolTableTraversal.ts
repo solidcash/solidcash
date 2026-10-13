@@ -226,7 +226,7 @@ import {
   UpgradeStrandsBoundStateError,
 } from '../Errors.js';
 import { parameterTypeSignature } from './parameterTypeToken.js';
-import { getMaxPushdataEncodedSizeForType } from './maxEncodedSize.js';
+import { getEventChunkCount, getMaxPushdataEncodedSizeForType } from './maxEncodedSize.js';
 import {
   type CompilerOptions, PrimitiveType, BytesType, type Type, StructType, EnumType, AddressType, ValueType,
   computeEventSignature, computeEventSelector, computeErrorSignature, computeCollectionSignature,
@@ -235,7 +235,7 @@ import {
   IntType, FixedType, MappingType, FunctionType,
   type FunctionBlockLayout, type BlockLayoutSlot, resolveLibraries, type ExternalLibrary, parseTypeStrict,
   INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType, encodeInt, implicitlyCastable, type LocationI,
-  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
+  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX, EVENT_CHUNK_BYTES,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
@@ -5709,11 +5709,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     for (const site of sites) site.emit.emitIndex = site.slot;
     return slots.map((_key, emitIndex) => {
       const { emit } = sites.find((site) => site.slot === emitIndex)!;
+      // A payload wider than one commitment continues in consecutive outputs (computeBlockLayout `eventChunk`).
+      const definitions = emit.eventDefinition ? [emit.eventDefinition] : emit.eventCandidates ?? [];
       return {
         eventName: emit.eventName,
         eventSignature: emit.eventDefinition?.signature ?? '',
         emitIndex,
-        chunkCount: 1,
+        chunkCount: Math.max(1, ...definitions.map((definition) =>
+          getEventChunkCount(definition.parameters, this.compilerOptions.commitmentLimit ?? EVENT_CHUNK_BYTES))),
         eventDefinition: emit.eventDefinition,
       };
     });
@@ -5724,8 +5727,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Counter-loop events use the bounded trailing runtime stream. Giving them a fixed emitIndex as well would
       // reserve one row slot and then overwrite that same pending register on every inner iteration.
       if (node.runtimeLoopEvent) return emitIndex;
-      // One source emit is one event NFT. Event commitments are never split across outputs: the active
-      // provider's commitment limit decides whether the encoded payload is admissible. Older layout planning
+      // A framed emit is one event NFT: its commitment is never split across outputs (the direct convention's
+      // `allocateEmitSlots` reserves continuation chunks), so the provider's limit decides. Older layout planning
       // estimated a synthetic `chunkCount` from 128-byte pieces, but code generation and the SDK still emitted
       // one commitment. That advanced every later semantic emit index without reserving or producing the
       // invented chunks, so a wide event followed by another event failed internally at `event[N]` and could
@@ -17953,7 +17956,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       frame.deployOffset = deployOffset;
       frame.deployInputOffset = deployOffset - layout.slots
         .filter((slot) => slot.offset < deployOffset
-          && ['transfer', 'tcTransfer', 'event', 'returnEvent', 'deployDataNft'].includes(slot.kind))
+          && ['transfer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent', 'deployDataNft'].includes(slot.kind))
         .length;
     }
   }
@@ -18282,10 +18285,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Events (output-only)
+    // Events (output-only). A wide emit's continuation chunks follow its own slot; a shorter payload leaves the
+    // trailing ones without a token, so they are conditional.
     if (node.emitInfos) {
       for (let i = 0; i < node.emitInfos.length; i++) {
         slots.push({ kind: 'event', offset: offset++, slotIndex: i });
+        for (let chunk = 1; chunk < node.emitInfos[i].chunkCount; chunk++) {
+          slots.push({ kind: 'eventChunk', offset: offset++, slotIndex: i, chunk, conditional: true });
+        }
       }
     }
     for (let i = node.emitInfos?.length ?? 0; i < graphEvents; i++) {

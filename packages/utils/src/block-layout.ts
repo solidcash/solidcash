@@ -2,7 +2,7 @@ import type { BlockLayoutSlot, BlockSlotKind, FunctionBlockLayout } from './arti
 
 /** Slots which exist only in the output coordinate space and therefore do not advance input coordinates. */
 export const OUTPUT_ONLY_BLOCK_SLOT_KINDS: ReadonlySet<BlockSlotKind> = new Set([
-  'transfer', 'tcTransfer', 'event', 'returnEvent', 'deployDataNft',
+  'transfer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent', 'deployDataNft',
 ]);
 
 export function isOutputOnlyBlockSlot(slot: Pick<BlockLayoutSlot, 'kind'>): boolean {

@@ -2260,6 +2260,36 @@ export function buildAnonymousEventNftCovenantBytecode(categoryIdHex: string): s
   return binToHex(scriptToBytecode(buildAnonymousEventNftCovenantScript(categoryId)));
 }
 
+/** Event payload bytes one event NFT commitment carries (the consensus commitment limit). */
+export const EVENT_CHUNK_BYTES = 128;
+
+/**
+ * The hash a wide event's continuation chunks are locked under. Chunk 0 keeps the event's own covenant; chunks
+ * 1.. sit at the named covenant built with this hash (`#` cannot occur in a signature, so no event collides).
+ * Anonymous events share one continuation covenant, as they share one event covenant.
+ */
+export function computeEventContinuationHash(eventSignature: string, anonymous = false): Uint8Array {
+  return computeEventNameHash(anonymous ? '#continuation' : `${eventSignature}#continuation`);
+}
+
+/** Build the hex-encoded bytecode for an event's continuation-chunk covenant. */
+export function buildEventContinuationNftCovenantBytecode(
+  categoryIdHex: string, eventSignature: string, anonymous = false,
+): string {
+  const hash = computeEventContinuationHash(eventSignature, anonymous);
+  return binToHex(scriptToBytecode(buildEventNftCovenantScript(hexToBin(categoryIdHex), hash)));
+}
+
+/** Split an encoded event payload into its commitments: `chunkBytes` chunks, the last one shorter. */
+export function splitEventPayload(payload: Uint8Array, chunkBytes: number = EVENT_CHUNK_BYTES): Uint8Array[] {
+  if (payload.length === 0) return [payload];
+  const chunks: Uint8Array[] = [];
+  for (let offset = 0; offset < payload.length; offset += chunkBytes) {
+    chunks.push(payload.slice(offset, offset + chunkBytes));
+  }
+  return chunks;
+}
+
 /**
  * Build the blockhash (n -> hash) oracle covenant for block `n` under the oracle token category
  * (docs/block-and-transaction-properties.md s11). The immutable ('none' capability) NFT carries commitment =

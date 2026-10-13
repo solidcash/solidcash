@@ -9,7 +9,7 @@ import * as messageBus from '../../src/message-bus/index.js';
 import { isContractUnlocker, type Utxo } from '../../src/interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs, solidCashOutputToLibauthOutput } from '../../src/utils.js';
-import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';
+import { addProvenUtxo, createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 
 /**
@@ -66,11 +66,7 @@ interface Fixture {
 async function setup(): Promise<Fixture> {
   const provider = createMessageBusCapstoneTestProvider();
   const signer = new Signer(new Uint8Array(32).fill(0x58), provider);
-  for (let index = 0; index < 16; index += 1) {
-    await provider.addUtxo(signer.getAddress(), {
-      txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
-    });
-  }
+  for (let index = 0; index < 16; index += 1) await addProvenUtxo(provider, signer.getAddress());
   const probeArtifact = compileString(PROBE, { ...KERNEL, messageBusGraphContext: true });
   const probeBase = new Contract(probeArtifact, [], { provider });
   const probeSetup = await setupStatefulUtxos(

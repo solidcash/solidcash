@@ -3,7 +3,7 @@ import { compileString } from '../direct-compile.js';
 import { Signer } from '../../src/index.js';
 import { getContractFactory, upgrades } from '../../src/stateful/index.js';
 import { alicePriv } from '../fixture/vars.js';
-import { createTestProvider, getTxOutputs } from '../test-util.js';
+import { addProvenUtxo, createTestProvider, getTxOutputs } from '../test-util.js';
 
 /**
  * Audit DX-8 follow-up. A delegate's lone write to a string-valued mapping goes through the SDK's chunkable-write
@@ -23,11 +23,7 @@ const LABEL_IMPL = `pragma solidcash >=0.8.0;
 async function fundedSigner(): Promise<Signer> {
   const provider = createTestProvider();
   const signer = new Signer(alicePriv, provider);
-  for (let index = 1; index <= 20; index += 1) {
-    await provider.addUtxo(signer.getAddress(), {
-      txid: index.toString(16).padStart(2, '0').repeat(32), vout: 0, satoshis: 1_000_000n,
-    });
-  }
+  for (let index = 1; index <= 20; index += 1) await addProvenUtxo(provider, signer.getAddress());
   return signer;
 }
 

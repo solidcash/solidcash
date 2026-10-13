@@ -12,7 +12,7 @@ import {
   upgrades,
 } from '../../src/stateful/index.js';
 import { alicePriv } from '../fixture/vars.js';
-import { createTestProvider } from '../test-util.js';
+import { addProvenUtxo, createTestProvider } from '../test-util.js';
 
 // Blocker A repro: MarketplaceDataV1.initialize fails BCH-2026 preflight at its own input when it writes even a
 // SINGLE mapping entry (verified against the real project: 8 writes fail, 1 write fails, 0 writes succeed and
@@ -88,9 +88,7 @@ const ENTRY_CALL = `pragma solidcash >=0.8.0;
 async function fundedSigner(): Promise<Signer> {
   const provider = createTestProvider();
   const signer = new Signer(alicePriv, provider);
-  for (const seed of Array.from({ length: 20 }, (_unused, index) => (index + 1).toString(16).padStart(2, '0'))) {
-    await provider.addUtxo(signer.getAddress(), { txid: seed.repeat(32), vout: 0, satoshis: 1_000_000n });
-  }
+  for (let index = 0; index < 20; index += 1) await addProvenUtxo(provider, signer.getAddress());
   return signer;
 }
 

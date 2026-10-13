@@ -9786,12 +9786,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMintingNftUniqueness(node);
           this.emitDelegateSelfPreservation(node);
           // DX-8, direct and routed alike: an honest route carries no implementation item but its executor.
+          // The chain conserves every record in order; the SDK may place a record at another index.
           this.emitDelegateRecordConservation(node);
-          // Each record of this category also keeps its own index, unless entry writes or low-level calls may move it.
-          if (!this.isCompilerMessageBusRoute(node)
-            && (node.entryAccesses?.length ?? 0) === 0 && (node.lowLevelCalls?.length ?? 0) === 0) {
-            this.emitDelegateOwnCategoryPreservation(node);
-          }
         } else if (isUpgrade) {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -9823,11 +9819,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMasterCommitmentPreservation(node);
           this.emitDelegateSelfPreservation(node);
           this.emitDelegateRecordConservation(node);
-          // Each record of this category also keeps its own index, unless entry writes or low-level calls may move it.
-          if (!this.isCompilerMessageBusRoute(node)
-            && (node.entryAccesses?.length ?? 0) === 0 && (node.lowLevelCalls?.length ?? 0) === 0) {
-            this.emitDelegateOwnCategoryPreservation(node);
-          }
         } else if (isUpgrade) {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -46888,97 +46879,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Uses OP_INPUTINDEX (not emitMasterInputIndex) because this refers to the
    * delegate's own UTXO, not the proxy's.
    */
-  /**
-   * The delegate master is co-spent, so its own data, entry, and fungible tokens are open to the same flag
-   * the master would authorize. Every input of this category is recreated at its own index, and no output of
-   * this category appears without that input.
-   */
-  private emitDelegateOwnCategoryPreservation(node: FunctionDefinitionNode): void {
-    const loc = { location: node.body.location, positionHint: PositionHint.END };
-    this.emit(Op.OP_INPUTINDEX, loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emitTakeFirst32(loc);
-    this.emit(Op.OP_TOALTSTACK, loc);
-    this.emit(Op.OP_0, loc);
-    this.emit(Op.OP_BEGIN, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_TXINPUTCOUNT, loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emitDelegateCategorySide(loc, false);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emitDelegateCategorySide(loc, true);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_1ADD, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_TXINPUTCOUNT, loc);
-    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
-    this.emit(Op.OP_2DUP, loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_UNTIL, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc);
-    this.emit(Op.OP_DROP, loc);
-  }
-
-  /** `[i]` stays. When this side's category base is the delegate's, require the other side to match it. */
-  private emitDelegateCategorySide(loc: SingleLocationData, isOutput: boolean): void {
-    const category = isOutput ? Op.OP_OUTPUTTOKENCATEGORY : Op.OP_UTXOTOKENCATEGORY;
-    const otherCategory = isOutput ? Op.OP_UTXOTOKENCATEGORY : Op.OP_OUTPUTTOKENCATEGORY;
-    const bytecode = isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE;
-    const otherBytecode = isOutput ? Op.OP_UTXOBYTECODE : Op.OP_OUTPUTBYTECODE;
-    const commitment = isOutput ? Op.OP_OUTPUTTOKENCOMMITMENT : Op.OP_UTXOTOKENCOMMITMENT;
-    const otherCommitment = isOutput ? Op.OP_UTXOTOKENCOMMITMENT : Op.OP_OUTPUTTOKENCOMMITMENT;
-    this.emit(Op.OP_DUP, loc);
-    this.emit(category, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_SIZE, loc);
-    this.emit(Op.OP_NIP, loc);
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_TOALTSTACK, loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(isOutput ? Op.OP_TXINPUTCOUNT : Op.OP_TXOUTPUTCOUNT, loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_VERIFY, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(bytecode, loc);
-    this.emit(Op.OP_OVER, loc);
-    this.emit(otherBytecode, loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(category, loc);
-    this.emit(Op.OP_OVER, loc);
-    this.emit(otherCategory, loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(commitment, loc);
-    this.emit(Op.OP_OVER, loc);
-    this.emit(otherCommitment, loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_ENDIF, loc);
-  }
-
   private emitDelegateSelfPreservation(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
 

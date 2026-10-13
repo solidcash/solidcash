@@ -8,7 +8,7 @@ import {
 } from '@bitauth/libauth';
 import { createTxVerifier } from '@mem-cash/validation';
 import {
-  buildInitialStateCommitments, messageBusVerifierCommitment, type StateLayout,
+  buildInitialStateCommitments, hash256, messageBusVerifierCommitment, type StateLayout,
 } from '@solidcash/utils';
 import { Output, Network, Utxo } from '../src/interfaces.js';
 import {
@@ -33,7 +33,10 @@ import {
   network as defaultNetwork, aliceAddress, alicePub, alicePriv, alicePkh,
 } from './fixture/vars.js';
 import p2pkhArtifact from './fixture/p2pkh.artifact.js';
-import { generateLibauthSourceOutputs, getNetworkPrefix, libauthOutputToSolidCashOutput } from '../src/utils.js';
+import {
+  addressToLockScript, generateLibauthSourceOutputs, getNetworkPrefix, libauthOutputToSolidCashOutput,
+} from '../src/utils.js';
+import type NetworkProvider from '../src/network/NetworkProvider.js';
 import { utxoComparator } from '../src/utils.js';
 
 type TestProvider = MockNetworkProvider | RegtestNetworkProvider;
@@ -250,6 +253,32 @@ async function fundAddress(
   for (let i = 0; i < utxoCount; i++) {
     await provider.addUtxo(address, { txid: nextFundingTxid(), vout: 0, satoshis });
   }
+}
+
+/**
+ * A vout-0 coin at `address` that genesis selection can prove (SDKFRAMED-1): on the mock its raw transaction pays
+ * `address`, so the txid is that transaction's hash. A live provider funds a real coin.
+ */
+export async function addProvenUtxo(
+  provider: NetworkProvider, address: string, satoshis = 1_000_000n,
+): Promise<Utxo> {
+  if (!(provider instanceof MockNetworkProvider)) {
+    return (provider as TestProvider).addUtxo(address, { txid: nextFundingTxid(), vout: 0, satoshis });
+  }
+  const raw = encodeTransaction({
+    version: 2,
+    locktime: 0,
+    inputs: [{
+      outpointIndex: 1,
+      outpointTransactionHash: hexToBin(nextFundingTxid()),
+      sequenceNumber: 0xffffffff,
+      unlockingBytecode: Uint8Array.of(0x51),
+    }],
+    outputs: [{ lockingBytecode: addressToLockScript(address), valueSatoshis: satoshis }],
+  });
+  const txid = binToHex(hash256(raw).reverse());
+  provider.indexer.storage.storeRawTx(txid, binToHex(raw));
+  return provider.addUtxo(address, { txid, vout: 0, satoshis });
 }
 
 /**

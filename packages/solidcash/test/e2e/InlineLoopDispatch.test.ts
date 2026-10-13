@@ -15,7 +15,7 @@ const SRC = `
 pragma solidcash >=0.8.0;
 contract MiniMultiCall() {
     function run(address[] targets, bytes[] data) {
-        int total = 0;
+        uint total = 0;
         for (uint i = 0; i < targets.length; i++) {
             bool ok, bytes r = targets[i].staticcall(data[i]);
             require(ok);

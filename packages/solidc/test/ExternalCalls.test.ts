@@ -214,7 +214,7 @@ describe('Low-level call options + tuple-slot modifiers + value units', () => {
 
   it('evmCompat .call(data) compiles a presence pin for the callee input', () => {
     const artifact = compileString(
-      'contract C() { int n; function f(address to, bytes data) {'
+      'contract C() { uint n; function f(address to, bytes data) {'
       + ' (bool ok, bytes res) = to.call(data); require(ok); this.n = res.length; } }',
       { evmCompat: true },
     );
@@ -549,7 +549,7 @@ describe('SBE-7: ether-send via low-level call{value:}', () => {
     const artifact = compileString(
       'function invoke(address dst, bytes data, int value) returns (bytes) { '
       + '(bool ok, bytes ret) = dst.call{value: value}(data); require(ok); return ret; } '
-      + 'contract C() { int n; function f(address dst, bytes data) { '
+      + 'contract C() { uint n; function f(address dst, bytes data) { '
       + 'bytes ret = invoke(dst, data, 0); this.n = ret.length; } }',
       { evmCompat: true },
     );
@@ -566,7 +566,7 @@ describe('SBE-7: ether-send via low-level call{value:}', () => {
       + 'return invoke(dst, data, value); } '
       + 'function safeRelay(address dst, bytes data) returns (bytes) { '
       + 'return relay(dst, data, 0); } '
-      + 'contract C() { int n; function f(address dst, bytes data) { '
+      + 'contract C() { uint n; function f(address dst, bytes data) { '
       + 'bytes ret = safeRelay(dst, data); this.n = ret.length; } }',
       { evmCompat: true },
     );

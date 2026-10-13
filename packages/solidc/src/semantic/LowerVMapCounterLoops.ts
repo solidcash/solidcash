@@ -5453,6 +5453,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const at = <T extends Node>(value: T): T => { value.location = location; return value; };
       const id = (name: string): IdentifierNode => at(new IdentifierNode(name));
       const lit = (value: bigint): IntLiteralNode => at(new IntLiteralNode(value));
+      // A witness length is compared with int256 proof values, so it keeps bigint under evmCompat.
+      const witnessLength = (name: string): UnaryOpNode => {
+        const length = at(new UnaryOpNode(UnaryOperator.SIZE, id(name)));
+        length.compilerLength = true;
+        return length;
+      };
       const binary = (left: ExpressionNode, operator: BinaryOperator, right: ExpressionNode): BinaryOpNode =>
         at(new BinaryOpNode(left, operator, right));
       const proofInt = new IntType(true, 256);
@@ -5893,7 +5899,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       )));
       for (const trace of prefixCountTraces) {
         prelude.push(at(new RequireNode(binary(
-          at(new UnaryOpNode(UnaryOperator.SIZE, id(trace.witnessParam))),
+          witnessLength(trace.witnessParam),
           BinaryOperator.EQ,
           binary(iterationCount(), BinaryOperator.PLUS, lit(1n)),
         ), 'vmap counter prefix-count trace length mismatch')));
@@ -5907,21 +5913,21 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             && write instanceof MappingAssignNode && valueTracePlans.get(write) === trace));
         for (const trace of traceParams) {
           prelude.push(at(new RequireNode(binary(
-            at(new UnaryOpNode(UnaryOperator.SIZE, id(trace.witnessParam))),
+            witnessLength(trace.witnessParam),
             BinaryOperator.EQ,
             iterationCount(),
           ), 'vmap counter value trace length mismatch')));
         }
         prelude.push(at(new RequireNode(binary(
-          at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),
+          witnessLength(group.hidden),
           group.expandedSelectionCondition ? BinaryOperator.LE : BinaryOperator.EQ,
           iterationCount(),
         ), 'vmap counter permutation length mismatch')));
         if (group.sourceIndexParam) {
           prelude.push(at(new RequireNode(binary(
-            at(new UnaryOpNode(UnaryOperator.SIZE, id(group.sourceIndexParam))),
+            witnessLength(group.sourceIndexParam),
             BinaryOperator.EQ,
-            at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),
+            witnessLength(group.hidden),
           ), 'vmap counter source index length mismatch')));
         }
         if (group.domainOnly) continue;
@@ -5992,7 +5998,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               BinaryOperator.AND,
               binary(
                 sourceIndexRead(group), BinaryOperator.LT,
-                at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),
+                witnessLength(group.hidden),
               ),
             ), 'vmap counter source index out of range')),
             at(new RequireNode(binary(
@@ -6098,7 +6104,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         canonical.parent.statements!.splice(insertionIndex + 1, 0, ...selectedGroups.map((group) =>
           at(new RequireNode(binary(
             id(group.settlementCursor), BinaryOperator.EQ,
-            at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),
+            witnessLength(group.hidden),
           ), 'vmap counter selection length mismatch'))));
       }
       for (const group of groups) {

@@ -21,10 +21,10 @@ contract C() {
   function pushDefault(pubkey pk, sig s) { require(checkSig(s, pk)); xs.push(); }
   function pushThisDefault(pubkey pk, sig s) { require(checkSig(s, pk)); this.xs.push(); }
   function pushVal(uint256 v, pubkey pk, sig s) { require(checkSig(s, pk)); xs.push(v); }
-  function count(int n) { require(xs.length == n); }
+  function count(uint n) { require(xs.length == n); }
   function elem(int i, uint256 e) { require(xs[i] == e); }
   function mPushDefault(address k, pubkey pk, sig s) { require(checkSig(s, pk)); m[k].push(); }
-  function mCount(address k, int n) { require(m[k].length == n); }
+  function mCount(address k, uint n) { require(m[k].length == n); }
   function mElem(address k, int i, uint256 e) { require(m[k][i] == e); }
 }`;
 

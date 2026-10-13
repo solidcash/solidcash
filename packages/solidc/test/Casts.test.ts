@@ -112,13 +112,16 @@ describe('SBE-2: bytesN -> bytesM cast (truncate / widen)', () => {
   });
 });
 
+// The P2PKH arm of the identity narrowing checks both template ends (76a914 ... 88ac) before taking the hash (KB-2).
+const P2PKH_IDENTITY = 'OP_3 OP_SPLIT OP_SWAP 76a914 OP_EQUALVERIFY';
+
 describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', () => {
   it('bytes20(address) narrows to the embedded 20-byte hash (skips the P2PKH frame) and warns', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
       'contract C() { function f(address a, bytes20 e) { require(bytes20(a) == e); } }',
       { messageBus: false }).debug.bytecode));
-    expect(asm).toContain('OP_3 OP_SPLIT OP_NIP'); // skip the 0x76a914 prefix, then take 20 / drop 88ac
+    expect(asm).toContain(P2PKH_IDENTITY); // check the 76a914 prefix, then take 20 and check 88ac
     expect(asm).not.toContain('OP_BIN2NUM');        // bytes20, not int
     expect(warn.mock.calls.some((c) => String(c[0]).includes('narrows a variable-length BCH address'))).toBe(true);
     warn.mockRestore();
@@ -129,7 +132,7 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     const asm = bytecodeToAsm(hexToBin(compileString(
       'contract C() { function f(address a, int e) { require(uint160(a) == e); } }',
       { messageBus: false }).debug.bytecode));
-    expect(asm).toContain('OP_3 OP_SPLIT OP_NIP');
+    expect(asm).toContain(P2PKH_IDENTITY);
     expect(asm).toContain('OP_BIN2NUM');
     warn.mockRestore();
   });
@@ -164,7 +167,7 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     const asm = bytecodeToAsm(hexToBin(compileString(
       'contract C() { function f(address a) returns (bytes) { return abi.encodePacked(uint160(a)); } }',
       { evmCompat: true, messageBus: false }).debug.bytecode));
-    expect(asm).toContain('OP_3 OP_SPLIT OP_NIP');
+    expect(asm).toContain(P2PKH_IDENTITY);
     expect(asm).toContain('OP_BIN2NUM');
     expect(asm).toContain('OP_REVERSEBYTES');
     warn.mockRestore();
@@ -179,7 +182,7 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
         evmCompat: true, messageBus: false, addressForm: form,
       }).debug.bytecode));
       // The narrowing script belongs to the cast, and the cast emits it in either form.
-      expect(asm).toContain('OP_3 OP_SPLIT OP_NIP');
+      expect(asm).toContain(P2PKH_IDENTITY);
       expect(asm).toContain('OP_HASH160');
     }
     expect(warn.mock.calls.some((c) => String(c[0]).includes('narrows a variable-length BCH address'))).toBe(true);
@@ -193,8 +196,8 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
       messageBus: false, addressForm: 'hash',
     }).debug.bytecode));
     // A native compile packs the lock by default; asking for 'hash' inserts the identity narrowing.
-    expect(native).not.toContain('OP_3 OP_SPLIT OP_NIP');
-    expect(forced).toContain('OP_3 OP_SPLIT OP_NIP');
+    expect(native).not.toContain(P2PKH_IDENTITY);
+    expect(forced).toContain(P2PKH_IDENTITY);
   });
 
   it("addressForm: 'bytecode' packs the whole lock where 'hash' packs the 20-byte identity", () => {
@@ -206,8 +209,8 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     const bytecode = bytecodeToAsm(hexToBin(compileString(source, {
       evmCompat: true, messageBus: false, addressForm: 'bytecode',
     }).debug.bytecode));
-    expect(hash).toContain('OP_3 OP_SPLIT OP_NIP');
-    expect(bytecode).not.toContain('OP_3 OP_SPLIT OP_NIP');
+    expect(hash).toContain(P2PKH_IDENTITY);
+    expect(bytecode).not.toContain(P2PKH_IDENTITY);
     expect(bytecode.length).toBeLessThan(hash.length);
   });
 
@@ -216,7 +219,7 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     const asm = bytecodeToAsm(hexToBin(compileString(
       'contract C() { function f(address a, bytes e) { require(bytes(a) == e); } }',
       { messageBus: false }).debug.bytecode));
-    expect(asm).not.toContain('OP_3 OP_SPLIT OP_NIP');
+    expect(asm).not.toContain(P2PKH_IDENTITY);
     expect(warn.mock.calls.some((c) => String(c[0]).includes('narrows a variable-length BCH address'))).toBe(false);
     warn.mockRestore();
   });

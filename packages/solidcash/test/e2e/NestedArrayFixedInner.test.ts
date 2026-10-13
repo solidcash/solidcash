@@ -22,7 +22,7 @@ contract C() {
   function setw(int i, int j, uint256 v, pubkey pk, sig s) { require(checkSig(s, pk)); a[i][j] = v; }
   function seedLoop(pubkey pk, sig s) { require(checkSig(s, pk)); for (uint i = 0; i < 3; i++) a.push(); }
   function get(int i, int j, uint256 e) { require(a[i][j] == e); }
-  function len(int n) { require(a.length == n); }
+  function len(uint n) { require(a.length == n); }
 }`;
 
 describe('fixed-inner nested array uint256[2][] (chunk-packed)', () => {

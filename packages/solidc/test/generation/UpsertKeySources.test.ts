@@ -68,7 +68,7 @@ describe('generic upsert fixed-key recovery', () => {
     const artifact = compileString(`contract Registry() {
       mapping(address => bool) flags;
       function update(address[] members) internal {
-        for (int i = 0; i < members.length; i = i + 1) {
+        for (uint i = 0; i < members.length; i = i + 1) {
           this.flags[members[i]] = true;
         }
       }

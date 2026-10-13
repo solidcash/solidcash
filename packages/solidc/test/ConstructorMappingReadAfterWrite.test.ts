@@ -120,7 +120,9 @@ function settleDirect(artifact: Artifact, args: Record<string, Uint8Array>, crea
   ];
   if (created !== undefined) {
     const signature = artifact.stateLayout!.collections!.find((entry) => entry.name === created.collection)!.signature;
-    const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(signature)));
+    // A direct contract's node covenant names the master's lock (CRYPTO-4).
+    const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(signature),
+      lock));
     const entryLock = encodeLockingBytecodeP2sh32(hash256(entryRedeem));
     inputs.push({
       outpointIndex: 0, outpointTransactionHash: outpoint(1), sequenceNumber: 0xffffffff,

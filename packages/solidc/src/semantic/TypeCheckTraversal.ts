@@ -3136,15 +3136,19 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.type = node.expression.type;
         return node;
       }
-      case UnaryOperator.SIZE:
+      case UnaryOperator.SIZE: {
         // evmCompat `.length` is uint256, so `length - 1` on an empty array underflows instead of wrapping.
+        // A compiler-built proof length is compared with int256 proof values and keeps bigint.
+        const lengthType = this.strictSolidityValidation && !node.compilerLength
+          ? new IntType(false, 256) : PrimitiveType.BIGINT;
         if (node.expression.type instanceof ArrayType) {
-          node.type = this.strictSolidityValidation ? new IntType(false, 256) : PrimitiveType.BIGINT;
+          node.type = lengthType;
           return node;
         }
         expectAnyOfTypes(node, node.expression.type, [new BytesType(), PrimitiveType.STRING]);
-        node.type = this.strictSolidityValidation ? new IntType(false, 256) : PrimitiveType.BIGINT;
+        node.type = lengthType;
         return node;
+      }
       case UnaryOperator.REVERSE:
         this.expectNoContractReceiver(node, node.expression.type, 'reverse');
         expectAnyOfTypes(node, node.expression.type, [new BytesType(), PrimitiveType.STRING]);

@@ -62,7 +62,8 @@ function settleDirect(artifact: Artifact, entry: string, args: Record<string, Ui
   const redeem = scriptToBytecode(asmToScript(artifact.bytecode));
   const lock = encodeLockingBytecodeP2sh32(hash256(redeem));
   const signature = artifact.stateLayout!.collections!.find((collection) => collection.name === 'logs')!.signature;
-  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(signature)));
+  // A direct contract's node covenant names the master's lock (CRYPTO-4).
+  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(signature), lock));
   const entryLock = encodeLockingBytecodeP2sh32(hash256(entryRedeem));
   const fn = artifact.abi.find((candidate) => candidate.name === entry)!;
   // The published ABI also lists `__internal__completePushValue_N` beside each leading-push witness; the direct

@@ -2078,6 +2078,9 @@ export class UnaryOpNode extends ExpressionNode {
   // destination width (e.g. `d & -d` in FullMath).
   legacyWrappingNegation = false;
 
+  // A compiler-built `.length` that a proof compares with int256 values. It stays bigint under evmCompat.
+  compilerLength = false;
+
   constructor(
     public operator: UnaryOperator,
     public expression: ExpressionNode,

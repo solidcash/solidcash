@@ -30,7 +30,9 @@ describe('general vmap bytecode sharing', () => {
     // constructor derivation with OP_EQUALVERIFY against an empty key. Verified by reverting the gate to `> 1`,
     // The trace-stable write path keeps the authenticated output proof in the entry body. Preserve substantial
     // headroom below BCH's 10KB consensus ceiling while still catching accidental framework-scale growth.
-    expect(artifact.bytecode.length / 2).toBeLessThan(2700);
+    // Raised again (4122.5 measured) by the October covenant hardening: every direct function now binds entry
+    // addresses to the master lock and runs the container, foreign-token and mutable-output scans.
+    expect(artifact.bytecode.length / 2).toBeLessThan(4300);
   });
 
   it('shares a collection-specific entry address across reads and writes', () => {
@@ -46,7 +48,8 @@ describe('general vmap bytecode sharing', () => {
     const shared = compactHelperDefinitions(asm)
       .filter((id) => [...asm.matchAll(new RegExp(`(?:^| )${id} OP_INVOKE(?: |$)`, 'g'))].length >= 2);
     expect(shared.length).toBeGreaterThanOrEqual(1);
-    expect(artifact.bytecode.length / 2).toBeLessThan(3000);
+    // 4415.5 measured after the October covenant hardening (master-lock entry addresses, per-function scans).
+    expect(artifact.bytecode.length / 2).toBeLessThan(4600);
   });
 
   it('shares the authenticated-absence bracket after three reads', () => {
@@ -124,7 +127,9 @@ describe('general vmap bytecode sharing', () => {
     const helperIds = compactHelperDefinitions(asm);
     expect(helperIds.length).toBeGreaterThanOrEqual(1);
     expect(helperIds.some((id) => asm.includes(`${id} OP_INVOKE`))).toBe(true);
-    expect(artifact.bytecode.length / 2).toBeLessThan(2900);
+    // 4346.5 measured after the October covenant hardening: every direct function now runs the container,
+    // foreign-token, unwritten-chunk and mutable-output scans.
+    expect(artifact.bytecode.length / 2).toBeLessThan(4500);
   });
 
   it('nests only compiler helpers and other outlined spans, acyclically, while sharing composite array traversal', () => {

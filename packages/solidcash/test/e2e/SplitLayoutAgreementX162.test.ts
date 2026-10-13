@@ -154,10 +154,15 @@ describe('X162: a divided ERC-7201 split bundle agrees about storage, loads, and
     // transition on the root script rather than a delegated one.
     const rootRoute = bundle.manifest.routes.find((r: any) => r.function === '__updateBlockOracle');
     expect(rootRoute.target).toBe('root');
-    // The mock keeper already moved the register to the tip time, and the owner cannot rewind it.
-    const stamp = BigInt((signer.provider as { getBlockTime(): number }).getBlockTime()) + 1n;
+    // The mock keeper already moved the register to the tip time, and the owner cannot rewind it. A timestamp-only
+    // update CLTVs its timestamp under a time-type locktime, which is final only below the median time past. Moving
+    // the tip one second on stamps the mock's last 11 headers, so that is the median, and the update publishes the
+    // last final second, as the keeper does.
+    const mock = signer.provider as unknown as { getBlockTime(): number; increaseTime(seconds: number): number };
+    const stamp = BigInt(mock.increaseTime(1)) - 1n;
     const oracleCall = deployed.call.__updateBlockOracle(new SignatureTemplate(alicePriv), stamp)
-      .setState({ __block_timestamp: stamp });
+      .setState({ __block_timestamp: stamp })
+      .setLocktime(Number(stamp));
     const built = await oracleCall.build();
     const tx = built.buildLibauthTransaction();
     // The root script commits this output. send() then mines, and the mock keeper rewrites a timestamp-only
@@ -185,9 +190,7 @@ describe('X162: a divided ERC-7201 split bundle agrees about storage, loads, and
     const afterOracle = await deployed.root.getState();
     expect(afterOracle.AStorage__a).toBe(5n);
     expect(afterOracle.CStorage__c).toBe(9n);
-    expect(afterOracle.__block_timestamp).toBe(BigInt(
-      (signer.provider as { getBlockTime(): number }).getBlockTime(),
-    ));
+    expect(afterOracle.__block_timestamp).toBe(BigInt(mock.getBlockTime()));
   }, 300_000);
 });
 

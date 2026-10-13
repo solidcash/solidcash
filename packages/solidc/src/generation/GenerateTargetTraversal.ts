@@ -27718,19 +27718,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else if (runtimeAliasOwners.length > 0) {
       // Non-batch routes have no topology sentinel and cannot redirect a proof input. Retain their structural
       // active-slot gate; in that layout a funded fixed slot really is the inactive alias representation.
+      // Only the route runs it, picking its master from the bottom; the counts name the untracked category, then
+      // address, on top all the same.
       const trackedBeforeGate = [...this.stack];
       this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
       this.emitTakeFirst32(loc);
-      this.emitSortedEntryAddress(collectionHash, loc);
-      this.emitBlockSlotIndex('entry', slotIndex, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emitSortedEntryAddress(collectionHash, loc, 1);
+      this.emitBlockSlotIndex('entry', slotIndex, loc, 1); this.emit(Op.OP_UTXOBYTECODE, loc);
       this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_IF, loc);
       this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_DROP, loc);
       this.emit(Op.OP_ENDIF, loc);
       this.stack = [...trackedBeforeGate];
       this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
       this.emitTakeFirst32(loc);
-      this.emitSortedEntryAddress(collectionHash, loc);
-      this.emitBlockSlotIndex('entry', slotIndex, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emitSortedEntryAddress(collectionHash, loc, 1);
+      this.emitBlockSlotIndex('entry', slotIndex, loc, 1); this.emit(Op.OP_UTXOBYTECODE, loc);
       this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_IF, loc);
       this.stack = [...trackedBeforeGate];
     }

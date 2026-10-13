@@ -1262,6 +1262,18 @@ interface SortedFlowHooks<F> {
   readonly enterLoop?: (loop: Node, flow: F | undefined) => F | undefined;
 }
 
+/**
+ * A stack-neutral per-entry covenant check every entry of a contract emits with the same bytes. Its key names
+ * those bytes; `id` is set once the helper is defined.
+ */
+interface SharedEntryCheck {
+  readonly useKey: bigint;
+  /** Bottom ordinal (plus one) of a proxy master the body picks, or undefined for the executing input. */
+  readonly masterOrdinal: number | undefined;
+  readonly emit: (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData) => void;
+  id?: bigint;
+}
+
 const SORTED_FLOW_SKIPPED = new Set(['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
   'referencedContract', 'stateVariable', 'packedStateVariable', 'collection', 'type', 'location', 'name',
   'functionId', 'error', 'opRolls', 'selectorHex', 'abiType', 'catchClauses']);
@@ -1592,6 +1604,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private valueChunkAddressId: bigint | undefined;
   /** The data-record address helper, `[lock, category]` -> `[lbc]`, once defined. */
   private dataNftAddressId: bigint | undefined;
+  /** Per-entry checks shared as one helper each. Contract-wide: the probe, the bodies and the definitions share it. */
+  private sharedEntryChecks = new Map<string, SharedEntryCheck>();
+  /** Set on a shared check's body traversal: the check stays inline there, and picks its master as recorded. */
+  private sharedCheckBody: { masterOrdinal: number | undefined } | undefined;
   private structSkipIds = new Map<string, bigint>();
   private structSkipTypes = new Map<string, StructType | ArrayType>();
   private structFieldPrefixIds = new Map<string, bigint>();
@@ -1744,6 +1760,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static lockedEntryAddressUseKey(collectionHashHex: string): bigint {
     return GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - (1n << 160n) - BigInt(`0x${collectionHashHex}`);
   }
+
+  /** Use-count keys of shared per-entry checks, one per check in first-seen order. Never emitted. */
+  private static readonly SHARED_CHECK_USE_KEY_BASE = GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE
+    - (1n << 224n);
 
   /**
    * Captured subroutines that keep being extracted even when outlining could reach them - which is all of
@@ -2753,6 +2773,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * delegate and a delegated route take it from the proxy master witness; a delegated route's handler from its owner.
    */
   private recordsBelongToProxyMaster(): boolean {
+    if (this.sharedCheckBody !== undefined) return this.sharedCheckBody.masterOrdinal !== undefined;
     if (this.usesMessageBusOwnerBlockBase()) {
       return (this.currentFunction.messageBusCallerBandNames ?? this.messageBusRouteParameterNames)
         .includes('__internal__proxyMasterIndex');
@@ -2791,6 +2812,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return false;
     }
     return this.invokeSubroutineIfDefined(id, locationData);
+  }
+
+  /**
+   * Invoke the shared helper of a stack-neutral per-entry check, counting this site toward it. `key` names the
+   * check's bytes; `emit` reads only contract-wide state and the record master, which the helper picks as this
+   * frame does. False, to emit inline, where the frame's master has no shared form or no helper is defined.
+   */
+  private invokeSharedEntryCheck(
+    key: string,
+    emit: (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData) => void,
+    locationData: SingleLocationData,
+  ): boolean {
+    if (this.sharedCheckBody !== undefined || this.framedMaster || this.usesMessageBusOwnerBlockBase()) return false;
+    let masterOrdinal: number | undefined;
+    if (this.usesProxyStateBlockBase()) {
+      // A delegate picks its proxy's master by bottom ordinal, which reads the same item inside an invoked helper.
+      if (this.isDefineSubTraversal || !this.recordsBelongToProxyMaster()) return false;
+      masterOrdinal = this.stack.length - this.getStackIndex('__internal__proxyMasterIndex');
+    }
+    const fullKey = `${masterOrdinal ?? 'self'}|${key}`;
+    let check = this.sharedEntryChecks.get(fullKey);
+    if (check === undefined) {
+      check = {
+        useKey: GenerateTargetTraversalWithLocation.SHARED_CHECK_USE_KEY_BASE - BigInt(this.sharedEntryChecks.size),
+        masterOrdinal,
+        emit,
+      };
+      this.sharedEntryChecks.set(fullKey, check);
+    }
+    this.bumpSubroutineUse(check.useKey);
+    return check.id !== undefined && this.invokeSubroutineIfDefined(check.id, locationData);
+  }
+
+  /** A shared check's body traversal: this contract's record layout, and the master its sites pick. */
+  private prepareSharedCheckBody(t: GenerateTargetTraversalWithLocation, masterOrdinal: number | undefined): void {
+    t.dataNftCount = this.dataNftCount;
+    t.collectionDefinitions = this.collectionDefinitions;
+    t.stateVariables = this.stateVariables;
+    t.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
+    t.sharedCheckBody = { masterOrdinal };
   }
 
   /** Select the execution-resource block authorized by the delegate prologue. */
@@ -4955,6 +5016,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.lockParameterisedHelperIds = new Set();
     this.valueChunkAddressId = undefined;
     this.dataNftAddressId = undefined;
+    this.sharedEntryChecks = new Map();
     this.dataNftCount = node.stateVariables.length > 0
       ? Math.max(...node.stateVariables.map((sv) => sv.nftIndex)) + 1
       : 0;
@@ -5145,9 +5207,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       lockedUses: number,
       emitExecuting: (t: GenerateTargetTraversalWithLocation) => void,
       emitLocked: (t: GenerateTargetTraversalWithLocation) => void,
+      deferToOutlining = true,
     ): void => {
       const emitBody = lockedUses > 0 ? emitLocked : emitExecuting;
-      if (!this.capturedSubroutineIsProfitable(id, count(id) + lockedUses, emitBody)) return;
+      if (!this.capturedSubroutineIsProfitable(id, count(id) + lockedUses, emitBody, deferToOutlining)) return;
       if (lockedUses > 0) this.lockParameterisedHelperIds.add(id);
       spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
     };
@@ -5187,6 +5250,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         count(GenerateTargetTraversalWithLocation.lockedEntryAddressUseKey(hashHex)),
         (t) => t.emitEntryP2sh32(collectionHash, loc),
         (t) => t.emitLockedEntryAddress(collectionHash, loc),
+        // A direct body's sites carry the collection hash between two outlined halves; the helper carries it once.
+        !this.directConvention || this.framedMaster,
       );
     }
     // Value-chunk and data-record addresses have no executing-input body: every site supplies its lock. The id is
@@ -5390,6 +5455,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         id,
         span: this.defineCapturedSubroutine(id, emitBody, loc),
       });
+    }
+    // Per-entry covenant checks, after every helper they invoke. Outlining cannot share them whole: their scans
+    // park the rest of a list on the alternate stack, and they invoke helpers it may not nest.
+    for (const check of this.sharedEntryChecks.values()) {
+      const emitBody = (t: GenerateTargetTraversalWithLocation): void => {
+        this.prepareSharedCheckBody(t, check.masterOrdinal);
+        check.emit(t, loc);
+      };
+      const uses = count(check.useKey);
+      if (uses < 2
+        || !this.capturedSubroutineIsProfitable(this.peekCompactHelperId(), uses, emitBody, false)) continue;
+      const id = this.allocateCompactHelperId();
+      spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
+      check.id = id;
     }
 
     this.subroutineUseCount = new Map();
@@ -6355,6 +6434,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
     sub.valueChunkAddressId = this.valueChunkAddressId;
     sub.dataNftAddressId = this.dataNftAddressId;
+    sub.sharedEntryChecks = this.sharedEntryChecks;
     sub.structSkipIds = this.structSkipIds;
     sub.structSkipTypes = this.structSkipTypes;
     sub.structFieldPrefixIds = this.structFieldPrefixIds;
@@ -6423,11 +6503,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return { start, end: this.output.length };
   }
 
-  /** Decide extraction from the actual encoded body/definition/invocation sizes rather than a fixed use count. */
+  /**
+   * Decide extraction from the actual encoded body/definition/invocation sizes rather than a fixed use count.
+   * `deferToOutlining` false: a body outlining cannot share whole is extracted whenever it pays.
+   */
   private capturedSubroutineIsProfitable(
     id: bigint,
     uses: number,
     inlineEmit: (t: GenerateTargetTraversalWithLocation) => void,
+    deferToOutlining = true,
   ): boolean {
     // Diagnostic bisect (`SOLIDC_DEBUG_NO_OUTLINE=1`): never define a captured subroutine, so every use is
     // emitted inline. Outlining replaces a body's own model effect with one OP_INVOKE at the call site; when a
@@ -6443,6 +6527,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
     sub.valueChunkAddressId = this.valueChunkAddressId;
     sub.dataNftAddressId = this.dataNftAddressId;
+    sub.sharedEntryChecks = this.sharedEntryChecks;
     sub.structSkipIds = this.structSkipIds;
     sub.structSkipTypes = this.structSkipTypes;
     sub.structFieldPrefixIds = this.structFieldPrefixIds;
@@ -6489,7 +6574,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       Op.OP_DEFINE, Op.OP_ACTIVEBYTECODE, Op.OP_CODESEPARATOR,
       Op.OP_CHECKSIG, Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIG, Op.OP_CHECKMULTISIGVERIFY,
     ]);
-    if (!GenerateTargetTraversalWithLocation.EXTRACT_EVEN_IF_OUTLINABLE.includes(id)
+    if (deferToOutlining && !GenerateTargetTraversalWithLocation.EXTRACT_EVEN_IF_OUTLINABLE.includes(id)
       && !this.currentContractRequiresTraceStableBodies
       && this.compilerOptions.optimizeForCompilationSpeed !== true
       && optimised.length >= MINIMUM_WINDOW_ELEMENTS
@@ -6579,6 +6664,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.compiledBytecodes = this.compiledBytecodes;
       probe.sourcePrimaryContract = this.sourcePrimaryContract;
       probe.compactHelperIds = this.compactHelperIds;
+      probe.sharedEntryChecks = this.sharedEntryChecks;
       // The usage probe compiles the same OP_DEFINE call ABI as the shipping pass. Preserve the recovery-context
       // widening or it can count a body with the old arity and silently select a different extraction plan.
       probe.outlinedRecoveryInputFunctionIds = this.outlinedRecoveryInputFunctionIds;
@@ -6891,6 +6977,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
     subTraversal.valueChunkAddressId = this.valueChunkAddressId;
     subTraversal.dataNftAddressId = this.dataNftAddressId;
+    subTraversal.sharedEntryChecks = this.sharedEntryChecks;
     // Dynamic structural helper registries are contract-wide. Sharing the maps lets independently compiled
     // function bodies allocate collision-free IDs and lets the dry-run retain the key behind every use count.
     subTraversal.structSkipIds = this.structSkipIds;
@@ -7284,6 +7371,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
       subTraversal.valueChunkAddressId = this.valueChunkAddressId;
       subTraversal.dataNftAddressId = this.dataNftAddressId;
+      subTraversal.sharedEntryChecks = this.sharedEntryChecks;
       subTraversal.structSkipIds = this.structSkipIds;
       subTraversal.structSkipTypes = this.structSkipTypes;
       subTraversal.structFieldPrefixIds = this.structFieldPrefixIds;
@@ -46764,6 +46852,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
 
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
+    if (this.sharedCheckBody !== undefined) {
+      // A shared check's body: the executing input, or the proxy master at the bottom ordinal its sites recorded.
+      const ordinal = this.sharedCheckBody.masterOrdinal;
+      if (ordinal === undefined) {
+        this.emit(Op.OP_INPUTINDEX, locationData);
+      } else {
+        this.emit(Op.OP_DEPTH, locationData);
+        this.emit(encodeInt(BigInt(ordinal)), locationData);
+        this.emit(Op.OP_SUB, locationData);
+        this.emit(Op.OP_PICK, locationData);
+      }
+      return;
+    }
     if (this.readsRecordsFromFrame && this.stack.includes(categoryOwnerSlotName())) {
       // A framed frame's records belong to the input the head parked as their owner: the frame's own input for a
       // frame that owns its records, and its caller's for a frame that runs on them. Every state and entry site is
@@ -48985,6 +49086,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * require the inputs not to exceed the outputs plus the amounts this call actually transfers. Stack neutral.
    */
   private emitSatoshiContainerAggregate(loc: SingleLocationData): void {
+    if (this.pendingTransfers.length === 0 && this.invokeSharedEntryCheck(
+      'satoshiContainers', (t, l) => t.emitSatoshiContainerAggregate(l), loc,
+    )) return;
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc);
@@ -49037,6 +49141,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * and at least the same amount. Stack neutral.
    */
   private emitForeignFungiblePreservation(loc: SingleLocationData): void {
+    // A caller co-spends its own sender anchor for its callee, as a proxy does for its delegate.
+    const admitAnchor = this.currentFunctionIsDelegate || this.lowLevelCallCount > 0
+      || this.externalCallSlots.length > 0;
+    // The function's own container slots are its own; the shared body has none.
+    if (this.tokenContainerSlots.length === 0 && this.invokeSharedEntryCheck(
+      `foreignTokens:${admitAnchor}`, (t, l) => t.emitForeignTokenScan(admitAnchor, l), loc,
+    )) return;
+    this.emitForeignTokenScan(admitAnchor, loc);
+  }
+
+  /** The scan of emitForeignFungiblePreservation. `admitAnchor`: an own sender anchor input is not kept. */
+  private emitForeignTokenScan(admitAnchor: boolean, loc: SingleLocationData): void {
     // Own-category 33-byte records move in a composed transaction. A foreign category, fungible or NFT, is this
     // contract's to keep only at its own container lock for that category: a co-composed participant's
     // container or value chunk is also a 35-byte lock, and that participant's script accounts for it.
@@ -49063,7 +49179,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_BOOLAND, loc);
     }, loc);
     this.emit(Op.OP_NIP, loc);
-    this.emitForEachListedIndex(() => this.emitForeignInputKeep(category, loc), loc);
+    this.emitForEachListedIndex(() => this.emitForeignInputKeep(category, admitAnchor, loc), loc);
     this.emit(Op.OP_DROP, loc);
     this.popFromStack();
   }
@@ -49121,7 +49237,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** `[index]` stays, untracked directly above the tracked `category`. The keep rules for one input. */
-  private emitForeignInputKeep(category: string, loc: SingleLocationData): void {
+  private emitForeignInputKeep(category: string, admitAnchor: boolean, loc: SingleLocationData): void {
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_UTXOBYTECODE, loc);
     this.emit(Op.OP_SIZE, loc);
@@ -49162,8 +49278,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(32n), loc);
     this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    // A caller co-spends its own sender anchor for its callee, as a proxy does for its delegate.
-    if (this.currentFunctionIsDelegate || this.lowLevelCallCount > 0 || this.externalCallSlots.length > 0) {
+    if (admitAnchor) {
       // The sender anchor sits at an anyone-can-spend lock; the SDK recreates it at any free index.
       this.emitOwnScidAnchorInputFlag(category, loc);
       this.emit(Op.OP_NOTIF, loc);
@@ -49320,12 +49435,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitFixedSlotCollectionCount(
     collection: string, slots: readonly number[], outputs: boolean, loc: SingleLocationData,
   ): void {
+    const signature = this.vmapCollectionSignature(collection)!;
+    // A collection this function names no node of is counted with the declared address everywhere.
+    if (slots.length === 0 && !this.entrySlots.some((slot) => slot.collection === collection)
+      && this.invokeSharedEntryCheck(`collectionCount:${signature}:${outputs}`,
+        (t, l) => t.emitFixedSlotCollectionCount(collection, [], outputs, l), loc)) return;
     const addr = `(__collection_census_addr_${collection})`;
     const expected = `(__collection_census_expected_${collection})`;
     this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc);
     this.pushToStack(addr);
-    this.emitSortedEntryAddress(computeCollectionHash(this.vmapCollectionSignature(collection)!), loc);
+    this.emitSortedEntryAddress(computeCollectionHash(signature), loc);
     this.stack[0] = addr;
     this.emit(Op.OP_0, loc);
     this.pushToStack(expected);
@@ -49379,50 +49499,63 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The records this function names are exactly its accessed data NFTs, each recreated by the auto covenant, so
     // pin the data-NFT address to that count on both sides.
     if (this.dataNftCount > 0) {
-      const addr = '(__data_census_addr)';
-      const expected = '(__data_census_expected)';
-      this.emitMasterInputIndex(loc);
-      this.emit(Op.OP_DUP, loc);
-      this.emit(Op.OP_UTXOBYTECODE, loc);
-      this.emit(Op.OP_SWAP, loc);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-      this.emitTakeFirst32(loc);
-      this.pushToStack(addr);
-      this.emitDataNftLbc(loc, true);
-      this.stack[0] = addr;
-      this.emit(encodeInt(BigInt(this.compactOffsetMap.size)), loc);
-      this.pushToStack(expected);
-      this.emitAddressCountCheck(false, loc);
-      this.emitAddressCountCheck(true, loc);
-      this.emit(Op.OP_2DROP, loc);
-      this.popFromStack(2);
+      const expected = this.compactOffsetMap.size;
+      if (!this.invokeSharedEntryCheck(`dataRecordCount:${expected}`,
+        (t, l) => t.emitDataRecordCensus(expected, l), loc)) this.emitDataRecordCensus(expected, loc);
     }
     // A dynamic variable the function does not write still sits at its own entry address. The entry covenant
     // spends it beside any master, so pin the input count at that address to the output count.
     for (const sv of this.stateVariables) {
       if (!sv.isDynamic || this.pendingDynamicWrites.has(sv.name)) continue;
       const chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()));
-      const addr = `(__chunk_census_${sv.name})`;
-      this.emitMasterInputIndex(loc);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-      this.emitTakeFirst32(loc);
-      this.pushToStack(addr);
-      this.emitSortedEntryAddress(chunkHash, loc);
-      this.stack[0] = addr;
-      // Same count is not enough: flag=1 recreates the chunk at this lock with any commitment, and a later
-      // read accepts it. Each spent chunk must come back at its own index with the same commitment.
-      this.emitPreserveUnaccessedChunk(addr, loc);
-      this.emitCountAtLock(false, loc);
-      this.emit(Op.OP_SWAP, loc);
-      this.emitCountAtLock(true, loc);
-      this.emit(Op.OP_ROT, loc);
-      this.emit(Op.OP_NUMEQUALVERIFY, loc);
-      this.emit(Op.OP_DROP, loc);
-      this.popFromStack();
+      if (!this.invokeSharedEntryCheck(`unwrittenChunks:${binToHex(chunkHash)}`,
+        (t, l) => t.emitUnwrittenChunkCensus(chunkHash, l), loc)) this.emitUnwrittenChunkCensus(chunkHash, loc);
     }
     // A mutable NFT of this contract at a lock nothing here counts (a P2PKH, for example) is a forged record.
     // Locks of mutable inputs, and the collection, data, and chunk locks this contract can mint, are the set.
     this.emitAuthorizeMutableOutputs(loc);
+  }
+
+  /** The data-record address holds exactly `expected` inputs and as many outputs. Stack neutral. */
+  private emitDataRecordCensus(expected: number, loc: SingleLocationData): void {
+    const addr = '(__data_census_addr)';
+    const expectedName = '(__data_census_expected)';
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack(addr);
+    this.emitDataNftLbc(loc, true);
+    this.stack[0] = addr;
+    this.emit(encodeInt(BigInt(expected)), loc);
+    this.pushToStack(expectedName);
+    this.emitAddressCountCheck(false, loc);
+    this.emitAddressCountCheck(true, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.popFromStack(2);
+  }
+
+  /** Each input at an unwritten dynamic variable's chunk address comes back unchanged. Stack neutral. */
+  private emitUnwrittenChunkCensus(chunkHash: Uint8Array, loc: SingleLocationData): void {
+    const addr = '(__chunk_census_addr)';
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack(addr);
+    this.emitSortedEntryAddress(chunkHash, loc);
+    this.stack[0] = addr;
+    // Same count is not enough: flag=1 recreates the chunk at this lock with any commitment, and a later
+    // read accepts it. Each spent chunk must come back at its own index with the same commitment.
+    this.emitPreserveUnaccessedChunk(addr, loc);
+    this.emitCountAtLock(false, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emitCountAtLock(true, loc);
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
   }
 
   /** `[addr]` stays. An input locked to addr must be recreated at that index with the same commitment. */
@@ -49463,12 +49596,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * contract is allowed to mint (a collection, its data record, or a dynamic chunk).
    */
   private emitAuthorizeMutableOutputs(loc: SingleLocationData): void {
+    const signatures = this.collectionDefinitions.map((collection) => this.vmapCollectionSignature(collection.name));
+    // The value-chunk locks a long write appended are this function's own.
+    if (this.getStackIndex('__internal__valueChunkOutputBase', true) < 0
+      && this.invokeSharedEntryCheck(`mutableOutputs:${signatures.join(',')}`,
+        (t, l) => t.emitMutableOutputCheck(signatures, l), loc)) return;
+    this.emitMutableOutputCheck(signatures, loc);
+  }
+
+  /** emitAuthorizeMutableOutputs with each collection's address signature, undefined for none. */
+  private emitMutableOutputCheck(signatures: readonly (string | undefined)[], loc: SingleLocationData): void {
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc);
     this.pushToStack('(__mutable_base)');
     // [base, locks]. Built once, not once per output.
-    this.emitMintableRecordLocks(loc);
+    this.emitMintableRecordLocks(signatures, loc);
     // [base, locks, ownMutable]
     this.emit(Op.OP_OVER, loc);
     this.emit(new Uint8Array([0x01]), loc);
@@ -49488,7 +49631,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** `[base]` -> `[base, locks]`: each lock this contract may mint a record at, 35 bytes apiece. */
-  private emitMintableRecordLocks(loc: SingleLocationData): void {
+  private emitMintableRecordLocks(signatures: readonly (string | undefined)[], loc: SingleLocationData): void {
     this.emit(Op.OP_0, loc);
     // [base, locks]. A rebuilt lock replaces one untracked copy; the tracked base stays put.
     const append = (build: () => void): void => {
@@ -49506,8 +49649,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         } else this.emitDataNftLbc(loc);
       });
     }
-    for (const collection of this.collectionDefinitions) {
-      const signature = this.vmapCollectionSignature(collection.name);
+    for (const signature of signatures) {
       if (signature === undefined) continue;
       append(() => this.emitSortedEntryAddress(computeCollectionHash(signature), loc));
     }

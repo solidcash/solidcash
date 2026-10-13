@@ -9876,10 +9876,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && !isSelfdestruct && !this.graphTransferFlagActive) {
         this.emitSatoshiContainerAggregate({ location: node.body.location, positionHint: PositionHint.END });
       }
-      if (!this.framedMaster && !this.functionHasDelegatecall && !this.currentFunctionIsDelegate
+      if (!this.framedMaster && !this.functionHasDelegatecall
+        && (!this.currentFunctionIsDelegate || this.recordsBelongToProxyMaster())
         && isStatefulContract && unsafeTier === null && !isSelfdestruct) {
         // A function that never names `tokens[...]` still has to keep every other container. Gating this scan
-        // on the function's own slots let `touch()` drain a fungible or NFT container.
+        // on the function's own slots let `touch()` drain a fungible or NFT container. The forwarder skips it, so a
+        // direct delegate scans the proxy's containers, whose locks bind the proxy master.
         this.emitForeignFungiblePreservation({ location: node.body.location, positionHint: PositionHint.END });
       }
       // SEC-10/SEC-11: an own-category IMMUTABLE (0x00) NFT output - what an event NFT is - may only sit at an

@@ -91,8 +91,11 @@ describe('fixed and computed continuation families', () => {
     };
     const resourceA = valueChunkWriteResourceIdentity(write);
     const resourceB = `${categoryId}:${'56'.repeat(20)}:${'78'.repeat(32)}`;
-    const aLock = getValueChunkLockingBytecode(categoryId, collection, hexToBin(keySlot), hexToBin(digest));
     const owner = { categoryId, lockingBytecode: `aa20${'51'.repeat(32)}87` };
+    // The claim's state owner holds the minting baton, so its chunks bind the owner's lock.
+    const aLock = getValueChunkLockingBytecode(
+      categoryId, collection, hexToBin(keySlot), hexToBin(digest), hexToBin(owner.lockingBytecode),
+    );
     const producerClaim = { resourceIdentity: resourceA, producer: {
       version: 1 as const, stateOwner: owner,
       sourcePath: [{ sourceEffectDomainId: '91'.repeat(32), sourceCallsiteId: 3,

@@ -15,6 +15,7 @@ import {
 } from '../stateful/balancedBlocks.js';
 import type { BalancedAssembly, BalancedAssemblyOptions } from '../stateful/balancedBlocks.js';
 import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
+import { matchesProbeOpcodeSequence } from '../stateful/probe-instruction-sequence.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { isContractUnlocker } from '../interfaces.js';
 import { getMessageBusEnvelopeTransport } from '../stateful/covenant-helpers.js';
@@ -360,8 +361,12 @@ const convergeMessageBusMutableResourceOutputs = (
         // are not executed and their stack shape belongs to the active branch. Interpreting them as covenant
         // observations can manufacture a preservation proposal from a write covenant's inactive read path.
         if (state.controlStack.some((frame) => frame === false)) return;
+        // Outlining can move the comparison into an invoked helper (a delegated route's state pin); static helpers
+        // are transparent.
         const nextOpcode = state.instructions[state.ip + 1]?.opcode;
-        if (nextOpcode !== Op.OP_EQUAL && nextOpcode !== Op.OP_EQUALVERIFY) return;
+        if (nextOpcode !== Op.OP_EQUAL && nextOpcode !== Op.OP_EQUALVERIFY
+          && !matchesProbeOpcodeSequence(state, 1, [Op.OP_EQUALVERIFY])
+          && !matchesProbeOpcodeSequence(state, 1, [Op.OP_EQUAL])) return;
         let outputIndex: number;
         try {
           outputIndex = Number(vmNumberToBigInt(state.stack[state.stack.length - 1]));

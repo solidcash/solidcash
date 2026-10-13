@@ -45898,10 +45898,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ELSE, locationData);
     // Standalone call (DX-4): refuse every own-category return carrier (none-cap, OP_TRUE lock), the fingerprint
     // the caller's return read and uniqueness count accept. Otherwise a spender passing -1 beside a self-minted
-    // carrier hands the caller an unauthenticated return value.
+    // carrier hands the caller an unauthenticated return value. A token-less input has no category: every caller
+    // read splits the callee's category at 32 and fails on it, so there is no carrier to refuse.
     this.emit(Op.OP_DROP, locationData);
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_IF, locationData);
     this.emit(encodeInt(32n), locationData);
     this.emit(Op.OP_SPLIT, locationData);
     this.emit(Op.OP_DROP, locationData);
@@ -45923,7 +45926,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_NOT, locationData);
     this.emit(Op.OP_UNTIL, locationData);
-    this.emit(Op.OP_2DROP, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_DROP, locationData);
     this.emit(Op.OP_ENDIF, locationData);
 
     // Clean up __returnBlob from tracked stack

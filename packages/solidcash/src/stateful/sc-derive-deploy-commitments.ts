@@ -68,12 +68,14 @@ type ValueChunkRun = { lockingBytecode: Uint8Array; commitments: string[] };
  * The value-chunk runs a constructor probe's sorted-mapping pins ask for. A value over 60 bytes keeps its continuation
  * NFTs at the address of (category, collection, slot, sha256(value)), which the pin finds by scanning every output;
  * its frame at each OP_OUTPUTBYTECODE is [value, address, expectedCount, matches, i, i]. An address counts only when it
- * is a constructor target's address for that value. Keyed by locking bytecode.
+ * is a constructor target's address for that value, bound to `masterLock` (the probe master's, as the pin binds it).
+ * Keyed by locking bytecode.
  */
 function observeValueChunkRuns(
   trace: readonly AuthenticationProgramStateCommon[],
   categoryId: string,
   targets: ReadonlyArray<{ collection: string; slot: Uint8Array }>,
+  masterLock: Uint8Array | undefined,
 ): Map<string, ValueChunkRun> {
   const runs = new Map<string, ValueChunkRun>();
   if (targets.length === 0) return runs;
@@ -87,7 +89,7 @@ function observeValueChunkRuns(
     if (decodeScriptNumber(expectedCount) !== BigInt(chunks.length)) continue;
     const root = sha256(value);
     if (!targets.some(({ collection, slot }) => binsAreEqual(
-      getValueChunkLockingBytecode(categoryId, collection, slot, root), lockingBytecode,
+      getValueChunkLockingBytecode(categoryId, collection, slot, root, masterLock), lockingBytecode,
     ))) continue;
     runs.set(lockHex, {
       lockingBytecode: lockingBytecode.slice(),
@@ -745,7 +747,9 @@ export async function deriveDeployCommitments<T extends Artifact>(
     }
 
     // A long value's chunk pin runs before its entry pin, and its frame holds the whole value: learn the runs first.
-    liveValueChunkRuns = observeValueChunkRuns(fullTrace, categoryId, valueChunkTargets);
+    liveValueChunkRuns = observeValueChunkRuns(
+      fullTrace, categoryId, valueChunkTargets, directConventionMasterLock(contract),
+    );
     const newValueChunkRuns = [...liveValueChunkRuns].filter(([lockHex]) => !valueChunkRuns.has(lockHex));
     if (newValueChunkRuns.length > 0 && valueChunkProbes < maxDeployIterations) {
       for (const [lockHex, run] of newValueChunkRuns) valueChunkRuns.set(lockHex, run);

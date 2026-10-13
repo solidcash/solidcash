@@ -16,6 +16,7 @@ import { hexToBin, binsAreEqual, binToHex } from '@bitauth/libauth/build/lib/for
 import { binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
 import type { Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { joinEventContinuations } from './event-chunks.js';
 
 export interface OnChainState {
   state: Record<string, StateValue>;
@@ -344,7 +345,37 @@ export function parseEventCommitment(
 }
 
 /**
- * Read events from chain by querying UTXOs at the event covenant address.
+ * The continuation commitments of this category's wide events (`txid:vout` -> commitment), read only when some
+ * event's first commitment does not decode alone. Empty without a continuation address.
+ */
+async function readEventContinuations(
+  provider: NetworkProvider,
+  continuationAddress: string | undefined,
+  categoryId: string,
+  heads: readonly Utxo[],
+  decodesAlone: (commitment: string) => boolean,
+): Promise<Map<string, string>> {
+  const continuations = new Map<string, string>();
+  if (continuationAddress === undefined
+    || heads.every((utxo) => decodesAlone(utxo.token!.nft!.commitment))) return continuations;
+  for (const utxo of await provider.getUtxos(continuationAddress)) {
+    const commitment = utxo.token?.nft?.commitment;
+    if (utxo.token?.category !== categoryId || commitment === undefined || commitment.length === 0) continue;
+    continuations.set(`${utxo.txid}:${utxo.vout}`, commitment);
+  }
+  return continuations;
+}
+
+/** An event's full payload: its own commitment, then the continuation chunks in the outputs right after it. */
+function eventPayload(utxo: Utxo, continuations: ReadonlyMap<string, string>): string {
+  return joinEventContinuations(
+    utxo.token!.nft!.commitment, (offset) => continuations.get(`${utxo.txid}:${utxo.vout + offset}`),
+  );
+}
+
+/**
+ * Read events from chain by querying UTXOs at the event covenant address. A wide event's later chunks are read
+ * from `continuationAddress` (`getEventNftContinuationAddress`) and joined to its first.
  */
 export async function readEventsFromChain(
   provider: NetworkProvider,
@@ -352,24 +383,34 @@ export async function readEventsFromChain(
   categoryId: string,
   eventDef: EventDefinitionAbi,
   structs?: StateLayout['structs'],
+  continuationAddress?: string,
 ): Promise<ParsedEvent[]> {
   const utxos = await provider.getUtxos(eventAddress);
 
-  return utxos
+  const heads = utxos
     .filter((utxo) => (
       utxo.token
       && utxo.token.category === categoryId
       && utxo.token.nft
       && utxo.token.nft.commitment.length > 0
     ))
-    .sort(compareChainPosition)
-    .map((utxo) => ({
-      txid: utxo.txid,
-      vout: utxo.vout,
-      blockHeight: utxo.blockHeight,
-      confirmations: utxo.confirmations,
-      values: attachEventArgsAccessors(parseEventCommitment(utxo.token!.nft!.commitment, eventDef, structs)),
-    }));
+    .sort(compareChainPosition);
+  const continuations = await readEventContinuations(provider, continuationAddress, categoryId, heads,
+    (commitment) => {
+      try {
+        parseEventCommitment(commitment, eventDef, structs);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  return heads.map((utxo) => ({
+    txid: utxo.txid,
+    vout: utxo.vout,
+    blockHeight: utxo.blockHeight,
+    confirmations: utxo.confirmations,
+    values: attachEventArgsAccessors(parseEventCommitment(eventPayload(utxo, continuations), eventDef, structs)),
+  }));
 }
 
 /**
@@ -382,8 +423,11 @@ export async function readEventsFiltered(
   eventDef: EventDefinitionAbi,
   filters?: EventFilter,
   structs?: StateLayout['structs'],
+  continuationAddress?: string,
 ): Promise<ParsedEvent[]> {
-  const allEvents = await readEventsFromChain(provider, eventAddress, categoryId, eventDef, structs);
+  const allEvents = await readEventsFromChain(
+    provider, eventAddress, categoryId, eventDef, structs, continuationAddress,
+  );
   if (!filters || Object.keys(filters).length === 0) return allEvents;
 
   // Validate filter keys are indexed parameters
@@ -445,6 +489,7 @@ export async function readAnonymousEventsFromChain(
   categoryId: string,
   anonymousEventDefs: EventDefinitionAbi[],
   structs?: StateLayout['structs'],
+  continuationAddress?: string,
 ): Promise<ParsedEvent[]> {
   const utxos = await provider.getUtxos(anonymousAddress);
   const results: ParsedEvent[] = [];
@@ -455,11 +500,14 @@ export async function readAnonymousEventsFromChain(
     && utxo.token.nft
     && utxo.token.nft.commitment.length > 0
   )).sort(compareChainPosition);
+  const continuations = await readEventContinuations(provider, continuationAddress, categoryId, filtered,
+    (commitment) => anonymousEventDefs.some((eventDef) =>
+      tryParseEventCommitment(commitment, eventDef, structs) !== null));
 
   for (const utxo of filtered) {
     for (const eventDef of anonymousEventDefs) {
       try {
-        const values = tryParseEventCommitment(utxo.token!.nft!.commitment, eventDef, structs);
+        const values = tryParseEventCommitment(eventPayload(utxo, continuations), eventDef, structs);
         if (values === null) continue; // didn't match this event schema
         results.push({
           txid: utxo.txid,

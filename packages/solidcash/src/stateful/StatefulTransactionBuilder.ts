@@ -12,6 +12,7 @@ import {
   attachDecodedAccessors,
   type Artifact,
   encodeChunkableValueTail,
+  EVENT_CHUNK_BYTES,
 } from '@solidcash/utils';
 import { binToHex, binsAreEqual, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
@@ -23,6 +24,7 @@ import { onMockNetworkProviderReset } from '../network/mock-reset.js';
 import { clearCollectionValueRecords } from './ValueChunkPersistence.js';
 import { assertFinalizedTransactionCovenants } from '../message-bus/preflight.js';
 import { parseEventCommitment } from './StateReader.js';
+import { eventContinuationLockingBytecode, joinEventContinuations } from './event-chunks.js';
 import { type Utxo, type UnlockableUtxo, type TransactionDetails, isContractUnlocker, type Unlocker } from '../interfaces.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
@@ -3141,7 +3143,9 @@ export class StatefulTransactionBuilder {
       if (master < 0) continue;
       const allowed = allowedByCategory.get(group.categoryId) ?? new Set<number>();
       for (const slot of layout.slots) {
-        if (slot.kind === 'event' || slot.kind === 'returnEvent') allowed.add(master + slot.offset);
+        if (slot.kind === 'event' || slot.kind === 'eventChunk' || slot.kind === 'returnEvent') {
+          allowed.add(master + slot.offset);
+        }
       }
       allowedByCategory.set(group.categoryId, allowed);
     }
@@ -6023,6 +6027,16 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /** The raw event payload learned so far for an emit index, if any. */
+  getEventRawCommitment(emitIndex: number): string | undefined {
+    return this.eventRawCommitments.get(emitIndex);
+  }
+
+  /** Payload bytes one event NFT commitment carries for this contract (its commitment limit). */
+  getEventChunkBytes(): number {
+    return this.stateLayout.commitmentLimit ?? EVENT_CHUNK_BYTES;
+  }
+
   /**
    * Add an event placeholder for probe transactions (empty commitment).
    */
@@ -6305,7 +6319,7 @@ export class StatefulTransactionBuilder {
     // Skip the main block's output-only funder inputs (event/transfer): they sit inside the proxy block,
     // before the low-level call inputs. A delegatecall'd impl that emits events reserves such slots here.
     for (const s of this.blockLayout?.slots ?? []) {
-      if (s.kind === 'event' || s.kind === 'transfer' || s.kind === 'tcTransfer'
+      if (s.kind === 'event' || s.kind === 'eventChunk' || s.kind === 'transfer' || s.kind === 'tcTransfer'
         || (s.kind === 'entry' && !this.delegateEntriesAfterLowLevel)) base += 1;
     }
     // Skip preceding low-level call groups
@@ -7062,14 +7076,24 @@ export class StatefulTransactionBuilder {
       return undefined;
     };
     const events: ReceiptEvent[] = [];
-    for (const out of outputs) {
-      const commitment = out.token?.nft?.commitment;
-      if (commitment === undefined) continue;
+    const commitmentOf = (out: LibauthOutput | undefined): string | undefined => {
+      const commitment = out?.token?.nft?.commitment;
+      if (commitment === undefined) return undefined;
+      return typeof commitment === 'string' ? commitment : binToHex(commitment);
+    };
+    for (const [index, out] of outputs.entries()) {
+      const head = commitmentOf(out);
+      if (head === undefined) continue;
       const sig = sigByLbc.get(binToHex(out.lockingBytecode));
       if (sig === undefined) continue;
       const eventDef = this.eventDefinitions.find((e) => e.signature === sig);
       if (!eventDef) continue;
-      const commitmentHex = typeof commitment === 'string' ? commitment : binToHex(commitment);
+      // A wide event continues in the outputs right after it, at its continuation covenant.
+      const continuation = binToHex(eventContinuationLockingBytecode(this.categoryId, sig, eventDef.anonymous === true));
+      const commitmentHex = joinEventContinuations(head, (offset) => {
+        const next = outputs[index + offset];
+        return next !== undefined && binToHex(next.lockingBytecode) === continuation ? commitmentOf(next) : undefined;
+      });
       const named = parseNamed(commitmentHex, eventDef);
       if (!named) continue;
       events.push({

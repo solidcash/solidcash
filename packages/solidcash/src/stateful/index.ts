@@ -259,6 +259,7 @@ export {
   getValueChunkAddress,
   getValueChunkLockingBytecode,
   getEventNftAddress,
+  getEventNftContinuationAddress,
   getAnonymousEventNftAddress,
   getTokenContainerAddress,
   getSatoshiContainerAddress,

@@ -645,7 +645,7 @@ export async function expandCreateBuilderLateTransitive(
               }
               continue;
             }
-            if (['event', 'returnEvent', 'transfer', 'tcTransfer'].includes(slot.kind)) {
+            if (['event', 'eventChunk', 'returnEvent', 'transfer', 'tcTransfer'].includes(slot.kind)) {
               lateBlockInputs.push(makeLateFunder());
               continue;
             }

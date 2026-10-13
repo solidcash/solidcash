@@ -47,27 +47,14 @@ contract C() {
   function setB(bytes v) { this.b = v; }
 }`;
 
-// Over the real operation-cost budget at its natural size (see RELEASE_READINESS). Three dispatches over a
-// three-element table now settle (FunctionPointerArrayCall). Five dispatches over a ten-element table still
-// exceed the budget even at the maximum density reserve (BehaviorParityPins), which is the refusal this title
-// has to see named by the probe rather than swallowed.
-const FN_PTR_ARRAY = `contract C {
-  function a(int x) public returns (int) { return x + 1; }
-  function b(int x) public returns (int) { return x + 2; }
-  function c(int x) public returns (int) { return x + 3; }
-  function d(int x) public returns (int) { return x + 5; }
-  function e(int x) public returns (int) { return x + 8; }
-  function test(int x, int i) internal returns (int) {
-    function(int) internal returns (int)[] memory arr = new function(int) internal returns (int)[](10);
-    arr[0] = a; arr[1] = b; arr[2] = c; arr[3] = d; arr[4] = e;
-    return arr[i](x);
-  }
-  function ok() public returns (bool) {
-    require(test(10, 0) == 11);
-    require(test(10, 1) == 12);
-    require(test(10, 2) == 13);
-    require(test(10, 3) == 15);
-    require(test(10, 4) == 18);
+// Over the real operation-cost budget at any script length: the loop's cost grows with `n` while the budget its
+// script buys stays fixed. (The five-dispatch ten-element fn-ptr table this title used fits since the October
+// hardening lengthened the covenant, as BehaviorParityPins records.)
+const OVER_BUDGET_LOOP = `contract C {
+  function spin(int n) public returns (bool) {
+    int acc = 0;
+    for (int i = 0; i < n; i++) { acc = acc + i; }
+    require(acc >= 0);
     return true;
   }
 }`;
@@ -94,13 +81,14 @@ describe('the faithful derivation path (what every live network takes)', () => {
     // The probe's `try/catch` is best-effort for a reason - the signature is not final at probe time, so a
     // `require(checkSig(...))` can fail there and still be fine in the finished transaction. A consensus-limit
     // refusal is not that: the final transaction does at least as much work against a budget its own unlocking
-    // length buys. Swallowed, this shape ground on from an unresolved shape and reported an unrelated failure
-    // 141 s later. It must name the density refusal, and quickly.
+    // length buys. Swallowed, the fn-ptr shape this title used ground on from an unresolved shape and reported an
+    // unrelated failure 141 s later. It must name the density refusal, and quickly.
     const provider = faithfulProvider();
-    const artifact = compileString(FN_PTR_ARRAY, { forceStateful: true });
+    const artifact = compileString(OVER_BUDGET_LOOP, { forceStateful: true });
     const sc = await getContractFactory(artifact, await faithfulSigner(provider)).deploy() as any;
     const started = Date.now();
-    await expect(sc.ok()).rejects.toThrow(/operation-cost budget exceeded while probing|operation cost density/);
+    // 100,000 iterations cost far more than the largest budget a 10,000-byte input buys (about 8M units).
+    await expect(sc.spin(100_000n)).rejects.toThrow(/operation-cost budget exceeded while probing|operation cost density/);
     expect(Date.now() - started).toBeLessThan(30_000);
   });
 

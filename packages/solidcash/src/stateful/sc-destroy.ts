@@ -11,7 +11,7 @@ import {
 } from '../message-bus/preflight.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { getDustThreshold } from '../network/dust-threshold.js';
-import { addressToLockScript } from '../utils.js';
+import { addressToLockScript, calculateDust } from '../utils.js';
 import {
   createAnonymousEventNftUnlocker,
   createDestroyDataNftUnlocker,
@@ -60,9 +60,37 @@ async function settleDestroyReclaimFee(
   throw new Error('Destroy transaction fee did not converge after 32 finalized-size measurements.');
 }
 
+/**
+ * Settle an automatic-fee intermediate batch whose records cannot pay its finalized fee: the master's carried value
+ * (output 0) covers the shortfall, down to its own dust floor. Selfdestruct pins the minting NFT, not its value, and
+ * the final batch reclaims the rest. Fees only rise, as in settleDestroyReclaimFee.
+ */
+async function settleDestroyMasterFee(
+  builder: TransactionBuilder, totalInputSats: bigint, masterAmount: bigint,
+): Promise<void> {
+  const floor = BigInt(calculateDust(builder.outputs[0]));
+  let fee = await computeFeeFromBuilder(builder);
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const amount = totalInputSats - fee < masterAmount ? totalInputSats - fee : masterAmount;
+    if (amount < floor) {
+      throw new Error(
+        'Destroy batch cannot preserve its master and pay the finalized relay fee. '
+        + `Available fee value: ${totalInputSats - floor} satoshis.`,
+      );
+    }
+    builder.outputs[0] = { ...builder.outputs[0], amount };
+    const measured = await computeFeeFromBuilder(builder);
+    if (measured <= fee) return;
+    fee = measured;
+  }
+  throw new Error('Destroy transaction fee did not converge after 32 finalized-size measurements.');
+}
+
 export interface DestroyBatch {
   hex: string;
   reclaimed: bigint;
+  /** An intermediate batch's master output value, which the next batch spends. */
+  masterAmount?: bigint;
   subjects: (FinalizedByteSubject | undefined)[];
   /** X175: kept so a refused batch can report its covenant objection alongside its byte rule. */
   builder: TransactionBuilder;
@@ -176,7 +204,8 @@ export async function buildDestroyTransactionHex(
     const { reclaimed } = await settleDestroyReclaimFee(
       builder, totalInputSats - masterAmount, feeOverride,
     );
-    if (reclaimed < 0n) {
+    // An explicit fee is exact: the records pay it in full or the batch is refused.
+    if (reclaimed < 0n && feeOverride !== undefined) {
       throw new Error(
         'Destroy batch cannot preserve its master and pay the finalized relay fee. '
         + `Available fee value: ${totalInputSats - masterAmount} satoshis.`,
@@ -191,10 +220,12 @@ export async function buildDestroyTransactionHex(
       };
     } else {
       builder.outputs.pop(); // remove placeholder - no reclaim
+      if (reclaimed < 0n) await settleDestroyMasterFee(builder, totalInputSats, masterAmount);
     }
     const hex = builder.build();
     return {
-      hex, reclaimed: keepReclaim ? reclaimed : 0n, subjects: inputSubjectsOfBuilder(builder), builder,
+      hex, reclaimed: keepReclaim ? reclaimed : 0n, masterAmount: builder.outputs[0].amount,
+      subjects: inputSubjectsOfBuilder(builder), builder,
     };
   }
 
@@ -416,6 +447,8 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
         const localTxid = localBinToHex(localHash256(hexToBin(result.hex)).reverse());
         primaryMaster.txid = localTxid;
         primaryMaster.vout = 0;
+        // The batch may have paid part of its fee from the master: spend it at the value it left.
+        primaryMaster.satoshis = result.masterAmount ?? primaryMaster.satoshis;
       }
     }
 

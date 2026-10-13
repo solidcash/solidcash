@@ -96,8 +96,9 @@ not a stateful contract and not part of any reader's state:
   owner is not, so one bytecode serves every operator. The genesis must mint exactly one mutable NFT of that
   category and no minting NFT, because readers pin only the lock.
 - **Reads co-spend it.** A reader spends the oracle on the read path (flag 0), which recreates bytecode,
-  category and commitment unchanged at the same output index, and slices what it needs. No master, no
-  register, no operands: the SDK places the input and fills `__internal__blockOracleInputIndex`.
+  category and commitment unchanged, with at least its value, at the same output index, and slices what it
+  needs. No master, no register, no operands: the SDK places the input and fills
+  `__internal__blockOracleInputIndex`.
 - **Every reader of a deployment shares it.** Reads serialize on the one UTXO (section 9), the price of a
   value that is on-chain and unique rather than signed and replicable (section 2.1).
 
@@ -113,8 +114,8 @@ slot (`StatefulContract`) and as a recovery input of the master (framed `callFra
 
 The update path (flag 1, unlocking `<pubkey> <sig> <newCommitment> 1`) requires `hash160(pubkey)` to equal the
 owner hash already in the commitment, the new commitment to keep that same hash, a valid signature, and the
-output to carry the new commitment at the same lock and category. nLocktime is a height or a time, so one
-update anchors one field to the chain and keeps the other:
+output to carry the new commitment at the same lock and category, with at least the oracle's value. nLocktime is
+a height or a time, so one update anchors one field to the chain and keeps the other:
 
 - **height-type nLockTime:** `number` is below 500,000,000, does not rewind, and `tx.time >= number`;
   `timestamp` is unchanged.
@@ -123,9 +124,10 @@ update anchors one field to the chain and keeps the other:
 
 The keeper (`BlockOracleUpdater.syncOnce`) pushes a height update when the chain is ahead of `number`, then a
 timestamp update at the last final second, `min(header time, MTP - 1)`, when that is ahead of `timestamp`.
+A coin at the keeper's P2PKH pays each update's fee and takes the change.
 The owner is trusted for the data; staleness is the owner's responsibility and is not script-enforceable
-(section 5). The mock provider mints one oracle owned by `blockOracleOwnerKey`, seeds it with
-`setBlockOracleFields`, and writes its own height and time into it when it mines.
+(section 5). The mock provider mints one oracle owned by `blockOracleOwnerKey`, funds that key's P2PKH, seeds
+the oracle with `setBlockOracleFields`, and writes its own height and time into it when it mines.
 
 ## 5. Hardening (what nLocktime can and cannot do)
 
@@ -135,6 +137,8 @@ The owner is trusted for the data; staleness is the owner's responsibility and i
   above the real tip, nor a time at or above the median time past.
 - **Non-rewind (enforced):** an update cannot move `number` or `timestamp` back to replay an old window. Equal
   values are admitted.
+- **Value pin (enforced):** every spend, read or update, recreates the oracle with at least its value, so no
+  spend drains it.
 - **Type confusion (enforced):** `number` must stay below 500,000,000, so a time-type nLockTime cannot stand
   in for a height, and CLTV refuses an operand of the other locktime type.
 - **Anti-staleness (NOT possible):** no covenant can prove a value is recent (no upper bound on mining

@@ -146,6 +146,7 @@ const LOCKTIME_THRESHOLD = 500_000_000n;
  *    `timestamp` is unchanged;
  *  - time-type nLockTime: `timestamp` does not rewind and `tx.time >= timestamp`, which is final only below
  *    the median time past; `number` is unchanged.
+ * Both paths recreate the oracle at the same index with at least its value, so no spend drains it.
  */
 export function buildBlockOracleCovenantScript(categoryId: Uint8Array): Script {
   if (categoryId.length !== 32) throw new Error('block oracle category is 32 bytes');
@@ -189,7 +190,7 @@ export function buildBlockOracleCovenantScript(categoryId: Uint8Array): Script {
     Op.OP_DROP, Op.OP_2DROP,
     ...preserveOutput(true),
     Op.OP_ENDIF,
-    Op.OP_1,
+    Op.OP_INPUTINDEX, Op.OP_OUTPUTVALUE, Op.OP_INPUTINDEX, Op.OP_UTXOVALUE, Op.OP_GREATERTHANOREQUAL,
   ];
 }
 

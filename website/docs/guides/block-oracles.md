@@ -72,11 +72,12 @@ slices the field out of its commitment. The artifact publishes `usesBlockOracle`
 offsets of a 35-byte lock placeholder that deployment overwrites with the real oracle lock. A reader stays
 stateless unless something else makes it stateful.
 
-The SDK spends the oracle on its read path, which recreates it unchanged at the same output index, and fills the
-index on every call path: a direct `Contract` with `TransactionBuilder`, `StatefulContract` calls, framed entries
-and framed proxies, delegate calls, and message-bus routes, where one oracle input serves every reader of the
-composed transaction. A call that cannot forward the index is refused at compile time with
-`BlockOracleIndexNotForwardedError`: read `block.*` in the caller as well, or pass the value in as an argument.
+The SDK spends the oracle on its read path, which recreates it unchanged, with at least its value, at the same
+output index, and fills the index on every call path: a direct `Contract` with `TransactionBuilder`,
+`StatefulContract` calls, framed entries and framed proxies, delegate calls, and message-bus routes, where one
+oracle input serves every reader of the composed transaction. A call that cannot forward the index is refused at
+compile time with `BlockOracleIndexNotForwardedError`: read `block.*` in the caller as well, or pass the value in
+as an argument.
 
 ### Provision an oracle
 
@@ -145,8 +146,9 @@ with "no oracle lock was provided"; a missing oracle UTXO fails with "block orac
 
 Only the owner updates the oracle, by spending the covenant with `<pubkey> <sig> <newCommitment> 1`. The covenant
 requires `hash160(pubkey)` to equal the owner hash already in the commitment, the new commitment to keep that hash,
-a valid signature, and the output at the same index to carry the new commitment at the same lock and category.
-Because nLockTime is either a height or a time, one update anchors one field to the chain and keeps the other:
+a valid signature, and the output at the same index to carry the new commitment at the same lock and category,
+with at least the oracle's value. Because nLockTime is either a height or a time, one update anchors one field to
+the chain and keeps the other:
 
 - **Height update** (nLockTime below 500,000,000): `number` stays below 500,000,000, does not rewind, and
   `tx.time >= number` is checked with CLTV. `timestamp` is unchanged.
@@ -198,19 +200,19 @@ on every new tip. It returns a `stop()` function. Notification-time errors are l
 alert on persistent failures. Without `url`, `createRpcClient('mainnet')` uses a public BCHN endpoint; production
 keepers should use a node they operate or explicitly trust.
 
-:::caution
-`pushUpdate` pays a 2,000-satoshi fee out of the oracle UTXO's own value and adds no funding input. The covenant
-does not pin that value, so a read spend can lower it. Monitor it: at or below 2,000 satoshis an update carries no
-fee, and nodes will not relay it.
+:::note
+Every spend of the oracle, read or update, must recreate it with at least its value, so no reader can drain it.
+`pushUpdate` pays its 2,000-satoshi fee from the largest token-free coin at the keeper key's P2PKH address and sends
+the change back there. Fund that address before the first update.
 :::
 
 ### Testing on the mock network
 
-`MockNetworkProvider` mints one oracle at construction, owned by `provider.blockOracleOwnerKey`, and writes its own
-height and time into it whenever it mines, so `mine()` and `time.increase()` move `block.number` and
-`block.timestamp`. `provider.setBlockOracleFields(fields)` writes exact fields, which hold until the mock next
-mines. Once an owner update replaces the commitment, the mock stops writing its clock and the owner's values
-stand.
+`MockNetworkProvider` mints one oracle at construction, owned by `provider.blockOracleOwnerKey`, gives that key's
+P2PKH a coin for update fees, and writes its own height and time into the oracle whenever it mines, so `mine()`
+and `time.increase()` move `block.number` and `block.timestamp`. `provider.setBlockOracleFields(fields)` writes
+exact fields, which hold until the mock next mines. Once an owner update replaces the commitment, the mock stops
+writing its clock and the owner's values stand.
 
 To exercise the keeper, seed older fields and sync against the mock chain:
 
@@ -280,16 +282,19 @@ await keeper.mintBlockhashPair(height, hash);
 await keeper.sweepBlockhashPair(height - 256n);
 ```
 
-`syncOnce()` mints the tip's pair and sweeps the one that left the 256-block window when the artifact uses
-`blockhash`. The keeper finds the baton at its covenant on every mint; `blockhashOracleMaster` overrides the baton
-UTXO and unlocker, and then the caller tracks the recreated baton itself. Each mint spends 2,000 satoshis of the
-baton's value (1,000 on the pair and a 1,000 fee), so fund it accordingly.
+`syncOnce()` mints the tip's pair and sweeps the pairs that left the 256-block window when the artifact uses
+`blockhash`. A sweep reclaims every aged pair (up to 100) to the keeper's P2PKH in one transaction, paying 1 sat/byte
+out of the reclaimed satoshis; a batch that cannot leave an output above dust waits for a later sweep. The keeper
+finds the baton at its covenant on every mint; `blockhashOracleMaster` overrides the baton UTXO and unlocker, and
+then the caller tracks the recreated baton itself. Each mint spends 2,000 satoshis of the baton's value (1,000 on
+the pair and a 1,000 fee), so fund it accordingly.
 
 ## Operational checklist
 
 1. Prefer `tx.time`/`this.age` when an exact block field is unnecessary.
 2. Record the oracle category, owner, RPC trust source, update cadence, and monitoring policy with the deployment.
 3. Keep the owner key safe for the oracle's life: it cannot be rotated without new readers.
-4. Alert when the oracle height lags the node tip, when its value runs low, or when a blockhash pair is missing.
+4. Alert when the oracle height lags the node tip, when the keeper's P2PKH runs low, or when a blockhash pair is
+   missing.
 5. Treat `block.difficulty` and `block.prevrandao` as non-random; the builder picks `n` for `blockhash(n)`.
 6. Exercise stale, rewound, over-reported, wrong-owner, missing-pair and 256-block cleanup cases in tests.

@@ -7,6 +7,7 @@
 export * from './declaration.js';
 export * from './material.js';
 export * from './pool.js';
+export * from './entry-pool.js';
 export * from './create-lookahead.js';
 export * from './create-lookahead-session.js';
 export * from './genesis.js';

@@ -37,12 +37,12 @@ the final byte limit checked for each shard; choose a value below 10,000 when op
 CLI usage is explicit:
 
 ```sh
-solidc --split Large.scash --output Large.split.json
-solidc --split Large.scash --format ts --output Large.split.ts
-solidc --split Large.scash --size
+solidc Large.scash --split size --output Large.split.json
+solidc Large.scash --split size --format ts --output Large.split.ts
+solidc Large.scash --split size --size
 ```
 
-`--split` cannot be combined with raw ASM or hex output.
+`--split size` is the size packer. An over-cap kernel route is outside function split: `--split func` compiles one framed master per entry and is refused for any other composition. `--split size` and `--split func` cannot be combined with raw ASM or hex output. A bare `--split` is refused; the modes are `off`, `size`, and `func`.
 
 SolidHat also checks compiled artifacts against the active provider's input limit. When an ordinary stateful
 artifact exceeds that ceiling, its project compilation attempts to publish a `.split.json` bundle alongside the

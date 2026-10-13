@@ -36,8 +36,8 @@
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  bytesEqual, bytesToHex, FrameKind, INDEX_NONE, sha256, witnessKindOf, type Artifact, type PublishedWriteSegment,
-  type RecordEntry,
+  bytesEqual, bytesToHex, FrameKind, INDEX_NONE, sha256, witnessKindOf, type Artifact, type FunctionSplitBundle,
+  type PublishedWriteSegment, type RecordEntry,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
@@ -165,6 +165,15 @@ export interface CalleePlanOptions {
    * it (`CalleeValues.writeValues`): the write is planned from it, which sizes its run of chunk records.
    */
   readonly calleeWriteValues?: ReadonlyMap<string, Uint8Array>;
+  /**
+   * The per-entry bundle the root belongs to.
+   *
+   * A call back to this category spends the callee's shard, at that shard's lock, rather than another copy of
+   * the caller's own master.
+   */
+  readonly split?: FunctionSplitBundle;
+  /** Outpoints already claimed, keyed by category, so a callee does not spend the root's master. */
+  readonly takenMasters?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** The keys the root and the caller's named deployments are handed to the planner under, which no interface can be. */
@@ -333,6 +342,24 @@ function withSpelledCalls(plan: HopExternalPlan, artifact: Artifact, entry: stri
 /** The shape one callee frame takes that this path does not settle yet, or undefined for one it does. */
 function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefined {
   const label = `the callee "${callee.functionName}"`;
+  // A legal internal cut writes no state. Its further calls are other cuts of the same contract. The
+  // write-segment refusal below is for a frame whose artifact publishes a write this path cannot place.
+  if (callee.kind === FrameKind.INTERNAL) {
+    if (callee.retvalFrom !== undefined || callee.recordOwner !== undefined) {
+      return `${label} sits behind a proxy, whose delegate frame this call path does not plan yet`;
+    }
+    const internalAbi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
+    const internalSend = (internalAbi?.transfers ?? []).some((transfer) => transfer.condition === undefined);
+    if (internalSend || (callee.takenSends?.length ?? 0) > 0) {
+      return `${label} sends value on a path the call reaches, which this call path does not plan for a callee yet`;
+    }
+    if (sideCars) return `${label} co-spends a side-car, which this call path does not plan yet`;
+    if (publishedLoopEffects(callee.artifact, callee.entry) !== undefined) {
+      return `${label} emits, sends or hashes once per turn of a loop, which this call path does not plan for `
+        + 'a callee yet';
+    }
+    return undefined;
+  }
   if (callee.kind !== FrameKind.CALL && callee.kind !== FrameKind.STATIC) {
     return `${label} is entered as a delegate frame, which this call path does not plan yet`;
   }
@@ -401,6 +428,8 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       ...(options.reachedResults === undefined ? {} : { reachedResults: options.reachedResults }),
       ...(options.externalReturns === undefined ? {} : { externalReturns: options.externalReturns }),
       ...(options.calleeWriteValues === undefined ? {} : { calleeWriteValues: options.calleeWriteValues }),
+      ...(options.split === undefined ? {} : { split: options.split, splitCategoryId: options.categoryId }),
+      ...(options.takenMasters === undefined ? {} : { takenMasters: options.takenMasters }),
     });
   } catch (error) {
     if (!(error instanceof FramedProxyDeployError)) throw error;
@@ -534,6 +563,12 @@ export function calleeFrames(options: {
     readonly masters: ReadonlyMap<string, number>;
     readonly startViews: ReadonlyMap<string, ReadonlyMap<string, Uint8Array>>;
   };
+  /**
+   * The root's own block, when the root is another master of a callee's deployment. The calls enter that block once
+   * more than the callee frames alone, so a record a callee writes there chains across the root's segments the way a
+   * contract entered by several frames does.
+   */
+  readonly rootBlock?: string;
 }): CalleeFrames {
   const { planned, layout, values } = options;
   const { callees } = planned;
@@ -556,6 +591,11 @@ export function calleeFrames(options: {
   const chainEnds = new Map<string, Uint8Array>();
   const enteredOf = new Map<string, number>();
   for (const callee of callees) enteredOf.set(callee.block, (enteredOf.get(callee.block) ?? 0) + 1);
+  // The root spends a master of this block beside the callees. A record written here chains across the root's own
+  // segments, which the walk reaches between the call and the segment after it.
+  if (options.rootBlock !== undefined) {
+    enteredOf.set(options.rootBlock, (enteredOf.get(options.rootBlock) ?? 0) + 1);
+  }
   const chainedRecords = new Set<string>();
   const inputs: Record<string, DraftInput> = {};
   const eventOutputs: DraftSourceOutput[] = [];

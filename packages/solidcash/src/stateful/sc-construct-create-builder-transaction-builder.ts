@@ -77,6 +77,7 @@ export function constructCreateBuilderTransactionBuilder(
     satoshiContainerUtxo: UnlockableUtxo | undefined;
     satoshiContainerLockingBytecode: Uint8Array | undefined;
     blockhashCoSpendUtxos: UnlockableUtxo[];
+    blockInfoCoSpendUtxos?: UnlockableUtxo[];
     blockhashCoSpendSlotOrdinals: number[] | undefined;
     keccakComputeCoSpendUtxos: UnlockableUtxo[];
     keccakComputeCommitments: any;
@@ -128,7 +129,7 @@ export function constructCreateBuilderTransactionBuilder(
     runtimeLoopEventOutputs, runtimeLoopTransferOutputs, runtimeLoopTrailingSegments,
     kernelJournalSettlementOutputPlan, kernelJournalEagerOutputPlan, tokenContainers,
     tokenContainerLockingBytecodes, satoshiContainerUtxo, satoshiContainerLockingBytecode,
-    blockhashCoSpendUtxos, blockhashCoSpendSlotOrdinals, keccakComputeCoSpendUtxos,
+    blockhashCoSpendUtxos, blockInfoCoSpendUtxos, blockhashCoSpendSlotOrdinals, keccakComputeCoSpendUtxos,
     keccakComputeCommitments, delegateComputeResources, deferredKeccakCompute,
     deferredEcrecoverCompute, ecrecoverComputeCoSpendUtxos, ecrecoverComputeRecreates,
     keccakLoopSideCars, keccakLoopRecreates, externalOutStateUtxoGroups, externalCallUtxoGroups,
@@ -230,6 +231,7 @@ export function constructCreateBuilderTransactionBuilder(
     ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),
     ...(externalReadUtxos.length > 0 && { readOnlyDataNftUtxos: externalReadUtxos }),
     ...(blockhashCoSpendUtxos.length > 0 && { blockhashCoSpendUtxos }),
+    ...(blockInfoCoSpendUtxos && blockInfoCoSpendUtxos.length > 0 && { blockInfoCoSpendUtxos }),
     ...(blockhashCoSpendSlotOrdinals && { blockhashCoSpendSlotOrdinals }),
     ...(keccakComputeCoSpendUtxos.length > 0 && { keccakComputeCoSpendUtxos, keccakComputeCommitments }),
     ...(delegateComputeResources && { delegateComputeResources: true }),

@@ -204,12 +204,9 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     const artifact = compileString(TIMED_DELEGATE_IMPL);
     const proxy = await upgrades.deployProxy(getContractFactory(artifact, signer), []);
 
-    const deployed = await proxy.proxy.getState();
-    expect(deployed.__block_timestamp).toBeGreaterThan(0n);
-
     const tx = await (proxy as any).capture().send();
     expect(proxyState(tx, proxy.proxy.categoryId, artifact.stateLayout).captured)
-      .toBe(deployed.__block_timestamp);
+      .toBe(BigInt(signer.provider.getBlockTime()));
   });
 
   it('auto-detects an OZ initializer in Solidity import-compat mode', async () => {

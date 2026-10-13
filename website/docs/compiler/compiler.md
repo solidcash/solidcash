@@ -33,7 +33,7 @@ Options:
   -A, --asm              Compile the contract to ASM format rather than a full artifact.
   -c, --opcount          Display the number of opcodes in the compiled bytecode.
   -s, --size             Display the size in bytes of the compiled bytecode.
-      --split            Emit a state-local one-hop root/facet bundle.
+      --split <mode>     Split mode: off, size, or func. size is the size packer. An over-cap kernel route is outside function split.
       --no-message-bus   Disable inferred atomic message-bus composition.
   -S, --skip-enforce-function-parameter-types
   -L, --skip-enforce-locktime-guard
@@ -55,7 +55,7 @@ solidc ./Contract.scash --output ./artifact.ts --format ts
 ```bash
 solidc ./Contract.scash --size --opcount
 
-solidc ./Large.scash --split --output ./Large.split.json
+solidc ./Large.scash --split size --output ./Large.split.json
 ```
 
 :::info

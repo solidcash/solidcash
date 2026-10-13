@@ -3,7 +3,7 @@
  * (phase-boundary extract from StatefulContract.ts).
  */
 
-import type { Artifact, ExternalCallAbi } from '@solidcash/utils';
+import type { Artifact, ExternalCallAbi, FunctionSplitBundle } from '@solidcash/utils';
 import type { AddressType, Output, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
 import type { FramedGenesisHeadCollection } from '../framed/deploy/genesis.js';
 import type { FunctionArgument, ConstructorArgument } from '../Argument.js';
@@ -52,6 +52,13 @@ export interface DeployOptions {
   threadCount?: number;    // number of master minting NFTs (direct default 1; framed default 12)
   /** Number of validator UTXOs at the contract's address; framed deployments default to the composing size. */
   validatorCount?: number;
+  /**
+   * The `split: 'func'` bundle whose logical artifact is being deployed.
+   *
+   * Genesis mints `threadCount` empty-commitment minting NFTs at each shard's filled lock, and one validator
+   * pool at the shared `addrV`. Absent, genesis mints that many copies of the one master lock.
+   */
+  functionSplit?: FunctionSplitBundle;
   /**
    * A dead `<salt> OP_DROP` push baked into the script. Beyond CREATE2 addressing this is the DENSITY RESERVE:
    * the BCH-2026 operation-cost budget is `operationCostBudgetPerByte x unlockingBytecodeLength`, and for

@@ -25,6 +25,7 @@ export interface BuildInputsHost {
   dataNftUtxos: UnlockableUtxo[];
   readOnlyDataNftUtxos: UnlockableUtxo[];
   blockhashCoSpendUtxos: UnlockableUtxo[];
+  blockInfoCoSpendUtxos?: UnlockableUtxo[];
   blockhashCoSpendSlotOrdinals?: number[];
   keccakComputeCoSpendUtxos: UnlockableUtxo[];
   keccakLoopSideCars: UnlockableUtxo[];
@@ -186,6 +187,14 @@ export function buildInputs(
         case 'readOnlyDataNft':
           if (readOnlyIdx < host.readOnlyDataNftUtxos.length) {
             positioned[slot.offset] = host.readOnlyDataNftUtxos[readOnlyIdx++];
+          }
+          break;
+        case 'blockInfoOracle':
+          if (host.blockInfoCoSpendUtxos?.[0] !== undefined) {
+            positioned[slot.offset] = host.blockInfoCoSpendUtxos[0];
+          } else {
+            const funder = funderPool.shift();
+            if (funder) positioned[slot.offset] = funder;
           }
           break;
         case 'blockhashOracle':
@@ -698,7 +707,9 @@ export function buildInputs(
     return assembled;
   }
 
-  // Legacy ordering - funders go at the end (past all covenant inputs).
+  // Legacy ordering - funders go at the end (past all covenant inputs). This path runs when no funder
+  // exists yet (the fee input is appended later), so a co-spend left out here is replaced by that funder.
+  // computeBlockLayout places blockInfoOracle immediately after the blockhash band; the legacy outputs do too.
   // Delegate bytecode requires the implementation master to immediately follow the proxy master/data region.
   // Its nested external callees are ordinary co-spends, but must be ordered after that implementation band.
   if (host.delegateEntriesAfterLowLevel) {
@@ -749,6 +760,7 @@ export function buildInputs(
         ? [] : [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos]),
       ...host.lowLevelCallRawInputs,
       ...host.readOnlyDataNftUtxos, ...host.blockhashCoSpendUtxos,
+      ...(host.blockInfoCoSpendUtxos ?? []),
       ...host.keccakComputeCoSpendUtxos, ...host.keccakLoopSideCars, ...host.ecrecoverComputeCoSpendUtxos,
       ...externalOutStateInputs, ...entryInputs,
     ];
@@ -846,6 +858,7 @@ export function buildInputs(
   if (host.iterationEntryInputs.length > 0 && externalCallInputs.length > 0) {
     return [
       host.masterUtxo, ...host.dataNftUtxos, ...host.readOnlyDataNftUtxos, ...host.blockhashCoSpendUtxos,
+      ...(host.blockInfoCoSpendUtxos ?? []),
       ...host.keccakComputeCoSpendUtxos, ...host.keccakLoopSideCars, ...host.ecrecoverComputeCoSpendUtxos,
       ...externalOutStateInputs,
       ...lowLevelCallInputs, ...host.lowLevelCallRawInputs,
@@ -858,6 +871,7 @@ export function buildInputs(
   }
   return [
     host.masterUtxo, ...host.dataNftUtxos, ...host.readOnlyDataNftUtxos, ...host.blockhashCoSpendUtxos,
+    ...(host.blockInfoCoSpendUtxos ?? []),
     ...host.keccakComputeCoSpendUtxos, ...host.keccakLoopSideCars, ...host.ecrecoverComputeCoSpendUtxos,
     ...externalOutStateInputs, ...externalCallInputs,
     ...lowLevelCallInputs, ...host.lowLevelCallRawInputs,

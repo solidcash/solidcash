@@ -14,7 +14,8 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
-  type AbiFunctionReference, type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType,
+  type AbiFunctionReference, type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode,
+  findBlockOracleLockSlots, BytesType,
   type CompilerOptions,
   FixedType, IntType,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSelectorHex,
@@ -38,7 +39,8 @@ import {
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual,
   scriptToBytecode, bytecodeToScript, asmToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
-  type AbiFunction, type ChildDeploymentSiteAbi, type SplitArtifactBundle, type SplitStateFootprint, StructType, TupleType,
+  type AbiFunction, type ChildDeploymentSiteAbi, type FunctionSplitBundle, type SplitArtifactBundle,
+  type SplitStateFootprint, StructType, TupleType,
   type Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType, isFixedWidthType,
   isChunkableValueType,
@@ -269,6 +271,7 @@ import { validateStorageLayoutSpecifiers } from './semantic/ValidateStorageLayou
 import { ImportResolver } from './ImportResolver.js';
 import { createMapResolver } from './createMapResolver.js';
 import { assertNoAmbiguousOverrides } from './semantic/AmbiguousOverrides.js';
+import { compileFunctionSplit } from './split/function-split.js';
 import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
@@ -615,6 +618,10 @@ type InternalCompilerOptions = CompilerOptions & {
   __coldDelegateRebuild?: boolean;
   __cheapAdmissionCodegen?: boolean;
   __parsedAst?: Ast;
+  /** Set on a per-entry shard whose storage-shaping passes already ran on the whole contract. */
+  __functionSplitPrepared?: boolean;
+  /** Frame kinds the shard's master head admits. Absent keeps the historical four. */
+  __functionSplitFrameKinds?: readonly number[];
   /** Shared box so the shallow-copied admission options and the binder see the same pre-lowering snapshot. */
   __pristineAstBox?: { ast?: Ast };
   /**
@@ -3073,7 +3080,13 @@ function withoutUpgradesFrom(options: CompileOptions): CompileOptions {
 }
 
 export function compileString(code: string, options: CompileStringOptions = {}): Artifact {
+  if (options.split !== undefined && options.split !== 'off') {
+    throw new Error(
+      "compileString does not accept split 'size' or 'func'; use compileStringSplit. split is 'off', 'size', or 'func'",
+    );
+  }
   const compilerOptions: CompileOptions = withFilesResolver(options);
+  if (compilerOptions.split === 'off') delete compilerOptions.split;
   // SOLIDC env registry: when SOLIDC_STRICT_UNKNOWN_ENV=1 (CI), refuse unknown SOLIDC_* before any compile work.
   enforceSolidcEnvPolicy();
   clearDefineFrameValidations();
@@ -14841,7 +14854,10 @@ function compileResolvedAst(
   // X169: the split path already ran this on the COMPLETE function set (`prepareSplitAst`). Re-running it on a
   // shard's filtered set would re-decide a table this pass declined there, and the decision appends state
   // variables - see `assertSplitLayoutsAgree`.
-  if (!fnPtrArraysPreLowered && !ast.contract.isSplitFacet
+  // A per-entry shard already ran this pass on the complete function set (`prepareSplitAst`). Re-running it on
+  // the filtered closure would append different state and break `assertSplitLayoutsAgree`.
+  const functionSplitPrepared = (mergedCompilerOptions as InternalCompilerOptions).__functionSplitPrepared === true;
+  if (!fnPtrArraysPreLowered && !functionSplitPrepared && !ast.contract.isSplitFacet
     && !(rootSourceCoversProgram(ast) && !code.includes('function(') && !code.includes('function ('))) {
     ast = ast.accept(new LowerForeignFunctionPointerArrayElements(messageBusGraphMode)) as Ast;
   }
@@ -15799,14 +15815,21 @@ function compileResolvedAst(
   if (ast.freeFunctions.length > 0 || ast.declaredLibraryNames.length > 0) {
     ast = ast.accept(new SynthesizeLibraryDelegateCalls(mergedCompilerOptions.evmCompat === true)) as Ast;
   }
-  // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
+  // Oracle-backed block.* reads stay reads of the shared covenant commitment. No state is injected.
   const blockOracle = new SynthesizeBlockOracle(
     mergedCompilerOptions.evmCompat ?? false,
     oracleDelegateExecutionContext,
   );
-  // Yul context builtins become ordinary block.* reads and gasleft() only after assembly lowering. The initial
-  // source survey cannot see those generated AST nodes, so resurvey only sources which actually had assembly.
-  if (needsBlockOracle || (needsInlineAssembly && surveyOptionalLowerings(ast).needsBlockOracle)) {
+  // A split root's forwarder no longer contains the read, but the prepare pass already marked the function.
+  // Re-run so that mark is cleared. Yul builtins become block.* reads only after assembly lowering, which the
+  // initial survey cannot see, so sources that had assembly are resurveyed.
+  const oracleAlreadyMarked = ast.contract.usesBlockOracle
+    || ast.contract.functions.some((fn) => fn.usesBlockOracle === true)
+    || ast.contract.constructorDef?.usesBlockOracle === true
+    || ast.contract.fallbackDef?.usesBlockOracle === true
+    || ast.contract.receiveDef?.usesBlockOracle === true;
+  if (needsBlockOracle || oracleAlreadyMarked
+    || (needsInlineAssembly && surveyOptionalLowerings(ast).needsBlockOracle)) {
     ast = ast.accept(blockOracle) as Ast;
   }
 
@@ -18315,6 +18338,14 @@ function compileResolvedAst(
   }
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
+  if (ast.contract.usesBlockOracle) {
+    const slots = findBlockOracleLockSlots(asmToBytecode(artifact.bytecode));
+    if (slots.length === 0) {
+      throw new Error(`'${artifact.contractName}' reads the block oracle but did not publish its lock pin`);
+    }
+    artifact.usesBlockOracle = true;
+    artifact.blockOracleLockSlots = slots;
+  }
   const boundVerifierProgram = mergedCompilerOptions.__messageBusVerifierProgram ?? singlePassVerifierProgram;
   if (boundVerifierProgram && artifact.messageBus?.route.inputs.some((input) =>
     input.name === '__internal__activeVerifierIndex')) {
@@ -18735,14 +18766,113 @@ const LIFECYCLE_MODIFIERS = new Set([
   FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.UNSAFE,
 ]);
 
+/** Drop split-planning keys so a nested `compileString` does not see a mode it refuses. */
+function stripSplitPlanning(options: CompilerOptions): CompilerOptions {
+  const rest = { ...options } as CompilerOptions & {
+    split?: unknown;
+    maxShardBytes?: unknown;
+    forceSplit?: unknown;
+    rootFunctions?: unknown;
+  };
+  delete rest.split;
+  delete rest.maxShardBytes;
+  delete rest.forceSplit;
+  delete rest.rootFunctions;
+  return rest;
+}
+
+function splitModeOf(split: CompilerOptions['split']): 'off' | 'size' | 'func' {
+  const mode = split ?? 'size';
+  if (mode !== 'off' && mode !== 'size' && mode !== 'func') {
+    throw new Error("split must be 'off', 'size', or 'func'");
+  }
+  return mode;
+}
+
+/** Per-entry framed split. The size packer below is not used. */
+function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): FunctionSplitBundle {
+  const { errorListener } = compilerOptions;
+  let probe: Ast | undefined;
+  return compileFunctionSplit({
+    code,
+    options: compilerOptions,
+    host: {
+      prepare(source, options) {
+        probe = prepareSplitAst(source, normalizeCompilerOptions(stripSplitPlanning(options)), errorListener);
+        return probe;
+      },
+      compileMonolith(source, options) {
+        return compileString(source, { ...stripSplitPlanning(options), errorListener });
+      },
+      compileParsed(source, options, ast, frameKinds) {
+        return compileStringUnchecked(source, {
+          ...stripSplitPlanning(options),
+          errorListener,
+          __parsedAst: ast,
+          __functionSplitPrepared: true,
+          __functionSplitFrameKinds: frameKinds,
+        } as InternalCompilerOptions);
+      },
+      cloneAst,
+      byteSize,
+      spendReserve(artifact, budgetWholeSpend) {
+        return budgetWholeSpend ? widestSpendReserve(artifact, artifact.constructorInputs) : 0;
+      },
+      fingerprint(artifact) {
+        return splitStateLayoutFingerprint(artifact.stateLayout);
+      },
+      assertLayouts: assertSplitLayoutsAgree,
+      selectorHex: sourceFunctionSelectorHex,
+      helperCuts(entry) {
+        if (probe === undefined) return [];
+        const byName = new Map<string, FunctionDefinitionNode[]>();
+        for (const fn of probe.contract.functions) {
+          (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
+        }
+        const cache = createFootprintAnalysisCache(new Set(
+          probe.contract.stateVariables.map((state) => state.name),
+        ));
+        const plan: PlannedFunction = {
+          name: entry.name,
+          parameters: entry.parameters.length,
+          closure: collectNamedFunctionClosure(entry, byName),
+          footprint: analyseFunctionFootprint(entry, byName, cache),
+        };
+        const interfaceNames = new Set(probe.interfaceDefinitions.map((iface) => iface.name));
+        return splitHelperCutProfiles(plan, byName, cache, probe.contract, interfaceNames);
+      },
+      cloneLogical(artifact) {
+        return cloneArtifact(artifact);
+      },
+    },
+  });
+}
+
 /**
- * Compile a contract into a statically-linked one-hop root/facet bundle. This API is additive: ordinary compile
- * entry points retain their existing Artifact return type and bytecode. The splitter operates on fresh ASTs for
- * every shard, so the normal mutating compiler pipeline remains isolated per artifact.
+ * Compile a contract into a statically-linked one-hop root/facet bundle, or into a framed per-entry bundle when
+ * `split` is `'func'`. Ordinary compile entry points retain their existing Artifact return type and bytecode.
+ * The splitter operates on fresh ASTs for every shard, so the normal mutating compiler pipeline remains isolated
+ * per artifact. Omitting `split` keeps the size packer (`state-affinity-best-fit-v2`).
  */
 export function compileStringSplit(
+  code: string,
+  options: SplitCompileOptions & CompileStringOptions & { split: 'func' },
+): FunctionSplitBundle;
+export function compileStringSplit(
+  code: string,
+  options: SplitCompileOptions & CompileStringOptions & { split: 'off' },
+): Artifact;
+export function compileStringSplit(
+  code: string,
+  options: SplitCompileOptions & CompileStringOptions & { split?: 'size' },
+): SplitArtifactBundle;
+export function compileStringSplit(
+  code: string,
+  options?: SplitCompileOptions & CompileStringOptions,
+): Artifact | SplitArtifactBundle | FunctionSplitBundle;
+export function compileStringSplit(
   code: string, options: SplitCompileOptions & CompileStringOptions = {},
-): SplitArtifactBundle {
+): Artifact | SplitArtifactBundle | FunctionSplitBundle {
   const compilerOptions: SplitCompileOptions = withFilesResolver(options);
   return withCompilerWarnings(
     compilerOptions.suppressWarnings,
@@ -18752,11 +18882,25 @@ export function compileStringSplit(
 
 function compileStringSplitUnchecked(
   code: string, compilerOptions: SplitCompileOptions,
-): SplitArtifactBundle {
+): Artifact | SplitArtifactBundle | FunctionSplitBundle {
+  const split = splitModeOf(compilerOptions.split);
+  if (split === 'off') {
+    return compileString(code, stripSplitPlanning(compilerOptions));
+  }
+  if (split === 'func') return runFunctionSplit(code, compilerOptions);
+  if (compilerOptions.composition === 'framed') {
+    throw new SolidcDiagnosticError(
+      'SPLIT_SIZE_REFUSES_FRAMED',
+      "split 'size' refuses composition 'framed'",
+      { split: 'size', composition: 'framed' },
+    );
+  }
   const {
     maxShardBytes = MAX_INPUT_BYTESIZE, forceSplit = false, rootFunctions = [], errorListener,
     ...artifactOptions
   } = compilerOptions;
+  // compileString refuses split 'size'; every compile below is an ordinary one.
+  delete artifactOptions.split;
   // Budget the whole SPEND, not just the redeem script - but only against the real consensus cap. An explicit
   // `maxShardBytes` is a tuning knob expressed in redeem-script bytes and is honoured literally; the default is
   // the BCH per-input limit, which covers redeem script + constructor arguments + the call's own arguments +
@@ -19454,11 +19598,9 @@ function prepareSplitAst(
   if (!(rootSourceCoversProgram(ast) && !code.includes('assembly'))) {
     ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
   }
-  // Sharding must happen after storage-shaping synthesis. Otherwise a block.* read moved into a facet injects
-  // oracle registers only there, changing delegate offsets and leaving the root unable to materialize that state.
-  // Match the ordinary pipeline's block-oracle synthesis so split roots append the same canonical register
-  // order (__block_number before __block_timestamp) as their unsplit baseline. block.timestamp always lowers
-  // to the __block_timestamp oracle register.
+  // Sharding must happen after storage-shaping synthesis. A block.* read stays a read of the shared
+  // covenant; the pass marks the function and injects no state. Running it on the complete function set
+  // keeps that mark on the same functions the unsplit pipeline marks.
   if (!(rootSourceCoversProgram(ast) && !code.includes('block.') && !code.includes('now'))) {
     ast = ast.accept(new SynthesizeBlockOracle(
       options.evmCompat ?? false,

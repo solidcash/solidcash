@@ -26,7 +26,7 @@ import { PLACEHOLDER_P2PKH_UNLOCKING_SIZE } from './constants.js';
 import type { NetworkProvider } from './network/index.js';
 import { traceBroadcast } from './tx-trace.js';
 import {
-  hash256, scriptToBytecode, buildSidecarRedeem, sidecarLockingBytecode, resolveLibraryBlob,
+  blockOracleReadUnlocking, hash256, scriptToBytecode, buildSidecarRedeem, sidecarLockingBytecode, resolveLibraryBlob,
   SHARED_LIBRARY_SALT, type ExternalLibraryAbi,
   buildKeccakComputeRedeem, keccakComputeLockingBytecode, KECCAK256_COMPUTE_COVENANT_HASH,
   ecrecoverComputeLockingBytecode,
@@ -950,6 +950,47 @@ export class TransactionBuilder {
    * TransactionBuilder append. A blockhash reader reaching this builder means the call was NOT built through
    * StatefulContract, so fail loudly. Auto-invoked by send() before sidecars.
    */
+  /**
+   * Co-spend the block-info oracle and recreate it at the same index. A stateful block-layout slot already
+   * places it; this path is the stateless reader, whose script learns the index from the spent outputs.
+   */
+  async addRequiredBlockOracleCoSpends(): Promise<this> {
+    for (const input of [...this.inputs]) {
+      if (!isUnlockableUtxo(input) || !isContractUnlocker(input.unlocker)) continue;
+      const abi = input.unlocker.abiFunction;
+      if (abi.usesBlockOracle !== true) continue;
+      if (abi.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')) continue;
+      const lock = input.unlocker.contract.blockOracleLock;
+      if (lock === undefined) {
+        throw new Error(`${input.unlocker.contract.name} reads the block oracle, and no oracle lock was provided`);
+      }
+      if (this.inputs.some((spent) => isUnlockableUtxo(spent)
+        && bytesEqual(spent.unlocker.generateLockingBytecode(), lock))) continue;
+      const utxos = await this.provider.getUtxosForLockingBytecode(lock);
+      const oracle = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+      if (oracle?.token?.category === undefined) {
+        throw new Error('block oracle UTXO is not available');
+      }
+      const category = hexToBin(oracle.token.category);
+      while (this.outputs.length < this.inputs.length) {
+        this.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+      }
+      // The covenant checks output[inputIndex]. Insert the recreate there when outputs already run ahead.
+      const index = this.inputs.length;
+      this.addInput(oracle, {
+        generateLockingBytecode: () => lock,
+        generateUnlockingBytecode: () => blockOracleReadUnlocking(category),
+      });
+      this.addOutput({ to: lock, amount: oracle.satoshis, token: oracle.token });
+      const placed = this.outputs.length - 1;
+      if (placed !== index) {
+        const recreate = this.outputs.pop();
+        if (recreate !== undefined) this.outputs.splice(index, 0, recreate);
+      }
+    }
+    return this;
+  }
+
   async addRequiredBlockhashCoSpends(): Promise<this> {
     // blockhash(n) brands its (n->hash) oracle to the contract's OWN category (master-bound, stateful), so the
     // co-spend is resolved by StatefulContract via the blockhashOracle block-layout slot. A blockhash reader in
@@ -1338,6 +1379,7 @@ export class TransactionBuilder {
     if (!this.options.skipAutomaticCoSpends) {
       // Auto co-spend the blockhash(n) oracle (last input) before sidecars, which would otherwise claim it.
       await this.addRequiredBlockhashCoSpends();
+      await this.addRequiredBlockOracleCoSpends();
       // Auto co-spend keccak256 compute-and-commit side-cars (the default keccak model) from the recorded param.
       await this.addRequiredKeccakComputeCoSpends();
       // Auto co-spend ecrecoverPubKey recovery side-car pairs (A checkpoints, B commits the recovered pubkey).

@@ -9,7 +9,7 @@ import {
 import {
   asmToScript, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
   buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue, scriptToBytecode,
-  type AbiFunction, type Artifact,
+  type AbiFunction,
 } from '@solidcash/utils';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../solidcash/src/stateful/SortedList.js';
 import { compileString } from '../src/index.js';
@@ -43,7 +43,9 @@ function pushesOf(values: readonly Uint8Array[]): Uint8Array {
   return new Uint8Array(values.flatMap((value) => [...encodeDataPush(value)]));
 }
 
-function redeemUnlock(fn: AbiFunction, redeem: Uint8Array, values: Record<string, Uint8Array>, dispatch: boolean): Uint8Array {
+function redeemUnlock(
+  fn: AbiFunction, redeem: Uint8Array, values: Record<string, Uint8Array>, dispatch: boolean,
+): Uint8Array {
   const args = fn.inputs.map((entry) => {
     const value = values[entry.name];
     if (value === undefined) {
@@ -116,8 +118,8 @@ describe('October 2026 class A holes', () => {
     const n = 1n;
     const hash = Uint8Array.from({ length: 32 }, (_, index) => index + 3);
     const forged = Uint8Array.from({ length: 32 }, () => 0x44);
-    const oracleRedeem = scriptToBytecode(buildBlockhashOracleCovenantScript(CATEGORY, n));
-    const oracleLock = blockhashOracleLockingBytecode(CATEGORY, n);
+    const oracleRedeem = scriptToBytecode(buildBlockhashOracleCovenantScript(CATEGORY));
+    const oracleLock = blockhashOracleLockingBytecode(CATEGORY);
     const oracleUnlock = pushesOf([num(0n), oracleRedeem]);
     const commitment = buildBlockhashCommitment(n, hash);
     const values: Record<string, Uint8Array> = {};

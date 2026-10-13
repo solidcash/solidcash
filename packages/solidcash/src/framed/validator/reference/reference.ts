@@ -298,6 +298,10 @@ class ReferenceRun {
           if (calleeBlock.value !== callerBlock.value) this.reject('V5', 'AN_INTERNAL_CALLEE_DOES_NOT_INHERIT_THE_VALUE', callee);
           if (!eq(calleeBlock.sender, callerBlock.sender)) this.reject('V5', 'AN_INTERNAL_CALLEE_DOES_NOT_INHERIT_THE_SENDER', callee);
           if (!eq(calleeBlock.self, callerBlock.self)) this.reject('V5', 'AN_INTERNAL_CALLEE_DOES_NOT_INHERIT_SELF', callee);
+          const calleeInput = inputByIndex(this.transaction, callee);
+          if (calleeInput === undefined || !eq(calleeInput.lockingBytecode, call.target)) {
+            this.reject('V5', 'AN_INTERNAL_CALLEES_LOCK_IS_NOT_THE_RECORDED_TARGET', callee);
+          }
           if (!eq(this.ownCategory(callee), this.contextOf(caller))) {
             this.reject('V5', 'AN_INTERNAL_CALLEE_IS_NOT_A_FACET_OF_THE_CONTEXT', callee);
           }

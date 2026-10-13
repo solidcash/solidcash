@@ -1,4 +1,4 @@
-import { type Artifact, asmToBytecode } from '@solidcash/utils';
+import { type Artifact, type FunctionSplitBundle, asmToBytecode } from '@solidcash/utils';
 import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
@@ -33,6 +33,8 @@ export interface DeployContractOptions {
   threadCount?: number;
   /** Number of validator UTXOs a framed genesis mints; defaults to the composing pool size. */
   validatorCount?: number;
+  /** `split: 'func'` bundle. Genesis mints a master pool at each shard lock, and funding counts those pools. */
+  functionSplit?: FunctionSplitBundle;
   /** Number of self-preserved message bus verifier instances created in the genesis transaction. */
   messageBusVerificationInputCount?: number;
   initialBalance?: bigint;
@@ -368,7 +370,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         let poolSatoshis = 0n;
         if (deployArtifact.composition?.convention === 'framed') {
           const pool = resolveMasterPoolSize({ masters: overrides.threadCount, validators: overrides.validatorCount });
-          poolSatoshis = poolGenesisSatoshis(pool);
+          poolSatoshis = poolGenesisSatoshis(pool, 1200n, overrides.functionSplit?.shards.length ?? 1);
         }
         fundingUtxo = await selectGenesisFundingUtxo(
           signer, deployArtifact, new Set(), 1 + verifierCount, poolSatoshis,
@@ -416,6 +418,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         salt: overrides.salt,
         threadCount: overrides.threadCount,
         validatorCount: overrides.validatorCount,
+        ...(overrides.functionSplit === undefined ? {} : { functionSplit: overrides.functionSplit }),
         messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,
         initArgs: overrideInitArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),

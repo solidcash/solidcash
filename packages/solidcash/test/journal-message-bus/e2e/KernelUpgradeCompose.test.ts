@@ -1,5 +1,4 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { encodePushdataValue } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
@@ -17,11 +16,11 @@ const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true,
 } as const;
 
+// An in-place upgrade leaves a participant's records at the old master lock, to which CRYPTO-4 binds them, so an
+// upgradable participant keeps no record beyond its master NFT.
 const CURRENT = `contract CurrentVersion() {
-  int stored;
   function setStored(int next) public {
-    this.stored = next;
-    require(true);
+    require(next >= 0);
   }
   function replace() public upgrade {
     require(true);
@@ -29,7 +28,6 @@ const CURRENT = `contract CurrentVersion() {
 }`;
 
 const REPLACEMENT = `contract ReplacementVersion(int domain) {
-  int stored;
   function identify() public view returns (int) {
     return domain;
   }
@@ -88,13 +86,11 @@ describe('kernel in-place append upgrade composition', () => {
   it('selects an overloaded upgrade by canonical signature and preserves its selector identity', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const currentArtifact = compileString(`contract OverloadedCurrent() {
-      int stored;
       function replace(int expected) public upgrade { require(expected == expected); }
-      function replace(bool enabled) public { this.stored = enabled ? 1 : 0; require(true); }
+      function replace(bool enabled) public { require(enabled == enabled); }
     }`, KERNEL);
     const replacementArtifact = compileString(`contract OverloadedReplacement() {
-      int stored;
-      function read() public view returns (int) { return this.stored; }
+      function read() public view returns (int) { return 1; }
     }`, KERNEL);
     const coordinatorArtifact = compileString(`interface IOverloadedVersion {
       function replace(int expected);
@@ -199,7 +195,7 @@ describe('kernel in-place append upgrade composition', () => {
       function identify() public view returns (int) { return additional; }
     }`, KERNEL);
     await expect(compose(current.call.replace().upgradeTo(incompatible, [])))
-      .rejects.toThrow(/does not preserve the existing state-variable geometry/);
+      .rejects.toThrow(/does not preserve the existing data NFT geometry/);
     await expect(messageBus.compose({
       calls: [
         coordinator.call.executeAfterSet(
@@ -224,90 +220,27 @@ describe('kernel in-place append upgrade composition', () => {
     }).build()).rejects.toThrow(/requires exactly one replacement target/);
   }, 180_000);
 
-  it('appends canonical new fields after the post-row old state and rejects suffix tampering', async () => {
+  // The in-place append layout has no data NFT to append into: a participant keeping records is refused at compile,
+  // and a replacement that adds state to a record-free one is refused at composition.
+  it('refuses a participant that keeps records, and a replacement that adds state', async () => {
+    expect(() => compileString(`contract StatefulVersion() {
+      int stored;
+      function setStored(int next) public { this.stored = next; require(true); }
+      function replace() public upgrade { require(true); }
+    }`, KERNEL)).toThrow(/is an in-place upgrade, but this contract keeps state variables in data NFTs/);
     const { current, coordinator, fee } = await setup();
     const extended = compileString(`contract ExtendedVersion(int domain) {
-      int stored;
       int added;
-      bytes4 marker;
       function identify() public view returns (int) { return domain + added; }
     }`, KERNEL);
-    const marker = Uint8Array.of(1, 2, 3, 4);
-    const builder = await messageBus.compose({
-      calls: [
-        coordinator.call.executeAfterSet(
-          current.inner.lockingBytecode, current.inner.lockingBytecode, 9n,
-        ),
-        current.call.setStored(9n),
-        current.call.replace().upgradeTo(extended, [7n], {
-          appendedState: { added: 5n, marker },
-        }),
-      ],
-      funder: fee,
-      changeAddress: fee.unlocker.generateLockingBytecode(),
-    }).build();
-    const master = builder.inputs.findIndex((input) =>
-      input.token?.category === current.categoryId && input.token.nft?.capability === 'minting');
-    const commitment = builder.outputs[master + 1].token?.nft?.commitment;
-    expect(commitment).toBe(binToHex(new Uint8Array([
-      ...encodePushdataValue(9n, 'int256'),
-      ...encodePushdataValue(5n, 'int256'),
-      ...encodePushdataValue(marker, 'bytes4'),
-    ])));
-    assertAuthenticatingVmEvidence(builder);
-    expect(() => messageBus.preflightMessageBusTransaction(builder)).not.toThrow();
-    builder.outputs[master + 1].token!.nft!.commitment = `${commitment!.slice(0, -2)}ff`;
-    expect(() => messageBus.preflightMessageBusTransaction(builder)).toThrow();
-  }, 180_000);
-
-  it('defaults omitted appended fields and rejects initializers for an existing field', async () => {
-    const { current, coordinator, fee } = await setup();
-    const extended = compileString(`contract ExtendedVersion() {
-      int stored;
-      int added;
-      function identify() public view returns (int) { return added; }
-    }`, KERNEL);
-    const defaults = await messageBus.compose({
-      calls: [
-        coordinator.call.execute(current.inner.lockingBytecode),
-        current.call.replace().upgradeTo(extended, []),
-      ],
-      funder: fee,
-      changeAddress: fee.unlocker.generateLockingBytecode(),
-    }).build();
-    const master = defaults.inputs.findIndex((input) =>
-      input.token?.category === current.categoryId && input.token.nft?.capability === 'minting');
-    expect(defaults.outputs[master + 1].token?.nft?.commitment).toBe(binToHex(new Uint8Array([
-      ...encodePushdataValue(0n, 'int256'), ...encodePushdataValue(0n, 'int256'),
-    ])));
     await expect(messageBus.compose({
       calls: [
         coordinator.call.execute(current.inner.lockingBytecode),
-        current.call.replace().upgradeTo(extended, [], { appendedState: { stored: 1n } }),
+        current.call.replace().upgradeTo(extended, [7n], { appendedState: { added: 5n } }),
       ],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
-    }).build()).rejects.toThrow(/appendedState may only initialize new fields/);
-  }, 180_000);
-
-  it('rejects appended fields with nested dynamic state', async () => {
-    const { current, coordinator, fee } = await setup();
-    const dynamicStruct = compileString(`contract DynamicStructVersion() {
-      struct Extra { bytes payload; }
-      int stored;
-      Extra extra;
-      function identify() public view returns (int) { return stored; }
-    }`, KERNEL);
-    await expect(messageBus.compose({
-      calls: [
-        coordinator.call.execute(current.inner.lockingBytecode),
-        current.call.replace().upgradeTo(dynamicStruct, [], {
-          appendedState: { extra: { payload: Uint8Array.of(1) } },
-        }),
-      ],
-      funder: fee,
-      changeAddress: fee.unlocker.generateLockingBytecode(),
-    }).build()).rejects.toThrow(/contiguous fixed-size suffix/);
+    }).build()).rejects.toThrow(/does not preserve the existing data NFT geometry/);
   }, 180_000);
 
   it('fences an opaque transitively reached signature in an upgrade graph', async () => {

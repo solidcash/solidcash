@@ -28,12 +28,13 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
   ) === true);
 };
 
+// An in-place upgrade leaves a participant's records at the old master lock (CRYPTO-4), so each upgradable Current
+// keeps no record beyond its master NFT.
 describe('kernel transaction-bound upgrade signature', () => {
   it('authenticates two detached aggregate signatures through one exact helper body', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const currentArtifact = compileString(`contract Current() {
       struct Auth { sig first; sig second; pubkey key; int nonce; }
-      int marker;
       modifier authorized(Auth selected) {
         require(checkSig(selected.first, selected.key)); require(checkSig(selected.second, selected.key)); _;
       }
@@ -41,8 +42,7 @@ describe('kernel transaction-bound upgrade signature', () => {
     }`, KERNEL);
     const replacementArtifact = compileString(`contract Replacement() {
       struct Auth { sig first; sig second; pubkey key; int nonce; }
-      int marker;
-      function read() public view returns (int) { return this.marker; }
+      function read() public view returns (int) { return 1; }
     }`, KERNEL);
     expect(currentArtifact.messageBus?.handlers.find((handler) => handler.name === 'replace'))
       .toMatchObject({
@@ -58,7 +58,7 @@ describe('kernel transaction-bound upgrade signature', () => {
 
     const base = new Contract(currentArtifact, [], { provider });
     const setup = await setupStatefulUtxos(
-      provider, base, currentArtifact.stateLayout!, { marker: 7n }, { saltContract: true },
+      provider, base, currentArtifact.stateLayout!, {}, { saltContract: true },
     );
     const current = StatefulContract.withCategory(
       base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
@@ -112,7 +112,6 @@ describe('kernel transaction-bound upgrade signature', () => {
   it('accepts SIGHASH_ALL and rejects weaker authorization and output tampering in the BCH-2026 VM', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const currentArtifact = compileString(`contract Current(pubkey authority) {
-      int marker;
       function identity(sig value) internal pure returns (sig) { return value; }
       function verify(sig selected, pubkey key) internal { require(checkSig(selected, key)); }
       function replace(sig proof) public upgrade {
@@ -121,8 +120,7 @@ describe('kernel transaction-bound upgrade signature', () => {
       }
     }`, KERNEL);
     const replacementArtifact = compileString(`contract Replacement(pubkey authority) {
-      int marker;
-      function read() public view returns (int) { return this.marker; }
+      function read() public view returns (int) { return 1; }
     }`, KERNEL);
     expect(currentArtifact.messageBus?.handlers.find((handler) => handler.name === 'replace'))
       .toMatchObject({
@@ -135,7 +133,7 @@ describe('kernel transaction-bound upgrade signature', () => {
 
     const base = new Contract(currentArtifact, [alicePub], { provider });
     const setup = await setupStatefulUtxos(
-      provider, base, currentArtifact.stateLayout!, { marker: 7n }, { saltContract: true },
+      provider, base, currentArtifact.stateLayout!, {}, { saltContract: true },
     );
     const current = StatefulContract.withCategory(
       base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
@@ -191,16 +189,14 @@ describe('kernel transaction-bound upgrade signature', () => {
   it('allows an all-output-signed ordinary leaf in a graph containing another participant upgrade', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const currentArtifact = compileString(`contract Current() {
-      int marker;
       function replace() public upgrade { require(true); }
     }`, KERNEL);
     const replacementArtifact = compileString(`contract Replacement() {
-      int marker;
-      function read() public view returns (int) { return this.marker; }
+      function read() public view returns (int) { return 1; }
     }`, KERNEL);
     const currentBase = new Contract(currentArtifact, [], { provider });
     const currentSetup = await setupStatefulUtxos(
-      provider, currentBase, currentArtifact.stateLayout!, { marker: 9n }, { saltContract: true },
+      provider, currentBase, currentArtifact.stateLayout!, {}, { saltContract: true },
     );
     const current = StatefulContract.withCategory(
       currentBase.withCategory(hexToBin(currentSetup.categoryId)), currentSetup.categoryId,

@@ -40,6 +40,7 @@ export interface BlockOracleFields {
   size: bigint; // block size in bytes
   totalFees: bigint; // sum of tx fees, satoshis
   coinbase: Uint8Array; // coinbase output 0 locking bytecode
+  medianTime?: bigint; // median time past at this block, when the rpc reports it
 }
 
 // EVM-parity blockhash window.
@@ -88,7 +89,24 @@ export async function fetchBlockOracleFields(rpc: RpcLike, hash: string): Promis
     size: BigInt(block.size),
     totalFees: coinbaseSum - blockSubsidySats(block.height),
     coinbase: hexToBin(coinbase.vout[0].scriptPubKey.hex),
+    ...(block.mediantime !== undefined && { medianTime: BigInt(block.mediantime) }),
   };
+}
+
+function updateWritesTimestampOnly(contract: Contract): boolean {
+  const inputs = contract.artifact.abi.find((fn) => fn.name === '__updateBlockOracle')?.inputs ?? [];
+  return inputs.some((input) => input.name === '__set_timestamp')
+    && !inputs.some((input) => input.name === '__set_number');
+}
+
+/**
+ * A timestamp-only update CLTVs its timestamp under a time-type locktime, and that locktime is final only below
+ * the median time past. Publish at most the last final second.
+ */
+function finalTimestamp(fields: BlockOracleFields): bigint {
+  if (fields.medianTime === undefined) return fields.timestamp;
+  const last = fields.medianTime - 1n;
+  return fields.timestamp < last ? fields.timestamp : last;
 }
 
 // Map fetched fields to the contract's injected registers, in the ABI order of __updateBlockOracle. Only
@@ -170,20 +188,27 @@ export class BlockOracleUpdater {
 
   /** Current block-info oracle height from the on-chain __block_number register (0 if absent). */
   async oracleHeight(): Promise<bigint> {
+    return this.oracleRegister('__block_number');
+  }
+
+  private async oracleRegister(name: string): Promise<bigint> {
     const { StatefulContract } = await import('../stateful/StatefulContract.js');
     const sc = StatefulContract.withCategory(this.cfg.contract, this.cfg.categoryId);
     const state = await sc.getState();
-    return BigInt((state.__block_number as bigint | undefined) ?? 0n);
+    return BigInt((state[name] as bigint | undefined) ?? 0n);
   }
 
   /** Push a signed + freshness-bound block-info update for the given block fields. Returns the txid. */
   async pushUpdate(fields: BlockOracleFields): Promise<string> {
     const { StatefulContract } = await import('../stateful/StatefulContract.js');
-    const { args, state } = buildUpdate(this.cfg.contract, fields);
+    const timestampOnly = updateWritesTimestampOnly(this.cfg.contract);
+    const published = timestampOnly ? { ...fields, timestamp: finalTimestamp(fields) } : fields;
+    const { args, state } = buildUpdate(this.cfg.contract, published);
     const sc = StatefulContract.withCategory(this.cfg.contract, this.cfg.categoryId);
+    // Freshness: require(tx.time >= number), or tx.time >= timestamp under a time-type locktime without a height.
     const call = (sc as any).__updateBlockOracle(new SignatureTemplate(this.cfg.keeperKey), ...args)
       .setState(state)
-      .setLocktime(Number(fields.number)); // freshness: require(tx.time >= number)
+      .setLocktime(Number(timestampOnly ? published.timestamp : fields.number));
     const tx = await call.send();
     return tx.txid;
   }
@@ -289,7 +314,14 @@ export class BlockOracleUpdater {
     const { artifact } = this.cfg.contract;
 
     let blockInfoTxid: string | null = null;
-    if (BlockOracleUpdater.usesBlockInfo(artifact) && BigInt(tip) > (await this.oracleHeight())) {
+    if (BlockOracleUpdater.usesBlockInfo(artifact) && updateWritesTimestampOnly(this.cfg.contract)) {
+      // No height register: the oracle is behind while the last final second is past the stored timestamp.
+      const hash: string = await this.cfg.rpc.request('getblockhash', tip);
+      const fields = await fetchBlockOracleFields(this.cfg.rpc, hash);
+      if (finalTimestamp(fields) > await this.oracleRegister('__block_timestamp')) {
+        blockInfoTxid = await this.pushUpdate(fields);
+      }
+    } else if (BlockOracleUpdater.usesBlockInfo(artifact) && BigInt(tip) > (await this.oracleHeight())) {
       const hash: string = await this.cfg.rpc.request('getblockhash', tip);
       blockInfoTxid = await this.pushUpdate(await fetchBlockOracleFields(this.cfg.rpc, hash));
     }

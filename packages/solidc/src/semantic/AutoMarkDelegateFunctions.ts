@@ -4,6 +4,7 @@ import {
   TransferStatementNode, AddressTransferStatementNode, TokenContainerMethodStatementNode,
   AssignNode, VariableDefinitionNode, TupleAssignmentNode, StatementNode, BlockNode, BranchNode,
   TryCatchNode, DoWhileNode, WhileNode, CollectionIterationNode, UncheckedNode, SwitchNode,
+  ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode,
 } from '../ast/AST.js';
 import { containsStatefulOperation } from './EnsureFinalRequireTraversal.js';
 
@@ -53,8 +54,9 @@ function walk(node: Node | undefined, seen: Set<Node>, hit: (n: Node) => boolean
 function hasBareStateWrite(fn: FunctionDefinitionNode, stateNames: ReadonlySet<string>): boolean {
   if (stateNames.size === 0) return false;
   // Auto-marking runs before SymbolTableTraversal rewrites an unqualified Solidity `value = next` to
-  // StateAssignNode. Resolve only the narrow bare-assignment shape here, respecting parameter/local shadowing;
-  // the normal semantic pass remains the authority for the compiled write itself.
+  // StateAssignNode, and a bare single-key `m[k] = v` to MappingAssignNode. Resolve only these narrow bare
+  // shapes here, respecting parameter/local shadowing; the normal semantic pass remains the authority for the
+  // compiled write itself.
   const scan = (statements: readonly StatementNode[] | undefined, locals: Set<string>): boolean => {
     for (const statement of statements ?? []) {
       if (statement instanceof VariableDefinitionNode) {
@@ -65,6 +67,10 @@ function hasBareStateWrite(fn: FunctionDefinitionNode, stateNames: ReadonlySet<s
         }
       } else if (statement instanceof AssignNode) {
         if (stateNames.has(statement.identifier.name) && !locals.has(statement.identifier.name)) return true;
+      } else if (statement instanceof ArrayAssignNode || statement instanceof ArrayDeleteNode
+        || statement instanceof ArrayPushNode || statement instanceof ArrayPopNode) {
+        // Bare `m[k] = v`, `delete m[k]`, `a.push(v)`: their `this.` spellings are stateful operations already.
+        if (stateNames.has(statement.name) && !locals.has(statement.name)) return true;
       } else if (statement instanceof BlockNode) {
         if (scan(statement.statements, statement.scoped ? new Set(locals) : locals)) return true;
       } else if (statement instanceof BranchNode) {
@@ -214,7 +220,10 @@ export default function autoMarkDelegateFunctions(ast: Ast, forceStateful = fals
 
   // Contract methods plus file-level free functions: either can host a helper that transfers.
   const callables = [...contract.functions, ...(ast.freeFunctions ?? [])];
-  const stateNames = new Set(contract.stateVariables.map((state) => state.name));
+  const stateNames = new Set([
+    ...contract.stateVariables.map((state) => state.name),
+    ...contract.collections.map((collection) => collection.name),
+  ]);
 
   let marked = 0;
   for (const fn of contract.functions) {

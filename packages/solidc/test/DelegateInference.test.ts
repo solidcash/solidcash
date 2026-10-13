@@ -43,6 +43,14 @@ describe('delegate inference', () => {
     }`)).toEqual(['f']);
   });
 
+  it('marks an entry point whose only proxy-state write is a bare mapping entry', () => {
+    expect(markedNames(`contract C() {
+      mapping(int => int) balances;
+      function seed(int k, int v) public { balances[k] = v; }
+      function drop(int k) public { delete balances[k]; }
+    }`)).toEqual(['seed', 'drop']);
+  });
+
   it('sees a state write that is only reachable through an internal helper', () => {
     expect(markedNames(`contract C() {
       bigint counter;

@@ -152,6 +152,12 @@ const PROXY_MASTER_WITNESS_PARAMETER = '__internal__proxyMasterIndex';
 const MESSAGE_CONTEXT_PARAMETERS = new Set(['__internal__msgSig', '__internal__msgData']);
 
 /**
+ * The co-spent block oracle's input index. The caller pushes it as the entry's last argument, and the body pins
+ * the input at that index to the oracle lock before slicing its commitment.
+ */
+const BLOCK_ORACLE_PARAMETER = '__internal__blockOracleInputIndex';
+
+/**
  * The direct convention's fold operands: pushes earlier rows made, their complete form, and the first output of a
  * written long value's chunks. A framed frame reads an entry's current value itself and finds its chunk outputs by
  * address, so the body neither receives nor reads them.
@@ -2394,6 +2400,7 @@ function isUndeclaredHiddenParameter(
   constants: ReadonlySet<string>,
 ): boolean {
   return name.startsWith('__internal__')
+    && name !== BLOCK_ORACLE_PARAMETER
     && !MESSAGE_CONTEXT_PARAMETERS.has(name)
     && !FRAME_PARAMETERS.has(name)
     && !RETURN_EVENT_PARAMETERS.has(name)

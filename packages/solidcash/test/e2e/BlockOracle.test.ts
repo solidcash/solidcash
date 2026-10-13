@@ -267,6 +267,7 @@ contract InternalReader() {
     }
     function check(int expected) {
         readTime(expected);
+        require(expected > 0);
     }
 }`;
 

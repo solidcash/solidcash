@@ -185,9 +185,9 @@ export async function assembleCreateBuilderNestedComposeSlots(
   const sharedPriorDelegateFunctionArgs = params.sharedPriorDelegateFunctionArgs as
     FunctionArgument[] | undefined;
   const sharedLogicalArtifact = params.sharedLogicalArtifact as Artifact;
-  // A delegated callee's records belong to its proxy, and a direct delegate binds them to the proxy master's lock. A
-  // compiler route still binds its executing input's lock, the implementation's.
-  const recordContract = proxyCallee && childCompilerRoute ? proxyCallee.implementation.inner : callee.inner;
+  // A delegated callee's records belong to its proxy. A direct delegate and a compiler route alike bind them to the
+  // proxy master's lock.
+  const recordContract = callee.inner;
   const directInvocationRows = params.directInvocationRows as any[] | undefined;
   const valueChunkWriteStagingSession = params.valueChunkWriteStagingSession as
     ValueChunkWriteStagingSession;

@@ -2718,9 +2718,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !this.usesMessageBusOwnerBlockBase();
   }
 
-  /** A direct delegate writes the proxy's records, so their master is the proxy, not the executing implementation. */
+  /**
+   * A delegate writes the proxy's records, so their master is the proxy, not the executing implementation. A direct
+   * delegate and a delegated route take it from the proxy master witness; a delegated route's handler from its owner.
+   */
   private recordsBelongToProxyMaster(): boolean {
-    return this.usesDelegateExecutorBlockBase()
+    if (this.usesMessageBusOwnerBlockBase()) {
+      return (this.currentFunction.messageBusCallerBandNames ?? this.messageBusRouteParameterNames)
+        .includes('__internal__proxyMasterIndex');
+    }
+    return this.usesProxyStateBlockBase()
       && this.getStackIndex('__internal__proxyMasterIndex', true) >= 0;
   }
 
@@ -26216,7 +26223,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Transform the category id on top into this collection's entry P2SH32, sharing the baked covenant per contract. */
   private emitSortedEntryAddress(collectionHash: Uint8Array, loc: SingleLocationData): void {
-    // The shared body binds the executing input's lock. A direct delegate binds the proxy master's, inline.
+    // The shared body binds the executing input's lock. A delegate binds the proxy master's, inline.
     const id = this.recordsBelongToProxyMaster()
       ? undefined : this.sortedEntryAddressIds.get(binToHex(collectionHash));
     if (id !== undefined) {
@@ -42055,7 +42062,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Value-chunk address bound to this body's master lock (a direct delegate's is the proxy's). The category stays
+   * Value-chunk address bound to this body's master lock (a delegate's is the proxy's). The category stays
    * the tracked top. Encoding the category leaves the lock between that encoding and the slot, so each pick is one
    * deeper than the category-only form (whose +1 only clears the untracked domain prefix).
    */
@@ -42290,7 +42297,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Entry address bound to a 35-byte master lock. The category is the tracked top item.
    * `under` means the raw lock is already the untracked item beneath it. A stack, input, or output source
-   * copies that master lock. The default is this body's master: the executing input, or a direct delegate's proxy.
+   * copies that master lock. The default is this body's master: the executing input, or a delegate's proxy.
    */
   private emitBoundEntryP2sh32(
     collectionHash: Uint8Array,
@@ -50615,7 +50622,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitSatoshiContainerLbc(locationData: SingleLocationData): void {
     // Shared as a subroutine when used >=2x; replicate the inline net effect (category -> lbc). The shared body binds
-    // the executing input's lock, so a direct delegate stays inline.
+    // the executing input's lock, so a delegate stays inline.
     if (!this.recordsBelongToProxyMaster() && this.invokeSubroutineIfDefined(
       GenerateTargetTraversalWithLocation.SATOSHI_LBC_SUBROUTINE_ID, locationData,
     )) {
@@ -50700,7 +50707,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitTokenContainerLbc(locationData: SingleLocationData, untracked = 0): void {
     // Shared as a subroutine when used >=2x; like the inline body, leaves stack tracking to caller. The shared body
-    // binds the executing input's lock, so a direct delegate stays inline.
+    // binds the executing input's lock, so a delegate stays inline.
     if (!this.recordsBelongToProxyMaster() && this.invokeSubroutineIfDefined(
       GenerateTargetTraversalWithLocation.TOKEN_LBC_SUBROUTINE_ID, locationData,
     )) {
@@ -50716,7 +50723,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SWAP, locationData);
       this.emit(Op.OP_CAT, locationData);
       this.emit(Op.OP_SWAP, locationData);
-      // This body's master lock: a direct delegate's is the proxy's.
+      // This body's master lock: a delegate's is the proxy's.
       if (this.recordsBelongToProxyMaster()) this.emitMasterInputIndex(locationData, untracked);
       else this.emit(Op.OP_INPUTINDEX, locationData);
       this.emit(Op.OP_UTXOBYTECODE, locationData);

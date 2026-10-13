@@ -44,6 +44,24 @@ export interface ComputedValueChunkConvergence {
 const isP2sh32 = (bytecode: Uint8Array | undefined): bytecode is Uint8Array => !!bytecode
   && bytecode.length === 35 && bytecode[0] === 0xaa && bytecode[1] === 0x20 && bytecode[34] === 0x87;
 
+/** Lock an input's value chunks bind: a delegated route's authenticated proxy master, else the input itself. */
+const valueChunkMasterLock = (
+  builder: TransactionBuilder,
+  sourceOutputs: ReturnType<typeof generateLibauthSourceOutputs>,
+  inputIndex: number,
+): Uint8Array | undefined => {
+  const unlocker = builder.inputs[inputIndex]?.unlocker as {
+    abiFunction?: { inputs?: readonly { name: string }[] };
+    params?: readonly FunctionArgument[];
+  } | undefined;
+  const at = unlocker?.abiFunction?.inputs?.findIndex((input) => input.name === '__internal__proxyMasterIndex') ?? -1;
+  const proxy = at < 0 ? undefined : unlocker?.params?.[at];
+  const master = typeof proxy === 'bigint' && proxy >= 0n && proxy < BigInt(sourceOutputs.length)
+    ? Number(proxy) : inputIndex;
+  const lock = sourceOutputs[master]?.lockingBytecode;
+  return lock instanceof Uint8Array && lock.length === 35 ? lock : undefined;
+};
+
 /** Retire duplicate provisional outputs only when a complete zero-based continuation run proves its owner. */
 export function retireOutputsOutsideAuthenticatedValueChunkRuns(
   outputs: Array<{
@@ -220,8 +238,7 @@ export function discoverMessageBusComputedValueChunkValues(
   }
   const observations = new Map<string, IndexedComputedValueChunkValueObservation>();
   for (const [inputIndex, writes] of byInput) {
-    const ownerLock = sourceOutputs[inputIndex]?.lockingBytecode;
-    const masterLock = ownerLock instanceof Uint8Array && ownerLock.length === 35 ? ownerLock : undefined;
+    const masterLock = valueChunkMasterLock(builder, sourceOutputs, inputIndex);
     const recordObservation = (
       observation: ComputedValueChunkValueObservation, requiresMaterialization: boolean,
     ): void => {
@@ -490,8 +507,7 @@ export function convergeMessageBusComputedValueChunkOutputs(
       const inputWrites = describedWrites.filter((write) => (
         write.outputCount > 0 && owners.get(write.outputBase)?.has(inputIndex)
       ));
-      const ownerLock = sourceOutputs[inputIndex]?.lockingBytecode;
-      const masterLock = ownerLock instanceof Uint8Array && ownerLock.length === 35 ? ownerLock : undefined;
+      const masterLock = valueChunkMasterLock(builder, sourceOutputs, inputIndex);
       const vm = createVirtualMachineBch2026ForProvider(builder.provider, {
         opcodes: new Set([Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUALVERIFY]),
         beforeOperation: (unknownState) => {

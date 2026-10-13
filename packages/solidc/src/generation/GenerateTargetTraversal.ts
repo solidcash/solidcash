@@ -48849,7 +48849,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex(category) + 2)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_SWAP, loc);
-    this.emitTokenContainerLbc(loc);
+    this.emitTokenContainerLbc(loc, 3);
     // [index, containerLock]
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_DUP, loc);
@@ -50614,17 +50614,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., p2sh32_locking_bytecode]
    */
   private emitSatoshiContainerLbc(locationData: SingleLocationData): void {
-    // Shared as a subroutine when used >=2x; replicate the inline net effect (category -> lbc).
-    if (this.invokeSubroutineIfDefined(GenerateTargetTraversalWithLocation.SATOSHI_LBC_SUBROUTINE_ID, locationData)) {
+    // Shared as a subroutine when used >=2x; replicate the inline net effect (category -> lbc). The shared body binds
+    // the executing input's lock, so a direct delegate stays inline.
+    if (!this.recordsBelongToProxyMaster() && this.invokeSubroutineIfDefined(
+      GenerateTargetTraversalWithLocation.SATOSHI_LBC_SUBROUTINE_ID, locationData,
+    )) {
       this.popFromStack();
       this.pushToStack('(value)');
       return;
     }
     if (this.directConvention && !this.framedMaster) {
-      // [category] -> [lock, category], then the covenant that requires this executing master lock.
-      this.emit(Op.OP_INPUTINDEX, locationData);
-      this.emit(Op.OP_UTXOBYTECODE, locationData);
-      this.emit(Op.OP_SWAP, locationData);
+      // [category] -> [lock, category], then the covenant that requires this body's master lock.
+      this.emitRecordMasterLockUnder(locationData);
       this.encodeLockAndCategory(locationData);
       const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
       const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
@@ -50695,11 +50696,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack before: [..., masterCat, tcCat]
    * Stack after:  [..., p2sh32_locking_bytecode]
    *
-   * Does NOT track stack - caller must manage push/pop.
+   * Does NOT track stack - caller must manage push/pop. `untracked` counts the untracked items on top at entry.
    */
-  private emitTokenContainerLbc(locationData: SingleLocationData): void {
-    // Shared as a subroutine when used >=2x; like the inline body, leaves stack tracking to caller.
-    if (this.invokeSubroutineIfDefined(GenerateTargetTraversalWithLocation.TOKEN_LBC_SUBROUTINE_ID, locationData)) {
+  private emitTokenContainerLbc(locationData: SingleLocationData, untracked = 0): void {
+    // Shared as a subroutine when used >=2x; like the inline body, leaves stack tracking to caller. The shared body
+    // binds the executing input's lock, so a direct delegate stays inline.
+    if (!this.recordsBelongToProxyMaster() && this.invokeSubroutineIfDefined(
+      GenerateTargetTraversalWithLocation.TOKEN_LBC_SUBROUTINE_ID, locationData,
+    )) {
       return;
     }
     if (this.directConvention && !this.framedMaster) {
@@ -50712,7 +50716,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SWAP, locationData);
       this.emit(Op.OP_CAT, locationData);
       this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_INPUTINDEX, locationData);
+      // This body's master lock: a direct delegate's is the proxy's.
+      if (this.recordsBelongToProxyMaster()) this.emitMasterInputIndex(locationData, untracked);
+      else this.emit(Op.OP_INPUTINDEX, locationData);
       this.emit(Op.OP_UTXOBYTECODE, locationData);
       this.emit(hexToBin('23'), locationData);
       this.emit(Op.OP_SWAP, locationData);
@@ -50949,7 +50955,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // emitTokenContainerLbc expects [masterCat, tcCat] -> [p2sh32_lbc]
       // But stack is [tcCat, masterCat, tcCat]... we need [masterCat, tcCat] on top
       // Actually: [tcCat, masterCat, tcCat] - top two are [masterCat, tcCat], good!
-      this.emitTokenContainerLbc(locationData);
+      this.emitTokenContainerLbc(locationData, 3);
       // Stack: [tcCat, p2sh32_lbc]
       this.emit(Op.OP_SWAP, locationData);        // [p2sh32_lbc, tcCat]
 
@@ -51087,7 +51093,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // [tcCat, masterCat] -> the same locking bytecode emitTokenContainerLbc derives.
       this.emit(Op.OP_SWAP, locationData);
-      this.emitTokenContainerLbc(locationData);
+      this.emitTokenContainerLbc(locationData, 2);
       // 1 untracked (expected locking bytecode)
 
       // Get actual container input's locking bytecode

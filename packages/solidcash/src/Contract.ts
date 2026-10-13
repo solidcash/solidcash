@@ -89,7 +89,10 @@ export function kernelRouteDensityReserveBytes(accessStreams: FunctionArgument |
 // one-byte reserve (the size the reported overrun suggests) does not. The journal-access reserve above does not
 // apply here because an effect-only route publishes no access streams. Size an envelope per reserved site, like
 // the access reserve, so only a route that reserves an effect band is padded by this much.
-const KERNEL_ROUTE_EFFECT_OPERATION_COST_PER_SITE = 8_000;
+// Each site also brings a pad input and an output that the per-entry hardening scans (satoshi-container sums,
+// foreign-token and mutable-output listings) step through. MEASURED on the same route with those scans: 5.27M
+// input-0 cost, so finishing needs 11,448 per site.
+const KERNEL_ROUTE_EFFECT_OPERATION_COST_PER_SITE = 12_000;
 
 /**
  * Size the discarded density reserve for a kernel row-loop effect route from its reserved effect band. Only a

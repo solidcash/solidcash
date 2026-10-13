@@ -1638,6 +1638,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private valueChunkAddressId: bigint | undefined;
   /** The data-record address helper, `[lock, category]` -> `[lbc]`, once defined. */
   private dataNftAddressId: bigint | undefined;
+  /** The loop int encoder's opcode arm and OP_PUSHDATA1/2 prefix helpers, once defined. */
+  private loopIntSmallId: bigint | undefined;
+  private loopIntWideId: bigint | undefined;
   /** Per-entry checks shared as one helper each. Contract-wide: the probe, the bodies and the definitions share it. */
   private sharedEntryChecks = new Map<string, SharedEntryCheck>();
   /** Set on a shared check's body traversal: the check stays inline there, and picks its master as recorded. */
@@ -1797,6 +1800,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Every value-chunk or data-record address build, whatever its lock: neither has an executing-input form. */
   private static readonly VALUE_CHUNK_ADDRESS_USE_KEY = GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - 1n;
   private static readonly DATA_NFT_ADDRESS_USE_KEY = GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - 2n;
+  /** Sites of the loop int encoder's opcode arm and OP_PUSHDATA1/2 prefix (`emitLoopIntPushdataEncode`). */
+  private static readonly LOOP_INT_SMALL_USE_KEY = GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - 3n;
+  private static readonly LOOP_INT_WIDE_USE_KEY = GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - 4n;
   private static lockedEntryAddressUseKey(collectionHashHex: string): bigint {
     return GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - (1n << 160n) - BigInt(`0x${collectionHashHex}`);
   }
@@ -5083,6 +5089,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.lockParameterisedHelperIds = new Set();
     this.valueChunkAddressId = undefined;
     this.dataNftAddressId = undefined;
+    this.loopIntSmallId = undefined;
+    this.loopIntWideId = undefined;
     this.sharedEntryChecks = new Map();
     this.dataNftCount = node.stateVariables.length > 0
       ? Math.max(...node.stateVariables.map((sv) => sv.nftIndex)) + 1
@@ -5341,6 +5349,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.dataNftAddressId = defineLockSuppliedHelper(
       GenerateTargetTraversalWithLocation.DATA_NFT_ADDRESS_USE_KEY,
       (t) => t.emitBoundDataNftAddress(loc),
+    );
+    // The loop int encoder's arms run inside a loop pass, so they are defined for one site too: inline, every pass
+    // pays for each of their instructions even when it steps over them.
+    const defineLoopIntArm = (
+      useKey: bigint, emitBody: (t: GenerateTargetTraversalWithLocation) => void,
+    ): bigint | undefined => {
+      if (count(useKey) === 0) return undefined;
+      const id = this.allocateCompactHelperId();
+      spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
+      return id;
+    };
+    this.loopIntSmallId = defineLoopIntArm(
+      GenerateTargetTraversalWithLocation.LOOP_INT_SMALL_USE_KEY, (t) => t.emitLoopIntSmallArm(loc),
+    );
+    this.loopIntWideId = defineLoopIntArm(
+      GenerateTargetTraversalWithLocation.LOOP_INT_WIDE_USE_KEY, (t) => t.emitLoopIntWidePrefix(loc),
     );
     for (const [key, id] of this.structSkipIds) {
       const type = this.structSkipTypes.get(key)!;
@@ -6501,6 +6525,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
     sub.valueChunkAddressId = this.valueChunkAddressId;
     sub.dataNftAddressId = this.dataNftAddressId;
+    sub.loopIntSmallId = this.loopIntSmallId;
+    sub.loopIntWideId = this.loopIntWideId;
     sub.sharedEntryChecks = this.sharedEntryChecks;
     sub.structSkipIds = this.structSkipIds;
     sub.structSkipTypes = this.structSkipTypes;
@@ -6594,6 +6620,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
     sub.valueChunkAddressId = this.valueChunkAddressId;
     sub.dataNftAddressId = this.dataNftAddressId;
+    sub.loopIntSmallId = this.loopIntSmallId;
+    sub.loopIntWideId = this.loopIntWideId;
     sub.sharedEntryChecks = this.sharedEntryChecks;
     sub.structSkipIds = this.structSkipIds;
     sub.structSkipTypes = this.structSkipTypes;
@@ -7044,6 +7072,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
     subTraversal.valueChunkAddressId = this.valueChunkAddressId;
     subTraversal.dataNftAddressId = this.dataNftAddressId;
+    subTraversal.loopIntSmallId = this.loopIntSmallId;
+    subTraversal.loopIntWideId = this.loopIntWideId;
     subTraversal.sharedEntryChecks = this.sharedEntryChecks;
     // Dynamic structural helper registries are contract-wide. Sharing the maps lets independently compiled
     // function bodies allocate collision-free IDs and lets the dry-run retain the key behind every use count.
@@ -7438,6 +7468,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
       subTraversal.valueChunkAddressId = this.valueChunkAddressId;
       subTraversal.dataNftAddressId = this.dataNftAddressId;
+      subTraversal.loopIntSmallId = this.loopIntSmallId;
+      subTraversal.loopIntWideId = this.loopIntWideId;
       subTraversal.sharedEntryChecks = this.sharedEntryChecks;
       subTraversal.structSkipIds = this.structSkipIds;
       subTraversal.structSkipTypes = this.structSkipTypes;
@@ -11188,9 +11220,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
 
-      // Emits: push OP_0 dummy for each emit blob
+      // Emits: push OP_0 dummy for each emit blob. Runtime-loop events fill no register, so a branch holding only
+      // those reserves none.
       const emitStartIndex = this.pendingEmits.length;
-      for (let i = 0; i < ops.emitCount; i++) {
+      const registerEmits = this.directConvention && this.branchEmitsAreRuntimeLoop(node) ? 0 : ops.emitCount;
+      for (let i = 0; i < registerEmits; i++) {
         const globalIdx = emitStartIndex + i;
         if (!this.preAllocatedEmits.has(globalIdx)) {
           this.preAllocateEmit(globalIdx, locationData);
@@ -12396,6 +12430,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /** Whether every emit under a branch is a runtime-loop event, which keeps no epilogue register. */
+  private branchEmitsAreRuntimeLoop(node: BranchNode): boolean {
+    let found = false;
+    let fixed = false;
+    const walk = (current: Node | undefined): void => {
+      if (current === undefined || fixed) return;
+      if (current instanceof EmitStatementNode) {
+        found = true;
+        if (current.runtimeLoopEvent === undefined) fixed = true;
+        return;
+      }
+      if (current instanceof BranchNode) {
+        walk(current.ifBlock);
+        walk(current.elseBlock);
+      } else if (current instanceof TryCatchNode) {
+        walk(current.tryBlock);
+      } else if (current instanceof DoWhileNode || current instanceof WhileNode || current instanceof UncheckedNode) {
+        walk(current.block);
+      } else if (current instanceof CollectionIterationNode) {
+        walk(current.body);
+      } else if (current instanceof SwitchNode) {
+        for (const switchCase of current.cases) walk(switchCase.body);
+        walk(current.defaultCase);
+      } else if (current instanceof BlockNode) {
+        for (const statement of current.statements ?? []) walk(statement);
+      }
+    };
+    walk(node);
+    return found && !fixed;
+  }
+
   /** The fixed emit indices anywhere under `node`; a counter-loop event has none (it settles in its own stream). */
   private fixedEmitIndices(node: Node | undefined): Set<number> {
     const indices = new Set<number>();
@@ -12474,6 +12539,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!block.statements) return;
     for (const stmt of block.statements) {
       if (stmt instanceof EmitStatementNode) {
+        // A runtime-loop event leaves its record on the alt stack and never fills an epilogue register.
+        if (stmt.runtimeLoopEvent !== undefined && this.directConvention) continue;
         indices.add(stmt.emitIndex);
       } else if (stmt instanceof BranchNode) {
         this.collectEmitIndices(stmt.ifBlock, indices);
@@ -19669,6 +19736,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
 
       const count = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_COUNT;
+      if (this.runtimeLoopEventLocks !== undefined && this.getStackIndex(count) <= 16) {
+        this.emitIncrementInPlace(this.getStackIndex(count), locationData);
+        return node;
+      }
       this.emit(encodeInt(BigInt(this.getStackIndex(count))), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(__runtime_loop_event_count_prior)');
@@ -22785,7 +22856,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * `[v] -> [push(v)]`: the generic int-like pushdata encoding at a flat cost for a loop body. An inline IF ladder
    * is charged whole on every pass, so this one is short: a minimal v in -1..16 is its opcode (OP_0 for empty),
-   * any other v is framed as a direct push or OP_PUSHDATA1/2.
+   * any other v is framed as a direct push or OP_PUSHDATA1/2. The opcode arm and the OP_PUSHDATA1/2 prefix run out
+   * of line once the contract defines them, so a pass steps over one invoke instead of their instructions.
    */
   private emitLoopIntPushdataEncode(loc: SingleLocationData): void {
     this.emit(Op.OP_DUP, loc);
@@ -22798,6 +22870,71 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_WITHIN, loc);
     this.emit(Op.OP_BOOLAND, loc);                 // [v, n, small]
     this.emit(Op.OP_IF, loc);
+    this.emitLoopIntArm(
+      this.loopIntSmallId, GenerateTargetTraversalWithLocation.LOOP_INT_SMALL_USE_KEY,
+      (t) => t.emitLoopIntSmallArm(loc), loc,
+    );
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_SIZE, loc);                    // [v, s]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(76n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_NOTIF, loc);
+    this.emitLoopIntArm(
+      this.loopIntWideId, GenerateTargetTraversalWithLocation.LOOP_INT_WIDE_USE_KEY,
+      (t) => t.emitLoopIntWidePrefix(loc), loc,
+    );
+    this.emit(Op.OP_ENDIF, loc);                   // [v, s or the OP_PUSHDATA1/2 prefix]
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
+  /**
+   * Add one to the number `depth` items down, leaving every item where it was: roll it up, add, and rotate the
+   * items above it back over it, instead of a copy and a replace.
+   */
+  private emitIncrementInPlace(depth: number, loc: SingleLocationData): void {
+    if (depth === 0) {
+      this.emit(Op.OP_1ADD, loc);
+    } else if (depth === 1) {
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_1ADD, loc);
+      this.emit(Op.OP_SWAP, loc);
+    } else if (depth === 2) {
+      this.emit(Op.OP_ROT, loc);
+      this.emit(Op.OP_1ADD, loc);
+      this.emit(Op.OP_ROT, loc);
+      this.emit(Op.OP_ROT, loc);
+    } else {
+      this.emit(encodeInt(BigInt(depth)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_1ADD, loc);
+      for (let i = 0; i < depth; i += 1) {
+        this.emit(encodeInt(BigInt(depth)), loc);
+        this.emit(Op.OP_ROLL, loc);
+      }
+    }
+  }
+
+  /** Invoke a loop int encoder arm when the contract defines it, else count the site and emit it inline. */
+  private emitLoopIntArm(
+    id: bigint | undefined, useKey: bigint, inline: (t: GenerateTargetTraversalWithLocation) => void,
+    loc: SingleLocationData,
+  ): void {
+    if (id !== undefined && this.subroutineDefined.get(id)) {
+      this.invokeSubroutineIfDefined(id, loc);
+      return;
+    }
+    this.bumpSubroutineUse(useKey);
+    inline(this);
+  }
+
+  /** `[v, n] -> [opcode]` for a minimal v in -1..16. */
+  private emitLoopIntSmallArm(loc: SingleLocationData): void {
     this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_IF, loc);
@@ -22806,16 +22943,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_1, loc);
     this.emit(Op.OP_NUM2BIN, loc);
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_SIZE, loc);                    // [v, s]
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(76n), loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_CAT, loc);
-    this.emit(Op.OP_ELSE, loc);
+  }
+
+  /** `[v, s] -> [v, prefix]`: the OP_PUSHDATA1/2 prefix of a size s >= 76. */
+  private emitLoopIntWidePrefix(loc: SingleLocationData): void {
     this.emit(Op.OP_DUP, loc);
     this.emit(encodeInt(256n), loc);
     this.emit(Op.OP_GREATERTHANOREQUAL, loc);
@@ -22831,12 +22962,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ADD, loc);
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_CAT, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_CAT, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.popFromStack();
-    this.pushToStack('(value)');
   }
 
   /** The payload of `emitEventArgument` in standard EVM notation (see `isEvmNotationScalarType`). */

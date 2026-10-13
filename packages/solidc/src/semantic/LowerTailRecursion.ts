@@ -126,6 +126,11 @@ export default class LowerTailRecursion extends AstTraversal {
   private structConstructorNames = new Set<string>();
   private sortedMappingNames = new Set<string>();
 
+  /** `settleEventStreams`: lower recursive event streams by `settleInBaseArm` (the direct convention). */
+  constructor(private readonly settleEventStreams = false) {
+    super();
+  }
+
   /** Return the constant component of the deliberately narrow recursive key grammar `counter +/- literal`.
    * Keeping the coefficient exactly one lets resource domains be compared without an SMT-style expression
    * solver. The recursive step supplies the common progression for every retained frame. */
@@ -3089,7 +3094,9 @@ export default class LowerTailRecursion extends AstTraversal {
     const continuationName = fold && !unitAddFold ? `__tail_continuations_${frame}` : undefined;
     const continuationTagName = fold && !unitAddFold && fold.variants.length > 1
       ? `__tail_continuation_tags_${frame}` : undefined;
-    const transformed = this.transformBlock(
+    const settled = affineEvent && !fold && this.settleEventStreams
+      ? this.settleInBaseArm(node.body, node, returnNames, iterationName, repeatName) : undefined;
+    const transformed = settled ?? this.transformBlock(
       node.body, node, returnNames, iterationName, repeatName, fold, continuationName, continuationTagName,
       unitAddFold,
     );
@@ -3099,7 +3106,7 @@ export default class LowerTailRecursion extends AstTraversal {
     ), node.location);
     const eventFrameGuards = affineEvent
       ? this.publishAffineEventRecursion(node, affineEvent, iterationName) : undefined;
-    transformed.statements = [clearRepeat, ...(transformed.statements ?? [])];
+    if (!settled) transformed.statements = [clearRepeat, ...(transformed.statements ?? [])];
     const loop = this.stamp(new WhileNode(
       this.stamp(new IdentifierNode(repeatName), node.location), transformed,
     ), node.location);
@@ -3307,6 +3314,97 @@ export default class LowerTailRecursion extends AstTraversal {
       )];
     }
     return [statement];
+  }
+
+  /**
+   * `prefix; if (base) return [r]; recurse(args)` as one loop body: the base arm stores the results and clears the
+   * repeat flag, the other arm advances the frame. The flag starts set and is cleared only there, so the loop needs
+   * no break flag and no per-frame reset or re-arm.
+   */
+  private settleInBaseArm(
+    block: BlockNode, fn: FunctionDefinitionNode, returnNames: readonly string[], iterationName: string,
+    repeatName: string,
+  ): BlockNode | undefined {
+    const statements = block.statements ?? [];
+    const base = statements.at(-2);
+    const recursive = statements.at(-1);
+    const exit = base instanceof BranchNode && !base.elseBlock && base.ifBlock.statements?.length === 1
+      ? base.ifBlock.statements[0] : undefined;
+    const call = recursive instanceof ReturnNode && recursive.expressions.length === 1
+      && this.isSelfCall(recursive.expressions[0], fn.name) ? recursive.expressions[0]
+      : recursive instanceof FunctionCallStatementNode && this.isSelfCall(recursive.call, fn.name)
+        ? recursive.call : undefined;
+    if (!(base instanceof BranchNode) || !(exit instanceof ReturnNode) || !call || !recursive
+      || this.countSelfCalls(base.condition, fn.name) > 0) return undefined;
+    let prefixExits = false;
+    this.walkNodes(this.stamp(new BlockNode(statements.slice(0, -2)), block.location), (candidate) => {
+      if (candidate instanceof ReturnNode || candidate instanceof BreakNode || this.isSelfCall(candidate, fn.name)
+        || candidate instanceof WhileNode || candidate instanceof DoWhileNode) prefixExits = true;
+    });
+    if (prefixExits) return undefined;
+    const results = returnNames.length > 0 && exit.expressions.length > 0
+      ? returnNames.map((name, index) => this.stamp(new AssignNode(
+        this.stamp(new IdentifierNode(name), exit.location), exit.expressions[index],
+      ), exit.location))
+      : [];
+    const stop = this.stamp(new AssignNode(
+      this.stamp(new IdentifierNode(repeatName), exit.location),
+      this.stamp(new BoolLiteralNode(false), exit.location),
+    ), exit.location);
+    base.ifBlock = this.stamp(new BlockNode([...results, stop]), base.ifBlock.location);
+    base.elseBlock = this.stamp(new BlockNode(
+      this.advance(call, fn, iterationName, recursive.location),
+    ), recursive.location);
+    block.statements = [...statements.slice(0, -2), base];
+    return block;
+  }
+
+  /**
+   * `recur` without the repeat re-arm. When no changed argument reads another changed parameter, each parameter is
+   * assigned its argument in place: the same values as the temporaries give, without their copies and drops.
+   */
+  private advance(
+    call: FunctionCallNode, fn: FunctionDefinitionNode, iterationName: string, location: Node['location'],
+  ): StatementNode[] {
+    const changed = fn.parameters.flatMap((parameter, index) => {
+      const argument = call.parameters[index];
+      return argument instanceof IdentifierNode && argument.name === parameter.name ? [] : [{ parameter, argument }];
+    });
+    const names = new Set(changed.map(({ parameter }) => parameter.name));
+    const inPlace = changed.every(({ parameter, argument }) => {
+      const scalar = parameter.type instanceof IntType || parameter.type === PrimitiveType.INT
+        || parameter.type === PrimitiveType.BIGINT;
+      let readsOther = false;
+      this.walkNodes(argument, (candidate) => {
+        if (candidate instanceof IdentifierNode && candidate.name !== parameter.name && names.has(candidate.name)) {
+          readsOther = true;
+        }
+      });
+      return scalar && !readsOther;
+    });
+    let assignments: StatementNode[];
+    if (inPlace) {
+      assignments = changed.map(({ parameter, argument }) => this.stamp(new AssignNode(
+        this.stamp(new IdentifierNode(parameter.name), location), argument,
+      ), location));
+    } else {
+      const frame = this.counter++;
+      const temps = changed.map(({ parameter, argument }) => this.stamp(new VariableDefinitionNode(
+        parameter.type, [], `__tail_${frame}_${parameter.name}`, argument,
+      ), location));
+      assignments = [...temps, ...changed.map(({ parameter }, index) => this.stamp(new AssignNode(
+        this.stamp(new IdentifierNode(parameter.name), location),
+        this.stamp(new IdentifierNode(temps[index].name), location),
+      ), location))];
+    }
+    const increment = this.stamp(new AssignNode(
+      this.stamp(new IdentifierNode(iterationName), location),
+      this.stamp(new BinaryOpNode(
+        this.stamp(new IdentifierNode(iterationName), location), BinaryOperator.PLUS,
+        this.stamp(new IntLiteralNode(1n), location),
+      ), location),
+    ), location);
+    return [...assignments, increment];
   }
 
   private recur(

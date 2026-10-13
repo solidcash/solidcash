@@ -15038,7 +15038,7 @@ function compileResolvedAst(
     ast = ast.accept(new DesugarReturnInLoop(!mergedCompilerOptions.messageBusKernel)) as Ast;
   }
   if (earlyEntryFeatures?.needsTailRecursion || mergedCompilerOptions.messageBusKernel === true) {
-    ast = ast.accept(new LowerTailRecursion()) as Ast;
+    ast = ast.accept(new LowerTailRecursion(mergedCompilerOptions.composition !== 'framed')) as Ast;
   }
   if (mergedCompilerOptions.messageBusKernel === true
     && earlyEntryFeatures?.needsNestedBranchReturn) {
@@ -15395,7 +15395,9 @@ function compileResolvedAst(
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
   // injected breaks are lowered; internal functions can't raw-return from inside a loop's balanced stack).
-  if (needsTailRecursion) ast = ast.accept(new LowerTailRecursion()) as Ast;
+  if (needsTailRecursion) {
+    ast = ast.accept(new LowerTailRecursion(mergedCompilerOptions.composition !== 'framed')) as Ast;
+  }
   if (needsReturnInLoop) ast = ast.accept(new DesugarReturnInLoop()) as Ast;
 
   // Unroll a FIXED-BOUND for-loop that writes a mapping into N static writes (which the per-slot machinery already

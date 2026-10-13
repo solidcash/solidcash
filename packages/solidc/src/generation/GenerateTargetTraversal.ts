@@ -2190,6 +2190,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Counter-loop events are accumulated as framed (commitment, locking-bytecode) records while the source loop
   // runs, then verified in one source-order trailing run after every mapping journal has settled.
   private runtimeLoopEventActive = false;
+  // An events-only, unchunked stream keeps compact records: the commitment, behind a one-byte lock ordinal when the
+  // stream mixes event locks. Its verifier builds each lock once. Undefined: the tagged effect records.
+  private runtimeLoopEventLocks: EventDefinitionNode[] | undefined;
   private static readonly RUNTIME_LOOP_EVENT_COUNT = '__internal__runtimeLoopEventCount';
   private static readonly RUNTIME_LOOP_EVENT_START = '__internal__runtimeLoopEventStart';
   private static readonly RUNTIME_LOOP_EVENT_END = '__internal__runtimeLoopEventEnd';
@@ -8589,6 +8592,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.runtimeLoopEntryJournalCountActive = false;
     this.runtimeLoopEntryOutputCountActive = false;
     this.runtimeLoopEventActive = false;
+    this.runtimeLoopEventLocks = undefined;
     this.runtimeLoopTransferActive = false;
     this.runtimeLoopBchTransferActive = false;
     this.runtimeLoopNftTransferActive = false;
@@ -9526,6 +9530,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.runtimeLoopBchTransferActive = this.functionContainsRuntimeLoopBchTransfer(node);
       this.runtimeLoopNftTransferActive = this.functionContainsRuntimeLoopNftTransfer(node);
     }
+    // The framed composition's bytes are left alone, as the size work leaves them.
+    this.runtimeLoopEventLocks = this.runtimeLoopEventActive && !this.runtimeLoopTransferActive
+      && this.directConvention ? this.compactRuntimeLoopEventLocks(node) : undefined;
     const seenChunkableMappingWrites = new WeakSet<Node>();
     const hasChunkableMappingWrite = (candidate: Node): boolean => {
       if (seenChunkableMappingWrites.has(candidate)) return false;
@@ -9699,7 +9706,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Mapping writes have advanced the shared trailing cursor by this point. Settle the function-local event
     // stream now, before dynamic chunks use that cursor as their output base and before a DEFINE tears down its
     // local frame.
-    if (this.runtimeLoopEventActive || this.runtimeLoopTransferActive) {
+    if (this.runtimeLoopEventActive && this.runtimeLoopEventLocks !== undefined) {
+      this.emitRuntimeLoopEventVerification(node, this.runtimeLoopEventLocks);
+    } else if (this.runtimeLoopEventActive || this.runtimeLoopTransferActive) {
       this.emitRuntimeLoopEffectVerification(node);
     }
     this.emitHomogeneousRuntimeLoopCardinality(node);
@@ -10913,7 +10922,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const unrollAtomicVerifier = this.compilerOptions.__detachedVerifierUnrollDeepReplace === true
       && this.currentFunction?.name === '__message_bus_verify_atomic_program'
       && index >= 28;
-    if (index >= 14 && !UNROLL_DEEP_REPLACE && !unrollJournalDensity && !unrollAtomicVerifier) {
+    // A replacement in a loop body runs once per iteration: through depth 17 the ROLL rotation below costs at most
+    // 9 bytes more than the counted loops and about an eighth of their executed operations.
+    const unrollLoopBody = this.plainLoopDepth > 0 && index <= 17 && this.directConvention;
+    if (index >= 14 && !UNROLL_DEEP_REPLACE && !unrollJournalDensity && !unrollAtomicVerifier && !unrollLoopBody) {
       const count = BigInt(index - 1);
       this.emit(encodeInt(count), locationData);
       this.emit(Op.OP_DUP, locationData);
@@ -11943,6 +11955,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const found = walk(node.body);
     this.rememberRuntimeLoopScan(node, memo, 'event', found);
     return found;
+  }
+
+  /** The distinct event locks of an unchunked runtime-loop event stream, in first-emit order; else undefined. */
+  private compactRuntimeLoopEventLocks(node: FunctionDefinitionNode): EventDefinitionNode[] | undefined {
+    const locks = new Map<string, EventDefinitionNode>();
+    let chunked = false;
+    const seen = new Set<Node>();
+    const walk = (candidate: Node | undefined): void => {
+      if (!candidate || seen.has(candidate) || chunked) return;
+      seen.add(candidate);
+      if (candidate instanceof EmitStatementNode && candidate.runtimeLoopEvent !== undefined) {
+        if (candidate.runtimeLoopEventChunked || candidate.eventDefinition === undefined) chunked = true;
+        else {
+          const key = GenerateTargetTraversalWithLocation.runtimeLoopEventLockKey(candidate.eventDefinition);
+          if (!locks.has(key)) locks.set(key, candidate.eventDefinition);
+        }
+      }
+      for (const [key, value] of Object.entries(candidate)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection', 'type', 'eventDefinition'].includes(key)) continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) value.forEach((item) => { if (item instanceof Node) walk(item); });
+      }
+    };
+    walk(node.body);
+    // A one-byte positive ordinal selects the lock, so at most 127 distinct locks.
+    return chunked || locks.size === 0 || locks.size > 127 ? undefined : [...locks.values()];
+  }
+
+  private static runtimeLoopEventLockKey(eventDef: EventDefinitionNode): string {
+    return `${eventDef.isAnonymous ? 'anonymous:' : ''}${eventDef.signature}`;
   }
 
   private functionContainsRuntimeLoopTransfer(node: FunctionDefinitionNode): boolean {
@@ -19561,7 +19604,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       // Encode each argument value to pushdata format
-      this.emitEventArgument(eventDef.parameters[i].type, locationData);
+      const argumentType = eventDef.parameters[i].type;
+      if (node.runtimeLoopEvent !== undefined && !node.runtimeLoopEventChunked
+        && this.runtimeLoopEventLocks !== undefined && this.isLoopIntEventArgument(argumentType)) {
+        this.emitLoopIntPushdataEncode(locationData);
+      } else {
+        this.emitEventArgument(argumentType, locationData);
+      }
 
       // CAT with previous if not the first
       if (i > 0) {
@@ -19585,20 +19634,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitChunkedRuntimeLoopEventRecords(eventDef, node, locationData);
         return node;
       }
-      // Frame the arbitrary event commitment as one script push and append its compiler-constructed P2SH32
-      // event lock. Keep each record as a distinct alt-stack item: a single concatenated vector could exceed
-      // BCH's stack-item limit even though every individual NFT commitment is valid.
-      this.emitPushdataEncode(new BytesType(), locationData);
-      this.emitExpectedEventLockingBytecode(eventDef, locationData);
-      this.emit(Op.OP_CAT, locationData);
-      this.popFromStack(2);
-      this.pushToStack('(__runtime_loop_event_record)');
-      this.emit(new Uint8Array([0x01]), locationData);
-      this.pushToStack('(__runtime_loop_event_tag)');
-      this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_CAT, locationData);
-      this.popFromStack(2);
-      this.pushToStack('(__runtime_loop_event_record)');
+      if (this.runtimeLoopEventLocks !== undefined) {
+        // Compact record: the commitment, behind its lock's 1-based ordinal when the stream mixes event locks.
+        const key = GenerateTargetTraversalWithLocation.runtimeLoopEventLockKey(eventDef);
+        const ordinal = this.runtimeLoopEventLocks.findIndex(
+          (lock) => GenerateTargetTraversalWithLocation.runtimeLoopEventLockKey(lock) === key,
+        ) + 1;
+        if (ordinal === 0) throw new Error(`Runtime loop event ${eventDef.signature} has no compact lock`);
+        if (this.runtimeLoopEventLocks.length > 1) {
+          this.emit(encodeInt(BigInt(ordinal)), locationData);
+          this.pushToStack('(__runtime_loop_event_lock_ordinal)');
+          this.emit(Op.OP_SWAP, locationData);
+          this.emit(Op.OP_CAT, locationData);
+          this.popFromStack(2);
+          this.pushToStack('(__runtime_loop_event_record)');
+        }
+      } else {
+        // Frame the arbitrary event commitment as one script push and append its compiler-constructed P2SH32
+        // event lock. Keep each record as a distinct alt-stack item: a single concatenated vector could exceed
+        // BCH's stack-item limit even though every individual NFT commitment is valid.
+        this.emitPushdataEncode(new BytesType(), locationData);
+        this.emitExpectedEventLockingBytecode(eventDef, locationData);
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(__runtime_loop_event_record)');
+        this.emit(new Uint8Array([0x01]), locationData);
+        this.pushToStack('(__runtime_loop_event_tag)');
+        this.emit(Op.OP_SWAP, locationData);
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(__runtime_loop_event_record)');
+      }
       this.emit(Op.OP_TOALTSTACK, locationData);
       this.popFromStack();
 
@@ -22707,6 +22773,70 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     this.emitEvmNotationEventValue(type, locationData);
+  }
+
+  /** An event argument that `emitEventArgument` would encode through the generic int-like pushdata path. */
+  private isLoopIntEventArgument(type: Type): boolean {
+    if (this.compilerOptions.evmCompat && isEvmNotationScalarType(type)) return false;
+    return type === PrimitiveType.BIGINT || type instanceof IntType || type instanceof FixedType
+      || type instanceof EnumType || type instanceof FunctionType || (type instanceof BytesType && type.bound === 1);
+  }
+
+  /**
+   * `[v] -> [push(v)]`: the generic int-like pushdata encoding at a flat cost for a loop body. An inline IF ladder
+   * is charged whole on every pass, so this one is short: a minimal v in -1..16 is its opcode (OP_0 for empty),
+   * any other v is framed as a direct push or OP_PUSHDATA1/2.
+   */
+  private emitLoopIntPushdataEncode(loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_2DUP, loc);
+    this.emit(Op.OP_EQUAL, loc);                   // [v, n, minimal]
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_1NEGATE, loc);
+    this.emit(encodeInt(17n), loc);
+    this.emit(Op.OP_WITHIN, loc);
+    this.emit(Op.OP_BOOLAND, loc);                 // [v, n, small]
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(0x50n), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_SIZE, loc);                    // [v, s]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(76n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(256n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_1ADD, loc);                    // [v, s, len]
+    this.emit(Op.OP_TUCK, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);                    // [v, len, s as len LE bytes]
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(encodeInt(0x4bn), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.popFromStack();
+    this.pushToStack('(value)');
   }
 
   /** The payload of `emitEventArgument` in standard EVM notation (see `isEvmNotationScalarType`). */
@@ -44192,146 +44322,152 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.runtimeLoopBchTransferActive = false;
   }
 
-  /** Settle the ordered event records produced by lowered counter-keyed mapping loops. */
-  private emitRuntimeLoopEventVerification(node: FunctionDefinitionNode): void {
-    const locationData = { location: node.body.location, positionHint: PositionHint.END };
+  /**
+   * Settle an events-only runtime-loop stream of compact records (`runtimeLoopEventLocks`): each record is its
+   * event's commitment, behind a one-byte lock ordinal when the stream mixes event locks. A lock depends only on
+   * the owner's category and the event, so each is built once here rather than once per record. Every output
+   * gets the effect verifier's event checks, in its order.
+   */
+  private emitRuntimeLoopEventVerification(node: FunctionDefinitionNode, locks: EventDefinitionNode[]): void {
+    const loc = { location: node.body.location, positionHint: PositionHint.END } as SingleLocationData;
     const count = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_COUNT;
+    const cursor = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT;
     const start = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START;
     const end = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END;
-    const cursor = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT;
     const baseName = '__internal__runtimeLoopEventOutputBase';
 
-    this.emitTrailingBlockBase(
-      node.blockLayout?.blockSize ?? 1, locationData, node.blockLayout?.trailingBase,
-    );
-    this.emitAddCollectionIterCounts(locationData);
-    this.emitPickCompilerRouteFrameValue(cursor, locationData, 1);
-    this.emit(Op.OP_ADD, locationData);
+    this.emitTrailingBlockBase(node.blockLayout?.blockSize ?? 1, loc, node.blockLayout?.trailingBase);
+    this.emitAddCollectionIterCounts(loc);
+    this.emitPickCompilerRouteFrameValue(cursor, loc, 1);
+    this.emit(Op.OP_ADD, loc);
     this.pushToStack(baseName);
 
-    // Publish the first/last absolute coordinates to the enclosing physical route. The immutable-NFT census
-    // later permits this exact runtime span in addition to ordinary fixed event slots.
-    this.emit(encodeInt(BigInt(this.getStackIndex(count))), locationData);
-    this.emit(Op.OP_PICK, locationData);
+    // Publish the stream's absolute span, as the effect verifier does; the immutable-NFT census admits it.
+    this.emit(encodeInt(BigInt(this.getStackIndex(count))), loc);
+    this.emit(Op.OP_PICK, loc);
     this.pushToStack('(__runtime_event_nonempty)');
-    this.emit(Op.OP_0NOTEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_0NOTEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
     this.popFromStack();
-    this.emitPickCompilerRouteFrameValue(start, locationData);
+    this.emitPickCompilerRouteFrameValue(start, loc);
     this.pushToStack('(__runtime_event_start_prior)');
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_LESSTHAN, locationData);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
     this.popFromStack();
-    this.pushToStack('(__runtime_event_start_unset)');
-    this.emit(Op.OP_IF, locationData);
-    this.popFromStack();
-    this.emit(encodeInt(BigInt(this.getStackIndex(baseName))), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.pushToStack('(__runtime_event_start_value)');
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(baseName))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(__runtime_event_start)');
     this.emitReplaceCompilerRouteFrameValue(start, node);
     this.popFromStack();
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-
-    // Work on copies above the tracked frame. Records were pushed to the alt-stack in source order, so consume
-    // them last-to-first and address outputs from end-to-start. Each record is one bounded
-    // pushdata(commitment)||bytes35(lockingBytecode) item; no aggregate byte vector can hit the item-size limit.
-    const baseline = [...this.stack];
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-    this.emit(encodeInt(32n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.pushToStack('(__runtime_event_owner_category)');
-    for (const name of [baseName, count]) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(name))), locationData);
-      this.emit(Op.OP_PICK, locationData);
-      this.pushToStack(`(__runtime_event_work_${name})`);
-    }
-    this.emit(Op.OP_BEGIN, locationData);               // [cat, base, remaining]
-    this.emit(Op.OP_DUP, locationData);                 // remaining
-    this.emit(Op.OP_0NOTEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_1SUB, locationData);                // reverse ordinal
-    this.emit(encodeInt(2n), locationData);             // ordinal=0, remaining=1, base=2
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_ADD, locationData);                 // [cat, base, remaining, outputIndex]
-    this.emit(Op.OP_FROMALTSTACK, locationData);
-    this.emitConsumeFirstScriptPush(locationData);      // [..., outputIndex, blob, lockingBytecode]
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(encodeInt(35n), locationData);
-    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
-
-    this.emit(encodeInt(2n), locationData);             // lbc=0, blob=1, outputIndex=2
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
-    this.emit(Op.OP_1, locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
-    this.emit(encodeInt(6n), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
-
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_OUTPUTVALUE, locationData);
-    this.emit(encodeInt(1200n), locationData);
-    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
-
-    this.emit(Op.OP_2DROP, locationData);               // lbc, blob
-    this.emit(Op.OP_DROP, locationData);                // outputIndex
-    this.emit(Op.OP_1SUB, locationData);                // remaining - 1
-    this.emit(Op.OP_0, locationData);                   // continue
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_DROP, locationData);                // remaining
-    this.emit(Op.OP_2DROP, locationData);               // base, category
-    this.emit(Op.OP_1, locationData);                   // stop
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_UNTIL, locationData);
-    this.stack = baseline;
-
-    this.emit(encodeInt(BigInt(this.getStackIndex(baseName))), locationData);
-    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(baseName))), loc);
+    this.emit(Op.OP_PICK, loc);
     this.pushToStack('(__runtime_event_end_base)');
-    this.emit(encodeInt(BigInt(this.getStackIndex(count))), locationData);
-    this.emit(Op.OP_PICK, locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex(count))), loc);
+    this.emit(Op.OP_PICK, loc);
     this.pushToStack('(__runtime_event_end_count)');
-    this.emit(Op.OP_ADD, locationData);
+    this.emit(Op.OP_ADD, loc);
     this.popFromStack(2);
-    this.pushToStack('(__runtime_event_end_value)');
+    this.pushToStack('(__runtime_event_end)');
     this.emitReplaceCompilerRouteFrameValue(end, node);
     this.popFromStack();
-    this.emitAccumulateRuntimeLoopEntryOutputs(count, locationData);
+    this.emit(Op.OP_ENDIF, loc);
 
+    locks.forEach((eventDef, index) => {
+      this.emitExpectedEventLockingBytecode(eventDef, loc);
+      this.stack[0] = `(__runtime_event_lock_${index})`;
+    });
+    const baseline = [...this.stack];
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(__runtime_event_owner_category)');
+    for (const name of [baseName, count]) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack(`(__runtime_event_work_${name})`);
+    }
+    // The raw loop is outside the symbolic stack model: [locks, category, base, remaining]. Records were pushed in
+    // source order, so they are consumed last-to-first against outputs addressed end-to-start.
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_0NOTEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_2, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_ADD, loc);                     // [locks, category, base, remaining, index]
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    if (locks.length === 1) {
+      this.emit(Op.OP_5, loc);
+      this.emit(Op.OP_PICK, loc);                  // [..., index, commitment, lock]
+    } else {
+      // A one-byte ordinal k in 1..127 is already a minimal number; lock k sits 5 + locks - k below the record.
+      this.emit(Op.OP_1, loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(encodeInt(BigInt(5 + locks.length)), loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_SUB, loc);
+      this.emit(Op.OP_PICK, loc);                  // [..., index, commitment, lock]
+    }
+    this.emit(Op.OP_2, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_6, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_PICK, loc);                    // expected commitment before introspection keeps the trace pin adjacent
+    this.emit(Op.OP_3, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_2, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);             // [..., index, commitment]
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.emit(encodeInt(1200n), loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_2DROP, loc);                   // [locks]
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.stack = baseline;
+    for (let index = 0; index < locks.length; index += 1) {
+      this.emit(Op.OP_DROP, loc);
+      this.popFromStack();
+    }
+
+    this.emitAccumulateRuntimeLoopEntryOutputs(count, loc);
     for (const name of [baseName, count]) {
       const index = this.getStackIndex(name);
-      this.emit(encodeInt(BigInt(index)), locationData);
-      this.emit(Op.OP_ROLL, locationData);
-      this.emit(Op.OP_DROP, locationData);
+      this.emit(encodeInt(BigInt(index)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
       this.removeFromStack(index);
     }
     this.runtimeLoopEventActive = false;
+    this.runtimeLoopEventLocks = undefined;
   }
 
   /** Settle BCH transfers produced by lowered counter-keyed mapping loops. */
@@ -48492,6 +48628,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
     this.emit(encodeBool(true), loc);
     this.emit(Op.OP_ELSE, loc);
+    // The runtime event span clause below admits every j in [start, end) once start >= 0, so no output there can
+    // fail this census: step from its top straight below it instead of classifying each output. Framed bytes stay.
+    const skipsRuntimeEventSpan = this.directConvention
+      && this.stack.includes(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START)
+      && this.stack.includes(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END);
+    if (skipsRuntimeEventSpan) {
+      this.emit(Op.OP_DUP, loc);                   // [cat, base, j, j]
+      this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START, loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_BOOLAND, loc);
+      this.emit(Op.OP_OVER, loc);
+      this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END, loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_BOOLAND, loc);               // [cat, base, j, inSpan]
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START, loc);
+      this.emit(Op.OP_ELSE, loc);                  // [cat, base, start]: the shared step lands on start - 1
+    }
     this.emit(Op.OP_DUP, loc);                     // [cat, base, j, j]
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);     // [cat, base, j, cat_j]
     this.emit(encodeInt(3n), loc);                 // cat_j=0, j=1, base=2, cat=3
@@ -48761,6 +48919,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_VERIFY, loc);                  // [cat, base, j]
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
+    if (skipsRuntimeEventSpan) this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_1SUB, loc);
     this.emit(encodeBool(false), loc);
     this.emit(Op.OP_ENDIF, loc);

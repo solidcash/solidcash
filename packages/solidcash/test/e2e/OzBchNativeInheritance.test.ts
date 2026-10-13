@@ -1,7 +1,7 @@
 import {
   beforeAll, describe, expect, it,
 } from 'vitest';
-import { binToHex, encodeTransaction } from '@bitauth/libauth';
+import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { compileFile, compileFileSplit } from 'solidc';
 import { asmToScript, buildChunkCommitment, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import type { Utxo } from '../../src/interfaces.js';
@@ -65,7 +65,8 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     }, {
       saltContract: true,
       extraOutputs: (category) => Object.entries(labels).map(([name, value]) => ({
-        address: getDynamicChunkAddress(inner, category, name, 'string'),
+        // A chunk binds the master lock, which is the category-pinned contract's.
+        address: getDynamicChunkAddress(inner.withCategory(hexToBin(category)), category, name, 'string'),
         satoshis: 1_200n,
         token: {
           amount: 0n,
@@ -90,7 +91,10 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     }, {
       saltContract: true,
       extraOutputs: (category) => [{
-        address: getTokenContainerAddress(inner, category, category), satoshis: 1_200n, token: { amount: 1_000n },
+        // The container binds the master lock, which is the category-pinned contract's.
+        address: getTokenContainerAddress(inner.withCategory(hexToBin(category)), category, category),
+        satoshis: 1_200n,
+        token: { amount: 1_000n },
       }, {
         address: bob.getAddress(), satoshis: 100_000n, token: { amount: 5n },
       }],

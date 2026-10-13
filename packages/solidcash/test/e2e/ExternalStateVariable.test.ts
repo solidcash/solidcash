@@ -548,7 +548,8 @@ contract ExternalSource() {
       unlocker: readOnlyUnlocker,
     };
 
-    const writerUnlocker = createDataNftUnlocker(writerContract, 0, writerCategoryId);
+    // The writer's record binds its master lock: the category-pinned writer's.
+    const writerUnlocker = createDataNftUnlocker(writerSaltedContract, 0, writerCategoryId);
     const stateInputUnlocker = writerSaltedContract.unlock.increment();
 
     const stb = new StatefulTransactionBuilder({
@@ -576,7 +577,7 @@ contract ExternalSource() {
       masterUtxo: { ...writerMasterUtxo, unlocker: writerSaltedContract.unlock.increment() },
       dataNftUtxos: [{
         ...writerDataNftUtxo,
-        unlocker: createDataNftUnlocker(writerContract, 0, writerCategoryId),
+        unlocker: createDataNftUnlocker(writerSaltedContract, 0, writerCategoryId),
       }],
       readOnlyDataNftUtxos: [{
         ...sourceDataNftUtxo,

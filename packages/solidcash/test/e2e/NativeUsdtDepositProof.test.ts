@@ -138,7 +138,8 @@ async function deploy(): Promise<Deployed> {
     master.registerLibrary(name, StatefulContract.withCategory(libContracts[name], libCats[name]));
   }
 
-  const ft = await genesisFtContainer(provider, masterContract, masterCat, [PREMINT]);
+  // The container binds the master lock: the category-pinned master's.
+  const ft = await genesisFtContainer(provider, master.inner, masterCat, [PREMINT]);
   const owner = new Signer(alicePriv, provider);
   const bob = new Signer(bobPriv, provider);
   let nonce = 0xbf00;

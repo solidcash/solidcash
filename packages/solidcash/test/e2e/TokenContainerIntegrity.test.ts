@@ -46,7 +46,6 @@ describe('token-container transaction integrity', () => {
   it('preserves container and transfer inputs, positions, destinations, and amounts', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE);
-    const bare = new Contract(artifact, [], { provider });
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
     const funding: Utxo = { txid: 'fb'.repeat(32), vout: 0, satoshis: 200_000n };
     await provider.addUtxo(p2pkh.address, funding);
@@ -57,7 +56,8 @@ describe('token-container transaction integrity', () => {
       initialState: { counter: 0n },
       changeAddress: p2pkh.address,
     });
-    const ft = await genesisFtContainer(provider, bare, deployed.categoryId, [1_000n]);
+    // The container binds the master lock: the deployed (category-pinned) contract's.
+    const ft = await genesisFtContainer(provider, deployed.contract.inner, deployed.categoryId, [1_000n]);
 
     // The raw `.send()` funds, captured unbroadcast; `.build()` is the covenant transaction without its fee.
     const captured = await captureSend(provider,

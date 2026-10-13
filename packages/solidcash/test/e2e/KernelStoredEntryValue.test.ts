@@ -47,6 +47,8 @@ describe('kernel stored incoming-entry values', () => {
         }
       }`, options);
     const base = new Contract(artifact, [], { provider });
+    // Entries and chunks bind the master lock, which is the category-pinned contract's.
+    const pinned = (categoryId: string): Contract => base.withCategory(hexToBin(categoryId));
     const payload = new Uint8Array(180).fill(0x53);
     const previous = encodePushdataValue({ amount: 5n, payload, marks: [-2n, -3n] }, 'Record', artifact.structs);
     const slot = keyToSlot(bigIntToVmNumber(7n));
@@ -55,17 +57,17 @@ describe('kernel stored incoming-entry values', () => {
     }, {}, {
       saltContract: true,
       extraOutputs: (categoryId) => [{
-        address: getEntryNftAddress(base, categoryId, 'records'), satoshis: 10_000n,
+        address: getEntryNftAddress(pinned(categoryId), categoryId, 'records'), satoshis: 10_000n,
         token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(
           new Uint8Array(32), slot, new Uint8Array(64),
         )) } },
       }, {
-        address: getEntryNftAddress(base, categoryId, 'records'), satoshis: 10_000n,
+        address: getEntryNftAddress(pinned(categoryId), categoryId, 'records'), satoshis: 10_000n,
         token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(
           slot, new Uint8Array(32), encodeChunkableValueTail(previous),
         )) } },
       }, ...splitValueIntoValueChunks(previous).map((chunk, index) => ({
-        address: getValueChunkAddress(base, categoryId, 'records', slot, sha256(previous)), satoshis: 10_000n,
+        address: getValueChunkAddress(pinned(categoryId), categoryId, 'records', slot, sha256(previous)), satoshis: 10_000n,
         token: { amount: 0n, nft: { capability: 'mutable', commitment: buildValueChunkCommitment(index, chunk) } },
       }))],
     });

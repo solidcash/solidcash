@@ -52,7 +52,9 @@ import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.j
 import { nextBuildId, peekBuildId } from './buildSequence.js';
 import { appendComputedValueChunkRun } from './computed-value-chunk-runs.js';
 import { encodeEvmInvocationResult } from './evm-abi-result.js';
-import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
+import {
+  buildKeccakComputeSidecar, learnKeccakPreimages, scanKeccakPreimageReads,
+} from '../keccak/keccakComputeSidecar.js';
 import { encodeMessageBatch } from '../message-bus/message-bus.js';
 import type { FixedEffectEntryResolver } from '../message-bus/fixed-effect-entries.js';
 export { inactiveMessageBusRouteWitness } from '../message-bus/route-witness.js';
@@ -380,6 +382,7 @@ import {
 } from './sc-materialize-create-builder-low-level-stateful-call.js';
 export { publishPreparedKernelDelegateOwnerFrame };
 import { runCreateBuilderDerivePass as runCreateBuilderDerivePassImpl } from './sc-run-create-builder-derive-pass.js';
+import { settlesSortedTargetsByActivity } from './conditional-sorted-activity.js';
 import {
   materializeCreateBuilderReturnEmit as materializeCreateBuilderReturnEmitImpl,
 } from './sc-materialize-create-builder-return-emit.js';
@@ -506,6 +509,7 @@ import { pushAutoResolvedExternalCall as pushAutoResolvedExternalCallImpl } from
 import { resolveEcrecoverComputeCoSpends as resolveEcrecoverComputeCoSpendsImpl } from './sc-resolve-ecrecover-co-spends.js';
 import { resolveStatefulKeccakLoop as resolveStatefulKeccakLoopImpl } from './sc-resolve-stateful-keccak-loop.js';
 import {
+  keccakProbeTrailingRun,
   resolveKeccakComputeCoSpends as resolveKeccakComputeCoSpendsImpl,
   type ResolveKeccakProbeCtx,
 } from './sc-resolve-keccak-compute-co-spends.js';
@@ -4495,7 +4499,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryCommitments: string[];
       trailingEntryCommitments: string[];
       eventCommitments: string[];
-      dynamicChunkCommitments: Record<string, string>;
+      dynamicChunkCommitments: Record<string, string[]>;
+      valueChunkOutputs: Array<{ lockingBytecode: Uint8Array; commitment: string }>;
       transferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }>;
     }> {
     return deriveDeployCommitmentsImpl(
@@ -5224,13 +5229,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // minimal tx (master + data NFTs + placeholder keccak side-cars at their block-layout slots), debug the
   // master, and read each unresolved call's argument off the trace at its OP_INPUTBYTECODE step (before the
   // binding OP_EQUALVERIFY aborts). Nested calls resolve one per probe (inner-to-outer), like the stateless
-  // path. Requires the probe context; unsupported alongside front-region oracles/reads that shift the keccak
-  // slot (throws). Mutates `preimages` in place.
+  // path, which also ends probing the same way when a probe learns nothing. Requires the probe context;
+  // unsupported alongside front-region oracles/reads that shift the keccak slot (throws). Mutates `preimages`.
   private async _extractStatefulKeccakPreimages(
     abiFunction: AbiFunction, preimages: (Uint8Array | null)[], salt: Uint8Array, scUtxos: Utxo[],
     probeCtx?: {
       masterUtxo: Utxo; stateInputUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[];
-      frontRegionInputs?: UnlockableUtxo[]; locktime?: number;
+      frontRegionInputs?: UnlockableUtxo[]; trailingReadInputs?: readonly UnlockableUtxo[];
+      firstDynamicReadInput?: Utxo; locktime?: number;
     },
   ): Promise<void> {
     if (!probeCtx) {
@@ -5253,12 +5259,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
     const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
     const lock = keccakComputeLockingBytecode(salt, true);
+    // A hashed chunk-backed value (string/bytes state) is read from the trailing run before its side-car.
+    const trailing = keccakProbeTrailingRun(
+      abiFunction, stateInputUnlocker, base + batchCount, probeCtx.trailingReadInputs, probeCtx.firstDynamicReadInput,
+    );
     let guard = 0;
     while (preimages.some((p) => p === null)) {
       if (guard++ > n) throw new Error('keccak256 stateful preimage extraction did not converge.');
       const probe = new CovenantTransactionBuilder({ provider: this.inner.provider });
       if (probeCtx.locktime) probe.setLocktime(probeCtx.locktime);
-      probe.addInput(masterUtxo, stateInputUnlocker);
+      probe.addInput(masterUtxo, trailing.unlocker);
       dataNftUtxos.forEach((u, i) => probe.addInput(u, dataNftUnlockers[i]));
       frontRegion.forEach((u) => probe.addInputs([u])); // unlockable form: u already carries its unlocker
       const recreates: Output[] = [];
@@ -5271,6 +5281,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         probe.addInput(scUtxos[batch], unlocker);
         recreates.push(recreate);
       }
+      probe.addInputs(trailing.inputs);
       probe.addOutput({
         to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token,
       });
@@ -5279,11 +5290,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }));
       frontRegion.forEach((u) => probe.addOutput(this._frontRegionRecreate(u))); // self-preserving recreate
       for (const rec of recreates) probe.addOutput({ ...rec, to: lock });
+      trailing.inputs.forEach((u) => probe.addOutput(this._frontRegionRecreate(u)));
       const transaction = probe.buildLibauthTransaction();
       const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
       const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as unknown[];
-      const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, base, n, batchCount);
-      preimages[callIndex] = preimage;
+      if (!learnKeccakPreimages(preimages, scanKeccakPreimageReads(trace, base, n, batchCount))) {
+        // Nothing new to learn: the unreached calls keep the empty placeholder, so the transaction reports the
+        // contract's own failure (or succeeds when a short-circuit skips them).
+        preimages.forEach((preimage, index) => { if (preimage === null) preimages[index] = new Uint8Array(0); });
+      }
     }
   }
 
@@ -6618,8 +6633,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       omitLocalFeeTail?: boolean;
       /** Compiler-authenticated terminal value productions transported through atomic graph promotion. */
       valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
+      /** DS-6: the sorted batch targets that spend, or chain on, a node they share with other targets (else the first). */
+      sortedNodeOwners?: readonly number[];
+      /** DS-6: lent present deletes that run on their node's owner write: the node is relinked at its default value. */
+      sortedChainedDeletes?: readonly number[];
     },
   ): Promise<StatefulTransactionBuilder> {
+    const callerArgs = [...args];
     const physicalAbiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
     let abiFunction = overrides?.abiFunction ?? physicalAbiFunction;
     // A function the compiler refused is emitted as a program that fails wherever it is reached: name its reason.
@@ -6905,6 +6925,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const batchTargetPlaceholders = new Map<number, string>();
     let exactBatchTargetSlots = new Set<number>();
     let batchPredCommitments = new Map<string, string[]>();
+    // DS-6: the owner sets that may hold a node shared with an earlier target instead, tried where the first refuses;
+    // `chainedDeletes` run on their node's owner write.
+    const sortedNodeOwnerAlternatives: { owners: number[]; chainedDeletes?: number[] }[] = [];
     const runtimeMessageBusAliasSkipSlots = new Set<number>();
     const inactiveMessageBusEntrySlots = new Set(
       (entryAbiFunction as AbiFunction & { messageBusInactiveEntrySlots?: readonly number[] } | undefined)
@@ -8521,6 +8544,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...(entryAccessForSlot(entry.slotIndex)?.aliasCondDeleteSlot === undefined
             ? [] : [entryAccessForSlot(entry.slotIndex)!.aliasCondDeleteSlot!]),
           ...(entryAccessForSlot(entry.slotIndex)?.runtimeAliasPriorSlots ?? []),
+          ...(entryAccessForSlot(entry.slotIndex)?.composeAliasPriorSlots ?? []),
         ],
         target: batchTargetSlots.has(entry.slotIndex)
           ? binToHex(batchTargetSlots.get(entry.slotIndex)!) : undefined,
@@ -8530,6 +8554,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }))));
       const batchAliasSkips = new Set(batchAliasOwners.keys());
       for (const slotIndex of batchAliasSkips) runtimeMessageBusAliasSkipSlots.add(slotIndex);
+      // A direct pure read whose proof node is the one its compiler-named prior slot spends reads that input; its
+      // own input is funded instead of spending the node twice.
+      for (const entry of entryNfts) {
+        const prior = entryAccessForSlot(entry.slotIndex)?.sharedProofPriorSlot;
+        const owner = prior === undefined ? undefined : entryNfts.find((candidate) => candidate.slotIndex === prior);
+        if (!entry.utxo || !owner?.utxo || runtimeMessageBusAliasSkipSlots.has(owner.slotIndex)
+          || entry.collection !== owner.collection) continue;
+        if (`${entry.utxo.txid.toLowerCase()}:${entry.utxo.vout}`
+          !== `${owner.utxo.txid.toLowerCase()}:${owner.utxo.vout}`) continue;
+        runtimeMessageBusAliasSkipSlots.add(entry.slotIndex);
+        entry.exists = false;
+        entry.utxo = undefined;
+      }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_ENTRY_PLAN === '1') {
         console.error('message-bus-route-entry-plan', entryNfts.map((entry) => ({
@@ -8550,14 +8587,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         })));
       }
 
-      const batchGuardSlot = entryAbiFunction?.blockLayout?.slots.find(
-        (slot) => slot.kind === 'entry' && slot.softDelete,
-      )?.slotIndex;
-      const batchGuardEntry = batchGuardSlot === undefined ? undefined
-        : entryNfts.find((entry) => entry.slotIndex === batchGuardSlot);
-      const batchNoOp = !!(batchGuardEntry?.utxo?.token?.nft?.commitment && batchGuardSlot !== undefined
-        && binToHex(decodeEntryCommitment(hexToBin(batchGuardEntry.utxo.token.nft.commitment)).slot)
-          !== binToHex(batchTargetSlots.get(batchGuardSlot)!));
+      // A conditional delete whose key is absent spends the key's predecessor at its slot and keeps it. An
+      // activity-settled body (DS-6) plans no transition for that delete, and its batch's writes settle alone; any
+      // other body's guard skips the whole batch verifier there, so every batch takes the no-op witnesses.
+      const softDeleteSlots = (entryAbiFunction?.blockLayout?.slots ?? [])
+        .filter((slot) => slot.kind === 'entry' && slot.softDelete).map((slot) => slot.slotIndex);
+      const absentSoftDelete = (slotIndex: number | undefined): boolean => {
+        const commitment = slotIndex === undefined ? undefined
+          : entryNfts.find((entry) => entry.slotIndex === slotIndex)?.utxo?.token?.nft?.commitment;
+        return !!commitment && binToHex(decodeEntryCommitment(hexToBin(commitment)).slot)
+          !== binToHex(batchTargetSlots.get(slotIndex!)!);
+      };
+      const settlesByActivity = settlesSortedTargetsByActivity(entryAbiFunction);
+      const batchNoOp = !settlesByActivity && absentSoftDelete(softDeleteSlots[0]);
 
       // Atomic fixed-write batches: collapse logical accesses that share an original predecessor onto one physical
       // proof input. The block slot of the first logical owner carries that UTXO; later aliases receive funders and
@@ -8603,7 +8645,53 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (batch.linear && inactiveBatchSlots.size > 0) {
           throw new Error(`Linear vmap batch '${batch.collection}' cannot contain inactive message-bus slots`);
         }
-        if (batchNoOp) {
+        const noOpSlots = new Set(batchNoOp ? batch.slotIndices : batch.slotIndices.filter((slotIndex) => (
+          settlesByActivity && softDeleteSlots.includes(slotIndex) && absentSoftDelete(slotIndex))));
+        // DS-6: activity-settled targets whose nodes coincide spend that node once, at the slot of the target that
+        // runs (`sortedNodeOwners`, else the first that is no alias skip: a swap-remove write whose key meets its
+        // delete's runs nothing). The others are lent: their slot is funded and runs nothing. Listed writes all run on
+        // the node: the first spends it and the others chain on it. An alias skip is no chain member. A lent delete
+        // names the first owner's input, which it reads where it runs beside that write.
+        const lentSlots = new Set<number>();
+        const lentOwners = new Map<number, number>();
+        if (settlesByActivity && batch.slotIndices.length > 1
+          && batch.slotIndices.some((slotIndex) => softDeleteSlots.includes(slotIndex))) {
+          const byNode = new Map<string, number[]>();
+          for (const slotIndex of batch.slotIndices) {
+            const spent = entryNfts.find((entry) => entry.slotIndex === slotIndex)?.utxo;
+            const uid = spent ? `${spent.txid}:${spent.vout}` : undefined;
+            if (uid !== undefined) byNode.set(uid, [...(byNode.get(uid) ?? []), slotIndex]);
+          }
+          // A deleted value reads as empty for these kinds.
+          const emptyDefault = /^(bool|u?int\d*)$/.test(collection.valueType);
+          for (const members of [...byNode.values()].filter((group) => group.length > 1)) {
+            const listed = members.filter((slotIndex) => overrides?.sortedNodeOwners?.includes(slotIndex));
+            const first = members.find((slotIndex) => !batchAliasSkips.has(slotIndex)) ?? members[0];
+            const owners = listed.length > 0 ? listed : [first];
+            if (overrides?.sortedNodeOwners === undefined) {
+              sortedNodeOwnerAlternatives.push(...members.filter((member) => member !== first)
+                .map((slotIndex) => ({ owners: [slotIndex] })));
+              const memberWrites = members.filter((slotIndex) => !softDeleteSlots.includes(slotIndex)
+                && !batchAliasSkips.has(slotIndex));
+              if (memberWrites.length > 1) sortedNodeOwnerAlternatives.push({ owners: memberWrites });
+              const present = members.filter((slotIndex) => softDeleteSlots.includes(slotIndex)
+                && !noOpSlots.has(slotIndex));
+              if (memberWrites.length > 0 && present.length > 0 && emptyDefault) {
+                sortedNodeOwnerAlternatives.push({ owners: memberWrites, chainedDeletes: present });
+              }
+            }
+            for (const slotIndex of members.filter((member) => !owners.includes(member))) {
+              lentSlots.add(slotIndex);
+              lentOwners.set(slotIndex, owners[0]);
+              const entry = entryNfts.find((candidate) => candidate.slotIndex === slotIndex)!;
+              entry.exists = false;
+              entry.utxo = undefined;
+              // A lent write leaves no node; a lent delete's slot has no entry, which drops its output already.
+              if (!softDeleteSlots.includes(slotIndex)) runtimeMessageBusAliasSkipSlots.add(slotIndex);
+            }
+          }
+        }
+        if (noOpSlots.size === batch.slotIndices.length) {
           const noOpRows = batch.linear ? batch.slotIndices.map((slotIndex) => ({
             slotIndex, slot: batchTargetSlots.get(slotIndex)!, next: new Uint8Array(32),
           })).sort((a, b) => bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1) : [];
@@ -8637,7 +8725,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }));
         const writes = batch.slotIndices
           .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !inactiveBatchSlots.has(slotIndex)
-            && !readOnlyBatchSlots.has(slotIndex))
+            && !readOnlyBatchSlots.has(slotIndex) && !noOpSlots.has(slotIndex) && !lentSlots.has(slotIndex))
           .map((slotIndex) => ({ slot: settlementSlots.get(slotIndex)!, value: new Uint8Array() }));
         if (writes.some((w) => !w.slot)) throw new Error(`vmap batch '${batch.collection}' is missing a target slot`);
         const plan = list.planBatchUpsert(writes);
@@ -8652,6 +8740,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           plan.outputs.push({ slot, commitment: encodeEntryCommitment(slot, proof.nextKey, proof.value), existed: true });
         }
         const predOutputs = plan.outputs.filter((o) => !targetValues.has(bytesToSlotValue(o.slot).toString()));
+        // DS-6: a node a chained present delete ran on is relinked at its default value.
+        for (const slotIndex of overrides?.sortedChainedDeletes ?? []) {
+          if (!lentSlots.has(slotIndex)) continue;
+          const deleted = bytesToSlotValue(batchTargetSlots.get(slotIndex)!);
+          const at = predOutputs.findIndex((output) => bytesToSlotValue(output.slot) === deleted);
+          if (at < 0) continue;
+          const node = decodeEntryCommitment(predOutputs[at].commitment);
+          predOutputs[at] = { ...predOutputs[at], commitment: encodeEntryCommitment(node.slot, node.nextKey) };
+        }
         // An all-update batch has no rewritten predecessor suffix. Do not publish an empty
         // collection family: a routed counter loop may independently own non-empty rewritten
         // entries for the same collection, and zero-width metadata must not erase that plan.
@@ -8686,7 +8783,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             || (batchSourceRows.length > 1 && overrides?.omitLocalFeeTail !== true))
           && uniqueBatchTargets.size === 1;
         const linearRows = batch.linear ? batch.slotIndices
-          .filter((slotIndex) => !batchAliasSkips.has(slotIndex))
+          .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !noOpSlots.has(slotIndex)
+            && !lentSlots.has(slotIndex))
           .map((slotIndex) => {
             const slot = batchTargetSlots.get(slotIndex)!;
             const out = plan.outputs.find((candidate) => bytesToSlotValue(candidate.slot) === bytesToSlotValue(slot));
@@ -8703,6 +8801,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const ownerByUtxo = new Map<string, number>();
         for (const slotIndex of batch.slotIndices) {
+          // An absent delete and a lent target run no transition: each proof names its own slot, and a lent write
+          // is inactive (-2). A lent delete names its node's owner (DS-6).
+          if (noOpSlots.has(slotIndex) || lentSlots.has(slotIndex)) {
+            const named = softDeleteSlots.includes(slotIndex) ? lentOwners.get(slotIndex) ?? slotIndex : slotIndex;
+            const offset = entryAbiFunction!.blockLayout?.slots.find(
+              (slot) => slot.kind === 'entry' && slot.slotIndex === named,
+            )?.offset;
+            if (offset === undefined) throw new Error(`vmap no-op slot has no block offset ${slotIndex}`);
+            batchWitnesses.push(batchTargetSlots.get(slotIndex)!, BigInt(offset), new Uint8Array(32),
+              softDeleteSlots.includes(slotIndex) ? -3n : -2n, ...(batch.linear ? [0n] : []));
+            continue;
+          }
           if (inactiveBatchSlots.has(slotIndex)) {
             // Sorted batches retain every bounded route lane so their hidden witness vector stays positional,
             // but an inactive selector/row lane is still a balanced funder slot. Its provisional key lookup can
@@ -8731,8 +8841,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             )?.offset;
             if (ownerOffset === undefined) throw new Error(`vmap alias owner has no block slot ${ownerSlot}`);
             const raw = this._rawVMapBatchWitness?.get(slotIndex);
+            // A compose alias row names its owner's planned successor; the covenant binds the two.
+            const ownerOut = (entryAccessForSlot(slotIndex)?.composeAliasPriorSlots?.length ?? 0) > 0
+              ? plan.outputs.find((o) => bytesToSlotValue(o.slot) === bytesToSlotValue(ownerTarget)) : undefined;
             batchWitnesses.push(raw?.slot ?? settlementSlots.get(ownerSlot)!, raw?.proof ?? BigInt(ownerOffset),
-              raw?.next ?? new Uint8Array(32), raw?.predOut ?? -2n);
+              raw?.next ?? (ownerOut ? decodeEntryCommitment(ownerOut.commitment).nextKey : new Uint8Array(32)),
+              raw?.predOut ?? -2n, ...(batch.linear ? [raw?.rank ?? BigInt(linearRank.get(ownerSlot) ?? 0)] : []));
             continue;
           }
           const slot = settlementSlots.get(slotIndex)!;
@@ -8971,6 +9085,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
             }
           }
+          // A compose owner's node carries the value of its key's last write, which only the trace knows.
+          if ([...batchAliasOwners].some(([alias, owner]) => owner === slotIndex
+            && (entryAccessForSlot(alias)?.composeAliasPriorSlots?.length ?? 0) > 0)) resolvedWholeValue = undefined;
           let targetCommitment = out.commitment;
           if (resolvedWholeValue !== undefined) {
             const valueTail = collection.chunkableValue
@@ -12154,6 +12271,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         masterUtxo: derivationMasterUtxo, stateInputUnlocker,
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
         frontRegionInputs: keccakFrontRegion, locktime: maxBhLocktime,
+        trailingReadInputs: iterationEntryInputs, firstDynamicReadInput: dynamicReadChunkInputs[0],
         ecrecoverPreimages: ecrecoverEvmPreimages,
         plannedPreimages: (keccakAbiFunction as MessageBusRuntimeAbiFunction).messageBusKeccakPreimages,
         ...((delegatedKeccak || graphOwnedKeccak
@@ -12722,6 +12840,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // atomic-promotion-complete (size-guarded end marker for finishCreateBuilderAtomicPromotion)
 
     timing('complete');
+    // DS-6: a node targets share sits at the first one's slot; where the probe refuses that, another target ran.
+    const vmErrored = (candidate: StatefulTransactionBuilder): boolean => (
+      (candidate as unknown as { __vmErrored?: boolean }).__vmErrored === true);
+    if (vmErrored(builder)) {
+      const tried = new Set<string>();
+      for (const { owners, chainedDeletes } of sortedNodeOwnerAlternatives) {
+        const key = `${owners.join()}|${chainedDeletes?.join() ?? ''}`;
+        if (tried.has(key)) continue;
+        tried.add(key);
+        const retry = await this._createBuilder(functionName, callerArgs, {
+          ...overrides, sortedNodeOwners: owners, sortedChainedDeletes: chainedDeletes,
+        });
+        if (!vmErrored(retry)) return retry;
+      }
+    }
     return builder;
   }
 

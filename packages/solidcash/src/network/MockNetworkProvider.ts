@@ -6,7 +6,7 @@ import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
 import { type Utxo, Network, VmTarget, type TokenDetails } from '../interfaces.js';
 import type NetworkProvider from './NetworkProvider.js';
-import type { ConsensusLimits, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
+import type { ConsensusLimits, LedgerOutput, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
 import { addressToLockScript, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
@@ -283,6 +283,8 @@ export default class MockNetworkProvider implements NetworkProvider {
   public vmTarget: VmTarget;
   public consensusLimits: ConsensusLimits;
   public policy: NetworkPolicy;
+  /** Selects the SDK's fast VM paths at any configured limits; each enforces `consensusLimits`. */
+  public readonly simulator = true;
   public readonly statefulSimulation?: 'legacy-mistswap-v1';
 
   // The default hardhat dev mnemonic (a valid BIP-39 phrase); its accounts are the ones getSigners funds.
@@ -367,7 +369,6 @@ export default class MockNetworkProvider implements NetworkProvider {
     } as Parameters<typeof createTxVerifier>[0] & { consensus: typeof overrides };
     const stockVerifier = createTxVerifier(verifierConfig);
     const verifier = this.vmTarget === VmTarget.BCH_2026_05
-      && this.consensusLimits.maximumInputBytes > 10_000
       ? createPreparedBch2026TxVerifier(
         this, verifierConfig, () => this.preparedTransaction, stockVerifier,
       )
@@ -589,6 +590,24 @@ export default class MockNetworkProvider implements NetworkProvider {
 
   async getRawTransaction(txid: string): Promise<string> {
     return this.indexer.getRawTx(txid)!;
+  }
+
+  /** The live output at `txid:vout` in this simulator's own ledger: `addUtxo` coins carry no transaction. */
+  async getLedgerOutput(txid: string, vout: number): Promise<LedgerOutput | undefined> {
+    const entry = this.indexer.storage.getUtxoByOutpoint(`${txid.toLowerCase()}:${vout}`);
+    if (entry === undefined) return undefined;
+    const token = entry.tokenData;
+    return {
+      lockingBytecode: entry.lockingBytecode,
+      satoshis: entry.satoshis,
+      ...(token === undefined ? {} : {
+        token: {
+          amount: token.amount,
+          category: token.category,
+          ...(token.nft === undefined ? {} : { nft: { ...token.nft } }),
+        },
+      }),
+    };
   }
 
   async sendPreparedTransaction(prepared: PreparedTransaction): Promise<string> {

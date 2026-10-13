@@ -5465,3 +5465,39 @@ fixtures (layout 70, pointer 43, data location 28, recursive struct 9, lineariza
 were already rejected for another reason.
 
 The remaining 182 are led by literal/rational typing (2271, 9553, 7407, 9574) and Yul access rules (1408, 6578).
+
+## 2026-10-11: negative parity 91.57% -> 93.00% (182 -> 151 over-accepted)
+
+Positives unchanged (2717/2805). Newly rejected with solc's reasons: binary operators on reference values, signed
+shift amounts and literal arithmetic past 4096 bits in `.sol` units (TypeError 2271, 10); structs holding mappings
+outside storage and internal function types in public library functions (4061/4103, 6); contracts whose storage
+reaches 2^256 slots (7676, 5); invalid implicit conversions in `.sol` units (9574/7407/9553, 10). Contract/address
+conversions stay accepted while the address representation decision is deferred.
+
+## 2026-10-11: runtime parity measured on the BCH VM (semantic-runner.mjs)
+
+`semantic-runner.mjs` executes the corpus's own `// ----` expectation lines on the BCH VM through a derived (or, for
+`layout at` and lifecycle targets, in-target) check function: pure slice 1482/1613 = 91.88%, stateful slice (deploy
+once, lines in order) 599/675 = 88.74%. Positives 2719/2805 and negatives 2009/2158 (93.10%) unchanged; differential
+592/595. Silent divergences it found and fixed: a struct returned from a helper lost fields 2+; library, free and
+public helpers copied memory arguments instead of sharing them; Yul memory written in one assembly block was lost
+in a later one; evmCompat same-width int <-> uint casts reverted instead of reinterpreting; base constructors lost
+their own `super` scope and modifiers; library code picked a contract's same-named event; the SDK decoded
+function pointers in state as bytes. 30 remaining mismatches are tryCatch (a failed call cannot be caught; see
+packages/solidc/docs/platform-differences.md).
+
+## 2026-10-12: runtime parity under real BCH size limits; a batch-census hole closed
+
+The semantic runner now runs every spend under the real BCH-2026 size limits (128-byte commitments, 10,000-byte
+inputs and stack items) and reports lines that only pass under the mock's relaxed sizes apart. Measured that way:
+pure 1380/1490 = 92.62%, stateful 673/755 = 89.14% (14 lines still need an oversized record). Corpus 2719/2805 and
+negatives 2009/2158 unchanged. Fixed on the way: evmCompat bounded arrays over 128 B were stored as one oversized
+data-NFT field (now chunk-packed); external function-pointer tables dropped pushed values (the push only bumped a
+separate length counter); array state-variable initializers were silently dropped; deploys under-reserved chunk and
+value-chunk outputs (oscillation stalls) and under-funded wide records; base constructors lost `super` scope and
+modifiers; `layout at` ignored its base slot; tuple assignments ran stores left to right; `interfaceId` folded in
+inherited functions; shifts past the bit width aborted; a free function computing keccak miscounted side-cars;
+mock receipts skipped the token rules. Security: the vmap batch census counted an untaken pure-read slot by
+"non-empty commitment" instead of by entry address, so an own-category NFT outside the collection could stand in
+for a node and another node could be rewritten (VM-proven on the mock; fixed in 6e292ca1f, recorded as DS-7 in the
+per-call audit). Direct functions may now share one absence proof between sorted reads (reviewed twice).

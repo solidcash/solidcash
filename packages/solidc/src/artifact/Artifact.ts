@@ -3713,6 +3713,8 @@ function buildFunctionAbiMetadata(
         ...(ea.aliasCondDeleteSlot !== undefined && { aliasCondDeleteSlot: ea.aliasCondDeleteSlot }),
         ...(ea.runtimeAliasPriorSlots?.length
           && { runtimeAliasPriorSlots: ea.runtimeAliasPriorSlots }),
+        ...(ea.composeAliasPriorSlots?.length && { composeAliasPriorSlots: [...ea.composeAliasPriorSlots] }),
+        ...(ea.sharedProofPriorSlot !== undefined && { sharedProofPriorSlot: ea.sharedProofPriorSlot }),
         ...(ea.valueParam !== undefined && { valueParam: ea.valueParam }),
         ...(ea.valueSource !== undefined && { valueSource: ea.valueSource }),
         ...(ea.storedValueSource !== undefined && {

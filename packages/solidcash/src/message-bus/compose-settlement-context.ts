@@ -5,6 +5,7 @@
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { FunctionArgument } from '../Argument.js';
+import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';
@@ -109,6 +110,21 @@ export async function createComposeSettlementContext(
   const deploymentEffects: AtomicDeploymentSlotEffect[] = composeDeploymentSlotEffects(
     materializedDeployments,
   );
+  // A child's category is its genesis coin's txid, so each coin is proven at its funder's own lock before anything
+  // is signed: a coin listed there but sitting at another lock would hand the category to that lock's owner.
+  for (const deployment of materializedDeployments) {
+    if (deployment.active) {
+      const { genesis } = deployment;
+      const refusal = await ownCoinRefusal(
+        input.provider, genesis, genesis.unlocker.generateLockingBytecode(), { role: 'funder', tokenFree: true },
+      );
+      if (refusal !== undefined) {
+        throw new Error(
+          `messageBus: child genesis for invocation ${deployment.invocation}, site ${deployment.siteIndex}: ${refusal}`,
+        );
+      }
+    }
+  }
   const provisionalEventEffects: AtomicEventSlotEffect[] = [];
   const provisionalResourceEffects: AtomicResourceSlotEffect[] = [];
   const provisionalValueEffects: AtomicValueSlotEffect[] = [];

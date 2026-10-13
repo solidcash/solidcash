@@ -30,7 +30,8 @@ import { compositionProvider } from './framed/machine.js';
  * every input runs its own program. On the framed convention the shipped genesis derivation runs the constructor
  * frame and refuses a frame the machine does not accept. Scalar writes the entry cache (`CacheMappingEntryInLoop`)
  * serves stand beside the shapes the kept values serve, and a read after a write the body keeps no value for is
- * refused at compile time, as is, on the direct convention, a read a loop's earlier turns may have written.
+ * refused at compile time. On the direct convention a read inside a loop takes what the loop's earlier turns wrote
+ * from the log they keep (ConstructorLoopReadAfterWrite).
  *
  * On the framed convention a read that the same turn's write of its entry follows is served: the genesis runs the
  * loop's writes as one chain of inserts in ascending slot order, so the only node an earlier turn wrote under the key
@@ -376,7 +377,10 @@ function refusal(members: string, convention: 'direct' | 'framed'): string | und
   }
 }
 
-const REFUSED: readonly { readonly shape: string; readonly members: string; readonly message: string }[] = [
+/** `framedOnly`: a read a loop's earlier turns may have written, which the direct convention serves from its log. */
+const REFUSED: readonly {
+  readonly shape: string; readonly members: string; readonly message: string; readonly framedOnly?: true;
+}[] = [
   {
     shape: 'a read after the branch arm that pushed',
     members: `${LOGS} constructor(uint k, bytes4 v, bool b, uint e) { if (b) { this.logs[k].push(v); }`
@@ -400,6 +404,7 @@ const REFUSED: readonly { readonly shape: string; readonly members: string; read
     members: `${SEEN} constructor(uint[] memory ks, uint[] memory js) {`
       + ' for (uint i = 0; i < ks.length; i++) { require(!this.seen[js[i]]); this.seen[ks[i]] = true; } }',
     message: readOf('seen[js[i]]', 'seen[ks[i]]', 'in an earlier turn of its loop'),
+    framedOnly: true,
   },
   {
     shape: 'a read its turn may not go on to write, the write behind a guard',
@@ -407,12 +412,14 @@ const REFUSED: readonly { readonly shape: string; readonly members: string; read
       + ' for (uint i = 0; i < ks.length; i++) { require(!this.seen[ks[i]]); if (fs[i] == 1) {'
       + ' this.seen[ks[i]] = true; } } }',
     message: readOf('seen[ks[i]]', 'seen[ks[i]]', 'in an earlier turn of its loop'),
+    framedOnly: true,
   },
   {
     shape: 'a read its turn may skip the write after, by a continue',
     members: `${SEEN} constructor(uint[] memory ks) {`
       + ' for (uint i = 0; i < ks.length; i++) { if (this.seen[ks[i]]) { continue; } this.seen[ks[i]] = true; } }',
     message: readOf('seen[ks[i]]', 'seen[ks[i]]', 'in an earlier turn of its loop'),
+    framedOnly: true,
   },
 ];
 
@@ -435,7 +442,8 @@ const COMPILED: readonly { readonly shape: string; readonly members: string }[] 
 
 describe('a constructor read after a write the body keeps no value for', () => {
   for (const convention of ['direct', 'framed'] as const) {
-    for (const { shape, members, message } of REFUSED) {
+    for (const { shape, members, message, framedOnly } of REFUSED) {
+      if (framedOnly === true && convention === 'direct') continue;
       it(`refuses ${shape} on the ${convention} convention, naming the entries and the shape`, () => {
         expect(refusal(members, convention)).toContain(message);
       });
@@ -597,10 +605,9 @@ const [OWNER_A, OWNER_B, OWNER_C] = [0x61, 0x62, 0x63]
   [Uint8Array, Uint8Array, Uint8Array];
 
 describe('a constructor read that the same turn\'s write of its entry follows', () => {
-  it('refuses the owner loop and a count of unwritten keys on the direct convention, naming the earlier turn', () => {
-    expect(refusal(OWNERS, 'direct')).toContain(readOf('isOwner[o]', 'isOwner[o]', 'in an earlier turn of its loop'));
-    expect(refusal(TURN_COUNTED, 'direct'))
-      .toContain(readOf('totals[ks[i]]', 'totals[ks[i]]', 'in an earlier turn of its loop'));
+  it('compiles the owner loop and a count of unwritten keys on the direct convention, served by the loop\'s log', () => {
+    expect(refusal(OWNERS, 'direct')).toBeUndefined();
+    expect(refusal(TURN_COUNTED, 'direct')).toBeUndefined();
   });
 
   it('publishes the framed owner loop: the array it walks and the literal it stores', () => {

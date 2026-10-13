@@ -19,7 +19,7 @@
  * `scopedDerivations` the iterations that stop at the frame under judgement. `hopAttempts` and
  * `hopDerivations` are the same pair for the hop's per-frame loop. The `...Closes` pair splits the learning walk's
  * declaration reads into the ones answered from a close the machine already recorded and the ones that had to step
- * the program.
+ * the program. `phaseRuns` counts input evaluations on the SDK's fast VM paths (`evaluate`, `debug`, `verify`).
  */
 export interface FramedComposerCounts {
   readonly attempts: number;
@@ -33,6 +33,7 @@ export interface FramedComposerCounts {
   readonly tracedCloses: number;
   readonly evaluations: number;
   readonly steppedRuns: number;
+  readonly phaseRuns: number;
 }
 
 /** The counters, in the order a report reads them. */
@@ -50,6 +51,7 @@ const zeroes = (): Record<CounterName, number> => ({
   tracedCloses: 0,
   evaluations: 0,
   steppedRuns: 0,
+  phaseRuns: 0,
 });
 
 const env = (): Record<string, string | undefined> | undefined =>

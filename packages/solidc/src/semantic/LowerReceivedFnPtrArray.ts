@@ -34,6 +34,12 @@ import {
   StatementNode,
   WhileNode,
   DoWhileNode,
+  AssignNode,
+  AssignmentExpressionNode,
+  StateAssignNode,
+  StateAccessNode,
+  DeleteLocalNode,
+  DeleteStateNode,
 } from '../ast/AST.js';
 import { ArrayType, FunctionType, AddressType, BytesType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -41,6 +47,14 @@ import { cloneNode } from '../ast/clone.js';
 import { FnPtrArrayLoweringError } from '../Errors.js';
 
 const SELECTOR_ARRAY_PREFIX = '__fnsel_';
+
+const NEVER_WRITTEN = 'it is never written in contract code, so its element selectors cannot be established; push or '
+  + 'assign IFace(addr).method or received function-pointer values';
+const UNSUPPORTED_VALUE = 'an unsupported value is written to it; each pushed/assigned value must be IFace(addr).method '
+  + 'or a function-pointer param / state variable carrying its selector';
+const UNSUPPORTED_COPY = 'a whole-array value assigned to it carries no element selectors; only a copy of another '
+  + 'storage function-pointer array of the same function type and length is supported';
+const ZERO_PUSH = 'a no-arg push appends a zero function pointer, whose selector cannot be established';
 
 /**
  * FOREIGN external function-pointer ARRAYS holding RECEIVED values (`fns.push(p)` where `p` is a fn-ptr param
@@ -59,7 +73,11 @@ const SELECTOR_ARRAY_PREFIX = '__fnsel_';
  * - `fns[i](args)` INSIDE a loop is the notify-all idiom -> the BROADCAST covenant (selectorArrayVar + the
  *   `__internal__extcallIdxList` witness); the source loop is harmless iteration and a broadcast cannot return
  *   a value (rejected).
- * Mutations (element assign / pop / delete) rewrite to lockstep two-statement blocks on both arrays.
+ * Mutations (element assign / pop / element or whole delete) rewrite to lockstep two-statement blocks on both
+ * arrays; each array's own length header is the table's length (the parser gives the table no `$len`).
+ * A whole copy `b = a` between tables of this pass copies the selector array with it, so `b` holds exactly `a`'s
+ * targets. A table with no write at all holds none: it lowers as an empty table whose element reads, and so
+ * calls, revert.
  * Runs AFTER the param + storage lowerings (so received values already expose `__fnsel_<name>` companions).
  */
 export default class LowerReceivedFnPtrArray extends AstTraversal {
@@ -73,6 +91,9 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
   // received/mixed fn-ptr array name -> its synth interface + whether the fn type returns values.
   private lowered = new Map<string, { iface: string; returns: boolean }>();
   private currentFn: FunctionDefinitionNode | undefined;
+  // Every fn-ptr array this pass classifies, by name (copy sources must be among them).
+  private tables = new Map<string, ArrayType>();
+  private localNames = new WeakMap<FunctionDefinitionNode, Set<string>>();
 
   /**
    * `graphMode` only affects a broadcast (in-loop) receiver: a message-bus graph handler reconstructs one
@@ -107,22 +128,47 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
       .filter((f): f is FunctionDefinitionNode => !!f?.body);
 
     // Classify: every write (push or element assign) must be a RECOGNIZED fn-ptr value - a received value with
-    // a `__fnsel_` companion (param or lowered state var) or an inline `IFace(a).m`. Anything else is
-    // unclassifiable and gets a specific error below (fail closed with a reason, not "Undefined state variable").
+    // a `__fnsel_` companion (param or lowered state var) or an inline `IFace(a).m` - and every whole-array
+    // assignment must copy another table of this pass. Anything else is unclassifiable and gets a specific error
+    // below (fail closed with a reason, not "Undefined state variable").
     this.lowered = new Map();
+    this.tables = new Map();
+    for (const coll of fnPtrArrays) if (coll.type instanceof ArrayType) this.tables.set(coll.name, coll.type);
+    const refusals = new Map<string, string>();
+    const copied = new Map<string, Set<string>>();
     for (const coll of fnPtrArrays) {
       if (!(coll.type instanceof ArrayType)) continue;
       const writes = this.collectWrites(coll.name, bodies);
-      if (writes.length === 0) {
-        throw new FnPtrArrayLoweringError(coll, coll.name,
-          'it is never written in contract code, so its element selectors cannot be established; push or '
-          + 'assign IFace(addr).method or received function-pointer values');
-      }
       if (writes.some((w) => !w.recognized)) {
-        throw new FnPtrArrayLoweringError(coll, coll.name,
-          'an unsupported value is written to it; each pushed/assigned value must be IFace(addr).method or a '
-          + 'function-pointer param / state variable carrying its selector');
+        refusals.set(coll.name, UNSUPPORTED_VALUE);
+        continue;
       }
+      const sources = this.collectCopies(coll.name, bodies);
+      // A no-arg push grows the table by an element no write gives a selector.
+      if (this.pushesWithoutValue(coll.name, bodies)) {
+        refusals.set(coll.name, writes.length === 0 && sources.length === 0 ? NEVER_WRITTEN : ZERO_PUSH);
+        continue;
+      }
+      if (sources.some((s) => s === undefined)) {
+        refusals.set(coll.name, UNSUPPORTED_COPY);
+        continue;
+      }
+      copied.set(coll.name, new Set(sources as string[]));
+    }
+    // A copy holds its source's targets, so a table copying a refused table is refused too.
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const [name, sources] of copied) {
+        const refused = [...sources].find((s) => refusals.has(s));
+        if (refused === undefined || refusals.has(name)) continue;
+        refusals.set(name, `it copies '${refused}', whose element selectors cannot be established`);
+        changed = true;
+      }
+    }
+    for (const coll of fnPtrArrays) {
+      if (!(coll.type instanceof ArrayType)) continue;
+      const refusal = refusals.get(coll.name);
+      if (refusal) throw new FnPtrArrayLoweringError(coll, coll.name, refusal);
       const ft = coll.type.elementType as FunctionType;
       this.lowered.set(coll.name, {
         iface: this.synthInterface(ft), returns: (ft.returnTypes ?? []).length > 0,
@@ -237,6 +283,41 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
       this.selArrayName(name), cloneNode(idx) as ExpressionNode, parts.sel,
     ), at);
     return this.twoStatementBlock(addrAssign, selAssign, at);
+  }
+
+  // `b = a` -> `{ b = a; __fnsel_b = __fnsel_a; }`.
+  visitAssign(node: AssignNode): Node {
+    return this.rewriteCopy(node.identifier.name, node.expression, node, true) ?? super.visitAssign(node);
+  }
+
+  visitStateAssign(node: StateAssignNode): Node {
+    return this.rewriteCopy(node.name, node.expression, node, false) ?? super.visitStateAssign(node);
+  }
+
+  private rewriteCopy(
+    name: string, value: ExpressionNode, at: AssignNode | StateAssignNode, mayBeLocal: boolean,
+  ): Node | undefined {
+    if (!this.lowered.has(name) || (mayBeLocal && this.isLocal(name))) return undefined;
+    const src = this.copySource(name, value);
+    if (src === undefined) throw new FnPtrArrayLoweringError(at, name, UNSUPPORTED_COPY);
+    const flags = { fromModifier: at.fromModifier, qualifiedBaseAccess: at.qualifiedBaseAccess };
+    const selRead = this.copyLoc(new IdentifierNode(this.selArrayName(src)), at);
+    const selCopy = Object.assign(this.copyLoc(new StateAssignNode(this.selArrayName(name), selRead), at), flags);
+    return this.twoStatementBlock(at, selCopy, at);
+  }
+
+  // `delete fns` -> `{ delete fns; delete __fnsel_fns; }`.
+  visitDeleteLocal(node: DeleteLocalNode): Node {
+    const name = node.identifier.name;
+    if (!this.lowered.has(name) || this.isLocal(name)) return super.visitDeleteLocal(node);
+    return this.twoStatementBlock(node, this.copyLoc(new DeleteStateNode(this.selArrayName(name)), node), node);
+  }
+
+  visitDeleteState(node: DeleteStateNode): Node {
+    if (!this.lowered.has(node.name)) return super.visitDeleteState(node);
+    const selDelete = this.copyLoc(new DeleteStateNode(this.selArrayName(node.name)), node);
+    selDelete.fromModifier = node.fromModifier;
+    return this.twoStatementBlock(node, selDelete, node);
   }
 
   // `this.fns[i] = v` / `delete fns[i]` parse MAPPING-flavored while the array is still a collection;
@@ -407,6 +488,63 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
     return out;
   }
 
+  // The table each whole-array assignment to `name` copies; undefined for a value with no tracked selectors (a
+  // literal, `new`, a memory/calldata array, a call result) or an assignment a same-named local may receive.
+  private collectCopies(name: string, bodies: FunctionDefinitionNode[]): Array<string | undefined> {
+    const out: Array<string | undefined> = [];
+    for (const fn of bodies) {
+      this.currentFn = fn;
+      this.walk(fn.body!, (n) => {
+        if (n instanceof AssignmentExpressionNode && n.assign.identifier.name === name) out.push(undefined);
+        else if (n instanceof AssignNode && n.identifier.name === name) {
+          out.push(this.isLocal(name) ? undefined : this.copySource(name, n.expression));
+        } else if (n instanceof StateAssignNode && n.name === name) out.push(this.copySource(name, n.expression));
+      });
+    }
+    this.currentFn = undefined;
+    return out;
+  }
+
+  // A copy source is another table of this pass whose function type converts to the destination's (same
+  // parameters and returns, mutability no weaker) and whose length kind matches.
+  private copySource(name: string, value: ExpressionNode): string | undefined {
+    const src = value instanceof StateAccessNode ? value.name
+      : value instanceof IdentifierNode && !this.isLocal(value.name) ? value.name : undefined;
+    const to = this.tables.get(name);
+    const from = src === undefined ? undefined : this.tables.get(src);
+    if (!to || !from || to.bound !== from.bound) return undefined;
+    const toFt = to.elementType as FunctionType;
+    const fromFt = from.elementType as FunctionType;
+    if (toFt.toString() !== fromFt.toString()) return undefined;
+    const converts = fromFt.stateMutability === toFt.stateMutability || toFt.stateMutability === 'nonpayable'
+      || (toFt.stateMutability === 'view' && fromFt.stateMutability === 'pure');
+    return converts ? src : undefined;
+  }
+
+  // A param, named return or local of the current function with this name.
+  private isLocal(name: string): boolean {
+    const fn = this.currentFn;
+    if (!fn) return false;
+    let names = this.localNames.get(fn);
+    if (!names) {
+      const found = new Set<string>([...fn.parameters.map((p) => p.name), ...(fn.returnNames ?? [])]);
+      if (fn.body) this.walk(fn.body, (n) => { if (n instanceof VariableDefinitionNode) found.add(n.name); });
+      this.localNames.set(fn, found);
+      names = found;
+    }
+    return names.has(name);
+  }
+
+  // A no-arg `name.push()` (either flavor).
+  private pushesWithoutValue(name: string, bodies: FunctionDefinitionNode[]): boolean {
+    let found = false;
+    const visit = (n: Node): void => {
+      if ((n instanceof StateArrayPushNode || n instanceof ArrayPushNode) && n.name === name && n.noArg) found = true;
+    };
+    for (const fn of bodies) this.walk(fn.body!, visit);
+    return found;
+  }
+
   // A name has a selector companion if a param `__fnsel_<name>` is in scope (the param lowering's convention)
   // or a state var `__fnsel_<name>` exists (the storage lowering's convention for received state pointers).
   private hasSelectorCompanion(name: string): boolean {
@@ -438,19 +576,23 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
   }
 
   private forEachWriteTo(node: Node, name: string, cb: (val: ExpressionNode) => void): void {
-    const walk = (n: Node): void => {
+    this.walk(node, (n) => {
       if (n instanceof StateArrayPushNode && n.name === name && !n.noArg) cb(n.value);
       else if (n instanceof ArrayPushNode && n.name === name && !n.noArg) cb(n.value);
       else if (n instanceof StateArrayAssignNode && n.name === name) cb(n.value);
       else if (n instanceof ArrayAssignNode && n.name === name) cb(n.value);
       else if (n instanceof MappingAssignNode && n.name === name && n.keys.length === 1
         && !n.arrayPush && !n.arrayPop && !n.arrayIndex && !n.noArg) cb(n.expression);
-      for (const key of Object.keys(n)) {
-        const val = (n as unknown as Record<string, unknown>)[key];
-        if (val instanceof Node) walk(val);
-        else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) walk(v);
-      }
-    };
-    walk(node);
+    });
+  }
+
+  // Pre-order visit of every node reachable through a node's own fields.
+  private walk(n: Node, cb: (n: Node) => void): void {
+    cb(n);
+    for (const key of Object.keys(n)) {
+      const val = (n as unknown as Record<string, unknown>)[key];
+      if (val instanceof Node) this.walk(val, cb);
+      else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) this.walk(v, cb);
+    }
   }
 }

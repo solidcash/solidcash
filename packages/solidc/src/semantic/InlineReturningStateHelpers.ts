@@ -225,6 +225,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   /** Lexically scoped types used only by lazy event-helper continuation lowering. */
   private lazyValueTypes: Map<string, Type> = new Map();
   private localBufferNames: Set<string> = new Set(); // memory locals a lowering may relocate out of the stack
+  private dynamicStateArrays: Set<string> = new Set(); // chunk-packed (isDynamic) state arrays
+  private calledNames: Set<string> = new Set(); // functions some body calls by name
   private readonly analysisNodes = new Map<FunctionDefinitionNode, Node[]>();
 
 
@@ -477,6 +479,11 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     this.collectionValueTypes = new Map(node.collections.map((collection) => [
       collection.name, collection.innermostValueType,
     ]));
+    this.dynamicStateArrays = new Set(node.stateVariables
+      .filter((sv) => sv.isDynamic && sv.type instanceof ArrayType).map((sv) => sv.name));
+    this.calledNames = this.inlineSignatureChecks || this.dynamicStateArrays.size > 0
+      ? namesCalledFrom([...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef, ...this.freeFns])
+      : new Set<string>();
 
     this.inlinedFns = new Set();
     this.rawSlotFreeFns = new Set();
@@ -497,17 +504,16 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // entry, so it cannot be an OP_INVOKE subroutine - an internal call to it must inline (Multicall2 `tryAggregate`
     // called by `tryBlockAndAggregate`). The public definition still stands as its own dispatched entry. So is one
     // that checks a transaction signature, which must run in the calling entry point's body.
-    const calledByName = this.inlineSignatureChecks
-      ? namesCalledFrom([...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef, ...this.freeFns])
-      : new Set<string>();
+    const calledByName = this.calledNames;
     for (const fn of node.functions) {
       if (!fn.graphEmissionHandler && !fn.messageBusDetachedSignatureHandler && !fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
         && !(fn.name.startsWith('__message_bus_entry_') && this.ownsRuntimeMappingLoop(fn))
         && (this.touchesOwnEntry(fn) || this.touchesScalarState(fn)
-          || this.containsMsgSender(fn) || this.containsKeccak(fn)
+          || this.containsMsgSender(fn) || this.containsKeccak(fn) || this.statefulHashesThroughFreeFunction(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
-          || this.transitivelyContainsEvent(fn) || (calledByName.has(fn.name) && this.checksSignature(fn)))) {
+          || this.transitivelyContainsEvent(fn) || (calledByName.has(fn.name) && this.checksSignature(fn))
+          || this.writesCalledDynamicStateArray(fn))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }
@@ -600,10 +606,10 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       // `IPair(..).getReserves()`) must inline like a low-level-call one: the external-call covenant param is only
       // threaded at an entry point, so a subroutine holding it surfaces phantom params at the call site. Transitive
       // so a helper reaching the external call only through another inlined helper inlines too. So does one that
-      // checks a transaction signature.
+      // checks a transaction signature, and a file-level one that hashes (freeFunctionHashes).
       } else if (this.eligibleShape(fn)
         && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
-          || this.transitivelyContainsEvent(fn) || this.checksSignature(fn))) {
+          || this.transitivelyContainsEvent(fn) || this.checksSignature(fn) || this.freeFunctionHashes(fn))) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -771,7 +777,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!this.eligibleShape(fn)) return false;
     return this.touchesOwnEntry(fn) || this.touchesScalarState(fn)
       || this.containsLowLevelCall(fn) || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn)
-      || this.transitivelyContainsEvent(fn) || this.checksSignature(fn);
+      || this.transitivelyContainsEvent(fn) || this.checksSignature(fn) || this.writesCalledDynamicStateArray(fn);
   }
 
   /**
@@ -788,6 +794,41 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return this.nodesOf(fn).some(
       (node) => node instanceof FunctionCallNode && node.identifier.name === 'keccak256',
     );
+  }
+
+  /**
+   * A file-level free function reaching keccak256, directly or through another such function, has the same
+   * problem: as an OP_INVOKE subroutine its calls read side-cars by its own ordinals and count, which the caller's
+   * published preimage list never covers (an erc7201-style `slot(id)` helper). Library members keep their own
+   * machinery, and a same-arity overload (which an inline cannot resolve) keeps the subroutine form.
+   */
+  private freeFunctionHashes(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
+    const key = inlineKey(fn.name, fn.parameters.length);
+    if (fn.name.includes('.') || !this.freeFns.includes(fn) || this.ambiguousInlineKeys.has(key)) return false;
+    if (this.containsKeccak(fn)) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return this.nodesOf(fn).some((node) => {
+      if (!(node instanceof FunctionCallNode)) return false;
+      const callee = this.lookupOverload(node.identifier.name, node.parameters.length);
+      return callee !== undefined && callee !== fn && this.eligibleShape(callee)
+        && this.freeFunctionHashes(callee, seen);
+    });
+  }
+
+  /**
+   * A contract function of a stateful contract reaching keccak256 only through a file-level free function that
+   * hashes (an erc7201-style `slotOf(id)`). That helper inlines into the function, so its calls would run in this
+   * function's OP_INVOKE body, which reads side-cars the calling entry point never publishes. Inline it like a
+   * function hashing directly. A stateless contract keeps its existing bytecode.
+   */
+  private statefulHashesThroughFreeFunction(fn: FunctionDefinitionNode): boolean {
+    if (this.stateVarNames.size === 0 && this.collectionNames.size === 0) return false;
+    return this.nodesOf(fn).some((node) => {
+      if (!(node instanceof FunctionCallNode)) return false;
+      const callee = this.lookupOverload(node.identifier.name, node.parameters.length);
+      return callee !== undefined && callee !== fn && this.freeFunctionHashes(callee);
+    });
   }
 
   // msg.sender is backed by a synthetic entry-point witness/category parameter. A returning helper compiled as
@@ -1114,6 +1155,19 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       }
     }
     return false;
+  }
+
+  // A bare `arr[i] = v`, `arr.push(..)` or `arr.pop()` on a chunk-packed state array stays an Array* node until
+  // SymbolTableTraversal makes it a StateArray* one, so touchesScalarState misses it. Code generation refuses a
+  // returning writer of one behind OP_INVOKE (its length/blob journal is the caller's frame), so a called one inlines.
+  private writesCalledDynamicStateArray(fn: FunctionDefinitionNode): boolean {
+    if (!this.calledNames.has(fn.name)) return false;
+    const nodes = this.nodesOf(fn);
+    const shadowed = new Set(fn.parameters.map((p) => p.name));
+    for (const n of nodes) if (n instanceof VariableDefinitionNode) shadowed.add(n.name);
+    return nodes.some((n) => (n instanceof ArrayAssignNode || n instanceof ArrayPushNode
+      || n instanceof ArrayPopNode || n instanceof ArrayDeleteNode)
+      && this.dynamicStateArrays.has(n.name) && !shadowed.has(n.name));
   }
 
   // A single-tail-return value helper taking a struct, mapping, or array storage pointer. Struct pointers rewrite
@@ -1500,7 +1554,11 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   ): ExpressionNode | undefined {
     // Identifier arguments are already evaluated values, so substituting one at several use sites neither
     // duplicates effects nor changes order. More complex arguments stay on the ordinary hoist path/fail closed.
-    if (args.some((arg) => !(arg instanceof IdentifierNode))) return undefined;
+    // Literals are effect-free too; a hashing helper takes them, since its subroutine form misaddresses side-cars.
+    const hashes = this.containsKeccak(callee) || this.freeFunctionHashes(callee);
+    if (args.some((arg) => !(arg instanceof IdentifierNode || (hashes && arg instanceof LiteralNode)))) {
+      return undefined;
+    }
     const cloned = cloneNode(callee) as FunctionDefinitionNode;
     substituteInFunction(cloned, new Map(callee.parameters.map((parameter, index) =>
       [parameter.name, cloneNode(args[index]) as ExpressionNode])));
@@ -1877,6 +1935,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         // method (never a local). rn() only maps renamed locals, so a literal `abi.encodeCall(IERC20.approve, ..)`
         // passes through unchanged. OZ SafeERC20.forceApprove is the trigger.
         n.interfaceName = rn(n.interfaceName);
+      } else if ((n instanceof StateAccessNode || n instanceof StateAssignNode) && this.stateVarNames.has(n.name)
+        && rn(n.name).startsWith(PREFIX)) {
+        // A state variable an inlined local shadows (`C.x` under a local `x`): it stays state, not the local.
       } else {
         const nm = (n as unknown as { name?: unknown }).name;
         if (typeof nm === 'string') (n as unknown as { name: string }).name = rn(nm);

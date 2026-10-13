@@ -15,7 +15,8 @@ import {
   InstantiationNode, TypeIntrospectionNode, ArrayAccessNode, ArrayAssignNode, ArrayNode, StateArrayPopNode,
   TernaryOpNode, TupleIndexOpNode, SourceFileNode,
   FunctionModifier, AbiEncodeNode, AbiEncodePackedNode,
-  LiteralNode,
+  LiteralNode, type YulWordBuiltin,
+  exactArrayLength,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import { GlobalFunction } from '../ast/Globals.js';
@@ -38,6 +39,7 @@ import {
   memGrowTo,
 } from './YulMemPrimitives.js';
 import { isKernelSafeNativeAssembly } from './NativeAssemblyKernelSafety.js';
+import { expandYulLoopBreakContinue } from './BreakContinueTransformation.js';
 
 // Thrown when a Yul construct is outside the supported codegen subset; the block is then left as-is for the
 // inline-assembly diagnostic (GTT) to report. Internal to this pass.
@@ -451,42 +453,42 @@ function valueByteWidth(t: Type): number {
 // byte width within a 32-byte word; a nested struct / fixed array starts a new slot and occupies whole slots.
 // Returns the number of 32-byte slots the members occupy. EVM-exact for value + nested-composite members
 // (Types.cpp computeOffsets); mirrors computeStorageLayout's own packing.
-function packWords(types: Type[]): number {
-  let slot = 0;
+function packWords(types: Type[]): bigint {
+  let slot = 0n;
   let byteOff = 0;
   for (const t of types) {
     const inner = compositeSlotWords(t);
-    if (inner > 0) {
-      if (byteOff > 0) { slot += 1; byteOff = 0; }
+    if (inner > 0n) {
+      if (byteOff > 0) { slot += 1n; byteOff = 0; }
       slot += inner;
       continue;
     }
     const w = valueByteWidth(t);
-    if (byteOff + w > 32) { slot += 1; byteOff = 0; }
+    if (byteOff + w > 32) { slot += 1n; byteOff = 0; }
     byteOff += w;
-    if (byteOff >= 32) { slot += 1; byteOff = 0; }
+    if (byteOff >= 32) { slot += 1n; byteOff = 0; }
   }
-  return slot + (byteOff > 0 ? 1 : 0);
+  return slot + (byteOff > 0 ? 1n : 0n);
 }
 
 // The whole-slot footprint of a fixed-size array or struct type (>0), else 0 for a value / mapping / dynamic
 // type (those pack by byte width). A fixed array T[k] and a struct occupy whole slots in EVM and never pack with
 // a neighbour, so the following var starts a fresh slot. This fixes the prior one-slot collapsed layout.
-function compositeSlotWords(t: Type): number {
+function compositeSlotWords(t: Type): bigint {
+  const atLeastOne = (words: bigint): bigint => (words > 1n ? words : 1n);
   if (t instanceof ArrayType && t.bound !== undefined) {
     // Compute the fixed array's whole-slot footprint ARITHMETICALLY (all elements share one type), rather than
     // materializing `bound` copies and byte-packing them - a `uint[2 gwei]` (2e9-element) declaration would OOM
     // the fill. This is the exact result packWords([T,..,T]) returns: a composite element occupies `inner` whole
-    // slots each (bound*inner); a value element of width w packs floor(32/w) per slot.
-    const k = Number(t.bound);
+    // slots each (bound*inner); a value element of width w packs floor(32/w) per slot. Exact past 2^53 too.
+    const k = exactArrayLength(t)!;
     const inner = compositeSlotWords(t.elementType);
-    if (inner > 0) return Math.max(1, k * inner);
-    const w = valueByteWidth(t.elementType);
-    const perSlot = Math.max(1, Math.floor(32 / w));
-    return Math.max(1, Math.ceil(k / perSlot));
+    if (inner > 0n) return atLeastOne(k * inner);
+    const perSlot = BigInt(Math.max(1, Math.floor(32 / valueByteWidth(t.elementType))));
+    return atLeastOne((k + perSlot - 1n) / perSlot);
   }
-  if (t instanceof StructType) return Math.max(1, packWords(t.fields.map((f) => f.type)));
-  return 0;
+  if (t instanceof StructType) return atLeastOne(packWords(t.fields.map((f) => f.type)));
+  return 0n;
 }
 
 // Source ordering key for a state member (declaration order = EVM slot order). Absent location sorts last, stable.
@@ -498,8 +500,9 @@ function declPos(n: { location?: { start: { line: number; column: number } } }):
 // (EVM counts every member - a mapping / dynamic array takes one slot; a fixed struct/array takes its whole
 // multi-word footprint; sub-word scalars pack). Collections are merged in so a mapping's slot is known (needed
 // to bridge the assembly mapping-slot idiom to the high-level mapping) and so a scalar declared after a mapping
-// gets its correct EVM slot. currentSlots (int-field decode) is only filled for packed scalar slots.
-function computeStorageLayout(vars: StateVariableNode[], collections: CollectionNode[] = []): void {
+// gets its correct EVM slot. currentSlots (int-field decode) is only filled for packed scalar slots. A `layout at`
+// base shifts the whole layout, inherited vars included (solc's base applies to the linearized layout).
+function computeStorageLayout(vars: StateVariableNode[], collections: CollectionNode[] = [], base = 0n): void {
   currentSlots = new Map();
   currentVarSlot = new Map();
   currentDynamicArrayTypes = new Map();
@@ -509,7 +512,7 @@ function computeStorageLayout(vars: StateVariableNode[], collections: Collection
   type Member = { sv: StateVariableNode } | { col: CollectionNode };
   const members: Member[] = [...vars.map((sv) => ({ sv })), ...collections.map((col) => ({ col }))];
   members.sort((a, b) => declPos('sv' in a ? a.sv : a.col) - declPos('sv' in b ? b.sv : b.col));
-  let slot = 0n;
+  let slot = base;
   let byteOff = 0;
   for (const m of members) {
     if ('col' in m) {
@@ -525,14 +528,16 @@ function computeStorageLayout(vars: StateVariableNode[], collections: Collection
       continue;
     }
     const sv = m.sv;
-    if (sv.isDynamic && sv.type instanceof ArrayType) currentDynamicArrayTypes.set(sv.name, sv.type);
+    // A bounded chunk-packed array keeps its static EVM footprint; only an unbounded one is a length slot.
+    const lengthSlot = sv.isDynamic && !(sv.type instanceof ArrayType && sv.type.bound !== undefined);
+    if (lengthSlot && sv.type instanceof ArrayType) currentDynamicArrayTypes.set(sv.name, sv.type);
     // A fixed struct/array (non-dynamic) occupies whole EVM slots and does not pack; the next var starts fresh.
-    const composite = sv.isDynamic ? 0 : compositeSlotWords(sv.type);
-    if (composite > 0) {
+    const composite = lengthSlot ? 0n : compositeSlotWords(sv.type);
+    if (composite > 0n) {
       if (byteOff > 0) { slot += 1n; byteOff = 0; }
       currentVarSlot.set(sv.name, slot);
-      compositeRanges.push({ base: slot, words: BigInt(composite), sv });
-      slot += BigInt(composite);
+      compositeRanges.push({ base: slot, words: composite, sv });
+      slot += composite;
       continue;
     }
     const w = stateVarByteWidth(sv);
@@ -831,13 +836,13 @@ function compositeArraySlotElems(sv: StateVariableNode, rel: bigint):
   const t = sv.type;
   if (!(t instanceof ArrayType) || t.bound === undefined) return undefined;
   const et = t.elementType;
-  if (compositeSlotWords(et) > 0 || !isSupportedSlotField(et)) return undefined;
+  if (compositeSlotWords(et) > 0n || !isSupportedSlotField(et)) return undefined;
   const w = valueByteWidth(et);
   const perSlot = Math.floor(32 / w); // w in [1,32] for value types
   if (perSlot < 1) return undefined;
   const start = rel * BigInt(perSlot);
   const elems: { index: number; bitOffset: bigint; bitWidth: bigint }[] = [];
-  for (let j = 0; j < perSlot && start + BigInt(j) < t.bound; j += 1) {
+  for (let j = 0; j < perSlot && start + BigInt(j) < exactArrayLength(t)!; j += 1) {
     elems.push({ index: Number(start) + j, bitOffset: BigInt(j * w * 8), bitWidth: BigInt(w * 8) });
   }
   return elems.length ? { elemType: et, elems } : undefined;
@@ -1026,7 +1031,71 @@ let yulMemUsed = false;
 // is function-scoped, so one buffer is declared at the function-body top and shared across every block (a later
 // block reads what an earlier one wrote); a per-block re-init would reset the free pointer to 0x80 each time.
 let functionYulMemUsed = false;
+// Set per function when a later assembly block mloads a constant word an earlier block mstored (see
+// crossBlockMemoryFlow): each of its blocks then tries the shared runtime `__yulmem` buffer first.
+let functionCrossBlockMemory = false;
 let yulTmpN = 0;
+
+// Constant word offsets a Yul block mstores, and those it mloads before any mstore of its own, in source order.
+function constantMemoryAccesses(block: YulBlockNode, writes: Set<bigint>, reads: Set<bigint>): void {
+  const scan = (e: YulExpressionNode | undefined): void => {
+    if (!(e instanceof YulFunctionCallNode)) return;
+    e.args.forEach(scan);
+    const off = e.args.length > 0 && isIntLiteral(e.args[0]) ? BigInt(e.args[0].raw) : undefined;
+    if (off === undefined) return;
+    if (e.name === 'mload' && e.args.length === 1 && !writes.has(off)) reads.add(off);
+    else if (e.name === 'mstore' && e.args.length === 2) writes.add(off);
+  };
+  const walk = (b: YulBlockNode): void => constantMemoryAccesses(b, writes, reads);
+  for (const s of block.statements) {
+    if (s instanceof YulVariableDeclarationNode || s instanceof YulAssignmentNode) scan(s.value);
+    else if (s instanceof YulExpressionStatementNode) scan(s.expression);
+    else if (s instanceof YulBlockNode) walk(s);
+    else if (s instanceof YulFunctionDefinitionNode) walk(s.body);
+    else if (s instanceof YulIfNode) {
+      scan(s.condition);
+      walk(s.body);
+    } else if (s instanceof YulSwitchNode) {
+      scan(s.expression);
+      s.cases.forEach((c) => walk(c.body));
+      if (s.defaultBody) walk(s.defaultBody);
+    } else if (s instanceof YulForLoopNode) {
+      walk(s.pre);
+      scan(s.condition);
+      walk(s.body);
+      walk(s.post);
+    }
+  }
+}
+
+function collectYulBlocks(node: Node, out: YulBlockNode[]): void {
+  if (node instanceof AssemblyStatementNode) {
+    if (node.yulBlock) out.push(node.yulBlock);
+    return;
+  }
+  for (const key of Object.keys(node)) {
+    if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+    const v = (node as unknown as Record<string, unknown>)[key];
+    if (v instanceof Node) collectYulBlocks(v, out);
+    else if (Array.isArray(v)) for (const x of v) if (x instanceof Node) collectYulBlocks(x, out);
+  }
+}
+
+// EVM memory is function-scoped, but the compile-time constant-offset map is per block: a word one block mstores
+// there never reaches a later block's mload, which falls back to a `__yulmem` the write skipped.
+function crossBlockMemoryFlow(body: Node): boolean {
+  const blocks: YulBlockNode[] = [];
+  collectYulBlocks(body, blocks);
+  const written = new Set<bigint>();
+  for (const block of blocks) {
+    const writes = new Set<bigint>();
+    const reads = new Set<bigint>();
+    constantMemoryAccesses(block, writes, reads);
+    if ([...reads].some((off) => written.has(off))) return true;
+    writes.forEach((off) => written.add(off));
+  }
+  return false;
+}
 
 // A Yul log0-log4 (EVM LOG opcodes = event emission) was lowered in the current contract: emit its topics + data
 // region as an anonymous event NFT. Set while lowering; the `event __YulLog(bytes) anonymous` decl is synthesized
@@ -1197,7 +1266,7 @@ function calldataHeadWords(t: Type): number | undefined {
   if (t instanceof IntType || t instanceof AddressType || t === PrimitiveType.BOOL
     || t instanceof EnumType || t instanceof ValueType || (t instanceof BytesType && t.bound !== undefined)) return 1;
   const words = compositeSlotWords(t);
-  return words > 0 ? words : undefined;
+  return words > 0n ? Number(words) : undefined;
 }
 
 // The compile-time ABI calldata byte offset of a dynamic param's DATA (`x.offset`): 4 (selector) + head size + 32
@@ -1243,9 +1312,9 @@ function collectCalldataPointers(node: Node): void {
       const base = currentCalldataPointers.get(array.name);
       const baseType = currentVars.get(array.name);
       const elementType = baseType instanceof ArrayType ? baseType.elementType : undefined;
-      const words = elementType ? compositeSlotWords(elementType) : 0;
-      if (base && words > 0) {
-        const delta = new IntLiteralNode(index * BigInt(words) * 32n);
+      const words = elementType ? compositeSlotWords(elementType) : 0n;
+      if (base && words > 0n) {
+        const delta = new IntLiteralNode(index * words * 32n);
         delta.location = node.location;
         const ptr = new BinaryOpNode(cloneNode(base) as ExpressionNode, BinaryOperator.PLUS, delta);
         ptr.location = node.location;
@@ -1595,17 +1664,20 @@ function buildLogEmit(
   return loc(new EmitStatementNode(YUL_LOG_EVENT, [data]), src);
 }
 
-// Yul arithmetic builtins -> solidc operators (value `a op b`).
+// Yul arithmetic builtins -> solidc operators (value `a op b`), all YUL_WORD_BUILTINS.
 const ARITH_OPS: Record<string, BinaryOperator> = {
   add: BinaryOperator.PLUS, sub: BinaryOperator.MINUS, mul: BinaryOperator.MUL,
   div: BinaryOperator.DIV, sdiv: BinaryOperator.DIV, mod: BinaryOperator.MOD, smod: BinaryOperator.MOD,
   exp: BinaryOperator.POW,
 };
+const YUL_WORD_BUILTINS: ReadonlySet<string> = new Set<YulWordBuiltin>([
+  'add', 'sub', 'mul', 'div', 'sdiv', 'mod', 'smod', 'slt', 'sgt', 'sar', 'signextend', 'shl', 'shr', 'exp',
+]);
 // Integer bitwise needs both operands to be a bounded int, so literal operands are cast to uint256.
 const BITWISE_OPS: Record<string, BinaryOperator> = {
   and: BinaryOperator.BIT_AND, or: BinaryOperator.BIT_OR, xor: BinaryOperator.BIT_XOR,
 };
-// Yul comparison builtins -> solidc comparison operator (boolean result).
+// Yul comparison builtins -> solidc comparison operator (boolean result); slt/sgt are YUL_WORD_BUILTINS.
 const CMP_OPS: Record<string, BinaryOperator> = {
   lt: BinaryOperator.LT, slt: BinaryOperator.LT, gt: BinaryOperator.GT, sgt: BinaryOperator.GT,
   eq: BinaryOperator.EQ,
@@ -1653,6 +1725,14 @@ function loc<T extends { location?: Node['location'] }>(node: T, src: { location
 
 function intLit(value: bigint, src: { location?: Node['location'] }): IntLiteralNode {
   return loc(new IntLiteralNode(value), src);
+}
+
+// A cast to or from the raw word a Yul `:=` copies (CastNode.evmWord).
+function evmWordCast(type: Type, value: ExpressionNode, isUnsafe: boolean, src: { location?: Node['location'] },
+): CastNode {
+  const cast = loc(new CastNode(type, value, isUnsafe), src);
+  cast.evmWord = true;
+  return cast;
 }
 
 function isIntLiteral(e: YulExpressionNode): e is YulLiteralNode {
@@ -1779,6 +1859,54 @@ function boolToWord(boolExpr: ExpressionNode, src: { location?: Node['location']
 // `int`, so cast every bitwise operand to uint256 (a no-op for an already-uint256 value).
 function lowerBitwiseOperand(arg: YulExpressionNode): ExpressionNode {
   return loc(new CastNode(UINT256, lowerValue(arg), false), arg);
+}
+
+// A word-op operand; a bytes32 word (keccak256/sha256 result, bytes32 local) reads as its uint256 value.
+function lowerWordOperand(arg: YulExpressionNode, src: YulNode): ExpressionNode {
+  return isBytes32Word(arg) ? loc(new CastNode(UINT256, lowerValue(arg), false), src) : lowerValue(arg);
+}
+
+// a^e mod 2^256 by square and multiply.
+function powWord(a: bigint, exponent: bigint): bigint {
+  let result = 1n;
+  let base = a & WORD_MASK;
+  for (let e = exponent; e > 0n; e >>= 1n) {
+    if ((e & 1n) === 1n) result = (result * base) & WORD_MASK;
+    base = (base * base) & WORD_MASK;
+  }
+  return result;
+}
+
+// Literal operands fold to their word when it is small (a large word is cheaper built at runtime than pushed); exp
+// always folds (its runtime form is a loop).
+const YUL_WORD_FOLD: Partial<Record<YulWordBuiltin, (a: bigint, b: bigint) => bigint>> = {
+  add: (a, b) => (a + b) & WORD_MASK, sub: (a, b) => (a - b) & WORD_MASK, mul: (a, b) => (a * b) & WORD_MASK,
+  div: (a, b) => (b === 0n ? 0n : a / b), mod: (a, b) => (b === 0n ? 0n : a % b), exp: powWord,
+};
+
+// `name(left, right)` with EVM semantics over words in [0, 2^256) (BinaryOpNode.yulBuiltin; a signed operand is
+// handled by the type check).
+function yulWordOp(
+  name: YulWordBuiltin, left: ExpressionNode, op: BinaryOperator, right: ExpressionNode, src: YulNode,
+): ExpressionNode {
+  const fold = YUL_WORD_FOLD[name];
+  if (fold && left instanceof IntLiteralNode && right instanceof IntLiteralNode) {
+    const word = fold(left.value, right.value);
+    if (word < 1n << 32n || name === 'exp') return intLit(word, src);
+  }
+  const node = loc(new BinaryOpNode(left, op, right), src);
+  node.yulBuiltin = name;
+  return node;
+}
+
+// A Yul comparison builtin as a boolean expression.
+function lowerCompare(call: YulFunctionCallNode): ExpressionNode {
+  const [a, b] = call.args;
+  if (YUL_WORD_BUILTINS.has(call.name)) {
+    return yulWordOp(call.name as YulWordBuiltin, lowerWordOperand(a, call), CMP_OPS[call.name],
+      lowerWordOperand(b, call), call);
+  }
+  return loc(new BinaryOpNode(lowerValue(a), CMP_OPS[call.name], lowerValue(b)), call);
 }
 
 // Lower a Yul expression in value position to a 256-bit-word (uint256) expression.
@@ -2085,22 +2213,26 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
       ? loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(lastReturnData), call)), call)
       : intLit(0n, call);
   }
-  // addmod(a,b,n) / mulmod(a,b,n) -> the matching solidc builtin ((a op b) mod n, full-width).
+  // addmod(a,b,n) / mulmod(a,b,n) -> the matching solidc builtin ((a op b) mod n, full-width). Unless n is a nonzero
+  // constant, it is marked so that n = 0 gives 0, as the EVM.
   if ((name === 'addmod' || name === 'mulmod') && args.length === 3) {
-    return loc(new FunctionCallNode(loc(new IdentifierNode(name), call), args.map((a) => lowerValue(a))), call);
+    const node = loc(new FunctionCallNode(loc(new IdentifierNode(name), call), args.map((a) => lowerValue(a))), call);
+    const n = args[2];
+    const inverted = n instanceof YulFunctionCallNode && n.name === 'not' && n.args.length === 1
+      ? yulConstFold(n.args[0]) : undefined;
+    const modulus = inverted === undefined ? yulConstFold(n) : ~inverted & WORD_MASK;
+    if (modulus === undefined || modulus === 0n) node.yulZeroModulus = true;
+    return node;
   }
-  // signextend(i, v): sign-extend v from the low (i+1) bytes. For a constant i the branchless identity
-  // `((v & mask) ^ signBit) - signBit` computes it in wrapping uint256 arithmetic (sub wraps, as EVM).
-  if (name === 'signextend' && args.length === 2 && isIntLiteral(args[0])) {
-    const raw = lowerValue(args[1]);
-    const i = BigInt(args[0].raw);
-    if (i >= 31n) return raw; // already full-width - no-op
-    const v = loc(new CastNode(UINT256, raw, false), call);
-    const bits = (i + 1n) * 8n;
-    const u256 = (n: bigint): ExpressionNode => loc(new CastNode(UINT256, intLit(n, call), false), call);
-    const masked = loc(new BinaryOpNode(v, BinaryOperator.BIT_AND, u256((1n << bits) - 1n)), call);
-    const xored = loc(new BinaryOpNode(masked, BinaryOperator.BIT_XOR, u256(1n << (bits - 1n))), call);
-    return loc(new BinaryOpNode(xored, BinaryOperator.MINUS, intLit(1n << (bits - 1n), call)), call);
+  // signextend(i, v) / sar(shift, v), value operand first. A literal i stays a literal for codegen; i >= 31 leaves v.
+  if (name === 'signextend' && args.length === 2) {
+    if (isIntLiteral(args[0]) && BigInt(args[0].raw) >= 31n) return lowerValue(args[1]);
+    const index = isIntLiteral(args[0]) ? intLit(BigInt(args[0].raw), call) : lowerWordOperand(args[0], call);
+    return yulWordOp('signextend', lowerWordOperand(args[1], call), BinaryOperator.MOD, index, call);
+  }
+  if (name === 'sar' && args.length === 2) {
+    const value = lowerWordOperand(args[1], call);
+    return yulWordOp('sar', value, BinaryOperator.SHIFT_RIGHT, lowerWordOperand(args[0], call), call);
   }
   // blockhash(n) -> solidc blockhash builtin (a bytes32; SynthesizeBlockOracle, which runs after this pass, wires
   // the n->hash oracle). Cast to a uint256 word for the assembly context.
@@ -2171,24 +2303,26 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   if (name in ARITH_OPS && args.length === 2) {
     // A bytes32-producing operand (keccak256/sha256) must be cast to uint256 for arithmetic (Yul words are 256-bit),
     // e.g. `add(keccak256(0,23), 1)` as a computed __evm_storage slot key.
-    const operand = (a: YulExpressionNode): ExpressionNode => (isBytes32Word(a)
-      ? loc(new CastNode(UINT256, lowerValue(a), false), call)
-      : lowerValue(a));
-    // add/sub/mul wrap mod 2^256, including when one operand is a literal. div/mod keep their checked form.
-    if (name === 'add' || name === 'sub' || name === 'mul') {
-      const word = (a: YulExpressionNode): ExpressionNode => loc(new CastNode(UINT256, operand(a), false), call);
-      const wrapped = loc(new BinaryOpNode(word(args[0]), ARITH_OPS[name], word(args[1])), call);
-      wrapped.yulWrapping = true;
-      return wrapped;
+    // EVM word semantics: add/sub/mul wrap mod 2^256 (ARITH-11).
+    const left = lowerWordOperand(args[0], call);
+    const right = lowerWordOperand(args[1], call);
+    // exp(2, e) is shl(e, 1).
+    if (name === 'exp' && left instanceof IntLiteralNode && left.value === 2n && !(right instanceof IntLiteralNode)) {
+      return yulWordOp('shl', intLit(1n, call), BinaryOperator.SHIFT_LEFT, right, call);
     }
-    return loc(new BinaryOpNode(operand(args[0]), ARITH_OPS[name], operand(args[1])), call);
+    return yulWordOp(name as YulWordBuiltin, left, ARITH_OPS[name], right, call);
   }
   if (name in BITWISE_OPS && args.length === 2) {
     return loc(new BinaryOpNode(lowerBitwiseOperand(args[0]), BITWISE_OPS[name], lowerBitwiseOperand(args[1])), call);
   }
-  // shl(shift, value)=value*2^shift, shr/sar(shift, value)=value/2^shift. Avoids the `<<`/`>>` operators,
-  // which require bigint/bytes; staying on uint256 keeps bitwise on the same value valid.
-  if ((name === 'shl' || name === 'shr' || name === 'sar') && args.length === 2) {
+  // shl by a runtime shift: (value << shift) mod 2^256, 0 past the word (BinaryOpNode.yulBuiltin).
+  if (name === 'shl' && args.length === 2 && !isIntLiteral(args[0])) {
+    return yulWordOp('shl', lowerWordOperand(args[1], call), BinaryOperator.SHIFT_LEFT,
+      lowerWordOperand(args[0], call), call);
+  }
+  // shl(shift, value)=value*2^shift and shr(shift, value)=value/2^shift for a literal shift. Avoids the `<<`/`>>`
+  // operators, which require bigint/bytes; staying on uint256 keeps bitwise on the same value valid.
+  if ((name === 'shl' || name === 'shr') && args.length === 2) {
     // The shifted value is a 256-bit word (`value*2^shift` must not overflow a narrow operand's type, e.g.
     // shl(0x40, uint64) would truncate to 0); widen it to uint256 to match EVM word arithmetic.
     const value = loc(new CastNode(UINT256, lowerValue(args[1]), false), call);
@@ -2202,14 +2336,13 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
       const masked = loc(new BinaryOpNode(value, BinaryOperator.MOD, intLit(2n ** (256n - s), call)), call);
       return loc(new BinaryOpNode(masked, BinaryOperator.MUL, intLit(2n ** s, call)), call);
     }
-    const pow2 = isIntLiteral(args[0])
-      ? intLit(2n ** BigInt(args[0].raw), call)
-      : loc(new BinaryOpNode(intLit(2n, call), BinaryOperator.POW, lowerValue(args[0])), call);
-    return loc(new BinaryOpNode(value, name === 'shl' ? BinaryOperator.MUL : BinaryOperator.DIV, pow2), call);
+    // shr by a runtime shift: OP_RSHIFTNUM of the word, 0 past the word (BinaryOpNode.yulBuiltin).
+    if (!isIntLiteral(args[0])) {
+      return yulWordOp('shr', value, BinaryOperator.SHIFT_RIGHT, lowerWordOperand(args[0], call), call);
+    }
+    return loc(new BinaryOpNode(value, BinaryOperator.DIV, intLit(2n ** BigInt(args[0].raw), call)), call);
   }
-  if (name in CMP_OPS && args.length === 2) {
-    return boolToWord(loc(new BinaryOpNode(lowerValue(args[0]), CMP_OPS[name], lowerValue(args[1])), call), call);
-  }
+  if (name in CMP_OPS && args.length === 2) return boolToWord(lowerCompare(call), call);
   if (name === 'not' && args.length === 1) {
     return loc(new UnaryOpNode(UnaryOperator.INVERT, lowerBitwiseOperand(args[0])), call);
   }
@@ -2468,9 +2601,7 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
 // Lower a Yul expression in condition position (if / while) to a boolean expression.
 function lowerCond(expr: YulExpressionNode): ExpressionNode {
   if (expr instanceof YulFunctionCallNode) {
-    if (expr.name in CMP_OPS && expr.args.length === 2) {
-      return loc(new BinaryOpNode(lowerValue(expr.args[0]), CMP_OPS[expr.name], lowerValue(expr.args[1])), expr);
-    }
+    if (expr.name in CMP_OPS && expr.args.length === 2) return lowerCompare(expr);
     if (expr.name === 'iszero' && expr.args.length === 1) {
       return loc(new BinaryOpNode(lowerValue(expr.args[0]), BinaryOperator.EQ, intLit(0n, expr)), expr);
     }
@@ -2760,21 +2891,22 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
     // A plain non-word var read (address, bytesN, bool) yields a value of that type; normalize it to the uint256
     // word so the target-cast below reinterprets it uniformly (EVM `:=` copies the raw word). Complex values
     // (arith / calls) are already uint256, and mstore etc. keep the un-normalized read (they encode differently).
+    // An integer cast here truncates to its width rather than range-checking (see CastNode.evmWord).
     if (stmt.value instanceof YulPathNode && stmt.value.members.length === 0) {
       const vt = currentVars.get(stmt.value.base);
       const vIsWord = vt instanceof IntType && !vt.signed && vt.bits === 256;
       if (vt && !vIsWord && !(vt instanceof ValueType)) {
-        value = loc(new CastNode(UINT256, value, vt instanceof FunctionType), stmt);
+        value = evmWordCast(UINT256, value, vt instanceof FunctionType, stmt);
       }
     }
     // The assembled value is a uint256 word; a target of a different type reinterprets it (EVM `:=` writes the
     // raw word). Cast to the target so the lowered assignment type-checks - except when the target IS uint256.
     const isWord = t instanceof IntType && !t.signed && t.bits === 256;
     if (t instanceof ValueType) {
-      value = loc(new CastNode(t.underlyingType, value, false), stmt);
+      value = evmWordCast(t.underlyingType, value, false, stmt);
       value = loc(new CastNode(t, value, false), stmt);
     } else if (t && !isWord) {
-      value = loc(new CastNode(t, value, t instanceof FunctionType), stmt);
+      value = evmWordCast(t, value, t instanceof FunctionType, stmt);
     } else if (isWord && (isBytes32Call(stmt.value) || isByteCall(stmt.value))) {
       // Hashes and byte() yield bytes-shaped main-AST values, but every Yul assignment copies a uint256 word.
       // Reinterpret them for a uint256 target (a differently typed target is handled above).
@@ -3095,7 +3227,8 @@ function lowerForLoop(node: YulForLoopNode): StatementNode {
   const whileNode = loc(new WhileNode(lowerCond(node.condition), loopBlock), node);
   whileNode.forLoopUpdateCount = postStmts.length; // so `continue` still runs the post step
 
-  return loc(new BlockNode([...initStmts, whileNode]), node);
+  // This pass runs after expandBreakContinue, so the loop's own break/continue are expanded here.
+  return loc(new BlockNode([...initStmts, ...expandYulLoopBreakContinue(whileNode)]), node);
 }
 
 // Deep-clone a Yul node, renaming any identifier (path base, let-declared name) found in `rn`. Function-call
@@ -3401,7 +3534,8 @@ export default class LowerInlineAssembly extends AstTraversal {
   visitContract(node: ContractNode): Node {
     const savedContractName = currentContractName;
     currentContractName = node.name;
-    computeStorageLayout(node.stateVariables, node.collections);
+    computeStorageLayout(node.stateVariables, node.collections, node.storageLayoutBase);
+    // Transient storage has its own slot space: `layout at` does not shift it.
     computeTransientLayout(node.transientStateVars);
     const fileConstantTypes = currentConstantTypes;
     currentConstantTypes = new Map([
@@ -3503,6 +3637,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     }
     bufferWrites = new Map();
     functionYulMemUsed = false;
+    functionCrossBlockMemory = crossBlockMemoryFlow(node.body);
     mutableCalldataComponents = new Set();
     collectMutableCalldataComponents(node, mutableCalldataComponents);
     // Keep only dynamic calldata parameters and named calldata returns. Storage-pointer `.offset` is read-only
@@ -3669,6 +3804,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     yulLoopDepth = 0;
     bufferWrites = new Map();
     functionYulMemUsed = false;
+    functionCrossBlockMemory = false;
     return result;
   }
 
@@ -3752,14 +3888,15 @@ export default class LowerInlineAssembly extends AstTraversal {
     // Fast path: the compile-time constant-offset memory model. If it rejects a memory op (dynamic offset, msize,
     // sub-word/dynamic keccak, mstore8, dynamic mcopy), re-lower the WHOLE block on the runtime `__yulmem` buffer -
     // all-or-nothing, so the two models never mix within a block. bufferWrites is per-function, so snapshot it and
-    // restore before the retry (a partial compile-time attempt may have pushed stale buffer entries).
+    // restore before the retry (a partial compile-time attempt may have pushed stale buffer entries). A function
+    // whose blocks pass constant words to each other tries the shared runtime buffer first.
     const bufSnapshot = new Map(bufferWrites);
-    const compiled = this.tryLowerAsm(node, false);
-    if (compiled) return compiled;
-    bufferWrites = new Map(bufSnapshot);
-    const runtime = this.tryLowerAsm(node, true);
-    if (!runtime) bufferWrites = new Map(bufSnapshot);
-    return runtime ?? node;
+    for (const runtime of functionCrossBlockMemory ? [true, false] : [false, true]) {
+      const lowered = this.tryLowerAsm(node, runtime);
+      if (lowered) return lowered;
+      bufferWrites = new Map(bufSnapshot);
+    }
+    return node;
   }
 
   private tryLowerAsm(node: AssemblyStatementNode, runtime: boolean): BlockNode | undefined {

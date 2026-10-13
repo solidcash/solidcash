@@ -23,6 +23,7 @@ import {
   genesisOutpointKey, releaseGenesisOutpoint, reserveGenesisOutpoint,
 } from '../../stateful/genesis-reservations.js';
 import { deployMaster } from './material.js';
+import { ownCoinRefusal } from './own-coin.js';
 
 /** Raised when a create address cannot be predicted from the UTXOs that are reserved. */
 export class CreateAddressError extends Error {
@@ -116,6 +117,10 @@ export class CreateLookahead {
     if (this.base === undefined) this.base = Number(this.signer._getTransactionNonceState());
     while (this.reserved.length < count) {
       const utxo = await this.select(options?.fanOut !== false);
+      // A predicted address is `addrV` of this coin's txid, so the coin is proven at the signer's own lock first.
+      const refusal = await ownCoinRefusal(
+        this.signer.provider, utxo, this.signer.getLockingBytecode(), { role: 'signer', tokenFree: true });
+      if (refusal !== undefined) throw new CreateAddressError(refusal);
       reserveGenesisOutpoint(genesisOutpointKey(utxo.txid, utxo.vout));
       this.reserved.push(utxo);
     }

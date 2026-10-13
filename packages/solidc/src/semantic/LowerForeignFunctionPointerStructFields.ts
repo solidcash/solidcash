@@ -9,6 +9,9 @@ import {
   MethodCallNode,
   MethodCallStatementNode,
   FieldAccessNode,
+  ArrayAccessNode,
+  MappingAccessNode,
+  TupleIndexOpNode,
   IdentifierNode,
   ExpressionNode,
 } from '../ast/AST.js';
@@ -153,6 +156,33 @@ export default class LowerForeignFunctionPointerStructFields extends AstTraversa
       return node;
     }
     return super.visitFunctionCall(node);
+  }
+
+  // An indexed receiver parses as a MethodCall: `items[i].field(args)` -> `items[i].field.method(args)`. A literal
+  // index (`items[0]`) parses as a TupleIndexOp until symbol resolution.
+  visitMethodCall(node: MethodCallNode): Node {
+    const t = this.lowered.get(node.methodName);
+    const indexed = node.object instanceof ArrayAccessNode || node.object instanceof MappingAccessNode
+      || node.object instanceof TupleIndexOpNode;
+    if (t && indexed) {
+      const recv = new FieldAccessNode(this.visit(node.object) as ExpressionNode, node.methodName);
+      recv.location = node.location;
+      const args = node.parameters.map((a) => this.visit(a) as ExpressionNode);
+      const mc = new MethodCallNode(recv, t.method, args); mc.location = node.location;
+      return mc;
+    }
+    return super.visitMethodCall(node);
+  }
+
+  visitMethodCallStatement(node: MethodCallStatementNode): Node {
+    const result = this.visit(node.call);
+    if (result instanceof MethodCallNode) {
+      node.call = result;
+      node.expression = undefined;
+      return node;
+    }
+    node.expression = result as ExpressionNode;
+    return node;
   }
 
   // A bare `s.field(args);` statement: the rewritten call is a MethodCall, so re-wrap the statement to match.

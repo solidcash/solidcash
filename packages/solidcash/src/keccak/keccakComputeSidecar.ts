@@ -15,17 +15,17 @@ export function leSmallNumber(bytes: Uint8Array): number {
   return n;
 }
 
-// Read the LAST keccak256 side-car read off a contract's VM debug trace: the last executed OP_INPUTBYTECODE
-// step whose top-of-stack (the side-car input index) is in the range [base, base+n) is the call the probe
-// aborted at (its binding OP_EQUALVERIFY failed on a placeholder). The stack is `[.., arg, idx]`, so the
-// preimage `arg` is one below the index; the call's slot is `idx - base` (assign to that call, NOT the loop
-// index - nested calls abort in inner-to-outer runtime order, not emission order). Shared by the stateless
-// (base TransactionBuilder) and stateful (block-layout-slot) complex/nested-arg probes.
-export function extractKeccakPreimageFromTrace(
+export type KeccakPreimageRead = { callIndex: number; preimage: Uint8Array };
+
+// Every keccak256 side-car read in a contract's VM debug trace, in execution order: each executed
+// OP_INPUTBYTECODE step whose top-of-stack (the side-car input index) is in [base, base+slotCount). The stack is
+// `[.., arg, ordinal, idx]`: the call is `ordinal - 1` (NOT the side-car slot - nested calls run inner-to-outer,
+// not in emission order) and `arg` is the argument its binding OP_EQUALVERIFY compares. A read without an ordinal
+// (`[.., arg, idx]`) is assigned to slot `idx - base`.
+export function scanKeccakPreimageReads(
   trace: unknown[], base: number, n: number, slotCount = n,
-  acceptCandidate: (callIndex: number, preimage: Uint8Array) => boolean = () => true,
-): { callIndex: number; preimage: Uint8Array } {
-  let found: { callIndex: number; preimage: Uint8Array } | undefined;
+): KeccakPreimageRead[] {
+  const reads: KeccakPreimageRead[] = [];
   for (const s of trace) {
     const step = s as { ip: number; stack: Uint8Array[]; instructions?: { opcode: number }[]; controlStack?: unknown[] };
     if (step.controlStack?.some((c) => c === false)) continue;
@@ -34,14 +34,48 @@ export function extractKeccakPreimageFromTrace(
     const idx = leSmallNumber(step.stack[step.stack.length - 1]);
     if (idx >= base && idx < base + slotCount) {
       const marker = step.stack.length >= 3 ? leSmallNumber(step.stack[step.stack.length - 2]) : 0;
-      const candidate = marker >= 1 && marker <= n
+      reads.push(marker >= 1 && marker <= n
         ? { callIndex: marker - 1, preimage: Uint8Array.from(step.stack[step.stack.length - 3]) }
-        : { callIndex: idx - base, preimage: Uint8Array.from(step.stack[step.stack.length - 2]) };
-      if (acceptCandidate(candidate.callIndex, candidate.preimage)) found = candidate;
+        : { callIndex: idx - base, preimage: Uint8Array.from(step.stack[step.stack.length - 2]) });
     }
   }
-  if (!found) throw new Error('keccak256 preimage extraction: no side-car read found in the probe trace.');
-  return found;
+  return reads;
+}
+
+// The LAST keccak256 side-car read in the trace: the call the probe aborted at (its binding OP_EQUALVERIFY failed
+// on a placeholder). Shared by the stateless (base TransactionBuilder) and stateful (block-layout-slot) probes.
+export function extractKeccakPreimageFromTrace(
+  trace: unknown[], base: number, n: number, slotCount = n,
+  acceptCandidate: (callIndex: number, preimage: Uint8Array) => boolean = () => true,
+): KeccakPreimageRead {
+  const reads = scanKeccakPreimageReads(trace, base, n, slotCount)
+    .filter((read) => acceptCandidate(read.callIndex, read.preimage));
+  if (reads.length === 0) throw new Error('keccak256 preimage extraction: no side-car read found in the probe trace.');
+  return reads[reads.length - 1];
+}
+
+const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/**
+ * Record what one complex/nested-argument probe learned (the side-cars carry the known preimages and the empty
+ * placeholder, committed as keccak256 of what they carry). The last read is the call the probe stopped at, so it
+ * takes the argument it was bound against. An earlier read of a still-unknown call passed on the placeholder, so its
+ * argument (empty) is known as well: without it a call that hashes empty bytes is never resolved, since every later
+ * probe ends past it. Returns false when nothing new was learned: the contract stopped for its own reason or never
+ * reaches the remaining calls (a short-circuit), and another probe would end the same way.
+ */
+export function learnKeccakPreimages(
+  preimages: (Uint8Array | null)[], reads: readonly KeccakPreimageRead[],
+): boolean {
+  let learned = false;
+  reads.forEach(({ callIndex, preimage }, index) => {
+    const known = preimages[callIndex];
+    if (known === null || (index === reads.length - 1 && !sameBytes(known, preimage))) {
+      preimages[callIndex] = preimage;
+      learned = true;
+    }
+  });
+  return learned;
 }
 
 // Minimal data push (OP_0 / OP_1-16 / OP_1NEGATE / direct / PUSHDATA1 / PUSHDATA2) for hand-built unlocking

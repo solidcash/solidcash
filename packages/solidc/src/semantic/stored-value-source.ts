@@ -14,6 +14,7 @@ import {
   RequireNode, ReturnNode, StateAccessNode, StateAssignNode,
   StringLiteralNode, StructDefinitionNode, TernaryOpNode, TimeOpNode, TupleAssignmentNode, TupleIndexOpNode,
   UnaryOpNode, VariableDefinitionNode,
+  exactArrayLength,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
 
@@ -187,6 +188,8 @@ function publishFunctionSources(
         }
         return { kind: 'unary', operator: node.operator, type, expression };
       }
+      // A Yul word builtin (BinaryOpNode.yulBuiltin) has EVM semantics no recipe operator states.
+      if (node instanceof BinaryOpNode && node.yulBuiltin) return undefined;
       if (node instanceof BinaryOpNode || node instanceof ArrayAccessNode) {
         const left = serialize(node instanceof BinaryOpNode ? node.left : node.array, env);
         const right = serialize(node instanceof BinaryOpNode ? node.right : node.index, env);
@@ -324,7 +327,7 @@ function publishFunctionSources(
           while (constantIndex.kind === 'cast' && constantIndex.expression) constantIndex = constantIndex.expression;
           const literalIndex = constantIndex.kind === 'literal' && typeof constantIndex.value === 'string'
             && /^\d+$/u.test(constantIndex.value) ? BigInt(constantIndex.value) : undefined;
-          if (literalIndex !== undefined && literalIndex >= BigInt(arrayType.bound)) return false;
+          if (literalIndex !== undefined && literalIndex >= exactArrayLength(arrayType)!) return false;
           env.locals.set(definition, {
             kind: 'array', type: arrayType.toString(),
             args: Array.from({ length: arrayType.bound }, (_, position) => {

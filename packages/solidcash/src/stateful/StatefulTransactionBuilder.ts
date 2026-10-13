@@ -1532,6 +1532,7 @@ export class StatefulTransactionBuilder {
   private _nestedEmitEventsHost(): NestedEmitEventsHost {
     return {
       ...this._scaledPreserveEmitHost(),
+      categoryId: this.categoryId,
       pendingValueChunkPredecessors: this.pendingValueChunkPredecessors,
       forcedChunkableValueWriteBandStart: this.forcedChunkableValueWriteBandStart,
       detachedEventReceipts: this.detachedEventReceipts,
@@ -5513,6 +5514,11 @@ export class StatefulTransactionBuilder {
     }
     this.entryRawCommitments.set(slotIndex, commitment);
     return this;
+  }
+
+  /** The raw entry NFT commitment currently planned for a slot's output, if any. */
+  getEntryRawCommitment(slotIndex: number): string | undefined {
+    return this.entryRawCommitments.get(slotIndex);
   }
 
   /** Mark an entry slot's commitment as known exactly (injected), so auto-derivation must not re-derive it. */

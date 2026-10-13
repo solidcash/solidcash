@@ -75,6 +75,10 @@ export const formatParametersForDebugging = (
       return `<${varName}.${signatureAlgorithmName}.${sighashTypeName}> // ${input.type}`;
     }
     if (isDeferredSignatureArgument(arg)) return `<${varName}> // ${input.type} (finalized signatures)`;
+    if (arg === undefined) {
+      throw new Error(`No value for '${input.name}' (${input.type}): compiler-owned inputs such as external-call `
+        + 'witnesses are filled by StatefulContract transaction building, not by a plain unlock');
+    }
 
     const typeStr = input.type === 'bytes' ? `bytes${arg.length}` : input.type;
 

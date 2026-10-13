@@ -1,5 +1,5 @@
 import type { Transaction as LibauthTransaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
-import { type Utxo, Network } from '../interfaces.js';
+import { type TokenDetails, type Utxo, Network } from '../interfaces.js';
 
 /** Exact transaction forms already materialized by an SDK builder. */
 export interface PreparedTransaction {
@@ -37,6 +37,13 @@ export interface ConsensusLimits {
   hashDigestIterationsPerByteNonstandard?: number;
 }
 
+/** A live output as an in-process simulator's own ledger holds it. */
+export interface LedgerOutput {
+  readonly lockingBytecode: Uint8Array;
+  readonly satoshis: bigint;
+  readonly token?: TokenDetails;
+}
+
 export interface NetworkPolicy {
   /** Apply node relay dust thresholds when constructing and validating outputs. */
   enforceDust: boolean;
@@ -52,6 +59,11 @@ export default interface NetworkProvider {
   consensusLimits?: ConsensusLimits;
   /** Optional relay-policy behavior. Omitted providers use production policy. */
   policy?: NetworkPolicy;
+  /**
+   * True for an in-process simulator (MockNetworkProvider). The SDK then evaluates on its fast VM paths, which
+   * enforce `consensusLimits` as libauth's own paths do; live providers omit it and keep libauth's paths.
+   */
+  readonly simulator?: boolean;
 
   /**
    * Retrieve all UTXOs (confirmed and unconfirmed) for a given address.
@@ -100,4 +112,11 @@ export default interface NetworkProvider {
    * `sendRawTransaction`; the extra forms only avoid decoding bytes the builder has just encoded.
    */
   sendPreparedTransaction?(prepared: PreparedTransaction): Promise<string>;
+
+  /**
+   * Optional, in-process simulators only: the live output at `txid:vout` as the simulator's own ledger holds it. A
+   * simulator's coins need no transaction behind them, so a coin proven from its transaction falls back to this; a
+   * provider with a remote party behind it must not implement it.
+   */
+  getLedgerOutput?(txid: string, vout: number): Promise<LedgerOutput | undefined>;
 }

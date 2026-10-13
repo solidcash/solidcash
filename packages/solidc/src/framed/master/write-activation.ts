@@ -386,7 +386,8 @@ class ActivationSerializer {
       return inner === undefined ? undefined : { kind: 'unary', operator: expression.operator, expression: inner };
     }
     if (expression instanceof BinaryOpNode) {
-      if (expression.operator === BinaryOperator.SPLIT) return undefined;
+      // A Yul word builtin (yulBuiltin) has EVM semantics no recipe operator states.
+      if (expression.operator === BinaryOperator.SPLIT || expression.yulBuiltin) return undefined;
       const left = this.serialize(expression.left, at);
       const right = left === undefined ? undefined : this.serialize(expression.right, at);
       return right === undefined ? undefined : { kind: 'binary', operator: expression.operator, left: left!, right };

@@ -1,7 +1,6 @@
 import { PrimitiveType } from '@solidcash/utils';
 import {
   BlockNode,
-  BranchNode,
   BreakNode,
   CollectionIterationNode,
   ContinueNode,
@@ -12,10 +11,8 @@ import {
   Node,
   NullaryOpNode,
   ReturnNode,
-  RevertNode,
-  SwitchNode,
+  StatementNode,
   TimeOpNode,
-  UncheckedNode,
   WhileNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -54,14 +51,18 @@ export default class InjectLocktimeGuardTraversal extends AstTraversal {
   }
 
   visitBlock(node: BlockNode): Node {
+    const statements = node.statements;
+    if (!statements || statements.length === 0) return node;
     const previous = this.hasTimeCheckOnPath;
 
-    // A later check still covers an earlier `tx.locktime` read, but only when every path actually reaches it.
-    // A check after `return` used to suppress the guard for a read that executed and then left.
-    if (blockHasCoveringLocktimeCheck(node.statements)) {
-      this.hasTimeCheckOnPath = true;
-    }
-    super.visitBlock(node);
+    // A check covers a read when every path through the read reaches it: an earlier check, or a later one with no
+    // early exit (return/break/continue) from the read's statement up to the check (SEM-6).
+    const checks = statements.flatMap((s, i) => (isLocktimeCheck(s) ? [i] : []));
+    const exits = statements.map(holdsEarlyExit);
+    node.statements = statements.map((statement, i) => {
+      this.hasTimeCheckOnPath = previous || checks.some((j) => j < i || !exits.slice(i, j).includes(true));
+      return this.visit(statement) as StatementNode;
+    });
     this.hasTimeCheckOnPath = previous;
     return node;
   }
@@ -86,63 +87,50 @@ function isLocktimeCheck(statement: Node): boolean {
   return false;
 }
 
-/** A check counts only when no earlier statement can leave the block before it runs. */
-function blockHasCoveringLocktimeCheck(statements: Node[] | undefined): boolean {
-  if (!statements) return false;
-  for (const statement of statements) {
-    if (isLocktimeCheck(statement)) return true;
-    if (skipsRestOfBlock(statement)) return false;
-  }
-  return false;
+// Whether a statement can leave its enclosing block early: any return, or a break/continue outside its own loops.
+function holdsEarlyExit(statement: StatementNode): boolean {
+  const finder = new EarlyExitFinder();
+  finder.visit(statement);
+  return finder.found;
 }
 
-function skipsRestOfBlock(statement: Node): boolean {
-  if (statement instanceof ReturnNode || statement instanceof RevertNode
-    || statement instanceof BreakNode || statement instanceof ContinueNode) return true;
-  if (statement instanceof BranchNode) {
-    if (blockSkipsRest(statement.ifBlock)) return true;
-    return statement.elseBlock !== undefined && blockSkipsRest(statement.elseBlock);
-  }
-  if (statement instanceof UncheckedNode || statement instanceof BlockNode) {
-    const block = statement instanceof UncheckedNode ? statement.block : statement;
-    return blockSkipsRest(block);
-  }
-  // `break` leaves the loop and still runs the statements after it. `return` does not.
-  if (statement instanceof WhileNode || statement instanceof DoWhileNode) return blockCanReturn(statement.block);
-  if (statement instanceof CollectionIterationNode) return blockCanReturn(statement.body);
-  if (statement instanceof SwitchNode) {
-    if (statement.cases.some((item) => blockCanReturn(item.body))) return true;
-    return statement.defaultCase !== undefined && blockCanReturn(statement.defaultCase);
-  }
-  return false;
-}
+class EarlyExitFinder extends AstTraversal {
+  found = false;
+  private loopDepth = 0;
 
-function blockSkipsRest(block: BlockNode): boolean {
-  for (const statement of block.statements ?? []) {
-    if (skipsRestOfBlock(statement)) return true;
+  visitReturn(node: ReturnNode): Node {
+    this.found = true;
+    return node;
   }
-  return false;
-}
 
-function blockCanReturn(block: BlockNode): boolean {
-  for (const statement of block.statements ?? []) {
-    if (statement instanceof ReturnNode || statement instanceof RevertNode) return true;
-    if (statement instanceof BranchNode) {
-      if (blockCanReturn(statement.ifBlock)) return true;
-      if (statement.elseBlock && blockCanReturn(statement.elseBlock)) return true;
-    } else if (statement instanceof WhileNode || statement instanceof DoWhileNode) {
-      if (blockCanReturn(statement.block)) return true;
-    } else if (statement instanceof UncheckedNode || statement instanceof BlockNode) {
-      const block = statement instanceof UncheckedNode ? statement.block : statement;
-      if (blockCanReturn(block)) return true;
-    } else if (statement instanceof CollectionIterationNode) {
-      if (blockCanReturn(statement.body)) return true;
-    } else if (statement instanceof SwitchNode) {
-      if (statement.cases.some((item) => blockCanReturn(item.body))) return true;
-      if (statement.defaultCase && blockCanReturn(statement.defaultCase)) return true;
-    }
+  visitBreak(node: BreakNode): Node {
+    if (this.loopDepth === 0) this.found = true;
+    return node;
   }
-  return false;
+
+  visitContinue(node: ContinueNode): Node {
+    if (this.loopDepth === 0) this.found = true;
+    return node;
+  }
+
+  visitWhile(node: WhileNode): Node {
+    return this.inLoop(() => super.visitWhile(node));
+  }
+
+  visitDoWhile(node: DoWhileNode): Node {
+    return this.inLoop(() => super.visitDoWhile(node));
+  }
+
+  visitCollectionIteration(node: CollectionIterationNode): Node {
+    return this.inLoop(() => super.visitCollectionIteration(node));
+  }
+
+  private inLoop(visit: () => Node): Node {
+    this.loopDepth += 1;
+    const result = visit();
+    this.loopDepth -= 1;
+    return result;
+  }
 }
 
 function createLocktimeGuard(funcNode: FunctionDefinitionNode): TimeOpNode {

@@ -123,6 +123,7 @@ export async function refreshProjectedExternalReturns(
       network: baseProvider.network,
       consensusLimits: baseProvider.consensusLimits,
       policy: baseProvider.policy,
+      simulator: baseProvider.simulator,
       getUtxos: async (address) => projectedAt(address) ?? baseProvider.getUtxos(address),
       getUtxosForLockingBytecode: async (lockingBytecode) => projectedAt(lockingBytecode)
         ?? baseProvider.getUtxosForLockingBytecode(lockingBytecode),

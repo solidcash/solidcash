@@ -806,10 +806,10 @@ contract NoWrite() {
    * declaration order, or throws - and this pins the ordering that keeps a MIXED contract's root equal to its
    * baseline: the pass that runs first in the ordinary pipeline appends first.
    *
-   * What it still refuses is the root that `prepareSplitRoot` left with no write to a received-value table,
-   * because every writer moved to a facet. That is a loud refusal, not a divergence.
+   * A root that `prepareSplitRoot` left with no write to a received-value table (every writer moved to a facet)
+   * now lowers that table like its facets do, since pushes keep their values: the slots must agree.
    */
-  it('fails closed, by name, on a received-value table whose writers all move off the root', () => {
+  it('keeps the root layout equal to its facets when every writer of a received-value table moves off it', () => {
     const source = `pragma solidcash >=0.8.0;
 interface IH { function inc(uint value); function dec(uint value); }
 contract Mixed() {
@@ -827,8 +827,11 @@ contract Mixed() {
     // the array pass runs first and appends first. `prepareSplitAst` reproduces exactly this.
     expect(fnPtrSlots(compileString(source, { forceStateful: true }).stateLayout))
       .toEqual(['total@0.0', 'q@0.1', '__fnsel_q@0.2', 'p@0.3', '__fnsel_p@0.4']);
-    expect(() => compileStringSplit(source, { forceStateful: true, forceSplit: true }))
-      .toThrow(/Function-pointer array 'p': it is never written in contract code/);
+    const bundle = compileStringSplit(source, { forceStateful: true, forceSplit: true });
+    const facets = Object.values(bundle.facets);
+    expect(facets.length).toBeGreaterThan(0);
+    for (const facet of facets) expect(fnPtrSlots(facet.stateLayout)).toEqual(fnPtrSlots(bundle.root.stateLayout));
+    expect(fnPtrSlots(bundle.root.stateLayout)).toEqual(['total@0.0', 'q@0.1', '__fnsel_q@0.2', 'p@0.3', '__fnsel_p@0.4']);
   });
 
   it('CONTROL: a call-edge union that fits is not divided and keeps both entries in one facet', () => {

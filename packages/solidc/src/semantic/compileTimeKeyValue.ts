@@ -5,9 +5,10 @@ import {
   type Script, type Type,
 } from '@solidcash/utils';
 import {
-  BoolLiteralNode, CastNode, ConstantDefinitionNode, ExpressionNode, HexLiteralNode, IdentifierNode, IntLiteralNode,
-  StringLiteralNode,
+  BinaryOpNode, BoolLiteralNode, CastNode, ConstantDefinitionNode, ExpressionNode, HexLiteralNode, IdentifierNode,
+  IntLiteralNode, StringLiteralNode, TypeIntrospectionNode,
 } from '../ast/AST.js';
+import { BinaryOperator } from '../ast/Operator.js';
 import { compileCast } from '../generation/utils.js';
 
 /**
@@ -35,6 +36,15 @@ const MAXIMUM_NUMBER_BYTES = 10_000;
 
 const isNumberType = (type: Type | undefined): boolean =>
   type === PrimitiveType.INT || type === PrimitiveType.BIGINT || type instanceof IntType;
+
+const isFixedBytesType = (type: Type): boolean => type instanceof BytesType && type.bound !== undefined;
+
+/** What `OP_AND` / `OP_OR` / `OP_XOR` do to each byte pair of two equal-width byte values. */
+const BYTEWISE_OPERATIONS: Partial<Record<BinaryOperator, (left: number, right: number) => number>> = {
+  [BinaryOperator.BIT_AND]: (left, right) => left & right,
+  [BinaryOperator.BIT_OR]: (left, right) => left | right,
+  [BinaryOperator.BIT_XOR]: (left, right) => left ^ right,
+};
 
 /** The integer a script number encodes, reading a non-minimal encoding as the VM's number operations do. */
 function numberOf(item: Uint8Array): bigint | undefined {
@@ -133,7 +143,37 @@ function valueOf(
     if (constant === undefined || seen.has(constant.name)) return undefined;
     return constantValue(constant, context, new Set([...seen, constant.name]));
   }
+  if (expression instanceof TypeIntrospectionNode) return introspectionValue(expression);
+  if (expression instanceof BinaryOpNode) return bytewiseValue(expression, context, seen);
   return undefined;
+}
+
+/** `type(I).interfaceId` and an integer type's `min` / `max`: the values symbol resolution fixes and codegen pushes. */
+function introspectionValue(node: TypeIntrospectionNode): CompileTimeValue | undefined {
+  const id = node.property === 'interfaceId' ? node.precomputedBytes : undefined;
+  if (id !== undefined) return { bytes: id, type: new BytesType(id.length) };
+  const type = node.resolvedType;
+  if (!(type instanceof IntType) || (node.property !== 'min' && node.property !== 'max')) return undefined;
+  return { bytes: encodeInt(node.property === 'min' ? type.minValue : type.maxValue), type };
+}
+
+/**
+ * A bitwise operation over two fixed-width byte values of one width, which code generation emits as the byte-wise
+ * opcode. An integer operand is bounded two's-complement arithmetic and a number literal takes its type from its
+ * context, so neither is folded.
+ */
+function bytewiseValue(
+  node: BinaryOpNode, context: CompileTimeKeyContext, seen: ReadonlySet<string>,
+): CompileTimeValue | undefined {
+  const operation = node.yulBuiltin === undefined ? BYTEWISE_OPERATIONS[node.operator] : undefined;
+  const numberLiteral = (operand: ExpressionNode): boolean => operand instanceof HexLiteralNode
+    && operand.numericValue !== undefined;
+  if (operation === undefined || numberLiteral(node.left) || numberLiteral(node.right)) return undefined;
+  const left = valueOf(node.left, context, seen);
+  const right = valueOf(node.right, context, seen);
+  if (left === undefined || right === undefined || !isFixedBytesType(left.type) || !isFixedBytesType(right.type)
+    || left.bytes.length !== right.bytes.length) return undefined;
+  return { bytes: left.bytes.map((byte, index) => operation(byte, right.bytes[index])), type: left.type };
 }
 
 /**
@@ -199,4 +239,16 @@ export function castKeyLabel(cast: CastNode, context: CompileTimeKeyContext): st
   const value = valueOf(cast, context, new Set());
   if (operand === undefined || value === undefined) return undefined;
   return binToHex(operand.bytes) === binToHex(value.bytes) ? undefined : valueLabel(value);
+}
+
+/**
+ * The label of a key fixed at compile time whose structure the off-chain evaluator cannot read: a bitwise operation
+ * over byte values (`this.f.selector ^ this.g.selector`) or a type introspection (`type(I).interfaceId`). Undefined
+ * for one this does not fold, which keeps its structural label.
+ */
+export function compileTimeKeyLabel(
+  expression: BinaryOpNode | TypeIntrospectionNode, context: CompileTimeKeyContext,
+): string | undefined {
+  const value = valueOf(expression, context, new Set());
+  return value === undefined ? undefined : valueLabel(value);
 }

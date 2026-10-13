@@ -181,7 +181,8 @@ const serializeExpression = (
     return inner && { kind: 'unary', operator: expression.operator, expression: inner };
   }
   if (expression instanceof BinaryOpNode) {
-    if (!replayBinaryOperator.has(expression.operator)) return undefined;
+    // A Yul word builtin (yulBuiltin) has EVM semantics the replay operators do not state.
+    if (!replayBinaryOperator.has(expression.operator) || expression.yulBuiltin) return undefined;
     const left = serializeExpression(expression.left, parameters, loopIndex);
     const right = serializeExpression(expression.right, parameters, loopIndex);
     return left && right && { kind: 'binary', operator: expression.operator, left, right };

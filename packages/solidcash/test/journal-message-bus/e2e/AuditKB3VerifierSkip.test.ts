@@ -20,6 +20,16 @@ const verdict = (builder: TransactionBuilder): true | string => {
   return vm.verify({ sourceOutputs, transaction });
 };
 
+const vmRejects = (builder: TransactionBuilder): boolean => {
+  assertAuthenticatingVmEvidence(builder);
+  const transaction = builder.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+  return transaction.inputs.some((_input, inputIndex) => vm.evaluate({
+    inputIndex, sourceOutputs, transaction,
+  }).error !== undefined);
+};
+
 const buildComposition = async (): Promise<{
   composition: ReturnType<typeof messageBus.compose>; calleeLock: string;
 }> => {
@@ -87,5 +97,17 @@ describe('audit KB-3: a bound route cannot skip its manifest verifier', () => {
     const hostile = await composition.build();
     skipCalleeVerifier(hostile, calleeLock);
     expect(verdict(hostile), 'KB-3 verifier skipped').not.toBe(true);
+  }, 120_000);
+
+  it('accepts the honest routed call', async () => {
+    const { composition } = await buildComposition();
+    expect(vmRejects(await composition.build())).toBe(false);
+  }, 120_000);
+
+  it('rejects a callee route whose active verifier index is negative inside a composition', async () => {
+    const { composition, calleeLock } = await buildComposition();
+    const hostile = await composition.build();
+    skipCalleeVerifier(hostile, calleeLock);
+    expect(vmRejects(hostile)).toBe(true);
   }, 120_000);
 });

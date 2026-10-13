@@ -27,6 +27,7 @@ import {
   computeFunctionSignature,
   canonicalSelectorSignature,
   encodeIntegerValue,
+  isChunkableValueType,
   isDynamicStorageType,
   isOutputOnlyBlockSlot,
 } from '@solidcash/utils';
@@ -44,9 +45,11 @@ import {
   BlockNode,
   BoolLiteralNode,
   BranchNode,
+  BreakNode,
   CastNode,
   CollectionIterationNode,
   ConstantDefinitionNode,
+  ContinueNode,
   ContractNode,
   DeleteLocalNode,
   DeleteStateNode,
@@ -1304,6 +1307,65 @@ function unsupportedBatchWriteShape(
   if (order.kind === 'refusal') return order.reason;
   return 'the body writes a mapping in a shape whose record the master cannot read back from its own frame: its '
     + 'segment would not fix which transition ran';
+}
+
+/**
+ * True when a swap-remove write's owner delete runs wherever the write has: one statement list holds both, the
+ * delete itself after the write's statement, and nothing between them leaves the list.
+ */
+export function aliasDeleteFollowsWrite(block: BlockNode, write: Node, owner: number): boolean {
+  const holds = (statement: Node): boolean => statement === write
+    || (statement instanceof BlockNode && (statement.statements ?? []).some(holds))
+    || (statement instanceof UncheckedNode && holds(statement.block))
+    || (statement instanceof BranchNode && (holds(statement.ifBlock)
+      || (statement.elseBlock !== undefined && holds(statement.elseBlock))));
+  // A loop, switch or try is not walked: it counts as leaving.
+  const leaves = (statement: Node): boolean => statement instanceof ReturnNode || statement instanceof BreakNode
+    || statement instanceof ContinueNode || statement instanceof WhileNode || statement instanceof DoWhileNode
+    || statement instanceof SwitchNode || statement instanceof TryCatchNode
+    || statement instanceof CollectionIterationNode
+    || (statement instanceof BlockNode && (statement.statements ?? []).some(leaves))
+    || (statement instanceof UncheckedNode && leaves(statement.block))
+    || (statement instanceof BranchNode && (leaves(statement.ifBlock)
+      || (statement.elseBlock !== undefined && leaves(statement.elseBlock))));
+  const statements = block.statements ?? [];
+  const at = statements.findIndex(holds);
+  if (at < 0) return false;
+  const end = statements.findIndex((statement, index) => index > at
+    && statement instanceof MappingDeleteNode && statement.entrySlotIndex === owner);
+  if (end >= 0) return !statements.slice(at, end).some(leaves);
+  const inner = statements[at];
+  if (inner instanceof BlockNode) return aliasDeleteFollowsWrite(inner, write, owner);
+  if (inner instanceof UncheckedNode) return aliasDeleteFollowsWrite(inner.block, write, owner);
+  return inner instanceof BranchNode && (aliasDeleteFollowsWrite(inner.ifBlock, write, owner)
+    || (inner.elseBlock !== undefined && aliasDeleteFollowsWrite(inner.elseBlock, write, owner)));
+}
+
+/**
+ * DS-6: why a body's swap-remove write of a value that chunks may be lost, or undefined when it may not. Where its key
+ * meets the key of the delete of its batch after it, the write is skipped, as the delete wins where it runs; a delete
+ * that may not run would leave the write lost. A value that does not chunk lands on the delete's node there instead.
+ */
+function losableChunkableAliasWrite(entry: FunctionDefinitionNode): string | undefined {
+  const body = entry.body;
+  if (body === undefined) return undefined;
+  for (const access of entry.entryAccesses ?? []) {
+    const owner = access.aliasCondDeleteSlot;
+    if (owner === undefined || !(entry.sortedBatchInfo ?? []).some((batch) => batch.slotIndices.includes(owner)
+      && batch.slotIndices.includes(access.slotIndex))) continue;
+    const writes: (MappingAssignNode | MappingFieldAssignNode)[] = [];
+    walkInvocationAst(body, (node) => {
+      if ((node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode)
+        && node.entrySlotIndex === access.slotIndex) writes.push(node);
+    });
+    const valueType = writes[0]?.collection?.innermostValueType;
+    if (valueType === undefined || !isChunkableValueType(valueType)
+      || writes.every((write) => aliasDeleteFollowsWrite(body, write, owner))) continue;
+    return `the body writes mapping "${access.collection}" ahead of a delete of it a branch or an early exit may `
+      + 'skip; where their keys meet, a value that chunks cannot land on the deleted key\'s node, so the write would '
+      + 'be lost';
+  }
+  return undefined;
 }
 
 /** A closed interval of the calls some path makes, or undefined when the source leaves the count open. */
@@ -2608,6 +2670,8 @@ export function assessFramedMasterShape(input: FramedMasterShapeInput): FramedMa
     if ('reason' in forward) refuseBody(fn, forward.reason);
     const batchShape = unsupportedBatchWriteShape(fn, constants);
     if (batchShape !== undefined) refuseBody(fn, batchShape);
+    const losable = losableChunkableAliasWrite(fn);
+    if (losable !== undefined) refuseBody(fn, losable);
     // A loop that reads a long value once per turn takes a list of values for one slot, and the block lists one.
     const perTurnValue = fn.parameters.find((parameter) =>
       VALUE_WITNESS_PARAMETER.test(parameter.name) && parameter.type instanceof ArrayType);

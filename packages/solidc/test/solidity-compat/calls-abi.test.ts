@@ -300,7 +300,7 @@ describe('foreign external fn-ptr .selector / .address members', () => {
       + ' return C(address(0x1234)).f.address; } }', { evmCompat: true });
     expect(art.abi.find((x) => x.name === 'f')!.outputs![0].type).toBe('address');
   });
-  it('encodes a self external-function member stored in a struct blob', () => {
+  it('keeps a self external-function member stored in a struct field a functionId', () => {
     const art = compileString('contract C { struct S { function() external returns (uint) f; uint b; }'
       + ' function invoke(S memory s) public returns (uint) { return s.f() + s.b; }'
       + ' function g() public returns (uint) { return 7; }'
@@ -308,7 +308,7 @@ describe('foreign external fn-ptr .selector / .address members', () => {
     { evmCompat: true });
     expect(art.contractName).toBe('C');
   });
-  it('dispatches a blob function-pointer field through indexed and nested struct receivers', () => {
+  it('dispatches a self function-pointer field through indexed and nested struct receivers', () => {
     const art = compileString('struct I { uint a; function(uint) external returns (uint) fp; }'
       + ' struct S { I inner; } contract C { S[2] rows;'
       + ' function plusOne(uint x) public returns (uint) { return x + 1; }'
@@ -955,8 +955,10 @@ describe('nested internal-only ABI parameter types', () => {
     const compat = { evmCompat: true };
     expect(() => compileString('contract C { struct S { function() internal[2] callbacks; }'
       + ' function f(S memory value) public {} }', compat)).toThrow(/Function types cannot be used/);
+    // A mapping-holding struct is refused outside storage before the ABI check (solc TypeError 4061).
     expect(() => compileString('contract C { struct S { mapping(uint => uint) values; }'
-      + ' function f(S memory value) public {} }', compat)).toThrow(/Function types cannot be used/);
+      + ' function f(S memory value) public {} }', compat))
+      .toThrow(/Function types cannot be used|mapping-containing parameters must have 'storage' location/);
   });
 });
 

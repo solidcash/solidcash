@@ -1,9 +1,11 @@
 import { computeErc7201SlotNumber } from '@solidcash/utils';
+import { stringLiteralBytes } from '../ast/stringLiteralBytes.js';
 import { Location, Point } from '../ast/Location.js';
 import { StorageLayoutSpecifierError } from '../Errors.js';
 
-// Solidity's storage-layout specifier (`contract C layout at <expr>`) offsets EVM storage, which has no meaning for
-// NFT-commitment state, so parseCode blanks the clause before parsing. This pass first applies solc's checks to the
+// Solidity's storage-layout specifier (`contract C layout at <expr>`) offsets EVM storage. NFT-commitment state has
+// no slot space, so parseCode blanks the clause before parsing and keeps only the evaluated base, which shifts the
+// EVM-visible slot numbers (`.slot`, sload/sstore addresses). This pass first applies solc's checks to the
 // source text: ContractLevelChecker (abstract contract 7587, inheriting a custom layout 8894) and
 // PostTypeContractLevelChecker (purity 1139, integer type 1763, constant evaluation 1505, uint256 range 6753,
 // signedness 1481). Only the parsed file is visible: a name it cannot resolve (an import, a base declared elsewhere)
@@ -90,7 +92,6 @@ const META_MEMBERS = new Map<string, Ty>([
 ]);
 const CONTRACT_KINDS = new Set(['contract', 'interface', 'library']);
 const SKIPPED_ITEMS = new Set(['constructor', 'fallback', 'receive', 'using', 'pragma', 'import']);
-const ESCAPES = new Map([['n', '\n'], ['r', '\r'], ['t', '\t']]);
 const VARIABLE_MODIFIERS = new Set([
   'public', 'private', 'internal', 'external', 'constant', 'immutable', 'override', 'transient', 'virtual',
 ]);
@@ -104,9 +105,12 @@ const BINARY_PRECEDENCE = new Map<string, number>([
   ['&', 7], ['<<', 8], ['>>', 8], ['+', 9], ['-', 9], ['*', 10], ['/', 10], ['%', 10], ['**', 11],
 ]);
 
-/** Throws StorageLayoutSpecifierError for a `layout at` specifier (or an inheritance of one) that solc rejects. */
-export function validateStorageLayoutSpecifiers(code: string): void {
-  new LayoutSpecifierCheck(code).run();
+/**
+ * Throws StorageLayoutSpecifierError for a `layout at` specifier (or an inheritance of one) that solc rejects.
+ * Returns the evaluated base slot per contract name; a base it cannot evaluate (an unresolved name) is absent.
+ */
+export function validateStorageLayoutSpecifiers(code: string): Map<string, bigint> {
+  return new LayoutSpecifierCheck(code).run();
 }
 
 class LayoutSpecifierCheck {
@@ -114,6 +118,7 @@ class LayoutSpecifierCheck {
   private readonly file = new Map<string, Decl>();
   private readonly contracts: Contract[] = [];
   private readonly constants = new Map<VarDecl, Val | null | undefined>();
+  private readonly bases = new Map<string, bigint>();
   private scope?: Contract;
   private pos = 0;
 
@@ -121,7 +126,7 @@ class LayoutSpecifierCheck {
     this.toks = tokenize(code);
   }
 
-  run(): void {
+  run(): Map<string, bigint> {
     for (const item of splitItems(this.toks, 0, this.toks.length)) {
       const contract = this.contractOf(item);
       if (!contract) this.declare(this.file, item);
@@ -144,6 +149,7 @@ class LayoutSpecifierCheck {
     for (const contract of this.contracts) {
       if (contract.layout?.length) this.checkBaseSlot(contract, contract.layout);
     }
+    return this.bases;
   }
 
   private checkBaseSlot(contract: Contract, toks: Tok[]): void {
@@ -182,6 +188,7 @@ class LayoutSpecifierCheck {
     if (ty.k === 'int' && ty.signed) {
       throw this.fail('TypeError 1481', `Base slot expression of type 'int${ty.bits}' is not convertible to uint256.`);
     }
+    if (slot.d === 1n) this.bases.set(contract.name, slot.n);
   }
 
   // ---- declarations ----
@@ -534,7 +541,8 @@ class LayoutSpecifierCheck {
         if (callee.den?.k !== 'builtin' || callee.den.name !== 'erc7201') return isUnknown(callee) ? undefined : null;
         const arg = e.args.length === 1 ? this.evaluate(e.args[0]) : null;
         if (!arg) return arg;
-        return typeof arg.v === 'string' ? { ty: UINT256, v: rat(computeErc7201SlotNumber(arg.v)) } : null;
+        if (typeof arg.v !== 'string') return null;
+        return { ty: UINT256, v: rat(computeErc7201SlotNumber(Uint8Array.from(arg.v, (c) => c.charCodeAt(0)))) };
       }
       default: return null;
     }
@@ -843,14 +851,10 @@ function readString(code: string, quoteAt: number, hex: boolean, toks: Tok[], st
     raw += code.slice(i, i + step);
     i += step;
   }
-  const s = hex
-    ? (raw.replace(/_/g, '').match(/../g) ?? []).map((h) => String.fromCharCode(parseInt(h, 16))).join('')
-    : raw.replace(/\\(?:x([\da-fA-F]{2})|u([\da-fA-F]{4})|(\r?\n)|([\s\S]))/g,
-      (_m: string, x?: string, u?: string, newline?: string, ch?: string): string => {
-        if (x || u) return String.fromCharCode(parseInt(x ?? u ?? '', 16));
-        if (newline) return '';
-        return ESCAPES.get(ch ?? '') ?? ch ?? '';
-      });
+  // One char per byte: hex digits pair up, any other string takes the bytes solc gives it (a malformed escape, which
+  // the parser rejects, reads as empty).
+  const bytes = hex ? (raw.replace(/_/g, '').match(/../g) ?? []).map((h) => parseInt(h, 16)) : stringLiteralBytes(raw);
+  const s = Array.from(bytes ?? [], (b) => String.fromCharCode(b)).join('');
   toks.push({ t: 'str', v: raw, pos: start, s });
   return i + 1;
 }

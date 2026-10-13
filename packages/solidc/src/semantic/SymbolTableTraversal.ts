@@ -120,7 +120,9 @@ import {
   StateArrayDeleteNode,
   SelfdestructStatementNode,
   UncheckedNode,
+  type CallOptions,
   type GraphEffectFrame,
+  exactArrayLength,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
@@ -138,7 +140,9 @@ import { describeFunctionLowLevelCallsites } from './LowLevelCallShapes.js';
 import { KERNEL_JOURNAL_ACCESS_STREAMS } from './LowerVMapCounterLoops.js';
 import { blockEndsWithReturn, nestedStatementLists } from './EarlyReturnTransformation.js';
 import { isReturnFlag } from './ConfineReturns.js';
-import { castKeyLabel, constantKeyLabel, type CompileTimeKeyContext } from './compileTimeKeyValue.js';
+import {
+  castKeyLabel, compileTimeKeyLabel, constantKeyLabel, type CompileTimeKeyContext,
+} from './compileTimeKeyValue.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
@@ -221,6 +225,7 @@ import {
   SolidcDiagnosticError,
 } from '../Errors.js';
 import { parameterTypeSignature } from './parameterTypeToken.js';
+import { getMaxPushdataEncodedSizeForType } from './maxEncodedSize.js';
 import {
   type CompilerOptions, PrimitiveType, BytesType, type Type, StructType, EnumType, AddressType, ValueType,
   computeEventSignature, computeEventSelector, computeErrorSignature, computeCollectionSignature,
@@ -235,6 +240,8 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { reachableFreeFunctionsInSource } from './PruneUnreachableFreeFunctions.js';
 import { reachableContractFunctions } from './PruneUnreachableMsgDataMethods.js';
+
+export { getMaxPushdataEncodedSizeForType };
 
 // Correctness-first bound for runtime-variable resources inside a relocatable balanced block.
 //
@@ -311,7 +318,7 @@ class SourceEffectOrderTraversal extends AstTraversal {
       .reverse();
     if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
     if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
-    if (node.callInfo && !node.foldedIntoDeploy && !node.rawValueTransferOnly) {
+    if (node.callInfo && !node.foldedIntoDeploy && !node.rawValueTransferOnly && !node.noCodeTarget) {
       if (this.overwrite || (this.assignMissing && node.sourceEffectOrdinal === undefined)) {
         node.sourceEffectOrdinal = this.next++;
       } else if (node.sourceEffectOrdinal !== undefined) {
@@ -446,12 +453,6 @@ function isOwnAddressExpression(expression: ExpressionNode): boolean {
 }
 
 /**
- * Widest pushdata encoding of an address: its locking bytecode is stored inline, and the widest form is
- * P2SH32 (`OP_HASH256 <32> OP_EQUAL` = 35 B), so 36 with the push prefix.
- */
-const ADDRESS_MAX_ENCODED_BYTES = 36;
-
-/**
  * `keccak256(type(C).creationCode)` (or `runtimeCode`) hashes a blob the compiler already holds, so code
  * generation folds it to a constant and never reads a side-car. Counting it would reserve a `keccakSideCar`
  * slot nobody uses and make the SDK co-spend an input the covenant never looks at.
@@ -507,59 +508,6 @@ function isMessageBusRowLoop(loop: WhileNode | DoWhileNode): boolean {
     ? expression.name === '__message_bus_row'
     : expression instanceof BinaryOpNode && (boundsRow(expression.left) || boundsRow(expression.right)));
   return boundsRow(loop.condition);
-}
-
-export function getMaxPushdataEncodedSizeForType(
-  type: Type, seen: Set<string> = new Set(), addressBytes: number = ADDRESS_MAX_ENCODED_BYTES,
-): number {
-  if (type === PrimitiveType.BOOL) return 1;
-  if (type === PrimitiveType.BIGINT) return 9;
-  if (type === PrimitiveType.PUBKEY) return 34;
-  if (type === PrimitiveType.SIG) return 74;
-  if (type === PrimitiveType.DATASIG) return 66;
-  if (type instanceof IntType) {
-    const dataBytes = Math.ceil((type.bits + 1) / 8); // +1 for sign bit
-    if (dataBytes <= 75) return dataBytes + 1;
-    if (dataBytes <= 255) return dataBytes + 2;
-    return dataBytes + 3;
-  }
-  if (type instanceof FixedType) {
-    const dataBytes = Math.ceil((type.bits + 1) / 8);
-    if (dataBytes <= 75) return dataBytes + 1;
-    if (dataBytes <= 255) return dataBytes + 2;
-    return dataBytes + 3;
-  }
-  if (type instanceof BytesType) {
-    if (type.bound === undefined) return 9; // Unbounded bytes: use generic pushdata size
-    const n = type.bound;
-    if (n === 0) return 1;
-    if (n === 1) return 2;
-    if (n <= 75) return n + 1;
-    if (n <= 255) return n + 2;
-    return n + 3;
-  }
-  // An address IS its locking bytecode, stored inline, so it costs its widest encoding - not the 9 bytes of a
-  // generic handle. Under-estimating packs too many addresses into one NFT and the commitment overflows the
-  // 128-byte consensus limit at send time (MistSwap SushiMaker deploy: 171 B).
-  if (type instanceof AddressType) return addressBytes;
-  if (type instanceof ValueType) {
-    return getMaxPushdataEncodedSizeForType(type.underlyingType, seen, addressBytes);
-  }
-  if (type instanceof StructType) {
-    // A struct reaches itself only through a dynamic array / mapping (returns a bounded handle below). A direct
-    // or fixed-array self / mutual reference has no finite size - reject cleanly rather than recursing forever.
-    if (seen.has(type.name)) {
-      throw new Error(`Recursive struct '${type.name}' has no bounded size; a struct may only reference itself `
-        + 'through a dynamic array or mapping');
-    }
-    const next = new Set(seen).add(type.name);
-    return type.fields.reduce((sum, f) => sum + getMaxPushdataEncodedSizeForType(f.type, next, addressBytes), 0);
-  }
-  if (type instanceof ArrayType && type.bound !== undefined) {
-    return getMaxPushdataEncodedSizeForType(PrimitiveType.BIGINT, seen)
-      + type.bound * getMaxPushdataEncodedSizeForType(type.elementType, seen, addressBytes);
-  }
-  return 9;
 }
 
 // Object keys that are RESOLVED cross-reference back-edges, not structural children. Once SymbolTable sets them a
@@ -944,8 +892,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   private writtenNames = new WeakMap<Node, { readonly names: Set<string>; readonly tuples: Set<string> }>();
   private writtenNamesOf?: FunctionDefinitionNode;
   private canonSeen: Set<string> = new Set(); // cycle guard for transitive local-key canonicalization
-  // Set while a mapping key is canonicalized: a constant or a byte-changing cast of a compile-time value is then
-  // published as the value the body hashes for it (`compileTimeKeyValue.ts`).
+  // Set while a mapping key is canonicalized: a constant, a byte-changing cast of a compile-time value, a bitwise
+  // operation over byte values or a type introspection is then published as the value the body hashes for it
+  // (`compileTimeKeyValue.ts`).
   private keyValueFolding = false;
   // Each node's straight-line statement number in the function body, and each statement's state effects: a
   // canonical read of state the body already assigned names the assigned value, so the SDK evaluates it against
@@ -2075,6 +2024,13 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
         }
       }
+      for (const special of [node.fallbackDef, node.receiveDef]) {
+        if (special?.isAbstract && special.inheritedFrom) {
+          throw new UnimplementedAbstractFunctionError(
+            node, special.isFallback ? 'fallback' : 'receive', special.inheritedFrom,
+          );
+        }
+      }
     }
 
     // Compute 4-byte hash selectors for entry-point functions
@@ -2645,6 +2601,13 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private deployResultLocals = new Map<string, InstantiationNode>(); // locals = `new C(...)` in the current fn
 
+  /** The deploy a local is bound to: `new C(..)`, also behind address casts (`I(new C())`, `I(address(..))`). */
+  private deployBehindAddressCasts(expression: ExpressionNode | undefined): InstantiationNode | undefined {
+    let value = expression;
+    while (value instanceof CastNode && value.type instanceof AddressType) value = value.expression;
+    return value instanceof InstantiationNode && value.referencedContract ? value : undefined;
+  }
+
   // Survey the conditions which can make an otherwise stateless contract stateful. Stateful-child deployment is
   // the first condition in the historical short-circuit chain, so finding one stops immediately. If none exists,
   // that same necessary full traversal also answers the value-bearing-deploy and event-emission predicates.
@@ -2708,6 +2671,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     expr: ExpressionNode, subs: Map<string, ExpressionNode>, fieldExprs: Map<string, ExpressionNode>,
     fieldType: (name: string) => Type | undefined, expectedType?: Type,
   ): ExpressionNode | null {
+    // A hex number literal in an integer slot is its big-endian integer, as TypeCheck reinterprets it in the body;
+    // the folded genesis skips that pass, so a raw byte string would replay as the wrong value and recipe type.
+    if (expr instanceof HexLiteralNode && !expr.isHexStringLiteral && (expectedType instanceof IntType
+      || expectedType === PrimitiveType.INT || expectedType === PrimitiveType.BIGINT)) {
+      let value = expr.numericValue ?? 0n;
+      if (expr.numericValue === undefined) for (const byte of expr.value) value = (value << 8n) + BigInt(byte);
+      const int = new IntLiteralNode(value);
+      int.location = expr.location;
+      return int;
+    }
     if (expr instanceof LiteralNode) return expr;
     // Pure helper replay is intentionally narrower than direct constructor folding: transaction/message
     // projections and state reads must not become hidden helper inputs. Unknown node kinds also fail closed below.
@@ -2953,6 +2926,18 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
+   * A folded call declared `view`/`pure` is a STATICCALL in EVM, where any state write reverts. `reverts` when the
+   * callee body writes on every path (the call is that failure), `conditional` when only on some (refused).
+   */
+  private staticFoldWrite(
+    declared: InterfaceFunctionNode | FunctionDefinitionNode, fold: { wrote?: boolean, unconditionalWrite?: boolean },
+  ): 'none' | 'reverts' | 'conditional' {
+    const mutability = declaredStateMutability(declared);
+    if ((mutability !== 'view' && mutability !== 'pure') || !fold.wrote) return 'none';
+    return fold.unconditionalWrite ? 'reverts' : 'conditional';
+  }
+
+  /**
    * The function a deploy-time call targets. A name declared by the contract being folded (the child whose
    * constructor or callee is being replayed) or supplied by the caller, or - for a call through a function-typed
    * parameter - the function the caller bound to that parameter: `new D(this.sixteen)` against the child's
@@ -3110,7 +3095,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     fieldExprs: Map<string, ExpressionNode>, fieldType: (name: string) => Type | undefined,
     writableFieldType: (name: string) => Type | undefined = fieldType,
     constructorPredicates?: ExpressionNode[],
-  ): false | { returnValue?: ExpressionNode, wrote: boolean, discarded: number } {
+  ): false | { returnValue?: ExpressionNode, wrote: boolean, unconditionalWrite: boolean, discarded: number } {
     type PredicateTrackedExpression = ExpressionNode & { constructorPredicateUnsafe?: boolean };
     const predicateSourceUnsafe = (value: unknown, seen = new WeakSet<object>()): boolean => {
       if (Array.isArray(value)) return value.some((item) => predicateSourceUnsafe(item, seen));
@@ -3132,6 +3117,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     let returnValue: ExpressionNode | undefined;
     let wrote = false;
+    // A state write on every path of this list (a branch writes unconditionally only when both arms do).
+    let unconditionalWrite = false;
     // Statements the replay drops on purpose: a guard it does not reproduce, an inert expression statement, and
     // a transfer the callee makes to its own address. A body of only those has no observable transition, which
     // the caller treats like an empty body (a no-op call) instead of refusing it.
@@ -3212,7 +3199,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const falseResult = stmt.elseBlock ? this.foldStatementList(
           stmt.elseBlock.statements ?? [], falseSubs, falseFields, fieldType, writableFieldType,
           constructorPredicates,
-        ) : { wrote: false, discarded: 0 };
+        ) : { wrote: false, unconditionalWrite: false, discarded: 0 };
         if (!falseResult || falseResult.returnValue) return false;
         const joined = (
           whenTrue: ExpressionNode, whenFalse: ExpressionNode, type: Type,
@@ -3270,6 +3257,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           fieldExprs.set(name, joined(trueValue, falseValue, type));
         }
         wrote ||= trueResult.wrote || falseResult.wrote;
+        unconditionalWrite ||= trueResult.unconditionalWrite && falseResult.unconditionalWrite;
       } else if (stmt instanceof StateAssignNode) {
         const folded = this.foldGenesisExpr(
           cloneNode(stmt.expression), subs, fieldExprs, fieldType, writableFieldType(stmt.name),
@@ -3277,6 +3265,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (!folded) return false;
         fieldExprs.set(stmt.name, folded);
         wrote = true;
+        unconditionalWrite = true;
       } else if (stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode) {
         // A not-yet-analyzed child body writes state as a BARE assign (the StateAssign rewrite happens in
         // the child's own pass): a local reassign updates subs, a child-field name is a state write.
@@ -3289,6 +3278,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         } else if (writableFieldType(stmt.identifier.name)) {
           fieldExprs.set(stmt.identifier.name, folded);
           wrote = true;
+          unconditionalWrite = true;
         } else {
           return false;
         }
@@ -3349,7 +3339,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         return false; // only straight-line local/field assignments (+ trailing require/return) fold
       }
     }
-    return { returnValue, wrote, discarded };
+    return { returnValue, wrote, unconditionalWrite, discarded };
   }
 
   // Folded genesis/return expressions embed CLONES of parent-context identifiers that the roll analysis
@@ -3483,7 +3473,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             ) : undefined;
           const literalIndex = statement.keys[0] instanceof IntLiteralNode ? statement.keys[0].value : -1n;
           if (!key || !value
-            || (fixedScalarArray && (literalIndex < 0n || literalIndex >= BigInt(fixedArrayType!.bound!)))) {
+            || (fixedScalarArray && (literalIndex < 0n || literalIndex >= exactArrayLength(fixedArrayType!)!))) {
             failed = true;
             continue;
           }
@@ -3553,10 +3543,11 @@ export default class SymbolTableTraversal extends AstTraversal {
   // straight-line sequence of `T local = expr;` and `this.field = expr;` assignments (plus an optional
   // trailing require, not enforced at deploy), where each expr folds (foldGenesisExpr). Records, per child
   // field, its final genesis expression in the parent's context, so the deploy covenant computes the value
-  // instead of using the default. Returns false (caller errors) for anything else.
+  // instead of using the default. Returns false (caller errors) for anything else. `wrote` / `unconditionalWrite`
+  // report a state write on some / every path (a read-only declaration of the callee must revert on it).
   private tryFoldDeployCall(
     deployNode: InstantiationNode, foo: FunctionDefinitionNode, parentArgs: ExpressionNode[],
-  ): false | { returnValue?: ExpressionNode } {
+  ): false | { returnValue?: ExpressionNode, wrote?: boolean, unconditionalWrite?: boolean } {
     const body = foo.body as BlockNode | undefined;
     if (!body) return false;
     const statements = body.statements ?? [];
@@ -3596,7 +3587,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       zero.location = deployNode.location;
       this.genesisChildBalance = zero;
     }
-    let res: false | { returnValue?: ExpressionNode, wrote: boolean, discarded: number };
+    let res: false | { returnValue?: ExpressionNode, wrote: boolean, unconditionalWrite: boolean, discarded: number };
     try {
       foo.returnNames.forEach((name, index) => {
         if (subs.has(name) || index >= foo.returnTypes.length) return;
@@ -3631,7 +3622,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.protectFoldedExprVars(init.values());
     }
     if (res.returnValue) this.protectFoldedExprVars([res.returnValue]);
-    return { returnValue: res.returnValue };
+    return { returnValue: res.returnValue, wrote: res.wrote, unconditionalWrite: res.unconditionalWrite };
   }
 
   /**
@@ -3805,9 +3796,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         // instead receive the already-resolved logical sender as hidden OP_INVOKE context; giving those helpers
         // a second declared category parameter makes graph handlers call `_checkOwner(bytes32)` as `_checkOwner()`.
         // A constructor is never such a subroutine: `constructor () internal` only marks a Solidity 0.6 contract
-        // abstract, and its body runs as the deploy entry point like a public constructor's.
-        const subroutineBody = node.name !== '__construct'
-          && (node.visibility === 'internal' || node.visibility === 'private');
+        // abstract, and its body runs as the deploy entry point like a public constructor's. A free or library
+        // function is never an entry point, whatever its visibility: a public library one is reached by a call.
+        const subroutineBody = node.name !== '__construct' && (node.isFreeFunction
+          || node.visibility === 'internal' || node.visibility === 'private');
         if (!subroutineBody && !node.graphEmissionHandler && !node.messageBusRoute) {
           const categoryParam = new ParameterNode(new BytesType(32), '__internal__msgSenderCategory');
           categoryParam.location = node.location;
@@ -3996,6 +3988,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         const ownsCollectionTopology = (node.modifiers.includes(FunctionModifier.DELEGATE)
           && fixedSortedWriteCount <= 1)
           || (node.name.startsWith('__message_bus_') && !node.messageBusRoute);
+        if (!ownsCollectionTopology) {
+          this.assignComposeAliasPriors(node, ordered, batchByCollection, loopWrittenCollections);
+        }
         node.sortedBatchInfo = ownsCollectionTopology ? undefined : [...batchByCollection]
           .filter(([collection]) => !loopWrittenCollections.has(collection)
             && (fixedSortedWriteCount >= 1 || stateArrayLastCollections.has(collection)))
@@ -4010,6 +4005,24 @@ export default class SymbolTableTraversal extends AstTraversal {
               return info?.aliasCondDeleteSlot === undefined && (info?.runtimeAliasPriorSlots?.length ?? 0) === 0;
             }) && { linear: true }),
           }));
+
+        // A direct pure read can need the node another slot of its collection spends (two keys bracketed by one
+        // predecessor). Let it prove its key with the collection's first slot's proof input; the covenant refuses
+        // a key a batch write targets, so a read never sees a written node's old value. Every write of the
+        // collection must be a batch target for that check.
+        if (!node.messageBusRoute && !node.name.startsWith('__message_bus_')
+          && !node.modifiers.includes(FunctionModifier.DELEGATE) && this.compilerOptions.composition !== 'framed') {
+          for (const info of ordered) {
+            const coll = this.collectionMap.get(info.collection);
+            if (!coll?.sorted || info.inLoop || isWritten(info) || isChunkableValueType(coll.innermostValueType)) continue;
+            const prior = ordered.find((candidate) => candidate.collection === info.collection);
+            if (!prior || prior === info || prior.inLoop || prior.keyParams.length !== info.keyParams.length) continue;
+            const batch = node.sortedBatchInfo?.find((candidate) => candidate.collection === info.collection);
+            if (ordered.some((other) => other.collection === info.collection && isWritten(other)
+              && !(batch?.slotIndices.includes(other.slotIndex) ?? false))) continue;
+            info.sharedProofPriorSlot = prior.slotIndex;
+          }
+        }
 
         // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,
         // and final successor slot for each logical target. The SDK derives them from the canonical batch plan.
@@ -7971,7 +7984,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const gather = (n: Node | undefined, seen: Set<Node>): void => {
       if (!n || seen.has(n)) return;
       seen.add(n);
-      if (n instanceof ExternalFunctionCallNode) {
+      if (n instanceof ExternalFunctionCallNode && !n.noCodeTarget) {
         if (!n.foldedIntoDeploy) allCalls.add(n);
         const nm = this.externalReceiverLocal(n.addressExpression);
         if (nm) {
@@ -8639,6 +8652,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const parameter of node.parameters) {
         this.collectExternalCalls(parameter, slots, enclosingConditions);
       }
+      // A call to a target that holds no code co-spends no callee, so it owns no slot.
+      if (node.noCodeTarget) return;
       // A concrete contract cast exposes only real ABI-visible functions (including synthesized PUBLIC state
       // getters). Do not let `C(addr).privateState()` become an arbitrary external-call selector merely because
       // the call node was formed before the secondary contract's members were validated.
@@ -11963,7 +11978,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       return `call:${node.identifier.name}(${args})`;
     }
     if (node instanceof BinaryOpNode) {
-      return `binop:${node.operator}(${this.canonicalizeExpression(node.left)},${this.canonicalizeExpression(node.right)})`;
+      const folded = this.keyValueFolding ? compileTimeKeyLabel(node, this.compileTimeKeyContext()) : undefined;
+      return folded
+        ?? `binop:${node.operator}(${this.canonicalizeExpression(node.left)},${this.canonicalizeExpression(node.right)})`;
     }
     if (node instanceof UnaryOpNode) {
       return `unop:${node.operator}(${this.canonicalizeExpression(node.expression)})`;
@@ -12034,6 +12051,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (node instanceof NewArrayNode) {
       return `newarr:${node.elementType.toString()}(${this.canonicalizeExpression(node.size)})`;
+    }
+    if (node instanceof TypeIntrospectionNode && this.keyValueFolding) {
+      const folded = compileTimeKeyLabel(node, this.compileTimeKeyContext());
+      if (folded !== undefined) return folded;
     }
     // Generic structural fallback for every other expression type. Must remain operand-injective: silently
     // collapsing two distinct keys into one entry slot is the C4 state-write mis-targeting bug.
@@ -12392,6 +12413,75 @@ export default class SymbolTableTraversal extends AstTraversal {
     return arrName;
   }
 
+  /**
+   * Direct-convention compose-on-alias. Fixed batch writes of one sorted collection whose keys are not distinct
+   * literals can name one entry at runtime (`bal[msg.sender]` and `bal[this.owner]`). Each later write lists the
+   * earlier ones it may meet, so the covenant composes them in source order instead of refusing the shared entry.
+   * Only plain whole-value writes qualify, each one statement of the body itself, written once and before any
+   * return, with every read of the collection a whole-value read.
+   */
+  private assignComposeAliasPriors(
+    node: FunctionDefinitionNode, ordered: EntryAccessInfo[], batchByCollection: ReadonlyMap<string, number[]>,
+    loopWrittenCollections: ReadonlySet<string>,
+  ): void {
+    if (node.messageBusRoute || node.name.startsWith('__message_bus_') || this.insideConstructor
+      || node.modifiers.includes(FunctionModifier.DELEGATE) || this.compilerOptions.composition === 'framed'
+      || !(node.body instanceof BlockNode)) return;
+    const statements = node.body.statements ?? [];
+    const bySlotKey = new Map(ordered.map((info) => [`${info.collection}:${info.keyParams.join(':')}`, info]));
+    const slotOf = (collection: string, keys: ExpressionNode[]): number | undefined =>
+      bySlotKey.get(`${collection}:${this.getMappingKeyDescriptors(keys).keyParams.join(':')}`)?.slotIndex;
+    const literalKind = (canonical: string): string | undefined => /^(const|lit):/.exec(canonical)?.[1];
+    const distinct = (left: EntryAccessInfo, right: EntryAccessInfo): boolean => left.keySources.some((source, i) => {
+      const other = right.keySources[i]?.canonical;
+      return other !== undefined && literalKind(source.canonical) !== undefined
+        && literalKind(source.canonical) === literalKind(other) && source.canonical !== other;
+    });
+    for (const [collection, slots] of batchByCollection) {
+      const coll = this.collectionMap.get(collection);
+      if (slots.length < 2 || loopWrittenCollections.has(collection) || !coll?.sorted
+        || isChunkableValueType(coll.innermostValueType) || coll.innermostValueType instanceof StructType
+        || coll.innermostValueType instanceof ArrayType) continue;
+      let eligible = true;
+      let lastWrite = -1;
+      const writes = new Map<number, number>();
+      walkInvocationAst(node.body, (candidate) => {
+        if ((candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode
+          || candidate instanceof MappingDeleteNode) && candidate.collection?.name === collection) {
+          const index = statements.indexOf(candidate);
+          const slot = slotOf(collection, candidate.keys);
+          if (!(candidate instanceof MappingAssignNode) || index < 0 || slot === undefined || !slots.includes(slot)
+            || candidate.arrayIndex !== undefined || candidate.arrayPush === true || candidate.arrayPop === true) {
+            eligible = false;
+            return;
+          }
+          writes.set(slot, (writes.get(slot) ?? 0) + 1);
+          lastWrite = Math.max(lastWrite, index);
+        } else if (candidate instanceof MappingAccessNode && candidate.collection?.name === collection
+          && (candidate.arrayIndex !== undefined || candidate.isTokenContainerAccess === true)) {
+          eligible = false;
+        }
+      });
+      if (!eligible || slots.some((slot) => writes.get(slot) !== 1)) continue;
+      if (this.containsReturn(statements.slice(0, lastWrite))) continue;
+      const infos = slots.map((slot) => ordered.find((info) => info.slotIndex === slot)!);
+      for (const info of infos) {
+        const priors = infos.filter((prior) => prior.slotIndex < info.slotIndex && !distinct(prior, info))
+          .map((prior) => prior.slotIndex);
+        if (priors.length > 0) info.composeAliasPriorSlots = priors;
+      }
+    }
+  }
+
+  /** True when any of the statements holds a return. */
+  private containsReturn(statements: readonly Node[]): boolean {
+    return statements.some((statement) => {
+      let found = false;
+      walkInvocationAst(statement, (candidate) => { if (candidate instanceof ReturnNode) found = true; });
+      return found;
+    });
+  }
+
   // Mark each WRITE slot that is followed (in source order) by a DELETE of a DIFFERENT key on the SAME
   // collection (swap-remove's `m[a]=v; delete m[b]`). When a and b alias at runtime the write is redundant
   // (the delete wins) and the one entry NFT can't back both slots; the covenant then gates the write off and
@@ -12509,9 +12599,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // A local bound to `new C(...)` holds a contract this tx will CREATE as an output; it can never be
     // co-spent as an input in this same tx, so calling a method on it later is rejected (see the two
     // external-call sites below). Tracked per function body.
-    if (node.expression instanceof InstantiationNode && node.expression.referencedContract) {
-      this.deployResultLocals.set(node.name, node.expression);
-    }
+    const deploy = this.deployBehindAddressCasts(node.expression);
+    if (deploy) this.deployResultLocals.set(node.name, deploy);
 
     this.symbolTables[0].set(Symbol.variable(node));
     // A synthesized binding allowed to be unused (e.g. a desugared for..of loop var): self-reference it so
@@ -12652,10 +12741,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.expectedFunctionPointerType = savedExpectedFunctionPointerType;
     }
     // Reassignment of a deploy-result local (`d = new D();` again): later folded calls must bind to the
-    // NEW deploy node - earlier folds correctly stay on the old one.
-    if (node.expression instanceof InstantiationNode && node.expression.referencedContract) {
-      this.deployResultLocals.set(node.identifier.name, node.expression);
-    }
+    // NEW deploy node - earlier folds correctly stay on the old one. Any other value unbinds the deploy.
+    const deploy = this.deployBehindAddressCasts(node.expression);
+    if (deploy) this.deployResultLocals.set(node.identifier.name, deploy);
+    else this.deployResultLocals.delete(node.identifier.name);
     return node;
   }
 
@@ -13161,6 +13250,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       decl.location = node.location;
       stmts.push(decl);
     }
+    const writes: StatementNode[] = [];
     node.elements.forEach((e, i) => {
       if (e.skip) return;
       const target = new IdentifierNode(e.name!);
@@ -13169,8 +13259,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       value.location = node.location;
       const assign = new AssignNode(target, value);
       assign.location = node.location;
-      stmts.push(assign);
+      writes.push(assign);
     });
+    // solc stores right to left: a repeated target keeps its leftmost value.
+    if (new Set(node.elements.filter((e) => !e.skip).map((e) => e.name)).size < writes.length) writes.reverse();
+    stmts.push(...writes);
     const block = new BlockNode(stmts);
     block.location = node.location;
     return this.visit(block);
@@ -13341,10 +13434,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private validateExternalCallMutability(callee: InterfaceFunctionNode | FunctionDefinitionNode): void {
     const callerPure = this.currentFunction?.modifiers.includes(FunctionModifier.PURE);
     const callerView = this.currentFunction?.modifiers.includes(FunctionModifier.VIEW);
-    const calleeMutability = callee instanceof InterfaceFunctionNode ? callee.stateMutability
-      : callee.modifiers.includes(FunctionModifier.PURE) ? 'pure'
-        : callee.modifiers.includes(FunctionModifier.VIEW) ? 'view'
-          : callee.modifiers.includes(FunctionModifier.PAYABLE) ? 'payable' : 'nonpayable';
+    const calleeMutability = declaredStateMutability(callee);
     if ((callerPure && calleeMutability !== 'pure')
       || (callerView && (calleeMutability === 'nonpayable' || calleeMutability === 'payable'))) {
       throw new InvalidModifierCombinationError(
@@ -13504,6 +13594,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               callMode: methodName === 'staticcall'
                 ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR,
             };
+            this.markNoCodeRawCall(callNode, node.callOptions);
             callNode.location = node.location;
             return callNode;
           }
@@ -13563,12 +13654,34 @@ export default class SymbolTableTraversal extends AstTraversal {
                   failed.location = node.location;
                   return failed;
                 }
+                // A local typed by another interface (`I i = I(new C())`) runs C's body through I's ABI: fold only
+                // when both declare the same results, as the inline `I(new C()).m()` form does.
+                if (realFoo && calleeName !== deployNode.referencedContract?.name
+                  && (realFoo.returnTypes.length !== ifaceFunc.returnTypes.length
+                    || realFoo.returnTypes.some((t, i) => t.toString() !== ifaceFunc.returnTypes[i].toString()))) {
+                  throw new DeployThenCallError(node, varName, methodName, deployNode.identifier.name, true);
+                }
                 const foldRes = realFoo ? this.tryFoldDeployCall(deployNode, realFoo, parameters) : false;
                 if (!foldRes) {
-                  throw new DeployThenCallError(node, varName, methodName, calleeName,
+                  throw new DeployThenCallError(node, varName, methodName, deployNode.identifier.name,
                     realFoo ? this.isDeployFoldable(realFoo) : false);
                 }
                 deployNode.hasFoldedChildCall = true;
+                const staticWrite = this.staticFoldWrite(ifaceFunc, foldRes);
+                if (staticWrite === 'conditional') {
+                  throw new DeployThenCallError(node, varName, methodName, deployNode.identifier.name, true);
+                }
+                if (staticWrite === 'reverts') {
+                  const failed = new ExternalFunctionCallNode(calleeName, visitedVar, methodName, parameters);
+                  failed.sourceEffectOrdinal = node.sourceEffectOrdinal;
+                  failed.callInfo = { interfaceName: calleeName, functionName: methodName, externalCallSlotIndex: -1 };
+                  failed.foldedIntoDeploy = true;
+                  failed.foldedCallReverts = true;
+                  failed.type = ifaceFunc.returnTypes.length === 1 ? ifaceFunc.returnTypes[0]
+                    : ifaceFunc.returnTypes.length > 1 ? new TupleType(ifaceFunc.returnTypes) : PrimitiveType.VOID;
+                  failed.location = node.location;
+                  return failed;
+                }
                 // A value-returning folded call IS its genesis expression in the parent's context
                 // (`r = c.m_x()` on a fresh deploy reads the value the deploy covenant verifies).
                 if (foldRes.returnValue) {
@@ -14366,10 +14479,31 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
+  /**
+   * Solidity lexical lookup of a bare event name: the enclosing library (in a library function) or contract, then
+   * file-level events (library events share that list, marked by declaringLibraryName). Falls back to the contract,
+   * then to every registered event (imported, interface or compiler-synthesized declarations).
+   */
+  private bareEventCandidates(name: string, contract: ContractNode | undefined): EventDefinitionNode[] {
+    const fn = this.currentFunction;
+    const library = fn?.isLibraryFunction && fn.name.includes('.')
+      ? fn.name.slice(0, fn.name.indexOf('.'))
+      : undefined;
+    const fileEvents = this.sourceFile?.eventDefinitions.filter((event) => event.name === name) ?? [];
+    const contractEvents = contract?.eventDefinitions.filter((event) => event.name === name) ?? [];
+    // One file-level candidate per signature: imports can repeat a declaration.
+    const fileLevel = fileEvents.filter((event) => event.declaringLibraryName === undefined);
+    const scopes = [
+      library !== undefined ? fileEvents.filter((event) => event.declaringLibraryName === library) : contractEvents,
+      fileLevel.filter((event, index) => fileLevel.findIndex((other) => other.signature === event.signature) === index),
+      contractEvents,
+    ];
+    return scopes.find((scope) => scope.length > 0)
+      ?? [...this.eventMap.values()].filter((event) => event.name === name);
+  }
+
   visitEmitStatement(node: EmitStatementNode): Node {
-    // Solidity lexical lookup: any event with this name in the effective contract namespace shadows file-level
-    // and library events of the same name. Only fall back to the global event map when the contract has no such
-    // declaration; otherwise `event E(uint)` incorrectly remained overloaded with file-level `event E()`.
+    // Bare names follow Solidity's lexical scope (bareEventCandidates).
     const qualifiedHolder = node.eventQualifier
       ? this.contractMap.get(node.eventQualifier) ?? this.interfaceMap.get(node.eventQualifier)
       : undefined;
@@ -14382,14 +14516,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     const lexicalContract = !node.eventQualifier && this.currentFunction?.inheritedFrom
       ? this.contractMap.get(this.currentFunction.inheritedFrom)
       : this.currentContract;
-    const contractCandidates = lexicalContract?.eventDefinitions
-      .filter((event) => event.name === node.eventName) ?? [];
     const candidates = node.eventQualifier
       ? qualifiedHolder?.eventDefinitions.filter((event) => event.name === node.eventName)
         ?? (qualifiedLibraryEvent ? [qualifiedLibraryEvent] : [])
-      : contractCandidates.length > 0
-        ? contractCandidates
-        : [...this.eventMap.values()].filter((event) => event.name === node.eventName);
+      : this.bareEventCandidates(node.eventName, lexicalContract);
     if (candidates.length === 0) {
       throw new UndefinedEventError(node);
     }
@@ -15653,10 +15783,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       if ((node.expression instanceof IdentifierNode || node.expression instanceof StateAccessNode)
         && !this.functionDefinitions.has(node.expression.name)) {
         // Own + inherited events live merged on the contract node (available even during state-var
-        // initializers, before eventMap - which is keyed by signature - fills).
-        const bareName = node.expression.name;
-        const ev = this.currentContract?.eventDefinitions?.find((e) => e.name === bareName)
-          ?? [...this.eventMap.values()].find((e) => e.name === bareName);
+        // initializers, before eventMap - which is keyed by signature - fills). A library function sees its
+        // library's events, then file-level ones, not the calling contract's.
+        const ev = this.bareEventCandidates(node.expression.name, this.currentContract)[0];
         if (ev) {
           if (ev.isAnonymous) throw new AnonymousEventSelectorError(node, ev.name);
           const fromEvent = eventSelectorLit(ev.name, ev.parameters.map((p) => p.type.toString()));
@@ -16022,11 +16151,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (node.property !== 'interfaceId') {
         throw new InvalidTypeIntrospectionPropertyError(node, typeText, node.property, ['interfaceId', 'name']);
       }
-      // Pre-compute interfaceId: XOR of all function selectors
-      const allFunctions = this.getAllInterfaceFunctions(iface);
+      // interfaceId (ERC-165): XOR of the selectors of the functions the interface itself declares,
+      // excluding inherited ones (solc interfaceFunctionList(false)); a redeclared override counts.
       const interfaceId = new Uint8Array(4);
-      for (const func of allFunctions) {
+      const seen = new Set<string>();
+      for (const func of iface.functions) {
         const sig = this.selectorSignatureFor(func.name, func.parameters.map((p) => p.type));
+        if (seen.has(sig)) continue;
+        seen.add(sig);
         const selector = this.computeAbiSelector(sig);
         for (let i = 0; i < 4; i++) {
           interfaceId[i] ^= selector[i];
@@ -16341,7 +16473,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.operator === UnaryOperator.SIZE && node.expression instanceof IdentifierNode) {
       const collection = this.collectionMap.get(node.expression.name);
       if (collection?.type instanceof ArrayType && collection.type.bound !== undefined) {
-        const length = new IntLiteralNode(BigInt(collection.type.bound));
+        const length = new IntLiteralNode(exactArrayLength(collection.type)!);
         length.location = node.location;
         return length;
       }
@@ -16881,31 +17013,40 @@ export default class SymbolTableTraversal extends AstTraversal {
           ? deployAlias
           : deployName ? this.deployResultLocals.get(deployName) : undefined;
         if (deployNode) {
+          const receiverName = deployName ?? `new ${deployNode.identifier.name}()`;
+          // An inline deploy the hoist left in place (a conditionally evaluated position) would vanish with the
+          // fold, which keeps only the call's effect: refuse it rather than drop the child.
+          if (deployAlias instanceof InstantiationNode) {
+            throw new DeployThenCallError(node, receiverName, node.methodName, iface.name, true);
+          }
           const realFunction = deployNode.referencedContract?.functions.find((f) => f.name === node.methodName);
           const fold = realFunction ? this.tryFoldDeployCall(deployNode, realFunction, parameters) : false;
           if (!fold) {
             throw new DeployThenCallError(
-              node, deployName ?? `new ${deployNode.identifier.name}()`, node.methodName, iface.name,
+              node, receiverName, node.methodName, iface.name,
               realFunction ? this.isDeployFoldable(realFunction) : false,
             );
           }
           deployNode.hasFoldedChildCall = true;
+          const staticWrite = this.staticFoldWrite(ifaceFunc, fold);
+          if (staticWrite === 'conditional') {
+            throw new DeployThenCallError(node, receiverName, node.methodName, iface.name, true);
+          }
           const sameReturns = realFunction!.returnTypes.length === ifaceFunc.returnTypes.length
             && realFunction!.returnTypes.every((t, i) => t.toString() === ifaceFunc.returnTypes[i].toString());
-          if (sameReturns && fold.returnValue) {
+          if (staticWrite === 'none' && sameReturns && fold.returnValue) {
             fold.returnValue.location = node.location;
             return fold.returnValue;
           }
-          if (!sameReturns && !this.discardedMethodCalls.has(node)) {
-            throw new DeployThenCallError(
-              node, deployName ?? `new ${deployNode.identifier.name}()`, node.methodName, iface.name, true,
-            );
+          if (staticWrite === 'none' && !sameReturns && !this.discardedMethodCalls.has(node)) {
+            throw new DeployThenCallError(node, receiverName, node.methodName, iface.name, true);
           }
           const inert = new ExternalFunctionCallNode(iface.name, addressExpr, node.methodName, parameters);
           inert.resultArrayOutput = node.resultArrayOutput;
           inert.sourceEffectOrdinal = node.sourceEffectOrdinal;
           inert.callInfo = { interfaceName: iface.name, functionName: node.methodName, externalCallSlotIndex: -1 };
           inert.foldedIntoDeploy = true;
+          if (staticWrite === 'reverts') inert.foldedCallReverts = true;
           inert.type = ifaceFunc.returnTypes.length === 1
             ? ifaceFunc.returnTypes[0]
             : ifaceFunc.returnTypes.length > 1 ? new TupleType(ifaceFunc.returnTypes) : PrimitiveType.VOID;
@@ -17017,6 +17158,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             returnEventSignature: '_Return___raw__(bytes)',
             callMode: mode,
           };
+          this.markNoCodeRawCall(callNode, node.callOptions);
           callNode.location = node.location;
           return callNode;
         }
@@ -17348,6 +17490,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       returnEventSignature: '_Return___raw__(bytes)',
       callMode: node.callMode === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR,
     };
+    this.markNoCodeRawCall(callNode, node.callOptions);
     callNode.location = node.location;
     const surface = new MethodCallNode(receiver, node.callMode, [node.data]);
     surface.location = node.location;
@@ -17402,8 +17545,30 @@ export default class SymbolTableTraversal extends AstTraversal {
     call.valueTransferIndex = node.valueTransferIndex;
     call.rawValueTransferOnly = valueCall && hasEffectiveCallValue(call.callOptions?.value)
       && node.data instanceof StringLiteralNode && node.data.value.length === 0;
+    this.markNoCodeRawCall(call, node.callOptions);
     call.location = node.location;
     return call;
+  }
+
+  /**
+   * Mark an option-free empty-calldata raw call to a constant target that cannot be a P2SH lock (`noCodeTarget`).
+   * solc's call to an account without code succeeds with empty data and runs nothing, so no callee is co-spent. A
+   * runtime target may hold a contract (its fallback runs), so it keeps the co-spend, as does a P2SH-sized literal.
+   */
+  private markNoCodeRawCall(call: ExternalFunctionCallNode, options: CallOptions | undefined): void {
+    if (this.compilerOptions.composition === 'framed' || options !== undefined) return;
+    const payload = call.parameters[0];
+    const emptyPayload = (payload instanceof StringLiteralNode && payload.value.length === 0
+        && (payload.solidityBytes === undefined || payload.solidityBytes.length === 0))
+      || (payload instanceof HexLiteralNode && payload.value.length === 0 && payload.codegenError === undefined);
+    if (!emptyPayload) return;
+    let target = call.addressExpression;
+    while (target instanceof CastNode && target.type instanceof AddressType) target = target.expression;
+    if (target instanceof HexLiteralNode || target instanceof IntLiteralNode) {
+      if (target instanceof HexLiteralNode && target.codegenError !== undefined) return;
+      const size = target instanceof HexLiteralNode ? target.value.length : encodeInt(target.value).length;
+      if (size !== 23 && size !== 35) call.noCodeTarget = true;
+    }
   }
 
   private createDefaultExpression(type: Type, contextNode: Node): ExpressionNode {
@@ -18383,6 +18548,14 @@ export default class SymbolTableTraversal extends AstTraversal {
 
 function isEmptyBytesLiteral(expr: ExpressionNode): boolean {
   return expr instanceof HexLiteralNode && expr.value.byteLength === 0;
+}
+
+/** The state mutability a callee's declaration states. */
+function declaredStateMutability(callee: InterfaceFunctionNode | FunctionDefinitionNode): string {
+  return callee instanceof InterfaceFunctionNode ? callee.stateMutability
+    : callee.modifiers.includes(FunctionModifier.PURE) ? 'pure'
+      : callee.modifiers.includes(FunctionModifier.VIEW) ? 'view'
+        : callee.modifiers.includes(FunctionModifier.PAYABLE) ? 'payable' : 'nonpayable';
 }
 
 /** The method a framed low-level call routed to its target's fallback names, which no interface declares. */

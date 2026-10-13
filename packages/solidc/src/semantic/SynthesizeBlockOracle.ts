@@ -36,9 +36,10 @@ import AstTraversal from '../ast/AstTraversal.js';
  * Owner duty to refresh: a baked owner key (`__blockOracleOwner`, an immutable pubkey register seeded at
  * genesis) + an injected `__updateBlockOracle(sig, ...fields)` that requires the owner signature. A height
  * register must be a block-height (`< 500000000`, so a time-type nLockTime cannot satisfy CLTV), must not
- * rewind, and must satisfy `tx.time >= number`. A timestamp register must not rewind. A timestamp-only
- * update also requires a time-type locktime and `tx.time >=` the new timestamp. block.chainid is a
- * separate baked constant (NOT here).
+ * rewind, and must satisfy `tx.time >= number` (the owner cannot report a height above the chain). A timestamp
+ * register must not rewind (no replay of an old window). A timestamp-only update also requires a time-type
+ * locktime and `tx.time >=` the new timestamp. Then each register is written. block.chainid is a separate
+ * baked constant (NOT here).
  *
  * Runs before semantic analysis so injected decls/reads/writes resolve normally. `block.timestamp` always
  * lowers to the injected `__block_timestamp` oracle register; the compat-only tx.locktime mapping was removed.
@@ -396,6 +397,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
         'block oracle: number exceeds chain height',
       )) as TimeOpNode);
     }
+    // Non-rewind for the timestamp too, so the owner cannot replay an old window.
     if (this.used.has('__block_timestamp')) {
       body.push(this.compareRequire(
         this.at(new IdentifierNode(setterParam('__block_timestamp'))) as IdentifierNode,

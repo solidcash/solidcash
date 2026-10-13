@@ -31,14 +31,18 @@ export interface DeployOptions {
   headCollections?: readonly FramedGenesisHeadCollection[];
   /**
    * Record commitments the genesis mints in place of encoding `initialState`. One hex string per data NFT.
-   * A proxy deployment passes the commitments `initialize` already computed.
    */
   recordCommitments?: readonly string[];
   /**
-   * Sorted-collection head commitments `initialize` already computed, keyed by collection name.
-   * Genesis mints these instead of the empty head sentinel.
+   * Sorted-collection head commitments, keyed by collection name, that genesis mints instead of the empty head
+   * sentinel.
    */
   writtenHeadCommitments?: Readonly<Record<string, string>>;
+  /**
+   * Internal, framed only: the state outputs the genesis mints beside its pools, in place of the ones its constructor
+   * frame derives. A proxy's genesis mints its records as its derived `initialize` left them.
+   */
+  mintedState?: readonly Output[];
   changeAddress: string;
   masterAmount?: bigint;   // default 1200n
   dataNftAmount?: bigint;  // default 1200n per data NFT
@@ -61,12 +65,9 @@ export interface DeployOptions {
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
   /** Internal SDK composition: immutable category-bearing logical identity outputs minted by genesis. */
   identityAnchors?: Array<{ to: string | Uint8Array; commitment: string; amount?: bigint }>;
-  /**
-   * When false, the genesis transaction is built and its txid is returned, but nothing is broadcast.
-   * A proxy deployment uses that to learn `initialize` before any uninitialized proxy can hit the chain.
-   */
+  /** When false, the genesis transaction is built and its txid is returned, but nothing is broadcast. */
   broadcast?: boolean;
-  /** Outputs minted in the genesis after the records, such as an initialize hop's new chunks and events. */
+  /** Outputs minted in the genesis after the records. */
   extraOutputs?: readonly Output[];
 }
 

@@ -25,6 +25,7 @@ import {
 } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
+import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
 import type { Unlocker, Utxo } from '../interfaces.js';
 import type { StateValueType } from '../types/state-inference.js';
 import {
@@ -219,6 +220,13 @@ export async function deployFromStatefulContract<T extends Artifact>(
         + `Got vout ${fu.vout}.`,
       );
     }
+  }
+  // Child i's category is fundingUtxos[i].txid, so each coin is proven at the funder's own lock before anything is
+  // signed: a coin a provider lists there but that sits at another lock would hand the category to its owner.
+  const funderLock: Uint8Array = funder.generateLockingBytecode();
+  for (const fu of fundingUtxos) {
+    const coinRefusal = await ownCoinRefusal(provider, fu, funderLock, { role: 'funder', tokenFree: true });
+    if (coinRefusal !== undefined) throw new Error(coinRefusal);
   }
 
   // child i's category = fundingUtxos[i].txid. The first child's category doubles as the returned handle's.
@@ -823,8 +831,12 @@ export async function deployFromStatefulContract<T extends Artifact>(
     }
   }
 
-  // Create unlockers for factory's master UTXO and data NFTs
-  const stateInputUnlocker = (factory.inner.unlock as any)[deployFunctionName](...finalArgs);
+  // Create unlockers for factory's master UTXO and data NFTs. The master is a covenant input like the data NFTs, so
+  // a zero-state factory's deploy gets the same best-effort template debug (its strict replay reports the P2PKH
+  // funder's signature as NULLFAIL); the finalized-bytes gate and the broadcast stay authoritative.
+  const stateInputUnlocker = {
+    ...(factory.inner.unlock as any)[deployFunctionName](...finalArgs), covenantUnlocker: true,
+  };
   const dataNftUnlockers = filteredDataNftUtxos.map(
     () => createDataNftUnlocker(factory.inner, 0, factory.categoryId),
   );

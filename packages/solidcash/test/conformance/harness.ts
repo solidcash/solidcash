@@ -2,10 +2,11 @@
 // evaluated on BOTH VMs, asserting value-identical results. The EVM side is the reference; the BCH
 // side proves it matches by a require(<computed> == <expected>) oracle fed the EVM result.
 import {
-  compileEvm, evalEvm, ethersAbiEncode, ethersAbiEncodePacked, ethersSelector,
+  compileEvm, evalEvm, evalEvmDeployed, ethersAbiEncode, ethersAbiEncodePacked, ethersSelector,
 } from './evm.js';
 import {
-  compileBch, evalBchCheck, evalBchVmRejects, compileBchStateful, evalBchStatefulCheck,
+  compileBch, evalBchCheck, evalBchVmRejects, compileBchStateful, evalBchStatefulCheck, evalBchStatefulVmRejects,
+  evalBchDeployedStateful,
 } from './bch.js';
 
 const SPDX = '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n';
@@ -140,6 +141,18 @@ export async function assertStatefulConformant(c: ConformanceCase): Promise<void
   }
 }
 
+// Stateful value conformance through a real deployment on both VMs: the constructor runs, so state-variable
+// initializers apply (assertStatefulConformant starts both sides from zero state).
+export async function assertDeployedStatefulConformant(c: ConformanceCase): Promise<void> {
+  const { decoded } = await evalEvmDeployed(compileEvm(c.solidity), c.evmFn, c.args);
+  const rejection = await evalBchDeployedStateful(compileBchStateful(c.scash), c.bchFn, [...c.args, ...decoded]);
+  if (rejection !== undefined) {
+    const tag = c.label ? ` [${c.label}]` : '';
+    throw new Error(`Deployed stateful conformance MISMATCH${tag}: EVM ${c.evmFn}(${fmt(c.args)}) = `
+      + `${fmt(decoded)}, but the deployed SolidCash covenant rejected that result: ${rejection}`);
+  }
+}
+
 // Run a slot-layout case: solc computes the EVM slot; the SolidCash stateful covenant must accept it.
 export const assertSlotConformant = assertStatefulConformant;
 
@@ -182,6 +195,23 @@ export async function assertReverts(c: RevertCase): Promise<void> {
       throw new Error(`Revert MISMATCH${tag} (${modeName(evmCompat)}): expected the BCH covenant to reject, `
         + 'but it accepted');
     }
+  }
+}
+
+// Assert the EVM reference AND the stateful BCH covenant (both from zero state) reject the call. Compile errors throw.
+export async function assertStatefulReverts(c: RevertCase): Promise<void> {
+  const tag = c.label ? ` [${c.label}]` : '';
+  const evm = compileEvm(c.solidity);
+  const artifact = compileBchStateful(c.scash);
+  let evmReverted = false;
+  try {
+    await evalEvm(evm, c.evmFn, c.args);
+  } catch {
+    evmReverted = true;
+  }
+  if (!evmReverted) throw new Error(`Revert MISMATCH${tag}: expected EVM to revert, but it returned a value`);
+  if (!await evalBchStatefulVmRejects(artifact, c.bchFn, c.args)) {
+    throw new Error(`Revert MISMATCH${tag}: expected the stateful BCH covenant to reject, but it accepted`);
   }
 }
 
@@ -689,6 +719,63 @@ export function fnCase(o: {
     args: o.args,
     ...(o.evmCompat === undefined ? {} : { evmCompat: o.evmCompat }),
     ...(o.densityReserve === undefined ? {} : { densityReserve: o.densityReserve }),
+    label: o.label,
+  };
+}
+
+// A function body that must revert on both VMs. Solidity calls it from `f`; SolidCash evaluates it and accepts any
+// result, so only the body itself can refuse the spend.
+export function fnRevertCase(o: {
+  params: string; retType: string; body: string; args: readonly unknown[]; label: string; evmCompat?: boolean;
+  decls?: string;
+}): RevertCase {
+  const ok = fnCase(o);
+  const names = o.params.length === 0 ? '' : o.params.split(',').map((p) => p.trim().split(/\s+/).pop()).join(', ');
+  const decls = o.decls ? `  ${o.decls}\n` : '';
+  return {
+    ...ok,
+    scash: `contract Conf() {\n${decls}  function calc(${o.params}) private pure returns (${o.retType}) {\n`
+      + `    ${o.body}\n  }\n  function f(${o.params}) {\n    ${o.retType} r = calc(${names});\n`
+      + '    require(r == r);\n  }\n}\n',
+  };
+}
+
+// Whole contracts (inheritance, modifiers, libraries, free functions) on both VMs. `source` must declare a contract
+// `C` with a public `f`; the EVM deploys C, and SolidCash compiles a derived `Check` that compares `f` with the EVM.
+// `view` marks a `view` f (one that reads `this`), so `check` is declared view too.
+export function contractCase(o: {
+  source: string; params: string; retType: string; args: readonly unknown[]; label: string; evmCompat?: boolean;
+  view?: boolean;
+}): ConformanceCase {
+  const names = o.params.length === 0 ? '' : o.params.split(',').map((p) => p.trim().split(/\s+/).pop()).join(', ');
+  const paramsSep = o.params.length > 0 ? `${o.params}, ` : '';
+  const mutability = o.view ? 'view' : 'pure';
+  return {
+    solidity: `${SPDX}${o.source}\n`,
+    scash: `${o.source}\ncontract Check is C {\n`
+      + `  function check(${paramsSep}${o.retType} __expected) public ${mutability} {\n`
+      + `    require(f(${names}) == __expected);\n  }\n}\n`,
+    evmFn: 'f',
+    bchFn: 'check',
+    args: o.args,
+    ...(o.evmCompat === undefined ? {} : { evmCompat: o.evmCompat }),
+    label: o.label,
+  };
+}
+
+// A whole contract whose `f` must revert on both VMs: the derived `Check` calls it and accepts any result, so only `f`
+// itself can refuse the spend.
+export function contractRevertCase(o: {
+  source: string; params: string; retType: string; args: readonly unknown[]; label: string;
+}): RevertCase {
+  const names = o.params.length === 0 ? '' : o.params.split(',').map((p) => p.trim().split(/\s+/).pop()).join(', ');
+  return {
+    solidity: `${SPDX}${o.source}\n`,
+    scash: `${o.source}\ncontract Check is C {\n  function check(${o.params}) public {\n`
+      + `    ${o.retType} r = f(${names});\n    require(r == r);\n  }\n}\n`,
+    evmFn: 'f',
+    bchFn: 'check',
+    args: o.args,
     label: o.label,
   };
 }

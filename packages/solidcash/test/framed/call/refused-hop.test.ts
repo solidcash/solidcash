@@ -22,11 +22,12 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  *
  * A participant the frames' own runs never evaluate, such as the validator, is judged by the hop's verdict over every
  * input. A hop whose verdicts refuse broadcasts nothing, an initialize hop as much as a call: the verdicts name the
- * participant that refused, and the caller's coin stays unspent.
+ * participant that refused, and the caller's coin stays unspent. A refused initialize broadcasts neither genesis.
  */
 
 const IMPL_CATEGORY = '66'.repeat(32);
 const PROXY_CATEGORY = '67'.repeat(32);
+const HOP_COIN = { txid: '68'.repeat(32), vout: 0, satoshis: 300_000n };
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' error Short(int requested, int available);'
@@ -101,7 +102,7 @@ async function deployedWithCallerCoin(network: MockNetworkProvider, vm = composi
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
   const implFunding = { txid: IMPL_CATEGORY, vout: 0, satoshis: 500_000n };
   const proxyFunding = { txid: PROXY_CATEGORY, vout: 0, satoshis: 500_000n };
-  const hopCoin = { txid: '68'.repeat(32), vout: 0, satoshis: 300_000n };
+  const hopCoin = HOP_COIN;
   const callCoin = { txid: '69'.repeat(32), vout: 0, satoshis: 300_000n };
   for (const coin of [implFunding, proxyFunding]) await network.addUtxo(source.address, coin);
   const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
@@ -243,19 +244,13 @@ describe('a hop whose implementation entry refuses', () => {
     expect(await recordState(network, funded.proxyCategoryId)).toBe(before);
   });
 
-  it('broadcasts no initialize a participant past the frames refuses, and names it', async () => {
+  it('broadcasts no initialize a participant past the frames refuses, nor either genesis, and names it', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallerCoin(network, refusingValidatorOf(PROXY_CATEGORY));
-    const refused = funded.initialize.verdicts.filter((verdict) => !verdict.accepted);
-    expect(refused).toEqual(expect.arrayContaining([
-      { id: 'validator', index: 1, accepted: false, objection: VALIDATOR_REFUSAL },
-    ]));
-    expect(refused.every((verdict) => verdict.accepted === false)).toBe(true);
-    expect(funded.initialize.accepted).toBe(false);
-    expect(funded.initialize.broadcast).toBeUndefined();
-    expect(await unspent(network, funded.deployerLock, funded.hopCoin)).toBe(true);
-    // Neither genesis was published, so a refusal cannot leave an uninitialized proxy to initialize later.
-    expect(await network.getUtxosByTokenCategory(funded.proxyCategoryId)).toEqual([]);
-    expect(await network.getUtxosByTokenCategory(funded.implementationCategoryId)).toEqual([]);
+    await expect(deployedWithCallerCoin(network, refusingValidatorOf(PROXY_CATEGORY)))
+      .rejects.toThrow(`hop was refused, so nothing was broadcast: validator: ${VALIDATOR_REFUSAL}`);
+    // The geneses were only held, so no category exists and no proxy is left for anyone to initialize.
+    expect(await network.getUtxosByTokenCategory(IMPL_CATEGORY)).toStrictEqual([]);
+    expect(await network.getUtxosByTokenCategory(PROXY_CATEGORY)).toStrictEqual([]);
+    expect(await unspent(network, encodeLockingBytecodeP2pkh(alicePkh), HOP_COIN)).toBe(true);
   });
 });

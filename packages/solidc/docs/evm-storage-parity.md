@@ -73,6 +73,10 @@ sound, do not rebuild it.
 - **Declared-var slots decompose to packed vars** (`computeStorageLayout` + `resolveSlotFields`): a literal
   or `.slot` slot that holds declared vars stays the optimized register path (sub-word fields combined /
   decomposed), NOT `__evm_storage`. `x.slot` of a state var lowers to its constant slot number.
+- **`contract C layout at <base>`** (solc 0.8.29 custom layout): the evaluated base
+  (`ContractNode.storageLayoutBase`) shifts every persistent var's slot, inherited ones included, so `.slot`
+  and literal `sload`/`sstore` slots match solc. Transient vars keep their own slot space. Physical state is
+  unchanged.
 - **OZ StorageSlot param-factory idiom** (`LowerStorageSlotPointers.ts`): a `library` fn
   `f(bytes32 slot) returns (XSlot storage r){ assembly { r.slot := slot } }` is a slot-pointer factory;
   `XSlot storage d = StorageSlot.getXSlot(SLOT); d.value = v` / `d.value` rewrite to

@@ -33,32 +33,23 @@ that are represented by the external Solidity corpus could be removed while reta
 bytecode-equivalence checks, and multi-condition regressions. Do this only after the external corpus benchmark is
 part of normal CI; otherwise those tests are the only continuously run guards for many compatibility behaviors.
 
-## Known pre-existing failure (fn-ptr array dispatch table)
+## Closed: fn-ptr array dispatch table (pushes kept)
 
-Two tests in `storage-collections.test.ts` fail - and they fail IDENTICALLY at the pre-goal base `041acb1c7`
-(verified by building that commit in a scratch worktree), so no recent change introduced them:
+The two `foreign external fn-ptr ARRAY dispatch table ...` tests in `storage-collections.test.ts` and the
+`packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts` contract suite (15 VM tests) failed with
+`Function-pointer array 'fns': it is never written in contract code ...`.
 
-- `foreign external fn-ptr ARRAY dispatch table ... > bare fns[idx](v) is a SINGLE-element call (no broadcast loop)`
-- `foreign external fn-ptr ARRAY dispatch table ... > the loop spelling for (..) { fns[i](v); } is the broadcast ...`
+Root: an external-function-pointer-element array (`function(uint) external[] fns`) is a sparse-entry COLLECTION
+at parse time (the element is not chunk-packable), and `4c20695ca` gave every unbounded array collection a
+`<name>$len` length authority. `fns.push(v)` then took `buildCollectionLengthPush`, which keeps only the length
+bump and drops `v`. The fn-ptr lowering moves the table to chunk-backed `address[]` (+ `bytes[] __fnsel_<name>`)
+state arrays, each with its own length header, which the SDK keys as `<name>$len` - so a surviving scalar
+`fns$len` also collides with the lowered array's header (the "missing: fns$len" / VM `OP_VERIFY` seen when only
+the push was patched).
 
-Both compile `contract C { function(uint) external[] fns; ... this.fns.push(IFoo(a).ping); ... }` and get
-`FnPtrArrayLoweringError: Function-pointer array 'fns': it is never written in contract code ...`
-(`src/semantic/LowerReceivedFnPtrArray.ts`).
-
-Root (measured): an external-function-pointer-element array is registered at parse time as a sparse-entry
-COLLECTION with a `<name>$len` length authority (`AstBuilder`'s collection classification - the element is not
-chunk-packable). `this.fns.push(v)` then takes the collection-length branch of `buildArrayPush` ->
-`buildCollectionLengthPush`, which emits ONLY the length bump and drops the element value, so the fn-ptr pass
-finds no write to classify.
-
-Two fixes were tried and rejected (do not retry them blind):
-- emitting the leaf element write beside the bump lowers the array to `address[]`, but the `fns$len` bump remains
-  and the SDK state derivation then fails ("missing: fns$len");
-- falling through to the ordinary push node for a leaf value push removes that, but the contract suite
-  `packages/solidcash/test/e2e/FnPtrDispatchTables.test.ts` (15 VM tests, which currently cannot even run - the
-  file fails at import with this same error) still fails 13/15 with a VM `OP_VERIFY`.
-
-A real fix must reconcile the parse-time collection/length-authority model with the fn-ptr array lowering.
-This note is a diagnosis, NOT a waiver: the two tests stay active and failing, and the fix is expected to
-make them - and the `FnPtrDispatchTables` contract suite - pass.
+Fix: `AstBuilder` gives an external fn-ptr table no length authority (`isExternalFnPtrTable`), so push (value
+kept), pop, delete and `.length` take the ordinary array forms and the fn-ptr passes rewrite them in lockstep on
+both arrays (whole `delete` included). A no-arg `push()` (a zero element with no selector) stays refused:
+"never written" when it is the table's only growth, a specific reason beside writes.
+`FnPtrArrayEmptyTargets.test.ts` pins both refusals and the kept-push lockstep.
 

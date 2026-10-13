@@ -17,6 +17,7 @@ import {
 import {
   createFaithfulTraceVmForProvider,
   createVirtualMachineBch2026ForProvider,
+  usesFastVmPaths,
 } from '../network/createVirtualMachine.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { captureProbeContinuations } from './probe-instruction-sequence.js';
@@ -209,7 +210,7 @@ export function evaluateFaithfulProbeTrace(
  * everywhere else.
  *
  * The recorder is equivalent to `debug()` only while the cached P2SH evaluator supplies the phase exits, and
- * that evaluator is installed exactly when `maximumInputBytes > 10_000`. Below that the reference is kept, so a
+ * that evaluator is installed exactly when `usesFastVmPaths(provider)`. Otherwise the reference is kept, so a
  * live network sees no change at all. Callers that need a full faithful trace (rather than the sparse observer's
  * reduced one) use this instead of calling `debug()` directly.
  */
@@ -217,8 +218,7 @@ export function evaluateFaithfulOrDebugTrace(
   provider: NetworkProvider,
   program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
 ): AuthenticationProgramStateCommon[] {
-  const maxIn = provider.consensusLimits?.maximumInputBytes ?? 10_000;
-  if (maxIn <= 10_000) return cachedDebugVm(provider).debug(program) as AuthenticationProgramStateCommon[];
+  if (!usesFastVmPaths(provider)) return cachedDebugVm(provider).debug(program) as AuthenticationProgramStateCommon[];
   const faithful = evaluateFaithfulProbeTrace(provider, program);
   if ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
     ?.SOLIDC_DEBUG_TRACE_PARITY === '1') {

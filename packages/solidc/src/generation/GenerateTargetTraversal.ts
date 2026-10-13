@@ -48813,9 +48813,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * and at least the same amount. Stack neutral.
    */
   private emitForeignFungiblePreservation(loc: SingleLocationData): void {
-    // Own-category 33-byte records move in a composed transaction. A foreign 33-byte category is an NFT
-    // container only when its lock is the container covenant for that category; a callee's value chunk is
-    // also a 35-byte lock, and the callee's script accounts for consuming it.
+    // Own-category 33-byte records move in a composed transaction. A foreign category, fungible or NFT, is this
+    // contract's to keep only at its own container lock for that category: a co-composed participant's
+    // container or value chunk is also a 35-byte lock, and that participant's script accounts for it.
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc);
@@ -48839,8 +48839,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DUP, loc);
     this.emit(encodeInt(32n), loc);
     this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(encodeInt(33n), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    // [index, id]. Keep the id: the container lock is derived from it.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(category) + 3)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc);
+    // [index]. An own fungible or immutable input is kept; an own 33-byte record is not.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
     if (this.currentFunctionIsDelegate) {
       // The proxy's sender anchor sits at an anyone-can-spend lock; the SDK recreates it at any free index.
       this.emitOwnScidAnchorInputFlag(category, loc);
@@ -48850,23 +48873,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       this.emitForeignContainerKeep(loc);
     }
+    this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ELSE, loc);
-    this.emit(encodeInt(33n), loc);
-    this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_IF, loc);
+    this.emitKeepAtOwnContainerLock(category, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_DROP, loc);
-    // [index, foreignId]. Keep the id: the container lock is derived from it.
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(BigInt(this.getStackIndex(category) + 3)), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_NOT, loc);
-    this.emit(Op.OP_IF, loc);
-    // [index, foreignId]. UTXOTOKENCATEGORY is internal order; the container salt is display order.
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
+  }
+
+  /**
+   * `[index, foreignId]` -> `[index]`, untracked directly above the tracked `category`. An input at this
+   * contract's container lock for `foreignId` is kept; any other lock is not this contract's to keep.
+   */
+  private emitKeepAtOwnContainerLock(category: string, loc: SingleLocationData): void {
+    // UTXOTOKENCATEGORY is internal order; the container salt is display order.
     this.emit(Op.OP_REVERSEBYTES, loc);
     this.emit(encodeInt(BigInt(this.getStackIndex(category) + 2)), loc);
     this.emit(Op.OP_PICK, loc);
@@ -48881,18 +48907,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.emitForeignContainerKeep(loc);
     this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_NOT, loc);
-    this.emit(Op.OP_UNTIL, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.popFromStack();
   }
 
   /**
@@ -49220,32 +49234,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DUP, loc);
       this.emit(Op.OP_TOALTSTACK, loc);
     };
-    this.emit(Op.OP_TXINPUTCOUNT, loc);
-    this.emit(Op.OP_BEGIN, loc);
-    this.emit(Op.OP_1SUB, loc);
-    // [base, allowed, j] -> [base, allowed, j, lockEq]
-    copyOutputIndex();
-    this.emit(Op.OP_OUTPUTBYTECODE, loc);
-    this.emit(Op.OP_OVER, loc);
-    this.emit(Op.OP_UTXOBYTECODE, loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    copyOutputIndex();
-    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
-    this.emit(Op.OP_OVER, loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    // IF consumed the bit. [base, allowed, j] -> [base, 1, j]
-    this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_1, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_NOT, loc);
-    this.emit(Op.OP_UNTIL, loc);
-    this.emit(Op.OP_DROP, loc);
     // [base, allowed]. A rebuilt lock replaces one untracked copy; the tracked base stays put.
     const admit = (build: () => void): void => {
       const saved = this.stack.slice();
@@ -49303,6 +49291,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
       this.emit(Op.OP_UNTIL, loc);
     }
+    // Most outputs sit at a lock this contract mints. Only one at none of them scans for a mutable input with
+    // its lock and category, so the scan is not paid once per output over every input.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOTIF, loc);
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    // [base, allowed, j] -> [base, allowed, j, lockEq]
+    copyOutputIndex();
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    copyOutputIndex();
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    // IF consumed the bit. [base, allowed, j] -> [base, 1, j]
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_VERIFY, loc);
     this.emit(Op.OP_FROMALTSTACK, loc);
   }

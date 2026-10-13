@@ -44,8 +44,9 @@ const DESTROYABLE = `contract Destroyable(pubkey admin) {
     selfdestruct(new LockingBytecodeP2PKH(recipient));
   }
 }`;
+// An upgradable contract keeps no record (CRYPTO-4 binds each to the master lock an upgrade leaves). V2 adds state,
+// whose data NFT the upgrade mints at V2's lock.
 const UPGRADE_V1 = `contract UpgradeV1(pubkey admin) {
-  int counter;
   function migrate(sig s) upgrade { require(checkSig(s, admin)); }
 }`;
 const UPGRADE_V2 = `contract UpgradeV2(pubkey admin) {
@@ -364,11 +365,11 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
   // implement and a real chain cannot offer. Skipped on live regtest rather than failing there.
   it.skipIf(process.env.TESTS_USE_REGTEST)('upgrade rejects missing, duplicated, reordered, and redirected lifecycle outputs', async () => {
     const provider = createTestProvider();
-    const oldArtifact = compileString(UPGRADE_V1);
+    const oldArtifact = compileString(UPGRADE_V1, { forceStateful: true });
     const newArtifact = compileString(UPGRADE_V2);
     const oldBase = new Contract(oldArtifact, [alicePub], { provider });
     const { categoryId } = await setupStatefulUtxos(
-      provider, oldBase, oldArtifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      provider, oldBase, oldArtifact.stateLayout!, {}, { saltContract: true },
     );
     const oldContract = StatefulContract.withCategory(oldBase, categoryId);
     const funding: Utxo = { txid: 'f6'.repeat(32), vout: 0, satoshis: 500_000n };
@@ -414,7 +415,7 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
     // fragile, so require the script-verify refusal itself - which is what these tampers must provoke.
     const covenantFailure = /mandatory-script-verify-flag-failed/;
 
-    // Outputs 0/1 are the upgraded master and data NFT; ordinary change follows.
+    // Outputs 0/1 are the upgraded master and the data NFT minted at its lock; ordinary change follows.
     await expect(rejectMutation((tx) => { tx.outputs.splice(1, 1); }))
       .rejects.toThrow(covenantFailure);
     await expect(rejectMutation((tx) => {

@@ -2019,3 +2019,25 @@ routed composition reuse the proxy's anchor instead of minting another.
 
 **Why deferred:** each part changes delegate variants or identity anchoring beyond the merge; the routed insert
 settles.
+
+## An in-place upgrade of a contract that keeps records (CRYPTO-4 residual, 2026-10-13)
+
+**What:** CRYPTO-4 (d6821a812) binds every data NFT, mapping entry, value chunk and satoshi or token container to
+the executing master's exact 35-byte lock, so no second minting baton of the category can rewrite them. A native
+in-place `upgrade` entry moves the master to the replacement bytecode's lock, so every record bound to the old lock
+could never be spent again. The compiler refuses such an entry (`UpgradeStrandsBoundStateError`, raised by
+`SymbolTableTraversal` once the block layouts are known). The kernel's in-place append upgrade
+(`in-place-append-v1`) also leaves the records at the old lock, so it is refused the same way, and its append path is
+unreachable: a record-free participant has no data NFT to append into. What still works: a contract whose whole
+state lives in its master NFT commitment (no state variables, mappings or containers), including an upgrade to a
+replacement that adds state, whose data NFTs the upgrade now mints at the replacement's lock; and a proxy upgrade,
+which keeps the proxy's lock and its records. Framed records bind no master lock and are not refused.
+
+**Proposed design:** a migration path that re-mints each record at the replacement's lock. A record's own covenant
+keeps its locking bytecode on the write path, so it cannot move; the old master would destroy it (flag 2, which still
+binds the old lock while the old master is an input) and mint a copy with the same commitment at the
+replacement-bound covenant, with the census pinning one copy per destroyed record. Unbounded collections need that
+batched across transactions before the final upgrade, behind the old code's authorization.
+
+**Why deferred:** it is a covenant protocol for every record kind plus an SDK planner; the refusal fails closed
+meanwhile.

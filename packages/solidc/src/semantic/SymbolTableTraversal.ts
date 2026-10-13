@@ -223,6 +223,7 @@ import {
   GraphEmissionEffectError,
   GraphHandlerShapeError,
   SolidcDiagnosticError,
+  UpgradeStrandsBoundStateError,
 } from '../Errors.js';
 import { parameterTypeSignature } from './parameterTypeToken.js';
 import { getMaxPushdataEncodedSizeForType } from './maxEncodedSize.js';
@@ -2298,6 +2299,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       console.log(`Warning: receive() is a Solidity compatibility feature${loc}. Its usage on BCH is discouraged as BCH does not use the same contract call model.`);
       node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
     }
+
+    // After every block layout is known, so the containers an entry co-spends count too.
+    this.refuseUpgradeStrandingBoundRecords(node);
 
     this.decideLibraryInlining(node);
 
@@ -17573,6 +17577,32 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private createDefaultExpression(type: Type, contextNode: Node): ExpressionNode {
     return createDefaultValueExpression(type, contextNode.location);
+  }
+
+  /**
+   * CRYPTO-4 binds every data NFT, mapping entry, value chunk and satoshi or token container to the master's exact
+   * lock. An in-place upgrade moves the master to the replacement's lock, so a contract keeping any of them would
+   * strand them. The kernel's in-place append upgrade leaves its records at the old lock too. A framed record binds
+   * no master lock.
+   */
+  private refuseUpgradeStrandingBoundRecords(contract: ContractNode): void {
+    if (this.compilerOptions.composition === 'framed') return;
+    // Name the source entry rather than a route clone of it.
+    const upgrades = contract.functions.filter((fn) => fn.modifiers.includes(FunctionModifier.UPGRADE));
+    const upgrade = upgrades.find((fn) => !fn.name.startsWith('__')) ?? upgrades[0];
+    if (upgrade === undefined) return;
+    const slots = [...contract.functions, contract.fallbackDef, contract.receiveDef]
+      .flatMap((fn) => fn?.blockLayout?.slots ?? []);
+    // A lowering may add state of its own, such as the message bus's event hold.
+    const declared = contract.stateVariables.some((sv) => !sv.name.startsWith('__'));
+    const records = [
+      ...(contract.stateVariables.length > 0
+        ? [declared ? 'state variables in data NFTs' : 'compiler-added state in data NFTs'] : []),
+      ...(contract.collections.length > 0 ? ['mapping or array entries'] : []),
+      ...(slots.some((slot) => slot.kind === 'satoshiContainer') ? ['a satoshi container'] : []),
+      ...(slots.some((slot) => slot.kind === 'tokenContainer') ? ['token containers'] : []),
+    ];
+    if (records.length > 0) throw new UpgradeStrandsBoundStateError(upgrade, upgrade.name, records);
   }
 
   /**

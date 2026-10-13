@@ -1,8 +1,8 @@
 contract UpgradeCounter() {
-    int counter;
+    event Incremented(int counter);
 
-    function increment() {
-        this.counter = this.counter + 1;
+    function increment(int counter) {
+        emit Incremented(counter + 1);
     }
 
     function migrate(pubkey admin, sig s) upgrade {

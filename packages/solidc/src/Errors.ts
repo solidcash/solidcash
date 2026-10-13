@@ -1446,6 +1446,22 @@ export class UnauthorizedLifecycleError extends SolidCashError {
   }
 }
 
+/**
+ * CRYPTO-4 binds every record to the executing master's exact lock. An in-place upgrade moves the master to the
+ * replacement's lock, so a record the contract keeps could never be spent again.
+ */
+export class UpgradeStrandsBoundStateError extends SolidCashError {
+  constructor(node: Node, funcName: string, records: readonly string[]) {
+    const kept = records.length > 1
+      ? `${records.slice(0, -1).join(', ')} and ${records[records.length - 1]}` : records[0];
+    super(node, `Function '${funcName}' is an in-place upgrade, but this contract keeps ${kept}. Each such record `
+      + 'is bound to the master\'s exact lock, and the upgrade moves the master to the replacement bytecode\'s lock, '
+      + 'so the records cannot follow it and could never be spent again. An in-place upgrade works for a contract '
+      + 'whose whole state lives in its master NFT commitment (no state variables, mappings, or satoshi or token '
+      + 'containers); a proxy upgrade keeps the proxy\'s lock and its records.');
+  }
+}
+
 export class NestedSelfdestructError extends SolidCashError {
   constructor(node: Node, funcName: string) {
     super(node, `Function '${funcName}' places selfdestruct inside conditional or nested control flow. `

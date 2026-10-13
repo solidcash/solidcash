@@ -9,7 +9,7 @@ import {
   SignatureAlgorithm,
   SignatureTemplate,
 } from '../../src/index.js';
-import { StatefulContract } from '../../src/stateful/index.js';
+import { StatefulContract, getDataNftLockingBytecode } from '../../src/stateful/index.js';
 import { buildPushdataCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import {
   alicePub,
@@ -19,19 +19,22 @@ import {
   bobPub,
 } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
-import { Utxo } from '../../src/interfaces.js';
+import { Unlocker, Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { assertApplicationScriptSize } from '../application-size-budgets.js';
 
-// V1: simple counter with upgrade and unsafe functions
+// An in-place upgrade moves the master to the replacement's lock, and every record is bound to the master's exact
+// lock (CRYPTO-4), so only a contract that keeps no record beyond its master NFT has an upgrade entry. These compile
+// stateful without state variables; a replacement may add state, whose data NFTs the upgrade mints at its new lock.
+const MASTER_ONLY = { forceStateful: true } as const;
+
+// V1: no records; an upgrade entry, an ordinary entry and an unsafe one
 const COUNTER_V1 = `
 pragma solidcash >=0.8.0;
 
 contract CounterV1(pubkey admin) {
-    int counter;
-
-    function increment() {
-        this.counter = this.counter + 1;
+    function check(int value) {
+        require(value >= 1);
     }
 
     function migrate(sig s) upgrade {
@@ -44,15 +47,13 @@ contract CounterV1(pubkey admin) {
 }
 `;
 
-// V2: counter that increments by 2 instead of 1
+// V2: different logic, still no records and still upgradable
 const COUNTER_V2 = `
 pragma solidcash >=0.8.0;
 
 contract CounterV2(pubkey admin) {
-    int counter;
-
-    function incrementByTwo() {
-        this.counter = this.counter + 2;
+    function checkTwo(int value) {
+        require(value >= 2);
     }
 
     function migrate(sig s) upgrade {
@@ -65,7 +66,7 @@ contract CounterV2(pubkey admin) {
 }
 `;
 
-// V3: extended state layout (counter + extra field) - append-only extension
+// V3: adds state, so it keeps a data NFT and has no upgrade entry of its own
 const COUNTER_V3 = `
 pragma solidcash >=0.8.0;
 
@@ -76,10 +77,6 @@ contract CounterV3(pubkey admin) {
     function incrementWithBonus() {
         this.counter = this.counter + 1;
         this.bonus = this.bonus + 10;
-    }
-
-    function migrate(sig s) upgrade {
-        require(checkSig(s, admin));
     }
 
     function authorize(pubkey pk, sig s) unsafe {
@@ -109,31 +106,7 @@ contract NoUpgrade(pubkey admin) {
 }
 `;
 
-// V1_OVERFLOW: 3 bytes32 fields (3*33=99 bytes, fits in 1 data NFT)
-const OVERFLOW_V1 = `
-pragma solidcash >=0.8.0;
-
-contract OverflowV1(pubkey admin) {
-    bytes32 a;
-    bytes32 b;
-    bytes32 c;
-
-    function setA(bytes32 newA) {
-        this.a = newA;
-    }
-
-    function migrate(sig s) upgrade {
-        require(checkSig(s, admin));
-    }
-
-    function authorize(pubkey pk, sig s) unsafe {
-        require(checkSig(s, pk));
-    }
-}
-`;
-
-// V2_OVERFLOW: 5 bytes32 fields (5*33=165 bytes, needs 2 data NFTs)
-// NFT 0: a, b, c (99 bytes), NFT 1: d, e (66 bytes)
+// OVERFLOW_V2: 5 bytes32 fields (5*33=165 bytes) in 2 data NFTs: NFT 0: a, b, c (99 bytes), NFT 1: d, e (66 bytes)
 const OVERFLOW_V2 = `
 pragma solidcash >=0.8.0;
 
@@ -148,17 +121,13 @@ contract OverflowV2(pubkey admin) {
         this.d = newD;
     }
 
-    function migrate(sig s) upgrade {
-        require(checkSig(s, admin));
-    }
-
     function authorize(pubkey pk, sig s) unsafe {
         require(checkSig(s, pk));
     }
 }
 `;
 
-// OVERFLOW_WIDE: 8 bytes32 fields in 3 data NFTs (a-c, d-f, g-h), so an upgrade from V1_OVERFLOW mints two
+// OVERFLOW_WIDE: 8 bytes32 fields in 3 data NFTs (a-c, d-f, g-h), so an upgrade from V1 mints three
 const OVERFLOW_WIDE = `
 pragma solidcash >=0.8.0;
 
@@ -176,8 +145,8 @@ contract OverflowWide(pubkey admin) {
         this.h = newH;
     }
 
-    function migrate(sig s) upgrade {
-        require(checkSig(s, admin));
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
     }
 }
 `;
@@ -187,10 +156,8 @@ const MULTISIG_UPGRADE = `
 pragma solidcash >=0.8.0;
 
 contract MultisigUpgrade(pubkey first, pubkey second) {
-    int counter;
-
-    function increment() {
-        this.counter = this.counter + 1;
+    function check(int value) {
+        require(value >= 1);
     }
 
     function migrate(sig s1, sig s2) upgrade {
@@ -204,21 +171,18 @@ const HELPER_UPGRADE = `
 pragma solidcash >=0.8.0;
 
 contract HelperUpgrade(pubkey admin) {
-    int counter;
-
     function authorize(sig s) internal {
         require(checkSig(s, admin));
     }
 
     function bump(sig s) {
         authorize(s);
-        this.counter = this.counter + 1;
-        require(this.counter > 0);
+        require(true);
     }
 
     function migrate(sig s) upgrade {
         authorize(s);
-        require(this.counter >= 0);
+        require(true);
     }
 }
 `;
@@ -228,10 +192,8 @@ const EITHER_UPGRADE = `
 pragma solidcash >=0.8.0;
 
 contract EitherUpgrade(pubkey first, pubkey second) {
-    int counter;
-
-    function increment() {
-        this.counter = this.counter + 1;
+    function check(int value) {
+        require(value >= 1);
     }
 
     function migrate(sig s1, sig s2) upgrade {
@@ -240,32 +202,124 @@ contract EitherUpgrade(pubkey first, pubkey second) {
 }
 `;
 
-// NEXT_VERSION: the replacement for the three above, with the same layout
+// NEXT_VERSION: the replacement for the three above, with the same (empty) layout
 const NEXT_VERSION = `
 pragma solidcash >=0.8.0;
 
 contract NextVersion(pubkey admin) {
+    function check(int value) {
+        require(value >= 1);
+    }
+}
+`;
+
+// Each keeps a record bound to the master's lock beside an upgrade entry, so the compiler refuses it.
+const DATA_NFT_UPGRADE = `
+pragma solidcash >=0.8.0;
+
+contract DataNftUpgrade(pubkey admin) {
     int counter;
 
     function increment() {
         this.counter = this.counter + 1;
     }
+
+    function migrate(sig s) upgrade {
+        require(checkSig(s, admin));
+    }
 }
 `;
+
+const MAPPING_UPGRADE = `
+pragma solidcash >=0.8.0;
+
+contract MappingUpgrade(pubkey admin) {
+    mapping(int => int) balances;
+
+    function set(int key, int value) {
+        this.balances[key] = value;
+    }
+
+    function migrate(sig s) upgrade {
+        require(checkSig(s, admin));
+    }
+}
+`;
+
+const SATOSHI_CONTAINER_UPGRADE = `
+pragma solidcash >=0.8.0;
+
+contract SatoshiContainerUpgrade(pubkey admin) {
+    function pay(sig s, bytes20 recipient, int amount) {
+        require(checkSig(s, admin));
+        this.transfer(new LockingBytecodeP2PKH(recipient), amount);
+    }
+
+    function migrate(sig s) upgrade {
+        require(checkSig(s, admin));
+    }
+}
+`;
+
+const TOKEN_CONTAINER_UPGRADE = `
+pragma solidcash >=0.8.0;
+
+contract TokenContainerUpgrade(pubkey admin) {
+    function send(sig s, bytes32 tokenCategory, bytes20 recipient, int amount) {
+        require(checkSig(s, admin));
+        this.tokens[tokenCategory].transfer(recipient, amount);
+    }
+
+    function migrate(sig s) upgrade {
+        require(checkSig(s, admin));
+    }
+}
+`;
+
+// The data-NFT covenant bound to a contract's master lock
+const dataNftLock = (contract: Contract, categoryId: string): string =>
+  binToHex(getDataNftLockingBytecode(categoryId, hexToBin(contract.lockingBytecode)));
 
 describe('StatefulContract.upgrade()', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
-  const v1Artifact = compileString(COUNTER_V1);
-  const v2Artifact = compileString(COUNTER_V2);
+  const v1Artifact = compileString(COUNTER_V1, MASTER_ONLY);
+  const v2Artifact = compileString(COUNTER_V2, MASTER_ONLY);
   const v3Artifact = compileString(COUNTER_V3);
   const noUpgradeArtifact = compileString(NO_UPGRADE);
-  const overflowV1Artifact = compileString(OVERFLOW_V1);
   const overflowV2Artifact = compileString(OVERFLOW_V2);
-  assertApplicationScriptSize(
-    'proxyUpgrade', v1Artifact, v2Artifact, v3Artifact, overflowV1Artifact, overflowV2Artifact,
-  );
+  assertApplicationScriptSize('proxyUpgrade', v1Artifact, v2Artifact, v3Artifact, overflowV2Artifact);
+
+  const deployV1 = async (label: string, masterAmount?: bigint): Promise<{
+    contract: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract']; categoryId: string;
+  }> => {
+    const fundingUtxo: Utxo = { txid: label.repeat(16), vout: 0, satoshis: 100000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
+    return StatefulContract.deploy(v1Artifact, [alicePub], {
+      provider,
+      fundingUtxo,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: p2pkh.address,
+      ...(masterAmount !== undefined && { masterAmount }),
+    });
+  };
+  // A funding coin for an upgrade that mints data NFTs. Anyone can spend it: with no data NFT input, send() runs the
+  // debug template strictly, and a P2PKH funder's `s` collides there with the upgrade entry's `s`.
+  const upgradeFunding = async (label: string): Promise<{
+    fundingUtxo: Utxo; funder: Unlocker; changeAddress: string;
+  }> => {
+    const fundingUtxo: Utxo = { txid: label.repeat(16), vout: 0, satoshis: 100_000n };
+    await provider.addUtxo('51', fundingUtxo);
+    return {
+      fundingUtxo,
+      funder: {
+        generateLockingBytecode: (): Uint8Array => hexToBin('51'),
+        generateUnlockingBytecode: (): Uint8Array => new Uint8Array(),
+      },
+      changeAddress: p2pkh.address,
+    };
+  };
 
   describe('upgrade modifier in artifact ABI', () => {
     it('should include upgrade in ABI modifiers', () => {
@@ -275,9 +329,9 @@ describe('StatefulContract.upgrade()', () => {
     });
 
     it('should not have upgrade modifier on non-upgrade functions', () => {
-      const incrementAbi = v1Artifact.abi.find((f) => f.name === 'increment');
-      expect(incrementAbi).toBeDefined();
-      expect(incrementAbi!.modifiers ?? []).not.toContain('upgrade');
+      const checkAbi = v1Artifact.abi.find((f) => f.name === 'check');
+      expect(checkAbi).toBeDefined();
+      expect(checkAbi!.modifiers ?? []).not.toContain('upgrade');
     });
   });
 
@@ -286,41 +340,25 @@ describe('StatefulContract.upgrade()', () => {
     let categoryId: string;
 
     it('should deploy V1', async () => {
-      const fundingUtxo: Utxo = {
-        txid: 'a1cd'.repeat(16),
-        vout: 0,
-        satoshis: 100000n,
-      };
-      await provider.addUtxo(p2pkh.address, fundingUtxo);
-
-      const result = await StatefulContract.deploy(v1Artifact, [alicePub], {
-        provider,
-        fundingUtxo,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        initialState: { counter: 0n },
-        changeAddress: p2pkh.address,
-      });
+      const result = await deployV1('a1cd');
 
       v1Contract = result.contract;
       categoryId = result.categoryId;
 
-      expect(categoryId).toBe(fundingUtxo.txid);
+      expect(categoryId).toBe('a1cd'.repeat(16));
       expect(v1Contract.categoryId).toBe(categoryId);
+      expect(v1Artifact.stateLayout!.dataNftCount).toBe(0);
     });
 
-    it('should increment V1 counter', async () => {
-      const tx = await v1Contract.call.increment().send();
+    it('should run a V1 entry on the master alone', async () => {
+      const tx = await v1Contract.call.check(1n).send();
       expect(tx.txid).toBeDefined();
 
       const txOutputs = getTxOutputs(tx);
-      // Output 0: master preserved
+      // Output 0: master preserved; no record of the category beside it
       expect(txOutputs[0].token?.nft?.capability).toBe('minting');
       expect(txOutputs[0].token?.category).toBe(categoryId);
-      // Output 1: data NFT with counter=1
-      const parsed = parsePushdataCommitment(
-        txOutputs[1].token!.nft!.commitment, v1Artifact.stateLayout!, 0,
-      );
-      expect(parsed.counter).toBe(1n);
+      expect(txOutputs.filter((output) => output.token?.category === categoryId)).toHaveLength(1);
     });
 
     it('should upgrade from V1 to V2', async () => {
@@ -339,17 +377,11 @@ describe('StatefulContract.upgrade()', () => {
 
       const txOutputs = getTxOutputs(upgradeResult.tx);
 
-      // Output 0: minting NFT at NEW address
+      // Output 0: minting NFT at the V2 lock, the only output of the category
       expect(txOutputs[0].token?.nft?.capability).toBe('minting');
       expect(txOutputs[0].token?.category).toBe(categoryId);
-
-      // Output 1: data NFT preserved with current state (counter=1)
-      expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
-      expect(txOutputs[1].token?.category).toBe(categoryId);
-      const parsed = parsePushdataCommitment(
-        txOutputs[1].token!.nft!.commitment, v2Artifact.stateLayout!, 0,
-      );
-      expect(parsed.counter).toBe(1n);
+      expect(binToHex(upgradeResult.tx.outputs[0].lockingBytecode)).toBe(upgradeResult.contract.inner.lockingBytecode);
+      expect(txOutputs.filter((output) => output.token?.category === categoryId)).toHaveLength(1);
 
       // Update reference for subsequent tests
       v1Contract = upgradeResult.contract;
@@ -364,19 +396,13 @@ describe('StatefulContract.upgrade()', () => {
       expect(v1Instance.tokenAddress).not.toBe(v2Instance.tokenAddress);
     });
 
-    it('should use V2 logic after upgrade (incrementByTwo)', async () => {
+    it('should use V2 logic after upgrade (checkTwo)', async () => {
       // v1Contract is now a V2 ConnectedStatefulContract after upgrade
       const v2Contract = v1Contract;
 
-      const tx = await v2Contract.call.incrementByTwo().send();
+      const tx = await v2Contract.call.checkTwo(2n).send();
       expect(tx.txid).toBeDefined();
-
-      const txOutputs = getTxOutputs(tx);
-      const parsed = parsePushdataCommitment(
-        txOutputs[1].token!.nft!.commitment, v2Artifact.stateLayout!, 0,
-      );
-      // Was 1 from V1 increment, now +2 from V2 incrementByTwo = 3
-      expect(parsed.counter).toBe(3n);
+      expect(getTxOutputs(tx)[0].token?.nft?.capability).toBe('minting');
     });
   });
 
@@ -426,20 +452,7 @@ describe('StatefulContract.upgrade()', () => {
 
     it('should reject upgrade to non-stateful artifact', async () => {
       // Deploy a V1 contract (which has the upgrade modifier) for this test
-      const fundingUtxo: Utxo = {
-        txid: 'b2cd'.repeat(16),
-        vout: 0,
-        satoshis: 100000n,
-      };
-      await provider.addUtxo(p2pkh.address, fundingUtxo);
-
-      const v1Result = await StatefulContract.deploy(v1Artifact, [alicePub], {
-        provider,
-        fundingUtxo,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        initialState: { counter: 0n },
-        changeAddress: p2pkh.address,
-      });
+      const v1Result = await deployV1('b2cd');
 
       await expect(StatefulContract.upgrade({
         provider,
@@ -454,20 +467,7 @@ describe('StatefulContract.upgrade()', () => {
 
   describe('categoryId preservation', () => {
     it('should preserve categoryId across upgrade', async () => {
-      const fundingUtxo: Utxo = {
-        txid: 'c1cd'.repeat(16),
-        vout: 0,
-        satoshis: 100000n,
-      };
-      await provider.addUtxo(p2pkh.address, fundingUtxo);
-
-      const deployResult = await StatefulContract.deploy(v1Artifact, [alicePub], {
-        provider,
-        fundingUtxo,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        initialState: { counter: 42n },
-        changeAddress: p2pkh.address,
-      });
+      const deployResult = await deployV1('c1cd');
 
       const upgradeResult = await StatefulContract.upgrade({
         provider,
@@ -488,25 +488,10 @@ describe('StatefulContract.upgrade()', () => {
     });
   });
 
-  describe('data NFT state survival', () => {
-    it('should preserve state across upgrade', async () => {
-      const fundingUtxo: Utxo = {
-        txid: 'd1cd'.repeat(16),
-        vout: 0,
-        satoshis: 100000n,
-      };
-      await provider.addUtxo(p2pkh.address, fundingUtxo);
+  describe('master NFT survival', () => {
+    it('should keep the master NFT, its commitment and its value across upgrade', async () => {
+      const deployResult = await deployV1('d1cd', 5_000n);
 
-      // Deploy V1 with counter=100
-      const deployResult = await StatefulContract.deploy(v1Artifact, [alicePub], {
-        provider,
-        fundingUtxo,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        initialState: { counter: 100n },
-        changeAddress: p2pkh.address,
-      });
-
-      // Upgrade to V2
       const upgradeResult = await StatefulContract.upgrade({
         provider,
         oldContract: deployResult.contract,
@@ -516,43 +501,23 @@ describe('StatefulContract.upgrade()', () => {
         newConstructorArgs: [alicePub],
       });
 
-      // Data NFT state should be preserved with counter=100
-      const txOutputs = getTxOutputs(upgradeResult.tx);
-      const parsed = parsePushdataCommitment(
-        txOutputs[1].token!.nft!.commitment, v2Artifact.stateLayout!, 0,
-      );
-      expect(parsed.counter).toBe(100n);
+      const master = getTxOutputs(upgradeResult.tx)[0];
+      expect(master.amount).toBe(5_000n);
+      expect(master.token).toMatchObject({
+        category: deployResult.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' },
+      });
 
-      // Use V2 to mutate state
-      const v2 = upgradeResult.contract;
-      const tx = await v2.call.incrementByTwo().send();
-      const v2Outputs = getTxOutputs(tx);
-      const v2Parsed = parsePushdataCommitment(
-        v2Outputs[1].token!.nft!.commitment, v2Artifact.stateLayout!, 0,
-      );
-      expect(v2Parsed.counter).toBe(102n);
+      // V2 runs on the master it received
+      const tx = await upgradeResult.contract.call.checkTwo(2n).send();
+      expect(getTxOutputs(tx)[0].token?.category).toBe(deployResult.categoryId);
     });
   });
 
-  describe('state extension (V1 -> V3 with new state variable)', () => {
-    it('should upgrade from V1 to V3 and initialise new field with default', async () => {
-      const fundingUtxo: Utxo = {
-        txid: 'e1cd'.repeat(16),
-        vout: 0,
-        satoshis: 100000n,
-      };
-      await provider.addUtxo(p2pkh.address, fundingUtxo);
+  describe('state extension (V1 -> V3 with new state variables)', () => {
+    it('should upgrade from V1 to V3 and mint its data NFT with defaults at the V3 lock', async () => {
+      const deployResult = await deployV1('e1cd');
 
-      // Deploy V1 with counter=5
-      const deployResult = await StatefulContract.deploy(v1Artifact, [alicePub], {
-        provider,
-        fundingUtxo,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        initialState: { counter: 5n },
-        changeAddress: p2pkh.address,
-      });
-
-      // Upgrade directly from V1 to V3 (counter -> counter + bonus)
+      // V3 needs a data NFT, which the upgrade mints from a funding coin
       const upgradeResult = await StatefulContract.upgrade({
         provider,
         oldContract: deployResult.contract,
@@ -560,35 +525,26 @@ describe('StatefulContract.upgrade()', () => {
         upgradeFunctionArgs: [new SignatureTemplate(alicePriv)],
         newArtifact: v3Artifact,
         newConstructorArgs: [alicePub],
+        ...(await upgradeFunding('e4cd')),
       });
 
       expect(upgradeResult.categoryId).toBe(deployResult.categoryId);
 
-      // Data NFT should have counter=5 preserved and bonus=0 (default)
+      // Data NFT with counter=0 and bonus=0, bound to the V3 master's lock rather than the V1 one
       const txOutputs = getTxOutputs(upgradeResult.tx);
+      expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
       const parsed = parsePushdataCommitment(
         txOutputs[1].token!.nft!.commitment, v3Artifact.stateLayout!, 0,
       );
-      expect(parsed.counter).toBe(5n);
+      expect(parsed.counter).toBe(0n);
       expect(parsed.bonus).toBe(0n);
+      const lock = binToHex(upgradeResult.tx.outputs[1].lockingBytecode);
+      expect(lock).toBe(dataNftLock(upgradeResult.contract.inner, deployResult.categoryId));
+      expect(lock).not.toBe(dataNftLock(deployResult.contract.inner, deployResult.categoryId));
     });
 
     it('should use V3 logic after upgrade (incrementWithBonus)', async () => {
-      const fundingUtxo: Utxo = {
-        txid: 'e2cd'.repeat(16),
-        vout: 0,
-        satoshis: 100000n,
-      };
-      await provider.addUtxo(p2pkh.address, fundingUtxo);
-
-      // Deploy V1 with counter=10
-      const deployResult = await StatefulContract.deploy(v1Artifact, [alicePub], {
-        provider,
-        fundingUtxo,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        initialState: { counter: 10n },
-        changeAddress: p2pkh.address,
-      });
+      const deployResult = await deployV1('e2cd');
 
       // Upgrade V1 -> V3
       const upgradeResult = await StatefulContract.upgrade({
@@ -598,6 +554,7 @@ describe('StatefulContract.upgrade()', () => {
         upgradeFunctionArgs: [new SignatureTemplate(alicePriv)],
         newArtifact: v3Artifact,
         newConstructorArgs: [alicePub],
+        ...(await upgradeFunding('e5cd')),
       });
 
       const v3 = upgradeResult.contract;
@@ -608,29 +565,14 @@ describe('StatefulContract.upgrade()', () => {
       const parsed = parsePushdataCommitment(
         txOutputs[1].token!.nft!.commitment, v3Artifact.stateLayout!, 0,
       );
-      expect(parsed.counter).toBe(11n);
+      expect(parsed.counter).toBe(1n);
       expect(parsed.bonus).toBe(10n);
     });
 
-    it('should chain V1 -> V2 -> V3 upgrade preserving state throughout', async () => {
-      const fundingUtxo: Utxo = {
-        txid: 'e3cd'.repeat(16),
-        vout: 0,
-        satoshis: 100000n,
-      };
-      await provider.addUtxo(p2pkh.address, fundingUtxo);
+    it('should chain V1 -> V2 -> V3 upgrades, adding state at the last', async () => {
+      const deployResult = await deployV1('e3cd');
 
-      // Deploy V1 with counter=0
-      const deployResult = await StatefulContract.deploy(v1Artifact, [alicePub], {
-        provider,
-        fundingUtxo,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        initialState: { counter: 0n },
-        changeAddress: p2pkh.address,
-      });
-
-      // Increment once on V1 (counter=1)
-      await deployResult.contract.call.increment().send();
+      await deployResult.contract.call.check(1n).send();
 
       // Upgrade V1 -> V2
       const v2Result = await StatefulContract.upgrade({
@@ -642,10 +584,9 @@ describe('StatefulContract.upgrade()', () => {
         newConstructorArgs: [alicePub],
       });
 
-      // IncrementByTwo on V2 (counter=3)
-      await v2Result.contract.call.incrementByTwo().send();
+      await v2Result.contract.call.checkTwo(2n).send();
 
-      // Upgrade V2 -> V3 (extends state with bonus)
+      // Upgrade V2 -> V3 (adds counter and bonus)
       const v3Result = await StatefulContract.upgrade({
         provider,
         oldContract: v2Result.contract,
@@ -653,49 +594,36 @@ describe('StatefulContract.upgrade()', () => {
         upgradeFunctionArgs: [new SignatureTemplate(alicePriv)],
         newArtifact: v3Artifact,
         newConstructorArgs: [alicePub],
+        ...(await upgradeFunding('e6cd')),
       });
 
-      // After V2 -> V3 upgrade: counter=3, bonus=0 (default)
+      // After V2 -> V3 upgrade: counter=0, bonus=0 (defaults)
       const upgradeOutputs = getTxOutputs(v3Result.tx);
       const upgradeParsed = parsePushdataCommitment(
         upgradeOutputs[1].token!.nft!.commitment, v3Artifact.stateLayout!, 0,
       );
-      expect(upgradeParsed.counter).toBe(3n);
+      expect(upgradeParsed.counter).toBe(0n);
       expect(upgradeParsed.bonus).toBe(0n);
 
-      // Use V3: incrementWithBonus (counter=4, bonus=10)
+      // Use V3: incrementWithBonus (counter=1, bonus=10)
       const tx = await v3Result.contract.call.incrementWithBonus().send();
       const txOutputs = getTxOutputs(tx);
       const parsed = parsePushdataCommitment(
         txOutputs[1].token!.nft!.commitment, v3Artifact.stateLayout!, 0,
       );
-      expect(parsed.counter).toBe(4n);
+      expect(parsed.counter).toBe(1n);
       expect(parsed.bonus).toBe(10n);
     });
   });
 
-  describe('state extension overflowing into new data NFT', () => {
-    it('should verify layout: V1 has 1 data NFT, V2 has 2', () => {
-      expect(overflowV1Artifact.stateLayout!.dataNftCount).toBe(1);
+  describe('state extension minting several data NFTs', () => {
+    it('should verify layout: V1 has no data NFT, V2 has 2', () => {
+      expect(v1Artifact.stateLayout!.dataNftCount).toBe(0);
       expect(overflowV2Artifact.stateLayout!.dataNftCount).toBe(2);
     });
 
     it('should reject upgrade without funder when new NFTs are needed', async () => {
-      const fundingUtxo: Utxo = {
-        txid: 'f1cd'.repeat(16),
-        vout: 0,
-        satoshis: 100000n,
-      };
-      await provider.addUtxo(p2pkh.address, fundingUtxo);
-
-      const zeroBytes32 = new Uint8Array(32);
-      const deployResult = await StatefulContract.deploy(overflowV1Artifact, [alicePub], {
-        provider,
-        fundingUtxo,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        initialState: { a: zeroBytes32, b: zeroBytes32, c: zeroBytes32 },
-        changeAddress: p2pkh.address,
-      });
+      const deployResult = await deployV1('f1cd');
 
       await expect(StatefulContract.upgrade({
         provider,
@@ -707,37 +635,8 @@ describe('StatefulContract.upgrade()', () => {
       })).rejects.toThrow('Provide fundingUtxo and funder');
     });
 
-    it('should mint new data NFT when state overflows to second NFT', async () => {
-      const deployFunding: Utxo = {
-        txid: 'f2cd'.repeat(16),
-        vout: 0,
-        satoshis: 100000n,
-      };
-      await provider.addUtxo(p2pkh.address, deployFunding);
-
-      const aVal = new Uint8Array(32);
-      aVal[0] = 0xAA;
-      const bVal = new Uint8Array(32);
-      bVal[0] = 0xBB;
-      const cVal = new Uint8Array(32);
-      cVal[0] = 0xCC;
-
-      // Deploy OverflowV1 with 1 data NFT
-      const deployResult = await StatefulContract.deploy(overflowV1Artifact, [alicePub], {
-        provider,
-        fundingUtxo: deployFunding,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        initialState: { a: aVal, b: bVal, c: cVal },
-        changeAddress: p2pkh.address,
-      });
-
-      // Provide a separate funding UTXO for the upgrade
-      const upgradeFunding: Utxo = {
-        txid: 'f3cd'.repeat(16),
-        vout: 0,
-        satoshis: 10000n,
-      };
-      await provider.addUtxo(p2pkh.address, upgradeFunding);
+    it('should mint both data NFTs of the new layout at the new master\'s lock', async () => {
+      const deployResult = await deployV1('f2cd');
 
       // Upgrade to OverflowV2 (needs 2 data NFTs)
       const upgradeResult = await StatefulContract.upgrade({
@@ -747,9 +646,7 @@ describe('StatefulContract.upgrade()', () => {
         upgradeFunctionArgs: [new SignatureTemplate(alicePriv)],
         newArtifact: overflowV2Artifact,
         newConstructorArgs: [alicePub],
-        fundingUtxo: upgradeFunding,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        changeAddress: p2pkh.address,
+        ...(await upgradeFunding('f3cd')),
       });
 
       expect(upgradeResult.categoryId).toBe(deployResult.categoryId);
@@ -760,14 +657,13 @@ describe('StatefulContract.upgrade()', () => {
       expect(txOutputs[0].token?.nft?.capability).toBe('minting');
       expect(txOutputs[0].token?.category).toBe(deployResult.categoryId);
 
-      // Output 1: existing data NFT (nftIndex 0) - a, b, c preserved
+      // Output 1: NEW data NFT (nftIndex 0) - a, b, c initialised to zero
       expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
       const nft0Parsed = parsePushdataCommitment(
         txOutputs[1].token!.nft!.commitment, overflowV2Artifact.stateLayout!, 0,
       );
-      expect(nft0Parsed.a).toEqual(aVal);
-      expect(nft0Parsed.b).toEqual(bVal);
-      expect(nft0Parsed.c).toEqual(cVal);
+      expect(nft0Parsed.a).toEqual(new Uint8Array(32));
+      expect(nft0Parsed.c).toEqual(new Uint8Array(32));
 
       // Output 2: NEW data NFT (nftIndex 1) - d, e initialised to zero
       expect(txOutputs[2].token?.nft?.capability).toBe('mutable');
@@ -777,32 +673,14 @@ describe('StatefulContract.upgrade()', () => {
       );
       expect(nft1Parsed.d).toEqual(new Uint8Array(32));
       expect(nft1Parsed.e).toEqual(new Uint8Array(32));
+
+      // Both at the covenant bound to the new master's lock
+      const lock = dataNftLock(upgradeResult.contract.inner, deployResult.categoryId);
+      expect([1, 2].map((at) => binToHex(upgradeResult.tx.outputs[at].lockingBytecode))).toEqual([lock, lock]);
     });
 
-    it('should use V2 logic with new data NFT after overflow upgrade', async () => {
-      const deployFunding: Utxo = {
-        txid: 'f4cd'.repeat(16),
-        vout: 0,
-        satoshis: 100000n,
-      };
-      await provider.addUtxo(p2pkh.address, deployFunding);
-
-      const zeroBytes32 = new Uint8Array(32);
-
-      const deployResult = await StatefulContract.deploy(overflowV1Artifact, [alicePub], {
-        provider,
-        fundingUtxo: deployFunding,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        initialState: { a: zeroBytes32, b: zeroBytes32, c: zeroBytes32 },
-        changeAddress: p2pkh.address,
-      });
-
-      const upgradeFunding: Utxo = {
-        txid: 'f5cd'.repeat(16),
-        vout: 0,
-        satoshis: 10000n,
-      };
-      await provider.addUtxo(p2pkh.address, upgradeFunding);
+    it('should use V2 logic with the new data NFTs after the upgrade', async () => {
+      const deployResult = await deployV1('f4cd');
 
       const upgradeResult = await StatefulContract.upgrade({
         provider,
@@ -811,14 +689,12 @@ describe('StatefulContract.upgrade()', () => {
         upgradeFunctionArgs: [new SignatureTemplate(alicePriv)],
         newArtifact: overflowV2Artifact,
         newConstructorArgs: [alicePub],
-        fundingUtxo: upgradeFunding,
-        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        changeAddress: p2pkh.address,
+        ...(await upgradeFunding('f5cd')),
       });
 
       const v2 = upgradeResult.contract;
 
-      // Call setD to write to the new data NFT (nftIndex 1)
+      // Call setD to write to the second data NFT (nftIndex 1)
       const dVal = new Uint8Array(32);
       dVal[0] = 0xDD;
       const tx = await v2.call.setD(dVal).send();
@@ -832,11 +708,12 @@ describe('StatefulContract.upgrade()', () => {
     });
   });
 
-  // An overflow upgrade mints the new layout's data NFTs as a run at the canonical data-NFT covenant, right after the
-  // old data NFTs. The census pins the run's SHAPE (exactly the old data NFTs in; out the same plus a contiguous run
-  // at the covenant). A direct upgrade's authorizing signature must sign all outputs (base sighash type ALL), which
-  // binds the run's CONTENTS: the replacement bytecode, the run length and the new commitments cannot be rebound
-  // under a NONE/SINGLE signature (kernel lane 4b89cce8e signature fence; ledger D10, R1-R3).
+  // An upgrade that adds state mints the new layout's data NFTs as a run at the canonical data-NFT covenant bound to
+  // the replacement's lock, right after the old data NFTs (none here). The census pins the run's SHAPE (exactly the
+  // old data NFTs in; out the same plus a contiguous run at that covenant). A direct upgrade's authorizing signature
+  // must sign all outputs (base sighash type ALL), which binds the run's CONTENTS: the replacement bytecode, the run
+  // length and the new commitments cannot be rebound under a NONE/SINGLE signature (kernel lane 4b89cce8e signature
+  // fence; ledger D10, R1-R3).
   describe('overflow data NFT run under a signature over all outputs', () => {
     const wideArtifact = compileString(OVERFLOW_WIDE);
     const OP_TRUE = hexToBin('51');
@@ -849,21 +726,21 @@ describe('StatefulContract.upgrade()', () => {
     const keyLock = encodeLockingBytecodeP2pkh(alicePkh);
     const refused = /mandatory-script-verify-flag-failed/;
     const defaultHashType = HashType.SIGHASH_ALL | HashType.SIGHASH_UTXOS;
+    const zero = new Uint8Array(32);
     type Tx = ReturnType<typeof decodeTransactionUnsafe>;
 
-    // Deploys OverflowV1 and signs its upgrade to OverflowWide under `hashType`, which the provider keeps instead of
-    // broadcasting. Inputs: the master, the old data NFT, the funding coin. Outputs: the master at its new covenant,
-    // the old data NFT, the two new data NFTs, change.
+    // Deploys V1 and signs its upgrade to OverflowWide under `hashType`, which the provider keeps instead of
+    // broadcasting. Inputs: the master, the funding coin. Outputs: the master at its new covenant, the three new data
+    // NFTs, change.
     const prepare = async (
       label: string, hashType: number = defaultHashType,
-    ): Promise<{ hex: string; wide: Contract; categoryId: string }> => {
+    ): Promise<{ hex: string; wide: Contract; old: Contract; categoryId: string }> => {
       const deployFunding = coin(`${label} deploy`);
       await provider.addUtxo(p2pkh.address, deployFunding);
-      const { contract, categoryId } = await StatefulContract.deploy(overflowV1Artifact, [alicePub], {
+      const { contract, categoryId } = await StatefulContract.deploy(v1Artifact, [alicePub], {
         provider,
         fundingUtxo: deployFunding,
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        initialState: { a: field('a'), b: field('b'), c: field('c') },
         changeAddress: p2pkh.address,
       });
       const funding = coin(`${label} upgrade`);
@@ -890,15 +767,15 @@ describe('StatefulContract.upgrade()', () => {
         (provider as any).sendRawTransaction = send;
       }
       const wide = new Contract(wideArtifact, [alicePub], { provider, category: hexToBin(categoryId) });
-      return { hex, wide, categoryId };
+      return { hex, wide, old: contract.inner, categoryId };
     };
     const submit = (hex: string, mutate: (tx: Tx) => void = () => {}): Promise<string> => {
       const tx = decodeTransactionUnsafe(hexToBin(hex));
       mutate(tx);
       return provider.sendRawTransaction(binToHex(encodeTransaction(tx)));
     };
-    // A further data NFT at output `at`, a copy of the first new one with its own commitment, paid for (with its
-    // bytes) out of the change output.
+    // A further data NFT at output `at`, a copy of a new one with its own commitment, paid for (with its bytes) out
+    // of the change output.
     const addDataNft = (tx: Tx, at: number, commitment: Uint8Array): void => {
       const template = tx.outputs[2];
       tx.outputs[tx.outputs.length - 1].valueSatoshis -= template.valueSatoshis + 1_000n;
@@ -909,39 +786,37 @@ describe('StatefulContract.upgrade()', () => {
       });
     };
 
-    it('settles under SIGHASH_ALL, and refuses a new data NFT off the covenant, a gap, a detached extra, or an old '
-      + 'one left unspent', async () => {
-      const { hex, wide, categoryId } = await prepare('wide run');
+    it('settles under SIGHASH_ALL, and refuses a new data NFT off the covenant, a gap, a detached extra, or a run '
+      + 'at the old master\'s covenant', async () => {
+      const { hex, wide, old, categoryId } = await prepare('wide run');
       const honest = decodeTransactionUnsafe(hexToBin(hex));
       expect(honest.outputs.map((output) => output.token?.nft?.capability))
         .toEqual(['minting', 'mutable', 'mutable', 'mutable', undefined]);
-      const dataLock = binToHex(honest.outputs[1].lockingBytecode);
-      expect(honest.outputs.slice(2, 4).map((output) => binToHex(output.lockingBytecode)))
-        .toEqual([dataLock, dataLock]);
+      // The run sits at the data-NFT covenant bound to the new master's lock
+      const dataLock = dataNftLock(wide, categoryId);
+      expect(honest.outputs.slice(1, 4).map((output) => binToHex(output.lockingBytecode)))
+        .toEqual([dataLock, dataLock, dataLock]);
 
-      // Each tamper changes outputs (or inputs), which the output signature no longer covers, and also breaks the
-      // census shape; both refuse it. The second new data NFT at a key's locking bytecode.
+      // Each tamper changes outputs, which the output signature no longer covers, and also breaks the census shape;
+      // both refuse it. The third new data NFT at a key's locking bytecode.
       await expect(submit(hex, (tx) => { tx.outputs[3].lockingBytecode = keyLock; })).rejects.toThrow(refused);
-      // A gap in the run: the second new data NFT after the change output.
+      // A gap in the run: the third new data NFT after the change output.
       await expect(submit(hex, (tx) => { [tx.outputs[3], tx.outputs[4]] = [tx.outputs[4], tx.outputs[3]]; }))
         .rejects.toThrow(refused);
       // An extra data NFT detached from the run, after the change output.
       await expect(submit(hex, (tx) => { addDataNft(tx, tx.outputs.length, field('detached')); }))
         .rejects.toThrow(refused);
-      // The old data NFT left unspent and a replacement minted into the run.
+      // The run at the old master's data-NFT covenant, where no master could spend it after the upgrade.
+      const stranded = hexToBin(dataNftLock(old, categoryId));
       await expect(submit(hex, (tx) => {
-        const old = tx.outputs[1];
-        tx.inputs.splice(1, 1);
-        tx.outputs[1] = { lockingBytecode: keyLock, valueSatoshis: 1_000n };
-        tx.outputs[tx.outputs.length - 1].valueSatoshis -= old.valueSatoshis + 1_000n;
-        addDataNft(tx, 4, field('replacement'));
+        for (const at of [1, 2, 3]) tx.outputs[at].lockingBytecode = stranded.slice();
       })).rejects.toThrow(refused);
 
       await expect(submit(hex)).resolves.toBeTypeOf('string');
       const settled = StatefulContract.withCategory(wide, categoryId);
       await settled.call.setH(field('h')).send();
       const state = await settled.getState();
-      expect([state.a, state.c, state.g, state.h]).toEqual([field('a'), field('c'), new Uint8Array(32), field('h')]);
+      expect([state.a, state.c, state.g, state.h]).toEqual([zero, zero, zero, field('h')]);
     });
 
     // The fence refuses an authorization that does not sign all outputs. This closes the rebind the census alone did
@@ -971,10 +846,10 @@ describe('StatefulContract.upgrade()', () => {
   // it can only fail.
   describe('upgrade authorizations beyond a direct checkSig', () => {
     const artifacts = {
-      multisig: compileString(MULTISIG_UPGRADE),
-      helper: compileString(HELPER_UPGRADE),
-      either: compileString(EITHER_UPGRADE),
-      next: compileString(NEXT_VERSION),
+      multisig: compileString(MULTISIG_UPGRADE, MASTER_ONLY),
+      helper: compileString(HELPER_UPGRADE, MASTER_ONLY),
+      either: compileString(EITHER_UPGRADE, MASTER_ONLY),
+      next: compileString(NEXT_VERSION, MASTER_ONLY),
     };
     const OP_TRUE = hexToBin('51');
     const anyoneCanSpend = {
@@ -997,7 +872,6 @@ describe('StatefulContract.upgrade()', () => {
         provider,
         fundingUtxo: funding,
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-        initialState: { counter: 0n },
         changeAddress: p2pkh.address,
       });
       return contract;
@@ -1051,9 +925,9 @@ describe('StatefulContract.upgrade()', () => {
     it('fences the upgrade\'s inlined copy of a checkSig helper, and settles both callers with an SDK signature',
       async () => {
         const contract = await deploy('helper', artifacts.helper, [alicePub]);
-        await contract.call.bump(new SignatureTemplate(alicePriv)).send();
-        await contract.call.bump(new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)).send();
-        expect((await contract.getState()).counter).toBe(2n);
+        await expect(contract.call.bump(new SignatureTemplate(alicePriv)).send()).resolves.toBeDefined();
+        await expect(contract.call.bump(new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)).send())
+          .resolves.toBeDefined();
 
         const none = await capture('helper none', contract,
           [new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)]);
@@ -1070,6 +944,34 @@ describe('StatefulContract.upgrade()', () => {
       await expect(provider.sendRawTransaction(none)).rejects.toThrow(fenced);
       const all = await capture('either all', contract, [new Uint8Array(), new SignatureTemplate(bobPriv)]);
       await expect(provider.sendRawTransaction(all)).resolves.toBeTypeOf('string');
+    });
+  });
+
+  // Every record a contract keeps is bound to its master's exact lock (CRYPTO-4). An in-place upgrade moves the master
+  // to the replacement's lock, so the compiler refuses an upgrade entry beside any record: it would strand them.
+  describe('refuses an in-place upgrade that would strand lock-bound records', () => {
+    const strands = /is an in-place upgrade, but this contract keeps .* cannot follow it/;
+
+    it('refuses a contract with data NFTs', () => {
+      expect(() => compileString(DATA_NFT_UPGRADE)).toThrow(strands);
+      expect(() => compileString(DATA_NFT_UPGRADE)).toThrow(/keeps .*state variables in data NFTs/);
+    });
+
+    it('refuses a contract with a mapping', () => {
+      expect(() => compileString(MAPPING_UPGRADE)).toThrow(strands);
+      expect(() => compileString(MAPPING_UPGRADE)).toThrow(/keeps .*mapping or array entries/);
+    });
+
+    it('refuses a contract that co-spends a satoshi container or a token container', () => {
+      expect(() => compileString(SATOSHI_CONTAINER_UPGRADE, MASTER_ONLY)).toThrow(/keeps .*a satoshi container/);
+      expect(() => compileString(TOKEN_CONTAINER_UPGRADE, MASTER_ONLY)).toThrow(/keeps .*token containers/);
+    });
+
+    // The kernel's in-place append upgrade leaves the records at the old lock as well.
+    it('refuses the kernel lane\'s in-place upgrade of a contract with data NFTs', () => {
+      expect(() => compileString(DATA_NFT_UPGRADE, {
+        forceStateful: true, messageBus: true, messageBusKernel: true,
+      })).toThrow(strands);
     });
   });
 });

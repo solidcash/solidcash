@@ -47485,7 +47485,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // sub-covenant self-authorizes given the master's minting NFT is present - drops the output count below the
   // input count and is rejected. Mirrors emitMintingNftUniqueness (balance = inputs - outputs), asserting == 0.
   // The direct-upgrade variant also requires exactly the old data-NFT input population and discounts only a
-  // contiguous run of new data NFTs at the canonical covenant. A message-bus upgrade keeps the balanced census
+  // contiguous run of new data NFTs at the canonical covenant bound to the replacement's lock, the master the
+  // records will serve. A message-bus upgrade keeps the balanced census
   // because it appends inside the final existing data NFT and co-spends the participant's detached verifier, and
   // its route verifier already pins the block. Residual: flag=1 corruption that re-emits a 0x01-of-C output keeps
   // the count balanced (see SECURITY-AUDIT C3), and the run's length and commitments are not checked.
@@ -47587,8 +47588,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     if (allowUpgradeDataNftGrowth) {
       // The only excess outputs allowed are a contiguous run right after the old data-NFT outputs, each at the
-      // canonical data-NFT covenant of this category. Count that run back into the balance; the count above still
-      // refuses a mutable output beyond the run or at another locking bytecode.
+      // canonical data-NFT covenant of this category bound to the replacement's lock. Count that run back into the
+      // balance; the count above still refuses a mutable output beyond the run or at another locking bytecode.
       this.emit(encodeInt(BigInt(1 + this.dataNftCount)), loc);
       this.pushToStack('(upgrade_new_data_j)');
       this.emit(Op.OP_BEGIN, loc);
@@ -47610,8 +47611,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(32n), loc);
       this.emit(Op.OP_SPLIT, loc);
       this.emit(Op.OP_DROP, loc); // C
-      this.emit(Op.OP_INPUTINDEX, loc);
-      this.emit(Op.OP_UTXOBYTECODE, loc);
+      // The replacement lock, which emitUpgradeSelfPreservation pinned to the master output. The +2 clears the
+      // untracked category comparison and output bytecode below C.
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__upgradeBytecode') + 2)), loc);
+      this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_SWAP, loc);
       this.emitDataNftLbc(loc, true);
       this.emit(Op.OP_EQUAL, loc);

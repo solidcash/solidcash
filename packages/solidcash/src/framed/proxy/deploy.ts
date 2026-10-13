@@ -65,7 +65,7 @@ import {
   unstatedViewPlaceholder, validatorFacetsOf,
   type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftCall, type DraftInput,
   type DraftMaster, type DraftRecordEntry, type DraftSourceOutput, type FrameRequest, type RecoverySideCars,
-  type ShippedVmProgram, type TransactionLayout,
+  type ShippedVmProgram,
 } from '../composer/index.js';
 import { bumpFramedCounter } from '../composer/counters.js';
 import { eventCloseOf, readComputedDeclaration, type DeclarationReading } from '../deploy/declaration.js';
@@ -74,7 +74,8 @@ import {
 } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
 import {
-  bindProviderBlockOracle, blockOracleClock, entryReadsBlockOracle, framedBlockOracle, type FramedBlockOracle,
+  bindProviderBlockOracle, blockOracleClock, entryReadsBlockOracle, framedBlockOracle, withBlockOracleSideCar,
+  type FramedBlockOracle,
 } from '../call/block-oracle.js';
 import {
   FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
@@ -276,8 +277,6 @@ const PROXY_MASTER_ID = 'proxy-master';
 const CALLER_LOCK_REFUSAL = 'the caller funding unlocker signs for a lock that is not the hop\'s caller lock, so the '
   + 'root frame\'s `msg.sender` binding would not hold';
 const IMPLEMENTATION_MASTER_ID = 'implementation-master';
-/** The block oracle the implementation's entry reads, co-spent after its side-cars. */
-const BLOCK_ORACLE_ID = `${IMPLEMENTATION_MASTER_ID}:block-oracle`;
 const RECORD_ID = 'proxy-record';
 const VALIDATOR_ID = 'validator';
 const USER_ID = 'deployer';
@@ -1008,28 +1007,14 @@ async function hopBlockOracle(
 
 /**
  * The implementation master's side-cars with the block oracle after them, where a direct call places it: the
- * plan lays it out and spends it as one, and `buildHopPlan` hands the entry its index.
+ * plan lays it out and spends it as one, and every frame's body finds it by its lock.
  */
 function withBlockOracle(
   sideCars: ReadonlyMap<string, RecoverySideCars>, oracle: FramedBlockOracle | undefined,
 ): ReadonlyMap<string, RecoverySideCars> {
   if (oracle === undefined) return sideCars;
-  const own = sideCars.get(IMPLEMENTATION_MASTER_ID);
-  return new Map<string, RecoverySideCars>([...sideCars, [IMPLEMENTATION_MASTER_ID, {
-    ids: [...own?.ids ?? [], BLOCK_ORACLE_ID],
-    inputs: { ...own?.inputs, [BLOCK_ORACLE_ID]: oracle.input },
-    computedWitnesses: own?.computedWitnesses ?? [],
-    utxos: { ...own?.utxos, [BLOCK_ORACLE_ID]: oracle.utxo },
-  }]]);
-}
-
-/** The call data with the oracle's input index pushed after the selector, as the entry's last parameter. */
-function withBlockOracleIndex(pushes: readonly Uint8Array[], layout: TransactionLayout): readonly Uint8Array[] {
-  const oracle = findParticipant(layout, BLOCK_ORACLE_ID);
-  if (oracle === undefined) return pushes;
-  const encoded = encodeFunctionArgument(BigInt(oracle.index), 'int');
-  if (!(encoded instanceof Uint8Array)) throw new FramedProxyDeployError('the block oracle input index did not encode');
-  return [pushes[0]!, encoded, ...pushes.slice(1)];
+  return new Map<string, RecoverySideCars>([...sideCars, [IMPLEMENTATION_MASTER_ID,
+    withBlockOracleSideCar(IMPLEMENTATION_MASTER_ID, sideCars.get(IMPLEMENTATION_MASTER_ID), oracle)]]);
 }
 
 /** The entry facts the composer's admission rules read for one execution. */
@@ -3853,8 +3838,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const validatorRedeem = validatorRedeemScript(options.proxyCategory, framedValidator.buildValidatorProgram());
   const facets = validatorFacetsOf({ id: VALIDATOR_ID, covers: [], settles: [], redeemScript: validatorRedeem });
   const layout = layoutTransaction(blocks, new Map([[VALIDATOR_ID, facets]]));
-  const pushes = withBlockOracleIndex(
-    callPushes(implementationArtifact, options.entry.functionName, options.entry.args ?? []), layout);
+  const pushes = callPushes(implementationArtifact, options.entry.functionName, options.entry.args ?? []);
   // The events the delegate frame lists sit in the trailing region, which starts past the participants. The
   // assembly allocates them there and refuses a plan that names any other index.
   const eventIndices = options.eventOutputs.map((_output, position) => layout.participantCount + position);

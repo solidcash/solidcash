@@ -17504,13 +17504,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Slice one field out of the co-spent block-oracle commitment. The lock pin is a sentinel deployment fills. */
   private emitBlockOracleField(field: BlockOracleField | 'coinbase', locationData: SingleLocationData): void {
-    const idxDepth = this.getStackIndex('__internal__blockOracleInputIndex');
-    this.emit([
-      encodeInt(BigInt(idxDepth)), Op.OP_PICK,
-      Op.OP_DUP, Op.OP_UTXOBYTECODE,
-      BLOCK_ORACLE_LOCK_SENTINEL, Op.OP_EQUALVERIFY,
-      Op.OP_UTXOTOKENCOMMITMENT,
-    ], locationData);
+    if (this.framedMaster) {
+      // A framed body takes no index, so it finds the first input at the oracle lock; past the last input the
+      // introspection fails. The covenant admits only the category's one mutable NFT, so that input is the oracle.
+      this.emit([
+        Op.OP_1NEGATE,
+        Op.OP_BEGIN, Op.OP_1ADD, Op.OP_DUP, Op.OP_UTXOBYTECODE, BLOCK_ORACLE_LOCK_SENTINEL, Op.OP_EQUAL, Op.OP_UNTIL,
+        Op.OP_UTXOTOKENCOMMITMENT,
+      ], locationData);
+    } else {
+      this.emit([
+        encodeInt(BigInt(this.getStackIndex('__internal__blockOracleInputIndex'))), Op.OP_PICK,
+        Op.OP_DUP, Op.OP_UTXOBYTECODE,
+        BLOCK_ORACLE_LOCK_SENTINEL, Op.OP_EQUALVERIFY,
+        Op.OP_UTXOTOKENCOMMITMENT,
+      ], locationData);
+    }
     if (field === 'coinbase') {
       this.emit([
         encodeInt(BigInt(BLOCK_ORACLE_COINBASE_OFFSET)), Op.OP_SPLIT, Op.OP_NIP,

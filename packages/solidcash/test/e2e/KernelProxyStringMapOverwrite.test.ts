@@ -6,6 +6,7 @@ import {
   upgrades,
 } from '../../src/stateful/index.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
+import { addProvenUtxo } from '../test-util.js';
 
 // An initializer-marked implementation compiles every public function as a delegate entry, so the setter runs as a
 // direct proxied owner call. Its if/revert guard makes the single map write a conditional entry slot.
@@ -44,9 +45,7 @@ const asText = (value: unknown): string => {
 async function deploy() {
   const provider = createMessageBusCapstoneTestProvider();
   const signer = new Signer(new Uint8Array(32).fill(0x6e), provider);
-  for (let index = 0; index < 20; index += 1) await provider.addUtxo(signer.getAddress(), {
-    txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
-  });
+  for (let index = 0; index < 20; index += 1) await addProvenUtxo(provider, signer.getAddress());
   const catalog = await upgrades.deployProxy(getContractFactory(artifacts().Catalog, signer), []);
   return { catalog, labels: catalog as unknown as Labels };
 }

@@ -10,7 +10,7 @@ import {
 } from '../../src/stateful/index.js';
 import type { EventLog } from '../../src/stateful/index.js';
 import { encodeEventCommitment, parsePushdataCommitment } from '@solidcash/utils';
-import { createTestProvider, getTxOutputs } from '../test-util.js';
+import { addProvenUtxo, createTestProvider, getTxOutputs } from '../test-util.js';
 
 // ethers/hardhat OpenZeppelin-upgrades-style proxy deploy for stateful contracts:
 //   const Impl = getContractFactory(implArtifact, signer);
@@ -78,8 +78,8 @@ async function fundedSigner(): Promise<Signer> {
   const provider = createTestProvider();
   const signer = new Signer(freshPrivateKey(), provider);
   // Two genesis-valid funders: one for the implementation, one for the proxy.
-  await provider.addUtxo(signer.getAddress(), { txid: 'a1'.repeat(32), vout: 0, satoshis: 1_000_000n });
-  await provider.addUtxo(signer.getAddress(), { txid: 'b2'.repeat(32), vout: 0, satoshis: 1_000_000n });
+  await addProvenUtxo(provider, signer.getAddress());
+  await addProvenUtxo(provider, signer.getAddress());
   return signer;
 }
 
@@ -127,9 +127,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
 
   it('stores a registered proxy argument as its physical master locking bytecode', async () => {
     const signer = await fundedSigner();
-    await signer.provider.addUtxo(signer.getAddress(), {
-      txid: 'c8'.repeat(32), vout: 0, satoshis: 1_000_000n,
-    });
+    await addProvenUtxo(signer.provider, signer.getAddress());
     const target = await upgrades.deployProxy(
       getContractFactory(compileString(DELEGATE_IMPL), signer), [1n],
     );
@@ -293,7 +291,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
   it('emits an event from inside a delegate function (event NFT lands in the proxy block)', async () => {
     const signer = await fundedSigner();
     // A third funder: the event NFT reserves one output-only funder input beyond the two deploy genesis coins.
-    await signer.provider.addUtxo(signer.getAddress(), { txid: 'c3'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    await addProvenUtxo(signer.provider, signer.getAddress());
     const implArtifact = compileString(EVENT_IMPL);
     const proxy = await upgrades.deployProxy(getContractFactory(implArtifact, signer), [1n]);
 
@@ -312,7 +310,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
 
   it('exposes implementation events through connected proxy handles', async () => {
     const signer = await fundedSigner();
-    await signer.provider.addUtxo(signer.getAddress(), { txid: 'c6'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    await addProvenUtxo(signer.provider, signer.getAddress());
     const implArtifact = compileString(EVENT_IMPL);
     const proxy = await upgrades.deployProxy(
       getContractFactory(implArtifact, signer),
@@ -385,7 +383,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
 
   it('preserves msg.sender through an inherited owner modifier with an address argument', async () => {
     const signer = await fundedSigner();
-    await signer.provider.addUtxo(signer.getAddress(), { txid: 'c4'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    await addProvenUtxo(signer.provider, signer.getAddress());
     const implArtifact = compileString(INHERITED_OWNER_IMPL, { evmCompat: true });
     expect(implArtifact.abi.find((entry) => entry.name === 'transferOwnership')?.emits).toEqual([
       expect.objectContaining({ eventSignature: 'OwnershipTransferred(address,address)' }),
@@ -411,8 +409,8 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
   it('supports indexed params, multiple emits in one delegate call, and shifts co-spent impl UTXOs', async () => {
     const signer = await fundedSigner();
     // two() emits twice -> two event NFTs -> two output-only funder inputs beyond the two deploy coins.
-    await signer.provider.addUtxo(signer.getAddress(), { txid: 'd4'.repeat(32), vout: 0, satoshis: 1_000_000n });
-    await signer.provider.addUtxo(signer.getAddress(), { txid: 'e5'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    await addProvenUtxo(signer.provider, signer.getAddress());
+    await addProvenUtxo(signer.provider, signer.getAddress());
     const implArtifact = compileString(EVENT_IMPL2);
     const proxy = await upgrades.deployProxy(getContractFactory(implArtifact, signer), [3n]);
 
@@ -439,8 +437,8 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
 
   it('writes a msg.sender-keyed vmap from inside a delegate, minting its entry NFTs in the proxy block', async () => {
     const signer = await fundedSigner();
-    await signer.provider.addUtxo(signer.getAddress(), { txid: 'f6'.repeat(32), vout: 0, satoshis: 1_000_000n });
-    await signer.provider.addUtxo(signer.getAddress(), { txid: '07'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    await addProvenUtxo(signer.provider, signer.getAddress());
+    await addProvenUtxo(signer.provider, signer.getAddress());
     const implArtifact = compileString(MAP_IMPL);
     const proxy = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
 
@@ -463,7 +461,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
 
   it('materializes a returning external call made by a delegated implementation', async () => {
     const signer = await fundedSigner();
-    await signer.provider.addUtxo(signer.getAddress(), { txid: '18'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    await addProvenUtxo(signer.provider, signer.getAddress());
     const calleeArtifact = compileString(`pragma solidcash >=0.8.0;
       contract ValueSource() {
         int marker;
@@ -488,9 +486,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
   // Nested proxy emit+return composition still requires a dedicated cross-owner event/return layout.
   it.skip('materializes a returning external call to another deployed proxy', async () => {
     const signer = await fundedSigner();
-    await signer.provider.addUtxo(signer.getAddress(), {
-      txid: '19'.repeat(32), vout: 0, satoshis: 1_000_000n,
-    });
+    await addProvenUtxo(signer.provider, signer.getAddress());
     const valueArtifact = compileString(`pragma solidcash >=0.8.0;
       contract ProxyValueSource() {
         event Read(int value);

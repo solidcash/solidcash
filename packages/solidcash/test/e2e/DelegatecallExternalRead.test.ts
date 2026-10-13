@@ -9,7 +9,9 @@ import {
   getDataNftLockingBytecode,
 } from '../../src/stateful/index.js';
 import type { TransactionDetails } from '../../src/interfaces.js';
-import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
+import {
+  createBareP2pkhFeeFunder, createTestProvider, getTxOutputs, setupStatefulUtxos,
+} from '../test-util.js';
 
 /**
  * A read a function makes beside its delegatecall is verified like a read in any other function.
@@ -78,12 +80,12 @@ describe('a read beside a delegatecall', () => {
     const impl = await deploy(provider, implArtifact, [], { counter: 0n });
     const counter = await deploy(provider, counterArtifact, [], { counter: 7n });
     const other = await deploy(provider, counterArtifact, [], { counter: 9n });
-    const proxy = await deploy(
-      provider, proxyArtifact, [impl.locking, getDataNftLockingBytecode(counter.category, hexToBin(counter.locking))], { counter: 5n },
-    );
+    const counterRecord = getDataNftLockingBytecode(counter.category, hexToBin(counter.locking));
+    const proxy = await deploy(provider, proxyArtifact, [impl.locking, counterRecord], { counter: 5n });
     const input = hexToBin(implArtifact.abi.find((entry) => entry.name === 'increment')!.selector!);
 
-    // `look` reading the given deployment, its read output restored at the read input's index.
+    // `look` reading the given deployment, its read output restored at the read input's index. The restored layout
+    // drops the built fee, and the mock checks the relay fee before the scripts, so a fee-only input pays it.
     const look = async (source: Deployed): Promise<TransactionDetails> => {
       const reader = StatefulContract.withCategory(proxy.contract, proxy.category, {
         externals: { ICounter: source.sc },
@@ -96,6 +98,8 @@ describe('a read beside a delegatecall', () => {
       builder.outputs.splice(index, builder.outputs.length - index, {
         to, amount: BigInt(read.satoshis), token: read.token,
       });
+      const fee = await createBareP2pkhFeeFunder(provider, 50_000n);
+      builder.addInput(fee.utxo, fee.unlocker);
       return builder.send();
     };
 

@@ -317,8 +317,10 @@ describe('Token Container', () => {
 
     const categoryId = 'aacd'.repeat(16);
     const tokenContainerCategoryId = 'bbcd'.repeat(16);
-    const dataNftAddress = getDataNftAddress(contract, categoryId);
-    const containerAddress = getTokenContainerAddress(contract, categoryId, tokenContainerCategoryId);
+    // Records and containers bind the master's lock; StatefulContract's master is the category-pinned contract.
+    const master = contract.withCategory(hexToBin(categoryId));
+    const dataNftAddress = getDataNftAddress(master, categoryId);
+    const containerAddress = getTokenContainerAddress(master, categoryId, tokenContainerCategoryId);
 
     const initialCommitments = buildInitialStateCommitments(stateLayout, { counter: 0n });
 
@@ -355,7 +357,7 @@ describe('Token Container', () => {
     };
 
     beforeAll(async () => {
-      await provider.addUtxo(contract.tokenAddress, masterUtxo);
+      await provider.addUtxo(master.tokenAddress, masterUtxo);
       await provider.addUtxo(dataNftAddress, dataNftUtxo);
       await provider.addUtxo(containerAddress, tokenContainerUtxo);
     });
@@ -400,9 +402,11 @@ describe('Token Container', () => {
 
     beforeAll(async () => {
       ({ categoryId } = await genesisStatefulMaster(provider, contract, stateLayout, { counter: 0n }));
+      // Containers bind the master's lock: fund them for the category-pinned contract StatefulContract reads.
+      const master = contract.withCategory(hexToBin(categoryId));
 
       // Container A: FT token funded with 300n + 700n.
-      const ftA = await genesisFtContainer(provider, contract, categoryId, [300n, 700n]);
+      const ftA = await genesisFtContainer(provider, master, categoryId, [300n, 700n]);
       tokenContainerCategoryA = ftA.category;
       containerAddressA = ftA.address;
 
@@ -413,11 +417,11 @@ describe('Token Container', () => {
 
       // Container B: 2 immutable NFTs.
       ({ category: tokenContainerCategoryB } = await genesisNftContainer(
-        provider, contract, categoryId, ['deadbeef', 'cafebabe'],
+        provider, master, categoryId, ['deadbeef', 'cafebabe'],
       ));
 
       // Satoshi container: 25000 sats.
-      await provider.addUtxo(getSatoshiContainerAddress(contract, categoryId), {
+      await provider.addUtxo(getSatoshiContainerAddress(master, categoryId), {
         txid: 'f7cd'.repeat(16), vout: 0, satoshis: 25000n,
       });
     });
@@ -1941,7 +1945,6 @@ contract C() {
     const redirectArtifact = compileString(REDIRECT_SRC);
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const bare = new Contract(redirectArtifact, [], { provider });
 
     it('rejects redirecting the token container remainder to a foreign address; honest tx accepted', async () => {
       const { addressToLockScript } = await import('../../src/utils.js');
@@ -1955,8 +1958,8 @@ contract C() {
         changeAddress: p2pkh.address,
       });
       const contract = deployed.contract;
-      // Fund the token container with 1000 FT of a fresh category.
-      const ft = await genesisFtContainer(provider, bare, deployed.categoryId, [1000n]);
+      // Fund the token container with 1000 FT of a fresh category, at the lock the deployed master binds.
+      const ft = await genesisFtContainer(provider, contract.inner, deployed.categoryId, [1000n]);
 
       // Honest: transfer 300 FT to bob; the container remainder (700 FT) stays at the container address. The raw is
       // the one `.send()` funds, captured unbroadcast; `.build()` is the covenant transaction without its fee.

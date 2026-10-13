@@ -29,6 +29,10 @@ import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { UnsupportedReturnError } from '../Errors.js';
 import { computeBranchOps } from './branchOps.js';
 
+// True while nesting an entry point the final-require check verifies. An internal return goes back to its caller,
+// and a state-writing entry ends under its state covenant, so neither is sealed.
+let sealingUnguardedReturns = false;
+
 /**
  * Transforms early return statements into nested if-else structures.
  * Bitcoin Script has no GOTO/JUMP, so we rewrite:
@@ -85,7 +89,13 @@ export default class EarlyReturnTransformation extends AstTraversal {
 
     // Transform the body statements to nest early returns
     if (node.body.statements) {
-      node.body.statements = transformStatements(node.body.statements);
+      const sealing = sealingUnguardedReturns;
+      sealingUnguardedReturns = node.sealsUnguardedReturns === true;
+      try {
+        node.body.statements = transformStatements(node.body.statements);
+      } finally {
+        sealingUnguardedReturns = sealing;
+      }
       if (this.canonicalizeScalarReturns && node.returnTypes.length === 1) {
         const returns = collectReturns(node.body);
         // A bare `return;` in a scalar named-return function means "return the current named value" and has no
@@ -218,7 +228,7 @@ export function bareReturnIsUnguarded(statements: StatementNode[]): boolean {
 
 /** A bare return that skips the only require must fail closed. A return after a require stays a success. */
 function sealUnguardedBareReturn(statements: StatementNode[], alreadyGated: boolean): StatementNode[] {
-  if (alreadyGated) return statements;
+  if (alreadyGated || !sealingUnguardedReturns) return statements;
   const sealed = [...statements];
   for (let index = sealed.length - 1; index >= 0; index -= 1) {
     const statement = sealed[index];

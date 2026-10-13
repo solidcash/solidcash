@@ -181,6 +181,7 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       && containsStatefulOperation(node.body.statements);
 
     if (!hasStateWrites) {
+      node.sealsUnguardedReturns = true;
       // selfdestruct functions skip all covenant codegen, so a missing require() means any caller can trigger
       // the destruction. Keep that a hard error regardless of enforceFinalRequire (the general no-verification
       // path is only a warning by default). The selfdestruct statement itself does not authorize the destruction.

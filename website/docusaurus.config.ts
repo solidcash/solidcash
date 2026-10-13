@@ -80,11 +80,11 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `<b>Donations:</b> bitcoincash:qz6uftqp7dyc4ca9e94d7wsle06u0z2ccc223dkpl8`,
+      copyright: `<b>Donations:</b> bitcoincash:qzlhhdh5ma2ehcxmwqx3xfc6fla3854p3c8zu625kl`,
     },
     algolia: {
-      apiKey: 'd1e059f9bd6bf56667612a41a5115c6b',
-      appId: 'XBVJRKV38F',
+      apiKey: '',
+      appId: '',
       indexName: 'solidcash'
     },
   },

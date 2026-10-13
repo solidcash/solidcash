@@ -109,28 +109,10 @@ await time.setNextBlockTimestamp(new Date('2027-01-01T00:00:00Z'));
 `time.increase()` and `time.increaseTo()` advance time and mine a block. `setNextBlockTimestamp()` changes only
 the next block timestamp. These operations affect the mock chain.
 
-Contracts read Solidity-style `block.number` and `block.timestamp` through a deployed block-oracle side-car. Time
-travel alone does not update that contract. Bridge and synchronize it explicitly:
-
-```ts
-import {
-  mockBlockOracleRpc,
-  BlockOracleUpdater,
-} from '@solidcash/testing';
-
-const rpc = mockBlockOracleRpc(network.provider);
-const updater = new BlockOracleUpdater({
-  rpc,
-  contract: blockOracle.inner,
-  categoryId: blockOracle.categoryId,
-  keeperKey: owner.privateKey,
-});
-
-await time.increase(60);
-await updater.syncOnce();
-```
-
-See [Global Variables](../language/globals.md#block-properties) for the contract-side oracle model.
+Contracts read Solidity-style `block.number` and `block.timestamp` from one shared block-oracle covenant. The mock
+chain writes its own height and time into that oracle whenever it mines, so these helpers move `block.*` as
+Hardhat's do, with no keeper. To drive a keeper against the mock chain, see
+[Block Data & Oracles](../guides/block-oracles.md#testing-on-the-mock-network).
 
 ## Balance helpers and BCH differences
 

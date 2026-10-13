@@ -7,12 +7,13 @@ SolidCash therefore separates block-related values into three groups:
 
 | Group | Examples | Source |
 | --- | --- | --- |
-| Native transaction facts/floors | `tx.time`, `this.age`, `tx.gasprice` | Transaction introspection and locktime/sequence checks |
-| Per-contract block registers | `block.number`, `block.timestamp`, `block.difficulty`, `block.coinbase` | Owner-updated state fields injected by the compiler |
-| Windowed block hashes | `blockhash(n)` | A category-branded `(n, hash)` NFT which is co-spent read-only |
+| Native facts and shims | `tx.time`, `this.age`, `tx.gasprice`, `block.chainid` | Introspection, locktime checks, constants |
+| Block-info oracle | `block.number`, `block.timestamp`, `block.difficulty`, `block.coinbase` | One shared covenant's commitment |
+| Blockhash oracle | `blockhash(n)` | One `(n, hash)` NFT per block, of the reader's own category |
 
-Choose native timelocks when all you need is a deadline. Use block registers when contract logic needs the value,
-and use `blockhash(n)` only when the actual header hash is required.
+Choose native time locks when all you need is a deadline. Use the block-info oracle when contract logic needs the
+value, and `blockhash(n)` only when the actual header hash is required. Shims such as `block.prevrandao`,
+`block.gaslimit` and `blobhash()` are covered in [Global Variables](../language/globals.md#block-properties).
 
 ## Prefer native time locks for deadlines
 
@@ -27,198 +28,268 @@ consensus-enforced lower bounds without a keeper or oracle trust assumption.
 Locktime has height and timestamp domains and is only a lower bound. It cannot reveal the exact current height or
 header time. See [Global Variables](../language/globals.md#global-time-lock-variables) for the source syntax.
 
-## Per-contract `block.*` registers
+## The block-info oracle
 
-Referencing a non-native block property makes the contract stateful and injects only the fields it uses, plus an
-immutable oracle-owner key and an owner-authorized `__updateBlockOracle` entry point.
+The block-info oracle is one raw P2SH32 covenant (`blockOracleLockingBytecode(category)` in `@solidcash/utils`).
+It is not a contract you compile and not part of any reader's state. Its single mutable NFT holds the whole record:
+
+```text
+ownerPkh(20) | number(5) | timestamp(5) | difficulty(5) | size(5) | totalFees(5) | coinbaseLen(1) | coinbase(<= 80)
+```
+
+Each numeric field is a `uint32` as 4 little-endian bytes plus a trailing `0x00`. The category is baked into the
+covenant, so its lock identifies the oracle token. The owner is the public-key hash at the front of the commitment,
+so one bytecode serves every operator. Every reader of a deployment co-spends this one UTXO, so concurrent
+transactions that read or update it conflict; build them in sequence.
+
+| Property | Type | Value |
+| --- | --- | --- |
+| `block.number` | `uint32` | Height the owner last wrote, at most the chain tip when written |
+| `block.timestamp` | `uint32` | Time the owner last wrote, below the median time past then (about an hour behind) |
+| `block.difficulty` | `uint32` | Raw compact `nBits`, not a randomness source |
+| `block.size` | `uint32` | Serialized block bytes |
+| `block.totalFees` | `uint32` | Coinbase outputs minus the block subsidy, in satoshis |
+| `block.coinbase` | `address` | Locking bytecode of coinbase output 0 |
+| `block.basefee` | `uint32` | Derived: `Floor(1000 * totalFees / size)` satoshis per kB; `block.blobbasefee` aliases it |
+
+### Reading block fields
+
+A reader just uses the property:
 
 ```solidity
-contract TimeVault(uint64 unlockTime) {
-    function withdraw() public {
+contract TimeVault(pubkey owner, uint64 unlockTime) {
+    function withdraw(sig ownerSig) {
         require(block.timestamp >= unlockTime, "still locked");
+        require(checkSig(ownerSig, owner));
     }
 }
 ```
 
-The values live in the contract's own data NFT registers. Normal calls read them like other state, so there is no
-shared global oracle UTXO. The updater is independently authorized to refresh those fields. It cannot alter
-application state through the update route.
+The compiler adds no state and no update function. Each function that reads one of these fields, or calls a
+function that does, gets a hidden `__internal__blockOracleInputIndex` parameter and `usesBlockOracle` in its ABI
+entry. The generated code reads that input, requires its locking bytecode to equal the pinned oracle lock and
+slices the field out of its commitment. The artifact publishes `usesBlockOracle` and `blockOracleLockSlots`, the
+offsets of a 35-byte lock placeholder that deployment overwrites with the real oracle lock. A reader stays
+stateless unless something else makes it stateful.
 
-The available register values are:
+The SDK spends the oracle on its read path, which recreates it unchanged at the same output index, and fills the
+index on every call path: a direct `Contract` with `TransactionBuilder`, `StatefulContract` calls, framed entries
+and framed proxies, delegate calls, and message-bus routes, where one oracle input serves every reader of the
+composed transaction. A call that cannot forward the index is refused at compile time with
+`BlockOracleIndexNotForwardedError`: read `block.*` in the caller as well, or pass the value in as an argument.
 
-- `block.number`: header height;
-- `block.timestamp`: header `nTime` in Unix seconds;
-- `block.difficulty`: raw compact `nBits`, not a randomness source;
-- `block.coinbase`: locking bytecode of coinbase output 0;
-- `block.size`: serialized block bytes;
-- `block.totalFees`: realized transaction fees in satoshis; and
-- `block.basefee`: `floor(1000 * totalFees / size)` satoshis per kB.
+### Provision an oracle
 
-`block.chainid` is a `uint256` whose value is the low byte of the numeric compiler option (`chainId & 0xff`), so
-it is compact on the Script stack and needs no updater. `block.prevrandao`, `gasleft()`,
-`block.gaslimit`, `blobhash()`, and other compatibility shims have the limitations documented in
-[Global Variables](../language/globals.md#block-properties).
-
-:::caution
-The updater owner is trusted not to under-report or lie about fields which cannot be verified from the spending
-transaction. A locktime freshness floor prevents claiming a future height, but Script cannot prove that a stored
-value is recent. A stale value remains possible if the keeper stops.
-:::
-
-### Deploy the register owner
-
-Seed the compiler-injected owner and register values at deployment. The exact register set depends on which
-properties the artifact uses:
+The genesis must mint exactly one mutable NFT of a fresh category at the oracle lock, and no minting NFT, because
+readers pin only the lock. The category is the txid of the `vout: 0` outpoint the genesis spends:
 
 ```ts
-import { ContractFactory } from 'solidcash/contract-factory';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { SignatureTemplate, TransactionBuilder } from 'solidcash';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { blockOracleLockingBytecode, encodeBlockOracleCommitment, hash160 } from '@solidcash/utils';
 
-const [keeper] = await ethers.getSigners();
-const factory = new ContractFactory(timeVaultArtifact, keeper);
-
-const vault = await factory.deploy(unlockTime, {
-  initialState: {
-    __block_timestamp: 0n,
-    __blockOracleOwner: keeper.publicKey,
-  },
+const genesisProvider = new ElectrumNetworkProvider('mainnet');
+const owner = new SignatureTemplate(ownerPrivateKey);
+const [genesisUtxo] = (await genesisProvider.getUtxos(ownerAddress))
+  .filter((utxo) => utxo.vout === 0 && utxo.token === undefined);
+const category = genesisUtxo.txid;
+const commitment = encodeBlockOracleCommitment(hash160(owner.publicKey), {
+  number: 0n, timestamp: 0n, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: new Uint8Array(),
 });
+
+await new TransactionBuilder({ provider: genesisProvider })
+  .addInput(genesisUtxo, owner.unlockP2PKH())
+  .addOutput({
+    to: blockOracleLockingBytecode(hexToBin(category)),
+    amount: 100_000n,
+    token: { category, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(commitment) } },
+  })
+  .addOutput({ to: ownerAddress, amount: genesisUtxo.satoshis - 101_000n })
+  .send();
 ```
 
-Constructor inference can populate ordinary state, but injected oracle fields should be explicit in deployment
-configuration so the keeper identity is auditable.
+The owner hash cannot change after genesis. Because readers bake the lock into their bytecode, replacing the owner
+key means a new oracle and redeployed readers.
 
-### Run one synchronization
+### Point readers at the oracle
+
+The SDK reads the oracle lock from the provider's `blockOracleLock`, and the keeper also needs its
+`blockOracleCategory`. `MockNetworkProvider` carries its own oracle. On a live network, attach yours:
+
+```ts
+import { hexToBin } from '@bitauth/libauth';
+import { Contract, SignatureTemplate, TransactionBuilder } from 'solidcash';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { blockOracleLockingBytecode } from '@solidcash/utils';
+
+const blockOracleCategory = hexToBin(oracleCategory);
+const provider = Object.assign(new ElectrumNetworkProvider('mainnet'), {
+  blockOracleCategory,
+  blockOracleLock: blockOracleLockingBytecode(blockOracleCategory),
+});
+
+const vault = new Contract(timeVaultArtifact, [ownerPublicKey, unlockTime], { provider });
+
+await new TransactionBuilder({ provider })
+  .addInput(vaultUtxo, vault.unlock.withdraw(new SignatureTemplate(ownerPrivateKey)))
+  .addOutput({ to: ownerAddress, amount: vaultUtxo.satoshis - 2_000n })
+  .send(); // adds the oracle input and its recreate, and fills the hidden index
+```
+
+The lock is part of the reader's bytecode, so the reader's address depends on the oracle it trusts. Contracts,
+factories and framed deployments built on this provider all use it. Spending a reader built without a lock fails
+with "no oracle lock was provided"; a missing oracle UTXO fails with "block oracle UTXO is not available".
+
+### Owner updates
+
+Only the owner updates the oracle, by spending the covenant with `<pubkey> <sig> <newCommitment> 1`. The covenant
+requires `hash160(pubkey)` to equal the owner hash already in the commitment, the new commitment to keep that hash,
+a valid signature, and the output at the same index to carry the new commitment at the same lock and category.
+Because nLockTime is either a height or a time, one update anchors one field to the chain and keeps the other:
+
+- **Height update** (nLockTime below 500,000,000): `number` stays below 500,000,000, does not rewind, and
+  `tx.time >= number` is checked with CLTV. `timestamp` is unchanged.
+- **Timestamp update** (time-type nLockTime): `timestamp` does not rewind and `tx.time >= timestamp` is checked with
+  CLTV. A time locktime is final only below the median time past, so `timestamp` is at most MTP - 1. `number` is
+  unchanged.
+
+The other fields are the owner's word. Equal values are admitted.
+
+:::caution
+The owner is trusted not to under-report or lie about any field. The covenant stops a claimed height above the tip,
+a timestamp at or above the median time past, and rewinds, but Script cannot prove a value is recent: if the keeper
+stops, readers see the last write, and a deadline written against `block.timestamp` stays open until the owner
+updates. The compiler warns on `block.number` and `block.timestamp` for this reason. Where a stale value would
+benefit the spender, use a native `tx.time` floor.
+:::
+
+### Run the keeper
+
+`BlockOracleUpdater` signs updates with the owner key. Configure it with a reader `Contract` built on the
+oracle-aware provider (for a stateful deployment, its `.inner`):
 
 ```ts
 import { BlockOracleUpdater, createRpcClient } from 'solidcash/oracle';
 
-const updater = new BlockOracleUpdater({
-  contract: vault.inner,
-  categoryId: vault.categoryId,
-  keeperKey: keeper.privateKey,
-  rpc: createRpcClient('mainnet', {
-    url: process.env.BCH_RPC_URL,
-    rpcUser: process.env.BCH_RPC_USER,
-    rpcPassword: process.env.BCH_RPC_PASSWORD,
-  }),
+const rpc = createRpcClient('mainnet', {
+  url: process.env.BCH_RPC_URL,
+  rpcUser: process.env.BCH_RPC_USER,
+  rpcPassword: process.env.BCH_RPC_PASSWORD,
 });
-
-await updater.syncOnce();
-```
-
-`syncOnce()` reads the node tip. If the on-chain block register is behind, it fetches the full block with BCHN
-JSON-RPC, computes the requested fields, signs the synthesized update, sets the transaction locktime to the claimed
-height, and broadcasts it. It returns the block-info update txid or `null` when no update was needed.
-
-The updater's RPC client must support `getblockcount`, `getblockhash`, and `getblock(hash, 2)`. Avoid treating the
-public default RPC endpoint as an availability guarantee; production applications should operate or explicitly
-trust their configured data source.
-
-### Subscribe as a keeper
-
-```ts
-const subscribed = new BlockOracleUpdater({
-  contract: vault.inner,
-  categoryId: vault.categoryId,
-  keeperKey: keeper.privateKey,
+const updater = new BlockOracleUpdater({
+  contract: vault,
+  categoryId: oracleCategory,
+  keeperKey: ownerPrivateKey,
   rpc,
-  electrumHost: 'fulcrum.example.org',
 });
 
-const stop = await subscribed.start();
-// Later:
-await stop();
-```
-
-`start()` performs an initial sync, subscribes to Fulcrum `blockchain.headers.subscribe`, and attempts another sync
-on each new tip. Notification-time errors are logged; supervise the process and alert on persistent failures.
-
-### Testing time-dependent contracts
-
-Mock-network time travel changes the harness tip, not the on-chain register. Bridge it and call the updater:
-
-```ts
-import {
-  BlockOracleUpdater,
-  mockBlockOracleRpc,
-  network,
-  time,
-} from '@solidcash/testing';
-
-const updater = new BlockOracleUpdater({
-  contract: vault.inner,
-  categoryId: vault.categoryId,
-  keeperKey: keeper.privateKey,
-  rpc: mockBlockOracleRpc(network.provider),
-});
-
-await time.increase(3600);
 await updater.syncOnce();
 ```
 
-## `blockhash(n)` result NFTs
+`syncOnce()` reads the tip with BCHN JSON-RPC (`getblockcount`, `getblockhash`, `getblock(hash, 2)`). When the chain
+is ahead of `number` it pushes a height update with the tip height as nLockTime. Then, when the last final second,
+`min(header time, mediantime - 1)`, is ahead of `timestamp`, it pushes a timestamp update with that second as
+nLockTime. It returns the last update txid, or `null` when the oracle was current. `pushUpdate(fields, locktime)`
+sends one update directly.
 
-`blockhash(n)` cannot use the scalar block register because each queried height needs its own authenticated value.
-The compiler marks `artifact.usesBlockhash` and emits a `blockhashOracle` slot. The SDK resolves the address for
-`n`, co-spends its NFT, recreates it byte-for-byte at the same index, supplies the hidden input index, and sets the
-required locktime automatically.
+`start()` performs an initial sync, subscribes to Fulcrum `blockchain.headers.subscribe` on `electrumHost`, and syncs
+on every new tip. It returns a `stop()` function. Notification-time errors are logged, so supervise the process and
+alert on persistent failures. Without `url`, `createRpcClient('mainnet')` uses a public BCHN endpoint; production
+keepers should use a node they operate or explicitly trust.
 
-The oracle NFT commitment binds:
+:::caution
+`pushUpdate` pays a 2,000-satoshi fee out of the oracle UTXO's own value and adds no funding input. The covenant
+does not pin that value, so a read spend can lower it. Monitor it: at or below 2,000 satoshis an update carries no
+fee, and nodes will not relay it.
+:::
+
+### Testing on the mock network
+
+`MockNetworkProvider` mints one oracle at construction, owned by `provider.blockOracleOwnerKey`, and writes its own
+height and time into it whenever it mines, so `mine()` and `time.increase()` move `block.number` and
+`block.timestamp`. `provider.setBlockOracleFields(fields)` writes exact fields, which hold until the mock next
+mines. Once an owner update replaces the commitment, the mock stops writing its clock and the owner's values
+stand.
+
+To exercise the keeper, seed older fields and sync against the mock chain:
+
+```ts
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { Contract } from 'solidcash';
+import { MockNetworkProvider } from 'solidcash/network/mock';
+import { BlockOracleUpdater } from 'solidcash/oracle';
+import { mockBlockOracleRpc } from '@solidcash/testing';
+
+const provider = new MockNetworkProvider();
+const vault = new Contract(timeVaultArtifact, [ownerPublicKey, unlockTime], { provider });
+provider.setBlockOracleFields({
+  number: 100n, timestamp: 1n, difficulty: 0n, size: 1n, totalFees: 0n,
+  coinbase: hexToBin(`76a914${'00'.repeat(20)}88ac`),
+});
+
+const updater = new BlockOracleUpdater({
+  contract: vault,
+  categoryId: binToHex(provider.blockOracleCategory),
+  keeperKey: provider.blockOracleOwnerKey,
+  rpc: mockBlockOracleRpc(provider),
+});
+
+await updater.syncOnce(); // a height update to the mock tip, then a timestamp update
+```
+
+## `blockhash(n)`
+
+Each queried height needs its own authenticated value, so `blockhash(n)` reads a separate oracle: one
+capability-none NFT per block, all at one lock per category (`blockhashOracleLockingBytecode(category)`), with the
+commitment
 
 ```text
-height n || 32-byte block hash
+n (4 bytes, little-endian) || 32-byte block hash
 ```
 
-Its locking covenant is branded to the consuming contract's CashToken category. The read path verifies the category, height,
-commitment, address, and self-preserving output. A wipe path becomes available at `n + 256`, letting anyone remove
-an aged-out pair while a keeper can reclaim its dust.
+The NFTs carry the reading contract's own category, so `blockhash` makes the contract stateful and the artifact sets
+`usesBlockhash`. The reader checks that the co-spent NFT's category is its master's, that `commitment.n == n`, and
+`tx.time >= n`, then returns the hash. Each distinct `n` in a function rides its own input slot, and a computed `n`
+such as `block.number - 1` is resolved from the SDK's probe of the covenant itself.
 
-Unlike the EVM, an unpublished or unavailable in-window pair is an error, not `bytes32(0)`. Returning zero when a
-builder omits the NFT would make absence forgeable.
+Calls go through `StatefulContract`, which finds the pair, co-spends it read-only and sets the locktime; the base
+`Contract`/`TransactionBuilder` path throws. A missing pair is an error, not `bytes32(0)`: returning zero when a
+builder omits the NFT would make absence forgeable. A contract that wants the EVM's "too old means zero" branch checks
+`block.number - n` against the window itself. Once `tx.time >= n + 256`, anyone may wipe a pair, which keeps the set
+bounded even if the keeper stalls.
 
-### Provision and maintain the blockhash category
+### Keeper baton
 
-The keeper needs a separately spendable minting NFT with the **same category as the consuming contract**.
-Provisioning that extra baton is an advanced genesis responsibility; it is distinct from the contract's state
-master and must use an unlocker controlled by the keeper. Pass both to the updater:
+The keeper mints pairs from a minting NFT of the contract's category held at the keeper baton covenant,
+`blockhashKeeperBatonLockingBytecode(category, keeperPublicKey)`. A baton spend needs the keeper's signature,
+recreates the baton at output 0 and mints exactly one pair at the category's blockhash lock under `tx.time >= n`, so
+the baton cannot stand in for the contract's master. The genesis that creates the contract's category must also
+mint this baton; the SDK's deploy helpers do not add it.
 
 ```ts
-const updater = new BlockOracleUpdater({
+const keeper = new BlockOracleUpdater({
   contract: consumer.inner,
   categoryId: consumer.categoryId,
-  keeperKey: keeper.privateKey,
+  keeperKey: keeperPrivateKey,
   rpc,
   blockhashOracleCategory: consumer.categoryId,
-  blockhashOracleMaster: {
-    utxo: oracleMintingUtxo,
-    unlocker: oracleMintingUnlocker,
-  },
 });
 
-await updater.mintBlockhashPair(height, hash);
-await updater.sweepBlockhashPair(height - 256n);
+await keeper.mintBlockhashPair(height, hash);
+await keeper.sweepBlockhashPair(height - 256n);
 ```
 
-`syncOnce()` calls these maintenance operations when the artifact uses `blockhash`. The mint method recreates the
-minting baton at output 0 and creates the immutable pair NFT. The current updater configuration stores the supplied
-baton outpoint; after every successful mint, a long-running keeper must replace it with the recreated
-`{ txid: mintTxid, vout: 0, ... }` UTXO (or construct the next updater from provider discovery). It is not mutated
-inside the caller-owned config automatically. Each mint also spends 1,000 satoshis on the pair and 1,000 on its
-fixed fee, so provision and replenish keeper funding deliberately.
-
-Because of that baton rotation requirement, `start()` is directly turnkey for scalar block-register updates. A
-`blockhash` keeper should wrap tip notifications in its own baton-tracking loop until its operational storage has
-recorded the recreated outpoint.
-
-For manual transaction composition, `resolveBlockhashCoSpend(provider, oracleCategory, n)` returns the UTXO,
-unlocker, matching recreate output, and locktime. Normal `StatefulContract` calls should rely on artifact-driven
-automatic injection.
+`syncOnce()` mints the tip's pair and sweeps the one that left the 256-block window when the artifact uses
+`blockhash`. The keeper finds the baton at its covenant on every mint; `blockhashOracleMaster` overrides the baton
+UTXO and unlocker, and then the caller tracks the recreated baton itself. Each mint spends 2,000 satoshis of the
+baton's value (1,000 on the pair and a 1,000 fee), so fund it accordingly.
 
 ## Operational checklist
 
 1. Prefer `tx.time`/`this.age` when an exact block field is unnecessary.
-2. Record the oracle owner, RPC trust source, update cadence, and monitoring policy with the deployment.
-3. Give the keeper enough BCH UTXOs for update fees without sharing application authority keys.
-4. Alert when the register height lags the node tip or a blockhash pair is missing.
-5. Treat `block.difficulty` and `block.prevrandao` as non-random.
-6. Exercise stale, future-height, wrong-owner, missing-pair, and 256-block cleanup cases in tests.
+2. Record the oracle category, owner, RPC trust source, update cadence, and monitoring policy with the deployment.
+3. Keep the owner key safe for the oracle's life: it cannot be rotated without new readers.
+4. Alert when the oracle height lags the node tip, when its value runs low, or when a blockhash pair is missing.
+5. Treat `block.difficulty` and `block.prevrandao` as non-random; the builder picks `n` for `blockhash(n)`.
+6. Exercise stale, rewound, over-reported, wrong-owner, missing-pair and 256-block cleanup cases in tests.

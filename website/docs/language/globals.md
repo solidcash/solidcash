@@ -300,14 +300,14 @@ authentication and authorization. The compiler warns on every use of `msg.sender
 
 ## Block properties
 
-Bitcoin Cash Script has no opcode for block metadata, so `block.*` reads are served by a **per-contract,
-master-bound oracle register**: the values are committed into the contract's state and refreshed by an update
-function the compiler synthesizes. Reads themselves are cheap.
+Bitcoin Cash Script has no opcode for block metadata, so the oracle-backed `block.*` reads slice the NFT commitment
+of **one shared block-oracle covenant**, which the reader co-spends and only its owner updates. The compiler adds no
+state and no update function to the reader.
 
 | Global | Type | Source | Notes |
 | --- | --- | --- | --- |
-| `block.number` | `uint32` | oracle (native floor) | A `>=` comparison lowers to a native `nLocktime` floor |
-| `block.timestamp` | `uint32` | oracle (native floor) | Matches the BCH header `nTime`; beats the ~1h median-time-past lag |
+| `block.number` | `uint32` | oracle | The height the oracle owner last wrote, at most the chain tip when written |
+| `block.timestamp` | `uint32` | oracle | The time the oracle owner last wrote, below the median time past when written |
 | `block.chainid` | `uint256` | baked constant | The low byte of the numeric compiler option (`chainId & 0xff`); encoded compactly and needs no oracle |
 | `block.difficulty` | `uint32` | oracle | The raw `nBits` value. **Not randomness** |
 | `block.coinbase` | `address` | oracle | Full locking bytecode of coinbase output 0 |

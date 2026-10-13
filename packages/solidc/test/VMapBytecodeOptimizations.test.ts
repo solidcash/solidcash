@@ -128,8 +128,9 @@ describe('general vmap bytecode sharing', () => {
     expect(helperIds.length).toBeGreaterThanOrEqual(1);
     expect(helperIds.some((id) => asm.includes(`${id} OP_INVOKE`))).toBe(true);
     // 4346.5 measured after the October covenant hardening: every direct function now runs the container,
-    // foreign-token, unwritten-chunk and mutable-output scans.
-    expect(artifact.bytecode.length / 2).toBeLessThan(4500);
+    // foreign-token, unwritten-chunk and mutable-output scans. 4592.5 once those scans list the slots they act
+    // on in one classifying pass per side, and the mutable-output check tries the minted locks first.
+    expect(artifact.bytecode.length / 2).toBeLessThan(4750);
   });
 
   it('nests only compiler helpers and other outlined spans, acyclically, while sharing composite array traversal', () => {

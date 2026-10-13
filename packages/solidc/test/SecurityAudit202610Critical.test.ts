@@ -56,8 +56,10 @@ function p2sh32(redeem: Uint8Array): Uint8Array {
   return encodeLockingBytecodeP2sh32(hash256(redeem));
 }
 
-function tokenOf(capability: 'minting' | 'mutable' | 'none', commitment: Uint8Array, category = CATEGORY): VmOutput['token'] {
-  return { category, amount: 0n, nft: { capability, commitment } };
+function tokenOf(
+  capability: 'minting' | 'mutable' | 'none', nftCommitment: Uint8Array, category = CATEGORY,
+): VmOutput['token'] {
+  return { category, amount: 0n, nft: { capability, commitment: nftCommitment } };
 }
 
 function outpoint(index: number): Uint8Array {
@@ -501,8 +503,8 @@ describe('October 2026 critical holes', () => {
     expect((await evaluated(honest)).every((result) => result === true), 'KB-1 authorized').toBe(true);
 
     const hostile = await composition.build();
-    const verifierIndex = hostile.inputs.findIndex((input) =>
-      input.token?.nft?.commitment.startsWith('4c335631'));
+    const verifierIndex = hostile.inputs.findIndex((entry) =>
+      entry.token?.nft?.commitment.startsWith('4c335631'));
     expect(verifierIndex).toBeGreaterThanOrEqual(0);
     const verifierOutput = hostile.outputs[verifierIndex]!;
     const honestCommitment = verifierOutput.token!.nft!.commitment;
@@ -711,7 +713,9 @@ function skippedMappingWrite(artifact: Artifact): Spend {
   const base = mappingUpdate(artifact, -2n, num(9n));
   const fn = fnOf(artifact, 'set');
   const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'm')!;
-  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact))));
+  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
+    CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact)),
+  ));
   const entryLock = p2sh32(entryRedeem);
   const key = num(7n);
   const slot = keyToSlotMulti([key]);
@@ -750,7 +754,9 @@ function mappingUpdate(artifact: Artifact, predOut: bigint, tail: Uint8Array, na
   const redeem = redeemOf(artifact);
   const lock = p2sh32(redeem);
   const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'm')!;
-  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact))));
+  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
+    CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact)),
+  ));
   const entryLock = p2sh32(entryRedeem);
   const key = num(7n);
   const slot = keyToSlotMulti([key]);
@@ -789,7 +795,9 @@ function mappingInsert(artifact: Artifact, key: Uint8Array): Spend {
   const redeem = redeemOf(artifact);
   const lock = p2sh32(redeem);
   const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'claimed')!;
-  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact))));
+  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
+    CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact)),
+  ));
   const entryLock = p2sh32(entryRedeem);
   const slot = keyToSlotMulti([key]);
   const values: Record<string, Uint8Array> = {};
@@ -840,7 +848,9 @@ function withForgedData(artifact: Artifact, honest: Spend): Spend {
 function chunkLock(artifact: Artifact): { lock: Uint8Array; redeem: Uint8Array } {
   const variable = artifact.stateLayout!.variables.find((entry) => entry.name === 'name');
   const signature = computeCollectionSignature(variable?.name ?? 'name', variable?.type ?? 'string');
-  const redeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(signature), p2sh32(redeemOf(artifact))));
+  const redeem = scriptToBytecode(buildEntryNftCovenantScript(
+    CATEGORY, computeCollectionHash(signature), p2sh32(redeemOf(artifact)),
+  ));
   return { lock: p2sh32(redeem), redeem };
 }
 
@@ -907,7 +917,9 @@ function arrayClaim(artifact: Artifact, omit: boolean): Spend {
   const redeem = redeemOf(artifact);
   const lock = p2sh32(redeem);
   const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'claimed')!;
-  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact))));
+  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
+    CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact)),
+  ));
   const entryLock = p2sh32(entryRedeem);
   const values: Record<string, Uint8Array> = {};
   for (const entry of fn.inputs) values[entry.name] = entry.name === 'i' ? num(1n) : internalDefault(entry.name);

@@ -1,17 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { Signer } from '../../src/index.js';
-import { ContractFactory } from '../../src/stateful/index.js';
-import { syncMockBlockOracleDeployment } from '../../src/oracle/index.js';
 import { createTestProvider } from '../test-util.js';
-import { Utxo } from '../../src/interfaces.js';
-
-function freshKey(): Uint8Array {
-  const key = new Uint8Array(32);
-  crypto.getRandomValues(key);
-  key[0] = (key[0] & 0x7f) | 0x01;
-  return key;
-}
 
 const TIMED = `
 contract Timed() {

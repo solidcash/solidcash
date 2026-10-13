@@ -228,12 +228,12 @@ describe('a write ahead of a guarded delete of the same mapping, called through 
 
   it('creates the written key through its own group where the keys differ, the delete run or not', async () => {
     let shared = await world();
-    const kept = await settle(shared, 'setThenDrop', [A, 300n, K, 0n]);
+    const retained = await settle(shared, 'setThenDrop', [A, 300n, K, 0n]);
     expect([await heldAt(shared, A), await heldAt(shared, K), await heldAt(shared, J)]).toStrictEqual([300n, 70n, 50n]);
     // A forged value, or the delete run on a node its group keeps.
-    expect(restatedVerdict(kept, A, encodeIntegerValue(300n))).toBe(true);
-    expect(restatedVerdict(kept, A, encodeIntegerValue(301n))).not.toBe(true);
-    expect(restatedGuardVerdict(kept, 1n)).not.toBe(true);
+    expect(restatedVerdict(retained, A, encodeIntegerValue(300n))).toBe(true);
+    expect(restatedVerdict(retained, A, encodeIntegerValue(301n))).not.toBe(true);
+    expect(restatedGuardVerdict(retained, 1n)).not.toBe(true);
     shared = await world();
     const cleared = await settle(shared, 'setThenDrop', [A, 300n, K, 1n]);
     expect([await heldAt(shared, A), await heldAt(shared, K), await heldAt(shared, J)]).toStrictEqual([300n, 0n, 50n]);

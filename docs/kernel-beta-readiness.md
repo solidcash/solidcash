@@ -373,7 +373,7 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
 - Useful `SOLIDC_*` probes remain available under the [diagnostic policy](kernel-diagnostics.md). Observation-only tracing must leave bytecode unchanged (covered for route-argument tracing). Flags that alter emitted code, witnesses, outlining, or optimisation are experiments, **not production measurements**. The cold gate now strips inherited switches. `SOLIDC_ROUTE_ABI_TAIL` is default-on behavior; `=0` is an A/B escape hatch.
 - Focused self/foreign/proxy compose proofs cover mappings, dynamic values, events, sidecars, returns, and lifecycle operations. These are fixture evidence, not an expanded beta manifest. Fixed-state read-bearing split/merge and modifier-only fixed-state selfdestruct now publish explicit resource topology. Wider dynamic lifecycle layouts and detached `sig` leaves remain fenced.
 - Source-tree build sidecars are removed; authored JavaScript and ambient declarations remain. Build into `dist/`
-  and review `git status` before committing. The previously documented `check:source-tree` script is not present.
+  and run `yarn check:source-tree` before committing; CI runs it after the build.
 - The SDK still has an explicitly legacy-fenced `JobEvent` compatibility adapter and historical internal names around
   chunked continuation bands. Do not extend those names into kernel decisions; retire them behind compiler-published
   resource metadata in a dedicated refactor, separately from capability work. The active band-width and

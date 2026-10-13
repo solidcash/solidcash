@@ -6,8 +6,8 @@ title: Migration Notes
 
 Version 0.13.1 is a major protocol and workflow upgrade, not only a syntax update. Existing stateless contracts can
 often be recompiled directly, but existing stateful deployments are not layout-compatible with the new
-self-pinned data/vmap/chunk protocol. Recompile, audit the artifact, and deploy a new category unless an explicitly
-tested native upgrade path preserves the published append-only layout.
+self-pinned data/vmap/chunk protocol. Recompile, audit the artifact, and deploy a new category; a native upgrade
+cannot carry state records to new bytecode.
 
 ### Runtime and project requirements
 
@@ -41,8 +41,9 @@ tested native upgrade path preserves the published append-only layout.
   the SDK's external registry and let auto-derivation construct the callee blocks and return-event outputs.
 - Event records are immutable NFT commitments and are queried through receipts, filters, or listeners. Do not
   assume an EVM log bloom or runtime revert-data transport.
-- Native `upgrade` moves the master and rebuilt data NFTs to new bytecode while preserving the category and
-  enforcing append-only state-layout compatibility. It is different from a proxy/delegate deployment.
+- Native `upgrade` moves the master to new bytecode while preserving the category. The compiler refuses it in a
+  contract that keeps state records, which stay bound to the old lock. It is different from a proxy/delegate
+  deployment.
 - `selfdestruct`, child deployment, and split/merge operations require their dedicated SDK builders and explicit
   funding/recipient/thread plans.
 

@@ -7,20 +7,27 @@ transaction shapes:
 
 | Pattern | State holder | What changes | Stable identifier |
 | --- | --- | --- | --- |
-| Native `upgrade` lifecycle | The contract's category-branded data NFTs | The master NFT moves to new locking bytecode | CashToken category ID |
+| Native `upgrade` lifecycle | The master NFT; the old contract keeps no state records | The master NFT moves to new locking bytecode | CashToken category ID |
 | Proxy + `delegatecall` | A proxy's data NFTs | A co-spent implementation authorizes proxy-state outputs | Proxy address, for that proxy deployment |
 
-These are not interchangeable. Native upgrade is the simpler choice when changing the physical contract address
-is acceptable. A proxy is useful when callers must continue targeting a state-holding proxy address or when
-porting a Solidity proxy architecture.
+These are not interchangeable. Native upgrade is the simpler choice for a contract that keeps no state records,
+when changing the physical contract address is acceptable. A contract that keeps state cannot upgrade in place. A
+proxy keeps its own lock and records, and is useful when callers must continue targeting a state-holding proxy
+address or when porting a Solidity proxy architecture.
 
 ## Native lifecycle upgrades
 
 An `upgrade` function authorizes moving the contract's minting master NFT to new bytecode:
 
 ```solidity
-contract CounterV1(pubkey admin) {
-    int public counter;
+contract PolicyV1(pubkey admin) {
+    event Approved(int amount);
+
+    function approve(int amount, sig s) public {
+        require(amount <= 1000);
+        require(checkSig(s, admin));
+        emit Approved(amount);
+    }
 
     function authorizeUpgrade(sig s) upgrade {
         require(checkSig(s, admin));
@@ -41,33 +48,38 @@ policy, or another non-caller-chosen authority. `require(checkSig(s, pk))` is no
 chooses `pk`.
 :::
 
+### Contracts that keep state
+
+Every state record is bound to the executing master's exact lock: the data NFTs holding state variables, mapping
+and array entries, and satoshi or token containers. An in-place upgrade moves the master to the replacement
+bytecode's lock, so those records could not follow it and could never be spent again. The compiler therefore
+refuses an `upgrade` function in a contract that keeps any of them (`UpgradeStrandsBoundStateError`). Native
+upgrade works for a contract whose whole state lives in its master NFT; declaring and emitting events, as
+`PolicyV1` does, makes a contract stateful without keeping such records. Evolve a contract that keeps state behind
+a proxy instead: a [custom proxy](#custom-proxies-and-manual-delegatecall) can select a new implementation while
+keeping its own lock and records.
+
 ### State and identity after migration
 
 The upgrade transaction:
 
 1. spends the old master with the `upgrade` entry point;
-2. recreates the same minting NFT category at the new contract's physical locking bytecode;
-3. preserves existing data values using the new artifact's compatible layout; and
-4. mints additional data NFTs if appended fields no longer fit in the existing commitments.
+2. recreates the same minting NFT category at the new contract's physical locking bytecode; and
+3. mints the replacement's data NFTs at the replacement's lock when the new artifact declares state.
 
 The category ID stays the same, but the physical P2SH address changes because the covenant bytecode or constructor
-arguments changed. Data NFTs, vmap entry NFTs, event NFTs, chunk NFTs, and value/token containers are keyed by
-category and remain in their existing covenant families. They are not all swept through the upgrade transaction.
+arguments changed.
 
-### Layout compatibility
+### Adding state in the replacement
 
-Native migration is append-only:
+The replacement may declare state variables. Each begins with its type's default value and can be initialized in
+a later function call. The new data-NFT outputs require a funding input for their 1,200 satoshis each. Those
+records are bound to the replacement's lock, so a replacement that declares state cannot declare an `upgrade`
+function of its own.
 
-- every old state variable must still exist;
-- its name, type, `nftIndex`, and `fieldIndex` must remain unchanged; and
-- new fields may be appended and begin with their type's default value.
-
-Appending enough state to increase `dataNftCount` requires a funding input for the new 1,200-satoshi data-NFT
-outputs. Reordering, removing, renaming, or changing the type of an existing field is rejected by the SDK.
-
-The `upgrade` body is the authorization path, not a general state-migration callback. Appended values default at
-upgrade and can be initialized in a later function call. Constructor arguments construct the replacement locking
-bytecode; an explicit `constructor { ... }` state-initialization block is not rerun.
+The `upgrade` body is the authorization path, not a general state-migration callback. Constructor arguments
+construct the replacement locking bytecode; an explicit `constructor { ... }` state-initialization block is not
+rerun.
 
 ### SDK migration
 
@@ -77,10 +89,10 @@ import { StatefulContract } from 'solidcash/stateful';
 
 const result = await StatefulContract.upgrade({
   provider,
-  oldContract: counterV1,
+  oldContract: policyV1,
   upgradeFunctionName: 'authorizeUpgrade',
   upgradeFunctionArgs: [new SignatureTemplate(adminPrivateKey)],
-  newArtifact: counterV2Artifact,
+  newArtifact: policyV2Artifact,
   newConstructorArgs: [adminPublicKey],
   fundingUtxo,
   funder: signer.unlockP2PKH(),
@@ -88,14 +100,14 @@ const result = await StatefulContract.upgrade({
   maxFee: 20_000n,
 });
 
-console.log(result.categoryId === counterV1.categoryId); // true
-console.log(result.contract.address === counterV1.address); // normally false
+console.log(result.categoryId === policyV1.categoryId); // true
+console.log(result.contract.address === policyV1.address); // normally false
 await result.tx.wait();
 ```
 
-`fundingUtxo` and `funder` are mandatory when the layout needs more data NFTs. Supplying them for ordinary
-real-network upgrades also keeps the miner fee separate from contract state value. Persist the new artifact,
-constructor arguments, physical address, and transaction ID beside the stable category.
+`fundingUtxo` and `funder` are mandatory when the replacement declares state, because its data NFTs are new
+outputs. Supplying them for ordinary real-network upgrades also keeps the miner fee separate from contract value.
+Persist the new artifact, constructor arguments, physical address, and transaction ID beside the stable category.
 
 Artifacts compiled before the authenticated replacement-bytecode witness was added are rejected. Recompile the
 old source with the current compiler before enabling its upgrade path.
@@ -291,8 +303,8 @@ a contract is a script-size mechanism, not a facet-upgrade protocol. See
 
 ## Choosing a pattern
 
-- Use native `StatefulContract.upgrade()` when a stable category is enough and you want an explicit,
-  append-only code migration.
+- Use native `StatefulContract.upgrade()` for a contract that keeps no state records, when a stable category is
+  enough and you want an explicit code migration.
 - Use the built-in `deployProxy()` when a stable proxy address and Solidity-like forwarded calls matter, but the
   implementation can remain pinned for that deployment.
 - Build a custom proxy only when mutable implementation selection is essential and its governance covenant can be

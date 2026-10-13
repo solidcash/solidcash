@@ -481,7 +481,7 @@ describe('function-split calls on the composition machine', () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signature = new SignatureTemplate(alicePriv);
     const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
-    const funder = signature.unlockP2PKH();
+    const callerFunder = signature.unlockP2PKH();
     const implFunding = freshCoin(500_000n);
     const proxyFunding = freshCoin(500_000n);
     const initCoin = freshCoin(300_000n);
@@ -500,11 +500,11 @@ describe('function-split calls on the composition machine', () => {
       }`, { split: 'func', ...FRAMED });
     const deployment = await deployFramedProxy({
       provider: network, implementationArtifact: proxyBundle.logical,
-      implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress: encoded.address },
-      proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress: encoded.address },
+      implementationDeploy: { fundingUtxo: implFunding, funder: callerFunder, changeAddress: encoded.address },
+      proxyDeploy: { fundingUtxo: proxyFunding, funder: callerFunder, changeAddress: encoded.address },
       initialize: { functionName: 'f', args: [4n] },
       callerLockingBytecode: callerLock,
-      callerFunding: { utxo: initCoin, funder, changeAddress: encoded.address },
+      callerFunding: { utxo: initCoin, funder: callerFunder, changeAddress: encoded.address },
       vm: compositionMachine(),
     });
     expect(deployment.initialize.accepted).toBe(true);
@@ -523,7 +523,7 @@ describe('function-split calls on the composition machine', () => {
       provider: network, implementationArtifact: proxyBundle.logical,
       proxyCategoryId: deployment.proxy.categoryId,
       implementationCategoryId: deployment.implementation.categoryId,
-      functionName: 'f', args: [6n], callerUtxo: callCoin, callerLockingBytecode: callerLock, funder,
+      functionName: 'f', args: [6n], callerUtxo: callCoin, callerLockingBytecode: callerLock, funder: callerFunder,
       changeAddress: encoded.address, split: proxyBundle, vm: compositionMachine(),
     });
     expect(call.accepted, call.verdicts.filter((verdict) => !verdict.accepted)

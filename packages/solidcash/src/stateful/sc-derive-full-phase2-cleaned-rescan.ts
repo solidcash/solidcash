@@ -4,12 +4,14 @@
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
+import type { EmitAbi, FunctionBlockLayout } from '@solidcash/utils';
 import type { Output } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
 import { buildParticipantProbeProgram } from './participant-probe-program.js';
+import { deriveFullPhase2ApplyEvents } from './sc-derive-full-phase2-apply-events.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
-import { extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
+import { extractCommitmentMapFromTrace, extractExpectedOutputCommitmentFromTrace } from './trace-commitment-helpers.js';
 
 export type DeriveFullPhase2CleanedRescanHost = {
   readonly categoryId: string;
@@ -22,8 +24,8 @@ export type DeriveFullPhase2CleanedRescanResult = {
 };
 
 /**
- * Drop unresolved value-chunk `00` placeholders, then iteratively re-probe dynamic
- * chunk commitments from the cleaned layout. Mutates STB chunk commitments in place.
+ * Drop unresolved value-chunk `00` placeholders, then iteratively re-probe dynamic chunk and event
+ * commitments from the cleaned layout. Mutates STB chunk and event commitments in place.
  */
 export function deriveFullPhase2CleanedRescan(
   host: DeriveFullPhase2CleanedRescanHost,
@@ -38,6 +40,8 @@ export function deriveFullPhase2CleanedRescan(
     retainDiagnosticTrace: (
       trace: AuthenticationProgramStateCommon[],
     ) => AuthenticationProgramStateCommon[];
+    emitInfos: readonly EmitAbi[] | undefined;
+    eventBlockLayout: FunctionBlockLayout | undefined;
   },
 ): DeriveFullPhase2CleanedRescanResult {
   let { lastTrace, lastFailProbeOutputs } = params;
@@ -47,6 +51,8 @@ export function deriveFullPhase2CleanedRescan(
     dummyLbc,
     delegatecallInputIndex,
     retainDiagnosticTrace,
+    emitInfos,
+    eventBlockLayout,
   } = params;
 
   // P5b: drop any unresolved '00' value-chunk placeholder from the FINAL commitments. The seed at derivation
@@ -64,9 +70,11 @@ export function deriveFullPhase2CleanedRescan(
   }
 
   // The speculative value-chunk placeholder above can be the first failing output pin in every
-  // primary probe. Once it is removed, delegate execution can finally reach later dynamic-storage
-  // pins. Derive those commitments from the cleaned layout before constructing the final transaction.
-  if (removedValueChunkPlaceholder && stb.getDynamicChunkVars().length > 0) {
+  // primary probe, or an output a covenant's own-category output check rejects. Once it is removed,
+  // execution can finally reach later dynamic-storage and event pins. Derive those commitments from
+  // the cleaned layout before constructing the final transaction.
+  if (removedValueChunkPlaceholder
+    && (stb.getDynamicChunkVars().length > 0 || (emitInfos?.length ?? 0) > 0)) {
     const cleanedIterationLimit = configuredDebugIterations > 0
       ? Math.min(64, configuredDebugIterations) : 64;
     for (let iter = 0; iter < cleanedIterationLimit; iter++) {
@@ -178,6 +186,14 @@ export function deriveFullPhase2CleanedRescan(
             changed = true;
           }
           chunkOffset += existing.length;
+        }
+        if (emitInfos !== undefined && emitInfos.length > 0) {
+          const before = emitInfos.map((emit) => stb.getEventRawCommitment(emit.emitIndex));
+          deriveFullPhase2ApplyEvents({ extractExpectedOutputCommitmentFromTrace }, stb, {
+            fullTrace2: cleanedTrace, commitmentProgress: 0, emitInfos, eventBlockLayout,
+            probeBuilder2: cleanedProbe, transaction2: transaction, sourceOutputs2: sourceOutputs, iter,
+          });
+          changed ||= emitInfos.some((emit, i) => stb.getEventRawCommitment(emit.emitIndex) !== before[i]);
         }
         if (!changed || !faithfulCleanedHadError) break;
         if (debugTargetsThisDerivation) console.error('derive-cleaned-iteration-complete', {

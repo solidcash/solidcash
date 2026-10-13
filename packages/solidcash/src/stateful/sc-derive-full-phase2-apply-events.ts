@@ -130,94 +130,124 @@ export function deriveFullPhase2ApplyDynamicRescanAndEvents(
   }
 
   phaseCheckpoint('dynamic-rescan');
-  // Event commitments are keyed by the compiler-published physical emit index. A bounded route reserves
-  // the union of all event sites, while a runtime batch can select a sparse subset (for example only row
-  // 1 emits). `eventCount` is therefore not a physical width and must not be used as a contiguous range.
   if (eventCount > 0) {
-    latestEventCommits = [];
-    const eventSlots = eventBlockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
-    const firstEventOffset = eventSlots[0]?.offset;
-    const selectedEmits = emitInfos!.map((emitInfo, selectedOrdinal) => {
-      const slot = eventSlots.find((candidate) => candidate.slotIndex === emitInfo.emitIndex);
-      const outputIndex = slot === undefined
-        // Backward compatibility for artifacts predating block-layout event slots.
-        ? stb.getEventOutputBase() + selectedOrdinal
-        // The builder's effective layout has already projected any
-        // delegate-owned slots into its physical event frame. Anchor
-        // that frame once; the delegate input index belongs to VM
-        // execution, not to output materialization.
-        : stb.getEventOutputBase() + slot.offset - (firstEventOffset ?? slot.offset);
-      return { emitInfo, selectedOrdinal, slot, outputIndex };
-    });
-    // Graph handlers search a bounded event window using both commitment and covenant identity. There is no
-    // EQUALVERIFY pin until a candidate matches, so an empty event blocks every later state/value-chunk pin.
-    // Reuse the same compiler-pattern-aware extractor as return probes, restricted to these published slots.
-    const graphExpectations = extractGraphEventExpectations(
-      fullTrace2, new Set(selectedEmits.map((emit) => emit.outputIndex)), transaction2.outputs,
-    );
-    const graphCandidates = graphEventCandidateIndices(fullTrace2);
-    for (const { emitInfo, selectedOrdinal, slot, outputIndex } of selectedEmits) {
-      const eventCommitMap = extractCommitmentMapFromTrace(
-        fullTrace2, { min: outputIndex, max: outputIndex + 1 }, true, false, true,
-      );
-      const actual = probeBuilder2.outputs[outputIndex]?.token?.nft?.commitment;
-      const mappedCommitment = graphCandidates.has(outputIndex)
-        ? graphExpectations.get(outputIndex)?.commitment : eventCommitMap.get(outputIndex);
-      const fallbackCommitment = mappedCommitment === undefined && !graphCandidates.has(outputIndex)
-        ? host.extractExpectedOutputCommitmentFromTrace(fullTrace2, outputIndex, actual ?? '')
-        : undefined;
-      const commitment = mappedCommitment ?? fallbackCommitment;
-      const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
-      const debugEventIndex = Number.parseInt(debugEnv?.SOLIDC_DEBUG_EVENT_INDEX ?? '', 10);
-      if (debugEventIndex === outputIndex || debugEnv?.SOLIDC_DEBUG_EVENT_STAGE === '1') {
-        console.error('stateful-event-derivation', {
-          iter,
-          outputIndex,
-          selectedOrdinal,
-          emitIndex: emitInfo.emitIndex,
-          eventSignature: emitInfo.eventSignature,
-          blockSize: eventBlockLayout?.blockSize,
-          slot,
-          actual,
-          mappedCommitment,
-          fallbackCommitment,
-          traceStates: fullTrace2.length,
-          traceEnd: fullTrace2.at(-1) === undefined ? undefined : {
-            ip: fullTrace2.at(-1)!.ip,
-            error: String(fullTrace2.at(-1)!.error),
-          },
-          pinned: [...eventCommitMap.entries()],
-          eventBase: stb.getEventOutputBase(),
-          outputCount: transaction2.outputs.length,
-          inputs: sourceOutputs2.slice(0, 14).map((output, index) => ({
-            index,
-            lock: binToHex(output.lockingBytecode).slice(0, 16),
-            category: output.token?.category === undefined
-              ? undefined : binToHex(output.token.category).slice(0, 10),
-            commitmentLength: output.token?.nft?.commitment?.length,
-          })),
-          materialized: transaction2.outputs.slice(0, 14).map((output, index) => ({
-            index,
-            lock: binToHex(output.lockingBytecode).slice(0, 16),
-            category: output.token?.category === undefined
-              ? undefined : binToHex(output.token.category).slice(0, 10),
-            commitmentLength: output.token?.nft?.commitment?.length,
-            commitment: output.token?.nft?.commitment === undefined
-              ? '~none~' : binToHex(output.token.nft.commitment).slice(0, 12),
-          })),
-        });
-      }
-      if (commitment === undefined) continue;
-      const payload = joinLearnedEventChunks(stb, fullTrace2, eventBlockLayout, emitInfo.emitIndex, {
-        commitment, outputIndex, slotOffset: slot?.offset,
-      });
-      latestEventCommits[selectedOrdinal] = payload;
-      stb.setEventRawCommitment(emitInfo.emitIndex, payload);
-      commitmentProgress += 1;
-    }
+    ({ commitmentProgress, latestEventCommits } = deriveFullPhase2ApplyEvents(host, stb, {
+      fullTrace2, commitmentProgress, emitInfos: emitInfos!, eventBlockLayout,
+      probeBuilder2, transaction2, sourceOutputs2, iter,
+    }));
   }
 
   phaseCheckpoint('events');
+
+  return {
+    commitmentProgress,
+    latestEventCommits,
+  };
+}
+
+/** Learn the event commitments a probe trace pins at the selected emits' published event outputs. */
+export function deriveFullPhase2ApplyEvents(
+  host: DeriveFullPhase2EventsHost,
+  stb: StatefulTransactionBuilder,
+  params: {
+    fullTrace2: AuthenticationProgramStateCommon[];
+    commitmentProgress: number;
+    emitInfos: readonly EmitAbi[];
+    eventBlockLayout: FunctionBlockLayout | undefined;
+    probeBuilder2: TransactionBuilder;
+    transaction2: ReturnType<TransactionBuilder['buildLibauthProgram']>['transaction'];
+    sourceOutputs2: ReturnType<TransactionBuilder['buildLibauthProgram']>['sourceOutputs'];
+    iter: number;
+  },
+): DeriveFullPhase2EventsResult {
+  let { commitmentProgress } = params;
+  const {
+    fullTrace2, emitInfos, eventBlockLayout, probeBuilder2, transaction2, sourceOutputs2, iter,
+  } = params;
+  // Event commitments are keyed by the compiler-published physical emit index. A bounded route reserves
+  // the union of all event sites, while a runtime batch can select a sparse subset (for example only row
+  // 1 emits). The emit count is therefore not a physical width and must not be used as a contiguous range.
+  const latestEventCommits: string[] = [];
+  const eventSlots = eventBlockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
+  const firstEventOffset = eventSlots[0]?.offset;
+  const selectedEmits = emitInfos.map((emitInfo, selectedOrdinal) => {
+    const slot = eventSlots.find((candidate) => candidate.slotIndex === emitInfo.emitIndex);
+    const outputIndex = slot === undefined
+      // Backward compatibility for artifacts predating block-layout event slots.
+      ? stb.getEventOutputBase() + selectedOrdinal
+      // The builder's effective layout has already projected any
+      // delegate-owned slots into its physical event frame. Anchor
+      // that frame once; the delegate input index belongs to VM
+      // execution, not to output materialization.
+      : stb.getEventOutputBase() + slot.offset - (firstEventOffset ?? slot.offset);
+    return { emitInfo, selectedOrdinal, slot, outputIndex };
+  });
+  // Graph handlers search a bounded event window using both commitment and covenant identity. There is no
+  // EQUALVERIFY pin until a candidate matches, so an empty event blocks every later state/value-chunk pin.
+  // Reuse the same compiler-pattern-aware extractor as return probes, restricted to these published slots.
+  const graphExpectations = extractGraphEventExpectations(
+    fullTrace2, new Set(selectedEmits.map((emit) => emit.outputIndex)), transaction2.outputs,
+  );
+  const graphCandidates = graphEventCandidateIndices(fullTrace2);
+  for (const { emitInfo, selectedOrdinal, slot, outputIndex } of selectedEmits) {
+    const eventCommitMap = extractCommitmentMapFromTrace(
+      fullTrace2, { min: outputIndex, max: outputIndex + 1 }, true, false, true,
+    );
+    const actual = probeBuilder2.outputs[outputIndex]?.token?.nft?.commitment;
+    const mappedCommitment = graphCandidates.has(outputIndex)
+      ? graphExpectations.get(outputIndex)?.commitment : eventCommitMap.get(outputIndex);
+    const fallbackCommitment = mappedCommitment === undefined && !graphCandidates.has(outputIndex)
+      ? host.extractExpectedOutputCommitmentFromTrace(fullTrace2, outputIndex, actual ?? '')
+      : undefined;
+    const commitment = mappedCommitment ?? fallbackCommitment;
+    const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+    const debugEventIndex = Number.parseInt(debugEnv?.SOLIDC_DEBUG_EVENT_INDEX ?? '', 10);
+    if (debugEventIndex === outputIndex || debugEnv?.SOLIDC_DEBUG_EVENT_STAGE === '1') {
+      console.error('stateful-event-derivation', {
+        iter,
+        outputIndex,
+        selectedOrdinal,
+        emitIndex: emitInfo.emitIndex,
+        eventSignature: emitInfo.eventSignature,
+        blockSize: eventBlockLayout?.blockSize,
+        slot,
+        actual,
+        mappedCommitment,
+        fallbackCommitment,
+        traceStates: fullTrace2.length,
+        traceEnd: fullTrace2.at(-1) === undefined ? undefined : {
+          ip: fullTrace2.at(-1)!.ip,
+          error: String(fullTrace2.at(-1)!.error),
+        },
+        pinned: [...eventCommitMap.entries()],
+        eventBase: stb.getEventOutputBase(),
+        outputCount: transaction2.outputs.length,
+        inputs: sourceOutputs2.slice(0, 14).map((output, index) => ({
+          index,
+          lock: binToHex(output.lockingBytecode).slice(0, 16),
+          category: output.token?.category === undefined
+            ? undefined : binToHex(output.token.category).slice(0, 10),
+          commitmentLength: output.token?.nft?.commitment?.length,
+        })),
+        materialized: transaction2.outputs.slice(0, 14).map((output, index) => ({
+          index,
+          lock: binToHex(output.lockingBytecode).slice(0, 16),
+          category: output.token?.category === undefined
+            ? undefined : binToHex(output.token.category).slice(0, 10),
+          commitmentLength: output.token?.nft?.commitment?.length,
+          commitment: output.token?.nft?.commitment === undefined
+            ? '~none~' : binToHex(output.token.nft.commitment).slice(0, 12),
+        })),
+      });
+    }
+    if (commitment === undefined) continue;
+    const payload = joinLearnedEventChunks(stb, fullTrace2, eventBlockLayout, emitInfo.emitIndex, {
+      commitment, outputIndex, slotOffset: slot?.offset,
+    });
+    latestEventCommits[selectedOrdinal] = payload;
+    stb.setEventRawCommitment(emitInfo.emitIndex, payload);
+    commitmentProgress += 1;
+  }
 
   return {
     commitmentProgress,

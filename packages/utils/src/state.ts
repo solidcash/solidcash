@@ -119,9 +119,10 @@ export interface StateRecord { [key: string]: StateValue; }
 
 /**
  * `[authorityIndex]` stays. The authority is a 35-byte P2SH32 whose final redeem push is longer than 128
- * bytes. Argument pushes in front are skipped. A pad in front of `OP_DROP OP_1` leaves a 2-byte redeem, and
- * the keeper baton is a one-byte redeem. The walk cuts a short prefix first, so a contract-sized redeem is
- * not copied on every argument.
+ * bytes. The redeem is the push that reaches the end of the unlocking; every push in front, of any size, is an
+ * argument and is skipped. A pad in front of `OP_DROP OP_1` leaves a 2-byte redeem, and the keeper baton is a
+ * one-byte redeem. The walk parses a 512-byte head at a time, so a contract-sized redeem is not copied on every
+ * argument.
  */
 function bindMintingAuthorityLock(masterLock?: Uint8Array): Script {
   if (masterLock !== undefined) {
@@ -129,72 +130,42 @@ function bindMintingAuthorityLock(masterLock?: Uint8Array): Script {
     // [index] stays. A one-byte proxy redeem is a real master when this covenant was built for its lock.
     return [Op.OP_DUP, Op.OP_UTXOBYTECODE, masterLock, Op.OP_EQUALVERIFY];
   }
-  const pushByte = (opcode: bigint): Script => [
-    encodeInt(opcode), Op.OP_SPLIT, Op.OP_SWAP, new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM,
-  ];
-  // [index, tail, rest, length] → [index] and the length must be the rest of the unlocking, past 128 bytes.
-  const redeemCoversRemainder: Script = [
-    Op.OP_DUP, encodeInt(128n), Op.OP_GREATERTHAN, Op.OP_VERIFY,
-    Op.OP_ROT, Op.OP_SIZE, Op.OP_NIP, Op.OP_SWAP, Op.OP_ROT, Op.OP_SIZE, Op.OP_NIP,
-    Op.OP_ROT, Op.OP_ADD, Op.OP_NUMEQUALVERIFY, Op.OP_1,
-  ];
+  // [bytes, count] -> [bytes past count, the unsigned little-endian value of the first count bytes]
+  const readUnsigned: Script = [Op.OP_SPLIT, Op.OP_SWAP, new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
   return [
     Op.OP_DUP, Op.OP_UTXOBYTECODE, Op.OP_SIZE, encodeInt(35n), Op.OP_NUMEQUALVERIFY, Op.OP_DROP,
-    Op.OP_DUP, Op.OP_INPUTBYTECODE,
-    // [index, script]. Keep the redeem in the tail and parse only the argument prefix.
-    Op.OP_SIZE, encodeInt(512n), Op.OP_GREATERTHAN,
-    Op.OP_IF,
-    encodeInt(512n), Op.OP_SPLIT, Op.OP_SWAP,
-    Op.OP_ELSE,
-    Op.OP_0, Op.OP_SWAP,
-    Op.OP_ENDIF,
-    // [index, tail, head]
+    // [index, tail, head], the whole unlocking starting as the tail.
+    Op.OP_DUP, Op.OP_INPUTBYTECODE, Op.OP_0,
     Op.OP_BEGIN,
-    Op.OP_SIZE, Op.OP_NOT, Op.OP_IF, Op.OP_0, Op.OP_VERIFY, Op.OP_ENDIF,
-    ...pushByte(1n),
-    Op.OP_DUP, encodeInt(77n), Op.OP_NUMEQUAL,
+    // A head too short for a push header takes the tail back and is cut to 512 bytes again.
+    Op.OP_SIZE, Op.OP_3, Op.OP_LESSTHAN,
     Op.OP_IF,
-    // A PUSHDATA2 is the redeem only when its data runs through the tail. A shorter one is an argument:
-    // framed masters push multi-hundred-byte witnesses before the redeem.
-    Op.OP_DROP, ...pushByte(2n),
-    Op.OP_DUP,
-    encodeInt(2n), Op.OP_PICK, Op.OP_SIZE, Op.OP_NIP,
-    // Top is the remaining head size; the length is under it. length <= head means the push stays in the head.
-    Op.OP_LESSTHANOREQUAL,
-    Op.OP_IF,
-    Op.OP_SPLIT, Op.OP_NIP, Op.OP_0,
-    Op.OP_ELSE,
-    ...redeemCoversRemainder,
+    Op.OP_SWAP, Op.OP_CAT,
+    Op.OP_SIZE, encodeInt(512n), Op.OP_GREATERTHAN,
+    Op.OP_IF, encodeInt(512n), Op.OP_SPLIT, Op.OP_SWAP, Op.OP_ELSE, Op.OP_0, Op.OP_SWAP, Op.OP_ENDIF,
     Op.OP_ENDIF,
-    Op.OP_ELSE,
-    Op.OP_DUP, encodeInt(76n), Op.OP_NUMEQUAL,
+    // [index, tail, rest, length]. OP_1NEGATE to OP_16 carry no data, and any other opcode is not a push.
+    Op.OP_1, ...readUnsigned,
+    Op.OP_DUP, encodeInt(75n), Op.OP_GREATERTHAN,
     Op.OP_IF,
-    Op.OP_DROP, ...pushByte(1n),
-    // A PUSHDATA1 that reaches the end and is past 128 bytes is the redeem. A shorter one is an argument.
-    Op.OP_DUP, encodeInt(128n), Op.OP_GREATERTHAN,
-    Op.OP_IF,
-    ...redeemCoversRemainder,
-    Op.OP_ELSE,
-    Op.OP_SPLIT, Op.OP_NIP, Op.OP_0,
-    Op.OP_ENDIF,
-    Op.OP_ELSE,
-    Op.OP_DUP, encodeInt(75n), Op.OP_LESSTHANOREQUAL,
-    Op.OP_IF,
-    Op.OP_DUP, encodeInt(0n), Op.OP_NUMEQUAL,
-    Op.OP_IF,
-    Op.OP_DROP, Op.OP_0,
-    Op.OP_ELSE,
-    Op.OP_SPLIT, Op.OP_NIP, Op.OP_0,
-    Op.OP_ENDIF,
-    Op.OP_ELSE,
-    Op.OP_DUP, encodeInt(79n), Op.OP_GREATERTHANOREQUAL,
-    Op.OP_IF,
-    Op.OP_DUP, encodeInt(96n), Op.OP_LESSTHANOREQUAL,
-    Op.OP_IF, Op.OP_DROP, Op.OP_0, Op.OP_ELSE, Op.OP_0, Op.OP_VERIFY, Op.OP_ENDIF,
-    Op.OP_ELSE,
-    Op.OP_0, Op.OP_VERIFY,
+    Op.OP_DUP, encodeInt(78n), Op.OP_LESSTHAN,
+    Op.OP_IF, encodeInt(75n), Op.OP_SUB, ...readUnsigned,
+    Op.OP_ELSE, encodeInt(79n), encodeInt(97n), Op.OP_WITHIN, Op.OP_VERIFY, Op.OP_0,
     Op.OP_ENDIF,
     Op.OP_ENDIF,
+    // [index, tail, rest, length, length - |rest|]
+    Op.OP_SWAP, Op.OP_SIZE, Op.OP_ROT, Op.OP_TUCK, Op.OP_SWAP, Op.OP_SUB,
+    Op.OP_DUP, Op.OP_0, Op.OP_LESSTHAN,
+    Op.OP_IF,
+    // The push ends inside the head: an argument.
+    Op.OP_DROP, Op.OP_SPLIT, Op.OP_NIP, Op.OP_0,
+    Op.OP_ELSE,
+    // [index, tail, rest, length, over]. Reaching the end it is the redeem; ending inside the tail, an argument.
+    Op.OP_ROT, Op.OP_DROP, Op.OP_ROT, Op.OP_SIZE, Op.OP_ROT, Op.OP_TUCK, Op.OP_NUMEQUAL,
+    Op.OP_IF,
+    Op.OP_2DROP, encodeInt(128n), Op.OP_GREATERTHAN, Op.OP_VERIFY, Op.OP_1,
+    Op.OP_ELSE,
+    Op.OP_SPLIT, Op.OP_NIP, Op.OP_NIP, Op.OP_0, Op.OP_0,
     Op.OP_ENDIF,
     Op.OP_ENDIF,
     Op.OP_UNTIL,

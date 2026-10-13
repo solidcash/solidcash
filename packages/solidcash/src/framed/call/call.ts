@@ -69,7 +69,6 @@ import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/c
 import {
   FrameKind,
   INDEX_NONE,
-  blockOracleReadUnlocking,
   bytesEqual,
   computeFunctionSelector,
   computeFunctionSignature,
@@ -88,7 +87,6 @@ import {
 import {
   encodeFunctionArgument, type FunctionArgument,
 } from '../../Argument.js';
-import { bindBlockOracleLock } from '../../oracle/block-oracle-lock.js';
 import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
@@ -132,6 +130,7 @@ import {
   type LoopRecordMint, type LoopRecordSpan,
 } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
+import { bindProviderBlockOracle, entryReadsBlockOracle, framedBlockOracle } from './block-oracle.js';
 import { sendRecipient, type RecipientContext } from './send-recipient.js';
 import {
   FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
@@ -772,10 +771,7 @@ async function callInShape(
   // A shard that names a helper lock is replaced, once the validator program is known, by the clone whose
   // sentinel already holds that lock.
   let artifact = splitShard?.artifact ?? options.artifact;
-  const providerOracleLock = (provider as { blockOracleLock?: Uint8Array }).blockOracleLock;
-  if (providerOracleLock !== undefined && artifact.usesBlockOracle === true) {
-    bindBlockOracleLock(artifact, providerOracleLock);
-  }
+  const providerOracleLock = bindProviderBlockOracle(provider, artifact);
   const stateLayout = artifact.stateLayout;
   if (stateLayout === undefined) {
     throw new FramedCallError(`artifact "${artifact.contractName}" is not a stateful contract`);
@@ -837,6 +833,7 @@ async function callInShape(
       throw new FramedCallError(`function "${functionName}" is not in the prepared split`);
     }
     artifact = patched;
+    bindProviderBlockOracle(provider, artifact);
   }
   const published = publishedEntryOf(artifact, functionName);
   const deployed = deployMaster(artifact, category, validatorProgram);
@@ -947,30 +944,10 @@ async function callInShape(
   }
   // The compute side-cars the entry's keccak256 and recovery calls read, one per call after the master.
   const BLOCK_ORACLE_INPUT = `${MASTER_ID}:block-oracle`;
-  const readsBlockOracle = artifact.abi.some((candidate) =>
-    candidate.name === functionName && candidate.usesBlockOracle === true);
+  const readsBlockOracle = entryReadsBlockOracle(artifact, functionName);
   // Fetched here: the plan builder that places the input is synchronous.
-  const blockOracleInput: DraftInput | undefined = readsBlockOracle
-    ? await (async (): Promise<DraftInput> => {
-      const lock = providerOracleLock;
-      if (lock === undefined) {
-        throw new FramedCallError(
-          `entry "${functionName}" reads the block oracle, and no oracle lock was provided`,
-        );
-      }
-      const utxos = await provider.getUtxosForLockingBytecode(lock);
-      const oracle = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
-      if (oracle?.token?.category === undefined) {
-        throw new FramedCallError('block oracle UTXO is not available');
-      }
-      const oracleCategory = hexToBin(oracle.token.category);
-      return {
-        source: mutableSource(
-          lock, oracle.satoshis, oracleCategory, hexToBin(oracle.token.nft?.commitment ?? ''),
-        ),
-        unlockingBytecode: blockOracleReadUnlocking(oracleCategory),
-      };
-    })()
+  const blockOracle = readsBlockOracle
+    ? await framedBlockOracle(provider, providerOracleLock, functionName, (reason) => new FramedCallError(reason))
     : undefined;
   const sideCars = await entrySideCars({
     provider,
@@ -1703,7 +1680,7 @@ async function callInShape(
     }
     if (laid !== undefined) Object.assign(inputs, laid.inputs);
     Object.assign(inputs, sideCars.inputs);
-    if (blockOracleInput !== undefined) inputs[BLOCK_ORACLE_INPUT] = blockOracleInput;
+    if (blockOracle !== undefined) inputs[BLOCK_ORACLE_INPUT] = blockOracle.input;
     Object.assign(inputs, callees?.inputs ?? {});
     payees.forEach((payee, index) => {
       inputs[receiveMasterId(index)] = {
@@ -2427,6 +2404,7 @@ async function callInShape(
     ...declared.map((record) => [record.id, record.utxo] as const),
     ...(mappingRecords?.spentUtxos ?? []),
     ...Object.entries(sideCars.utxos),
+    ...(blockOracle === undefined ? [] : [[BLOCK_ORACLE_INPUT, blockOracle.utxo] as const]),
     ...(calleePlan?.utxos ?? []),
     ...payees.flatMap((payee, index) => [
       [receiveMasterId(index), payee.master] as const,

@@ -1,9 +1,9 @@
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+import { decodeTransaction, encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
 import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import {
-  encodeBlockOracleCommitment, blockOracleLockingBytecode, hash160, hash256, sha256,
+  encodeBlockOracleCommitment, blockOracleLockingBytecode, blockOracleReadUnlocking, hash160, hash256, sha256,
   type BlockOracleCommitmentFields,
 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
@@ -238,6 +238,11 @@ export const resetConsensusProbeCacheForTests = (): void => consensusProbeVerdic
 
 type LiveUtxoEntry = ReturnType<Indexer['storage']['snapshot']>['utxos'] extends Map<string, infer E> ? E : never;
 
+interface Outpoint { readonly txid: string; readonly vout: number }
+
+/** Where a fresh mock chain mints its block oracle. */
+const MOCK_BLOCK_ORACLE_OUTPOINT: Outpoint = { txid: `${'b0'.repeat(31)}b1`, vout: 0 };
+
 /**
  * Write counters for indexer stores. mem-cash calls its storage by property lookup, so wrapping the writer methods
  * and the `_test` helpers (which edit the internals directly) sees every change to the UTXO set.
@@ -389,69 +394,85 @@ export default class MockNetworkProvider implements NetworkProvider {
   readonly blockOracleOwnerKey = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x44 : 0x11));
   blockOracleLock!: Uint8Array;
   blockOracleCategory!: Uint8Array;
-  private blockOracleOutpoint = { txid: `${'b0'.repeat(31)}b1`, vout: 0 };
+  /** The outpoint the mock last wrote the oracle at. */
+  private blockOracleOutpoint: Outpoint = MOCK_BLOCK_ORACLE_OUTPOINT;
 
   /** Mint the one block-info NFT this provider's readers slice. */
   private installBlockOracle(): void {
     this.blockOracleCategory = sha256(new TextEncoder().encode('solidcash-block-info-oracle-v1'));
     this.blockOracleLock = blockOracleLockingBytecode(this.blockOracleCategory);
-    const pubkey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
-    const commitment = encodeBlockOracleCommitment(hash160(pubkey), {
+    this.writeBlockOracle(MOCK_BLOCK_ORACLE_OUTPOINT, this.tipBlockOracleFields());
+  }
+
+  private tipBlockOracleFields(): BlockOracleCommitmentFields {
+    return {
       number: BigInt(this.blockHeight),
       timestamp: BigInt(this.getBlockTime()),
       difficulty: 0n,
       size: 1000n,
       totalFees: 0n,
       coinbase: hexToBin(`76a914${'00'.repeat(20)}88ac`),
-    });
-    this.indexer.addUtxo({
-      txid: this.blockOracleOutpoint.txid,
-      vout: 0,
-      satoshis: 10_000n,
-      scriptHash: binToHex(sha256(this.blockOracleLock)),
-      height: 100,
-      lockingBytecode: this.blockOracleLock,
-      tokenData: {
-        category: binToHex(this.blockOracleCategory),
-        amount: 0n,
-        nft: { capability: 'mutable', commitment: binToHex(commitment) },
-      },
-    });
+    };
   }
 
-  /** Write the provider's current height and time into the oracle commitment. The owner hash stays. */
+  /**
+   * Write the provider's current height and time into the live oracle. An oracle an owner's signed update
+   * recreated keeps the owner's fields, as on chain; one only readers recreated is still the mock's.
+   */
   refreshBlockOracle(): void {
-    this.setBlockOracleFields({
-      number: BigInt(this.blockHeight),
-      timestamp: BigInt(this.getBlockTime()),
-      difficulty: 0n,
-      size: 1000n,
-      totalFees: 0n,
-      coinbase: hexToBin(`76a914${'00'.repeat(20)}88ac`),
-    });
+    const live = this.liveBlockOracle();
+    if (live === undefined || !this.onlyReadSince(live)) return;
+    this.writeBlockOracle(live, this.tipBlockOracleFields());
   }
 
-  /** Replace the block fields. The owner hash already in the commitment stays, so the same key can sign. */
+  /** Replace the block fields of the live oracle in place. The commitment names the mock owner's key. */
   setBlockOracleFields(fields: BlockOracleCommitmentFields): void {
+    this.writeBlockOracle(this.liveBlockOracle() ?? this.blockOracleOutpoint, fields);
+  }
+
+  /** The oracle a reader co-spends: the first mutable NFT at the oracle lock. */
+  private liveBlockOracle(): Outpoint | undefined {
+    const entry = this.indexer.getUtxos(binToHex(sha256(this.blockOracleLock)))
+      .find((utxo) => utxo.tokenData?.nft?.capability === 'mutable');
+    return entry === undefined ? undefined : { txid: entry.outpoint.txid, vout: entry.outpoint.vout };
+  }
+
+  /** Whether only read-path spends, which recreate it unchanged, moved the oracle since the mock wrote it. */
+  private onlyReadSince(outpoint: Outpoint): boolean {
+    let read: string | undefined;
+    let at = outpoint;
+    while (at.txid !== this.blockOracleOutpoint.txid || at.vout !== this.blockOracleOutpoint.vout) {
+      read ??= binToHex(blockOracleReadUnlocking(this.blockOracleCategory));
+      const raw = this.indexer.getRawTx(at.txid);
+      const decoded = raw === undefined ? undefined : decodeTransaction(hexToBin(raw));
+      // The read path recreates the oracle at its own input index.
+      const input = typeof decoded === 'object' ? decoded.inputs[at.vout] : undefined;
+      if (input === undefined || binToHex(input.unlockingBytecode) !== read) return false;
+      at = { txid: binToHex(input.outpointTransactionHash), vout: input.outpointIndex };
+    }
+    return true;
+  }
+
+  /** Rewrite the oracle NFT at `outpoint` in place, keeping its value and height. */
+  private writeBlockOracle(outpoint: Outpoint, fields: BlockOracleCommitmentFields): void {
     const pubkey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
     const commitment = encodeBlockOracleCommitment(hash160(pubkey), fields);
-    const { txid, vout } = this.blockOracleOutpoint;
-    const storage = this.indexer.storage as {
-      getUtxoByOutpoint?: (key: string) => { scriptHash: string; height: number; isCoinbase?: boolean } | undefined;
-      _test?: { utxo: { remove: (id: { txid: string; vout: number }) => void } };
-    };
-    storage._test?.utxo.remove({ txid, vout });
+    const { txid, vout } = outpoint;
+    const { storage } = this.indexer;
+    const live = storage.getUtxoByOutpoint(`${txid}:${vout}`);
+    storage._test.utxo.remove({ txid, vout });
     this.indexer.addUtxo({
-      txid, vout, satoshis: 10_000n,
+      txid, vout, satoshis: live?.satoshis ?? 10_000n,
       scriptHash: binToHex(sha256(this.blockOracleLock)),
-      height: storage.getUtxoByOutpoint?.(`${txid}:${vout}`)?.height ?? 100,
+      height: live?.height ?? 100,
       lockingBytecode: this.blockOracleLock,
       tokenData: {
-        category: binToHex(this.blockOracleCategory),
+        category: live?.tokenData?.category ?? binToHex(this.blockOracleCategory),
         amount: 0n,
         nft: { capability: 'mutable', commitment: binToHex(commitment) },
       },
     });
+    this.blockOracleOutpoint = { txid, vout };
   }
 
   async getUtxos(address: string): Promise<Utxo[]> {
@@ -592,6 +613,7 @@ export default class MockNetworkProvider implements NetworkProvider {
     const snap = this.indexer.snapshot(); // captures headers => tip height + timestamp
     const height = this.blockHeight;
     const fundingNonce = this.fundingNonce;
+    const oracleOutpoint = this.blockOracleOutpoint;
     const signerNonces = new Map(
       [...this.signerCache].map(([key, signer]) => [key, signer._getTransactionNonceState()]),
     );
@@ -603,6 +625,7 @@ export default class MockNetworkProvider implements NetworkProvider {
       this.acceptedTransactions = new Set(accepted);
       this.blockHeight = height;
       this.fundingNonce = fundingNonce;
+      this.blockOracleOutpoint = oracleOutpoint;
       for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);
       // Snapshot restoration can abandon transactions just as completely as reset(). Any process-local cache
       // derived from the prior chain tip is stale after this point and must be rebuilt from the restored UTXO set.
@@ -832,6 +855,8 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.fundedSignerKeys.clear();
     this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
+    // The wipe took the oracle with it, and a fresh chain has one.
+    this.installBlockOracle();
     runMockNetworkProviderResetHooks();
   }
 

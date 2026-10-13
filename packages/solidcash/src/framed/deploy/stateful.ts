@@ -35,6 +35,7 @@ import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecy
 import { getNetworkPrefix } from '../../utils.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
+import { bindProviderBlockOracle } from '../call/block-oracle.js';
 import { deriveFramedGenesis } from './genesis.js';
 import { deployMaster } from './material.js';
 import { MasterPoolDeployment, resolveMasterPoolSize } from './pool.js';
@@ -85,6 +86,8 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       + `Got vout ${options.fundingUtxo.vout}.`,
     );
   }
+  // The masters pin the oracle lock the contract's calls co-spend.
+  bindProviderBlockOracle(options.provider, artifact);
 
   const funderLock = options.funder.generateLockingBytecode();
   // The constructor's own frame is entered by the deployer. A body that reads `msg.sender` therefore resolves to the

@@ -306,6 +306,8 @@ export interface HopEntryWritesRequest {
    * unresolved, which is refused by name.
    */
   readonly readMappingValue?: MappingValueReader;
+  /** The clock of the oracle the entry co-spends, under the register name a stored value's source reads it by. */
+  readonly blockClock?: Readonly<Record<string, bigint>>;
 }
 
 /** The live deployment a call's hop reads its writes against, from the deployment's own classification. */
@@ -1587,7 +1589,7 @@ function liveStateValues(request: HopEntryWritesRequest): Record<string, unknown
   const layout = request.artifact.stateLayout;
   const deployment = request.liveDeployment;
   if (layout === undefined || deployment === undefined) return undefined;
-  const values: Record<string, unknown> = {};
+  const values: Record<string, unknown> = { ...request.blockClock };
   deployment.recordCommitments.forEach((commitment, nftIndex) => {
     try {
       Object.assign(values, parsePushdataCommitment(binToHex(commitment), layout, nftIndex));

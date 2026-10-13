@@ -17,6 +17,7 @@ describe('kernel inactive dynamic writes beside mapping appends', () => {
     { populated: false, optimizeForCompilationSpeed: false },
     { populated: true, optimizeForCompilationSpeed: false },
   ])('does not materialize an empty sibling chunk (%j)', async ({ populated, optimizeForCompilationSpeed }) => {
+    // An event is one NFT commitment (<= 128 bytes, never split), so it carries the key, not the 160-byte message.
     const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       interface ILedger {
         function append(uint key, bytes memory message) external;
@@ -34,7 +35,7 @@ describe('kernel inactive dynamic writes beside mapping appends', () => {
         mapping(uint => bytes) public labels;
         mapping(address => bytes) public profiles;
         mapping(address => bytes) public observerProfiles;
-        event Appended(uint indexed key, bytes message);
+        event Appended(uint indexed key);
         function initialize() public { this.initialized = 1; this.owner = msg.sender; }
         function setController(address value) public { this.controller = value; }
         function setPaused(bool value) public { this.paused = value; }
@@ -48,7 +49,7 @@ describe('kernel inactive dynamic writes beside mapping appends', () => {
         }
         function append(uint key, bytes memory message) public {
           this.messages[key].push(message);
-          emit Appended(key, message);
+          emit Appended(key);
         }
         function label(uint key) public view returns (bytes memory) { return this.labels[key]; }
       }

@@ -27260,9 +27260,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A later long write concatenates, so every lock stays admitted. A new stack slot would shift the
     // fixed depths of the entry-output commitment check.
     const chunkBase = '__internal__valueChunkOutputBase';
-    if (this.getStackIndex(chunkBase, true) >= 0) {
-      const bottom = this.stack.length - this.getStackIndex(chunkBase);
-      this.emit(encodeInt(BigInt(this.getStackIndex(chunkBase))), loc);
+    // An invoked handler appends to the route's band copy, which the route's census reads. Its own argument copy
+    // is dropped on return, and its frame model has no stable bottom: the caller's frame lies below it.
+    const bandOrdinal = this.isDefineSubTraversal ? this.declaredBandOrdinal(chunkBase) : undefined;
+    if (bandOrdinal !== undefined || (!this.isDefineSubTraversal && this.getStackIndex(chunkBase, true) >= 0)) {
+      const bottom = bandOrdinal ?? this.stack.length - this.getStackIndex(chunkBase);
+      if (bandOrdinal !== undefined) {
+        this.emit(Op.OP_DEPTH, loc);
+        this.emit(encodeInt(BigInt(bandOrdinal)), loc);
+        this.emit(Op.OP_SUB, loc);
+      } else this.emit(encodeInt(BigInt(this.getStackIndex(chunkBase))), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_DUP, loc);
       this.emit(Op.OP_SIZE, loc);
@@ -49081,8 +49088,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(32n), loc);
     this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    if (this.currentFunctionIsDelegate) {
-      // The proxy's sender anchor sits at an anyone-can-spend lock; the SDK recreates it at any free index.
+    // A caller co-spends its own sender anchor for its callee, as a proxy does for its delegate.
+    if (this.currentFunctionIsDelegate || this.lowLevelCallCount > 0 || this.externalCallSlots.length > 0) {
+      // The sender anchor sits at an anyone-can-spend lock; the SDK recreates it at any free index.
       this.emitOwnScidAnchorInputFlag(category, loc);
       this.emit(Op.OP_NOTIF, loc);
       this.emitForeignContainerKeep(loc);

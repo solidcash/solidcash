@@ -27806,16 +27806,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Non-batch routes have no topology sentinel and cannot redirect a proof input. Retain their structural
       // active-slot gate; in that layout a funded fixed slot really is the inactive alias representation.
       // Only the route runs it, picking its master from the bottom; the counts name the untracked category, then
-      // address, on top all the same.
+      // address, on top all the same. Its inactive arm drops H(k) at the close, so H(k) is on top in both arms here.
       const trackedBeforeGate = [...this.stack];
-      this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-      this.emitTakeFirst32(loc);
-      this.emitSortedEntryAddress(collectionHash, loc, 1);
-      this.emitBlockSlotIndex('entry', slotIndex, loc, 1); this.emit(Op.OP_UTXOBYTECODE, loc);
-      this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_IF, loc);
-      this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_DROP, loc);
-      this.emit(Op.OP_ENDIF, loc);
-      this.stack = [...trackedBeforeGate];
       this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
       this.emitTakeFirst32(loc);
       this.emitSortedEntryAddress(collectionHash, loc, 1);
@@ -28319,12 +28311,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc); this.popFromStack();
     if (hasRepoint) { this.emit(Op.OP_DROP, loc); this.popFromStack(); } // drop the re-point register temp
     if (runtimeAliasOwners.length > 0) {
-      // The structural activity guard is opened after H(k) is computed. The active arm consumes that hash in the
-      // upsert proof above; the inactive alias arm must consume it explicitly and close the guard at this same
-      // lexical boundary. Leaving the guard open skips every later covenant and fails with a non-empty VM control
-      // stack whenever this scalar route slot is inactive.
+      // The structural activity guard is opened after H(k) is computed. The active arm consumes that hash, and the
+      // re-point temp beneath it, in the upsert proof above; the inactive alias arm must consume them explicitly and
+      // close the guard at this same lexical boundary. Leaving the guard open skips every later covenant and fails
+      // with a non-empty VM control stack whenever this scalar route slot is inactive.
       this.emit(Op.OP_ELSE, loc);
-      this.emit(Op.OP_DROP, loc);
+      this.emit(hasRepoint ? Op.OP_2DROP : Op.OP_DROP, loc);
       this.emit(Op.OP_ENDIF, loc);
     }
     return node;

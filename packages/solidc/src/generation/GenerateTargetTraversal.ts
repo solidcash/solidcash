@@ -4215,10 +4215,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the slot sits, and the run is addressed past the records that are always declared. The records the turns do
     // add are counted where the run is addressed.
     //
-    // A side-car slot carries a co-spent input the frame's owner places after its own master, outside the record
-    // block the run is addressed from, so it advances no record coordinate and is not part of the width either.
+    // A side-car slot, and the block oracle's, carries a co-spent input the frame's owner places after its own
+    // master, outside the record block the run is addressed from, so it advances no record coordinate and is not
+    // part of the width either.
     const sideCars = layout.slots.filter(
-      (slot) => slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar',
+      (slot) => slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar' || slot.kind === 'blockInfoOracle',
     ).length;
     // A frame beside a batch declares every data record ahead of its groups, not only the ones its layout names
     // (`framedRecordsBeforeGroups`), so the run sits past those too.

@@ -1755,13 +1755,32 @@ Still deferred:
 
 - Message-bus routes (kernel and legacy): route synthesis refuses a handler that emits a wide event, by event name
   (`event-wider-than-one-commitment`, published as `KERNEL_LAYOUT` under the kernel), and codegen throws
-  `EVENT_PAYLOAD_EXCEEDS_COMMITMENT` if a wide emit still reaches a route, graph handler or framed frame. What is
-  missing: the graph frame's `eventWidth` counts one output per emit, `emitGraphEventOutputIndex` matches one
-  commitment per row window, compose-assemble places one event output per emit, and the callManifest census admits
-  one immutable output per event. This blocks `KernelRealUnicrowArbitration` / `KernelRealUnicrowProxyArbitration`
-  (`Arbitrated` 389 B, `Claim` 167 B, `ClaimMultiple(ClaimEvent[])` 1 + 167 B per escrow).
-- `ClaimMultiple` also needs a payload bound the estimate cannot give (a dynamic array of structs): a declared bound
-  or a runtime-sized continuation region.
+  `EVENT_PAYLOAD_EXCEEDS_COMMITMENT` if a wide emit still reaches a route, graph handler or framed frame. This blocks
+  `KernelRealUnicrowArbitration` / `KernelRealUnicrowProxyArbitration` (`Arbitrated` 4+ chunks, `Claim` 2,
+  `ClaimMultiple(ClaimEvent[])` 1 + 167 B per escrow).
+- Investigated 2026-10-13, nothing landed: making the graph frame's `eventWidth` count chunk outputs is the wrong
+  layout for the kernel. A kernel route reserves `sites = messageBusMaximumRows = 255` windows
+  (`planGraphEffectFrames`; `computeBlockLayout` pushes `sites * eventWidth` event slots ahead of `returnEvent` and
+  the 64-slot trailing band, e.g. the MasterChef fixture: events 7..261, return 262, trailing 263..326). Balanced
+  blocks materialize every slot up to the last live one (compose-assemble only trims a trailing run of dummy pairs;
+  a `fixedSuffix` proxy never trims), so a width of `w` chunks adds `255 * (w - 1)` funder/pad pairs to EVERY
+  transaction on that route, narrow rows included (UnicrowArbitrator, Unicrow `Pay`/`Release`/`Refund`: about 3x
+  the block). It also cannot express `ClaimMultiple`, whose chunk count is the payload's own.
+- Design to build instead: put a wide emit's commitments on the kernel's runtime effect stream in the trailing band.
+  `emitRuntimeLoopEffectVerification` already verifies ordered `pushdata(commitment) || lock35` records as
+  own-category immutable NFTs (amount 0, at most 1200 sat) at consecutive trailing outputs, and graph.ts already
+  admits kind-2 rows at `trailing` slots with a `runtimeRow`. A wide emit takes no window slot (as a counter-loop
+  emit) and pushes `ceil(len / 128)` records (head under the event covenant, then the `<signature>#continuation`
+  covenant), so head and chunks are adjacent (readers unchanged), there are no unused chunk slots, a dynamic payload
+  (`ClaimMultiple`) works, and its bound is the trailing capacity the covenant already enforces. The callManifest
+  census needs no change (one kind-2 row per physical event output). Missing: codegen to split the payload into
+  records inside a graph handler (today only counter-loop emits feed the stream), and SDK runtime-event planning
+  that learns the record count from the trace (records are planned from `RuntimeLoopEventAbi` repeat sources
+  today). Window-based helpers that assume one output per emit (`selectedGraphEventOffsets`, graph.ts kind-2
+  `parent`, `eventLockingBytecodeAtOffset`) stay as they are; `eventLockingBytecodeForCommitment` must not be asked
+  to identify a continuation chunk by schema.
+- `ClaimMultiple` counts as 9 B, so its handler is admitted as a narrow emit and refused at run time once the
+  payload passes 128 B; the six `claimMultiple` titles stay red until the runtime-stream design lands.
 - Framed convention (`collectEmitStatements` keeps `chunkCount` 1) and runtime counter-loop event records (one
   commitment per record): an oversized payload is refused by the provider at build time.
 - Nested external-call and delegatecall callees: their unused chunk slots get funding inputs and token-free

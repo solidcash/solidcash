@@ -309,7 +309,7 @@ const ACCEPTED = new Map(Object.entries({
   mapping: 'the mapping type constructor',
   payable: 'the payable address/data-location modifier',
 }));
-// Psdoc tags live in the doc-comment rules, not in the language.
+// NatSpec tags live in the doc-comment rules, not in the language.
 for (const tag of ['title', 'author', 'notice', 'dev', 'param', 'return', 'inheritdoc', 'custom']) {
   ACCEPTED.set(tag, 'a doc-comment annotation tag, not a language token');
 }

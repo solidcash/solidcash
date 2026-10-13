@@ -1,5 +1,6 @@
 aaaabbbbcccc
 AABBBBBBBBBBBBB
+aabbccddffffffff
 AAVDEF
 abbb
 abcabc
@@ -34,6 +35,7 @@ aliaschk
 allo
 ALLONES
 amts
+anchorscan
 andand
 arbitartor
 arbius
@@ -81,6 +83,7 @@ bignums
 bips
 bitmask
 bitmasks
+bitnot
 blobbasefee
 blobcopy
 blobhas
@@ -113,6 +116,7 @@ calldatas
 calldatasize
 calleecat
 callees
+callinput
 callok
 callsite
 callsite's
@@ -318,6 +322,7 @@ falback
 falsey
 fanin
 fargs
+fbytes
 Fcashscript
 FCFS
 feff
@@ -388,6 +393,7 @@ hasnt't
 Hbind
 hdsigner
 hdwallet
+hellp
 hexlify
 Hexp
 HEXSTRING
@@ -569,6 +575,7 @@ mixedcase
 mload
 mload'd
 mload's
+mloads
 mockhash
 modadd
 moded
@@ -585,6 +592,7 @@ msize
 mstore
 mstore'd
 Mstore's
+mstored
 mstores
 mtimes
 MTWAP
@@ -684,6 +692,7 @@ overloadable
 OVEROP
 overridding
 Overwritable
+Ownr
 PADB
 padpush
 PAIRCODEHASH
@@ -739,6 +748,7 @@ predout
 preds
 prefetchable
 Preflighted
+prefund
 prefunding
 Preinstalling
 Prelowered
@@ -780,6 +790,7 @@ READERR
 readlink
 reassemblable
 reassignable
+reaudit
 reauthenticated
 rebadgeable
 rebadged
@@ -834,6 +845,7 @@ requalification
 reresolve
 rescope
 rescoping
+rescored
 reserialize
 reserializing
 respose
@@ -884,6 +896,8 @@ scriptsig
 scrow
 scure
 sdiv
+SDKCORE
+SDKFRAMED
 seedable
 SEGFILL
 segs
@@ -898,6 +912,7 @@ SELFPRES
 SELFPRESERVE
 selrem
 sels
+serrow
 setdefault
 setimmutable
 setit
@@ -990,6 +1005,8 @@ tgeo
 thisactivebytecode
 thisactiveinputindex
 thisage
+thiscategory
+thiscategoryid
 thisdoesntexist
 THREEDUP
 throughs
@@ -1040,6 +1057,7 @@ txoutputsitokencategory
 txoutputsivalue
 txoutputslength
 TXSIZE
+typable
 typechain
 TYPEHASH
 uints
@@ -1055,6 +1073,7 @@ unbroadcast
 uncallable
 uncensused
 unchooseable
+unclocked
 uncloned
 uncoalesced
 uncompacted
@@ -1099,6 +1118,7 @@ unlinearizable
 unlk
 unlockables
 unlockings
+unlogged
 unlooped
 unlowerable
 unlowered
@@ -1151,6 +1171,7 @@ unstarted
 unstatable
 unstepped
 unstub
+unsub
 unsuffixed
 UNSUMMARIZABLE
 unsupplied
@@ -1175,6 +1196,7 @@ varints
 vctx
 versionless
 vexpect
+viair
 viem
 Viem's
 viewin

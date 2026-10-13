@@ -26858,11 +26858,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 2. Entry address = base(master category) wrapped in the collection's entry covenant. Track the categoryId so
     // emitP2sh32FromCovenant's popFromStack consumes IT (not a real tracked var), then untrack the address.
-    this.emitMasterInputIndex(loc);
+    // Hk32 stays untracked beneath the tracked category, as at the upsert sites.
+    this.emitMasterInputIndex(loc, 1);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc); // [Hk32, categoryId]
     this.pushToStack('(sortedaddr)');
-    this.emitSortedEntryAddress(collectionHash, loc); // [Hk32, entryAddr]
+    this.emitSortedEntryAddress(collectionHash, loc, 1); // [Hk32, entryAddr]
     this.popFromStack();
 
     // 3. input[slot] bytecode == entryAddr (a real entry of this collection; omission -> mismatch -> revert),

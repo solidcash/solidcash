@@ -10,6 +10,7 @@
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+import { buildSatoshiContainerCovenantScript, scriptToBytecode } from '@solidcash/utils';
 import {
   WITNESS_BLOCK_HEADER_LENGTH,
   dropPrefix,
@@ -19,14 +20,23 @@ import {
   takeLengthPrefixedField32,
 } from './witness-reader.js';
 
-/** The covenant bytes before the first category push. */
-const COVENANT_PREFIX = hexToBin('63ce01207f5288');
-/** The covenant bytes between the two category pushes. */
-const COVENANT_MIDDLE = hexToBin(
-  '8867767676cdc0c788ccc0c6a269d1c0ce88d3c0d0a269c0c7c38c6576c09c6476c75279879169688c76009f66757568',
-);
-/** The covenant bytes after the second category push. */
-const COVENANT_SUFFIX = hexToBin('7551');
+/** The covenant split around its two category pushes, derived from the builder so it cannot drift from it. */
+function covenantPieces(): readonly [Uint8Array, Uint8Array, Uint8Array] {
+  const placeholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
+  const covenant = scriptToBytecode(buildSatoshiContainerCovenantScript(placeholder));
+  const push = Uint8Array.from([0x20, ...placeholder.slice().reverse()]);
+  const at: number[] = [];
+  for (let index = 0; index + push.length <= covenant.length; index += 1) {
+    if (push.every((byte, offset) => covenant[index + offset] === byte)) at.push(index);
+  }
+  if (at.length !== 2) throw new Error(`satoshi container covenant has ${at.length} category pushes`);
+  return [
+    covenant.slice(0, at[0]), covenant.slice(at[0]! + push.length, at[1]), covenant.slice(at[1]! + push.length),
+  ];
+}
+
+/** The covenant bytes before, between and after the two category pushes. */
+const [COVENANT_PREFIX, COVENANT_MIDDLE, COVENANT_SUFFIX] = covenantPieces();
 /** `OP_HASH256 OP_PUSHBYTES_32`, the front of a P2SH32 lock. */
 const P2SH32_FRONT = hexToBin('aa20');
 /** `OP_EQUAL`, the end of a P2SH32 lock. */

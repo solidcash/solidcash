@@ -25524,9 +25524,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SPLIT, loc);
     this.emit(Op.OP_DROP, loc);
     this.pushToStack('(external_out_dynamic_category)');
-    this.emit(Op.OP_DUP, loc);
+    // Bound chunks take the owner master's lock. The length header's output is a data NFT at another lock.
+    const boundChunks = this.directConvention && !this.framedMaster;
+    if (boundChunks) {
+      this.emitExternalOutStateOutputIndex(info.externalOutStateSlotIndex, undefined, loc);
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);
+      this.emit(Op.OP_OVER, loc);
+    } else {
+      this.emit(Op.OP_DUP, loc);
+    }
     this.pushToStack('(external_out_dynamic_address)');
-    this.emitEntryP2sh32(chunkHash, loc, { output: '(external_out_dynamic_master)' });
+    this.emitEntryP2sh32(chunkHash, loc, boundChunks ? 'under' : undefined);
     this.stack[0] = '(external_out_dynamic_address)';
 
     // expected = ceil(length / DYNAMIC_CHUNK_SIZE); then initialize the scan. A dynamic state value keeps every

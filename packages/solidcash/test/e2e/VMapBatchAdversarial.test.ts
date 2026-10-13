@@ -6,6 +6,7 @@ import {
 import { Contract } from '../../src/index.js';
 import {
   bytesToSlotValue,
+  decodeEntryCommitment,
   getEntryNftAddress,
   keyToSlotMulti,
   StatefulContract,
@@ -88,9 +89,30 @@ describe('vmap atomic batch adversarial soundness', () => {
     const badRows = rows.slice(); badRows[32] ^= 1;
     forgedRowLink._setRawVMapBatchWitness(0, { rows: badRows });
     await expect(call3(forgedRowLink)).rejects.toThrow(verifyFail);
+  });
 
-    const aliasedKeys = await deploy();
-    await expect(aliasedKeys.getFunction('batch')(1n, 1n).send()).rejects.toThrow(/duplicate slot/i);
+  // Two writes of one key compose (9b478f894): the preflight binds the second row as the first's alias row, the batch
+  // settles the first target alone, the census drops the alias row, and the key's last write pins the one node.
+  it('settles two writes of one key as one node holding the later value', async () => {
+    const sc = await deploy();
+    const provider = sc.inner.provider;
+    let sent = '';
+    const send = provider.sendRawTransaction.bind(provider);
+    (provider as any).sendRawTransaction = async (hex: string): Promise<string> => { sent = hex; return send(hex); };
+    await sc.getFunction('batch')(1n, 1n).send();
+
+    // The collection holds the relinked HEAD and one node for key 1 with the later value: no duplicate, no orphan.
+    const utxos = await provider.getUtxos(getEntryNftAddress(sc.inner, sc.categoryId, 'm'));
+    expect(utxos.every((u) => u.token?.category === sc.categoryId && u.token.nft?.capability === 'mutable')).toBe(true);
+    const nodes = utxos.map((u) => decodeEntryCommitment(hexToBin(u.token!.nft!.commitment))).map((n) => (
+      bytesToSlotValue(n.slot) === 0n ? `head>${binToHex(n.nextKey)}`
+        : `${binToHex(n.slot)}>${binToHex(n.nextKey)}=${binToHex(n.value)}`));
+    const zero = binToHex(new Uint8Array(32));
+    const key = binToHex(keyToSlotMulti([bigIntToVmNumber(1n)]));
+    expect(nodes.sort()).toEqual([`head>${key}`, `${key}>${zero}=${binToHex(bigIntToVmNumber(22n))}`].sort());
+    const entryOutputs = decodeTransactionUnsafe(hexToBin(sent)).outputs.filter((o) => (
+      o.token?.nft?.capability === 'mutable' && o.token.nft.commitment.length >= 64));
+    expect(entryOutputs).toHaveLength(2);
   });
 
   it('rejects link, value, capability, and orphan-output tampering', async () => {

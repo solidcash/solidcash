@@ -10,6 +10,7 @@ import {
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { InvalidModifierCombinationError } from '../Errors.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 // Whether a name is referenced (as an identifier) anywhere in a subtree.
 class ReferenceFinder extends AstTraversal {
@@ -71,7 +72,7 @@ function lowerContract(contract: ContractNode): void {
   for (const tv of transientVars) {
     const at = tv.location ? ` (line ${tv.location.start.line})` : '';
     // eslint-disable-next-line no-console
-    console.log(`Warning: transient state variable '${tv.name}'${at} has no UTXO analogue; SolidCash lowers `
+    emitCompilerWarning(`Warning: transient state variable '${tv.name}'${at} has no UTXO analogue; SolidCash lowers `
       + 'it to a transaction-local (zero at the start of each spend). It does not persist across spends, and '
       + 'cross-call transient state is impossible on BCH (one spend = one execution).');
     for (const fn of fns) {

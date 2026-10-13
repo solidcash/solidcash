@@ -98,6 +98,7 @@ import {
 } from './admission-decision.js';
 import { normalizeKernelAdmissionReason } from './kernel-admission-catalog.js';
 import { deduplicateMessageBusVerifierStackSuffix } from './messageBusVerifierDedup.js';
+import { emitCompilerWarning, withSuppressedWarnings, withWarningListener, type WarningListener } from './warnings.js';
 
 /** Survives binder rebuild: span-based analysis from the admission ladder. */
 let pendingSpanAdmissionAnalysis: AdmissionDecisionSet | undefined;
@@ -1194,6 +1195,12 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
 
 export interface CompileOptions extends CompilerOptions {
   errorListener?: SolidCashErrorListener;
+  /**
+   * Receives each compiler warning instead of the default `console.log` print. `suppressWarnings` still
+   * discards warnings, including for a listener set on the same compile. Compose with `defaultWarningListener`
+   * to print and collect.
+   */
+  warningListener?: WarningListener;
   /** Select a named top-level contract instead of the source file's last concrete contract. */
   primaryContractName?: string;
   /**
@@ -1323,39 +1330,25 @@ Artifact, readonly KernelJournalDispositionHandlerScope[]
 >();
 const diagnosticConsoleLog = console.log;
 const diagnosticConsoleWarn = console.warn;
-let warningSuppressionDepth = 0;
-let warningSuppressionLog: typeof console.log | undefined;
-let warningSuppressionWarn: typeof console.warn | undefined;
 
-/** Keep warning suppression scoped to one synchronous compiler entry point, including its nested variant passes. */
+/**
+ * Keep warning suppression scoped to one synchronous compiler entry point, including its nested variant passes.
+ * A caller-supplied `warningListener` is installed around this, so a suppressed inner compile hides warnings
+ * from that listener and restores it on the way out.
+ */
 function withCompilerWarnings<T>(suppress: boolean | undefined, compile: () => T): T {
   if (!suppress) return compile();
-  if (warningSuppressionDepth === 0) {
-    warningSuppressionLog = console.log;
-    warningSuppressionWarn = console.warn;
-    console.log = (...args: unknown[]): void => {
-      if (typeof args[0] !== 'string' || !args[0].startsWith('Warning:')) {
-        warningSuppressionLog!(...args);
-      }
-    };
-    console.warn = (...args: unknown[]): void => {
-      if (typeof args[0] !== 'string' || !args[0].startsWith('Warning:')) {
-        warningSuppressionWarn!(...args);
-      }
-    };
-  }
-  warningSuppressionDepth += 1;
-  try {
-    return compile();
-  } finally {
-    warningSuppressionDepth -= 1;
-    if (warningSuppressionDepth === 0) {
-      console.log = warningSuppressionLog!;
-      console.warn = warningSuppressionWarn!;
-      warningSuppressionLog = undefined;
-      warningSuppressionWarn = undefined;
-    }
-  }
+  return withSuppressedWarnings(compile);
+}
+
+/** Install `warningListener` for one public compile. Suppression still wins when both are set. */
+function runWithWarningListener<T>(
+  options: { suppressWarnings?: boolean, warningListener?: WarningListener }, compile: () => T,
+): T {
+  const listener = options.warningListener;
+  const invoke = (): T => withCompilerWarnings(options.suppressWarnings, compile);
+  if (listener === undefined || options.suppressWarnings) return invoke();
+  return withWarningListener(listener, invoke);
 }
 
 function compileCacheLimit(): number {
@@ -1383,6 +1376,7 @@ function recordArtifactCacheHit(detail: Record<string, unknown>): void {
 
 function artifactCacheEnabled(
   options: CompilerOptions, errorListener: SolidCashErrorListener | undefined, suppressWarnings: boolean,
+  warningListener?: WarningListener,
 ): boolean {
   const internal = options as InternalCompilerOptions;
   // Attempt auditing is meaningful only for a fresh pipeline. A cached artifact has no attempts to observe and
@@ -1397,6 +1391,8 @@ function artifactCacheEnabled(
   const want = solidcEnvFlagEnabled('SOLIDC_COMPILE_CACHE') || options.__artifactCache === true;
   return want
     && !errorListener
+    // A cached artifact is returned without re-running the passes, so a listener would never observe it.
+    && !warningListener
     && (options.__artifactCache === true || !options.importResolver)
     && !solidcEnvFlagEnabled('SOLIDCASH_NO_OUTLINE')
     && (suppressWarnings
@@ -2549,7 +2545,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     if (fresh.length === 0) {
       if (artifact === undefined) throw failure;
       for (const [name, reason] of refusals) {
-        if (!inherited?.has(name)) console.log(`Warning: function '${name}' is refused: ${reason}`);
+        if (!inherited?.has(name)) emitCompilerWarning(`Warning: function '${name}' is refused: ${reason}`);
       }
       return artifact;
     }
@@ -2565,7 +2561,7 @@ function compileStringUncheckedAttempt(code: string, compilerOptions: CompileOpt
     (compilerOptions as InternalCompilerOptions).__kernelReadCarrierAuthorizationBox,
   );
   const {
-    errorListener, primaryContractName, suppressWarnings = false, ...artifactCompilerOptions
+    errorListener, warningListener, primaryContractName, suppressWarnings = false, ...artifactCompilerOptions
   } = compilerOptions;
   const internalOptions = artifactCompilerOptions as InternalCompilerOptions;
   if (((internalOptions.messageBusKernel ?? DEFAULT_COMPILER_OPTIONS.messageBusKernel) === true
@@ -2583,7 +2579,7 @@ function compileStringUncheckedAttempt(code: string, compilerOptions: CompileOpt
   // A caller-supplied tree can be a projected split facet rather than the artifact described by `code`.
   // Never return an ordinary source-cache hit in place of that physical AST.
   const cacheable = parsedAst === undefined
-    && artifactCacheEnabled(artifactCompilerOptions, errorListener, suppressWarnings);
+    && artifactCacheEnabled(artifactCompilerOptions, errorListener, suppressWarnings, warningListener);
   let cacheKey = '';
   if (cacheable) {
     // Keep cached artifacts tied to their published shape. Compiler versions can remain unchanged throughout
@@ -3093,7 +3089,7 @@ export function compileString(code: string, options: CompileStringOptions = {}):
   pendingSpanAdmissionAnalysis = undefined;
   const { upgradesFrom } = compilerOptions;
   const artifactOptions = withoutUpgradesFrom(compilerOptions);
-  return withCompilerWarnings(compilerOptions.suppressWarnings, () => {
+  return runWithWarningListener(compilerOptions, () => {
     try {
       const artifact = compileStringUnchecked(code, artifactOptions);
       requireUpgradeLayouts({ [artifact.contractName]: artifact }, upgradesFrom);
@@ -3234,7 +3230,7 @@ function attachDelegateVariant(
       console.warn = warn;
     }
     if (variantFailure !== undefined && reportVariantFailure) {
-      console.log(
+      emitCompilerWarning(
         `Warning: could not build the delegate (proxy-implementation) variant of '${artifact.contractName}': `
         + `${variantFailure}. The contract itself compiled; it just cannot be used behind a proxy.`,
       );
@@ -18631,7 +18627,7 @@ function validateInheritedPrivateFunctionAccess(ast: Ast): void {
 export function compileStringMulti(code: string, options: CompileStringOptions = {}): ArtifactMap {
   const compilerOptions: CompileOptions = withFilesResolver(options);
   const { upgradesFrom } = compilerOptions;
-  return withCompilerWarnings(compilerOptions.suppressWarnings, () => {
+  return runWithWarningListener(compilerOptions, () => {
     const artifacts = compileStringMultiUnchecked(code, withoutUpgradesFrom(compilerOptions));
     requireUpgradeLayouts(artifacts, upgradesFrom);
     return artifacts;
@@ -18644,11 +18640,15 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
   clearKernelReadCarrierBindingToken(
     (compilerOptions as InternalCompilerOptions).__kernelReadCarrierAuthorizationBox,
   );
-  const { errorListener, compileDeclarations, suppressWarnings = false, ...artifactCompilerOptions } = compilerOptions;
+  const {
+    errorListener, warningListener, compileDeclarations, suppressWarnings = false, ...artifactCompilerOptions
+  } = compilerOptions;
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
   const requested = compileDeclarations === undefined ? undefined : new Set(compileDeclarations);
-  const cacheable = artifactCacheEnabled(artifactCompilerOptions, errorListener, suppressWarnings);
+  const cacheable = artifactCacheEnabled(
+    artifactCompilerOptions, errorListener, suppressWarnings, warningListener,
+  );
   const multiCacheKey = cacheable
     ? buildMultiArtifactCacheKey(code, artifactCompilerOptions, compileDeclarations)
     : '';
@@ -18874,8 +18874,8 @@ export function compileStringSplit(
   code: string, options: SplitCompileOptions & CompileStringOptions = {},
 ): Artifact | SplitArtifactBundle | FunctionSplitBundle {
   const compilerOptions: SplitCompileOptions = withFilesResolver(options);
-  return withCompilerWarnings(
-    compilerOptions.suppressWarnings,
+  return runWithWarningListener(
+    compilerOptions,
     () => compileStringSplitUnchecked(code, compilerOptions),
   );
 }
@@ -18897,6 +18897,9 @@ function compileStringSplitUnchecked(
   }
   const {
     maxShardBytes = MAX_INPUT_BYTESIZE, forceSplit = false, rootFunctions = [], errorListener,
+    // The outer compile already installed it; it must not ride into the per-shard artifact options.
+    // eslint-disable-next-line @typescript-eslint/naming-convention, @typescript-eslint/no-unused-vars
+    warningListener: _warningListener,
     ...artifactOptions
   } = compilerOptions;
   // compileString refuses split 'size'; every compile below is an ordinary one.
@@ -21176,7 +21179,7 @@ export function parseCode(
     const warnUnevaluated = (header: string): void => {
       const name = /\bcontract\s+(\w+)/.exec(header)?.[1];
       if (name !== undefined && !bases.has(name)) {
-        console.log(`Warning: the \`layout at\` base slot of contract ${name} could not be evaluated - its EVM `
+        emitCompilerWarning(`Warning: the \`layout at\` base slot of contract ${name} could not be evaluated - its EVM `
           + 'slot numbers (.slot, sload/sstore) are not offset by it.');
       }
     };

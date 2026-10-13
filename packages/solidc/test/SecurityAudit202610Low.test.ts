@@ -164,7 +164,7 @@ describe('October 2026 low holes', () => {
   });
 
   it('CRYPTO-6 block.timestamp warns and a timestamp update cannot precede the chain', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       const artifact = compileString(
         `${P} contract C { function f() { require(block.timestamp >= 0); } }`,

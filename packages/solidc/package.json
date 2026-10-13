@@ -61,13 +61,13 @@
   "devDependencies": {
     "@types/node": "^22.17.0",
     "@types/semver": "^7.7.0",
-    "@vitest/coverage-v8": "^4.0.15",
+    "@vitest/coverage-v8": "^5.0.4",
     "cpy-cli": "^5.0.0",
     "eslint": "^8.54.0",
     "eslint-plugin-import": "^2.31.0",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
-    "vitest": "^4.0.15"
+    "vitest": "^5.0.4"
   },
   "gitHead": "bf02a4b641d5d03c035d052247a545109c17b708",
   "exports": {

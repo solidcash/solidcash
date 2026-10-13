@@ -15,6 +15,7 @@ import { encodeComputedBlockhashKey } from '@solidcash/utils';
 import { NullaryOperator, BinaryOperator } from '../ast/Operator.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 /**
  * Oracle-backed `block.*` reads.
@@ -62,7 +63,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   private warnShim(key: string, message: string): void {
     if (this.warnedShims.has(key)) return;
     this.warnedShims.add(key);
-    console.warn(message);
+    emitCompilerWarning(message);
   }
 
   visitFunctionCall(node: FunctionCallNode): Node {

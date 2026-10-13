@@ -53,12 +53,26 @@ integration fixed them on feat/per-call-merge:
 | An activity-settled delete binds its present node's next witness (DS-6) | 7a1f6a4e0 |
 | The own-coin proof and per-call's funding hardening reconciled; fixtures funded with proven coins | 3d5471181 67260c100 |
 | ARITH-4: a static `abi.decode` ignores bytes after its last word again, as solc does (the last word is still read as exactly 32 bytes) | 39670ebad |
-| Message-bus builds keep the kernel's deploy authority (user decision, 2026-10-13); upgrade, split and merge still need a trusted key there (DX-9) | e231d3090 735180ab3 |
+| Message-bus builds keep the kernel's lifecycle policy for every lifecycle kind (kernel precedent, user decision 2026-10-13): DX-9's first point stays open there; its checkDataSig and sighash-fence points hold and are tested outside the bus | e231d3090 13947a043 |
+| Generated route helpers skip the `.sol` operand rules (feat/parity 7a12c1b99 refused their own bytes comparisons under a `.sol` root) | e0cbde22a |
+| The deploy observer learns constructor value-chunk runs at the master-bound lock | ac5994a64 |
+| Test pins brought up to date: two writes of one key settle as one node (9b478f894), fn-pointer state defaults and encoding (d32e57b82, ccf77b8dc), two bytecode-shape guards, a moved-event tamper that really moves | 4b13e7188 3ef154a43 a2da5abe4 028452452 |
 
 Not merged: a00dd2f72 (delegate marking of bare mapping and array writes), see deferrals.md, "A routed update of a
 proxy's records". Direct delegates and delegated routes now inline the container and entry address builds (size not
 measured). In a delegate body the foreign scan also refuses a forwarder that draws on one of the proxy's containers
 in the same transaction; no test does that.
+
+Test status at the landing head (2026-10-13, full `test:all` plus the corpus): utils 485/485; solidc 88 of 7233
+failed; SDK non-e2e 396 of 5988; SDK e2e 140 of 3500; testing 4 of 107; testing-suite 1 of 27. Run on both parents
+over the same files: 40 fail on both, 592 fail on feat/per-call d6821a812 and pass on feat/parity, none fail on
+feat/parity alone, and 2 are new: timeouts in KernelAdmission (60 s; 52 s on feat/parity) and the
+AtomicMessageBusCompose ecrecover case (120 s). Corpus 2720/2805, gate PASS, identical to feat/parity.
+
+The merged hardening grows delegate bodies: in LibraryDelegateEvents the facet input's unlock goes from 1307 to 2295
+bytes, and inline delegate address builds add 342 B to one marketplace body; a lock-parameterised shared address
+helper would win back about 110 B per site. One body (selector 2928b689) still invokes the shared address helper
+bound to the executing input's lock; whether it runs as a delegate is not checked.
 
 ## Residuals and findings
 

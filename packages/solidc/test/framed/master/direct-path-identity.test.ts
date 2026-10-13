@@ -8,8 +8,9 @@ import { compileString } from '../../../src/compiler.js';
  * The hashes are that bytecode. They moved once when an integer literal beside a bounded operand took its type, so
  * `x + 1` carries the range check Solidity gives it, and again after later direct-convention fixes: a signature
  * check stays at the front of the entry the SDK signs, and `msg.sender` is read from the authenticated execution
- * frame, and once more when the record and container covenants were bound to the contract's own lock. A framed
- * compile may add artifacts, but it may not make these two directs disagree.
+ * frame; once more when the record and container covenants were bound to the contract's own lock; and again when
+ * the mutable-output check tried the locks the contract mints before scanning inputs. A framed compile may add
+ * artifacts, but it may not make these two directs disagree.
  */
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
@@ -31,9 +32,9 @@ const SENDER_CONTRACT = 'pragma solidcash ^0.13.0;'
 
 const CASES = [
   { name: 'a stateful contract with a signature check', source: STATE_CONTRACT,
-    pinnedSha256: '92f5afa0ce54392165064191f4eac179c46d7321985b56ce83af09b73d23c597' },
+    pinnedSha256: '7ac092f4b7ab4bc8e168850ff2317763521d63f04b6b542f09c2628f5c0fc7fd' },
   { name: 'a stateful contract that reads msg.sender', source: SENDER_CONTRACT,
-    pinnedSha256: '7e6fb2787ec4a770cca02224670e15f1939ae7217d6bf666f42e32ff7d2d4228' },
+    pinnedSha256: 'e5bca417cfecb2310cc06c3fa0c7d07d4957e4d35d953e78230baf50b65955b5' },
 ] as const;
 
 describe('the direct convention is unchanged', () => {

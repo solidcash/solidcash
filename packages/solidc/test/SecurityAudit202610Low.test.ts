@@ -66,15 +66,16 @@ describe('October 2026 low holes', () => {
     expect(artifact.bytecode).toContain('OP_1 OP_LESSTHANOREQUAL OP_VERIFY');
   });
 
-  it('DX-9 a message-bus split without a trusted signature is rejected', () => {
+  // Message-bus builds keep the kernel's own lifecycle policy (decided 2026-10-13); the rule holds elsewhere.
+  it('DX-9 a split without a trusted signature is rejected outside the message bus', () => {
     const src = `${P} contract C(pubkey admin) { int n; function fork(int k) split(k) { require(true); } }`;
-    expect(() => compileString(src, { messageBus: true })).toThrow(/without an unconditional trusted-key signature/);
+    expect(() => compileString(src, { messageBus: false })).toThrow(/without an unconditional trusted-key signature/);
   });
 
   it('DX-9 checkDataSig does not authorize a split, and checkSig fences the sighash', () => {
     const dataSig = `${P} contract C(pubkey admin) { int n;`
       + ' function fork(datasig ds, bytes m, int k) split(k) { require(checkDataSig(ds, m, admin)); } }';
-    expect(() => compileString(dataSig, { messageBus: true })).toThrow(/without an unconditional trusted-key signature/);
+    expect(() => compileString(dataSig, { messageBus: false })).toThrow(/without an unconditional trusted-key signature/);
     const signed = compileString(
       `${P} contract C(pubkey admin) { int n;`
       + ' function fork(sig s, int k) split(k) { require(checkSig(s, admin)); } }',

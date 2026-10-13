@@ -2,8 +2,10 @@ import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-inst
 import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
 import {
-  type Artifact, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
-  buildPushdataCommitment, scriptToBytecode, encodeInt, hash160, type StateVariableInfo,
+  type Artifact, blockhashCommitmentNumber, blockhashOracleLockingBytecode,
+  buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
+  blockOracleUpdateUnlocking, encodeBlockOracleCommitment, blockOracleFieldBytes,
+  buildPushdataCommitment, scriptToBytecode, encodeInt, hash160, hash256, type StateVariableInfo,
 } from '@solidcash/utils';
 import type { Contract } from '../Contract.js';
 import type { Utxo, Unlocker } from '../interfaces.js';
@@ -138,7 +140,7 @@ export class BlockOracleUpdater {
 
   /** The contract writes a current-block register set (block.number/timestamp/...). */
   static usesBlockInfo(artifact: Artifact): boolean {
-    return artifact.abi.some((fn) => fn.name === '__updateBlockOracle');
+    return artifact.usesBlockOracle === true;
   }
 
   /**
@@ -151,22 +153,72 @@ export class BlockOracleUpdater {
 
   /** Current block-info oracle height from the on-chain __block_number register (0 if absent). */
   async oracleHeight(): Promise<bigint> {
-    const { StatefulContract } = await import('../stateful/StatefulContract.js');
-    const sc = StatefulContract.withCategory(this.cfg.contract, this.cfg.categoryId);
-    const state = await sc.getState();
-    return BigInt((state.__block_number as bigint | undefined) ?? 0n);
+    const commitment = await this.currentCommitment();
+    const bytes = blockOracleFieldBytes(commitment, 'number');
+    let value = 0n;
+    for (let index = 0; index < 4; index += 1) value |= BigInt(bytes[index] ?? 0) << BigInt(8 * index);
+    return value;
   }
 
-  /** Push a signed + freshness-bound block-info update for the given block fields. Returns the txid. */
-  async pushUpdate(fields: BlockOracleFields): Promise<string> {
-    const { StatefulContract } = await import('../stateful/StatefulContract.js');
-    const { args, state } = buildUpdate(this.cfg.contract, fields);
-    const sc = StatefulContract.withCategory(this.cfg.contract, this.cfg.categoryId);
-    const call = (sc as any).__updateBlockOracle(new SignatureTemplate(this.cfg.keeperKey), ...args)
-      .setState(state)
-      .setLocktime(Number(fields.number)); // freshness: require(tx.time >= number)
-    const tx = await call.send();
+  /** Push a signed update of the oracle commitment. The owner hash already in it must match `keeperKey`.
+   * `locktime` defaults to the new block number, which is what the covenant's CLTV checks. */
+  async pushUpdate(fields: BlockOracleFields, locktime = Number(fields.number)): Promise<string> {
+    const { TransactionBuilder } = await import('../TransactionBuilder.js');
+    const { createSighashPreimage, toSigningSerializationType } = await import('../utils.js');
+    const provider = this.cfg.contract.provider as NetworkProvider & {
+      blockOracleLock?: Uint8Array;
+      blockOracleCategory?: Uint8Array;
+    };
+    const lock = provider.blockOracleLock;
+    const category = provider.blockOracleCategory;
+    if (lock === undefined || category === undefined) {
+      throw new Error('the provider has no block oracle covenant');
+    }
+    const utxos = await provider.getUtxosForLockingBytecode(lock);
+    const oracle = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+    if (oracle === undefined) throw new Error('block oracle UTXO is not available');
+    const pubkey = secp256k1.derivePublicKeyCompressed(this.cfg.keeperKey) as Uint8Array;
+    const newCommitment = encodeBlockOracleCommitment(hash160(pubkey), fields);
+    const redeem = (await import('@solidcash/utils')).blockOracleRedeemScript(category);
+    const unlocker: Unlocker = {
+      generateLockingBytecode: () => lock,
+      generateUnlockingBytecode: ({ transaction, sourceOutputs, inputIndex }) => {
+        // SIGHASH_ALL | SIGHASH_UTXOS. The preimage and the signature byte both include the fork-id flag.
+        const sighashType = 0x21;
+        const signatureByte = toSigningSerializationType(sighashType);
+        const signature = secp256k1.signMessageHashSchnorr(this.cfg.keeperKey, hash256(
+          createSighashPreimage(transaction, sourceOutputs, inputIndex, redeem, sighashType),
+        )) as Uint8Array;
+        const signed = new Uint8Array(signature.length + 1);
+        signed.set(signature);
+        signed[signature.length] = signatureByte;
+        return blockOracleUpdateUnlocking(category, pubkey, signed, newCommitment);
+      },
+    };
+    const tx = await new TransactionBuilder({ provider })
+      .addInput(oracle, unlocker)
+      .addOutput({
+        to: lock,
+        // The covenant does not pin the satoshi value. The difference is the relay fee.
+        amount: oracle.satoshis > 2_000n ? oracle.satoshis - 2_000n : oracle.satoshis,
+        token: {
+          category: oracle.token!.category,
+          amount: oracle.token!.amount,
+          nft: { capability: 'mutable', commitment: binToHex(newCommitment) },
+        },
+      })
+      .setLocktime(locktime)
+      .send();
     return tx.txid;
+  }
+
+  private async currentCommitment(): Promise<Uint8Array> {
+    const provider = this.cfg.contract.provider as NetworkProvider & { blockOracleLock?: Uint8Array };
+    const lock = provider.blockOracleLock;
+    if (lock === undefined) return new Uint8Array();
+    const utxos = await provider.getUtxosForLockingBytecode(lock);
+    const commitment = utxos.find((utxo) => utxo.token?.nft)?.token?.nft?.commitment;
+    return commitment === undefined ? new Uint8Array() : hexToBin(commitment);
   }
 
   /**
@@ -179,7 +231,11 @@ export class BlockOracleUpdater {
     if (!catHex || !master) {
       throw new Error('blockhashOracleCategory + blockhashOracleMaster are required to mint (n->hash) pairs');
     }
-    const addrN = blockhashOracleLockingBytecode(hexToBin(catHex), n);
+    const category = catHex.toLowerCase();
+    if (master.utxo.token?.category?.toLowerCase() !== category) {
+      throw new Error('blockhash oracle minting master must carry the master contract category');
+    }
+    const lock = blockhashOracleLockingBytecode(hexToBin(category));
     const commitment = binToHex(buildBlockhashCommitment(n, hash));
     const mintSats = 1000n;
     const fee = 1000n;
@@ -190,12 +246,12 @@ export class BlockOracleUpdater {
         to: master.unlocker.generateLockingBytecode(),
         amount: master.utxo.satoshis - mintSats - fee,
         token: master.utxo.token,
-      }) // recreate the minting master
+      })
       .addOutput({
-        to: addrN,
+        to: lock,
         amount: mintSats,
         token: { category: catHex, amount: 0n, nft: { capability: 'none', commitment } },
-      }) // mint the (n,hash) oracle NFT
+      })
       .send();
     return tx.txid;
   }
@@ -209,15 +265,16 @@ export class BlockOracleUpdater {
   async sweepBlockhashPair(n: bigint): Promise<string | null> {
     const catHex = this.cfg.blockhashOracleCategory;
     if (!catHex) throw new Error('blockhashOracleCategory is required to sweep (n->hash) pairs');
-    const cat = hexToBin(catHex);
-    const addrN = blockhashOracleLockingBytecode(cat, n);
-    const utxos = await this.cfg.contract.provider.getUtxosForLockingBytecode(addrN);
+    const category = hexToBin(catHex);
+    const lock = blockhashOracleLockingBytecode(category);
+    const utxos = (await this.cfg.contract.provider.getUtxosForLockingBytecode(lock))
+      .filter((utxo) => blockhashCommitmentNumber(hexToBin(utxo.token?.nft?.commitment ?? '')) === n);
     if (utxos.length === 0) return null;
 
-    const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(cat, n));
-    const wipeUnlock = scriptToBytecode([encodeInt(1n), redeem]); // flag 1 = wipe branch
+    const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(category));
+    const wipeUnlock = scriptToBytecode([encodeInt(1n), redeem]);
     const unlocker = {
-      generateLockingBytecode: (): Uint8Array => addrN,
+      generateLockingBytecode: (): Uint8Array => lock,
       generateUnlockingBytecode: (): Uint8Array => wipeUnlock,
     };
 
@@ -554,6 +611,8 @@ export async function syncMockBlockOracleDeployment(
 }
 
 export async function syncMockBlockOracles(provider: NetworkProvider): Promise<number> {
+  const refresh = (provider as { refreshBlockOracle?: () => void }).refreshBlockOracle;
+  if (refresh !== undefined) refresh.call(provider);
   const { listDeployments } = await import('../stateful/deployment-registry.js');
   return syncMockBlockOracleDeployments(provider, listDeployments(provider));
 }

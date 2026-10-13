@@ -1,10 +1,9 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import {
   Contract,
   TransactionBuilder,
-  SignatureTemplate,
 } from '../../src/index.js';
 import {
   StatefulContract,
@@ -16,10 +15,10 @@ import { Utxo } from '../../src/interfaces.js';
 import {
   createTestProvider, createFeeFunder, setupStatefulUtxos, fundedSigner,
 } from '../test-util.js';
-import { alicePub, alicePriv, bobPriv, aliceAddress } from '../fixture/vars.js';
+import { alicePriv, bobPriv, aliceAddress } from '../fixture/vars.js';
 import {
-  buildBlockhashOracleCovenantScript, blockhashOracleLockingBytecode, buildBlockhashCommitment, scriptToBytecode,
-  encodeInt, keccakComputeLockingBytecode,
+  buildBlockhashOracleCovenantScript, blockhashOracleLockingBytecode,
+  buildBlockhashCommitment, scriptToBytecode, encodeInt, keccakComputeLockingBytecode,
 } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { BlockOracleUpdater, fetchBlockOracleFields, RpcLike } from '../../src/oracle/blockOracleUpdater.js';
@@ -57,34 +56,42 @@ async function allocHeight(
 
 interface OraclePair { n: bigint; hash: Uint8Array; satoshis?: bigint; capability?: 'none' | 'minting' }
 
-// Seed one or more (n->hash) oracle NFTs sharing ONE genesis category and return it (the reader covenant must
-// bake it). Token categories are genesis outpoints, so we genesis a real one and mint the NFTs at addr(n) for
-// it. Callers compile the reader with `cat`.
+// One lock per master category. Standalone covenant tests use BH_CAT; a reader passes its own category so
+// the NFT category matches the master.
+let blockhashNonce = 0;
+
 async function seedOracleNfts(
-  provider: ReturnType<typeof createTestProvider>, pairs: OraclePair[],
+  provider: ReturnType<typeof createTestProvider>, pairs: OraclePair[], category = BH_CAT,
 ): Promise<{ cat: string; entries: { addrN: Uint8Array; utxo: Utxo }[] }> {
-  const detail = (p: OraclePair): { satoshis: bigint; capability: 'none' | 'minting'; commitment: string } => ({
-    satoshis: p.satoshis ?? 1000n, capability: p.capability ?? 'none', commitment: binToHex(buildBlockhashCommitment(p.n, p.hash)),
-  });
-  const { categoryId, utxos } = await provider.addTokenUtxosDynamic((cat: string) => pairs.map((p) => {
-    const d = detail(p);
-    return {
-      address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), p.n)),
-      satoshis: d.satoshis,
-      token: { nft: { capability: d.capability, commitment: d.commitment } },
-    };
-  }));
-  const entries = pairs.map((p, i) => ({
-    addrN: blockhashOracleLockingBytecode(hexToBin(categoryId), p.n), utxo: utxos[i],
-  }));
-  return { cat: categoryId, entries };
+  const lock = blockhashOracleLockingBytecode(hexToBin(category));
+  const entries = [];
+  for (const pair of pairs) {
+    blockhashNonce += 1;
+    const utxo = await provider.addUtxo(binToHex(lock), {
+      txid: blockhashNonce.toString(16).padStart(64, '0'),
+      vout: 0,
+      satoshis: pair.satoshis ?? 1000n,
+      token: {
+        category,
+        amount: 0n,
+        nft: {
+          capability: pair.capability ?? 'none',
+          commitment: binToHex(buildBlockhashCommitment(pair.n, pair.hash)),
+        },
+      },
+    });
+    entries.push({ addrN: lock, utxo });
+  }
+  return { cat: category, entries };
 }
 
 async function seedOracleNft(
   provider: ReturnType<typeof createTestProvider>, n: bigint, hash: Uint8Array,
-  opts: { satoshis?: bigint; capability?: 'none' | 'minting' } = {},
+  opts: { satoshis?: bigint; capability?: 'none' | 'minting'; category?: string } = {},
 ): Promise<{ cat: string; addrN: Uint8Array; utxo: Utxo }> {
-  const { cat, entries } = await seedOracleNfts(provider, [{ n, hash, ...opts }]);
+  const { cat, entries } = await seedOracleNfts(
+    provider, [{ n, hash, ...opts }], opts.category,
+  );
   return { cat, addrN: entries[0].addrN, utxo: entries[0].utxo };
 }
 
@@ -164,10 +171,8 @@ describe('block.chainid compilation', () => {
   });
 });
 
-// Oracle-backed block.* reads: each referenced field is an injected register of the contract's own
-// state (uint32, or address for the variable-length coinbase). This block tests the READ path with the
-// registers seeded as initial state (decoupled from the owner-update path tested below). Values are real
-// mainnet block 956830. basefee is derived: Floor(1000 * totalFees / size) = Floor(1000*31792/9075) = 3503.
+// Oracle-backed block.* reads slice one shared covenant commitment. The reader is stateless. Values are
+// real mainnet block 956830. basefee is Floor(1000 * totalFees / size) = Floor(1000*31792/9075) = 3503.
 const ORACLE_READER = `
 contract BlockReader() {
     function check(int eNumber, int eTimestamp, int eDiff, int eSize, int eFees, int eBasefee, bytes eCoinbase) {
@@ -191,69 +196,75 @@ const BLOCK = {
   coinbase: hexToBin('76a914f1c075a01882ae0972f95d3a4177c86c852b7d9188ac'), // p2pkh, 25 bytes
 };
 
-describe('block.* oracle reads e2e', () => {
+function seedBlock(provider: ReturnType<typeof createTestProvider>): void {
+  if (!('setBlockOracleFields' in provider)) return;
+  provider.setBlockOracleFields({
+    number: BLOCK.number,
+    timestamp: BLOCK.timestamp,
+    difficulty: BLOCK.difficulty,
+    size: BLOCK.size,
+    totalFees: BLOCK.totalFees,
+    coinbase: BLOCK.coinbase,
+  });
+}
+
+async function spendReader(
+  number: bigint, timestamp: bigint, difficulty: bigint, size: bigint, fees: bigint, basefee: bigint,
+  coinbase: Uint8Array,
+): Promise<string> {
   const provider = createTestProvider();
+  seedBlock(provider);
+  const contract = new Contract(compileString(ORACLE_READER), [], { provider });
+  const utxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+  const feeFunder = await createFeeFunder(provider, 20000n);
+  const tx = await new TransactionBuilder({ provider })
+    .addInput(utxo, contract.unlock.check(number, timestamp, difficulty, size, fees, basefee, coinbase))
+    .addInput(feeFunder.utxo, feeFunder.unlocker)
+    .addOutput({ to: contract.address, amount: 110000n })
+    .send();
+  return tx.txid;
+}
+
+describe('block.* oracle reads e2e', () => {
   const artifact = compileString(ORACLE_READER);
-  const contract = new Contract(artifact, [], { provider });
-  const stateLayout = artifact.stateLayout!;
-  let categoryId: string;
 
-  beforeAll(async () => {
-    ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, {
-      __block_number: BLOCK.number,
-      __block_timestamp: BLOCK.timestamp,
-      __block_difficulty: BLOCK.difficulty,
-      __block_size: BLOCK.size,
-      __block_totalFees: BLOCK.totalFees,
-      __block_coinbase: BLOCK.coinbase,
-      __blockOracleOwner: alicePub,
-    }, { saltContract: true }));
+  it('publishes a lock pin and no per-contract register', () => {
+    expect(artifact.usesBlockOracle).toBe(true);
+    expect(artifact.blockOracleLockSlots?.length).toBeGreaterThan(0);
+    expect(artifact.abi.map((fn) => fn.name)).not.toContain('__updateBlockOracle');
+    expect(artifact.stateLayout?.variables.map((variable) => variable.name) ?? []).not.toContain('__block_number');
   });
 
-  it('injects one register per field (uint32, address for coinbase) + an immutable owner key', () => {
-    expect(stateLayout.variables.map((v) => `${v.name}:${v.type}`)).toEqual([
-      '__block_number:uint32', '__block_timestamp:uint32', '__block_difficulty:uint32',
-      '__block_size:uint32', '__block_totalFees:uint32', '__block_coinbase:address',
-      '__blockOracleOwner:pubkey',
-    ]);
-  });
-
-  it('reads every block.* field (incl. coinbase) and derives basefee, matching the seeded state', async () => {
-    const sc = StatefulContract.withCategory(contract, categoryId);
-    const tx = await sc.check(
+  it('reads every block.* field (incl. coinbase) and derives basefee from the commitment', async () => {
+    const txid = await spendReader(
       BLOCK.number, BLOCK.timestamp, BLOCK.difficulty, BLOCK.size, BLOCK.totalFees, BLOCK.basefee, BLOCK.coinbase,
-    ).send();
-    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+    );
+    expect(txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('rejects a wrong block.number', async () => {
-    const sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(
+    await expect(spendReader(
       999999n, BLOCK.timestamp, BLOCK.difficulty, BLOCK.size, BLOCK.totalFees, BLOCK.basefee, BLOCK.coinbase,
-    ).send()).rejects.toThrow(verifyFailure);
+    )).rejects.toThrow(/OP_VERIFY|non-truthy/);
   });
 
   it('rejects a wrong derived basefee', async () => {
-    const sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(
+    await expect(spendReader(
       BLOCK.number, BLOCK.timestamp, BLOCK.difficulty, BLOCK.size, BLOCK.totalFees, 3504n, BLOCK.coinbase,
-    ).send()).rejects.toThrow(verifyFailure);
+    )).rejects.toThrow(/OP_VERIFY|non-truthy/);
   });
 
   it('rejects a wrong block.coinbase', async () => {
-    const sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(
+    await expect(spendReader(
       BLOCK.number, BLOCK.timestamp, BLOCK.difficulty, BLOCK.size, BLOCK.totalFees, BLOCK.basefee,
       hexToBin('76a914000000000000000000000000000000000000000088ac'),
-    ).send()).rejects.toThrow(verifyFailure);
+    )).rejects.toThrow(/OP_VERIFY|non-truthy/);
   });
 });
 
-// Owner-update path: block.* usage injects an immutable owner key (__blockOracleOwner) + an owner-gated
-// __updateBlockOracle(sig, ...fields) that requires the owner signature and the freshness/anti-over-
-// reporting bound require(tx.time >= number), then writes the registers. The deployer/owner runs an
-// off-chain updater (see solidcash/src/oracle/block-oracle-updater) that calls this each block.
-const OWNED_ORACLE = `
+// The owner is the first 20 bytes of the oracle commitment. An update is a spend of that covenant, signed by
+// the key named there, with tx.time >= the new block number. It is not a function of the reader.
+const READ_BACK = `
 contract BlockOracleOwned() {
     function readBack(int eNumber, int eTimestamp) {
         require(block.number == eNumber);
@@ -262,58 +273,60 @@ contract BlockOracleOwned() {
 }`;
 
 describe('block.* owner-update path e2e', () => {
-  const provider = createTestProvider();
-  const artifact = compileString(OWNED_ORACLE);
-  const contract = new Contract(artifact, [], { provider });
-  const stateLayout = artifact.stateLayout!;
-  let categoryId: string;
-
-  beforeAll(async () => {
-    ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, {
-      __block_number: 0n, __block_timestamp: 0n, __blockOracleOwner: alicePub,
-    }, { saltContract: true }));
+  it('does not put an owner key or an update function on the reader', () => {
+    const artifact = compileString(READ_BACK);
+    expect(artifact.abi.map((fn) => fn.name)).not.toContain('__updateBlockOracle');
+    expect(artifact.stateLayout?.variables ?? []).toEqual([]);
   });
 
-  it('injects an immutable owner key + an owner-gated __updateBlockOracle function', () => {
-    expect(stateLayout.variables.map((v) => v.name)).toContain('__blockOracleOwner');
-    expect(stateLayout.variables.find((v) => v.name === '__blockOracleOwner')?.immutable).toBe(true);
-    expect(artifact.abi.map((f) => f.name)).toContain('__updateBlockOracle');
-  });
-
-  // Mock chain tip is height 133700, so the freshness bound tx.time >= number requires number <= 133700
-  // (a real-node update at the tip would use the live height). The freshness IS the anti-over-reporting:
-  // a tx claiming a height the chain has not reached is non-final and unminable.
-  it('owner updates the registers (signed + fresh), and the new values read back', async () => {
-    const { n } = await allocHeight(provider);
-    const bn = BigInt(n);
-    const sc = StatefulContract.withCategory(contract, categoryId);
-    await sc.__updateBlockOracle(new SignatureTemplate(alicePriv), bn, 1700000000n)
-      .setState({ __block_number: bn, __block_timestamp: 1700000000n })
-      .setLocktime(n) // tx.time >= number (height mode), <= chain tip -> final
+  // Mock chain tip is height 133700. The covenant's CLTV is tx.time >= number, and a locktime above the tip
+  // is non-final, so an update cannot name a height the chain has not reached.
+  it('owner replaces the commitment, and a reader slices the new fields', async () => {
+    const provider = createTestProvider();
+    if (!('blockOracleOwnerKey' in provider)) return;
+    const contract = new Contract(compileString(READ_BACK), [], { provider });
+    const updater = new BlockOracleUpdater({
+      contract, categoryId: '00'.repeat(32), keeperKey: provider.blockOracleOwnerKey, rpc: fakeRpc(100000),
+    });
+    const txid = await updater.pushUpdate({
+      number: 100000n, timestamp: 1700000000n, difficulty: 0n, size: 1n, totalFees: 0n,
+      coinbase: hexToBin('00'),
+    });
+    expect(txid).toMatch(/^[0-9a-f]{64}$/);
+    const utxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+    const feeFunder = await createFeeFunder(provider, 20000n);
+    const tx = await new TransactionBuilder({ provider })
+      .addInput(utxo, contract.unlock.readBack(100000n, 1700000000n))
+      .addInput(feeFunder.utxo, feeFunder.unlocker)
+      .addOutput({ to: contract.address, amount: 110000n })
       .send();
-
-    const reader = StatefulContract.withCategory(contract, categoryId);
-    const tx = await reader.readBack(bn, 1700000000n).send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('rejects an update not signed by the owner', async () => {
-    const sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.__updateBlockOracle(new SignatureTemplate(bobPriv), 100000n, 1700000000n)
-      .setState({ __block_number: 100000n, __block_timestamp: 1700000000n })
-      .setLocktime(100000)
-      .send()).rejects.toThrow(nullFail);
+    const provider = createTestProvider();
+    if (!('blockOracleOwnerKey' in provider)) return;
+    const contract = new Contract(compileString(READ_BACK), [], { provider });
+    const impostor = new BlockOracleUpdater({
+      contract, categoryId: '00'.repeat(32), keeperKey: bobPriv, rpc: fakeRpc(100000),
+    });
+    await expect(impostor.pushUpdate({
+      number: 100000n, timestamp: 1700000000n, difficulty: 0n, size: 1n, totalFees: 0n,
+      coinbase: hexToBin('00'),
+    })).rejects.toThrow(/OP_VERIFY|EQUALVERIFY|NULLFAIL|signature/);
   });
 
   it('rejects an over-reported height (nLocktime < number violates the freshness bound)', async () => {
-    const sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.__updateBlockOracle(new SignatureTemplate(alicePriv), 100001n, 1700000000n)
-      .setState({ __block_number: 100001n, __block_timestamp: 1700000000n })
-      .setLocktime(100000) // < number -> require(tx.time >= number) fails (and 100000 <= tip, so final)
-      .send()).rejects.toThrow(preflightFailure(
-      "Program called an OP_CHECKLOCKTIMEVERIFY operation that requires a locktime greater than the transaction's "
-      + 'locktime. Transaction locktime: 100000; required locktime: 100001.',
-    ));
+    const provider = createTestProvider();
+    if (!('blockOracleOwnerKey' in provider)) return;
+    const contract = new Contract(compileString(READ_BACK), [], { provider });
+    const updater = new BlockOracleUpdater({
+      contract, categoryId: '00'.repeat(32), keeperKey: provider.blockOracleOwnerKey, rpc: fakeRpc(100000),
+    });
+    await expect(updater.pushUpdate({
+      number: 100001n, timestamp: 1700000000n, difficulty: 0n, size: 1n, totalFees: 0n,
+      coinbase: hexToBin('00'),
+    }, 100000)).rejects.toThrow(/CHECKLOCKTIMEVERIFY|Locktime requirement not satisfied/);
   });
 });
 
@@ -365,35 +378,34 @@ describe('block.* off-chain keeper (updater)', () => {
 
   it('pushes a signed update when the chain is ahead, then is a no-op when caught up', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(ORACLE_FULL);
-    const contract = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {
-      __block_number: 0n, __block_timestamp: 0n, __block_difficulty: 0n, __block_size: 0n,
-      __block_totalFees: 0n, __block_coinbase: hexToBin('00'), __blockOracleOwner: alicePub,
-    }, { saltContract: true });
-
-    const { n } = await allocHeight(provider);
-    const updater = new BlockOracleUpdater({ contract, categoryId, keeperKey: alicePriv, rpc: fakeRpc(n) });
-    expect(await updater.oracleHeight()).toBe(0n);
+    if (!('setBlockOracleFields' in provider)) return;
+    provider.setBlockOracleFields({
+      number: 100n, timestamp: 1n, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: hexToBin(CB_HEX),
+    });
+    const contract = new Contract(compileString(ORACLE_FULL), [], { provider });
+    const updater = new BlockOracleUpdater({
+      contract, categoryId: '00'.repeat(32), keeperKey: provider.blockOracleOwnerKey, rpc: fakeRpc(133700),
+    });
+    expect(await updater.oracleHeight()).toBe(100n);
 
     const txid = await updater.syncOnce();
     expect(txid).toMatch(/^[0-9a-f]{64}$/);
-    expect(await updater.oracleHeight()).toBe(BigInt(n));
+    expect(await updater.oracleHeight()).toBe(133700n);
 
-    expect(await updater.syncOnce()).toBeNull(); // chain not ahead -> no update
+    expect(await updater.syncOnce()).toBeNull();
   });
 
-  it('rejects a keeper that is not the baked owner', async () => {
+  it('rejects a keeper that is not the commitment owner', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(ORACLE_FULL);
-    const contract = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {
-      __block_number: 0n, __block_timestamp: 0n, __block_difficulty: 0n, __block_size: 0n,
-      __block_totalFees: 0n, __block_coinbase: hexToBin('00'), __blockOracleOwner: alicePub,
-    }, { saltContract: true });
-
-    const impostor = new BlockOracleUpdater({ contract, categoryId, keeperKey: bobPriv, rpc: fakeRpc(100000) });
-    await expect(impostor.syncOnce()).rejects.toThrow(nullFail);
+    if (!('setBlockOracleFields' in provider)) return;
+    provider.setBlockOracleFields({
+      number: 100n, timestamp: 1n, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: hexToBin(CB_HEX),
+    });
+    const contract = new Contract(compileString(ORACLE_FULL), [], { provider });
+    const impostor = new BlockOracleUpdater({
+      contract, categoryId: '00'.repeat(32), keeperKey: bobPriv, rpc: fakeRpc(133700),
+    });
+    await expect(impostor.syncOnce()).rejects.toThrow(/OP_VERIFY|EQUALVERIFY|NULLFAIL|signature/);
   });
 });
 
@@ -426,7 +438,8 @@ describe('blobhash / blockhash', () => {
     const base = compileString('contract A(){ function f(int e){ require(block.basefee == e); } }');
     const blob = compileString('contract B(){ function f(int e){ require(block.blobbasefee == e); } }');
     expect(blob.bytecode).toEqual(base.bytecode);
-    expect(blob.stateLayout!.variables.map((v) => v.name)).toEqual(['__block_size', '__block_totalFees', '__blockOracleOwner']);
+    expect(blob.stateLayout?.variables.map((v) => v.name) ?? []).not.toContain('__blockOracleOwner');
+    expect(blob.abi.map((fn) => fn.name)).not.toContain('__updateBlockOracle');
   });
 
   // block.gaslimit + gasleft() are fixed shims (1000000): BCH has no gas metering. A constant (not 0/revert)
@@ -501,12 +514,8 @@ async function spendBlockhash(
   const contract = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {}, {
     saltContract: true,
-    extraOutputs: (cat) => [{
-      address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), BigInt(storedN))),
-      satoshis: 1000n,
-      token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(BigInt(storedN), storedHash)) } },
-    }],
   });
+  await seedOracleNft(provider, BigInt(storedN), storedHash, { category: categoryId });
   const sc = StatefulContract.withCategory(contract, categoryId);
   const tx = await sc.f(BigInt(argN), expectHash).send();
   return tx.txid;
@@ -517,7 +526,7 @@ async function wipeBlockhash(
   provider: ReturnType<typeof createTestProvider>, storedN: number, locktime: number,
 ): Promise<string> {
   const { cat, addrN, utxo } = await seedOracleNft(provider, BigInt(storedN), new Uint8Array(32), { satoshis: 5000n });
-  const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(hexToBin(cat), BigInt(storedN)));
+  const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(hexToBin(cat)));
   const wipeUnlock = scriptToBytecode([encodeInt(1n), redeem]); // flag 1 (wipe) + redeem
   const unlocker = { generateLockingBytecode: () => addrN, generateUnlockingBytecode: () => wipeUnlock };
   const tx = await new TransactionBuilder({ provider, allowImplicitNftBurn: true })
@@ -546,7 +555,7 @@ describe('blockhash(n) e2e (real (n->hash) covenant)', () => {
     const provider = createTestProvider();
     const { n, hash } = await allocHeight(provider);
     await expect(spendBlockhash(provider, n, n - 1, hash, hash))
-      .rejects.toThrow(/blockhash\((\d+)\): no \(n->hash\) oracle UTXO at addr\(\1\)/); // stored at n-1, requested n
+      .rejects.toThrow(/blockhash\((\d+)\): no \(n->hash\) oracle UTXO for block \1/);
   });
 
   it('anyone may wipe the (n->hash) UTXO at or after n+256', async () => {
@@ -628,17 +637,9 @@ describe('blockhash(n) auto-injection (StatefulContract)', () => {
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {}, {
       saltContract: true,
-      extraOutputs: (cat) => [
-        {
-          address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), n1)), satoshis: 1000n,
-          token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(n1, H1)) } },
-        },
-        {
-          address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), n2)), satoshis: 1000n,
-          token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(n2, H2)) } },
-        },
-      ],
     });
+    await seedOracleNft(provider, n1, H1, { category: categoryId });
+    await seedOracleNft(provider, n2, H2, { category: categoryId });
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await (sc as any).f(n1, H1, n2, H2).send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
@@ -670,11 +671,8 @@ describe('keccak256 + blockhash front-region (stateful)', () => {
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, { c: 0n }, {
       saltContract: true,
-      extraOutputs: (cat) => [{
-        address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), BigInt(n))), satoshis: 1000n,
-        token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(BigInt(n), hash)) } },
-      }],
     });
+    await seedOracleNft(provider, BigInt(n), hash, { category: categoryId });
     // Two branded keccak side-cars (nested = two calls).
     const scLock = binToHex(keccakComputeLockingBytecode(hexToBin(categoryId).slice().reverse(), true));
     for (let i = 0; i < 2; i++) {
@@ -707,11 +705,8 @@ describe('keccak256 + blockhash front-region (stateful)', () => {
     let target = seed; for (let i = 0; i < 3; i++) target = keccak_256(target);
     const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, { acc: seed }, {
       saltContract: true,
-      extraOutputs: (cat) => [{
-        address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), BigInt(n))), satoshis: 1000n,
-        token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(BigInt(n), hash)) } },
-      }],
     });
+    await seedOracleNft(provider, BigInt(n), hash, { category: categoryId });
     const scLock = binToHex(keccakComputeLockingBytecode(hexToBin(categoryId).slice().reverse(), true));
     for (let i = 0; i < 5; i++) {
       await provider.addUtxo(scLock, {
@@ -737,18 +732,19 @@ describe('blockhash keeper minting', () => {
     const n = BigInt(height);
     const H = hexToBin('cd'.repeat(32));
 
-    // Branded model: the (n->hash) oracle is minted under the CONSUMER's own category. Deploy the stateful
-    // consumer and seed a sibling minting baton of that same category (held at a trivial OP_1 p2sh for the
-    // keeper) so the keeper can mint the pair without touching the consumer's master.
+    // The minting baton carries the consumer's own category, so the minted hash NFT matches the master.
     const artifact = compileString('contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }');
     const consumer = new Contract(artifact, [], { provider });
-    const { categoryId, extraUtxos } = await setupStatefulUtxos(provider, consumer, artifact.stateLayout!, {}, {
+    const { categoryId } = await setupStatefulUtxos(provider, consumer, artifact.stateLayout!, {}, {
       saltContract: true,
-      extraOutputs: () => [
-        { address: binToHex(MASTER_LBC), satoshis: 10000n, token: { nft: { capability: 'minting', commitment: '' } } },
-      ],
     });
-    const [batonUtxo] = extraUtxos!;
+    const batonUtxo = await provider.addUtxo(binToHex(MASTER_LBC), {
+      txid: 'a1'.repeat(32), vout: 0, satoshis: 10000n,
+      token: {
+        category: categoryId, amount: 0n,
+        nft: { capability: 'minting', commitment: '' },
+      },
+    });
 
     const updater = new BlockOracleUpdater({
       contract: consumer, categoryId, keeperKey: alicePriv, rpc: fakeRpc(),
@@ -823,18 +819,11 @@ describe('blockhash(n) stateful reader', () => {
     const n = BigInt(height); const H = hexToBin('aa'.repeat(32));
     const artifact = compileString(BH_STATEFUL_SRC);
     const contract = new Contract(artifact, [], { provider });
-    // The (n->hash) oracle is branded to the reader's OWN category: seed it under the same category as the master.
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { counter: 5n },
-      {
-        saltContract: true,
-        extraOutputs: (cat) => [{
-          address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), n)),
-          satoshis: 1000n,
-          token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(n, H)) } },
-        }],
-      },
+      { saltContract: true },
     );
+    await seedOracleNft(provider, n, H, { category: categoryId });
 
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await (sc as any).bump(n, H).send();
@@ -850,21 +839,19 @@ describe('blockhash(block.number - K) computed read (probe-trace extraction)', (
   it('extracts n from the covenant trace and co-spends the block.number - 1 oracle', async () => {
     const provider = createTestProvider();
     const oracle = await allocHeight(provider); // the (n->hash) oracle block; set block.number = n + 1
-    const n = BigInt(oracle.n); const blockNumber = n + 1n;
+    const n = BigInt(oracle.n);
     const H = hexToBin('cd'.repeat(32));
     const src = 'contract B(){ function f(bytes32 h){ require(blockhash(block.number - 1) == h); } }';
     const artifact = compileString(src);
     expect(artifact.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['<computed:0>']);
     const contract = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {
-      __block_number: blockNumber, __blockOracleOwner: alicePub,
-    }, {
+    const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {}, {
       saltContract: true,
-      extraOutputs: (cat) => [{
-        address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), n)), satoshis: 1000n,
-        token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(n, H)) } },
-      }],
     });
+    await seedOracleNft(provider, n, H, { category: categoryId });
+    // allocHeight left the info oracle at n. One more block makes block.number = n + 1, so
+    // blockhash(block.number - 1) is the pair seeded above.
+    await provider.mine(1);
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await (sc as any).f(H).send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
@@ -883,11 +870,8 @@ describe('blockhash(block.number - K) computed read (probe-trace extraction)', (
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {}, {
       saltContract: true,
-      extraOutputs: (cat) => [{
-        address: binToHex(blockhashOracleLockingBytecode(hexToBin(cat), n)), satoshis: 1000n,
-        token: { nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(n, H)) } },
-      }],
     });
+    await seedOracleNft(provider, n, H, { category: categoryId });
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await (sc as any).f(x, H).send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);

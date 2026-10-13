@@ -2187,34 +2187,26 @@ export function buildAnonymousEventNftCovenantBytecode(categoryIdHex: string): s
 }
 
 /**
- * Build the blockhash (n -> hash) oracle covenant for block `n` under the oracle token category
- * (docs/block-and-transaction-properties.md s11). The immutable ('none' capability) NFT carries commitment =
- * n(4 LE)||hash(32).
+ * One blockhash covenant per master category. Every block of that contract is an immutable NFT at the
+ * same lock. The commitment is `n` as 4 little-endian bytes followed by the 32-byte hash. Readers of the
+ * master co-spend the UTXO whose commitment starts with the `n` they asked for. `n` is not baked in.
  *
- * The covenant:
- *  - self-pins its token category == categoryId (capability 'none'), so a foreign-category UTXO paid to
- *    this address is unspendable;
- *  - read path (flag 0): self-preserving recreate (bytecode + category + commitment at the same output
- *    index), so permissionless reads cannot tamper with or destroy it;
- *  - wipe path (flag 1): `tx.time >= n + 256` (CLTV absolute - reads recreate the UTXO so a relative CSV
- *    would keep resetting), after which anyone may consume it for cleanup. `n` is baked, which both bounds
- *    the wipe and makes addr(n) unique per block.
- *
- * No compiler reconstruction: the consumer reads by category + commitment.n, never rebuilds this address.
+ * The covenant self-pins the master category (capability 'none'). Flag 0 recreates bytecode, category,
+ * and commitment. Flag 1 wipes once `tx.time >= n + 256`, with `n` read from the commitment.
  */
-export function buildBlockhashOracleCovenantScript(categoryId: Uint8Array, n: bigint): Script {
+export function buildBlockhashOracleCovenantScript(categoryId: Uint8Array): Script {
+  if (categoryId.length !== 32) throw new Error('blockhash oracle category is 32 bytes');
   const catInternal = categoryId.slice().reverse();
   return [
-    // self-pin: this input's token category == categoryId, capability 'none' (immutable)
     Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY,
-    encodeInt(32n), Op.OP_SPLIT, Op.OP_SWAP, // [flag, capOrEmpty, cat32]
+    encodeInt(32n), Op.OP_SPLIT, Op.OP_SWAP,
     catInternal, Op.OP_EQUALVERIFY,
-    encodeInt(0n), Op.OP_EQUALVERIFY,        // capability empty (none)
-    // flag (from unlocking): wipe (1) vs read (0)
+    encodeInt(0n), Op.OP_EQUALVERIFY,
     Op.OP_IF,
-    encodeInt(n + 256n), Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP, // wipe: tx.time >= n + 256
+    Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT,
+    encodeInt(4n), Op.OP_SPLIT, Op.OP_DROP, Op.OP_BIN2NUM,
+    encodeInt(256n), Op.OP_ADD, Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP,
     Op.OP_ELSE,
-    // read: self-preserve (bytecode + category + commitment) at the same output index
     Op.OP_INPUTINDEX, Op.OP_UTXOBYTECODE, Op.OP_INPUTINDEX, Op.OP_OUTPUTBYTECODE, Op.OP_EQUALVERIFY,
     Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, Op.OP_INPUTINDEX, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY,
     Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_INPUTINDEX, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
@@ -2223,9 +2215,9 @@ export function buildBlockhashOracleCovenantScript(categoryId: Uint8Array, n: bi
   ];
 }
 
-/** p2sh32 locking bytecode for the (n -> hash) oracle UTXO of block `n`. */
-export function blockhashOracleLockingBytecode(categoryId: Uint8Array, n: bigint): Uint8Array {
-  const scriptHash = sha256(sha256(scriptToBytecode(buildBlockhashOracleCovenantScript(categoryId, n))));
+/** The one p2sh32 lock for every (n -> hash) NFT of this master category. */
+export function blockhashOracleLockingBytecode(categoryId: Uint8Array): Uint8Array {
+  const scriptHash = sha256(sha256(scriptToBytecode(buildBlockhashOracleCovenantScript(categoryId))));
   return Uint8Array.from([0xaa, 0x20, ...scriptHash, 0x87]);
 }
 

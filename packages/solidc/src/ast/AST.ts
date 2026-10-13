@@ -180,6 +180,9 @@ export class ContractNode extends Node implements Named {
   // contract's OWN category (master-bound, per docs/block-and-transaction-properties.md s3), so a blockhash
   // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against).
   usesBlockhash: boolean = false;
+  // A function reads block.number/timestamp/.... The data is a separate covenant's commitment, not this
+  // contract's state, and this contract does not grow an update entry.
+  usesBlockOracle: boolean = false;
   // Set when the contract instantiates a stateful child (`new T()` where T has state): deploying it IS a deploy,
   // so this contract is made stateful to host the (implied) deploy covenant. Read by both the symbol-table pass
   // (block-layout allocation) and artifact generation (so the SDK sees a zero-state stateful contract).
@@ -777,6 +780,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Set by SynthesizeBlockOracle when the function reads blockhash(n); SymbolTable then injects the hidden
   // __internal__blockhashInputIndex param (the co-spend's input index) so the read survives composition.
   usesBlockhash?: boolean;
+  // Set when the body reads the block-info oracle commitment. SymbolTable injects the co-spend index.
+  usesBlockOracle?: boolean;
   // Set by LowerInlineAssembly when this function's body contained an inline `assembly {}` block (before the
   // block was lowered away). PruneUnreachableFreeFunctions uses it to drop DEAD assembly helpers whose EVM
   // primitives may not codegen on BCH, even after the assembly lowered to plain ops (e.g. OZ Math.mulDiv).

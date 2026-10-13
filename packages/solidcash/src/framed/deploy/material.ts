@@ -8,7 +8,9 @@
  */
 
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
+  applyBlockOracleLock,
   asmToScript,
   bytesEqual,
   hash256,
@@ -19,6 +21,7 @@ import {
   validatorAddress,
   validatorTemplateHash,
 } from '@solidcash/utils';
+import { blockOracleLockFor } from '../../oracle/block-oracle-lock.js';
 import { compositionPlaceholders } from 'solidc/runtime';
 
 const {
@@ -123,7 +126,7 @@ function programBytes(artifact: Artifact): Uint8Array {
  */
 interface FilledMasters {
   bytecode: string;
-  byCategory: WeakMap<Uint8Array, WeakMap<Uint8Array, DeployedMaster>>;
+  byLock: Map<string, WeakMap<Uint8Array, WeakMap<Uint8Array, DeployedMaster>>>;
 }
 const filledMasters = new WeakMap<Artifact, FilledMasters>();
 
@@ -132,14 +135,19 @@ export function deployMaster(
   category: Uint8Array,
   validatorProgram: Uint8Array,
 ): DeployedMaster {
+  const oracleLock = blockOracleLockFor(artifact);
+  const lockKey = oracleLock === undefined ? '' : binToHex(oracleLock);
   const filled = filledMasters.get(artifact);
   const cached = filled?.bytecode === artifact.bytecode
-    ? filled.byCategory.get(category)?.get(validatorProgram)
+    ? filled.byLock.get(lockKey)?.get(category)?.get(validatorProgram)
     : undefined;
   if (cached !== undefined) return cached;
   const placeholders = requirePlaceholders(artifact);
   const address = validatorAddress(category, validatorProgram);
-  const original = programBytes(artifact);
+  const assembled = programBytes(artifact);
+  const original = oracleLock !== undefined && artifact.blockOracleLockSlots !== undefined
+    ? applyBlockOracleLock(assembled, oracleLock, artifact.blockOracleLockSlots)
+    : assembled;
   assertPlaceholders(original, placeholders);
   // The hash is only filled where the descriptor reserves a slot for it: a master that cannot be reached through a
   // call never reads it, and passing it to a script with no slot is refused.
@@ -155,13 +163,18 @@ export function deployMaster(
   const deployed = { script, address, lockingBytecode: masterLock(script) };
   let remembered = filledMasters.get(artifact);
   if (remembered === undefined || remembered.bytecode !== artifact.bytecode) {
-    remembered = { bytecode: artifact.bytecode, byCategory: new WeakMap() };
+    remembered = { bytecode: artifact.bytecode, byLock: new Map() };
     filledMasters.set(artifact, remembered);
   }
-  let byProgram = remembered.byCategory.get(category);
+  let byCategory = remembered.byLock.get(lockKey);
+  if (byCategory === undefined) {
+    byCategory = new WeakMap();
+    remembered.byLock.set(lockKey, byCategory);
+  }
+  let byProgram = byCategory.get(category);
   if (byProgram === undefined) {
     byProgram = new WeakMap();
-    remembered.byCategory.set(category, byProgram);
+    byCategory.set(category, byProgram);
   }
   byProgram.set(validatorProgram, deployed);
   return deployed;

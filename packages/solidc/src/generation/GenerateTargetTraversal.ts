@@ -13,6 +13,11 @@ import {
   decodeInt,
   encodeInt,
   encodeString,
+  BLOCK_ORACLE_LOCK_SENTINEL,
+  BLOCK_ORACLE_FIELD_WIDTH,
+  BLOCK_ORACLE_COINBASE_OFFSET,
+  blockOracleFieldOffset,
+  type BlockOracleField,
   Op,
   type OpOrData,
   PrimitiveType,
@@ -14179,13 +14184,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     if (node.identifier.name === GlobalFunction.BLOCKHASH) {
-      // The (n->hash) oracle NFT is BRANDED to the contract's OWN category (master-bound, per
-      // docs/block-and-transaction-properties.md s3): there is no separate oracle category and no compile-time
-      // option. Read the co-spent oracle UTXO and return its hash:
-      //   require(tx.time >= n); base(category(oracle)) == base(category(master)); commitment = n(4 LE)||hash,
-      //   n == arg. Soundness: the oracle rides the contract's own category (only the owner mints it), so a
-      //   co-spent UTXO with that category carries a genuine (n,hash); the n-check disambiguates the block.
-      // blockhash forces the contract stateful (usesBlockhash), so the covenant runs on the master (category).
+      // One covenant per master category. The co-spent NFT carries that same category (capability
+      // none) and commitment = n(4 LE)||hash. require(tx.time >= n) and commitment.n == the argument.
       const loc = { location: node.location, positionHint: PositionHint.START };
       // SDK auto-injection keys on blockhashReads: a direct-identifier n is recorded by param name (the SDK
       // reads that arg to resolve addr(n)). ANY computed n (block.number - K, arbitrary arithmetic) is recorded
@@ -14220,10 +14220,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit([encodeInt(BigInt(offsetDepth)), Op.OP_PICK, Op.OP_ADD], loc);
       }
       if (readOrdinal > 0) this.emit([encodeInt(BigInt(readOrdinal)), Op.OP_ADD], loc); // base + ordinal -> [n, idx]
-      this.emit([
-        Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, // [n, idx, oracleCategory]
-      ], loc);
-      this.emitVerifyCatBaseEqMaster(loc, 2); // base(oracle category) == base(contract's own category) -> [n, idx]
+      this.emit([Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY], loc);
+      this.emitVerifyCatBaseEqMaster(loc, 2);
       this.emit([
         Op.OP_UTXOTOKENCOMMITMENT, encodeInt(4n), Op.OP_SPLIT, // [n, n4, hash32]
         Op.OP_SWAP, Op.OP_BIN2NUM, // [n, hash32, commitment.n]
@@ -16665,6 +16663,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit([Op.OP_SWAP, encodeInt(1000n), Op.OP_MUL, Op.OP_SWAP, Op.OP_DIV], loc); // [gasprice]
   }
 
+  /** Slice one field out of the co-spent block-oracle commitment. The lock pin is a sentinel deployment fills. */
+  private emitBlockOracleField(field: BlockOracleField | 'coinbase', locationData: SingleLocationData): void {
+    const idxDepth = this.getStackIndex('__internal__blockOracleInputIndex');
+    this.emit([
+      encodeInt(BigInt(idxDepth)), Op.OP_PICK,
+      Op.OP_DUP, Op.OP_UTXOBYTECODE,
+      BLOCK_ORACLE_LOCK_SENTINEL, Op.OP_EQUALVERIFY,
+      Op.OP_UTXOTOKENCOMMITMENT,
+    ], locationData);
+    if (field === 'coinbase') {
+      this.emit([
+        encodeInt(BigInt(BLOCK_ORACLE_COINBASE_OFFSET)), Op.OP_SPLIT, Op.OP_NIP,
+        encodeInt(1n), Op.OP_SPLIT, Op.OP_SWAP, Op.OP_BIN2NUM, Op.OP_SPLIT, Op.OP_DROP,
+      ], locationData);
+    } else {
+      this.emit([
+        encodeInt(BigInt(blockOracleFieldOffset(field))), Op.OP_SPLIT, Op.OP_NIP,
+        encodeInt(BigInt(BLOCK_ORACLE_FIELD_WIDTH)), Op.OP_SPLIT, Op.OP_DROP,
+        Op.OP_BIN2NUM,
+      ], locationData);
+    }
+    this.pushToStack('(value)');
+  }
+
   visitNullaryOp(node: NullaryOpNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
@@ -16699,6 +16721,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       case NullaryOperator.TX_GASPRICE:
         this.emitTxGasprice(locationData);
         break;
+      case NullaryOperator.BLOCK_NUMBER:
+        this.emitBlockOracleField('number', locationData);
+        return node;
+      case NullaryOperator.BLOCK_TIMESTAMP:
+        this.emitBlockOracleField('timestamp', locationData);
+        return node;
+      case NullaryOperator.BLOCK_DIFFICULTY:
+        this.emitBlockOracleField('difficulty', locationData);
+        return node;
+      case NullaryOperator.BLOCK_SIZE:
+        this.emitBlockOracleField('size', locationData);
+        return node;
+      case NullaryOperator.BLOCK_TOTAL_FEES:
+        this.emitBlockOracleField('totalFees', locationData);
+        return node;
+      case NullaryOperator.BLOCK_COINBASE:
+        this.emitBlockOracleField('coinbase', locationData);
+        return node;
       default:
         this.emit(compileNullaryOp(node.operator), locationData);
         break;

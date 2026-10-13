@@ -5,7 +5,8 @@ import {
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { compileString, compileStringMulti } from 'solidc';
 import {
-  blockhashOracleLockingBytecode, buildBlockhashCommitment, buildChunkCommitment, scriptToBytecode, sha256,
+  blockhashOracleLockingBytecode, buildBlockhashCommitment,
+  buildChunkCommitment, scriptToBytecode, sha256,
   MESSAGE_BUS_BINDING_DOMAIN,
   keccakComputeLockingBytecode,
   ecrecoverComputeLockingBytecode,
@@ -2025,21 +2026,15 @@ describe('messageBus.compose atomic transaction', () => {
     }`, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [], { provider });
     const callerSetup = await setupStatefulUtxos(
-      provider, callerBase, callerArtifact.stateLayout!, {}, {
-        saltContract: true,
-        extraOutputs: (category) => [{
-          address: binToHex(blockhashOracleLockingBytecode(hexToBin(category), BigInt(height))),
-          satoshis: 1000n,
-          token: {
-            amount: 0n,
-            nft: {
-              capability: 'none',
-              commitment: binToHex(buildBlockhashCommitment(BigInt(height), hash)),
-            },
-          },
-        }],
-      },
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
     );
+    await provider.addUtxo(binToHex(blockhashOracleLockingBytecode(hexToBin(callerSetup.categoryId))), {
+      txid: 'b4'.repeat(32), vout: 0, satoshis: 1000n,
+      token: {
+        category: callerSetup.categoryId, amount: 0n,
+        nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(BigInt(height), hash)) },
+      },
+    });
     const caller = StatefulContract.withCategory(
       callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
     );

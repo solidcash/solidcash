@@ -3004,6 +3004,18 @@ export default class TypeCheckTraversal extends AstTraversal {
       case NullaryOperator.TX_GASPRICE:
         node.type = new IntType(false, 32); // uint (sat/KB fee rate), same nominal type as block.basefee
         return node;
+      case NullaryOperator.BLOCK_NUMBER:
+      case NullaryOperator.BLOCK_TIMESTAMP:
+      case NullaryOperator.BLOCK_DIFFICULTY:
+      case NullaryOperator.BLOCK_SIZE:
+      case NullaryOperator.BLOCK_TOTAL_FEES:
+      case NullaryOperator.BLOCK_BASEFEE:
+      case NullaryOperator.BLOCK_BLOBBASEFEE:
+        node.type = new IntType(false, 32);
+        return node;
+      case NullaryOperator.BLOCK_COINBASE:
+        node.type = new AddressType(true);
+        return node;
       case NullaryOperator.MSG_DATA:
         node.type = new BytesType();
         return node;

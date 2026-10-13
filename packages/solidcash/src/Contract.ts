@@ -1,9 +1,11 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
+  applyBlockOracleLock,
   type AbiFunction,
   type Artifact,
   asmToScript,
+  bytesEqual,
   bytecodeToScript,
   countOpcodes,
   generateContractBytecodeScript,
@@ -30,6 +32,7 @@ import {
   type OpaqueLoopCallContext, type OpaqueLoopContractCall, type OpaqueLoopCoSpend, type ExternalTargetEntry,
 } from './loop-call.js';
 import type { TransactionBuilder } from './TransactionBuilder.js';
+import { bindBlockOracleLock } from './oracle/block-oracle-lock.js';
 import semver from 'semver';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { decodeKernelEntryJournalAccesses } from './stateful/KernelEntryJournal.js';
@@ -319,6 +322,8 @@ export class Contract<
   usesExternalLibraries: boolean;
   salt?: Uint8Array;
   category?: Uint8Array;
+  /** The oracle p2sh32 lock baked over the reader's sentinel, when this contract slices that commitment. */
+  blockOracleLock?: Uint8Array;
 
   encodedConstructorArgs: Uint8Array[];
   private rawConstructorArgs: TResolved['constructorInputs'];
@@ -341,6 +346,11 @@ export class Contract<
       throw new Error('Salt must be 520 bytes or less');
     }
     this.category = this.options.category;
+    const providerLock = (this.provider as { blockOracleLock?: Uint8Array }).blockOracleLock;
+    this.blockOracleLock = (this.options as { blockOracleLock?: Uint8Array }).blockOracleLock ?? providerLock;
+    if (this.blockOracleLock !== undefined && (artifact.blockOracleLockSlots?.length ?? 0) > 0) {
+      bindBlockOracleLock(artifact, this.blockOracleLock);
+    }
     this.rawConstructorArgs = constructorArgs;
 
     const expectedProperties = ['abi', 'bytecode', 'constructorInputs', 'contractName', 'compiler'];
@@ -478,6 +488,7 @@ export class Contract<
       this.usesExternalLibraries ? 'library-pad' : '',
       this.isStateful && this.category ? binToHex(this.category) : '',
       this.salt === undefined ? 'no-salt' : `salt:${binToHex(this.salt)}`,
+      this.blockOracleLock === undefined ? 'no-oracle' : `oracle:${binToHex(this.blockOracleLock)}`,
     ].join('|');
     let compositions = composedBytecodeScripts.get(artifact.bytecode);
     if (!compositions) {
@@ -486,8 +497,12 @@ export class Contract<
     }
     let contractBytecodeScript = compositions.get(compositionKey);
     if (!contractBytecodeScript) {
+      let readerProgram = scriptToBytecode(parsedArtifactScript(this.artifact));
+      if (this.blockOracleLock !== undefined && this.artifact.blockOracleLockSlots !== undefined) {
+        readerProgram = applyBlockOracleLock(readerProgram, this.blockOracleLock, this.artifact.blockOracleLockSlots);
+      }
       contractBytecodeScript = generateContractBytecodeScript(
-        parsedArtifactScript(this.artifact), this.encodedConstructorArgs,
+        bytecodeToScript(readerProgram), this.encodedConstructorArgs,
       );
       if (this.usesExternalLibraries) {
         contractBytecodeScript = [Op.OP_DROP, ...contractBytecodeScript];
@@ -777,7 +792,10 @@ export class Contract<
       const needsBlockhashIndex = !internalsProvided && abiFunction.inputs.some(
         (input) => input.name === '__internal__blockhashInputIndex',
       );
-      const cacheUnlockingBytecode = !hasSignatures && !needsBlockhashIndex;
+      const needsOracleIndex = !internalsProvided && abiFunction.inputs.some(
+        (input) => input.name === '__internal__blockOracleInputIndex',
+      );
+      const cacheUnlockingBytecode = !hasSignatures && !needsBlockhashIndex && !needsOracleIndex;
       let cachedUnlockingBytecode: Uint8Array | undefined;
       // Redeem push is stable across probe-local ReturnOutputIdx edits; keep it so arg-only
       // rebuilds do not reserialize multi-megabyte redeem scripts every probe.
@@ -827,7 +845,10 @@ export class Contract<
         // Fill the synthesized blockhash co-spend index (locate the C_oracle UTXO among the spent inputs);
         // composition-safe - the reader does not assume the last input. Appended after the visible args.
         // Skipped when the caller already provided the full arg list (stateful orchestrator).
-        const synthArgs = internalsProvided ? [] : this.resolveBlockhashIndexArgs(abiFunction, sourceOutputs, args);
+        const synthArgs = internalsProvided ? [] : [
+          ...this.resolveBlockhashIndexArgs(abiFunction, sourceOutputs, args),
+          ...this.resolveBlockOracleIndexArgs(abiFunction, sourceOutputs),
+        ];
 
         // External-library contracts get a budget pad pushed on top (dropped by the redeem's OP_DROP),
         // sizing the per-input op budget to the keccak computation.
@@ -960,6 +981,23 @@ export class Contract<
     // and its co-spend is resolved by StatefulContract (via the blockhashOracle block-layout slot). Reaching
     // the base Contract/TransactionBuilder path means the reader was not built through StatefulContract.
     throw new Error('blockhash(n) is only supported in stateful contracts; build the call via StatefulContract.');
+  }
+
+  /** The co-spend index of the block-info oracle, located by the lock this contract was instantiated with. */
+  private resolveBlockOracleIndexArgs(
+    abiFunction: AbiFunction, sourceOutputs: LibauthOutput[],
+  ): Uint8Array[] {
+    const wanted = abiFunction.inputs.some((input) => input.name === '__internal__blockOracleInputIndex');
+    if (!wanted) return [];
+    const lock = this.blockOracleLock;
+    if (lock === undefined) {
+      throw new Error(`${this.name} reads the block oracle, and no oracle lock was provided`);
+    }
+    const index = sourceOutputs.findIndex((output) => bytesEqual(output.lockingBytecode, lock));
+    if (index < 0) {
+      throw new Error(`${this.name} reads the block oracle, and the transaction does not spend it`);
+    }
+    return [bigIntToVmNumber(BigInt(index))];
   }
 
   // Size the budget pad for a call. keccak256 functions need the per-input op budget raised

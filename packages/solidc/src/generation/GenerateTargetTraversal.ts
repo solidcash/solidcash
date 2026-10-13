@@ -2718,6 +2718,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !this.usesMessageBusOwnerBlockBase();
   }
 
+  /** A direct delegate writes the proxy's records, so their master is the proxy, not the executing implementation. */
+  private recordsBelongToProxyMaster(): boolean {
+    return this.usesDelegateExecutorBlockBase()
+      && this.getStackIndex('__internal__proxyMasterIndex', true) >= 0;
+  }
+
+  /** `[category]` -> `[lock, category]`: the lock of the input holding this body's minting baton. */
+  private emitRecordMasterLockUnder(locationData: SingleLocationData): void {
+    if (this.recordsBelongToProxyMaster()) this.emitMasterInputIndex(locationData);
+    else this.emit(Op.OP_INPUTINDEX, locationData);
+    this.emit(Op.OP_UTXOBYTECODE, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+  }
+
   /** Select the execution-resource block authorized by the delegate prologue. */
   private emitDelegateResourceBase(locationData: SingleLocationData): void {
     const compactOffset = 1 + this.dataNftCount;
@@ -26202,7 +26216,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Transform the category id on top into this collection's entry P2SH32, sharing the baked covenant per contract. */
   private emitSortedEntryAddress(collectionHash: Uint8Array, loc: SingleLocationData): void {
-    const id = this.sortedEntryAddressIds.get(binToHex(collectionHash));
+    // The shared body binds the executing input's lock. A direct delegate binds the proxy master's, inline.
+    const id = this.recordsBelongToProxyMaster()
+      ? undefined : this.sortedEntryAddressIds.get(binToHex(collectionHash));
     if (id !== undefined) {
       this.bumpSubroutineUse(id);
       if (this.subroutineDefined.get(id)) {
@@ -42029,16 +42045,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Value-chunk address bound to the executing master's 35-byte lock. The category stays the tracked top.
-   * Encoding the category leaves the lock between that encoding and the slot, so each pick is one deeper
-   * than the category-only form (whose +1 only clears the untracked domain prefix).
+   * Value-chunk address bound to this body's master lock (a direct delegate's is the proxy's). The category stays
+   * the tracked top. Encoding the category leaves the lock between that encoding and the slot, so each pick is one
+   * deeper than the category-only form (whose +1 only clears the untracked domain prefix).
    */
   private emitBoundValueChunkP2sh32(
     collectionHash: Uint8Array, slotName: string, rootName: string, locationData: SingleLocationData,
   ): void {
-    this.emit(Op.OP_INPUTINDEX, locationData);
-    this.emit(Op.OP_UTXOBYTECODE, locationData);
-    this.emit(Op.OP_SWAP, locationData);
+    this.emitRecordMasterLockUnder(locationData);
     this.emit(hexToBin('20'), locationData);
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData);
@@ -42266,7 +42280,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Entry address bound to a 35-byte master lock. The category is the tracked top item.
    * `under` means the raw lock is already the untracked item beneath it. A stack, input, or output source
-   * copies that master lock. The default is the executing input, which is this contract's own master.
+   * copies that master lock. The default is this body's master: the executing input, or a direct delegate's proxy.
    */
   private emitBoundEntryP2sh32(
     collectionHash: Uint8Array,
@@ -42290,9 +42304,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_UTXOBYTECODE, locationData);
       this.emit(Op.OP_SWAP, locationData);
     } else {
-      this.emit(Op.OP_INPUTINDEX, locationData);
-      this.emit(Op.OP_UTXOBYTECODE, locationData);
-      this.emit(Op.OP_SWAP, locationData);
+      this.emitRecordMasterLockUnder(locationData);
     }
     this.encodeLockAndCategory(locationData);
     const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
@@ -49166,9 +49178,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.dataNftCount > 0) {
       admit(() => {
         if (this.directConvention && !this.framedMaster) {
-          this.emit(Op.OP_INPUTINDEX, loc);
-          this.emit(Op.OP_UTXOBYTECODE, loc);
-          this.emit(Op.OP_SWAP, loc);
+          this.emitRecordMasterLockUnder(loc);
           this.emitDataNftLbc(loc, true);
         } else this.emitDataNftLbc(loc);
       });

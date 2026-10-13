@@ -62,9 +62,13 @@ const SERVED_SOURCE = 'pragma solidcash ^0.13.0;\n'
   + '  }\n'
   + '}\n';
 
-/** The Solidity-compatible shape initializer inference used to refuse for this convention. */
+/**
+ * The Solidity-compatible shape initializer inference used to refuse for this convention. Its clock read adds no
+ * record, so it names its proxy's address itself: a generated proxy keeps no record of its own beside one record.
+ */
 const INITIALIZER_SOURCE = 'pragma solidity ^0.8.19;\n'
   + 'contract Impl {\n'
+  + '  address public implementation;\n'
   + '  uint public initialized;\n'
   + '  int public version;\n'
   + '  uint public lastSeen;\n'

@@ -7,6 +7,8 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { Op } from '@solidcash/utils';
+import { createFaithfulTraceVmForProvider } from '../network/createVirtualMachine.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 import { decodeScriptNumber } from './trace-commitment-helpers.js';
 
 export interface RuntimeEffectStreamRecord {
@@ -73,4 +75,43 @@ export function extractRuntimeEffectStreamRuns(
     runs.set(base, { remaining, records });
   }
   return [...runs].map(([base, run]) => ({ base, records: run.records }));
+}
+
+type StreamProbeProgram = Parameters<ReturnType<typeof createFaithfulTraceVmForProvider>['evaluate']>[0];
+const streamVmCache = new WeakMap<NetworkProvider, {
+  vm: ReturnType<typeof createFaithfulTraceVmForProvider>; states: AuthenticationProgramStateCommon[];
+}>();
+
+/**
+ * `extractRuntimeEffectStreamRuns` over one evaluation of `program` that keeps only the states a verifier run can
+ * be read from. A full faithful trace of a large route probe does not fit in memory; this one steps into invoked
+ * bodies the same way and keeps a few stacks.
+ */
+export function traceRuntimeEffectStreamRuns(
+  provider: NetworkProvider, program: StreamProbeProgram,
+): RuntimeEffectStreamRun[] {
+  let cached = streamVmCache.get(provider);
+  if (cached === undefined) {
+    const states: AuthenticationProgramStateCommon[] = [];
+    cached = {
+      states,
+      vm: createFaithfulTraceVmForProvider(provider, (unknownState) => {
+        const state = unknownState as AuthenticationProgramStateCommon;
+        if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCATEGORY || state.stack.length < 7) return;
+        states.push({
+          ip: state.ip, instructions: state.instructions, stack: state.stack.slice(),
+          alternateStack: state.alternateStack.slice(),
+          controlStack: state.controlStack.filter((frame) => typeof frame === 'boolean'),
+        } as unknown as AuthenticationProgramStateCommon);
+      }),
+    };
+    streamVmCache.set(provider, cached);
+  }
+  cached.states.length = 0;
+  try {
+    cached.vm.evaluate(program);
+    return extractRuntimeEffectStreamRuns(cached.states);
+  } finally {
+    cached.states.length = 0;
+  }
 }

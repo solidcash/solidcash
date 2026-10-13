@@ -435,6 +435,7 @@ import {
 import {
   deriveFullPhase2ApplyRuntimeLoop as deriveFullPhase2ApplyRuntimeLoopImpl,
 } from './sc-derive-full-phase2-apply-runtime-loop.js';
+import { traceRuntimeEffectStreamRuns } from './runtime-effect-stream-trace.js';
 import {
   deriveFullPhase2ApplyValueChunks as deriveFullPhase2ApplyValueChunksImpl,
 } from './sc-derive-full-phase2-apply-value-chunks.js';
@@ -5903,6 +5904,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 {
                   extractExpectedOutputCommitmentFromTrace,
                   parseNftCapability,
+                  traceRuntimeEffectStreams: () => traceRuntimeEffectStreamRuns(this.inner.provider, {
+                    inputIndex: delegatecallInputIndex ?? 0, sourceOutputs: sourceOutputs2, transaction: transaction2,
+                  }),
                 },
                 stb,
                 {

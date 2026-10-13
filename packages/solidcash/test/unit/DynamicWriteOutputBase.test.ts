@@ -7,9 +7,12 @@ import { getDynamicChunkAddress } from '../../src/stateful/covenant-helpers.js';
 import { resolveMaterializedDynamicWriteOutputBase } from '../../src/stateful/stb-reconcile-dynamic-chunk-output-witnesses.js';
 
 const categoryId = '11'.repeat(32);
+// A direct contract's chunk covenant binds its 35-byte master lock.
 const contract = {
   provider: { network: 'chipnet' },
   addressType: 'p2sh32',
+  artifact: {},
+  lockingBytecode: `aa20${'5a'.repeat(32)}87`,
 } as unknown as Contract;
 const route = {
   name: '__message_bus',

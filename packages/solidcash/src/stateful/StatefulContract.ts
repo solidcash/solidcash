@@ -4397,17 +4397,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   /**
-   * Upgrade a stateful contract by migrating the minting NFT to a new contract.
+   * Upgrade a stateful contract in place by moving its master (minting) NFT to the replacement's lock.
    *
-   * The upgrade transaction moves the minting NFT from the old contract's address to
-   * the new contract's address. Data NFTs, entry NFTs, event NFTs, and token containers
-   * are NOT touched - they remain at their covenant addresses (keyed by categoryId).
+   * The category and the master's commitment carry over. Every data NFT, mapping entry and satoshi or token
+   * container is bound to the master's exact lock, so the compiler refuses an `upgrade` function in a contract
+   * that keeps any of them (UpgradeStrandsBoundStateError). Only a contract whose whole state lives in its master
+   * NFT upgrades this way. A replacement that declares state starts it at default values, in data NFTs minted at
+   * its own lock and paid by `fundingUtxo`/`funder`. A contract that keeps state needs a proxy to change code.
    *
    * Requirements:
    * - The upgrade function must have the 'upgrade' modifier in the old contract's ABI
    * - The new artifact must be a stateful contract
-   * - State layout must be append-only: existing variables keep their nftIndex/fieldIndex,
-   *   new variables can only be appended at the end
    *
    * @returns The new ConnectedStatefulContract with the same categoryId
    */

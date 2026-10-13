@@ -78,12 +78,9 @@ This produces `SimpleToken.json` and optionally `SimpleToken.artifact.ts` (with 
 ## Step 3: Deploy
 
 ```typescript title="deploy.ts"
-import {
-    ContractFactory,
-    ElectrumNetworkProvider,
-    SignatureTemplate,
-    Signer,
-} from 'solidcash';
+import { SignatureTemplate, Signer } from 'solidcash';
+import { ContractFactory } from 'solidcash/contract-factory';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 import artifact from './SimpleToken.json' assert { type: 'json' };
 
 const provider = new ElectrumNetworkProvider('chipnet');
@@ -180,11 +177,9 @@ See [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
 ```typescript title="SimpleToken.test.ts"
 import { describe, it, expect, beforeAll } from 'vitest';
 import 'solidcash/vitest';
-import {
-    ContractFactory,
-    MockNetworkProvider,
-    SignatureTemplate,
-} from 'solidcash';
+import { SignatureTemplate } from 'solidcash';
+import { ContractFactory } from 'solidcash/contract-factory';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 import artifact from './SimpleToken.json' assert { type: 'json' };
 
 describe('SimpleToken', () => {

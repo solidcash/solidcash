@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
 import {
   buildValueChunkCommitment, encodeChunkableValueTail, encodePushdataValue,

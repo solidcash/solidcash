@@ -1,5 +1,7 @@
 import { hash160, hexToBin } from '@bitauth/libauth';
-import { decorateDecodedResult, type StateValue, type StructDefinitionInfo } from '@solidcash/utils';
+import {
+  decorateDecodedResult, resolveAddressForm, type StateValue, type StructDefinitionInfo,
+} from '@solidcash/utils';
 import { describe, expect as check, it } from 'vitest';
 import { expect } from '../src/chai.js';
 
@@ -37,7 +39,8 @@ describe('ABI-typed address comparisons', () => {
   it('does not loosen untyped bytes or native address equality', () => {
     check(() => expect(word).to.equal(identity)).toThrow();
     check(() => expect(identity).to.equal(lock)).toThrow();
-    const native = decorateDecodedResult(word, 'address', undefined, 'compact-pushdata-v1');
+    // A native artifact's form is 'bytecode': the leaf keeps its stored bytes ('hash' would project it).
+    const native = decorateDecodedResult(word, 'address', undefined, 'compact-pushdata-v1', resolveAddressForm({}));
     check(() => expect(native).to.equal(identity)).toThrow();
     const other = identity.slice();
     other[0] ^= 1;

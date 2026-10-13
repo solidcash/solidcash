@@ -82,6 +82,7 @@ import {
 import { ArrayType, IntType, MappingType, StructType, type Type } from '@solidcash/utils';
 import {
   CircularContractInheritanceError,
+  CircularInterfaceInheritanceError,
   C3LinearizationError,
   NonVirtualOverrideError,
   OverrideMutabilityError,
@@ -464,8 +465,13 @@ function assertLinearizableWithInterfaces(
   const linearize = (name: string, stack: Set<string>): string[] => {
     const known = memo.get(name);
     if (known) return known;
-    // A cycle is reported by computeLinearization or the interface-inheritance check; do not recurse into it.
-    if (stack.has(name)) return [name];
+    // computeLinearization already refused contract cycles, so a cycle here is an interface cycle. Report it as
+    // such: merging over it would raise a misleading C3LinearizationError.
+    if (stack.has(name)) {
+      const iface = interfaceMap.get(name);
+      if (iface) throw new CircularInterfaceInheritanceError(iface);
+      return [name];
+    }
     const parents = parentsOf(name);
     const nextStack = new Set(stack).add(name);
     const reversed = [...parents].reverse();

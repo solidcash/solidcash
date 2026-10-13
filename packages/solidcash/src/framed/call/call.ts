@@ -426,7 +426,7 @@ function entryArgumentPushes(
   return [
     new Uint8Array(hexToBin(entry.selector)),
     ...args.map((value, index) => {
-      const input = entry.inputs.filter((candidate) => candidate.name !== '__internal__blockOracleInputIndex')[index];
+      const input = entry.inputs[index];
       if (input === undefined) throw new FramedCallError(`entry "${functionName}" has no parameter ${index}`);
       return encodeFunctionArgument(value, input.type, structs) as Uint8Array;
     }).reverse(),
@@ -928,7 +928,7 @@ async function callInShape(
     ? [valueSendCallData(artifact)]
     : entryArgumentPushes(entry, args, structs, functionName);
   // A sole-entry root does not push the selector. Callee frames still do: their arms equal-verify the salt.
-  let argumentPushes = splitShard !== undefined && entry.name !== FALLBACK_ENTRY
+  const argumentPushes = splitShard !== undefined && entry.name !== FALLBACK_ENTRY
     ? selectorPushes.slice(1)
     : selectorPushes;
   // The events, sends and hashes a loop of the entry repeats, as many as the loop turns over the call's own facts.
@@ -1210,14 +1210,6 @@ async function callInShape(
   const facets = validatorFacetsOf({ id: VALIDATOR_ID, covers: [], settles: [], redeemScript: validatorRedeem });
   const layout = layoutTransaction(blocks, new Map([[VALIDATOR_ID, facets]]));
   const masterIndex = participant(layout, MASTER_ID).index;
-  if (readsBlockOracle) {
-    const encoded = encodeFunctionArgument(BigInt(participant(layout, BLOCK_ORACLE_INPUT).index), 'int');
-    if (!(encoded instanceof Uint8Array)) {
-      throw new FramedCallError('the block oracle input index did not encode');
-    }
-    const at = splitShard !== undefined && entry.name !== FALLBACK_ENTRY ? 0 : 1;
-    argumentPushes = [...argumentPushes.slice(0, at), encoded, ...argumentPushes.slice(at)];
-  }
   // The trailing region is events first, then the created mapping nodes. An entry that emits declares one output
   // per emit, in emit order, at the covenant the body rebuilds; each output's commitment is the payload the body
   // computes, so the frame starts it from a sentinel the body's own comparison fails against and the derivation

@@ -272,7 +272,8 @@ describe('the mock chain\'s clock in a plain framed contract, with a direct one 
     await calls.mark();
     expect((await plainState()).stamp).toBe(now);
     await expect(calls.later()).rejects.toThrow(/a day has not passed/);
-    await expect(gated(network, direct, now)).rejects.toThrow(/a day has not passed/);
+    // The oracle co-spend is a custom unlocker, which `send()` does not debug, so the network's verdict is raw.
+    await expect(gated(network, direct, now)).rejects.toThrow(/OP_VERIFY|non-truthy/);
 
     await network.send('evm_increaseTime', [Number(DAY)]);
     await network.send('evm_mine', []);

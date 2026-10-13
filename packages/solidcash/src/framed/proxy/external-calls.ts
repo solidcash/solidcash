@@ -99,6 +99,9 @@ import {
 } from './entry-writes.js';
 import { readEntryNode } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
+import {
+  bindProviderBlockOracle, framedBlockOracle, withBlockOracleSideCar, type FramedBlockOracle,
+} from '../call/block-oracle.js';
 import type { RecoverySideCars } from '../composer/recovery.js';
 import { bytesToSlotValue, decodeEntryCommitment } from '../../stateful/SortedList.js';
 import { chainsEnclosedTouch } from './enclosed-reads.js';
@@ -1938,11 +1941,12 @@ function calleeEntryWrites(
 }
 
 /**
- * The compute side-cars one callee frame's own body reads, over the provider's live pool.
+ * The compute side-cars one callee frame's own body reads, over the provider's live pool, and the block oracle.
  *
  * A body that hashes a runtime value or recovers a signer reads one side-car per call immediately after its own
- * input; the pushes the caller records for the call are what those calls' scalars are read from. A frame whose
- * entry publishes neither reads none, and contributes nothing.
+ * input; the pushes the caller records for the call are what those calls' scalars are read from. A body that reads
+ * the clock finds the one oracle input by its lock, so the frame co-spends the oracle after its side-cars unless an
+ * earlier frame already does. A frame whose entry publishes none of these reads none, and contributes nothing.
  */
 async function calleeSideCars(
   ctx: PlanContext,
@@ -1958,13 +1962,24 @@ async function calleeSideCars(
   const hashes = (abiFunction.keccakPreimageParams ?? []).length > 0;
   const recovers = (abiFunction.ecrecoverArgParams ?? []).length > 0
     || (abiFunction.ecrecoverEvmFlags ?? []).length > 0;
-  if (!hashes && !recovers) return;
-  const sideCars = await entrySideCars({
+  const computed = hashes || recovers ? await entrySideCars({
     provider: ctx.provider, master, abiFunction, argumentPushes, leadingPushes: 1,
-  });
-  if (sideCars.ids.length === 0) return;
+  }) : undefined;
+  const oracle = abiFunction.usesBlockOracle === true ? await unplacedBlockOracle(ctx, artifact, entryName) : undefined;
+  const sideCars = oracle === undefined ? computed : withBlockOracleSideCar(master, computed, oracle);
+  if (sideCars === undefined || sideCars.ids.length === 0) return;
   ctx.sideCars.set(master, sideCars);
   for (const [id, utxo] of Object.entries(sideCars.utxos)) ctx.utxos.set(id, utxo);
+}
+
+/** The live block oracle, or undefined when a frame this plan already placed co-spends it. */
+async function unplacedBlockOracle(
+  ctx: PlanContext, artifact: Artifact, entryName: string,
+): Promise<FramedBlockOracle | undefined> {
+  const lock = bindProviderBlockOracle(ctx.provider, artifact);
+  const oracle = await framedBlockOracle(ctx.provider, lock, entryName, (reason) => new FramedProxyDeployError(reason));
+  const placed = [...ctx.utxos.values()].some((utxo) => utxo.txid === oracle.utxo.txid && utxo.vout === oracle.utxo.vout);
+  return placed ? undefined : oracle;
 }
 
 /**

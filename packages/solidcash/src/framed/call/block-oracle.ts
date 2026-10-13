@@ -3,7 +3,7 @@ import { blockOracleFieldBytes, blockOracleReadUnlocking, type Artifact } from '
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { bindBlockOracleLock } from '../../oracle/block-oracle-lock.js';
-import type { DraftInput } from '../composer/index.js';
+import type { DraftInput, RecoverySideCars } from '../composer/index.js';
 
 /** The block oracle a framed entry co-spends: its live UTXO and the read-path input that recreates it in place. */
 export interface FramedBlockOracle {
@@ -55,5 +55,21 @@ export async function framedBlockOracle(
       },
       unlockingBytecode: blockOracleReadUnlocking(category),
     },
+  };
+}
+
+/**
+ * `own` with the block oracle co-spent after its compute side-cars. The oracle is not a compute side-car: a body
+ * finds it by its pinned lock, so it only has to sit after the side-cars the body addresses by offset.
+ */
+export function withBlockOracleSideCar(
+  master: string, own: RecoverySideCars | undefined, oracle: FramedBlockOracle,
+): RecoverySideCars {
+  const id = `${master}:block-oracle`;
+  return {
+    ids: [...own?.ids ?? [], id],
+    inputs: { ...own?.inputs, [id]: oracle.input },
+    computedWitnesses: own?.computedWitnesses ?? [],
+    utxos: { ...own?.utxos, [id]: oracle.utxo },
   };
 }

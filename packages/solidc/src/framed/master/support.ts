@@ -152,8 +152,8 @@ const PROXY_MASTER_WITNESS_PARAMETER = '__internal__proxyMasterIndex';
 const MESSAGE_CONTEXT_PARAMETERS = new Set(['__internal__msgSig', '__internal__msgData']);
 
 /**
- * The co-spent block oracle's input index. The caller pushes it as the entry's last argument, and the body pins
- * the input at that index to the oracle lock before slicing its commitment.
+ * The direct convention's co-spent block oracle input index. A framed master does not take it: a callee's call
+ * data cannot carry it, so the body finds the one input at the oracle's pinned lock itself.
  */
 const BLOCK_ORACLE_PARAMETER = '__internal__blockOracleInputIndex';
 
@@ -212,7 +212,7 @@ export function stripFrameParameters(
     const kept = (parameter: ParameterNode): boolean =>
       !(derived?.has(parameter.name) ?? false) && !(derivedDynamic?.has(parameter.name) ?? false)
       && !FRAME_PARAMETERS.has(parameter.name) && !RETURN_EVENT_PARAMETERS.has(parameter.name)
-      && !isExternalCallParameter(parameter.name)
+      && !isExternalCallParameter(parameter.name) && parameter.name !== BLOCK_ORACLE_PARAMETER
       && !VALUE_WITNESS_PARAMETER.test(parameter.name) && !isFoldParameter(parameter.name);
     const lostAt = (parameters: readonly ParameterNode[]): Set<number> =>
       new Set(parameters.flatMap((parameter, index) => (kept(parameter) ? [] : [index])));

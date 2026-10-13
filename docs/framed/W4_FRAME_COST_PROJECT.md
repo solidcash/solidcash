@@ -130,6 +130,31 @@ The second row needs more cost than any single input can ever fund: the maximum 
   which the affine frame guard refuses at derivation (as `424fea1b1` recorded for the non-void title; measured
   the same for the pre-only title); the three tests assert that.
 
+- 2026-10-13, third increment (branch `feat/hunt-d26b`, base `aa4cd27ab`): all six settle at 64 frames; the
+  pre-only title has 20.5% headroom. Direct convention only (framed bytes and lowering untouched). Cuts:
+  1. `LowerTailRecursion`: an event stream `prefix; if (base) return [r]; recurse(args)` clears the repeat flag in
+     its base arm and advances the frame in the other, so the loop has no break flag and no per-frame reset or
+     re-arm. A parameter whose new value reads only itself and invariants is assigned in place (no temporaries,
+     so its replace is 3 to 4 items shallower).
+  2. Runtime-loop events reserve no epilogue emit registers: two dead items no longer deepen every loop replace.
+  3. The loop int encoder's opcode arm and OP_PUSHDATA1/2 prefix are compiler helpers, defined once and invoked,
+     so a pass steps over one invoke instead of 8 and 14 instructions; the encoding is unchanged.
+  4. The compact stream's record count is bumped in place (`ROT 1ADD ROT ROT` at depth 2, not a copy and replace).
+
+  | title | before cost / budget | now cost / budget |
+  |---|---:|---:|
+  | guarded tail-call stream | 1,931,872 / 2,906,400 | 1,337,172 / 2,829,600 |
+  | pre-only affine parameters | 3,819,340 / 3,288,800 | 2,567,470 / 3,231,200 |
+  | every pre-recursion frame | 1,794,891 / 2,966,400 | 1,219,493 / 2,881,600 |
+  | mixed pre-order and post-descent | 2,468,363 / 2,983,200 | 2,070,559 / 2,984,800 |
+  | affine-counter progression | 2,784,016 / 3,110,400 | 2,382,688 / 3,104,000 |
+  | recursive event domain step (KernelLoopCompose) | 1,994,457 / 3,227,200 | 1,465,248 / 3,160,000 |
+
+  The pre-only title now executes 24,780 instructions at 64 frames (was 36,906): about 388 a frame (was 577).
+  What is left a frame: argument encoding ~118 (the outliner shares the classification and the medium prefix, at
+  two invokes a call), the three parameter replaces at depth 7-9 ~67, settlement ~83 and output scans ~48.
+  Pinned sizes move for direct-convention contracts with runtime-loop events and for affine event recursions.
+
 ## Risks
 
 - Any emission change moves pinned sizes across the kernel corpus; that is the largest cost of this project.

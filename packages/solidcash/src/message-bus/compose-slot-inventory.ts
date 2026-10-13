@@ -81,7 +81,8 @@ export function inventoryComposeSlots(
     })));
   const sidecarSlots = plan.participants.filter((participant) => participant.authority !== 'direct').flatMap((participant) =>
     participant.blockLayout!.slots
-      .filter((slot) => ['blockhashOracle', 'keccakSideCar', 'ecrecoverSideCar'].includes(slot.kind))
+      .filter((slot) => ['blockhashOracle', 'blockInfoOracle', 'keccakSideCar', 'ecrecoverSideCar']
+        .includes(slot.kind))
       .map((slot) => ({
         participant: participant.participant, offset: slot.offset,
         kind: slot.kind as AtomicSidecarSlotEffect['kind'],

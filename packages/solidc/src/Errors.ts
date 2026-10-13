@@ -1296,6 +1296,15 @@ export class MixedBlockOracleOwnershipError extends SolidCashError {
   }
 }
 
+/** A call to a block.* reader that cannot forward the reader's hidden oracle input index. */
+export class BlockOracleIndexNotForwardedError extends SolidCashError {
+  constructor(node: Node, callee: string) {
+    super(node, `'${callee}' reads block.* through the block oracle, whose input index is forwarded from its `
+      + 'caller as a hidden argument, and this call cannot forward it. Read block.* in the caller as well, '
+      + 'or pass the value in as an argument');
+  }
+}
+
 export class InvalidImmutableTypeError extends SolidCashError {
   constructor(node: Node, functionType = false) {
     super(

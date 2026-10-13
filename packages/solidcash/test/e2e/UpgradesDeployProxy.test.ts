@@ -204,9 +204,10 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     const artifact = compileString(TIMED_DELEGATE_IMPL);
     const proxy = await upgrades.deployProxy(getContractFactory(artifact, signer), []);
 
+    // The send mines a block afterwards, so the oracle the capture slices holds the time before it.
+    const oracleTime = BigInt(signer.provider.getBlockTime());
     const tx = await (proxy as any).capture().send();
-    expect(proxyState(tx, proxy.proxy.categoryId, artifact.stateLayout).captured)
-      .toBe(BigInt(signer.provider.getBlockTime()));
+    expect(proxyState(tx, proxy.proxy.categoryId, artifact.stateLayout).captured).toBe(oracleTime);
   });
 
   it('auto-detects an OZ initializer in Solidity import-compat mode', async () => {

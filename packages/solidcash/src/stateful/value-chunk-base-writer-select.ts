@@ -306,6 +306,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   readOnlyDataNftUtxos?: UnlockableUtxo[];  // read-only data NFTs from other contracts
   blockhashCoSpendUtxos?: UnlockableUtxo[];  // (n->hash) oracle co-spends for blockhash(n) readers
   blockInfoCoSpendUtxos?: UnlockableUtxo[];  // the block-info oracle commitment a reader slices
+  delegateBlockInfoOracle?: boolean;  // that reader is the delegated implementation, so its recreate rides its band
   /** Optional physical ordinal within the function's blockhashOracle slots for each co-spend. Graph message-bus batch
    * routes reserve a fixed row band, so active reads are sparse and the inactive slots must remain funders. */
   blockhashCoSpendSlotOrdinals?: number[];

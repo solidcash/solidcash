@@ -246,7 +246,7 @@ import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.
 import {
   kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
 } from './semantic/KernelEntryActivation.js';
-import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
+import SynthesizeBlockOracle, { markBlockOracleCallers, readsBlockOracle } from './semantic/SynthesizeBlockOracle.js';
 import detectMappingArrayPagination from './semantic/DetectMappingArrayPagination.js';
 import PruneUnreachableFreeFunctions from './semantic/PruneUnreachableFreeFunctions.js';
 import PruneUnreachableMsgDataMethods from './semantic/PruneUnreachableMsgDataMethods.js';
@@ -11990,7 +11990,8 @@ function synthesizeMessageBusRoute(
             GlobalFunction.ECRECOVER_EVM,
           ].includes(node.identifier.name as GlobalFunction)) found = true;
         });
-        return found;
+        // A block.* reader co-spends the oracle in its slot, and only a sidecar row exempts that foreign NFT.
+        return found || readsBlockOracle(candidate);
       })));
   const graphRouteParameters = !graphExecutionContext ? [] : [
     'bigint __internal__graphFixedSize',
@@ -15905,6 +15906,9 @@ function compileResolvedAst(
       }
     }
   }
+
+  // A caller of a block.* reader carries the oracle index to forward it, including the generated route.
+  if (needsBlockOracle || ast.contract.usesBlockOracle) markBlockOracleCallers(ast.contract, ast.freeFunctions);
 
   // An entry's msg.data reads the unlocking frame, which can include compiler-hidden witnesses in addition
   // to source-visible arguments. The internal-context lowering above replaces helper reads with a synthetic

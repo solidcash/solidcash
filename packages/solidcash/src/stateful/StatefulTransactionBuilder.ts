@@ -843,6 +843,7 @@ export class StatefulTransactionBuilder {
   private readOnlyDataNftUtxos: UnlockableUtxo[];
   private blockhashCoSpendUtxos: UnlockableUtxo[];
   private blockInfoCoSpendUtxos: UnlockableUtxo[] = [];
+  private delegateBlockInfoOracle = false;
   private blockhashCoSpendSlotOrdinals?: number[];
   private keccakComputeCoSpendUtxos: UnlockableUtxo[];
   private keccakComputeCommitments: string[];
@@ -1059,6 +1060,7 @@ export class StatefulTransactionBuilder {
     this.readOnlyDataNftUtxos = options.readOnlyDataNftUtxos ?? [];
     this.blockhashCoSpendUtxos = options.blockhashCoSpendUtxos ?? [];
     this.blockInfoCoSpendUtxos = options.blockInfoCoSpendUtxos ?? [];
+    this.delegateBlockInfoOracle = options.delegateBlockInfoOracle ?? false;
     this.blockhashCoSpendSlotOrdinals = options.blockhashCoSpendSlotOrdinals;
     this.keccakComputeCoSpendUtxos = options.keccakComputeCoSpendUtxos ?? [];
     this.keccakComputeCommitments = options.keccakComputeCommitments ?? [];
@@ -1799,6 +1801,7 @@ export class StatefulTransactionBuilder {
       compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
       blockhashCoSpendUtxos: this.blockhashCoSpendUtxos,
       blockInfoCoSpendUtxos: this.blockInfoCoSpendUtxos,
+      delegateBlockInfoOracle: this.delegateBlockInfoOracle,
       blockhashCoSpendSlotOrdinals: this.blockhashCoSpendSlotOrdinals,
       keccakComputeCoSpendUtxos: this.keccakComputeCoSpendUtxos,
       keccakComputeCommitments: this.keccakComputeCommitments,
@@ -1826,6 +1829,7 @@ export class StatefulTransactionBuilder {
       externalCallEntryOutputs: this.externalCallEntryOutputs,
       delegateComputeResources: this.delegateComputeResources,
       compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
+      blockInfoCoSpendUtxos: this.delegateBlockInfoOracle ? this.blockInfoCoSpendUtxos : [],
       keccakComputeCoSpendUtxos: this.keccakComputeCoSpendUtxos,
       keccakComputeCommitments: this.keccakComputeCommitments,
       categoryId: this.categoryId,

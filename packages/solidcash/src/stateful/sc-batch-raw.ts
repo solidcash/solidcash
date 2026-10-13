@@ -570,6 +570,11 @@ export function batchRaw(
       if (input.name === '__internal__activeVerifierIndex') return -1n;
       if (input.name === '__internal__graphSelfIdentityInput') return -1n;
       if (input.name === '__internal__messageBusOwnerBandInput') return BigInt(blockBase);
+      // The route's own oracle slot. A composition that already spends the oracle repoints it to that input.
+      if (input.name === '__internal__blockOracleInputIndex') {
+        const slot = capability.route.blockLayout?.slots.find((candidate) => candidate.kind === 'blockInfoOracle');
+        return slot === undefined ? -1n : BigInt(blockBase + slot.offset);
+      }
       // The aggregate route returns its concatenated result blob to graph consumers, but an ordinary local
       // `.batch()` does not materialize that route-level value as a return-event NFT. Semantic injection still
       // gives every returning entry point this compiler-owned coordinate, so use the same negative sentinel as

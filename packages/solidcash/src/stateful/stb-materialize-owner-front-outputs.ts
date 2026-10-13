@@ -29,6 +29,8 @@ export interface MaterializeOwnerFrontOutputsHost {
   readonly compilerRouteDelegateBlock: boolean;
   readonly blockhashCoSpendUtxos: readonly UnlockableUtxo[];
   readonly blockInfoCoSpendUtxos?: readonly UnlockableUtxo[];
+  /** The oracle belongs to the delegated implementation; its recreate is emitted with that band. */
+  readonly delegateBlockInfoOracle?: boolean;
   readonly blockhashCoSpendSlotOrdinals?: readonly number[];
   readonly keccakComputeCoSpendUtxos: readonly UnlockableUtxo[];
   readonly keccakComputeCommitments: readonly string[];
@@ -121,7 +123,7 @@ export function materializeOwnerFrontOutputs(
     const blockhashOrdinals = host.blockhashCoSpendSlotOrdinals
     ?? host.blockhashCoSpendUtxos.map((_utxo, index) => index);
     const fixedComputeSlots = host.blockLayout.slots.filter((slot) => (
-      slot.kind === 'blockhashOracle' || slot.kind === 'blockInfoOracle'
+      slot.kind === 'blockhashOracle' || (slot.kind === 'blockInfoOracle' && !host.delegateBlockInfoOracle)
       || slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar'
     )).sort((left, right) => left.offset - right.offset);
     let blockhashOrdinal = 0;
@@ -152,7 +154,7 @@ export function materializeOwnerFrontOutputs(
     for (let index = 0; index < host.blockhashCoSpendUtxos.length; index++) {
       builder.addOutput(blockhashOutput(index)!);
     }
-    for (const oracle of host.blockInfoCoSpendUtxos ?? []) {
+    for (const oracle of host.delegateBlockInfoOracle ? [] : host.blockInfoCoSpendUtxos ?? []) {
       builder.addOutput({
         to: oracle.unlocker.generateLockingBytecode(),
         amount: oracle.satoshis,

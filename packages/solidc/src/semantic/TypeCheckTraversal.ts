@@ -172,6 +172,7 @@ import {
   AbiEncodeEmptyError,
   UndefinedReferenceError,
   StructFieldExternalCallError,
+  BlockOracleIndexNotForwardedError,
 } from '../Errors.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
@@ -1973,6 +1974,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.parameters.splice(senderParamIndex, 1);
       }
       this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
+      this.requireBlockOracleIndexForwarded(node, node.resolvedFunction);
       const resolvedParamTypes = this.expectedCallSiteTypes(
         node.resolvedFunction, node.parameters.length,
       );
@@ -2002,6 +2004,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.parameters.splice(senderParamIndex, 1);
       }
       this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
+      this.requireBlockOracleIndexForwarded(node, node.resolvedFunction);
       const resolvedParamTypes = this.expectedCallSiteTypes(
         node.resolvedFunction, node.parameters.length,
       );
@@ -2568,6 +2571,15 @@ export default class TypeCheckTraversal extends AstTraversal {
     ), expected[i]));
   }
 
+  // A block.* reader slices the oracle at the index its caller forwards. A call that drops it would hand the
+  // reader a shifted frame, so refuse it here instead of compiling a call that only the lock pin stops.
+  private requireBlockOracleIndexForwarded(node: FunctionCallNode, fn: FunctionDefinitionNode): void {
+    const name = '__internal__blockOracleInputIndex';
+    if (!fn.parameters.some((parameter) => parameter.name === name)) return;
+    if (node.parameters.some((argument) => argument instanceof IdentifierNode && argument.name === name)) return;
+    throw new BlockOracleIndexNotForwardedError(node, fn.name);
+  }
+
   // An internal call to a `public` function that RETURNS a value targets the function's internal-call
   // subroutine, which still carries the injected `__internal__returnOutputIdx` param. The Solidity-source call
   // site can't know about it, so auto-supply -1 (the internal subroutine produces no return event - the value
@@ -2604,7 +2616,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // master sits at a fixed input, so an internal callee reads the caller's own value. Without it, a generated
     // route cannot call a delegate-marked getter (`owner()`) at all.
     const FORWARDABLE = new Set([
-      '__internal__blockhashInputIndex', '__internal__proxyMasterOutputIndex',
+      '__internal__blockhashInputIndex', '__internal__blockOracleInputIndex', '__internal__proxyMasterOutputIndex',
       '__internal__proxyMasterIndex', '__internal__kernelJournalAccessStreams',
       '__internal__kernelJournalRecords', '__internal__dynamicChunkInputBase',
       '__internal__dynamicChunkOutputBase',

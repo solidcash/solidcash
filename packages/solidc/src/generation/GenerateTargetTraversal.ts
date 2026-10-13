@@ -632,6 +632,8 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
 const MESSAGE_BUS_OWNER_INPUT = '__internal__messageBusOwnerInput';
 /** Stable route-band coordinate for a graph participant's physical owner input. */
 const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
+/** The value-chunk lock list the mutable-output check admits: the chunk-base witness, or a route-owned item. */
+const VALUE_CHUNK_LOCK_LIST = '__internal__valueChunkOutputBase';
 /** Tracked-local name for the entry-time copy of the participant owner (see messageBusOwnerAltAnchor). */
 const OWNER_ANCHOR_LOCAL = '(message_bus_owner)';
 const PROXY_MASTER_ANCHOR_LOCAL = '(message_bus_proxy_master)';
@@ -8893,11 +8895,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Discard an attacker-supplied chunk-base witness before any long write appends to it. The witness then
     // accumulates every 35-byte value-chunk lock this function pins, and nothing else.
-    const chunkLockList = '__internal__valueChunkOutputBase';
+    const chunkLockList = VALUE_CHUNK_LOCK_LIST;
     if (!this.isDefineSubTraversal && this.getStackIndex(chunkLockList, true) >= 0) {
       const clearLoc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
       this.emit(Op.OP_0, clearLoc);
       this.emitReplace(this.getStackIndex(chunkLockList) + 1, node);
+    } else if (!this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node)
+      && this.chunkLockListAboveBand(node.parameters.map((parameter) => parameter.name))) {
+      // A band without the witness: start the list right above it, the ordinal invoked handlers append at.
+      // Only the band lies below it at runtime here; the positional items under the band are dropped later.
+      this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(chunkLockList);
     }
 
     // An aggregate route can retain runtime-only values below its compiler-modelled frame. Capture the
@@ -27378,10 +27386,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Append this lock to the chunk-base witness. The first long write replaces the cleared witness.
     // A later long write concatenates, so every lock stays admitted. A new stack slot would shift the
     // fixed depths of the entry-output commitment check.
-    const chunkBase = '__internal__valueChunkOutputBase';
-    // An invoked handler appends to the route's band copy, which the route's census reads. Its own argument copy
-    // is dropped on return, and its frame model has no stable bottom: the caller's frame lies below it.
-    const bandOrdinal = this.isDefineSubTraversal ? this.declaredBandOrdinal(chunkBase) : undefined;
+    const chunkBase = VALUE_CHUNK_LOCK_LIST;
+    // An invoked handler appends to the route's list (its band copy, or the item the route keeps above a band
+    // without one), which the route's census reads. Its own argument copy is dropped on return, and its frame
+    // model has no stable bottom: the caller's frame lies below it.
+    const bandOrdinal = this.isDefineSubTraversal ? this.chunkLockListBandOrdinal() : undefined;
     if (bandOrdinal !== undefined || (!this.isDefineSubTraversal && this.getStackIndex(chunkBase, true) >= 0)) {
       const bottom = bandOrdinal ?? this.stack.length - this.getStackIndex(chunkBase);
       if (bandOrdinal !== undefined) {
@@ -46609,6 +46618,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return index < 0 ? undefined : names.length - index;
   }
 
+  /**
+   * True when a route band lacks the value-chunk lock witness while this contract can pin value chunks. The route
+   * then keeps its lock list in an item it pushes directly above the band.
+   */
+  private chunkLockListAboveBand(bandNames: readonly string[] | undefined): boolean {
+    return bandNames !== undefined && !bandNames.includes(VALUE_CHUNK_LOCK_LIST)
+      && this.collectionDefinitions.some((collection) => collection.sorted
+        && this.isChunkableValue(collection.innermostValueType));
+  }
+
+  /** One-based bottom ordinal of the route's value-chunk lock list, as an invoked handler addresses it. */
+  private chunkLockListBandOrdinal(): number | undefined {
+    const names = this.currentFunction.messageBusCallerBandNames;
+    const declared = this.declaredBandOrdinal(VALUE_CHUNK_LOCK_LIST);
+    if (declared !== undefined || !this.chunkLockListAboveBand(names)) return declared;
+    return names!.length + 1;
+  }
+
   /** Replace the item at a known one-based bottom ordinal with the value currently on top. */
   private emitReplaceAtBottomOrdinal(
     bottomOrdinalPlusOne: number, locationData: SingleLocationData,
@@ -49699,7 +49726,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()));
       append(() => this.emitSortedEntryAddress(chunkHash, loc));
     }
-    const chunkBase = '__internal__valueChunkOutputBase';
+    const chunkBase = VALUE_CHUNK_LOCK_LIST;
     if (this.getStackIndex(chunkBase, true) >= 0) {
       // The value-chunk locks a long write appended. A short remainder is the cleared witness, so it goes last.
       this.emitPickTrackedFromBottom(chunkBase, loc);

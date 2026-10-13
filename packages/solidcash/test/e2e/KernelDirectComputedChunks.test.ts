@@ -31,7 +31,8 @@ describe('kernel direct computed continuation outputs', () => {
       }`, { forceStateful: true, evmCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
       suppressWarnings: true, optimizeForCompilationSpeed: true });
-    expect(artifacts.Store.messageBus?.handlers.find((handler) => handler.name === 'update')?.eligible).toBe(false);
+    // The guard reads only the entry it writes, which the route replays at its key argument (D25): batchable.
+    expect(artifacts.Store.messageBus?.handlers.find((handler) => handler.name === 'update')?.eligible).toBe(true);
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x66), provider);
     for (let index = 0; index < 20; index += 1) await provider.addUtxo(signer.getAddress(), {

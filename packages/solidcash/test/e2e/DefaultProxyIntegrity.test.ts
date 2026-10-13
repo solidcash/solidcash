@@ -57,6 +57,14 @@ describe('default proxy transaction integrity', () => {
     const submitChanged = async (change: (tx: Decoded) => void): Promise<void> => {
       const tx = decodeTransactionUnsafe(hexToBin(captured));
       change(tx);
+      // A change that adds bytes pays for them from the largest output (the funder's change), so relay policy cannot
+      // refuse it before the covenants do.
+      const grown = BigInt(encodeTransaction(tx).length - hexToBin(captured).length);
+      if (grown > 0n) {
+        const payer = tx.outputs.reduce((largest, output) => (
+          output.valueSatoshis > largest.valueSatoshis ? output : largest));
+        payer.valueSatoshis -= grown;
+      }
       await send(binToHex(encodeTransaction(tx)));
     };
 

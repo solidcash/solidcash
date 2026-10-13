@@ -174,6 +174,7 @@ import { getCompileTimeByteLength, isNumericType, literalTypeBesideBounded, resu
 import { analyzeAssemblyStack, getStackEffect } from '../asmStackEffects.js';
 import { ImportedLocations } from './ImportedLocations.js';
 import { generatedOriginOf } from '../ast/Location.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 /**
  * A sorted-batch operand of a framed master's own frame: the masked slot, the proof index, the successor, the
@@ -1594,7 +1595,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     const loc = this.diagLine(node.location);
-    console.log(`Warning: inline assembly used${loc}. Raw opcodes bypass type checking; you are responsible for the correctness of the emitted script.`);
+    emitCompilerWarning(`Warning: inline assembly used${loc}. Raw opcodes bypass type checking; you are responsible for the correctness of the emitted script.`);
     return node;
   }
 
@@ -1694,7 +1695,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.expression.type instanceof AddressType
       && ((node.type instanceof BytesType && node.type.bound === 20) || node.type instanceof IntType)) {
       const loc = this.diagLine(node.location);
-      console.log(`Warning: ${node.type}(address)${loc} narrows a variable-length BCH address (a locking `
+      emitCompilerWarning(`Warning: ${node.type}(address)${loc} narrows a variable-length BCH address (a locking `
         + 'bytecode) to its embedded 20-byte hash; this is lossy and differs from a fixed-width EVM address.');
     }
 
@@ -1705,7 +1706,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       && ((node.expression.type instanceof BytesType && node.expression.type.bound === 20)
         || node.expression.type instanceof IntType)) {
       const loc = this.diagLine(node.location);
-      console.log(`Warning: address(${node.expression.type})${loc} treats a fixed 20-byte value as an address, but `
+      emitCompilerWarning(`Warning: address(${node.expression.type})${loc} treats a fixed 20-byte value as an address, but `
         + 'a BCH address is a variable-length locking bytecode, not a 20-byte hash; this does not yield a valid '
         + 'address (wrap the hash explicitly, e.g. new LockingBytecodeP2PKH(hash)).');
     }
@@ -1764,7 +1765,7 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     if (this.evmCompat && this.isEvmCreate2AddressHash(node)) {
       const loc = this.diagLine(node.location);
-      console.log(`Warning: EVM CREATE2 address computation${loc} cannot derive a native BCH contract address. `
+      emitCompilerWarning(`Warning: EVM CREATE2 address computation${loc} cannot derive a native BCH contract address. `
         + 'BCH deployments use P2SH32 locking bytecode, and stateful contract addresses also commit to their '
         + 'CashToken category ID. Use the deploying factory\'s registry (for example getPair(token0, token1)) '
         + 'instead of keccak256(abi.encodePacked(hex"ff", ...)).');

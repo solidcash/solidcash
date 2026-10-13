@@ -304,6 +304,8 @@ export default class MockNetworkProvider implements NetworkProvider {
     byCategory: ReadonlyMap<string, readonly number[]>;
   };
 
+  /** Txids this provider has already accepted. A resubmit returns the id and does not throw. */
+  private acceptedTransactions = new Set<string>();
   private signerCache = new Map<string, HDSigner>();
   private fundedSignerKeys = new Set<string>();
   private preparedTransaction?: PreparedTransaction;
@@ -614,10 +616,14 @@ export default class MockNetworkProvider implements NetworkProvider {
   }
 
   async sendRawTransaction(txHex: string): Promise<string> {
+    // A node returns the txid with no error when sendrawtransaction is given a transaction it already
+    // accepted. Record the id before the oracle await so a second call during that await takes the same path.
+    const txid = binToHex(sha256(sha256(hexToBin(txHex))).reverse());
+    if (this.acceptedTransactions.has(txid)) return txid;
+
     if (!this.options.updateUtxoSet) {
-      const bin = hexToBin(txHex);
-      const txid = binToHex(sha256(sha256(bin)).reverse());
       this.indexer.storage.storeRawTx(txid, txHex);
+      this.acceptedTransactions.add(txid);
       return txid;
     }
 
@@ -642,8 +648,12 @@ export default class MockNetworkProvider implements NetworkProvider {
       stage: 'submit-transaction', ms: Date.now() - submitStartedAt, success: result.success,
     });
     if (!result.success) {
+      // The winning call may have recorded the txid while this one was waiting on the indexer.
+      if (this.acceptedTransactions.has(txid)) return txid;
       throw new Error(result.debugMessage ? `${result.error}: ${result.debugMessage}` : result.error);
     }
+    this.acceptedTransactions.add(txid);
+    this.acceptedTransactions.add(result.txid);
 
     // Mine a block to confirm the transaction immediately. This moves outputs
     // from the mempool to the confirmed UTXO set and clears mempool spend
@@ -721,6 +731,7 @@ export default class MockNetworkProvider implements NetworkProvider {
 
   reset(): void {
     this.indexer.reset();
+    this.acceptedTransactions.clear();
     this.signerCache.clear();
     this.fundedSignerKeys.clear();
     this.fundingNonce = 0x1000;

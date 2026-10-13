@@ -233,6 +233,7 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { reachableFreeFunctionsInSource } from './PruneUnreachableFreeFunctions.js';
 import { reachableContractFunctions } from './PruneUnreachableMsgDataMethods.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 // Correctness-first bound for runtime-variable resources inside a relocatable balanced block.
 //
@@ -2235,12 +2236,12 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     if (node.fallbackDef) {
       const loc = node.fallbackDef.location ? ` at line ${node.fallbackDef.location.start.line}` : '';
-      console.log(`Warning: fallback() is a Solidity compatibility feature${loc}. Its usage on BCH is discouraged as BCH does not use the same contract call model.`);
+      emitCompilerWarning(`Warning: fallback() is a Solidity compatibility feature${loc}. Its usage on BCH is discouraged as BCH does not use the same contract call model.`);
       node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     }
     if (node.receiveDef) {
       const loc = node.receiveDef.location ? ` at line ${node.receiveDef.location.start.line}` : '';
-      console.log(`Warning: receive() is a Solidity compatibility feature${loc}. Its usage on BCH is discouraged as BCH does not use the same contract call model.`);
+      emitCompilerWarning(`Warning: receive() is a Solidity compatibility feature${loc}. Its usage on BCH is discouraged as BCH does not use the same contract call model.`);
       node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
     }
 
@@ -2255,7 +2256,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
-      console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
+      emitCompilerWarning(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
     this.symbolTables.shift();
@@ -5123,7 +5124,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
-      console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
+      emitCompilerWarning(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
     this.symbolTables.shift();
@@ -5889,7 +5890,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // virtual is a no-op: all inherited functions are implicitly virtual in SolidCash
     if (mods.includes(FunctionModifier.VIRTUAL)) {
       const loc = this.diagLine(node.location);
-      console.log(`Warning: 'virtual' function modifier is a no-op in SolidCash${loc}. All inherited functions are implicitly virtual.`);
+      emitCompilerWarning(`Warning: 'virtual' function modifier is a no-op in SolidCash${loc}. All inherited functions are implicitly virtual.`);
     }
 
     // At most one visibility modifier
@@ -12312,7 +12313,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
-      console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
+      emitCompilerWarning(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
     this.symbolTables.shift();
@@ -14397,7 +14398,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitTryCatch(node: TryCatchNode): Node {
     const line = node.location?.start?.line;
     const loc = line ? ` at line ${line}` : '';
-    console.log(`Warning: try/catch is a no-op in SolidCash${loc}. Catch blocks are dead code because BCH VM script failures are always fatal.`);
+    emitCompilerWarning(`Warning: try/catch is a no-op in SolidCash${loc}. Catch blocks are dead code because BCH VM script failures are always fatal.`);
 
     // Visit expression first
     node.expression = this.visit(node.expression);
@@ -14425,7 +14426,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
-      console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
+      emitCompilerWarning(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
     this.symbolTables.shift();
@@ -15060,7 +15061,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Multiple overloads: defer to TypeCheckTraversal
 
       const loc = this.diagLine(node.location);
-      console.log(`Warning: revert with custom error is a no-op in SolidCash${loc}. Error arguments are type-checked but not evaluated; the script simply fails unconditionally.`);
+      emitCompilerWarning(`Warning: revert with custom error is a no-op in SolidCash${loc}. Error arguments are type-checked but not evaluated; the script simply fails unconditionally.`);
     }
 
     node.args = this.visitList(node.args);
@@ -15879,7 +15880,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ? contract.constructorDef.parameters.length : contract.parameters.length;
       if ((node.property === 'creationCode' || node.property === 'runtimeCode') && ctorParamCount > 0) {
         const cloc = node.location ? ` at line ${node.location.start.line}` : '';
-        console.log(`Warning: type(${contract.name}).${node.property}${cloc} does not include constructor `
+        emitCompilerWarning(`Warning: type(${contract.name}).${node.property}${cloc} does not include constructor `
           + 'arguments. On BCH the deploy redeem script prepends (not appends) constructor args, so '
           + `create2 over abi.encodePacked(${node.property}, abi.encode(args)) will not match a `
           + `new ${contract.name}(args) address; use new ${contract.name}(args) for a correct deterministic address.`);
@@ -17059,7 +17060,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       );
     }
     const loc = node.location ? ` at line ${node.location.start.line}` : '';
-    console.log(`Warning: Low-level .${node.callMode}() used${loc}. Low-level calls bypass type safety and contract verification. Consider using typed interface calls instead.`);
+    emitCompilerWarning(`Warning: Low-level .${node.callMode}() used${loc}. Low-level calls bypass type safety and contract verification. Consider using typed interface calls instead.`);
     // Visit targetExpression for symbol resolution unless it's an interface/contract FunctionCallNode
     if (!(node.targetExpression instanceof FunctionCallNode
       && (this.interfaceMap.has(node.targetExpression.identifier.name)
@@ -17082,7 +17083,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     const loc = node.location ? ` at line ${node.location.start.line}` : '';
     if (!node.synthesizedFromLibraryCall) {
-      console.log(`Warning: Low-level .${node.callMode}() used${loc}. Low-level calls bypass type safety and contract verification. Consider using typed interface calls instead.`);
+      emitCompilerWarning(`Warning: Low-level .${node.callMode}() used${loc}. Low-level calls bypass type safety and contract verification. Consider using typed interface calls instead.`);
     }
     // Visit targetExpression for symbol resolution unless it's an interface/contract FunctionCallNode
     if (!(node.targetExpression instanceof FunctionCallNode

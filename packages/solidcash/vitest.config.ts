@@ -2,6 +2,8 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // Vitest 5 clears mock call history before every test. This suite reads history recorded in hooks.
+    clearMocks: false,
     environment: 'node',
     // Tests are authored in TypeScript. Build output can exist beside sources in a development worktree; never
     // discover those stale JavaScript copies as a second, independently scheduled version of the same test.

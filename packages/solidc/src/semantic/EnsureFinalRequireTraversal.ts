@@ -48,6 +48,7 @@ import {
   EmptyFunctionError, FinalRequireStatementError, MissingReturnError, ReturnInExternalFunctionError,
   UnauthenticatedSelfdestructError, UnauthorizedLifecycleError,
 } from '../Errors.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 export default class EnsureFinalRequireTraversal extends AstTraversal {
   private isStatefulContract: boolean = false;
@@ -228,7 +229,7 @@ export function fallsOffEndCheck(freeFunctions: FunctionDefinitionNode[]): (fn: 
 function warnOrThrowUnverified(node: Node, strict: boolean): void {
   if (strict) throw new FinalRequireStatementError(node);
   const line = node.location?.start?.line;
-  console.log(`Warning: a spending path${line ? ` near line ${line}` : ''} performs no require()/verification `
+  emitCompilerWarning(`Warning: a spending path${line ? ` near line ${line}` : ''} performs no require()/verification `
     + 'and changes no state; it compiles as an unconditionally-spendable path. Add a require() to constrain it.');
 }
 
@@ -255,7 +256,7 @@ function checkUnauthenticatedSelfdestruct(node: FunctionDefinitionNode, allowUns
     if (!allowUnsafe) throw new UnauthenticatedSelfdestructError(sd, node.name);
 
     const line = sd.location?.start?.line;
-    console.log(`Warning: selfdestruct in '${node.name}'${line ? ` at line ${line}` : ''} sends the freed `
+    emitCompilerWarning(`Warning: selfdestruct in '${node.name}'${line ? ` at line ${line}` : ''} sends the freed `
       + 'balance to a caller-supplied address with no signature check; any caller could redirect it to '
       + 'themselves. Authenticate it (e.g. require(checkSig(s, owner))) or take the destination from contract '
       + 'state / a constant (selfdestruct(this.beneficiary)). See packages/solidc/docs/selfdestruct.md.');
@@ -285,7 +286,7 @@ function checkLifecycleAuthorization(node: FunctionDefinitionNode, allowUnsafe: 
   if (!allowUnsafe) throw new UnauthorizedLifecycleError(node, node.name, kind);
 
   const line = node.location?.start?.line;
-  console.log(`Warning: ${kind} in '${node.name}'${line ? ` at line ${line}` : ''} has no trusted-key signature `
+  emitCompilerWarning(`Warning: ${kind} in '${node.name}'${line ? ` at line ${line}` : ''} has no trusted-key signature `
     + 'check; any caller can change the contract\'s lifecycle without authorization. Add require(checkSig(s, '
     + 'owner)) with a key the caller cannot choose.');
 }

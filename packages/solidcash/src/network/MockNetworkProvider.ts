@@ -595,9 +595,12 @@ export default class MockNetworkProvider implements NetworkProvider {
     const signerNonces = new Map(
       [...this.signerCache].map(([key, signer]) => [key, signer._getTransactionNonceState()]),
     );
+    // A transaction accepted after the snapshot is rewound with the chain, so a resubmit of it applies again.
+    const accepted = new Set(this.acceptedTransactions);
     const snapshotId = `0x${(this.snapshotNonce++).toString(16)}`;
     const restore = async (): Promise<void> => {
       this.indexer.restore(snap);
+      this.acceptedTransactions = new Set(accepted);
       this.blockHeight = height;
       this.fundingNonce = fundingNonce;
       for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);

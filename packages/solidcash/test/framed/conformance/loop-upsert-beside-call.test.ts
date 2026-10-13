@@ -139,13 +139,13 @@ interface Deployed {
 
 /**
  * Deploys the callee the entry calls, then the implementation and the proxy in front of it, and runs one entry of
- * the implementation through the proxy: `initialize` by default, any entry when the caller names one, and only
- * derived - not broadcast - when the caller asks for that.
+ * the implementation through the proxy: `initialize` by default, any entry when the caller names one, and as a
+ * separate hop when the caller asks for that, which an entry that calls another contract needs.
  */
 async function deployed(source: string, options: {
   readonly entry?: string;
   readonly args?: readonly unknown[];
-  readonly broadcast?: boolean;
+  readonly initializeAs?: 'hop';
 } = {}): Promise<Deployed> {
   const artifacts = compileStringMulti(source, { composition: 'framed' });
   const impl = artifacts.Impl!;
@@ -188,12 +188,11 @@ async function deployed(source: string, options: {
     },
     externals: { IOther: { artifact: callee, categoryId: CALLEE_CATEGORY } },
     callerLockingBytecode: deployerLock,
-    ...(options.broadcast === false ? {} : {
-      callerFunding: { utxo: hopCoin, funder: callerFunder, changeAddress: funderContract.address },
-    }),
+    ...(options.initializeAs === undefined ? {} : { initializeAs: options.initializeAs }),
+    callerFunding: { utxo: hopCoin, funder: callerFunder, changeAddress: funderContract.address },
     vm: compositionMachine(),
   });
-  if (options.broadcast !== false) expect(deployment.initialize.broadcast).toBeDefined();
+  expect(deployment.initialize.broadcast).toBeDefined();
   return {
     network, impl, callee, deployment,
     funded: {
@@ -346,9 +345,10 @@ describe('the mapping node of the same shape, through the same path', () => {
 
 describe('a mapping loop whose own body reaches a call, through the same path', () => {
   it('declares the loop\'s write in the segments its turns publish, and the frame accepts them', async () => {
-    // Derived rather than broadcast: the assertion is the machine's verdict on every frame of the hop.
+    // The entry calls another contract, which the proxy's genesis cannot carry, so it runs as a separate hop. The
+    // assertion is the machine's verdict on every frame of that hop.
     const run = await deployed(LOOP_CALLS_SOURCE, {
-      entry: 'move', args: [[hexToBin(KEY)], AMOUNT], broadcast: false,
+      entry: 'move', args: [[hexToBin(KEY)], AMOUNT], initializeAs: 'hop',
     });
     // The artifact states where each turn writes: the segment the loop's site's call closes, and no entry-wide one.
     expect((publishedWrites(run.impl, 'move').writeSegments ?? []) as readonly unknown[])

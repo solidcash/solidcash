@@ -77,9 +77,12 @@ describe('kernel graph result dependencies', () => {
     expect(artifact.bytecode.replace(/\s+/g, '')).toContain('OP_INVOKE');
 
     const invokeDebug = artifact.debug.invokeDebug ?? {};
-    const projectionBytecode = binToHex(scriptToBytecode(compileAddressToEvmIdentity()));
+    // The 12-zero-byte prefix check may be outlined into its own helper once the contract pushes that word twice.
+    const zeroWord = binToHex(scriptToBytecode([new Uint8Array(12)]));
+    const [head, tail] = binToHex(scriptToBytecode(compileAddressToEvmIdentity())).split(zeroWord);
+    const projection = new RegExp(`^${head}(?:${zeroWord}|(?:5[1-9a-f]|60|01[0-9a-f]{2})8a)${tail}$`);
     const projectionHelper = Object.entries(invokeDebug)
-      .find(([, entry]) => entry.bytecode === projectionBytecode);
+      .find(([, entry]) => projection.test(entry.bytecode));
     expect(projectionHelper).toBeDefined();
     const projectionInvocation = bytecodeToAsm(scriptToBytecode([
       encodeInt(BigInt(projectionHelper![0])), Op.OP_INVOKE,

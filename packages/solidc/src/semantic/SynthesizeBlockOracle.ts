@@ -16,6 +16,56 @@ import { NullaryOperator, BinaryOperator } from '../ast/Operator.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { emitCompilerWarning } from '../warnings.js';
+import { collectNamedFunctionClosure, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
+
+/** The block.* reads that slice the oracle commitment. basefee and blobbasefee lower to two of them. */
+const ORACLE_FIELDS = new Set<NullaryOperator>([
+  NullaryOperator.BLOCK_NUMBER,
+  NullaryOperator.BLOCK_TIMESTAMP,
+  NullaryOperator.BLOCK_DIFFICULTY,
+  NullaryOperator.BLOCK_SIZE,
+  NullaryOperator.BLOCK_TOTAL_FEES,
+  NullaryOperator.BLOCK_COINBASE,
+]);
+
+/** Whether a body slices the oracle itself, before or after basefee lowering. */
+export function readsBlockOracle(fn: FunctionDefinitionNode): boolean {
+  if (fn.usesBlockOracle === true) return true;
+  let found = false;
+  walkInvocationAst(fn.body, (node) => {
+    if (node instanceof NullaryOpNode && (ORACLE_FIELDS.has(node.operator)
+      || node.operator === NullaryOperator.BLOCK_BASEFEE
+      || node.operator === NullaryOperator.BLOCK_BLOBBASEFEE)) found = true;
+  });
+  return found;
+}
+
+/**
+ * A reader takes the oracle index as a hidden parameter, so every caller has to carry it to forward it.
+ * Mark the named-call closure of each reader, which also reaches a generated message-bus route through its
+ * handler calls. Runs after the route exists and before SymbolTableTraversal injects the parameter.
+ */
+export function markBlockOracleCallers(
+  contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[],
+): void {
+  const bodies = [
+    ...contract.functions, ...freeFunctions, contract.constructorDef, contract.fallbackDef, contract.receiveDef,
+  ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+  const byName = new Map<string, FunctionDefinitionNode[]>();
+  const readers = new Set<string>();
+  for (const fn of bodies) {
+    byName.set(fn.name, [...(byName.get(fn.name) ?? []), fn]);
+    if (readsBlockOracle(fn)) readers.add(fn.name);
+  }
+  if (readers.size === 0) return;
+  const directCalls = new WeakMap<FunctionDefinitionNode, Set<string>>();
+  for (const fn of bodies) {
+    if ([...collectNamedFunctionClosure(fn, byName, directCalls)].some((name) => readers.has(name))) {
+      fn.usesBlockOracle = true;
+    }
+  }
+  contract.usesBlockOracle = true;
+}
 
 /**
  * Oracle-backed `block.*` reads.
@@ -180,12 +230,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   }
 
   visitNullaryOp(node: NullaryOpNode): Node {
-    if (node.operator === NullaryOperator.BLOCK_NUMBER
-      || node.operator === NullaryOperator.BLOCK_TIMESTAMP
-      || node.operator === NullaryOperator.BLOCK_DIFFICULTY
-      || node.operator === NullaryOperator.BLOCK_SIZE
-      || node.operator === NullaryOperator.BLOCK_TOTAL_FEES
-      || node.operator === NullaryOperator.BLOCK_COINBASE) {
+    if (ORACLE_FIELDS.has(node.operator)) {
       this.fnUsesOracle = true;
       if (node.operator === NullaryOperator.BLOCK_TIMESTAMP) {
         this.warnShim('block.timestamp', 'Warning: block.timestamp is the last value the oracle owner wrote, '

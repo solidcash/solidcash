@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import path from 'path';
+import { asmToScript, scriptToBytecode } from '@solidcash/utils';
 import { compileFile, compileFileMulti } from '../src/compileFile.js';
 import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corpus.js';
 
@@ -85,10 +86,12 @@ describe.skipIf(contractsRoot === undefined)('MarketplaceV1 publishJobPost upser
     const hex = target.functionBodies?.bdb10816;
     expect(typeof hex).toBe('string');
     const body = hex as string;
-    // A delegate's records are bound to the proxy master's lock, so it builds the whitelist entry address inline:
-    // the shared address helper binds the executing input's lock. The body pushes the whitelist collection hash
-    // itself and retains the predecessor displacement ceil(jobsLen/120): encodeInt(119) ADD encodeInt(120) DIV.
-    expect(body).toContain('1409e7d00ab6cd5795b2a4fa3db718efbdb374cbaf');
+    // A delegate's records are bound to the proxy master's lock. The collection's shared address helper takes that
+    // lock from the stack, so the whitelist collection hash is pushed once in the script, not in this body. The body
+    // retains the predecessor displacement ceil(jobsLen/120): encodeInt(119) ADD encodeInt(120) DIV.
+    const whitelistHash = '1409e7d00ab6cd5795b2a4fa3db718efbdb374cbaf';
+    expect(body).not.toContain(whitelistHash);
+    expect(Buffer.from(scriptToBytecode(asmToScript(target.bytecode))).toString('hex')).toContain(whitelistHash);
     expect(body).toContain('017793017896');
   });
 

@@ -1586,6 +1586,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private subroutineDefined = new Map<bigint, boolean>();
   private subroutineUseCount = new Map<bigint, number>();
   private subroutineDependencies = new Map<bigint, Set<bigint>>();
+  /** Address helpers whose body takes the bound lock on top: `[...operands, lock]` -> `[lbc]`. */
+  private lockParameterisedHelperIds = new Set<bigint>();
+  /** The value-chunk address helper, `[category, lock, domain]` -> `[lbc]`, once defined. */
+  private valueChunkAddressId: bigint | undefined;
+  /** The data-record address helper, `[lock, category]` -> `[lbc]`, once defined. */
+  private dataNftAddressId: bigint | undefined;
   private structSkipIds = new Map<string, bigint>();
   private structSkipTypes = new Map<string, StructType | ArrayType>();
   private structFieldPrefixIds = new Map<string, bigint>();
@@ -1725,6 +1731,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly KERNEL_JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID = -16n;
   private static readonly WIDE_PUSHDATA_DECODE_SUBROUTINE_ID = -17n;
   private static readonly SORTED_INT_READ_SUBROUTINE_ID = -18n;
+  /**
+   * Use-count keys for an address build that binds a lock other than the executing input's (a delegate's proxy, or
+   * an explicit lock). Counted by the probe, never emitted: no helper identifier is this negative.
+   */
+  private static readonly LOCKED_USE_KEY_BASE = -(1n << 256n);
+  private static readonly LOCKED_SATOSHI_LBC_USE_KEY = GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - 8n;
+  private static readonly LOCKED_TOKEN_LBC_USE_KEY = GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - 9n;
+  /** Every value-chunk or data-record address build, whatever its lock: neither has an executing-input form. */
+  private static readonly VALUE_CHUNK_ADDRESS_USE_KEY = GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - 1n;
+  private static readonly DATA_NFT_ADDRESS_USE_KEY = GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - 2n;
+  private static lockedEntryAddressUseKey(collectionHashHex: string): bigint {
+    return GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - (1n << 160n) - BigInt(`0x${collectionHashHex}`);
+  }
+
   /**
    * Captured subroutines that keep being extracted even when outlining could reach them - which is all of
    * them. DO NOT DEFER THESE TO OUTLINING; the experiment has been run, per subroutine, and it does not hold.
@@ -1980,6 +2000,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let next = this.compactHelperIds.next;
     while (next === 0n || this.compactHelperIds.used.has(next)) next -= 1n;
     return encodeDataPush(encodeInt(next)).length;
+  }
+
+  /** The id `allocateCompactHelperId` hands out next, without drawing it. */
+  private peekCompactHelperId(): bigint {
+    const cheap = this.isSubroutineUseProbe ? undefined
+      : this.compactHelperIds.cheap.find((id) => !this.compactHelperIds.used.has(id));
+    if (cheap !== undefined) return cheap;
+    let next = this.compactHelperIds.next;
+    while (next === 0n || this.compactHelperIds.used.has(next)) next -= 1n;
+    return next;
   }
 
   // State-related tracking
@@ -2731,12 +2761,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.getStackIndex('__internal__proxyMasterIndex', true) >= 0;
   }
 
-  /** `[category]` -> `[lock, category]`: the lock of the input holding this body's minting baton. */
-  private emitRecordMasterLockUnder(locationData: SingleLocationData): void {
-    if (this.recordsBelongToProxyMaster()) this.emitMasterInputIndex(locationData);
+  /** Push the lock of the input holding this body's minting baton. `untracked` counts untracked items on top. */
+  private emitRecordMasterLock(locationData: SingleLocationData, untracked = 0): void {
+    if (this.recordsBelongToProxyMaster()) this.emitMasterInputIndex(locationData, untracked);
     else this.emit(Op.OP_INPUTINDEX, locationData);
     this.emit(Op.OP_UTXOBYTECODE, locationData);
+  }
+
+  /** `[category]` -> `[lock, category]`: the lock of the input holding this body's minting baton. */
+  private emitRecordMasterLockUnder(locationData: SingleLocationData): void {
+    this.emitRecordMasterLock(locationData);
     this.emit(Op.OP_SWAP, locationData);
+  }
+
+  /**
+   * `[...operands]` -> `[lbc]` through a shared address helper, feeding a lock-parameterised body this body's
+   * record master lock. An executing-input body cannot serve a site binding another lock (a delegate's proxy):
+   * such a site counts toward the lock-parameterised form and stays inline. False when nothing was emitted.
+   */
+  private invokeAddressHelper(
+    id: bigint, lockedUseKey: bigint, untracked: number, locationData: SingleLocationData,
+  ): boolean {
+    if (this.lockParameterisedHelperIds.has(id) && this.subroutineDefined.get(id)) {
+      this.emitRecordMasterLock(locationData, untracked);
+      return this.invokeSubroutineIfDefined(id, locationData);
+    }
+    if (this.recordsBelongToProxyMaster()) {
+      if (this.directConvention && !this.framedMaster) this.bumpSubroutineUse(lockedUseKey);
+      return false;
+    }
+    return this.invokeSubroutineIfDefined(id, locationData);
   }
 
   /** Select the execution-resource block authorized by the delegate prologue. */
@@ -4898,6 +4952,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       binToHex(computeCollectionHash(computeCollectionSignature(c.name, c.type.toString()))),
       this.allocateCompactHelperId(),
     ]));
+    this.lockParameterisedHelperIds = new Set();
+    this.valueChunkAddressId = undefined;
+    this.dataNftAddressId = undefined;
     this.dataNftCount = node.stateVariables.length > 0
       ? Math.max(...node.stateVariables.map((sv) => sv.nftIndex)) + 1
       : 0;
@@ -5080,16 +5137,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.capturedSubroutineIsProfitable(CATEQ, count(CATEQ), emitCateq)) {
       spans.push({ id: CATEQ, span: this.defineCapturedSubroutine(CATEQ, emitCateq, loc) });
     }
-    const SATLBC = GenerateTargetTraversalWithLocation.SATOSHI_LBC_SUBROUTINE_ID;
-    const emitSatlbc = (t: GenerateTargetTraversalWithLocation): void => t.emitSatoshiContainerLbc(loc);
-    if (this.capturedSubroutineIsProfitable(SATLBC, count(SATLBC), emitSatlbc)) {
-      spans.push({ id: SATLBC, span: this.defineCapturedSubroutine(SATLBC, emitSatlbc, loc) });
-    }
-    const TOKLBC = GenerateTargetTraversalWithLocation.TOKEN_LBC_SUBROUTINE_ID;
-    const emitToklbc = (t: GenerateTargetTraversalWithLocation): void => t.emitTokenContainerLbc(loc);
-    if (this.capturedSubroutineIsProfitable(TOKLBC, count(TOKLBC), emitToklbc)) {
-      spans.push({ id: TOKLBC, span: this.defineCapturedSubroutine(TOKLBC, emitToklbc, loc) });
-    }
+    // An address helper's body binds the executing input's lock. Once any site binds another (a delegate's proxy
+    // master, an explicit lock), its one body takes the lock on top instead, and executing-input sites feed it
+    // OP_INPUTINDEX OP_UTXOBYTECODE: two bytes a site against a second body.
+    const defineAddressHelper = (
+      id: bigint,
+      lockedUses: number,
+      emitExecuting: (t: GenerateTargetTraversalWithLocation) => void,
+      emitLocked: (t: GenerateTargetTraversalWithLocation) => void,
+    ): void => {
+      const emitBody = lockedUses > 0 ? emitLocked : emitExecuting;
+      if (!this.capturedSubroutineIsProfitable(id, count(id) + lockedUses, emitBody)) return;
+      if (lockedUses > 0) this.lockParameterisedHelperIds.add(id);
+      spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
+    };
+    defineAddressHelper(
+      GenerateTargetTraversalWithLocation.SATOSHI_LBC_SUBROUTINE_ID,
+      count(GenerateTargetTraversalWithLocation.LOCKED_SATOSHI_LBC_USE_KEY),
+      (t) => t.emitSatoshiContainerLbc(loc),
+      (t) => t.emitLockedSatoshiContainerLbc(loc),
+    );
+    defineAddressHelper(
+      GenerateTargetTraversalWithLocation.TOKEN_LBC_SUBROUTINE_ID,
+      count(GenerateTargetTraversalWithLocation.LOCKED_TOKEN_LBC_USE_KEY),
+      (t) => t.emitTokenContainerLbc(loc),
+      (t) => t.emitLockedTokenContainerLbc(loc),
+    );
     // The verifier's field depths are relative to function-specific untracked working areas. Copying those values
     // into a canonical OP_INVOKE frame is not sound for every inherited/nested-mapping call shape (for example an
     // OZ ERC20 allowance write can copy the native signer script in place of the entry address). Keep it inline
@@ -5109,15 +5182,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     for (const [hashHex, id] of this.sortedEntryAddressIds) {
       const collectionHash = hexToBin(hashHex);
-      const emitBody = (t: GenerateTargetTraversalWithLocation): void => {
-        t.emitEntryP2sh32(collectionHash, loc);
-      };
-      if (!this.capturedSubroutineIsProfitable(id, count(id), emitBody)) continue;
-      spans.push({
+      defineAddressHelper(
         id,
-        span: this.defineCapturedSubroutine(id, emitBody, loc),
-      });
+        count(GenerateTargetTraversalWithLocation.lockedEntryAddressUseKey(hashHex)),
+        (t) => t.emitEntryP2sh32(collectionHash, loc),
+        (t) => t.emitLockedEntryAddress(collectionHash, loc),
+      );
     }
+    // Value-chunk and data-record addresses have no executing-input body: every site supplies its lock. The id is
+    // drawn only for a helper that pays, so a contract without one keeps its identifiers.
+    const defineLockSuppliedHelper = (
+      useKey: bigint, emitBody: (t: GenerateTargetTraversalWithLocation) => void,
+    ): bigint | undefined => {
+      const uses = count(useKey);
+      if (uses === 0 || !this.capturedSubroutineIsProfitable(this.peekCompactHelperId(), uses, emitBody)) {
+        return undefined;
+      }
+      const id = this.allocateCompactHelperId();
+      spans.push({ id, span: this.defineCapturedSubroutine(id, emitBody, loc) });
+      return id;
+    };
+    this.valueChunkAddressId = defineLockSuppliedHelper(
+      GenerateTargetTraversalWithLocation.VALUE_CHUNK_ADDRESS_USE_KEY,
+      (t) => t.emitLockedValueChunkAddress(loc),
+    );
+    this.dataNftAddressId = defineLockSuppliedHelper(
+      GenerateTargetTraversalWithLocation.DATA_NFT_ADDRESS_USE_KEY,
+      (t) => t.emitBoundDataNftAddress(loc),
+    );
     for (const [key, id] of this.structSkipIds) {
       const type = this.structSkipTypes.get(key)!;
       const emitBody = (t: GenerateTargetTraversalWithLocation): void => {
@@ -6260,6 +6352,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Definitions are emitted in dependency order. Let a captured helper reuse any earlier definition rather than
     // embedding that helper's body again, and record the dependency for dead-DEFINE reachability below.
     sub.subroutineDefined = new Map(this.subroutineDefined);
+    sub.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
+    sub.valueChunkAddressId = this.valueChunkAddressId;
+    sub.dataNftAddressId = this.dataNftAddressId;
     sub.structSkipIds = this.structSkipIds;
     sub.structSkipTypes = this.structSkipTypes;
     sub.structFieldPrefixIds = this.structFieldPrefixIds;
@@ -6345,6 +6440,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.compiledBytecodes = this.compiledBytecodes;
     sub.sourcePrimaryContract = this.sourcePrimaryContract;
     sub.subroutineDefined = new Map(this.subroutineDefined);
+    sub.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
+    sub.valueChunkAddressId = this.valueChunkAddressId;
+    sub.dataNftAddressId = this.dataNftAddressId;
     sub.structSkipIds = this.structSkipIds;
     sub.structSkipTypes = this.structSkipTypes;
     sub.structFieldPrefixIds = this.structFieldPrefixIds;
@@ -6790,6 +6888,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.compiledBytecodes = this.compiledBytecodes;
     subTraversal.sourcePrimaryContract = this.sourcePrimaryContract;
     subTraversal.subroutineDefined = new Map(this.subroutineDefined);
+    subTraversal.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
+    subTraversal.valueChunkAddressId = this.valueChunkAddressId;
+    subTraversal.dataNftAddressId = this.dataNftAddressId;
     // Dynamic structural helper registries are contract-wide. Sharing the maps lets independently compiled
     // function bodies allocate collision-free IDs and lets the dry-run retain the key behind every use count.
     subTraversal.structSkipIds = this.structSkipIds;
@@ -7180,6 +7281,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.compiledBytecodes = this.compiledBytecodes;
       subTraversal.sourcePrimaryContract = this.sourcePrimaryContract;
       subTraversal.subroutineDefined = new Map(this.subroutineDefined);
+      subTraversal.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
+      subTraversal.valueChunkAddressId = this.valueChunkAddressId;
+      subTraversal.dataNftAddressId = this.dataNftAddressId;
       subTraversal.structSkipIds = this.structSkipIds;
       subTraversal.structSkipTypes = this.structSkipTypes;
       subTraversal.structFieldPrefixIds = this.structFieldPrefixIds;
@@ -26225,12 +26329,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Transform the category id on top into this collection's entry P2SH32, sharing the baked covenant per contract. */
   private emitSortedEntryAddress(collectionHash: Uint8Array, loc: SingleLocationData): void {
-    // The shared body binds the executing input's lock. A delegate binds the proxy master's, inline.
+    // The shared body binds the executing input's lock, or takes it on top. A delegate binds the proxy master's,
+    // which emitBoundEntryP2sh32 feeds.
     const id = this.recordsBelongToProxyMaster()
       ? undefined : this.sortedEntryAddressIds.get(binToHex(collectionHash));
     if (id !== undefined) {
       this.bumpSubroutineUse(id);
       if (this.subroutineDefined.get(id)) {
+        if (this.lockParameterisedHelperIds.has(id)) this.emitRecordMasterLock(loc);
         this.emit(encodeInt(id), loc);
         this.emit(Op.OP_INVOKE, loc);
         return;
@@ -41995,6 +42101,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, locationData);
   }
 
+  /** `[rawCategory, rawLock]` -> `[encLock, encCategory]`: a shared address body's operands. */
+  private encodeTopLockAndCategory(locationData: SingleLocationData): void {
+    this.emit(hexToBin('23'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(hexToBin('20'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+  }
+
   private emitDataNftLbc(locationData: SingleLocationData, bindMasterLock = false): void {
     // Auto-derived from buildDataNftCovenantScript so this mirror can never drift from state.ts.
     if (!bindMasterLock) {
@@ -42002,6 +42119,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     // Real stack: [masterLock, category]. The lock is the untracked item under the tracked category.
+    const id = this.dataNftAddressId;
+    if (id !== undefined && this.subroutineDefined.get(id)) {
+      this.invokeSubroutineIfDefined(id, locationData);
+    } else {
+      this.bumpSubroutineUse(GenerateTargetTraversalWithLocation.DATA_NFT_ADDRESS_USE_KEY);
+      this.emitBoundDataNftAddress(locationData);
+    }
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
+  /** Data record address body: `[lock, category]` -> `[lbc]`. */
+  private emitBoundDataNftAddress(locationData: SingleLocationData): void {
     const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_v, i) => i);
     const lockPlaceholder = Uint8Array.from({ length: 35 }, (_v, i) => 0x80 + i);
     const covenant = scriptToBytecode(buildDataNftCovenantScript(categoryPlaceholder, lockPlaceholder));
@@ -42059,8 +42189,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
     this.emit(P2SH32_LBC_SUFFIX, locationData);
     this.emit(Op.OP_CAT, locationData);
-    this.popFromStack();
-    this.pushToStack('(value)');
   }
 
   /**
@@ -42071,6 +42199,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitBoundValueChunkP2sh32(
     collectionHash: Uint8Array, slotName: string, rootName: string, locationData: SingleLocationData,
   ): void {
+    const id = this.valueChunkAddressId;
+    if (id !== undefined && this.subroutineDefined.get(id)) {
+      // [category, lock, domain] for the shared body. The lock and the domain prefix sit above the category.
+      this.emitRecordMasterLock(locationData);
+      this.emit(Uint8Array.from([...VALUE_CHUNK_DOMAIN_TAG, ...collectionHash]), locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex(slotName) + 2)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex(rootName) + 2)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      this.emit(Op.OP_HASH256, locationData);
+      this.invokeSubroutineIfDefined(id, locationData);
+      return;
+    }
+    this.bumpSubroutineUse(GenerateTargetTraversalWithLocation.VALUE_CHUNK_ADDRESS_USE_KEY);
     this.emitRecordMasterLockUnder(locationData);
     this.emit(hexToBin('20'), locationData);
     this.emit(Op.OP_SWAP, locationData);
@@ -42096,6 +42240,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_ROT, locationData);
     this.emit(Op.OP_ROT, locationData);
+    this.emitBoundValueChunkCovenant(['lock', 'category', 'domain'], locationData);
+  }
+
+  /** Shared value-chunk address body: `[category, lock, domain]` -> `[lbc]`. */
+  private emitLockedValueChunkAddress(locationData: SingleLocationData): void {
+    this.emit(hexToBin('20'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(hexToBin('23'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_ROT, locationData);
+    this.emit(hexToBin('20'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emitBoundValueChunkCovenant(['domain', 'lock', 'category'], locationData);
+  }
+
+  /** The encoded lock, category and domain, in `stackOrder` (bottom to top) -> the value-chunk P2SH32. */
+  private emitBoundValueChunkCovenant(stackOrder: readonly string[], locationData: SingleLocationData): void {
     const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
     const domainPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => 0x40 + index);
     const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
@@ -42106,7 +42271,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       { token: 'category', bytes: Uint8Array.from([0x20, ...categoryPlaceholder.slice().reverse()]) },
       { token: 'domain', bytes: Uint8Array.from([0x20, ...domainPlaceholder]) },
       { token: 'lock', bytes: Uint8Array.from([0x23, ...lockPlaceholder]) },
-    ], ['lock', 'category', 'domain'], {}, locationData);
+    ], stackOrder, {}, locationData);
   }
 
   /**
@@ -42306,6 +42471,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     locationData: SingleLocationData,
     lock?: { stack: string } | { output: string } | { input: string } | 'under',
   ): void {
+    if (this.invokeLockedEntryAddress(collectionHash, locationData, lock)) {
+      this.popFromStack();
+      this.pushToStack('(value)');
+      return;
+    }
     if (lock === 'under') {
       // [lock, category] already.
     } else if (lock !== undefined && 'stack' in lock) {
@@ -42326,6 +42496,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitRecordMasterLockUnder(locationData);
     }
     this.encodeLockAndCategory(locationData);
+    this.emitBoundEntryCovenant(collectionHash, locationData);
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
+  /**
+   * A site binding a lock other than the executing input's (`lock`, or a delegate's proxy) shares the collection's
+   * address helper once its body takes the lock; until then it counts toward that form. False when nothing was
+   * emitted.
+   */
+  private invokeLockedEntryAddress(
+    collectionHash: Uint8Array,
+    locationData: SingleLocationData,
+    lock?: { stack: string } | { output: string } | { input: string } | 'under',
+  ): boolean {
+    if (lock === undefined && !this.recordsBelongToProxyMaster()) return false;
+    const hashHex = binToHex(collectionHash);
+    const id = this.sortedEntryAddressIds.get(hashHex);
+    if (id === undefined) return false;
+    if (!this.lockParameterisedHelperIds.has(id) || !this.subroutineDefined.get(id)) {
+      this.bumpSubroutineUse(GenerateTargetTraversalWithLocation.lockedEntryAddressUseKey(hashHex));
+      return false;
+    }
+    // [category] -> [category, lock]
+    if (lock === 'under') {
+      this.emit(Op.OP_SWAP, locationData);
+    } else if (lock === undefined) {
+      this.emitRecordMasterLock(locationData);
+    } else {
+      const source = 'stack' in lock ? lock.stack : 'output' in lock ? lock.output : lock.input;
+      this.emit(encodeInt(BigInt(this.getStackIndex(source))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      if ('output' in lock) this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+      if ('input' in lock) this.emit(Op.OP_UTXOBYTECODE, locationData);
+    }
+    return this.invokeSubroutineIfDefined(id, locationData);
+  }
+
+  /** Shared entry address body taking the lock: `[category, lock]` -> `[lbc]`. */
+  private emitLockedEntryAddress(collectionHash: Uint8Array, locationData: SingleLocationData): void {
+    this.encodeTopLockAndCategory(locationData);
+    this.emitBoundEntryCovenant(collectionHash, locationData);
+  }
+
+  /** `[encLock, encCategory]` -> this collection's entry P2SH32 bound to that lock. */
+  private emitBoundEntryCovenant(collectionHash: Uint8Array, locationData: SingleLocationData): void {
     const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
     const hashPlaceholder = Uint8Array.from({ length: 20 }, (_value, index) => 0xa0 + index);
     const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
@@ -42339,8 +42555,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ], ['lock', 'category'], {
       hash: Uint8Array.from([0x14, ...collectionHash]),
     }, locationData);
-    this.popFromStack();
-    this.pushToStack('(value)');
   }
 
   /**
@@ -50705,10 +50919,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., p2sh32_locking_bytecode]
    */
   private emitSatoshiContainerLbc(locationData: SingleLocationData): void {
-    // Shared as a subroutine when used >=2x; replicate the inline net effect (category -> lbc). The shared body binds
-    // the executing input's lock, so a delegate stays inline.
-    if (!this.recordsBelongToProxyMaster() && this.invokeSubroutineIfDefined(
-      GenerateTargetTraversalWithLocation.SATOSHI_LBC_SUBROUTINE_ID, locationData,
+    // Shared as a subroutine when used >=2x; replicate the inline net effect (category -> lbc). A delegate binds the
+    // proxy master's lock, which only a lock-parameterised body takes.
+    if (this.invokeAddressHelper(
+      GenerateTargetTraversalWithLocation.SATOSHI_LBC_SUBROUTINE_ID,
+      GenerateTargetTraversalWithLocation.LOCKED_SATOSHI_LBC_USE_KEY,
+      0,
+      locationData,
     )) {
       this.popFromStack();
       this.pushToStack('(value)');
@@ -50718,13 +50935,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // [category] -> [lock, category], then the covenant that requires this body's master lock.
       this.emitRecordMasterLockUnder(locationData);
       this.encodeLockAndCategory(locationData);
-      const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
-      const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
-      const covenant = scriptToBytecode(buildSatoshiContainerCovenantScript(categoryPlaceholder, lockPlaceholder));
-      this.emitBoundCovenantP2sh32(covenant, [
-        { token: 'category', bytes: Uint8Array.from([0x20, ...categoryPlaceholder.slice().reverse()]) },
-        { token: 'lock', bytes: Uint8Array.from([0x23, ...lockPlaceholder]) },
-      ], ['lock', 'category'], {}, locationData);
+      this.emitBoundSatoshiContainerCovenant(locationData);
       this.popFromStack();
       this.pushToStack('(value)');
       return;
@@ -50779,6 +50990,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  /** Shared satoshi container address body taking the lock: `[category, lock]` -> `[lbc]`. */
+  private emitLockedSatoshiContainerLbc(locationData: SingleLocationData): void {
+    this.encodeTopLockAndCategory(locationData);
+    this.emitBoundSatoshiContainerCovenant(locationData);
+  }
+
+  /** `[encLock, encCategory]` -> the satoshi container P2SH32 bound to that lock. */
+  private emitBoundSatoshiContainerCovenant(locationData: SingleLocationData): void {
+    const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
+    const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
+    const covenant = scriptToBytecode(buildSatoshiContainerCovenantScript(categoryPlaceholder, lockPlaceholder));
+    this.emitBoundCovenantP2sh32(covenant, [
+      { token: 'category', bytes: Uint8Array.from([0x20, ...categoryPlaceholder.slice().reverse()]) },
+      { token: 'lock', bytes: Uint8Array.from([0x23, ...lockPlaceholder]) },
+    ], ['lock', 'category'], {}, locationData);
+  }
+
+  /** Shared token container address body taking the lock: `[masterCat, tcCat, lock]` -> `[lbc]`. */
+  private emitLockedTokenContainerLbc(locationData: SingleLocationData): void {
+    this.emit(hexToBin('23'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_ROT, locationData);
+    this.emit(hexToBin('20'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_ROT, locationData);
+    this.emit(hexToBin('20'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emitBoundTokenContainerCovenant(locationData);
+  }
+
+  /** `[encLock, encMaster, encToken]` -> the token container P2SH32 bound to that lock. */
+  private emitBoundTokenContainerCovenant(locationData: SingleLocationData): void {
+    const master = Uint8Array.from({ length: 32 }, (_value, index) => index);
+    const token = Uint8Array.from({ length: 32 }, (_value, index) => 0x40 + index);
+    const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
+    const covenant = scriptToBytecode(buildTokenContainerCovenantScript(master, token, lockPlaceholder));
+    this.emitBoundCovenantP2sh32(covenant, [
+      { token: 'master', bytes: Uint8Array.from([0x20, ...master.slice().reverse()]) },
+      { token: 'token', bytes: Uint8Array.from([0x20, ...token]) },
+      { token: 'lock', bytes: Uint8Array.from([0x23, ...lockPlaceholder]) },
+    ], ['lock', 'master', 'token'], {}, locationData);
+  }
+
   // ===== Token Container Support =====
 
   /**
@@ -50790,10 +51047,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Does NOT track stack - caller must manage push/pop. `untracked` counts the untracked items on top at entry.
    */
   private emitTokenContainerLbc(locationData: SingleLocationData, untracked = 0): void {
-    // Shared as a subroutine when used >=2x; like the inline body, leaves stack tracking to caller. The shared body
-    // binds the executing input's lock, so a delegate stays inline.
-    if (!this.recordsBelongToProxyMaster() && this.invokeSubroutineIfDefined(
-      GenerateTargetTraversalWithLocation.TOKEN_LBC_SUBROUTINE_ID, locationData,
+    // Shared as a subroutine when used >=2x; like the inline body, leaves stack tracking to caller. A delegate binds
+    // the proxy master's lock, which only a lock-parameterised body takes.
+    if (this.invokeAddressHelper(
+      GenerateTargetTraversalWithLocation.TOKEN_LBC_SUBROUTINE_ID,
+      GenerateTargetTraversalWithLocation.LOCKED_TOKEN_LBC_USE_KEY,
+      untracked,
+      locationData,
     )) {
       return;
     }
@@ -50816,15 +51076,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_CAT, locationData);
       this.emit(Op.OP_ROT, locationData);
       this.emit(Op.OP_ROT, locationData);
-      const master = Uint8Array.from({ length: 32 }, (_value, index) => index);
-      const token = Uint8Array.from({ length: 32 }, (_value, index) => 0x40 + index);
-      const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
-      const covenant = scriptToBytecode(buildTokenContainerCovenantScript(master, token, lockPlaceholder));
-      this.emitBoundCovenantP2sh32(covenant, [
-        { token: 'master', bytes: Uint8Array.from([0x20, ...master.slice().reverse()]) },
-        { token: 'token', bytes: Uint8Array.from([0x20, ...token]) },
-        { token: 'lock', bytes: Uint8Array.from([0x23, ...lockPlaceholder]) },
-      ], ['lock', 'master', 'token'], {}, locationData);
+      this.emitBoundTokenContainerCovenant(locationData);
       return;
     }
     // Token container covenant script (must match buildTokenContainerCovenantScript in state.ts):

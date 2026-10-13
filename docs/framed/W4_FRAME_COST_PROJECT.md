@@ -99,6 +99,37 @@ The second row needs more cost than any single input can ever fund: the maximum 
   structural move (outlining the mutually-exclusive arms so the VM dispatches past them without losing their
   bytes from the control length), which must be built and measured as one change, not incrementally.
 
+- 2026-10-13, second increment (branch `feat/hunt-d26`, base `fc44df38a`): five of the six settle at 64 frames.
+  Profile at base, title 1 per frame (~600 charged instructions): frame loop ~270 (commitment encode 48, record
+  pushdata wrap 50, per-record event lock rebuild 24 + HASH256, count bump 16, loop control and rebinding ~70),
+  settlement ~180 per record (four-kind dispatch 98 of which 53 stepped over, pushdata decode 51, checks 32),
+  census ~130 per output (immutable-NFT pin ~100, two shared output scans ~31). Cuts, all in
+  `GenerateTargetTraversal.ts`, direct convention only (framed bytes untouched):
+  1. An events-only, unchunked stream keeps compact records (the commitment, plus a one-byte lock ordinal when it
+     mixes events); its verifier builds each event lock once and runs the effect verifier's event checks in the
+     same order. Transfer and chunked streams keep the tagged records.
+  2. The immutable-NFT pin steps over `[start, end)`: its own span clause admits every output there.
+  3. A 14..17-deep replace inside a while body uses the ROLL rotation, not the counted alt-stack loops.
+  4. Compact-stream int event arguments use a 47-instruction flat encoder (the generic ladder became 83 once the
+     outliner inlined its push frame), same encoding for every input.
+
+  | title | base cost / budget | now cost / budget |
+  |---|---:|---:|
+  | guarded tail-call stream | 4,032,737 / 3,241,600 | 1,931,872 / 2,906,400 |
+  | pre-only affine parameters | 9,642,515 / 3,580,800 | 3,819,340 / 3,288,800 |
+  | every pre-recursion frame | 3,884,596 / 3,260,800 | 1,794,891 / 2,966,400 |
+  | mixed pre-order and post-descent | 6,595,267 / 3,292,800 | 2,468,363 / 2,983,200 |
+  | affine-counter progression | 7,316,296 / 3,424,800 | 2,784,016 / 3,110,400 |
+  | recursive event domain step (KernelLoopCompose) | 4,116,185 / 3,492,000 | 1,994,457 / 3,227,200 |
+
+  The pre-only title fits 54 frames (3,241,490 / 3,288,800; 57,785 per frame). Its ~577 instructions per frame:
+  argument encoding 168 (3.5 args, the PUSHDATA1/2 arm is stepped over on every call), parameter rebinding at
+  depth 13-15 ~98, the lowered tail recursion's loop control ~51, settlement ~77, count bumps ~36, shared output
+  scans ~47. Next levers: that arm out of line (~52), a do-while lowering with the continue flag on top (~40),
+  shallow loop-carried parameters. The mixed and affine-counter titles now reach their inexact-descend check,
+  which the affine frame guard refuses at derivation (as `424fea1b1` recorded for the non-void title; measured
+  the same for the pre-only title); the three tests assert that.
+
 ## Risks
 
 - Any emission change moves pinned sizes across the kernel corpus; that is the largest cost of this project.

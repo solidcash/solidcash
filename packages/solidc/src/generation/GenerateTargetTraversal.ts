@@ -27154,9 +27154,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A later long write concatenates, so every lock stays admitted. A new stack slot would shift the
     // fixed depths of the entry-output commitment check.
     const chunkBase = '__internal__valueChunkOutputBase';
-    if (this.getStackIndex(chunkBase, true) >= 0) {
-      const bottom = this.stack.length - this.getStackIndex(chunkBase);
-      this.emit(encodeInt(BigInt(this.getStackIndex(chunkBase))), loc);
+    // An invoked handler appends to the route's band copy, which the route's census reads. Its own argument copy
+    // is dropped on return, and its frame model has no stable bottom: the caller's frame lies below it.
+    const bandOrdinal = this.isDefineSubTraversal ? this.declaredBandOrdinal(chunkBase) : undefined;
+    if (bandOrdinal !== undefined || (!this.isDefineSubTraversal && this.getStackIndex(chunkBase, true) >= 0)) {
+      const bottom = bandOrdinal ?? this.stack.length - this.getStackIndex(chunkBase);
+      if (bandOrdinal !== undefined) {
+        this.emit(Op.OP_DEPTH, loc);
+        this.emit(encodeInt(BigInt(bandOrdinal)), loc);
+        this.emit(Op.OP_SUB, loc);
+      } else this.emit(encodeInt(BigInt(this.getStackIndex(chunkBase))), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_DUP, loc);
       this.emit(Op.OP_SIZE, loc);

@@ -250,6 +250,7 @@ import {
   StateVariableNameCollisionError, TernaryTypeMismatchError, NestedSelfdestructError,
   UnsupportedTypeError, VersionError,
 } from '../Errors.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 // Compound-assignment operators desugared to `target <binop> rhs`.
 const COMPOUND_OPS: Record<string, BinaryOperator> = {
@@ -295,7 +296,7 @@ let warnedFixedPoint = false;
 function warnFixedPointOnce(): void {
   if (warnedFixedPoint) return;
   warnedFixedPoint = true;
-  console.log('Warning: fixed-point (fixed/ufixed types, decimal literals) is not implemented in Solidity '
+  emitCompilerWarning('Warning: fixed-point (fixed/ufixed types, decimal literals) is not implemented in Solidity '
     + '(solc: "Fixed point types not implemented"); solidcash compiles it with its own decimal-scaled-integer '
     + 'implementation, which differs - do not assume cross-compiler parity.');
 }
@@ -5675,7 +5676,7 @@ export default class AstBuilder
       }
       const loc = Location.fromCtx(ctx);
       const line = this.diagLine(loc.start?.line);
-      console.log(
+      emitCompilerWarning(
         `Warning: hex literal '${hexString}'${line} has an odd number of digits; its last nibble will be `
         + `zero-extended into a full byte (0x${hexContent} -> 0x${binToHex(hexToBin(hexContent))}). `
         + 'Use an even number of hex digits.',
@@ -7936,7 +7937,7 @@ export default class AstBuilder
       } else if (name === 'gas') {
         options.gas = expr;
         const line = this.diagLine(opt.start?.line);
-        console.log(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
+        emitCompilerWarning(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
       } else {
         throw new ParseError(
           `Unknown call option '${name}'. Only 'value', 'salt', and 'gas' are supported`,
@@ -7967,7 +7968,7 @@ export default class AstBuilder
     } else if (optName === 'gas') {
       callOpts.gas = optExpr;
       const line = this.diagLine(ctx.start?.line);
-      console.log(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
+      emitCompilerWarning(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
     } else {
       throw new ParseError(
         `Unknown legacy call option '.${optName}(..)'. Only 'value' and 'gas' are supported`,
@@ -8067,7 +8068,7 @@ export default class AstBuilder
       // on BCH, so they are inert and dropped (like the other EVM shims).
       const optNote = callOpts ? ' ({value}/{gas} call options are inert on a self-call and ignored)' : '';
       const spelling = selfCastReceiver ? `${object.identifier.name}(this).${methodName}` : `this.${methodName}`;
-      console.log(`Warning: '${spelling}(...)'${line} is an external self-call in Solidity; on BCH it is a `
+      emitCompilerWarning(`Warning: '${spelling}(...)'${line} is an external self-call in Solidity; on BCH it is a `
         + `direct internal call to '${methodName}' (no separate calldata, msg.sender is not re-set to self)${optNote}.`);
       const id = new IdentifierNode(methodName);
       id.location = Location.fromCtx(ctx);

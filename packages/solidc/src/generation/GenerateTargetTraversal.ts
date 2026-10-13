@@ -264,6 +264,7 @@ import {
   isSignReinterpretCast,
   getFixedWidth,
 } from './utils.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 /** Stack indices to drop, in execution order, so an inactive branch matches active cleanup with duplicates. */
 export function inactiveBranchDropIndices(stackBefore: readonly string[], stackAfter: readonly string[]): number[] {
@@ -12822,7 +12823,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // No-op: catch blocks produce no bytecode (Bitcoin Script cannot recover from opcode failures)
     if (_node.block.statements && _node.block.statements.length > 0) {
       const line = _node.location ? ` at line ${_node.location.start.line}` : '';
-      console.log(`Warning: catch clause${line} is dead code and will be ignored at runtime. Unlike Solidity, `
+      emitCompilerWarning(`Warning: catch clause${line} is dead code and will be ignored at runtime. Unlike Solidity, `
         + 'Bitcoin Script has no exception recovery: if the try expression fails, the whole transaction '
         + 'is invalid and the catch block never runs.');
     }

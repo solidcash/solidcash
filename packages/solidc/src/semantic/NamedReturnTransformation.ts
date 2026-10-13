@@ -15,6 +15,7 @@ import { createDefaultValueExpression } from '../ast/defaults.js';
 import { blockEndsWithReturn } from './EarlyReturnTransformation.js';
 import { fallsOffEndCheck } from './EnsureFinalRequireTraversal.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 /**
  * Empty-body VOID function (e.g. `receive() external payable {}`, an empty payable `deposit()`, an empty internal
@@ -30,7 +31,7 @@ export function synthesizeEmptyVoidBody(node: FunctionDefinitionNode): boolean {
   }
   const isReceiveOrFallback = node.name === '__receive' || node.name === '__fallback';
   const label = isReceiveOrFallback ? (node.name === '__receive' ? 'receive()' : 'fallback()') : `${node.name}()`;
-  console.warn(`Warning: ${label} has an empty body; SolidCash synthesizes a state-preserving no-op spend `
+  emitCompilerWarning(`Warning: ${label} has an empty body; SolidCash synthesizes a state-preserving no-op spend `
     + 'path (require(true)). Add explicit logic if it should do more.');
   const cond = new BoolLiteralNode(true);
   cond.location = node.location;

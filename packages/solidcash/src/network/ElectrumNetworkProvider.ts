@@ -5,6 +5,7 @@ import {
   type RequestResponse,
   type ElectrumClientEvents,
 } from '@electrum-cash/network';
+import { ElectrumWebSocket } from '@electrum-cash/web-socket';
 import { type Utxo, Network } from '../interfaces.js';
 import type NetworkProvider from './NetworkProvider.js';
 import { addressToLockScript } from '../utils.js';
@@ -41,9 +42,10 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
   private instantiateElectrumClient(network: Network, options: Options): ElectrumClient<ElectrumClientEvents> {
     if ('electrum' in options) return options.electrum;
     const server = 'hostname' in options ? options.hostname : this.getServerForNetwork(network);
-    return new ElectrumClient(
-      'SolidCash Application', ELECTRUM_PROTOCOL_VERSION, server, { disableBrowserVisibilityHandling: true },
-    );
+    // 4.4 moved the old disableBrowserVisibilityHandling flag onto the websocket, where the
+    // page-hidden disconnect now defaults on. Keep the provider from dropping the socket when a tab is hidden.
+    const socket = new ElectrumWebSocket(server, { enforceConsistentBrowserBehavior: false });
+    return new ElectrumClient('SolidCash Application', ELECTRUM_PROTOCOL_VERSION, socket);
   }
 
   // Get Electrum server based on network

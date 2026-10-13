@@ -8,6 +8,7 @@ import { Location } from './Location.js';
 import { YulBlockNode } from './YulAST.js';
 import { SymbolTable, Symbol } from './SymbolTable.js';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 export type Ast = SourceFileNode;
 
@@ -2396,7 +2397,7 @@ export class DecimalLiteralNode extends LiteralNode<string> {
     const [intPart, fracPart = ''] = abs.split('.');
     if (fracPart.length > decimals) {
       const loc = this.location ? ` at line ${this.location.start.line}` : '';
-      console.log(
+      emitCompilerWarning(
         `Warning: decimal literal '${this.value}'${loc} has ${fracPart.length} fractional digits `
         + `but the target type only supports ${decimals}. Truncating to ${decimals} digits.`,
       );

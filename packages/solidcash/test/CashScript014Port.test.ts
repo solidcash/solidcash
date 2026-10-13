@@ -144,6 +144,19 @@ describe('SignatureTemplate', () => {
 });
 
 describe('network providers', () => {
+  it('accepts a resubmitted transaction without an error', async () => {
+    const provider = new MockNetworkProvider();
+    const utxo = randomUtxo({ satoshis: 10_000n });
+    await provider.addUtxo(aliceAddress, utxo);
+    const hex = new TransactionBuilder({ provider })
+      .addInput(utxo, alice.unlockP2PKH())
+      .addOutput({ to: bobAddress, amount: 9_000n })
+      .build();
+
+    const first = await provider.sendRawTransaction(hex);
+    await expect(provider.sendRawTransaction(hex)).resolves.toBe(first);
+  });
+
   it('the mock spends a UTXO that was added with an uppercase txid', async () => {
     const provider = new MockNetworkProvider();
     const utxo = randomUtxo({ satoshis: 10_000n });

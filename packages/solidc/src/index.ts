@@ -84,6 +84,7 @@ export { type ArtifactMap, type SplitArtifactBundle, type SplitManifest } from '
 export { createMapResolver } from './createMapResolver.js';
 export * from './ast/Location.js';
 export * from './ast/error-listeners.js';
+export { defaultWarningListener, type CompilerWarning, type WarningListener } from './warnings.js';
 
 export { version } from './version.js';
 

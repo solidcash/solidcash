@@ -75,7 +75,8 @@ export function compileAddressToEvmIdentity(): Script {
     Op.OP_ELSE,
     // Any other length is not a locking-bytecode template. A 71-byte bare multisig used to fall through
     // to "bytes 3..23", so a crafted lock compared equal to a victim's 20-byte identity.
-    Op.OP_0, Op.OP_VERIFY,
+    encodeInt(3n), Op.OP_SPLIT, encodeInt(20n), Op.OP_SPLIT,
+    Uint8Array.of(0x88, 0xac), Op.OP_EQUALVERIFY, Op.OP_SWAP, Uint8Array.of(0x76, 0xa9, 0x14), Op.OP_EQUALVERIFY,
     Op.OP_ENDIF,
     Op.OP_ENDIF,
     Op.OP_ENDIF,

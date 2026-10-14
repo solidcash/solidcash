@@ -1041,6 +1041,12 @@ deferred/chained/msg.sender-merge/insert loop state machine - the most soundness
 disproportionate to the rare bulk-LONG-value pattern. The chunk NFT is keyed by `(slot=Hk32, digest)`, so even an
 invariant value cannot share one chunk set across keys. Revisit if a real port needs bulk long values in a loop.
 
+**STATUS 2026-10-14: still fail-closed (sound, not built).** This remains the one open vmap deferral after the
+windowed-iteration work (`e6ec23c02`). A `>60 B` value in a per-iteration sorted loop still reverts at the VM (the
+loop body's inline `size<=60` assert) - never a wrong value. Building it means the interleaved `[entry][chunks]`
+output layout plus a running chunk-output counter threaded through `emitSortedUpsertLoopBody`, and SDK chunk planning
+for the loop; deferred as a separate soundness-critical pass.
+
 **Revisit if.** A real port needs bulk array-value initialization across keys in one loop, OR the upsert-loop planner
 is refactored to a value-kind-generic shape for another reason (then the bytes branch is cheap + low-risk).
 

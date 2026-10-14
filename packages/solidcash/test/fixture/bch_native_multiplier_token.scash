@@ -1,0 +1,25 @@
+pragma solidcash >=0.8.0;
+
+import { ERC20 } from "../../contracts/ERC20.scash";
+import { BchNative } from "../../contracts/BchNative.scash";
+import { BchNativeMultiplier } from "../../contracts/BchNativeMultiplier.scash";
+
+// Minimal scaled native token: one CashToken base unit backs 100 ERC20 ledger
+// units. The ledger, allowance machinery, and ERC-6093 errors come from OZ
+// ERC20 v5.6.1 exactly as in MinimalNativeToken.
+contract MultiplierToken()
+    is ERC20, BchNative, BchNativeMultiplier(100)
+{
+    function _nativeCredit(address account, uint256 amount) internal override {
+        this._totalSupply = this._totalSupply + amount;
+        this._balances[account] = this._balances[account] + amount;
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _nativeDebit(address account, uint256 amount) internal override {
+        require(this._balances[account] >= amount);
+        this._balances[account] = this._balances[account] - amount;
+        this._totalSupply = this._totalSupply - amount;
+        emit Transfer(account, address(0), amount);
+    }
+}

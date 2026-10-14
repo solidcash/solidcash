@@ -26,7 +26,7 @@ abstract contract BchNative {
     function _nativeCanUnwrap(address account) internal view virtual returns (bool) { return true; }
 
     // Direct wrap: prove the reserve grew, then credit the sibling ledger.
-    function wrap(int amount) {
+    function wrap(int amount) virtual {
         bytes32 category = this.category;
         require(amount > 0);
         address claimant = msg.sender;
@@ -40,7 +40,7 @@ abstract contract BchNative {
     }
 
     // Unwrap ledger units into bearer CashTokens.
-    function withdraw(address to, int amount) {
+    function withdraw(address to, int amount) virtual {
         bytes32 category = this.category;
         address sender = msg.sender;
         require(_nativeCanUnwrap(sender));

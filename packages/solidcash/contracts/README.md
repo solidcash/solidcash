@@ -67,6 +67,38 @@ contract MyToken(address initialOwner) is ERC20, BchNative, BlackList {
 }
 ```
 
+## `BchNativeMultiplier`
+
+`BchNativeMultiplier.scash` scales the `BchNative` reserve boundary for tokens whose ledger is expressed in
+more precision than the CashToken reserve can hold. Fungible CashToken amounts cap at the signed 64-bit
+maximum `9223372036854775807`, while an 18-decimal ERC20 ledger routinely needs more base units. Inheriting
+the multiplier compresses the ledger into the reserve: one native CashToken base unit backs `multiplier`
+ledger units, and `wrap`/`withdraw` convert with `native = ledger / multiplier`.
+
+```solidity
+import { BchNativeMultiplier } from "solidcash/contracts/BchNativeMultiplier.scash";
+
+// One native base unit = 100 ledger units, so 500 ledger units bridge 5 CashTokens.
+contract ScaledToken() is ERC20, BchNative, BchNativeMultiplier(100) {
+    function _nativeCredit(address account, uint256 amount) internal override {
+        _mint(account, amount);
+    }
+    function _nativeDebit(address account, uint256 amount) internal override {
+        _burn(account, amount);
+    }
+}
+```
+
+The multiplier is an immutable state variable set once at construction from the inheritance-list argument,
+the same pattern as `ERC20Metadata`'s name/symbol. The constructor seeds it into the initial data-NFT
+commitment and no later transaction can change it, so each deployment fixes its own scale factor. It must be
+positive, and boundary amounts must be an exact multiple of the multiplier so the reserve stays exactly
+backed; a non-multiple amount refuses at the boundary. This is the precision trade-off in one line: a
+`BchNativeMultiplier(10^12)` token supports a far larger total supply at the cost of only being able to move
+ledger amounts divisible by `10^12` across the boundary. The layer overrides only the immediate
+`wrap`/`withdraw` boundary; the optional quarantined `deposit`/`cancelDeposit` paths in `BchNativeQuarantine`
+are not scaled by it, so a token composing both layers must scale those paths itself.
+
 `BlackList.scash` is an independent optional behavior: it owns blacklist state and administration, and has no
 dependency on either ERC20 or `BchNative`. The policy hooks deliberately keep all blacklist concerns outside
 `BchNative`. Immediate tokens override only wrap/unwrap hooks. Quarantine-enabled tokens can additionally veto

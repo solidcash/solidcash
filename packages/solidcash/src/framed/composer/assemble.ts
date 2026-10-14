@@ -381,6 +381,9 @@ function requireCreatedOutputs(settled: PlannedSettlement, outputs: OutputRegion
   return [...declared];
 }
 
+/** The plan reference for a frame that has no origin: a minted genesis root and every frame it enters. */
+export const INDEX_NONE_REFERENCE = '\u0000index-none';
+
 /** Raised when a plan names an identity that has no place in the layout. */
 export class UnresolvedReferenceError extends Error {
   constructor(reference: string, what: string) {
@@ -471,6 +474,8 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
     }
     indexOf.set(user.id, user.index);
   }
+  // A genesis frame's origin is INDEX_NONE: the minted root has no P2PKH caller, and every frame it enters inherits it.
+  indexOf.set(INDEX_NONE_REFERENCE, INDEX_NONE);
   // A minted master is not an input: a callee names it by `mintedRef(output)`, the flagged reference the transcript
   // carries. Its output index is the trailing slot the minted region allocates, in plan order.
   (plan.mintedMasters ?? []).forEach((minted, position) => {

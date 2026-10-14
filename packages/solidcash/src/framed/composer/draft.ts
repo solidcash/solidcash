@@ -47,6 +47,7 @@ import {
 } from '@solidcash/utils';
 import { readComputedDeclaration } from '../deploy/declaration.js';
 import {
+  INDEX_NONE_REFERENCE,
   assembleComposition,
   bindContractValidators,
   type CompositionAssembly,
@@ -305,9 +306,6 @@ export interface DraftMaster {
    */
   readonly dispatches?: boolean;
 }
-
-/** The plan reference for a frame that has no origin: a minted genesis root and every frame it enters. */
-export const INDEX_NONE_REFERENCE = '\u0000index-none';
 
 /** The whole plan the composer lays out, assembles and hands to the derivation. */
 export interface CompositionDraftPlan {

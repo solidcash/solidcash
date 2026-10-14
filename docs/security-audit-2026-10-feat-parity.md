@@ -82,6 +82,34 @@ rewritten in place keeps balanced, so its unguarded return is sealed. Lifecycle 
 constructor are always checked. Proven at compile time only (AuditSem1FinalRequire); no VM test drives the exempt
 return paths against a hostile transaction.
 
+## Closing validation (2026-10-14)
+
+The closing run at `3dc7e8b54` completed after the atomic-bus stages and trailing-band layout fixes. The package
+runs passed 17,291 tests, with no unexpected failures:
+
+| Scope | Passed | Other outcomes |
+|---|---:|---|
+| utils | 485 | - |
+| solidc | 7,269 | - |
+| SDK non-e2e | 5,831 | 4 expected failures, 167 skipped, 5 todo |
+| SDK e2e | 3,501 | 25 skipped, 3 todo |
+| solidhat | 71 | 1 skipped |
+| testing | 107 | - |
+| testing-suite | 27 | - |
+
+Build, lint, spellcheck, source-tree guard, examples, docs snippets, application and security conformance,
+generated-project smoke and packed-package smoke passed. The reviewed corpus baseline passed at 2,720/2,805
+positive fixtures and 149/2,158 over-accepted negatives, with no status changes against feat/parity. These are
+the existing baseline's allowances, not a claim that all corpus fixtures compile or all invalid programs fail.
+The local package runs did not enable CI coverage instrumentation.
+
+The resumed session also passed `yarn test:application-regtest`: both files, all 9 tests, against BCHN v29.0.0 and
+the repository's pinned Fulcrum v2.1.3 image. The earlier host-port conflict was avoided with a temporary Compose
+project sharing the execution container's network namespace and publishing no host ports. No repository service
+configuration changed. All configured local gates have now passed; CI coverage instrumentation and the hosted
+workflow itself were not run here. Source evidence: the resumed session's `scratchpad/parity/full7-progress.txt`,
+`full7-*.txt`, `ci/f7-*.txt` and `/tmp/codex-resume7d9-application-regtest.log`.
+
 ## Residuals and findings
 
 - SDKFRAMED-2: a framed proxy initializer that calls another contract is refused by default; its `initializeAs: 'hop'`
@@ -99,5 +127,16 @@ return paths against a hostile transaction.
   predecessor; the skipped write never binds its slot witness, so a spender can choose that duplicate's `next`.
 - Found, not verified: a body invoked through `this.f()` reads mapping entries at its own layout's input slots, not
   the caller's.
-- Failing on feat/parity and on feat/per-call alike, so not from this work: KernelLoopCompose "recursive event domain
-  step and 64-frame resource bound", KernelPhysicalCallerWithScidCompose, and KernelRealUnicrowProxyArbitration.
+- Historical failures on both integration parents: KernelLoopCompose "recursive event domain step and 64-frame
+  resource bound" and KernelRealUnicrowProxyArbitration now pass in the closing run. The model-B logical-identity
+  title in KernelPhysicalCallerWithScidCompose is explicitly skipped by the user's decision; see deferrals.md.
+- Evaluated decision D30: do not implement batch-width witness binding. This is not a deferral; the evidence,
+  candidate's cost and SDK impact, and scope for future reevaluation live in [D30](framed/DECISIONS.md).
+- Event-integrity review, code-read only at `3dc7e8b54`: split/merge and unsafe paths bypass the ordinary
+  own-category immutable-output pin (`GenerateTargetTraversal.ts`, `visitFunctionDefinition`). The review identified
+  potential extra event NFTs under those policies; no hostile VM reproduction was run for this finding.
+- Event-integrity review, code-read only: the external-call exception in `emitOwnCategoryImmutableNftOutputPin`
+  admits an output matching a spent own-category immutable input. Event covenants become permissionlessly
+  spendable after 144 blocks (`packages/utils/src/state.ts`, `buildEventNftCovenantScript`), so the review identified
+  potential replay of an old log through that exception. No hostile VM reproduction was run. This and the lifecycle
+  finding predate the stream-offset change and are not resolved by D30.

@@ -110,7 +110,7 @@ describe('kernel route wide events on the runtime effect stream', () => {
     expect(events.map((event) => event.lock)).toEqual([lockOf(getEventNftAddress(salted, categoryId, narrow.signature))]);
     expect(events[0].commitment).toBe(binToHex(encodeEventCommitment(narrow.parameters, [5n])));
     const withNft = (change: (nft: { capability: 'none' | 'mutable' | 'minting'; commitment: Uint8Array }) => object):
-      LibauthTransaction => ({
+    LibauthTransaction => ({
       ...transaction,
       outputs: transaction.outputs.map((output, index) => (index === events[0].index ? {
         ...output, token: { ...output.token!, nft: { ...output.token!.nft!, ...change(output.token!.nft!) } },

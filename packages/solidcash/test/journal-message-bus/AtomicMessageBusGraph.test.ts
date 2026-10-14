@@ -678,6 +678,24 @@ describe('atomic compiled invocation graph', () => {
       .toEqual(expect.arrayContaining([4]));
   });
 
+  it('commits a streamed handler\'s event schemas to the participant policy', () => {
+    // A streamed handler publishes no `emits`; its runtime stream names the events it settles.
+    const streamed = (eventSignatures: string[]): Artifact => {
+      const base = artifact('11111111');
+      return {
+        ...base,
+        messageBus: {
+          ...base.messageBus!,
+          handlers: base.messageBus!.handlers.map((handler) => ({
+            ...handler, runtimeLoopEvents: [{ repeatCount: 1, eventSignatures, stream: true as const }],
+          })),
+        },
+      };
+    };
+    expect(messageBus.atomicParticipantPolicyHash(streamed(['A(int256)'])))
+      .not.toBe(messageBus.atomicParticipantPolicyHash(streamed(['B(int256)'])));
+  });
+
   it('projects forwarded and constructed signature arrays out of child invocation bytes', () => {
     const leafArtifact = compileString(`contract SignatureArrayLeaf() {
       function authorize(sig[] proofs, pubkey[] authorities, int amount) public {

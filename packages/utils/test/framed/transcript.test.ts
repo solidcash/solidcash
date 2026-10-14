@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   CATEGORY_LENGTH,
+  FrameKind,
   TRANSCRIPT_MAGIC,
   TRANSCRIPT_VERSION,
+  TRANSCRIPT_VERSION_MINTED,
+  decodeMintedTranscript,
   decodeTranscript,
+  encodeMintedTranscript,
   encodeTranscript,
 } from '../../src/framed/index.js';
 import { concatBytes, hexToBytes } from '../../src/framed/primitives.js';
@@ -96,5 +100,62 @@ describe('transcript rejection', () => {
       + '0103020607',
     );
     expect(decodeTranscript(encoded)).toEqual(transcript);
+  });
+});
+
+describe('minted transcript codec', () => {
+  const mintedTranscript = (): ReturnType<typeof decodeMintedTranscript> => ({
+    roots: [0],
+    masters: [1],
+    mintedMasters: [{
+      output: 5,
+      block: {
+        kind: FrameKind.ROOT,
+        callerRef: 2,
+        originRef: 2,
+        validatorRef: 0,
+        sender: hexToBytes('aa'.repeat(25)),
+        self: hexToBytes('bb'.repeat(35)),
+        value: 0n,
+        retval: new Uint8Array(),
+        calls: [],
+        segments: [[]],
+        events: [],
+        sends: [],
+      },
+    }],
+    settles: [{ category: hexToBytes(CATEGORY_A), stateInputs: [3], createdOutputs: [6] }],
+  });
+
+  it('uses the minted version after the frozen magic', () => {
+    expect(TRANSCRIPT_VERSION_MINTED).toBe(3);
+    const encoded = encodeMintedTranscript(mintedTranscript());
+    expect(Array.from(encoded.slice(0, 4))).toEqual([0x50, 0x43, 0x37, 0x03]);
+  });
+
+  it('round trips a genesis-shape transcript with an inline witness block', () => {
+    expect(decodeMintedTranscript(encodeMintedTranscript(mintedTranscript()))).toEqual(mintedTranscript());
+  });
+
+  it('rejects a version that is not the minted version', () => {
+    const bytes = encodeMintedTranscript(mintedTranscript());
+    bytes[3] = 0x02;
+    expectFramedRejection(() => decodeMintedTranscript(bytes), /unsupported minted transcript version/);
+  });
+
+  it('rejects a trailing byte', () => {
+    const bytes = concatBytes([encodeMintedTranscript(mintedTranscript()), Uint8Array.of(0x00)]);
+    expectFramedRejection(() => decodeMintedTranscript(bytes), /trailing byte/);
+  });
+
+  it('rejects a truncated inline witness block', () => {
+    const bytes = encodeMintedTranscript(mintedTranscript());
+    expectFramedRejection(() => decodeMintedTranscript(bytes.subarray(0, bytes.length - 1)), /truncated/);
+  });
+
+  it('rejects a minted master output index above the one-byte range', () => {
+    const transcript = mintedTranscript();
+    transcript.mintedMasters = [{ ...transcript.mintedMasters[0]!, output: 0x100 }];
+    expectFramedRejection(() => encodeMintedTranscript(transcript), /output index out of range/);
   });
 });

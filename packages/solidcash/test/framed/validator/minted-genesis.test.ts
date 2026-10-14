@@ -4,9 +4,8 @@
  * SDKFRAMED-2's atomic calling initialize needs a minted proxy root master: a master the transaction mints as an
  * output rather than spends, whose witness block rides in the transcript. This suite hand-lays that minimal shape —
  * a validator, its facet, a spent Writer master, and one minted proxy root that calls the Writer — and checks the
- * derivation accepts it and refuses each edge mutation. The on-chain program path for this shape is tracked in
- * `packages/solidc/docs/deferrals.md`: its V6/V7 emitters still walk the minted list as a settle list, so the
- * program is not yet run here.
+ * derivation accepts it and refuses each edge mutation, and that the on-chain program accepts the honest shape and
+ * refuses the same edge mutation.
  */
 
 import { describe, expect, test } from 'vitest';
@@ -40,6 +39,8 @@ import {
   mutableTokenShape,
   selectorOf,
 } from './fixture.js';
+import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/network/mock/index.js';
 
 /** The real program, so the addresses this transaction presents are the ones every deployed validator derives. */
 const PROGRAM = buildValidatorProgram();
@@ -227,5 +228,68 @@ describe('the minted V5 reasons are on-chain', () => {
     for (const reason of ['V5_CALLER_MISMATCH', 'V5_KIND_MISMATCH', 'V5_CALLEE_NOT_A_MASTER'] as const) {
       expect(VALIDATOR_PROGRAM_REASONS).toContain(reason);
     }
+  });
+});
+
+/** The machine's token shape for one the derivation states. */
+function vmToken(token: OutputView['token'] | InputView['token']): unknown {
+  if (token.category.length === 0) return undefined;
+  const capabilities = ['none', 'mutable', 'minting'] as const;
+  return {
+    category: token.category,
+    amount: token.amount,
+    ...(token.hasNft ? { nft: { capability: capabilities[token.capability]!, commitment: token.nftCommitment } } : {}),
+  };
+}
+
+/** How the machine decided one input of the modelled transaction, at the relaxed operation-cost density. */
+function vmVerdict(tx: FramedTransaction, inputIndex: number): { accepted: boolean; objection?: string } {
+  const vm = createVirtualMachineBch2026ForProvider(
+    new MockNetworkProvider({ consensusLimits: { operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST } }),
+  );
+  const state = vm.evaluate({
+    inputIndex,
+    sourceOutputs: tx.inputs.map((input) => ({
+      lockingBytecode: input.lockingBytecode,
+      valueSatoshis: input.value,
+      token: vmToken(input.token),
+    })),
+    transaction: {
+      version: 2,
+      locktime: 0,
+      inputs: tx.inputs.map((input) => ({
+        outpointIndex: input.outpointIndex,
+        outpointTransactionHash: input.outpointTransactionHash,
+        sequenceNumber: 0xffffffff,
+        unlockingBytecode: input.unlockingBytecode,
+      })),
+      outputs: tx.outputs.map((output) => ({
+        lockingBytecode: output.lockingBytecode,
+        valueSatoshis: output.value,
+        token: vmToken(output.token),
+      })),
+    },
+  });
+  if (vm.stateSuccess(state) === true) return { accepted: true };
+  const failure = state as { error?: unknown; errorMessage?: unknown; ip?: unknown };
+  return {
+    accepted: false,
+    objection: `input ${inputIndex} ip ${String(failure.ip)}: `
+      + `${JSON.stringify(failure.error ?? failure.errorMessage ?? Object.keys(state))}`,
+  };
+}
+
+describe('the genesis-shape transcript, decided by the on-chain program', () => {
+  test('accepts a minted proxy root whose call names the spent writer', () => {
+    const tx = transaction(writerBlock(mintedRef(3)), [honestCall()]);
+    // The facet runs first: it carries V4/V5/V6, and the head then checks the minted master's completeness.
+    for (const inputIndex of [1, 0]) {
+      expect(vmVerdict(tx, inputIndex).accepted).toBe(true);
+    }
+  });
+
+  test('refuses a minted root whose callee records a different caller', () => {
+    const tx = transaction(writerBlock(mintedRef(3)), [honestCall()]);
+    expect(vmVerdict(withWriterBlock(tx, writerBlock(2)), 1).accepted).toBe(false);
   });
 });

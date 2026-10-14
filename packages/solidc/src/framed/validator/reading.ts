@@ -13,12 +13,16 @@
 
 import {
   FramedEncodingError,
+  TRANSCRIPT_VERSION,
+  TRANSCRIPT_VERSION_MINTED,
   bytesEqual,
+  decodeMintedTranscript,
   decodeTranscript,
   decodeWitnessBlock,
   splitFirstPush,
   validatorAddress,
   validatorRedeemScript,
+  type MintedMaster,
   type Transcript,
   type WitnessBlock,
 } from '@solidcash/utils';
@@ -135,7 +139,21 @@ export interface ParsedValidator {
   readonly input: InputView;
   readonly category: Uint8Array;
   readonly transcript: Transcript;
+  /** The minted masters a genesis-shape (version 0x03) transcript carries inline; empty for version 0x02. */
+  readonly mintedMasters: readonly MintedMaster[];
   readonly redeemScript: Uint8Array;
+}
+
+/** Decodes either transcript version, rejecting any other version byte. */
+function decodeAnyTranscript(payload: Uint8Array): { transcript: Transcript; mintedMasters: MintedMaster[] } {
+  if (payload.length < 4) throw new FramedEncodingError('truncated transcript');
+  const version = payload[3];
+  if (version === TRANSCRIPT_VERSION) return { transcript: decodeTranscript(payload), mintedMasters: [] };
+  if (version === TRANSCRIPT_VERSION_MINTED) {
+    const minted = decodeMintedTranscript(payload);
+    return { transcript: minted, mintedMasters: minted.mintedMasters };
+  }
+  throw new FramedEncodingError(`unsupported transcript version: ${version}`);
 }
 
 /**
@@ -174,15 +192,18 @@ export function readValidator(transaction: FramedTransaction, context: Validator
   }
 
   let transcript: Transcript;
+  let mintedMasters: MintedMaster[];
   try {
-    transcript = decodeTranscript(pushes[0]!);
+    const decoded = decodeAnyTranscript(pushes[0]!);
+    transcript = decoded.transcript;
+    mintedMasters = decoded.mintedMasters;
   } catch (error) {
     if (error instanceof FramedEncodingError) {
       throw new CheckFailure('V2', ValidatorReason.V2_TRANSCRIPT_MALFORMED, index, error.message);
     }
     throw error;
   }
-  return { input, category, transcript, redeemScript };
+  return { input, category, transcript, mintedMasters, redeemScript };
 }
 
 /**

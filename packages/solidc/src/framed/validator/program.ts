@@ -195,6 +195,7 @@ const HEAD_CHECKS: readonly CheckEmitter[] = [
   emitRootCategory,
   emitRootsAreInputs,
   emitMasterIndices,
+  emitMintedMastersIfV3,
   emitSettledStateInputs,
   emitCompleteness,
   emitSettlementStateInputs,
@@ -492,9 +493,14 @@ function emitTranscriptHeader(e: Emitter): void {
   const O = Opcodes;
   // `[M]`: long enough for the header, then the wire name and version.
   e.op(O.OP_SIZE).count(4).op(O.OP_GREATERTHANOREQUAL, O.OP_VERIFY);
-  // The wire name is compared on a copy of the transcript's head, which `OP_DROP` leaves on the stack.
-  e.op(O.OP_DUP).count(4).op(O.OP_SPLIT, O.OP_DROP);
-  e.push(TRANSCRIPT_MAGIC).op(O.OP_EQUALVERIFY);
+  // The wire name "PC7", then a version this program understands (0x02 or the minted-master 0x03).
+  e.op(O.OP_DUP).count(3).op(O.OP_SPLIT, O.OP_DROP);
+  e.push(new Uint8Array([0x50, 0x43, 0x37])).op(O.OP_EQUALVERIFY);
+  e.op(O.OP_DUP).count(3).op(O.OP_SPLIT, O.OP_NIP);
+  e.count(1).op(O.OP_SPLIT, O.OP_DROP);
+  e.unsignedByteOnTop();
+  e.count(2).count(4).op(O.OP_WITHIN, O.OP_VERIFY);
+  e.op(O.OP_DROP);
   // `[M, rootCount, rest]`: the root count, read unsigned, and everything after it left as bytes. Converting the
   // remainder would re-encode it as a script number and drop a trailing zero, which is where an empty settle list
   // keeps its count.
@@ -603,6 +609,54 @@ function emitMasterIndices(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
   e.op(O.OP_ENDIF);
   e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+}
+
+/** Reads the transcript version byte on top of the stack, for a transcript `M` at the given depth. */
+function emitVersionOnTop(e: Emitter, depth: number): void {
+  const O = Opcodes;
+  if (depth === 0) {
+    e.op(O.OP_DUP);
+  } else {
+    e.count(depth).op(O.OP_PICK);
+  }
+  e.count(3).op(O.OP_SPLIT, O.OP_NIP);
+  e.count(1).op(O.OP_SPLIT, O.OP_DROP);
+  e.unsignedByteOnTop();
+}
+
+/** Consumes one minted master: `output:u8 block:lp16`, validating the output index and the block's shape. */
+function consumeOneMintedMaster(e: Emitter): void {
+  const O = Opcodes;
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_DUP, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  e.op(O.OP_ROT, O.OP_ROT, O.OP_DROP, O.OP_SWAP);
+  consumeWitnessBlock(e);
+}
+
+/** Consumes the minted-master list of a version-0x03 transcript, leaving the settle list. */
+function consumeMintedList(e: Emitter): void {
+  const O = Opcodes;
+  takeCount(e);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  consumeOneMintedMaster(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP);
+}
+
+/** V2: on a version-0x03 transcript, consumes the minted-master list between the masters and the settles. */
+function emitMintedMastersIfV3(e: Emitter): void {
+  const O = Opcodes;
+  emitVersionOnTop(e, 2);
+  e.count(3).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_NIP);
+  consumeMintedList(e);
+  e.count(0);
+  e.op(O.OP_ENDIF);
 }
 
 /**

@@ -17,9 +17,13 @@ import {
   bytesEqual,
   entryLeavesCommitmentUnchanged,
   frameKindName,
+  isMintedRef,
+  mintedRef,
+  mintedRefIndex,
   scriptToBytecode,
   selfIsCodeConstant,
   validatorAddress,
+  type MintedMaster,
   type RecordEntry,
   type SettledContract,
   type WitnessBlock,
@@ -47,9 +51,14 @@ export interface DerivationState {
   /** The validator's own category, which is the category of its mutable NFT. */
   category?: Uint8Array;
   transcript?: import('@solidcash/utils').Transcript;
-  /** Covered masters' witness blocks, by input index. */
+  /** The minted masters a genesis-shape (v0x03) transcript carries inline; empty for v0x02. */
+  mintedMasters: readonly MintedMaster[];
+  /**
+   * Covered masters' witness blocks, by master id: an input index for a spent master, or `mintedRef(output)` for a
+   * master minted as an output whose block the transcript carries inline.
+   */
   readonly blocks: Map<number, WitnessBlock>;
-  /** Resolved context categories (the contract whose records a master runs on), by input index. */
+  /** Resolved context categories (the contract whose records a master runs on), by master id. */
   readonly contexts: Map<number, Uint8Array>;
   masterSet: Set<number>;
   /** The contracts this validator claims to settle. */
@@ -66,6 +75,7 @@ export function createDerivationState(
     transaction,
     context,
     validatorIndex: context.validatorInputIndex,
+    mintedMasters: [],
     blocks: new Map(),
     contexts: new Map(),
     masterSet: new Set(),
@@ -92,8 +102,13 @@ function blockOf(state: DerivationState, master: number): WitnessBlock {
   return block;
 }
 
-/** The own category of a covered master. */
+/** The own category of a covered master: from its spent input, or its minted output for a genesis master. */
 function ownCategory(state: DerivationState, master: number): Uint8Array {
+  if (isMintedRef(master)) {
+    const output = outputAt(state.transaction, mintedRefIndex(master));
+    if (output === undefined) check('V5', 'V5_CALLEE_NOT_A_MASTER', master);
+    return output.token.category;
+  }
   const input = inputAt(state.transaction, master);
   if (input === undefined) check('V5', 'V5_CALLEE_NOT_A_MASTER', master);
   return input.token.category;
@@ -170,6 +185,7 @@ export function checkV1(state: DerivationState): void {
 export function checkV2(state: DerivationState): void {
   const parsed = readValidator(state.transaction, state.context);
   state.transcript = parsed.transcript;
+  state.mintedMasters = parsed.mintedMasters;
   const transcript = parsed.transcript;
   state.settleKeys = new Set(transcript.settles.map((settled) => categoryKey(settled.category)));
 
@@ -183,6 +199,12 @@ export function checkV2(state: DerivationState): void {
     if (block === undefined) check('V2', 'V2_MASTER_WITNESS_BLOCK_MALFORMED', master);
     state.blocks.set(master, block!);
   }
+  for (const minted of parsed.mintedMasters) {
+    if (outputAt(state.transaction, minted.output) === undefined) {
+      check('V2', 'V2_MASTER_INDEX_OUT_OF_RANGE', minted.output);
+    }
+    state.blocks.set(mintedRef(minted.output), minted.block);
+  }
   for (const settled of transcript.settles) {
     for (const stateInput of settled.stateInputs) {
       if (inputAt(state.transaction, stateInput) === undefined) {
@@ -192,13 +214,20 @@ export function checkV2(state: DerivationState): void {
   }
 }
 
-/** V3. `M.masters` is exactly the set of inputs that hold a minting NFT and point at this validator. */
+/**
+ * V3. `M.masters` plus the transcript's minted masters is exactly the set of covered masters: every minting input
+ * whose witness names this validator, and every minted master whose inline block names it.
+ */
 export function checkV3(state: DerivationState): void {
   const declared = transcriptOf(state).masters;
   if (new Set(declared).size !== declared.length) {
     check('V3', 'V3_DUPLICATE_MASTER', declared.find((master, at) => declared.indexOf(master) !== at));
   }
-  state.masterSet = new Set(declared);
+  const minted = state.mintedMasters.map((minted) => mintedRef(minted.output));
+  if (new Set(minted).size !== minted.length) {
+    check('V3', 'V3_DUPLICATE_MASTER', minted.find((master, at) => minted.indexOf(master) !== at));
+  }
+  state.masterSet = new Set([...declared, ...minted]);
 
   const pointing = new Set<number>();
   for (const input of state.transaction.inputs) {
@@ -214,6 +243,15 @@ export function checkV3(state: DerivationState): void {
   for (const candidate of pointing) {
     if (!state.masterSet.has(candidate)) check('V3', 'V3_MASTERS_MISSING', candidate);
   }
+  for (const mintedMaster of state.mintedMasters) {
+    const output = outputAt(state.transaction, mintedMaster.output);
+    if (output === undefined || !isMasterToken(output.token)) {
+      check('V3', 'V3_MASTER_NOT_POINTING_HERE', mintedMaster.output);
+    }
+    if (mintedMaster.block.validatorRef !== state.validatorIndex) {
+      check('V3', 'V3_MASTER_NOT_POINTING_HERE', mintedMaster.output);
+    }
+  }
 }
 
 /** V4. The roots are the covered masters entered by users, and every other covered master is called by one. */
@@ -222,7 +260,11 @@ export function checkV4(state: DerivationState): void {
   if (new Set(roots).size !== roots.length) {
     check('V4', 'V4_DUPLICATE_ROOT', roots.find((root, at) => roots.indexOf(root) !== at));
   }
-  const rootSet = new Set(roots);
+  // A minted master whose block is a ROOT frame is itself a root: a genesis root has no P2PKH caller input.
+  const mintedRoots = state.mintedMasters
+    .filter((minted) => minted.block.kind === FrameKind.ROOT)
+    .map((minted) => mintedRef(minted.output));
+  const rootSet = new Set([...roots, ...mintedRoots]);
 
   for (const master of state.masterSet) {
     const isRootFrame = blockOf(state, master).kind === FrameKind.ROOT;
@@ -236,6 +278,12 @@ export function checkV4(state: DerivationState): void {
     if (caller === undefined) check('V4', 'V4_ROOT_INPUT_MISSING', block.callerRef);
     if (!isP2pkhLock(caller!.lockingBytecode)) check('V4', 'V4_ROOT_CALLER_NOT_P2PKH', block.callerRef);
     if (block.originRef !== block.callerRef) check('V4', 'V4_ROOT_ORIGIN_MISMATCH', root);
+  }
+  for (const root of mintedRoots) {
+    const block = blockOf(state, root);
+    if (block.callerRef !== INDEX_NONE || block.originRef !== INDEX_NONE) {
+      check('V4', 'V4_ROOT_ORIGIN_MISMATCH', mintedRefIndex(root));
+    }
   }
 
   for (const master of state.masterSet) {
@@ -317,7 +365,11 @@ export function checkV5(state: DerivationState): void {
       callCounts.set(call.calleeRef, (callCounts.get(call.calleeRef) ?? 0) + 1);
     }
   }
-  const rootSet = new Set(transcriptOf(state).roots);
+  const rootSet = new Set([
+    ...transcriptOf(state).roots,
+    ...state.mintedMasters.filter((minted) => minted.block.kind === FrameKind.ROOT)
+      .map((minted) => mintedRef(minted.output)),
+  ]);
   for (const master of state.masterSet) {
     if (rootSet.has(master)) continue;
     const count = callCounts.get(master) ?? 0;
@@ -343,6 +395,9 @@ export function checkV6(state: DerivationState): void {
     }
   };
   for (const root of transcriptOf(state).roots) visit(root);
+  for (const minted of state.mintedMasters) {
+    if (minted.block.kind === FrameKind.ROOT) visit(mintedRef(minted.output));
+  }
   for (const master of state.masterSet) {
     if (!visited.has(master)) check('V6', 'V6_MASTER_UNREACHABLE', master);
   }
@@ -643,13 +698,20 @@ function inputIndexOfCategory(state: DerivationState, key: string): number | und
   return undefined;
 }
 
-/** V9. Owner policy: the first root master's category is the validator's own. */
+/**
+ * V9. Owner policy: the first root master's category is the validator's own. A genesis-shape transcript whose first
+ * root is a minted master carries a foreign category (the contract being created), so that root is exempt: the
+ * validator's own category is then bound by V1's spent-master rule instead.
+ */
 export function checkV9(state: DerivationState): void {
   const roots = transcriptOf(state).roots;
-  if (roots.length === 0) check('V9', 'V9_NO_ROOT', state.validatorIndex);
-  const first = roots[0]!;
-  if (!sameCategory(ownCategory(state, first), state.category!)) {
-    check('V9', 'V9_ROOT_CATEGORY_MISMATCH', first);
+  const firstMinted = state.mintedMasters.find((minted) => minted.block.kind === FrameKind.ROOT);
+  if (roots.length === 0 && firstMinted === undefined) check('V9', 'V9_NO_ROOT', state.validatorIndex);
+  if (roots.length > 0) {
+    const first = roots[0]!;
+    if (!sameCategory(ownCategory(state, first), state.category!)) {
+      check('V9', 'V9_ROOT_CATEGORY_MISMATCH', first);
+    }
   }
 }
 

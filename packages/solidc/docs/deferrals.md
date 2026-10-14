@@ -2191,12 +2191,15 @@ them). `minted-genesis.test.ts` now runs the real VM program and asserts it acce
 V5 caller mutation (8 tests). The composer now builds the same shape: `layout.ts` allocates a minted output region
 ahead of the events, `assemble.ts` builds the minted block and the v0x03 transcript (`buildMintedValidatorUnlockingBytecode`
 in `utils/transcript.ts`), and `draft.ts` resolves a callee's caller to `mintedRef(output)` with `INDEX_NONE_REFERENCE`
-as the sentinel origin (`minted-compose.test.ts` runs `composeDraft` and the derivation accepts it). What remains is
+as the sentinel origin (`minted-compose.test.ts` runs `composeDraft` and the derivation accepts the minimal shape,
+and assembles the full shape — a minted root that delegates to a frame creating the proxy record, with the record
+created at the trailing output the settlement names). What remains is
 the SDK genesis builder itself: `buildHopPlan` still lays the proxy master out as an input entered by the caller's
 coin, so the atomic path needs a genesis-plan variant (the proxy master minted, no caller coin, the proxy's records
-created rather than spent) plus `initializedProxyState` accepting a callee whose writes land in the callee's own
-records, and the adversarial e2e test. The direct (non-framed) deploy in `sc-deploy.ts` shares the same
-unproven-coin shape SDKFRAMED-1 closed for framed deploys; no audit row names it.
+created rather than spent — a `chainSharedNodeViews`/layout/settlement ripple) plus `initializedProxyState`
+accepting a callee whose writes land in the callee's own records, and the adversarial e2e test. The direct
+(non-framed) deploy in `sc-deploy.ts` shares the same unproven-coin shape SDKFRAMED-1 closed for framed deploys; no
+audit row names it.
 
 ## Sorted batch targets sharing a node: one key written twice (DS-6 residual, 2026-10-12)
 

@@ -29,6 +29,8 @@ export type LoadCreateBuilderIterationInputsHost = {
   readonly inner: any;
   readonly rawIterationKeysBlob: Map<string, any> | undefined;
   readonly iterationKeys: Map<string, any> | undefined;
+  /** Test hook: verbatim windowed-iteration entry co-spend (bypasses the cursor-based window planner). */
+  readonly rawWindowUtxos: Map<string, any[]> | undefined;
   /** Read the current on-chain state (lazily, only when a windowed iteration needs its cursor). */
   readonly getState?: () => Promise<Record<string, any>>;
   [key: string]: any;
@@ -131,7 +133,12 @@ export async function loadCreateBuilderIterationInputs(
       let sortedRest: { slot: Uint8Array }[] = [];
       if (coll.sorted) {
         const list = SortedList.fromUtxos(entryUtxos);
-        if (iter.windowCursor !== undefined && iter.windowBound !== undefined) {
+        const rawWindow = host.rawWindowUtxos?.get(coll.name);
+        if (rawWindow) {
+          // Test hook: use the verbatim entry co-spend (a hostile anchor or a broken chain) so the covenant's
+          // anchor-slot pin / contiguity check is exercised, not the honest planner.
+          orderedUtxos = rawWindow;
+        } else if (iter.windowCursor !== undefined && iter.windowBound !== undefined) {
           // Windowed (paginated) iteration: co-spend the anchor whose slot == cursor (HEAD for cursor 0) and the
           // next K chain successors, so the covenant walks a bounded contiguous window and writes the new cursor.
           if (!host.getState) throw new Error('windowed iteration requires getState to read the cursor');

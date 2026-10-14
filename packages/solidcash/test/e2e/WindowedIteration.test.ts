@@ -3,6 +3,7 @@ import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import { Contract } from '../../src/index.js';
 import {
   StatefulContract,
+  SortedList,
   bytesToSlotValue,
   encodeEntryCommitment,
   getDataNftAddress,
@@ -145,5 +146,47 @@ describe('Windowed (paginated) sorted-mapping iteration', () => {
     });
     const sc = StatefulContract.withCategory(contract, categoryId);
     await expect(sc.page().send()).rejects.toThrow(/chain is broken/);
+  });
+
+  // A raw-window helper: fetch the seeded entry UTXOs into a SortedList so a test can inject a HOSTILE window
+  // (wrong anchor or a skipped entry) that reaches the covenant's anchor-slot pin / contiguity checks.
+  const entriesOf = async (provider: any, contract: Contract<any, any>, categoryId: string): Promise<SortedList> => {
+    const entryAddress = getEntryNftAddress(contract.withCategory(hexToBin(categoryId)), categoryId, 'values');
+    return SortedList.fromUtxos(await provider.getUtxos(entryAddress));
+  };
+  const entryBySlot = (list: SortedList, slot: Uint8Array): any => {
+    const found = list.all.find((e) => bytesToSlotValue(e.slot) === bytesToSlotValue(slot));
+    if (!found) throw new Error(`missing entry slot ${binToHex(slot)}`);
+    return found;
+  };
+
+  it('reverts at the covenant when the anchor slot does not match the persisted cursor (skip/stale cursor)', async () => {
+    const provider = createTestProvider();
+    const contract = new Contract(artifact, [], { provider });
+    // Persist the cursor at entry 3's slot, but co-spend HEAD (slot 0) as the anchor: the covenant's
+    // `anchor.slot == cursor` OP_EQUALVERIFY must reject, not the SDK planner (the raw hook bypasses it).
+    const categoryId = await seed(provider, chain[2].slot);
+    const list = await entriesOf(provider, contract, categoryId);
+    const head = entryBySlot(list, slotValueToBytes(0n));
+    const e1 = entryBySlot(list, chain[0].slot);
+    const e2 = entryBySlot(list, chain[1].slot);
+
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    sc._setRawWindowUtxos('values', [head.utxo, e1.utxo, e2.utxo]);
+    await expect(sc.page().send()).rejects.toThrow(/Program failed an OP_VERIFY operation/);
+  });
+
+  it('reverts at the covenant when an in-window entry is omitted (broken contiguity)', async () => {
+    const provider = createTestProvider();
+    const contract = new Contract(artifact, [], { provider });
+    const categoryId = await seed(provider);
+    const list = await entriesOf(provider, contract, categoryId);
+    const head = entryBySlot(list, slotValueToBytes(0n));
+    const e1 = entryBySlot(list, chain[0].slot);
+    const e3 = entryBySlot(list, chain[2].slot); // skip chain[1] (e2)
+
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    sc._setRawWindowUtxos('values', [head.utxo, e1.utxo, e3.utxo]);
+    await expect(sc.page().send()).rejects.toThrow(/Program failed an OP_VERIFY operation/);
   });
 });

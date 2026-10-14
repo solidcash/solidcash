@@ -730,8 +730,11 @@ persisted `bytes32` register state var; first page = HEAD 0); (2) the loop is bo
 `[cursor..cursor+K]` window via `SortedList` and the covenant persists the cursor, so pages are disjoint and resumable.
 Tests: `packages/solidc/test/WindowedIteration.test.ts` (compile + metadata + cursor-type rejection) and
 `packages/solidcash/test/e2e/WindowedIteration.test.ts` (two disjoint pages that together visit every entry, exact
-per-page values, cursor = last visited slot, fail-closed on a non-present anchor and a broken in-window chain). The
-remaining vmap deferral is chunked >60 B values in a loop (its own entry).
+per-page values, cursor = last visited slot, and — via the `_setRawWindowUtxos` hook — VM-level adversarial cases: a
+wrong anchor (anchor slot != persisted cursor) and an omitted in-window entry each reject with `Program failed an
+OP_VERIFY operation`, exercising the covenant's anchor-slot pin and contiguity backstops, plus the SDK-level
+fail-closed cases for a non-present anchor and a broken chain). The remaining vmap deferral is chunked >60 B values
+in a loop (its own entry).
 
 ### 5. vmap value-shape coverage + the default entry model (2026-07-17)
 

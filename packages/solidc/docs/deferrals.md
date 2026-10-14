@@ -2088,3 +2088,21 @@ batched across transactions before the final upgrade, behind the old code's auth
 
 **Why deferred:** it is a covenant protocol for every record kind plus an SDK planner; the refusal fails closed
 meanwhile.
+
+## Logical caller identity for native compiles (model B residual, 2026-10-14)
+
+**What:** packages/solidcash/test/journal-message-bus/e2e/KernelPhysicalCallerWithScidCompose.test.ts (skipped) needs a
+nested callee to see its proxy caller by the logical CREATE/SCID lock. Today a native compile injects no SCID anchor
+witness (`__internal__msgSenderAnchorIdx` is evmCompat-only, SymbolTableTraversal.ts), so `msg.sender` is the proxy's
+physical master lock; the SDK registers a proxy root's `publicSelfIdentity` as its physical lock (StatefulContract.ts,
+upgrades.ts); and `address(this)` in a native delegate is physical (`__internal__graphSelfIdentityInput` is
+evmCompat-only). The title is red on the kernel parent too (W6_BASELINE.md).
+
+**Proposed design (model B: full locks end to end, no identity20 keys):** inject the anchor witness for native compiles
+(one hidden ABI input per native entry that reads `msg.sender`, about 45 B of anchor check per read); make a proxy
+root's `publicSelfIdentity` its SCID/CREATE lock so the SDK queues the anchor fill; un-gate the self-identity input for
+native delegates and routes; record a DECISIONS row superseding large-contract-splitting.md's "contract-origin
+`msg.sender` is the physical root" (precedent: `__internal__extcallAnchorIdx` is already injected without the gate).
+
+**Why deferred:** the user deferred the model-B migration (2026-10-05, confirmed 2026-10-14).
+

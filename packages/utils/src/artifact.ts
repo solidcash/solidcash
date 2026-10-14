@@ -897,6 +897,10 @@ export interface CollectionIterationAbi {
   collection: string;
   mode: 'entries' | 'keys' | 'values';
   iterationIndex: number;
+  /** Windowed (paginated) iteration: the register state variable holding the cursor (a 32-byte slot). */
+  windowCursor?: string;
+  /** Windowed iteration: the maximum number of entries walked per transaction. */
+  windowBound?: number;
 }
 
 export interface FunctionDebugInformation {

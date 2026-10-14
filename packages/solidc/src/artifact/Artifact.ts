@@ -4043,6 +4043,8 @@ function buildFunctionAbiMetadata(
         collection: ci.collection,
         mode: ci.mode,
         iterationIndex: ci.iterationIndex,
+        ...(ci.windowCursor !== undefined && { windowCursor: ci.windowCursor }),
+        ...(ci.windowBound !== undefined && { windowBound: ci.windowBound }),
       })),
     }),
     ...(func.dynamicReads && func.dynamicReads.length > 0 && { dynamicReads: [...func.dynamicReads] }),

@@ -1181,6 +1181,13 @@ class NftIndexCollector extends AstTraversal {
     }
     return super.visitMappingAccess(node);
   }
+
+  // A windowed iteration reads and writes its cursor register state var, so its data NFT must be in the
+  // function's block layout even though the cursor is never a StateAccessNode in the source AST.
+  visitCollectionIteration(node: CollectionIterationNode): Node {
+    if (node.windowCursorStateVar) this.indices.add(node.windowCursorStateVar.nftIndex);
+    return super.visitCollectionIteration(node);
+  }
 }
 
 interface SortedUpsertLoopContext {
@@ -13381,6 +13388,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const collection = node.collection!;
     const allKeyTypes = collection.allKeyTypes;
 
+    // Windowed (paginated) iteration only exists for the authenticated vmap (sorted) backend; a plain entry-model
+    // collection has no sorted chain to walk a bounded window over.
+    if (node.windowCursor !== undefined && !collection.sorted) {
+      throw new SortedMappingCodegenPendingError(node, collection.name,
+        `windowed iteration \`for (.. of this.${collection.name}.window(..))\` requires a sorted (vmap) mapping.`);
+    }
+
     // PRE-ALLOCATE: same as visitDoWhile/visitWhile - scan body for mutations
     const stateWriteKeys = new Set<string>();
     this.collectStateWriteKeys(node.body, stateWriteKeys);
@@ -13466,7 +13480,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // nextKey to the tail). VALUES exposes the value tail; KEYS/ENTRIES additionally verify each caller-supplied
     // key against the entry's slot=H(key) (the raw key is not on-chain). See emitSortedIterationLinkage.
     if (collection.sorted) {
-      this.emitSortedIterationLinkage(node, iterIdx, locationData, endLocationData);
+      if (node.windowCursor !== undefined) {
+        this.emitWindowedSortedIteration(node, iterIdx, locationData, endLocationData);
+      } else {
+        this.emitSortedIterationLinkage(node, iterIdx, locationData, endLocationData);
+      }
       return node;
     }
 
@@ -13750,6 +13768,176 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ROLL, endLocationData);
       this.emit(Op.OP_DROP, endLocationData);
       this.removeFromStack(idx);
+    }
+  }
+
+  /**
+   * Windowed (paginated) VALUES iteration over a sorted mapping. Reduces to the adversarially-verified full-walk
+   * linkage, with three deltas: (1) the anchor entry at base+0 must have `slot == cursor` (the cursor is a
+   * persisted `bytes32` register state var; the first page's cursor is the HEAD sentinel 0), instead of always
+   * HEAD; (2) the loop is bounded to at most `windowBound` entries (or the tail); (3) the last visited entry's
+   * slot is written back to the cursor state var. The per-entry chain check and entry-address pin are unchanged.
+   */
+  private emitWindowedSortedIteration(
+    node: CollectionIterationNode, iterIdx: number,
+    locationData: SingleLocationData, endLocationData: SingleLocationData,
+  ): void {
+    const collection = node.collection!;
+    const valueType = collection.innermostValueType;
+    const valueKind = this.sortedValueKind(valueType);
+    if (valueKind === null) {
+      throw new SortedMappingCodegenPendingError(node as unknown as MappingAccessNode, collection.name);
+    }
+    const cursorSv = node.windowCursorStateVar!;
+    const K = BigInt(node.windowBound!);
+    const collectionHash = computeCollectionHash(computeCollectionSignature(collection.name, collection.type.toString()));
+
+    // 0. Read the cursor register state var (a raw 32-byte slot) as the start anchor.
+    const cursorAccess = new StateAccessNode(cursorSv.name);
+    cursorAccess.stateVariable = cursorSv;
+    cursorAccess.location = node.location;
+    this.visitStateAccess(cursorAccess);
+    this.popFromStack();
+    this.pushToStack('(__window_cursor)');
+
+    // 1. Entry address (constant for the collection) -> tracked, reused per entry.
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emitTakeFirst32(locationData);
+    this.pushToStack('(__iter_entryaddr)');
+    this.emitSortedEntryAddress(collectionHash, locationData);
+    this.popFromStack();
+    this.pushToStack('(__iter_entryaddr)');
+
+    // 2. i = 0 (anchor at base+0, entries at base+1..N).
+    this.emit(encodeInt(0n), locationData);
+    this.pushToStack('(__iter_i)');
+
+    // 3. Anchor @ base+0: pin + split; verify slot == cursor; seed next/cursor/count.
+    this.emitSortedIterEntryCommitment(iterIdx, locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_slot)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__window_cursor)') + 1)), locationData); // +1 for the picked slot
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData); // anchor.slot == cursor (wrong/stale anchor reverts)
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_next)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__iter_next)'); // expectedNext = anchor.nextKey
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_slot)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__iter_cursor)'); // cursor = anchor.slot (last verified slot; written back)
+    this.emit(encodeInt(0n), locationData);
+    this.pushToStack('(__iter_count)'); // processed count
+    this.removeScopedEntryTemps(node);
+    // The cursor value only seeds the anchor check; drop it.
+    const cursorIdx = this.getStackIndex('(__window_cursor)');
+    this.emit(encodeInt(BigInt(cursorIdx)), locationData);
+    this.emit(Op.OP_ROLL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.removeFromStack(cursorIdx);
+
+    // i = 1 (anchor consumed; entries start at base+1).
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__iter_i)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_1ADD, locationData);
+    this.pushToStack('(__iter_tmp)');
+    this.emitReplace(this.getStackIndex('(__iter_i)'), node);
+    this.popFromStack();
+
+    // 4. LOOP: while (processed < K) && (expectedNext != 0).
+    this.scopeDepth += 1;
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__iter_count)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(encodeInt(K), locationData);
+    this.emit(Op.OP_LESSTHAN, locationData); // count < K
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__iter_next)') + 1)), locationData); // +1 for the count<K bool
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_BIN2NUM, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_GREATERTHAN, locationData); // expectedNext > 0
+    this.emit(Op.OP_BOOLAND, locationData);
+    this.emit(Op.OP_IF, locationData);
+
+    const stackBeforeBody = [...this.stack];
+    const stackDepth = this.stack.length;
+
+    // Read entry @ base+i -> tracked [__ent_slot,__ent_next,__ent_value]; verify contiguity; advance next,
+    // cursor and count.
+    this.emitSortedIterEntryCommitment(iterIdx, locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_slot)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__iter_next)') + 1)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData); // contiguity (omission -> mismatch -> revert)
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_next)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__iter_tmp)');
+    this.emitReplace(this.getStackIndex('(__iter_next)'), node);
+    this.popFromStack();
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_slot)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__iter_tmp)');
+    this.emitReplace(this.getStackIndex('(__iter_cursor)'), node);
+    this.popFromStack();
+
+    // Expose the value loop variable.
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_value)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    if (valueKind === 'int') this.emit(Op.OP_BIN2NUM, locationData);
+    this.pushToStack(node.valueName!);
+    this.removeScopedEntryTemps(node);
+
+    node.body = this.visit(node.body);
+    this.removeScopedVariables(stackDepth, node.body);
+
+    // i++
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__iter_i)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_1ADD, locationData);
+    this.pushToStack('(__iter_tmp)');
+    this.emitReplace(this.getStackIndex('(__iter_i)'), node);
+    this.popFromStack();
+    // count++
+    this.emit(encodeInt(BigInt(this.getStackIndex('(__iter_count)'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_1ADD, locationData);
+    this.pushToStack('(__iter_tmp)');
+    this.emitReplace(this.getStackIndex('(__iter_count)'), node);
+    this.popFromStack();
+
+    this.emitCollectionIterationStep(node, endLocationData);
+    this.emit(Op.OP_ELSE, endLocationData);
+    this.stack = [...stackBeforeBody];
+    this.emit(encodeBool(true), endLocationData);
+    this.pushToStack('(loop_exit)');
+    this.emit(Op.OP_ENDIF, endLocationData);
+    this.emit(Op.OP_UNTIL, endLocationData);
+    this.popFromStack();
+    this.scopeDepth -= 1;
+
+    // Clean up the loop-carried slots, keeping (__iter_cursor) as the new cursor value.
+    for (const name of ['(__iter_count)', '(__iter_next)', '(__iter_i)', '(__iter_entryaddr)']) {
+      const idx = this.getStackIndex(name);
+      this.emit(encodeInt(BigInt(idx)), endLocationData);
+      this.emit(Op.OP_ROLL, endLocationData);
+      this.emit(Op.OP_DROP, endLocationData);
+      this.removeFromStack(idx);
+    }
+
+    // Write the new cursor back to the register state var (mirrors visitStateAssign's non-dynamic path).
+    this.emitPushdataEncode(cursorSv.type, endLocationData);
+    const cursorKey = `${cursorSv.nftIndex}:${cursorSv.fieldIndex}`;
+    this.framedFieldWritten(cursorSv, cursorKey, node);
+    if (this.pendingStateWrites.has(cursorKey)) {
+      const stackName = `__internal__state_write_${cursorSv.name}`;
+      this.emitReplace(this.getStackIndex(stackName), node);
+      this.popFromStack();
+    } else {
+      this.popFromStack();
+      const stackName = `__internal__state_write_${cursorSv.name}`;
+      this.pushToStack(stackName);
+      this.pendingStateWrites.set(cursorKey, stackName);
     }
   }
 

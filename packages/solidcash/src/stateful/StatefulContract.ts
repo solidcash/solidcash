@@ -9355,6 +9355,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         inner: this.inner,
         rawIterationKeysBlob: this._rawIterationKeysBlob,
         iterationKeys: this._iterationKeys,
+        getState: () => this.getState(),
       },
       {
         abiFunction,

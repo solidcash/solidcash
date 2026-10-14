@@ -6638,6 +6638,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         collectionSignature: collSig,
         mode: node.mode,
         iterationIndex: idx,
+        ...(node.windowCursor !== undefined && { windowCursor: node.windowCursor }),
+        ...(node.windowBound !== undefined && { windowBound: node.windowBound }),
       });
       // Recurse into body - nested iterations get their own indices
       this.collectCollectionIterations(node.body, iterations);
@@ -14691,6 +14693,25 @@ export default class SymbolTableTraversal extends AstTraversal {
     // are always enumerable (ordered + length), so they are not gated.
     if (coll.type instanceof MappingType && !coll.enumerable) throw new NonEnumerableMappingError(node);
     node.collection = coll;
+
+    if (node.windowCursor !== undefined) {
+      // Windowed (paginated) iteration: the cursor must be an int/uint/bigint/bytes32 register state variable
+      // (it holds a 32-byte slot), and the bound must be a positive integer page size.
+      const cursorSv = this.stateVariableMap.get(node.windowCursor);
+      if (!cursorSv) throw new UndefinedStateVariableError(new StateAccessNode(node.windowCursor));
+      node.windowCursorStateVar = cursorSv;
+      const cursorType = cursorSv.type;
+      // The cursor stores a raw 32-byte slot (H(key) masked), compared and written back verbatim, so it must be a
+      // fixed 32-byte state variable (int/bigint would need num2bin/bin2num round-trips the covenant does not do).
+      const slotOk = cursorType instanceof BytesType && cursorType.bound === 32;
+      if (!slotOk) {
+        throw new Error(`windowed iteration cursor '${node.windowCursor}' must be a bytes32 state variable `
+          + `(it holds a 32-byte slot verbatim), got '${cursorType}'`);
+      }
+      if (node.windowBound === undefined || !Number.isInteger(node.windowBound) || node.windowBound < 1) {
+        throw new Error(`windowed iteration bound must be a positive integer, got '${node.windowBound}'`);
+      }
+    }
 
     // Enter new scope for loop variables
     const scopeTable = new SymbolTable(this.symbolTables[0]);

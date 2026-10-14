@@ -1523,6 +1523,12 @@ export class CollectionIterationNode extends StatementNode {
   collectionIterationIndex: number = -1;
   /** Bool local set by a lowered `break`. The iteration loop exits once it is true. */
   breakFlagName?: string;
+  /** Windowed (paginated) iteration: the register state variable holding the cursor (last visited slot). */
+  windowCursor?: string;
+  /** Windowed iteration: the maximum number of entries walked per transaction (the page size). */
+  windowBound?: number;
+  /** Windowed iteration: the resolved cursor state variable (set by semantic analysis). */
+  windowCursorStateVar?: StateVariableNode;
 
   constructor(
     public mode: CollectionIterationMode,
@@ -3328,6 +3334,10 @@ export interface CollectionIterationInfo {
   collectionSignature: string;
   mode: CollectionIterationMode;
   iterationIndex: number;
+  /** Windowed (paginated) iteration: the register state variable holding the cursor. */
+  windowCursor?: string;
+  /** Windowed iteration: the maximum number of entries walked per transaction. */
+  windowBound?: number;
 }
 
 export class EmitStatementNode extends StatementNode {

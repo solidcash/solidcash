@@ -722,6 +722,7 @@ loopStatement
     | forOfEntriesStatement
     | forInStatement
     | forOfStatement
+    | forWindowStatement
     ;
 
 forOfEntriesStatement
@@ -734,6 +735,12 @@ forInStatement
 
 forOfStatement
     : 'for' '(' typeName Identifier 'of' 'this' '.' Identifier ')' block
+    ;
+
+// Windowed (paginated) VALUES iteration over a sorted mapping: walk at most `windowBound` entries from the
+// persisted `windowCursor` register state, chain-verified and address-pinned, and write the last visited slot back.
+forWindowStatement
+    : 'for' '(' typeName Identifier 'of' 'this' '.' Identifier '.' 'window' '(' Identifier ',' NumberLiteral ')' ')' block
     ;
 
 forStatement

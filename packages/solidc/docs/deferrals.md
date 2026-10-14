@@ -2145,13 +2145,16 @@ V4 (a genesis root frame has no P2PKH caller/origin), V5 (the callee edge still 
 counts the minted master's own outputs), and V9 (the first root's category is the validator's own, read from the
 minted master). The shape is the deferred CREATE-frame machinery: the composer already lays a created record with
 `INDEX_NONE`, but the validator's CREATE witness checks are not emitted (`assessFramedMasterShape` refuses
-`hasContractInstantiation`, and `VALIDATOR_PROGRAM_REASONS` names no CREATE rule). Two design questions stay open
-before the wire format can be fixed: which validator covers the minted root master (the proxy's own validator is also
-minted, while a spent Writer validator fails V9, which wants the first root's category to be the running validator's
-own, and V1, which wants a spent master of its own category), and where the minted root master's witness block lives
-(a witness block exists only as the first push of a spent input's unlocking bytecode, so a minted output has no
-carrier; the transcript would have to carry it inline). The composer would then state the callee's frame in the same
-draft as the minted root, the derivation
+`hasContractInstantiation`, and `VALIDATOR_PROGRAM_REASONS` names no CREATE rule). The shortcut that would run the
+Writer's `bump` as a standalone ROOT frame is provably invalid: `master-head.ts` `assertRootFrame` requires a ROOT
+frame's witness `sender` to equal its P2PKH caller's lock and its origin, so `msg.sender` inside the callee would
+become the deployer, not the proxy. The minted-root-master carrier is therefore mandatory, and the two open questions
+resolve to one shape: the Writer's validator covers both the spent Writer master and the minted proxy root master,
+whose witness block the transcript carries inline (a new transcript version); V3 gains the minted master, V4 treats a
+minted root as a root with no P2PKH caller, V5 reads the minted master's inline block for the callee edge, and V9 is
+relaxed so the first root may be a minted master of a category the running validator does not own (the proxy's own
+validator cannot run: it is minted in the same transaction). The composer would then state the callee's frame in the
+same draft as the minted root, the derivation
 evaluates the genesis shape off-chain as it does the probe today, and the SDK's `initializedProxyState` accepts a
 callee whose writes land in the callee's own records. The direct (non-framed) deploy in `sc-deploy.ts` shares the
 same unproven-coin shape SDKFRAMED-1 closed for framed deploys; no audit row names it.

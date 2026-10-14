@@ -18,13 +18,13 @@ contract EventIdentity() {
 
   function appendA(bigint key, bigint value) public {
     rows[key].push(Row(value));
-    emit A(value);
+    if (value >= 0) emit A(value);
     require(value >= 0);
   }
 
   function appendB(bigint key, bigint value) public {
     rows[key].push(Row(value));
-    emit B(value);
+    if (value >= 0) emit B(value);
     require(value >= 0);
   }
 }`;
@@ -40,7 +40,8 @@ describe('message-bus runtime event identity', () => {
       suppressWarnings: true,
     });
     // The route is an envelope, not a semantic event producer. Event identity belongs to the
-    // selected handler even when multiple branches reuse the same physical event slot.
+    // selected handler even when multiple branches reuse the same physical event slot. The emits are
+    // conditional: a top-level kernel emit streams and builds no shared event window.
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'appendA')?.emits)
       .toContainEqual(expect.objectContaining({ eventName: 'A' }));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'appendB')?.emits)

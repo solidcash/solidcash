@@ -80,33 +80,32 @@ interface CapacityReading {
 }
 
 // Exact stock-VM snapshot of the finalized two-party bytes; the property is the bounds asserted before it (the
-// chain fits the stock limits). Measured on feat/ab-verifier after the verifier's arm outlining and single-pass
-// row and slot walks: only the two verifier inputs moved (kernel 3_068_177 / 3_037_456 -> 934_974 / 786_296,
-// legacy 6_113_248 / 6_020_083 -> 2_483_629 / 2_001_909), so the kernel worst input is now participant 1 and the
-// legacy worst stays a verifier; transaction bytes unchanged.
+// chain fits the stock limits). Re-pinned after the atomic bus stages changed callee and route bytecode: only the
+// two participant inputs and the transaction bytes moved (kernel 24_303 -> 24_189 B, legacy 24_747 -> 24_672 B);
+// the verifier inputs are unchanged. The kernel worst input stays participant 1, the legacy worst a verifier.
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_303, callManifestBytes: 294,
-    worstOperationCost: 478_356, worstMaximumOperationCost: 1_949_600,
-    worstRatio: 0.2453610997127616,
+    transactionBytes: 24_189, callManifestBytes: 294,
+    worstOperationCost: 475_342, worstMaximumOperationCost: 1_904_800,
+    worstRatio: 0.2495495590088198,
     inputOperationCosts: [
-      487_031, 478_356, 695, 934_974, 786_296, 27_321,
+      489_197, 475_342, 695, 934_974, 786_296, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_485_600, 1_949_600, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_439_200, 1_904_800, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_747, callManifestBytes: 294,
+    transactionBytes: 24_672, callManifestBytes: 294,
     worstOperationCost: 2_483_629, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.34330822182903903,
     inputOperationCosts: [
-      475_756, 501_059, 695, 2_483_629, 2_001_909, 27_321,
+      474_904, 499_602, 695, 2_483_629, 2_001_909, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_420_000, 2_370_400, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_388_800, 2_341_600, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });

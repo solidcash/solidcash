@@ -1221,15 +1221,44 @@ export async function assembleAtomicComposition(
         };
       }
     }
+    // Embedded delegates can move selected read-only chunks into the state owner's trailing band after the
+    // nested builder placed outputs. The union ABI may supply write-mode unlockers for these inputs, so use
+    // selected handler effects (not the unlocker flag) to identify which unchanged twins must be restored.
+    const selectedHandlers = participant.invocations.map((index) => {
+      const selected = findMessageBusHandlerForInvocation(participant.artifact, plan.invocations[index]);
+      return selected === undefined ? undefined : participant.artifact.abi.find((handler) =>
+        handler.selector?.toLowerCase() === selected.selector.toLowerCase());
+    });
+    const selectedDynamicWrites = new Set(selectedHandlers.flatMap((handler) => handler?.dynamicWrites ?? []));
+    const selectedReadOnlyDynamicLocks = [...new Set(selectedHandlers.flatMap((handler) =>
+      handler?.dynamicReads ?? []))].flatMap((name) => {
+      if (selectedDynamicWrites.has(name)) return [];
+      const variable = participant.artifact.stateLayout?.variables.find((candidate) =>
+        candidate.name === name && candidate.dynamic);
+      return variable === undefined ? [] : [addressToLockScript(getDynamicChunkAddress(
+        contract.inner, categories[participant.participant], variable.name, variable.type,
+      ))];
+    });
     // Runtime event occurrences occupy compiler-owned trailing slots, so they cannot appear as fixed
     // `blockLayout.kind === event` coordinates. Preserve the exact row, schema, and physical offset published
     // by the participant builder; later graph passes turn only these observed occurrences into kind-2 rows.
     // This is resource geometry, independent of contract/function/event names.
-    const runtimeEvents = (local as TransactionBuilder & {
+    const builtRuntimeEvents = (local as TransactionBuilder & {
       __messageBusRuntimeLoopEvents?: readonly {
         eventSignature: string; rowIndex: number; offset: number; chunked?: true;
       }[];
     }).__messageBusRuntimeLoopEvents ?? [];
+    // The read-only twins restored below lead the band and the stream follows them, as its verifier counts:
+    // publish each record where that restoration leaves it, and feed claims back at the built coordinate.
+    const settledOutputs = [...local.outputs];
+    reassertRoutedReadOnlyDynamicChunkTwins(settledOutputs, local.inputs, selectedReadOnlyDynamicLocks);
+    const runtimeEvents = builtRuntimeEvents.map((event) => {
+      const offset = settledOutputs.indexOf(local.outputs[event.offset]!);
+      return offset < 0 ? event : { ...event, offset };
+    });
+    const builtEventOffsets = new Map(runtimeEvents.map((event, index) => [
+      event.offset, builtRuntimeEvents[index]!.offset,
+    ]));
     runtimeEventSlots.set(participant.participant,
       runtimeEvents.map((event) => ({
         participant: participant.participant,
@@ -1246,12 +1275,13 @@ export async function assembleAtomicComposition(
     for (const row of graph.callManifest.rows) {
       if (row.kind !== 2 || row.owner !== participant.participant || row.mode !== 1
         || !runtimeEventOffsets.has(row.targetOffset)) continue;
-      const planned = local.outputs[row.targetOffset];
+      const builtOffset = builtEventOffsets.get(row.targetOffset)!;
+      const planned = local.outputs[builtOffset];
       const plannedLock = planned === undefined ? undefined
         : typeof planned.to === 'string' ? addressToLockScript(planned.to) : planned.to;
       if (planned?.token?.nft?.capability !== 'none' || plannedLock === undefined
         || binToHex(plannedLock) !== row.subjectHex.toLowerCase()) continue;
-      local.outputs[row.targetOffset] = {
+      local.outputs[builtOffset] = {
         ...planned, token: { ...planned.token, nft: { ...planned.token.nft, commitment: row.effectHex } },
       };
     }
@@ -2339,24 +2369,7 @@ export async function assembleAtomicComposition(
         proxyInput.unlocker, rootMessageEnvelope!, maximumInputBytes, executorOffset,
       );
     }
-    // Embedded delegates can move selected read-only chunks into the state owner's trailing band after the
-    // nested builder placed outputs. The union ABI may supply write-mode unlockers for these inputs, so use
-    // selected handler effects (not the unlocker flag) to identify which unchanged twins must be restored.
-    const selectedHandlers = participant.invocations.map((index) => {
-      const selected = findMessageBusHandlerForInvocation(participant.artifact, plan.invocations[index]);
-      return selected === undefined ? undefined : participant.artifact.abi.find((handler) =>
-        handler.selector?.toLowerCase() === selected.selector.toLowerCase());
-    });
-    const selectedDynamicWrites = new Set(selectedHandlers.flatMap((handler) => handler?.dynamicWrites ?? []));
-    const selectedReadOnlyDynamicLocks = [...new Set(selectedHandlers.flatMap((handler) =>
-      handler?.dynamicReads ?? []))].flatMap((name) => {
-      if (selectedDynamicWrites.has(name)) return [];
-      const variable = participant.artifact.stateLayout?.variables.find((candidate) =>
-        candidate.name === name && candidate.dynamic);
-      return variable === undefined ? [] : [addressToLockScript(getDynamicChunkAddress(
-        contract.inner, categories[participant.participant], variable.name, variable.type,
-      ))];
-    });
+    // Restore the selected read-only twins at their input coordinates, as the stream slots above assumed.
     reassertRoutedReadOnlyDynamicChunkTwins(local.outputs, local.inputs, selectedReadOnlyDynamicLocks);
     const routeInputOffset = participant.executionKind === 1 ? participant.executorOffset : 0;
     const routeInput = routeInputOffset === null ? undefined : local.inputs[routeInputOffset];

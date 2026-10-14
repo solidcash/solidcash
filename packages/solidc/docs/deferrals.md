@@ -1045,10 +1045,11 @@ invariant value cannot share one chunk set across keys. Revisit if a real port n
 (`emitSortedUpsertLoopBody`) pins each slot's value chunks via `emitSortedValueChunkPin` and stores the `len4 ++
 sha256(v)` tail, so the interleaved entry/chunk outputs are covenant-bound and the SDK plans the chunks. The positive
 path is pinned by `solidcash/test/e2e/SortedArrayValueVaryingLoop.test.ts` (per-key `bytes[]`/`int[][]` values, a
-170-byte value, duplicate-key update, and the inline/chunk boundary), the compile surface by
+170-byte value, duplicate-key update, and the inline/chunk boundary) and `solidcash/test/e2e/ChunkedLoopRoundtrip.test.ts`
+(insert then in-place update of a 170-byte value, exact read-back), the compile surface by
 `solidc/test/ChunkedLoopValue.test.ts`, and the fail-closed chunk integrity by
-`solidcash/test/e2e/ChunkedLoopAdversarial.test.ts` (a forged chunk at the (collection, slot, digest) address fails
-the read closed). This entry's earlier "still fail-closed" note was stale.
+`solidcash/test/e2e/ChunkedLoopAdversarial.test.ts` (a forged chunk, a missing chunk, and a reordered chunk each fail
+the read closed at the (collection, slot, digest) address). This entry's earlier "still fail-closed" note was stale.
 
 **Revisit if.** A real port needs bulk array-value initialization across keys in one loop, OR the upsert-loop planner
 is refactored to a value-kind-generic shape for another reason (then the bytes branch is cheap + low-risk).

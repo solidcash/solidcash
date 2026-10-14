@@ -1840,6 +1840,10 @@ looped emit, a helper emit, a counter-loop stream or runtime transfers; X149 pin
   byte assertion, as before. "binds an emitted event row to its absolute physical output": callee block 257 -> 3
   slots, 261 -> 7 inputs, 42,877 -> 25,787 B; caller 3.25M (over its 2.37M) -> 0.53M, route 4.94M -> 0.69M,
   verifiers 7.76M and 23.54M -> 4.39M and 4.57M: every input now within its real budget.
+- Capacity: stream records share the participant's 64-slot trailing band (`BALANCED_TRAILING_CAPACITY`), so a
+  kernel batch of a streamed handler holds at most 64 records and the SDK refuses more ("exceed balanced trailing
+  capacity"); a conditional emit keeps one event window per row up to the 255-row batch ceiling
+  (KernelBatchRowCapacity pins both).
 
 Stage 2 (2026-10-14), contract size, no check dropped: the pooled title's callee 11,004 -> 8,718 B, its route input
 12,116 B / 5.16M -> 9,830 B / 4.34M against (9,830 + 41) * 800 = 7.90M, so it meets the per-input byte limit. The

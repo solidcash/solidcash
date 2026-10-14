@@ -11844,6 +11844,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /** Names of the dynamic state variables a body reads by value. */
+  private dynamicStateReadNames(body: BlockNode): Set<string> {
+    const names = new Set<string>();
+    const seen = new WeakSet<Node>();
+    const references = new Set(['location', 'resolvedFunction', 'functionReference', 'definition', 'collection',
+      'symbolTable', 'stateVariable', 'type']);
+    const visit = (node: Node): void => {
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof StateAccessNode && !node.storagePointerOnly) {
+        const name = node.stateVariable?.name ?? node.name;
+        if (this.stateVariables.some((sv) => sv.name === name && sv.isDynamic)) names.add(name);
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (references.has(key)) continue;
+        if (value instanceof Node) visit(value);
+        else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node) visit(item);
+        }
+      }
+    };
+    visit(body);
+    return names;
+  }
+
   /** Whether this body can emit a mapping transition a runtime loop number of times. */
   private hasRuntimeLoopEntryWrite(
     candidate: Node,
@@ -13864,7 +13889,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitAddForeignReadOnlyChunkCounts(
     locationData: SingleLocationData, includeWrittenOldChunks = false, callsiteDepth = 0,
   ): void {
-    const dynamicChunkSize = 120;
     const written = new Set(this.currentFunction.dynamicWrites ?? []);
     // Code generation can reach a trailing collection write before a later statement records a dynamic write.
     // Survey the complete body so that later-written values are not mistaken for read-only trailing runs on the
@@ -13898,17 +13922,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (includeWrittenOldChunks) {
       for (const name of written) names.add(name);
     }
+    // A same-function write is added below from its NEW value. Counting its route-preserved name here as well
+    // duplicates the run (measured `jobEvents[jobId].push`: base 159 + preserved userAddresses + jobEvents twice
+    // addressed output 161 while the entry is at 160). Sibling-only preserved dynamics remain in `names`.
+    this.emitAddDynamicChunkRunCounts(
+      [...names].filter((name) => includeWrittenOldChunks || !written.has(name)), locationData, callsiteDepth,
+    );
+  }
+
+  /** Add ceil(A$len/120) for each named dynamic var. Assumes one untracked offset partial on top. */
+  private emitAddDynamicChunkRunCounts(
+    names: readonly string[], locationData: SingleLocationData, callsiteDepth = 0,
+  ): void {
+    const dynamicChunkSize = 120;
     // This helper is entered with the running trailing index as one raw stack item. Name that item while reading
     // each dynamic length so every frame-relative lookup (including a generated handler's participant-owner
     // witness) accounts for it. Leaving the partial untracked made successive OP_PICK depths select the value
     // below the owner argument whenever this path ran inside an OP_INVOKE graph continuation.
     const partialName = '(foreign_chunk_offset)';
-    if (names.size > 0) this.pushToStack(partialName);
+    if (names.length > 0) this.pushToStack(partialName);
     for (const name of names) {
-      // A same-function write is added below from its NEW value. Counting its route-preserved name here as well
-      // duplicates the run (measured `jobEvents[jobId].push`: base 159 + preserved userAddresses + jobEvents twice
-      // addressed output 161 while the entry is at 160). Sibling-only preserved dynamics remain in `names`.
-      if (!includeWrittenOldChunks && written.has(name)) continue;
       const sv = this.stateVariables.find((v) => v.name === name && v.isDynamic);
       if (!sv) continue;
       this.emitReadDynamicLen(sv, '(vmap_foreign_len)', locationData, callsiteDepth);
@@ -13922,7 +13955,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
       this.emit(Op.OP_ADD, locationData);
     }
-    if (names.size > 0) this.popFromStack();
+    if (names.length > 0) this.popFromStack();
   }
 
   /** Add outputs emitted before scalar vmap NEW nodes: preserved iteration/read chunks and newly-written chunks. */
@@ -44163,6 +44196,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emitTrailingBlockBase(node.blockLayout?.blockSize ?? 1, loc, node.blockLayout?.trailingBase);
     this.emitAddCollectionIterCounts(loc);
+    this.emitAddRuntimeEffectPrefix(loc);
     this.emitPickCompilerRouteFrameValue(cursor, loc, 1);
     this.emit(Op.OP_ADD, loc);
     this.pushToStack(baseName);
@@ -44553,6 +44587,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emitTrailingBlockBase(node.blockLayout?.blockSize ?? 1, loc, node.blockLayout?.trailingBase);
     this.emitAddCollectionIterCounts(loc);
+    this.emitAddRuntimeEffectPrefix(loc);
     this.emitPickCompilerRouteFrameValue(cursor, loc, 1);
     this.emit(Op.OP_ADD, loc);
     this.pushToStack(baseName);
@@ -48176,6 +48211,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       );
       this.emit(Op.OP_ADD, locationData);
     }
+  }
+
+  /**
+   * Add the band prefix runtime effects follow: the chunks of this body's read-only dynamic reads, preserved at
+   * their input coordinates, then the rewritten predecessors of a fixed sorted batch. Other route dynamic runs are
+   * located by witness past the effects. A route clone reads a route-threaded dynamic value from its journal, so
+   * its body names those reads; without the batch width it reads that from the route band. Assumes one untracked
+   * offset partial on top.
+   */
+  private emitAddRuntimeEffectPrefix(locationData: SingleLocationData): void {
+    const fn = this.currentFunction;
+    const reads = new Set(fn.dynamicReads ?? []);
+    const written = new Set((fn.dynamicWrites ?? []).filter((name) => !this.preAllocatedDynamicWrites.has(name)));
+    if (fn.body) {
+      if (this.isDefineSubTraversal) {
+        for (const name of this.dynamicStateReadNames(fn.body)) {
+          if (this.preAllocatedDynamicWrites.has(name)) reads.add(name);
+        }
+      }
+      const writeKeys = new Set<string>();
+      this.collectStateWriteKeys(fn.body, writeKeys);
+      for (const sv of this.stateVariables) {
+        if (sv.isDynamic && writeKeys.has(`${sv.nftIndex}:${sv.fieldIndex}`)) written.add(sv.name);
+      }
+    }
+    this.emitAddDynamicChunkRunCounts([...reads].filter((name) => !written.has(name)), locationData);
+    const batchCount = '__internal__vmapBatchTrailingCount';
+    if (this.currentFunction.parameters.some((parameter) => parameter.name === batchCount)
+      && this.getStackIndex(batchCount, true) >= 0) {
+      this.emitPickCompilerRouteFrameValue(batchCount, locationData, 1);
+      this.emit(Op.OP_ADD, locationData);
+      return;
+    }
+    const bandOrdinal = this.declaredBandOrdinal(batchCount);
+    if (bandOrdinal === undefined) return;
+    this.emit(Op.OP_DEPTH, locationData);
+    this.emit(encodeInt(BigInt(bandOrdinal)), locationData);
+    this.emit(Op.OP_SUB, locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_ADD, locationData);
   }
 
   /**

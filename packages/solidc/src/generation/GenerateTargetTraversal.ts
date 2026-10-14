@@ -2878,6 +2878,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return id !== undefined && this.invokeSubroutineIfDefined(id, locationData);
   }
 
+  /**
+   * Invoke a shared helper whose body reads only the stacks and the transaction, counting this site toward it.
+   * Outlining cannot share such a body when it parks items on the alternate stack. False, to emit inline, in a
+   * framed program, in the atomic verifier, or where no helper is defined.
+   */
+  private invokeSharedStackHelper(
+    key: string,
+    emit: (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData) => void,
+    locationData: SingleLocationData,
+  ): boolean {
+    if (this.framedMaster || !this.directConvention
+      || this.currentFunction?.name?.startsWith('__message_bus_verify_atomic')) return false;
+    const fullKey = `stack|${key}`;
+    let check = this.sharedEntryChecks.get(fullKey);
+    if (check === undefined) {
+      check = {
+        useKey: GenerateTargetTraversalWithLocation.SHARED_CHECK_USE_KEY_BASE - BigInt(this.sharedEntryChecks.size),
+        masterOrdinal: undefined,
+        emit,
+      };
+      this.sharedEntryChecks.set(fullKey, check);
+    }
+    this.bumpSubroutineUse(check.useKey);
+    return check.id !== undefined && this.invokeSubroutineIfDefined(check.id, locationData);
+  }
+
   /** Count this site toward a shared per-entry check; its helper id once defined, else undefined. */
   private sharedEntryCheckId(
     key: string,
@@ -10927,9 +10953,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
-    this.emit(encodeInt(BigInt(index)), locationData);
-    this.emit(Op.OP_ROLL, locationData);
-    this.emit(Op.OP_DROP, locationData);
     // X24. The depth is a COMPILE-TIME constant, so the rotation is always unrollable: `index-1` OP_SWAPs
     // interleaved with `index-2` OP_TOALTSTACKs, then `index-2` OP_FROMALTSTACKs - 3k-2 instructions emitted
     // AND executed, against the two counted loops' ~22k executed for 26 fixed bytes. The loops are a SIZE
@@ -10957,7 +10980,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A replacement in a loop body runs once per iteration: through depth 17 the ROLL rotation below costs at most
     // 9 bytes more than the counted loops and about an eighth of their executed operations.
     const unrollLoopBody = this.plainLoopDepth > 0 && index <= 17 && this.directConvention;
-    if (index >= 14 && !UNROLL_DEEP_REPLACE && !unrollJournalDensity && !unrollAtomicVerifier && !unrollLoopBody) {
+    const countedLoops = index >= 14 && !UNROLL_DEEP_REPLACE && !unrollJournalDensity && !unrollAtomicVerifier
+      && !unrollLoopBody;
+    this.emit(encodeInt(BigInt(index)), locationData);
+    // The counted loops are one shared body; a site passes its depth.
+    if (countedLoops && this.invokeReplaceAtDepth(locationData)) return;
+    this.emit(Op.OP_ROLL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    if (countedLoops) {
       const count = BigInt(index - 1);
       this.emit(encodeInt(count), locationData);
       this.emit(Op.OP_DUP, locationData);
@@ -15222,11 +15252,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const locationData = { location: node.location, positionHint: PositionHint.END };
 
       node.parameters.forEach((param, i) => {
-        param = this.visit(param);
-        node.parameters[i] = param;
+        // An empty literal leaf encodes to its constant 0x00 frame.
+        const emptyLiteral = (param instanceof IntLiteralNode && param.value === 0n)
+          || (param instanceof BoolLiteralNode && !param.value)
+          || (param instanceof StringLiteralNode && (param.solidityBytes ?? encodeString(param.value)).length === 0)
+          || (param instanceof HexLiteralNode && param.value.length === 0 && !param.codegenError);
+        if (emptyLiteral && GenerateTargetTraversalWithLocation.encodesEmptyAsZeroByte(structType.fields[i].type)) {
+          this.emit(new Uint8Array([0x00]), locationData);
+          this.pushToStack('(value)');
+        } else {
+          param = this.visit(param);
+          node.parameters[i] = param;
 
-        // Encode each field value to pushdata format
-        this.emitPushdataEncode(structType.fields[i].type, locationData);
+          // Encode each field value to pushdata format
+          this.emitPushdataEncode(structType.fields[i].type, locationData);
+        }
 
         // CAT with previous if not the first
         if (i > 0) {
@@ -17797,6 +17837,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SWAP, locationData);      // [..., 0, n]
       this.emit(Op.OP_NUM2BIN, locationData);   // [..., zero_bytes]
       this.popFromStack();
+      this.pushToStack('(value)');
+      return node;
+    }
+
+    // An empty array is its encoded zero length.
+    if (node.size instanceof IntLiteralNode && node.size.value === 0n) {
+      this.emit(new Uint8Array([0x00]), locationData);
       this.pushToStack('(value)');
       return node;
     }
@@ -27042,6 +27089,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * A read's absent arm: `[H(k), slot, next, value]` -> `[]` once the bracket is proven. The shared body runs the
+   * same proof on that frame in place, copying nothing.
+   */
+  private emitSortedAbsentArm(loc: SingleLocationData): void {
+    const body = (t: GenerateTargetTraversalWithLocation, l: SingleLocationData): void => {
+      t.emit(Op.OP_DROP, l);
+      t.emitSortedAbsenceBracket(l);
+      t.emit(Op.OP_2DROP, l); t.emit(Op.OP_DROP, l);
+    };
+    if (this.invokeSharedStackHelper('sortedAbsentArm', body, loc)) return;
+    body(this, loc);
+  }
+
+  /**
    * A direct scalar integer read of a sorted mapping, with an explicit three-item ABI: [H(key), authenticated entry
    * address, entry input index] -> [value]. Every operand is supplied, so reads can share the proof without the
    * helper selecting any caller-local stack item; the absent arm still proves the predecessor bracket.
@@ -27389,9 +27450,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (valueKind === 'int') this.emit(Op.OP_BIN2NUM, loc);     // normalize the int/bool tail (bytesN kept verbatim)
     else if (this.isChunkableValue(valueType)) this.emitChunkableValueRead(loc, slotIndex);
     this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);                                 // drop value -> [Hk32, slot32, nextKey32]
-    this.emitSortedAbsenceBracket(loc);                         // verifies slot < H(k) < nextKey
-    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);    // -> []
+    this.emitSortedAbsentArm(loc);                              // verifies slot < H(k) < nextKey -> []
     this.emitDefaultValue(loc, valueType);                      // absent -> default
     this.emit(Op.OP_ENDIF, loc);
 
@@ -31428,9 +31487,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc);
     if (this.sortedValueKind(valueType) === 'int') this.emit(Op.OP_BIN2NUM, loc);
     this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emitSortedAbsenceBracket(loc);
-    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
+    this.emitSortedAbsentArm(loc);
     this.emitDefaultValue(loc, valueType);
     this.emit(Op.OP_ENDIF, loc);
     this.pushToStack('(value)');
@@ -32712,12 +32769,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const copyProof = (): void => {
       bin(Op.OP_FROMALTSTACK); bin(Op.OP_DUP); bin(Op.OP_TOALTSTACK);
     };
-    const copyPredOut = (): void => {
-      bin(Op.OP_FROMALTSTACK); // proof
-      bin(Op.OP_FROMALTSTACK); // predOut
-      bin(Op.OP_DUP); bin(Op.OP_TOALTSTACK); // restore predOut
-      bin(Op.OP_SWAP); bin(Op.OP_TOALTSTACK); // restore proof on top; leave predOut copy
-    };
+    // Leaves a predOut copy; the alternate stack keeps [predOut, proof].
+    const copyPredOut = (): void => this.emitAltPeek(1, loc);
     const proofField = (_slot: number, field: 'slot' | 'next' | 'value', extra = 0): void => {
       void extra;
       commitmentField(copyProof, field);
@@ -33211,13 +33264,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           if (i > 0) bin(Op.OP_CAT);
         }
         bin(Op.OP_TOALTSTACK);
-        const copyBatchBlob = (): void => {
         // With a target frame active: alt=[blob,predOut,proof(top)]. Preserve the frame and leave blob on main.
-          bin(Op.OP_FROMALTSTACK); bin(Op.OP_FROMALTSTACK); bin(Op.OP_FROMALTSTACK);
-          bin(Op.OP_DUP); bin(Op.OP_TOALTSTACK); // blob
-          bin(Op.OP_SWAP); bin(Op.OP_TOALTSTACK); // predOut
-          bin(Op.OP_SWAP); bin(Op.OP_TOALTSTACK); // proof
-        };
+        const copyBatchBlob = (): void => this.emitAltPeek(2, loc);
         const batchField = (targetSlot: number, field: 'slot' | 'next'): void => {
           copyBatchBlob();
           const ordinal = targets.indexOf(targetSlot);
@@ -34304,11 +34352,44 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * The encoded default of a struct whose every leaf defaults to the empty push, which each leaf encodes as one
+   * 0x00 byte; undefined for any other field type.
+   */
+  private static constantStructDefault(type: StructType): number[] | undefined {
+    if (type.fields.length === 0) return undefined;
+    const bytes: number[] = [];
+    for (const { type: field } of type.fields) {
+      if (field instanceof StructType) {
+        const inner = GenerateTargetTraversalWithLocation.constantStructDefault(field);
+        if (inner === undefined) return undefined;
+        bytes.push(...inner);
+        continue;
+      }
+      if (!GenerateTargetTraversalWithLocation.encodesEmptyAsZeroByte(field)) return undefined;
+      bytes.push(0x00);
+    }
+    return bytes;
+  }
+
+  /** Whether emitPushdataEncode frames this type's empty push as the single byte 0x00. */
+  private static encodesEmptyAsZeroByte(type: Type): boolean {
+    return type === PrimitiveType.BOOL || type === PrimitiveType.BIGINT || type === PrimitiveType.INT
+      || type === PrimitiveType.STRING || type instanceof IntType || type instanceof EnumType
+      || type instanceof FixedType || (type instanceof BytesType && type.bound === undefined);
+  }
+
+  /**
    * Emit a type-appropriate default value (zero/false/empty).
    * Pushes 1 value to the real stack (not tracked).
    * @param type Optional type for struct-aware default encoding.
    */
   private emitDefaultValue(locationData: SingleLocationData, type?: Type): void {
+    const constantStruct = type instanceof StructType
+      ? GenerateTargetTraversalWithLocation.constantStructDefault(type) : undefined;
+    if (constantStruct !== undefined) {
+      this.emit(new Uint8Array(constantStruct), locationData);
+      return;
+    }
     if (type instanceof StructType) {
       // Save tracked stack: the struct encoding calls emitPushdataEncode which
       // pops/pushes on the tracked stack, but emitDefaultValue should not alter
@@ -34738,6 +34819,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const routeBatch = this.ownsMessageBusParticipantBlock()
         && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(i)) ?? false)
         && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${i}`), true) >= 0;
+      if (!routeBatch && this.sharesFixedEntryCoordinate(i)) {
+        // The executing input is the master here, which a shared body reads as it does.
+        this.emitPresentEntryChecks(i, 'category', (t, loc) => {
+          t.emit(Op.OP_DUP, loc); t.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+          t.emitVerifyCatBaseEqMaster(loc, 2);
+          t.emit(Op.OP_DUP, loc); t.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+          t.emit(encodeInt(32n), loc); t.emit(Op.OP_SPLIT, loc); t.emit(Op.OP_NIP, loc);
+          t.emit(new Uint8Array([0x01]), loc); t.emit(Op.OP_EQUALVERIFY, loc);
+        }, locationData);
+        continue;
+      }
       if (routeBatch) {
         // A compiler route publishes the union of every handler's logical entry slots. Its fixed block slot can
         // belong to another participant when this handler is inactive, so existence must come from the
@@ -47453,8 +47545,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitReplaceAtDynamicDepth(locationData);
   }
 
+  /**
+   * `[..., old, x(d-1)..x1, new, d]` -> `[..., new, x(d-1)..x1]` through one shared body. False where no helper is
+   * defined; the site then emits its own rotation.
+   */
+  private invokeReplaceAtDepth(locationData: SingleLocationData): boolean {
+    return this.invokeSharedStackHelper('replaceAtDepth', (t, loc) => t.emitReplaceAtDepthBody(loc), locationData);
+  }
+
+  /** The shared rotation: body-first counted loops, which the guard runs only for a positive count. */
+  private emitReplaceAtDepthBody(locationData: SingleLocationData): void {
+    const ops = [
+      Op.OP_DUP, Op.OP_1ADD, Op.OP_ROLL, Op.OP_DROP, Op.OP_1SUB, Op.OP_DUP, Op.OP_0NOTEQUAL, Op.OP_IF,
+      Op.OP_DUP, Op.OP_ROT,
+      Op.OP_BEGIN, Op.OP_3, Op.OP_ROLL, Op.OP_TOALTSTACK, Op.OP_SWAP, Op.OP_1SUB, Op.OP_SWAP, Op.OP_OVER, Op.OP_NOT,
+      Op.OP_UNTIL,
+      Op.OP_SWAP, Op.OP_DROP, Op.OP_SWAP,
+      Op.OP_BEGIN, Op.OP_FROMALTSTACK, Op.OP_SWAP, Op.OP_1SUB, Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL,
+      Op.OP_DROP, Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF,
+    ];
+    for (const op of ops) this.emit(op, locationData);
+  }
+
+  /** Copy the alternate-stack item `depth` below its top onto the main stack, leaving the alternate stack as is. */
+  private emitAltPeek(depth: number, locationData: SingleLocationData): void {
+    const body = (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData): void => {
+      for (let item = 0; item <= depth; item += 1) t.emit(Op.OP_FROMALTSTACK, loc);
+      t.emit(Op.OP_DUP, loc); t.emit(Op.OP_TOALTSTACK, loc);
+      for (let item = 0; item < depth; item += 1) { t.emit(Op.OP_SWAP, loc); t.emit(Op.OP_TOALTSTACK, loc); }
+    };
+    if (depth > 0 && this.invokeSharedStackHelper(`altPeek:${depth}`, body, locationData)) return;
+    body(this, locationData);
+  }
+
   /** Replace the indexed item with the value below a dynamic top-relative depth currently on top. */
   private emitReplaceAtDynamicDepth(locationData: SingleLocationData): void {
+    if (this.invokeReplaceAtDepth(locationData)) return;
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_1ADD, locationData);
     this.emit(Op.OP_ROLL, locationData);
@@ -47534,58 +47660,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const topIndex = this.getStackIndex(name);
     const bottomOrdinalPlusOne = this.stack.length - topIndex;
 
-    // Compute the old slot's current depth D, retain D while rolling out the old value, then rotate the returned
-    // replacement down D-1 positions.
+    // Compute the old slot's current depth D, then roll out the old value and rotate the returned replacement
+    // down D-1 positions. A target immediately below the replacement needs no rotation.
     this.emit(Op.OP_DEPTH, locationData);
     this.emit(encodeInt(BigInt(bottomOrdinalPlusOne)), locationData);
     this.emit(Op.OP_SUB, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_ROLL, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(Op.OP_1SUB, locationData);
-
-    // Reuse emitReplace's deep runtime rotation. A target immediately below the replacement has D-1 == 0 and
-    // needs no rotation; all deeper targets shuttle the intervening values through the alt stack and restore them.
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_0NOTEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_ROT, locationData);
-    this.emit(Op.OP_BEGIN, locationData);
-    this.emit(Op.OP_OVER, locationData);
-    this.emit(Op.OP_0NOTEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(encodeInt(3n), locationData);
-    this.emit(Op.OP_ROLL, locationData);
-    this.emit(Op.OP_TOALTSTACK, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_1SUB, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_1, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_UNTIL, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_BEGIN, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_0NOTEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_FROMALTSTACK, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_1SUB, locationData);
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_1, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_UNTIL, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
+    this.emitReplaceAtDynamicDepth(locationData);
   }
 
   /**
@@ -49673,11 +49753,64 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Whether a fixed entry slot's existence, input and output coordinates are all one block offset from the executing
+   * input, so a check can push the coordinate once and run on it.
+   */
+  private sharesFixedEntryCoordinate(i: number): boolean {
+    const entry = this.entrySlots[i];
+    return entry !== undefined && !entry.inLoop && this.directConvention && !this.framedMaster
+      && !this.readsRecordsFromFrame && this.sharedCheckBody === undefined
+      && !this.usesMessageBusOwnerBlockBase() && !this.usesProxyStateBlockBase() && !this.sharesProofInput(i)
+      && !((this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(i)) ?? false)
+        && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${i}`), true) >= 0);
+  }
+
+  /**
+   * Run `checks` on a present entry: `[]` -> `[]`. The slot's coordinate is pushed once, pinned at this site like an
+   * output coordinate, and a shared body tests presence and runs `checks`, which leave the coordinate on top.
+   */
+  private emitPresentEntryChecks(
+    i: number, key: string,
+    checks: (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData) => void,
+    locationData: SingleLocationData,
+  ): void {
+    const coordinateStartIp = this.getMostRecentInstructionPointer() + 1;
+    this.emitFixedEntryInputIndex(i, locationData);
+    const coordinateEndIp = this.getMostRecentInstructionPointer();
+    for (let ip = coordinateStartIp; ip <= coordinateEndIp; ip += 1) {
+      this.requires.push({ ip, line: locationData.location.start.line });
+    }
+    const body = (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData): void => {
+      t.emit(Op.OP_DUP, loc); t.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); t.emitBytesNonEmpty(loc);
+      t.emit(Op.OP_IF, loc); checks(t, loc); t.emit(Op.OP_ENDIF, loc);
+      t.emit(Op.OP_DROP, loc);
+    };
+    if (this.invokeSharedStackHelper(`presentEntry:${key}`, body, locationData)) return;
+    body(this, locationData);
+  }
+
+  /** `[i]` -> `[i]`: input i and output i agree on `inputOp`/`outputOp`, compared by `compare`. */
+  private static emitIndexPairCheck(
+    t: GenerateTargetTraversalWithLocation, inputOp: Op, outputOp: Op, compare: Op[], loc: SingleLocationData,
+  ): void {
+    for (const op of [Op.OP_DUP, inputOp, Op.OP_OVER, outputOp, ...compare]) t.emit(op, loc);
+  }
+
+  /**
    * Preserve one co-spent entry NFT: if the slot's input exists, require its output equals its input in commitment,
    * token category (base + capability) and locking bytecode. Shared by the read-only preserver and by the
    * conditional-sorted-write preserver (which wraps it in the write's not-taken branch).
    */
   private emitEntryPreservationBody(i: number, locationData: SingleLocationData): void {
+    if (this.sharesFixedEntryCoordinate(i)) {
+      const pair = GenerateTargetTraversalWithLocation.emitIndexPairCheck;
+      this.emitPresentEntryChecks(i, 'preserve', (t, loc) => {
+        pair(t, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_OUTPUTTOKENCOMMITMENT, [Op.OP_EQUALVERIFY], loc);
+        pair(t, Op.OP_UTXOTOKENCATEGORY, Op.OP_OUTPUTTOKENCATEGORY, [Op.OP_EQUALVERIFY], loc);
+        pair(t, Op.OP_UTXOBYTECODE, Op.OP_OUTPUTBYTECODE, [Op.OP_EQUALVERIFY], loc);
+      }, locationData);
+      return;
+    }
     // Check if entry exists via introspection
     this.emitReadOnlyEntryExistsCheck(i, locationData);
 
@@ -50980,6 +51113,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.entrySlots[i].inLoop) continue; // loop-write entries are new, no input to preserve
       // sorted write: input -> P'/k', handled inline (not preserved)
       if (this.sortedWrittenCollections.has(this.entrySlots[i].collection) && !this.preservesSortedRead(i)) continue;
+
+      if (this.sharesFixedEntryCoordinate(i)) {
+        const pair = GenerateTargetTraversalWithLocation.emitIndexPairCheck;
+        this.emitPresentEntryChecks(i, 'value', (t, loc) => {
+          pair(t, Op.OP_UTXOVALUE, Op.OP_OUTPUTVALUE, [Op.OP_EQUALVERIFY], loc);
+          pair(t, Op.OP_UTXOTOKENAMOUNT, Op.OP_OUTPUTTOKENAMOUNT, [Op.OP_LESSTHANOREQUAL, Op.OP_VERIFY], loc);
+        }, locationData);
+        continue;
+      }
 
       // Check if entry exists via introspection
       this.emitReadOnlyEntryExistsCheck(i, locationData);

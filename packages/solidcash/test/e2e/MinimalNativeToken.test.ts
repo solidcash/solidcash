@@ -24,8 +24,9 @@ describe('MinimalNativeToken bytecode budget', () => {
     const artifactBytes = scriptToBytecode(asmToScript(artifact.bytecode)).length;
     // Pinned to the build with the per-entry covenant hardening, its checks, return and event pins and one-target
     // transitions shared as one helper each, re-measured at feat/per-call-fix ac92c7446 after the merged slot passes
-    // (7503 -> 7500); the 8 KB title stays the budget.
-    expect(artifactBytes).toBe(7500);
+    // (7503 -> 7500), then with present-entry checks, deep rotations and constant struct defaults shared or folded
+    // (7500 -> 7473); the 8 KB title stays the budget.
+    expect(artifactBytes).toBe(7473);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')).toBeUndefined();
 
@@ -54,7 +55,7 @@ describe('MinimalNativeToken bytecode budget', () => {
       { provider: new MockNetworkProvider() },
     );
     // The deployed locking bytecode tracks the artifact bytecode above.
-    expect(deployed.bytecode.length / 2).toBe(7500);
+    expect(deployed.bytecode.length / 2).toBe(7473);
 
     expect(artifact.events.map((event) => event.name).sort()).toEqual(['Approval', 'Transfer']);
 

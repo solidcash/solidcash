@@ -11882,8 +11882,13 @@ function synthesizeMessageBusRoute(
       const wrappedDispatch = markDispatch
         ? `require(${MB_DISPATCH_SENTINEL}); ${effectiveDispatch} require(${MB_DISPATCH_SENTINEL});`
         : effectiveDispatch;
+      // The tuple-lane dispatch ends in require(false), so it already refuses a tuple no lane holds.
+      const tuplesDispatched = fixedTupleGroups.length > 0 && lifecycleKind !== 'merge'
+        && !(rowIndex !== undefined && rowIndex > 0 && entryShape);
+      const rowKeyChecks = tuplesDispatched ? `${ordinaryKeyChecks}\n${swappableKeyCheck}` : keyChecks;
       return `${condition} { ${upgradeAuthorization} ${fixedChunkableWriteAuthorization}
-        ${signatureAuthorization} ${decode} ${keyChecks} ${outStateBoundaryChecks} ${lifecycleAuthorization} ${wrappedDispatch}
+        ${signatureAuthorization} ${decode} ${rowKeyChecks} ${outStateBoundaryChecks}
+        ${lifecycleAuthorization} ${wrappedDispatch}
         require(rowArgs == rowArgs); }`;
     }).join(' ');
   const declaredWitnessNames = new Set<string>();
@@ -13808,21 +13813,22 @@ function synthesizeMessageBusRoute(
             // minimal-data rules require this opcode for the 76..255-byte range. Do not reinterpret bytes >= 0x80
             // through Script-number casts: their sign-bit encoding is not the unsigned push length.
             __message_bus_payload_at = __message_bus_push_at + 2;
-          } else if (batchBlob.length <= 65535) {
+          } else ${routeMaximumBlobBytes <= 65535 ? '' : 'if (batchBlob.length <= 65535) '}{
+            // The blob bound above leaves no PUSHDATA4 carrier to check unless it exceeds 65535 bytes.
             require(__message_bus_pushOpcode == 77);
             bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
               __message_bus_push_at + 1, __message_bus_push_at + 3
             ), hex"00"));
             require(__message_bus_pushLength == batchBlob.length);
             __message_bus_payload_at = __message_bus_push_at + 3;
-          } else {
+          }${routeMaximumBlobBytes <= 65535 ? '' : ` else {
             require(__message_bus_pushOpcode == 78);
             bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
               __message_bus_push_at + 1, __message_bus_push_at + 5
             ), hex"00"));
             require(__message_bus_pushLength == batchBlob.length);
             __message_bus_payload_at = __message_bus_push_at + 5;
-          }
+          }`}
           require(__message_bus_unlock.slice(
             __message_bus_payload_at, __message_bus_payload_at + batchBlob.length
           ) == batchBlob);

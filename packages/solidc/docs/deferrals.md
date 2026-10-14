@@ -719,7 +719,7 @@ this prevents, so it ships only when those fail closed.
 **Revisit if.** A real contract must enumerate/aggregate a mapping whose entry count exceeds one tx's input
 budget (the USDT-scale case that motivated the enumerable/plain split originally).
 
-**RESOLVED (2026-10-14, commit `feat/vmap-items`).** Built the `for (T v of this.m.window(cursor, K))` VALUES
+**RESOLVED (2026-10-14, commit `e6ec23c02`).** Built the `for (T v of this.m.window(cursor, K))` VALUES
 surface (the first of the two documented options) end to end on the direct convention. The covenant is a new
 `emitWindowedSortedIteration` (GTT) that reuses the adversarially-verified full-walk entry pin + contiguity check,
 with the three planned deltas: (1) the anchor entry at base+0 must have `slot == cursor` (cursor read from the

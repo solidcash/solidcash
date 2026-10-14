@@ -2166,13 +2166,22 @@ the matching V3/V4/V5/V9 changes in `checks.ts` and `reference.ts`, then the SDK
 fork, not a soft extension: changing `buildValidatorProgram()` moves the validator's P2SH32 address and the
 master-head's `recogniseValidatorScriptAgainstReservedHash` reserved hash in `frame-tail.ts`/`master-head.ts`, so the
 program, the derivation, the reference model, the master-head recognition, and every deployed validator must move
-together. PARTIALLY DONE (commits `52057b47f`, `52c170d71`): `reading.ts` dispatches both transcript versions, `checks.ts` and
-`reference.ts` thread a minted-master id space (`0x8000 | output`) through V2/V3/V4/V5/V6/V9, and `program.ts` accepts
-version 0x03 with a conditional `emitMintedMastersIfV3` V2 walk, plus the `rootCount`/V9 relaxation for a genesis whose
-only root is minted; the differential harness still passes. What remains
-on the program side is the V3/V4/V5 minted enforcement (each emitter must re-read the variable-length minted list
-from its fresh `dropFront(4)` transcript copy, with the version byte at a different stack depth); then the SDK
-genesis builder. The composer would
+together. PARTIALLY DONE (commits `52057b47f`, `52c170d71`, `59e34aeda`, `11c64cc37`, then the minted program walk
+completed): `reading.ts` dispatches both transcript versions, `checks.ts` and `reference.ts` thread a minted-master id
+space (`0x8000 | output`) through V2/V3/V4/V5/V6/V9, and `program.ts` accepts version 0x03 with a conditional
+`emitMintedMastersIfV3` V2 walk, the `rootCount`/V9 relaxation, and on-chain V3 (minted output is minting and names
+this validator), V4 (minted root is a ROOT frame with no caller or origin) and V5 (the minted root's calls are read
+from the inline block and checked against their callees, with the caller named by `mintedRef(output)`) enforcement.
+The V3/V4/V5 minted emitters are version-gated so they are no-ops for the shipped v0x02 transcript; the same pass
+fixed two stack bugs the earlier minted program commits had introduced on the v0x02 path (a stray `OP_DROP` in the
+header's version check and an `OP_DUP` that read the transcript remainder instead of `rootCount` in the V9
+relaxation), and `script.test.ts` passes again. A derivation-level genesis test (`minted-genesis.test.ts`) now
+hand-lays the minimal v0x03 shape (a validator, its facet, a spent Writer master, and one minted proxy root that
+calls the Writer) and checks the derivation accepts it and refuses the V5 edge mutations. Running that same shape
+through the real program surfaced what remains: the minted emitters had read `takeUnsignedCount`'s output in the
+wrong stack order (fixed for V2/V3/V4/V5), and the head/facet V6/V7 emitters still walk the minted list as if it
+were the settle list, so the on-chain program path does not yet accept the genesis shape. Those V6/V7 minted-list
+skips, an on-chain `minted-genesis` assertion, and the SDK genesis builder remain. The composer would
 then state the callee's frame in the
 same draft as the minted root, the derivation
 evaluates the genesis shape off-chain as it does the probe today, and the SDK's `initializedProxyState` accepts a

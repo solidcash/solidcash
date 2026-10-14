@@ -2181,17 +2181,20 @@ calls the Writer) and checks the derivation accepts it and refuses the V5 edge m
 through the real program surfaced what remains: the minted emitters had read `takeUnsignedCount`'s output in the
 wrong stack order (fixed for V2/V3/V4/V5), the head/facet V6/V7 settle emitters needed a version-gated minted-list
 skip (added), and the `emitMintedMastersIfV3` V2 walk parked its zero on the wrong side of the settle list (fixed).
-The head now accepts the genesis shape; the facet still refuses it at V4's non-root-caller rule, because
-`emitCoveredFrame` counts the caller against the input-master byte string and does not yet accept a minted ref
-(`0x8000 | output`) as a covered master. The remaining on-chain gaps are that V4 caller rule, V5's "a non-root
-master is called exactly once" (`emitEdgeRules`/`emitTimesCalled` still count only input masters' calls), and V6's
-execution-order walk (`emitExecutionOrder` still starts only from input roots). Those three, an on-chain
-`minted-genesis` assertion, and the SDK genesis builder remain. The composer would
-then state the callee's frame in the
-same draft as the minted root, the derivation
-evaluates the genesis shape off-chain as it does the probe today, and the SDK's `initializedProxyState` accepts a
-callee whose writes land in the callee's own records. The direct (non-framed) deploy in `sc-deploy.ts` shares the
-same unproven-coin shape SDKFRAMED-1 closed for framed deploys; no audit row names it.
+
+**STATUS 2026-10-14 (validator complete; SDK builder remains).** The on-chain minted rules are all emitted and
+version-gated, and the genesis shape runs through the real program: `emitCoveredFrame` accepts a minted ref as a
+covered caller (V4), `emitTimesCalled` counts the minted masters' callees in the called-once rule (V5), and
+`emitExecutionOrder` seeds its work list from the minted roots' callees (V6) — the minted edge walk's filler-slot
+juggling was also fixed (it parked the remaining minted list and the count swapped, so `OP_ROT OP_ROT` now reorders
+them). `minted-genesis.test.ts` now runs the real VM program and asserts it accepts the honest shape and refuses the
+V5 caller mutation (8 tests). The validator protocol extension is therefore done; what remains is the SDK genesis
+builder, which is a composer model change rather than a planner tweak: the composer's `layout.ts`/`assemble.ts` lay
+every master out as an input participant, so a minted master (an output whose witness block rides in the v0x03
+transcript) needs a new `mintedMasters` participant kind, a `MintedTranscript` encode path in `assemble.ts`/
+`witness.ts`, and `initializedProxyState` accepting a callee whose writes land in the callee's own records. The
+direct (non-framed) deploy in `sc-deploy.ts` shares the same unproven-coin shape SDKFRAMED-1 closed for framed
+deploys; no audit row names it.
 
 ## Sorted batch targets sharing a node: one key written twice (DS-6 residual, 2026-10-12)
 

@@ -454,6 +454,8 @@ export function atomicParticipantPolicyHash(artifact: Artifact): string {
     eligible: handler.eligible,
     rejectionCode: handler.rejectionCode ?? '',
     emits: (handler.emits ?? []).map((event) => [event.eventName, event.eventSignature, event.emitIndex]),
+    // A streamed or loop handler publishes its events here instead of in `emits`.
+    ...((handler.runtimeLoopEvents?.length ?? 0) > 0 && { runtimeLoopEvents: handler.runtimeLoopEvents }),
     transfers: (handler.transfers ?? []).map((transfer) => ({
       transferIndex: transfer.transferIndex,
       recipient: transfer.recipient,

@@ -2182,19 +2182,21 @@ through the real program surfaced what remains: the minted emitters had read `ta
 wrong stack order (fixed for V2/V3/V4/V5), the head/facet V6/V7 settle emitters needed a version-gated minted-list
 skip (added), and the `emitMintedMastersIfV3` V2 walk parked its zero on the wrong side of the settle list (fixed).
 
-**STATUS 2026-10-14 (validator complete; SDK builder remains).** The on-chain minted rules are all emitted and
-version-gated, and the genesis shape runs through the real program: `emitCoveredFrame` accepts a minted ref as a
+**STATUS 2026-10-14 (validator + composer done; deploy wiring remains).** The on-chain minted rules are all emitted
+and version-gated, and the genesis shape runs through the real program: `emitCoveredFrame` accepts a minted ref as a
 covered caller (V4), `emitTimesCalled` counts the minted masters' callees in the called-once rule (V5), and
 `emitExecutionOrder` seeds its work list from the minted roots' callees (V6) — the minted edge walk's filler-slot
 juggling was also fixed (it parked the remaining minted list and the count swapped, so `OP_ROT OP_ROT` now reorders
 them). `minted-genesis.test.ts` now runs the real VM program and asserts it accepts the honest shape and refuses the
-V5 caller mutation (8 tests). The validator protocol extension is therefore done; what remains is the SDK genesis
-builder, which is a composer model change rather than a planner tweak: the composer's `layout.ts`/`assemble.ts` lay
-every master out as an input participant, so a minted master (an output whose witness block rides in the v0x03
-transcript) needs a new `mintedMasters` participant kind, a `MintedTranscript` encode path in `assemble.ts`/
-`witness.ts`, and `initializedProxyState` accepting a callee whose writes land in the callee's own records. The
-direct (non-framed) deploy in `sc-deploy.ts` shares the same unproven-coin shape SDKFRAMED-1 closed for framed
-deploys; no audit row names it.
+V5 caller mutation (8 tests). The composer now builds the same shape: `layout.ts` allocates a minted output region
+ahead of the events, `assemble.ts` builds the minted block and the v0x03 transcript (`buildMintedValidatorUnlockingBytecode`
+in `utils/transcript.ts`), and `draft.ts` resolves a callee's caller to `mintedRef(output)` with `INDEX_NONE_REFERENCE`
+as the sentinel origin (`minted-compose.test.ts` runs `composeDraft` and the derivation accepts it). What remains is
+the SDK genesis builder itself: `buildHopPlan` still lays the proxy master out as an input entered by the caller's
+coin, so the atomic path needs a genesis-plan variant (the proxy master minted, no caller coin, the proxy's records
+created rather than spent) plus `initializedProxyState` accepting a callee whose writes land in the callee's own
+records, and the adversarial e2e test. The direct (non-framed) deploy in `sc-deploy.ts` shares the same
+unproven-coin shape SDKFRAMED-1 closed for framed deploys; no audit row names it.
 
 ## Sorted batch targets sharing a node: one key written twice (DS-6 residual, 2026-10-12)
 

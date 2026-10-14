@@ -6499,6 +6499,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // entry -> chain break).
   private _iterationKeys?: Map<string, Uint8Array[]>;
   private _rawIterationKeysBlob?: Map<string, Uint8Array>;
+  private _rawWindowUtxos?: Map<string, Utxo[]>;
   private _rawVMapBatchWitness?: Map<number, {
     slot?: Uint8Array; proof?: bigint; next?: Uint8Array; predOut?: bigint; rank?: bigint; rows?: Uint8Array;
   }>;
@@ -6520,6 +6521,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    */
   _setRawIterationKeysBlob(collectionName: string, blob: Uint8Array): this {
     (this._rawIterationKeysBlob ??= new Map()).set(collectionName, blob);
+    return this;
+  }
+
+  /**
+   * @internal Test hook: supply the windowed-iteration entry co-spend verbatim, bypassing the cursor-based
+   * window planner, to exercise the covenant's anchor-slot pin and contiguity backstops against a malicious
+   * spender (a wrong anchor or a skipped entry must revert at the VM).
+   */
+  _setRawWindowUtxos(collectionName: string, utxos: Utxo[]): this {
+    (this._rawWindowUtxos ??= new Map()).set(collectionName, utxos);
     return this;
   }
 
@@ -9355,6 +9366,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         inner: this.inner,
         rawIterationKeysBlob: this._rawIterationKeysBlob,
         iterationKeys: this._iterationKeys,
+        rawWindowUtxos: this._rawWindowUtxos,
         getState: () => this.getState(),
       },
       {

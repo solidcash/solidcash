@@ -52,6 +52,11 @@ export interface TransactionLayout {
 
 /** Counts of the non-participant outputs, in the order the trailing region holds them. */
 export interface TrailingOutputCounts {
+  /**
+   * One output per minted master, ahead of every event: a master the transaction creates rather than spends,
+   * whose witness block the validator's transcript carries inline (v0x03).
+   */
+  readonly mintedMasters?: number;
   /** One output per emitted event, in emission order. */
   readonly events: number;
   /** One output per value send to a user. */
@@ -69,6 +74,8 @@ export interface TrailingOutputCounts {
 export interface OutputRegions {
   /** Index of the first trailing output: one past the last participant. */
   readonly trailingBase: number;
+  /** One output per minted master, ahead of every event, in plan order. */
+  readonly mintedMasterIndices: readonly number[];
   readonly eventIndices: readonly number[];
   /** The container each run of sends follows, one per sending frame. */
   readonly sendContainerIndices: readonly number[];
@@ -190,6 +197,7 @@ export function allocateOutputRegions(layout: TransactionLayout, counts: Trailin
     const indices = Array.from({ length: count }, () => cursor++);
     return indices;
   };
+  const mintedMasterIndices = allocate(counts.mintedMasters ?? 0);
   const eventIndices = allocate(counts.events);
   const runs = counts.sendRuns ?? (counts.sends > 0 ? [counts.sends] : []);
   if (runs.reduce((sum, run) => sum + run, 0) !== counts.sends || runs.some((run) => run <= 0)) {
@@ -204,6 +212,7 @@ export function allocateOutputRegions(layout: TransactionLayout, counts: Trailin
   const createdIndices = allocate(counts.created);
   return {
     trailingBase: layout.participantCount,
+    mintedMasterIndices,
     eventIndices,
     sendContainerIndices,
     sendIndices,

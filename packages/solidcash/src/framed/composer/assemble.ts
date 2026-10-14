@@ -19,9 +19,13 @@ import {
   bytesEqual,
   encodeArgumentList,
   encodeMinimalDataPush,
+  mintedRef,
   type FrameKindValue,
+  type MintedMaster,
+  type MintedTranscript,
   type RecordEntry,
   type Transcript,
+  type WitnessBlock,
 } from '@solidcash/utils';
 import { framedValidator } from 'solidc/runtime';
 import { assertValidatorCoverage, type EntryFacts } from './need-test.js';
@@ -36,6 +40,7 @@ import {
 import { assertOutputOccupancy } from './settlement.js';
 import {
   assembleMasterWitness,
+  assembleMintedMasterBlock,
   assembleValidatorWitness,
   type FrameWitness,
 } from './witness.js';
@@ -104,6 +109,24 @@ export interface PlannedSettlement {
   readonly createdOutputs?: readonly number[];
 }
 
+/**
+ * One master the transaction mints rather than spends: a genesis root frame whose witness block the validator's
+ * transcript carries inline (v0x03). It has no input, so it is never a run of its own; its caller and origin are
+ * `INDEX_NONE`, and its callees name it by `mintedRef(output)`.
+ */
+export interface PlannedMintedMaster {
+  /** The master's identity within its contract's pool. */
+  readonly master: string;
+  readonly contract: string;
+  /** The frame the master runs in: a ROOT frame with an empty sender and no value. */
+  readonly frame: FrameWitness;
+  readonly calls: readonly PlannedCall[];
+  readonly retval: Uint8Array;
+  readonly segments: readonly (readonly RecordEntry[])[];
+  readonly events: readonly number[];
+  readonly sends: readonly number[];
+}
+
 /** One validator the composition spends: the contracts it covers, what it settles, and its program. */
 export interface PlannedValidator {
   /** The identity the hosting block names and the layout places. */
@@ -141,6 +164,8 @@ export interface CompositionPlan {
   readonly blocks: readonly ContractBlock[];
   readonly userInputs: readonly PlannedUserInput[];
   readonly masters: readonly PlannedMaster[];
+  /** The masters the transaction mints, whose blocks ride in the validator transcript (v0x03). */
+  readonly mintedMasters?: readonly PlannedMintedMaster[];
   /**
    * The composition's validators. A composition of one group names its validator directly; a composition of
    * independent groups names one per group, each hosted by the block that names it.
@@ -243,7 +268,7 @@ export interface ResolvedCall {
 export interface ValidatorTranscript {
   /** The validator identity the transcript belongs to. */
   readonly validator: string;
-  readonly transcript: Transcript;
+  readonly transcript: Transcript | MintedTranscript;
 }
 
 /** The assembled composition. */
@@ -305,6 +330,9 @@ function resolveOutputRegions(
   const created = createdRecordOutputs(plan.masters);
 
   const regions = allocateOutputRegions(layout, {
+    ...(plan.mintedMasters?.length === undefined || plan.mintedMasters.length === 0
+      ? {}
+      : { mintedMasters: plan.mintedMasters.length }),
     events: declaredEvents.length,
     sends: declaredSends.length,
     sendRuns: plan.masters.map((master) => master.sends.length).filter((run) => run > 0),
@@ -373,7 +401,7 @@ export class UnresolvedReferenceError extends Error {
  */
 function assertCallDataAgrees(plan: CompositionPlan): void {
   const recorded = new Map<string, readonly Uint8Array[]>();
-  for (const master of plan.masters) {
+  for (const master of [...plan.masters, ...(plan.mintedMasters ?? [])]) {
     for (const call of master.calls) {
       if (call.callee === master.master) {
         throw new FramedEncodingError(`master "${master.master}" calls itself, which the format refuses`);
@@ -443,6 +471,18 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
     }
     indexOf.set(user.id, user.index);
   }
+  // A minted master is not an input: a callee names it by `mintedRef(output)`, the flagged reference the transcript
+  // carries. Its output index is the trailing slot the minted region allocates, in plan order.
+  (plan.mintedMasters ?? []).forEach((minted, position) => {
+    const output = outputs.mintedMasterIndices[position];
+    if (output === undefined) {
+      throw new FramedEncodingError(`the plan mints "${minted.master}" past the minted output region`);
+    }
+    if (indexOf.has(minted.master)) {
+      throw new FramedEncodingError(`"${minted.master}" is both a participant and a minted master`);
+    }
+    indexOf.set(minted.master, mintedRef(output));
+  });
 
   const resolve = (reference: string, what: string): number => {
     const index = indexOf.get(reference);
@@ -495,6 +535,33 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
     });
   }
 
+  // A minted master's block rides in the validator transcript: a genesis root has no P2PKH caller and no origin, and
+  // its calls name their callees by input index as any other caller's do.
+  const mintedBlocks = new Map<string, WitnessBlock>();
+  for (const minted of plan.mintedMasters ?? []) {
+    const validator = binding.byContract.get(minted.contract);
+    const validatorRef = validator === undefined ? INDEX_NONE : resolve(validator.id, 'validator');
+    const calls = minted.calls.map((call) => {
+      const calleeRef = resolve(call.callee, 'callee');
+      const hashed = argsHashOf(call);
+      resolvedCalls.push({ from: minted.master, callee: call.callee, calleeRef, argsHash: hashed });
+      return {
+        kind: call.kind, target: call.target, value: call.value, calleeRef, argsHash: hashed, result: call.result,
+      };
+    });
+    mintedBlocks.set(minted.master, assembleMintedMasterBlock({
+      frame: minted.frame,
+      callerRef: INDEX_NONE,
+      originRef: INDEX_NONE,
+      validatorRef,
+      calls,
+      retval: minted.retval,
+      segments: minted.segments,
+      events: minted.events,
+      sends: minted.sends,
+    }));
+  }
+
   // Coverage is checked before the validators are assembled, so a plan that cannot be verified is refused as a plan
   // rather than producing inputs.
   assertValidatorCoverage(entries);
@@ -503,7 +570,19 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
   for (const validator of binding.hosted) {
     // A validator's transcript names the masters that point at it, not every master of the composition.
     const covered = plan.masters.filter((master) => binding.byContract.get(master.contract) === validator);
-    const transcript: Transcript = {
+    const minted: MintedMaster[] = [];
+    (plan.mintedMasters ?? []).forEach((master, position) => {
+      if (binding.byContract.get(master.contract) !== validator) return;
+      const block = mintedBlocks.get(master.master);
+      if (block === undefined) throw new FramedEncodingError(`the minted master "${master.master}" was not assembled`);
+      minted.push({ output: outputs.mintedMasterIndices[position]!, block });
+    });
+    const settles: Transcript['settles'] = validator.settles.map((settled) => ({
+      category: settled.category,
+      stateInputs: settled.stateInputs.map((state) => resolve(state, 'state input')),
+      createdOutputs: requireCreatedOutputs(settled, outputs),
+    }));
+    const transcript: Transcript | MintedTranscript = {
       // Ascending by index, so two builders of the same composition produce the same transcript.
       roots: covered
         .filter((master) => master.facts.kind === 0)
@@ -512,11 +591,8 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
       masters: covered
         .map((master) => resolve(master.master, 'master'))
         .sort((left, right) => left - right),
-      settles: validator.settles.map((settled) => ({
-        category: settled.category,
-        stateInputs: settled.stateInputs.map((state) => resolve(state, 'state input')),
-        createdOutputs: requireCreatedOutputs(settled, outputs),
-      })),
+      ...(minted.length === 0 ? {} : { mintedMasters: minted }),
+      settles,
     };
     const validatorWitness = assembleValidatorWitness({
       transcript,

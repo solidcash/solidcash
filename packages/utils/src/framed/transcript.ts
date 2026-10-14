@@ -263,3 +263,12 @@ export function buildValidatorUnlockingBytecode(
 ): Uint8Array {
   return concatBytes([minimalPush(encodeTranscript(transcript)), minimalPush(redeemScript)]);
 }
+
+/** Unlocking bytecode for a validator of a genesis-shape (v0x03) transcript, with the minted blocks inline. */
+export function buildMintedValidatorUnlockingBytecode(
+  transcript: MintedTranscript,
+  redeemScript: Uint8Array,
+  minimalPush: (payload: Uint8Array) => Uint8Array,
+): Uint8Array {
+  return concatBytes([minimalPush(encodeMintedTranscript(transcript)), minimalPush(redeemScript)]);
+}

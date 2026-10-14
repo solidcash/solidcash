@@ -2241,10 +2241,15 @@ chunk accounting; the direct `forward('seed')` then settles.
 The likely seam is the `valueChunkTrailingCountActive` gate at `GenerateTargetTraversal` ~line 9624, which only
 activates for `!this.directConvention`. A direct delegate is `directConvention` (composition !== 'framed'), so the
 sorted-batch `seed` (`balances[key] = amount; notes[key] = note` with a 96-byte chunked note) does NOT count the
-`notes` value chunk in its trailing band, while the SDK still appends that chunk output between the new entries and
-the batch's rewritten predecessors — the helper's count check then sees `0x03` (2 predecessors + 1 chunk) where the
-compiler published `0x02`. The fix must count the chunkable sorted-mapping value chunk in the direct delegate's
-trailing band without disturbing the default (non-delegate) direct path, which the comment says stays byte-identical.
+`notes` value chunk in its trailing band. The failing instruction is `emitVerifyChunkUtxoCount`
+(`GenerateTargetTraversal` ~line 33926, outlined into the seed prologue), which scans outputs at a sorted
+collection's ENTRY address and verifies the count equals the batch-derived expectation: the `balances` census finds
+three outputs at its entry address (the new entry, its predecessor, and the `notes` value-chunk output that landed at
+that address) where the compiler derived two. The `notes` value-chunk output is missing/misplaced: the 96-byte note
+needs one 68-byte continuation chunk, but the transaction emits a 3-byte `000000` output at the `balances` entry
+address under the implementation's category (8221decf) instead of a chunk at the `notes` value-chunk address under the
+proxy's category (754e1983). The fix must publish/materialize the chunkable sorted-mapping value chunk for the direct
+delegate path without disturbing the default (non-delegate) direct path, which the comment says stays byte-identical.
 
 ## An in-place upgrade of a contract that keeps records (CRYPTO-4 residual, 2026-10-13)
 

@@ -39,13 +39,13 @@ describe('kernel batch row capacity', () => {
         stack: state.stack.slice(-6).map(binToHex) });
     }
     expect(failures).toEqual([]);
-    const slots = artifact.messageBus!.route.blockLayout!.slots.filter((slot) => slot.kind === 'event');
-    expect(slots.length).toBeGreaterThanOrEqual(count);
+    // Each row owns one event output, an event window or a record of its runtime effect stream.
+    const events = transaction.outputs.flatMap((output, index) => (output.token?.nft?.capability === 'none'
+      && output.token.nft.commitment.length > 0 ? [index] : []));
+    expect(events).toHaveLength(count);
     // The last row must own its own event; corrupting that output cannot be hidden in unused capacity.
-    const lastEvent = transaction.outputs[slots[count - 1].offset];
-    expect(lastEvent.token?.nft?.commitment.length).toBeGreaterThan(0);
     const forged = structuredClone(transaction);
-    forged.outputs[slots[count - 1].offset].token!.nft!.commitment[0] ^= 1;
+    forged.outputs[events[count - 1]].token!.nft!.commitment[0] ^= 1;
     expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, transaction: forged, sourceOutputs }))).not.toBe(true);
     await call.send();
     expect((await tally.getState()).count).toBe(BigInt(count));

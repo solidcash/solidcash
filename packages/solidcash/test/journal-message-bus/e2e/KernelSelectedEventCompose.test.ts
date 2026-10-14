@@ -109,11 +109,12 @@ describe('kernel selected event beside journal mutation under composition', () =
 
   it('skips unselected fixed event slots during semantic composition', async () => {
     const provider = createMessageBusCapstoneTestProvider();
+    // A conditional emit keeps its fixed event slot; a top-level one would stream in the trailing band.
     const storeArtifact = compileString(`pragma solidcash >=0.8.0;
       contract Store() {
         event Touched(int indexed key);
         function touch(int key) public {
-          emit Touched(key);
+          if (key >= 0) { emit Touched(key); }
           require(true);
         }
         function leaveUntouched() public { require(true); }

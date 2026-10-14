@@ -12189,14 +12189,10 @@ function synthesizeMessageBusRoute(
     : useBoundRoute ? MESSAGE_BUS_PLACEHOLDER_LOCK_HEX : '';
   const compactAllowsSelfdestructRetirement = [...kernelLifecycleHandlers.values()].includes('selfdestruct');
   const compactAtomicBinder = `
-        bigint activeMasterOutput = -1;
-        for (bigint masterOutput = 0; masterOutput < tx.outputs.length; masterOutput = masterOutput + 1) {
-          if (tx.outputs[masterOutput].lockingBytecode == ${kernelUpgradeMode
-    ? '__internal__upgradeBytecode' : 'tx.inputs[activeInputIndex].lockingBytecode'}
-            && tx.outputs[masterOutput].tokenCategory == tx.inputs[activeInputIndex].tokenCategory) {
-            activeMasterOutput = masterOutput;
-          }
-        }
+        bytes activeMasterCategory = tx.inputs[activeInputIndex].tokenCategory;
+        bytes activeMasterLock = ${kernelUpgradeMode
+    ? '__internal__upgradeBytecode' : 'tx.inputs[activeInputIndex].lockingBytecode'};
+        bigint activeMasterOutput = __message_bus_find_last_output(activeMasterCategory, activeMasterLock);
         require(tx.inputs[activeInputIndex].tokenCategory.length == 33);
         require(tx.inputs[activeInputIndex].tokenCategory.slice(32, 33) == hex"02");
         ${compactAllowsSelfdestructRetirement ? `
@@ -12486,6 +12482,182 @@ function synthesizeMessageBusRoute(
           }
         }
   `;
+  // Keep transaction-wide scans in shallow frames: their per-slot assignments must not rotate the
+  // verifier's large manifest/row frame on every iteration. Both hosts use these same checks.
+  const atomicScanHelpers = `
+      function __message_bus_find_last_output(bytes category, bytes lockingBytecode) internal view returns (bigint) {
+        // A backwards search can stop on its first exact match while retaining the original last-match rule.
+        // Keep the scan frame shallow and skip unrelated categories before inspecting locking bytecode.
+        bigint result = -1;
+        bigint output = tx.outputs.length;
+        if (output > 0) {
+          do {
+            do { output = output - 1; }
+            while (output > 0 && tx.outputs[output].tokenCategory != category);
+            if (tx.outputs[output].tokenCategory == category) {
+              if (tx.outputs[output].lockingBytecode == lockingBytecode) { result = output; }
+            }
+          } while (output > 0 && result < 0);
+        }
+        return result;
+      }
+      function __message_bus_empty_pad(bigint input, bigint output) internal view returns (bool) {
+        // All three terms are nonnegative. Eager evaluation avoids conditional dispatch on every pad;
+        // both coordinates are already within the authenticated participant block.
+        return bytes.concat(tx.inputs[input].tokenCategory, tx.outputs[output].tokenCategory).length
+          + bigint(tx.inputs[input].lockingBytecode != hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}")
+          + bigint(tx.outputs[output].lockingBytecode != hex"51") == 0;
+      }
+      function __message_bus_minting_outputs() internal view returns (bytes) {
+        bytes outputs = hex"";
+        if (tx.outputs.length > 0) {
+          bigint output = 0;
+          do {
+            if (tx.outputs[output].tokenCategory.length == 33) {
+              if (tx.outputs[output].tokenCategory.slice(32, 33) == hex"02") {
+                outputs = bytes.concat(outputs, toPaddedBytes(output, 4));
+              }
+            }
+            output = output + 1;
+          } while (output < tx.outputs.length);
+        }
+        return outputs;
+      }
+      function __message_bus_last_output(
+        bytes outputs, bytes category, bytes lockingBytecode
+      ) internal view returns (bigint) {
+        // Every participant master is minting. Preserve the last exact match across all outputs, including
+        // duplicates outside participant blocks, using the shared census rather than rescanning every pad.
+        bigint result = -1;
+        for (bigint at = 0; at < outputs.length; at = at + 4) {
+          bigint output = int(bytes.concat(outputs.slice(at, at + 4), hex"00"));
+          if (tx.outputs[output].tokenCategory == category) {
+            if (tx.outputs[output].lockingBytecode == lockingBytecode) { result = output; }
+          }
+        }
+        return result;
+      }
+      function __message_bus_physical_counts(
+        bigint activeBase, bigint activeOutputBase, bigint activeBlockSize, bytes activeCategory,
+        bigint activeReturnOutput${kernelDeploymentHandlers.size === 0 ? '' : ', bytes activeDeploymentTargets'}
+        ${sidecarVerificationMode ? ', bytes activeSidecarTargets' : ''}
+      ) internal view returns (bigint, bigint, bigint, bigint, bigint, bigint) {
+        bytes activeMutableCategory = bytes.concat(activeCategory, hex"01");
+        bigint physicalSatoshiContainers = 0;
+        bigint physicalTokenContainers = 0;
+        bigint physicalValueOutputs = 0;
+        bigint physicalTokenOutputs = 0;
+        bigint physicalEventOutputs = 0;
+        bigint physicalResourceEndpoints = 0;
+        // One pass per slot. Token categories are 0, 32 or 33 bytes, and the satoshi, token-container, value and
+        // token-output counts are mutually exclusive: the first two need a non-funder input, the last two a
+        // funder input, each pair split by an empty or present category.
+        bigint end = activeBase + activeBlockSize;
+        bigint outputDelta = activeOutputBase - activeBase;
+        // The participant parser proves activeBlockSize >= fixedSize >= 1 before this helper is called.
+        bigint slot = activeBase;
+        do {
+          // A token-free dummy input paired with OP_TRUE contributes zero to all six physical counts.
+          // Check that neutral shape before creating the classifier frame for this slot.
+          if (!__message_bus_empty_pad(slot, outputDelta + slot)) {
+            bigint outputSlot = outputDelta + slot;
+            bytes inCategory = tx.inputs[slot].tokenCategory;
+            bytes outCategory = tx.outputs[outputSlot].tokenCategory;
+            // Token-free pads cannot be resources, events, deployments or token transfers. Classify their
+            // satoshi/value role without traversing the token-only checks or target lists.
+            if (inCategory.length + outCategory.length == 0) {
+              if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
+                if (tx.outputs[outputSlot].lockingBytecode != hex"51") {
+                  physicalValueOutputs = physicalValueOutputs + 1;
+                }
+              } else if (tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode) {
+                physicalSatoshiContainers = physicalSatoshiContainers + 1;
+              }
+            } else {
+              ${kernelDeploymentHandlers.size === 0 ? '' : `bigint isDeploymentSlot = 0;
+              for (bigint deployment = 0; deployment < activeDeploymentTargets.length;
+                deployment = deployment + 4) {
+                bigint deploymentStart = int(bytes.concat(
+                  activeDeploymentTargets.slice(deployment, deployment + 2), hex"00"
+                ));
+                bigint deploymentCount = int(bytes.concat(
+                  activeDeploymentTargets.slice(deployment + 2, deployment + 4), hex"00"
+                ));
+                if (outputSlot >= deploymentStart && outputSlot < deploymentStart + deploymentCount) {
+                  isDeploymentSlot = 1;
+                }
+              }`}
+              ${sidecarVerificationMode ? `bigint isSidecarSlot = 0;
+              for (bigint sidecar = 0;
+                sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
+                if (slot == int(bytes.concat(
+                  activeSidecarTargets.slice(sidecar, sidecar + 2), hex"00"))) {
+                  isSidecarSlot = 1;
+                }
+              }` : ''}
+              if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
+                if (outCategory.length == 0) {
+                  if (tx.outputs[outputSlot].lockingBytecode != hex"51") {
+                    physicalValueOutputs = physicalValueOutputs + 1;
+                  }
+                } else if (${kernelDeploymentHandlers.size === 0 ? '' : 'isDeploymentSlot == 0 && '}
+                  // Participant-owned state/event NFTs use the participant category and are authenticated as
+                  // resource/event rows. A tcTransfer category is necessarily foreign to that participant in this
+                  // admitted shape; excluding the local category prevents trailing chunk mints from satisfying the
+                  // token-settlement cardinality check.
+                  outCategory.slice(0, 32) != activeCategory) {
+                  physicalTokenOutputs = physicalTokenOutputs + 1;
+                }
+              } else if (inCategory.length == 0) {
+                if (outCategory.length == 0
+                  && tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode) {
+                  physicalSatoshiContainers = physicalSatoshiContainers + 1;
+                }
+              } else if (${sidecarVerificationMode ? 'isSidecarSlot == 0 && ' : ''}inCategory.slice(0, 32) != activeCategory) {
+                physicalTokenContainers = physicalTokenContainers + 1;
+              }
+              // The return coordinate publishes a mutable participant NFT, but it is authenticated separately by
+              // the result-vector commitment below. It is not a state-resource endpoint and must not inflate the
+              // resource cardinality merely because the route returns a value.
+              if (inCategory.length + outCategory.length > 0 && outputSlot != activeReturnOutput) {
+                if (inCategory == activeMutableCategory) {
+                  physicalResourceEndpoints = physicalResourceEndpoints + 1;
+                }
+                if (outCategory == activeMutableCategory) {
+                  physicalResourceEndpoints = physicalResourceEndpoints + 1;
+                }
+                if (outCategory == activeCategory) {
+                  // Event rows always carry their encoded effect. Empty immutable NFTs are reserved frame/resource
+                  // endpoints, not emitted events, even when they use the participant's category. CREATE/proxy
+                  // logical-identity anchors (SCID v1: magic||version) are also not callManifest event rows;
+                  // counting them as physical events breaks event-only (no dataNft) compose when the identity is
+                  // minted onto a previously tokenless pad while kind-2 only records the real emit.
+                  if (inCategory != activeCategory
+                    && tx.outputs[outputSlot].nftCommitment.length > 0
+                    && (tx.outputs[outputSlot].nftCommitment.length < 5
+                      || tx.outputs[outputSlot].nftCommitment.slice(0, 5) != hex"5343494401")
+                    && tx.outputs[outputSlot].tokenAmount == 0) {
+                    physicalEventOutputs = physicalEventOutputs + 1;
+                  }
+                } else if (inCategory == activeCategory
+                  // Delegate execution can relocate an existing immutable participant NFT (for example, its logical
+                  // identity anchor) to another slot in the same authenticated block. Count net creation, not a
+                  // slot-local category transition, so such moves cancel while newly emitted event NFTs remain.
+                  && tx.inputs[slot].nftCommitment.length > 0
+                  && (tx.inputs[slot].nftCommitment.length < 5
+                    || tx.inputs[slot].nftCommitment.slice(0, 5) != hex"5343494401")
+                  && tx.inputs[slot].tokenAmount == 0) {
+                  physicalEventOutputs = physicalEventOutputs - 1;
+                }
+              }
+            }
+          }
+          slot = slot + 1;
+        } while (slot < end);
+        return (physicalSatoshiContainers, physicalTokenContainers, physicalValueOutputs,
+          physicalTokenOutputs, physicalEventOutputs, physicalResourceEndpoints);
+      }
+  `;
   const inlinedAtomicVerifierBody = `
         bytes manifestVersion = callManifest.slice(0, 8);
         ${compilerOptions.messageBusKernel === true
@@ -12501,6 +12673,8 @@ function synthesizeMessageBusRoute(
         require(participantCount >= 2 && participantCount <= 8);
         bool manifestOutputIdentity = ${atomicManifestOutputIdentityExpression};
         bool manifestSignatureFrames = ${atomicManifestSignatureFrameExpression};
+        bytes mintingOutputs = hex"";
+        if (!manifestOutputIdentity) { mintingOutputs = __message_bus_minting_outputs(); }
         bigint activeMembership = 0;
         bigint activeBase = 65535;
         bigint activeParticipant = 255;
@@ -12589,15 +12763,8 @@ function synthesizeMessageBusRoute(
                 && tx.outputs[participantOutputBase].value == tx.inputs[base].value);
             }
           } else {
-            bytes baseCategory = tx.inputs[base].tokenCategory;
-            for (bigint participantOutput = 0; participantOutput < tx.outputs.length;
-              participantOutput = participantOutput + 1) {
-              if (tx.outputs[participantOutput].tokenCategory == baseCategory) {
-                if (tx.outputs[participantOutput].lockingBytecode == participantOutputLbc) {
-                  participantOutputBase = participantOutput;
-                }
-              }
-            }
+            participantOutputBase = __message_bus_last_output(
+              mintingOutputs, tx.inputs[base].tokenCategory, participantOutputLbc);
             if (participantOutputBase < 0 && tx.outputs[base].tokenCategory.length == 0) {
               require(tx.outputs[base].value == tx.inputs[base].value);
               participantOutputBase = base;
@@ -13357,98 +13524,11 @@ function synthesizeMessageBusRoute(
             }
           }
         }
-        bytes activeMutableCategory = bytes.concat(activeCategory, hex"01");
-        bigint physicalSatoshiContainers = 0;
-        bigint physicalTokenContainers = 0;
-        bigint physicalValueOutputs = 0;
-        bigint physicalTokenOutputs = 0;
-        bigint physicalEventOutputs = 0;
-        bigint physicalResourceEndpoints = 0;
-        // One pass per slot. Token categories are 0, 32 or 33 bytes, and the satoshi, token-container, value and
-        // token-output counts are mutually exclusive: the first two need a non-funder input, the last two a
-        // funder input, each pair split by an empty or present category.
-        for (bigint slot = activeBase;
-          slot < activeBase + activeBlockSize; slot = slot + 1) {
-          bigint outputSlot = activeOutputBase + slot - activeBase;
-          bytes inCategory = tx.inputs[slot].tokenCategory;
-          bytes outCategory = tx.outputs[outputSlot].tokenCategory;
-          ${kernelDeploymentHandlers.size === 0 ? '' : `bigint isDeploymentSlot = 0;
-          for (bigint deployment = 0; deployment < activeDeploymentTargets.length;
-            deployment = deployment + 4) {
-            bigint deploymentStart = int(bytes.concat(
-              activeDeploymentTargets.slice(deployment, deployment + 2), hex"00"
-            ));
-            bigint deploymentCount = int(bytes.concat(
-              activeDeploymentTargets.slice(deployment + 2, deployment + 4), hex"00"
-            ));
-            if (outputSlot >= deploymentStart && outputSlot < deploymentStart + deploymentCount) {
-              isDeploymentSlot = 1;
-            }
-          }`}
-          ${sidecarVerificationMode ? `bigint isSidecarSlot = 0;
-          for (bigint sidecar = 0;
-            sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
-            if (slot == int(bytes.concat(
-              activeSidecarTargets.slice(sidecar, sidecar + 2), hex"00"))) {
-              isSidecarSlot = 1;
-            }
-          }` : ''}
-          if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
-            if (outCategory.length == 0) {
-              if (tx.outputs[outputSlot].lockingBytecode != hex"51") {
-                physicalValueOutputs = physicalValueOutputs + 1;
-              }
-            } else if (${kernelDeploymentHandlers.size === 0 ? '' : 'isDeploymentSlot == 0 && '}
-              // Participant-owned state/event NFTs use the participant category and are authenticated as
-              // resource/event rows. A tcTransfer category is necessarily foreign to that participant in this
-              // admitted shape; excluding the local category prevents trailing chunk mints from satisfying the
-              // token-settlement cardinality check.
-              outCategory.slice(0, 32) != activeCategory) {
-              physicalTokenOutputs = physicalTokenOutputs + 1;
-            }
-          } else if (inCategory.length == 0) {
-            if (outCategory.length == 0
-              && tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode) {
-              physicalSatoshiContainers = physicalSatoshiContainers + 1;
-            }
-          } else if (${sidecarVerificationMode ? 'isSidecarSlot == 0 && ' : ''}inCategory.slice(0, 32) != activeCategory) {
-            physicalTokenContainers = physicalTokenContainers + 1;
-          }
-          // The return coordinate publishes a mutable participant NFT, but it is authenticated separately by
-          // the result-vector commitment below. It is not a state-resource endpoint and must not inflate the
-          // resource cardinality merely because the route returns a value.
-          if (inCategory.length + outCategory.length > 0 && outputSlot != activeReturnOutput) {
-            if (inCategory == activeMutableCategory) {
-              physicalResourceEndpoints = physicalResourceEndpoints + 1;
-            }
-            if (outCategory == activeMutableCategory) {
-              physicalResourceEndpoints = physicalResourceEndpoints + 1;
-            }
-            if (outCategory == activeCategory) {
-              // Event rows always carry their encoded effect. Empty immutable NFTs are reserved frame/resource
-              // endpoints, not emitted events, even when they use the participant's category. CREATE/proxy
-              // logical-identity anchors (SCID v1: magic||version) are also not callManifest event rows;
-              // counting them as physical events breaks event-only (no dataNft) compose when the identity is
-              // minted onto a previously tokenless pad while kind-2 only records the real emit.
-              if (inCategory != activeCategory
-                && tx.outputs[outputSlot].nftCommitment.length > 0
-                && (tx.outputs[outputSlot].nftCommitment.length < 5
-                  || tx.outputs[outputSlot].nftCommitment.slice(0, 5) != hex"5343494401")
-                && tx.outputs[outputSlot].tokenAmount == 0) {
-                physicalEventOutputs = physicalEventOutputs + 1;
-              }
-            } else if (inCategory == activeCategory
-              // Delegate execution can relocate an existing immutable participant NFT (for example, its logical
-              // identity anchor) to another slot in the same authenticated block. Count net creation, not a
-              // slot-local category transition, so such moves cancel while newly emitted event NFTs remain.
-              && tx.inputs[slot].nftCommitment.length > 0
-              && (tx.inputs[slot].nftCommitment.length < 5
-                || tx.inputs[slot].nftCommitment.slice(0, 5) != hex"5343494401")
-              && tx.inputs[slot].tokenAmount == 0) {
-              physicalEventOutputs = physicalEventOutputs - 1;
-            }
-          }
-        }
+        bigint physicalSatoshiContainers, bigint physicalTokenContainers, bigint physicalValueOutputs,
+          bigint physicalTokenOutputs, bigint physicalEventOutputs, bigint physicalResourceEndpoints =
+          __message_bus_physical_counts(activeBase, activeOutputBase, activeBlockSize, activeCategory,
+            activeReturnOutput${kernelDeploymentHandlers.size === 0 ? '' : ', activeDeploymentTargets'}
+            ${sidecarVerificationMode ? ', activeSidecarTargets' : ''});
         require(activeResourceEndpoints == physicalResourceEndpoints);
         require(activeSatoshiContainerRows == physicalSatoshiContainers);
         require(activeTokenContainerRows == physicalTokenContainers);
@@ -13686,6 +13766,7 @@ function synthesizeMessageBusRoute(
         return (payload, nextAt);
       }` : '';
   const helperSource = `${preamble}    contract __MessageBusHost() {
+      ${atomicScanHelpers}
       ${directPushHelperSource}
       ${graphCallManifestLoader}
       ${atomicCallManifestLoader}
@@ -14046,10 +14127,14 @@ function synthesizeMessageBusRoute(
       })))).flat();
   }
   route.location = contract.location;
-  for (const helper of helpers) helper.location = contract.location;
+  for (const helper of helpers) {
+    helper.location = contract.location;
+    helper.compilerGeneratedHelper = true;
+  }
   contract.functions.push(...helpers, route);
   if ((useBoundRoute || compilerOptions.messageBusKernel === true) && !offloadedVerifier) {
     const verifierHost = `${preamble}    contract __MessageBusVerifierHost() {
+      ${atomicScanHelpers}
       ${directPushHelperSource}
       function ${MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM}(
         bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch

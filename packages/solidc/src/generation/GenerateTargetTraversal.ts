@@ -7177,10 +7177,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Serialize the function body to bytecode data.
     //
     // User-authored function bodies remain unoptimised so their nested require pointers stay stable. The
-    // compiler-generated detached message-bus verifier is different: its source is generated here, and the
-    // standard helper optimiser carries its rewritten location/require data. Run that pass on this large body
-    // so its repeated stack shuffles do not consume the transaction's BCH operation-density budget.
-    const generatedVerifierBody = func.name === '__message_bus_verify_atomic_program';
+    // compiler-generated helpers are different: their provenance is stamped when generated, and the standard
+    // helper optimiser carries rewritten location/require data. Run that pass on these bodies so repeated
+    // stack shuffles do not consume the transaction's BCH operation-density budget.
+    const generatedVerifierBody = func.name === '__message_bus_verify_atomic_program'
+      || func.compilerGeneratedHelper === true
+      || this.compilerOptions.__detachedVerifierUnrollDeepReplace !== undefined;
     const optimisedVerifierBody = generatedVerifierBody
       ? GenerateTargetTraversalWithLocation.optimisedHelperBody(subTraversal) : undefined;
     const bodyScript = optimisedVerifierBody?.script ?? normaliseScript(subTraversal.output);
@@ -10974,9 +10976,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // without changing the size-oriented lowering of ordinary user functions.
     // No depth takes the counted loop: it runs about five times the instructions of the ROLL rotation (through
     // depth 17) or the unrolled shuttle, and the stack-suffix outlining keeps the shuttle about as small as it.
-    const unrollAtomicVerifier = this.compilerOptions.__detachedVerifierUnrollDeepReplace === true
-      && this.currentFunction?.name === '__message_bus_verify_atomic_program'
-      && index >= 14;
+    const unrollAtomicVerifier = this.compilerOptions.__detachedVerifierUnrollDeepReplace === true && index >= 14;
     // A replacement in a loop body runs once per iteration: through depth 17 the ROLL rotation below costs at most
     // 9 bytes more than the counted loops and about an eighth of their executed operations.
     const unrollLoopBody = this.plainLoopDepth > 0 && index <= 17 && this.directConvention;
@@ -45413,6 +45413,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     transferIndex: number, locationData: SingleLocationData,
   ): void {
     this.emitBlockSlotIndex('tcTransfer', transferIndex, locationData);
+    this.emitNotTakenTokenTransferAtComputedIndex(locationData);
+  }
+
+  /** Consume a computed output index and apply the same SEC-16 proof as a fixed transfer slot. */
+  private emitNotTakenTokenTransferAtComputedIndex(locationData: SingleLocationData): void {
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
     this.emit(Op.OP_LESSTHAN, locationData);
@@ -45521,6 +45526,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!frame || frame.tokenTransferWidth === 0 || !this.stack.includes(GRAPH_TOKEN_SITE)) return;
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     const covered = new Set(this.pendingTokenContainerTransfers.map((transfer) => transfer.transferIndex));
+    if (frame.sites > 8 && covered.size === 0) {
+      // Mirror the event-window walk: one proof per member, reused across every unowned dispatch site.
+      this.emitPickCompilerRouteFrameValue(GRAPH_TOKEN_SITE, locationData);
+      this.emit(Op.OP_0, locationData);
+      this.emit(Op.OP_BEGIN, locationData);
+      this.emit([Op.OP_OVER, Op.OP_2, Op.OP_MOD, Op.OP_NOT, Op.OP_IF], locationData);
+      for (let member = 0; member < frame.tokenTransferWidth; member += 1) {
+        this.emitBlockSlotIndex('tcTransfer', frame.tokenTransferBase, locationData, 2);
+        this.emit(Op.OP_OVER, locationData);
+        if (frame.tokenTransferWidth > 1) {
+          this.emit([encodeInt(BigInt(frame.tokenTransferWidth)), Op.OP_MUL], locationData);
+        }
+        if (member > 0) this.emit([encodeInt(BigInt(member)), Op.OP_ADD], locationData);
+        this.emit(Op.OP_ADD, locationData);
+        this.emitNotTakenTokenTransferAtComputedIndex(locationData);
+      }
+      this.emit([
+        Op.OP_ENDIF, Op.OP_1ADD, Op.OP_SWAP, Op.OP_2, Op.OP_DIV, Op.OP_SWAP,
+        Op.OP_DUP, encodeInt(BigInt(frame.sites)), Op.OP_NUMEQUAL, Op.OP_UNTIL, Op.OP_2DROP,
+      ], locationData);
+      return;
+    }
     for (let ordinal = 0; ordinal < frame.sites * frame.tokenTransferWidth; ordinal += 1) {
       if (covered.has(ordinal)) continue;
       const site = Math.floor(ordinal / frame.tokenTransferWidth);
@@ -51033,8 +51060,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
+    // This is an existence proof. Stop when a matching mutable input is found instead of rescanning the
+    // remaining inputs; the output's exact lock and category have already been compared in the match arm.
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_2, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_BOOLOR, loc);
     this.emit(Op.OP_UNTIL, loc);
     this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_ENDIF, loc);
@@ -51458,123 +51490,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const p2pkhPrefix = P2PKH_LBC_PREFIX;  // 3 bytes
     const p2pkhSuffix = P2PKH_LBC_SUFFIX;  // 2 bytes
 
-    // Push sentinel (OP_0) and counter i=0
-    this.emit(Op.OP_0, locationData);          // sentinel (will be replaced by result)
-    this.emit(Op.OP_0, locationData);          // i = 0
-
-    this.emit(Op.OP_BEGIN, locationData);
-
-    // Check: i < tx.inputs.length
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_TXINPUTCOUNT, locationData);
-    this.emit(Op.OP_LESSTHAN, locationData);
-    this.emit(Op.OP_IF, locationData);
-
-    // Stack inside if: [sentinel, i]
-
-    // Skip self: i == OP_INPUTINDEX
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_INPUTINDEX, locationData);
-    this.emit(Op.OP_NUMEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    // Self - skip (i++, continue)
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);            // continue loop
-    this.emit(Op.OP_ELSE, locationData);
-
-    // Skip token-bearing inputs: OP_UTXOTOKENCATEGORY size > 0
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(Op.OP_0NOTEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    // Token-bearing - skip (i++, continue)
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);            // continue loop
-    this.emit(Op.OP_ELSE, locationData);
-
-    // Get locking bytecode at [i]
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_UTXOBYTECODE, locationData);
-    // Stack: [sentinel, i, lbc]
-
-    // Check size == 25
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(encodeInt(25n), locationData);
-    this.emit(Op.OP_NUMEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-
-    // Check prefix (first 3 bytes) == 0x76a914
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(3n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);        // [sentinel, i, lbc, prefix3, rest]
-    this.emit(Op.OP_DROP, locationData);          // [sentinel, i, lbc, prefix3]
-    this.emit(p2pkhPrefix, locationData);
-    this.emit(Op.OP_EQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-
-    // Check suffix (last 2 bytes) == 0x88ac
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(23n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);        // [sentinel, i, lbc, first23, last2]
-    this.emit(Op.OP_NIP, locationData);           // [sentinel, i, lbc, last2]
-    this.emit(p2pkhSuffix, locationData);
-    this.emit(Op.OP_EQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-
-    // MATCH: replace sentinel with lockingBytecode, exit loop
-    // Stack: [sentinel, i, lbc]
-    this.emit(Op.OP_ROT, locationData);           // [i, lbc, sentinel]
-    this.emit(Op.OP_DROP, locationData);           // [i, lbc]
-    this.emit(Op.OP_SWAP, locationData);           // [lbc, i]
-    // Push tx.inputs.length to force loop exit on next iteration
-    this.emit(Op.OP_TXINPUTCOUNT, locationData);   // [lbc, i, count]
-    this.emit(Op.OP_NIP, locationData);             // [lbc, count]
-    this.emit(Op.OP_1, locationData);               // exit loop
-    this.emit(Op.OP_ELSE, locationData);
-
-    // Suffix mismatch - drop lbc, i++, continue
-    this.emit(Op.OP_DROP, locationData);           // drop lbc
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);              // continue loop
-    this.emit(Op.OP_ENDIF, locationData);          // end suffix check
-
-    this.emit(Op.OP_ELSE, locationData);
-    // Prefix mismatch - drop lbc, i++, continue
-    this.emit(Op.OP_DROP, locationData);           // drop lbc
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);              // continue loop
-    this.emit(Op.OP_ENDIF, locationData);          // end prefix check
-
-    this.emit(Op.OP_ELSE, locationData);
-    // Size mismatch - drop lbc, i++, continue
-    this.emit(Op.OP_DROP, locationData);           // drop lbc
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);              // continue loop
-    this.emit(Op.OP_ENDIF, locationData);          // end size check
-
-    this.emit(Op.OP_ENDIF, locationData);          // end token check
-    this.emit(Op.OP_ENDIF, locationData);          // end self check
-
-    this.emit(Op.OP_ELSE, locationData);
-    // i >= count - exit loop
-    this.emit(Op.OP_1, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-
-    this.emit(Op.OP_UNTIL, locationData);
-
-    // Stack: [result, i]
-    this.emit(Op.OP_DROP, locationData);           // drop i
-    // Stack: [result]
-    // Verify result is not sentinel (0 = OP_0 = empty bytes)
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(Op.OP_0NOTEQUAL, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
+    // An evaluated transaction has at least its active input. Scan from zero, testing the cheap script-size
+    // discriminator before category and self checks. Padded contract blocks mostly contain P2SH inputs.
+    // Each iteration keeps [result, index]; the first eligible P2PKH replaces the empty result and exits.
+    this.emit([
+      Op.OP_0, Op.OP_0,
+      Op.OP_BEGIN,
+      Op.OP_DUP, Op.OP_UTXOBYTECODE,
+      Op.OP_SIZE, encodeInt(25n), Op.OP_NUMEQUAL,
+      Op.OP_IF,
+      // [result, index, lbc]: only a non-self, token-free candidate can be the origin.
+      Op.OP_OVER, Op.OP_INPUTINDEX, Op.OP_NUMNOTEQUAL,
+      Op.OP_IF,
+      Op.OP_OVER, Op.OP_UTXOTOKENCATEGORY, Op.OP_SIZE, Op.OP_NIP, Op.OP_NOT,
+      Op.OP_IF,
+      Op.OP_DUP, Op.OP_3, Op.OP_SPLIT, Op.OP_DROP, p2pkhPrefix, Op.OP_EQUAL,
+      Op.OP_OVER, encodeInt(23n), Op.OP_SPLIT, Op.OP_NIP, p2pkhSuffix, Op.OP_EQUAL,
+      Op.OP_BOOLAND,
+      Op.OP_ELSE, Op.OP_0, Op.OP_ENDIF,
+      Op.OP_ELSE, Op.OP_0, Op.OP_ENDIF,
+      Op.OP_ELSE, Op.OP_0, Op.OP_ENDIF,
+      Op.OP_IF,
+      Op.OP_ROT, Op.OP_DROP, Op.OP_SWAP, Op.OP_1,
+      Op.OP_ELSE,
+      Op.OP_DROP, Op.OP_1ADD, Op.OP_DUP, Op.OP_TXINPUTCOUNT, Op.OP_NUMEQUAL,
+      Op.OP_ENDIF,
+      Op.OP_UNTIL,
+      Op.OP_DROP,
+      // No eligible input leaves the empty sentinel, which must fail as before.
+      Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, Op.OP_0NOTEQUAL, Op.OP_VERIFY,
+    ], locationData);
     // Stack: [lockingBytecode]
   }
 
@@ -52644,16 +52589,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Stack: [target_lbc, target_cat]
     this.emit(Op.OP_0, locationData);           // sum = 0
-    this.emit(Op.OP_0, locationData);           // i = 0
+    this.emit(countOp, locationData);          // scan backwards from count
     // Stack: [target_lbc, target_cat, sum, i]
 
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_IF, locationData);
     this.emit(Op.OP_BEGIN, locationData);
 
-    // Check: i < count
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(countOp, locationData);
-    this.emit(Op.OP_LESSTHAN, locationData);
-    this.emit(Op.OP_IF, locationData);
+    // Skip unrelated locks in a small inner loop. BCH charges skipped conditional opcodes too, so putting
+    // the category/accumulation body inside every iteration needlessly prices it for every unrelated pad.
+    // Stop at zero even without a match; the normal lock check below still excludes that sentinel input.
+    this.emit([
+      Op.OP_BEGIN, Op.OP_1SUB, Op.OP_DUP, bytecodeOp, encodeInt(4n), Op.OP_PICK, Op.OP_EQUAL,
+      Op.OP_OVER, Op.OP_NOT, Op.OP_BOOLOR, Op.OP_UNTIL,
+    ], locationData);
 
     // Stack: [target_lbc, target_cat, sum, i]
     // Check lbc match
@@ -52728,15 +52677,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emit(Op.OP_ENDIF, locationData);       // end lbc match
 
-    // i++
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);           // continue loop
-
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_1, locationData);           // exit loop
-    this.emit(Op.OP_ENDIF, locationData);
-
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_NOT, locationData);
     this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
 
     // Stack: [target_lbc, target_cat, sum, i]
     this.emit(Op.OP_DROP, locationData);         // drop i
@@ -53207,7 +53151,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_SUB, locationData);
         // still 1 untracked (adjusted_input)
       }
-      if (this.isCompilerMessageBusRoute(node) && (node.graphEffectFrame?.tokenTransferWidth ?? 0) > 0) {
+      // NFT transfer checks prove a zero fungible amount, and unused graph slots are tokenless (SEC-16).
+      // A frame with no fungible transfer effects therefore has no debit to scan; container preservation
+      // below still requires the entire input fungible balance to remain. Unknown metadata keeps the scan.
+      const hasFungibleGraphTransfers = node.tokenContainerAccesses?.some((access) => access.transferCount > 0) ?? true;
+      if (this.isCompilerMessageBusRoute(node) && (node.graphEffectFrame?.tokenTransferWidth ?? 0) > 0
+        && hasFungibleGraphTransfers) {
         for (let transferIndex = 0;
           transferIndex < node.graphEffectFrame!.sites * node.graphEffectFrame!.tokenTransferWidth;
           transferIndex += 1) {

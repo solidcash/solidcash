@@ -17879,6 +17879,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     route.graphEffectFrame = frame;
     if (loopDispatch && frame.tokenTransferWidth > 0) {
       const reserved = frame.sites * frame.tokenTransferWidth;
+      // Each container advertises the largest transfer population it may fund, but those populations share
+      // one dispatch band. Summing the expanded per-container counts below would reserve that entire band
+      // once per container (and per transfer kind). The row/site frame is the physical slot authority.
+      route.tokenContainerTransferSiteCount = reserved;
       for (const access of route.tokenContainerAccesses ?? []) {
         if (access.transferCount > 0) access.transferCount = Math.max(access.transferCount, reserved);
         if (access.transferNftCount > 0) {

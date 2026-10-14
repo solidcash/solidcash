@@ -49,7 +49,6 @@ import {
   validateInput,
   validateOutput,
   validateChangeLocks,
-  getOutputSize,
   calculateDust,
   formatLockingBytecode,
 } from './utils.js';
@@ -1036,19 +1035,26 @@ export class TransactionBuilder {
       throw new Error(`Transaction does not have enough funds to cover the transaction fee rate of ${changeOutputOptions.feeRate} even without adding a change output. Current surplus: ${tentativeSurplus}, current fee: ${tentativeFee}, current change amount: ${tentativeChangeAmount}`);
     }
 
-    const changeOutputSize = getOutputSize({ to: changeOutputOptions.to, amount: tentativeSurplus });
-    const transactionSize = tentativeTransactionSize + BigInt(changeOutputSize);
-    const calculatedFee = BigInt(Math.ceil(changeOutputOptions.feeRate * Number(transactionSize)));
+    const changeOutput = { to: changeOutputOptions.to, amount: tentativeChangeAmount };
 
-    const changeAmount = tentativeSurplus - calculatedFee;
-    const changeOutput = { to: changeOutputOptions.to, amount: changeAmount };
-
-    if (changeAmount < calculateDust(changeOutput)) {
+    if (changeOutput.amount < calculateDust(changeOutput)) {
       this.changeLocks.BCH = true;
       return this;
     }
 
     this.addOutput(changeOutput);
+    try {
+      // A compiler-route density reserve depends on the complete input/output population. Measure with the
+      // change output present: adding only its serialized size misses growth in those unlocking scripts
+      // (and output-count varint boundaries). Satoshi amounts themselves always occupy eight bytes.
+      const transactionSize = this.getTransactionSize();
+      const calculatedFee = BigInt(Math.ceil(changeOutputOptions.feeRate * Number(transactionSize)));
+      changeOutput.amount = tentativeSurplus - calculatedFee;
+      if (changeOutput.amount < calculateDust(changeOutput)) this.outputs.pop();
+    } catch (error) {
+      this.outputs.pop();
+      throw error;
+    }
     this.changeLocks.BCH = true;
     return this;
   }

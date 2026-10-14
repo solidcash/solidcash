@@ -41,6 +41,8 @@ OP_2ROT OP_2ROT OP_2ROT                <=> ;
 OP_OVER OP_OVER                        <=> OP_2DUP;
 OP_DUP OP_DROP                         <=> ;
 OP_DUP OP_NIP                          <=> ;
+OP_DUP OP_1ADD OP_NIP                   <=> OP_1ADD;
+OP_DUP OP_1SUB OP_NIP                   <=> OP_1SUB;
 
 # Enabling secondary effects
 OP_DUP OP_OVER                         <=> OP_DUP OP_DUP;

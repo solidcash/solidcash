@@ -470,6 +470,8 @@ export type KernelReadCarrierSyntheticParameterRole =
   | 'old-values-witness';
 
 export class FunctionDefinitionNode extends Node implements Named {
+  /** Set only on compiler-synthesized helpers whose source/require maps may be rewritten by helper optimization. */
+  compilerGeneratedHelper?: boolean;
   /** Exact source-level dense slice proof, captured before array/mapping lowering changes the body shape. */
   mappingArrayPagination?: NonNullable<AbiFunction['mappingArrayPagination']>;
   symbolTable?: SymbolTable;

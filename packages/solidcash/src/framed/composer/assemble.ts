@@ -282,10 +282,12 @@ export interface CompositionAssembly {
   readonly transcripts: readonly ValidatorTranscript[];
 }
 
-/** The outputs a plan creates records at, in first-appearance order. */
-function createdRecordOutputs(masters: readonly PlannedMaster[]): readonly number[] {
+/** The outputs a plan creates records at, in first-appearance order, for the spent and the minted masters. */
+function createdRecordOutputs(
+  masters: readonly PlannedMaster[], mintedMasters: readonly PlannedMintedMaster[] = [],
+): readonly number[] {
   const created: number[] = [];
-  for (const master of masters) {
+  for (const master of [...masters, ...mintedMasters]) {
     for (const segment of master.segments) {
       for (const entry of segment) {
         if (entry.in !== INDEX_NONE) continue;
@@ -327,7 +329,7 @@ function resolveOutputRegions(
 ): OutputRegions {
   const declaredEvents = plan.masters.flatMap((master) => master.events);
   const declaredSends = plan.masters.flatMap((master) => master.sends);
-  const created = createdRecordOutputs(plan.masters);
+  const created = createdRecordOutputs(plan.masters, plan.mintedMasters ?? []);
 
   const regions = allocateOutputRegions(layout, {
     ...(plan.mintedMasters?.length === undefined || plan.mintedMasters.length === 0

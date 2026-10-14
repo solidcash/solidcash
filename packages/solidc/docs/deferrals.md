@@ -2219,6 +2219,22 @@ tweak, so item 2 remains open: the reverting calling-initializer test passes (th
 end to end), but the atomic calling-initializer deploy cannot settle until the framed master head handles created data
 records. The drafted SDK changes are left uncommitted pending that compiler fix.
 
+**STATUS 2026-10-14 (closed; atomic calling initialize deploys).** The compiler-side read is fixed: `GenerateTargetTraversal.ts`
+gates `emitOwnerSide`/`emitOwnerPreservation` on `framedMaster`, so a minted records-owner resolves through the
+output side and skips the spent-input preservation check, while direct (non-framed) bytecode stays byte-identical
+(`direct-path-identity.test.ts` re-pins unchanged). The validator now resolves minted refs on the output side in
+`emitContextCategory` (the caller-chain walk ends at a minted root's own category) and `emitReadOnlySubtree` (a
+minted root is never read-only), exempts a minted master from `emitRequireMastersRecreated`'s "an output master has a
+master input under it" via `emitIsMintedOutput` (version-gated), and `emitRequireOutputIsDeclared` accepts a mutable
+output the transcript lists among the created records, so the minted genesis's own created records settle without the
+census walking the minted master's inline block. `deployFramedProxy` stages the calling genesis on the outer overlay
+beside the implementation's genesis (it mints the proxy rather than spending the probe the inner overlay holds).
+`AuditSdkFramedProxyAtomic.test.ts` now passes all seven cases, including the atomic calling-initializer deploy, the
+reverting calling-initializer, and the `initializeAs: 'hop'` escape hatch. Residual: the created-record exemption
+trusts the transcript's created list rather than re-deriving it from the minted master's segments, because a
+minted-master record-output walk would push the shipped head past the 10,000-byte input cap (`settle-necessity`
+pins the head at exactly 10,000 bytes); a follow-up size pass or a facet-resident census would remove that trust.
+
 ## Sorted batch targets sharing a node: one key written twice (DS-6 residual, 2026-10-12)
 
 **What:** a direct body such as `if (sel > 0) { delete m[k]; } else { m[j] = v; }` compiles to one linear

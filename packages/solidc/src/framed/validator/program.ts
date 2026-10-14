@@ -1680,6 +1680,14 @@ function emitReadOnlySubtree(e: Emitter): void {
   const O = Opcodes;
   e.op(O.OP_BEGIN);
   e.op(O.OP_DUP);
+  // A minted master is a genesis root, so it is never a read-only frame: it resolves to a root and ends the walk,
+  // because it has no input to read. Its caller reference carries the minted bit, so an input index never enters.
+  e.op(O.OP_DUP);
+  e.push(MINTED_REF_BASE);
+  e.op(O.OP_GREATERTHANOREQUAL, O.OP_IF);
+  e.op(O.OP_2DROP);
+  e.op(O.OP_0, O.OP_1);
+  e.op(O.OP_ELSE);
   emitIndexHead(e);
   e.op(O.OP_DROP);
   e.op(O.OP_ROT, O.OP_DROP);
@@ -1692,6 +1700,7 @@ function emitReadOnlySubtree(e: Emitter): void {
   e.op(O.OP_ELSE);
   e.op(O.OP_NIP);
   e.op(O.OP_0);
+  e.op(O.OP_ENDIF);
   e.op(O.OP_ENDIF);
   e.op(O.OP_UNTIL);
   e.count(FrameKind.STATIC).op(O.OP_NUMEQUAL);
@@ -2412,12 +2421,21 @@ function emitRequireOutputIsDeclared(e: Emitter): void {
   e.push(new Uint8Array(2)).op(O.OP_CAT);
   e.count(2).op(O.OP_SPLIT, O.OP_DROP);
   // `[.., outs, count, index, needle]`.
+  // A created record needs no declaration: its output is one the transcript lists among the created records, so the
+  // minted genesis's own records settle without a frame declaring them.
+  e.op(O.OP_1, O.OP_PICK);
+  e.op(O.OP_6, O.OP_PICK);
+  e.op(O.OP_SWAP);
+  emitCountItem(e, 1);
+  e.op(O.OP_0NOTEQUAL, O.OP_TOALTSTACK);
   e.op(O.OP_DUP);
   e.count(4).op(O.OP_PICK);
   e.op(O.OP_SWAP);
   emitFoundWidth(e, 2);
   e.count(2).op(O.OP_PICK);
   e.op(O.OP_INPUTINDEX, O.OP_NUMEQUAL);
+  e.op(O.OP_BOOLOR);
+  e.op(O.OP_FROMALTSTACK);
   e.op(O.OP_BOOLOR, O.OP_VERIFY);
   e.op(O.OP_DROP);
 }
@@ -3002,17 +3020,45 @@ function emitRequireMastersRecreated(e: Emitter): void {
     em.op(O.OP_1ADD);
   });
   e.op(O.OP_DROP);
-  // An output that is a master has a master under it: nothing mints one into the transaction.
+  // An output that is a master has a master under it: nothing mints one into the transaction, except a master the
+  // transcript lists as minted, whose genesis mints it as a trailing output rather than recreating an input.
   e.op(O.OP_TXINPUTCOUNT);
   e.count(0);
   loopCounted(e, (em) => {
     emitMasterPinFlag(em, O.OP_OUTPUTTOKENCATEGORY);
     em.op(O.OP_IF);
+    emitIsMintedOutput(em, 6);
+    em.op(O.OP_NOT, O.OP_IF);
     emitRequireMasterPinFlag(em, O.OP_UTXOTOKENCATEGORY);
+    em.op(O.OP_ENDIF);
     em.op(O.OP_ENDIF);
     em.op(O.OP_1ADD);
   });
   e.op(O.OP_DROP, O.OP_FROMALTSTACK, O.OP_DROP);
+}
+
+/** Entry `[.., i]`, exit `[.., i, flag]`: whether the output index `i` is a listed minted master. */
+function emitIsMintedOutput(e: Emitter, mDepth: number): void {
+  const O = Opcodes;
+  e.count(mDepth).op(O.OP_PICK);
+  // The version byte is always a small non-negative number, so it is read without an unsigned fix-up.
+  e.op(O.OP_DUP);
+  e.op(O.OP_3, O.OP_SPLIT, O.OP_NIP);
+  e.op(O.OP_1, O.OP_SPLIT, O.OP_DROP);
+  e.op(O.OP_3, O.OP_NUMEQUAL, O.OP_IF);
+  dropFront(e, 4);
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_NIP);
+  e.op(O.OP_OVER);
+  emitCountItem(e, 1);
+  e.op(O.OP_0NOTEQUAL);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_DROP, O.OP_0);
+  e.op(O.OP_ENDIF);
 }
 
 /**
@@ -3307,6 +3353,16 @@ function emitContextCategory(e: Emitter): void {
   e.op(O.OP_BEGIN);
   // `[current, steps]`: the frame under examination is below the step count, so the copy is an `OP_OVER`.
   e.op(O.OP_OVER);
+  // A minted master is a genesis root: it resolves to its own (output-side) category and ends the walk, because it
+  // has no input to read. Its caller reference carries the minted bit, so an input index never enters this arm.
+  e.op(O.OP_DUP);
+  e.push(new Uint8Array([0x00, 0x01]));
+  e.op(O.OP_GREATERTHANOREQUAL, O.OP_IF);
+  e.op(O.OP_NIP);
+  e.push(MINTED_REF_BASE).op(O.OP_SUB, O.OP_OUTPUTTOKENCATEGORY);
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP, O.OP_NIP);
+  e.op(O.OP_1);
+  e.op(O.OP_ELSE);
   emitIndexHead(e);
   e.op(O.OP_DROP);
   e.op(O.OP_OVER);
@@ -3322,6 +3378,7 @@ function emitContextCategory(e: Emitter): void {
   e.op(O.OP_DUP, O.OP_UTXOTOKENCATEGORY);
   e.count(32).op(O.OP_SPLIT, O.OP_DROP, O.OP_NIP);
   e.count(1);
+  e.op(O.OP_ENDIF);
   e.op(O.OP_ENDIF, O.OP_UNTIL);
 }
 

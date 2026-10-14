@@ -762,11 +762,27 @@ class HeadEmitter {
     );
   }
 
-  /** `tx.origin` for any admitted frame: the lock of the origin reference. */
+  /**
+   * `tx.origin` for any admitted frame: the lock of the origin reference. A genesis frame whose origin is the
+   * `INDEX_NONE` sentinel names no user input, so it leaves the empty lock rather than reading an input at it.
+   */
   private computeOrigin(): void {
     this.pick('originRef');
-    this.bin2num();
-    this.emitPopPush(Opcodes.OP_UTXOBYTECODE, 'origin');
+    this.dup();
+    this.pushData(INDEX_NONE_BYTES);
+    this.equal();
+    this.emitBranch(
+      () => {},
+      () => {
+        this.dropTop();
+        this.emit0();
+        this.replaceTop('origin');
+      },
+      () => {
+        this.bin2num();
+        this.emitPopPush(Opcodes.OP_UTXOBYTECODE, 'origin');
+      },
+    );
   }
 
   /**

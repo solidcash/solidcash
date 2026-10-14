@@ -2838,11 +2838,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.getStackIndex('__internal__proxyMasterIndex', true) >= 0;
   }
 
+  /**
+   * Applies an input or output read at the records' owner index on top of the stack. A spent owner is a
+   * non-negative input index; a minted genesis owner is a negative flagged reference whose negated form is the
+   * output index, so the read goes through the output side there.
+   */
+  private emitOwnerSide(inputOpcode: number, outputOpcode: number, locationData: SingleLocationData): void {
+    if (!this.framedMaster) {
+      this.emit(inputOpcode, locationData);
+      return;
+    }
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_LESSTHAN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_NEGATE, locationData);
+    this.emit(outputOpcode, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(inputOpcode, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+  }
+
   /** Push the lock of the input holding this body's minting baton. `untracked` counts untracked items on top. */
   private emitRecordMasterLock(locationData: SingleLocationData, untracked = 0): void {
     if (this.recordsBelongToProxyMaster()) this.emitMasterInputIndex(locationData, untracked);
     else this.emit(Op.OP_INPUTINDEX, locationData);
-    this.emit(Op.OP_UTXOBYTECODE, locationData);
+    this.emitOwnerSide(Op.OP_UTXOBYTECODE, Op.OP_OUTPUTBYTECODE, locationData);
   }
 
   /** `[category]` -> `[lock, category]`: the lock of the input holding this body's minting baton. */
@@ -3055,7 +3076,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const hasWitness = bandOrdinal !== undefined || this.stack.includes(witness);
     this.emitMasterInputIndex(locationData);
     if (!hasWitness) {
-      this.emit(Op.OP_UTXOBYTECODE, locationData);
+      this.emitOwnerSide(Op.OP_UTXOBYTECODE, Op.OP_OUTPUTBYTECODE, locationData);
       return;
     }
     // Retain the authenticated owner's category while inspecting the optional immutable CREATE anchor.
@@ -34705,7 +34726,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       this.emitMasterInputIndex(locationData, extraStackOffset);
     }
-    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emitOwnerSide(Op.OP_UTXOTOKENCATEGORY, Op.OP_OUTPUTTOKENCATEGORY, locationData);
     // Sites that took the base inline before the owner slot reached them keep that form outside framed: a shared
     // take's OP_INVOKE splits the region the outliner would have extracted whole.
     if (directInlineTake && !this.framedMaster) this.emitTakeFirst32Inline(locationData);
@@ -34737,7 +34758,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       this.emitMasterInputIndex(locationData, untrackedStackItems);
     }
-    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emitOwnerSide(Op.OP_UTXOTOKENCATEGORY, Op.OP_OUTPUTTOKENCATEGORY, locationData);
     this.emit(encodeInt(32n), locationData);
     this.emit(Op.OP_SPLIT, locationData);
     this.emit(Op.OP_DROP, locationData);
@@ -47524,6 +47545,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData); // [idx]
   }
 
+  /**
+   * Emits the records' owner input/output preservation check for one token field. A minted genesis owner has no
+   * spent input, so the check is skipped there rather than reading an input at the flagged output reference.
+   * `verifyOp` is `OP_EQUALVERIFY`, or `OP_LESSTHANOREQUAL` followed by `OP_VERIFY` for a lower-bound check.
+   */
+  private emitOwnerPreservation(
+    inputOp: number, outputOp: number, verifyOp: number, locationData: SingleLocationData,
+  ): void {
+    if (!this.framedMaster) {
+      this.emitMasterInputIndex(locationData);
+      this.emit(inputOp, locationData);
+      this.pushToStack('(value)');
+      this.emitMasterInputIndex(locationData);
+      this.emit(outputOp, locationData);
+      this.pushToStack('(value)');
+      this.emit(verifyOp, locationData);
+      this.popFromStack(2);
+      if (verifyOp === Op.OP_LESSTHANOREQUAL) {
+        this.pushToStack('(value)');
+        this.emit(Op.OP_VERIFY, locationData);
+        this.popFromStack();
+      }
+      return;
+    }
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_LESSTHAN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(inputOp, locationData);
+    this.pushToStack('(value)');
+    this.emitMasterInputIndex(locationData, 1);
+    this.emit(outputOp, locationData);
+    this.pushToStack('(value)');
+    this.emit(verifyOp, locationData);
+    this.popFromStack(2);
+    if (verifyOp === Op.OP_LESSTHANOREQUAL) {
+      this.pushToStack('(value)');
+      this.emit(Op.OP_VERIFY, locationData);
+      this.popFromStack();
+    }
+    this.emit(Op.OP_ENDIF, locationData);
+  }
+
   private emitMasterSelfPreservation(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     const skipRetirement = this.beginAtomicSelfdestructExclusion(locationData);
@@ -47540,25 +47607,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
 
-    // Verify locking bytecode (use UTXOBYTECODE, not ACTIVEBYTECODE, for P2SH compatibility)
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_UTXOBYTECODE, locationData);
-    this.pushToStack('(value)');
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
-    this.pushToStack('(value)');
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-    this.popFromStack(2);
+    // Verify locking bytecode (use UTXOBYTECODE, not ACTIVEBYTECODE, for P2SH compatibility).
+    this.emitOwnerPreservation(Op.OP_UTXOBYTECODE, Op.OP_OUTPUTBYTECODE, Op.OP_EQUALVERIFY, locationData);
 
     // Verify token category
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-    this.pushToStack('(value)');
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
-    this.pushToStack('(value)');
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-    this.popFromStack(2);
+    this.emitOwnerPreservation(Op.OP_UTXOTOKENCATEGORY, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY, locationData);
     if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
     if (skipRetirement) this.emit(Op.OP_ENDIF, locationData);
   }
@@ -47572,14 +47625,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     const skipRetirement = this.beginAtomicSelfdestructExclusion(locationData);
     const mergeTail = this.beginAtomicMergeTailExclusion(locationData);
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
-    this.pushToStack('(value)');
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
-    this.pushToStack('(value)');
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-    this.popFromStack(2);
+    this.emitOwnerPreservation(Op.OP_UTXOTOKENCOMMITMENT, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUALVERIFY, locationData);
     if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
     if (skipRetirement) this.emit(Op.OP_ENDIF, locationData);
   }
@@ -47600,27 +47646,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Master UTXO exact satoshi preservation: inputValue == outputValue
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_UTXOVALUE, locationData);
-    this.pushToStack('(value)');
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_OUTPUTVALUE, locationData);
-    this.pushToStack('(value)');
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-    this.popFromStack(2);
+    this.emitOwnerPreservation(Op.OP_UTXOVALUE, Op.OP_OUTPUTVALUE, Op.OP_EQUALVERIFY, locationData);
 
     // Master UTXO fungible token amount preservation: outputAmount >= inputAmount
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_UTXOTOKENAMOUNT, locationData);
-    this.pushToStack('(value)');
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
-    this.pushToStack('(value)');
-    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
-    this.popFromStack(2);
-    this.pushToStack('(value)');
-    this.emit(Op.OP_VERIFY, locationData);
-    this.popFromStack();
+    this.emitOwnerPreservation(Op.OP_UTXOTOKENAMOUNT, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_LESSTHANOREQUAL, locationData);
     if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
     if (skipRetirement) this.emit(Op.OP_ENDIF, locationData);
   }
@@ -48710,8 +48739,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
 
-    // Get this contract's category+capability (33 bytes: 32-byte category + 0x02 minting)
+    // Get this contract's category+capability (33 bytes: 32-byte category + 0x02 minting). A minted genesis
+    // owner has no spent input to conserve, so its census is skipped rather than read at the output reference.
     this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_LESSTHAN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ELSE, locationData);
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
     this.pushToStack('(this_cat_cap)');
 
@@ -48786,6 +48822,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Clean up this_cat_cap
     this.emit(Op.OP_DROP, locationData);
     this.popFromStack(); // remove (this_cat_cap)
+    this.emit(Op.OP_ENDIF, locationData);
     if (lifecycleModeIndex >= 0) this.emit(Op.OP_ENDIF, locationData);
   }
 

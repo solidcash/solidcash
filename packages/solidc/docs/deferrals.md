@@ -1725,10 +1725,11 @@ internal vector".
 ## Event payloads larger than one 128-byte NFT commitment (2026-08-07)
 
 **RESOLVED for direct stateful calls (2026-10-13) and for kernel route handlers whose emits all stream (2026-10-13,
-runtime effect stream, see below); STILL DEFERRED on legacy routes, other kernel handler shapes, framed frames,
-runtime counter-loop events and nested / delegate callees.** Before, an event whose encoded arguments exceed the
-commitment limit was rejected by the network (`excessive token commitment length`, measured on MistSwap
-`Timelock.queueTransaction` at 129 B), and later by the SDK at `addOutput`; the pre-scan had pinned `chunkCount` to 1.
+runtime effect stream, narrow emits too since 2026-10-14, see below); STILL DEFERRED on legacy routes, other kernel
+handler shapes, framed frames, runtime counter-loop events and nested / delegate callees.** Before, an event whose
+encoded arguments exceed the commitment limit was rejected by the network (`excessive token commitment length`,
+measured on MistSwap `Timelock.queueTransaction` at 129 B), and later by the SDK at `addOutput`; the pre-scan had
+pinned `chunkCount` to 1.
 
 As built:
 
@@ -1814,6 +1815,31 @@ Still deferred:
   pass-through outputs, so payloads that fit one commitment keep working, but a nested payload that needs chunks is
   not learned or materialized and the callee covenant refuses it.
 - `destroy()` does not collect continuation chunk UTXOs (anyone can spend them after 144 blocks).
+
+Widened 2026-10-14 (atomic bus redesign, stage 1): every kernel handler whose emits stream takes the stream, narrow
+ones included, so a route keeps its 255 event windows only for a handler that cannot stream (a conditional or
+looped emit, a helper emit, a counter-loop stream or runtime transfers; X149 pins both forms).
+
+- A handler none of whose emits can pass one commitment (`chunkedEvents`: wide or dynamic-array payloads) pushes
+  one compact record per emit (`messageBusEventStreamChunked` unset), settled by `emitRuntimeLoopEventVerification`;
+  the artifact publishes `runtimeLoopEvents: [{ repeatCount: 1, eventSignatures, stream: true }]`, and `stream`
+  is what the SDK keys the row metadata on (`mergePublishedMessageBusHandlerMetadata`). A chunked stream keeps
+  `chunked: true` beside it.
+- Both stream verifiers compare the whole output category with the owner's 32-byte category, so a record must be
+  an own-category IMMUTABLE NFT, as a window event is (they used to drop the capability byte).
+- Compose: the route stops at the first record it cannot match, so event discovery learns one compact record per
+  pass. `compose-assemble` feeds each authenticated kind-2 row back into the record planned at its offset under the
+  same lock; without it every pass restarted at the first record and the pooled title's callee never reached its
+  return output (the caller then read stray stack words, `require(length == 3 && fee == 100)` failed at input 0).
+  Event-frame relocation treats stream records as their own family: always selectable, never an inactive
+  template, never reset by a mixed route's window reset.
+- Measured on `AtomicMessageBusCompose` "preserves a pooled long mapping return across event-emitting writes"
+  (real BCH-2026 budget = (unlocking + 41) * 800): callee block 327 -> 72 slots, 331 -> 76 inputs, 58,537 ->
+  41,412 B; callee route input 15,721 B / 11.32M -> 12,116 B / 5.16M (contract 10,775 -> 11,004 B, still over the
+  10,000 B input limit); verifiers 13.30M and 34.51M -> 9.91M and 15.46M against 7.23M. Still red on the per-input
+  byte assertion, as before. "binds an emitted event row to its absolute physical output": callee block 257 -> 3
+  slots, 261 -> 7 inputs, 42,877 -> 25,787 B; caller 3.25M (over its 2.37M) -> 0.53M, route 4.94M -> 0.69M,
+  verifiers 7.76M and 23.54M -> 4.39M and 4.57M: every input now within its real budget.
 
 ## keccak256 inside an internal helper of a STATEFUL contract (2026-08-07) - RESOLVED
 

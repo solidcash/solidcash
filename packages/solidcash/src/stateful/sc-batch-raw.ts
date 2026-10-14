@@ -67,8 +67,8 @@ export function mergePublishedMessageBusHandlerMetadata(
   const published = callable.selector !== undefined
     ? publishedHandlers.find((handler) => handler.selector?.toLowerCase() === callable.selector?.toLowerCase())
     : publishedHandlers.find((handler) => handler.name === callable.name);
-  // A stream handler's route clone settles its emits as chunked runtime records, not in the direct entry's slots.
-  const streamed = published?.runtimeLoopEvents?.some((loop) => loop.chunked) === true;
+  // A stream handler's route clone settles its emits as runtime records, not in the direct entry's slots.
+  const streamed = published?.runtimeLoopEvents?.some((loop) => loop.stream === true || loop.chunked === true) === true;
   // Keep the artifact ABI object itself when there is no published metadata to add. Carrier-route
   // authentication deliberately checks this identity before trusting runtime row metadata.
   if (published === undefined || (published.dynamicReads === undefined

@@ -2156,14 +2156,13 @@ relaxed so the first root may be a minted master of a category the running valid
 validator cannot run: it is minted in the same transaction). The wire-format carrier is now implemented and tested:
 `packages/utils/src/framed/transcript.ts` gains `encodeMintedTranscript`/`decodeMintedTranscript` (version 0x03),
 carrying each minted master as `{ output:u8 block:lp16 }[]` between the masters and the settles, with the block
-decoded through `decodeWitnessBlock` (commit `0f05916c8`, `packages/utils/test/framed/transcript.test.ts`). What
+decoded through `decodeWitnessBlock` (commit `0f05916c8`, `packages/utils/test/framed/transcript.test.ts`). The
+witness-block reference discriminator is now implemented and tested too: `MINTED_REF_FLAG`/`isMintedRef`/
+`mintedRef`/`mintedRefIndex` in `witness-block.ts` (commit `4945700a3`), with the high bit naming a minted master by
+its output index and `INDEX_NONE = 0xffff` kept as the absent sentinel (output indices below `0x7fff`). What
 remains is the validator side: parsing the minted list in `program.ts` (whose `emitMasterIndices`/`emitSettledStateInputs`/
 `emitCompleteness`/`emitRootRules`/`emitEdgeRules`/`emitRootCategory` all re-walk the transcript at fixed offsets) and
-the matching V3/V4/V5/V9 changes in `checks.ts` and `reference.ts`, then the SDK genesis builder. The witness block
-also needs a reference discriminator: the Writer's callee frame records `callerRef` = the minted proxy master, but
-`callerRef`/`calleeRef`/`validatorRef` are u16 input ordinals, so a minted master's output index is ambiguous with an
-input index; a high-bit (or equivalent) input/output flag on those references is the consensus-format piece of the
-same review, and it must not collide with `INDEX_NONE = 0xffff`. The composer would
+the matching V3/V4/V5/V9 changes in `checks.ts` and `reference.ts`, then the SDK genesis builder. The composer would
 then state the callee's frame in the
 same draft as the minted root, the derivation
 evaluates the genesis shape off-chain as it does the probe today, and the SDK's `initializedProxyState` accepts a

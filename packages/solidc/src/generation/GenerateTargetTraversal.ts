@@ -10030,6 +10030,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.framedDynamicOrigins.size > 0) this.emitFramedDynamicOriginChecks(node);
       if (!this.functionHasDelegatecall && (node.sortedBatchInfo?.length ?? 0) > 0) {
         this.emitGuardedSortedBatchTransitionVerification(node);
+      } else if (!this.functionHasDelegatecall) {
+        this.emitBatchTrailingCountBinding(node, { location: node.body.location, positionHint: PositionHint.END });
       }
       if (this.framedMaster && !isSelfdestruct) {
         this.emitFramedSegmentClose({ location: node.body.location, positionHint: PositionHint.END }, true);
@@ -31695,6 +31697,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
+    this.emitBatchTrailingCountBinding(node, loc);
     const snapshots = this.vmapBatchTopologyNames(node).map((name) => `__vmap_snapshot_${name}`);
     for (const name of snapshots.reverse()) {
       const depth = this.getStackIndex(name, true);
@@ -31710,6 +31713,60 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if ((this.vmapUpsertWitnessSnapshotNames?.length ?? 0) > 0) {
       this.emitDropTrackedFromBottom(GenerateTargetTraversalWithLocation.VMAP_UPSERT_CAPSULE, loc);
     }
+  }
+
+  /**
+   * Binds the trailing batch width to the lanes the batch witnesses name: per batch its distinct non-negative
+   * PredOut values (a linear batch names each predecessor on one row), plus each non-negative PredOut outside a
+   * batch. Every use offsets a trailing coordinate by the width, so it must not be the spender's choice.
+   */
+  private emitBatchTrailingCountBinding(node: FunctionDefinitionNode, loc: SingleLocationData): void {
+    const width = '__internal__vmapBatchTrailingCount';
+    if (this.isDefineSubTraversal || !this.directConvention || this.framedMaster || this.readsRecordsFromFrame
+      || !node.parameters.some((parameter) => parameter.name === width)
+      || this.getStackIndex(width, true) < 0) return;
+    const lanes = (node.sortedBatchInfo ?? []).map((batch) => ({ slots: batch.slotIndices, distinct: !batch.linear }));
+    const batched = new Set(lanes.flatMap((lane) => lane.slots));
+    for (const parameter of node.parameters) {
+      const slot = /^__internal__vmapBatchPredOut_(\d+)$/.exec(parameter.name)?.[1];
+      if (slot !== undefined && !batched.has(Number(slot))) lanes.push({ slots: [Number(slot)], distinct: false });
+    }
+    const term = '(__vmap_batch_width)';
+    const pick = (slot: number): void => {
+      this.emitPickVMapWitness(`__internal__vmapBatchPredOut_${slot}`, loc);
+      this.pushToStack(term);
+    };
+    const apply = (op: Op, consumed: number): void => {
+      this.emit(op, loc);
+      this.popFromStack(consumed);
+      this.pushToStack(term);
+    };
+    let terms = 0;
+    for (const { slots, distinct } of lanes) {
+      for (let index = 0; index < slots.length; index += 1) {
+        const earlier = distinct ? slots.slice(0, index) : [];
+        pick(slots[index]!);
+        if (earlier.length > 0) apply(Op.OP_DUP, 0);
+        this.emit(Op.OP_0, loc);
+        apply(Op.OP_GREATERTHANOREQUAL, 1); // [.., p?, include]
+        for (const other of earlier) {
+          apply(Op.OP_OVER, 0);
+          pick(other);
+          apply(Op.OP_NUMNOTEQUAL, 2);
+          apply(Op.OP_BOOLAND, 2);
+        }
+        if (earlier.length > 0) apply(Op.OP_NIP, 2);
+        if (terms > 0) apply(Op.OP_ADD, 2);
+        terms += 1;
+      }
+    }
+    if (terms === 0) {
+      this.emit(Op.OP_0, loc);
+      this.pushToStack(term);
+    }
+    this.emitPickCompilerRouteFrameValue(width, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack();
   }
 
   /**

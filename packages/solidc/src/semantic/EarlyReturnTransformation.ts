@@ -30,8 +30,8 @@ import { UnsupportedReturnError } from '../Errors.js';
 import { computeBranchOps } from './branchOps.js';
 
 // True while nesting an entry point the final-require check verifies, in a mode where a bare return ends the covenant
-// path. An internal return goes back to its caller, a state-writing entry ends under its state covenant, and a framed
-// body still runs its frame tail, so none of them is sealed.
+// path. An internal return goes back to its caller, an entry of a contract holding state ends under its state
+// covenant, and a framed body still runs its frame tail, so none of them is sealed.
 let sealingBareReturns = false;
 
 /**

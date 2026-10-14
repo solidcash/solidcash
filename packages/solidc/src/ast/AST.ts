@@ -476,8 +476,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Set by semantic analysis after visiting the body. Codegen can skip its more detailed deploy-site survey when
   // this is false; undefined remains the conservative value for compiler-synthesized functions created later.
   declare hasContractInstantiation?: boolean;
-  // Set by EnsureFinalRequireTraversal on an entry point whose paths it verifies. Only there does
-  // EarlyReturnTransformation seal an unguarded bare return (SEM-1); a state covenant covers the others.
+  // Set by EnsureFinalRequireTraversal on a direct entry point with no covenant of its own, whose early-return paths it
+  // verifies. Only there does EarlyReturnTransformation seal an unguarded bare return (SEM-1).
   declare sealsUnguardedReturns?: boolean;
   opRolls: Map<string, IdentifierNode> = new Map();
   // Direct whole-state storage-pointer aliases erased by AstBuilder (`mapping storage p = m`,

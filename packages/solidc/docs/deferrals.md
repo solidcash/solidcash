@@ -2153,7 +2153,14 @@ resolve to one shape: the Writer's validator covers both the spent Writer master
 whose witness block the transcript carries inline (a new transcript version); V3 gains the minted master, V4 treats a
 minted root as a root with no P2PKH caller, V5 reads the minted master's inline block for the callee edge, and V9 is
 relaxed so the first root may be a minted master of a category the running validator does not own (the proxy's own
-validator cannot run: it is minted in the same transaction). The composer would then state the callee's frame in the
+validator cannot run: it is minted in the same transaction). The wire-format carrier is now implemented and tested:
+`packages/utils/src/framed/transcript.ts` gains `encodeMintedTranscript`/`decodeMintedTranscript` (version 0x03),
+carrying each minted master as `{ output:u8 block:lp16 }[]` between the masters and the settles, with the block
+decoded through `decodeWitnessBlock` (commit `0f05916c8`, `packages/utils/test/framed/transcript.test.ts`). What
+remains is the validator side: parsing the minted list in `program.ts` (whose `emitMasterIndices`/`emitSettledStateInputs`/
+`emitCompleteness`/`emitRootRules`/`emitEdgeRules`/`emitRootCategory` all re-walk the transcript at fixed offsets) and
+the matching V3/V4/V5/V9 changes in `checks.ts` and `reference.ts`, then the SDK genesis builder. The composer would
+then state the callee's frame in the
 same draft as the minted root, the derivation
 evaluates the genesis shape off-chain as it does the probe today, and the SDK's `initializedProxyState` accepts a
 callee whose writes land in the callee's own records. The direct (non-framed) deploy in `sc-deploy.ts` shares the

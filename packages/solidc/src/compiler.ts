@@ -16467,6 +16467,7 @@ function compileResolvedAst(
   ast = ast.accept(new EnsureFinalRequireTraversal(
     mergedCompilerOptions.enforceFinalRequire, mergedCompilerOptions.allowUnsafeOperations,
     !(mergedCompilerOptions.messageBus || mergedCompilerOptions.messageBusKernel),
+    mergedCompilerOptions.composition === 'framed',
   )) as Ast;
   profileLog('resolved:finalRequire', finalRequireStarted, { contract: contractName });
 
@@ -19990,6 +19991,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(
       compilerOptions.enforceFinalRequire, compilerOptions.allowUnsafeOperations,
       !(compilerOptions.messageBus || compilerOptions.messageBusKernel),
+      compilerOptions.composition === 'framed',
     )) as Ast;
     if (compilerOptions.enforceLocktimeGuard) {
       singleAst = singleAst.accept(new InjectLocktimeGuardTraversal()) as Ast;

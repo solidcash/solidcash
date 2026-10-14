@@ -53,12 +53,16 @@ import { emitCompilerWarning } from '../warnings.js';
 
 export default class EnsureFinalRequireTraversal extends AstTraversal {
   private isStatefulContract: boolean = false;
+  // State variables, collections or events: code generation pins the master and its value on every entry path.
+  private holdsState = false;
   private neverReturn = new Set<string>();
 
   constructor(
     private enforceFinalRequire: boolean = true,
     private allowUnsafeOperations: boolean = false,
     private lifecycleAuthorization: boolean = true,
+    /** A framed body's bare return ends only its frame, whose tail still runs. */
+    private framed: boolean = false,
   ) {
     super();
   }
@@ -87,6 +91,8 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       || (hasStatefulOperations
         ?? node.functions.some((func) => containsStatefulOperation(func.body?.statements)))
       || node.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT));
+    this.holdsState = node.stateVariables.length > 0 || node.collections.length > 0
+      || node.eventDefinitions.length > 0;
 
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
     if (node.constructorDef) {
@@ -182,7 +188,11 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       && containsStatefulOperation(node.body.statements);
 
     if (!hasStateWrites) {
-      node.sealsUnguardedReturns = true;
+      // SEM-1: a bare return ends an unverified spend only in a direct entry with no covenant of its own. A framed
+      // body's return ends its frame, whose tail still runs; an ordinary entry of a contract holding state ends
+      // under the covenant that pins the master and its value on every path.
+      const returnsEndPath = !this.framed && !(this.holdsState && endsUnderStateCovenant(node));
+      if (returnsEndPath) node.sealsUnguardedReturns = true;
       // selfdestruct functions skip all covenant codegen, so a missing require() means any caller can trigger
       // the destruction. Keep that a hard error regardless of enforceFinalRequire (the general no-verification
       // path is only a warning by default). The selfdestruct statement itself does not authorize the destruction.
@@ -191,6 +201,7 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       ensureFinalStatementIsRequire(
         node.body.statements,
         this.enforceFinalRequire || (isSelfdestruct && !this.allowUnsafeOperations),
+        returnsEndPath,
         !isSelfdestruct || !this.lifecycleAuthorization,
       );
     }
@@ -233,6 +244,15 @@ function warnOrThrowUnverified(node: Node, strict: boolean): void {
   const line = node.location?.start?.line;
   emitCompilerWarning(`Warning: a spending path${line ? ` near line ${line}` : ''} performs no require()/verification `
     + 'and changes no state; it compiles as an unconditionally-spendable path. Add a require() to constrain it.');
+}
+
+// An entry of a contract holding state that code generation closes with master self-preservation and value
+// preservation on every path. selfdestruct skips both, unsafe drops them by tier, and split/merge settle their own
+// topology instead.
+function endsUnderStateCovenant(node: FunctionDefinitionNode): boolean {
+  return !node.modifiers.some((modifier) => modifier === FunctionModifier.SELFDESTRUCT
+    || modifier === FunctionModifier.UNSAFE || modifier === FunctionModifier.SPLIT
+    || modifier === FunctionModifier.MERGE);
 }
 
 // selfdestruct(addr) value-pins the freed balance to outputs[0] == addr, but addr is whatever the covenant
@@ -293,8 +313,9 @@ function checkLifecycleAuthorization(node: FunctionDefinitionNode, allowUnsafe: 
     + 'owner)) with a key the caller cannot choose.');
 }
 
+// `returnsEndPath`: an early bare return ends the spend here, so SEM-1 checks the path each one ends.
 function ensureFinalStatementIsRequire(
-  statements: StatementNode[] = [], strict = false, selfdestructIsTerminal = true,
+  statements: StatementNode[] = [], strict = false, returnsEndPath = true, selfdestructIsTerminal = true,
 ): void {
   const statementsWithoutLogs = statements.filter((statement) => !(statement instanceof ConsoleStatementNode));
   const finalStatement = statementsWithoutLogs[statementsWithoutLogs.length - 1];
@@ -306,9 +327,9 @@ function ensureFinalStatementIsRequire(
   const recursesIntoFinal = finalStatement instanceof BranchNode || finalStatement instanceof SwitchNode
     || finalStatement instanceof TryCatchNode || finalStatement instanceof UncheckedNode
     || finalStatement instanceof ReturnNode;
-  const unverifiedReturn = firstUnverifiedReturn(
+  const unverifiedReturn = returnsEndPath ? firstUnverifiedReturn(
     recursesIntoFinal ? statementsWithoutLogs.slice(0, -1) : statementsWithoutLogs,
-  );
+  ) : undefined;
   if (unverifiedReturn) {
     warnOrThrowUnverified(unverifiedReturn, strict);
     return;
@@ -316,7 +337,7 @@ function ensureFinalStatementIsRequire(
 
   // A bare return no earlier require/revert gates, the rule EarlyReturnTransformation seals by. It also catches a
   // return after an if/else whose only check sits in a loop that can run zero times.
-  if (bareReturnIsUnguarded(statementsWithoutLogs)) {
+  if (returnsEndPath && bareReturnIsUnguarded(statementsWithoutLogs)) {
     const returning = statementsWithoutLogs.find((statement) => statement instanceof ReturnNode
       || statement instanceof BranchNode) ?? finalStatement;
     warnOrThrowUnverified(returning, strict);
@@ -335,16 +356,16 @@ function ensureFinalStatementIsRequire(
       warnOrThrowUnverified(finalStatement, strict);
       return;
     }
-    ensureFinalStatementIsRequire(finalStatement.ifBlock.statements, strict);
-    ensureFinalStatementIsRequire(finalStatement.elseBlock.statements, strict);
+    ensureFinalStatementIsRequire(finalStatement.ifBlock.statements, strict, returnsEndPath);
+    ensureFinalStatementIsRequire(finalStatement.elseBlock.statements, strict, returnsEndPath);
     return;
   }
 
   // If the final statement is a try/catch, check both the try block and all catch clauses
   if (finalStatement instanceof TryCatchNode) {
-    ensureFinalStatementIsRequire(finalStatement.tryBlock.statements, strict);
+    ensureFinalStatementIsRequire(finalStatement.tryBlock.statements, strict, returnsEndPath);
     for (const clause of finalStatement.catchClauses) {
-      ensureFinalStatementIsRequire(clause.block.statements, strict);
+      ensureFinalStatementIsRequire(clause.block.statements, strict, returnsEndPath);
     }
     return;
   }
@@ -369,7 +390,7 @@ function ensureFinalStatementIsRequire(
 
   // Unchecked blocks are transparent - check their inner statements
   if (finalStatement instanceof UncheckedNode) {
-    ensureFinalStatementIsRequire(finalStatement.block.statements, strict);
+    ensureFinalStatementIsRequire(finalStatement.block.statements, strict, returnsEndPath);
     return;
   }
 
@@ -381,9 +402,9 @@ function ensureFinalStatementIsRequire(
       return;
     }
     for (const c of finalStatement.cases) {
-      ensureFinalStatementIsRequire(c.body.statements, strict);
+      ensureFinalStatementIsRequire(c.body.statements, strict, returnsEndPath);
     }
-    ensureFinalStatementIsRequire(finalStatement.defaultCase.statements, strict);
+    ensureFinalStatementIsRequire(finalStatement.defaultCase.statements, strict, returnsEndPath);
     return;
   }
 

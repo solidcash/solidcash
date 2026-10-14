@@ -877,8 +877,10 @@ export class FunctionDefinitionNode extends Node implements Named {
 
   messageBusEligible?: boolean;
   messageBusRejectionReason?: string;
-  /** Kernel route: this handler's emits settle as chunked records on its runtime effect stream, not in windows. */
+  /** Kernel route: this handler's emits settle as records on its runtime effect stream, not in event windows. */
   messageBusEventStream?: true;
+  /** A stream emit can pass one commitment, so every record of the stream is chunked (head, then continuations). */
+  messageBusEventStreamChunked?: true;
   /** Stable index of this eligible handler in the route's eligible dispatch set, the ordinal witness names use.
    * Published on the handler so the SDK never re-derives the filtered-list ordering. */
   messageBusWitnessOrdinal?: number;

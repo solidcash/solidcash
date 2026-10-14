@@ -44160,13 +44160,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc); // event tag
 
-    // Event record: pushdata(commitment) || bytes35(event locking bytecode).
+    // Event record: pushdata(commitment) || bytes35(event locking bytecode). The whole category must equal the
+    // owner's, so no capability byte: an own-category immutable NFT.
     this.emit(Op.OP_1, loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_DROP, loc);
     // The raw verifier loop is intentionally outside the symbolic stack model. At this point the owner
     // category is followed by exactly the three loop accumulators, the output index, the effect record, and
     // the inspected category: six items in total. Deriving this depth from `this.stack` is incorrect because
@@ -44540,12 +44538,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SUB, loc);
       this.emit(Op.OP_PICK, loc);                  // [..., index, commitment, lock]
     }
+    // The whole category must equal the owner's, so no capability byte: an own-category immutable NFT.
     this.emit(Op.OP_2, loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_6, loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);

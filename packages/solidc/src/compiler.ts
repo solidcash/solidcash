@@ -3805,16 +3805,19 @@ function streamedEventSignatures(fn: FunctionDefinitionNode): string[] | undefin
   return signatures;
 }
 
-/** Kernel stream clone: its top-level emits become chunked records of one exact-count runtime event segment. */
-function streamHandlerEmits(handler: FunctionDefinitionNode, cheap: boolean): void {
+/**
+ * Kernel stream clone: its top-level emits become the records of one exact-count runtime event segment, one compact
+ * record per emit, or the chunked records of each payload when one can pass a commitment.
+ */
+function streamHandlerEmits(handler: FunctionDefinitionNode, cheap: boolean, chunked: boolean): void {
   // The records share the route's trailing band; reserve the default wide band beside any other stream.
   handler.runtimeCounterLoopOutputCapacity = Math.max(handler.runtimeCounterLoopOutputCapacity ?? 0, 64);
   if (cheap || !handler.body) return;
   topLevelEmits(handler.body).emits.forEach((emit, siteIndex) => {
     emit.runtimeLoopEvent = { loopIndex: 0, siteIndex };
-    emit.runtimeLoopEventChunked = true;
+    if (chunked) emit.runtimeLoopEventChunked = true;
   });
-  handler.runtimeLoopEvents = [{ loopIndex: 0, repeatCount: 1, chunked: true }];
+  handler.runtimeLoopEvents = [{ loopIndex: 0, repeatCount: 1, ...(chunked && { chunked: true as const }) }];
 }
 
 /** True when `body` holds an emit of an event named in `names`. */
@@ -5793,9 +5796,11 @@ function synthesizeMessageBusRoute(
     contract.stateVariables.map((state) => state.name),
   ));
   const wideEvents = wideEventNames(ast, compilerOptions.commitmentLimit ?? 128);
-  // The kernel also streams a payload a dynamic array can grow past one commitment; the legacy route keeps its count.
+  // The kernel streams every emit it can, so its records take the trailing band instead of the route's per-row
+  // event windows; a payload a dynamic array can grow past one commitment is chunked like a wide one.
   const streamedEvents = compilerOptions.messageBusKernel === true
-    ? new Set([...wideEvents, ...unboundedEventNames(ast)]) : wideEvents;
+    ? new Set(visibleEventDefinitions(ast).map((event) => event.name)) : wideEvents;
+  const chunkedEvents = new Set([...wideEvents, ...unboundedEventNames(ast)]);
   const dynamicState = new Set(contract.stateVariables.filter((state) => state.isDynamic
     || state.isPacked
     || state.type === PrimitiveType.STRING
@@ -7359,6 +7364,7 @@ function synthesizeMessageBusRoute(
   const kernelAllOutputSignatureParameters = new Map<FunctionDefinitionNode, number[]>();
   for (const fn of functions) {
     fn.messageBusEventStream = undefined;
+    fn.messageBusEventStreamChunked = undefined;
     fn.messageBusUsesTransactionSignature = reachesTransactionSignatureCheck(fn);
     const allOutputProof = compilerOptions.messageBusKernel === true
       && fn.messageBusUsesTransactionSignature === true
@@ -7417,13 +7423,15 @@ function synthesizeMessageBusRoute(
       }
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
-    // A payload wider than one NFT commitment continues in outputs no route frame reserves. A kernel handler whose
-    // emits all stream settles them as chunked records on its runtime effect stream; refuse any other wide emitter
-    // by name rather than publish a route whose event output the network rejects. A payload only a dynamic array
-    // widens otherwise keeps its window, refused at run time past one commitment.
+    // A kernel handler whose emits all stream settles them as records on its runtime effect stream, chunked when a
+    // payload can pass one commitment. Any other handler keeps its event windows, and a payload wider than one NFT
+    // commitment continues in outputs no window reserves: refuse that emitter by name rather than publish a route
+    // whose event output the network rejects. A payload only a dynamic array widens keeps its window, refused at
+    // run time past one commitment.
     if (emitsWideEvent(fn, signatureClosureByName, streamedEvents)) {
       if (compilerOptions.messageBusKernel === true && streamsEveryEmit(fn, signatureClosureByName)) {
         fn.messageBusEventStream = true;
+        if (emitsWideEvent(fn, signatureClosureByName, chunkedEvents)) fn.messageBusEventStreamChunked = true;
         fn.runtimeCounterLoopOutputCapacity = Math.max(fn.runtimeCounterLoopOutputCapacity ?? 0, 64);
       } else if (emitsWideEvent(fn, signatureClosureByName, wideEvents)) {
         noteKernelLayoutGate(fn, 'event-wider-than-one-commitment');
@@ -14610,7 +14618,9 @@ function cloneMessageBusHandler(
   // body (no OP_INVOKE hidden context) while still treating it as a graph emission handler.
   handler.isFallback = false;
   handler.isReceive = false;
-  if (source.messageBusEventStream === true) streamHandlerEmits(handler, cheap);
+  if (source.messageBusEventStream === true) {
+    streamHandlerEmits(handler, cheap, source.messageBusEventStreamChunked === true);
+  }
   return handler;
 }
 
@@ -18077,12 +18087,17 @@ function compileResolvedAst(
         ...(() => {
           const sourceAbi = artifact.abi.find((candidate) =>
             candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined));
-          // A stream handler's emits settle as chunked runtime records in source order, not in event windows.
+          // A stream handler's emits settle as runtime records in source order, not in event windows.
           const streamed = streamedEventSignatures(fn);
           return {
             ...(streamed === undefined && sourceAbi?.emits?.length ? { emits: sourceAbi.emits } : {}),
             ...(streamed !== undefined
-              ? { runtimeLoopEvents: [{ repeatCount: 1, eventSignatures: streamed, chunked: true as const }] }
+              ? {
+                runtimeLoopEvents: [{
+                  repeatCount: 1, eventSignatures: streamed, stream: true as const,
+                  ...(fn.messageBusEventStreamChunked && { chunked: true as const }),
+                }],
+              }
               : sourceAbi?.runtimeLoopEvents?.length ? { runtimeLoopEvents: sourceAbi.runtimeLoopEvents } : {}),
             ...(sourceAbi?.runtimeLoopTransfers?.length
               ? { runtimeLoopTransfers: sourceAbi.runtimeLoopTransfers } : {}),

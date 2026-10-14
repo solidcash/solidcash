@@ -2238,6 +2238,14 @@ derives disagrees with the SDK's appended chunk output by one.
 `GenerateTargetTraversal` (the `0x02` vs `0x03` count the outlined helper compares), reusing the routed path's
 chunk accounting; the direct `forward('seed')` then settles.
 
+The likely seam is the `valueChunkTrailingCountActive` gate at `GenerateTargetTraversal` ~line 9624, which only
+activates for `!this.directConvention`. A direct delegate is `directConvention` (composition !== 'framed'), so the
+sorted-batch `seed` (`balances[key] = amount; notes[key] = note` with a 96-byte chunked note) does NOT count the
+`notes` value chunk in its trailing band, while the SDK still appends that chunk output between the new entries and
+the batch's rewritten predecessors — the helper's count check then sees `0x03` (2 predecessors + 1 chunk) where the
+compiler published `0x02`. The fix must count the chunkable sorted-mapping value chunk in the direct delegate's
+trailing band without disturbing the default (non-delegate) direct path, which the comment says stays byte-identical.
+
 ## An in-place upgrade of a contract that keeps records (CRYPTO-4 residual, 2026-10-13)
 
 **What:** CRYPTO-4 (d6821a812) binds every data NFT, mapping entry, value chunk and satoshi or token container to

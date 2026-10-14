@@ -406,8 +406,10 @@ describe('logical CREATE identity at getAddress()', () => {
     if (!existsSync(path)) return;
     const { signer } = await fundedSigner('b4');
     const artifact = JSON.parse(readFileSync(path, 'utf8'));
+    // The bench compiles FakeToken framed, whose getAddress() is the lock its frames present: the SCID anchor
+    // sits at the CREATE address the deploy derives, which getAddress() is only in the direct convention.
+    const logical = deriveLogicalCreateAddress(signer.getAddress(), await signer.getNonce());
     const token = await new ContractFactory(artifact, signer).deploy('Test', 'TST');
-    const logical = await token.getAddress();
     const user1 = new Signer(freshKey(), signer.provider);
     const user2 = new Signer(freshKey(), signer.provider);
     const marketplace = new Signer(freshKey(), signer.provider);
@@ -438,14 +440,17 @@ describe('logical CREATE identity at getAddress()', () => {
     if (!existsSync(path)) return;
     const { signer } = await fundedSigner('b3');
     const artifact = JSON.parse(readFileSync(path, 'utf8'));
+    // The bench compiles FakeToken framed, whose getAddress() is the lock its frames present: the SCID anchor
+    // sits at the CREATE address the deploy derives, which getAddress() is only in the direct convention.
+    const logical = deriveLogicalCreateAddress(signer.getAddress(), await signer.getNonce());
     const token = await new ContractFactory(artifact, signer).deploy('Test', 'TST');
-    const before = await resolveLogicalIdentity(signer.provider, await token.getAddress());
+    const before = await resolveLogicalIdentity(signer.provider, logical);
     expect(before.categoryId).toBe(token.categoryId);
     const recipient = new Signer(freshKey(), signer.provider);
     await token.transfer(recipient.getAddress(), 10n);
-    const after = await resolveLogicalIdentity(signer.provider, await token.getAddress());
+    const after = await resolveLogicalIdentity(signer.provider, logical);
     expect(after.categoryId).toBe(token.categoryId);
-    expect((await signer.provider.getUtxos(await token.getAddress()))
+    expect((await signer.provider.getUtxos(logical))
       .filter((utxo) => isScidIdentityCommitment(utxo.token?.nft?.commitment))).toHaveLength(1);
   });
 });

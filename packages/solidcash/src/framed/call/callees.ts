@@ -24,7 +24,7 @@
  * frame's own close, and the call is planned again from it, as the hop plans its callee's (`planCalleeWrites`).
  *
  * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that sends value the call
- * reaches or co-spends a side-car; reaches of one collection one transaction cannot carry; and
+ * reaches, co-spends a side-car or reads the block oracle; reaches of one collection one transaction cannot carry; and
  * a deployment entered twice whose frames name data records that no order of its block keeps side by side. A site,
  * of the entry or of a callee frame, whose argument reads an earlier call's result stops the plan before it
  * (`blocked`), and a call the entry guards on one is stated from the results the plan was made from
@@ -59,6 +59,7 @@ import {
   type DraftSourceOutput,
   type FrameRequest,
   type PlannedSettlement,
+  type RecoverySideCars,
   type TransactionLayout,
 } from '../composer/index.js';
 import {
@@ -76,6 +77,7 @@ import {
   sharedNodeWritersBefore,
   type HopCallee, type HopCalleeRecord, type HopExternalPlan, type HopPlanBlock, type FramedProxyExternal,
 } from '../proxy/external-calls.js';
+import { blockOracleSideCarId } from './block-oracle.js';
 import { adjacentRecordOrder, frameDataRecordIndices, namedDataRecordIndices } from './entry-records.js';
 import { publishedLoopEffects } from './loop-turns.js';
 
@@ -339,9 +341,19 @@ function withSpelledCalls(plan: HopExternalPlan, artifact: Artifact, entry: stri
   };
 }
 
+/** Why the inputs a callee co-spends stop this path: an oracle alone is named as the clock its body reads. */
+function sideCarRefusal(label: string, master: string, sideCars: RecoverySideCars | undefined): string | undefined {
+  if (sideCars === undefined || sideCars.ids.length === 0) return undefined;
+  if (sideCars.ids.every((id) => id === blockOracleSideCarId(master))) {
+    return `${label} reads the block oracle, which this call path does not co-spend for a callee yet`;
+  }
+  return `${label} co-spends a side-car, which this call path does not plan yet`;
+}
+
 /** The shape one callee frame takes that this path does not settle yet, or undefined for one it does. */
-function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefined {
+function unservedCallee(callee: HopCallee, sideCars: RecoverySideCars | undefined): string | undefined {
   const label = `the callee "${callee.functionName}"`;
+  const sideCarWhy = sideCarRefusal(label, callee.master, sideCars);
   // A legal internal cut writes no state. Its further calls are other cuts of the same contract. The
   // write-segment refusal below is for a frame whose artifact publishes a write this path cannot place.
   if (callee.kind === FrameKind.INTERNAL) {
@@ -353,7 +365,7 @@ function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefine
     if (internalSend || (callee.takenSends?.length ?? 0) > 0) {
       return `${label} sends value on a path the call reaches, which this call path does not plan for a callee yet`;
     }
-    if (sideCars) return `${label} co-spends a side-car, which this call path does not plan yet`;
+    if (sideCarWhy !== undefined) return sideCarWhy;
     if (publishedLoopEffects(callee.artifact, callee.entry) !== undefined) {
       return `${label} emits, sends or hashes once per turn of a loop, which this call path does not plan for `
         + 'a callee yet';
@@ -376,7 +388,7 @@ function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefine
   if (unguarded || (callee.takenSends?.length ?? 0) > 0) {
     return `${label} sends value on a path the call reaches, which this call path does not plan for a callee yet`;
   }
-  if (sideCars) return `${label} co-spends a side-car, which this call path does not plan yet`;
+  if (sideCarWhy !== undefined) return sideCarWhy;
   if (publishedLoopEffects(callee.artifact, callee.entry) !== undefined) {
     return `${label} emits, sends or hashes once per turn of a loop, which this call path does not plan for a callee `
       + 'yet';
@@ -440,7 +452,7 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
   // the site from the results the plan was made from: the call learns those results from the calls' own frames and
   // plans again (`call.ts`).
   for (const callee of plan.callees) {
-    const why = unservedCallee(callee, plan.sideCars.has(callee.master));
+    const why = unservedCallee(callee, plan.sideCars.get(callee.master));
     if (why !== undefined) refuse(why);
   }
   // A deployment entered more than once is settled by the validator, which chains its records' views across its

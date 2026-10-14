@@ -64,6 +64,29 @@ describe('SEM-1: early return before the only require', () => {
   });
 });
 
+// A stateful entry's return ends under the collection census only when the entry reads an entry. Without it only
+// C3's count holds, which a co-spent record rewritten in place keeps balanced, so the path is checked.
+describe('SEM-1: early return in a stateful entry', () => {
+  const vault = (entry: string): string => `
+    contract Vault {
+      mapping(uint256 => uint256) m;
+      function put(uint256 k, uint256 v) external { m[k] = v; require(true); }
+      ${entry}
+    }`;
+
+  it('errors when the entry reads no entry', () => {
+    const src = vault('function act(uint256 code, bool skip) external { if (skip) { return; } require(code == 7); }');
+    expect(() => compileString(src, { enforceFinalRequire: true })).toThrow(Errors.FinalRequireStatementError);
+  });
+
+  it('accepts the return in an entry that reads an entry', () => {
+    const src = vault(
+      'function readIf(uint256 k, uint256 ev, bool doit) external { if (!doit) { return; } require(m[k] == ev); }',
+    );
+    expect(() => compileString(src, { enforceFinalRequire: true })).not.toThrow();
+  });
+});
+
 // SEM-6: a time check after an early return does not enforce locktime for the returning path.
 describe('SEM-6: locktime guard and early returns', () => {
   it('keeps the guard when the time check follows an early return', () => {

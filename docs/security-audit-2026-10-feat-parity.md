@@ -74,6 +74,14 @@ bytes, and inline delegate address builds add 342 B to one marketplace body; a l
 helper would win back about 110 B per site. One body (selector 2928b689) still invokes the shared address helper
 bound to the executing input's lock; whether it runs as a delegate is not checked.
 
+SEM-1 after the merges (2026-10-14, ef3d4dc5b and 58b93f911): the path check and its seal cover every entry except
+two whose returns still end under a covenant that settles the contract's records: a framed body, whose head pins the
+master and its value, and a direct entry of a stateful contract that reads an entry, where the collection census
+runs on every path. A direct stateful entry that reads no entry has only C3's count, which a co-spent record
+rewritten in place keeps balanced, so its unguarded return is sealed. Lifecycle entries, delegatecalls and the
+constructor are always checked. Proven at compile time only (AuditSem1FinalRequire); no VM test drives the exempt
+return paths against a hostile transaction.
+
 ## Residuals and findings
 
 - SDKFRAMED-2: a framed proxy initializer that calls another contract is refused by default; its `initializeAs: 'hop'`

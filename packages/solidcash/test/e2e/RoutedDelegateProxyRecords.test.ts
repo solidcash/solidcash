@@ -154,11 +154,11 @@ describe('a routed delegate binds the proxy records to the proxy master lock', (
   }, 300_000);
 
   // The direct (non-routed) delegate path: `forward('seed')` writes the proxy's mapping entry and a chunked
-  // value, and the records must land at the proxy master's lock, not the executor's. Still fails the chunked
-  // write's output count check (`emitVerifyChunkUtxoCount` compares the collection-entry census 0x02 vs 0x03;
-  // the notes value-chunk output is missing/misplaced) — see the deferrals doc entry "A routed update of a
-  // proxy's records". Kept as a skip so the routed half stays green while that is fixed.
-  it.skip('settles a DIRECT delegate seed that writes a mapping entry and a chunked value', async () => {
+  // value, and the records must land at the proxy master's lock, not the executor's. The SDK derives the
+  // chunk's state-owner CATEGORY as the proxy's (see prepareDeriveFullValueChunkWrites), and appendValueChunks
+  // now places the staged run into the reserved band slot the covenant's value-chunk output base names instead
+  // of trailing after the delegate's predecessor outputs, so the entry census matches.
+  it('settles a DIRECT delegate seed that writes a mapping entry and a chunked value', async () => {
     const f = await setup();
     await f.deployed.forward('seed', [1n, 10n, FIRST]).send();
     expect(await records(f)).toEqual({ amount: 10n, note: binToHex(FIRST), atExecutorLock: 0 });

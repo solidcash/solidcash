@@ -2135,6 +2135,19 @@ calling initializer can run as the proxy genesis's own frame.
 
 **Why deferred:** it is a validator protocol extension; the default path no longer needs it.
 
+**STATUS 2026-10-14 (still open).** The default path still refuses a calling initializer with the documented
+`initializeAs: 'hop'` escape hatch (`initializedProxyState` refuses `callees.length > 0`). The atomic fix is a real
+protocol extension, not a planner tweak: the proxy genesis would mint the proxy master as an OUTPUT rather than spend
+it, while still spending the callee's (Writer's) master and records so the callee's state change commits in the same
+transaction. Every validator check that assumes a covered master is an input has to learn the genesis shape — V1 (the
+validator's own category master is present only as a minted output), V3 (`M.masters` gains a minted-out root master),
+V4 (a genesis root frame has no P2PKH caller/origin), V5 (the callee edge still names a spent master), V7 (the census
+counts the minted master's own outputs), and V9 (the first root's category is the validator's own, read from the
+minted master). The composer would then state the callee's frame in the same draft as the minted root, the derivation
+evaluates the genesis shape off-chain as it does the probe today, and the SDK's `initializedProxyState` accepts a
+callee whose writes land in the callee's own records. The direct (non-framed) deploy in `sc-deploy.ts` shares the
+same unproven-coin shape SDKFRAMED-1 closed for framed deploys; no audit row names it.
+
 ## Sorted batch targets sharing a node: one key written twice (DS-6 residual, 2026-10-12)
 
 **What:** a direct body such as `if (sel > 0) { delete m[k]; } else { m[j] = v; }` compiles to one linear
@@ -2250,6 +2263,19 @@ needs one 68-byte continuation chunk, but the transaction emits a 3-byte `000000
 address under the implementation's category (8221decf) instead of a chunk at the `notes` value-chunk address under the
 proxy's category (754e1983). The fix must publish/materialize the chunkable sorted-mapping value chunk for the direct
 delegate path without disturbing the default (non-delegate) direct path, which the comment says stays byte-identical.
+
+**RESOLVED 2026-10-14 (verified).** The open half was an SDK placement bug, not a compiler count: the compiler's
+block layout already names the notes value chunk at `__internal__valueChunkOutputBase` (the reserved band slot right
+after the two entry outputs), and `emitBoundValueChunkP2sh32` already binds its address to the proxy master lock.
+The SDK staged the chunk correctly (`host.valueChunkOutputs`, `aa20308e…` = the proxy's notes value-chunk address)
+but `appendValueChunks` only placed a staged run into the reserved band when `builder.outputs.length < band.start`;
+for a direct delegate the predecessor outputs (7, 8) are materialized past the band first, so the run was appended at
+the trailing end and `ensureLiveValueChunkBand` then filled the still-empty band slot with a phantom `000000` hole at
+whatever lock its `dominant` fallback observed (the balances entry address), tripping the `balances` entry census
+3-vs-2. `appendValueChunks` now also lands a staged run at the band coordinate when the band slot is an empty
+`OP_TRUE` alignment pad, so the notes chunk sits at the covenant's named output base and the census matches. The
+DIRECT `forward('seed')` e2e test in `RoutedDelegateProxyRecords.test.ts` is un-skipped and passes (records read back
+at the proxy master's lock, `atExecutorLock: 0`), alongside both routed cases.
 
 ## An in-place upgrade of a contract that keeps records (CRYPTO-4 residual, 2026-10-13)
 

@@ -198,6 +198,7 @@ const HEAD_CHECKS: readonly CheckEmitter[] = [
   emitMintedMastersIfV3,
   emitSettledStateInputs,
   emitCompleteness,
+  emitMintedMasterCompleteness,
   emitSettlementStateInputs,
   emitDefineOrderedVisit,
   emitSettlementCensus,
@@ -662,6 +663,44 @@ function emitMintedMastersIfV3(e: Emitter): void {
   consumeMintedList(e);
   e.count(0);
   e.op(O.OP_ENDIF);
+}
+
+/** V3: one minted master is a minting output whose inline block names this validator. */
+function emitOneMintedMasterCompleteness(e: Emitter): void {
+  const O = Opcodes;
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_DUP, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
+  e.op(O.OP_DUP, O.OP_OUTPUTTOKENCATEGORY);
+  e.op(O.OP_SIZE).count(33).op(O.OP_NUMEQUALVERIFY);
+  e.count(32).op(O.OP_SPLIT, O.OP_NIP);
+  e.push(Uint8Array.from([TokenCapability.MINTING])).op(O.OP_EQUALVERIFY);
+  e.op(O.OP_DROP);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  e.op(O.OP_SWAP);
+  e.count(8).op(O.OP_SPLIT, O.OP_NIP);
+  e.count(2).op(O.OP_SPLIT, O.OP_DROP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_INPUTINDEX, O.OP_NUMEQUALVERIFY);
+}
+
+/** V3: every minted master is a minting output whose inline block names this validator. */
+function emitMintedMasterCompleteness(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  emitOneMintedMasterCompleteness(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP);
 }
 
 /**

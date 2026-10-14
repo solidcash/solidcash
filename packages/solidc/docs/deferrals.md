@@ -2189,3 +2189,17 @@ native delegates and routes; record a DECISIONS row superseding large-contract-s
 
 **Why deferred:** the user deferred the model-B migration (2026-10-05, confirmed 2026-10-14).
 
+
+## A streamed route handler reached on the plain call path (atomic bus stage 1 residual, 2026-10-14)
+
+**What:** since stage 1 (ff51608b8), a kernel handler whose emits all sit at top level streams its records through
+the trailing band and publishes `runtimeLoopEvents: [{ eventSignatures, stream: true }]` instead of `emits`. Compose
+places those records (graph.ts, compose-event-helpers.ts). A routed callee reached on the plain (non-compose) call
+path still builds its rows from the raw ABI handlers, so nothing places its streamed records:
+sc-derive-full-phase1-return-and-events.ts (about lines 276-280) and value-chunk-base-writer-select.ts (about line
+470) fall back to the direct entry's event slots, and the callee's covenant refuses the transaction. It fails closed.
+
+**Proposed design:** the plain path reads the route copy of the handler (its `stream: true` entry) and places the
+records in the callee input's trailing band, as compose does.
+
+**Why deferred:** feature-sized; found by the audit of the SDK's `emits` reads after stage 1 (2026-10-14).

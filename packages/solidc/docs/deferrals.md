@@ -2162,7 +2162,11 @@ witness-block reference discriminator is now implemented and tested too: `MINTED
 its output index and `INDEX_NONE = 0xffff` kept as the absent sentinel (output indices below `0x7fff`). What
 remains is the validator side: parsing the minted list in `program.ts` (whose `emitMasterIndices`/`emitSettledStateInputs`/
 `emitCompleteness`/`emitRootRules`/`emitEdgeRules`/`emitRootCategory` all re-walk the transcript at fixed offsets) and
-the matching V3/V4/V5/V9 changes in `checks.ts` and `reference.ts`, then the SDK genesis builder. The composer would
+the matching V3/V4/V5/V9 changes in `checks.ts` and `reference.ts`, then the SDK genesis builder. This is a hard
+fork, not a soft extension: changing `buildValidatorProgram()` moves the validator's P2SH32 address and the
+master-head's `recogniseValidatorScriptAgainstReservedHash` reserved hash in `frame-tail.ts`/`master-head.ts`, so the
+program, the derivation, the reference model, the master-head recognition, and every deployed validator must move
+together. The composer would
 then state the callee's frame in the
 same draft as the minted root, the derivation
 evaluates the genesis shape off-chain as it does the probe today, and the SDK's `initializedProxyState` accepts a

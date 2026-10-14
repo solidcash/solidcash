@@ -10949,11 +10949,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // consume the same operation-density budget as the transaction introspection they authenticate. Its body
     // is already separately outlined/optimised, so trade some definition bytes for fewer executed rotations
     // without changing the size-oriented lowering of ordinary user functions.
-    // Shallow replacements offer little runtime saving but their unrolled bytecode consumes the verifier's
-    // 10,000-byte covenant allowance. Reserve unrolling for the costly deep end of its frame.
+    // No depth takes the counted loop: it runs about five times the instructions of the ROLL rotation (through
+    // depth 17) or the unrolled shuttle, and the stack-suffix outlining keeps the shuttle about as small as it.
     const unrollAtomicVerifier = this.compilerOptions.__detachedVerifierUnrollDeepReplace === true
       && this.currentFunction?.name === '__message_bus_verify_atomic_program'
-      && index >= 28;
+      && index >= 14;
     // A replacement in a loop body runs once per iteration: through depth 17 the ROLL rotation below costs at most
     // 9 bytes more than the counted loops and about an eighth of their executed operations.
     const unrollLoopBody = this.plainLoopDepth > 0 && index <= 17 && this.directConvention;

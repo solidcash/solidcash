@@ -3797,10 +3797,10 @@ describe('required kernel admission', () => {
       ?.childDeployments?.[0];
     expect(site).toMatchObject({ dataNftOutputCount: 2, totalOutputCount: 3 });
     expect(site?.childLayoutDigest).toMatch(/^[0-9a-f]{64}$/);
-    const verifier = artifact.messageBus?.verifierProgram?.functions.find(
-      (candidate) => candidate.name === '__message_bus_verify_atomic',
-    );
-    expect(verifier?.bytecode).toContain(site!.childLayoutDigest);
+    // The digest sits in the deployment-registration arm, which the verifier program may outline.
+    expect(artifact.messageBus?.verifierProgram?.functions.some(
+      (candidate) => candidate.bytecode.includes(site!.childLayoutDigest!),
+    )).toBe(true);
   });
 
   it('publishes a Solidity-style constructor-parameter genesis recipe', () => {

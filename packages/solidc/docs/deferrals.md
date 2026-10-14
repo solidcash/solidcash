@@ -2179,9 +2179,14 @@ relaxation), and `script.test.ts` passes again. A derivation-level genesis test 
 hand-lays the minimal v0x03 shape (a validator, its facet, a spent Writer master, and one minted proxy root that
 calls the Writer) and checks the derivation accepts it and refuses the V5 edge mutations. Running that same shape
 through the real program surfaced what remains: the minted emitters had read `takeUnsignedCount`'s output in the
-wrong stack order (fixed for V2/V3/V4/V5), and the head/facet V6/V7 emitters still walk the minted list as if it
-were the settle list, so the on-chain program path does not yet accept the genesis shape. Those V6/V7 minted-list
-skips, an on-chain `minted-genesis` assertion, and the SDK genesis builder remain. The composer would
+wrong stack order (fixed for V2/V3/V4/V5), the head/facet V6/V7 settle emitters needed a version-gated minted-list
+skip (added), and the `emitMintedMastersIfV3` V2 walk parked its zero on the wrong side of the settle list (fixed).
+The head now accepts the genesis shape; the facet still refuses it at V4's non-root-caller rule, because
+`emitCoveredFrame` counts the caller against the input-master byte string and does not yet accept a minted ref
+(`0x8000 | output`) as a covered master. The remaining on-chain gaps are that V4 caller rule, V5's "a non-root
+master is called exactly once" (`emitEdgeRules`/`emitTimesCalled` still count only input masters' calls), and V6's
+execution-order walk (`emitExecutionOrder` still starts only from input roots). Those three, an on-chain
+`minted-genesis` assertion, and the SDK genesis builder remain. The composer would
 then state the callee's frame in the
 same draft as the minted root, the derivation
 evaluates the genesis shape off-chain as it does the probe today, and the SDK's `initializedProxyState` accepts a

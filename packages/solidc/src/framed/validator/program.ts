@@ -656,14 +656,31 @@ function consumeMintedList(e: Emitter): void {
   e.op(O.OP_NIP);
 }
 
+/**
+ * On a version-0x03 transcript, consumes the minted-master list between the masters and the settles.
+ *
+ * Entry `[.., rest]` with the minted list on top and the transcript `M` at depth `mDepth`; exit the same with the
+ * settle list on top. A version-0x02 transcript has no minted list, so the walk is skipped there.
+ */
+function skipMintedListIfV3(e: Emitter, mDepth: number): void {
+  const O = Opcodes;
+  emitVersionOnTop(e, mDepth);
+  e.count(3).op(O.OP_NUMEQUAL, O.OP_IF);
+  consumeMintedList(e);
+  e.op(O.OP_ENDIF);
+}
+
 /** V2: on a version-0x03 transcript, consumes the minted-master list between the masters and the settles. */
 function emitMintedMastersIfV3(e: Emitter): void {
   const O = Opcodes;
   emitVersionOnTop(e, 2);
   e.count(3).op(O.OP_NUMEQUAL, O.OP_IF);
   e.op(O.OP_NIP);
-  consumeMintedList(e);
+  // `[M, suffix]`: park the settle walk's zero below the suffix, then consume the minted list on top.
+  e.op(O.OP_SWAP);
   e.count(0);
+  e.op(O.OP_ROT);
+  consumeMintedList(e);
   e.op(O.OP_ENDIF);
 }
 
@@ -778,8 +795,7 @@ function emitMintedMasterEdgeRules(e: Emitter): void {
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   takeCount(e);
-  e.op(O.OP_SWAP, O.OP_SPLIT);
-  e.op(O.OP_NIP);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_DROP);
   // `[M, mintedCount, mintedRest, masters]` -> `[M, mintedRest, mintedCount, masters]`.
   e.op(O.OP_SWAP, O.OP_ROT, O.OP_ROT);
   // Park the transcript beside the program bytes, keeping the walk's alternate stack reads intact.
@@ -1715,6 +1731,7 @@ function emitSettlementStateInputs(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  skipMintedListIfV3(e, 1);
   takeCount(e);
   // `[M, settleCount, settles]`.
   e.op(O.OP_BEGIN);
@@ -1771,6 +1788,7 @@ function emitSettlementFungibleAmounts(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  skipMintedListIfV3(e, 1);
   takeCount(e);
   // `[M, settleCount, settles]`.
   e.op(O.OP_BEGIN);
@@ -1859,6 +1877,7 @@ function emitSettlementCensus(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  skipMintedListIfV3(e, 1);
   takeCount(e);
   // `[M, settleCount, settles]`.
   e.op(O.OP_BEGIN);
@@ -3086,6 +3105,7 @@ function emitDeclaredCategories(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  skipMintedListIfV3(e, 1);
   takeCount(e);
   e.op(O.OP_BEGIN);
   e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);

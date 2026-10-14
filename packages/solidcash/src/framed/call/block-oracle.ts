@@ -58,6 +58,11 @@ export async function framedBlockOracle(
   };
 }
 
+/** The id the block oracle is co-spent under after `master`'s side-cars. */
+export function blockOracleSideCarId(master: string): string {
+  return `${master}:block-oracle`;
+}
+
 /**
  * `own` with the block oracle co-spent after its compute side-cars. The oracle is not a compute side-car: a body
  * finds it by its pinned lock, so it only has to sit after the side-cars the body addresses by offset.
@@ -65,7 +70,7 @@ export async function framedBlockOracle(
 export function withBlockOracleSideCar(
   master: string, own: RecoverySideCars | undefined, oracle: FramedBlockOracle,
 ): RecoverySideCars {
-  const id = `${master}:block-oracle`;
+  const id = blockOracleSideCarId(master);
   return {
     ids: [...own?.ids ?? [], id],
     inputs: { ...own?.inputs, [id]: oracle.input },

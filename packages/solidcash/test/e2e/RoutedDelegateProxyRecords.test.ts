@@ -152,4 +152,15 @@ describe('a routed delegate binds the proxy records to the proxy master lock', (
     expect(await records(f)).toEqual({ amount: 20n, note: binToHex(SECOND), atExecutorLock: 0 });
     expect((await f.proxy.getState()).counter).toBe(2n);
   }, 300_000);
+
+  // The direct (non-routed) delegate path: `forward('seed')` writes the proxy's mapping entry and a chunked
+  // value, and the records must land at the proxy master's lock, not the executor's. Still fails the chunked
+  // write's outlined count helper (`OP_EQUALVERIFY` comparing 0x02 vs 0x03) — see the deferrals doc entry
+  // "A routed update of a proxy's records". Kept as a skip so the routed half stays green while the direct
+  // chunk-output count/placement derivation is fixed.
+  it.skip('settles a DIRECT delegate seed that writes a mapping entry and a chunked value', async () => {
+    const f = await setup();
+    await f.deployed.forward('seed', [1n, 10n, FIRST]).send();
+    expect(await records(f)).toEqual({ amount: 10n, note: binToHex(FIRST), atExecutorLock: 0 });
+  }, 300_000);
 });

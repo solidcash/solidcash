@@ -20731,28 +20731,28 @@ function predictExpressionPrefix(
   }
   if (first === SolidCashParser.T__41) return EXPRESSION_ALT_THIS;
   if (first === SolidCashParser.T__91) return EXPRESSION_ALT_CONSTRUCTED;
-  if (first === SolidCashParser.T__127 || first === SolidCashParser.T__128) {
+  if (first === TX_OUTPUTS_TOK || first === TX_INPUTS_TOK) {
     return EXPRESSION_ALT_INTROSPECTION;
   }
   if (first === SolidCashParser.T__62) return EXPRESSION_ALT_TYPE_INTROSPECTION;
-  if (first === SolidCashParser.T__13 || first === SolidCashParser.T__26 || first === SolidCashParser.T__130) {
+  if (first === SolidCashParser.T__13 || first === SolidCashParser.T__26 || first === BANG_TOK) {
     return EXPRESSION_ALT_UNARY;
   }
   if (first === lbrack) return EXPRESSION_ALT_ARRAY_LITERAL;
-  if (first === SolidCashParser.T__118 || first === SolidCashParser.T__119
-    || first === SolidCashParser.T__120 || first === SolidCashParser.T__121) {
+  if (first === ABI_ENCODE_TOK || first === ABI_ENCODE_PACKED_TOK
+    || first === ABI_ENCODE_SELECTOR_TOK || first === ABI_ENCODE_SIGNATURE_TOK) {
     return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_ENCODE : EXPRESSION_ALT_BARE_ABI;
   }
-  if (first === SolidCashParser.T__122) {
+  if (first === ABI_ENCODE_CALL_TOK) {
     return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_ENCODE_CALL : EXPRESSION_ALT_BARE_ABI;
   }
-  if (first === SolidCashParser.T__123 || first === SolidCashParser.T__124) {
+  if (first === BYTES_CONCAT_TOK || first === STRING_CONCAT_TOK) {
     return EXPRESSION_ALT_BYTES_CONCAT;
   }
-  if (first === SolidCashParser.T__125) {
+  if (first === ABI_DECODE_TOK) {
     return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_DECODE : EXPRESSION_ALT_BARE_ABI;
   }
-  if (first === SolidCashParser.T__126) {
+  if (first === ABI_DECODE_AT_TOK) {
     return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_DECODE_AT : EXPRESSION_ALT_BARE_ABI;
   }
   return undefined;
@@ -20767,6 +20767,21 @@ function prefillParserTokenTypes(): void {
   }
 }
 prefillParserTokenTypes();
+// Expression-prefix literals resolved by name so a newly added keyword literal (which shifts later
+// implicit-token numbers) cannot silently re-map them. Kept as module constants to avoid per-prefix
+// Map lookups on the parse fast path.
+const TX_OUTPUTS_TOK = tokenTypeByLiteral("'tx.outputs'");
+const TX_INPUTS_TOK = tokenTypeByLiteral("'tx.inputs'");
+const BANG_TOK = tokenTypeByLiteral("'!'");
+const ABI_ENCODE_TOK = tokenTypeByLiteral("'abi.encode'");
+const ABI_ENCODE_PACKED_TOK = tokenTypeByLiteral("'abi.encodePacked'");
+const ABI_ENCODE_SELECTOR_TOK = tokenTypeByLiteral("'abi.encodeWithSelector'");
+const ABI_ENCODE_SIGNATURE_TOK = tokenTypeByLiteral("'abi.encodeWithSignature'");
+const ABI_ENCODE_CALL_TOK = tokenTypeByLiteral("'abi.encodeCall'");
+const BYTES_CONCAT_TOK = tokenTypeByLiteral("'bytes.concat'");
+const STRING_CONCAT_TOK = tokenTypeByLiteral("'string.concat'");
+const ABI_DECODE_TOK = tokenTypeByLiteral("'abi.decode'");
+const ABI_DECODE_AT_TOK = tokenTypeByLiteral("'abi.decodeAt'");
 function tokenTypeByLiteral(literal: string): number | undefined {
   const cached = TOKEN_TYPE_BY_LITERAL.get(literal);
   if (cached !== undefined) return cached;

@@ -2111,6 +2111,15 @@ read-only; satoshi and fungible-token movements of the callee are not pinned wit
 **Why deferred:** it is a semantic-versus-size trade-off on every contract that calls view functions; it needs a
 decision, then an adversarial review like the other covenant changes.
 
+**DECISION 2026-10-14 (reject the implicit `readOnlyDeclared` flag).** The cost is ~45 B on every direct-composition
+call through a `view`/`pure` interface declaration, including the common read-only getter calls that never touch
+callee state; that tax is disproportionate to a gap the explicit `.staticcall()` spelling already closes for the
+callers that need it (`I(a).m.staticcall()` and low-level `staticcall` both pin the callee's master and data NFTs).
+The proposed scan also has two known gaps — nested callee calls do not inherit read-only, and the callee's satoshi /
+fungible-token movements are not pinned — so the flag would be incomplete as a read-only guarantee. Retained deferral:
+revisit only if a real port needs implicit STATICCALL semantics on view/pure declarations. The entry remains open with
+the ~45 B/view-call cost stated.
+
 ## A framed proxy's `initialize` that calls another contract is not atomic (audit SDKFRAMED-2 residual, 2026-10-12)
 
 **What:** a framed proxy deploy is atomic by default (d9251997a): `initialize` is evaluated off-chain like a framed
@@ -2209,13 +2218,25 @@ require site (not diagnosed).
 **STATUS 2026-10-14 (verified).** The delegate-marking half is DONE: `a00dd2f72` is an ancestor of `feat/per-call`,
 and `AutoMarkDelegateFunctions.hasBareStateWrite` already counts bare `ArrayAssignNode`/`ArrayDeleteNode`/`ArrayPushNode`/
 `ArrayPopNode` against both state variables and collections, so a function whose only write is `m[k] = v` IS marked
-delegate. The remaining half is the `forward('seed')` preflight `OP_VERIFY` at input 2 (a direct-delegate chunked
-`bytes` write); the delegate value-chunk address is already bound to the proxy master lock
-(`GenerateTargetTraversal.emitBoundValueChunkP2sh32`), so the failure is in the chunk-output placement/derivation on
-the direct delegate path, not the address binding.
+delegate. The `abi.decodeAt` parse regression that previously blocked the whole route build is FIXED: the windowed
+mapping iteration (`e6ec23c02`) added the `'window'` implicit token at index 102, which shifted every later implicit
+token by one, but the parse fast path in `compiler.ts` (`predictExpressionPrefix`) still hardcoded the pre-window
+token numbers, so `abi.decodeAt` (127→128) was mis-predicted as `UnaryIntrospectionOp` (`tx.outputs`/`tx.inputs`) and
+`abi.decode` as `abi.decodeAt`. The fast path now resolves those literals by name (`tokenTypeByLiteral`) instead of
+raw `T__NNN` numbers, so a future grammar literal cannot silently re-map them. `RoutedDelegateProxyRecords.test.ts`
+now passes both ROUTED cases.
 
-**Proposed design:** diagnose the direct-delegate chunked write (`forward('seed')` for a `mapping(int => bytes)`
-written through a proxy); routed inserts and updates already settle.
+The DIRECT delegate `forward('seed')` still fails `OP_VERIFY` at input 2, now diagnosed to a chunk-coordinate
+mismatch rather than chunk-address binding: the failing instruction is `OP_EQUALVERIFY` at ip 2 of a 14-byte outlined
+helper (`OP_SUB OP_PICK OP_EQUALVERIFY OP_2DROP OP_0 OP_ROLL`), comparing two single-byte counts (`0x02` vs `0x03`)
+that the preflight `SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE` operands report. `emitBoundValueChunkP2sh32` already binds
+the delegate's value-chunk address to the proxy master lock, and the entry NFTs land at the proxy's category, so the
+open half is the direct-delegate chunk OUTPUT COUNT/placement: the value-chunk trailing count the direct convention
+derives disagrees with the SDK's appended chunk output by one.
+
+**Proposed design:** fix the direct-delegate value-chunk trailing-count/placement derivation in
+`GenerateTargetTraversal` (the `0x02` vs `0x03` count the outlined helper compares), reusing the routed path's
+chunk accounting; the direct `forward('seed')` then settles.
 
 ## An in-place upgrade of a contract that keeps records (CRYPTO-4 residual, 2026-10-13)
 

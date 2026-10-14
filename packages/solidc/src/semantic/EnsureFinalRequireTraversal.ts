@@ -188,10 +188,9 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       && containsStatefulOperation(node.body.statements);
 
     if (!hasStateWrites) {
-      // SEM-1: a bare return ends an unverified spend only in a direct entry with no covenant of its own. A framed
-      // body's return ends its frame, whose tail still runs; an ordinary entry of a contract holding state ends
-      // under the covenant that pins the master and its value on every path.
-      const returnsEndPath = !this.framed && !(this.holdsState && endsUnderStateCovenant(node));
+      // SEM-1: a bare return ends an unverified spend unless the path still ends under a covenant that settles the
+      // contract's records (`endsUnderCensus`).
+      const returnsEndPath = !endsUnderCensus(node, this.framed, this.holdsState);
       if (returnsEndPath) node.sealsUnguardedReturns = true;
       // selfdestruct functions skip all covenant codegen, so a missing require() means any caller can trigger
       // the destruction. Keep that a hard error regardless of enforceFinalRequire (the general no-verification
@@ -246,13 +245,22 @@ function warnOrThrowUnverified(node: Node, strict: boolean): void {
     + 'and changes no state; it compiles as an unconditionally-spendable path. Add a require() to constrain it.');
 }
 
-// An entry of a contract holding state that code generation closes with master self-preservation and value
-// preservation on every path. selfdestruct skips both, unsafe drops them by tier, and split/merge settle their own
-// topology instead.
-function endsUnderStateCovenant(node: FunctionDefinitionNode): boolean {
-  return !node.modifiers.some((modifier) => modifier === FunctionModifier.SELFDESTRUCT
-    || modifier === FunctionModifier.UNSAFE || modifier === FunctionModifier.SPLIT
-    || modifier === FunctionModifier.MERGE);
+const SETTLES_OWN_TOPOLOGY = new Set<FunctionModifier>([
+  FunctionModifier.SELFDESTRUCT, FunctionModifier.UNSAFE, FunctionModifier.SPLIT, FunctionModifier.MERGE,
+  FunctionModifier.UPGRADE, FunctionModifier.DEPLOY,
+]);
+
+// Whether every path of an entry ends under a covenant that settles the contract's records: a framed frame, whose
+// head pins the master and its value, or the collection census code generation runs for a direct entry of a
+// contract holding state that reads an entry. Without the census only C3's count holds, which a co-spent record
+// rewritten in place keeps balanced. Lifecycle entries, delegatecalls and the constructor are checked as ends.
+function endsUnderCensus(node: FunctionDefinitionNode, framed: boolean, holdsState: boolean): boolean {
+  if (node.name === '__construct' || node.modifiers.some((modifier) => SETTLES_OWN_TOPOLOGY.has(modifier))) {
+    return false;
+  }
+  if (framed) return true;
+  return holdsState && (node.entryAccesses?.length ?? 0) > 0
+    && !(node.lowLevelCalls?.some((call) => call.callMode === 'delegatecall') ?? false);
 }
 
 // selfdestruct(addr) value-pins the freed balance to outputs[0] == addr, but addr is whatever the covenant

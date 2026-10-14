@@ -209,6 +209,7 @@ const HEAD_CHECKS: readonly CheckEmitter[] = [
 const FACET_CHECKS: readonly (readonly CheckEmitter[])[] = [
   [
     emitRootRules,
+    emitMintedMasterRootRules,
     emitEdgeRules,
     emitExecutionOrder,
     emitReadOnlyFrames,
@@ -697,6 +698,46 @@ function emitMintedMasterCompleteness(e: Emitter): void {
   e.op(O.OP_BEGIN);
   e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
   emitOneMintedMasterCompleteness(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP);
+}
+
+/** V4: one minted master is a genesis root: a ROOT frame with no P2PKH caller and no origin. */
+function emitOneMintedMasterRootRule(e: Emitter): void {
+  const O = Opcodes;
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_DROP);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  e.op(O.OP_SWAP);
+  e.count(3).op(O.OP_SPLIT, O.OP_NIP);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.count(0).op(O.OP_NUMEQUALVERIFY);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUALVERIFY);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUALVERIFY);
+  e.op(O.OP_DROP);
+}
+
+/** V4: every minted master is a genesis root frame with no P2PKH caller and no origin. */
+function emitMintedMasterRootRules(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  emitOneMintedMasterRootRule(e);
   e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
   e.op(O.OP_ENDIF);
   e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);

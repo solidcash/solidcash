@@ -1041,7 +1041,7 @@ deferred/chained/msg.sender-merge/insert loop state machine - the most soundness
 disproportionate to the rare bulk-LONG-value pattern. The chunk NFT is keyed by `(slot=Hk32, digest)`, so even an
 invariant value cannot share one chunk set across keys. Revisit if a real port needs bulk long values in a loop.
 
-**RESOLVED (verified 2026-10-14).** A `>60 B` per-iteration sorted-loop value is already shipped: the loop body
+**RESOLVED (verified 2026-10-14, commit `3da2f72c0`).** A `>60 B` per-iteration sorted-loop value is already shipped: the loop body
 (`emitSortedUpsertLoopBody`) pins each slot's value chunks via `emitSortedValueChunkPin` and stores the `len4 ++
 sha256(v)` tail, so the interleaved entry/chunk outputs are covenant-bound and the SDK plans the chunks. The positive
 path is pinned by `solidcash/test/e2e/SortedArrayValueVaryingLoop.test.ts` (per-key `bytes[]`/`int[][]` values, a

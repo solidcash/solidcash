@@ -116,18 +116,15 @@ key means a new oracle and redeployed readers.
 ### Point readers at the oracle
 
 The SDK reads the oracle lock from the provider's `blockOracleLock`, and the keeper also needs its
-`blockOracleCategory`. `MockNetworkProvider` carries its own oracle. On a live network, attach yours:
+`blockOracleCategory`. `MockNetworkProvider` carries its own oracle. On a live network, configure its category:
 
 ```ts
 import { hexToBin } from '@bitauth/libauth';
 import { Contract, SignatureTemplate, TransactionBuilder } from 'solidcash';
 import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
-import { blockOracleLockingBytecode } from '@solidcash/utils';
 
-const blockOracleCategory = hexToBin(oracleCategory);
-const provider = Object.assign(new ElectrumNetworkProvider('mainnet'), {
-  blockOracleCategory,
-  blockOracleLock: blockOracleLockingBytecode(blockOracleCategory),
+const provider = new ElectrumNetworkProvider('mainnet', {
+  blockOracleCategory: hexToBin(oracleCategory),
 });
 
 const vault = new Contract(timeVaultArtifact, [ownerPublicKey, unlockTime], { provider });
@@ -267,7 +264,22 @@ The keeper mints pairs from a minting NFT of the contract's category held at the
 `blockhashKeeperBatonLockingBytecode(category, keeperPublicKey)`. A baton spend needs the keeper's signature,
 recreates the baton at output 0 and mints exactly one pair at the category's blockhash lock under `tx.time >= n`, so
 the baton cannot stand in for the contract's master. The genesis that creates the contract's category must also
-mint this baton; the SDK's deploy helpers do not add it.
+mint this baton. Pass `blockhashKeeperPublicKey` to `StatefulContract.deploy` to mint it at the confined covenant;
+`blockhashKeeperAmount` sets its initial balance (default 10,000 satoshis). Both direct and framed genesis support
+this option. It requires an artifact that reads `blockhash`; omitting it preserves existing deployment behavior.
+
+```ts
+import { StatefulContract } from 'solidcash/stateful';
+
+const { contract: consumer } = await StatefulContract.deploy(consumerArtifact, [], {
+  provider, fundingUtxo, funder, changeAddress,
+  blockhashKeeperPublicKey: keeperPublicKey,
+  blockhashKeeperAmount: 1_000_000n,
+});
+```
+
+Each pair currently spends 1,000 satoshis plus a 1,000-satoshi fee from that balance. Replenish the baton before
+its balance runs out; the keeper key is supplied only to the updater, never to deployment.
 
 ```ts
 const keeper = new BlockOracleUpdater({

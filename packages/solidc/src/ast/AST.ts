@@ -505,6 +505,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusPhysicalEntrySlotAlternatives?: number[][];
   /** Route-wide dynamic resources which precede this outlined handler's trailing mapping entries. */
   messageBusRouteDynamicResources?: string[];
+  /** Route-wide read-only chunk runs preserved before streamed effects; an empty list is authoritative. */
+  messageBusRouteReadOnlyDynamicResources?: string[];
   /** Authenticated participant-master offset used by message-bus handler code generation. */
   messageBusOwnerInputOffset?: number;
   /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */

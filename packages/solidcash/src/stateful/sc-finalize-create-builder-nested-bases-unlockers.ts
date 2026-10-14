@@ -40,6 +40,7 @@ export interface FinalizeCreateBuilderNestedBasesUnlockersHost {
   readonly provider: NetworkProvider;
   readonly physicalRootLockingBytecode: Uint8Array;
   readonly rootLogicalAddress?: string;
+  readonly blockOracle?: { lock: Uint8Array; inputIndex: number };
   readonly pendingAnchorFills: Array<{
     group: {
       masterUtxo?: unknown;
@@ -221,6 +222,18 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
             }],
           });
         }
+      } else if (paramName === '__internal__blockOracleInputIndex') {
+        const ownOffset = group.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle')?.offset;
+        const rootOracle = host.blockOracle;
+        const readerLock = group.externalContract.inner.blockOracleLock as Uint8Array | undefined;
+        const sharesRoot = rootOracle !== undefined && readerLock !== undefined
+          && binToHex(rootOracle.lock) === binToHex(readerLock);
+        if (sharesRoot) bFinalArgs.push(BigInt(rootOracle.inputIndex));
+        else if (ownOffset !== undefined && readerLock !== undefined
+          && group.blockInputs?.[ownOffset] !== undefined
+          && binToHex(group.blockInputs[ownOffset].unlocker.generateLockingBytecode()) === binToHex(readerLock)) {
+          bFinalArgs.push(BigInt(masterInputIndex + ownOffset));
+        } else throw new Error('nested block oracle reader has no authenticated oracle input');
       } else if (paramName === '__internal__blockhashInputIndex') {
         const firstOracleOffset = group.blockLayout?.slots.find(
           (slot) => slot.kind === 'blockhashOracle',

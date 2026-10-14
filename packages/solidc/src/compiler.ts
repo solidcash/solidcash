@@ -13505,15 +13505,16 @@ function synthesizeMessageBusRoute(
         // snapshot as defense in depth when the participant is entirely static. A mixed participant can
         // legitimately contain mutating sibling rows, so snapshotting its final block merely because one row
         // is static rejects those authenticated siblings and adds no row-local protection.
-        // A return-event slot may publish the authenticated result vector; all other slots of an all-static
-        // participant remain byte-for-byte and value-for-value preserved.
+        // A return-event slot may publish the authenticated result vector. Exact token-free neutral pads may
+        // keep their canonical OP_TRUE output, including shared-oracle duplicates. All other slots remain
+        // byte-for-byte preserved, and every slot preserves its complete input value.
         if (${kernelLifecycleHandlers.size > 0 ? 'activeLifecycleMode == 0 && ' : ''}
           activeStaticInvocationRows > 0 && activeStaticInvocationRows == consumedLocalRows) {
           for (bigint slot = activeBase;
             slot < activeBase + activeBlockSize; slot = slot + 1) {
             bigint outputSlot = activeOutputBase + slot - activeBase;
             require(tx.outputs[outputSlot].value == tx.inputs[slot].value);
-            if (outputSlot != activeReturnOutput) {
+            if (outputSlot != activeReturnOutput && !__message_bus_empty_pad(slot, outputSlot)) {
               require(tx.outputs[outputSlot].lockingBytecode == tx.inputs[slot].lockingBytecode);
               require(tx.outputs[outputSlot].tokenCategory == tx.inputs[slot].tokenCategory);
               require(tx.outputs[outputSlot].tokenAmount == tx.inputs[slot].tokenAmount);
@@ -15765,17 +15766,27 @@ function compileResolvedAst(
       || fn.modifiers.includes(FunctionModifier.PRIVATE));
   // Public entry points can also be called internally. A state/collection- or call-touching public callee owns
   // direct-route witnesses that do not exist as source-level arguments at its call site; inline that body into
-  // the caller's physical frame before SymbolTableTraversal adds those parameters. Keep its dispatched definition.
+  // the caller's physical frame before SymbolTableTraversal adds those parameters. In the direct convention,
+  // a void `this.f()` has the same inherited execution context and needs that frame too. Returning self-calls
+  // retain their existing invoked-read fence after pending mapping writes. Keep the dispatched definition.
   const publicEntryNames = new Set(ast.contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name));
+  const directVoidSelfCallKeys = new Set(ast.contract.functions
+    .filter((fn) => fn.returnTypes.length === 0 && mergedCompilerOptions.composition !== 'framed')
+    .map((fn) => `${fn.name}/${fn.parameters.length}`));
   let hasInternallyCalledPublicEntry = false;
+  let hasDirectVoidSelfCall = false;
   if (publicEntryNames.size > 0) {
     for (const fn of ast.contract.functions) {
       if (!fn.body) continue;
-      const found = { internalCall: false };
+      const found = { internalCall: false, directVoidSelfCall: false };
       walkInvocationAst(fn.body, (node) => {
-        if (node instanceof FunctionCallNode && publicEntryNames.has(node.identifier.name)
-          && !node.fromThisCall) found.internalCall = true;
+        if (!(node instanceof FunctionCallNode) || !publicEntryNames.has(node.identifier.name)) return;
+        if (!node.fromThisCall) found.internalCall = true;
+        else if (directVoidSelfCallKeys.has(`${node.identifier.name}/${node.parameters.length}`)) {
+          found.directVoidSelfCall = true;
+        }
       });
+      hasDirectVoidSelfCall ||= found.directVoidSelfCall;
       hasInternallyCalledPublicEntry = found.internalCall;
       if (hasInternallyCalledPublicEntry) break;
     }
@@ -15805,7 +15816,7 @@ function compileResolvedAst(
   // whenever an internal helper exists; the traversal's own eligibility checks retain the cheap no-op path.
   // An entry another body calls by name is inlined there too: a mapping write's batch witnesses are the entry's own
   // parameters, which that call does not pass.
-  if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers) && inlinesOwnCalls) {
+  if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers) && (inlinesOwnCalls || hasDirectVoidSelfCall)) {
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.evmCompat ?? false,
       inlineDelegateStateHelpers,
@@ -15877,6 +15888,7 @@ function compileResolvedAst(
   // tell it ran). If-convert it to an unconditional predicated write `m[k] = cond ? default : m[k]`.
   if (needsCollectionJournal) ast = ast.accept(new IfConvertConditionalEntryOp(
     mergedCompilerOptions.messageBusKernel === true,
+    mergedCompilerOptions.messageBus === false && mergedCompilerOptions.composition !== 'framed',
   )) as Ast;
 
   // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
@@ -16237,14 +16249,25 @@ function compileResolvedAst(
       functionsByName.set(fn.name, group);
     }
     const routeFootprintCache = createFootprintAnalysisCache(dynamicStateNames);
+    const routeDynamicWrites = new Set<string>();
+    const dynamicResourceName = (resource: string): string | undefined => {
+      const name = resource.startsWith('state:') ? resource.slice('state:'.length)
+        : resource.startsWith('collection:') ? resource.split(':')[1] : undefined;
+      return name !== undefined && dynamicStateNames.has(name) ? name : undefined;
+    };
     const footprintDynamicResources = ast.contract.functions
       .filter((fn) => fn !== messageBusRoute && fn.messageBusEligible)
       .flatMap((fn) => {
         const footprint = analyseFunctionFootprint(fn, functionsByName, routeFootprintCache);
+        // An opaque effect cannot prove that a sibling resource remains read-only. Keep every dynamic resource
+        // under the existing write settlement in that case rather than exempting a cached journal value.
+        if (footprint.unknown) for (const name of dynamicStateNames) routeDynamicWrites.add(name);
+        for (const resource of footprint.writes) {
+          const name = dynamicResourceName(resource);
+          if (name !== undefined) routeDynamicWrites.add(name);
+        }
         return [...footprint.reads, ...footprint.writes]
-          .filter((resource) => resource.startsWith('state:'))
-          .map((resource) => resource.slice('state:'.length))
-          .filter((name) => dynamicStateNames.has(name));
+          .map(dynamicResourceName).filter((name): name is string => name !== undefined);
       });
     // Route dynReads/Writes may still be unpopulated this early; fall back to every dynamic state name when
     // any eligible handler emits chunkable/entry-loop NEWs that must sit after the route-preserved dyn band.
@@ -16260,6 +16283,8 @@ function compileResolvedAst(
       ...footprintDynamicResources,
       ...(needsDynBandForChunkableOrLoop ? [...dynamicStateNames] : []),
     ].filter((name) => dynamicStateNames.has(name)))];
+    const routeReadOnlyDynamicResources = routeDynamicResources.filter((name) => !routeDynamicWrites.has(name));
+    messageBusRoute.messageBusRouteReadOnlyDynamicResources = routeReadOnlyDynamicResources;
     type MessageBusClone = FunctionDefinitionNode & { messageBusCloneSourceKey?: string };
     const graphCloneBySource = new Map<FunctionDefinitionNode, FunctionDefinitionNode>();
     for (const clone of ast.contract.functions.filter((fn) =>
@@ -16327,6 +16352,7 @@ function compileResolvedAst(
       }
       if (routeClone || directlyDispatchedSource) {
         fn.messageBusRouteDynamicResources = routeDynamicResources;
+        fn.messageBusRouteReadOnlyDynamicResources = routeReadOnlyDynamicResources;
       }
       if ((routeClone || directlyDispatchedSource)
         && fixedHandlerEntries.length > 0 && messageBusRoute.entryAccesses?.length) {
@@ -20035,6 +20061,7 @@ function compileReferencedContracts(
     }
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp(
       compilerOptions.messageBusKernel === true,
+      compilerOptions.messageBus === false && compilerOptions.composition !== 'framed',
     )) as Ast;
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;
     singleAst = singleAst.accept(new HoistBranchLocalExtcallTargets()) as Ast;

@@ -1895,12 +1895,16 @@ Stage 3 (2026-10-14, the atomic verifier's operation cost):
   verifier costs by test title. Its per-input byte assertion is stage 2's (callee route input 12,099 B before
   stage 2, 9,830 B after).
 - Not built: skipping checks another input of the same transaction already ran; not needed for the budget.
-- Still over the real budget in `AtomicMessageBusCompose`: "co-spends a compiler-positioned blockhash oracle"
-  (one verifier 7.96M, 257-input transaction) and "authenticates NFT capability, commitment, recipient, and
-  mixed-container settlement" (11.11M and 15.88M, 1,024 inputs). Two walks scale with the transaction there: the
-  V1 participant-output scan (every participant over every output, about 2.3k per output) and the slot walk (about
-  9k per slot of the active block). Bounding the V1 scan to the block changes which output a duplicated minting
-  master selects, and the route binder scans the same way, so it needs its own design.
+- The two remaining cases are closed with local ordinary-VM evidence in `4d575b330`:
+  "co-spends a compiler-positioned blockhash oracle" previously used 7.96M, and "authenticates NFT capability,
+  commitment, recipient, and mixed-container settlement" used 11.11M/15.88M. Shared minting-output census keeps
+  the last exact V1 match; structural neutral-pad classification, shallow helpers and loop lowering reduce scan
+  cost. A duplicate physical transfer reserve for multiple containers is counted once; a runtime unused-slot
+  walk and omission of a metadata-proven impossible FT debit scan fit the callee byte ceiling. The SDK reserve
+  includes the actual participant population and measures fees with the candidate change output present.
+  Both original cases now assert real cost and input-byte limits for every input, with mutated pads, duplicate
+  masters, NFT alterations and conservation-balanced FT theft refused. No live-node measurement was run for
+  these follow-ups; BCHN is excluded by the user's instruction.
 
 ## keccak256 inside an internal helper of a STATEFUL contract (2026-08-07) - RESOLVED
 
@@ -2194,16 +2198,21 @@ native delegates and routes; record a DECISIONS row superseding large-contract-s
 **Why deferred:** the user deferred the model-B migration (2026-10-05, confirmed 2026-10-14).
 
 
-## A streamed route handler reached on the plain call path (atomic bus stage 1 residual, 2026-10-14)
+## A streamed route handler reached on the plain call path (closed locally, 2026-10-14)
 
 **What:** since stage 1 (ff51608b8), a kernel handler whose emits all sit at top level streams its records through
 the trailing band and publishes `runtimeLoopEvents: [{ eventSignatures, stream: true }]` instead of `emits`. Compose
-places those records (graph.ts, compose-event-helpers.ts). A routed callee reached on the plain (non-compose) call
-path still builds its rows from the raw ABI handlers, so nothing places its streamed records:
-sc-derive-full-phase1-return-and-events.ts (about lines 276-280) and value-chunk-base-writer-select.ts (about line
-470) fall back to the direct entry's event slots, and the callee's covenant refuses the transaction. It fails closed.
+places those records (graph.ts, compose-event-helpers.ts). The plain path previously built routed callee rows from
+raw ABI handlers and fell back to direct event slots, so the callee's covenant refused the transaction.
 
-**Proposed design:** the plain path reads the route copy of the handler (its `stream: true` entry) and places the
-records in the callee input's trailing band, as compose does.
+**Implementation:** `0aae93f11` joins the route-published handler metadata by selector, seeds lifted top-level
+event heads, and learns exact compact/chunked records from the selected callee's faithful verifier trace. Records
+stay inside the compiler-owned trailing band and published schema; the SDK materializes only reached records and
+funds growing chunk runs from the signer wallet. Caller SCB1 verification supports canonical PUSHDATA2 through the
+existing 520-byte envelope limit.
 
-**Why deferred:** feature-sized; found by the audit of the SDK's `emits` reads after stage 1 (2026-10-14).
+**Evidence:** `KernelPlainStreamedCallee.test.ts` settles two compact rows and differing chunked rows (3 and 2
+records) with every input checked by the ordinary VM. Changed commitments, capabilities and swapped continuation
+records are refused. Compact trace extraction remains explicit opt-in and observes no unseen prefix. Two focused
+trace unit cases and two adjacent plain batch cases pass. No BCHN evidence was collected. General nested loop
+cardinality is outside this fix: this planner requires the published lifted top-level multiplicity of one.

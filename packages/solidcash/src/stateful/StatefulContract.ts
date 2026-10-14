@@ -852,6 +852,10 @@ export function selectReturnAbiPlan<T>(
 }
 
 export interface DeployOptions {
+  /** Mint a confined blockhash keeper baton at genesis; requires a blockhash-reading artifact. */
+  blockhashKeeperPublicKey?: Uint8Array;
+  /** Initial keeper baton balance, spent on oracle mints and fees; default 10,000 satoshis. */
+  blockhashKeeperAmount?: bigint;
   provider: NetworkProvider;
   fundingUtxo: Utxo;
   funder: Unlocker;

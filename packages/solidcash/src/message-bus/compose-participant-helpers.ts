@@ -4,7 +4,9 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { encodePushdataValue, getDefaultStateValue, parseArrayTypeString } from '@solidcash/utils';
+import {
+  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, encodePushdataValue, getDefaultStateValue, parseArrayTypeString,
+} from '@solidcash/utils';
 import type { Artifact, StateValue, StructDefinitionInfo } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
@@ -152,6 +154,16 @@ export const freezeStaticcallParticipantOutputs = (
       const absolute = base + local;
       const input = builder.inputs[absolute];
       if (!input || absolute >= builder.outputs.length) continue;
+      const output = builder.outputs[absolute];
+      const outputLock = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+      // Shared-oracle duplicates are exact neutral pads, not records in this read-only snapshot.
+      // Keep their canonical OP_TRUE output; the verifier still pins the complete input value.
+      if (input.token === undefined && output.token === undefined
+        && binToHex(input.unlocker.generateLockingBytecode()) === BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX
+        && binToHex(outputLock) === '51') {
+        builder.outputs[absolute] = { ...output, amount: input.satoshis };
+        continue;
+      }
       builder.outputs[absolute] = {
         to: input.unlocker.generateLockingBytecode(),
         amount: input.satoshis,

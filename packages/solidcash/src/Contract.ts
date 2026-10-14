@@ -365,8 +365,8 @@ export class Contract<
       throw new Error('Salt must be 520 bytes or less');
     }
     this.category = this.options.category;
-    const providerLock = (this.provider as { blockOracleLock?: Uint8Array }).blockOracleLock;
-    this.blockOracleLock = (this.options as { blockOracleLock?: Uint8Array }).blockOracleLock ?? providerLock;
+    const providerLock = this.provider.blockOracleLock;
+    this.blockOracleLock = this.options.blockOracleLock ?? providerLock;
     if (this.blockOracleLock !== undefined && (artifact.blockOracleLockSlots?.length ?? 0) > 0) {
       bindBlockOracleLock(artifact, this.blockOracleLock);
     }

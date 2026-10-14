@@ -7,6 +7,27 @@ STT = packages/solidc/src/semantic/SymbolTableTraversal.ts. Read-only audit, not
 "Direct" below means composition 'direct' with the message bus off (`__messageBusExplicitlyDisabled === true`),
 which is what the compiler picks for every graph-free contract (compiler.ts:4270-4283 narrowGraphFreeAutoMessageBus).
 
+## Current follow-up status (2026-10-14)
+
+The findings below preserve the original audit snapshot and its evidence. Current implementation and validation
+status is tracked in the [integration audit](../security-audit-2026-10-feat-parity.md).
+
+- The DS-1 follow-up involving a direct singleton conditional scalar write is fixed. If-conversion had turned a
+  skipped no-read write into an insert of an enumerable zero-valued node. The source branch now retains its
+  activity flag, and compiler/SDK activity settlement keeps the predecessor unchanged and removes the planned
+  insert. [AuditTranscriptStateIntegrity](../../packages/solidcash/test/e2e/AuditTranscriptStateIntegrity.test.ts)
+  proves the skipped path creates no absent-key output, refuses a changed predecessor successor, and accepts the
+  taken-path insert. This evidence does not establish additional multi-target conditional topology support.
+- The same regression file verifies that a covenant-covered direct early return preserves its mapping record,
+  and that a direct void `this.f()` mapping reader uses the caller's collection witnesses for distinct keys.
+  The framed exempt-return mapping/data checks are covered by the
+  [framed regression](../../packages/solidc/test/framed/master/audit-exempt-return.test.ts).
+- The returning self-call fence after pending mapping writes remains in place. The focused external-getter
+  refusal in [AuditDS6SameKeyAlias](../../packages/solidcash/test/e2e/AuditDS6SameKeyAlias.test.ts) passes.
+
+These are focused local VM/compiler checks performed without BCHN tests. They supplement the
+historical DS-1/DS-6 analysis without changing its original claims or implying that every DS finding is closed.
+
 ---
 
 ## DS-1  CRITICAL  CODE-CONFIRMED

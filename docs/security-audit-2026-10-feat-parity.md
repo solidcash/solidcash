@@ -79,8 +79,9 @@ two whose returns still end under a covenant that settles the contract's records
 master and its value, and a direct entry of a stateful contract that reads an entry, where the collection census
 runs on every path. A direct stateful entry that reads no entry has only C3's count, which a co-spent record
 rewritten in place keeps balanced, so its unguarded return is sealed. Lifecycle entries, delegatecalls and the
-constructor are always checked. Proven at compile time only (AuditSem1FinalRequire); no VM test drives the exempt
-return paths against a hostile transaction.
+constructor are always checked. Focused local VM evidence now drives both exempt return paths: the direct mapping
+reader refuses a rewritten mapping node, and the framed reader refuses rewritten mapping and data records while
+accepting unchanged records (`AuditTranscriptStateIntegrity`, `framed/master/audit-exempt-return`).
 
 ## Closing validation (2026-10-14)
 
@@ -122,24 +123,29 @@ workflow itself were not run here. Source evidence: the resumed session's `scrat
   settling it would need chunk runs staged on the delete's node.
 - DS-6: an external self-call (`this.get(k)`) that reads the mapping between a swap-remove write and its delete is
   refused at compile (`DirectInvokedStaleReadError`); function-pointer calls there are not covered.
-- Found, not fixed (nearest row DS-1, owned by the per-call worker): a direct conditional sorted write with no delete in
-  its batch, skipped on an absent key, still runs its planned insert, and the honest SDK leaves a duplicate
-  predecessor; the skipped write never binds its slot witness, so a spender can choose that duplicate's `next`.
-- Found, not verified: a body invoked through `this.f()` reads mapping entries at its own layout's input slots, not
-  the caller's.
+- DS-1 follow-up, fixed for a direct singleton conditional scalar write: if-conversion had inserted an enumerable
+  zero-valued node on the skipped absent-key path. The source branch now retains its activity flag; compiler and
+  SDK use the existing activity settlement to keep the predecessor unchanged and remove the planned insert.
+  `AuditTranscriptStateIntegrity` proves no absent-key output, refusal of a changed predecessor successor, and
+  successful taken-path insertion. This does not claim additional multi-target conditional topology support.
+- Invoked-read follow-up: a direct void body invoked through `this.f()` is now inlined into the caller's physical
+  collection frame. `AuditTranscriptStateIntegrity` proves two distinct-key reads settle and a wrong-key call is
+  refused. Returning self-calls retain their existing fence after pending mapping writes (`AuditDS6SameKeyAlias`).
 - Historical failures on both integration parents: KernelLoopCompose "recursive event domain step and 64-frame
   resource bound" and KernelRealUnicrowProxyArbitration now pass in the closing run. The model-B logical-identity
   title in KernelPhysicalCallerWithScidCompose is explicitly skipped by the user's decision; see deferrals.md.
 - Evaluated decision D30: do not implement batch-width witness binding. This is not a deferral; the evidence,
   candidate's cost and SDK impact, and scope for future reevaluation live in [D30](framed/DECISIONS.md).
-- Event-integrity review, code-read only at `3dc7e8b54`: split/merge and unsafe paths bypass the ordinary
-  own-category immutable-output pin (`GenerateTargetTraversal.ts`, `visitFunctionDefinition`). The review identified
-  potential extra event NFTs under those policies; no hostile VM reproduction was run for this finding.
-- Event-integrity review, code-read only: the external-call exception in `emitOwnCategoryImmutableNftOutputPin`
-  admits an output matching a spent own-category immutable input. Event covenants become permissionlessly
-  spendable after 144 blocks (`packages/utils/src/state.ts`, `buildEventNftCovenantScript`), so the review identified
-  potential replay of an old log through that exception. No hostile VM reproduction was run. This and the lifecycle
-  finding predate the stream-offset change and are not resolved by D30.
+- Event-integrity follow-up, fixed locally: split/merge and unsafe tiers 1/2 now run the ordinary own-category
+  immutable-output pin. `AuditLifecycleEventIntegrity` accepts their honest transactions and refuses an extra
+  addressable own-category event NFT. The fork case previously accepted that output. Explicit `unsafe(0)` remains
+  outside covenant policy; this change does not redefine that escape hatch.
+- Event-integrity replay follow-up, fixed locally: the generic exact-input-tuple exception was removed from
+  `emitOwnCategoryImmutableNftOutputPin`. A previously emitted log cannot be published anew merely because its
+  144-block event covenant can now be spent. The same regression verifies every honest external-call input,
+  preserves a genuine SCID-v1 anchor bound to the master lock, evaluates the actual matured log covenant with
+  sequence 144, and refuses recreation of that log at the caller. Structured identity metadata remains exempt.
+  No BCHN run was made for either event follow-up; D30 is unchanged.
 
 ## SDK equality observer follow-up (2026-10-14)
 

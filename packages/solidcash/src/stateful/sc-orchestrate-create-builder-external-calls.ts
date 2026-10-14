@@ -700,6 +700,12 @@ export async function orchestrateCreateBuilderExternalCalls(
         provider: host.inner.provider,
         physicalRootLockingBytecode: params.physicalSelfAddress,
         rootLogicalAddress: params.rootLogicalAddress,
+        blockOracle: host.inner.blockOracleLock !== undefined
+          && abiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')
+          ? { lock: host.inner.blockOracleLock,
+            inputIndex: (overrides?.blockBase ?? 0)
+              + abiFunction.blockLayout.slots.find((slot) => slot.kind === 'blockInfoOracle')!.offset }
+          : undefined,
         pendingAnchorFills,
         selectorParamSlot,
         isComputedBlockhashKey,

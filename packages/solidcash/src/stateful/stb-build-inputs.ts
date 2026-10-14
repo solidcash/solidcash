@@ -458,12 +458,13 @@ export function buildInputs(
     // Always carve dynamic-array old-chunk inputs out of trailingOverflow (not only whitelist INSERT).
     // Otherwise nested LLC precedes chunks and the dynamic read loop hits a non-chunk at
     // INPUTINDEX+blockSize (capability/chunkIndex EQUALVERIFY 01 vs empty). Iteration-entry
-    // predecessors are included only for an actual insert band, preserving ordinary band order when
-    // there are no old chunks.
+    // entries stay ahead of written old chunks when both resource families are present; their preservation
+    // outputs keep those same indices. Without old chunks, retain the ordinary band order unless inserting.
     const trailingOverflow = trailingInputs.slice(trailingIdx);
     const preInsertResourceBand = trailingOverflow.filter((input) => (
       host.dynamicChunkInputs.includes(input)
-      || (earlyInsertPredecessors.length > 0 && host.iterationEntryInputs.includes(input))
+      || ((earlyInsertPredecessors.length > 0 || host.dynamicChunkInputs.length > 0)
+        && host.iterationEntryInputs.includes(input))
     ));
     const trailingRest = trailingOverflow.filter((input) => !preInsertResourceBand.includes(input));
     // When old chunks are present, pad the fixed block to full width so the first chunk is exactly

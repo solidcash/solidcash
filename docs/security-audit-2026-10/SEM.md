@@ -6,6 +6,25 @@ abbb7e0ec (df51215d6 is its ancestor); line numbers below are against abbb7e0ec.
 Paths: `semantic/` = packages/solidc/src/semantic, `compiler.ts`/`GTT` = packages/solidc/src/compiler.ts /
 generation/GenerateTargetTraversal.ts.
 
+## Current follow-up status (2026-10-14)
+
+The findings below preserve the original audit snapshot and its evidence. Current implementation and validation
+status is tracked in the [integration audit](../security-audit-2026-10-feat-parity.md).
+
+- SEM-1 now has path-sensitive final-require checks. Focused local VM tests also verify the two covenant-covered
+  early-return exemptions: a direct mapping reader rejects a rewritten mapping node, and a framed reader rejects
+  rewritten mapping and data records while accepting unchanged records. Evidence:
+  [AuditTranscriptStateIntegrity](../../packages/solidcash/test/e2e/AuditTranscriptStateIntegrity.test.ts) and
+  [framed exempt-return regression](../../packages/solidc/test/framed/master/audit-exempt-return.test.ts).
+- The invoked-read follow-up now inlines a direct void `this.f()` mapping reader into its caller's physical
+  collection frame. Two distinct-key reads settle, and an incorrect second key is refused in
+  [AuditTranscriptStateIntegrity](../../packages/solidcash/test/e2e/AuditTranscriptStateIntegrity.test.ts).
+  Returning self-calls retain the existing refusal for a mapping read after a pending write before a delete;
+  the focused external-getter case in
+  [AuditDS6SameKeyAlias](../../packages/solidcash/test/e2e/AuditDS6SameKeyAlias.test.ts) still passes.
+
+These follow-up checks used local VMs without running BCHN tests.
+
 ## Findings
 
 ### SEM-1 HIGH, CODE-CONFIRMED - final-require check passes an early `return;` that precedes the only require

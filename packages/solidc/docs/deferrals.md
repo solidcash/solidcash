@@ -2166,12 +2166,13 @@ the matching V3/V4/V5/V9 changes in `checks.ts` and `reference.ts`, then the SDK
 fork, not a soft extension: changing `buildValidatorProgram()` moves the validator's P2SH32 address and the
 master-head's `recogniseValidatorScriptAgainstReservedHash` reserved hash in `frame-tail.ts`/`master-head.ts`, so the
 program, the derivation, the reference model, the master-head recognition, and every deployed validator must move
-together. PARTIALLY DONE (commit `52057b47f`): `reading.ts` dispatches both transcript versions, `checks.ts` and
+together. PARTIALLY DONE (commits `52057b47f`, `52c170d71`): `reading.ts` dispatches both transcript versions, `checks.ts` and
 `reference.ts` thread a minted-master id space (`0x8000 | output`) through V2/V3/V4/V5/V6/V9, and `program.ts` accepts
-version 0x03 with a conditional `emitMintedMastersIfV3` V2 walk; the differential harness still passes. What remains
-on the program side is the V3/V4/V5/V9 minted enforcement (each emitter must re-read the variable-length minted list
-from its fresh `dropFront(4)` transcript copy, with the version byte at a different stack depth), plus the header's
-`rootCount != 0` relaxation for a genesis whose only root is minted; then the SDK genesis builder. The composer would
+version 0x03 with a conditional `emitMintedMastersIfV3` V2 walk, plus the `rootCount`/V9 relaxation for a genesis whose
+only root is minted; the differential harness still passes. What remains
+on the program side is the V3/V4/V5 minted enforcement (each emitter must re-read the variable-length minted list
+from its fresh `dropFront(4)` transcript copy, with the version byte at a different stack depth); then the SDK
+genesis builder. The composer would
 then state the callee's frame in the
 same draft as the minted root, the derivation
 evaluates the genesis shape off-chain as it does the probe today, and the SDK's `initializedProxyState` accepts a

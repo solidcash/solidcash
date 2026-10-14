@@ -719,6 +719,20 @@ this prevents, so it ships only when those fail closed.
 **Revisit if.** A real contract must enumerate/aggregate a mapping whose entry count exceeds one tx's input
 budget (the USDT-scale case that motivated the enumerable/plain split originally).
 
+**RESOLVED (2026-10-14, commit `feat/vmap-items`).** Built the `for (T v of this.m.window(cursor, K))` VALUES
+surface (the first of the two documented options) end to end on the direct convention. The covenant is a new
+`emitWindowedSortedIteration` (GTT) that reuses the adversarially-verified full-walk entry pin + contiguity check,
+with the three planned deltas: (1) the anchor entry at base+0 must have `slot == cursor` (cursor read from the
+persisted `bytes32` register state var; first page = HEAD 0); (2) the loop is bounded to K entries (or the tail);
+(3) the last visited entry's slot is written back to the cursor state var. Grammar/AST/AstBuilder carry the form,
+`SymbolTableTraversal` binds the cursor state var + K and `Artifact.ts` publishes `windowCursor`/`windowBound` on the
+`collectionIterations` ABI entry. The SDK (`sc-load-create-builder-iteration-inputs.ts`) co-spends the contiguous
+`[cursor..cursor+K]` window via `SortedList` and the covenant persists the cursor, so pages are disjoint and resumable.
+Tests: `packages/solidc/test/WindowedIteration.test.ts` (compile + metadata + cursor-type rejection) and
+`packages/solidcash/test/e2e/WindowedIteration.test.ts` (two disjoint pages that together visit every entry, exact
+per-page values, cursor = last visited slot, fail-closed on a non-present anchor and a broken in-window chain). The
+remaining vmap deferral is chunked >60 B values in a loop (its own entry).
+
 ### 5. vmap value-shape coverage + the default entry model (2026-07-17)
 
 **vmap-by-DEFAULT covers every value shape except function pointers.** `mapping(K => V)` is vmap-backed by default for V
@@ -742,6 +756,13 @@ Revert-safe: add `FunctionType` to vmapStorableValue (needs the import) + sorted
 **Default entry-model DELETION** (still gated): (1) fn-ptr values -> vmap; (2) migrate the ~110 `sortedMappingsAll:false`
 opt-out'd tests to vmap seeding; (3) delete the entry-model codegen path + the `sortedMappingsAll` / `sortedMappings`
 options. Large mechanical change; do it as a dedicated pass.
+
+**RESOLVED (verified 2026-10-14).** Both halves are done. Internal `FunctionType` mapping values take the `'int'`
+sorted kind (`GenerateTargetTraversal.sortedValueKind`), so function pointers are vmap-backed like every other value
+shape. vmap is now mandatory for every collection: `compiler.ts` sets `col.sorted = true` over all of
+`ast.contract.collections` with no `MappingType` gate (that gate was removed by `d6821a812`, which also closed the
+DS-5 array-backend finding). The `sortedMappingsAll` / `sortedMappings` opt-outs and the omission-prone legacy entry
+backend are gone. The historical `vmapStorableValue` spelling no longer exists; the decision point is `sortedValueKind`.
 
 ### 6. vmap-default no-guards: the two deep source-shape blockers (2026-07-18)
 
@@ -1653,6 +1674,15 @@ stored value through all neighboring forms.
 
 ## Factory deploy of a stateful child alongside vmap mapping writes (2026-08-07)
 
+**RESOLVED (verified 2026-10-14).** A `deployDataNft` block-slot kind now reserves each child's data NFTs as fixed
+output-only slots right after the `deploy` master (`SymbolTableTraversal` deploy-slot reservation +
+`GenerateTargetTraversal.expandDeployDataNftLayout`), so the vmap insert tail starts at a covenant-known offset and
+no longer shares the first trailing slot with the child's genesis data-NFT outputs. The SDK orders child outputs
+into that region (`stb-build-inputs.ts` `deploy`/`deployDataNft`, `sc-deploy-from.ts`). The `createPair` shape is
+pinned by `solidcash/test/e2e/CreatePairDeployVMap.test.ts` and `DeployFromContract.test.ts` ("typed child combined
+with a vmap insert"). The guard in `sc-deploy-from.ts` now refuses only legacy artifacts whose ABI lacks
+`deployDataNft` slots (recompile to pick up the layout). Original analysis below.
+
 **STILL DEFERRED.** `StatefulContract.deployFrom` refuses a deploy function that both writes vmap mapping entries
 and instantiates a child with data NFTs:
 
@@ -1685,6 +1715,15 @@ the child data-NFT outputs against the entry outputs fails validation; the MistS
 suites reach contract behaviour instead of dying in `beforeEach`.
 
 ## Cross-contract call into a callee that writes vmap mapping entries (2026-08-07)
+
+**RESOLVED (verified 2026-10-14).** The callee's fixed vmap batch plan now travels as compiler-internal args on the
+plain external-call path, not only on message-bus routes: `sortedBatchInfo` groups the callee's straight-line vmap
+writes, `SortedList.planBatchUpsert` resolves the slot/proof/next/predecessor witnesses, and the builder fills
+`__internal__vmapBatch{Slot,Proof,Next,PredOut,TrailingCount}` alongside `msgSenderCategory`
+(`sc-resolve-create-builder-entry-abi.ts`, `sc-fix-create-builder-delegate-unlockers.ts`). The visible-vs-internal
+arity guard in `Contract.createUnlocker` is satisfied by the fully specified internal vector, so the
+`SushiBar.enter` → `SushiToken.transferFrom` shape is no longer refused by that guard. Cross-contract sorted writes
+are pinned by `CrossContractSortedWrite.test.ts`. Original analysis below.
 
 **STILL DEFERRED.** Calling a callee whose function writes vmap mapping entries fails before any transaction is
 built:
@@ -2132,10 +2171,15 @@ Still failing closed: two writes of one key that ran on one node (the runtime al
 its writes, and a deleted node's own key beside an insert where the value kind's default is not empty (the SDK does
 not plan that relink).
 
-**Proposed design:** a runtime alias of two writes settles as the later write alone (its alias row, as the compose
-batch does); deletes past one fold their registers in batch order; the SDK plans the default value of every kind.
+**UPDATE 2026-10-13 (verified 2026-10-14).** The first of the three ("two writes of one key that both run on one
+node") now SETTLES: `b94440c61`/`4b13e7188` replace the outdated refusal pin with a ledger check and make a runtime
+alias of two writes settle as one node holding the later value. Remaining fail-closed cases after that: more than
+one delete of a batch beside its writes, and a deleted node's own key beside an insert where the value kind's
+default is not empty (the SDK does not plan that relink).
 
-**Why deferred:** no tested shape writes one key twice or deletes twice beside its writes.
+**Proposed design:** deletes past one fold their registers in batch order; the SDK plans the default value of every kind.
+
+**Why deferred:** no tested shape deletes twice beside its writes.
 
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 

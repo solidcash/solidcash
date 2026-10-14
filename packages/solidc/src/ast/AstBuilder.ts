@@ -211,6 +211,7 @@ import type {
   ForOfEntriesStatementContext,
   ForInStatementContext,
   ForOfStatementContext,
+  ForWindowStatementContext,
   TypeIntrospectionContext,
   UncheckedStatementContext,
   SwitchStatementContext,
@@ -4106,6 +4107,9 @@ export default class AstBuilder
     if (ctx.forOfStatement()) {
       return this.visit(ctx.forOfStatement()) as StatementNode;
     }
+    if (ctx.forWindowStatement()) {
+      return this.visit(ctx.forWindowStatement()) as CollectionIterationNode;
+    }
     return this.visit(ctx.forStatement()) as BlockNode;
   }
 
@@ -4154,6 +4158,23 @@ export default class AstBuilder
       CollectionIterationMode.VALUES, collectionName,
       undefined, undefined, valueType, valueName, body,
     );
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
+  visitForWindowStatement(ctx: ForWindowStatementContext): CollectionIterationNode {
+    const valueType = this.resolveType(ctx.typeName().getText());
+    const valueName = ctx.Identifier(0).getText();
+    const collectionName = ctx.Identifier(1).getText();
+    const cursorName = ctx.Identifier(2).getText();
+    const windowBound = Number(ctx.NumberLiteral().getText());
+    const body = this.visit(ctx.block()) as BlockNode;
+    const node = new CollectionIterationNode(
+      CollectionIterationMode.VALUES, collectionName,
+      undefined, undefined, valueType, valueName, body,
+    );
+    node.windowCursor = cursorName;
+    node.windowBound = windowBound;
     node.location = Location.fromCtx(ctx);
     return node;
   }

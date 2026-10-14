@@ -29,6 +29,8 @@ export type LoadCreateBuilderIterationInputsHost = {
   readonly inner: any;
   readonly rawIterationKeysBlob: Map<string, any> | undefined;
   readonly iterationKeys: Map<string, any> | undefined;
+  /** Read the current on-chain state (lazily, only when a windowed iteration needs its cursor). */
+  readonly getState?: () => Promise<Record<string, any>>;
   [key: string]: any;
 };
 
@@ -38,6 +40,43 @@ export type LoadCreateBuilderIterationInputsResult = {
   finalArgs: any[];
   dynamicReads: readonly string[];
 };
+
+/**
+ * The contiguous window a windowed (paginated) iteration co-spends: the anchor entry whose slot equals the
+ * persisted cursor (HEAD for cursor 0) followed by at most `bound` chain successors, stopped at the tail.
+ */
+function windowedIterationUtxos(list: SortedList, cursor: Uint8Array, bound: number): any[] {
+  const zeroSlot = new Uint8Array(32);
+  const anchor = bytesToSlotValue(cursor) === 0n
+    ? list.find(zeroSlot) // first page: HEAD sentinel (slot 0)
+    : list.find(cursor);
+  if (!anchor) {
+    throw new Error(`windowed iteration anchor (cursor ${binToHex(cursor)}) is not a present entry`);
+  }
+  const ordered = [anchor.utxo];
+  let next = anchor.nextKey;
+  for (let i = 0; i < bound; i++) {
+    if (bytesToSlotValue(next) === 0n) break; // reached the tail
+    const entry = list.find(next);
+    if (!entry) throw new Error(`windowed iteration chain is broken: entry ${binToHex(next)} missing`);
+    ordered.push(entry.utxo);
+    next = entry.nextKey;
+  }
+  return ordered;
+}
+
+function cursorSlotBytes(value: unknown, name: string): Uint8Array {
+  if (value instanceof Uint8Array) {
+    if (value.length !== 32) throw new Error(`windowed iteration cursor '${name}' must be 32 bytes, got ${value.length}`);
+    return value;
+  }
+  if (typeof value === 'string') {
+    const bin = hexToBin(value.replace(/^0x/, ''));
+    if (bin.length !== 32) throw new Error(`windowed iteration cursor '${name}' must be 32 bytes`);
+    return bin;
+  }
+  throw new Error(`windowed iteration cursor '${name}' has unsupported state value type ${typeof value}`);
+}
 
 /**
  * Fetch collection-iteration entry NFTs and co-spend persisted dynamic-storage
@@ -92,11 +131,20 @@ export async function loadCreateBuilderIterationInputs(
       let sortedRest: { slot: Uint8Array }[] = [];
       if (coll.sorted) {
         const list = SortedList.fromUtxos(entryUtxos);
-        const head = list.all.find((e: any) => bytesToSlotValue(e.slot) === 0n);
-        if (!head) throw new Error(`Enumerable mapping '${coll.name}' is missing its HEAD sentinel (slot 0)`);
-        const rest = list.all.filter((e: any) => bytesToSlotValue(e.slot) !== 0n); // list.all is already ascending
-        orderedUtxos = [head.utxo, ...rest.map((e) => e.utxo)];
-        sortedRest = rest;
+        if (iter.windowCursor !== undefined && iter.windowBound !== undefined) {
+          // Windowed (paginated) iteration: co-spend the anchor whose slot == cursor (HEAD for cursor 0) and the
+          // next K chain successors, so the covenant walks a bounded contiguous window and writes the new cursor.
+          if (!host.getState) throw new Error('windowed iteration requires getState to read the cursor');
+          const state = await host.getState();
+          const cursor = cursorSlotBytes(state[iter.windowCursor], iter.windowCursor);
+          orderedUtxos = windowedIterationUtxos(list, cursor, iter.windowBound);
+        } else {
+          const head = list.all.find((e: any) => bytesToSlotValue(e.slot) === 0n);
+          if (!head) throw new Error(`Enumerable mapping '${coll.name}' is missing its HEAD sentinel (slot 0)`);
+          const rest = list.all.filter((e: any) => bytesToSlotValue(e.slot) !== 0n); // list.all is already ascending
+          orderedUtxos = [head.utxo, ...rest.map((e) => e.utxo)];
+          sortedRest = rest;
+        }
       }
 
       // Add as read-only inputs

@@ -106,6 +106,7 @@ import { LoopStatementContext } from "./SolidCashParser.js";
 import { ForOfEntriesStatementContext } from "./SolidCashParser.js";
 import { ForInStatementContext } from "./SolidCashParser.js";
 import { ForOfStatementContext } from "./SolidCashParser.js";
+import { ForWindowStatementContext } from "./SolidCashParser.js";
 import { ForStatementContext } from "./SolidCashParser.js";
 import { ForInitContext } from "./SolidCashParser.js";
 import { ForConditionContext } from "./SolidCashParser.js";
@@ -860,6 +861,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitForOfStatement?: (ctx: ForOfStatementContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.forWindowStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitForWindowStatement?: (ctx: ForWindowStatementContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.forStatement`.
 	 * @param ctx the parse tree

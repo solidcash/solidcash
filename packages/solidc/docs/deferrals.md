@@ -1841,6 +1841,24 @@ looped emit, a helper emit, a counter-loop stream or runtime transfers; X149 pin
   slots, 261 -> 7 inputs, 42,877 -> 25,787 B; caller 3.25M (over its 2.37M) -> 0.53M, route 4.94M -> 0.69M,
   verifiers 7.76M and 23.54M -> 4.39M and 4.57M: every input now within its real budget.
 
+Stage 2 (2026-10-14), contract size, no check dropped: the pooled title's callee 11,004 -> 8,718 B, its route input
+12,116 B / 5.16M -> 9,830 B / 4.34M against (9,830 + 41) * 800 = 7.90M, so it meets the per-input byte limit. The
+levers, in measured order on that callee:
+
+- Deep rotations (`emitReplace` from depth 14, the dynamic-depth and route frame-value replaces) run one shared body,
+  and the batch verifier's alternate-stack peeks one per depth: outlining cannot share either, since both park
+  items on the alternate stack (-1,100 B). These shared stack helpers stay out of a framed program and the atomic
+  verifier, whose program is byte-identical.
+- A fixed entry slot whose coordinate is one block offset from the executing master pushes it once; one shared body
+  per check kind tests presence and runs the read-only preservation, value preservation or category checks (-590 B).
+- Constant folds: an all-empty struct default or literal is its 0x00 frames, `new T[](0)` is 0x00 (-282 B).
+- Route source: no PUSHDATA4 carrier arm under a blob bound of at most 65,535 bytes (-43 B); the tuple-lane key
+  membership `require` is dropped where the lane dispatch's own `require(false)` refuses the same tuple (-58 B).
+- A sorted read's absent arm (bracket proof on the frame in place) is one shared body (-213 B).
+
+Size pins: MinimalNativeToken 7,500 -> 7,473 B, OzBchNativeInheritance 9,499 -> 9,433 B, NativeUsdt master
+9,239 -> 9,039 B. The verifiers (9.91M and 15.46M against 7.23M) are unchanged and remain stage 3.
+
 ## keccak256 inside an internal helper of a STATEFUL contract (2026-08-07) - RESOLVED
 
 **RESOLVED**, kept for the diagnosis and for the ruled-out list. A `keccak256` reached through an

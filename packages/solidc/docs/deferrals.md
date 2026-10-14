@@ -2206,10 +2206,16 @@ are bare mapping or array writes is never marked delegate and `forward` refuses 
 feat/pcm-anchorscan, not merged) gets `forward('seed')` to preflight, where it fails OP_VERIFY at input 2 with no
 require site (not diagnosed).
 
-**Proposed design:** count bare state writes in the delegate marking once its effect on the delegate variants of
-every contract with bare mapping or array writers is measured; diagnose the direct-delegate chunked write.
+**STATUS 2026-10-14 (verified).** The delegate-marking half is DONE: `a00dd2f72` is an ancestor of `feat/per-call`,
+and `AutoMarkDelegateFunctions.hasBareStateWrite` already counts bare `ArrayAssignNode`/`ArrayDeleteNode`/`ArrayPushNode`/
+`ArrayPopNode` against both state variables and collections, so a function whose only write is `m[k] = v` IS marked
+delegate. The remaining half is the `forward('seed')` preflight `OP_VERIFY` at input 2 (a direct-delegate chunked
+`bytes` write); the delegate value-chunk address is already bound to the proxy master lock
+(`GenerateTargetTraversal.emitBoundValueChunkP2sh32`), so the failure is in the chunk-output placement/derivation on
+the direct delegate path, not the address binding.
 
-**Why deferred:** both parts change delegate variants beyond the merge; routed inserts and updates settle.
+**Proposed design:** diagnose the direct-delegate chunked write (`forward('seed')` for a `mapping(int => bytes)`
+written through a proxy); routed inserts and updates already settle.
 
 ## An in-place upgrade of a contract that keeps records (CRYPTO-4 residual, 2026-10-13)
 

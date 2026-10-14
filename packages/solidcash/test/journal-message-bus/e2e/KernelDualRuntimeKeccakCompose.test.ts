@@ -88,9 +88,10 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
     expect(accArtifact.messageBus?.route.blockLayout?.slots.some(
       (slot) => slot.kind === 'keccakSideCar',
     )).toBe(true);
-    expect(accArtifact.messageBus?.route.blockLayout?.slots.some(
-      (slot) => slot.kind === 'event',
-    )).toBe(true);
+    // The top-level emit settles as a record on the handler's runtime effect stream, not in an event window.
+    const ping = accArtifact.events!.find((event) => event.name === 'Ping')!.signature;
+    expect(accArtifact.messageBus?.handlers.find((handler) => handler.name === 'reveal')?.runtimeLoopEvents)
+      .toEqual([expect.objectContaining({ eventSignatures: [ping], stream: true })]);
 
     const probeBase = new Contract(probeArtifact, [], { provider });
     const probeSetup = await setupStatefulUtxos(

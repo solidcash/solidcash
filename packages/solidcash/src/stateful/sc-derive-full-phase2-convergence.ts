@@ -121,9 +121,11 @@ export function deriveFullPhase2Convergence(
 
   // Check convergence using content fingerprint (not just count)
   // to detect when derived values change without the count increasing.
+  // A probe learns one runtime stream record: without them two such passes share a key and stop short.
   const convergenceKey = computeConvergenceKey(
     commitmentProgress, derivedTransfers, derivedFtTransfers, derivedNftTransfers,
     stateCommits, latestEntryCommits, latestEventCommits, latestLoopEntryCommits,
+    stb.getRuntimeLoopEventOutputs().map((event) => event.commitment),
   );
   phaseCheckpoint('convergence');
   // P5b: a computed value's ENTRY commitment only derives once the (earlier) value-chunk pin passes, which

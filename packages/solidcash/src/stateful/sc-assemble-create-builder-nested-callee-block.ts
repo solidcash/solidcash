@@ -32,6 +32,8 @@ import {
   SortedList, bytesToSlotValue, keyToSlotMulti, decodeEntryCommitment,
 } from './SortedList.js';
 import { isMsgSenderKeySource } from './soft-state-overlays.js';
+import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { planNestedStreamedEvents, type NestedStreamedEventPlan } from './nested-streamed-events.js';
 
 export interface AssembleCreateBuilderNestedCalleeBlockHost {
   getUtxos(address: string): Promise<Utxo[]>;
@@ -60,6 +62,7 @@ export interface AssembleCreateBuilderNestedCalleeBlockCtx {
   bCompilerInternalArgs: Record<string, FunctionArgument>;
   bPlannedEntryInserts: NestedCalleePlannedEntryInsert[];
   bRelativeOutputInternalArgs: Set<string>;
+  bStreamedEventPlan?: NestedStreamedEventPlan;
   bBlockLayout: NonNullable<AbiFunction['blockLayout']>;
   bHasLoop: boolean;
   bSc: { inner: any } | null;
@@ -70,11 +73,7 @@ export interface AssembleCreateBuilderNestedCalleeBlockCtx {
   bRequiredNftIndices: readonly number[];
   bValueChunkOutputCount: number;
   bKeccak: { inputs: UnlockableUtxo[] };
-  compilerRoute: {
-    args: any[];
-    abiFunction: AbiFunction;
-    selector: Uint8Array;
-  } | undefined;
+  compilerRoute: ExternalCallUtxoGroup['compilerRoute'] | undefined;
   callInfo: {
     args: FunctionArgument[];
     functionName: string;
@@ -126,7 +125,11 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
     // A loop-expanded slot shares ONE contiguous return-event band across its iterations, so its callees
     // keep the appended-tail shape and take no returnEvent funder.
     const bLoopExpanded = loopIdxRanges.some((r) => slotIndex >= r.start && slotIndex < r.start + r.count);
-    const hasExtraSlots = hadFullBlockKinds
+    const hasStreamedEvents = compilerRoute?.rowArguments?.some((row) =>
+      row.handler.runtimeLoopEvents?.some((stream) => stream.stream || stream.chunked)) === true;
+    const physicalFixedSize = hasStreamedEvents
+      ? bBlockLayout.trailingBase ?? bBlockLayout.blockSize : bBlockLayout.blockSize;
+    const hasExtraSlots = hadFullBlockKinds || hasStreamedEvents
       || (!bLoopExpanded && bBlockLayout.slots.some((s) => s.kind === 'returnEvent'));
     if ((hasExtraSlots || bHasLoop) && bSc) {
       // Build B's full block following blockLayout slot order.
@@ -154,6 +157,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
 
       // Helper: create a funder input. Uses signer UTXOs when available, OP_TRUE dummies otherwise.
       let bFunderIdx = 0;
+      const bFunderGroupIndex = host.currentGroupCount();
       // Block position of the returnEvent slot's funder, or -1 when the layout declares no such slot.
       let bReturnFunderOffset = -1;
       const makeFunder = async (): Promise<UnlockableUtxo> => {
@@ -173,7 +177,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
         // Mocknet fallback: P2SH32-wrapped OP_TRUE dummy registered with provider. The outpoint is seeded
         // with this callee's group position so two callees' block funders are distinct UTXOs.
         const dummyTxid = '00'.repeat(30)
-          + (host.currentGroupCount() & 0xff).toString(16).padStart(2, '0')
+          + (bFunderGroupIndex & 0xff).toString(16).padStart(2, '0')
           + ((0xb0 + (bFunderIdx++)) & 0xff).toString(16).padStart(2, '0');
         const dummy: Utxo = { txid: dummyTxid, vout: 0, satoshis: 10000n };
         if (host.addUtxo) {
@@ -547,6 +551,11 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
             }
             break;
           }
+          case 'trailing':
+            // This is capacity, not a fixed effect slot. A lifted stream materializes only its actual
+            // resources/records here; reserving the whole band would push the first event past that band.
+            if (!hasStreamedEvents) ctx.bBlockInputs.push(await makeFunder());
+            break;
           default:
             // Output-only slots (transfer, tcTransfer, event) - funder
             ctx.bBlockInputs.push(await makeFunder());
@@ -564,7 +573,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
         // The builder emits B's outputs as master + one per requiredDataNftIndices + one per remaining
         // block input, so the two extents only line up when the layout declares exactly those data slots.
         const layoutDataSlots = bBlockLayout.slots.filter((s) => s.kind === 'dataNft').length;
-        if (ctx.bBlockInputs.length === bBlockLayout.blockSize && bReturnFunderOffset === reOffset
+        if (ctx.bBlockInputs.length === physicalFixedSize && bReturnFunderOffset === reOffset
           && layoutDataSlots === bRequiredNftIndices.length) {
           ctx.bReturnEventInBlock = true;
         } else {
@@ -655,7 +664,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
             planned.outputBlockSlot = -1;
             continue;
           }
-          planned.outputBlockSlot = Math.max(ctx.bBlockInputs.length, bBlockLayout?.blockSize ?? 0);
+          planned.outputBlockSlot = Math.max(ctx.bBlockInputs.length, physicalFixedSize);
           ctx.bCompilerInternalArgs[`__internal__vmapBatchPredOut_${planned.slotIndex}`] =
             BigInt(planned.outputBlockSlot);
           while (ctx.bBlockInputs.length < planned.outputBlockSlot) {
@@ -688,6 +697,18 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
         ctx.bCompilerInternalArgs[`__internal__vmapBatchRows_${batch.collection}`] = Uint8Array.from(
           rows.flatMap((row) => [...row.slot, ...row.next]),
         );
+      }
+      if (compilerRoute && ctx.bBlockInputs) {
+        const plan = planNestedStreamedEvents(
+          compilerRoute, callInfo.externalContract.inner.artifact, externalCategoryId,
+          ctx.bBlockInputs.length, makeFunder,
+        );
+        if (plan) {
+          ctx.bStreamedEventPlan = plan;
+          for (let record = 0; record < plan.outputs.size; record += 1) {
+            ctx.bBlockInputs.push(await makeFunder());
+          }
+        }
       }
     }
   }

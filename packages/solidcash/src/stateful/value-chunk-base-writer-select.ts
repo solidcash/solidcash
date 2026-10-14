@@ -438,7 +438,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
 
 /** Absolute event coordinates owned by materialized external-call blocks. */
 export function externalCallEventDestinations(
-  groups: ReadonlyArray<Pick<ExternalCallUtxoGroup, 'sharedGroupIndex' | 'blockLayout' | 'compilerRoute'>>,
+  groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
+  'sharedGroupIndex' | 'blockLayout' | 'compilerRoute' | 'streamedEventPlan'>>,
   outputBaseForGroup: (groupIndex: number) => number,
 ): number[] {
   const destinations: number[] = [];
@@ -452,6 +453,7 @@ export function externalCallEventDestinations(
     for (const slot of layout?.slots ?? []) {
       if (slot.kind === 'event' || slot.kind === 'eventChunk') destinations.push(base + slot.offset);
     }
+    for (const offset of group.streamedEventPlan?.outputs.keys() ?? []) destinations.push(base + offset);
   }
   return destinations;
 }

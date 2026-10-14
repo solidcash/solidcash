@@ -40,6 +40,22 @@ const step = (remaining: number, ip = 0): AuthenticationProgramStateCommon => {
 const run = (): AuthenticationProgramStateCommon[] => records.map((_record, index) => step(records.length - index));
 
 describe('runtime effect stream trace', () => {
+  it('learns an exact compact record only when explicitly requested, without claiming its unseen prefix', () => {
+    const compact = {
+      ...step(2),
+      stack: [new Uint8Array(32).fill(0xcc), bigIntToVmNumber(BigInt(BASE)), bigIntToVmNumber(2n),
+        bigIntToVmNumber(BigInt(BASE + 1)), Uint8Array.of(0x57), headLock,
+        bigIntToVmNumber(BigInt(BASE + 1))],
+      alternateStack: [Uint8Array.of(0x56)],
+    };
+    expect(extractRuntimeEffectStreamRuns([compact])).toEqual([]);
+    expect(extractRuntimeEffectStreamRuns([compact], { includeCompactRecords: true })).toEqual([{
+      base: BASE + 1, records: [{ commitment: '57', lockingBytecode: headLock }],
+    }]);
+    expect(extractRuntimeEffectStreamRuns([{ ...compact, controlStack: [false] }],
+      { includeCompactRecords: true })).toEqual([]);
+  });
+
   it('reads a whole run at the verifier step that holds every record', () => {
     expect(extractRuntimeEffectStreamRuns(run())).toEqual(expected);
   });

@@ -47312,10 +47312,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(hexToBin('0453434231'), locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData); // [idx, remainder]
 
-    // Construct the exact minimal push encoding of the expected blob. Blobs
-    // through 75 bytes use a one-byte direct-push opcode; the remainder of the
-    // The shared message-bus batch envelope above the direct-push range uses OP_PUSHDATA1
-    // followed by one length byte.
+    // Construct the exact minimal push encoding of the expected blob: direct push through 75 bytes,
+    // PUSHDATA1 through 255, then PUSHDATA2. The advertised carrier bound includes all three shapes.
     // Comparing the complete encoded push avoids divergent locator/parser
     // rules and rejects non-minimal encodings without content scanning.
     this.emit(encodeInt(BigInt(this.getStackIndex(accumulator) + 2)), locationData);
@@ -47337,6 +47335,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData); // [idx, remainder, encodedExpectedPush]
     this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(255n), locationData);
+    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
     // VM numbers >= 128 require a sign byte. Encode to two bytes and
     // truncate to the unsigned one-byte PUSHDATA1 length.
     this.emit(encodeInt(2n), locationData);
@@ -47349,6 +47351,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData); // [idx, remainder, encodedExpectedPush]
+    this.emit(Op.OP_ELSE, locationData);
+    // Keep the unsigned two-byte length even when its highest byte needs a script-number sign pad.
+    this.emit(encodeInt(3n), locationData);
+    this.emit(Op.OP_NUM2BIN, locationData);
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(hexToBin('4d'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
     this.emit(Op.OP_ENDIF, locationData);
 
     // Consume exactly the encoded second push and compare it byte-for-byte.

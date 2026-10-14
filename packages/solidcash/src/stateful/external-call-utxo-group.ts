@@ -350,6 +350,8 @@ export interface ExternalCallUtxoGroup {
    * chunks off-chain the way `valueChunkMints` does for a caller-known value - the commitments are extracted
    * from the callee's derivation probe and placed here, keyed by block slot. */
   derivedTrailingOutputs?: Map<number, { commitment: string; lockingBytecode: Uint8Array }>;
+  /** Lifted runtime event records in this physical callee's trailing band. */
+  streamedEventPlan?: import('./nested-streamed-events.js').NestedStreamedEventPlan;
   /** B's event NFT outputs (from auto-derivation of B's VM trace) */
   eventOutputs?: Array<{
     eventSignature: string; commitment: string; lockingBytecode: Uint8Array;

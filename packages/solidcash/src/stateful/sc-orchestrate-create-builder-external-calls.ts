@@ -345,6 +345,7 @@ export async function orchestrateCreateBuilderExternalCalls(
 
       // Build B's full block inputs when B's function has entries/events/transfers
       let bBlockInputs: UnlockableUtxo[] | undefined;
+      let bStreamedEventPlan: ExternalCallUtxoGroup['streamedEventPlan'];
       // X13: set once B's block is confirmed to carry a funding input at its published returnEvent offset.
       let bReturnEventInBlock = false;
       const bCompilerInternalArgs: Record<string, FunctionArgument> = {};
@@ -361,6 +362,7 @@ export async function orchestrateCreateBuilderExternalCalls(
       if (bBlockLayout && callInfo) {
         const nestedBlockCtx = {
           bBlockInputs,
+          bStreamedEventPlan,
           bReturnEventInBlock,
           bCompilerInternalArgs,
           bPlannedEntryInserts,
@@ -403,6 +405,7 @@ export async function orchestrateCreateBuilderExternalCalls(
         );
         bBlockInputs = nestedBlockCtx.bBlockInputs;
         bReturnEventInBlock = nestedBlockCtx.bReturnEventInBlock;
+        bStreamedEventPlan = nestedBlockCtx.bStreamedEventPlan;
       }
 
       // A direct view callee must co-spend the chunks it reads after its published block. The
@@ -508,6 +511,10 @@ export async function orchestrateCreateBuilderExternalCalls(
             returnProbeOnly: overrides?.returnProbeOnly,
           } as any,
         );
+        const materializedGroup = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];
+        if (bStreamedEventPlan && materializedGroup.sharedGroupIndex === undefined) {
+          materializedGroup.streamedEventPlan = bStreamedEventPlan;
+        }
         if (bDynamicChunkResources.length > 0 && bBlockInputs !== undefined) {
           const first = [...bDynamicChunkResources].sort((left, right) => left.blockSlot - right.blockSlot)[0]!;
           pendingDynamicChunkInputFills.push({

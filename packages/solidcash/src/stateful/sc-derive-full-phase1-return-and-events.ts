@@ -270,6 +270,7 @@ export function deriveFullPhase1ReturnAndEvents(
     const bArt = delegateEventGroup?.externalContract.inner?.artifact
       ?? group.externalContract.inner?.artifact ?? group.externalContract.artifact;
     const bAbiFunc = delegateEventGroup?.compilerRoute?.abiFunction
+      ?? group.compilerRoute?.abiFunction
       ?? bArt?.abi?.find((f: any) => f.name === (delegateEventGroup?.functionName ?? group.functionName));
     const routeEventSignatures = delegateEventGroup?.compilerRoute?.eventSignaturesBySlot
       ?? group.compilerRoute?.eventSignaturesBySlot;

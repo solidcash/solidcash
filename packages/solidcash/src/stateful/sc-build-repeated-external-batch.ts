@@ -17,6 +17,7 @@ import {
 import { addressToLockScript } from '../utils.js';
 import type { ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
 import type { StatefulContract } from './StatefulContract.js';
+import { mergePublishedMessageBusHandlerMetadata } from './sc-batch-raw.js';
 
 export interface BuildRepeatedExternalBatchHost {
   readonly inner: { artifact: Artifact };
@@ -250,7 +251,7 @@ export function buildRepeatedExternalBatch(
     rowArguments.push({
       selector: row.selector,
       args,
-      handler: handlerAbi,
+      handler: mergePublishedMessageBusHandlerMetadata(handlerAbi, capability.handlers),
       sourceCallsiteId: row.sourceCallsiteId,
       sourceLogicalIndex: row.sourceLogicalIndex,
       occurrenceIndex: row.occurrenceIndex,

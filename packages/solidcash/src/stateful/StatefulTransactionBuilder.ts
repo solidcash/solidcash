@@ -3159,6 +3159,7 @@ export class StatefulTransactionBuilder {
           allowed.add(master + slot.offset);
         }
       }
+      for (const offset of group.streamedEventPlan?.outputs.keys() ?? []) allowed.add(master + offset);
       allowedByCategory.set(group.categoryId, allowed);
     }
     for (const claim of lowLevelCallImmutableEventDestinations(

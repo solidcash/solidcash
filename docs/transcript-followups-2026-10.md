@@ -17,7 +17,7 @@ Starting point: `feat/per-call` at `64c351077`. Work branch: `feat/transcript-fo
 | Item | Work | Evidence required | Status |
 | --- | --- | --- | --- |
 | 1 | Atomic-compose oracle and mixed-container cost gaps | Both original cases meet real per-input costs and byte limits; focused integrity regressions pass | Complete with local VM evidence, `4d575b330`; no new live-node evidence |
-| 2 | Stream placement for differing sibling reads/writes, plain batch and non-compose callees | Honest transactions settle for each shape; mutated stream records are refused | Pending |
+| 2 | Stream placement for differing sibling reads/writes, plain batch and non-compose callees | Honest transactions settle for each shape; mutated stream records are refused | In progress: compact and chunked plain callees verified locally; sibling and read-only chunk placement pending |
 | 3 | SEM-1 exemptions and event-integrity hypotheses; older DS-1 and invoked-read reports | Hostile VM evidence supports a fix or a documented refutation for each finding | Pending |
 | 4 | Oracle call-path coverage, keeper deployment and typed live configuration | Focused call-path/deployment tests and documented typed configuration | Pending |
 | 5 | SDK observers across outlined equality checks | Computed chunks, values, returns and repairs agree for inline and outlined checks | Pending |
@@ -58,6 +58,18 @@ Starting point: `feat/per-call` at `64c351077`. Work branch: `feat/transcript-fo
 - Build watcher and the two-title Vitest watcher remain active; logs are
   `/tmp/codex-followups-build-watch.log` and `/tmp/codex-followups-cost-watch.log`.
 - D26 status has been reconciled to the prior six-case, 64-frame completion evidence.
+- Repeated plain external callees now use their published SCB1 handler metadata and reserve only materialized
+  stream records in the compiler-owned trailing band. The SDK learns exact computed records from the selected
+  callee verifier and funds growing chunk runs from the retained signer wallet. Every final input still passes
+  the ordinary VM; records outside the published event schema or band are refused.
+- The caller's exact SCB1 push comparison now supports canonical PUSHDATA2 for payloads from 256 through
+  the existing 520-byte limit. Compact callee rows (7, 8) and differing chunked rows (3, 2 records) settle;
+  changed commitments, NFT capabilities and swapped continuation records are refused (2 focused tests).
+- Compact trace extraction is opt-in and returns only the single observed record; it does not infer an unseen
+  prefix. The compact and existing whole-run trace tests pass (2 focused unit tests). Adjacent plain batch
+  compact and chunk-count cases pass (2 focused tests). Build, changed-file lint and source-tree guard pass.
+- Parallel agents own security findings, oracle follow-ups and the four SDK equality observers. BCHN testing
+  remains excluded for all workers.
 
 Next: continue items 2-7. Under item 3, investigate the
 pre-existing graph-token bitmap layout: NFT counters begin at bit 8 while a kernel frame may reserve 255 site

@@ -439,6 +439,7 @@ import {
   deriveFullPhase2ApplyRuntimeLoop as deriveFullPhase2ApplyRuntimeLoopImpl,
 } from './sc-derive-full-phase2-apply-runtime-loop.js';
 import { traceRuntimeEffectStreamRuns } from './runtime-effect-stream-trace.js';
+import { deriveNestedStreamedEvents } from './nested-streamed-events.js';
 import {
   deriveFullPhase2ApplyValueChunks as deriveFullPhase2ApplyValueChunksImpl,
 } from './sc-derive-full-phase2-apply-value-chunks.js';
@@ -5579,6 +5580,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const group = externalCallUtxoGroups[groupIdx];
           const ec = externalCalls[groupIdx];
           if (group.sharedGroupIndex !== undefined) continue;
+          // Lifted emits execute before the route's final data-NFT settlement. Fill their probe records first
+          // so Phase 1 can reach and authenticate the callee's final state commitment.
+          await deriveNestedStreamedEvents(this.inner.provider, stb, group, groupIdx);
           const phase1Front = deriveFullPhase1GroupFrontImpl(
             {
               categoryId: this.categoryId,
@@ -5607,6 +5611,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             valueChunkWitness, debugTargetDerivation,
           );
 
+          await deriveNestedStreamedEvents(this.inner.provider, stb, group, groupIdx);
           deriveFullPhase1ReturnAndEventsImpl(
             { inner: this.inner as any },
             stb, externalCallUtxoGroups, group, groupIdx, externalCalls, ec?.hasReturnValues,

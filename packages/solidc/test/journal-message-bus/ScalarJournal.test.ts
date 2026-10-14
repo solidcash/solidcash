@@ -182,7 +182,10 @@ describe('Release 1 scalar journal lowering', () => {
         eligible: true,
         physicalEntrySlots: [0],
         outputs: [{ type: 'bool' }],
-        emits: [expect.objectContaining({ eventName: 'Approval' })],
+        // A top-level kernel emit settles on the handler's runtime stream, not in an event window.
+        runtimeLoopEvents: [expect.objectContaining({
+          eventSignatures: ['Approval(address,address,uint256)'], stream: true,
+        })],
       }),
     ]));
     expect(artifact.invocationAnalysis?.functions).toEqual(expect.arrayContaining([

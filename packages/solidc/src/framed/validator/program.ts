@@ -175,8 +175,10 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
  */
 export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V6', 'V8', 'V9', 'V10', 'V11'];
 
-/** The identifier the depth-first visit is defined under; the program defines no other function. */
+/** The identifier the depth-first visit is defined under. */
 const ORDERED_VISIT_ID = 1;
+/** The identifier the context-category walk is defined under. */
+const CONTEXT_CATEGORY_ID = 2;
 
 /** One check: a run of instructions that takes the stack shape `[M]` and leaves it. */
 type CheckEmitter = (e: Emitter) => void;
@@ -200,6 +202,7 @@ const HEAD_CHECKS: readonly CheckEmitter[] = [
   emitCompleteness,
   emitMintedMasterCompleteness,
   emitSettlementStateInputs,
+  emitDefineContextCategory,
   emitDefineOrderedVisit,
   emitSettlementCensus,
   emitFrameAddresses,
@@ -208,6 +211,7 @@ const HEAD_CHECKS: readonly CheckEmitter[] = [
 /** The checks each facet runs, in order: the input at `head + k` runs the `k`th group. */
 const FACET_CHECKS: readonly (readonly CheckEmitter[])[] = [
   [
+    emitDefineContextCategory,
     emitRootRules,
     emitMintedMasterRootRules,
     emitEdgeRules,
@@ -1796,7 +1800,7 @@ function emitSettlementMembership(e: Emitter): void {
   e.count(FrameKind.INTERNAL).op(O.OP_NUMEQUAL);
   e.op(O.OP_BOOLOR, O.OP_IF);
   e.op(O.OP_DROP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   emitRequireDeclaredCategory(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_DROP, O.OP_ENDIF);
   e.op(O.OP_ENDIF);
@@ -1876,7 +1880,7 @@ function emitNeededCategories(e: Emitter): void {
   e.count(FrameKind.INTERNAL).op(O.OP_NUMEQUAL);
   e.op(O.OP_BOOLOR, O.OP_IF);
   e.op(O.OP_DROP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   emitAppendAccumulated(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_DROP, O.OP_ENDIF);
   e.op(O.OP_ENDIF);
@@ -2113,7 +2117,7 @@ function emitCollectOwnSends(e: Emitter): void {
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
   emitAppendMasterSends(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
@@ -2165,7 +2169,7 @@ function emitRequireContractValue(e: Emitter): void {
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   e.count(4).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
   emitFrameNet(e);
   e.op(O.OP_ROT, O.OP_ADD, O.OP_SWAP);
@@ -2243,7 +2247,7 @@ function emitCollectOwnEvents(e: Emitter): void {
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
   emitAppendMasterEvents(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
@@ -2311,14 +2315,57 @@ function emitCollectOwnRecordOutputs(e: Emitter): void {
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
   emitAppendMasterRecordOutputs(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
   e.op(O.OP_ENDIF);
   e.op(O.OP_SIZE);
   e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
-  e.op(O.OP_DROP, O.OP_FROMALTSTACK);
+  e.op(O.OP_DROP);
+  emitCollectMintedRecordOutputs(e);
+  e.op(O.OP_FROMALTSTACK);
+}
+
+/** The record outputs the minted masters on the category declare, appended to the accumulator. */
+function emitCollectMintedRecordOutputs(e: Emitter): void {
+  const O = Opcodes;
+  // `[M, settleCount, after, created, X]`. A v0x02 transcript has no minted list, so the walk is skipped.
+  e.count(4).op(O.OP_PICK);
+  e.op(O.OP_DUP, O.OP_3, O.OP_SPLIT, O.OP_NIP);
+  e.op(O.OP_1, O.OP_SPLIT, O.OP_DROP);
+  e.op(O.OP_3, O.OP_NUMEQUAL, O.OP_IF);
+  dropFront(e, 4);
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeUnsignedCount(e, 1);
+  // `[.., X, mintedCount, rest]`, `X` at depth 2.
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_OVER, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
+  e.op(O.OP_1, O.OP_PICK, O.OP_OUTPUTTOKENCATEGORY);
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP);
+  e.count(4).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  e.op(O.OP_SWAP);
+  emitCollectRecordOutputsOfBlock(e);
+  e.op(O.OP_NIP);
+  e.op(O.OP_ELSE);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  e.op(O.OP_NIP, O.OP_NIP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_DROP);
+  e.op(O.OP_ENDIF);
 }
 
 /**
@@ -2333,6 +2380,13 @@ function emitAppendMasterRecordOutputs(e: Emitter): void {
   e.op(O.OP_DUP, O.OP_INPUTBYTECODE);
   emitSoftFirstPayload(e);
   e.op(O.OP_VERIFY);
+  emitCollectRecordOutputsOfBlock(e);
+  e.op(O.OP_DROP);
+}
+
+/** Entry `[.., block]`, exit `[..]`: the raw block's record outputs appended to the accumulator. */
+function emitCollectRecordOutputsOfBlock(e: Emitter): void {
+  const O = Opcodes;
   dropFront(e, 10);
   dropLengthPrefixed(e, 2);
   dropLengthPrefixed(e, 2);
@@ -2342,7 +2396,7 @@ function emitAppendMasterRecordOutputs(e: Emitter): void {
   loopCounted(e, dropCall);
   takeUnsignedCount(e, 2);
   loopCounted(e, emitCollectSegmentRecordOutputs);
-  e.op(O.OP_DROP, O.OP_DROP);
+  e.op(O.OP_DROP);
 }
 
 /** One segment: a counted list of record entries, each one's output collected. */
@@ -2421,21 +2475,12 @@ function emitRequireOutputIsDeclared(e: Emitter): void {
   e.push(new Uint8Array(2)).op(O.OP_CAT);
   e.count(2).op(O.OP_SPLIT, O.OP_DROP);
   // `[.., outs, count, index, needle]`.
-  // A created record needs no declaration: its output is one the transcript lists among the created records, so the
-  // minted genesis's own records settle without a frame declaring them.
-  e.op(O.OP_1, O.OP_PICK);
-  e.op(O.OP_6, O.OP_PICK);
-  e.op(O.OP_SWAP);
-  emitCountItem(e, 1);
-  e.op(O.OP_0NOTEQUAL, O.OP_TOALTSTACK);
   e.op(O.OP_DUP);
   e.count(4).op(O.OP_PICK);
   e.op(O.OP_SWAP);
   emitFoundWidth(e, 2);
   e.count(2).op(O.OP_PICK);
   e.op(O.OP_INPUTINDEX, O.OP_NUMEQUAL);
-  e.op(O.OP_BOOLOR);
-  e.op(O.OP_FROMALTSTACK);
   e.op(O.OP_BOOLOR, O.OP_VERIFY);
   e.op(O.OP_DROP);
 }
@@ -2457,7 +2502,7 @@ function emitRequireRecordValues(e: Emitter): void {
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
   emitCheckMasterRecordValues(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
@@ -2601,7 +2646,7 @@ function emitDefineOrderedVisit(e: Emitter): void {
   const v = new Emitter();
   // `[X, m, onX]`.
   v.op(O.OP_DUP);
-  emitContextCategory(v);
+  emitContextCategoryInvoke(v);
   v.count(2).op(O.OP_PICK, O.OP_EQUAL);
   // `[X, m, onX, callCount, calls]`.
   v.op(O.OP_OVER, O.OP_INPUTBYTECODE);
@@ -2939,7 +2984,7 @@ function emitCollectOwnRecordInputs(e: Emitter): void {
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
   emitAppendMasterRecordInputs(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
@@ -3387,6 +3432,21 @@ export function contextCategoryScript(): Uint8Array {
   const e = new Emitter();
   emitContextCategory(e);
   return e.done();
+}
+
+/** Defines the context-category walk as a function the validator's checks invoke. */
+function emitDefineContextCategory(e: Emitter): void {
+  const O = Opcodes;
+  const v = new Emitter();
+  emitContextCategory(v);
+  e.push(v.done());
+  e.count(CONTEXT_CATEGORY_ID).op(O.OP_DEFINE);
+}
+
+/** Invokes the context-category walk. Entry `[current, steps]`, exit `[category]`. */
+function emitContextCategoryInvoke(e: Emitter): void {
+  const O = Opcodes;
+  e.count(CONTEXT_CATEGORY_ID).op(O.OP_INVOKE);
 }
 
 /** Entry `[haystack, needle]`, exit `[found]`. `needle` is 32 bytes; `haystack` is a run of them. */

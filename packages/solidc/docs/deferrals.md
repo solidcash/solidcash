@@ -2225,15 +2225,16 @@ output side and skips the spent-input preservation check, while direct (non-fram
 (`direct-path-identity.test.ts` re-pins unchanged). The validator now resolves minted refs on the output side in
 `emitContextCategory` (the caller-chain walk ends at a minted root's own category) and `emitReadOnlySubtree` (a
 minted root is never read-only), exempts a minted master from `emitRequireMastersRecreated`'s "an output master has a
-master input under it" via `emitIsMintedOutput` (version-gated), and `emitRequireOutputIsDeclared` accepts a mutable
-output the transcript lists among the created records, so the minted genesis's own created records settle without the
-census walking the minted master's inline block. `deployFramedProxy` stages the calling genesis on the outer overlay
-beside the implementation's genesis (it mints the proxy rather than spending the probe the inner overlay holds).
-`AuditSdkFramedProxyAtomic.test.ts` now passes all seven cases, including the atomic calling-initializer deploy, the
-reverting calling-initializer, and the `initializeAs: 'hop'` escape hatch. Residual: the created-record exemption
-trusts the transcript's created list rather than re-deriving it from the minted master's segments, because a
-minted-master record-output walk would push the shipped head past the 10,000-byte input cap (`settle-necessity`
-pins the head at exactly 10,000 bytes); a follow-up size pass or a facet-resident census would remove that trust.
+master input under it" via `emitIsMintedOutput` (version-gated), and `emitCollectMintedRecordOutputs` walks the
+minted list so the minted master's own segment declarations feed `emitRequireOutputIsDeclared`, which keeps the
+V7_CENSUS_UNEXPECTED_MUTABLE rule (a stray created node is still refused). `deployFramedProxy` stages the calling
+genesis on the outer overlay beside the implementation's genesis (it mints the proxy rather than spending the probe
+the inner overlay holds). The census's `emitContextCategory` walk is now defined once as a validator function
+(`CONTEXT_CATEGORY_ID`) and invoked at its sites, which recovers the head budget the minted record-output walk
+consumes. `AuditSdkFramedProxyAtomic.test.ts` passes all seven cases, including the atomic calling-initializer
+deploy, the reverting calling-initializer, and the `initializeAs: 'hop'` escape hatch; `own-category-conservation.test.ts`
+still refuses a stray minted node. `settle-necessity` pins the head at 8,923 bytes, leaving headroom under the
+10,000-byte cap.
 
 ## Sorted batch targets sharing a node: one key written twice (DS-6 residual, 2026-10-12)
 

@@ -508,14 +508,18 @@ function emitTranscriptHeader(e: Emitter): void {
   e.op(O.OP_DUP).count(1).op(O.OP_SPLIT, O.OP_ROT, O.OP_DROP);
   e.op(O.OP_SWAP);
   e.unsignedByteOnTop();
-  e.op(O.OP_DUP, O.OP_0NOTEQUAL, O.OP_VERIFY);
   e.op(O.OP_SWAP);
 }
 
-/** V9. The first root the transcript lists is a master whose own category is this validator's. */
+/**
+ * V9. The first root the transcript lists is a master whose own category is this validator's. A genesis whose only
+ * root is minted lists no input root, so the category check is skipped there: V1's spent-master rule binds the
+ * validator's category instead.
+ */
 function emitRootCategory(e: Emitter): void {
   const O = Opcodes;
-  // `[M, rootCount, rest]`: the first root's index, then the pin of the input it names.
+  // `[M, rootCount, rest]`: with a root, the first root's index and the pin of the input it names.
+  e.op(O.OP_DUP, O.OP_0NOTEQUAL, O.OP_IF);
   e.op(O.OP_DUP).count(1).op(O.OP_SPLIT, O.OP_DROP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
@@ -525,6 +529,7 @@ function emitRootCategory(e: Emitter): void {
   e.op(O.OP_SIZE).count(32).op(O.OP_GREATERTHANOREQUAL, O.OP_VERIFY);
   e.count(32).op(O.OP_SPLIT, O.OP_DROP);
   e.op(O.OP_INPUTINDEX, O.OP_UTXOTOKENCATEGORY).count(32).op(O.OP_SPLIT, O.OP_DROP, O.OP_EQUALVERIFY);
+  e.op(O.OP_ENDIF);
 }
 
 /** V2, the roots' indices: every root the transcript lists names a real input. */

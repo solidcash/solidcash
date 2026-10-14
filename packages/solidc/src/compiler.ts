@@ -97,7 +97,7 @@ import {
   type KernelAdmissionReason,
 } from './admission-decision.js';
 import { normalizeKernelAdmissionReason } from './kernel-admission-catalog.js';
-import { deduplicateMessageBusVerifierStackSuffix } from './messageBusVerifierDedup.js';
+import { deduplicateMessageBusVerifierStackSuffix, outlineMessageBusVerifierArms } from './messageBusVerifierDedup.js';
 import { emitCompilerWarning, withSuppressedWarnings, withWarningListener, type WarningListener } from './warnings.js';
 
 /** Survives binder rebuild: span-based analysis from the admission ladder. */
@@ -3585,18 +3585,22 @@ function compileDetachedMessageBusVerifierUncached(
   // by verifyFunctionId, while diagnostics and existing tooling expect the canonical verifier name.
   const verify = program.functions.find((fn) => fn.id === program.verifyFunctionId);
   if (verify?.name === MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM) verify.name = '__message_bus_verify_atomic';
-  const compactProgram = deduplicateMessageBusVerifierStackSuffix(program);
+  const dedupedProgram = deduplicateMessageBusVerifierStackSuffix(program);
+  let compactProgram = outlineMessageBusVerifierArms(dedupedProgram);
   try {
     // Definition bytecode is embedded in the verifier covenant, not merely in this detached mini-contract.
     // Favor lower operation density when it fits; preserve the proven compact lowering for larger shapes.
     messageBusVerifierLockingBytecode(compactProgram, compilerOptions.maximumInputBytes);
   } catch (error) {
-    if (unrollDeepReplace && error instanceof MessageBusVerifierCapacityError) {
+    if (!(error instanceof MessageBusVerifierCapacityError)) throw error;
+    if (unrollDeepReplace) {
       return compileDetachedMessageBusVerifierUncached(
         source, compilerOptions, lifecycle, envelopeTransport, false,
       );
     }
-    throw error;
+    // Each outlined arm costs a few covenant bytes; a shape still over the limit keeps its arms inline.
+    compactProgram = dedupedProgram;
+    messageBusVerifierLockingBytecode(compactProgram, compilerOptions.maximumInputBytes);
   }
   profileLog('singlePass:verifier', started, { functions: compactProgram.functions.length });
   return compactProgram;
@@ -10069,7 +10073,7 @@ function synthesizeMessageBusRoute(
                 toPaddedBytes(${width}, 2), hex"${descriptorDigest}");`;
       })
         .join('\n              ');
-      return `if (callManifest.slice(rowStart + 10, rowStart + 14) == hex"${selector(fn)}") {
+      return `if (rowHeader.slice(10, 14) == hex"${selector(fn)}") {
               ${pairs}
               activeDeploymentInvocations = activeDeploymentInvocations + ${siteCount};
             }`;
@@ -12240,15 +12244,15 @@ function synthesizeMessageBusRoute(
           sha256(suppliedCallers), toPaddedBytes(suppliedSettlementBoundary, 2),
           sha256(suppliedCompletionPositions), sha256(suppliedSettlementTable)`;
   const atomicManifestV2Expression = compilerOptions.messageBusKernel === true
-    ? 'callManifest.slice(0, 8) == hex"4c33425553320000"' : 'false';
+    ? 'manifestVersion == hex"4c33425553320000"' : 'false';
   const atomicManifestV4Expression = compilerOptions.messageBusKernel === true
-    ? 'callManifest.slice(0, 8) == hex"4c33425553340000"' : 'false';
+    ? 'manifestVersion == hex"4c33425553340000"' : 'false';
   const directParticipantMode = compilerOptions.messageBusDirectParticipant === true
     && compilerOptions.messageBusKernel === true;
   // V5 adds an explicit per-participant authority byte. A direct authority has no detached verifier NFT;
   // its own co-spent covenant validates its state transition, while the routed caller binds delivery.
   const atomicManifestV5Expression = directParticipantMode
-    ? 'callManifest.slice(0, 8) == hex"4c33425553350000"' : 'false';
+    ? 'manifestVersion == hex"4c33425553350000"' : 'false';
   const atomicManifestSignatureFrameExpression = directParticipantMode
     ? `(${atomicManifestV4Expression} || ${atomicManifestV5Expression})` : atomicManifestV4Expression;
   const atomicManifestOutputIdentityExpression = compilerOptions.messageBusKernel === true
@@ -12305,11 +12309,13 @@ function synthesizeMessageBusRoute(
           && proxyRedeemAt + 3 + proxyRedeemLength == proxyUnlock.length);`
     : rootEnvelopeTransport ? `
         bytes unlocking = tx.inputs[0].unlockingBytecode;
-        require(unlocking.length >= 16 && unlocking.slice(0, 6) == hex"04534342314d");
-        bigint messageEnvelopeLength = int(bytes.concat(unlocking.slice(6, 8), hex"00"));
-        require(messageEnvelopeLength >= 8 && 8 + messageEnvelopeLength <= unlocking.length);
+        // Both slices fail closed past the unlocking end.
+        bytes envelopeHeader = unlocking.slice(0, 16);
+        require(envelopeHeader.slice(0, 6) == hex"04534342314d");
+        bigint messageEnvelopeLength = int(bytes.concat(envelopeHeader.slice(6, 8), hex"00"));
+        require(messageEnvelopeLength >= 8);
         bytes callManifest = unlocking.slice(16, 8 + messageEnvelopeLength);
-        require(unlocking.slice(8, 16) == bytes.concat(
+        require(envelopeHeader.slice(8, 16) == bytes.concat(
           hex"4c334331", toPaddedBytes(callManifest.length, 4)
         ));`
       : `
@@ -12481,19 +12487,20 @@ function synthesizeMessageBusRoute(
         }
   `;
   const inlinedAtomicVerifierBody = `
+        bytes manifestVersion = callManifest.slice(0, 8);
         ${compilerOptions.messageBusKernel === true
-    ? `require(callManifest.length >= 15 && (callManifest.slice(0, 8) == hex"4c33425553310000"
-          || callManifest.slice(0, 8) == hex"4c33425553320000"
-          || callManifest.slice(0, 8) == hex"4c33425553340000"${directParticipantMode
-    ? '\n          || callManifest.slice(0, 8) == hex"4c33425553350000"' : ''}));`
-    : 'require(callManifest.length >= 15 && callManifest.slice(0, 8) == hex"4c33425553310000");'}
+    ? `require(callManifest.length >= 15 && (manifestVersion == hex"4c33425553310000"
+          || manifestVersion == hex"4c33425553320000"
+          || manifestVersion == hex"4c33425553340000"${directParticipantMode
+    ? '\n          || manifestVersion == hex"4c33425553350000"' : ''}));`
+    : 'require(callManifest.length >= 15 && manifestVersion == hex"4c33425553310000");'}
         require(${compilerOptions.evmCompat
     ? 'bigint(int(bytes.concat(callManifest.slice(8, 12), hex"00000000"))) == bigint(callManifest.length)'
     : 'int(bytes.concat(callManifest.slice(8, 12), hex"00000000")) == callManifest.length'});
         bigint participantCount = int(bytes.concat(callManifest.slice(12, 13), hex"00"));
         require(participantCount >= 2 && participantCount <= 8);
-        bigint cursor = 13;
-        bigint expectedBase = 0;
+        bool manifestOutputIdentity = ${atomicManifestOutputIdentityExpression};
+        bool manifestSignatureFrames = ${atomicManifestSignatureFrameExpression};
         bigint activeMembership = 0;
         bigint activeBase = 65535;
         bigint activeParticipant = 255;
@@ -12513,29 +12520,28 @@ function synthesizeMessageBusRoute(
         bigint directParticipantCount = 0;` : ''}
         bigint replacementIdentityCount = 0;
         ${kernelLifecycleHandlers.size > 0 ? 'bytes activeParticipantLbc;' : ''}
+        // The manifest slices below fail closed past its end, so no separate length checks precede them.
+        bigint expectedBase = 0;
+        bigint cursor = 13;
         for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
-          require(cursor + 45 <= callManifest.length);
           bigint base = expectedBase;
           bigint fixedSize = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
           bigint blockSize = int(bytes.concat(callManifest.slice(cursor + 2, cursor + 4), hex"00"));
           bigint lbcLength = int(bytes.concat(callManifest.slice(cursor + 4, cursor + 6), hex"00"));
-          cursor = cursor + 6;
           require(fixedSize >= 1 && blockSize >= fixedSize && lbcLength > 0);
+          bytes participantLbc = callManifest.slice(cursor + 6, cursor + 6 + lbcLength);
+          cursor = cursor + 6 + lbcLength;
+          expectedBase = expectedBase + blockSize;
+          require(expectedBase < tx.inputs.length);
           participantBases = bytes.concat(participantBases, toPaddedBytes(base, 2));
           participantSizes = bytes.concat(participantSizes, toPaddedBytes(blockSize, 2));
-          expectedBase = expectedBase + blockSize;
-          require(expectedBase < tx.inputs.length && cursor + lbcLength + 38 <= callManifest.length);
-          bytes participantLbc = callManifest.slice(cursor, cursor + lbcLength);
-          cursor = cursor + lbcLength;
           participantLbcs = bytes.concat(participantLbcs, toPaddedBytes(lbcLength, 2), participantLbc);
           bytes participantOutputLbc = participantLbc;
-          if (${atomicManifestOutputIdentityExpression}) {
-            require(cursor + 2 <= callManifest.length);
-            bigint outputLbcLength = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
-            cursor = cursor + 2;
-            require(outputLbcLength > 0 && cursor + outputLbcLength + 38 <= callManifest.length);
-            participantOutputLbc = callManifest.slice(cursor, cursor + outputLbcLength);
-            cursor = cursor + outputLbcLength;
+          if (manifestOutputIdentity) {
+            participantOutputLbc = callManifest.slice(cursor + 2,
+              cursor + 2 + int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00")));
+            require(participantOutputLbc.length > 0);
+            cursor = cursor + 2 + participantOutputLbc.length;
             if (participantOutputLbc != participantLbc) {
               replacementIdentityCount = replacementIdentityCount + 1;
             }
@@ -12545,16 +12551,13 @@ function synthesizeMessageBusRoute(
           bigint trailingUsed = int(bytes.concat(callManifest.slice(cursor + 34, cursor + 36), hex"00"));
           bigint returnOffset = int(bytes.concat(callManifest.slice(cursor + 36, cursor + 38), hex"00"));
           cursor = cursor + 38;
-          if (${atomicManifestSignatureFrameExpression}) {
-            require(cursor + 3 <= callManifest.length);
-            bigint lifecycleMode = int(bytes.concat(callManifest.slice(cursor, cursor + 1), hex"00"));
-            bigint lifecycleCount = int(bytes.concat(callManifest.slice(cursor + 1, cursor + 3), hex"00"));
-            require(lifecycleMode == 0 && lifecycleCount == 0);
+          if (manifestSignatureFrames) {
+            // Lifecycle mode and count are both zero on the wire.
+            require(callManifest.slice(cursor, cursor + 3) == hex"000000");
             cursor = cursor + 3;
           }
           ${directParticipantMode ? `bigint participantAuthority = 0;
           if (${atomicManifestV5Expression}) {
-            require(cursor + 1 <= callManifest.length);
             participantAuthority = int(bytes.concat(callManifest.slice(cursor, cursor + 1), hex"00"));
             require(participantAuthority <= 1);
             cursor = cursor + 1;
@@ -12571,7 +12574,7 @@ function synthesizeMessageBusRoute(
             && tx.inputs[base].tokenCategory.slice(0, 32) == category
             && tx.inputs[base].tokenCategory.slice(32, 33) == hex"02");
           bigint participantOutputBase = -1;
-          if (${atomicManifestOutputIdentityExpression}) {
+          if (manifestOutputIdentity) {
             participantOutputBase = base;
             // Token-free output at the participant base is retirement/reclaim (selfdestruct): preserve sats
             // only. Gating on empty tokenCategory — not a synthesize-time lifecycle map snapshot — so the soft
@@ -12586,11 +12589,13 @@ function synthesizeMessageBusRoute(
                 && tx.outputs[participantOutputBase].value == tx.inputs[base].value);
             }
           } else {
+            bytes baseCategory = tx.inputs[base].tokenCategory;
             for (bigint participantOutput = 0; participantOutput < tx.outputs.length;
               participantOutput = participantOutput + 1) {
-              if (tx.outputs[participantOutput].lockingBytecode == participantOutputLbc
-                && tx.outputs[participantOutput].tokenCategory == tx.inputs[base].tokenCategory) {
-                participantOutputBase = participantOutput;
+              if (tx.outputs[participantOutput].tokenCategory == baseCategory) {
+                if (tx.outputs[participantOutput].lockingBytecode == participantOutputLbc) {
+                  participantOutputBase = participantOutput;
+                }
               }
             }
             if (participantOutputBase < 0 && tx.outputs[base].tokenCategory.length == 0) {
@@ -12694,25 +12699,15 @@ function synthesizeMessageBusRoute(
           bindingDigest
         ));`}
         require(tx.outputs.length == tx.inputs.length);
-        require(cursor + 2 <= callManifest.length);
+        // Every slice below fails closed past the manifest end, so no separate length checks precede them.
         bigint rowCount = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
         require(rowCount <= ${ATOMIC_MESSAGE_BUS_MAX_ROWS});
-        cursor = cursor + 2;
-        bigint consumedLocalRows = 0;
-        bigint batchCursor = 7;
         bigint batchVersion = int(bytes.concat(localBatch.slice(4, 5), hex"00"));
         bigint batchModeWidth = batchVersion == 2 ? 1 : 0;
         bigint batchValueWidth = int(bytes.concat(localBatch.slice(5, 6), hex"00")) * 9;
-        bytes rowConsumers = hex"";
-        bytes rowDepths = hex"";
-        bytes localResultVector = hex"";
-        bytes expectedEmissions = hex"";
-        bytes expectedCallers = hex"";
-        bytes expectedCompletionPositions = hex"";
-        bytes participantBoundaries = hex"";
-        for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
-          participantBoundaries = bytes.concat(participantBoundaries, hex"0000");
-          ${sharedEnvelopeTransport ? `// Legacy verifiers each carry an L3C1 first push. The envelope is >=256 bytes
+        ${!sharedEnvelopeTransport ? '' : `for (bigint participant = 0; participant < participantCount;
+          participant = participant + 1) {
+          // Legacy verifiers each carry an L3C1 first push. The envelope is >=256 bytes
           // and below the stack-item limit, so consensus minimal-push rules require PUSHDATA2 (0x4d).
           // Forbid that frame in every verifier slot; no co-spent participant may authenticate a private graph.
           ${directParticipantMode ? `if (int(bytes.concat(participantAuthorities.slice(participant, participant + 1), hex"00")) == 0) {
@@ -12727,57 +12722,79 @@ function synthesizeMessageBusRoute(
               || verifierUnlock.slice(3, 7) != hex"4c334331");
           }` : `bytes verifierUnlock = tx.inputs[expectedBase + participant].unlockingBytecode;
           require(verifierUnlock.slice(0, 1) != hex"4d"
-            || verifierUnlock.slice(3, 7) != hex"4c334331");`}` : ''}
-        }
-        bigint activeSettlementBoundary = 0;
-        bigint invocationRows = 0;
+            || verifierUnlock.slice(3, 7) != hex"4c334331");`}
+        }`}
+        // A replacement costs its stack depth, so the row loop's carried values sit nearest the top in order of
+        // write frequency, and each row's own values are dropped before the counter advances.
         bigint rootSubtreeEnd = 65535;
-        bigint activeResourceEndpoints = 0;
-        bigint activeSatoshiContainerRows = 0;
-        bigint activeTokenContainerRows = 0;
-        bigint activeEventRows = 0;
-        bigint activeValueRows = 0;
-        bigint activeTokenRows = 0;
         bigint activeDeploymentInvocations = 0;
         bigint activeDeploymentRows = 0;
-        bigint activeSidecarRows = 0;
-        bigint activeStaticInvocationRows = 0;
-        bigint transactionSignatureRows = 0;
-        bigint previousResourceTarget = -1;
-        bigint previousEventTarget = -1;
-        bigint previousValueTarget = -1;
-        bigint previousTokenTarget = -1;
-        bigint previousDeploymentTarget = -1;
-        bigint previousSidecarTarget = -1;
-        bytes activeSidecarTargets = hex"";
         bytes activeDeploymentParents = hex"";
         bytes settledDeploymentParents = hex"";
         bytes activeDeploymentTargets = hex"";
-        bigint eventsStarted = 0;
-        bigint effectsStarted = 0;
+        bigint activeSidecarRows = 0;
+        bytes activeSidecarTargets = hex"";
+        bigint transactionSignatureRows = 0;
+        bigint activeStaticInvocationRows = 0;
+        bigint activeSatoshiContainerRows = 0;
+        bigint activeTokenContainerRows = 0;
+        bigint activeValueRows = 0;
+        bigint activeTokenRows = 0;
+        bigint previousDeploymentTarget = -1;
+        bigint previousSidecarTarget = -1;
+        bigint previousValueTarget = -1;
+        bigint previousTokenTarget = -1;
+        ${!graphExecutionContext ? '' : `bigint activeSettlementBoundary = 0;
+        bytes expectedEmissions = hex"";
+        bytes expectedCallers = hex"";
+        bytes expectedCompletionPositions = hex"";
+        // participantCount <= 8: one zero uint16 boundary per participant.
+        bytes participantBoundaries = hex"${'00'.repeat(16)}".slice(0, participantCount * 2);`}
+        bigint activeEventRows = 0;
+        bigint activeResourceEndpoints = 0;
+        bigint previousEventTarget = -1;
+        bigint previousResourceTarget = -1;
+        bigint consumedLocalRows = 0;
+        bytes localResultVector = hex"";
+        bigint batchCursor = 7;
+        // Two bytes per invocation row: its consumer and its depth.
+        bytes rowFrames = hex"";
+        bigint rowCursor = cursor + 2;
         for (bigint row = 0; row < rowCount; row = row + 1) {
-          require(cursor + 29 <= callManifest.length);
-          bigint rowStart = cursor;
-          bigint kind = int(bytes.concat(callManifest.slice(cursor, cursor + 1), hex"00"));
-          bigint __message_bus_row_owner = int(bytes.concat(callManifest.slice(cursor + 1, cursor + 2), hex"00"));
-          bigint consumer = int(bytes.concat(callManifest.slice(cursor + 2, cursor + 3), hex"00"));
+          if (true) {
+          bytes rowHeader = callManifest.slice(rowCursor, rowCursor + 21);
+          rowCursor = rowCursor + 21;
+          bytes rowSubject = callManifest.slice(rowCursor + 2,
+            rowCursor + 2 + int(bytes.concat(callManifest.slice(rowCursor, rowCursor + 2), hex"00")));
+          rowCursor = rowCursor + 2 + rowSubject.length;
+          bytes rowArguments = callManifest.slice(rowCursor + 2,
+            rowCursor + 2 + int(bytes.concat(callManifest.slice(rowCursor, rowCursor + 2), hex"00")));
+          rowCursor = rowCursor + 2 + rowArguments.length;
+          bytes rowResult = callManifest.slice(rowCursor + 2,
+            rowCursor + 2 + int(bytes.concat(callManifest.slice(rowCursor, rowCursor + 2), hex"00")));
+          rowCursor = rowCursor + 2 + rowResult.length;
+          bytes rowEffect = callManifest.slice(rowCursor + 2,
+            rowCursor + 2 + int(bytes.concat(callManifest.slice(rowCursor, rowCursor + 2), hex"00")));
+          rowCursor = rowCursor + 2 + rowEffect.length;
+          bytes rowSignatureFrame = hex"";
+          if (manifestSignatureFrames) {
+            rowSignatureFrame = callManifest.slice(rowCursor + 2,
+              rowCursor + 2 + int(bytes.concat(callManifest.slice(rowCursor, rowCursor + 2), hex"00")));
+            rowCursor = rowCursor + 2 + rowSignatureFrame.length;
+          }
+          bigint kind = int(bytes.concat(rowHeader.slice(0, 1), hex"00"));
+          bigint __message_bus_row_owner = int(bytes.concat(rowHeader.slice(1, 2), hex"00"));
+          bigint consumer = int(bytes.concat(rowHeader.slice(2, 3), hex"00"));
           require(kind <= 6 && __message_bus_row_owner < participantCount && consumer < participantCount);
-          bigint sourceOffset = int(bytes.concat(callManifest.slice(cursor + 6, cursor + 8), hex"00"));
-          bigint targetOffset = int(bytes.concat(callManifest.slice(cursor + 8, cursor + 10), hex"00"));
-          bigint completion = int(bytes.concat(callManifest.slice(cursor + 14, cursor + 16), hex"00"));
-          bigint parent = int(bytes.concat(callManifest.slice(cursor + 16, cursor + 18), hex"00"));
-          bigint depth = int(bytes.concat(callManifest.slice(cursor + 18, cursor + 19), hex"00"));
-          bigint subtreeEnd = int(bytes.concat(callManifest.slice(cursor + 19, cursor + 21), hex"00"));
-          bigint participantBase = int(bytes.concat(
+          bigint sourceOffset = int(bytes.concat(rowHeader.slice(6, 8), hex"00"));
+          bigint targetOffset = int(bytes.concat(rowHeader.slice(8, 10), hex"00"));
+          bigint completion = int(bytes.concat(rowHeader.slice(14, 16), hex"00"));
+          bigint parent = int(bytes.concat(rowHeader.slice(16, 18), hex"00"));
+          bigint depth = int(bytes.concat(rowHeader.slice(18, 19), hex"00"));
+          bigint subtreeEnd = int(bytes.concat(rowHeader.slice(19, 21), hex"00"));
+          bigint targetSlot = int(bytes.concat(
             participantBases.slice(consumer * 2, consumer * 2 + 2), hex"00"
-          ));
-          bigint participantSize = int(bytes.concat(
-            participantSizes.slice(consumer * 2, consumer * 2 + 2), hex"00"
-          ));
-          bigint ownerSize = int(bytes.concat(
-            participantSizes.slice(__message_bus_row_owner * 2, __message_bus_row_owner * 2 + 2), hex"00"
-          ));
-          bigint targetSlot = participantBase + targetOffset;
+          )) + targetOffset;
           bigint sourceSlot = int(bytes.concat(
             participantBases.slice(__message_bus_row_owner * 2, __message_bus_row_owner * 2 + 2), hex"00"
           )) + sourceOffset;
@@ -12787,91 +12804,67 @@ function synthesizeMessageBusRoute(
             // The owner handler's emission transcript below binds that slot's exact locking bytecode, so an
             // in-range non-root offset is both necessary and sufficient; forcing offset zero aliases logical
             // calls back to their state owner.
-            require(effectsStarted == 0 && targetOffset < participantSize
+            // Every earlier row is an invocation row exactly when no effect row has started.
+            require(rowFrames.length == row * 2
+              && targetOffset < int(bytes.concat(participantSizes.slice(consumer * 2, consumer * 2 + 2), hex"00"))
               && (row > 0 || targetOffset == 0));
             if (row == 0) {
               require(parent == 65535 && depth == 0 && sourceOffset == 65535 && __message_bus_row_owner == consumer);
               rootSubtreeEnd = subtreeEnd;
             } else {
-              require(parent < invocationRows && depth <= 7);
-              require(__message_bus_row_owner == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
-              require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")) + 1);
-              require(sourceOffset < ownerSize);
+              require(parent * 2 < rowFrames.length && depth <= 7);
+              require(__message_bus_row_owner == int(bytes.concat(rowFrames.slice(parent * 2, parent * 2 + 1), hex"00")));
+              require(depth == int(bytes.concat(rowFrames.slice(parent * 2 + 1, parent * 2 + 2), hex"00")) + 1);
+              require(sourceOffset < int(bytes.concat(
+                participantSizes.slice(__message_bus_row_owner * 2, __message_bus_row_owner * 2 + 2), hex"00"
+              )));
             }
             require(subtreeEnd >= row && subtreeEnd < rowCount && completion == subtreeEnd + 1);
-            rowConsumers = bytes.concat(rowConsumers, bytes1(consumer));
-            rowDepths = bytes.concat(rowDepths, bytes1(depth));
-            invocationRows = invocationRows + 1;
-            if (consumer == activeParticipant) {
+            rowFrames = bytes.concat(rowFrames, bytes1(consumer), bytes1(depth));
+            ${!kernelDeploymentSelectorRegistration ? '' : `if (consumer == activeParticipant) {
               ${kernelDeploymentSelectorRegistration}
-            }
+            }`}
           } else {
-            require(invocationRows > 0);
-            effectsStarted = 1;
-            require(__message_bus_row_owner == consumer && sourceOffset == targetOffset && targetOffset < participantSize);
-            require(int(bytes.concat(callManifest.slice(cursor + 3, cursor + 5), hex"00"))
-              == targetOffset);
-            require(callManifest.slice(cursor + 10, cursor + 14) == hex"00000000");
+            require(rowFrames.length > 0);
+            require(__message_bus_row_owner == consumer && sourceOffset == targetOffset
+              && targetOffset < int(bytes.concat(participantSizes.slice(consumer * 2, consumer * 2 + 2), hex"00")));
+            require(int(bytes.concat(rowHeader.slice(3, 5), hex"00")) == targetOffset);
+            require(rowHeader.slice(10, 14) == hex"00000000");
             require(completion == targetOffset);
             if (kind == 1) {
-              require(eventsStarted == 0 && targetSlot > previousResourceTarget);
+              // No event row has started while previousEventTarget is still unset.
+              require(previousEventTarget < 0 && targetSlot > previousResourceTarget);
               previousResourceTarget = targetSlot;
-              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 5);
+              require(int(bytes.concat(rowHeader.slice(5, 6), hex"00")) <= 5);
               require(parent == 65535 && depth == 0 && subtreeEnd == completion);
             } else if (kind == 2) {
-              eventsStarted = 1;
               require(targetSlot > previousEventTarget);
               previousEventTarget = targetSlot;
-              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) == 1);
+              require(rowHeader.slice(5, 6) == hex"01");
             } else if (kind == 3) {
               require(targetSlot > previousValueTarget);
               previousValueTarget = targetSlot;
-              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) == 1);
+              require(rowHeader.slice(5, 6) == hex"01");
             } else if (kind == 4) {
               require(targetSlot > previousTokenTarget);
               previousTokenTarget = targetSlot;
-              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 3);
+              require(int(bytes.concat(rowHeader.slice(5, 6), hex"00")) <= 3);
             } else if (kind == 5) {
               require(targetSlot > previousDeploymentTarget);
               previousDeploymentTarget = targetSlot;
-              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 1);
+              require(int(bytes.concat(rowHeader.slice(5, 6), hex"00")) <= 1);
             } else {
               require(targetSlot > previousSidecarTarget);
               previousSidecarTarget = targetSlot;
-              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 2);
+              require(int(bytes.concat(rowHeader.slice(5, 6), hex"00")) <= 2);
               require(parent == 65535 && depth == 0 && subtreeEnd == completion);
             }
             if (kind >= 2 && kind <= 5) {
-              require(parent < invocationRows
-                && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
-              require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
+              require(parent * 2 < rowFrames.length
+                && consumer == int(bytes.concat(rowFrames.slice(parent * 2, parent * 2 + 1), hex"00")));
+              require(depth == int(bytes.concat(rowFrames.slice(parent * 2 + 1, parent * 2 + 2), hex"00")));
               require(subtreeEnd == parent);
             }
-          }
-          cursor = cursor + 21;
-          bytes rowSubject;
-          bytes rowArguments;
-          bytes rowResult;
-          bytes rowEffect;
-          for (bigint field = 0; field < 4; field = field + 1) {
-            require(cursor + 2 <= callManifest.length);
-            bigint fieldLength = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
-            cursor = cursor + 2;
-            require(cursor + fieldLength <= callManifest.length);
-            if (field == 0) { rowSubject = callManifest.slice(cursor, cursor + fieldLength); }
-            if (field == 1) { rowArguments = callManifest.slice(cursor, cursor + fieldLength); }
-            if (field == 2) { rowResult = callManifest.slice(cursor, cursor + fieldLength); }
-            if (field == 3) { rowEffect = callManifest.slice(cursor, cursor + fieldLength); }
-            cursor = cursor + fieldLength;
-          }
-          bytes rowSignatureFrame;
-          if (${atomicManifestSignatureFrameExpression}) {
-            require(cursor + 2 <= callManifest.length);
-            bigint signatureFrameLength = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
-            cursor = cursor + 2;
-            require(cursor + signatureFrameLength <= callManifest.length);
-            rowSignatureFrame = callManifest.slice(cursor, cursor + signatureFrameLength);
-            cursor = cursor + signatureFrameLength;
           }
           ${directParticipantMode ? `bigint rowConsumerAuthority = int(bytes.concat(
             participantAuthorities.slice(consumer, consumer + 1), hex"00"
@@ -12885,7 +12878,7 @@ function synthesizeMessageBusRoute(
             // claim any graph child or effect row: no compiler-authenticated direct emission stream exists.
             require(kind == 0 && row > 0 && targetOffset == 0 && subtreeEnd == row
               && rowResult.length == 0 && rowEffect.length == 0 && rowSignatureFrame.length == 0
-              && callManifest.slice(rowStart + 5, rowStart + 6) == hex"00"
+              && rowHeader.slice(5, 6) == hex"00"
               && rowSubject == tx.inputs[sourceSlot].lockingBytecode
               && directInvocations.slice(consumer, consumer + 1) == hex"00");
             directInvocations = bytes.concat(
@@ -12895,7 +12888,7 @@ function synthesizeMessageBusRoute(
             bytes directUnlock = tx.inputs[targetSlot].unlockingBytecode;
             require(directUnlock.length >= 7
               && directUnlock.slice(0, 5) == bytes.concat(
-                hex"04", callManifest.slice(rowStart + 10, rowStart + 14)
+                hex"04", rowHeader.slice(10, 14)
               ) && rowArguments.length > 0);
             bytes directExpectedArg;
             bigint directExpectedEnd;
@@ -12975,7 +12968,7 @@ function synthesizeMessageBusRoute(
             ${MESSAGE_BUS_SIGNATURE_POLICY_SENTINEL}
           }
           ${resourceVerificationMode ? `if (kind == 1 && __message_bus_row_owner == activeParticipant) {
-            bigint resourceMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
+            bigint resourceMode = int(bytes.concat(rowHeader.slice(5, 6), hex"00"));
             require(rowSubject.length > 0);
             ${fixedStateOnlyResourceMode ? `require(resourceMode == 0);
             require(rowArguments.length == 33);
@@ -13083,7 +13076,7 @@ function synthesizeMessageBusRoute(
             activeValueRows = activeValueRows + 1;
           }` : ''}
           ${tokenContainerMode ? `if (kind == 4 && __message_bus_row_owner == activeParticipant) {
-            bigint tokenMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
+            bigint tokenMode = int(bytes.concat(rowHeader.slice(5, 6), hex"00"));
             require((tokenMode == 0 && rowArguments.length == 32 && rowEffect.length == 8)
               || (tokenMode == 1 && rowArguments.length == 32)
               || (tokenMode > 1 && tokenMode <= 3 && rowArguments.length == 33
@@ -13109,7 +13102,7 @@ function synthesizeMessageBusRoute(
     ? 'require(kind != 5 || __message_bus_row_owner != activeParticipant);'
     : `if (kind == 5 && __message_bus_row_owner == activeParticipant) {
             bigint deploymentMode = int(bytes.concat(
-              callManifest.slice(rowStart + 5, rowStart + 6), hex"00"
+              rowHeader.slice(5, 6), hex"00"
             ));
             require(rowSubject.length == 0 && rowResult.length == 0
               && ((deploymentMode == 0 && rowArguments.length == 66 && rowEffect.length >= 15)
@@ -13164,7 +13157,8 @@ function synthesizeMessageBusRoute(
             activeDeploymentRows = activeDeploymentRows + 1;
             bigint deploymentOutputCount = int(bytes.concat(rowEffect.slice(0, 2), hex"00"));
             require(deploymentOutputCount == expectedDeploymentWidth
-              && deploymentOutputCount >= 1 && targetOffset + deploymentOutputCount <= participantSize);
+              && deploymentOutputCount >= 1 && targetOffset + deploymentOutputCount <= int(bytes.concat(
+                participantSizes.slice(consumer * 2, consumer * 2 + 2), hex"00")));
             activeDeploymentTargets = bytes.concat(
               activeDeploymentTargets, toPaddedBytes(targetSlot, 2), toPaddedBytes(deploymentOutputCount, 2)
             );
@@ -13261,25 +13255,26 @@ function synthesizeMessageBusRoute(
             activeSidecarRows = activeSidecarRows + 1;
             activeSidecarTargets = bytes.concat(activeSidecarTargets, toPaddedBytes(targetSlot, 2));
           }` : ''}
-          bigint priorBoundary = int(bytes.concat(
-            participantBoundaries.slice(consumer * 2, consumer * 2 + 2), hex"00"
-          ));
-          if (kind == 0 && completion > priorBoundary) {
-            participantBoundaries = bytes.concat(
-              participantBoundaries.slice(0, consumer * 2), toPaddedBytes(completion, 2),
-              participantBoundaries.slice(consumer * 2 + 2, participantBoundaries.length)
-            );
-          }
-          if (kind == 0 && row > 0 && __message_bus_row_owner == activeParticipant) {
-            bytes targetLbc = tx.inputs[targetSlot].lockingBytecode;
-            expectedEmissions = bytes.concat(
-              expectedEmissions, toPaddedBytes(targetLbc.length, 2), targetLbc,
-              callManifest.slice(rowStart + 5, rowStart + 6),
-              callManifest.slice(rowStart + 10, rowStart + 14),
-              toPaddedBytes(rowArguments.length, 2), rowArguments,
-              toPaddedBytes(rowResult.length, 2), rowResult
-            );
-          }
+          ${!graphExecutionContext ? '' : `if (kind == 0) {
+            if (completion > int(bytes.concat(
+              participantBoundaries.slice(consumer * 2, consumer * 2 + 2), hex"00"
+            ))) {
+              participantBoundaries = bytes.concat(
+                participantBoundaries.slice(0, consumer * 2), toPaddedBytes(completion, 2),
+                participantBoundaries.slice(consumer * 2 + 2, participantBoundaries.length)
+              );
+            }
+            if (row > 0 && __message_bus_row_owner == activeParticipant) {
+              bytes targetLbc = tx.inputs[targetSlot].lockingBytecode;
+              expectedEmissions = bytes.concat(
+                expectedEmissions, toPaddedBytes(targetLbc.length, 2), targetLbc,
+                rowHeader.slice(5, 6),
+                rowHeader.slice(10, 14),
+                toPaddedBytes(rowArguments.length, 2), rowArguments,
+                toPaddedBytes(rowResult.length, 2), rowResult
+              );
+            }
+          }`}
           if (kind == 0 && consumer == activeParticipant) {
             require(batchCursor + 12 + batchModeWidth + batchValueWidth <= localBatch.length);
             bigint batchArgsLength = int(bytes.concat(
@@ -13287,9 +13282,9 @@ function synthesizeMessageBusRoute(
             ));
             bigint batchArgsStart = batchCursor + 12 + batchModeWidth + batchValueWidth;
             require(batchArgsStart + batchArgsLength <= localBatch.length);
-            require(callManifest.slice(rowStart + 10, rowStart + 14)
+            require(rowHeader.slice(10, 14)
               == localBatch.slice(batchCursor, batchCursor + 4));
-            bigint callManifestMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
+            bigint callManifestMode = int(bytes.concat(rowHeader.slice(5, 6), hex"00"));
             // The manifest binds parent-edge options; the local batch carries only the callee's read-only bit.
             // A value-bearing call remains an ordinary callee invocation. Its exact value flag is bound by the
             // caller's emission equality and its payment by the caller's transfer covenant/effect rows.
@@ -13310,31 +13305,26 @@ function synthesizeMessageBusRoute(
     : 'require(rowSubject.length == 0 || rowSubject == tx.origin);'}
             }
             else { require(rowSubject == tx.inputs[sourceSlot].lockingBytecode); }
-            expectedCallers = bytes.concat(
+            ${!graphExecutionContext ? '' : `expectedCallers = bytes.concat(
               expectedCallers, toPaddedBytes(rowSubject.length, 2), rowSubject
             );
             expectedCompletionPositions = bytes.concat(
               expectedCompletionPositions, toPaddedBytes(completion, 2)
             );
-            if (completion > activeSettlementBoundary) { activeSettlementBoundary = completion; }
+            if (completion > activeSettlementBoundary) { activeSettlementBoundary = completion; }`}
             batchCursor = batchArgsStart + batchArgsLength;
             consumedLocalRows = consumedLocalRows + 1;
           }
+          }
         }
         // With no rows, rootSubtreeEnd retains 65535, so the root-subtree equality also rejects an empty graph.
-        require(rootSubtreeEnd + 1 == invocationRows);
+        require((rootSubtreeEnd + 1) * 2 == rowFrames.length);
         ${directParticipantMode ? `for (bigint participant = 0; participant < participantCount;
           participant = participant + 1) {
           if (participantAuthorities.slice(participant, participant + 1) == hex"01") {
             require(directInvocations.slice(participant, participant + 1) == hex"01");
           }
         }` : ''}
-        bigint physicalResourceEndpoints = 0;
-        bigint physicalSatoshiContainers = 0;
-        bigint physicalTokenContainers = 0;
-        bigint physicalEventOutputs = 0;
-        bigint physicalValueOutputs = 0;
-        bigint physicalTokenOutputs = 0;
         // A delegate route can execute from an authenticated interior slot. Resource cardinality belongs to
         // the participant block, so scan from the canonical base selected from the manifest rather than from
         // the executing slot.
@@ -13343,39 +13333,18 @@ function synthesizeMessageBusRoute(
         // its recipient is that same covenant, shifting the entire physical settlement window.
         // The selected participant already proved participantOutputBase >= 0 before assigning activeOutputBase.
         // Keep 65535 available as a real output index; it is not an absent-output proof at this point.
-        for (bigint slot = activeBase;
-          slot < activeBase + activeBlockSize; slot = slot + 1) {
-          bigint outputSlot = activeOutputBase + slot - activeBase;
-          bigint isSidecarSlot = 0;
-          bigint isDeploymentSlot = 0;
-          for (bigint deployment = 0; deployment < activeDeploymentTargets.length;
-            deployment = deployment + 4) {
-            bigint deploymentStart = int(bytes.concat(
-              activeDeploymentTargets.slice(deployment, deployment + 2), hex"00"
-            ));
-            bigint deploymentCount = int(bytes.concat(
-              activeDeploymentTargets.slice(deployment + 2, deployment + 4), hex"00"
-            ));
-            if (outputSlot >= deploymentStart && outputSlot < deploymentStart + deploymentCount) {
-              isDeploymentSlot = 1;
-            }
-          }
-          ${sidecarVerificationMode ? `for (bigint sidecar = 0;
-            sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
-            if (slot == int(bytes.concat(
-              activeSidecarTargets.slice(sidecar, sidecar + 2), hex"00"))) {
-              isSidecarSlot = 1;
-            }
-          }` : ''}
-          // Every invoked graph handler independently raises its compiler-owned DIRTY bit at each reached
-          // state/resource/effect mutation and verifies that bit for a static row. Retain this whole-block
-          // snapshot as defense in depth when the participant is entirely static. A mixed participant can
-          // legitimately contain mutating sibling rows, so snapshotting its final block merely because one row
-          // is static rejects those authenticated siblings and adds no row-local protection.
-          // A return-event slot may publish the authenticated result vector; all other slots of an all-static
-          // participant remain byte-for-byte and value-for-value preserved.
-          if (${kernelLifecycleHandlers.size > 0 ? 'activeLifecycleMode == 0 && ' : ''}
-            activeStaticInvocationRows > 0 && activeStaticInvocationRows == consumedLocalRows) {
+        // Every invoked graph handler independently raises its compiler-owned DIRTY bit at each reached
+        // state/resource/effect mutation and verifies that bit for a static row. Retain this whole-block
+        // snapshot as defense in depth when the participant is entirely static. A mixed participant can
+        // legitimately contain mutating sibling rows, so snapshotting its final block merely because one row
+        // is static rejects those authenticated siblings and adds no row-local protection.
+        // A return-event slot may publish the authenticated result vector; all other slots of an all-static
+        // participant remain byte-for-byte and value-for-value preserved.
+        if (${kernelLifecycleHandlers.size > 0 ? 'activeLifecycleMode == 0 && ' : ''}
+          activeStaticInvocationRows > 0 && activeStaticInvocationRows == consumedLocalRows) {
+          for (bigint slot = activeBase;
+            slot < activeBase + activeBlockSize; slot = slot + 1) {
+            bigint outputSlot = activeOutputBase + slot - activeBase;
             require(tx.outputs[outputSlot].value == tx.inputs[slot].value);
             if (outputSlot != activeReturnOutput) {
               require(tx.outputs[outputSlot].lockingBytecode == tx.inputs[slot].lockingBytecode);
@@ -13387,71 +13356,97 @@ function synthesizeMessageBusRoute(
               }
             }
           }
+        }
+        bytes activeMutableCategory = bytes.concat(activeCategory, hex"01");
+        bigint physicalSatoshiContainers = 0;
+        bigint physicalTokenContainers = 0;
+        bigint physicalValueOutputs = 0;
+        bigint physicalTokenOutputs = 0;
+        bigint physicalEventOutputs = 0;
+        bigint physicalResourceEndpoints = 0;
+        // One pass per slot. Token categories are 0, 32 or 33 bytes, and the satoshi, token-container, value and
+        // token-output counts are mutually exclusive: the first two need a non-funder input, the last two a
+        // funder input, each pair split by an empty or present category.
+        for (bigint slot = activeBase;
+          slot < activeBase + activeBlockSize; slot = slot + 1) {
+          bigint outputSlot = activeOutputBase + slot - activeBase;
+          bytes inCategory = tx.inputs[slot].tokenCategory;
+          bytes outCategory = tx.outputs[outputSlot].tokenCategory;
+          ${kernelDeploymentHandlers.size === 0 ? '' : `bigint isDeploymentSlot = 0;
+          for (bigint deployment = 0; deployment < activeDeploymentTargets.length;
+            deployment = deployment + 4) {
+            bigint deploymentStart = int(bytes.concat(
+              activeDeploymentTargets.slice(deployment, deployment + 2), hex"00"
+            ));
+            bigint deploymentCount = int(bytes.concat(
+              activeDeploymentTargets.slice(deployment + 2, deployment + 4), hex"00"
+            ));
+            if (outputSlot >= deploymentStart && outputSlot < deploymentStart + deploymentCount) {
+              isDeploymentSlot = 1;
+            }
+          }`}
+          ${sidecarVerificationMode ? `bigint isSidecarSlot = 0;
+          for (bigint sidecar = 0;
+            sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
+            if (slot == int(bytes.concat(
+              activeSidecarTargets.slice(sidecar, sidecar + 2), hex"00"))) {
+              isSidecarSlot = 1;
+            }
+          }` : ''}
+          if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
+            if (outCategory.length == 0) {
+              if (tx.outputs[outputSlot].lockingBytecode != hex"51") {
+                physicalValueOutputs = physicalValueOutputs + 1;
+              }
+            } else if (${kernelDeploymentHandlers.size === 0 ? '' : 'isDeploymentSlot == 0 && '}
+              // Participant-owned state/event NFTs use the participant category and are authenticated as
+              // resource/event rows. A tcTransfer category is necessarily foreign to that participant in this
+              // admitted shape; excluding the local category prevents trailing chunk mints from satisfying the
+              // token-settlement cardinality check.
+              outCategory.slice(0, 32) != activeCategory) {
+              physicalTokenOutputs = physicalTokenOutputs + 1;
+            }
+          } else if (inCategory.length == 0) {
+            if (outCategory.length == 0
+              && tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode) {
+              physicalSatoshiContainers = physicalSatoshiContainers + 1;
+            }
+          } else if (${sidecarVerificationMode ? 'isSidecarSlot == 0 && ' : ''}inCategory.slice(0, 32) != activeCategory) {
+            physicalTokenContainers = physicalTokenContainers + 1;
+          }
           // The return coordinate publishes a mutable participant NFT, but it is authenticated separately by
           // the result-vector commitment below. It is not a state-resource endpoint and must not inflate the
           // resource cardinality merely because the route returns a value.
-          if (outputSlot != activeReturnOutput && tx.inputs[slot].tokenCategory.length == 33
-            && tx.inputs[slot].tokenCategory.slice(0, 32) == activeCategory
-            && tx.inputs[slot].tokenCategory.slice(32, 33) == hex"01") {
-            physicalResourceEndpoints = physicalResourceEndpoints + 1;
-          }
-          if (outputSlot != activeReturnOutput && tx.outputs[outputSlot].tokenCategory.length == 33
-            && tx.outputs[outputSlot].tokenCategory.slice(0, 32) == activeCategory
-            && tx.outputs[outputSlot].tokenCategory.slice(32, 33) == hex"01") {
-            physicalResourceEndpoints = physicalResourceEndpoints + 1;
-          }
-          if (tx.inputs[slot].tokenCategory.length == 0
-            && tx.outputs[outputSlot].tokenCategory.length == 0
-            && tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode
-            && tx.inputs[slot].lockingBytecode != hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
-            physicalSatoshiContainers = physicalSatoshiContainers + 1;
-          }
-          if ((tx.inputs[slot].tokenCategory.length == 32 || tx.inputs[slot].tokenCategory.length == 33)
-            && tx.inputs[slot].tokenCategory.slice(0, 32) != activeCategory.slice(0, 32)
-            && isSidecarSlot == 0
-            && tx.inputs[slot].lockingBytecode != hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
-            physicalTokenContainers = physicalTokenContainers + 1;
-          }
-          if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}"
-            && tx.outputs[outputSlot].tokenCategory.length == 0
-            && tx.outputs[outputSlot].lockingBytecode != hex"51") {
-            physicalValueOutputs = physicalValueOutputs + 1;
-          }
-          if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}"
-            && isDeploymentSlot == 0
-            && (tx.outputs[outputSlot].tokenCategory.length == 32
-              || (tx.outputs[outputSlot].tokenCategory.length == 33
-                && tx.outputs[outputSlot].tokenCategory != bytes.concat(activeCategory, hex"02")))
-            // Participant-owned state/event NFTs use the participant category and are authenticated as
-            // resource/event rows. A tcTransfer category is necessarily foreign to that participant in this
-            // admitted shape; excluding the local category prevents trailing chunk mints from satisfying the
-            // token-settlement cardinality check.
-            && tx.outputs[outputSlot].tokenCategory.slice(0, 32) != activeCategory) {
-            physicalTokenOutputs = physicalTokenOutputs + 1;
-          }
-          if (outputSlot != activeReturnOutput && tx.outputs[outputSlot].tokenCategory == activeCategory
-            && tx.inputs[slot].tokenCategory != activeCategory
-            // Event rows always carry their encoded effect. Empty immutable NFTs are reserved frame/resource
-            // endpoints, not emitted events, even when they use the participant's category. CREATE/proxy
-            // logical-identity anchors (SCID v1: magic||version) are also not callManifest event rows; counting
-            // them as physical events breaks event-only (no dataNft) compose when the identity is minted onto a
-            // previously tokenless pad while kind-2 only records the real emit.
-            && tx.outputs[outputSlot].nftCommitment.length > 0
-            && (tx.outputs[outputSlot].nftCommitment.length < 5
-              || tx.outputs[outputSlot].nftCommitment.slice(0, 5) != hex"5343494401")
-            && tx.outputs[outputSlot].tokenAmount == 0) {
-            physicalEventOutputs = physicalEventOutputs + 1;
-          }
-          // Delegate execution can relocate an existing immutable participant NFT (for example, its logical
-          // identity anchor) to another slot in the same authenticated block. Count net creation, not a
-          // slot-local category transition, so such moves cancel while newly emitted event NFTs remain.
-          if (outputSlot != activeReturnOutput && tx.inputs[slot].tokenCategory == activeCategory
-            && tx.outputs[outputSlot].tokenCategory != activeCategory
-            && tx.inputs[slot].nftCommitment.length > 0
-            && (tx.inputs[slot].nftCommitment.length < 5
-              || tx.inputs[slot].nftCommitment.slice(0, 5) != hex"5343494401")
-            && tx.inputs[slot].tokenAmount == 0) {
-            physicalEventOutputs = physicalEventOutputs - 1;
+          if (inCategory.length + outCategory.length > 0 && outputSlot != activeReturnOutput) {
+            if (inCategory == activeMutableCategory) {
+              physicalResourceEndpoints = physicalResourceEndpoints + 1;
+            }
+            if (outCategory == activeMutableCategory) {
+              physicalResourceEndpoints = physicalResourceEndpoints + 1;
+            }
+            if (outCategory == activeCategory) {
+              // Event rows always carry their encoded effect. Empty immutable NFTs are reserved frame/resource
+              // endpoints, not emitted events, even when they use the participant's category. CREATE/proxy
+              // logical-identity anchors (SCID v1: magic||version) are also not callManifest event rows;
+              // counting them as physical events breaks event-only (no dataNft) compose when the identity is
+              // minted onto a previously tokenless pad while kind-2 only records the real emit.
+              if (inCategory != activeCategory
+                && tx.outputs[outputSlot].nftCommitment.length > 0
+                && (tx.outputs[outputSlot].nftCommitment.length < 5
+                  || tx.outputs[outputSlot].nftCommitment.slice(0, 5) != hex"5343494401")
+                && tx.outputs[outputSlot].tokenAmount == 0) {
+                physicalEventOutputs = physicalEventOutputs + 1;
+              }
+            } else if (inCategory == activeCategory
+              // Delegate execution can relocate an existing immutable participant NFT (for example, its logical
+              // identity anchor) to another slot in the same authenticated block. Count net creation, not a
+              // slot-local category transition, so such moves cancel while newly emitted event NFTs remain.
+              && tx.inputs[slot].nftCommitment.length > 0
+              && (tx.inputs[slot].nftCommitment.length < 5
+                || tx.inputs[slot].nftCommitment.slice(0, 5) != hex"5343494401")
+              && tx.inputs[slot].tokenAmount == 0) {
+              physicalEventOutputs = physicalEventOutputs - 1;
+            }
           }
         }
         require(activeResourceEndpoints == physicalResourceEndpoints);
@@ -13468,7 +13463,7 @@ function synthesizeMessageBusRoute(
         // Selector-derived lifecycle (activeLifecycleMode from the local batch) is independent of V4 KTS row
         // frames. The V4 participant suffix stays neutral (mode=0,count=0); non-zero wire lifecycle remains
         // refused at the V4 cursor above. Detached sig leaves on lifecycle handlers stay KERNEL_TX_SIGNATURE.
-        require(cursor == callManifest.length && consumedLocalRows == expectedLocalRows
+        require(rowCursor == callManifest.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);
         ${!graphExecutionContext ? '' : `
         require(suppliedFixedSize == activeFixedSize && suppliedBlockSize == activeMaximumSize);
@@ -17610,7 +17605,7 @@ function compileResolvedAst(
           ? [{ selector: binToHex(fn.functionSelector), frame }] : [];
       });
     return policies.map(({ selector, frame }, index) =>
-      `${index === 0 ? 'if' : 'else if'} (callManifest.slice(rowStart + 10, rowStart + 14) == hex"${selector}") { `
+      `${index === 0 ? 'if' : 'else if'} (rowHeader.slice(10, 14) == hex"${selector}") { `
       + `require(rowSignatureFrame == hex"${frame}"); }`).join(' ')
       + `${policies.length > 0 ? ' else' : ''} { require(rowSignatureFrame.length == 0); }`;
   };

@@ -42,7 +42,7 @@ import {
 } from '../../test-util.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { assertAuthenticatingVmEvidence } from '../vm-evidence.js';
-import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
+import { createMessageBusCapstoneTestProvider, verifierInputCosts } from './message-bus-semantic-profile.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { randomUtxo } from '../../../src/utils.js';
@@ -1432,6 +1432,8 @@ describe('messageBus.compose atomic transaction', () => {
 
     const built = await composition.build();
     expect(vmRejects(built)).toBe(false);
+    // The relaxed profile lifts the per-input operation budget; each verifier must still fit its real one.
+    expect(verifierInputCosts(built).filter(({ cost, budget }) => cost > budget)).toEqual([]);
     const hostileEvent = await composition.build();
     mutateAuthenticatedFrame(hostileEvent, '', 'messageEnvelope-event');
     expect(vmRejects(hostileEvent)).toBe(true);
@@ -3081,6 +3083,7 @@ describe('messageBus.compose atomic transaction', () => {
     });
 
     const built = await composition.build();
+    expect(verifierInputCosts(built).filter(({ cost, budget }) => cost > budget)).toEqual([]);
     const eventOutputIndex = built.outputs.findIndex((output) =>
       output.token?.category === calleeSetup.categoryId && output.token.nft?.capability === 'none');
     expect(eventOutputIndex).toBeGreaterThan(0);

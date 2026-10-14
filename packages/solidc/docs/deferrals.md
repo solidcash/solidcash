@@ -1859,6 +1859,45 @@ levers, in measured order on that callee:
 Size pins: MinimalNativeToken 7,500 -> 7,473 B, OzBchNativeInheritance 9,499 -> 9,433 B, NativeUsdt master
 9,239 -> 9,039 B. The verifiers (9.91M and 15.46M against 7.23M) are unchanged and remain stage 3.
 
+Stage 3 (2026-10-14, the atomic verifier's operation cost):
+
+- Where it went (pooled title, cost attributed to verifier source lines): the callee's verifier (15.46M) spent
+  8.5M in the row loop (10 rows, about 850k each), 5.0M in the per-slot walk (72 slots, about 69k each) and 1.5M
+  in the participant loop; the caller's (9.91M) the same row and participant loops. 6.1M of the callee's cost was
+  instructions stepped over in untaken arms (BCH-2026 charges each one), and most of the executed rest was deep
+  local reassignments: a write at stack depth d costs about 3d instructions unrolled and about 16d through the
+  counted loop (depths 14..27); the per-field loop alone rewrote `cursor` eight times a row at depth 61.
+  Hashing was under 10k and byte copies of the manifest about 1.3M.
+- `outlineMessageBusVerifierArms` (after the stack-suffix outlining, detached program only) moves every
+  conditional arm of at least 8 instructions, 5 inside a loop, into its own function: a not-taken arm steps over a
+  push and an OP_INVOKE. Stepped-over cost on the callee 6.13M -> 0.31M; the covenant gains about 7 B per arm.
+- A verifier reassignment never takes the counted loop: the ROLL rotation through depth 17, the unrolled shuttle
+  beyond (the stack-suffix outlining keeps it about as small).
+- Row loop: one 21-byte header slice; the four fields and the signature frame parsed in line with one cursor
+  write each; `rowFrames` (consumer and depth, 2 B per invocation row) replaces `rowConsumers`, `rowDepths` and
+  `invocationRows`, `rowFrames.length == row * 2` replaces `effectsStarted` and an unset `previousEventTarget`
+  replaces `eventsStarted`; carried values ordered by write frequency, each row's values dropped before the counter
+  advances; the graph-only bookkeeping (emissions, callers, completions, boundaries) only in a graph context;
+  the manifest version flags computed once.
+- Slot walk: one classifying pass per slot that reads each side's category once (the satoshi, token-container,
+  value and token-output counts are mutually exclusive), the all-static snapshot in its own guarded loop, and no
+  deployment-target loop without a deployment handler. Participant loop: fewer cursor writes, the V1 output scan
+  compares the category first. Root envelope reader: one header slice (also in the route binder: a root-envelope
+  route is 17 B smaller).
+- Measured, standard cost against the real budget (7,234,400 at the 9,000 B verifier floor): pooled caller
+  verifier 9.91M -> 3.09M, callee 15.46M -> 3.82M; "binds an emitted event row" 4.39M / 4.57M -> 1.23M / 1.15M.
+  Covenant: pooled callee 6,932 -> 7,031 B (188 functions), caller 6,001 -> 5,877 B. Both titles assert the real
+  budget through `verifierInputCosts`; `MESSAGE_BUS_VERIFIER_COST_LOG=<file>` logs every sent composition's
+  verifier costs by test title. Its per-input byte assertion is stage 2's (callee route input 12,099 B before
+  stage 2, 9,830 B after).
+- Not built: skipping checks another input of the same transaction already ran; not needed for the budget.
+- Still over the real budget in `AtomicMessageBusCompose`: "co-spends a compiler-positioned blockhash oracle"
+  (one verifier 7.96M, 257-input transaction) and "authenticates NFT capability, commitment, recipient, and
+  mixed-container settlement" (11.11M and 15.88M, 1,024 inputs). Two walks scale with the transaction there: the
+  V1 participant-output scan (every participant over every output, about 2.3k per output) and the slot walk (about
+  9k per slot of the active block). Bounding the V1 scan to the block changes which output a duplicated minting
+  master selects, and the route binder scans the same way, so it needs its own design.
+
 ## keccak256 inside an internal helper of a STATEFUL contract (2026-08-07) - RESOLVED
 
 **RESOLVED**, kept for the diagnosis and for the ruled-out list. A `keccak256` reached through an

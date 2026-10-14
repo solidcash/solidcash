@@ -10,7 +10,7 @@ import { MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES } from '../../../src/
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
-import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
+import { createMessageBusCapstoneTestProvider, verifierInputCosts } from './message-bus-semantic-profile.js';
 
 const HOP = `
 interface ICapacityHop { function run(int value) returns (int); }
@@ -80,17 +80,18 @@ interface CapacityReading {
 }
 
 // Exact stock-VM snapshot of the finalized two-party bytes; the property is the bounds asserted before it (the
-// chain fits the stock limits). Measured at feat/per-call-fix ac92c7446, after the merged slot passes: kernel
-// transactionBytes 24_227 -> 24_303, legacy 24_698 -> 24_747; the participant inputs moved, the worst input stays a
-// verifier (kernel unchanged, legacy 6_113_136 -> 6_113_248).
+// chain fits the stock limits). Measured on feat/ab-verifier after the verifier's arm outlining and single-pass
+// row and slot walks: only the two verifier inputs moved (kernel 3_068_177 / 3_037_456 -> 934_974 / 786_296,
+// legacy 6_113_248 / 6_020_083 -> 2_483_629 / 2_001_909), so the kernel worst input is now participant 1 and the
+// legacy worst stays a verifier; transaction bytes unchanged.
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
     transactionBytes: 24_303, callManifestBytes: 294,
-    worstOperationCost: 3_068_177, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.4241093940064138,
+    worstOperationCost: 478_356, worstMaximumOperationCost: 1_949_600,
+    worstRatio: 0.2453610997127616,
     inputOperationCosts: [
-      487_031, 478_356, 695, 3_068_177, 3_037_456, 27_321,
+      487_031, 478_356, 695, 934_974, 786_296, 27_321,
     ],
     inputMaximumOperationCosts: [
       2_485_600, 1_949_600, 34_400, 7_234_400, 7_234_400, 112_800,
@@ -99,10 +100,10 @@ const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>>
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
     transactionBytes: 24_747, callManifestBytes: 294,
-    worstOperationCost: 6_113_248, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.8450248811235209,
+    worstOperationCost: 2_483_629, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.34330822182903903,
     inputOperationCosts: [
-      475_756, 501_059, 695, 6_113_248, 6_020_083, 27_321,
+      475_756, 501_059, 695, 2_483_629, 2_001_909, 27_321,
     ],
     inputMaximumOperationCosts: [
       2_420_000, 2_370_400, 34_400, 7_234_400, 7_234_400, 112_800,
@@ -143,11 +144,13 @@ const buildChain = async (
     new Contract(rootArtifact, [contracts[0].inner.lockingBytecode], { provider }), rootArtifact,
   ));
   const fee = await createBareP2pkhFeeFunder(provider, 2_000_000n);
-  return messageBus.compose({
+  const builder = await messageBus.compose({
     calls: contracts.map((contract, index) => index === 0 ? contract.call.root(1n) : contract.call.run(1n)),
     funder: fee,
     changeAddress: fee.unlocker.generateLockingBytecode(),
   }).build();
+  if (process.env.MESSAGE_BUS_VERIFIER_COST_LOG) verifierInputCosts(builder);
+  return builder;
 };
 
 /** R-1 regression: every participant adds a state-resource effect to the returning chain. */
@@ -174,11 +177,13 @@ const buildResourceHeavyChain = async (participants: number): Promise<Transactio
     new Contract(rootArtifact, [contracts[0].inner.lockingBytecode], { provider }), rootArtifact,
   ));
   const fee = await createBareP2pkhFeeFunder(provider, 2_000_000n);
-  return messageBus.compose({
+  const builder = await messageBus.compose({
     calls: contracts.map((contract, index) => index === 0 ? contract.call.root(1n) : contract.call.run(1n)),
     funder: fee,
     changeAddress: fee.unlocker.generateLockingBytecode(),
   }).build();
+  if (process.env.MESSAGE_BUS_VERIFIER_COST_LOG) verifierInputCosts(builder);
+  return builder;
 };
 
 const measure = (participants: number, builder: TransactionBuilder): CapacityReading => {
@@ -293,42 +298,34 @@ describe('atomic single-transaction capacity', () => {
     }
   }, 600_000);
 
-  // Kernel density boundary: 4- and 5-participant kernel chains now report no stock-VM error (the same cost
-  // reduction that lowered the two-party pins moved them under the density ceiling), while 6 and 7 participants
-  // still exceed it. The 4-participant legacy chain still exceeds it. The property is unchanged: each listed
-  // composition is classified against the stock operation-cost density limit.
+  // The verifier inputs were the dense ones. The cost reduction that lowered the two-party pins moved the
+  // 4-participant legacy and the 6- and 7-participant kernel chains under the stock density ceiling too, so every
+  // standard-size chain is classified as accepted; the property is unchanged: each listed composition is
+  // classified against the stock operation-cost density limit.
   it.each([
     { count: 4, messageBusKernel: false, convention: 'legacy' },
+    { count: 4, messageBusKernel: true, convention: 'kernel' },
+    { count: 5, messageBusKernel: true, convention: 'kernel' },
     { count: 6, messageBusKernel: true, convention: 'kernel' },
     { count: 7, messageBusKernel: true, convention: 'kernel' },
-  ])('classifies a $count-participant $convention chain at the stock operation-density boundary', async ({
+  ])('accepts a $count-participant $convention chain under the stock operation-density boundary', async ({
     count, messageBusKernel,
   }) => {
     const builder = await buildChain(count, messageBusKernel);
     const transaction = builder.buildLibauthTransaction();
     expect(encodeTransaction(transaction).length).toBeLessThanOrEqual(100_000);
-    expect(stockVmErrors(builder)).toContainEqual(expect.stringMatching(/operation cost density limit/));
+    expect(stockVmErrors(builder)).not.toContainEqual(expect.stringMatching(/operation cost density limit/));
   }, 600_000);
 
   // Each participant's covenant carries the October hardening (container sums, foreign-token keep, record census),
-  // so eight participants no longer fit a standard transaction: 102,186 B when this row moved.
-  it('classifies an 8-participant kernel chain over the standard size and the stock operation-density boundary',
+  // so eight participants no longer fit a standard transaction: 102,186 B when this row moved. Its verifiers now
+  // fit their density budget, so only the size bound refuses it.
+  it('classifies an 8-participant kernel chain over the standard size and under the stock operation-density boundary',
     async () => {
       const builder = await buildChain(8, true);
       expect(encodeTransaction(builder.buildLibauthTransaction()).length).toBeGreaterThan(100_000);
-      expect(stockVmErrors(builder)).toContainEqual(expect.stringMatching(/operation cost density limit/));
-    }, 600_000);
-
-  // The same cost reduction that lowered the two-party pins moved the 4- and 5-participant kernel chains under
-  // the stock density ceiling, so they are classified as accepted rather than listed in the refusal table.
-  it.each([4, 5])(
-    'accepts a %i-participant kernel chain under the stock operation-density boundary', async (count) => {
-      const builder = await buildChain(count, true);
-      const transaction = builder.buildLibauthTransaction();
-      expect(encodeTransaction(transaction).length).toBeLessThanOrEqual(100_000);
       expect(stockVmErrors(builder)).not.toContainEqual(expect.stringMatching(/operation cost density limit/));
-    }, 600_000,
-  );
+    }, 600_000);
 
   it.skipIf(Boolean(process.env.TESTS_USE_REGTEST)).each([6])(
     'converges a %i-participant resource-heavy chain without the former pass refusal', async (count) => {
@@ -343,21 +340,23 @@ describe('atomic single-transaction capacity', () => {
     }, 300_000,
   );
 
+  // Only the standard size bound needs the relaxed profile now: every input fits its stock density budget.
   it.skipIf(Boolean(process.env.TESTS_USE_REGTEST)).each([8])(
     'converges a %i-participant resource-heavy chain only under the relaxed semantic profile', async (count) => {
       const builder = await buildResourceHeavyChain(count);
       const transaction = builder.buildLibauthTransaction();
       expect(encodeTransaction(transaction).length).toBeGreaterThan(100_000);
-      expect(stockVmErrors(builder)).toContainEqual(expect.stringMatching(/operation cost density limit/));
+      expect(stockVmErrors(builder)).not.toContainEqual(expect.stringMatching(/operation cost density limit/));
     }, 300_000,
   );
 
-  // The composition pass converges under the diagnostic profile, but these deliberately resource-heavy shapes
-  // exceed stock BCH-2026 operation-cost density on a live node. Pin that boundary rather than timing out while
-  // treating a consensus refusal as a composition regression.
-  it.runIf(Boolean(process.env.TESTS_USE_REGTEST)).each([6, 8])(
-    'classifies a %i-participant resource-heavy chain as over the live operation-cost budget', async (count) => {
-      await expect(buildResourceHeavyChain(count)).rejects.toThrow(/operation cost density limit/);
+  // These resource-heavy shapes exceeded stock BCH-2026 density on a live node while the verifier inputs were
+  // dense; the 8-participant mock reading above now fits that budget, so the standard-size 6-participant chain is
+  // classified as within it on the node as well.
+  it.runIf(Boolean(process.env.TESTS_USE_REGTEST)).each([6])(
+    'classifies a %i-participant resource-heavy chain as within the live operation-cost budget', async (count) => {
+      const builder = await buildResourceHeavyChain(count);
+      expect(stockVmErrors(builder)).not.toContainEqual(expect.stringMatching(/operation cost density limit/));
     }, 300_000,
   );
 });

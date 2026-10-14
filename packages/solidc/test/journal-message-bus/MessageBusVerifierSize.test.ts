@@ -23,11 +23,12 @@ describe('atomic verifier bytecode specialization', () => {
     // while the bounds retain deliberate headroom below BCH's deployment limit. Re-pinned after the October
     // hardening (feat/parity and the reaudit, whose stateful entries now also sum their satoshi container and
     // scan for foreign containers): +357 B in both conventions, and the bus tax grew 39 B. Again when those scans
-    // listed the slots they act on in one classifying pass per side: direct +46 B, composed +104 B.
+    // listed the slots they act on in one classifying pass per side: direct +46 B, composed +104 B. Again after the
+    // atomic bus stage 2 (no PUSHDATA4 carrier arm under a 10,000 B blob bound, shared stack helpers): composed -56 B.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
       direct: 543,
-      composed: 1881,
-      frameworkTax: 1338,
+      composed: 1825,
+      frameworkTax: 1282,
     });
     expect(composed).toBeLessThanOrEqual(1900);
     expect(composed - direct).toBeLessThanOrEqual(1360);

@@ -1244,18 +1244,19 @@ describe('message-bus compilation selection', () => {
   });
 
   it('allocates one route slot per wide event rather than phantom commitment chunks', () => {
+    // Top-level kernel emits stream with no event band; conditional ones keep the per-row windows measured here.
     const artifact = compileString(`contract WideEvents {
       int last;
       event Wide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e);
       event Narrow(int value);
       function emitWide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e) public {
         last = 1;
-        emit Wide(a, b, c, d, e);
+        if (a != b) emit Wide(a, b, c, d, e);
         require(last == 1);
       }
       function emitNarrow(int value) public {
         last = value;
-        emit Narrow(value);
+        if (value > 0) emit Narrow(value);
         require(last == value);
       }
     }`, {

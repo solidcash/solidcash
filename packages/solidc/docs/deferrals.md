@@ -2201,6 +2201,24 @@ accepting a callee whose writes land in the callee's own records, and the advers
 (non-framed) deploy in `sc-deploy.ts` shares the same unproven-coin shape SDKFRAMED-1 closed for framed deploys; no
 audit row names it.
 
+**STATUS 2026-10-14 (SDK builder drafted; a compiler-side record read remains).** The SDK genesis builder is now
+drafted in `deploy.ts` (`buildHopPlan` gains a genesis shape that mints the proxy master and creates the proxy's data
+records, runs the first callee's validator instead of the proxy's, and spends the proxy's funding coin as the lone
+user input; `deployFramedProxy` settles that shape for a calling initializer and broadcasts it; `initializedProxyState`
+no longer refuses callees because the calling path bypasses it), and `assemble.ts` counts a minted master's created
+records in the created output region. Running the adversarial e2e test (`AuditSdkFramedProxyAtomic.test.ts`) surfaces
+what the estimate above missed: the COMPILED framed implementation entry itself does not read a created data record or
+a minted records-owner. `Atomic.initialize()` — even one that touches no state — fails inside `settleCallees` with
+"Program attempted to read from an invalid transaction UTXO index ... requested index: -32767" (0xffff = `INDEX_NONE`
+as a script number) around instruction 489 of the filled master, before the callee frame is judged. The read is in the
+shipped master head / data-record category verification, which assumes the records' owner and the records themselves
+are spent inputs; the genesis shape mints the owner and creates the records, so that read must instead go through the
+output side and treat `INDEX_NONE` as a created coordinate, the way the mapping-entry path already does
+(`emitReadOnlyEntryExistsCheck`). This is a compiler-side change in `GenerateTargetTraversal.ts`, not an SDK planner
+tweak, so item 2 remains open: the reverting calling-initializer test passes (the genesis derivation and refusal work
+end to end), but the atomic calling-initializer deploy cannot settle until the framed master head handles created data
+records. The drafted SDK changes are left uncommitted pending that compiler fix.
+
 ## Sorted batch targets sharing a node: one key written twice (DS-6 residual, 2026-10-12)
 
 **What:** a direct body such as `if (sel > 0) { delete m[k]; } else { m[j] = v; }` compiles to one linear

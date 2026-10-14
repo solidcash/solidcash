@@ -1238,6 +1238,23 @@ export async function assembleAtomicComposition(
         eventSignature: event.eventSignature,
         ...(event.chunked && { chunked: true as const }),
       })));
+    // A compact stream record's commitment is a fixed-point claim as well. The route stops at the first record it
+    // cannot match, so each pass discovers one more: feed the authenticated ones back into the records planned at
+    // their offsets under the same lock, or every pass restarts at the stream's first record. A chunked stream's
+    // records are learned whole by its builder.
+    const runtimeEventOffsets = new Set(runtimeEvents.filter((event) => !event.chunked).map((event) => event.offset));
+    for (const row of graph.callManifest.rows) {
+      if (row.kind !== 2 || row.owner !== participant.participant || row.mode !== 1
+        || !runtimeEventOffsets.has(row.targetOffset)) continue;
+      const planned = local.outputs[row.targetOffset];
+      const plannedLock = planned === undefined ? undefined
+        : typeof planned.to === 'string' ? addressToLockScript(planned.to) : planned.to;
+      if (planned?.token?.nft?.capability !== 'none' || plannedLock === undefined
+        || binToHex(plannedLock) !== row.subjectHex.toLowerCase()) continue;
+      local.outputs[row.targetOffset] = {
+        ...planned, token: { ...planned.token, nft: { ...planned.token.nft, commitment: row.effectHex } },
+      };
+    }
     // Event effects are fixed-point claims just like return values and mutable resources. Once a prior pass
     // has authenticated an event commitment, feed it back into the exact compiler-published participant slot;
     // otherwise every assembly pass recreates the empty probe placeholder and convergence can never advance

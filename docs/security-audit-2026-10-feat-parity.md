@@ -140,3 +140,24 @@ workflow itself were not run here. Source evidence: the resumed session's `scrat
   spendable after 144 blocks (`packages/utils/src/state.ts`, `buildEventNftCovenantScript`), so the review identified
   potential replay of an old log through that exception. No hostile VM reproduction was run. This and the lifecycle
   finding predate the stream-offset change and are not resolved by D30.
+
+## SDK equality observer follow-up (2026-10-14)
+
+The transcript's four remaining observer checks are now aware of outlined equality helpers:
+`computed-dynamic-chunks`, `computed-value-chunks`, `sc-derive-return-blob` and
+`stb-repair-computed-chunk-output`. They share `probe-instruction-sequence`'s exact instruction matcher,
+which follows constant helper identifiers through the executing VM's function table and recorded caller
+continuations. Unknown, malformed, dynamic, recursive or EVAL dispatch fails closed. Continuation lock
+confirmation uses the same matcher; count and reconstruction checks also recognize their preceding DROP/CAT
+across helper boundaries. Output ownership, ordinal, category, capability and descriptor checks stay in their
+existing callers. SIZE-only introspection and untaken branches do not become output expectations.
+
+Local evidence: `OutlinedEqualityObservers.test.ts` has 12 passing cases. It covers nested EQUALVERIFY and
+EQUAL/VERIFY event pins at the exact requested coordinate, outlined value-count checks, split continuation
+pins, commitment and lock repair, and exclusion of inactive/SIZE observations. Its inline and outlined dynamic
+convergence cases evaluate all three transaction inputs with the ordinary VM and refuse a changed chunk.
+The bounded adjacent check adds `ComputedValueChunkOwnership.test.ts` and `HashedReturnProbe.test.ts`:
+29 tests passed across those three files. Changed-source lint and the incremental build passed. No BCHN run,
+full suite or marketplace measurement was performed for this observer change; the historical closing-run
+counts above remain historical. The diagnostic convergence test explicitly uses devOracle and restores its
+prior mode; production recipe restrictions are unchanged. D30 and deferred model-B identity are unaffected.

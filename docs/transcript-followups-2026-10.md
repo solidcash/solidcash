@@ -20,7 +20,7 @@ Starting point: `feat/per-call` at `64c351077`. Work branch: `feat/transcript-fo
 | 2 | Stream placement for differing sibling reads/writes, plain batch and non-compose callees | Honest transactions settle for each shape; mutated stream records are refused | In progress: compact and chunked plain callees verified locally; sibling and read-only chunk placement pending |
 | 3 | SEM-1 exemptions and event-integrity hypotheses; older DS-1 and invoked-read reports | Hostile VM evidence supports a fix or a documented refutation for each finding | Pending |
 | 4 | Oracle call-path coverage, keeper deployment and typed live configuration | Focused call-path/deployment tests and documented typed configuration | Pending |
-| 5 | SDK observers across outlined equality checks | Computed chunks, values, returns and repairs agree for inline and outlined checks | Pending |
+| 5 | SDK observers across outlined equality checks | Computed chunks, values, returns and repairs agree for inline and outlined checks | Complete with focused local VM/unit evidence; no new live-node evidence |
 | 6 | Refresh marketplace artifacts and run its planned ladder checkpoint | Full normal compile with current compiler context, then recorded ladder outcomes | Pending |
 | 7 | Reconcile decisions and audit status | D26 and older residuals match implementation and verified results | Pending |
 
@@ -70,6 +70,12 @@ Starting point: `feat/per-call` at `64c351077`. Work branch: `feat/transcript-fo
   compact and chunk-count cases pass (2 focused tests). Build, changed-file lint and source-tree guard pass.
 - Parallel agents own security findings, oracle follow-ups and the four SDK equality observers. BCHN testing
   remains excluded for all workers.
+- The four equality observers and their value-chunk pin predicate now reuse the bounded instruction-sequence
+  recognizer across exact constant OP_INVOKE dispatch and call continuations. Dynamic or EVAL dispatch and
+  introspections used only for SIZE remain excluded. Inline/outlined computed chunks, mapping values, events,
+  repairs and lock reconstruction agree; dynamic cases pass the ordinary VM on all inputs and refuse tampering.
+  Focused validation: 29/29 tests across the 12 new observer cases and the existing value-chunk ownership and
+  hashed-return files. Changed-file lint passes; the project build watcher reports zero errors.
 
 Next: continue items 2-7. Under item 3, investigate the
 pre-existing graph-token bitmap layout: NFT counters begin at bit 8 while a kernel frame may reserve 255 site

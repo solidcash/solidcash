@@ -19,6 +19,7 @@ import {
   isConstrainedEvmResultVector,
   probeRequireStatement,
 } from './external-return-encoding.js';
+import { followsProbeEquality } from './probe-instruction-sequence.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
 import { extractHashedReturnCommitmentAtOutput } from './hashed-return-probe.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
@@ -602,10 +603,7 @@ export function messageBusEventCommitmentsFromTransaction(
     for (const state of trace) {
       if (state.controlStack.some((flag) => flag === false)) continue;
       if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT || state.stack.length < 2) continue;
-      const nextOpcode = state.instructions[state.ip + 1]?.opcode;
-      const tightEquality = nextOpcode === Op.OP_EQUALVERIFY
-        || (nextOpcode === Op.OP_EQUAL
-          && state.instructions[state.ip + 2]?.opcode === Op.OP_VERIFY);
+      const tightEquality = followsProbeEquality(state);
       if (!tightEquality) continue;
       const outputIndex = Number(decodeScriptNumber(state.stack[state.stack.length - 1]));
       if (!requested.has(outputIndex)) continue;

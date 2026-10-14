@@ -289,7 +289,7 @@ export function directConventionMasterLock(contract: Contract<any, any>): Uint8A
 
 export function getDataNftAddress(contract: Contract<any, any>, categoryId: string): string {
   validateCategoryId(categoryId);
-  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId), contractMasterLock(contract));
+  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId), directConventionMasterLock(contract));
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 

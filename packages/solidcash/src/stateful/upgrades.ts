@@ -2,7 +2,7 @@ import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   type Artifact, type AbiFunction, asmToBytecode, attachDecodedAccessors, buildEventNftCovenantScript,
-  computeEventNameHash,
+  computeEventNameHash, hasDataNftIndexTags,
 } from '@solidcash/utils';
 import {
   ContractFactory, type DeployedContract, type DeployContractOptions, selectGenesisFundingUtxo,
@@ -1131,13 +1131,19 @@ export function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact):
   const nextLayout = next.stateLayout;
   if (!prevLayout || !nextLayout) return;
   // upgradeProxy retargets the implementation without migrating the proxy's existing data NFTs.
-  // Even a 1 -> 2 increase changes NFT 0's commitment: multi-NFT layouts prefix every NFT with an
-  // index tag. A newly added NFT would also have no live UTXO to read or spend.
+  // An untagged singleton becoming a multi-NFT layout changes NFT 0's commitment: multiple records carry
+  // index tags. A newly added NFT would also have no live UTXO to read or spend.
   if (nextLayout.dataNftCount !== prevLayout.dataNftCount) {
     throw new Error(
       'Upgrade layout incompatibility: data NFT count changed '
       + `(old: ${prevLayout.dataNftCount}, new: ${nextLayout.dataNftCount}). `
       + 'Retargeting does not migrate existing proxy commitments or create data NFTs.',
+    );
+  }
+  if (prevLayout.dataNftCount > 0 && hasDataNftIndexTags(prevLayout) !== hasDataNftIndexTags(nextLayout)) {
+    throw new Error(
+      'Upgrade layout incompatibility: data NFT index-tag encoding changed. '
+      + 'Retargeting does not migrate existing proxy commitments.',
     );
   }
   const oldStructs = prevLayout.structs ?? [];

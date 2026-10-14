@@ -905,39 +905,49 @@ export default class MockNetworkProvider implements NetworkProvider {
    * The hardhat `ethers.getSigners()` analogue: `count` HD signers derived from {@link DEFAULT_MNEMONIC}
    * (m/44'/145'/0'/0/i), each pre-funded with a genesis-valid UTXO on this provider. Destructure the famous
    * way: `const [owner, addr1] = await provider.getSigners();`. Each is an HDSigner - a drop-in ContractFactory
-   * runner. `fundingUtxos > 1` gives every account multiple funding UTXOs (for accounts that deploy repeatedly).
+   * runner. `fundingUtxos > 1` gives every account multiple funding UTXOs. `genesisFundingUtxos` partitions
+   * those equal-value coins across distinct transactions, each with a genesis-eligible vout 0; the total balance
+   * remains `fundingUtxos * satoshis`, and remaining outputs are ordinary fee/block-slot funding.
    */
   async getSigners(
     count = 20,
-    opts: { satoshis?: bigint; mnemonic?: string; fundingUtxos?: number; path?: string } = {},
+    opts: { satoshis?: bigint; mnemonic?: string; fundingUtxos?: number; genesisFundingUtxos?: number; path?: string } = {},
   ): Promise<HDSigner[]> {
     const satoshis = opts.satoshis ?? 1_000_000n;
     const fundingUtxos = opts.fundingUtxos ?? 1;
+    const requestedGenesis = opts.genesisFundingUtxos ?? 1;
+    if (!Number.isSafeInteger(requestedGenesis) || requestedGenesis < 1) {
+      throw new Error('genesisFundingUtxos must be a positive whole number');
+    }
+    const fundingTransactions = Math.max(1, Math.min(fundingUtxos, requestedGenesis));
     const mnemonic = opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC;
     const signers = Array.from({ length: count }, (_, index) => this.getCachedSigner(index, { mnemonic, path: opts.path }));
     for (let index = 0; index < signers.length; index++) {
       const signer = signers[index];
       const key = this.signerKey(mnemonic, opts.path, index);
       if (this.fundedSignerKeys.has(key)) continue;
-      // Model prefunding as a fan-out transaction. Only vout 0 is a CashTokens genesis candidate; sibling
-      // outputs are category-neutral and can safely fill vmap/output-only block slots. The raw transaction
-      // is what genesis selection checks, so the txid has to be the hash of outputs that pay this signer.
+      // Every prefunding transaction contributes one genesis candidate. Partition the requested coin count
+      // rather than adding balance; nonzero outputs remain available while CREATE look-ahead reserves vout 0.
       const lockingBytecode = signer.getLockingBytecode();
-      const raw = encodeTransaction({
-        version: 2,
-        locktime: 0,
-        inputs: [{
-          outpointIndex: 0,
-          outpointTransactionHash: hexToBin(this.nextFundingTxid()),
-          sequenceNumber: 0xffffffff,
-          unlockingBytecode: Uint8Array.of(0x51),
-        }],
-        outputs: Array.from({ length: fundingUtxos }, () => ({ lockingBytecode, valueSatoshis: satoshis })),
-      });
-      const fundingTxid = binToHex(hash256(raw).reverse());
-      this.indexer.storage.storeRawTx(fundingTxid, binToHex(raw));
-      for (let i = 0; i < fundingUtxos; i++) {
-        await this.addUtxo(signer.getAddress(), { txid: fundingTxid, vout: i, satoshis });
+      for (let transactionIndex = 0; transactionIndex < fundingTransactions; transactionIndex++) {
+        const outputCount = Math.floor(fundingUtxos / fundingTransactions)
+          + (transactionIndex < fundingUtxos % fundingTransactions ? 1 : 0);
+        const raw = encodeTransaction({
+          version: 2,
+          locktime: 0,
+          inputs: [{
+            outpointIndex: 0,
+            outpointTransactionHash: hexToBin(this.nextFundingTxid()),
+            sequenceNumber: 0xffffffff,
+            unlockingBytecode: Uint8Array.of(0x51),
+          }],
+          outputs: Array.from({ length: outputCount }, () => ({ lockingBytecode, valueSatoshis: satoshis })),
+        });
+        const fundingTxid = binToHex(hash256(raw).reverse());
+        this.indexer.storage.storeRawTx(fundingTxid, binToHex(raw));
+        for (let i = 0; i < outputCount; i++) {
+          await this.addUtxo(signer.getAddress(), { txid: fundingTxid, vout: i, satoshis });
+        }
       }
       this.fundedSignerKeys.add(key);
     }

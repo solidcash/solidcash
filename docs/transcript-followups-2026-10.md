@@ -21,10 +21,17 @@ Starting point: `feat/per-call` at `64c351077`. Work branch: `feat/transcript-fo
 | 3 | SEM-1 exemptions and event-integrity hypotheses; older DS-1 and invoked-read reports | Hostile VM evidence supports a fix or a documented refutation for each finding | Complete with focused local VM evidence; explicit unsafe(0) policy unchanged |
 | 4 | Oracle call-path coverage, keeper deployment and typed live configuration | Focused call-path/deployment tests and documented typed configuration | Complete with focused local evidence; no new live-node evidence |
 | 5 | SDK observers across outlined equality checks | Computed chunks, values, returns and repairs agree for inline and outlined checks | Complete with focused local VM/unit evidence; no new live-node evidence |
-| 6 | Refresh marketplace artifacts and run its planned ladder checkpoint | Full normal compile with current compiler context, then recorded ladder outcomes | Complete: fresh 9-source/19-artifact compile; three selected titles fail in shared deployment setup before execution |
+| 6 | Refresh marketplace artifacts and run its planned ladder checkpoint | Full normal compile with current compiler context, then all three selected titles pass | Complete: offline mock checkpoint 3/3, 63 skipped; current artifacts and clean validation |
 | 7 | Reconcile decisions and audit status | D26 and older residuals match implementation and verified results | Complete for scoped findings and recorded checkpoint outcome |
 
 ## Current evidence and handoff
+
+Item 6 completed on 2026-10-14. The final complete normal compile produced 19 artifacts from 9 source jobs
+(0 cache hits). The proxied lane and fixture freshness gate passed. With diagnostic variables unset, the unchanged
+upstream checkpoint passed **3/3** (`post job 1`, `take job`, `approve result`), with 63 titles skipped, in 152.66
+seconds. Individual title times were 7.333, 45.183 and 96.717 seconds. The project-reference build, changed-file
+lint and source-tree guard pass. BCHN and full-suite runs remain excluded; this enlarged mock lane does not
+establish ordinary-chain deployability.
 
 - Added real verifier-budget assertions to the two original atomic-compose cases. Baseline oracle verifier:
   7,959,892 / 7,234,400. Baseline mixed NFT verifiers: 11,114,485 and 15,884,364 / 7,234,400.
@@ -111,7 +118,7 @@ Item 3 now has focused local VM evidence:
 
 These are bounded local VM checks; no BCHN runs were made.
 
-## Marketplace checkpoint outcome
+## Marketplace checkpoint history
 
 Normal compile completed with 9 Solidity sources in 9 jobs, 0 cache hits, and 19 artifacts. The fixture freshness
 gate passed against the current emitted compiler JavaScript and proxied lane stamp. The offline mock checkpoint
@@ -124,5 +131,58 @@ behavior or ordinary BCH deployability is established by this failing setup chec
 marketplace lane uses enlarged consensus limits. No upstream source was changed.
 
 Logs: `/tmp/codex-followups-marketplace-compile.log` and `/tmp/codex-followups-marketplace-checkpoint.log`.
-The next marketplace action is to resolve the lookahead genesis reservation before repeating these three titles.
-This is a newly recorded checkpoint blocker, outside the seven scoped follow-ups completed here.
+The user requested completion of item 6 after reviewing this checkpoint. Work continues to resolve the lookahead
+genesis reservation and make these three titles pass. The earlier failed checkpoint remains recorded above as the
+baseline. BCHN and full-suite runs remain excluded.
+
+The CREATE reservation blocker is fixed by partitioning each mock HRE account's existing 128 prefunding coins
+across four transactions. Four distinct vout-0 genesis coins are now available without changing the configured
+balance or broadcasting during nonce reads; 124 other coins remain available for fees. SDK defaults and
+live/regtest funding are unchanged. Two focused tests pass, including an actual framed deployment matching its
+reserved category and predicted address.
+
+The next setup blocker was a genuine proxy wire-format mismatch: an untagged singleton implementation could
+not share its record with a generated proxy that added a second, tagged pointer record. The opt-in
+`tagSingletonDataNfts` compiler option publishes the singleton's tagged encoding, reserves its header during
+packing, and keeps compiler/SDK reads and writes consistent. Generated proxies inherit that choice. Layout
+digests and upgrade checks distinguish the formats; existing untagged artifacts keep their format and mismatched
+proxies remain refused. The root and benchmark fixture configs enable the option while retaining their existing
+mock capacities. No upstream application source or test was edited.
+
+Focused validation so far: generated proxy 10/10, tagged SDK plus adjacent reader checks 10/10, upgrade layout
+6/6, tagged utility codec/digest checks 4/4, and singleton compiler checks 4/4 (self/external reads and writes,
+child genesis, and packing boundaries). The transitive project build, changed-file lint and source-tree guard pass.
+
+The refreshed fixture then passed both proxy deployments and their linking call, exposing a pre-existing token
+constructor failure. A neutral two-string constructor with a mapping mint and event reproduced it with tagging
+both disabled and enabled: the first string's output coordinate selected the next string's chunk. Framed dynamic
+write reconstruction now uses the authenticated output record base and record width, excluding physical event
+and callee slots. Both constructor cases pass, including exact string payloads, mapping value, event payload and
+hostile chunk-lock rejection; scripts are 9,944/9,977 bytes. The adjacent proxied dynamic-append/event case passes
+on every contract input. Declaration learning and its unknown-comparison refusal are unchanged; temporary probes
+were removed. A normal complete fixture recompile is required again before the marketplace checkpoint.
+
+The next focused run completed deployment and registration, then failed the first job's call-argument hash check.
+An optional arbitrator-registration call had structural conditional metadata but no predicate: helper inlining
+had stamped an artificial empty source-guard snapshot. The SDK therefore planned that skipped call before the
+first executed tag lookup. Helper lowering now captures lexical and early-return fallthrough guards before
+return normalization, renames their bindings and then prepends caller guards. Compiler guard controls pass 3/3;
+the proxy skipped/taken integration plus adjacent direct-guard control pass 3/3 with every VM verdict accepted,
+correct callee counts and persisted state. SDK planning and argument-hash enforcement remain unchanged.
+
+The job transaction and event assertions then passed, but its `jobs(0)` readback queried a master-bound address
+for the framed data record. `getDataNftAddress` now uses the existing convention-aware master binding, matching
+the framed category-only covenant while preserving the direct convention's binding. The tagged dynamic proxy
+getter and adjacent direct-convention control pass 2/2; the regression verifies a long struct-array element,
+preserved scalar state and reconnecting the handle. Strict record decoding and owner layouts are unchanged.
+The clean focused `post job 1` run now passes (11.31 seconds, 65 skipped); the three-title checkpoint follows.
+
+That checkpoint passed `post job 1` but exposed a shared setup failure for the other two titles: the worker
+whitelist appends a second event to the same newly created history value. The first append's 185-byte value was
+learned, but the second frame received an empty old-value witness. Settlement dependencies now include existing
+declared writes as well as shared spent nodes, so creation followed by a repeated write triggers replanning from
+the learned value. The old-value hash check and value learner remain unchanged. The neutral proxied two-append
+case, hostile empty-witness control and two adjacent repeated-write/read controls pass. Clean individual runs of
+`take job` and `approve result` pass in 52.48 and 102.17 seconds. The final combined checkpoint passes 3/3, as
+recorded above. Logs: `/tmp/codex-item6-marketplace-compile.log`, `/tmp/codex-item6-marketplace-checkpoint.log`,
+`/tmp/codex-item6-final-build.log` and `/tmp/codex-item6-lint.log`.

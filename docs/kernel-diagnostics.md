@@ -23,6 +23,13 @@ those clean paths. During debugging, run only the target test and at most one ad
 switch, classify it here as observational, output-changing, experimental, or timing-related; include a bounded
 invocation and explain what evidence it provides. Do not preserve one-off logging solely because it once helped.
 
+`compiler.tagSingletonDataNfts: true` is a persisted state-layout option, not a diagnostic switch. It adds a
+verified record-index header to single-record state so an implementation can share that record with a generated
+proxy that owns an additional pointer record. The artifact publishes `stateLayout.taggedDataNfts: true`; codecs,
+layout digests and proxy compatibility checks use that encoding. Existing untagged artifacts keep their format.
+Changing this option requires a normal complete project compile and an explicit state migration for existing
+deployments. It changes bytecode and commitments, so compare measurements only at the same recorded setting.
+
 `SOLIDC_DEBUG_EVENT_TRACE_PARITY=1` reruns a failed event probe with the expensive faithful recorder and
 throws if its event commitments or locking bytecodes differ from the bounded observer. It is a targeted
 cross-check, not part of a production or timing run.
@@ -104,4 +111,10 @@ every bump is one `false` test. The running totals are logged as `framed-compose
 attempts, which is what a lane log can read (a worker's exit-time output is dropped by the test runner); a test can
 read them directly through `framedComposerCounts()` in `packages/solidcash/src/framed/composer/counters.ts`.
 Use it to size a title's cost before changing the loop, and compare the same title before and after a change.
+
+`FRAMED_HOP_TRACE=1` reports framed proxy/callee planning and settlement attempts, including bounded comparison
+and instruction context on an implementation-frame refusal. It changes logging only; programs, witnesses and
+verdicts remain unchanged. Use it on one focused title, for example
+`FRAMED_HOP_TRACE=1 yarn workspace solidcash vitest --watch --config vitest.framed.config.ts test/framed/shapes/proxied-root-append.test.ts -t 'settles the record write and both appends'`.
+Recheck with the variable unset before recording a passing checkpoint or comparing timings.
 `docs/framed/NOPROXY_LANE_COST.md` is the reading that motivated it.

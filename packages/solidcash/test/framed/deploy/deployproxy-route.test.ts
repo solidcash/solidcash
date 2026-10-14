@@ -13,6 +13,7 @@ import {
 } from '../../../src/stateful/index.js';
 import { deployMaster } from '../../../src/framed/deploy/index.js';
 import { buildProxyArtifact } from '../../../src/framed/proxy/index.js';
+import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
 import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
@@ -90,6 +91,39 @@ function routedDeployment(): Promise<Routed> {
 }
 
 describe('deployProxy with a framed implementation', () => {
+  it('reads tagged implementation fields and dynamic rows after a proxied update', async () => {
+    const artifacts = compileStringMulti('pragma solidcash ^0.13.0;'
+      + ' contract Table {'
+      + '   struct Row { string note; bigint amount; }'
+      + '   bigint public counter;'
+      + '   Row[] public rows;'
+      + '   function initialize() { this.counter = 7; }'
+      + '   function append(string note, bigint amount) {'
+      + '     this.rows.push();'
+      + '     Row storage row = this.rows[this.rows.length - 1];'
+      + '     row.note = note; row.amount = amount;'
+      + '     this.counter = this.counter + 1;'
+      + '   }'
+      + ' }', { composition: 'framed', tagSingletonDataNfts: true });
+    const network = provider();
+    const signer = await fundedSigner(network, 0x54);
+    const deployed = await deployProxy(getContractFactory(artifacts.Table! as FramedArtifact, signer), []);
+    const handle = deployed as unknown as StatefulContract & {
+      append(note: string, amount: bigint): Promise<unknown>;
+      rows(index: number): Promise<{ note: string; amount: bigint }>;
+    };
+    expect(artifacts.Table!.stateLayout!.dataNftCount).toBe(1);
+    expect(buildProxyArtifact(artifacts.Table!).stateLayout!.dataNftCount).toBe(2);
+    expect(await handle.getState()).toMatchObject({ counter: 7n, rows: [] });
+    const note = 'a dynamic row crossing a chunk boundary '.repeat(5);
+    await handle.append(note, 9n);
+    expect(await handle.rows(0)).toMatchObject({ note, amount: 9n });
+    expect(await handle.getState()).toMatchObject({ counter: 8n, rows: [{ note, amount: 9n }] });
+    const connected = handle.connect(signer) as unknown as typeof handle;
+    expect(await connected.rows(0)).toMatchObject({ note, amount: 9n });
+    expect(Object.keys(await connected.getState()).sort()).toEqual(['counter', 'rows']);
+  }, 300_000);
+
   it('routes to the framed deployment and settles the initialize hop', async () => {
     const { artifacts, routed } = await routedDeployment();
     const deployment = routed.proxyDeployment;

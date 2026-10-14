@@ -90,6 +90,8 @@ export interface CompilerOptions {
   // exists only as an explicit migration/testing escape hatch for contracts that knowingly accept takeover.
   allowUnsafeOperations?: boolean;
   commitmentLimit?: number;
+  /** Encode an NFT-index tag even when fixed state occupies only one data NFT. Opt-in wire-layout choice. */
+  tagSingletonDataNfts?: boolean;
   // Solidity-source compatibility and EVM byte-parity mode: resolve `.sol` imports as solidcash sources,
   // accept `pragma solidity`, apply Solidity literal/type semantics, and emit EVM-faithful ABI words (32-byte
   // big-endian two's-complement) for the abi.* family.
@@ -1606,6 +1608,8 @@ export interface StateLayout {
   variables: readonly StateVariableInfo[];
   dataNftCount: number;
   commitmentLimit: number;
+  /** Explicit index-tag encoding for singleton records; absent preserves the historical count-based format. */
+  taggedDataNfts?: true;
   constructorInputs?: readonly AbiInput[];
   deployReads?: readonly DeployReadHint[];
   collections?: readonly CollectionInfo[];

@@ -21056,6 +21056,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           })),
           dataNftCount: node.deployedDataNftCount,
           commitmentLimit: this.compilerOptions.commitmentLimit ?? 128,
+          ...(this.compilerOptions.tagSingletonDataNfts === true && node.deployedDataNftCount === 1
+            && { taggedDataNfts: true }),
           structs: childDeploymentStructDefinitions(liveVars),
           collections: childDeploymentCollectionDefinitions(node.referencedContract!.collections),
         }),
@@ -23738,10 +23740,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * A contract whose fixed-size state spans more than one data NFT prepends a verifiable nftIndex tag
    * to every data-NFT commitment (so a higher-index NFT cannot be passed off as a lower one - they
-   * share one covenant address). Single-data-NFT contracts carry no tag. Mirrors isMultiDataNftLayout.
+   * share one covenant address). A singleton can explicitly opt into that encoding. Mirrors hasDataNftIndexTags.
    */
-  private isMultiDataNft(): boolean {
-    return this.stateVariables.some((v) => v.nftIndex >= 1);
+  private hasDataNftIndexTags(): boolean {
+    return this.compilerOptions.tagSingletonDataNfts === true || this.stateVariables.some((v) => v.nftIndex >= 1);
   }
 
   /** Consume a leading nftIndex tag without checking it. Stack: [commitment] -> [fields_blob]. */
@@ -32712,7 +32714,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const previousReadSegment = this.framedReadSegment;
     this.framedReadSegment = this.framedSegmentIndex;
     let firstField = true;
-    if (this.isMultiDataNft()) {
+    if (this.hasDataNftIndexTags()) {
       this.emit(encodeNftIndexTag(nftIdx), loc);
       this.pushToStack('(value)');
       firstField = false;
@@ -34717,7 +34719,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
         let firstField = true;
         // Multi-data-NFT layouts: stamp the leading nftIndex tag, then CAT the fields onto it.
-        if (this.isMultiDataNft()) {
+        if (this.hasDataNftIndexTags()) {
           this.emit(encodeNftIndexTag(nftIdx), locationData);
           this.pushToStack('(value)');
           firstField = false;
@@ -40304,6 +40306,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else emitAfterReturnEvent();
     } else {
       const emitReconstructedBase = (): void => {
+        if (this.readsRecordsFromFrame) {
+          // Framed chunks occupy declared records, not the transaction's output band. Events and co-spent
+          // callees can precede their physical outputs without adding records to this frame's segment. Use
+          // the same record width as reads, then let the declaration resolve each ordinal to its output.
+          this.emitRecordBlockBase('out', loc);
+          this.emit(encodeInt(BigInt(this.framedDynamicChunkWidth())), loc);
+          this.emit(Op.OP_ADD, loc);
+          this.emitLoopDeclaredNodeCount(loc, 1);
+          return;
+        }
         this.emitTrailingBlockBase(blockSize, loc);
         // Non-returning, non-loop callee blocks still precede local dynamic chunks.
         const externalCallOutputCount = this.externalCallSlots
@@ -40317,7 +40329,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       };
       const sharesRouteBand = this.currentFunction.messageBusRoute === true
         || this.currentFunction.graphEmissionHandler === true;
-      if (explicitDynamicBase >= 0 && sharesRouteBand) {
+      if (explicitDynamicBase >= 0 && sharesRouteBand && !this.readsRecordsFromFrame) {
         // Composed routes publish the exact first dynamic-chunk coordinate. An invoked route clone's active
         // input can be the adjacent executor rather than its participant owner, so reconstructing owner +
         // trailingBase shifts the whole chunk run by one. The witness already includes collection-iteration
@@ -40354,10 +40366,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
     }
     if (!this.usesDelegateTransactionSuffix()) {
-      // Returning-call bases include collection-iteration inputs within emitAfterReturnEvent above; an explicit
-      // dynamic base already includes them and must not count them again. A framed frame with a returning call
-      // took the reconstruction branch and adds them here as it always has.
-      if (returningExternalSlots.length > 0 && this.framedMaster) this.emitAddCollectionIterCounts(loc);
+      // A framed run is addressed in its segment's declared record band; co-spent returning calls and their
+      // physical inputs do not advance that ordinal.
       // The absolute dynamic witness locates the first INPUT chunk. A fixed sorted batch can mint an output-only
       // predecessor before the replacement chunks, so even a nonnegative input base must advance past that output
       // band. The batch count excludes entry proofs already in the input base. A framed run's own record sits
@@ -40704,7 +40714,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       precedingTypes: fieldsInNft.slice(0, sv.fieldIndex).map((field) => this.physicalFieldType(field)),
       targetType: new IntType(false, 32),
       isLast: sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex,
-      tagged: this.isMultiDataNft(),
+      tagged: this.hasDataNftIndexTags(),
     }, loc);
     this.emit(encodeInt(BigInt(CHUNK - 1)), loc);
     this.emit(Op.OP_ADD, loc);
@@ -40814,7 +40824,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       precedingTypes: fieldsInNft.slice(0, sv.fieldIndex).map((field) => this.physicalFieldType(field)),
       targetType,
       isLast: sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex,
-      tagged: this.isMultiDataNft(),
+      tagged: this.hasDataNftIndexTags(),
     };
     const offset = this.compactOffsetMap.get(sv.nftIndex)!;
     // A framed master's record block is where its own frame declared it, so the read is written where it is
@@ -41621,7 +41631,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     loc: SingleLocationData,
   ): void {
     const isLast = sv.fieldIndex === fieldsInNft[fieldsInNft.length - 1].fieldIndex;
-    const tagged = this.isMultiDataNft();
+    const tagged = this.hasDataNftIndexTags();
     const precedingTypes = fieldsInNft.slice(0, sv.fieldIndex).map((field) => this.physicalFieldType(field));
     const key = [
       'state-decode',
@@ -43546,7 +43556,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         .sort((a, b) => a.fieldIndex - b.fieldIndex);
       const savedStack = [...this.stack];
       let firstField = true;
-      if (dataNftCount > 1) {
+      if (dataNftCount > 1 || this.compilerOptions.tagSingletonDataNfts === true) {
         this.emit(encodeNftIndexTag(nftIdx), locationData);
         this.pushToStack('(value)');
         firstField = false;
@@ -43881,8 +43891,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         let firstField = true;
         // Multi-data-NFT child: stamp the leading nftIndex tag so the genesis commitment matches the
         // child's own covenant (and the SDK's buildPushdataCommitment), both of which prepend + verify it
-        // on every commitment. Keyed on the CHILD's NFT count, not the parent factory's (isMultiDataNft).
-        if (dataNftCount > 1) {
+        // on every commitment. Keyed on the child's NFT count and encoding option, not the parent's record count.
+        if (dataNftCount > 1 || this.compilerOptions.tagSingletonDataNfts === true) {
           this.emit(encodeNftIndexTag(nftIdx), locationData);
           this.pushToStack('(value)');
           firstField = false;

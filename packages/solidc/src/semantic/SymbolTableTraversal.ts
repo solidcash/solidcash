@@ -226,7 +226,7 @@ import {
   UpgradeStrandsBoundStateError,
 } from '../Errors.js';
 import { parameterTypeSignature } from './parameterTypeToken.js';
-import { getEventChunkCount, getMaxPushdataEncodedSizeForType } from './maxEncodedSize.js';
+import { getEventChunkCount, getMaxPushdataEncodedSizeForType, stateNftPackingLimit } from './maxEncodedSize.js';
 import {
   type CompilerOptions, PrimitiveType, BytesType, type Type, StructType, EnumType, AddressType, ValueType,
   computeEventSignature, computeEventSelector, computeErrorSignature, computeCollectionSignature,
@@ -1821,7 +1821,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       } else if (sv.type instanceof StructType) {
         // Struct must be placed last in its NFT.
         // If it doesn't fit in the current NFT, start a new one.
-        if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+        if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex,
+          this.compilerOptions.tagSingletonDataNfts) && currentNftUsed > 0) {
           nftIndex++;
           fieldIndex = 0;
           currentNftUsed = 0;
@@ -1850,7 +1851,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           currentNftUsed = 0;
         } else {
           // Bounded packed array: use estimate for bin-packing, but must be last in NFT
-          if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+          if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex,
+            this.compilerOptions.tagSingletonDataNfts) && currentNftUsed > 0) {
             nftIndex++;
             fieldIndex = 0;
             currentNftUsed = 0;
@@ -1864,7 +1866,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           currentNftUsed = 0;
         }
       } else {
-        if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+        if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex,
+          this.compilerOptions.tagSingletonDataNfts) && currentNftUsed > 0) {
           nftIndex++;
           fieldIndex = 0;
           currentNftUsed = 0;
@@ -1872,6 +1875,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         sv.nftIndex = nftIndex;
         sv.fieldIndex = fieldIndex++;
         currentNftUsed += maxSize;
+      }
+
+      if (this.compilerOptions.tagSingletonDataNfts === true
+        && maxSize > stateNftPackingLimit(commitmentLimit, sv.nftIndex, true)) {
+        throw new SolidcDiagnosticError('STATE_RECORD_CAPACITY',
+          `state variable '${sv.name}' cannot fit beside its NFT-index tag within ${commitmentLimit} bytes`,
+          { name: sv.name, nftIndex: sv.nftIndex, maximumFieldBytes: maxSize, commitmentLimit });
       }
 
       const symbol = Symbol.stateVariable(sv);
@@ -15260,7 +15270,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         fieldIndex = 0;
         currentNftUsed = 0;
       } else if (sv.type instanceof StructType) {
-        if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+        if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex,
+          this.compilerOptions.tagSingletonDataNfts) && currentNftUsed > 0) {
           nftIndex++;
           fieldIndex = 0;
           currentNftUsed = 0;
@@ -15272,7 +15283,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         fieldIndex = 0;
         currentNftUsed = 0;
       } else {
-        if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+        if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex,
+          this.compilerOptions.tagSingletonDataNfts) && currentNftUsed > 0) {
           nftIndex++;
           fieldIndex = 0;
           currentNftUsed = 0;
@@ -16044,7 +16056,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
       const layout = this.computeInterfaceStateLayout(iface);
       const varLayout = layout.find((l) => l.name === node.name)!;
-      const calleeMultiNft = layout.some((l) => l.nftIndex >= 1);
+      const calleeMultiNft = this.compilerOptions.tagSingletonDataNfts === true || layout.some((l) => l.nftIndex >= 1);
       const fieldsInNft = layout
         .filter((l) => l.nftIndex === varLayout.nftIndex)
         .sort((a, b) => a.fieldIndex - b.fieldIndex)
@@ -16094,7 +16106,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           const varLayout = layout.find((l) => l.name === node.name)!;
           // A callee that spans >1 data NFT tags each commitment with its nftIndex; the read verifies it
           // (a substituted sibling NFT carries a different tag and fails), making multi-NFT reads sound.
-          const calleeMultiNft = layout.some((l) => l.nftIndex >= 1);
+          const calleeMultiNft = this.compilerOptions.tagSingletonDataNfts === true || layout.some((l) => l.nftIndex >= 1);
           const fieldsInNft = layout
             .filter((l) => l.nftIndex === varLayout.nftIndex)
             .sort((a, b) => a.fieldIndex - b.fieldIndex)
@@ -18527,12 +18539,14 @@ export default class SymbolTableTraversal extends AstTraversal {
             nftIndex += 1;
             currentNftUsed = 0;
           } else if (state.type instanceof StructType) {
-            if (currentNftUsed > 0 && currentNftUsed + maxSize > commitmentLimit) nftIndex += 1;
+            if (currentNftUsed > 0 && currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex,
+              this.compilerOptions.tagSingletonDataNfts)) nftIndex += 1;
             // A struct may finish the current NFT when it fits, but it is always the last field in that NFT.
             nftIndex += 1;
             currentNftUsed = 0;
           } else {
-            if (currentNftUsed > 0 && currentNftUsed + maxSize > commitmentLimit) {
+            if (currentNftUsed > 0 && currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex,
+              this.compilerOptions.tagSingletonDataNfts)) {
               nftIndex += 1;
               currentNftUsed = 0;
             }

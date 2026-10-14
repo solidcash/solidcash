@@ -2772,7 +2772,7 @@ export interface ExternalStateReadInfo {
   fieldIndex: number;
   fieldsInNft: { type: Type; fieldIndex: number }[];
   externalReadSlotIndex: number;
-  calleeMultiNft: boolean; // callee spans >1 data NFT -> its commitments carry an nftIndex tag to verify
+  calleeMultiNft: boolean; // callee commitments carry an nftIndex tag (multi-record or explicit singleton encoding)
 }
 
 export class ExternalStateAccessNode extends ExpressionNode {
@@ -3123,7 +3123,7 @@ export interface ExternalOutputStateAccessInfo {
   fieldIndex: number;
   fieldsInNft: { type: Type; fieldIndex: number }[];
   externalOutStateSlotIndex: number;
-  calleeMultiNft: boolean; // callee spans >1 data NFT -> its commitments carry an nftIndex tag to verify
+  calleeMultiNft: boolean; // callee commitments carry an nftIndex tag (multi-record or explicit singleton encoding)
   /** The data-NFT field is a uint32 length header; the value is reconstructed from owner-branded chunks. */
   dynamic: boolean;
 }

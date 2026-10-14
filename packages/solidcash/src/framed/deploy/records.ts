@@ -20,7 +20,7 @@ import {
   bytesToHex,
   computeCollectionHash,
   dynamicChunkSignature,
-  isMultiDataNftLayout,
+  hasDataNftIndexTags,
   parsePushdataCommitment,
   scriptToBytecode,
   type StateLayout,
@@ -228,8 +228,8 @@ function nftIndexOf(commitment: string, layout: StateLayout): number | undefined
  * covenant whose commitment parses as the layout's pushdata encoding is a record at that data-NFT index, and any
  * other mutable NFT is a collection node. A UTXO that carries no lock is judged by its commitment alone, except
  * that masters are also grouped by lock into `mastersByLock` (an absent lock shares one group). A minting NFT
- * with a non-empty commitment is still a master. Records come back in data-NFT order (the tag order a multi-NFT
- * layout carries, otherwise by outpoint), so index `i` is genuinely register `i`.
+ * with a non-empty commitment is still a master. Records come back in data-NFT order (verified index tags
+ * when the layout publishes them, otherwise by outpoint), so index `i` is genuinely register `i`.
  */
 export function classifyFramedDeployment(
   utxos: readonly Utxo[],
@@ -314,7 +314,7 @@ export function classifyFramedDeployment(
   chunks.sort((left, right) => left.vout - right.vout);
   collectionNodes.sort((left, right) => left.vout - right.vout);
   for (const nodes of nodesByCollection.values()) nodes.sort((left, right) => left.vout - right.vout);
-  tagged.sort((left, right) => (isMultiDataNftLayout(layout)
+  tagged.sort((left, right) => (hasDataNftIndexTags(layout)
     ? left.nftIndex - right.nftIndex
     : left.utxo.vout - right.utxo.vout));
   return {

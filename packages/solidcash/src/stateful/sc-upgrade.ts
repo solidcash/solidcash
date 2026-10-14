@@ -7,6 +7,7 @@ import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   buildPushdataCommitment,
   parsePushdataCommitment,
+  hasDataNftIndexTags,
   type Artifact,
   type StateValue,
 } from '@solidcash/utils';
@@ -95,6 +96,22 @@ export async function upgradeStatefulContract<T extends Artifact>(
     }
   }
 
+  const previousLayout = oldContract.inner.artifact.stateLayout;
+  const requiredNftIndices = upgradeAbi.requiredNftIndices
+    ?? Array.from({ length: oldContract.inner.stateLayout!.dataNftCount }, (_, i) => i);
+  // This API explicitly decodes and rebuilds commitments. A changed tag format must rebuild every old record;
+  // otherwise an unspent record would retain bytes the replacement cannot decode.
+  if (previousLayout && hasDataNftIndexTags(previousLayout) !== hasDataNftIndexTags(newArtifact.stateLayout)) {
+    const rebuilt = new Set(requiredNftIndices);
+    if (Array.from({ length: previousLayout.dataNftCount }, (_, index) => index)
+      .some((index) => !rebuilt.has(index))) {
+      throw new Error(
+        'Upgrade layout incompatibility: changing data NFT index-tag encoding requires re-encoding '
+        + 'every existing data NFT; the upgrade function omits a record.',
+      );
+    }
+  }
+
   const categoryId = oldContract.categoryId;
   const addressType = options.addressType ?? oldContract.inner.addressType;
 
@@ -115,10 +132,6 @@ export async function upgradeStatefulContract<T extends Artifact>(
     addressType,
     category: hexToBin(categoryId),
   });
-
-  // Determine which data NFTs the upgrade function needs
-  const requiredNftIndices = upgradeAbi.requiredNftIndices
-    ?? Array.from({ length: oldContract.inner.stateLayout!.dataNftCount }, (_, i) => i);
 
   const filteredDataNftUtxos = requiredNftIndices.map((idx) => onChainState.dataNftUtxos[idx]);
   if (filteredDataNftUtxos.some((u) => u === undefined)) {

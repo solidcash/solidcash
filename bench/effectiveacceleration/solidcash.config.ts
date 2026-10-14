@@ -32,9 +32,10 @@ const eaContracts = path.join(eaRoot, 'contract', 'contracts');
 export default defineConfig({
   paths: { contracts: eaContracts, artifacts: 'artifacts', tests: 'test' },
   // The options the marketplace lane compiles with (the repo root's `solidcash.config.ts`). This project runs the
-  // same fixture, so a divergence here compiles different contracts: the stale July set had no message-bus kernel
-  // or graph context and pinned commitmentLimit 128, and its fixture failed at the proxy deploy the lane passes.
+  // same fixture, so a divergence here compiles different contracts. Tagged singleton records let generated
+  // proxies add their implementation-pointer record while preserving the implementation's commitment header.
   compiler: {
+    tagSingletonDataNfts: true,
     evmCompat: true,
     // The suite decodes addresses itself (`decodeAddress` reads a packed identity) and compares them to
     // signer.getAddress(), so a packed address value is its 20-byte identity: `addressForm: 'hash'` (the

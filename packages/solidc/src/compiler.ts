@@ -143,7 +143,7 @@ import SymbolTableTraversal, {
 } from './semantic/SymbolTableTraversal.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
 import { publishStoredValueSources } from './semantic/stored-value-source.js';
-import { getEventChunkCount } from './semantic/maxEncodedSize.js';
+import { getEventChunkCount, stateNftPackingLimit } from './semantic/maxEncodedSize.js';
 import EnsureFinalRequireTraversal, {
   rejectFreeFunctionMissingReturns,
 } from './semantic/EnsureFinalRequireTraversal.js';
@@ -4015,7 +4015,7 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
  * Publish typed child-genesis geometry independently of kernel admission. The resolved deployment node and
  * compiled child body are the authority; no contract, function, or application name participates.
  */
-function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: number): Array<{
+function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: number, tagSingletonDataNfts = false): Array<{
   state: ContractNode['stateVariables'][number]; nftIndex: number; fieldIndex: number;
 }> {
   const result: Array<{
@@ -4043,7 +4043,8 @@ function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: num
       nftIndex += 1;
       fieldIndex = 0;
     } else {
-      if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+      if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex, tagSingletonDataNfts)
+        && currentNftUsed > 0) {
         nftIndex += 1;
         fieldIndex = 0;
         currentNftUsed = 0;
@@ -4057,8 +4058,8 @@ function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: num
   return result;
 }
 
-function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number): number {
-  const variables = packedStateLayoutVariables(contract, commitmentLimit);
+function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number, tagSingletonDataNfts = false): number {
+  const variables = packedStateLayoutVariables(contract, commitmentLimit, tagSingletonDataNfts);
   return variables.length === 0 ? 0 : Math.max(...variables.map((variable) => variable.nftIndex)) + 1;
 }
 
@@ -4157,6 +4158,7 @@ function childDeploymentSites(
   compiledBytecodes: ReadonlyMap<string, Uint8Array>,
   commitmentLimit: number,
   helperFunctions: readonly FunctionDefinitionNode[] = [],
+  tagSingletonDataNfts = false,
 ): ChildDeploymentSiteAbi[] {
   const sites: ChildDeploymentSiteAbi[] = [];
   // Every site this function can report requires an InstantiationNode in the body, and
@@ -4207,7 +4209,7 @@ function childDeploymentSites(
     if (value instanceof InstantiationNode && value.isStatefulDeploy && value.referencedContract) {
       const analyzed = recipeAnalysis.get(value);
       const child = value.referencedContract;
-      const dataNftOutputCount = packedStateDataNftCount(child, commitmentLimit);
+      const dataNftOutputCount = packedStateDataNftCount(child, commitmentLimit, tagSingletonDataNfts);
       const creationBytecode = compiledBytecodes.get(child.name);
       if (!creationBytecode) throw new Error(`Missing compiled child body for deployment topology '${child.name}'`);
       const genesisState = value.constructorStateFoldComplete === true
@@ -4234,6 +4236,7 @@ function childDeploymentSites(
         })),
         dataNftCount: dataNftOutputCount,
         commitmentLimit,
+        ...(tagSingletonDataNfts && dataNftOutputCount === 1 && { taggedDataNfts: true }),
         structs: childDeploymentStructDefinitions(child.stateVariables),
         collections: childDeploymentCollectionDefinitions(child.collections),
       });
@@ -8965,7 +8968,7 @@ function synthesizeMessageBusRoute(
             const conditional = control !== 'straight';
             const child = statefulChildren.get(value.identifier.name)!;
             const packedChildVariables = packedStateLayoutVariables(
-              child, compilerOptions.commitmentLimit ?? 128,
+              child, compilerOptions.commitmentLimit ?? 128, compilerOptions.tagSingletonDataNfts,
             );
             const packedChildDataNftCount = packedChildVariables.length === 0 ? 0
               : Math.max(...packedChildVariables.map((variable) => variable.nftIndex)) + 1;
@@ -8982,6 +8985,8 @@ function synthesizeMessageBusRoute(
               })),
               dataNftCount: packedChildDataNftCount,
               commitmentLimit: compilerOptions.commitmentLimit ?? 128,
+              ...(compilerOptions.tagSingletonDataNfts === true && packedChildDataNftCount === 1
+                && { taggedDataNfts: true }),
               structs: childDeploymentStructDefinitions(child.stateVariables),
               collections: childDeploymentCollectionDefinitions(child.collections),
             }));
@@ -16699,6 +16704,7 @@ function compileResolvedAst(
   for (const fn of ast.contract.functions) {
     const deployments = childDeploymentSites(
       fn, compiledBytecodes, mergedCompilerOptions.commitmentLimit!, ast.contract.functions,
+      mergedCompilerOptions.tagSingletonDataNfts,
     );
     if (deployments.length > 0) childDeploymentsBySignature.set(deploymentTopologyKey(fn), deployments);
   }

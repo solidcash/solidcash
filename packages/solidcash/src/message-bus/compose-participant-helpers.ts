@@ -5,7 +5,8 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, encodePushdataValue, getDefaultStateValue, parseArrayTypeString,
+  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, encodePushdataValue, getDefaultStateValue, hasDataNftIndexTags,
+  parseArrayTypeString,
 } from '@solidcash/utils';
 import type { Artifact, StateValue, StructDefinitionInfo } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
@@ -291,6 +292,7 @@ export const appendOnlyStateSuffix = (
   const newLayout = replacement.stateLayout;
   if (!oldLayout || !newLayout) throw new Error('messageBus: upgrade requires two stateful artifacts');
   if (oldLayout.dataNftCount !== newLayout.dataNftCount
+    || hasDataNftIndexTags(oldLayout) !== hasDataNftIndexTags(newLayout)
     || oldLayout.commitmentLimit !== newLayout.commitmentLimit) {
     throw new Error('messageBus: replacement does not preserve the existing data NFT geometry');
   }

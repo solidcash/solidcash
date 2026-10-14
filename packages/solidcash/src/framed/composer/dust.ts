@@ -13,7 +13,7 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransactionOutput } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import {
   DYNAMIC_LEN_TYPE, encodeNftIndexTag, encodePushdataValue, getDefaultStateValue, isFixedWidthType,
-  isMultiDataNftLayout, parseArrayTypeString, type StateLayout, type StructDefinitionInfo,
+  hasDataNftIndexTags, parseArrayTypeString, type StateLayout, type StructDefinitionInfo,
 } from '@solidcash/utils';
 import type { Output } from '../../interfaces.js';
 import { getOutputSize } from '../../utils.js';
@@ -130,11 +130,11 @@ function widestEncodingBytes(
 
 /**
  * The widest commitment the state record at `nftIndex` packs to, capped at the layout's commitment limit: its index
- * tag on a layout of several data NFTs, then each of its own variables at its widest encoding, a dynamic value by
+ * tag when its schema publishes one, then each of its own variables at its widest encoding, a dynamic value by
  * its uint32 length header. Undefined when one of them has no bound, a packed array blob among them.
  */
 export function widestRecordCommitmentBytes(layout: StateLayout, nftIndex: number): number | undefined {
-  let total = isMultiDataNftLayout(layout) ? encodeNftIndexTag(nftIndex).length : 0;
+  let total = hasDataNftIndexTags(layout) ? encodeNftIndexTag(nftIndex).length : 0;
   for (const variable of layout.variables.filter((candidate) => candidate.nftIndex === nftIndex)) {
     let width: number | undefined;
     if (variable.dynamic === true) width = widestEncodingBytes(DYNAMIC_LEN_TYPE, layout.structs, new Set());

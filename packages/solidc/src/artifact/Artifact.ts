@@ -35,6 +35,7 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
+import { stateNftPackingLimit } from '../semantic/maxEncodedSize.js';
 import { hasEffectiveCallValue, hasExternalCallValueEffect } from '../semantic/branchOps.js';
 import { externalResultEncoding } from '../semantic/ExternalResultEncoding.js';
 import {
@@ -4480,6 +4481,8 @@ export function generateArtifact(
         ? Math.max(...contract.stateVariables.map((sv) => sv.nftIndex)) + 1
         : 0,
       commitmentLimit: compilerOptions.commitmentLimit ?? 128,
+      ...(compilerOptions.tagSingletonDataNfts === true && contract.stateVariables.length > 0
+        && contract.stateVariables.every((variable) => variable.nftIndex === 0) && { taggedDataNfts: true as const }),
       ...(contract.constructorDef && {
         constructorInputs: contract.constructorDef.parameters.map((p) => ({
           name: p.name,
@@ -4690,6 +4693,7 @@ export function generateArtifact(
         enforceFinalRequire: compilerOptions.enforceFinalRequire,
         allowUnsafeOperations: compilerOptions.allowUnsafeOperations,
         commitmentLimit: compilerOptions.commitmentLimit,
+        ...(compilerOptions.tagSingletonDataNfts === true && { tagSingletonDataNfts: true }),
         messageBus: compilerOptions.messageBus,
         // Published only when the source chose it: omitting it follows the mode, which `resolveAddressForm`
         // re-derives on the artifact, so an artifact that names no form reads back the one its compile used
@@ -4738,7 +4742,8 @@ function buildExternalInterfaceInfo(
       nftIndex++; fieldIndex = 0; currentNftUsed = 0;
     } else if (isStruct) {
       // Struct must be placed last in its NFT (same rule as SymbolTableTraversal)
-      if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+      if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex,
+        compilerOptions.tagSingletonDataNfts) && currentNftUsed > 0) {
         nftIndex++; fieldIndex = 0; currentNftUsed = 0;
       }
       variables.push({ name: sv.name, type: typeStr, nftIndex, fieldIndex });
@@ -4746,7 +4751,8 @@ function buildExternalInterfaceInfo(
       // Force next var to go to a new NFT since struct must be last
       nftIndex++; fieldIndex = 0; currentNftUsed = 0;
     } else {
-      if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+      if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex,
+        compilerOptions.tagSingletonDataNfts) && currentNftUsed > 0) {
         nftIndex++; fieldIndex = 0; currentNftUsed = 0;
       }
       variables.push({ name: sv.name, type: typeStr, nftIndex, fieldIndex });
@@ -4787,6 +4793,7 @@ function buildExternalInterfaceInfo(
       variables,
       dataNftCount,
       commitmentLimit,
+      ...(compilerOptions.tagSingletonDataNfts === true && dataNftCount === 1 && { taggedDataNfts: true as const }),
       ...(collections && { collections }),
     },
     ...(ifaceFunctions.length > 0 && { abi: ifaceFunctions }),

@@ -361,18 +361,17 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
   ): Promise<Signer[]> => {
     const anyProvider = provider as unknown as { getSigners?: (c: number, x: object) => Promise<Signer[]> };
     if (typeof anyProvider.getSigners === 'function') {
-      // One funding UTXO per signer is enough: the deploy step fans out fresh vout-0 genesis coins on demand
-      // (ContractFactory.selectGenesisFundingUtxo), so an account can deploy any number of contracts. Override
-      // `fundingUtxos` to pre-split (saves a fan-out tx per deploy).
-      // Hardhat accounts are effectively pre-funded for large deployment suites. Split BCH contracts consume
-      // several genesis outputs, so use a similarly generous mock default while retaining an explicit override.
+      // A read-only CREATE look-ahead reserves four existing vout-0 coins without broadcasting. Partition
+      // mock prefunding across distinct transactions so nonce-relative predictions have those coins ready,
+      // while the nonzero outputs stay available for fees and compiler-owned block slots. This changes the
+      // account's coin geometry, never its configured coin count or per-coin value.
       return (await anyProvider.getSigners(count, {
         // Bounded message-bus participant blocks can require dozens of
         // category-neutral filler inputs in one call. Keep the Hardhat-style
         // mock accounts generously pre-split so those compiler-owned slots do
         // not turn into an artificial wallet-funding limit.
         satoshis: opts.accountSatoshis ?? 100_000_000n,
-        fundingUtxos: 128, mnemonic, path: accountsPath, ...o,
+        fundingUtxos: 128, genesisFundingUtxos: 4, mnemonic, path: accountsPath, ...o,
       })).map(withEthersMessageSigning);
     }
     const signers = signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath })

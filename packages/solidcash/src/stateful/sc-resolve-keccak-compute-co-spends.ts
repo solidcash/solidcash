@@ -6,8 +6,10 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH_LEGACY,
+  keccakChainLockingBytecode,
   keccakComputeLockingBytecode,
   keccakComputeLockingBytecodeLegacy,
+  planKeccakChain,
   type AbiFunction, type Artifact,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
@@ -15,7 +17,9 @@ import type {
   ContractUnlocker, Output, UnlockableUtxo, Unlocker, Utxo,
 } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import { buildKeccakComputeSidecar } from '../keccak/keccakComputeSidecar.js';
+import {
+  buildKeccakChainSidecars, buildKeccakComputeSidecar,
+} from '../keccak/keccakComputeSidecar.js';
 import { addressToLockScript } from '../utils.js';
 import {
   computeSideCarStandIn,
@@ -116,6 +120,8 @@ export type ResolveKeccakComputeCoSpendsResult = {
   preimages: Array<Uint8Array | null>;
   salt: Uint8Array;
   legacy: boolean;
+  /** Chained direct-preimage routing: trailing START/CONT/FINAL side-cars instead of fixed-slot compute side-cars. */
+  chain?: { sideCars: UnlockableUtxo[]; recreates: Output[] };
 };
 
 export async function resolveKeccakComputeCoSpends(
@@ -139,6 +145,50 @@ export async function resolveKeccakComputeCoSpends(
   // Branded to the contract's category. The covenant brand-checks the master's OP_UTXOTOKENCATEGORY, which
   // the VM returns in INTERNAL (reversed) byte order, so the baked salt must be the reversed category.
   const salt = hexToBin(host.categoryId).slice().reverse();
+  if (abiFunction.keccakChainReads) {
+    const visible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
+    const paramName = (abiFunction.keccakPreimageParams ?? [])[0];
+    const paramIndex = visible.findIndex((input) => input.name === paramName);
+    const preimage = paramIndex >= 0 && args[paramIndex] instanceof Uint8Array
+      ? (args[paramIndex] as Uint8Array) : null;
+    if (!(preimage instanceof Uint8Array)) {
+      throw new Error('keccak256 chained preimage could not be resolved from its direct parameter.');
+    }
+    const plan = planKeccakChain(preimage);
+    const chainUtxos: Utxo[] = [];
+    const addUtxo = (host.inner.provider as { addUtxo?: (a: string, u: Utxo) => Promise<Utxo> }).addUtxo;
+    const used = new Set<string>();
+    for (let step = 0; step < plan.length; step++) {
+      const stepLock = keccakChainLockingBytecode(salt, plan[step].kind, true);
+      const unused = (utxos: Utxo[]): Utxo | undefined => utxos
+        .filter((u) => u.token?.nft?.capability === 'mutable')
+        .find((u) => !used.has(`${u.txid.toLowerCase()}:${u.vout}`));
+      let utxo = unused(await host.inner.provider.getUtxosForLockingBytecode(stepLock));
+      if (!utxo && typeof addUtxo === 'function') {
+        const standIn = computeSideCarStandIn('keccak-chain-sidecar', stepLock, step);
+        await addUtxo.call(host.inner.provider, binToHex(stepLock), standIn);
+        utxo = unused(await host.inner.provider.getUtxosForLockingBytecode(stepLock));
+      }
+      if (!utxo) {
+        throw new Error(`keccak256 preimage too large (${preimage.length} B = ${plan.length} blocks); `
+          + `a chained spend needs ${plan.length} funded side-car UTXO(s) at the branded `
+          + `start/cont/final addresses (block ${step}/${plan.length} is ${plan[step].kind}).`);
+      }
+      used.add(`${utxo.txid.toLowerCase()}:${utxo.vout}`);
+      chainUtxos.push(utxo);
+    }
+    const built = buildKeccakChainSidecars(preimage, salt, chainUtxos, true);
+    return {
+      coSpends: [],
+      preimages: [preimage],
+      salt,
+      legacy: false,
+      chain: {
+        sideCars: built.map((entry) => ({ ...entry.utxo, unlocker: entry.unlocker })),
+        recreates: built.map((entry) => entry.recreate),
+      },
+    };
+  }
   const legacy = (probeCtx?.artifactBytecode ?? host.inner.bytecode)
     .includes(KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH_LEGACY);
   const lock = legacy

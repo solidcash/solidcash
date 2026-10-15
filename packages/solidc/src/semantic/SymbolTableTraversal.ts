@@ -261,6 +261,9 @@ export { getMaxPushdataEncodedSizeForType };
 // layout declares one and otherwise appends the chunk run past the block, misaligning every later participant.
 const BALANCED_TRAILING_CAPACITY = 64;
 
+/** Trailing side-car slots reserved for a direct unbounded keccak256 chained read (one per 136-byte block). */
+const KECCAK_CHAIN_TRAILING_CAPACITY = 256;
+
 /** Deterministic evaluation-order numbering shared by entry writes and external graph calls. */
 class SourceEffectOrderTraversal extends AstTraversal {
   constructor(
@@ -799,6 +802,8 @@ function flagSetsBefore(body: BlockNode, gate: BranchNode, flag: string): PathGu
 interface FunctionBodySurvey {
   usesMsgSender: boolean;
   keccakInLoop: boolean;
+  /** A direct keccak256(unbounded bytes/string param) call outside every loop: chained side-car routing. */
+  directUnboundedKeccak: boolean;
   /** Emission index (codegen pre-order) of each keccak256 call outside every loop. */
   keccakFixedSlotIndices: number[];
   hasValueTransfer: boolean;
@@ -815,6 +820,8 @@ interface ActiveFunctionBodySurvey {
   seen: WeakMap<Node, boolean>;
   recoveryLoopDepth: number;
   keccakLoopDepth: number;
+  /** The function whose body this survey inspects (for parameter type resolution). */
+  functionNode: FunctionDefinitionNode;
   /** keccak256 calls numbered so far, in the pre-order emitKeccakComputeCall assigns its index `i` in. */
   keccakEmitted: number;
   keccakNumbered: WeakSet<Node>;
@@ -864,7 +871,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       && !isFoldableCreationCodeHash(node) && !survey.keccakNumbered.has(node)) {
       survey.keccakNumbered.add(node);
       const index = survey.keccakEmitted++;
-      if (survey.keccakLoopDepth === 0) survey.result.keccakFixedSlotIndices.push(index);
+      if (survey.keccakLoopDepth === 0) {
+        survey.result.keccakFixedSlotIndices.push(index);
+        const arg = node.parameters[0];
+        if (arg instanceof IdentifierNode) {
+          const param = survey.functionNode.parameters.find((candidate) => candidate.name === arg.name);
+          const type = param?.type ?? arg.type;
+          if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) {
+            survey.result.directUnboundedKeccak = true;
+          }
+        }
+      }
     }
     try {
       const result = super.visit(node);
@@ -3706,6 +3723,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const bodySurvey: FunctionBodySurvey = {
       usesMsgSender: false,
       keccakInLoop: false,
+      directUnboundedKeccak: false,
       keccakFixedSlotIndices: [],
       hasValueTransfer: false,
       hasFunctionCall: false,
@@ -3717,12 +3735,22 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     this.activeBodySurvey = {
       result: bodySurvey, seen: new WeakMap(), recoveryLoopDepth: 0, keccakLoopDepth: 0,
-      keccakEmitted: 0, keccakNumbered: new WeakSet(),
+      functionNode: node, keccakEmitted: 0, keccakNumbered: new WeakSet(),
     };
     try {
       node.body = this.visit(node.body);
     } finally {
       this.activeBodySurvey = undefined;
+    }
+    // A direct keccak256 over an unbounded bytes/string parameter routes through the chained
+    // START/CONT/FINAL side-cars in the trailing region (see GenerateTargetTraversal.emitKeccakComputeCall).
+    // Only the SINGLE-call shape chains: two straight-line calls or a loop mix keep their fixed slots and the
+    // 3-block single-compute budget (fail-closed), so the one FINAL read coordinate stays unambiguous.
+    if (bodySurvey.directUnboundedKeccak && !bodySurvey.keccakInLoop
+      && bodySurvey.keccakFixedSlotIndices.length === 1
+      && this.isStatefulContract && node.isEntryPoint
+      && this.compilerOptions.composition !== 'framed') {
+      node.keccakChainReads = true;
     }
     // Some expression visitors replace a source node with a resolved ExternalFunctionCallNode at their parent
     // boundary. In particular, a returning interface call used directly as a local ArrayAssign RHS can be
@@ -18351,7 +18379,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Fixed keccakSideCar slots for straight-line (non-loop) keccak calls. A DYNAMIC keccak loop reads a
     // runtime-variable number of side-cars from the TRAILING region [blockSize, ..) instead (keccakInLoop), so
     // it allocates no fixed slots here.
-    if ((node.keccakCompute || (node.ecrecoverEvmCallCount ?? 0) > 0) && !node.keccakInLoop) {
+    // A direct unbounded keccak256 chained read keeps NO fixed keccakSideCar slot: its START/CONT/FINAL
+    // side-cars ride the trailing region, so the fixed slot would only desynchronize inputs and outputs.
+    if ((node.keccakCompute || (node.ecrecoverEvmCallCount ?? 0) > 0)
+      && !node.keccakInLoop && !node.keccakChainReads) {
       // EVM recovery hashes its verified uncompressed public key through the same batched compute side-cars as
       // ordinary keccak256 calls. Appending those preimages to the ordinary call order avoids a second resource
       // family while retaining an unambiguous batch/member index for every call.
@@ -18621,8 +18652,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       || (node.ecrecoverLoopReads === true && node.messageBusRoute !== true);
     const needsWideTrailingRegion = needsNonCounterWideTrailingRegion
       || runtimeCounterOutputCapacity > 0;
-    const needsTrailingRegion = node.name === '__message_bus1'
-      && (needsWideTrailingRegion || collectionRouteCapacity > 0);
+    // A direct unbounded keccak256 chained read uses the trailing region even outside a message-bus route.
+    const chainedKeccakTrailing = node.keccakChainReads === true;
+    const needsTrailingRegion = chainedKeccakTrailing
+      || (node.name === '__message_bus1' && (needsWideTrailingRegion || collectionRouteCapacity > 0));
     if (!needsTrailingRegion) return { blockSize: offset, slots };
 
     const trailingBase = offset;
@@ -18630,10 +18663,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     // than assuming one mapping plus the widest event site. Lowering also includes exact-count events before or
     // after the loop after moving them into the same source-ordered stream. Other runtime resources share this
     // bounded trailing band and the builder refuses a concrete transaction that exceeds it.
-    const trailingCapacity = runtimeCounterOutputCapacity > 0
-      ? runtimeCounterOutputCapacity
-      : needsWideTrailingRegion
-        ? Math.max(BALANCED_TRAILING_CAPACITY, fallbackCounterStreamCapacity) : collectionRouteCapacity;
+    const trailingCapacity = chainedKeccakTrailing
+      ? KECCAK_CHAIN_TRAILING_CAPACITY
+      : runtimeCounterOutputCapacity > 0
+        ? runtimeCounterOutputCapacity
+        : needsWideTrailingRegion
+          ? Math.max(BALANCED_TRAILING_CAPACITY, fallbackCounterStreamCapacity) : collectionRouteCapacity;
     for (let i = 0; i < trailingCapacity; i++) {
       slots.push({ kind: 'trailing', offset: offset++, slotIndex: i, conditional: true });
     }

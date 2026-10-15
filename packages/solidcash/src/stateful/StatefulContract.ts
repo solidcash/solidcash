@@ -5221,6 +5221,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       preimages: Array<Uint8Array | null>;
       salt: Uint8Array;
       legacy: boolean;
+      chain?: { sideCars: UnlockableUtxo[]; recreates: Output[] };
     }> {
     return resolveKeccakComputeCoSpendsImpl(
       {
@@ -12376,6 +12377,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
       keccakLoopSideCars = loop.sideCars;
       keccakLoopRecreates = loop.recreates;
+    } else if (abiFunction?.keccakChainReads && this.categoryId) {
+      // Chained direct preimage: one START/CONT/FINAL side-car per 136-byte block in the trailing region. The
+      // fixed keccakSideCar slot stays funder-padded; the covenant reads the FINAL side-car at blockSize + fullBlocks.
+      const resolution = await this._resolveKeccakComputeCoSpends(abiFunction, args, {
+        masterUtxo: derivationMasterUtxo, stateInputUnlocker,
+        dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
+        frontRegionInputs: keccakFrontRegion, locktime: maxBhLocktime,
+      });
+      keccakLoopSideCars = resolution.chain?.sideCars ?? [];
+      keccakLoopRecreates = resolution.chain?.recreates ?? [];
     } else if ((abiFunction?.keccakCompute || entryAbiFunction?.keccakCompute
       || abiFunction?.ecrecoverEvmFlags?.some(Boolean)
       || entryAbiFunction?.ecrecoverEvmFlags?.some(Boolean)) && this.categoryId) {

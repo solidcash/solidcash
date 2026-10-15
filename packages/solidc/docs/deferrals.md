@@ -504,8 +504,8 @@ runtime-bound loops in stateful + stateless contracts). These compound edges sti
    front-region, and complex without front-region, both work).
 3. **Preimage > 3 keccak blocks (~407 B)** in one side-car (a single side-car input funds at most 3 blocks).
 
-**PARTLY RESOLVED (2026-10-15): the chained side-car is prototyped and baked, the SDK resolver + contract-side
-read still pending.** A >407-byte preimage is now split on the keccak-256 136-byte rate into `start`/`cont`/`final`
+**RESOLVED (2026-10-15): the chained side-car is prototyped, baked, wired end-to-end, and e2e-verified.** A
+>407-byte preimage is now split on the keccak-256 136-byte rate into `start`/`cont`/`final`
 side-cars that chain the running 25-lane sponge state through their mutable-NFT commitments. Each side-car absorbs
 ONE block on-chain; `start` seeds the zero state, `cont` reads the previous side-car's committed state via
 `OP_INPUTINDEX OP_1SUB OP_OUTPUTTOKENCOMMITMENT`, and `final` pads the remainder, absorbs it, and commits the
@@ -516,22 +516,25 @@ against `@noble/hashes/sha3.js` for 136..1000-byte preimages (`research/keccak-p
 `packages/utils/test/keccak-chain-library.test.ts` (5/5). The commitment byte order is `lane24 || ... || lane0`
 (reversed), chosen so the covenant's front-to-back `<8> OP_SPLIT` reproduces the absorb frame. Soundness: each
 side-car's on-chain permutation means a tampered chain fails the contract's final-digest bind; intermediates are
-chained by introspection, not SDK-computed state. REMAINING: the SDK `resolveKeccakComputeCoSpends` routing for
->3-block preimages (consecutive chained side-car slots) and the compiler contract-side read of the FINAL side-car's
-slot (both still throw the `preimage too large` refusal), plus the large-preimage e2e test.
+chained by introspection, not SDK-computed state. The FINAL covenant carries the FULL preimage (extracting the
+last `len % 136` bytes on-chain, solo-seeding the zero state when the argument has no full block), so the
+contract-side `<pad> <preimage> <width> <redeem>` bind and hash check stay sound. The SDK
+`resolveKeccakComputeCoSpends` routes a direct unbounded single-call preimage through the chained slots, the
+compiler reserves a trailing region and reads the FINAL side-car at `trailingBase + floor(len/136)`, and
+`packages/solidcash/test/e2e/KeccakChainSidecar.test.ts` settles a 12 KB preimage whose digest matches
+`@noble/hashes/sha3.js keccak_256`.
 
 **Why deferred.** (1) The trailing region has ONE runtime-counter-indexed band; two independent counter-indexed
 users have nowhere sound to interleave. (2) B's probe context would need B's resolved front-region inputs +
 recreations + locktime (the master path threads them, but the transitive path builds B's context from
-`getFullState`, not a full derivation). (3) Fundamental per-input op budget.
+`getFullState`, not a full derivation).
 
 **What it'd take.** (1) A shared trailing-region allocator that assigns disjoint counter bands (like the fixed
 front-region band allocator). (2) Resolve B's blockhash/external-read co-spends inside `_externalKeccakProbeCtx`
-and pass them as `frontRegionInputs` (reuse the master's resolvers against B). (3) Split a large preimage across
-multiple side-cars (partial-absorb chaining), or a multi-block side-car covenant.
+and pass them as `frontRegionInputs` (reuse the master's resolvers against B).
 
-**Revisit if.** A real contract needs a keccak loop beside a mapping-write loop / container spend (1), a
-transitive callee that hashes a nested arg while reading a blockhash (2), or a >407 B preimage (3).
+**Revisit if.** A real contract needs a keccak loop beside a mapping-write loop / container spend (1), or a
+transitive callee that hashes a nested arg while reading a blockhash (2).
 
 **Soundness note (not a gap).** The complex-arg + transitive probes assume the keccak preimage depends only on
 the function's args/state, not on surrounding-tx introspection that differs between the isolated probe and the
@@ -2270,14 +2273,20 @@ already holds. That now folds to a constant in code generation, with `countLibra
 shape so no `keccakSideCar` slot is reserved for it. Note `FoldHashLiterals` could not do this: it runs
 pre-semantic, and `creationCode` only becomes bytes once the child has been compiled.
 
-STILL DEFERRED: a hash of RUNTIME data longer than ~407 bytes. The error names the intended design ("use
-multiple side-cars"), but a single logical hash spanning several side-car inputs is not implemented - the
-covenant would have to chain the keccak block state from one side-car's output commitment into the next
-input's, and the SDK would have to plan and fund that chain.
-
-**What it would take:** a chained side-car protocol (side-car i consumes the running state committed by i-1,
-the last commits the digest), plus SDK planning that splits the preimage on 64-byte block boundaries and sizes
-the co-spend set from the actual argument length.
+**RESOLVED 2026-10-15.** The chained START/CONT/FINAL side-car covenants,
+`splitKeccakChainBlocks` / `planKeccakChain` / `keccakChainCommitments` / `buildKeccakChainSidecars`, and the
+real-VM chain test landed in commits `dea9dcf8e`, `f064c8cc3`, and `b28713515`
+(`packages/utils/test/keccak-chain-library.test.ts` passes 6/6). The compiler now emits a FINAL chained read
+for a direct, unbounded single-call `bytes`/`string` preimage (`GenerateTargetTraversal.ts`: FINAL index
+`trailingBase + size(arg)/136`, FINAL covenant hash, `keccakChainReads` published on the ABI), reserves a
+256-slot trailing region for it (`SymbolTableTraversal.ts`), and the SDK routes the preimage through
+`buildKeccakChainSidecars` into that trailing band (`sc-resolve-keccak-compute-co-spends.ts`,
+`StatefulContract.ts`, `stb-build-inputs.ts`; unit coverage
+`packages/solidcash/test/unit/KeccakChainSidecar.test.ts` 3/3). The plain stateful `send()` balanced assembly
+admits the chained trailing inputs, and `packages/solidcash/test/e2e/KeccakChainSidecar.test.ts` settles a
+12 KB runtime preimage whose read-back digest equals `@noble/hashes/sha3.js keccak_256` (2/2, including the
+unfunded-refusal companion). The under-threshold single-compute side-car path and the loop/straight-line mix
+layouts are unchanged.
 
 **Acceptance:** `keccak256(x)` for a 12 KB runtime `x` settles and reads back the same digest `keccak_256`
 computes off-chain; the refusal above still fires when the caller declines to fund the chain.

@@ -1029,6 +1029,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   keccakFixedSlotIndices?: number[];
   keccakLoopReads?: boolean;    // a stateful dynamic keccak loop reads N trailing side-cars (SDK progressively
   // co-spends N = runtime iteration count into the trailing region [blockSize, ..))
+  keccakChainReads?: boolean;   // a direct, unbounded preimage routes through the chained START/CONT/FINAL side-cars
+  // in the trailing region; the SDK co-spends one side-car per 136-byte block + the FINAL digest carrier
   ecrecoverLoopReads?: boolean; // a dynamic ecrecoverPubKey loop reads one recovery PAIR per iteration from the
   // forward region [master+1+2k]; the SDK co-spends N pairs (N = the sig-array length)
   ecrecoverCompute?: boolean;   // ecrecoverPubKey uses a co-spent recovery side-car PAIR (A+B) per call; the SDK

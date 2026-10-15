@@ -52,15 +52,18 @@ const rotl = (x: bigint, n: number): bigint => n === 0 ? x : (((x << BigInt(n)) 
 function keccakF(state: bigint[]): bigint[] {
   const A = [...state];
   for (let round = 0; round < 24; round++) {
-    const C = [0n, 0n, 0n, 0n, 0n];
-    for (let x = 0; x < 5; x++) C[x] = A[x] ^ A[x + 5] ^ A[x + 10] ^ A[x + 15] ^ A[x + 20];
+    const CLanes = [0n, 0n, 0n, 0n, 0n];
+    for (let x = 0; x < 5; x++) CLanes[x] = A[x] ^ A[x + 5] ^ A[x + 10] ^ A[x + 15] ^ A[x + 20];
     const D = [0n, 0n, 0n, 0n, 0n];
-    for (let x = 0; x < 5; x++) D[x] = C[(x + 4) % 5] ^ rotl(C[(x + 1) % 5], 1);
+    for (let x = 0; x < 5; x++) D[x] = CLanes[(x + 4) % 5] ^ rotl(CLanes[(x + 1) % 5], 1);
     for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) A[x + 5 * y] ^= D[x];
     const B = new Array<bigint>(25).fill(0n);
-    for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) B[y + 5 * ((2 * x + 3 * y) % 5)] = rotl(A[x + 5 * y], ROT[x][y]);
     for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) {
-      A[x + 5 * y] = (B[x + 5 * y] ^ ((~B[((x + 1) % 5) + 5 * y] & B[((x + 2) % 5) + 5 * y]) & MASK)) & MASK;
+      B[y + 5 * ((2 * x + 3 * y) % 5)] = rotl(A[x + 5 * y], ROT[x][y]);
+    }
+    for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) {
+      const otherLanes = ~B[((x + 1) % 5) + 5 * y] & B[((x + 2) % 5) + 5 * y];
+      A[x + 5 * y] = (B[x + 5 * y] ^ (otherLanes & MASK)) & MASK;
     }
     A[0] ^= RC[round];
   }
@@ -107,8 +110,9 @@ function evalChain(length: number, stateful = false): string | undefined {
   const inputs = plan.map((s, i) => {
     const redeem = buildKeccakChainRedeem(C, s.kind, stateful);
     const pad = new Uint8Array(3200);
+    // FINAL carries the FULL preimage + width 1 (the contract decoder shape); start/cont carry their block.
     const data = s.kind === 'final'
-      ? Uint8Array.from([0x51, ...push(s.block), ...push(pad), ...push(redeem)])  // mode 1 = final
+      ? Uint8Array.from([...push(pad), ...push(preimage), 0x51, ...push(redeem)])
       : Uint8Array.from([...push(s.block), ...push(pad), ...push(redeem)]);
     return {
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(i + 1),

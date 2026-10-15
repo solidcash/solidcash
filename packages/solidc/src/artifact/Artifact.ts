@@ -4017,6 +4017,7 @@ function buildFunctionAbiMetadata(
       && { keccakPreimageParams: func.keccakPreimageParams }),
     ...(func.keccakInLoop && { keccakInLoop: true }),
     ...(func.keccakLoopReads && { keccakLoopReads: true }),
+    ...(func.keccakChainReads && { keccakChainReads: true }),
     ...(func.ecrecoverCompute && { ecrecoverCompute: true }),
     ...(computeSideCarRecipes && { computeSideCarRecipes }),
     ...(func.ecrecoverArgParams && func.ecrecoverArgParams.length > 0

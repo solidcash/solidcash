@@ -161,6 +161,7 @@ export function buildInputs(
       ...host.dynamicChunkInputs,
       ...trailingInsertPredecessors,
       ...(host.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
+      ...host.keccakLoopSideCars,
     ];
     let trailingIdx = 0;
     let trailingDisposalIdx = 0;

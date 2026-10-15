@@ -59,11 +59,11 @@ function build(preimageHex) {
     return Uint8Array.from([0x4d, n & 0xff, (n >> 8) & 0xff, ...data]);
   };
   const inputUnlockings = covenants.map((c, i) => {
-    const block = i < fullBlocks.length ? fullBlocks[i] : remainder;
-    // FINAL is mode-aware: mode 1 = final (previous committed state). Push [mode, block, pad, redeem].
     if (i === fullBlocks.length) {
-      return Uint8Array.from([0x51, ...pushData(block), ...pushData(new Uint8Array(PAD_LEN)), ...pushData(buildRedeem(C, c))]);
+      // FINAL carries the FULL preimage (so the contract-side bind survives) + width 1: [pad, fullArg, 1, redeem].
+      return Uint8Array.from([...pushData(new Uint8Array(PAD_LEN)), ...pushData(preimage), 0x51, ...pushData(buildRedeem(C, c))]);
     }
+    const block = fullBlocks[i];
     return Uint8Array.from([...pushData(block), ...pushData(new Uint8Array(PAD_LEN)), ...pushData(buildRedeem(C, c))]);
   });
 

@@ -179,8 +179,10 @@ export function buildKeccakChainSidecars(
     const pad = new Uint8Array(padLen);
     const unlocker: Unlocker = {
       generateLockingBytecode: () => lock,
+      // The FINAL side-car carries the FULL preimage (so the contract-side bind survives) + width 1, matching
+      // the contract decoder's [pad, preimage, width, redeem] shape; start/cont carry only their 136-byte block.
       generateUnlockingBytecode: () => step.kind === 'final'
-        ? Uint8Array.from([plan.length === 1 ? 0x53 : 0x51, ...pushDataBytes(step.block), ...pushDataBytes(pad), ...pushDataBytes(redeem)])
+        ? Uint8Array.from([...pushDataBytes(pad), ...pushDataBytes(preimage), 0x51, ...pushDataBytes(redeem)])
         : Uint8Array.from([...pushDataBytes(step.block), ...pushDataBytes(pad), ...pushDataBytes(redeem)]),
     };
     const recreate: Output = {

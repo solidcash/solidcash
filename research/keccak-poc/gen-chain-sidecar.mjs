@@ -106,26 +106,32 @@ function covenantAsm(stateLoad, absorbAndFinish, tail) {
 
 const START_ASM = `${ZERO_STATE_ASM}`;
 const CONT_ASM = `OP_INPUTINDEX OP_1SUB OP_OUTPUTTOKENCOMMITMENT ${SPLIT_STATE_ASM}`;
-// FINAL is mode-aware: mode 3 = solo (zero state), mode 1 = final (previous committed state). The unlocking
-// pushes [mode, block, pad, salt] so small preimages use ONE solo side-car and large ones end in a final side-car,
-// both at the same covenant hash the contract bakes.
+// FINAL reads [pad, full_arg, width, salt] - the SAME unlocking shape the contract decoder reads - and derives
+// its mode from the full argument length: len >= 136 (has a full block) reads the previous committed state,
+// else seeds the zero state. It extracts the last (len % 136) bytes as the padded remainder block, so the
+// contract-side bind (full_arg == the contract's argument) stays intact.
+const FINAL_REMAINDER_ASM =
+  'OP_DUP OP_SIZE OP_DUP <136> OP_MOD OP_SUB OP_SPLIT OP_NIP OP_NIP';
 const FINAL_STATE_ASM =
-  'OP_DUP OP_3 OP_NUMEQUAL OP_IF OP_DROP ' + `${ZERO_STATE_ASM} `
-  + 'OP_ELSE OP_1 OP_NUMEQUALVERIFY '
-  + `OP_INPUTINDEX OP_1SUB OP_OUTPUTTOKENCOMMITMENT ${SPLIT_STATE_ASM} `
-  + 'OP_ENDIF';
+  `${FINAL_REMAINDER_ASM} `
+  + 'OP_TOALTSTACK '
+  + 'OP_IF OP_INPUTINDEX OP_1SUB OP_OUTPUTTOKENCOMMITMENT ' + `${SPLIT_STATE_ASM} `
+  + 'OP_ELSE ' + `${ZERO_STATE_ASM} `
+  + 'OP_ENDIF '
+  + 'OP_FROMALTSTACK ';
 const FINAL_ASM = `${PAD_BLOCK_ASM} <${CHAIN_STEP_ID}> OP_INVOKE ${SQUEEZE_ASM}`;
 const START_STEP = `<${CHAIN_STEP_ID}> OP_INVOKE ${COMBINE_STATE_ASM}`;
 const CONT_STEP = `<${CHAIN_STEP_ID}> OP_INVOKE ${COMBINE_STATE_ASM}`;
 
 function finalCovenant(tail) {
-  // [mode, block, pad, salt] -> brand -> drop pad -> [mode, block]; stash block, load state by mode.
-  return asm(`${BRAND_ASM}OP_DROP `
+  // [pad, full_arg, width, salt] -> brand -> [pad, full_arg, width] -> verify width 1 -> [pad, full_arg]
+  // -> NIP the pad -> [full_arg]; stash remainder, choose state by full_arg length, absorb, squeeze.
+  return asm(`${BRAND_ASM}`
+    + 'OP_1 OP_NUMEQUALVERIFY OP_NIP '
     + `${ROUND_DEFINE_ASM} `
     + `<0x${CHAIN_STEP_HEX}> <${CHAIN_STEP_ID}> OP_DEFINE `
-    + 'OP_TOALTSTACK '
+    + 'OP_DUP OP_SIZE <136> OP_GREATERTHANOREQUAL OP_ROT OP_DROP OP_SWAP '  // [hasFull, full_arg]
     + `${FINAL_STATE_ASM} `
-    + 'OP_FROMALTSTACK '
     + `${FINAL_ASM} `
     + `${tail}`);
 }

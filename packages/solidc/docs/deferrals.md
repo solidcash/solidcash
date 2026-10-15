@@ -1518,6 +1518,18 @@ for evm). Triples... (well, +50%s) the side-car count per recovery, which also p
 FIXED historical signatures (where re-signing is impossible) in bulk. Detail in memory
 ecrecover_builtin.md (2026-07-20b section).
 
+**PARTLY RESOLVED 2026-10-15 (middle covenant generated + baked; SDK/compiler wiring remains).** The
+3-covenant split's hard cryptographic core is now done and VM-verified: `research/ecrecover-poc/middle.mjs`
+proves the A->M->B body math on the real BCH-2026 VM (A ladders to C1, the new middle covenant M is a pure
+ladder C1->C2 committing H_M, B ladders C2->Q; recovered pubkey == ethers, forged C1/C2 checkpoints rejected),
+and `research/ecrecover-poc/gen-middle-sidecar.mjs` generates the deployable self-preserving covenants with the
+A->M->B hash chain and verifies the full 3-input spend. The generated `M` and `B3` covenants + their hashes are
+baked into `packages/utils/src/ecrecover-compute-library.ts` (the 3rd baked lock;
+`buildEcrecoverComputeRedeem`/`ecrecoverComputeLockingBytecode` accept `M`/`B3`). REMAINING before a width-0 sig
+settles end-to-end: the SDK `probeEcrecoverSplit` 3-way fallback + `buildEcrecoverComputeSidecars` A/M/B
+co-spend, and the compiler's 3-slot-per-call `ecrecoverSideCar` block layout (+ stride-3 loop indexing for the
+loop case). Until those land a width-0 signature still throws fail-closed.
+
 ---
 
 ## ecrecover loop tx-size wall - covenant dedup via introspection + OP_DEFINE (candidate)  - 2026-07-20

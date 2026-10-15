@@ -865,6 +865,12 @@ export function buildInputs(
       ...host.funderUtxos.slice(fixedPaddingCount),
     ];
   }
+  // A direct keccak loop and a runtime mapping loop share the trailing band. The compiler seeds each family's
+  // counter from the widths accumulated by the families that precede it in source order, so the physical inputs
+  // must follow that same order (keccak side-cars first when the keccak loop precedes the mapping loop).
+  const trailingLoopInputs = host.keccakLoopPrecedesTrailingUser
+    ? [...host.keccakLoopSideCars, ...host.insertLoopPredecessorInputs]
+    : [...host.insertLoopPredecessorInputs, ...host.keccakLoopSideCars];
   // When the function also reads a dynamic-storage array (iterationEntryInputs = chunk run),
   // the covenant reads those chunks at blockSize+i, so they must sit immediately after the
   // block with nothing between. Loop external-call callees therefore go AFTER the chunk run
@@ -873,10 +879,10 @@ export function buildInputs(
     return [
       host.masterUtxo, ...host.dataNftUtxos, ...host.readOnlyDataNftUtxos, ...host.blockhashCoSpendUtxos,
       ...(host.blockInfoCoSpendUtxos ?? []),
-      ...host.keccakComputeCoSpendUtxos, ...host.keccakLoopSideCars, ...host.ecrecoverComputeCoSpendUtxos,
+      ...host.keccakComputeCoSpendUtxos, ...host.ecrecoverComputeCoSpendUtxos,
       ...externalOutStateInputs,
       ...lowLevelCallInputs, ...host.lowLevelCallRawInputs,
-      ...entryInputs, ...host.iterationEntryInputs, ...host.insertLoopPredecessorInputs,
+      ...entryInputs, ...host.iterationEntryInputs, ...trailingLoopInputs,
       ...externalCallInputs,
       ...host.dynamicChunkInputs, ...host.trailingDisposalInputs,
       ...tokenContainerInputs, ...satoshiContainerInputs,
@@ -886,10 +892,10 @@ export function buildInputs(
   return [
     host.masterUtxo, ...host.dataNftUtxos, ...host.readOnlyDataNftUtxos, ...host.blockhashCoSpendUtxos,
     ...(host.blockInfoCoSpendUtxos ?? []),
-    ...host.keccakComputeCoSpendUtxos, ...host.keccakLoopSideCars, ...host.ecrecoverComputeCoSpendUtxos,
+    ...host.keccakComputeCoSpendUtxos, ...host.ecrecoverComputeCoSpendUtxos,
     ...externalOutStateInputs, ...externalCallInputs,
     ...lowLevelCallInputs, ...host.lowLevelCallRawInputs,
-    ...entryInputs, ...host.iterationEntryInputs, ...host.insertLoopPredecessorInputs,
+    ...entryInputs, ...host.iterationEntryInputs, ...trailingLoopInputs,
     ...host.dynamicChunkInputs, ...host.trailingDisposalInputs,
     ...tokenContainerInputs, ...satoshiContainerInputs,
     ...host.funderUtxos,

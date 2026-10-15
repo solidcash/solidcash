@@ -32,10 +32,9 @@ contract C {
 const KC = 'dd'.repeat(32);
 
 describe('keccak loop beside a sorted-insert mapping loop (reversed source order)', () => {
-  // TODO(keccak edge a): the SDK probe + shifted side-car covenant are wired, but the final transaction still
-  // aborts at the first keccak preimage bind (the master reads the mapping predecessor at index 2 instead of the
-  // keccak side-car at index 3). Re-enable once the compiler seeds the loop counter from the accumulated input
-  // cursor on the reversed path.
+  // TODO(keccak edge a): the SDK probe, shifted side-car covenant, and reversed input ordering are wired, but the
+  // final transaction still aborts at the first keccak preimage bind (the decoded preimage is empty). Re-enable
+  // once the reversed path's keccak loop counter is seeded from the accumulated input cursor.
   it.skip('settles with the correct digest when the mapping loop precedes the keccak loop', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, { forceStateful: true, suppressWarnings: true });

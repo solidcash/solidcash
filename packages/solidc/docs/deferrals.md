@@ -552,10 +552,11 @@ with the correct digest. The REVERSED source order (mapping loop before keccak l
 single-preimage keccak side-car covenant (`research/keccak-poc/gen-compute-sidecar-shifted.mjs`, baked as
 `KECCAK256_COMPUTE_SHIFTED_COVENANT` + hash in `packages/utils`) recreates at
 `INPUTINDEX + (outputCursor - inputCursor)` so the side-car output lands past the mapping outputs, and the compiler
-reads that shifted output coordinate. STILL deferred: the final transaction aborts at the first keccak preimage
-bind because the reversed path seeds the keccak loop counter from the un-advanced input cursor (the master reads
-the mapping predecessor at `blockSize` rather than the side-car at `blockSize + inputCount`);
-`KeccakLoopTrailingUserReversed.test.ts` is committed `it.skip` pending that counter-seed fix.
+reads that shifted output coordinate, and `stb-build-inputs.ts` orders the non-dense trailing inputs by
+`keccakLoopPrecedesTrailingUser`. STILL deferred: the final transaction aborts at the first keccak preimage bind
+(the decoded preimage is empty), consistent with the reversed path seeding the keccak loop counter from the
+un-advanced input cursor; `KeccakLoopTrailingUserReversed.test.ts` is committed `it.skip` pending that
+counter-seed fix.
 
 **RESOLVED 2026-10-15 (edge 2, transitive complex keccak + blockhash front-region).** Two fixes land together:
 (1) `_externalKeccakProbeCtx` now resolves B's own blockhash oracle co-spends against B's category and returns

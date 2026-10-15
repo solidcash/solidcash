@@ -3,6 +3,7 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   buildKeccakComputeRedeem, keccakComputeLockingBytecode, KECCAK256_COMPUTE_PAD_LENGTH,
   buildKeccakComputeRedeemLegacy, keccakComputeLockingBytecodeLegacy,
+  buildKeccakChainRedeem, keccakChainLockingBytecode, planKeccakChain, keccakChainCommitments,
 } from '@solidcash/utils';
 import type { Unlocker, Utxo, Output } from '../interfaces.js';
 
@@ -152,4 +153,45 @@ export function buildKeccakComputeSidecar(
     },
   };
   return { unlocker, recreate, commitment };
+}
+
+/**
+ * Build the chained keccak256 compute side-cars for one preimage larger than three blocks (or any preimage on
+ * the chained path): one side-car per 136-byte block (`start` for the first, `cont` for the middle full blocks,
+ * `final` for the padded remainder), chaining the running sponge state through their mutable-NFT commitments.
+ * The FINAL side-car is mode-aware: mode 1 reads the previous commitment, mode 3 (solo) seeds the zero state for
+ * a sub-136-byte preimage. `sidecars` must have at least `planKeccakChain(preimage).length` mutable-NFT UTXOs at
+ * the chained address (stateful: consecutive block-layout slots; stateless: the last-N inputs, final last).
+ */
+export function buildKeccakChainSidecars(
+  preimage: Uint8Array, salt: Uint8Array, sidecars: readonly Utxo[], stateful = false,
+): Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }> {
+  const plan = planKeccakChain(preimage);
+  const commitments = keccakChainCommitments(preimage);
+  if (sidecars.length < plan.length) {
+    throw new Error(`keccak256 chained preimage needs ${plan.length} side-car UTXO(s); found ${sidecars.length}.`);
+  }
+  return plan.map((step, i) => {
+    const lock = keccakChainLockingBytecode(salt, step.kind, stateful);
+    const redeem = buildKeccakChainRedeem(salt, step.kind, stateful);
+    // One keccak block per side-car: the budget pad plus the block and redeem pushes fund ~2.26M op.
+    const padLen = Math.max(KECCAK256_COMPUTE_PAD_LENGTH, 3200 - redeem.length - step.block.length);
+    const pad = new Uint8Array(padLen);
+    const unlocker: Unlocker = {
+      generateLockingBytecode: () => lock,
+      generateUnlockingBytecode: () => step.kind === 'final'
+        ? Uint8Array.from([plan.length === 1 ? 0x53 : 0x51, ...pushDataBytes(step.block), ...pushDataBytes(pad), ...pushDataBytes(redeem)])
+        : Uint8Array.from([...pushDataBytes(step.block), ...pushDataBytes(pad), ...pushDataBytes(redeem)]),
+    };
+    const recreate: Output = {
+      to: lock,
+      amount: sidecars[i].satoshis,
+      token: {
+        category: sidecars[i].token!.category,
+        amount: sidecars[i].token?.amount ?? 0n,
+        nft: { capability: 'mutable', commitment: binToHex(commitments[i]) },
+      },
+    };
+    return { utxo: sidecars[i], unlocker, recreate, commitment: commitments[i] };
+  });
 }

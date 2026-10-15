@@ -18,6 +18,7 @@ import {
   keccakChainLockingBytecode,
   splitKeccakChainBlocks,
   planKeccakChain,
+  keccakChainCommitments,
 } from '../src/keccak-compute-library.js';
 import { hash256 } from '../src/hash.js';
 
@@ -167,5 +168,14 @@ describe('keccak chained compute side-cars (utils)', () => {
 
   it('a 5-side-car stateful chain hashes a 600-byte preimage matching EVM', () => {
     expect(evalChain(600, true)).toBeUndefined();
+  });
+
+  it('keccakChainCommitments final digest matches noble and has one commitment per side-car', () => {
+    const preimage = new Uint8Array(600);
+    for (let i = 0; i < 600; i++) preimage[i] = (i * 13 + 7) & 0xff;
+    const commitments = keccakChainCommitments(preimage);
+    expect(commitments.length).toBe(5);              // 4 full blocks + final digest
+    expect(commitments.slice(0, 4).every((c) => c.length === 200)).toBe(true);
+    expect(binToHex(commitments[4])).toBe(binToHex(keccak_256(preimage)));
   });
 });

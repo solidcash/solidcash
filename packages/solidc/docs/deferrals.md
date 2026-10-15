@@ -2132,29 +2132,20 @@ hash back; `bench/mistswap-native/repro-bento.mjs` deploys BentoBoxMock; `test/P
 
 ## MasterChef / MasterChefV2: message-bus preflight OP_VERIFY (2026-08-07)
 
-**DIAGNOSED (2026-10-15): the recorded preflight OP_VERIFY is masked at HEAD by a split-path codegen
-regression.** The committed tree no longer splits `MasterChef.sol` (nor `MasterChefV2.sol`); `compileFileSplit`
-aborts in code generation with
+**PARTLY DIAGNOSED (2026-10-15): the split regression is fixed; the preflight OP_VERIFY is still masked by a
+second, SDK-side compose refusal.** The split codegen regression is named and fixed: `emitDynamicWriteVerification`
+dropped the `poolInfo` read-modify-write value in the delegate single-write cleanup even when
+`coSpendPreservedDynValues` marked it for the array-external-call co-spend, so the later
+`emitExternalCallVerification` cleanup threw `Expected variable '__internal__dynwrite_value_poolInfo' does not
+exist on the stack`. The fix keeps the marked value; pinned by `DynamicWriteArraySplit.test.ts`.
 
-```
-StackVariableUnavailableError: Expected variable '__internal__dynwrite_value_poolInfo' does not exist on the stack
-  at getStackIndex → emitExternalCallVerification → visitFunctionDefinition (message-bus route entry point)
-```
-
-The concrete defect: message-bus route synthesis for a loop over a dynamically-written array
-(`massUpdatePools` → inlined `updatePool` → `poolInfo[i].lpToken.balanceOf(...)` plus
-`poolInfo[i].accSushiPerShare = ...`) marks the `poolInfo` read-modify-write value for the array-external-call
-co-spend cleanup (`coSpendPreservedDynValues`, dropped at the end of `emitExternalCallVerification`), but the
-synthesized route function never places `__internal__dynwrite_value_poolInfo` on its stack, so the cleanup's
-`getStackIndex` throws. A focused 22-line `MiniChef.sol` (loop + struct-field external call + array element
-write) reproduces the identical error under `compileFileSplit({ messageBus: true, maxShardBytes: 4000 })`.
-
-Because the split now fails, the unsplit constructor witness is 101,903 B and exceeds the 100,000-byte input
-ceiling, so every MasterChef/MasterChefV2 test currently dies at deploy (`unlocking bytecode exceeds ...
-100000 bytes`) before any message-bus preflight runs; the earlier `preflight ... at input 0: OP_VERIFY` census
-(24 tests) is therefore not reachable from HEAD and belongs to the last compiler that split these two files.
-Evidence: `masterchef-census.log` (26/26 constructor byte-gate failures) and `masterchef-repro.log` (focused
-repro stack) in the goal scratch.
+With the split fixed, `MasterChef` now splits (`MasterChef.split.json`, facet deploy succeeds) and the suite
+reaches cross-contract composition instead of the constructor byte gate. The next stacked refusal is SDK-side,
+before the preflight: `Delegate external call to IERC20.balanceOf is not connected. Connect 'IERC20' on the
+implementation before calling through the proxy` (from `sc-resolve-create-builder-nested-compose-callee.ts`),
+plus three harness arity failures (`dev`/`approve` called with an unstripped `{ from }` override). The recorded
+`preflight ... at input 0: OP_VERIFY` census is therefore still not reachable until that compose connection is
+resolved. Evidence: `masterchef-census-fixed.log` (25 failed / 1 passed) in the goal scratch.
 
 The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with
 

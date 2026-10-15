@@ -75,6 +75,7 @@ import {
   KECCAK256_COMPUTE_COVENANT_HASH,
   KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH,
   KECCAK256_COMPUTE_STATEFUL_COVENANT,
+  KECCAK256_COMPUTE_SHIFTED_COVENANT,
   KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK,
   KECCAK256_COMPUTE_SALT_PREFIX_LENGTH,
   KECCAK_CHAIN_FINAL_COVENANT_HASH,
@@ -14841,6 +14842,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     fn.keccakPreimageParams.push(paramName);
     const offset = batchCount - batchIndex;
+    // A dynamic keccak loop after a trailing mapping loop uses the SHIFTED side-car covenant: the mapping loop's
+    // output width differs from its input width, so the side-car recreated output must shift past the mapping
+    // outputs (by outputCursor - inputCursor) rather than self-preserve at its input index.
+    const shiftedLoop = this.keccakLoopActive && this.directKeccakTrailingCursorsActive
+      && this.currentFunction.keccakLoopPrecedesTrailingUser !== true;
     // Stateful contracts read the side-car from an absolute block-layout slot (master input index + slot
     // offset, same index for the 1:1 input and output). Stateless contracts have no block layout, so they read
     // the last N in/outputs count-relative (countOp - (n-i)). Both land on this call's dedicated side-car.
@@ -14875,6 +14881,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(cIdx + 1)), loc); // +1 for the untracked accumulator on top
         this.emit(Op.OP_PICK, loc);
         this.emit(Op.OP_ADD, loc);
+        if (shiftedLoop && countOp === Op.OP_TXOUTPUTCOUNT) {
+          // The input coordinate is blockSize + counter; the recreated output sits past the mapping outputs,
+          // so add (outputCursor - inputCursor) for the output read.
+          this.emitPickCompilerRouteFrameValue(
+            GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT, loc, 1,
+          );
+          this.emitPickCompilerRouteFrameValue(
+            GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT, loc, 2,
+          );
+          this.emit(Op.OP_SUB, loc);
+          this.emit(Op.OP_ADD, loc);
+        }
         return;
       }
       if (this.framedMaster) {
@@ -14957,6 +14975,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc);
     this.emit(encodeInt(BigInt(batchWidth)), loc);
     this.emit(Op.OP_NUMEQUALVERIFY, loc);           // [redeempush]
+    if (shiftedLoop) {
+      // The shifted unlocker carries the output-index delta between width and redeem; skip it before the
+      // redeem decode so the integrity read below still lands on the covenant.
+      this.emitGenericPushdataDecode(raw, loc);     // [delta_value, redeempush]
+      this.emit(Op.OP_NIP, loc);                    // [redeempush]
+    }
     this.emit(Op.OP_TOALTSTACK, loc);
     this.emit(Op.OP_FROMALTSTACK, loc);
     dropFirst(3);                                   // strip redeem PUSHDATA2 prefix -> [redeem]
@@ -14972,7 +14996,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Dynamic loop: compare the revealed covenant bytes. Hashing the covenant each iteration blows the
       // per-input hash budget. The revealed redeem is what the side-car lock commits to, including a
       // category-branded stateful lock. A shared-lock compare rejects that honest side-car.
-      this.emit(hexToBin(KECCAK256_COMPUTE_STATEFUL_COVENANT), loc);
+      this.emit(hexToBin(shiftedLoop ? KECCAK256_COMPUTE_SHIFTED_COVENANT : KECCAK256_COMPUTE_STATEFUL_COVENANT), loc);
     } else {
       this.emit(Op.OP_HASH256, loc);                // single/multi call: compare the 32-byte hash (tight script)
       this.emit(hexToBin(chainEligible

@@ -5349,6 +5349,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     abiFunction: AbiFunction, masterUtxo: Utxo, stateInputUnlocker: Unlocker,
     dataNftUtxos: Utxo[], dataNftUnlockers: Unlocker[],
     frontRegionInputs: UnlockableUtxo[] = [], locktime = 0,
+    trailingPredecessors: { inputs: UnlockableUtxo[]; outputs: Output[] } = { inputs: [], outputs: [] },
   ): Promise<{ sideCars: UnlockableUtxo[]; recreates: Output[] }> {
     return resolveStatefulKeccakLoopImpl(
       {
@@ -5359,7 +5360,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         generateLibauthSourceOutputs: (inputs: any) => generateLibauthSourceOutputs(inputs),
       },
       abiFunction, masterUtxo, stateInputUnlocker, dataNftUtxos, dataNftUnlockers,
-      frontRegionInputs, locktime,
+      frontRegionInputs, locktime, trailingPredecessors,
     );
   }
 
@@ -12442,10 +12443,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // the keccak side-cars; thread them into the probes so keccak works alongside external reads / blockhash.
     const keccakFrontRegion = [...externalReadUtxos, ...blockhashCoSpendUtxos];
     if (abiFunction?.keccakLoopReads && this.categoryId) {
-      // Dynamic loop: N (runtime) trailing side-cars, N + preimages found by a progressive VM probe.
+      // Dynamic loop: N (runtime) trailing side-cars, N + preimages found by a progressive VM probe. When a
+      // mapping loop precedes the keccak loop in source order, its bracketing predecessors (and their exact
+      // recreated chain outputs) occupy the front of the trailing band, so the probe co-spends them first.
+      const reversedTrailingPredecessors: { inputs: UnlockableUtxo[]; outputs: Output[] } = { inputs: [], outputs: [] };
+      if (abiFunction.keccakLoopPrecedesTrailingUser !== true) {
+        let predecessorCursor = 0;
+        for (const [, commitments] of sortedLoopCommitments) {
+          const predecessor = insertLoopPredecessors[predecessorCursor];
+          if (!predecessor) break;
+          predecessorCursor += 1;
+          const entryLock = predecessor.unlocker.generateLockingBytecode();
+          reversedTrailingPredecessors.inputs.push(predecessor);
+          for (const commitment of commitments) {
+            reversedTrailingPredecessors.outputs.push({
+              to: entryLock, amount: 1200n,
+              token: { amount: 0n, category: this.categoryId,
+                nft: { capability: 'mutable' as const, commitment } },
+            });
+          }
+        }
+      }
       const loop = await this._resolveStatefulKeccakLoop(
         abiFunction, derivationMasterUtxo, stateInputUnlocker, filteredDataNftUtxos, dataNftUnlockers,
-        keccakFrontRegion, maxBhLocktime,
+        keccakFrontRegion, maxBhLocktime, reversedTrailingPredecessors,
       );
       keccakLoopSideCars = loop.sideCars;
       keccakLoopRecreates = loop.recreates;

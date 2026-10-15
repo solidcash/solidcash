@@ -3,7 +3,7 @@
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { keccakComputeLockingBytecode, type AbiFunction } from '@solidcash/utils';
+import { keccakComputeLockingBytecode, keccakComputeLockingBytecodeShifted, type AbiFunction } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
@@ -24,6 +24,13 @@ export interface ResolveStatefulKeccakLoopHost {
  * Probe the master covenant with increasing numbers of keccak side-cars until the dynamic loop exits,
  * then return the authenticated side-car unlockables + recreates.
  */
+export interface KeccakLoopTrailingPredecessors {
+  /** Co-spent mapping-loop inputs (sorted-upsert predecessors) that precede the keccak side-cars. */
+  inputs: UnlockableUtxo[];
+  /** Their recreated outputs (P' + new chain nodes), in trailing output order. */
+  outputs: Output[];
+}
+
 export async function resolveStatefulKeccakLoop(
   host: ResolveStatefulKeccakLoopHost,
   abiFunction: AbiFunction,
@@ -33,6 +40,7 @@ export async function resolveStatefulKeccakLoop(
   dataNftUnlockers: Unlocker[],
   frontRegionInputs: UnlockableUtxo[] = [],
   locktime = 0,
+  trailingPredecessors: KeccakLoopTrailingPredecessors = { inputs: [], outputs: [] },
 ): Promise<{ sideCars: UnlockableUtxo[]; recreates: Output[] }> {
   const blockSize = abiFunction.blockLayout?.blockSize ?? 1;
   const sidecarBase = abiFunction.blockLayout?.trailingBase
@@ -46,7 +54,11 @@ export async function resolveStatefulKeccakLoop(
       + 'oracles) do not fill the slots before the trailing side-car region; cannot position the loop.');
   }
   const salt = hexToBin(host.categoryId).slice().reverse();
-  const lock = keccakComputeLockingBytecode(salt, true);
+  // A preceding mapping loop whose input and output widths differ forces the shifted side-car covenant: the
+  // recreated side-car output must land past the mapping outputs (delta = outputCount - inputCount).
+  const outputDelta = trailingPredecessors.outputs.length - trailingPredecessors.inputs.length;
+  const shifted = outputDelta !== 0;
+  const lock = shifted ? keccakComputeLockingBytecodeShifted(salt) : keccakComputeLockingBytecode(salt, true);
   const scUtxos = (await host.inner.provider.getUtxosForLockingBytecode(lock))
     .filter((u) => u.token?.nft?.capability === 'mutable');
   const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
@@ -63,10 +75,14 @@ export async function resolveStatefulKeccakLoop(
     probe.addInput(masterUtxo, stateInputUnlocker);
     dataNftUtxos.forEach((u, i) => probe.addInput(u, dataNftUnlockers[i]));
     frontRegionInputs.forEach((u) => probe.addInputs([u])); // unlockable form: u already carries its unlocker
+    // A mapping loop that precedes the keccak loop in source order consumes its predecessors first; co-spend them
+    // ahead of the side-cars so the master's trailing reads land on the keccak side-cars, not the mapping inputs.
+    trailingPredecessors.inputs.forEach((u) => probe.addInputs([u]));
+    const keccakInputBase = sidecarBase + trailingPredecessors.inputs.length;
     const recreates: Output[] = [];
     for (let j = 0; j < k; j++) {
       const { unlocker, recreate } = buildKeccakComputeSidecar(
-        j < preimages.length ? preimages[j] : new Uint8Array(0), salt, scUtxos[j], true,
+        j < preimages.length ? preimages[j] : new Uint8Array(0), salt, scUtxos[j], !shifted, false, outputDelta,
       );
       probe.addInput(scUtxos[j], unlocker);
       recreates.push(recreate);
@@ -78,11 +94,12 @@ export async function resolveStatefulKeccakLoop(
       to: dataNftUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
     }));
     frontRegionInputs.forEach((u) => probe.addOutput(host.frontRegionRecreate(u))); // self-preserving recreate
+    trailingPredecessors.outputs.forEach((out) => probe.addOutput(out));
     for (const rec of recreates) probe.addOutput({ ...rec, to: lock });
     const transaction = probe.buildLibauthTransaction();
     const sourceOutputs = host.generateLibauthSourceOutputs(probe.inputs);
     const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as unknown[];
-    const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, sidecarBase, k);
+    const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, keccakInputBase, k);
     if (callIndex === preimages.length) {
       preimages.push(preimage); // the k-th placeholder was read+aborted -> a new iteration
     } else {
@@ -93,7 +110,9 @@ export async function resolveStatefulKeccakLoop(
   const sideCars: UnlockableUtxo[] = [];
   const recreates: Output[] = [];
   for (let j = 0; j < preimages.length; j++) {
-    const { unlocker, recreate } = buildKeccakComputeSidecar(preimages[j], salt, scUtxos[j], true);
+    const { unlocker, recreate } = buildKeccakComputeSidecar(
+      preimages[j], salt, scUtxos[j], !shifted, false, outputDelta,
+    );
     sideCars.push({ ...scUtxos[j], unlocker });
     recreates.push(recreate);
   }

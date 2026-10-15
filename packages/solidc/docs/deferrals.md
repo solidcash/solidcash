@@ -2132,9 +2132,10 @@ hash back; `bench/mistswap-native/repro-bento.mjs` deploys BentoBoxMock; `test/P
 
 ## MasterChef / MasterChefV2: message-bus preflight OP_VERIFY (2026-08-07)
 
-**ROOT CAUSE REACHED (2026-10-15): the split regression and a zero-trip state-array loop resolver gap are
-fixed, and the original `add` preflight OP_VERIFY is re-exposed and traced to the `poolInfo.push` state-write
-verification.** The split codegen regression is named and fixed:
+**ROOT CAUSE FINALIZED (2026-10-15): the split regression and a zero-trip state-array loop resolver gap are
+fixed; the original `add` preflight OP_VERIFY is re-exposed, traced, and bisected to a double-applied
+`poolInfo.push` length increment in the split-delegate dynamic-write witness.** The split codegen regression is
+named and fixed:
 `emitDynamicWriteVerification` dropped the `poolInfo` read-modify-write value in the delegate single-write
 cleanup even when `coSpendPreservedDynValues` marked it for the array-external-call co-spend, so the later
 `emitExternalCallVerification` cleanup threw `Expected variable '__internal__dynwrite_value_poolInfo' does not
@@ -2168,23 +2169,32 @@ shape (no `iterationDomain`, only `loopArrayVar`), so a direct `massUpdatePools`
 graph planner cannot enumerate a `loopArrayVar`-driven result-dependent loop without the compiler publishing an
 affine domain.
 
-Re-exposed preflight and its trace (2026-10-15): with refusal 1 fixed, `MasterChef.add(100, lp, true)` no longer
-throws `not connected`; it reaches the original failure —
+Re-exposed preflight, its trace, and the finalized root cause (2026-10-15): with refusal 1 fixed,
+`MasterChef.add(100, lp, true)` no longer throws `not connected`; it reaches the original failure —
 `messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.` — the exact error of
 the 24-test census. The input-0 covenant trace (`SOLIDC_DEBUG_COVENANT_TRACE=1`,
 `setMaterializationMode('devOracle')`) names the site: a 50-instruction output-scan helper (invoke id `ae`) that
-walks the transaction outputs comparing 32-byte state-write commitments and ends with
+walks the transaction outputs comparing 32-byte collection commitment families and ends with
 `op=0x9d OP_NUMEQUALVERIFY` failing on a searched slot index of `81` (-1, not found) against `<empty>` (0). The
 scan compares the route's expected post-state commitment `f5345e06…ba401` against the witness's
-`f5345e06…ba402` (last byte differs), so the write-back slot is never found. This is the `poolInfo.push`
-state-write verification in the split delegate `add` route — the same dynamic-write verification family as the
-already-fixed `emitDynamicWriteVerification` bug, but for the array-push shape: the SDK-synthesized post-state
-commitment does not match what the route recomputes. The next bisection target is that commitment's last-byte
-delta (post-push `poolInfo` length/count serialization). A focused single-row struct-array callee
-(populated via `push`, read via forward-parameter `update(pid)`) SETTLES, so the defect is specific to the
-`add`-route push + inlined-loop write-back, not the array-element compose itself. Evidence:
-`masterchef-census-now.log`, `compose-callee-debug.log`, `masterchef-add-skip3-trace.log`,
-`multirrow-repro2.log`, `masterchef-repro.log` in the goal scratch.
+`f5345e06…ba402`, so the write-back slot is never found.
+
+Bisected (2026-10-15): the differing last byte IS the post-push `poolInfo` collection length/count. A minimal
+split repro (`MinimalAddPush.test.ts`: struct `PoolInfo{IERC20 lpToken; uint256 allocPoint; uint256
+lastRewardBlock; uint256 accSushiPerShare}`, `PoolInfo[] poolInfo`, `uint256 totalAllocPoint`, `add` =
+`massUpdatePools()` (zero-trip at add time) + `totalAllocPoint += ap` + `poolInfo.push(...)`, compiled with
+`compileStringSplit({forceSplit,messageBus,evmCompat})`) fails with the SAME input-0 OP_NUMEQUALVERIFY in the
+same `body=50` scan. Its trace shows the route searches for the collection commitment family
+`e1e1…e1e101` (the state category `e1e1…e1` with last byte `01`, the post-push length) while the witness
+synthesizes `e1e1…e1e102` (last byte `02`): the SDK's split-delegate array-push write-back double-applies the
+length increment, so the expected family is absent and the scan's found index stays `-1`. Plain `push` (no loop)
+and plain `scalar write + push` (no loop) both SETTLE, so the off-by-one is triggered by the zero-trip
+`massUpdatePools` array-co-spend loop sharing the route: `StateArrayPushNode` publishes both a scalar length-slot
+write (`0 → 1`) and a collection-entry write, and the split-delegate dynamic-write witness counts the length
+increment twice when the co-spend loop's element write is present in the same route. This is the same
+dynamic-write verification family as the already-fixed `emitDynamicWriteVerification` bug, now narrowed to the
+array-push length delta. Evidence: `masterchef-add-skip3-trace.log`, `minimal-split-add.log`,
+`masterchef-census-now.log`, `compose-callee-debug.log` in the goal scratch.
 
 The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with
 

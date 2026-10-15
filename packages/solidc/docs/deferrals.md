@@ -1806,14 +1806,14 @@ are pinned by `CrossContractSortedWrite.test.ts` (UPDATE, INSERT, msg.sender-key
 negative is pinned by the same file ("rejects a wrong predecessor proof co-spent for the callee batch"): co-spending a
 different entry as the callee's batch predecessor fails covenant validation rather than writing.
 
-**STILL GAP (measured 2026-10-15).** The single-collection UPDATE/INSERT/msg.sender shapes above settle, but the
-full `SushiBar.enter` -> `SushiToken.transferFrom` shape - one callee writing BOTH `_balances[from]/_balances[to]`
-(a two-slot `linear` batch mixing an update and an insert) and the nested `_allowances[from][msg.sender]` - does
-NOT settle: the plain external-call block assembles the callee entry inputs correctly (the insert predecessor is
-matched), but its entry OUTPUTS come out mis-ordered (the rewritten predecessor lands in a fixed target slot, the
-insert's NEW node is missing) and the token master covenant rejects at `OP_VERIFY`. The mixed update+insert linear
-batch output materialization on the plain path is the remaining piece; the single-write-per-collection batch keeps
-its byte-for-byte behavior. Original analysis below.
+**STILL GAP NOTE CORRECTED (re-verified 2026-10-15).** An earlier probe of the full `SushiBar.enter` ->
+`SushiToken.transferFrom` shape (one callee writing both `_balances[from]/_balances[to]` in a two-slot `linear`
+batch plus the nested `_allowances[from][msg.sender]`) looked like it mis-ordered its entry outputs and failed the
+token master covenant - but that observation was made against an unrelated in-progress, uncommitted compiler
+hardening in the shared worktree. Against the committed tree the shape SETTLES and is now pinned by
+`solidcash/test/e2e/SushiBarTransferFrom.test.ts`: `transferFrom` settles, `_balances[from]`/`_balances[to]` and
+`_allowances[from][msg.sender]` all read back, and a wrong `_allowances` predecessor proof is refused at covenant
+validation. Original analysis below.
 
 **ORIGINAL ANALYSIS (superseded).** Calling a callee whose function writes vmap mapping entries failed before any
 transaction was built:

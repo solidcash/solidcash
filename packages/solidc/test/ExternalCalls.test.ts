@@ -698,6 +698,25 @@ describe('value-returning low-level-call helpers are inlined at direct call site
     expect(f?.inputs.some((input) => input.name === '__internal__externalCallInputBase')).toBe(true);
   });
 
+  it('inlines a param-target value-returning external-call helper (BentoBox _tokenBalanceOf)', () => {
+    // `_tokenBalanceOf(IERC20 token)` calls `token.balanceOf(address(this))` on an interface-typed PARAM. The
+    // external call injected synthetic covenant params (data / externalCallInputBase / selector /
+    // externalReturnOutputIdx) into the internal helper's signature, so the BentoBoxV1 line-835 call
+    // `_tokenBalanceOf(token)` failed "Found parameters (address) ... where (address,bytes,bigint,bytes4,bigint)
+    // were expected". The helper is inlined, so the synthetic params land on the entry point instead of bloating
+    // `_tokenBalanceOf`'s signature.
+    const src = 'interface IERC20 { function balanceOf(address a) external view returns (uint256); }'
+      + ' contract C {'
+      + ' function _tokenBalanceOf(IERC20 token) internal view returns (uint256) {'
+      + ' return token.balanceOf(address(this)); }'
+      + ' function f(IERC20 token) public view returns (uint256) { return _tokenBalanceOf(token); } }';
+    const a = compileString(src, { evmCompat: true });
+    expect(a.contractName).toBe('C');
+    const f = a.abi.find((entry) => entry.name === 'f');
+    expect(f?.externalCalls?.[0].functionName).toBe('balanceOf');
+    expect(f?.inputs.some((input) => input.name === '__internal__externalCallInputBase')).toBe(true);
+  });
+
   it('lowers a recursive external-call helper and binds its loop-local returned target', () => {
     const src = 'interface P { function swap(uint x) external; }'
       + ' interface F { function pair(address a) external returns (P); }'

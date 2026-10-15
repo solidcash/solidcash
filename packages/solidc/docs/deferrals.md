@@ -1502,12 +1502,15 @@ deferral above (a cheaper ladder would help both).
   helper's). Does NOT reproduce in isolation (a returning ext-call helper + BoringMath `.sub()` compiles) - BentoBox-
   specific. NOT storage-pointer. Investigate on-site if BentoBox is prioritized.
 - **RESOLVED (2026-10-15).** The line-835 wall no longer reproduces: BentoBoxV1 now compiles end-to-end through
-  `deposit()` — `_tokenBalanceOf(token).sub(total.elastic)` resolves by widening the `uint128` `total.elastic`
-  argument to the `uint256` `BoringMath.sub` binding (overload resolution accepts the integer-widening). Verified
-  on-site against `/Code/mistswap/mistswap/contracts/bentobox/BentoBoxV1.sol` (evmCompat + forceStateful +
-  messageBus): the compile succeeds; the only remaining diagnostic is the contract-size warning (27,444 > 10,000
-  bytes), which is a non-goal. The general widening is locked by `libraries-imports.test.ts`
-  (`using-for method widens a uint128 ARGUMENT to the uint256 binding (BentoBox _tokenBalanceOf(token).sub(total.elastic))`).
+  `deposit()` (evmCompat + forceStateful + messageBus), with only the contract-size warning (27,444 > 10,000
+  bytes, a non-goal). The documented 5-arg `_tokenBalanceOf` param-bloat is the SAME synthetic-covenant-param
+  threading as Kashi `_isSolvent`: `_tokenBalanceOf(IERC20 token)` makes a PARAM-target external call
+  (`token.balanceOf(address(this))`), which injected `__internal__externalCallInputBase` /
+  `__internal__extcallAnchorIdxN` / `__internal__externalReturnOutputIdx` into its signature; the helper is now
+  inlined at its call site, so those params land on the entry point and `_tokenBalanceOf(token)` (1 arg) no longer
+  mismatches a 5-arg signature. The subordinate `.sub(total.elastic)` uint128->uint256 argument widening is locked
+  separately by `libraries-imports.test.ts`; the exact wall shape is locked by `ExternalCalls.test.ts`
+  (`inlines a param-target value-returning external-call helper (BentoBox _tokenBalanceOf)`).
 - Original returning-fn analysis kept below for the record.
 
 ## (superseded) RETURNING storage-pointer fn (BentoBox BoringRebase `addElastic`) - DONE 2026-07-21 (commit e5ab012c)

@@ -2194,7 +2194,28 @@ only from `sortedBatchInfo` (sorted-batch MAPPING collections) — dynamic-ARRAY
 a red herring: a split push WITHOUT the loop (`SplitPushNoLoop` scratch test) fails the same conservation check,
 so this is a split-delegate dynamic-array-push defect, not a loop/compose issue. Evidence:
 `masterchef-add-skip3-trace.log`, `minimal-split-add.log`, `split-push-noloop.log`, `seed-debug2.log`,
-`masterchef-census.log`, `masterchef-census-now.log`, `compose-callee-debug.log` in the goal scratch.
+`masterchef-census.log`, `masterchef-census-now.log`, `compose-callee-debug.log`, `masterchef-repro.log`
+(the reduced `SplitPushNoLoop` failure) in the goal scratch.
+
+Observed root-cause diff, both files (2026-10-15, `SOLIDC_DEBUG_COVENANT_TRACE=1` +
+`setMaterializationMode('devOracle')`, captured to `masterchef-trace.log` in the goal scratch). The failing
+input-0 trace for `MasterChef.add` is `body=50`, `ip=48 op=0x9d OP_NUMEQUALVERIFY` with
+`top=[01 <category||0x01> 81 <empty>]` — the balance is `81` (-1) against the pushed `0`, exactly the
+`emitOwnCategoryMutableNftConservation` epilogue (`encodeInt(0); OP_NUMEQUALVERIFY`). MasterChefV2.test.ts's
+first failing call is the SAME base `MasterChef.add` in its `beforeEach`, and its trace is the identical
+`body=50` / `op=0x9d` site, so the 24-test census is one defect: the pushed `poolInfo` chunk makes the
+own-category mutable balance -1.
+
+Second, distinct defect behind it (2026-10-15): once `MasterChef.add` is bypassed, `MasterChefV2.add`
+(`allocPoint.to64()` / `lastRewardBlock.to64()` narrowing) fails its own `BoringMath.to64` "uint64 Overflow"
+guard at `body=29` (invoke id `04`), `ip=11 op=0x88 OP_EQUALVERIFY` with `top=[440a02 81 80 00]`. `440a02` is
+the block oracle's `block.number` = 133700 (in range for uint64), but the outlined helper checks the SIGN byte of
+the literal `-1` from `uint64(-1)` (`OP_1NEGATE OP_DUP OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_NIP OP_0
+OP_EQUALVERIFY`, sign byte `80` != `00`) rather than the argument's range, so the guard fails for the in-range
+value. A minimal `to64(10)` on the same split+messageBus path settles (so ordinary narrowing is sound); the
+defect is specific to narrowing the block-oracle `block.number` value, and it is masked in the census by the
+conservation check above but will resurface for MasterChefV2 once that is fixed. Trace:
+`masterchefv2-add-trace.log` (both `chef.add` and `chef2.add` sites) in the goal scratch.
 
 The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with
 

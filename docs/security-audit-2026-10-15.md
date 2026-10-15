@@ -1,0 +1,120 @@
+# Security audit 2026-10-15
+
+HEAD: `d7a2aa8dc` (`test(solidc): drive criterion-1 as one 16-cell materialization x op table`) on `feat/per-call`. That commit is test-only on top of `994934726` (`fix(solidc): require a minted root's sender to be empty`). The checks cited below were read at `d7a2aa8dc`.
+Baseline for the rows below: `SECURITY-AUDIT-2026-10.md` and `docs/security-audit-2026-10/` as they stood at `abbb7e0ec`. That file is the 2026-10-11 record and is not rewritten here.
+
+## Threat model
+
+On chain, the compiled Bitcoin Cash Script is the only boundary. An attacker may build any transaction the BCH 2026 virtual machine accepts. They cannot produce a signature for a key they do not hold. A locking bytecode of up to 201 bytes is standard, so a bare lock needs no miner help. Off chain, a user must not be led to sign something they did not intend, lose funds, or leak keys, and a network provider may be hostile: it may lie about UTXOs, omit coins, or serve a transaction that does not match the outpoint it names.
+
+## Method and what was not read
+
+The delta from `abbb7e0ec` is 754 files. This pass reclassified every CRITICAL and HIGH id from the October audit by reading the current check, and it reviewed the covenant and trust surfaces that authorize a spend, bind identity, settle state, or sign and broadcast. It did not line-read website docs, benches, fixtures, conformance snapshots, or generated artifacts. It did not re-audit October MEDIUM and LOW rows whose checks were not on a reviewed delta. It did not re-read the whole of `GenerateTargetTraversal.ts` outside the functions cited below, the message-bus kernel past the verifier-binding template in `compiler.ts`, or the SDK broadcast path in `framed/call/call.ts` beyond the genesis-coin proof. A later commit message or doc was not treated as proof that a finding is fixed.
+
+Source-traced "confirmed" means the refusal is present or absent in the current script builder. It is not a new virtual-machine run.
+
+## Reclassification of October CRITICAL and HIGH
+
+| Id | Status | Deciding check, or its absence |
+| --- | --- | --- |
+| FM-1 | fixed | `recogniseValidatorScriptAgainstReservedHash` requires the redeem to open with `0x21` and the input lock to equal `P2SH32` of that redeem (`packages/solidc/src/framed/master/frame-tail.ts:806-814`). A bare lock replaying the unlocking no longer passes. |
+| FW-1 | fixed | A spent state input is keyed `in:<index>` (`checks.ts:444`) and must be touched (`checks.ts:503`, `V7_TOUCHED_RECORDS_MISMATCH`). On chain `emitRequireTouchedRecords` requires every collected index to be a state input or a listed created record, and every spent state input to be collected (`program.ts:2928-2960`). Declaring `in = 0xffff` does not stand in for the spent input. |
+| FW-2 | fixed | An exempt declaration must match the pair's input and its output (`declared-view.ts:613-619`, `OP_BOOLAND`). A trailing `{in: D, out: 0xffff}` is not exempt. The comment at 617-618 names the old skip. |
+| DX-1 | still open, narrowed | The container's master path now requires a long redeem or the contract's own 35-byte lock (`bindMintingAuthorityLock`, `packages/utils/src/state.ts:128-174`, used at `2518-2533`). It still does not preserve the container's satoshis. The master accounts for the container only when `pendingTransfers.length > 0` (`GenerateTargetTraversal.ts:51709-51721`). |
+| DX-2 | still open, narrowed | Same authority bind on the token-container master path (`state.ts:2422-2432`). That path checks category and minting capability and does not preserve the fungible amount. The master scans foreign containers (`GenerateTargetTraversal.ts:10194-10199`) only outside the framed master and outside `delegatecall`. A framed spend is not that scan. |
+| DX-6 | still open | `emitOwnCategoryMutableNftConservation` runs only when `countsOwnCategoryNfts` is true (`GenerateTargetTraversal.ts:10278-10282`). The comment at 10268-10274 says entry, token-container, dynamic-chunk, deploy, selfdestruct, split, merge, and delegate functions skip it. `__messageBusExplicitlyDisabled` still selects the direct conditional-batch flags (`50415-50418`). |
+| DS-1 | fixed | An active row may publish `predOut = -2` only when an earlier active write of the same target owns it, or the proof is non-positive (`GenerateTargetTraversal.ts:32202-32210`, `OP_EQUALVERIFY`). The write itself treats `-2` as inactive unless that alias holds (`28514-28523`). |
+| DS-2 | still open | `emitTokenCategoryVerification` checks the data-NFT category base against the master and does not read the lock (`GenerateTargetTraversal.ts:34926-34935`). A mutable NFT of the category at another lock still satisfies the read. Minting that NFT is the DX-6 residual. |
+| DS-3 | still open | Same gate as DX-6. The census comment records the residual: re-emitting a `0x01` output keeps the count, and this rule does not check the run's commitments (`GenerateTargetTraversal.ts:49133-49134`). |
+| DS-4 | fixed | `emitMinimalIntegerKey` requires the raw key bytes to equal `OP_BIN2NUM` of themselves before `OP_SHA256` (`GenerateTargetTraversal.ts:27481-27493`). `evmCompat` skips it because ABI words are not minimal script numbers (`27482-27484`); native `int`/`uint` keys are the October hole and are covered. |
+| DS-5 | fixed | Every collection is marked sorted, with no mapping-only gate (`compiler.ts:14903-14904`, and again at `15980` and `20136`). |
+| KB-1 | fixed | The generated route sets `activeVerifierOutput = activeVerifier` and requires that output's lock and category to equal the input (`compiler.ts:12239-12244`). The comment at 12239-12240 names the old last-output search. |
+| KB-2 | fixed | `compileAddressToEvmIdentity` accepts only empty, 20, 32 (12 zero prefix), 23 (P2SH20 template), 35 (`OP_HASH160`), and 25 (P2PKH template). Any other length must itself be a P2PKH template (`packages/solidc/src/generation/utils.ts:43-80`). The 71-byte multisig fall-through is gone. |
+| CRYPTO-1 | fixed | `emitBindAltStackedRedeemLock` requires the side-car input's lock to be `P2SH32` of the revealed redeem (`GenerateTargetTraversal.ts:51544-51554`). `emitKeccakComputeCall` calls it at `14907` before trusting the commitment. |
+| CRYPTO-2 | fixed | The non-loop recovery path binds side-car A with `emitBindAltStackedRedeemLock` (`GenerateTargetTraversal.ts:15189`) and checks side-car B's lock against `ECRECOVER_COMPUTE_B_SHARED_LOCK` (`15160-15162`). |
+| DS-6 | fixed | A conditional sorted batch pushes a false "ran" flag, and a flag that stays false binds every node unchanged (`GenerateTargetTraversal.ts:50407-50410`, `allocateConditionalSortedBatchFlags`). The old switch-off of the transition is that preservation arm. |
+| DS-7 | still open | `emitSlotExistsCheck` treats a nonempty commitment as an entry and does not read the lock (`GenerateTargetTraversal.ts:3735-3746`). The entry-address compare exists only for a shared-proof read (`3754-3766`). A skipped-branch read slot can still be counted from a stray own-category NFT. |
+| DS-8 | suspected | The alias preflight refuses an unjustified `predOut = -2` (`32202-32210`). This pass did not find a check that a batch target's proof index cannot name a pure-read slot of the same mapping. Not confirmed. |
+| DX-4 | suspected | `__internal__returnOutputIdx` is still a caller witness (`GenerateTargetTraversal.ts:816-838`). This pass did not re-read the return-carrier uniqueness compare, so the `-1` forge is not re-confirmed and not cleared. |
+| DX-5 | fixed | A non-empty low-level call requires the named input's lock to equal the target (`GenerateTargetTraversal.ts:26602-26635`). An empty literal payload is documented as running no callee (`26680-26684`) and is not pinned. |
+| DX-8 | fixed | `emitDelegateRecordConservation` requires the input record chain to equal the output chain (`GenerateTargetTraversal.ts:48842-48854`) and is called for a delegate entry (`10219`, `10250`). |
+| KB-3 | fixed | The same route template requires `activeVerifier >= 0` and a real input at that index (`compiler.ts:12230-12233`). A negative index no longer skips the verifier. |
+| SEM-1 | fixed | `firstUnverifiedReturn` walks into a branch and returns the early `return` (`EnsureFinalRequireTraversal.ts:334-343`, `466-471`) before `hasPriorUnconditionalRequire` can accept a later require. `enforceFinalRequire` defaults to true (`61`) and throws (`241-242`). |
+| SEM-11 | fixed | An entry function id must be one of `entryFunctionPointerTargets`, the contract's public and external functions (`GenerateTargetTraversal.ts:2613-2614`, `10609-10611`, `10663-10677`). A function value inside an array or struct fails compilation (`10642-10644`). |
+| CRYPTO-3 | fixed | `blockhash(n)` checks `tx.time >= n`, binds the oracle lock (`emitBindBlockhashOracleLock`), and requires `commitment.n == n` (`GenerateTargetTraversal.ts:15418-15438`). A caller-chosen index at another lock fails. |
+| CRYPTO-4 | fixed | Data-NFT destroy calls `bindMintingAuthorityLock` (`state.ts:253-254`). Without an explicit lock that walk requires the final redeem to be longer than 128 bytes (`168-169`). The comment at `124-125` says the keeper baton is a one-byte redeem and does not pass. Callers pass the contract lock (`covenant-helpers.ts:293`), not the keeper. |
+| TOOLS-1 | fixed | `packages/solidc/package.json`, `packages/solidcash/package.json`, `packages/utils/package.json`, and `packages/testing/package.json` depend on `git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8`, a commit, not `#vm-performance-dist`. The root `package.json` uses the same pin. No new mutable git-branch dependency was added on this pass. |
+| SDKFRAMED-1 | fixed | `genesisCoinRefusal` (`ContractFactory.ts:176-178`) calls `ownCoinRefusal`, which hashes the served raw transaction to the txid and requires the output lock, value, and token to match the signer's coin (`framed/deploy/own-coin.ts:20-38`, `59-78`). |
+| SDKFRAMED-2 | narrowed | The default deploy is one genesis. `separateHop` is true only when the caller passes `initializeAs: 'hop'` (`framed/proxy/deploy.ts:184`, `1095`). That opt-in still broadcasts the geneses and then the hop, so the race the October row described remains for the hop and is gone for the default. |
+
+## Still open, traced
+
+### DX-1 satoshi container beside a no-transfer spend
+
+Attacker: anyone who can satisfy a public function that does not transfer satoshis, on a contract that holds a satoshi container.
+Shape: spend the master with that function, and spend the container with `flag = 1` and the master's input index. Pay the container's satoshis to the attacker.
+What should refuse it: either the container script preserves value on the master path, or every master spend pins the container output.
+Why it does not: `buildSatoshiContainerCovenantScript`'s master arm checks the authority lock, minting capability, and category (`state.ts:2524-2533`) and then succeeds. `emitValuePreservation` skips the container when there are no pending transfers (`GenerateTargetTraversal.ts:51709-51721`). The comment there says the container covenant does not protect its output on the master-spend path.
+
+### DX-2 token container, same shape
+
+Attacker and shape as DX-1, against a fungible-token container, taking the tokens instead of the satoshis.
+What should refuse it: the master arm preserves `OP_OUTPUTTOKENAMOUNT`.
+Why it does not: `buildTokenContainerCovenantScript`'s master arm ends after the authority, capability, and category checks (`state.ts:2422-2432`). The preservation compares are only on the merge arm (`2433-2457`).
+
+### DX-6 and DS-3 unaccessed mutable NFTs on entry, chunk, and deploy functions
+
+Attacker: anyone who can spend a function that co-spends a variable number of own-category mutable NFTs (a mapping entry, a dynamic chunk, a deploy).
+Shape: co-spend an unaccessed data NFT or chunk, destroy it or replace its commitment with another `0x01` output so the count still balances, using the data-NFT covenant's master arm, which authorizes a change when the real master is present.
+What should refuse it: the own-category mutable count, plus a commitment pin for every NFT the function did not name.
+Why it does not: that count is skipped when `countsOwnCategoryNfts` is false (`GenerateTargetTraversal.ts:10268-10282`). The rule that does run says a re-emitted `0x01` output keeps the count and that commitments are not checked (`49133-49134`).
+
+### DS-2 data-NFT read trusts category, not lock
+
+Attacker: the same spender, after minting an own-category mutable NFT to their own lock (DS-3).
+Shape: place that NFT at the data-record offset the function reads.
+What should refuse it: `OP_UTXOBYTECODE` at that offset equals the data-NFT covenant.
+Why it does not: `emitTokenCategoryVerification` compares category bases only (`GenerateTargetTraversal.ts:34926-34935`).
+
+### DS-7 skipped-branch read slot counted from any nonempty commitment
+
+Attacker: a spender of a function that batch-writes a sorted mapping and also has a read of that mapping in a branch the call does not take.
+Shape: fund the read slot with an own-category mutable NFT at another lock and a nonempty commitment, so the census counts an extra node. One real node then sits outside the per-position checks.
+What should refuse it: the slot counts only when its lock is the collection's entry address.
+Why it does not, on the general path: `emitSlotExistsCheck` uses commitment nonempty (`3735-3746`). The address compare is only `emitEntrySlotAtAddressCheck`, and `emitReadOnlyEntryExistsCheck` calls that only for a shared-proof slot (`3754-3780`).
+
+## Suspected, not confirmed
+
+- DS-8. The proof-index overlap with a pure-read slot was not re-traced. The alias preflight that was read does not mention read slots.
+- DX-4. The return-output index is still a witness. The uniqueness compare against `-1` was not re-read.
+
+## Delta since `abbb7e0ec`: covenant and trust
+
+### Minted-root validator, beyond `self` and empty `sender`
+
+`emitOneMintedMasterRootRule` (`program.ts:741-777`) now checks, for each minted master: the output index is in range, the frame kind is `ROOT`, `callerRef` and `originRef` are `INDEX_NONE`, `sender` is empty (`760-767`), and `self` equals the address of the output category with the mutable capability (`768-775`). `emitOneMintedMasterCompleteness` (`692-708`) checks the output token is minting and `validatorRef` equals this validator input. The derivation matches the empty sender (`checks.ts:282-289`, `V4_MINTED_ROOT_SENDER`) and `self` (`checkV11`).
+
+No new issue on cross-category impersonation. A `CALL` callee's `msg.sender` is the caller's `self` (`emitMessageEdge`), and that `self` is the category address of this output. Forging another contract's address fails `OP_EQUALVERIFY`.
+
+New issue, confirmed. A minted root's `value` is not tied to a coin.
+
+- Attacker: anyone who can construct a genesis-shaped transaction the validator accepts (they do not need a key; the root is an output).
+- Shape: set the minted root's `value` to any `N`, and set the delegate call and the delegate frame's `value` to the same `N`.
+- What should refuse it: `N` is covered by the contract's satoshi container, or a genesis root's `value` is fixed at 0 the way its `sender` is.
+- Why it does not: `emitOneMintedMasterRootRule` drops the block after `self` and never reads `value`. `checkContractValue` subtracts a non-delegate frame's `value` and adds each call's `value` back (`checks.ts:573-577`), so a delegate call cancels `N`. On chain `emitFrameNet` reads `OP_INPUTBYTECODE` (`program.ts:2217-2232`) and the value walk iterates input masters only (`2185-2207`). The minted root is not an input, and a delegate frame contributes 0 because it is borrowed (`2225-2232`). The delegate head trusts the validator to have bound `value` (`master-head.ts` composed-frame comment). A payable delegate therefore sees whatever `msg.value` the witness names.
+
+Not bound, and not given a new confirmed id: the minted output's locking bytecode need not equal `self` (the identity is the category address, which is the check above), and this pass did not finish the stack trace of the framed output census that might count an extra minting output (`frame-tail.ts:1050-1056` compares a 33-byte output category with a 32-byte base). That census mismatch is suspected, not confirmed.
+
+### Other surfaces
+
+- Framed master validator recognition: FM-1's check holds, as cited above. No new issue.
+- Framed settlement of created and deleted records: FW-1 and FW-2 hold, as cited above. No new issue on those two shapes.
+- Direct sorted batch: DS-1 and DS-6 hold, as cited above. DS-7 remains open. DS-8 is suspected.
+- Direct containers: DX-1 and DX-2 remain open. The foreign-container scan (`10194-10199`) is the holding check for a direct non-delegate function that never names `tokens[...]`; it does not run for a framed master.
+- Message-bus verifier binding: KB-1 and KB-3 hold in the route template at `compiler.ts:12210-12244`. The rest of the kernel was not re-read; no new issue is claimed there.
+- External calls: DX-5's target lock holds. Delegate record conservation holds (DX-8).
+- SDK deploy and provider trust: `ownCoinRefusal` is the holding check for a genesis coin and a hop caller coin (`own-coin.ts:1-8`). No new issue on that path. The broadcast-without-recheck behavior previously filed as SDKFRAMED-10 was not re-read.
+
+## Ids left suspected
+
+DS-8, DX-4, and the framed extra-minting-output census note in the minted-root section.

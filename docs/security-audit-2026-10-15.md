@@ -32,7 +32,7 @@ Source-traced "confirmed" means the refusal is present or absent in the current 
 | KB-2 | fixed | `compileAddressToEvmIdentity` accepts only empty, 20, 32 (12 zero prefix), 23 (P2SH20 template), 35 (`OP_HASH160`), and 25 (P2PKH template). Any other length must itself be a P2PKH template (`packages/solidc/src/generation/utils.ts:43-80`). The 71-byte multisig fall-through is gone. |
 | CRYPTO-1 | fixed | `emitBindAltStackedRedeemLock` requires the side-car input's lock to be `P2SH32` of the revealed redeem (`GenerateTargetTraversal.ts:51544-51554`). `emitKeccakComputeCall` calls it at `14907` before trusting the commitment. |
 | CRYPTO-2 | fixed | The non-loop recovery path binds side-car A with `emitBindAltStackedRedeemLock` (`GenerateTargetTraversal.ts:15189`) and checks side-car B's lock against `ECRECOVER_COMPUTE_B_SHARED_LOCK` (`15160-15162`). |
-| DS-6 | fixed | A conditional sorted batch pushes a false "ran" flag, and a flag that stays false binds every node unchanged (`GenerateTargetTraversal.ts:50407-50410`, `allocateConditionalSortedBatchFlags`). The old switch-off of the transition is that preservation arm. |
+| DS-6 | still open, narrowed | The ran-flag and the unrun census exist only when the message bus is explicitly disabled or the master is framed (`allocateConditionalSortedBatchFlags`, `GenerateTargetTraversal.ts:50413-50418`; `settlesUnrun`, `31940-31941`). A compiler message-bus route sets both `settlesSortedTargetsByActivityLayout` and `settlesUnrun` false (`31376-31377`, `31940-31941`). A spender-chosen `__internal__vmapBatchSlot` mismatch then takes the guard `OP_IF` false and skips `emitSortedBatchTransitionVerification` with no preservation else (`31952-31990`). |
 | DS-7 | still open | `emitSlotExistsCheck` treats a nonempty commitment as an entry and does not read the lock (`GenerateTargetTraversal.ts:3735-3746`). The entry-address compare exists only for a shared-proof read (`3754-3766`). A skipped-branch read slot can still be counted from a stray own-category NFT. |
 | DS-8 | fixed | A direct-convention batch, routes included, requires each target's proof index to differ from every pure-read slot's input (`GenerateTargetTraversal.ts:33882-33896`, `OP_NUMNOTEQUAL` / `OP_VERIFY`). A framed frame leaves that loop at `33873` because its records are the declarations settlement ties to the transaction. |
 | DX-4 | fixed | `emitReturnEventCheck` pins the carrier when the index is nonnegative. When the index is negative it walks every output and refuses an own-category none-capability output locked with `OP_TRUE` (`GenerateTargetTraversal.ts:47362-47389`). The comment names DX-4. |
@@ -76,6 +76,13 @@ Shape: place that NFT at the data-record offset the function reads.
 What should refuse it: `OP_UTXOBYTECODE` at that offset equals the data-NFT covenant.
 Why it does not: `emitTokenCategoryVerification` compares category bases only (`GenerateTargetTraversal.ts:34926-34935`).
 
+### DS-6 a route can still switch the sorted-batch transition off
+
+Attacker: anyone who can spend a compiler message-bus route whose sorted writes sit in branches, including a conditional delete.
+Shape: set `__internal__vmapBatchSlot_<guard>` so it does not equal the first 32 bytes of the co-spent node's commitment, or spend a commitment shorter than 64 bytes. The guard comparison is 0.
+What should refuse it: the transition still runs, or the arm that did not run preserves every node.
+Why it does not: `settlesUnrun` is false because `isCompilerMessageBusRoute` is true (`GenerateTargetTraversal.ts:31940-31941`), so the `OP_ELSE` that calls `emitUnrunSortedBatchCensus` is not emitted (`31982-31989`). `settlesSortedTargetsByActivityLayout` returns false for the same route (`31376-31377`), so activity settlement does not replace the guard. The `OP_IF` at `31968` therefore skips `emitSortedBatchTransitionVerification` (`31979`) and the `OP_ENDIF` at `31990` ends the check. The ran-flag allocator never reaches a route: it returns unless the bus is explicitly disabled or the master is framed (`50413-50418`).
+
 ### DS-7 skipped-branch read slot counted from any nonempty commitment
 
 Attacker: a spender of a function that batch-writes a sorted mapping and also has a read of that mapping in a branch the call does not take.
@@ -93,12 +100,12 @@ Each surface is a new finding or an explicit no-new-issue. The holding check is 
 
 No new issue on cross-category impersonation. A `CALL` callee's `msg.sender` is the caller's `self` (`emitMessageEdge`), and that `self` is the category address of this output. Forging another contract's address fails `OP_EQUALVERIFY`.
 
-New issue, confirmed. A minted root's `value` is not tied to a coin.
+No new issue on a minted root's `value`. The root rule does not read `value`, and that is not a spend.
 
-- Attacker: anyone who can construct a genesis-shaped transaction the validator accepts (they do not need a key; the root is an output).
-- Shape: set the minted root's `value` to any `N`, and set the delegate call and the delegate frame's `value` to the same `N`.
-- What should refuse it: `N` is covered by the contract's satoshi container, or a genesis root's `value` is fixed at 0 the way its `sender` is.
-- Why it does not: `emitOneMintedMasterRootRule` drops the block after `self` and never reads `value`. `checkContractValue` subtracts a non-delegate frame's `value` and adds each call's `value` back (`checks.ts:573-577`), so a delegate call cancels `N`. On chain `emitFrameNet` reads `OP_INPUTBYTECODE` (`program.ts:2217-2232`) and the value walk iterates input masters only (`2185-2207`). The minted root is not an input, and a delegate frame contributes 0 because it is borrowed (`2225-2232`). The delegate head trusts the validator to have bound `value` (`master-head.ts` composed-frame comment). A payable delegate therefore sees whatever `msg.value` the witness names.
+- A non-payable delegate forces the value to 0. `composedFrameChecks` calls `assertZeroValue` when the frame does not handle value (`master-head.ts:693`, `1291-1294`). V5 requires the delegate's value to equal the caller's (`checks.ts:329`). `emitDelegateEdge` compares those values (`program.ts:1414-1415`). A nonzero witness fails the delegate before the body.
+- A payable delegate does not get past its own value check. `parkCategoryOwner` leaves `callerRef` as the records' owner for a delegate or internal frame (`master-head.ts:479-491`). `valueChecks` then runs `OP_UTXOTOKENCATEGORY` on that index (`1080-1084`). `emitOneMintedMasterEdges` names the caller `mintedRef(output)`, which is `MINTED_REF_BASE` (`0x8000`) plus the output index (`program.ts:861-864`, `3718`). That is not an input, so the introspection fails. The shape does not settle.
+
+A `CALL` from the minted root is a different frame: its value check uses its own input index (`master-head.ts:493-495`), and `emitFrameNet` subtracts that input's value because the frame is not borrowed (`program.ts:2219-2232`). No separate unbound-value finding.
 
 No new issue on the other minted-root fields.
 
@@ -115,7 +122,7 @@ No new issue. A spent root's `msg.sender` is the caller's locking bytecode: `ass
 
 ### Direct sorted-batch and container covenants
 
-DS-7 is still open, as traced above. DS-1, DS-6, and DS-8 hold on the direct batch (`32202-32210`, `50407-50410`, `33882-33896`). No new issue beyond DS-7.
+DS-6 and DS-7 are still open, as traced above. DS-1 and DS-8 hold on the direct batch (`32202-32210`, `33882-33896`). No new issue beyond those two.
 
 DX-1 and DX-2 are still open, as traced above. No new issue on the direct scan that does run: a non-delegate direct function that never names `tokens[...]` still scans foreign containers (`GenerateTargetTraversal.ts:10194-10199`). That scan does not cover a framed master.
 

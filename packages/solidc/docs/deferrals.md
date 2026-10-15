@@ -2326,19 +2326,20 @@ for a direct, unbounded single-call `bytes`/`string` preimage (`GenerateTargetTr
 factory-deploy assembly `sc-deploy-from.ts`; unit coverage `packages/solidcash/test/unit/KeccakChainSidecar.test.ts`
 3/3 and `packages/solidcash/test/unit/KeccakChainDerivationProbe.test.ts` 1/1). The plain stateful `send()`
 balanced assembly admits the chained trailing inputs, and `packages/solidcash/test/e2e/KeccakChainSidecar.test.ts`
-settles a 12 KB runtime preimage whose read-back digest equals `@noble/hashes/sha3.js keccak_256` (2/2,
-including the unfunded-refusal companion). A factory `deploy` function that hashes a >407-byte runtime argument
-now co-spends the chained side-cars in the finalized `deployFrom` transaction and derives the same digest
-(`packages/solidcash/test/e2e/KeccakChainDeployFrom.test.ts` 1/1, 1000-byte preimage). The under-threshold
-single-compute side-car path and the loop/straight-line mix layouts are unchanged. Remaining boundaries:
-(1) the compiler-reserved 256-slot trailing band holds one side-car per 136-byte block, so a single preimage
-longer than 255 full blocks + 135 bytes (~34 KB) still exceeds the reserved band and is refused by the balanced
-trailing-capacity check; (2) the FINAL side-car carries the full preimage in its unlocking bytecode, so on a real
-network the 10,000-byte per-input consensus limit caps a chained preimage at roughly 5.6 KB — the 12 KB
-plain-send e2e above runs on the mocknet's relaxed input-byte limit and would exceed real consensus.
+settles a 2000-byte (>407-byte) runtime preimage whose read-back digest equals `@noble/hashes/sha3.js keccak_256`
+(2/2, including the unfunded-refusal companion). A factory `deploy` function that hashes a >407-byte runtime
+argument now co-spends the chained side-cars in the finalized `deployFrom` transaction and derives the same digest
+(`packages/solidcash/test/e2e/KeccakChainDeployFrom.test.ts` 1/1, 2000-byte preimage, real byte gate). The
+under-threshold single-compute side-car path and the loop/straight-line mix layouts are unchanged. Remaining
+boundaries: (1) the compiler-reserved 256-slot trailing band holds one side-car per 136-byte block, so a single
+preimage longer than 255 full blocks + 135 bytes (~34 KB) still exceeds the reserved band and is refused by the
+balanced trailing-capacity check; (2) the FINAL side-car carries the full preimage in its unlocking bytecode, so a
+real network's 10,000-byte per-input consensus limit caps a chained preimage at roughly 6.4 KB (and the whole
+transaction must still fit the 100 KB standard relay ceiling).
 
-**Acceptance:** `keccak256(x)` for a 12 KB runtime `x` settles and reads back the same digest `keccak_256`
-computes off-chain; the refusal above still fires when the caller declines to fund the chain.
+**Acceptance:** `keccak256(x)` for a runtime `x` above the single-side-car threshold (~407 bytes) and within the
+consensus input-byte limit (~6.4 KB) settles and reads back the same digest `keccak_256` computes off-chain; the
+refusal above still fires when the caller declines to fund the chain.
 
 ## View and static calls do not pin the callee's state in direct composition (2026-10-12)
 

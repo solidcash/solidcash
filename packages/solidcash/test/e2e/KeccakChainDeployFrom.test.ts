@@ -35,7 +35,7 @@ contract HashFactory() {
 }`;
 
 const bigPreimage = (): Uint8Array => {
-  const out = new Uint8Array(1_000);
+  const out = new Uint8Array(2_000);
   for (let i = 0; i < out.length; i += 1) out[i] = (i * 13 + 7) & 0xff;
   return out;
 };

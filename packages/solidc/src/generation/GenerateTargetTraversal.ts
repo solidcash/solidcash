@@ -15091,11 +15091,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (fn.blockLayout) {
         this.emitBlockSlotIndex(
-          'ecrecoverSideCar', role === 'A' ? 2 * effectOrdinal : 2 * effectOrdinal + 1, loc,
+          'ecrecoverSideCar', role === 'A' ? 3 * effectOrdinal : 3 * effectOrdinal + 2, loc,
         );
         return;
       }
-      const basisSlot = basisSlots.find((slot) => slot.slotIndex === (role === 'A' ? 0 : 1));
+      const basisSlot = basisSlots.find((slot) => slot.slotIndex === (role === 'A' ? 0 : 2));
       if (basisSlot) {
         this.emitComputeSidecarBlockBase(loc, capturedComputeBase);
         this.emit(encodeInt(BigInt(basisSlot.offset)), loc);
@@ -39769,8 +39769,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         for (const key of Object.keys(n)) {
           if (semanticBackReferences.has(key)) continue;
           const value = (n as unknown as Record<string, unknown>)[key];
-          if (value instanceof Node) { if (walk(value)) return true; }
-          else if (Array.isArray(value)) {
+          if (value instanceof Node) { if (walk(value)) return true; } else if (Array.isArray(value)) {
             for (const item of value) if (item instanceof Node && walk(item)) return true;
           }
         }
@@ -39787,8 +39786,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (const key of Object.keys(n)) {
         if (semanticBackReferences.has(key)) continue;
         const value = (n as unknown as Record<string, unknown>)[key];
-        if (value instanceof Node) { if (walk(value)) return true; }
-        else if (Array.isArray(value)) {
+        if (value instanceof Node) { if (walk(value)) return true; } else if (Array.isArray(value)) {
           for (const item of value) if (item instanceof Node && walk(item)) return true;
         }
       }
@@ -48681,7 +48679,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     if (this.currentFunction.blockLayout) {
-      this.emitBlockSlotIndex('ecrecoverSideCar', 2 * effectOrdinal, locationData);
+      this.emitBlockSlotIndex('ecrecoverSideCar', 3 * effectOrdinal, locationData);
       return;
     }
     // A stateless entry has no authenticated owner-relative block. Its recovery pairs remain the final fixed

@@ -64,7 +64,10 @@ function modelToken(
 ): TokenShape {
   if (token === undefined || token.category.length === 0) return tokenShape(new Uint8Array(0), 0, false);
   const capability = token.nft?.capability === 'minting' ? 2 : token.nft?.capability === 'mutable' ? 1 : 0;
-  return tokenShape(token.category, capability, token.nft !== undefined, token.nft?.commitment ?? new Uint8Array(0), token.amount);
+  return tokenShape(
+    token.category, capability, token.nft !== undefined,
+    token.nft?.commitment ?? new Uint8Array(0), token.amount,
+  );
 }
 
 /** Turns the composer's shipped program into the model transaction the derivation reads. */

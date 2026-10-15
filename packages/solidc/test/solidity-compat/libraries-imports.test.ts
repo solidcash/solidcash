@@ -694,7 +694,7 @@ describe('MasterChefV2 semantic walls (struct scoping + using-for receiver resol
       + ' mapping(address => Rebase) totals;'
       + ' function _tokenBalanceOf(address t) internal view returns (uint256) { return totals[t].elastic; }'
       + ' function f(address t) public view returns (uint256) { return _tokenBalanceOf(t).sub(totals[t].elastic); } }',
-      opts)).not.toThrow();
+    opts)).not.toThrow();
   });
 });
 

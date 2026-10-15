@@ -7,8 +7,9 @@ import { fundedSigner } from '../test-util.js';
 
 /**
  * A stateful `keccak256` of a direct unbounded `bytes` parameter whose runtime length exceeds the single
- * compute side-car's 3-block budget. The SDK splits the preimage into START/CONT/FINAL side-cars in the
- * trailing region and the contract reads the FINAL digest.
+ * compute side-car's 3-block budget (~407 bytes) while staying within the 10,000-byte consensus input limit.
+ * The SDK splits the preimage into START/CONT/FINAL side-cars in the trailing region and the contract reads
+ * the FINAL digest.
  */
 const SOURCE = `
 contract ChainHasher {
@@ -37,13 +38,13 @@ const deploy = async (): Promise<Deployed> => {
 };
 
 const bigPreimage = (): Uint8Array => {
-  const out = new Uint8Array(12_000);
+  const out = new Uint8Array(2_000);
   for (let i = 0; i < out.length; i += 1) out[i] = (i * 13 + 7) & 0xff;
   return out;
 };
 
 describe('stateful chained keccak256 side-cars', () => {
-  it('hashes a 12 KB runtime argument through the chained START/CONT/FINAL side-cars', async () => {
+  it('hashes a >407-byte runtime argument through the chained START/CONT/FINAL side-cars', async () => {
     const hasher = await deploy();
     const preimage = bigPreimage();
     await hasher.getFunction('record')(preimage).send();
@@ -72,7 +73,7 @@ describe('stateful chained keccak256 side-cars', () => {
     });
     const unfunded = hasher.withProvider(wrapped as unknown as NetworkProvider);
     await expect(unfunded.getFunction('record')(preimage).send())
-      .rejects.toThrow(/keccak256 preimage too large \(12000 B = \d+ blocks\)/);
+      .rejects.toThrow(/keccak256 preimage too large \(2000 B = \d+ blocks\)/);
     expect(broadcasts).toBe(0);
   }, 300_000);
 });

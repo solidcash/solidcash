@@ -625,12 +625,12 @@ describe('bytes/string memory params and named returns as __yulmem pointers (mst
       + '  require(true);\n }\n}',
     'param-string': (op) => `contract C {\n function f(string memory p) {\n  assembly { ${op.replace(/__PTR__/g, 'p')} }\n`
       + '  require(true);\n }\n}',
-    'namedreturn-bytes': (op) => `contract C {\n function f() returns (bytes memory o) {\n`
+    'namedreturn-bytes': (op) => 'contract C {\n function f() returns (bytes memory o) {\n'
       + `  assembly { ${op.replace(/__PTR__/g, 'o')} }\n }\n}`,
-    'namedreturn-string': (op) => `contract C {\n function f() returns (string memory o) {\n`
+    'namedreturn-string': (op) => 'contract C {\n function f() returns (string memory o) {\n'
       + `  assembly { ${op.replace(/__PTR__/g, 'o')} }\n }\n}`,
   };
-  const localBuffer = (op: string): string => `contract C {\n function f() {\n  bytes memory b = new bytes(32);\n`
+  const localBuffer = (op: string): string => 'contract C {\n function f() {\n  bytes memory b = new bytes(32);\n'
     + `  assembly { ${op.replace(/__PTR__/g, 'b')} }\n  require(true);\n }\n}`;
 
   it('lowers every materialization x pointer-op to the local __yulmem buffer memory-op body', () => {

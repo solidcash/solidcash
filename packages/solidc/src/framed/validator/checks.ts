@@ -223,7 +223,7 @@ export function checkV3(state: DerivationState): void {
   if (new Set(declared).size !== declared.length) {
     check('V3', 'V3_DUPLICATE_MASTER', declared.find((master, at) => declared.indexOf(master) !== at));
   }
-  const minted = state.mintedMasters.map((minted) => mintedRef(minted.output));
+  const minted = state.mintedMasters.map((master) => mintedRef(master.output));
   if (new Set(minted).size !== minted.length) {
     check('V3', 'V3_DUPLICATE_MASTER', minted.find((master, at) => minted.indexOf(master) !== at));
   }

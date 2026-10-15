@@ -516,7 +516,7 @@ describe('memory-COPY struct-field external-call target (IFoo(job.token).transfe
     const art = compileString(`${IFACE} ${JOB} contract C { mapping(uint256 => Job) jobs;`
       + ' function f(uint256 id, address to) public {'
       + ' Job memory job = jobs[id]; IFoo(job.token).transfer(to, 1); require(true); } }',
-      { evmCompat: true });
+    { evmCompat: true });
     const fn = art.abi.find((f) => f.name === 'f');
     const ec = fn?.externalCalls?.[0];
     expect(ec?.addressParam).toMatch(/^__extaddr_/);
@@ -527,14 +527,18 @@ describe('memory-COPY struct-field external-call target (IFoo(job.token).transfe
       + ' function f(uint256 id, address to, address replacement) public {'
       + ' Job memory job = jobs[id]; job.token = replacement;'
       + ' IFoo(job.token).transfer(to, 1); require(true); } }',
-      { evmCompat: true })).toThrow(/external call target address must be a constructor\/function parameter or self-pinned state value/);
+    { evmCompat: true })).toThrow(
+      /external call target address must be a constructor\/function parameter or self-pinned state value/,
+    );
   });
   it('rejects a memory-COPY whole-local reassignment before the call', () => {
     expect(() => compileString(`${IFACE} ${JOB} contract C { mapping(uint256 => Job) jobs;`
       + ' function f(uint256 id, address to, address replacement) public {'
       + ' Job memory job = jobs[id]; job = Job(replacement, 0);'
       + ' IFoo(job.token).transfer(to, 1); require(true); } }',
-      { evmCompat: true })).toThrow(/external call target address must be a constructor\/function parameter or self-pinned state value/);
+    { evmCompat: true })).toThrow(
+      /external call target address must be a constructor\/function parameter or self-pinned state value/,
+    );
   });
 });
 

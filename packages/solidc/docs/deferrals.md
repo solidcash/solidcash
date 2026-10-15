@@ -355,6 +355,13 @@ the assignment; then `castChainTarget` handles the rewritten form. OR framed-sit
 **Revisit if.** A real contract makes a DIRECT (non-SafeERC20-wrapped) external call on a `memory`-copy struct
 field and it is the last compile blocker.
 
+**RESOLVED (2026-10-15).** The memory-COPY direct call now compiles and is pinned soundly.
+`SynthesizeExternalAddressLocals.castLocalStructFieldTarget` captures the call-site value of `job.token` into a
+synthesized `__extaddr_lf*_<iface>` local (never lifted to a caller-substitutable parameter); a copy whose `token`
+field is written, or whose local is reassigned, is no longer single-assignment and fails closed with
+`UnpinnedExternalCallTargetError` (not the stale state value). Locked by `calls-abi.test.ts`
+(`memory-COPY struct-field external-call target`): pinned `__extaddr_` addressParam + both rejection variants.
+
 ---
 
 ## `mapping(K => Struct)` NESTED struct-field write  — 2026-07-15
@@ -380,6 +387,13 @@ deeper structs.
 
 **Revisit if.** A real contract writes a nested struct field through a `mapping(K => Struct)` value and it blocks
 the compile.
+
+**RESOLVED (2026-10-15).** The flattening-forced mapping-value nested write now compiles. `buildLvalueAssign`'s
+`mappingStructValueVars` branch routes `jobs[id].roles.creator = v` to the flattened `jobs__roles[id].creator` field
+write (the leaf lands inside the rebuilt nested `Roles` struct, not raw at the first-level `roles` position), and the
+storage-pointer spelling `Post storage p = jobs[id]; p.roles.creator = v` desugars byte-for-byte to the direct
+spelling. Locked by `storage-collections.test.ts` (`flattening-forced mapping-value nested struct write`): direct
+write + same-chain read-back, storage pointer, and direct-vs-storage-pointer byte-identity.
 
 **Related (2026-07-15).** The fn-ptr CALL form `m[k].inner.x()` (calling a `function()` field nested inside a
 mapping-value struct, shipped 9d2ad911) is gated by THIS write limitation, not by the call rewrite: `m[k].inner.x
@@ -1487,6 +1501,13 @@ deferral above (a cheaper ladder would help both).
   overload/name-resolution confusion (the 5-arg signature is not `_tokenBalanceOf`'s; it looks like a low-level-call
   helper's). Does NOT reproduce in isolation (a returning ext-call helper + BoringMath `.sub()` compiles) - BentoBox-
   specific. NOT storage-pointer. Investigate on-site if BentoBox is prioritized.
+- **RESOLVED (2026-10-15).** The line-835 wall no longer reproduces: BentoBoxV1 now compiles end-to-end through
+  `deposit()` — `_tokenBalanceOf(token).sub(total.elastic)` resolves by widening the `uint128` `total.elastic`
+  argument to the `uint256` `BoringMath.sub` binding (overload resolution accepts the integer-widening). Verified
+  on-site against `/Code/mistswap/mistswap/contracts/bentobox/BentoBoxV1.sol` (evmCompat + forceStateful +
+  messageBus): the compile succeeds; the only remaining diagnostic is the contract-size warning (27,444 > 10,000
+  bytes), which is a non-goal. The general widening is locked by `libraries-imports.test.ts`
+  (`using-for method widens a uint128 ARGUMENT to the uint256 binding (BentoBox _tokenBalanceOf(token).sub(total.elastic))`).
 - Original returning-fn analysis kept below for the record.
 
 ## (superseded) RETURNING storage-pointer fn (BentoBox BoringRebase `addElastic`) - DONE 2026-07-21 (commit e5ab012c)
@@ -1539,6 +1560,13 @@ The abi.decode-interface fix advanced both Kashi contracts past their first wall
   NOTE a cleaner future fix for the ROOT would desugar value-type using-for method calls (`x.add(y)` on int) to
   `BoringMath.add(x, y)` BEFORE InlineReturningStateHelpers, so containsExternalCall stops mis-classifying them
   (RedesugarImportedUsingForCalls handles struct/interface/bare-ident receivers but not value-typed field receivers).
+  **RESOLVED (2026-10-15).** The `_isSolvent` wall no longer reproduces: KashiPairMediumRiskV1 now compiles
+  end-to-end (evmCompat + forceStateful + messageBus), with only the contract-size warning (29,584 > 10,000 bytes, a
+  non-goal). The state-var-target value-returning external-call helper is inlined at its call sites, so the synthetic
+  covenant params (`__internal__externalCallInputBase`, `__internal__extcallAnchorIdxN`,
+  `__internal__externalReturnOutputIdx`) land on the entry point instead of bloating `_isSolvent`'s signature. The
+  general shape is locked by `ExternalCalls.test.ts` (`inlines a state-var-target value-returning external-call helper
+  (Kashi _isSolvent)`).
 - **KashiPair (kashi-lending repo): import resolution** - "Cannot resolve import
   '@boringcrypto/boring-solidity/contracts/libraries/Bo...'" - a missing dependency path in that repo's layout, a
   HARNESS/dependency issue, not a compiler wall.

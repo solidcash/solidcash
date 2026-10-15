@@ -1738,6 +1738,37 @@ describe('nested struct fields in mapping values', () => {
   });
 });
 
+describe('flattening-forced mapping-value nested struct write (mapping(uint => Post) roles.creator)', () => {
+  // Post carries a mapping field (votes), so the mapping VALUE flattens into per-field collections keyed by the
+  // outer key (`jobs__roles`, ...). `jobs[id].roles.creator = v` must land the leaf inside the rebuilt
+  // `jobs__roles[id]` struct value, not raw at the first-level `roles` position. Mirrors the packed-array
+  // `jobs[i].roles.creator` rebuild (Marketplace jobs[]); the mapping form is the same write through
+  // mappingStructValueVars flattening. VM analog is the MappingStructScalarWrite e2e.
+  const S = 'struct Roles { address creator; address arbitrator; address worker; }'
+    + ' struct Post { uint8 state; Roles roles; uint256 amount; mapping(uint256 => uint256) votes; }';
+  const compileBody = (body: string): string => compileString(
+    `${S} contract C { mapping(uint256 => Post) jobs; function f(uint256 id) public { ${body} require(true); } }`,
+    { evmCompat: true },
+  ).contractName;
+  const bytecodeOf = (body: string): string => compileString(
+    `${S} contract C { mapping(uint256 => Post) jobs; function f(uint256 id) public { ${body} require(true); } }`,
+    { evmCompat: true },
+  ).bytecode;
+  it('writes the nested struct field directly and reads it back through the same chain', () => {
+    expect(compileBody('jobs[id].roles.creator = msg.sender; require(jobs[id].roles.creator == msg.sender);'))
+      .toBe('C');
+  });
+  it('writes the nested struct field through a storage pointer to the mapping value', () => {
+    expect(compileBody('Post storage p = jobs[id]; p.roles.creator = msg.sender;')).toBe('C');
+  });
+  it('desugars the storage-pointer spelling byte-for-byte to the direct spelling', () => {
+    // Both spellings route through the same mappingStructValueVars flattening: the write lands in the
+    // flattened `jobs__roles[id].creator` field, so the direct and storage-pointer forms emit identical code.
+    expect(bytecodeOf('jobs[id].roles.creator = msg.sender;'))
+      .toBe(bytecodeOf('Post storage p = jobs[id]; p.roles.creator = msg.sender;'));
+  });
+});
+
 describe('message-bus mapping struct-field writes', () => {
   it('derives the route key from a MappingFieldAssignNode', () => {
     const artifact = compileString(`

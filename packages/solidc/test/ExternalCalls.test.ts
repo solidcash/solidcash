@@ -679,6 +679,25 @@ describe('value-returning low-level-call helpers are inlined at direct call site
     expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
   });
 
+  it('inlines a state-var-target value-returning external-call helper (Kashi _isSolvent)', () => {
+    // `_isSolvent(address,bool,uint256)` calls `bentoBox.toAmount(..)` on an interface-typed STATE var. The
+    // external call injects synthetic covenant params (externalCallInputBase / extcallAnchorIdx /
+    // externalReturnOutputIdx) which used to bloat the internal helper's signature and fail its call sites.
+    // The helper is inlined, so those params land on the entry point instead.
+    const src = 'interface IBentoBox { function toAmount(address token, uint256 share, bool roundUp)'
+      + ' external view returns (uint256 amount); }'
+      + ' contract C { IBentoBox bentoBox; uint256 exchangeRate;'
+      + ' function _isSolvent(address user, bool open, uint256 rate) internal view returns (bool) {'
+      + ' return bentoBox.toAmount(user, 1, false) >= rate; }'
+      + ' function f(address user) public view returns (bool) {'
+      + ' return _isSolvent(user, false, exchangeRate); } }';
+    const a = compileString(src, { evmCompat: true });
+    expect(a.contractName).toBe('C');
+    const f = a.abi.find((entry) => entry.name === 'f');
+    expect(f?.externalCalls?.[0].functionName).toBe('toAmount');
+    expect(f?.inputs.some((input) => input.name === '__internal__externalCallInputBase')).toBe(true);
+  });
+
   it('lowers a recursive external-call helper and binds its loop-local returned target', () => {
     const src = 'interface P { function swap(uint x) external; }'
       + ' interface F { function pair(address a) external returns (P); }'

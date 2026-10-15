@@ -1,6 +1,6 @@
 # Security audit 2026-10-15
 
-HEAD: `d7a2aa8dc` (`test(solidc): drive criterion-1 as one 16-cell materialization x op table`) on `feat/per-call`. That commit is test-only on top of `994934726` (`fix(solidc): require a minted root's sender to be empty`). The checks cited below were read at `d7a2aa8dc`.
+Audited code: `d7a2aa8dc` on `feat/per-call` (`test(solidc): drive criterion-1 as one 16-cell materialization x op table`), which is `994934726` plus that test-only commit. This document is the only later change and does not alter the cited sources. The checks below were read at `d7a2aa8dc`.
 Baseline for the rows below: `SECURITY-AUDIT-2026-10.md` and `docs/security-audit-2026-10/` as they stood at `abbb7e0ec`. That file is the 2026-10-11 record and is not rewritten here.
 
 ## Threat model
@@ -9,7 +9,7 @@ On chain, the compiled Bitcoin Cash Script is the only boundary. An attacker may
 
 ## Method and what was not read
 
-The delta from `abbb7e0ec` is 754 files. This pass reclassified every CRITICAL and HIGH id from the October audit by reading the current check, and it reviewed the covenant and trust surfaces that authorize a spend, bind identity, settle state, or sign and broadcast. It did not line-read website docs, benches, fixtures, conformance snapshots, or generated artifacts. It did not re-audit October MEDIUM and LOW rows whose checks were not on a reviewed delta. It did not re-read the whole of `GenerateTargetTraversal.ts` outside the functions cited below, the message-bus kernel past the verifier-binding template in `compiler.ts`, or the SDK broadcast path in `framed/call/call.ts` beyond the genesis-coin proof. A later commit message or doc was not treated as proof that a finding is fixed.
+The delta from `abbb7e0ec` is 754 files. This pass reclassified every CRITICAL and HIGH id from the October audit by reading the current check, and it reviewed the covenant and trust surfaces that authorize a spend, bind identity, settle state, or sign and broadcast. It did not line-read website docs, benches, fixtures, conformance snapshots, or generated artifacts. It did not re-audit October MEDIUM and LOW rows whose checks were not on a reviewed delta. It did not line-read the whole of `GenerateTargetTraversal.ts` outside the functions cited below, nor every message-bus lifecycle mode past the binding-digest equation. The kernel caller digest, the framed call broadcast, and `TransactionBuilder.send` were read. A later commit message or doc was not treated as proof that a finding is fixed.
 
 Source-traced "confirmed" means the refusal is present or absent in the current script builder. It is not a new virtual-machine run.
 
@@ -34,8 +34,8 @@ Source-traced "confirmed" means the refusal is present or absent in the current 
 | CRYPTO-2 | fixed | The non-loop recovery path binds side-car A with `emitBindAltStackedRedeemLock` (`GenerateTargetTraversal.ts:15189`) and checks side-car B's lock against `ECRECOVER_COMPUTE_B_SHARED_LOCK` (`15160-15162`). |
 | DS-6 | fixed | A conditional sorted batch pushes a false "ran" flag, and a flag that stays false binds every node unchanged (`GenerateTargetTraversal.ts:50407-50410`, `allocateConditionalSortedBatchFlags`). The old switch-off of the transition is that preservation arm. |
 | DS-7 | still open | `emitSlotExistsCheck` treats a nonempty commitment as an entry and does not read the lock (`GenerateTargetTraversal.ts:3735-3746`). The entry-address compare exists only for a shared-proof read (`3754-3766`). A skipped-branch read slot can still be counted from a stray own-category NFT. |
-| DS-8 | suspected | The alias preflight refuses an unjustified `predOut = -2` (`32202-32210`). This pass did not find a check that a batch target's proof index cannot name a pure-read slot of the same mapping. Not confirmed. |
-| DX-4 | suspected | `__internal__returnOutputIdx` is still a caller witness (`GenerateTargetTraversal.ts:816-838`). This pass did not re-read the return-carrier uniqueness compare, so the `-1` forge is not re-confirmed and not cleared. |
+| DS-8 | fixed | A direct-convention batch, routes included, requires each target's proof index to differ from every pure-read slot's input (`GenerateTargetTraversal.ts:33882-33896`, `OP_NUMNOTEQUAL` / `OP_VERIFY`). A framed frame leaves that loop at `33873` because its records are the declarations settlement ties to the transaction. |
+| DX-4 | fixed | `emitReturnEventCheck` pins the carrier when the index is nonnegative. When the index is negative it walks every output and refuses an own-category none-capability output locked with `OP_TRUE` (`GenerateTargetTraversal.ts:47362-47389`). The comment names DX-4. |
 | DX-5 | fixed | A non-empty low-level call requires the named input's lock to equal the target (`GenerateTargetTraversal.ts:26602-26635`). An empty literal payload is documented as running no callee (`26680-26684`) and is not pinned. |
 | DX-8 | fixed | `emitDelegateRecordConservation` requires the input record chain to equal the output chain (`GenerateTargetTraversal.ts:48842-48854`) and is called for a delegate entry (`10219`, `10250`). |
 | KB-3 | fixed | The same route template requires `activeVerifier >= 0` and a real input at that index (`compiler.ts:12230-12233`). A negative index no longer skips the verifier. |
@@ -83,12 +83,9 @@ Shape: fund the read slot with an own-category mutable NFT at another lock and a
 What should refuse it: the slot counts only when its lock is the collection's entry address.
 Why it does not, on the general path: `emitSlotExistsCheck` uses commitment nonempty (`3735-3746`). The address compare is only `emitEntrySlotAtAddressCheck`, and `emitReadOnlyEntryExistsCheck` calls that only for a shared-proof slot (`3754-3780`).
 
-## Suspected, not confirmed
-
-- DS-8. The proof-index overlap with a pure-read slot was not re-traced. The alias preflight that was read does not mention read slots.
-- DX-4. The return-output index is still a witness. The uniqueness compare against `-1` was not re-read.
-
 ## Delta since `abbb7e0ec`: covenant and trust
+
+Each surface is a new finding or an explicit no-new-issue. The holding check is named.
 
 ### Minted-root validator, beyond `self` and empty `sender`
 
@@ -103,18 +100,37 @@ New issue, confirmed. A minted root's `value` is not tied to a coin.
 - What should refuse it: `N` is covered by the contract's satoshi container, or a genesis root's `value` is fixed at 0 the way its `sender` is.
 - Why it does not: `emitOneMintedMasterRootRule` drops the block after `self` and never reads `value`. `checkContractValue` subtracts a non-delegate frame's `value` and adds each call's `value` back (`checks.ts:573-577`), so a delegate call cancels `N`. On chain `emitFrameNet` reads `OP_INPUTBYTECODE` (`program.ts:2217-2232`) and the value walk iterates input masters only (`2185-2207`). The minted root is not an input, and a delegate frame contributes 0 because it is borrowed (`2225-2232`). The delegate head trusts the validator to have bound `value` (`master-head.ts` composed-frame comment). A payable delegate therefore sees whatever `msg.value` the witness names.
 
-Not bound, and not given a new confirmed id: the minted output's locking bytecode need not equal `self` (the identity is the category address, which is the check above), and this pass did not finish the stack trace of the framed output census that might count an extra minting output (`frame-tail.ts:1050-1056` compares a 33-byte output category with a 32-byte base). That census mismatch is suspected, not confirmed.
+No new issue on the other minted-root fields.
 
-### Other surfaces
+- Output lock. `self` is the category address, not the output's locking bytecode. A different lock does not impersonate another category, because `self` is checked against this output's category (`program.ts:768-775`).
+- `validatorRef`, kind, caller, origin, sender. Bound as cited above.
+- Callee `retval`, sender, and `self`. `requireCalleeBody` reads them from the callee input and `emitMessageEdge` requires sender to equal the caller's `self` and `self` to equal the call target (`program.ts:1347-1394`).
+- Minted-root `retval`, events, sends, and segments. `emitCollectOwnEvents` and `emitFrameNet` read `OP_INPUTBYTECODE` of input masters only (`program.ts:2292-2296`, `2217-2221`). The root is an output, so those lists are not executed. A spent delegate's own witness is what its script runs, and V5 ties that witness to the call. No separate spend is authorized by stuffing the minted block's event or segment list.
 
-- Framed master validator recognition: FM-1's check holds, as cited above. No new issue.
-- Framed settlement of created and deleted records: FW-1 and FW-2 hold, as cited above. No new issue on those two shapes.
-- Direct sorted batch: DS-1 and DS-6 hold, as cited above. DS-7 remains open. DS-8 is suspected.
-- Direct containers: DX-1 and DX-2 remain open. The foreign-container scan (`10194-10199`) is the holding check for a direct non-delegate function that never names `tokens[...]`; it does not run for a framed master.
-- Message-bus verifier binding: KB-1 and KB-3 hold in the route template at `compiler.ts:12210-12244`. The rest of the kernel was not re-read; no new issue is claimed there.
-- External calls: DX-5's target lock holds. Delegate record conservation holds (DX-8).
-- SDK deploy and provider trust: `ownCoinRefusal` is the holding check for a genesis coin and a hop caller coin (`own-coin.ts:1-8`). No new issue on that path. The broadcast-without-recheck behavior previously filed as SDKFRAMED-10 was not re-read.
+Suspected, not confirmed: the framed output walk at `frame-tail.ts:1050-1056` splits 32 bytes off the input category and compares that to the output category. A 33-byte output category would not match a 32-byte base, so an extra minting output might go uncounted. The stack effect was not finished, so this is not a finding.
+
+### Framed master and frame settlement
+
+No new issue. A spent root's `msg.sender` is the caller's locking bytecode: `assertSenderIsTheCallersLock` requires `OP_UTXOBYTECODE(callerRef)` to be a P2PKH lock and equal the witness sender (`packages/solidc/src/framed/master/master-head.ts:1249-1261`). Validator recognition is FM-1 (`frame-tail.ts:806-814`). Created and deleted records are FW-1 (`program.ts:2928-2960`) and FW-2 (`declared-view.ts:613-619`).
+
+### Direct sorted-batch and container covenants
+
+DS-7 is still open, as traced above. DS-1, DS-6, and DS-8 hold on the direct batch (`32202-32210`, `50407-50410`, `33882-33896`). No new issue beyond DS-7.
+
+DX-1 and DX-2 are still open, as traced above. No new issue on the direct scan that does run: a non-delegate direct function that never names `tokens[...]` still scans foreign containers (`GenerateTargetTraversal.ts:10194-10199`). That scan does not cover a framed master.
+
+### Message-bus kernel
+
+No new issue on caller identity or the verifier output. The binding digest is `sha256` of the manifest, the batch, and, in a graph route, `sha256(suppliedCallers)` (`compiler.ts:12255-12258`, `12845-12849`). The verifier output index is the verifier input index, and the output commitment must carry that digest (`compiler.ts:12239-12253` and `12854-12858`). A negative verifier index is refused (`12230-12233`). Lifecycle modes past that equation were not line-read; nothing in the digest equation is a new hole.
+
+### External and delegate calls
+
+No new issue. A non-empty low-level call pins the callee lock to the target (`GenerateTargetTraversal.ts:26629-26635`). A negative return index refuses every own-category `OP_TRUE` carrier (`47362-47389`). A delegate's records must enter and leave equal (`48842-48854`).
+
+### SDK deploy, sign, and provider trust
+
+No new issue. A genesis coin is refused unless the raw transaction hashes to the txid and pays the signer's lock (`framed/deploy/own-coin.ts:27-38`, `59-70`). A framed call is evaluated on the BCH 2026 machine before broadcast (`framed/call/call.ts:2347`) and the provider's txid must equal `hash256` of the submitted bytes (`2632-2636`). `TransactionBuilder.send` applies the same txid check (`TransactionBuilder.ts:1480-1487`). Covenant `debug()` errors on that path are swallowed (`1404-1408`) and an admitted transaction does not re-enter the VM (`1455-1458`); the signed bytes are still the bytes the local builder produced, so this is not a new signing bypass.
 
 ## Ids left suspected
 
-DS-8, DX-4, and the framed extra-minting-output census note in the minted-root section.
+The framed extra-minting-output census note above. No October critical or high id is left suspected.

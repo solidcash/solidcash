@@ -538,6 +538,16 @@ recreations + locktime (the master path threads them, but the transitive path bu
 front-region band allocator). (2) Resolve B's blockhash/external-read co-spends inside `_externalKeccakProbeCtx`
 and pass them as `frontRegionInputs` (reuse the master's resolvers against B).
 
+**PARTLY RESOLVED 2026-10-15 (edge 1, keccak-loop-first source order).** The compiler now pushes
+`RUNTIME_LOOP_ENTRY_INPUT_COUNT`/`OUTPUT_COUNT` as LOCAL cursors for a direct function whose dynamic keccak loop
+coexists with a sorted-insert/upsert/entry mapping loop, seeds the keccak counter from the input cursor, and
+accumulates its side-car width into both cursors at teardown; the sorted-insert/upsert bases already consume the
+cursors. The SDK orders the physical trailing inputs by the published `keccakLoopPrecedesTrailingUser` flag.
+`packages/solidcash/test/e2e/KeccakLoopTrailingUser.test.ts` settles a keccak loop BEFORE a sorted-insert loop
+with the correct digest. STILL deferred: the REVERSED source order (mapping loop before keccak loop) compiles the
+correct disjoint bands but the SDK's `resolveStatefulKeccakLoop` progressive probe does not yet co-spend the
+mapping predecessors ahead of the keccak side-cars, so it still fail-closes with "no side-car read found".
+
 **Revisit if.** A real contract needs a keccak loop beside a mapping-write loop / container spend (1), or a
 transitive callee that hashes a nested arg while reading a blockhash (2).
 
@@ -2286,18 +2296,20 @@ for a direct, unbounded single-call `bytes`/`string` preimage (`GenerateTargetTr
 `trailingBase + size(arg)/136`, FINAL covenant hash, `keccakChainReads` published on the ABI), reserves a
 256-slot trailing region for it (`SymbolTableTraversal.ts`), and the SDK routes the preimage through
 `buildKeccakChainSidecars` into that trailing band (`sc-resolve-keccak-compute-co-spends.ts`,
-`StatefulContract.ts`, `stb-build-inputs.ts`, and the state-derivation probe
-`sc-derive-commitments.ts`; unit coverage `packages/solidcash/test/unit/KeccakChainSidecar.test.ts` 3/3 and
-`packages/solidcash/test/unit/KeccakChainDerivationProbe.test.ts` 1/1). The plain stateful `send()` balanced
-assembly admits the chained trailing inputs, and `packages/solidcash/test/e2e/KeccakChainSidecar.test.ts`
+`StatefulContract.ts`, `stb-build-inputs.ts`, the state-derivation probe `sc-derive-commitments.ts`, and the
+factory-deploy assembly `sc-deploy-from.ts`; unit coverage `packages/solidcash/test/unit/KeccakChainSidecar.test.ts`
+3/3 and `packages/solidcash/test/unit/KeccakChainDerivationProbe.test.ts` 1/1). The plain stateful `send()`
+balanced assembly admits the chained trailing inputs, and `packages/solidcash/test/e2e/KeccakChainSidecar.test.ts`
 settles a 12 KB runtime preimage whose read-back digest equals `@noble/hashes/sha3.js keccak_256` (2/2,
-including the unfunded-refusal companion). The under-threshold single-compute side-car path and the
-loop/straight-line mix layouts are unchanged. Remaining boundaries: (1) the compiler-reserved 256-slot trailing
-band holds one side-car per 136-byte block, so a single preimage longer than 255 full blocks + 135 bytes
-(~34 KB) still exceeds the reserved band and is refused by the balanced trailing-capacity check; (2) a factory
-`deploy` function that hashes a >407-byte runtime argument derives its post-call state through the chained probe,
-but the `deployFrom` final assembly does not yet co-spend the chained side-cars, so that combination still
-refuses (fail closed).
+including the unfunded-refusal companion). A factory `deploy` function that hashes a >407-byte runtime argument
+now co-spends the chained side-cars in the finalized `deployFrom` transaction and derives the same digest
+(`packages/solidcash/test/e2e/KeccakChainDeployFrom.test.ts` 1/1, 1000-byte preimage). The under-threshold
+single-compute side-car path and the loop/straight-line mix layouts are unchanged. Remaining boundaries:
+(1) the compiler-reserved 256-slot trailing band holds one side-car per 136-byte block, so a single preimage
+longer than 255 full blocks + 135 bytes (~34 KB) still exceeds the reserved band and is refused by the balanced
+trailing-capacity check; (2) the FINAL side-car carries the full preimage in its unlocking bytecode, so on a real
+network the 10,000-byte per-input consensus limit caps a chained preimage at roughly 5.6 KB — the 12 KB
+plain-send e2e above runs on the mocknet's relaxed input-byte limit and would exceed real consensus.
 
 **Acceptance:** `keccak256(x)` for a 12 KB runtime `x` settles and reads back the same digest `keccak_256`
 computes off-chain; the refusal above still fires when the caller declines to fund the chain.

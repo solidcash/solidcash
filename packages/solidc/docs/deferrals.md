@@ -341,10 +341,11 @@ pointer optimization is missed. Not worth a read-modify-write byte-splice path y
 
 **Revisit if.** A contract hot-path does compound byte writes on a buffer it also drives via assembly.
 
-**RESOLVED (2026-10-15).** The compound byte write now emits the in-place splice: the AstBuilder's
-`desugarBytesElementWrite` rebuild and `LowerMemoryModel`'s element-write fusion collapse `b[i] op= v` on a local
-`__yulmem`-candidate buffer to the same bytecode as `b[i] = b[i] op v` (for `+=`/`|=`/`&=`). Locked by
-`storage-collections.test.ts` (`local bytes compound writes are byte-identical to the in-place splice`).
+**RESOLVED (2026-10-15).** The compound byte write now emits the in-place splice: `buildLvalueAssign` keeps a
+LOCAL `b[i] op= v` as a raw `ArrayAssignNode(b, i, b[i] op v)` (like the plain `=` form) instead of the
+`desugarBytesElementWrite` whole-blob rebuild, so `LowerMemoryModel` lowers a `__yulmem`-candidate buffer to the
+same single-byte splice as `b[i] = b[i] op v`, and `DesugarLocalBytesElementWrite` value-copies the fallback.
+Locked by `storage-collections.test.ts` (`local bytes compound writes are byte-identical to the in-place splice`).
 
 ---
 

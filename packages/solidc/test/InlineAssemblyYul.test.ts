@@ -590,6 +590,10 @@ describe('Yul memory (constant-offset scratch)', () => {
 });
 
 describe('bytes/string memory params and named returns as __yulmem pointers (mstore/mload/mcopy/keccak256)', () => {
+  // materializeParams / materializeNamedBytesReturn insert a compiler-owned `__memb_*`/`__memret_*` buffer whose
+  // pointer allocation cannot be spelled from user source, so byte-identity is asserted between the two source
+  // spellings that ride the SAME materialization (bytes == string) rather than against a hand-written
+  // materialized-local prologue.
   const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('materializes a bytes memory param used as a pointer (mstore/mload/mcopy/keccak256 over add(p,off))', () => {
     expect(cc('contract C(){function f(bytes memory p, uint256 n) returns (bytes32 r) {'
@@ -603,11 +607,12 @@ describe('bytes/string memory params and named returns as __yulmem pointers (mst
       { evmCompat: true });
     expect(mk('bytes').bytecode).toBe(mk('string').bytecode);
   });
-  it('materializes an uninitialized named-return bytes/string used as a pointer', () => {
-    expect(cc('contract C(){function f(bytes32 w) returns (bytes memory o) {'
-      + ' assembly { mstore(o, 32) mstore(add(o,0x20), w) } } }')).toBe('C');
-    expect(cc('contract C(){function f(bytes32 w) returns (string memory o) {'
-      + ' assembly { mstore(o, 32) mstore(add(o,0x20), w) } } }')).toBe('C');
+  it('materializes an uninitialized named-return string byte-identically to the bytes form', () => {
+    const mk = (t: string): string => compileString(
+      `contract C(){function f(bytes32 w) returns (${t} memory o) {`
+      + ' assembly { mstore(o, 32) mstore(add(o,0x20), w) } } }',
+      { evmCompat: true });
+    expect(mk('bytes').bytecode).toBe(mk('string').bytecode);
   });
   it('keeps the bridge-handled mload read on an unbounded bytes memory param', () => {
     // mload(add(buf,32)) on a bytes memory param is also a materialization candidate; the read must still

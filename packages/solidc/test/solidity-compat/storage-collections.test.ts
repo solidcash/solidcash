@@ -536,8 +536,12 @@ describe('bytes element compound write (data[i] |= v / &=)', () => {
     expect(s.bytecode).toBe(h.bytecode);
   });
   it('local bytes compound writes are byte-identical to the in-place splice (b[i] op= v == b[i] = b[i] op v)', () => {
+    // A __yulmem CANDIDATE: a fresh local bytes buffer observed by assembly, so LowerMemoryModel converts it to a
+    // pointer. The compound write must emit the in-place byte splice, not the whole-blob value-copy rebuild.
     const mk = (body: string): string => compileString(
-      'contract C { function f(bytes memory b, uint256 i, bytes1 v) external { ' + body + ' require(true); } }',
+      'contract C { function f(uint256 i, bytes1 v) external returns (bytes32 r) {'
+      + ' bytes memory b = new bytes(32); ' + body
+      + ' assembly { r := mload(add(b, 0x20)) } } }',
       { evmCompat: true }).bytecode;
     for (const op of ['+', '|', '&']) {
       expect(mk(`b[i] ${op}= v;`)).toBe(mk(`b[i] = b[i] ${op} v;`));

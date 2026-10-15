@@ -6293,17 +6293,21 @@ export default class AstBuilder
       return assign;
     }
 
-    // Bytes var element write `data[i] op= v` (state OR local/memory) -> reassign the whole blob with byte i
-    // replaced: `data = data[0:i] ++ (data[i] op v) ++ data[i+1:]` (plain `=` uses v directly). Reuses the bytes
-    // slice/concat codegen (like .push/.pop). ++/-- excluded (isIncDec) - byte inc/dec is not a Solidity form.
+    // Bytes var element write `data[i] op= v` (state OR local/memory). A LOCAL write stays a raw ArrayAssignNode:
+    // LowerMemoryModel lowers it to a single-byte splice when the buffer is a __yulmem pointer, and
+    // DesugarLocalBytesElementWrite value-copies (the whole-blob rebuild) the ones that fall back. A compound
+    // `op=` writes `b[i] op v` through that same splice, so a __yulmem candidate emits the in-place
+    // read-modify-write (byte-identical to `b[i] = b[i] op v`) rather than a whole-blob rebuild. State bytes have
+    // no pointer representation, so they keep the direct slice+concat rebuild. ++/-- excluded (isIncDec).
     if (!isThis && !isIncDec && !hasMember && keyFns.length === 1 && valueCtx
       && (this.bytesStateVarNames.has(rawName) || this.localBytesVars.has(rawName))) {
       const isState = this.bytesStateVarNames.has(rawName);
-      // A LOCAL bytes plain `=` element write stays a raw ArrayAssignNode: LowerMemoryModel lowers it to a single-
-      // byte splice when the buffer is a __yulmem pointer, and DesugarLocalBytesElementWrite value-copies (the
-      // whole-blob rebuild) the ones that fall back. State bytes and compound ops keep the rebuild directly.
-      if (!isState && op === '=') {
-        const aa = new ArrayAssignNode(rawName, keyFns[0](), this.visit(valueCtx) as ExpressionNode);
+      if (!isState) {
+        const value = this.visit(valueCtx) as ExpressionNode;
+        const writeValue = op === '='
+          ? value
+          : sourceBinaryOp(new ArrayAccessNode(new IdentifierNode(rawName), keyFns[0]()), COMPOUND_OPS[op], value);
+        const aa = new ArrayAssignNode(rawName, keyFns[0](), writeValue);
         aa.location = loc;
         return aa;
       }

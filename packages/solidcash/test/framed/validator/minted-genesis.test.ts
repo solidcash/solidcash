@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, test } from 'vitest';
+import { compileString } from 'solidc';
 import { encodeDataPush, encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import {
   FrameKind,
@@ -39,6 +40,7 @@ import {
   mutableTokenShape,
   selectorOf,
 } from './fixture.js';
+import { deployMaster } from '../../../src/framed/deploy/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/network/mock/index.js';
 
@@ -291,5 +293,59 @@ describe('the genesis-shape transcript, decided by the on-chain program', () => 
   test('refuses a minted root whose callee records a different caller', () => {
     const tx = transaction(writerBlock(mintedRef(3)), [honestCall()]);
     expect(vmVerdict(withWriterBlock(tx, writerBlock(2)), 1).accepted).toBe(false);
+  });
+
+  // The on-chain V11 walk reads spent inputs only, so a minted root's self is whatever the transcript says.
+  // V5 then accepts a callee sender that copies that self. The derivation rejects the same transaction.
+  test('a forged minted-root self passes the validator and fails V11 in the derivation', () => {
+    const authorized = validatorAddress(categoryOf('audit-expected-authority'), PROGRAM);
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Guarded {'
+      + `   function act() { require(msg.sender == 0x${Buffer.from(authorized).toString('hex')}); }`
+      + ' }';
+    const artifact = compileString(source, { composition: 'framed' });
+    const deployed = deployMaster(artifact, writerCategory, PROGRAM);
+    const selector = Uint8Array.from(Buffer.from(artifact.abi.find((row) => row.name === 'act')!.selector!, 'hex'));
+    const call = { ...honestCall(), argsHash: argsHash(selector, encodeArgumentList([])) };
+    const frame = writerBlock(mintedRef(3), { sender: authorized });
+    const tx = transaction(frame, [call]);
+    const transcript = encodeMintedTranscript({
+      roots: [],
+      masters: [2],
+      mintedMasters: [{ output: 3, block: { ...proxyBlock([call]), self: authorized } }],
+      settles: [],
+    });
+    const changed: FramedTransaction = {
+      ...tx,
+      inputs: tx.inputs.map((input) => {
+        if (input.index === 0) {
+          return {
+            ...input,
+            unlockingBytecode: new Uint8Array([
+              ...encodeDataPush(transcript),
+              ...encodeDataPush(validatorRedeemScript(writerCategory, PROGRAM)),
+            ]),
+          };
+        }
+        if (input.index === 2) {
+          return {
+            ...input,
+            lockingBytecode: deployed.lockingBytecode,
+            unlockingBytecode: new Uint8Array([
+              ...encodeDataPush(encodeWitnessBlock(frame)),
+              ...encodeDataPush(selector),
+              ...encodeDataPush(deployed.script),
+            ]),
+          };
+        }
+        return input;
+      }),
+      outputs: tx.outputs.map((output) => (
+        output.index === 2 ? { ...output, lockingBytecode: deployed.lockingBytecode } : output
+      )),
+    };
+    expect(model(changed).rejection?.reason).toBe('V11_SELF_NOT_CONTRACT_ADDRESS');
+    const verdicts = [0, 1, 2].map((index) => vmVerdict(changed, index));
+    expect(verdicts.map((verdict) => verdict.accepted)).toEqual([true, true, false]);
   });
 });

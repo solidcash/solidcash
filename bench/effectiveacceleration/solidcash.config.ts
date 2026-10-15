@@ -27,10 +27,10 @@ function effectiveAccelerationRoot(): string {
 }
 
 const eaRoot = effectiveAccelerationRoot();
-/** The sibling project's Solidity tree: the compile root and the typegen source dir, referenced, never copied. */
+/** Proxy/framed: canonical application sources and tests, referenced in place. */
 const eaContracts = path.join(eaRoot, 'contract', 'contracts');
 export default defineConfig({
-  paths: { contracts: eaContracts, artifacts: 'artifacts', tests: 'test' },
+  paths: { contracts: eaContracts, artifacts: 'artifacts', tests: path.join(eaRoot, 'contract', 'test') },
   // The options the marketplace lane compiles with (the repo root's `solidcash.config.ts`). This project runs the
   // same fixture, so a divergence here compiles different contracts. Tagged singleton records let generated
   // proxies add their implementation-pointer record while preserving the implementation's commitment header.
@@ -62,9 +62,7 @@ export default defineConfig({
   // The EA hardhat.config mnemonic + Ethereum derivation path, so getSigners() matches the project.
   mnemonic: 'rebuild always symbol rabbit sunset napkin laundry diary doll chalk valid train',
   accounts: { path: "m/44'/60'/0'/0", count: 20, initialIndex: 0 },
-  // The lane's mock limits. Proxy __forward inspects the implementation's INPUTBYTECODE (the full p2sh32 redeem,
-  // ~3.8 MB for MarketplaceV1) and that OP_SPLIT is charged to the 781-byte proxy input, so the per-byte budget
-  // has to cover the introspection without tightening the input or transaction caps.
+  // All matrix cells use the same enlarged mock limits for large redeem-script introspection and settlement.
   networks: {
     mock: {
       type: 'mock',

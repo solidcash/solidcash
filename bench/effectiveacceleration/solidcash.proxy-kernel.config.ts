@@ -1,0 +1,78 @@
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { defineConfig } from '@solidcash/testing';
+
+/**
+ * The sibling `effectiveacceleration.ai` checkout. Its application sources, tests, deploy scripts and configs are
+ * the literal ones and live there; this bench references them in place and mirrors nothing.
+ *
+ * The root is found by walking up from this file rather than written as a relative path: the repo is checked out
+ * both at `/Code/cashscript` and in worktrees under `/Code/cashscript/.worktrees/<name>`, and only an absolute
+ * path (or an env override) resolves the sibling from both. `vitest.config.ts` looks it up the same way.
+ */
+function effectiveAccelerationRoot(): string {
+  const fromEnv = process.env.EACC_ROOT;
+  if (fromEnv !== undefined && fromEnv !== '') return path.resolve(fromEnv);
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  for (;;) {
+    const candidate = path.join(dir, 'effectiveacceleration.ai');
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      throw new Error('effectiveacceleration.ai was not found above this config; set EACC_ROOT to its checkout.');
+    }
+    dir = parent;
+  }
+}
+
+const eaRoot = effectiveAccelerationRoot();
+/** proxy/kernel: canonical application sources and tests, referenced in place. */
+const eaContracts = path.join(eaRoot, 'contract', 'contracts');
+export default defineConfig({
+  paths: { contracts: eaContracts, artifacts: 'artifacts', tests: path.join(eaRoot, 'contract', 'test') },
+  // The options the marketplace lane compiles with (the repo root's `solidcash.config.ts`). This project runs the
+  // same fixture, so a divergence here compiles different contracts. Tagged singleton records let generated
+  // proxies add their implementation-pointer record while preserving the implementation's commitment header.
+  compiler: {
+    tagSingletonDataNfts: true,
+    evmCompat: true,
+    // The suite decodes addresses itself (`decodeAddress` reads a packed identity) and compares them to
+    // signer.getAddress(), so a packed address value is its 20-byte identity: `addressForm: 'hash'` (the
+    // evmCompat default, ticked here so the suite states it).
+    addressForm: 'hash',
+    messageBus: true,
+    messageBusKernel: true,
+    messageBusGraphContext: true,
+    // SolidCash addresses are locking bytecode. Recover the native P2PKH identity so an imported Solidity
+    // `ecrecover(...) == msg.sender` comparison stays in one address domain and needs no EVM-keccak sidecar.
+    ecrecover: 'p2pkh',
+    optimizeForCompilationSpeed: true,
+    suppressWarnings: true,
+  },
+  // Kernel composition uses direct entry-point programs with the message-bus kernel and graph context above.
+  composition: 'direct',
+  typegen: {
+    jsonArtifactModules: true,
+    targets: [{
+      target: 'ethers6', layout: 'typechain', outDir: 'typechain-types', sourceDir: eaContracts,
+    }],
+  },
+  // The EA hardhat.config mnemonic + Ethereum derivation path, so getSigners() matches the project.
+  mnemonic: 'rebuild always symbol rabbit sunset napkin laundry diary doll chalk valid train',
+  accounts: { path: "m/44'/60'/0'/0", count: 20, initialIndex: 0 },
+  // All matrix cells use the same enlarged mock limits for large redeem-script introspection and settlement.
+  networks: {
+    mock: {
+      type: 'mock',
+      consensus: {
+        operationCostBudgetPerByte: 1_000_000,
+        maximumInputBytes: 10_000_000,
+        maximumTransactionBytes: 100_000_000,
+        maximumStackItemBytes: 10_000_000,
+        maximumNftCommitmentBytes: 10_000_000,
+      },
+    },
+  },
+  defaultNetwork: 'mock',
+});

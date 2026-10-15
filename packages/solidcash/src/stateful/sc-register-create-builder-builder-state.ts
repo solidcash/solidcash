@@ -18,7 +18,7 @@ import {
   type AbiFunction,
 } from '@solidcash/utils';
 import { addressToLockScript } from '../utils.js';
-import { getValueChunkAddress } from './covenant-helpers.js';
+import { getValueChunkAddress, getValueChunkLockingBytecode } from './covenant-helpers.js';
 import type { OnChainState } from './StateReader.js';
 import { providerUnixLocktime } from './soft-state-overlays.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
@@ -450,6 +450,11 @@ export function registerCreateBuilderBuilderState(
   // The routed production owns each transported resource's exact sparse band. Source-order packing is only a
   // provisional fallback for unrelated mints and must never consume a transported resource's claimed slots.
   let composedMintCursor = 0;
+  // A direct delegatecall writes the top-level contract's records, so an untransported value-chunk mint lives
+  // under that root category and master lock, not the implementation's own deployment.
+  const directStateOwnerCategoryId = builder.rootCategoryId;
+  const directStateOwnerLock = directStateOwnerCategoryId.toLowerCase() !== host.categoryId.toLowerCase()
+    ? builder.ownerMasterLock() : undefined;
   for (const mint of valueChunkMints) {
     // Precomputed values bypass trace-based value-chunk derivation, which normally completes this
     // header too. Publish the entry and its continuations from the same value, preserving its successor
@@ -457,8 +462,9 @@ export function registerCreateBuilderBuilderState(
     const collection = host.inner.artifact.stateLayout?.collections?.find((candidate: any) => (
       candidate.name === mint.collection
     ));
+    const stateOwnerCategoryId = directStateOwnerCategoryId.toLowerCase();
     const resourceIdentity = collection === undefined ? undefined : [
-      host.categoryId.toLowerCase(),
+      stateOwnerCategoryId,
       binToHex(computeCollectionHash(collection.signature)),
       binToHex(mint.slot),
     ].join(':');
@@ -467,10 +473,14 @@ export function registerCreateBuilderBuilderState(
     const digest = transported ? sha256Sync(value) : mint.digest;
     const chunkData = transported ? splitValueIntoValueChunks(value) : mint.chunks;
     builder.completeExistingEntryValueTail(mint.collection, mint.slot, value, mint.slotIndex);
-    const chunkAddr = transported ? undefined
-      : getValueChunkAddress(host.inner, host.categoryId, mint.collection, mint.slot, digest);
     const chunkLock = transported?.chunks[0]?.lockingBytecode
-      ?? (chunkAddr === undefined ? undefined : addressToLockScript(chunkAddr));
+      ?? (directStateOwnerLock !== undefined
+        ? getValueChunkLockingBytecode(
+          stateOwnerCategoryId, mint.collection, mint.slot, digest, directStateOwnerLock,
+        )
+        : addressToLockScript(getValueChunkAddress(
+          host.inner, host.categoryId, mint.collection, mint.slot, digest,
+        )));
     if (!chunkLock) throw new Error('Mint has no authenticated continuation locking bytecode.');
     const mintBandBase = transported ? transported.write.outputBase - blockBase
       : !composed ? undefined : transportedByResource.size === 0
@@ -504,7 +514,7 @@ export function registerCreateBuilderBuilderState(
         const expected = {
           commitment,
           lockingBytecode,
-          categoryId: host.categoryId,
+          categoryId: stateOwnerCategoryId,
           fixedIndex: true,
           semanticKind: 'valueChunk' as const,
           ...(resourceIdentity !== undefined && {
@@ -522,12 +532,12 @@ export function registerCreateBuilderBuilderState(
           throw new Error('Transported mint could not bind its authenticated continuation slot.');
         }
       }
-      if (chunkAddr === undefined) throw new Error('Transported mint cannot append outside its claimed band.');
+      if (chunkLock === undefined) throw new Error('Transported mint cannot append outside its claimed band.');
       builder.addValueChunkOutput({
-        to: chunkAddr,
+        to: chunkLock,
         amount: 1000n,
         token: {
-          category: host.categoryId, amount: 0n,
+          category: stateOwnerCategoryId, amount: 0n,
           nft: { capability: 'mutable', commitment },
         },
       });

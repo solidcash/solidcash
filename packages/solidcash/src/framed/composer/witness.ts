@@ -10,10 +10,12 @@
 import {
   type CallRecord,
   type FrameKindValue,
+  type MintedTranscript,
   type RecordEntry,
   type Transcript,
   type WitnessBlock,
   buildMasterUnlockingBytecode,
+  buildMintedValidatorUnlockingBytecode,
   buildValidatorUnlockingBytecode,
   encodeMinimalDataPush,
 } from '@solidcash/utils';
@@ -57,6 +59,16 @@ export interface MasterWitness {
   readonly unlockingBytecode: Uint8Array;
 }
 
+/**
+ * A minted master's block alone: the transaction creates it rather than spends it, so there is no unlocking
+ * bytecode; the validator's transcript carries the block inline instead.
+ */
+export function assembleMintedMasterBlock(
+  input: Omit<MasterWitnessInput, 'argumentPushes' | 'redeemScript'>,
+): WitnessBlock {
+  return assembleMasterWitness({ ...input, argumentPushes: [], redeemScript: new Uint8Array(0) }).block;
+}
+
 /** Builds a master's witness block and unlocking bytecode from its resolved participants. */
 export function assembleMasterWitness(input: MasterWitnessInput): MasterWitness {
   const block: WitnessBlock = {
@@ -82,21 +94,29 @@ export function assembleMasterWitness(input: MasterWitnessInput): MasterWitness 
 
 /** Everything a validator's unlocking bytecode holds. */
 export interface ValidatorWitnessInput {
-  readonly transcript: Transcript;
+  readonly transcript: Transcript | MintedTranscript;
   /** The validator's redeem script: the category pin followed by the validator program. */
   readonly redeemScript: Uint8Array;
 }
 
 /** A validator's assembled witness: the transcript, and the unlocking bytecode that introduces it. */
 export interface ValidatorWitness {
-  readonly transcript: Transcript;
+  readonly transcript: Transcript | MintedTranscript;
   readonly unlockingBytecode: Uint8Array;
+}
+
+/** True when a transcript carries minted masters inline, so it is the genesis-shape (v0x03) codec. */
+export function isMintedTranscript(transcript: Transcript | MintedTranscript): transcript is MintedTranscript {
+  return 'mintedMasters' in transcript;
 }
 
 /** Builds a validator's unlocking bytecode: the transcript push, then its redeem script. */
 export function assembleValidatorWitness(input: ValidatorWitnessInput): ValidatorWitness {
+  const { transcript, redeemScript } = input;
   return {
-    transcript: input.transcript,
-    unlockingBytecode: buildValidatorUnlockingBytecode(input.transcript, input.redeemScript, encodeMinimalDataPush),
+    transcript,
+    unlockingBytecode: isMintedTranscript(transcript)
+      ? buildMintedValidatorUnlockingBytecode(transcript, redeemScript, encodeMinimalDataPush)
+      : buildValidatorUnlockingBytecode(transcript, redeemScript, encodeMinimalDataPush),
   };
 }

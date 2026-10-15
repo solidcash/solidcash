@@ -5959,8 +5959,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             {
               const appliedValueChunks = deriveFullPhase2ApplyValueChunksImpl(
                 {
-                  categoryId: this.categoryId,
+                  categoryId: delegatecallInputIndex !== undefined
+                    ? stb.rootCategoryId : this.categoryId,
                   inner: this.inner as any,
+                  ...(delegatecallInputIndex !== undefined
+                    ? { stateOwnerLock: stb.ownerMasterLock() } : {}),
                 },
                 stb,
                 {

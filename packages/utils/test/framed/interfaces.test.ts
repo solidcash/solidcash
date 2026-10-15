@@ -2,12 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   ARGS_HASH_LENGTH,
   INDEX_NONE,
+  MINTED_REF_FLAG,
   WITNESS_BLOCK_MAGIC,
   WITNESS_BLOCK_VERSION,
   argumentPushesOf,
   buildMasterUnlockingBytecode,
   decodeWitnessBlock,
   encodeWitnessBlock,
+  isMintedRef,
+  mintedRef,
+  mintedRefIndex,
   readOwnWitnessBlock,
   splitFirstPush,
   splitLastPush,
@@ -25,6 +29,28 @@ describe('witness block constants', () => {
     expect(WITNESS_BLOCK_VERSION).toBe(1);
     expect(ARGS_HASH_LENGTH).toBe(32);
     expect(INDEX_NONE).toBe(0xffff);
+  });
+});
+
+describe('minted master reference discriminator', () => {
+  it('flags a minted reference and keeps it clear of INDEX_NONE', () => {
+    expect(MINTED_REF_FLAG).toBe(0x8000);
+    expect(mintedRef(0)).toBe(0x8000);
+    expect(mintedRef(0x7ffe)).toBe(0xfffe);
+    expect(isMintedRef(0x8000)).toBe(true);
+    expect(isMintedRef(0xfffe)).toBe(true);
+    expect(isMintedRef(INDEX_NONE)).toBe(false);
+    expect(mintedRefIndex(0x8000 | 5)).toBe(5);
+  });
+
+  it('treats a plain reference as an input, not a minted master', () => {
+    expect(isMintedRef(0)).toBe(false);
+    expect(isMintedRef(0x7fff)).toBe(false);
+  });
+
+  it('rejects a minted reference output index that would collide with INDEX_NONE', () => {
+    expectFramedRejection(() => mintedRef(0x7fff), /output index out of range/);
+    expectFramedRejection(() => mintedRef(0x8000), /output index out of range/);
   });
 });
 

@@ -78,10 +78,22 @@ export function appendValueChunks(
   ));
   // Only place a staged run into an unoccupied selected band. A fixed pin can own a different
   // resource: suppress its exact duplicate, not every other staged or trace-derived continuation.
-  const wouldAppendBeforeBand = !!band
+  // A band slot is available while it is an empty alignment pad (OP_TRUE): a delegate's predecessor
+  // outputs can already be materialized past the band, so the run must still land at the reserved
+  // band coordinate the covenant's `__internal__valueChunkOutputBase` names, not the trailing end.
+  const bandSlotsAvailable = (activeBand: { readonly start: number; readonly nNew: number }): boolean => (
+    unpinnedOutputs.every((_output, offset) => {
+      if (offset >= activeBand.nNew) return true;
+      const occupant = builder.outputs[activeBand.start + offset];
+      if (occupant === undefined) return true;
+      const lock = occupant.to instanceof Uint8Array ? occupant.to : undefined;
+      return occupant.token === undefined && lock !== undefined && lock.length === 1 && lock[0] === 0x51;
+    })
+  );
+  const wouldAppendBeforeBand = band !== undefined
     && fixedBandPins.length === 0
     && unpinnedOutputs.length > 0
-    && builder.outputs.length < band.start;
+    && (builder.outputs.length < band.start || bandSlotsAvailable(band));
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1' && host.valueChunkOutputs.length > 0) {
     console.error('append-value-chunks', JSON.stringify({

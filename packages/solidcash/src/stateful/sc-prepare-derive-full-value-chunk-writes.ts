@@ -105,10 +105,17 @@ export function prepareDeriveFullValueChunkWrites(
     const lowLevelIndex = lowLevelGroups.indexOf(group);
     const stateOwnerGroup = lowLevelIndex >= 0
       ? delegateStateOwners.get(lowLevelIndex) : group;
+    // A direct delegatecall (no compiler-route external group to own it) executes the implementation against the
+    // TOP-LEVEL contract's state, so its entries and value chunks live under that root category and master lock,
+    // not the implementation's own deployment category.
+    const rootOwner = lowLevelIndex >= 0 && stateOwnerGroup === undefined
+      ? { categoryId: stb.rootCategoryId, lockingBytecode: stb.ownerMasterLock() } : undefined;
     const stateOwnerCategoryId = group.valueChunkStateOwner?.categoryId
-      ?? stateOwnerGroup?.categoryId ?? group.categoryId;
+      ?? stateOwnerGroup?.categoryId
+      ?? rootOwner?.categoryId ?? group.categoryId;
     const stateOwnerLockingBytecode = group.valueChunkStateOwner?.lockingBytecode
       ?? stateOwnerGroup?.externalContract?.inner?.lockingBytecode
+      ?? rootOwner?.lockingBytecode
       ?? group.externalContract?.inner?.lockingBytecode;
     const describedValueChunkWrites = describeValueChunkWrites(group, stateOwnerCategoryId);
     // A routed delegate may carry no independently addressable entry input until its proxy block is

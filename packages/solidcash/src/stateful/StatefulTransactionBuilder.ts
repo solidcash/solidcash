@@ -6313,6 +6313,11 @@ export class StatefulTransactionBuilder {
     return lock?.length === 35 ? lock : undefined;
   }
 
+  /** The top-level contract's token category: the physical state owner a direct delegatecall writes into. */
+  get rootCategoryId(): string {
+    return this.categoryId;
+  }
+
   /** Resolve an exact collection lock, retaining schema inference only for descriptor-free legacy plans. */
   private _persistValueChunkLock(
     categoryId?: string, value?: Uint8Array,

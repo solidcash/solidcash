@@ -2146,6 +2146,15 @@ read-only; satoshi and fungible-token movements of the callee are not pinned wit
 **Why deferred:** it is a semantic-versus-size trade-off on every contract that calls view functions; it needs a
 decision, then an adversarial review like the other covenant changes.
 
+**DECISION 2026-10-14 (reject the implicit `readOnlyDeclared` flag).** The cost is ~45 B on every direct-composition
+call through a `view`/`pure` interface declaration, including the common read-only getter calls that never touch
+callee state; that tax is disproportionate to a gap the explicit `.staticcall()` spelling already closes for the
+callers that need it (`I(a).m.staticcall()` and low-level `staticcall` both pin the callee's master and data NFTs).
+The proposed scan also has two known gaps — nested callee calls do not inherit read-only, and the callee's satoshi /
+fungible-token movements are not pinned — so the flag would be incomplete as a read-only guarantee. Retained deferral:
+revisit only if a real port needs implicit STATICCALL semantics on view/pure declarations. The entry remains open with
+the ~45 B/view-call cost stated.
+
 ## A framed proxy's `initialize` that calls another contract is not atomic (audit SDKFRAMED-2 residual, 2026-10-12)
 
 **What:** a framed proxy deploy is atomic by default (d9251997a): `initialize` is evaluated off-chain like a framed
@@ -2160,6 +2169,107 @@ same unproven-coin shape that SDKFRAMED-1 closed for framed deploys; no audit ro
 calling initializer can run as the proxy genesis's own frame.
 
 **Why deferred:** it is a validator protocol extension; the default path no longer needs it.
+
+**STATUS 2026-10-14 (still open).** The default path still refuses a calling initializer with the documented
+`initializeAs: 'hop'` escape hatch (`initializedProxyState` refuses `callees.length > 0`). The atomic fix is a real
+protocol extension, not a planner tweak: the proxy genesis would mint the proxy master as an OUTPUT rather than spend
+it, while still spending the callee's (Writer's) master and records so the callee's state change commits in the same
+transaction. Every validator check that assumes a covered master is an input has to learn the genesis shape — V1 (the
+validator's own category master is present only as a minted output), V3 (`M.masters` gains a minted-out root master),
+V4 (a genesis root frame has no P2PKH caller/origin), V5 (the callee edge still names a spent master), V7 (the census
+counts the minted master's own outputs), and V9 (the first root's category is the validator's own, read from the
+minted master). The shape is the deferred CREATE-frame machinery: the composer already lays a created record with
+`INDEX_NONE`, but the validator's CREATE witness checks are not emitted (`assessFramedMasterShape` refuses
+`hasContractInstantiation`, and `VALIDATOR_PROGRAM_REASONS` names no CREATE rule). The shortcut that would run the
+Writer's `bump` as a standalone ROOT frame is provably invalid: `master-head.ts` `assertRootFrame` requires a ROOT
+frame's witness `sender` to equal its P2PKH caller's lock and its origin, so `msg.sender` inside the callee would
+become the deployer, not the proxy. The minted-root-master carrier is therefore mandatory, and the two open questions
+resolve to one shape: the Writer's validator covers both the spent Writer master and the minted proxy root master,
+whose witness block the transcript carries inline (a new transcript version); V3 gains the minted master, V4 treats a
+minted root as a root with no P2PKH caller, V5 reads the minted master's inline block for the callee edge, and V9 is
+relaxed so the first root may be a minted master of a category the running validator does not own (the proxy's own
+validator cannot run: it is minted in the same transaction). The wire-format carrier is now implemented and tested:
+`packages/utils/src/framed/transcript.ts` gains `encodeMintedTranscript`/`decodeMintedTranscript` (version 0x03),
+carrying each minted master as `{ output:u8 block:lp16 }[]` between the masters and the settles, with the block
+decoded through `decodeWitnessBlock` (commit `0f05916c8`, `packages/utils/test/framed/transcript.test.ts`). The
+witness-block reference discriminator is now implemented and tested too: `MINTED_REF_FLAG`/`isMintedRef`/
+`mintedRef`/`mintedRefIndex` in `witness-block.ts` (commit `4945700a3`), with the high bit naming a minted master by
+its output index and `INDEX_NONE = 0xffff` kept as the absent sentinel (output indices below `0x7fff`). What
+remains is the validator side: parsing the minted list in `program.ts` (whose `emitMasterIndices`/`emitSettledStateInputs`/
+`emitCompleteness`/`emitRootRules`/`emitEdgeRules`/`emitRootCategory` all re-walk the transcript at fixed offsets) and
+the matching V3/V4/V5/V9 changes in `checks.ts` and `reference.ts`, then the SDK genesis builder. This is a hard
+fork, not a soft extension: changing `buildValidatorProgram()` moves the validator's P2SH32 address and the
+master-head's `recogniseValidatorScriptAgainstReservedHash` reserved hash in `frame-tail.ts`/`master-head.ts`, so the
+program, the derivation, the reference model, the master-head recognition, and every deployed validator must move
+together. PARTIALLY DONE (commits `52057b47f`, `52c170d71`, `59e34aeda`, `11c64cc37`, then the minted program walk
+completed): `reading.ts` dispatches both transcript versions, `checks.ts` and `reference.ts` thread a minted-master id
+space (`0x8000 | output`) through V2/V3/V4/V5/V6/V9, and `program.ts` accepts version 0x03 with a conditional
+`emitMintedMastersIfV3` V2 walk, the `rootCount`/V9 relaxation, and on-chain V3 (minted output is minting and names
+this validator), V4 (minted root is a ROOT frame with no caller or origin) and V5 (the minted root's calls are read
+from the inline block and checked against their callees, with the caller named by `mintedRef(output)`) enforcement.
+The V3/V4/V5 minted emitters are version-gated so they are no-ops for the shipped v0x02 transcript; the same pass
+fixed two stack bugs the earlier minted program commits had introduced on the v0x02 path (a stray `OP_DROP` in the
+header's version check and an `OP_DUP` that read the transcript remainder instead of `rootCount` in the V9
+relaxation), and `script.test.ts` passes again. A derivation-level genesis test (`minted-genesis.test.ts`) now
+hand-lays the minimal v0x03 shape (a validator, its facet, a spent Writer master, and one minted proxy root that
+calls the Writer) and checks the derivation accepts it and refuses the V5 edge mutations. Running that same shape
+through the real program surfaced what remains: the minted emitters had read `takeUnsignedCount`'s output in the
+wrong stack order (fixed for V2/V3/V4/V5), the head/facet V6/V7 settle emitters needed a version-gated minted-list
+skip (added), and the `emitMintedMastersIfV3` V2 walk parked its zero on the wrong side of the settle list (fixed).
+
+**STATUS 2026-10-14 (validator + composer done; deploy wiring remains).** The on-chain minted rules are all emitted
+and version-gated, and the genesis shape runs through the real program: `emitCoveredFrame` accepts a minted ref as a
+covered caller (V4), `emitTimesCalled` counts the minted masters' callees in the called-once rule (V5), and
+`emitExecutionOrder` seeds its work list from the minted roots' callees (V6) — the minted edge walk's filler-slot
+juggling was also fixed (it parked the remaining minted list and the count swapped, so `OP_ROT OP_ROT` now reorders
+them). `minted-genesis.test.ts` now runs the real VM program and asserts it accepts the honest shape and refuses the
+V5 caller mutation (8 tests). The composer now builds the same shape: `layout.ts` allocates a minted output region
+ahead of the events, `assemble.ts` builds the minted block and the v0x03 transcript (`buildMintedValidatorUnlockingBytecode`
+in `utils/transcript.ts`), and `draft.ts` resolves a callee's caller to `mintedRef(output)` with `INDEX_NONE_REFERENCE`
+as the sentinel origin (`minted-compose.test.ts` runs `composeDraft` and the derivation accepts the minimal shape,
+and assembles the full shape — a minted root that delegates to a frame creating the proxy record, with the record
+created at the trailing output the settlement names). What remains is
+the SDK genesis builder itself: `buildHopPlan` still lays the proxy master out as an input entered by the caller's
+coin, so the atomic path needs a genesis-plan variant (the proxy master minted, no caller coin, the proxy's records
+created rather than spent — a `chainSharedNodeViews`/layout/settlement ripple) plus `initializedProxyState`
+accepting a callee whose writes land in the callee's own records, and the adversarial e2e test. The direct
+(non-framed) deploy in `sc-deploy.ts` shares the same unproven-coin shape SDKFRAMED-1 closed for framed deploys; no
+audit row names it.
+
+**STATUS 2026-10-14 (SDK builder drafted; a compiler-side record read remains).** The SDK genesis builder is now
+drafted in `deploy.ts` (`buildHopPlan` gains a genesis shape that mints the proxy master and creates the proxy's data
+records, runs the first callee's validator instead of the proxy's, and spends the proxy's funding coin as the lone
+user input; `deployFramedProxy` settles that shape for a calling initializer and broadcasts it; `initializedProxyState`
+no longer refuses callees because the calling path bypasses it), and `assemble.ts` counts a minted master's created
+records in the created output region. Running the adversarial e2e test (`AuditSdkFramedProxyAtomic.test.ts`) surfaces
+what the estimate above missed: the COMPILED framed implementation entry itself does not read a created data record or
+a minted records-owner. `Atomic.initialize()` — even one that touches no state — fails inside `settleCallees` with
+"Program attempted to read from an invalid transaction UTXO index ... requested index: -32767" (0xffff = `INDEX_NONE`
+as a script number) around instruction 489 of the filled master, before the callee frame is judged. The read is in the
+shipped master head / data-record category verification, which assumes the records' owner and the records themselves
+are spent inputs; the genesis shape mints the owner and creates the records, so that read must instead go through the
+output side and treat `INDEX_NONE` as a created coordinate, the way the mapping-entry path already does
+(`emitReadOnlyEntryExistsCheck`). This is a compiler-side change in `GenerateTargetTraversal.ts`, not an SDK planner
+tweak, so item 2 remains open: the reverting calling-initializer test passes (the genesis derivation and refusal work
+end to end), but the atomic calling-initializer deploy cannot settle until the framed master head handles created data
+records. The drafted SDK changes are left uncommitted pending that compiler fix.
+
+**STATUS 2026-10-14 (closed; atomic calling initialize deploys).** The compiler-side read is fixed: `GenerateTargetTraversal.ts`
+gates `emitOwnerSide`/`emitOwnerPreservation` on `framedMaster`, so a minted records-owner resolves through the
+output side and skips the spent-input preservation check, while direct (non-framed) bytecode stays byte-identical
+(`direct-path-identity.test.ts` re-pins unchanged). The validator now resolves minted refs on the output side in
+`emitContextCategory` (the caller-chain walk ends at a minted root's own category) and `emitReadOnlySubtree` (a
+minted root is never read-only), exempts a minted master from `emitRequireMastersRecreated`'s "an output master has a
+master input under it" via `emitIsMintedOutput` (version-gated), and `emitCollectMintedRecordOutputs` walks the
+minted list so the minted master's own segment declarations feed `emitRequireOutputIsDeclared`, which keeps the
+V7_CENSUS_UNEXPECTED_MUTABLE rule (a stray created node is still refused). `deployFramedProxy` stages the calling
+genesis on the outer overlay beside the implementation's genesis (it mints the proxy rather than spending the probe
+the inner overlay holds). The census's `emitContextCategory` walk is now defined once as a validator function
+(`CONTEXT_CATEGORY_ID`) and invoked at its sites, which recovers the head budget the minted record-output walk
+consumes. `AuditSdkFramedProxyAtomic.test.ts` passes all seven cases, including the atomic calling-initializer
+deploy, the reverting calling-initializer, and the `initializeAs: 'hop'` escape hatch; `own-category-conservation.test.ts`
+still refuses a stray minted node. `settle-necessity` pins the head at 8,923 bytes, leaving headroom under the
+10,000-byte cap.
 
 ## Sorted batch targets sharing a node: one key written twice (DS-6 residual, 2026-10-12)
 
@@ -2241,10 +2351,54 @@ are bare mapping or array writes is never marked delegate and `forward` refuses 
 feat/pcm-anchorscan, not merged) gets `forward('seed')` to preflight, where it fails OP_VERIFY at input 2 with no
 require site (not diagnosed).
 
-**Proposed design:** count bare state writes in the delegate marking once its effect on the delegate variants of
-every contract with bare mapping or array writers is measured; diagnose the direct-delegate chunked write.
+**STATUS 2026-10-14 (verified).** The delegate-marking half is DONE: `a00dd2f72` is an ancestor of `feat/per-call`,
+and `AutoMarkDelegateFunctions.hasBareStateWrite` already counts bare `ArrayAssignNode`/`ArrayDeleteNode`/`ArrayPushNode`/
+`ArrayPopNode` against both state variables and collections, so a function whose only write is `m[k] = v` IS marked
+delegate. The `abi.decodeAt` parse regression that previously blocked the whole route build is FIXED: the windowed
+mapping iteration (`e6ec23c02`) added the `'window'` implicit token at index 102, which shifted every later implicit
+token by one, but the parse fast path in `compiler.ts` (`predictExpressionPrefix`) still hardcoded the pre-window
+token numbers, so `abi.decodeAt` (127→128) was mis-predicted as `UnaryIntrospectionOp` (`tx.outputs`/`tx.inputs`) and
+`abi.decode` as `abi.decodeAt`. The fast path now resolves those literals by name (`tokenTypeByLiteral`) instead of
+raw `T__NNN` numbers, so a future grammar literal cannot silently re-map them. `RoutedDelegateProxyRecords.test.ts`
+now passes both ROUTED cases.
 
-**Why deferred:** both parts change delegate variants beyond the merge; routed inserts and updates settle.
+The DIRECT delegate `forward('seed')` still fails `OP_VERIFY` at input 2, now diagnosed to a chunk-coordinate
+mismatch rather than chunk-address binding: the failing instruction is `OP_EQUALVERIFY` at ip 2 of a 14-byte outlined
+helper (`OP_SUB OP_PICK OP_EQUALVERIFY OP_2DROP OP_0 OP_ROLL`), comparing two single-byte counts (`0x02` vs `0x03`)
+that the preflight `SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE` operands report. `emitBoundValueChunkP2sh32` already binds
+the delegate's value-chunk address to the proxy master lock, and the entry NFTs land at the proxy's category, so the
+open half is the direct-delegate chunk OUTPUT COUNT/placement: the value-chunk trailing count the direct convention
+derives disagrees with the SDK's appended chunk output by one.
+
+**Proposed design:** fix the direct-delegate value-chunk trailing-count/placement derivation in
+`GenerateTargetTraversal` (the `0x02` vs `0x03` count the outlined helper compares), reusing the routed path's
+chunk accounting; the direct `forward('seed')` then settles.
+
+The likely seam is the `valueChunkTrailingCountActive` gate at `GenerateTargetTraversal` ~line 9624, which only
+activates for `!this.directConvention`. A direct delegate is `directConvention` (composition !== 'framed'), so the
+sorted-batch `seed` (`balances[key] = amount; notes[key] = note` with a 96-byte chunked note) does NOT count the
+`notes` value chunk in its trailing band. The failing instruction is `emitVerifyChunkUtxoCount`
+(`GenerateTargetTraversal` ~line 33926, outlined into the seed prologue), which scans outputs at a sorted
+collection's ENTRY address and verifies the count equals the batch-derived expectation: the `balances` census finds
+three outputs at its entry address (the new entry, its predecessor, and the `notes` value-chunk output that landed at
+that address) where the compiler derived two. The `notes` value-chunk output is missing/misplaced: the 96-byte note
+needs one 68-byte continuation chunk, but the transaction emits a 3-byte `000000` output at the `balances` entry
+address under the implementation's category (8221decf) instead of a chunk at the `notes` value-chunk address under the
+proxy's category (754e1983). The fix must publish/materialize the chunkable sorted-mapping value chunk for the direct
+delegate path without disturbing the default (non-delegate) direct path, which the comment says stays byte-identical.
+
+**RESOLVED 2026-10-14 (verified).** The open half was an SDK placement bug, not a compiler count: the compiler's
+block layout already names the notes value chunk at `__internal__valueChunkOutputBase` (the reserved band slot right
+after the two entry outputs), and `emitBoundValueChunkP2sh32` already binds its address to the proxy master lock.
+The SDK staged the chunk correctly (`host.valueChunkOutputs`, `aa20308e…` = the proxy's notes value-chunk address)
+but `appendValueChunks` only placed a staged run into the reserved band when `builder.outputs.length < band.start`;
+for a direct delegate the predecessor outputs (7, 8) are materialized past the band first, so the run was appended at
+the trailing end and `ensureLiveValueChunkBand` then filled the still-empty band slot with a phantom `000000` hole at
+whatever lock its `dominant` fallback observed (the balances entry address), tripping the `balances` entry census
+3-vs-2. `appendValueChunks` now also lands a staged run at the band coordinate when the band slot is an empty
+`OP_TRUE` alignment pad, so the notes chunk sits at the covenant's named output base and the census matches. The
+DIRECT `forward('seed')` e2e test in `RoutedDelegateProxyRecords.test.ts` is un-skipped and passes (records read back
+at the proxy master's lock, `atExecutorLock: 0`), alongside both routed cases.
 
 ## An in-place upgrade of a contract that keeps records (CRYPTO-4 residual, 2026-10-13)
 

@@ -42,7 +42,7 @@ import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/c
 import {
   FrameKind, INDEX_NONE, VALUE_INLINE_LIMIT, buildEntryNftCovenantScript, bytesEqual, bytesToHex,
   computeCollectionHash, decodeTranscript, dynamicChunkSignature, frameKindName, getDefaultStateValue,
-  sha256,
+  mintedRef, sha256,
   validatorRedeemScript,
   type Artifact, type FunctionSplitBundle, type RecordEntry, type StateValue, type StructDefinitionInfo,
 } from '@solidcash/utils';
@@ -60,12 +60,12 @@ import { providerUnixLocktime } from '../../stateful/soft-state-overlays.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails, scriptToLockingBytecode } from '../../utils.js';
 import {
-  FramedComposerError, UNFILLED_CALLEE_REF, createComposedDerivationHost, deriveComposition, describeInnermost,
-  facetId, findParticipant, layoutTransaction, participant, reportCompositionRefusal, requireLearnedViews,
-  unstatedViewPlaceholder, validatorFacetsOf,
+  FramedComposerError, INDEX_NONE_REFERENCE, UNFILLED_CALLEE_REF, createComposedDerivationHost, deriveComposition,
+  describeInnermost, facetId, findParticipant, layoutTransaction, participant, reportCompositionRefusal,
+  requireLearnedViews, unstatedViewPlaceholder, validatorFacetsOf,
   type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftCall, type DraftInput,
-  type DraftMaster, type DraftRecordEntry, type DraftSourceOutput, type FrameRequest, type RecoverySideCars,
-  type ShippedVmProgram,
+  type DraftMaster, type DraftMintedMaster, type DraftRecordEntry, type DraftSourceOutput, type FrameRequest,
+  type RecoverySideCars, type ShippedVmProgram,
 } from '../composer/index.js';
 import { bumpFramedCounter } from '../composer/counters.js';
 import { eventCloseOf, readComputedDeclaration, type DeclarationReading } from '../deploy/declaration.js';
@@ -1245,11 +1245,26 @@ export async function deployFramedProxy(
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
   // values, the proxy's own address for `address(this)`, and the deployer's lock for `msg.sender`.
-  const settleOptionsFor = (externalPlan: HopExternalPlan, seed?: CalleeSettlement): SettleHopOptions => ({
+  const settleOptionsFor = (
+    externalPlan: HopExternalPlan, seed?: CalleeSettlement, genesis = false, genesisValidatorAmount?: bigint,
+    funderLockingBytecode?: Uint8Array,
+  ): SettleHopOptions => ({
     vm,
     proxyArtifact,
     implementationArtifact,
-    root: rootOn(proxyArtifact),
+    // The genesis mints the proxy master rather than running it, so the derivation starts from the implementation
+    // frame the minted root delegates into; the hop derives the proxy's fallback root instead.
+    root: genesis
+      ? {
+        contract: implementationArtifact.contractName,
+        functionName: entryName(implementationArtifact, options.initialize.functionName),
+        kind: FrameKind.DELEGATE,
+        master: IMPLEMENTATION_MASTER_ID,
+      }
+      : rootOn(proxyArtifact),
+    ...(genesis ? { genesis: true } : {}),
+    ...(genesisValidatorAmount === undefined ? {} : { genesisValidatorAmount }),
+    ...(funderLockingBytecode === undefined ? {} : { funderLockingBytecode }),
     maximumCommitmentBytes,
     recordCommitments,
     ...(entryWrites === undefined ? {} : { entryWrites }),
@@ -1269,6 +1284,7 @@ export async function deployFramedProxy(
       provider,
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments, recordLockingBytecode,
+      ...(genesis ? { genesis: true } : {}),
       ...(attemptWrites === undefined ? {} : { entryWrites: attemptWrites }),
       entryWriteViews,
       implementationRetval,
@@ -1289,6 +1305,8 @@ export async function deployFramedProxy(
       proxyMasterAmount: options.proxyDeploy.masterAmount ?? 1200n,
       implementationMasterAmount: options.implementationDeploy.masterAmount ?? 1200n,
       validatorAmount: recordAmount,
+      ...(genesisValidatorAmount === undefined ? {} : { genesisValidatorAmount }),
+      ...(funderLockingBytecode === undefined ? {} : { funderLockingBytecode }),
       // A record's covenant pins its value, and the genesis funds a wide record above the fixed amount, so each one
       // is spent at what it holds.
       recordAmounts: deployment.records.map((record) => record.satoshis),
@@ -1323,10 +1341,30 @@ export async function deployFramedProxy(
       : settleOptionsFor(stated, seed)),
     settleCallees: (stated, only, seed) => settleHopCallees(settleOptionsFor(stated, seed), only),
   });
+  // A calling initializer is atomic: the genesis-shaped plan mints the proxy master and creates its records in the
+  // same transaction that runs the callee frames, so no uninitialized proxy genesis is broadcast (SDKFRAMED-2). The
+  // genesis mints the proxy's own validator, so the validator that runs is the first callee's, whose pool the
+  // broadcast spends and recreates at its live value.
+  const callingGenesis = !separateHop && externalPlan.callees.length > 0;
+  // The genesis's only user input is its own funding coin, signed by the proxy's funder rather than a root caller.
+  const genesisFunderLock = callingGenesis ? options.proxyDeploy.funder.generateLockingBytecode() : undefined;
+  const runningValidator = callingGenesis
+    ? (await readFramedDeployment(
+      provider, externalPlan.callees[0]!.categoryId, externalPlan.callees[0]!.artifact.stateLayout!,
+    )).validators[0]
+    : undefined;
+  if (callingGenesis && runningValidator === undefined) {
+    throw new FramedProxyDeployError(
+      `category ${externalPlan.callees[0]!.categoryId} holds no validator for the calling initializer to run under`,
+    );
+  }
+  const finalized = callingGenesis
+    ? await settleHop({ ...settleOptionsFor(externalPlan, undefined, true, runningValidator!.satoshis, genesisFunderLock) })
+    : settled;
   const {
     draft, program, verdicts, accepted, writtenCommitments, writtenEventCommitments, retval,
     completed: completedFrames,
-  } = settled;
+  } = finalized;
   const values = retvalPlaceholder === undefined
     ? []
     : decodeReturnValues(
@@ -1342,13 +1380,13 @@ export async function deployFramedProxy(
       `the "${options.initialize.functionName}" hop was refused, so nothing was broadcast: ${refused}`,
     );
   }
-  // By default the proxy's genesis mints the state the derivation left, in place of the probe's.
-  const initialized = separateHop ? undefined : await deployStatefulContract(proxyArtifact, [], {
+  // By default the proxy's genesis mints the state the derivation left, in place of the probe's; a calling
+  // initializer's genesis is the derived transaction itself, so it is broadcast rather than re-minted.
+  const initialized = separateHop || callingGenesis ? undefined : await deployStatefulContract(proxyArtifact, [], {
     ...options.proxyDeploy,
     provider: staging.provider,
     mintedState: initializedProxyState({
       entryLabel: entryLabelFor(options.initialize.functionName),
-      callees: externalPlan.callees,
       genesis: proxy.tx.outputs,
       program,
       draft,
@@ -1356,22 +1394,34 @@ export async function deployFramedProxy(
       validatorLock: proxyMaster.address,
     }),
   });
-  const proxyGenesis = initialized ?? proxy;
-  // With a separate hop, the hop is rebuilt on the geneses' outpoints and signed, and held like them.
   const broadcast = initialized?.tx ?? await broadcastHop({
-    provider,
-    callerFunding: callerFunding!,
-    callerLockingBytecode: options.callerLockingBytecode,
+    // A calling genesis mints the proxy rather than spending the probe the inner overlay holds, so it is staged on
+    // the outer overlay beside the implementation's genesis, which the two are released with.
+    provider: callingGenesis ? staging.provider : provider,
+    callerFunding: callingGenesis
+      ? {
+        utxo: options.proxyDeploy.fundingUtxo, funder: options.proxyDeploy.funder,
+        changeAddress: options.proxyDeploy.changeAddress,
+      }
+      : callerFunding!,
+    callerLockingBytecode: callingGenesis ? genesisFunderLock! : options.callerLockingBytecode,
     proxyArtifact,
     implementationArtifact,
     proxyCategoryId: proxy.categoryId,
     implementationCategoryId: implementation.categoryId,
     program,
     draft,
-    ...(entryWrites === undefined && externalPlan.utxos.size === 0 && facetSpends.size === 0
-      ? {}
-      : { spentUtxos: new Map([...(entryWrites?.spentUtxos ?? []), ...externalPlan.utxos, ...facetSpends]) }),
+    ...(callingGenesis
+      ? { spentUtxos: new Map([
+        ...(entryWrites?.spentUtxos ?? []), ...externalPlan.utxos, ...facetSpends, [VALIDATOR_ID, runningValidator!],
+      ]) }
+      : entryWrites === undefined && externalPlan.utxos.size === 0 && facetSpends.size === 0
+        ? {}
+        : { spentUtxos: new Map([...(entryWrites?.spentUtxos ?? []), ...externalPlan.utxos, ...facetSpends]) }),
   });
+  const proxyGenesis = callingGenesis
+    ? { contract: proxy.contract, tx: broadcast, categoryId: proxy.categoryId }
+    : initialized ?? proxy;
 
   // 3. Everything is built and accepted: the implementation's genesis and the proxy's (and a separate hop) go out
   // back to back, in that order.
@@ -1515,11 +1565,11 @@ function outputKey(output: HopOutput): string {
  * The proxy's state as the derived `initialize` leaves it, which its genesis mints in place of the probe's: what the
  * probe minted and the hop does not spend, then every output of the proxy's own state the hop recreates or creates.
  * The pools (masters at the minting capability, validators at `validatorLock`) are the genesis's own to mint. An
- * effect elsewhere (another contract's frame, a send) is refused: only a separate hop can carry it.
+ * effect elsewhere (another contract's frame, a send) is refused: a calling initializer never reaches this — it runs
+ * as a genesis-shaped transaction of its own (`callingGenesis`) — and only a separate hop carries any other effect.
  */
 function initializedProxyState(options: {
   readonly entryLabel: string;
-  readonly callees: readonly HopCallee[];
   readonly genesis: readonly HopOutput[];
   readonly program: ShippedVmProgram;
   readonly draft: CompositionDraft;
@@ -1531,9 +1581,6 @@ function initializedProxyState(options: {
     `the implementation's ${options.entryLabel} ${what}, which the proxy's genesis cannot mint; pass `
     + '`initializeAs: \'hop\'` to run it as a separate hop, which leaves the proxy uninitialized until it confirms',
   );
-  if (options.callees.length > 0) {
-    throw elsewhere(`calls another contract (${options.callees.map((callee) => callee.functionName).join(', ')})`);
-  }
   const isState = (output: HopOutput | undefined): boolean => output?.token !== undefined
     && bytesEqual(output.token.category, options.category) && output.token.nft?.capability !== 'minting'
     && !bytesEqual(output.lockingBytecode, options.validatorLock);
@@ -1632,6 +1679,20 @@ interface SettleHopOptions {
   readonly seed?: CalleeSettlement;
   /** The entry, for the refusal's own words, e.g. `"initialize" entry`. */
   readonly entryLabel: string;
+  /** True to plan the genesis shape: the proxy master minted and its records created, with no caller coin. */
+  readonly genesis?: boolean;
+  /**
+   * The satoshi value of the running validator's own pool, for the genesis shape.
+   *
+   * The genesis mints the proxy's own validator, so the validator that runs is the first callee's; its input is
+   * spent and recreated at the pool's actual value, which the caller read from the callee's live deployment.
+   */
+  readonly genesisValidatorAmount?: bigint;
+  /**
+   * The lock of the genesis's own funding coin, which the genesis shape's only user input sits at. It differs from
+   * the root frame's caller lock because a minted root has no P2PKH caller.
+   */
+  readonly funderLockingBytecode?: Uint8Array;
   /**
    * The value the hop carries and the sends the implementation's frame pays (`hop-value.ts`), absent for neither:
    * the plan starts each send's lock and amount from a sentinel the body's own pin fails against, and the settle
@@ -2623,7 +2684,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       + `refs-after=[${traceCallRefs(draft, PROXY_MASTER_ID)}]`);
   }
 
-  const program = draft.programFor(PROXY_MASTER_ID);
+  // The genesis mints the proxy master rather than running it, so its program is read from the implementation
+  // master, whose evaluation carries the whole transaction including the minted output.
+  const program = draft.programFor(options.genesis === true ? IMPLEMENTATION_MASTER_ID : PROXY_MASTER_ID);
   // The proxy's containers the implementation's sends are paid from follow the caller's coin, and the machine is
   // asked about them too.
   const containerInputs = options.value === undefined ? []
@@ -2644,6 +2707,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     for (const verdict of verdicts) {
       if (!verdict.accepted) {
         hopTrace(`verdict id=${verdict.id} index=${verdict.index} objection=${verdict.objection ?? ''}`);
+        hopTrace(`verdict-stop ${traceStopInstructions(vm, {
+          inputIndex: verdict.index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+        })}`);
       }
     }
   }
@@ -3265,10 +3331,20 @@ interface HopPlanOptions {
   readonly proxyMasterAmount: bigint;
   readonly implementationMasterAmount: bigint;
   readonly validatorAmount: bigint;
+  /**
+   * The satoshi value of the running validator's own pool for the genesis shape, where that validator is the first
+   * callee's rather than the proxy's.
+   */
+  readonly genesisValidatorAmount?: bigint;
   /** One value per record, in data-NFT order. */
   readonly recordAmounts: readonly bigint[];
   /** The 25-byte P2PKH lock of the caller whose coin enters the frame. */
   readonly callerLockingBytecode: Uint8Array;
+  /**
+   * The lock of the genesis's own funding coin, which is the only user input of the genesis shape. It differs from
+   * `callerLockingBytecode` (the root frame's caller) because a minted root has no P2PKH caller.
+   */
+  readonly funderLockingBytecode?: Uint8Array;
   /** One output per event the entry emits, in emit order, with the commitment it carries. */
   readonly eventOutputs: readonly HopEventOutput[];
   /**
@@ -3281,6 +3357,12 @@ interface HopPlanOptions {
    * that point only, so it settles the callee frames before it and is never derived or broadcast as a whole.
    */
   readonly truncated?: boolean;
+  /**
+   * True for the genesis-shape plan: the proxy master is minted as an output rather than spent, the proxy's records
+   * are created rather than spent, and there is no caller coin. The minted proxy root and every frame it enters
+   * carry an `INDEX_NONE` origin.
+   */
+  readonly genesis?: boolean;
 }
 
 /** One event output a hop's delegate frame lists: the covenant lock the frame's context contract derives. */
@@ -3502,8 +3584,8 @@ function calleeDeclaredRecordsOfCategory(
  * successor its plan states, since a value an earlier frame wrote is that frame's to compute. `ends` is the view
  * each written node's chain ends at, which its output carries.
  */
-export function chainSharedNodeViews(
-  masters: readonly DraftMaster[],
+export function chainSharedNodeViews<T extends DraftMaster | DraftMintedMaster>(
+  masters: readonly T[],
   root: string,
   nodes: ReadonlySet<number>,
   writes: ReadonlySet<DraftRecordEntry>,
@@ -3511,7 +3593,7 @@ export function chainSharedNodeViews(
   held = false,
   relinks: ReadonlySet<DraftRecordEntry> = new Set(),
 ): {
-    readonly masters: readonly DraftMaster[];
+    readonly masters: readonly T[];
     readonly ends: ReadonlyMap<number, Uint8Array>;
     readonly createdEnds: ReadonlyMap<number, Uint8Array>;
   } {
@@ -3728,6 +3810,18 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const { proxyArtifact, implementationArtifact, proxyMaster, implementationMaster } = options;
   const calls = options.calls ?? [];
   const callees = options.callees ?? [];
+  // The genesis shape mints the proxy master as one trailing output ahead of every event, and creates the proxy's
+  // data records rather than spending them.
+  const genesis = options.genesis === true;
+  const mintedShift = genesis ? 1 : 0;
+  // The genesis mints the proxy's own validator, so the validator that runs is the first callee's — its pool already
+  // exists on chain. It covers the minted proxy root and every frame below it (V9 relaxes the root category; V1 binds
+  // the running validator to its own category's spent master). A calling initializer always has one.
+  const validatorCategory = genesis ? callees[0]!.category : options.proxyCategory;
+  const validatorLock = genesis ? callees[0]!.deployed.address : proxyMaster.address;
+  // The genesis's only user input is its own funding coin, whose lock is the funder's, not a root caller's.
+  const userInputLock = genesis
+    ? (options.funderLockingBytecode ?? options.callerLockingBytecode) : options.callerLockingBytecode;
   // A callee's own write as it is planned for this pass: a write whose value only the frame's own close exposed is
   // planned again from the value a settle read there, so the frame declares the whole run its body addresses.
   const calleeWritesOf = (callee: HopCallee): HopEntryWrites | undefined => {
@@ -3824,10 +3918,14 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // touches follow the root's own.
   const rootBlock = (contract: string): boolean =>
     contract === proxyArtifact.contractName || contract === implementationArtifact.contractName;
-  const rootProxyMasters = [PROXY_MASTER_ID, ...calleeBlocks.get(proxyArtifact.contractName)?.masters ?? []];
+  const rootProxyMasters = [
+    ...(genesis ? [] : [PROXY_MASTER_ID]),
+    ...calleeBlocks.get(proxyArtifact.contractName)?.masters ?? [],
+  ];
   const rootImplementationMasters =
     [IMPLEMENTATION_MASTER_ID, ...calleeBlocks.get(implementationArtifact.contractName)?.masters ?? []];
-  const rootState = [...recordIds, ...readNodeIds, ...entryWriteIds];
+  // The proxy's data records are created outputs in the genesis (not spent), so they are not block state there.
+  const rootState = [...(genesis ? [] : recordIds), ...readNodeIds, ...entryWriteIds];
   // Each frame reads its named records from one base, so they must sit side by side (`adjacentRecordState`).
   for (const [id, block] of calleeBlocks) {
     if (rootBlock(id)) continue;
@@ -3855,20 +3953,22 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   ];
   // The validator runs as a head plus its facet inputs, so the hop's own layout has to place the same facets the
   // composer places; otherwise the indices the plan states and the ones the assembled transaction uses would differ.
-  const validatorRedeem = validatorRedeemScript(options.proxyCategory, framedValidator.buildValidatorProgram());
+  const validatorRedeem = validatorRedeemScript(validatorCategory, framedValidator.buildValidatorProgram());
   const facets = validatorFacetsOf({ id: VALIDATOR_ID, covers: [], settles: [], redeemScript: validatorRedeem });
   const layout = layoutTransaction(blocks, new Map([[VALIDATOR_ID, facets]]));
   const pushes = callPushes(implementationArtifact, options.entry.functionName, options.entry.args ?? []);
   // The events the delegate frame lists sit in the trailing region, which starts past the participants. The
   // assembly allocates them there and refuses a plan that names any other index.
-  const eventIndices = options.eventOutputs.map((_output, position) => layout.participantCount + position);
+  const eventIndices = options.eventOutputs.map(
+    (_output, position) => layout.participantCount + mintedShift + position,
+  );
   const maximumCommitmentBytes = options.maximumCommitmentBytes ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
-  // The trailing region is allocated in the assembler's own order: every frame's events first, the root's before
-  // any callee's, then the created records in the order the frames' segments declare them. Each frame that emits
-  // lists one output per event whatever else it writes, because the frame's own head walks them. Because every
-  // event sits ahead of the created region, the cursor the callee events leave is the base the created records
-  // start at, so a frame that both writes a record and reaches an emitting callee cannot collide with it.
-  let trailingCursor = layout.participantCount + options.eventOutputs.length;
+  // The trailing region is allocated in the assembler's own order: a minted master first when the genesis mints the
+  // proxy, every frame's events next, the root's before any callee's, then the created records in the order the
+  // frames' segments declare them. Each frame that emits lists one output per event whatever else it writes,
+  // because the frame's own head walks them. Because every event sits ahead of the created region, the cursor the
+  // callee events leave is the base the created records start at.
+  let trailingCursor = layout.participantCount + mintedShift + options.eventOutputs.length;
   const calleeEventPlan = callees.map((callee) => {
     const owner = callee.recordOwner === undefined ? undefined : callees[callee.recordOwner];
     const category = (owner ?? callee).category;
@@ -3891,14 +3991,20 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     ? undefined : hopValueOutputs(options.value.hop, listedSends, paying);
   const sendIndices = listedSends.map((_send, position) => trailingCursor + 1 + position);
   trailingCursor += valueOutputs?.run.length ?? 0;
-  const recordIndices = recordIds.map((id) => participant(layout, id).index);
+  // The proxy's data records: spent and recreated at their own index in a hop, created at a trailing output in the
+  // genesis, which mints them fresh. In the genesis they lead the created region, so the mapping nodes that follow
+  // start after them.
+  const recordIndices = genesis
+    ? recordIds.map((_id, nftIndex) => trailingCursor + nftIndex)
+    : recordIds.map((id) => participant(layout, id).index);
+  if (genesis) trailingCursor += recordIds.length;
   // Every record kept where the proxy read it before the call, and left where the entry's write leaves it. The
   // delegate frame's segment chains each record's kept view to its written one, and the proxy's own later segment
   // continues from the written view: a record has no other frame between them.
   const entries = (
     viewIn: (nftIndex: number) => Uint8Array, viewOut: (nftIndex: number) => Uint8Array,
   ): RecordEntry[] => recordIndices.map((index, nftIndex) => ({
-    in: index, out: index, viewIn: viewIn(nftIndex), viewOut: viewOut(nftIndex),
+    in: genesis ? INDEX_NONE : index, out: index, viewIn: viewIn(nftIndex), viewOut: viewOut(nftIndex),
   }));
   const recordKept = entries(
     (nftIndex) => options.recordCommitments[nftIndex]!, (nftIndex) => options.recordCommitments[nftIndex]!,
@@ -3924,7 +4030,11 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // artifact that publishes no landing for a record leaves the end commitment the settle learned to tell.
   const writes = options.recordCommitments.map((commitment, nftIndex) =>
     recordLandings.has(nftIndex) || !bytesEqual(commitment, options.writtenCommitments[nftIndex]!));
-  const proxyMasterIndex = participant(layout, PROXY_MASTER_ID).index;
+  // The proxy master's reference: its input index in a hop, or the flagged reference to its minted output in the
+  // genesis, where it is not spent. Only the write path of a spent node reads it, and the genesis spends none.
+  const proxyMasterIndex = genesis
+    ? mintedRef(layout.participantCount)
+    : participant(layout, PROXY_MASTER_ID).index;
   // The proxy's own master declares every record of its layout; the delegate frame declares those of the
   // implementation's records its entry's block layout names, as a callee frame does, because a body addresses each
   // record by its position in that list and reads its chunk run right after them.
@@ -4037,7 +4147,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     recordAmount: options.validatorAmount,
     category: options.proxyCategory,
     learnedViews: options.entryWriteViews,
-    releasedLock: options.callerLockingBytecode,
+    releasedLock: userInputLock,
   });
   if (laidWrites !== undefined && options.entryWrites !== undefined) {
     const placedWrites = placeOwnWrites(implementationSegments, {
@@ -4067,36 +4177,57 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     }
   }
   const implementationValues = calleeValueWitnesses(readNodes, laidWrites);
-  const proxyMasterDraft: DraftMaster = {
-    master: PROXY_MASTER_ID,
-    contract: proxyArtifact.contractName,
-    functionName: entryName(proxyArtifact, '__fallback'),
-    program: proxyMaster.script,
-    facts: factsOf(proxyArtifact, '__fallback', FrameKind.ROOT, true),
-    frame: { kind: FrameKind.ROOT, sender: options.callerLockingBytecode, self: proxyMaster.address, value },
-    enteredBy: USER_ID,
-    origin: USER_ID,
-    calls: [{
-      kind: FrameKind.DELEGATE,
-      callee: IMPLEMENTATION_MASTER_ID,
-      target: implementationMaster.address,
-      // A delegatecall passes no value of its own: its callee carries the caller's.
-      value: 0n,
+  // The genesis mints the proxy master rather than spending it: its caller and origin are INDEX_NONE, its sender is
+  // empty, and its output is the master token the genesis creates.
+  const proxyFrame = { kind: FrameKind.ROOT, sender: new Uint8Array(0), self: proxyMaster.address, value: 0n };
+  const proxyMasterDraft: DraftMaster | DraftMintedMaster = genesis
+    ? {
+      master: PROXY_MASTER_ID,
+      contract: proxyArtifact.contractName,
+      frame: proxyFrame,
+      calls: [{
+        kind: FrameKind.DELEGATE,
+        callee: IMPLEMENTATION_MASTER_ID,
+        target: implementationMaster.address,
+        value: 0n,
+        argumentPushes: pushes,
+      }],
+      retval: proxyReturnsValue ? options.implementationRetval : new Uint8Array(0),
+      segments: proxySegments,
+      events: [],
+      sends: [],
+      output: masterSource(proxyMaster.lockingBytecode, options.proxyCategory, options.proxyMasterAmount),
+    }
+    : {
+      master: PROXY_MASTER_ID,
+      contract: proxyArtifact.contractName,
+      functionName: entryName(proxyArtifact, '__fallback'),
+      program: proxyMaster.script,
+      facts: factsOf(proxyArtifact, '__fallback', FrameKind.ROOT, true),
+      frame: { kind: FrameKind.ROOT, sender: options.callerLockingBytecode, self: proxyMaster.address, value },
+      enteredBy: USER_ID,
+      origin: USER_ID,
+      calls: [{
+        kind: FrameKind.DELEGATE,
+        callee: IMPLEMENTATION_MASTER_ID,
+        target: implementationMaster.address,
+        // A delegatecall passes no value of its own: its callee carries the caller's.
+        value: 0n,
+        argumentPushes: pushes,
+      }],
+      // A proxy whose fallback returns records the delegate frame's own `retval`, so its frame carries the value the
+      // implementation entry computed; a fallback that records nothing leaves the slot empty.
+      retval: proxyReturnsValue ? options.implementationRetval : new Uint8Array(0),
+      segments: proxySegments,
+      events: [],
+      sends: [],
+      // The fallback's one parameter is the frame's own call-data band: the selector push and the argument pushes.
       argumentPushes: pushes,
-    }],
-    // A proxy whose fallback returns records the delegate frame's own `retval`, so its frame carries the value the
-    // implementation entry computed; a fallback that records nothing leaves the slot empty.
-    retval: proxyReturnsValue ? options.implementationRetval : new Uint8Array(0),
-    segments: proxySegments,
-    events: [],
-    sends: [],
-    // The fallback's one parameter is the frame's own call-data band: the selector push and the argument pushes.
-    argumentPushes: pushes,
-    redeemScript: proxyMaster.script,
-    // A root that carries call data is one a dispatcher selects an entry of; a fallback-only master is the
-    // degenerate case, and the flag is what admits its received call data.
-    dispatches: true,
-  };
+      redeemScript: proxyMaster.script,
+      // A root that carries call data is one a dispatcher selects an entry of; a fallback-only master is the
+      // degenerate case, and the flag is what admits its received call data.
+      dispatches: true,
+    };
   const implementationMasterDraft: DraftMaster = {
     master: IMPLEMENTATION_MASTER_ID,
     contract: implementationArtifact.contractName,
@@ -4104,9 +4235,14 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     program: implementationMaster.script,
     facts: factsOf(
       implementationArtifact, options.entry.functionName, FrameKind.DELEGATE, calls.length > 0),
-    frame: { kind: FrameKind.DELEGATE, sender: options.callerLockingBytecode, self: proxyMaster.address, value },
+    frame: {
+      kind: FrameKind.DELEGATE,
+      sender: genesis ? new Uint8Array(0) : options.callerLockingBytecode,
+      self: proxyMaster.address,
+      value: genesis ? 0n : value,
+    },
     enteredBy: PROXY_MASTER_ID,
-    origin: USER_ID,
+    origin: genesis ? INDEX_NONE_REFERENCE : USER_ID,
     // The calls the entry's own body makes, in the order it reaches them: the plan states one record per call,
     // whose result is what the callee frame's own body computed.
     calls,
@@ -4193,7 +4329,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         category,
         learnedViews: options.calleeWriteViews?.get(callee.master) ?? [],
         continuedOutputOf: (collection, slot) => createdElsewhere.get(createdNodeKey(category, collection, slot)),
-        releasedLock: options.callerLockingBytecode,
+        releasedLock: userInputLock,
       });
       for (const node of laid.createdNodes) {
         createdElsewhere.set(createdNodeKey(category, node.collection, node.slot), node.out);
@@ -4211,7 +4347,12 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     }
     return { laid, records, createdBase: frameCreatedBase, ...calleeEventPlan[position]! };
   });
-  settle(options.proxyCategory, [...recordIds, ...readNodeIds, ...entryWriteIds], laidWrites?.createdOutputs ?? []);
+  // The proxy's data records are spent state inputs in a hop and created outputs in the genesis.
+  settle(
+    options.proxyCategory,
+    genesis ? [...readNodeIds, ...entryWriteIds] : [...recordIds, ...readNodeIds, ...entryWriteIds],
+    [...(genesis ? recordIndices : []), ...(laidWrites?.createdOutputs ?? [])],
+  );
   for (const owner of delegateOwnerIndices(callees)) {
     settle(
       callees[owner]!.category,
@@ -4303,7 +4444,9 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     const argumentPushes = callTo.get(callee.master)?.argumentPushes ?? [];
     // A callee's own sender is the contract that calls it: the caller's own address for a call, and the caller's
     // sender for a delegate frame, which preserves it.
-    const sender = calleeSender(callees, proxyMaster.address, options.callerLockingBytecode, callee);
+    const sender = calleeSender(
+      callees, proxyMaster.address, genesis ? new Uint8Array(0) : options.callerLockingBytecode, callee,
+    );
     // A frame that makes k calls closes k + 1 segments, each declaring its own records kept. Each of the frame's
     // own writes lands in the segment its source fixes, which the artifact publishes per write: the records it
     // spends are kept at the commitment they were spent with before that segment and at the written one after it.
@@ -4432,7 +4575,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       },
       frame: { kind: callee.kind, sender, self: callee.selfAddress, value: 0n },
       enteredBy: callee.enteredBy === null ? IMPLEMENTATION_MASTER_ID : callees[callee.enteredBy]!.master,
-      origin: USER_ID,
+      origin: genesis ? INDEX_NONE_REFERENCE : USER_ID,
       calls: callee.calls,
       ...(callee.callBases.length === 0 ? {} : { callBaseBySite: callee.callBases }),
       // A proxy's fallback records the delegate frame's own `retval`, so the value a caller reads for a call
@@ -4490,38 +4633,48 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     [proxyMasterDraft, implementationMasterDraft, ...calleeMasterDrafts], PROXY_MASTER_ID, sharedNodeIndices,
     writeTransitions, learnedOutputs, options.heldContinuations === true, relinkTransitions,
   );
+  const chainedRegular = chained.masters.filter((master) => !('output' in master)) as DraftMaster[];
+  const chainedMinted = chained.masters.filter((master) => 'output' in master) as DraftMintedMaster[];
   const proxyMasterAmount = options.proxyMasterAmount;
   const implementationMasterAmount = options.implementationMasterAmount;
-  const proxyRecordAmount = options.validatorAmount;
+  const proxyRecordAmount = genesis ? options.genesisValidatorAmount ?? options.validatorAmount : options.validatorAmount;
   // The proxy's containers the sends are paid from follow the caller's coin, each opened by the proxy's master.
   const containerSpends = paying?.spent ?? [];
   const plan: CompositionDraftPlan = {
     blocks,
+    // The genesis's funder is the proxy's own funding coin, which creates the category; it is still the one user
+    // input, but it is not a root caller (the minted master has none).
     userInputs: [
       { id: USER_ID, index: layout.participantCount },
       ...containerSpends.map((_utxo, position) => ({
         id: hopContainerId(position), index: layout.participantCount + 1 + position,
       })),
     ],
-    masters: chained.masters,
+    masters: chainedRegular,
+    ...(chainedMinted.length === 0 ? {} : { mintedMasters: chainedMinted }),
     // The chain's own time, read from the provider: a body that reads the transaction's locktime sees it.
     locktime: providerUnixLocktime(options.provider as { getBlockTime?: () => number }),
     // A stated locktime means nothing to `OP_CHECKLOCKTIMEVERIFY` on a final input, and the builder's own
     // default is non-final, so the hop states the same rather than leaving the composer's final default.
     sequenceNumber: 0xfffffffe,
     inputs: withChainEnds(layout.participants, chained.ends, {
-      [PROXY_MASTER_ID]: {
-        source: masterSource(proxyMaster.lockingBytecode, options.proxyCategory, proxyMasterAmount),
-      },
+      // The genesis mints the proxy master rather than spending it, so it has no input of its own.
+      ...(genesis ? {} : {
+        [PROXY_MASTER_ID]: {
+          source: masterSource(proxyMaster.lockingBytecode, options.proxyCategory, proxyMasterAmount),
+        },
+      }),
       [IMPLEMENTATION_MASTER_ID]: {
         source: masterSource(
           implementationMaster.lockingBytecode, options.implementationCategory, implementationMasterAmount,
         ),
       },
       [VALIDATOR_ID]: {
-        source: mutableSource(proxyMaster.address, proxyRecordAmount, options.proxyCategory, new Uint8Array(0)),
+        source: mutableSource(validatorLock, proxyRecordAmount, validatorCategory, new Uint8Array(0)),
       },
-      ...Object.fromEntries(recordIds.map((id, nftIndex) => [id, {
+      // The proxy's data records are spent in a hop and created in the genesis, which mints them with the written
+      // commitments rather than spending them.
+      ...(genesis ? {} : Object.fromEntries(recordIds.map((id, nftIndex) => [id, {
         source: mutableSource(
           options.recordLockingBytecode, options.recordAmounts[nftIndex]!, options.proxyCategory,
           options.recordCommitments[nftIndex]!,
@@ -4539,9 +4692,9 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         unlockingBytecode: stateRecordUnlockingBytecode(
           options.recordCategoryHex, proxyMasterIndex, writes[nftIndex]! || recordWriters.has(id) ? 1 : 0,
         ),
-      }])),
+      }]))),
       [USER_ID]: {
-        source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: options.callerSatoshis },
+        source: { lockingBytecode: userInputLock, valueSatoshis: options.callerSatoshis },
         unlockingBytecode: callerUnlocking(),
       },
       ...Object.fromEntries(callees.flatMap((callee) => {
@@ -4600,7 +4753,10 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       ...Object.assign({}, ...calleeTrailing.map((written) => written?.laid?.inputs ?? {})),
       // Every side-car the hop's frames co-spend, placed in their own block after the master that reads them.
       ...sideCarInputs,
-      ...(options.value === undefined ? {} : hopContainerInputs(options.value.hop, containerSpends, proxyMasterIndex)),
+      // The genesis carries no caller value, so it has no container spends.
+      ...(genesis || options.value === undefined
+        ? {}
+        : hopContainerInputs(options.value.hop, containerSpends, proxyMasterIndex)),
     }),
     validator: {
       id: VALIDATOR_ID,
@@ -4608,7 +4764,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       covers: [...new Set([implementationArtifact.contractName, ...callees.map((callee) => callee.block)])]
         .filter((contract) => contract !== proxyArtifact.contractName),
       settles,
-      redeemScript: validatorRedeemScript(options.proxyCategory, framedValidator.buildValidatorProgram()),
+      redeemScript: validatorRedeemScript(validatorCategory, framedValidator.buildValidatorProgram()),
     },
     // The event outputs fill the trailing region in emit order, each an immutable token of the proxy's category at
     // the covenant the body rebuilds, carrying the payload the entry computed. A created mapping node follows them.
@@ -4635,6 +4791,13 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       )),
       // The implementation's sends follow the events: a container of the proxy, then one output per send.
       ...valueOutputs?.run ?? [],
+      // The proxy's data records, created at the trailing indices the settlement names when the genesis mints them.
+      ...(genesis
+        ? recordIds.map((_id, nftIndex) => mutableSource(
+          options.recordLockingBytecode, options.recordAmounts[nftIndex]!, options.proxyCategory,
+          options.writtenCommitments[nftIndex]!,
+        ))
+        : []),
       ...withCreatedChainEnds(laidWrites?.trailingOutputs ?? [], createdBase, chained.createdEnds),
       // Each callee frame's own created records follow the root entry's, in the order the frames are placed.
       ...calleeTrailing.flatMap((written) => withCreatedChainEnds(

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import { parsePushdataCommitment } from '@solidcash/utils';
 import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Signer } from '../../../src/index.js';
@@ -13,6 +14,7 @@ import {
 } from '../../../src/stateful/index.js';
 import { deployMaster } from '../../../src/framed/deploy/index.js';
 import { buildProxyArtifact } from '../../../src/framed/proxy/index.js';
+import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
 import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
 import { fundShippedFacets } from '../shapes/harness.js';
 
@@ -89,7 +91,97 @@ function routedDeployment(): Promise<Routed> {
   return routedRun;
 }
 
+interface TableRun {
+  readonly artifacts: ReturnType<typeof compileStringMulti>;
+  readonly network: MockNetworkProvider;
+  readonly signer: Signer;
+  readonly handle: StatefulContract & {
+    append(note: string, amount: bigint): Promise<unknown>;
+    rows(index: number): Promise<{ note: string; amount: bigint }>;
+  };
+  readonly note: string;
+}
+
+let tableRun: Promise<TableRun> | undefined;
+function tableDeployment(): Promise<TableRun> {
+  tableRun ??= (async (): Promise<TableRun> => {
+    const artifacts = compileStringMulti('pragma solidcash ^0.13.0;'
+      + ' contract Table {'
+      + '   struct Row { string note; bigint amount; }'
+      + '   bigint public counter;'
+      + '   Row[] public rows;'
+      + '   function initialize() { this.counter = 7; }'
+      + '   function append(string note, bigint amount) {'
+      + '     this.rows.push();'
+      + '     Row storage row = this.rows[this.rows.length - 1];'
+      + '     row.note = note; row.amount = amount;'
+      + '     this.counter = this.counter + 1;'
+      + '   }'
+      + ' }', { composition: 'framed', tagSingletonDataNfts: true });
+    const network = provider();
+    const signer = await fundedSigner(network, 0x54);
+    const deployed = await deployProxy(getContractFactory(artifacts.Table! as FramedArtifact, signer), []);
+    const handle = deployed as unknown as StatefulContract & {
+      append(note: string, amount: bigint): Promise<unknown>;
+      rows(index: number): Promise<{ note: string; amount: bigint }>;
+    };
+    expect(artifacts.Table!.stateLayout!.dataNftCount).toBe(1);
+    expect(buildProxyArtifact(artifacts.Table!).stateLayout!.dataNftCount).toBe(2);
+    expect(await handle.getState()).toMatchObject({ counter: 7n, rows: [] });
+    const note = 'a dynamic row crossing a chunk boundary '.repeat(5);
+    await handle.append(note, 9n);
+    expect(await handle.rows(0)).toMatchObject({ note, amount: 9n });
+    expect(await handle.getState()).toMatchObject({ counter: 8n, rows: [{ note, amount: 9n }] });
+    return { artifacts, network, signer, handle, note };
+  })();
+  return tableRun;
+}
+
 describe('deployProxy with a framed implementation', () => {
+  it('reads tagged implementation fields and dynamic rows after a proxied update', async () => {
+    const { handle, signer, note } = await tableDeployment();
+    const connected = handle.connect(signer) as unknown as typeof handle;
+    expect(await connected.rows(0)).toMatchObject({ note, amount: 9n });
+    expect(Object.keys(await connected.getState()).sort()).toEqual(['counter', 'rows']);
+  }, 300_000);
+
+  it('retains proxy owner inventory across signer and provider rebinding', async () => {
+    const { artifacts, handle, network, signer, note } = await tableDeployment();
+    const owner = buildProxyArtifact(artifacts.Table!);
+    const master = deployMaster(owner, hexToBin(handle.categoryId), VALIDATOR_PROGRAM);
+    const masterAddress = lockingBytecodeToCashAddress({
+      bytecode: master.lockingBytecode, prefix: 'bchtest', tokenSupport: true,
+    });
+    if (typeof masterAddress === 'string') throw new Error(masterAddress);
+    const liveMasters = await network.getUtxos(masterAddress.address);
+    expect(liveMasters.length).toBeGreaterThan(0);
+    // A distinct provider facade proves reads use the rebound provider, while retaining the deployment context.
+    const rebound = Object.create(network) as MockNetworkProvider;
+    expect(handle.withProvider(rebound).provider).toBe(rebound);
+    for (const candidate of [handle, handle.connect(signer), handle.withProvider(rebound), handle.connect(rebound)]) {
+      expect(candidate.address).toBe(handle.address);
+      const full = await candidate.getFullState();
+      expect(Object.keys(full.state).sort()).toEqual(['counter', 'rows']);
+      expect(full.state).toMatchObject({ counter: 8n, rows: [{ note, amount: 9n }] });
+      expect(full.masterUtxo).toBeDefined();
+      expect(liveMasters.some((utxo) => utxo.txid === full.masterUtxo?.txid
+        && utxo.vout === full.masterUtxo?.vout)).toBe(true);
+      expect(full.dataNftUtxos).toHaveLength(owner.stateLayout!.dataNftCount);
+      const pointer = full.dataNftUtxos[artifacts.Table!.stateLayout!.dataNftCount]!;
+      expect(parsePushdataCommitment(
+        pointer.token!.nft!.commitment, owner.stateLayout!, artifacts.Table!.stateLayout!.dataNftCount,
+      ).implementation).toBeInstanceOf(Uint8Array);
+      const records = new Set(full.dataNftUtxos.map((utxo) => `${utxo.txid}:${utxo.vout}`));
+      expect(full.entryNftUtxos.some((utxo) => records.has(`${utxo.txid}:${utxo.vout}`))).toBe(false);
+      expect(full.dynamicChunkUtxos?.rows.length).toBeGreaterThan(1);
+      for (const chunk of full.dynamicChunkUtxos!.rows) {
+        expect(full.entryNftUtxos.some((utxo) => utxo.txid === chunk.txid && utxo.vout === chunk.vout)).toBe(true);
+      }
+      expect(await (candidate as unknown as typeof handle).rows(0)).toMatchObject({ note, amount: 9n });
+      expect(await candidate.getState()).toMatchObject(full.state);
+    }
+  }, 300_000);
+
   it('routes to the framed deployment and settles the initialize hop', async () => {
     const { artifacts, routed } = await routedDeployment();
     const deployment = routed.proxyDeployment;

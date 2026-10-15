@@ -13,7 +13,7 @@ export interface FramedBlockOracle {
 
 /** The provider's oracle lock, bound into `artifact` when the artifact reads the oracle, so its masters pin it. */
 export function bindProviderBlockOracle(provider: NetworkProvider, artifact: Artifact): Uint8Array | undefined {
-  const lock = (provider as { blockOracleLock?: Uint8Array }).blockOracleLock;
+  const lock = provider.blockOracleLock;
   if (lock !== undefined && artifact.usesBlockOracle === true) bindBlockOracleLock(artifact, lock);
   return lock;
 }

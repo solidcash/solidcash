@@ -4,6 +4,7 @@ import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/li
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import { VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE, VALUE_INLINE_LIMIT } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { followsProbeEquality, matchesProbeOpcodeSequence } from '../stateful/probe-instruction-sequence.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import {
   chunksFromValue, persistValueChunkLock, valueChunkIndexFromCommitment, valueChunkWriteResourceIdentity,
@@ -256,7 +257,7 @@ export function discoverMessageBusComputedValueChunkValues(
     const recordTerminalCountFrame = (state: AuthenticationProgramStateCommon): void => {
       const verifyIp = state.instructions[state.ip]?.opcode === Op.OP_EQUALVERIFY
         ? state.ip : state.instructions[state.ip - 1]?.opcode === Op.OP_EQUALVERIFY ? state.ip - 1 : -1;
-      if (verifyIp < 1 || state.instructions[verifyIp - 1]?.opcode !== Op.OP_DROP
+      if (verifyIp < 0 || !matchesProbeOpcodeSequence({ ...state, ip: verifyIp }, -1, [Op.OP_DROP])
         || state.controlStack.some((frame) => frame === false)) return;
       if (!masterLock) return;
       for (const observation of matchComputedValueChunkStack(state.stack, writes, masterLock)) {
@@ -273,7 +274,7 @@ export function discoverMessageBusComputedValueChunkValues(
         const state = unknownState as AuthenticationProgramStateCommon;
         recordTerminalCountFrame(state);
         if (state.instructions[state.ip]?.opcode === Op.OP_EQUALVERIFY
-          && state.instructions[state.ip - 1]?.opcode === Op.OP_CAT
+          && matchesProbeOpcodeSequence(state, -1, [Op.OP_CAT])
           && !state.controlStack.some((frame) => frame === false)) {
           if (!masterLock) return;
           for (const observation of matchComputedValueChunkReconstructionStack(state.stack, writes, masterLock)) {
@@ -521,7 +522,7 @@ export function convergeMessageBusComputedValueChunkOutputs(
               roundConfirmedByInput.set(inputIndex, confirmed);
             }
           }
-          if (masterLock && opcode === Op.OP_EQUALVERIFY && state.instructions[state.ip - 1]?.opcode === Op.OP_DROP
+          if (masterLock && opcode === Op.OP_EQUALVERIFY && matchesProbeOpcodeSequence(state, -1, [Op.OP_DROP])
             && !state.controlStack.some((frame) => frame === false)) {
             for (const observation of matchComputedValueChunkStack(state.stack, inputWrites, masterLock)) {
               traceComputedValueChunkObservation(inputIndex, observation);
@@ -555,10 +556,7 @@ export function convergeMessageBusComputedValueChunkOutputs(
             }
             return;
           }
-          const nextOpcode = state.instructions[state.ip + 1]?.opcode;
-          const tightEquality = nextOpcode === Op.OP_EQUALVERIFY
-            || (nextOpcode === Op.OP_EQUAL
-              && state.instructions[state.ip + 2]?.opcode === Op.OP_VERIFY);
+          const tightEquality = followsProbeEquality(state);
           if ((opcode !== Op.OP_OUTPUTBYTECODE && opcode !== Op.OP_OUTPUTTOKENCOMMITMENT)
             || !tightEquality
             || state.controlStack.some((frame) => frame === false)

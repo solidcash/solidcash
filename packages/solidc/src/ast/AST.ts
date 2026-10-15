@@ -470,6 +470,8 @@ export type KernelReadCarrierSyntheticParameterRole =
   | 'old-values-witness';
 
 export class FunctionDefinitionNode extends Node implements Named {
+  /** Set only on compiler-synthesized helpers whose source/require maps may be rewritten by helper optimization. */
+  compilerGeneratedHelper?: boolean;
   /** Exact source-level dense slice proof, captured before array/mapping lowering changes the body shape. */
   mappingArrayPagination?: NonNullable<AbiFunction['mappingArrayPagination']>;
   symbolTable?: SymbolTable;
@@ -503,6 +505,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusPhysicalEntrySlotAlternatives?: number[][];
   /** Route-wide dynamic resources which precede this outlined handler's trailing mapping entries. */
   messageBusRouteDynamicResources?: string[];
+  /** Route-wide read-only chunk runs preserved before streamed effects; an empty list is authoritative. */
+  messageBusRouteReadOnlyDynamicResources?: string[];
   /** Authenticated participant-master offset used by message-bus handler code generation. */
   messageBusOwnerInputOffset?: number;
   /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */
@@ -2774,7 +2778,7 @@ export interface ExternalStateReadInfo {
   fieldIndex: number;
   fieldsInNft: { type: Type; fieldIndex: number }[];
   externalReadSlotIndex: number;
-  calleeMultiNft: boolean; // callee spans >1 data NFT -> its commitments carry an nftIndex tag to verify
+  calleeMultiNft: boolean; // callee commitments carry an nftIndex tag (multi-record or explicit singleton encoding)
 }
 
 export class ExternalStateAccessNode extends ExpressionNode {
@@ -3049,6 +3053,10 @@ export interface ExternalCallSlot {
   // MD1: the callee function's compile-time selector, baked as a constant OP_EQUALVERIFY for a regular call so a
   // spender cannot substitute a different method of the callee via the (previously trusted) witness param.
   compileTimeSelector?: Uint8Array;
+  /** Interface-proven readonly entry; used only for direct return-frame authentication. */
+  readonlyReturnSelector?: Uint8Array;
+  /** Set only when codegen emits the direct shared-readonly return equality check. */
+  readonlyReturnBindingSelector?: Uint8Array;
   // Same-address varying-method pointer: the RUNTIME selector expression (`cond ? a.selector : b.selector`).
   // The epilogue evaluates it and asserts the co-spent callee's selector == it, instead of the witness param.
   runtimeSelector?: ExpressionNode;
@@ -3125,7 +3133,7 @@ export interface ExternalOutputStateAccessInfo {
   fieldIndex: number;
   fieldsInNft: { type: Type; fieldIndex: number }[];
   externalOutStateSlotIndex: number;
-  calleeMultiNft: boolean; // callee spans >1 data NFT -> its commitments carry an nftIndex tag to verify
+  calleeMultiNft: boolean; // callee commitments carry an nftIndex tag (multi-record or explicit singleton encoding)
   /** The data-NFT field is a uint32 length header; the value is reconstructed from owner-branded chunks. */
   dynamic: boolean;
 }

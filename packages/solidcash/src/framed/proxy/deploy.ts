@@ -1704,13 +1704,14 @@ export interface CalleeSettlement {
  *
  * Deepest first, so the frames a callee reaches answer before it is derived; and a frame that declares the view an
  * earlier frame's write of a shared node left is settled after that writer, whose view is learned from its own
- * frame (`sharedNodeWritersBefore`). A hop with no shared write keeps the deepest-first order unchanged. Only the
+ * frame. Created nodes have no spent participant, so their declared writes add dependencies as well as shared
+ * inputs. A hop with no shared write keeps the deepest-first order unchanged. Only the
  * frames being settled order each other: a frame this settle leaves out keeps the view an earlier settle learned.
  * A frame that starts from a view an earlier frame of its contract left follows the frames that view's learning
  * needs (`reentrySettleBefore`).
  */
 export function calleeSettleOrder(callees: readonly HopCallee[], deepestFirst: readonly number[]): readonly number[] {
-  const writersBefore = sharedNodeWritersBefore(callees);
+  const writersBefore = calleeNodeWritersBefore(callees);
   const reentryBefore = reentrySettleBefore(callees);
   const inScope = new Set(deepestFirst);
   const settled = new Set<number>();
@@ -1733,6 +1734,18 @@ export function calleeSettleOrder(callees: readonly HopCallee[], deepestFirst: r
     order.push(index);
   }
   return order;
+}
+
+/** Earlier writers of spent or newly created nodes that a later frame continues. */
+function calleeNodeWritersBefore(callees: readonly HopCallee[]): ReadonlyMap<number, readonly number[]> {
+  const before = new Map<number, readonly number[]>();
+  for (const dependencies of [sharedNodeWritersBefore(callees), writtenNodeWritersBefore(callees)]) {
+    for (const [frame, writers] of dependencies) {
+      before.set(frame, [...new Set([...(before.get(frame) ?? []), ...writers])]
+        .filter((writer) => writer !== frame));
+    }
+  }
+  return before;
 }
 
 /**
@@ -1843,7 +1856,7 @@ export async function settleCallees(options: {
     .map((_callee, index) => index)
     .filter((index) => options.only === undefined || options.only.has(index))
     .sort((left, right) => depthOf(right) - depthOf(left));
-  const nodeWritersBefore = sharedNodeWritersBefore(options.callees);
+  const nodeWritersBefore = calleeNodeWritersBefore(options.callees);
   // The frames a later reach of one of their nodes continues from, which leave it the value they computed.
   const continuedWriters = new Set([...nodeWritersBefore.values()].flat());
   for (const calleeIndex of calleeSettleOrder(options.callees, deepestFirst)) {
@@ -2044,6 +2057,10 @@ export async function settleCallees(options: {
         }
         // The body computed a chunkable value the close did not expose, so the run's width stays unstated: refuse
         // by name rather than lay a run the body's own pin would not address.
+        if (trace) {
+          hopTrace(`callee-value-reading ${callee.master} ${traceReading(reading)}`);
+          hopTrace(`callee-value-stop ${callee.master} ${traceStopInstructions(options.vm, program)}`);
+        }
         throw new FramedProxyDeployError(
           `the call's callee "${callee.functionName}" writes mapping `
           + `"${callee.entryWrites.collection ?? '<unnamed>'}" a value whose source the artifact does not publish, `
@@ -2283,8 +2300,12 @@ export function learnedValueFromClose(vm: Machine, program: ShippedVmProgram): U
     if (seen.has(hex)) continue;
     seen.add(hex);
     if (!digests.has(bytesToHex(sha256(operand)))) continue;
+    if (hopTraceOn()) hopTrace(`value-probe match bytes=${operand.length} digest=${bytesToHex(sha256(operand))}`);
     if (found !== undefined) return undefined;
     found = operand;
+  }
+  if (found === undefined && hopTraceOn()) {
+    hopTrace(`value-probe missing stack=${stack.length} largeValues=${seen.size} digests=${digests.size}`);
   }
   return found === undefined ? undefined : Uint8Array.from(found);
 }
@@ -2528,6 +2549,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
           + `refs=[${traceCallRefs(candidate.draft, IMPLEMENTATION_MASTER_ID)}]`);
         hopTrace(`close entry=${IMPLEMENTATION_MASTER_ID} reason=${attributed}`);
         hopTrace(`reading entry=${IMPLEMENTATION_MASTER_ID} ${traceReading(reading)}`);
+        hopTrace(`entry-stop ${IMPLEMENTATION_MASTER_ID} ${traceStopInstructions(vm, readingProgram)}`);
       }
       throw new FramedProxyDeployError(
         `the implementation's ${options.entryLabel} did not settle through the proxy: ${failing}`
@@ -2771,13 +2793,11 @@ function producerFramesOf(externalPlan: HopExternalPlan, block: HopPlanBlock): S
  * by no deployment the plan could read instead, so the frames whose writes state those views are settled first.
  */
 function withNodeWriters(frames: Set<number>, callees: readonly HopCallee[]): Set<number> {
-  const writing = [sharedNodeWritersBefore(callees), writtenNodeWritersBefore(callees)];
-  const writersOf = (index: number): readonly number[] =>
-    writing.flatMap((map) => map.get(index) ?? []);
+  const writing = calleeNodeWritersBefore(callees);
   for (let changed = true; changed;) {
     changed = false;
     for (const index of [...frames]) {
-      for (const writer of writersOf(index)) {
+      for (const writer of writing.get(index) ?? []) {
         if (frames.has(writer)) continue;
         frames.add(writer);
         changed = true;
@@ -2979,8 +2999,8 @@ async function planAndSettleHop(options: {
   const heldPlanOf = async (): Promise<
   { readonly externalPlan: HopExternalPlan; readonly settled: SettledHop } | undefined
   > => {
-    // The held reading only restates a declaration for a node one frame of this hop writes and an earlier one wrote
-    // as well, and a created node is the shape no deployment holds: a hop without one is not planned again.
+    // The held reading restates a declaration for a node an earlier frame of this hop wrote, whether this frame
+    // reads or writes it. A created node is the shape no deployment holds: a hop without one is not planned again.
     if (![...writtenNodeWritersBefore(externalPlan.callees).values()].some((writers) => writers.length > 0)) {
       return undefined;
     }
@@ -5285,6 +5305,11 @@ export async function callFramedProxyEntry(
   const recordAmounts = proxyPools.records.map((record) => record.satoshis);
   // Read once: the hop co-spends this oracle, and a stored clock value is the time it holds.
   const blockOracle = await hopBlockOracle(provider, oracleLock, implementationArtifact, options.functionName);
+  // Call predicates and write recipes read the same clock the body authenticates from this co-spent oracle.
+  const executionState = {
+    ...deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
+    ...(blockOracle === undefined ? {} : blockOracleClock(blockOracle)),
+  };
 
   // The mapping nodes the entry only reads, planned the way a proxied callee's are: from the proxy's own nodes and
   // records, read with the proxy's layout, and the call data the frame receives. Each is named by its collection and
@@ -5308,8 +5333,7 @@ export async function callFramedProxyEntry(
     nodesByCollection: proxyPools.nodesByCollection,
     // A key the entry's write publishes as a state read is the value the delegate frame itself reads on the
     // proxy's own records, so those records are decoded into the same view its data slots carry.
-    state: deploymentStateValues(proxyArtifact.stateLayout!, options.proxyCategoryId, proxyPools) as
-      Readonly<Record<string, StateValue>>,
+    state: executionState as Readonly<Record<string, StateValue>>,
   };
   // The values the proxy's nodes hold, which the delegate frame reads: the facts a guarded write is decided from, and
   // the key a write reads out of another mapping.
@@ -5359,7 +5383,7 @@ export async function callFramedProxyEntry(
   // The events and hashes the entry's loops repeat, counted against the same facts its calls are resolved from.
   const loopTurns = implementationLoopTurns({
     artifact: implementationArtifact, functionName: options.functionName, args,
-    stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
+    stateValues: executionState,
     selfAddress: proxyMaster.address, senderAddress: options.callerLockingBytecode,
   });
   // The emits a branch guards that the delegate frame's facts decide its body skips, decided as its writes are.
@@ -5457,7 +5481,7 @@ export async function callFramedProxyEntry(
       planHopExternalCalls({
         provider, artifact: implementationArtifact, functionName: options.functionName,
         args, externals: options.externals ?? {}, validatorProgram,
-        stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
+        stateValues: executionState,
         entryDeployment: { categoryId: options.proxyCategoryId, deployment: proxyPools, layout: classificationLayout },
         reentrantRoot,
         selfAddress: proxyMaster.address,

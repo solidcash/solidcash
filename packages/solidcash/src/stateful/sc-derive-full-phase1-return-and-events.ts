@@ -249,6 +249,17 @@ export function deriveFullPhase1ReturnAndEvents(
         hexToBin(returnCommitments[0]),
         `external-call:${returnGroupIndex}`,
       );
+      // A shared ordinary readonly input executes only one selected zero-argument frame. Every active
+      // identical alias is bound to that same result by the caller covenant; retain its distinct output channel.
+      if (group.readonlyReturnSelector !== undefined && !group.compilerRoute) {
+        for (const [aliasIndex, alias] of externalCallUtxoGroups.entries()) {
+          if (alias.sharedGroupIndex !== groupIdx || alias.compilerRoute
+            || alias.readonlyReturnSelector !== group.readonlyReturnSelector
+            || alias.callerIdentity?.categoryId !== group.callerIdentity?.categoryId
+            || alias.callerIdentity?.lockingBytecode !== group.callerIdentity?.lockingBytecode) continue;
+          stb.setReturnEventOutput(group.categoryId, hexToBin(returnCommitments[0]), `external-call:${aliasIndex}`);
+        }
+      }
       if (returnGroupIndex !== groupIdx) {
         stb.setReturnEventOutput(
           group.categoryId,
@@ -270,6 +281,7 @@ export function deriveFullPhase1ReturnAndEvents(
     const bArt = delegateEventGroup?.externalContract.inner?.artifact
       ?? group.externalContract.inner?.artifact ?? group.externalContract.artifact;
     const bAbiFunc = delegateEventGroup?.compilerRoute?.abiFunction
+      ?? group.compilerRoute?.abiFunction
       ?? bArt?.abi?.find((f: any) => f.name === (delegateEventGroup?.functionName ?? group.functionName));
     const routeEventSignatures = delegateEventGroup?.compilerRoute?.eventSignaturesBySlot
       ?? group.compilerRoute?.eventSignaturesBySlot;

@@ -17,7 +17,7 @@
  */
 
 import {
-  isMultiDataNftLayout, parseType, type Artifact, type ArtifactMap, type StateLayout, type StateVariableInfo,
+  hasDataNftIndexTags, parseType, type Artifact, type ArtifactMap, type StateLayout, type StateVariableInfo,
   type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { FramedProxyDeployError } from './errors.js';
@@ -241,10 +241,10 @@ export function readLayoutAgreement(implementationArtifact: Artifact, proxyArtif
     };
   }
   const own = proxyFields.slice(implementationFields.length);
-  // A layout with more than one record leads every commitment with the index it belongs to; a single-record one
-  // does not. The writer is the implementation's own frame, and the reader is whoever holds the proxy's layout, so
+  // Multi-record layouts and explicitly tagged singleton layouts lead commitments with their record index.
+  // The writer is the implementation's own frame, and the reader is whoever holds the proxy's layout, so
   // the two have to agree on that leading field or the write lands on a commitment the proxy cannot place.
-  if (isMultiDataNftLayout(implementation) !== isMultiDataNftLayout(proxy)) {
+  if (hasDataNftIndexTags(implementation) !== hasDataNftIndexTags(proxy)) {
     return {
       ok: false,
       reason: `the implementation "${implementationArtifact.contractName}" declares `
@@ -303,7 +303,7 @@ function requireMirroredLayout(implementation: Artifact, generated: Artifact): v
  */
 export type ProxySourceCompiler = (
   source: string,
-  options: { composition: 'framed'; commitmentLimit: number },
+  options: { composition: 'framed'; commitmentLimit: number; tagSingletonDataNfts?: boolean },
 ) => ArtifactMap;
 
 /**
@@ -321,6 +321,8 @@ export function compileProxyArtifact(
     composition: 'framed',
     // The record geometry the implementation was compiled with, so the same fields land in the same data NFTs.
     commitmentLimit: layout.commitmentLimit,
+    ...((layout.taggedDataNfts === true || implementationArtifact.compiler.options?.tagSingletonDataNfts === true)
+      && { tagSingletonDataNfts: true }),
   });
   const generated = artifacts[proxyName(implementationArtifact)];
   if (generated === undefined) {

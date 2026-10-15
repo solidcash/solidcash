@@ -27,7 +27,9 @@
  */
 
 import type { Artifact, StateValue } from '@solidcash/utils';
-import { encodeFunctionArgument, resolveAddressArguments, type FunctionArgument } from '../../Argument.js';
+import {
+  encodeFunctionArgument, normalizeSolidityBytesArgument, resolveAddressArguments, type FunctionArgument,
+} from '../../Argument.js';
 import type { TransactionDetails, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type Signer from '../../Signer.js';
@@ -125,7 +127,9 @@ export class FramedFunctionCall {
     const named = artifact.abi.filter((entry) => entry.name === this.functionName);
     const entry = named.find((candidate) => visible(candidate).length === this.args.length) ?? named[0];
     if (entry === undefined) return this.args;
-    const args = await resolveAddressArguments(visible(entry), this.args, artifact.structs);
+    const resolved = await resolveAddressArguments(visible(entry), this.args, artifact.structs);
+    const args = artifact.compiler?.options?.evmCompat === true
+      ? resolved.map((arg, index) => normalizeSolidityBytesArgument(arg, visible(entry)[index]?.type ?? '')) : resolved;
     visible(entry).forEach((input, index) => {
       const argument = args[index];
       if (argument !== undefined) encodeFunctionArgument(argument, input.type, artifact.structs);

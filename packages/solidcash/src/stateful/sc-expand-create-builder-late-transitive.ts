@@ -17,6 +17,7 @@ import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js
 import { MessageBusDiagnosticError } from '../message-bus/diagnostics.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import { addressToLockScript } from '../utils.js';
+import { resolveOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import {
   createDataNftUnlocker,
   createEntryNftUnlocker,
@@ -147,19 +148,23 @@ export async function expandCreateBuilderLateTransitive(
     // physical resources which produced that call, but Solidity-visible `address(this)` and the callee's
     // `msg.sender` are the authenticated state owner. Keep that owner as one indivisible pair throughout
     // argument resolution and route witness planning.
+    const logicalParentFunctionName = parent.logicalFunctionName ?? parent.functionName;
+    const logicalParentArgs = parent.logicalFunctionArgs ?? parent.functionArgs;
+    const selectedSelfAbi = !parent.compilerRoute && logicalParentArtifact === logicalParentContract.inner.artifact
+      ? logicalParentContract._resolveCallAbi?.(logicalParentFunctionName, logicalParentArgs) : undefined;
+    const ordinarySelfIdentity = await resolveOrdinarySelfIdentity(logicalParentContract, selectedSelfAbi);
     const parentCallerIdentity = Object.freeze({
       categoryId: parentContract.categoryId,
-      lockingBytecode: logicalParentArtifact.messageBus?.route.inputs.some(
-        (input: { name: string }) => input.name === '__internal__graphSelfIdentityInput',
-      ) ? binToHex(addressToLockScript(parentContract.target)) : parentContract.inner.lockingBytecode,
+      lockingBytecode: ordinarySelfIdentity ? binToHex(ordinarySelfIdentity.unlocker.generateLockingBytecode())
+        : logicalParentArtifact.messageBus?.route.inputs.some(
+          (input: { name: string }) => input.name === '__internal__graphSelfIdentityInput',
+        ) ? binToHex(addressToLockScript(parentContract.target)) : parentContract.inner.lockingBytecode,
     });
     const parentOutgoingSelfAddress = hexToBin(parentCallerIdentity.lockingBytecode);
     // Expressions inside this invocation observe its incoming caller, not its own outgoing identity
     // and not the transaction signer.
     const parentIncomingCallerAddress = parent.callerIdentity
       ? hexToBin(parent.callerIdentity.lockingBytecode) : undefined;
-    const logicalParentFunctionName = parent.logicalFunctionName ?? parent.functionName;
-    const logicalParentArgs = parent.logicalFunctionArgs ?? parent.functionArgs;
     const parentAtomicNode = preparedAtomicNodeByExternalGroup.get(parentGroupIndex);
     const graphParentArgsRaw = parentAtomicNode === undefined
       ? logicalParentArgs : preparedAtomicNodes?.[parentAtomicNode]?.args ?? logicalParentArgs;
@@ -423,17 +428,16 @@ export async function expandCreateBuilderLateTransitive(
           + `for ${nested.interfaceName} (category ${callee.categoryId}).`,
         );
       }
-      const requiredDataNftIndices = [...new Set(
-        (selectedFn.blockLayout?.slots ?? [])
-          .filter((slot) => slot.kind === 'dataNft' && slot.nftIndex !== undefined)
-          .map((slot) => slot.nftIndex!),
-      )];
-      const dataNftUtxos = requiredDataNftIndices.flatMap((nftIndex) => {
+      const requiredDataNftIndices = [...new Set(selectedFn.requiredNftIndices
+        ?? (selectedFn.blockLayout?.slots ?? []).filter((slot) => slot.kind === 'dataNft')
+          .map((slot) => slot.nftIndex ?? 0))];
+      const dataNftUtxos = requiredDataNftIndices.map((nftIndex) => {
         const utxo = childState.dataNftUtxos[nftIndex];
-        return utxo ? [{
+        if (!utxo) throw new Error(`Late external data NFT at index ${nftIndex} is missing for the selected handler.`);
+        return {
           ...utxo,
           unlocker: createDataNftUnlocker(callee.inner, 0, callee.categoryId),
-        }] : [];
+        };
       });
       const existingPhysicalIndex = externalCallUtxoGroups.findIndex(
         (candidate) => candidate.categoryId === callee.categoryId,

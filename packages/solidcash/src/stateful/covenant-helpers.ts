@@ -5,6 +5,7 @@ import {
   type AbiFunction,
   type AbiInput,
   type Artifact,
+  type StateLayout,
   type EventDefinitionAbi,
   buildCovenantArtifact,
   buildDataNftCovenantScript,
@@ -289,7 +290,7 @@ export function directConventionMasterLock(contract: Contract<any, any>): Uint8A
 
 export function getDataNftAddress(contract: Contract<any, any>, categoryId: string): string {
   validateCategoryId(categoryId);
-  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId), contractMasterLock(contract));
+  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId), directConventionMasterLock(contract));
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
@@ -477,12 +478,42 @@ export function getSatoshiContainerAddress(contract: Contract<any, any>, categor
 // State reading
 // ---------------------------------------------------------------------------
 
+/** Deployment-authenticated state owner, which can have records beyond the implementation's public schema. */
+export interface FramedStateOwner {
+  readonly layout: StateLayout;
+  readonly masterLockingBytecode: Uint8Array;
+}
+
 export async function getContractState(
   contract: Contract<any, any>, categoryId: string, dataNftAddresses?: string | string[],
+  framedOwner?: FramedStateOwner,
 ): Promise<OnChainState> {
   validateCategoryId(categoryId);
   if (!contract.artifact.stateLayout) {
     throw new Error(`Contract ${contract.name} is not a stateful contract`);
+  }
+
+  if (framedOwner !== undefined) {
+    const { readFramedDeployment, chunkRecordLockingBytecode } = await import('../framed/deploy/records.js');
+    const inventory = await readFramedDeployment(contract.provider, categoryId, framedOwner.layout);
+    const dynamicChunkUtxos: Record<string, Utxo[]> = {};
+    for (const variable of contract.artifact.stateLayout.variables) {
+      if (variable.dynamic !== true) continue;
+      const lock = binToHex(chunkRecordLockingBytecode(categoryId, variable.name, variable.type));
+      dynamicChunkUtxos[variable.name] = inventory.chunks.filter((utxo) => utxo.lockingBytecode !== undefined
+        && binToHex(utxo.lockingBytecode) === lock);
+    }
+    // Inventory belongs to the owner; decoded public values belong exclusively to the implementation schema.
+    const dataNftUtxos = [...inventory.records];
+    const state = new StateReader(contract.artifact.stateLayout).readState(
+      dataNftUtxos, { categoryId, byVariable: dynamicChunkUtxos },
+    );
+    const masterLock = binToHex(framedOwner.masterLockingBytecode);
+    return {
+      state, dataNftUtxos, dynamicChunkUtxos,
+      masterUtxo: inventory.mastersByLock.get(masterLock)?.[0],
+      entryNftUtxos: [...inventory.collectionNodes, ...inventory.chunks].sort((a, b) => a.vout - b.vout),
+    };
   }
 
   // Dynamic-storage vars (string / unbounded bytes) keep their data in chunk UTXOs at a per-var address.

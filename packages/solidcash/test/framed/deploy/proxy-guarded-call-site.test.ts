@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { validatorAddress, type Artifact } from '@solidcash/utils';
+import { parsePushdataCommitment, validatorAddress, type Artifact } from '@solidcash/utils';
 import { framedValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -85,6 +85,30 @@ function sourceOfGuardedEntry(): string {
     + ' }';
 }
 
+/** An internal helper forwards the entry's arguments in a different order to its guarded call. */
+function sourceOfInternalGuardedEntry(): string {
+  return 'pragma solidcash ^0.13.0;'
+    + ' interface IOuter { function run(uint x, uint mode) returns (uint); }'
+    + ' contract Outer {'
+    + '   uint public status;'
+    + '   function run(uint x, uint mode) returns (uint) { this.status = x + mode; return this.status; }'
+    + ' }'
+    + ' contract Ledger {'
+    + '   address public implementation;'
+    + '   uint public stored;'
+    + '   function initialize() { require(true); }'
+    + '   function optional(uint forwardedMode, uint value) internal {'
+    + '     if (forwardedMode > 0) {'
+    + `       this.stored = IOuter(0x${binToHex(OUTER_ADDRESS)}).run(value, forwardedMode);`
+    + '     }'
+    + '   }'
+    + '   function run(uint x, uint mode) {'
+    + '     optional(mode, x);'
+    + `     this.stored = IOuter(0x${binToHex(OUTER_ADDRESS)}).run(x + 2, mode);`
+    + '   }'
+    + ' }';
+}
+
 /** Deploys the callee and its own callee, then the implementation behind its proxy. */
 async function deploy(source: string = sourceOf()): Promise<{
   readonly network: MockNetworkProvider;
@@ -140,6 +164,37 @@ async function deploy(source: string = sourceOf()): Promise<{
 }
 
 describe('a proxied entry whose callee guards one of its calls away', () => {
+  it.each([0n, 1n])('settles an internal helper call guard with forwarded arguments (mode=%s)', async (mode) => {
+    const { network, artifacts, callerUtxos, deployerLock, changeAddress, signature, initialized } =
+      await deploy(sourceOfInternalGuardedEntry());
+    expect(initialized).toBe(true);
+    const entry = artifacts.Ledger!.abi.find((candidate) => candidate.name === 'run')!;
+    expect(entry.externalCalls?.[0].condition).toBeDefined();
+    const proxyArtifact = buildProxyArtifact(artifacts.Ledger!);
+
+    const result = await callFramedProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Ledger!,
+      proxyArtifact,
+      proxyCategoryId: PROXY_CATEGORY,
+      implementationCategoryId: IMPL_CATEGORY,
+      functionName: 'run',
+      args: [3n, mode] as never,
+      externals: { IOuter: { artifact: artifacts.Outer as Artifact, categoryId: OUTER_CATEGORY } },
+      callerUtxo: callerUtxos[1]!,
+      callerLockingBytecode: deployerLock,
+      funder: signature.unlockP2PKH(),
+      changeAddress,
+      vm: compositionMachine(),
+    });
+    expect(result.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.completed.filter((frame) => frame.contract === 'Outer')).toHaveLength(mode === 0n ? 1 : 2);
+    const state = Object.assign({}, ...result.writtenCommitments.map((commitment, index) =>
+      parsePushdataCommitment(binToHex(commitment), proxyArtifact.stateLayout!, index)));
+    expect(state.stored).toBe(5n + mode);
+  }, 300_000);
+
   it('settles a callee whose middle call site no execution reaches', async () => {
     const { network, artifacts, callerUtxos, deployerLock, changeAddress, signature, initialized } = await deploy();
     expect(initialized).toBe(true);

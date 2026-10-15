@@ -43,9 +43,8 @@ import {
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { assertAuthenticatingVmEvidence } from '../vm-evidence.js';
 import { createMessageBusCapstoneTestProvider, verifierInputCosts } from './message-bus-semantic-profile.js';
-import { generateLibauthSourceOutputs } from '../../../src/utils.js';
+import { generateLibauthSourceOutputs, randomUtxo } from '../../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
-import { randomUtxo } from '../../../src/utils.js';
 
 const CALLEE = `contract ComposeCallee() {
   int counter;
@@ -68,6 +67,23 @@ contract ComposeCaller(address callee) {
 
 const raw = (builder: TransactionBuilder): string =>
   binToHex(encodeTransaction(builder.buildLibauthTransaction()));
+
+const expectBchInputLimits = (builder: TransactionBuilder): void => {
+  const transaction = builder.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  // Use the ordinary VM so the semantic provider cannot relax any input's cost, stack or byte limits.
+  const vm = createVirtualMachineBch2026ForProvider();
+  const violations = transaction.inputs.flatMap((input, inputIndex) => {
+    const result = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));
+    const bytes = input.unlockingBytecode.length;
+    return result === true && bytes <= ConsensusBch2026.maximumBytecodeLength
+      ? [] : [{ input: inputIndex, bytes, result,
+        cost: createVirtualMachineBch2026ForProvider(builder.provider)
+          .evaluate({ inputIndex, sourceOutputs, transaction }).metrics.operationCost,
+      }];
+  });
+  expect(violations, 'every input must satisfy ordinary BCH-2026 VM and byte limits').toEqual([]);
+};
 
 const vmRejects = (candidate: TransactionBuilder): boolean => {
   assertAuthenticatingVmEvidence(candidate);
@@ -2057,6 +2073,8 @@ describe('messageBus.compose atomic transaction', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
     const canonical = await composition.build();
+    expect(verifierInputCosts(canonical).filter(({ cost, budget }) => cost > budget)).toEqual([]);
+    expectBchInputLimits(canonical);
     expect(vmRejects(canonical)).toBe(false);
     for (const mutation of ['stale', 'substituted', 'omitted', 'duplicate'] as const) {
       const hostile = await composition.build();
@@ -3641,7 +3659,22 @@ describe('messageBus.compose atomic transaction', () => {
     const built = await composition.build();
     const nftOutput = built.outputs.findIndex((output) =>
       output.token?.category === token.category && output.token.nft?.commitment === commitment);
+    expect(verifierInputCosts(built).filter(({ cost, budget }) => cost > budget)).toEqual([]);
     expect(nftOutput).toBeGreaterThan(0);
+    expectBchInputLimits(built);
+    const padOutput = built.outputs.findIndex((output) => !output.token
+      && typeof output.to !== 'string' && binToHex(output.to) === '51');
+    expect(padOutput).toBeGreaterThan(0);
+    const hostilePad = await composition.build();
+    hostilePad.outputs[padOutput].to = hexToBin('0051');
+    expect(vmRejects(hostilePad)).toBe(true);
+    const duplicateMaster = await composition.build();
+    const master = duplicateMaster.outputs[0];
+    duplicateMaster.outputs.push({
+      ...master,
+      token: { ...master.token!, nft: { ...master.token!.nft!, commitment: '00' } },
+    });
+    expect(vmRejects(duplicateMaster)).toBe(true);
     for (const mutation of [
       'messageEnvelope-token', 'messageEnvelope-token-drop', 'messageEnvelope-token-container', 'messageEnvelope-token-container-drop',
     ] as const) {
@@ -3652,6 +3685,14 @@ describe('messageBus.compose atomic transaction', () => {
     const hostileOutput = await composition.build();
     hostileOutput.outputs[nftOutput].token!.nft!.commitment = 'c0ffef';
     await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
+    const hostileFungibleDebit = await composition.build();
+    const retainedFungible = hostileFungibleDebit.outputs.find((output, index) =>
+      index !== nftOutput && output.token?.category === token.category && output.token.amount > 0n);
+    expect(retainedFungible).toBeDefined();
+    retainedFungible!.token!.amount -= 1n;
+    hostileFungibleDebit.outputs[nftOutput].token!.amount += 1n;
+    // Global token conservation still balances: the NFT-only call must independently refuse an FT debit.
+    expect(vmRejects(hostileFungibleDebit)).toBe(true);
     const hostilePreserved = await composition.build();
     const preservedOutput = hostilePreserved.outputs.find((output) =>
       output.token?.category === preserved.categoryId && output.token.nft?.capability === 'minting');

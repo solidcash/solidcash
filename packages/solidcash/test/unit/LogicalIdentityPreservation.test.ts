@@ -75,6 +75,31 @@ describe('logical CREATE identity at getAddress()', () => {
       .toThrow('Ambiguous CREATE identity anchors');
   });
 
+  it.each([false, true])('keeps reserved output coordinates when splitting a large SCID funding pad (suffix %s)', (withSuffix) => {
+    const lock = Uint8Array.of(0xaa, 0x20, 0xe6);
+    const funderLock = Uint8Array.of(0x76, 0xa9, 0x14);
+    const category = 'ab'.repeat(32);
+    const commitment = '5343494401dead';
+    const interior = { to: Uint8Array.of(0x6a), amount: 1000n };
+    const entry = { to: Uint8Array.of(0x51), amount: 1200n,
+      token: { category, nft: { capability: 'mutable', commitment: '01' } } };
+    const suffix = { to: Uint8Array.of(0x6a), amount: 1000n };
+    const outputs: Array<{ to?: Uint8Array; amount?: bigint; token?: object }> = [
+      { to: funderLock, amount: 100_000n }, interior, entry, ...(withSuffix ? [suffix] : []),
+    ];
+    const total = outputs.reduce((sum, output) => sum + (output.amount ?? 0n), 0n);
+    const inputs = [{ satoshis: 1200n, unlocker: { generateLockingBytecode: () => lock },
+      token: { category, amount: 0n, nft: { capability: 'none', commitment } } }];
+    expect(reassertScidIdentityOutputs(outputs, inputs, new Set([1, 2]))).toBe(1);
+    expect(outputs[0].to).toBe(lock);
+    expect(outputs[1]).toBe(interior);
+    expect(outputs[2]).toBe(entry);
+    if (withSuffix) expect(outputs.at(-1)).toBe(suffix);
+    expect(outputs[3]).toEqual({ to: funderLock, amount: 98_800n });
+    expect(outputs.reduce((sum, output) => sum + (output.amount ?? 0n), 0n)).toBe(total);
+    expect(reassertScidIdentityOutputs(outputs, inputs, new Set([1, 2]))).toBe(0);
+  });
+
   it('recognizes SCID v1 commitments', () => {
     expect(isScidIdentityCommitment('5343494401abcd')).toBe(true);
     expect(isScidIdentityCommitment('53434944')).toBe(false);

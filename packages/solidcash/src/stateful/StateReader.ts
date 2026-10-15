@@ -1,6 +1,6 @@
 import {
   type StateLayout, parsePushdataCommitment, type EventDefinitionAbi, decodePushdataValue,
-  type StateValue, type StateRecord, isMultiDataNftLayout, attachDecodedAccessors,
+  type StateValue, type StateRecord, hasDataNftIndexTags, attachDecodedAccessors,
   parseChunkCommitment, joinChunks, dynamicLenKey,
   parseArrayTypeString, isFixedWidthType, unpackFixedWidthArray, decodePackedEventArray,
   decodeEvmNotationEventValue,
@@ -65,8 +65,8 @@ export class StateReader {
    */
   findDataNfts(utxos: Utxo[], categoryId: string): Utxo[] {
     const dataNftCount = this.layout.dataNftCount ?? 1;
-    const multi = isMultiDataNftLayout(this.layout);
-    // Validate each candidate's commitment and record the nftIndex it parses at. For a multi-data-NFT
+    const taggedLayout = hasDataNftIndexTags(this.layout);
+    // Validate each candidate's commitment and record the nftIndex it parses at. For an index-tagged
     // layout the commitment carries a verified nftIndex tag, so exactly one index parses cleanly.
     const tagged: Array<{ utxo: Utxo; nftIndex: number }> = [];
     for (const utxo of utxos) {
@@ -86,9 +86,9 @@ export class StateReader {
         }
       }
     }
-    // Multi-data-NFT: order by the verified nftIndex tag (robust against vout/input permutation, so
-    // dataNftUtxos[i] is genuinely register i). Single-data-NFT: vout order (no tag to disambiguate).
-    tagged.sort((a, b) => (multi ? a.nftIndex - b.nftIndex : a.utxo.vout - b.utxo.vout));
+    // Index-tagged layouts order by the verified tag (including explicitly tagged singletons). Legacy
+    // untagged singleton layouts retain vout order.
+    tagged.sort((a, b) => (taggedLayout ? a.nftIndex - b.nftIndex : a.utxo.vout - b.utxo.vout));
     return tagged.map((t) => t.utxo);
   }
 
@@ -181,6 +181,7 @@ export class StateReader {
    */
   readState(
     dataNftUtxos: Utxo[],
+    dynamicChunks?: { categoryId: string; byVariable: Record<string, Utxo[]> },
   ): Record<string, StateValue> {
     const result: Record<string, StateValue> = {};
 
@@ -198,6 +199,7 @@ export class StateReader {
       }
     }
 
+    if (dynamicChunks) this.assembleDynamicVars(result, dynamicChunks.categoryId, dynamicChunks.byVariable);
     return result;
   }
 

@@ -130,7 +130,7 @@ import {
   type LoopRecordMint, type LoopRecordSpan,
 } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
-import { bindProviderBlockOracle, entryReadsBlockOracle, framedBlockOracle } from './block-oracle.js';
+import { bindProviderBlockOracle, blockOracleClock, entryReadsBlockOracle, framedBlockOracle } from './block-oracle.js';
 import { sendRecipient, type RecipientContext } from './send-recipient.js';
 import {
   FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
@@ -142,7 +142,6 @@ import {
   type CalleeValues, type PlannedCallees,
 } from './callees.js';
 import { bumpFramedCounter } from '../composer/counters.js';
-import { deploymentStateValues } from '../proxy/external-calls.js';
 import { FramedReadError, decodeReturnValues } from '../read/index.js';
 import {
   FramedComposerError,
@@ -546,6 +545,8 @@ interface EntryMappingRequest {
   readonly deployment: FramedDeploymentSet;
   /** The frame's state, `address(this)` and nodes' values, which its keys and guarded writes are decided from. */
   readonly facts: WriteActivationFacts;
+  /** The timestamp from the same authenticated oracle input the frame co-spends. */
+  readonly blockClock?: Readonly<Record<string, bigint>>;
   /** The lock the chunks a write leaves past its value's width are paid to: the user's, whose coin enters. */
   readonly releasedLock: Uint8Array;
   /**
@@ -624,6 +625,7 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
       declaredReadSlots: reads.nodes.map((node) => node.slotIndex),
       nodeIdOf: (collection, slot) => writtenNodeId(slot, several ? collection : undefined),
       activationFacts: facts,
+      ...(request.blockClock === undefined ? {} : { blockClock: request.blockClock }),
       ...valueReader,
       ...(request.writtenCommitments === undefined ? {} : { writtenCommitments: request.writtenCommitments }),
     });
@@ -893,10 +895,19 @@ async function callInShape(
   // A run whose element the artifact does not state, such as one an entry rewrites an element of in place, is sized
   // from the length the records state for its value: the live records until the body's close states the ones it
   // writes, as the hop sizes a frame's own run (`planHopDynamicRun`).
-  const activationFacts = deploymentActivationFacts(artifact, categoryId, deployment, deployed.address);
+  const BLOCK_ORACLE_INPUT = `${MASTER_ID}:block-oracle`;
+  const fetchedBlockOracle = entryReadsBlockOracle(artifact, functionName)
+    ? await framedBlockOracle(provider, providerOracleLock, functionName, (reason) => new FramedCallError(reason))
+    : undefined;
+  const blockClock = fetchedBlockOracle === undefined ? undefined : blockOracleClock(fetchedBlockOracle);
+  const deploymentFacts = deploymentActivationFacts(artifact, categoryId, deployment, deployed.address);
+  const activationFacts = {
+    ...deploymentFacts, stateValues: { ...deploymentFacts.stateValues, ...blockClock },
+  };
   const mappingRecords = entryMapping({
     artifact, functionName, args, senderLockingBytecode: options.callerLockingBytecode, categoryId, deployment,
     facts: activationFacts, releasedLock: options.callerLockingBytecode,
+    ...(blockClock === undefined ? {} : { blockClock }),
     writtenCommitments: prior.writtenRecords ?? records.map((record) => record.commitment),
   });
   const mappingIds = mappingRecords?.participantIds ?? [];
@@ -908,6 +919,7 @@ async function callInShape(
       return await planEntryCallees({
         provider, artifact, functionName, args, externals: options.externals ?? {}, validatorProgram, categoryId,
         deployment, selfAddress: deployed.address, senderAddress: options.callerLockingBytecode,
+        ...(blockClock === undefined ? {} : { blockClock }),
         ...(prior.reached.size === 0 ? {} : { reachedResults: prior.reached }),
         ...(returns.size === 0 ? {} : { externalReturns: returns }),
         ...(prior.writeValues.size === 0 ? {} : { calleeWriteValues: prior.writeValues }),
@@ -935,7 +947,7 @@ async function callInShape(
   let loopTurns: EntryLoopTurns;
   try {
     loopTurns = entryLoopTurns({
-      artifact, functionName, args, stateValues: deploymentStateValues(stateLayout, categoryId, deployment),
+      artifact, functionName, args, stateValues: activationFacts.stateValues,
       selfAddress: deployed.address, senderAddress: options.callerLockingBytecode,
     });
   } catch (error) {
@@ -943,12 +955,10 @@ async function callInShape(
     throw error;
   }
   // The compute side-cars the entry's keccak256 and recovery calls read, one per call after the master.
-  const BLOCK_ORACLE_INPUT = `${MASTER_ID}:block-oracle`;
-  const readsBlockOracle = entryReadsBlockOracle(artifact, functionName);
-  // Fetched here: the plan builder that places the input is synchronous.
-  const blockOracle = readsBlockOracle
-    ? await framedBlockOracle(provider, providerOracleLock, functionName, (reason) => new FramedCallError(reason))
-    : undefined;
+  // Every body finds the oracle by its pinned lock. A callee may already place the same live outpoint.
+  const blockOracle = fetchedBlockOracle !== undefined && [...calleePlan?.utxos.values() ?? []].some(
+    (utxo) => utxo.txid === fetchedBlockOracle.utxo.txid && utxo.vout === fetchedBlockOracle.utxo.vout,
+  ) ? undefined : fetchedBlockOracle;
   const sideCars = await entrySideCars({
     provider,
     master: MASTER_ID,
@@ -1193,9 +1203,12 @@ async function callInShape(
     state: [...new Set([
       ...recordIds, ...mappingIds, ...ownCalleeBlocks.flatMap((block) => block.state),
     ])],
-    ...(sideCars.ids.length === 0 && !readsBlockOracle ? {} : {
-      recovery: { [MASTER_ID]: [...sideCars.ids, ...(readsBlockOracle ? [BLOCK_ORACLE_INPUT] : [])] },
-    }),
+    recovery: {
+      ...Object.assign({}, ...ownCalleeBlocks.map((block) => block.recovery ?? {})),
+      ...(sideCars.ids.length === 0 && blockOracle === undefined ? {} : {
+        [MASTER_ID]: [...sideCars.ids, ...(blockOracle === undefined ? [] : [BLOCK_ORACLE_INPUT])],
+      }),
+    },
   }, ...otherCalleeBlocks, ...payees.flatMap((payee, index) => (payee.shared.length > 0 ? [] : [{
     contract: payeeBlocks[index]!,
     masters: [receiveMasterId(index)],

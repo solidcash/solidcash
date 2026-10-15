@@ -10,6 +10,8 @@ export default defineConfig({
   // This project composes graph-free ERC-20 leaves into caller-authenticated atomic routes. Explicitly request
   // leaf participant routes; no marketplace source or test changes are required.
   compiler: {
+    // Proxy-owned pointer records need the same tagged header as a singleton implementation's shared record.
+    tagSingletonDataNfts: true,
     evmCompat: true,
     messageBus: true,
     messageBusKernel: true,

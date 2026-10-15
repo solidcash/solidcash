@@ -3,6 +3,9 @@
 Opened 2026-10-08 by the user's answer to the title sweep's density question ("Open a compiler per-frame cost
 project"). Ledger row D26.
 
+Status: complete. The third increment below meets all six 64-frame budgets, merged as `33860e146` on 2026-10-13.
+The earlier measurements and candidate approaches remain as the investigation record; D26 is closed.
+
 ## Goal
 
 Bring the emitted kernel runtime-loop settlement inside BCH-2026's operation-cost density budget at the frame

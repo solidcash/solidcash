@@ -535,3 +535,26 @@ are compiler-derived and therefore add no category parameter to the public ABI.
 **Recurring divergences** (all by design): the fee-family values are **sat/KB**, not wei/gas; the gas-family
 values are fixed shims (no metering on BCH); randomness (`prevrandao`) is grindable, not a beacon; `chainid`
 is a single byte; and `difficulty` stays the real PoW difficulty rather than aliasing `prevrandao`.
+
+### SDK oracle configuration and keeper genesis (2026-10-14)
+
+Live Electrum providers accept typed `blockOracleCategory` (32 display-order bytes) and derive the shared
+block-info covenant lock; `NetworkProvider` publishes the optional category and lock, and `ContractOptions`
+publishes an optional per-reader lock override. Reader and updater code need no structural casts.
+
+Direct and framed `StatefulContract.deploy` accept opt-in `blockhashKeeperPublicKey` and
+`blockhashKeeperAmount` (default 10,000 satoshis). Genesis mints one extra empty minting NFT of the consumer's
+category at the keeper baton covenant, after the participant records so existing record coordinates stay fixed.
+The key must be a valid compressed public key and the artifact must publish `usesBlockhash`. The confined
+baton signs every mint and can produce only its one blockhash record, as required by CRYPTO-4.
+
+Local follow-up evidence uses `KernelBlockOracleCallPaths.test.ts`: nested non-bus readers receive the
+root's authenticated shared-oracle input index, a named direct forwarder delegates to an oracle-reading
+implementation, and an all-staticcall composition shares one oracle plus exact neutral pads. Every input
+passes the ordinary VM. Forged oracle records and unequal-value pads fail. Static snapshots exempt only
+canonical token-free neutral pads from lock preservation and still require their complete input value.
+`BlockhashKeeperDeployment.test.ts` proves direct and framed baton genesis; its direct test also mints
+through the keeper, settles the consumer read, and refuses a mutable record in place of the immutable
+blockhash record under the ordinary VM. Framed genesis runs with the existing local composition profile.
+`LiveBlockOracleConfiguration.test.ts` checks typed category configuration and its derived covenant lock.
+These tests provide local evidence only; no BCHN or live-network checks were run for this follow-up.

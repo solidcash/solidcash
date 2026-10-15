@@ -5,6 +5,7 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';
+import { blockOracleLockFor, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
 import {
   connectedContractMatchesExactAddress, exactAddressLockingBytecodeHex,
   findDeploymentByAddressValue, registeredAddressValueLockingBytecode,
@@ -288,6 +289,13 @@ async function rebuildCallTopology(
       const sources = fn.externalCalls;
       const args = projectMessageBusHandlerArguments(artifact, fn.name, fn.selector, call.args);
       let state = { ...await stateOf(call.contract) };
+      // Reachability must use the same authenticated time that the selected body reads. A proxy's
+      // forwarder can omit the oracle while its delegate has a time-gated external effect.
+      const oracleLock = artifact.usesBlockOracle === true
+        ? blockOracleLockFor(artifact) ?? call.contract.inner.blockOracleLock : undefined;
+      const timestamp = oracleLock === undefined ? undefined
+        : await readBlockOracleTimestamp(call.contract.inner.provider, oracleLock);
+      if (timestamp !== undefined) state.__block_timestamp = timestamp;
       const returnsFor = (argSources: readonly ArgSource[], condition?: ExternalCallAbi,
         producerOccurrenceIndex?: number):
       Map<string, FunctionArgument> => externalReturnsForCallsites(argSources, childResults, sources,
@@ -667,7 +675,11 @@ async function rebuildCallTopology(
                 ?? (targetLockHex === undefined ? undefined : hexToBin(targetLockHex));
             const snapshot = state;
             const resolveArgsFromResults: Prepared['resolveArgsFromResults'] = (updated, frame) => {
-              const resolved = logical._resolveExternalArgs(argSources, [...(frame ?? args)], artifact,
+              // Parent arguments are supplied in their public SDK form. Resolve expressions from the
+              // selected handler's decoded frame, exactly as initial topology discovery does above.
+              const projected = frame === undefined ? args
+                : projectMessageBusHandlerArguments(artifact, fn.name, fn.selector, frame);
+              const resolved = logical._resolveExternalArgs(argSources, [...projected], artifact,
                 snapshot, fn.inputs, returnsForOuter(argSources, undefined, outerIndex, updated),
                 iteration, false, self, incoming);
               return rawPayload && resolved

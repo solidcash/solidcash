@@ -198,10 +198,7 @@ export class BlockOracleUpdater {
    */
   async pushUpdate(fields: BlockOracleFields, locktime = Number(fields.number)): Promise<string> {
     const { TransactionBuilder } = await import('../TransactionBuilder.js');
-    const provider = this.cfg.contract.provider as NetworkProvider & {
-      blockOracleLock?: Uint8Array;
-      blockOracleCategory?: Uint8Array;
-    };
+    const provider = this.cfg.contract.provider;
     const lock = provider.blockOracleLock;
     const category = provider.blockOracleCategory;
     if (lock === undefined || category === undefined) {
@@ -244,7 +241,7 @@ export class BlockOracleUpdater {
   }
 
   private async currentCommitment(): Promise<Uint8Array> {
-    const provider = this.cfg.contract.provider as NetworkProvider & { blockOracleLock?: Uint8Array };
+    const provider = this.cfg.contract.provider;
     const lock = provider.blockOracleLock;
     if (lock === undefined) return new Uint8Array();
     const utxos = await provider.getUtxosForLockingBytecode(lock);

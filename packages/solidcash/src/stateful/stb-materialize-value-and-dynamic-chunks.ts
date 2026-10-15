@@ -145,7 +145,9 @@ export function returningCallChunkRunBase(
     const value = params[fn.inputs.findIndex((input) => input.name === name)];
     return typeof value === 'bigint' ? value : undefined;
   };
-  if ((valueOf('__internal__dynamicChunkOutputBase') ?? -1n) >= 0n) return undefined;
+  // Artifacts publishing an output coordinate locate the completed physical run, including during their
+  // first provisional build. Only legacy artifacts without that witness use the return-event anchor.
+  if (fn.inputs.some((input) => input.name === '__internal__dynamicChunkOutputBase')) return undefined;
   // Witness suffixes count every returning call; loop-nested ones never anchor the run.
   const anchors = (fn.externalCalls ?? []).filter((call) => call.hasReturnValues)
     .map((call, ordinal) => ({ call, ordinal }))

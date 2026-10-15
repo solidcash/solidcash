@@ -3,9 +3,11 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction, ExternalCallAbi } from '@solidcash/utils';
+import type { AbiFunction } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
+import { blockOracleLockFor } from '../oracle/block-oracle-lock.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -40,6 +42,8 @@ export interface FinalizeCreateBuilderNestedBasesUnlockersHost {
   readonly provider: NetworkProvider;
   readonly physicalRootLockingBytecode: Uint8Array;
   readonly rootLogicalAddress?: string;
+  readonly blockOracle?: { lock: Uint8Array; inputIndex: number };
+  ensureOrdinarySelfIdentityBand(contract: any, abi: AbiFunction): Promise<number | undefined>;
   readonly pendingAnchorFills: Array<{
     group: {
       masterUtxo?: unknown;
@@ -90,6 +94,29 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
   // Fix data NFT unlockers and create master unlockers with correct hidden params.
   // Uses ABI-driven param resolution: scans each group's ABI inputs for hidden param names
   // and computes values based on the param name and transaction layout.
+  const sharedOracleInputs = new Map<string, number>();
+  if (host.blockOracle !== undefined) {
+    sharedOracleInputs.set(binToHex(host.blockOracle.lock), host.blockOracle.inputIndex);
+  }
+  // A logical clock-writing call can promote an earlier read-only call's physical block.
+  // Inventory actual pinned oracle inputs before binding any logical alias's hidden frame.
+  let oracleBlockBase = externalCallInputBase;
+  for (const group of externalCallUtxoGroups) {
+    // Logical aliases retain resource metadata but contribute no physical inputs or continuation band.
+    if (group.sharedGroupIndex !== undefined) continue;
+    const offset = group.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle')?.offset;
+    const input = offset === undefined ? undefined : group.blockInputs?.[offset];
+    const lock = group.externalContract.inner.blockOracleLock as Uint8Array | undefined
+      ?? blockOracleLockFor(group.externalContract.inner.artifact);
+    if (offset !== undefined && input?.token?.nft?.capability === 'mutable' && lock !== undefined
+      && binToHex(input.unlocker.generateLockingBytecode()) === binToHex(lock)) {
+      if (!sharedOracleInputs.has(binToHex(lock))) {
+        sharedOracleInputs.set(binToHex(lock), oracleBlockBase + offset);
+      }
+    }
+    oracleBlockBase += group.blockInputs?.length ?? 1 + group.dataNftUtxos.length;
+    oracleBlockBase += group.ordinaryDynamicChunkInputs?.length ?? 0;
+  }
   let currentInputBase = externalCallInputBase;
   const groupMasterIndices: number[] = []; // per co-spend group: its master's absolute input index
   for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
@@ -122,11 +149,13 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     }
 
     // Build hidden args by scanning the function's ABI inputs for hidden param names
-    type AbiEntry = { name: string; inputs: readonly { name: string }[]; externalCalls?: readonly ExternalCallAbi[] };
+    type AbiEntry = AbiFunction;
     const bAbiAll = group.externalContract.inner.artifact.abi as readonly AbiEntry[];
     const bAbiFunc = group.compilerRoute?.abiFunction
       ?? bAbiAll.find((f) => f.name === group.functionName);
     const bAbiInputs = bAbiFunc?.inputs ?? [];
+    const selfIdentityBand = !group.compilerRoute && usesOrdinarySelfIdentity(bAbiFunc)
+      ? await host.ensureOrdinarySelfIdentityBand(group.externalContract, bAbiFunc!) : undefined;
     const routeArgs = argumentsForPhysicalAbiFrame({
       abiFunction: bAbiFunc,
       physicalFunctionArgs: group.functionArgs,
@@ -183,6 +212,16 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         continue;
       }
 
+      if (!group.compilerRoute && usesOrdinarySelfIdentity(bAbiFunc)
+        && paramName === '__internal__graphSelfIdentityInput') {
+        bFinalArgs.push(-1n);
+        if (selfIdentityBand !== undefined) host.pendingAnchorFills.push({
+          group, functionName: group.functionName, encodedArgs: bFinalArgs,
+          positions: [{ argIndex: bFinalArgs.length - 1, name: paramName,
+            band: selfIdentityBand, proxyRoute: false, required: true }],
+        });
+        continue;
+      }
       const resolvedInternalArgs = group.compilerRoute?.internalArgs ?? group.internalArgs;
       if (resolvedInternalArgs
         && Object.prototype.hasOwnProperty.call(resolvedInternalArgs, paramName)) {
@@ -221,6 +260,19 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
             }],
           });
         }
+      } else if (paramName === '__internal__blockOracleInputIndex') {
+        const ownOffset = group.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle')?.offset;
+        const readerLock = group.externalContract.inner.blockOracleLock as Uint8Array | undefined
+          ?? blockOracleLockFor(group.externalContract.inner.artifact);
+        const lockHex = readerLock === undefined ? undefined : binToHex(readerLock);
+        if (lockHex !== undefined && !sharedOracleInputs.has(lockHex)
+          && ownOffset !== undefined && group.blockInputs?.[ownOffset] !== undefined
+          && binToHex(group.blockInputs[ownOffset].unlocker.generateLockingBytecode()) === lockHex) {
+          sharedOracleInputs.set(lockHex, masterInputIndex + ownOffset);
+        }
+        const oracleIndex = lockHex === undefined ? undefined : sharedOracleInputs.get(lockHex);
+        if (oracleIndex === undefined) throw new Error('nested block oracle reader has no authenticated oracle input');
+        bFinalArgs.push(BigInt(oracleIndex));
       } else if (paramName === '__internal__blockhashInputIndex') {
         const firstOracleOffset = group.blockLayout?.slots.find(
           (slot) => slot.kind === 'blockhashOracle',

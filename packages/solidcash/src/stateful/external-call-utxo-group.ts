@@ -123,7 +123,9 @@ export function hasMaterializedLowLevelCallBlock(group: ExternalCallUtxoGroup): 
   // This path knows how to preserve data slots and derive entry/event slots. Every other semantic slot has its
   // own materializer (transfers, token transfers, returns, compute sidecars, deploys, containers, lifecycle and
   // nested calls); admitting one here would silently clone or pad a value that must instead be derived.
-  const supported = new Set(['master', 'dataNft', 'readOnlyDataNft', 'entry', 'event']);
+  // A block-info oracle is an exact preservation spend: its own covenant validates the pinned
+  // authority and unchanged same-index output. It needs no producer or semantic result derivation.
+  const supported = new Set(['master', 'dataNft', 'readOnlyDataNft', 'entry', 'event', 'blockInfoOracle']);
   const offsets = new Set<number>();
   for (const slot of layout.slots) {
     if (!supported.has(slot.kind) || !Number.isSafeInteger(slot.offset)
@@ -222,6 +224,8 @@ export interface ExternalCallUtxoGroup {
   functionArgs: any[];
   /** Stable compiler callsite ID; physical group indices may compact past inactive conditional slots. */
   sourceCallsiteId?: number;
+  /** Selected ordinary readonly zero-argument frame; aliases may reuse its VM-authenticated result. */
+  readonlyReturnSelector?: string;
   externalContract: any; // StatefulContract - kept as any to avoid circular import
   /** Exact authenticated identity of the input which made this CALL/staticcall. Both fields are one authority:
    * entry-key planning uses the bytecode and runtime msg.sender reconstruction uses the category. */
@@ -350,6 +354,8 @@ export interface ExternalCallUtxoGroup {
    * chunks off-chain the way `valueChunkMints` does for a caller-known value - the commitments are extracted
    * from the callee's derivation probe and placed here, keyed by block slot. */
   derivedTrailingOutputs?: Map<number, { commitment: string; lockingBytecode: Uint8Array }>;
+  /** Lifted runtime event records in this physical callee's trailing band. */
+  streamedEventPlan?: import('./nested-streamed-events.js').NestedStreamedEventPlan;
   /** B's event NFT outputs (from auto-derivation of B's VM trace) */
   eventOutputs?: Array<{
     eventSignature: string; commitment: string; lockingBytecode: Uint8Array;

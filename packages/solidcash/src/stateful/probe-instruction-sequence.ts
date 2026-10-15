@@ -3,7 +3,8 @@ import { authenticationInstructionsAreMalformed, decodeAuthenticationInstruction
 import type { AuthenticationProgramStackFrame, AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { Op } from '@solidcash/utils';
 
-type ProbeState = AuthenticationProgramStateCommon & {
+type ProbeState = Pick<AuthenticationProgramStateCommon, 'instructions' | 'ip' | 'controlStack'>
+& Partial<Pick<AuthenticationProgramStateCommon, 'functionTable'>> & {
   probeContinuations?: readonly AuthenticationProgramStackFrame[];
 };
 
@@ -17,7 +18,8 @@ function continuations(state: ProbeState): readonly AuthenticationProgramStackFr
 
 /** Retain code coordinates, never caller operand stacks, for a projected return-commitment observation. */
 export function captureProbeContinuations(state: ProbeState): Pick<ProbeState, 'probeContinuations'> {
-  if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT) return {};
+  if (![Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_OUTPUTBYTECODE, Op.OP_EQUALVERIFY]
+    .includes(state.instructions[state.ip]?.opcode)) return {};
   return { probeContinuations: continuations(state).map(({ instructions, ip }) => ({ instructions, ip })) };
 }
 
@@ -79,4 +81,36 @@ export function matchesProbeOpcodeSequence(
     cursor.ip += direction;
   }
   return matched === expected.length;
+}
+
+/** An introspected value is consumed by this exact equality, including static outlined checks. */
+export function followsProbeEquality(state: ProbeState): boolean {
+  return !state.controlStack.some((frame) => frame === false)
+    && (matchesProbeOpcodeSequence(state, 1, [Op.OP_EQUALVERIFY])
+      || matchesProbeOpcodeSequence(state, 1, [Op.OP_EQUAL, Op.OP_VERIFY]));
+}
+
+/** Code between an earlier operation and this observation, following recorded static caller frames only. */
+export function probeInstructionsSince(
+  state: ProbeState,
+  start: AuthenticationProgramStackFrame,
+): AuthenticationProgramStackFrame['instructions'] | undefined {
+  let instructions = state.instructions;
+  let end = state.ip;
+  let suffix: AuthenticationProgramStackFrame['instructions'] = [];
+  const callers = continuations(state).slice();
+  for (let depth = 0; depth < 128; depth += 1) {
+    if (instructions === start.instructions) {
+      if (start.ip >= end) return undefined;
+      return [...instructions.slice(start.ip + 1, end), ...suffix];
+    }
+    suffix = [...instructions.slice(0, end), ...suffix];
+    const caller = callers.pop();
+    if (!caller || caller.instructions[caller.ip - 1]?.opcode !== Op.OP_INVOKE
+      || !caller.instructions[caller.ip - 2]
+      || literalIdentifier(caller.instructions[caller.ip - 2]) === undefined) return undefined;
+    instructions = caller.instructions;
+    end = caller.ip - 2;
+  }
+  return undefined;
 }

@@ -4,7 +4,10 @@ import {
   type Artifact, type CollectionInfo, type EntryAccessAbi, type StateLayout,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
-import type { Output } from '../../src/interfaces.js';
+import type { Output, UnlockableUtxo } from '../../src/interfaces.js';
+import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
+import { createBuildSessionPrelude } from '../../src/stateful/stb-create-build-session-prelude.js';
+import { redirectViewTailOffOpReturn } from '../../src/stateful/mutable-output-reassert.js';
 import {
   adaptLegacyNestedJobEventArguments,
   vmapBatchWitnessFallback,
@@ -1200,6 +1203,85 @@ function group(partial: Partial<PhysicalReturnGroup> & Pick<PhysicalReturnGroup,
 }
 
 describe('assignPhysicalReturnIndices', () => {
+  it('reserves return append families before an input-bearing identity coordinate', () => {
+    const category = 'ab'.repeat(32);
+    const inputs = Array.from({ length: 11 }, (_, index) => ({ txid: '11'.repeat(32), vout: index,
+      satoshis: 1200n, unlocker: { generateLockingBytecode: () => Uint8Array.of(0x51) } })) as UnlockableUtxo[];
+    inputs[3] = { ...inputs[3], token: { category, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+      unlocker: { ...inputs[3].unlocker, params: [], abiFunction: { name: 'size', inputs: [] },
+        contract: { artifact: {} } } as unknown as UnlockableUtxo['unlocker'] };
+    inputs[10] = { ...inputs[10], token: { category, amount: 0n,
+      nft: { capability: 'none', commitment: '5343494401dead' } } };
+    const layout = { blockSize: 3, slots: [{ kind: 'master' as const, offset: 0 },
+      { kind: 'dataNft' as const, offset: 1 }, { kind: 'returnEvent' as const, offset: 2 }] };
+    const artifact = { abi: [{ name: 'size', writesState: false }] } as unknown as Artifact;
+    const groups = [
+      group({ categoryId: category, functionName: 'size', blockLayout: layout,
+        blockInputs: { length: 6 }, returnEventInBlock: true, returnOutputIndex: 5,
+        externalContract: { inner: { artifact } } }),
+      group({ categoryId: category, functionName: 'size', sharedGroupIndex: 0, blockLayout: layout,
+        blockInputs: { length: 0 }, returnOutputIndex: 9,
+        loopReturnCommitments: [Uint8Array.of(1), Uint8Array.of(2)],
+        externalContract: { inner: { artifact } } }),
+    ];
+    const prelude = createBuildSessionPrelude({ allInputs: inputs, builderOptions: {}, entryDeletes: new Set(),
+      dynamicChunkInputs: [], trailingDisposalInputs: [], dynamicChunkVars: [], loopEntryVars: [],
+      pendingTokenContainerTransferNfts: [], externalCallUtxoGroups: groups, lowLevelCallUtxoGroups: [],
+    } as unknown as Parameters<typeof createBuildSessionPrelude>[0]);
+    const marker: Output = { to: Uint8Array.of(0x51), amount: 1200n,
+      token: { category, amount: 0n, nft: { capability: 'mutable', commitment: '03' } } };
+    const outputs = Array.from({ length: 9 }, () => ({ to: Uint8Array.of(0x51), amount: 1000n } as Output));
+    outputs[8] = marker;
+    const builder = {
+      outputs, addOutput(output: Output) { outputs.push(output); return this; },
+    } as unknown as TransactionBuilder;
+    for (const part of [0, 1]) prelude.addReturnOutput(builder, `external-call:1:${part}`, {
+      to: Uint8Array.of(0x51), amount: 800n,
+      token: { category, amount: 0n, nft: { capability: 'none', commitment: `0${part + 1}` } },
+    });
+    expect(outputs[8]).toBe(marker);
+    expect(outputs[10].token).toBeUndefined();
+    expect(outputs[11].token?.nft?.commitment).toBe('01');
+    expect(outputs[12].token?.nft?.commitment).toBe('02');
+  });
+
+  it('refuses a late return redirect onto an identity pad before another owned output', () => {
+    const owned = { to: Uint8Array.of(0x51), token: { nft: { capability: 'mutable', commitment: '01' } } };
+    const marker = { to: Uint8Array.of(0x6a) };
+    const outputs = [{ to: Uint8Array.of(0x51) }, owned, marker];
+    expect(redirectViewTailOffOpReturn({ placedIndex: 2, plannedIndex: 0, returnIndex: 1,
+      suffixStart: 2, outputs, reservedIndices: new Set([0]),
+    })).toBeUndefined();
+    expect(outputs[1]).toBe(owned);
+    expect(outputs[2]).toBe(marker);
+  });
+
+  it.each([1, 2])('reserves same-index identities before a shared leaf return of width %s', (width) => {
+    const layout = { blockSize: 3, slots: [
+      { kind: 'master' as const, offset: 0 }, { kind: 'dataNft' as const, offset: 1 },
+      { kind: 'returnEvent' as const, offset: 2 },
+    ] };
+    const artifact = { abi: [{ name: 'size', writesState: false }] } as unknown as Artifact;
+    const groups = [
+      group({ categoryId: 'ab', functionName: 'size', blockLayout: layout,
+        blockInputs: { length: 7 }, returnEventInBlock: true, returnOutputIndex: 5,
+        externalContract: { inner: { artifact } } }),
+      group({ categoryId: 'ab', functionName: 'size', sharedGroupIndex: 0, blockLayout: layout,
+        blockInputs: { length: 0 }, returnOutputIndex: 10,
+        externalContract: { inner: { artifact } },
+        ...(width > 1 && { loopReturnCommitments: Array.from({ length: width }, () => Uint8Array.of(1)) }) }),
+    ];
+    const reservations = new Set([10, 12]);
+    const assigned = assignPhysicalReturnIndices(groups, () => 3, -1, { reservedIndices: reservations });
+    expect(assigned.get(0)).toBe(5);
+    expect(assigned.get(1)).toBe(width === 1 ? 11 : 13);
+    for (let offset = 0; offset < width; offset += 1) {
+      expect(reservations.has(assigned.get(1)! + offset)).toBe(false);
+    }
+    groups[1].returnOutputIndex = assigned.get(1);
+    expect(assignPhysicalReturnIndices(groups, () => 3, -1, { reservedIndices: reservations })).toEqual(assigned);
+  });
+
   it('retains an output index through deterministic P2SH32 reconstruction', () => {
     const current = hexToBin(`aa20${'11'.repeat(32)}87`);
     const expected = hexToBin(`aa20${'22'.repeat(32)}87`);
@@ -3679,7 +3761,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(binToHex(legacyJobEventsPersistUpdateDigestLock(
       'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0',
     ) ?? new Uint8Array())).toBe(
-      'aa20618aeef2a12e8f9dcb793a856b66176776fa5bbc7b02fe77cd5aca369d6c4fd687',
+      'aa20cd5ee4db470812bbbd42b9f027c7426adc534996970b937fc1ae07461dd95e3787',
     );
     const entryLock = hexToBin('aa2047362c5b4a0c597c12b75c90f68f6933b2e86c63eb6ce7ed46e083407361b7b587');
     const persistVLock = hexToBin('aa20a8ff6e94d0a3199b8457333ae32c3f788fb420b10695af6f27e92a793e8af34987');

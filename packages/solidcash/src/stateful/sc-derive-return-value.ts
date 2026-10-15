@@ -10,6 +10,7 @@ import {
   decodePushdataValue,
   encodePushdataValue,
   getDefaultStateValue,
+  hasDataNftIndexTags,
   type AbiFunction,
   type Artifact,
   type StateLayout,
@@ -66,13 +67,14 @@ type LogicalReturnContext = {
   args: readonly FunctionArgument[];
 };
 
-function sameStatePrefixThroughField(
+/** @internal Compare the encoded state prefix a delegated field read consumes. */
+export function sameStatePrefixThroughField(
   owner: StateLayout, implementation: StateLayout, nftIndex: number, fieldIndex: number,
 ): boolean {
-  // The commitment codec prefixes every data NFT with an index only in multi-NFT layouts.
-  // A 1-to-2 NFT extension therefore changes the wire format even at NFT 0, field 0.
-  if ((owner.dataNftCount > 1) !== (implementation.dataNftCount > 1)) return false;
-  const wireNftCount = owner.dataNftCount > 1 ? 2 : 1;
+  // A delegated read consumes the same header and field prefix, even when the owner carries additional NFTs.
+  // Explicitly tagged singletons share that header with ordinary multi-NFT schemas; legacy singletons do not.
+  if (hasDataNftIndexTags(owner) !== hasDataNftIndexTags(implementation)) return false;
+  const wireNftCount = hasDataNftIndexTags(owner) ? 2 : 1;
   const prefixDigest = (layout: StateLayout): string => childStateLayoutDigest({
     variables: layout.variables.filter((variable) => variable.nftIndex < nftIndex
       || (variable.nftIndex === nftIndex && variable.fieldIndex <= fieldIndex)),

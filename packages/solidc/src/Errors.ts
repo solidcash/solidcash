@@ -60,6 +60,7 @@ export type SolidcDiagnosticCode =
   | 'MESSAGE_BUS_REQUIRED'
   | 'FRAMED_CODEGEN_UNAVAILABLE'
   | 'FRAMED_UPGRADE_LAYOUT'
+  | 'STATE_RECORD_CAPACITY'
   // A Solidity-compat low-level call whose payload arguments the covenant cannot bind to the co-spent callee.
   | 'COMPAT_CALL_UNBOUND_ARGUMENTS'
   // A transaction-signature check left in an invoked subroutine, whose covered bytecode no SDK signature matches.
@@ -992,6 +993,14 @@ export class DirectInvokedStaleReadError extends SolidCashError {
   constructor(public node: Node, entry: string, written: string, callee: string) {
     super(node, `a read of \`${entry}\` in the invoked function '${callee}' after the write of \`${written}\` is not `
       + 'supported on the direct convention: read it before the write, or into a local');
+  }
+}
+
+/** An unresolved indirect target may read a sorted entry whose pending value lives in the caller's registers. */
+export class DirectIndirectStaleReadError extends SolidCashError {
+  constructor(public node: Node, written: string) {
+    super(node, `an indirect call with unresolved state-read effects after the write of \`${written}\` is not `
+      + 'supported on the direct convention: read it before the write, or use an inlined internal getter');
   }
 }
 

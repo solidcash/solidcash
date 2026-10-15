@@ -338,6 +338,7 @@ export function assertKernelReadCarrierAuthenticatedRows(
 /** Fill missing trailing internal ABI slots with protocol defaults. */
 export function defaultInternalFunctionArg(input: { name: string; type?: string }): FunctionArgument {
   const { name, type = '' } = input;
+  if (name === '__internal__dynamicChunkOutputBase' || name === '__internal__graphSelfIdentityInput') return -1n;
   if (kernelEntryJournalRecordSegmentIndex(name) !== undefined) {
     return encodeKernelEntryJournalRecordSegment([]);
   }

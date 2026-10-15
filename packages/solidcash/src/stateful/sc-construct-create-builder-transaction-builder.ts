@@ -13,11 +13,13 @@ import { isDisposableAlignmentPad } from './value-chunk-band-helpers.js';
 import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
 import { groupIndexForExternalCallSlot } from './physical-external-call.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
+import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import {
   compilerRouteUsesPhysicalWrapper,
   selectedMessageBusResourceMetadata,
 } from './message-bus-resource-routing.js';
 import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
+import { resolveMaterializedDynamicWriteOutputBase } from './stb-reconcile-dynamic-chunk-output-witnesses.js';
 import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import type { ExternalCallUtxoGroup, EntryNftInfo, TokenContainerInfo } from './external-call-utxo-group.js';
 import {
@@ -295,6 +297,41 @@ export function constructCreateBuilderTransactionBuilder(
     }),
   });
   const firstRootDynamicChunk = dynamicReadChunkInputs[0] ?? dynamicChunkInputs[0];
+  const selfIdentityArgumentIndex = abiFunction?.inputs.findIndex((input) =>
+    input.name === '__internal__graphSelfIdentityInput') ?? -1;
+  const refreshTopLevelSelfIdentityInput = selfIdentityArgumentIndex < 0 || !usesOrdinarySelfIdentity(abiFunction)
+    || compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction)
+    ? undefined
+    : (materialized?: TransactionBuilder): void => {
+      if (logicalIdentity === undefined) {
+        finalArgs[selfIdentityArgumentIndex] = -1n;
+        return;
+      }
+      const target = logicalIdentity.anchor;
+      const localIndex = materialized
+        ? materialized.inputs.findIndex((input) => input.txid.toLowerCase() === target.txid.toLowerCase()
+          && input.vout === target.vout)
+        : builder.findInputIndexByOutpoint(target);
+      if (localIndex < 0) throw new Error('Selected own CREATE identity anchor is absent from the finalized transaction');
+      finalArgs[selfIdentityArgumentIndex] = BigInt(localIndex + (overrides?.blockBase ?? 0));
+    };
+  const dynamicOutputArgumentIndex = abiFunction?.inputs.findIndex((input) =>
+    input.name === '__internal__dynamicChunkOutputBase') ?? -1;
+  const refreshTopLevelDynamicChunkOutputBase = dynamicOutputArgumentIndex < 0
+    || overrides?.omitLocalFeeTail === true
+    || compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction)
+    ? undefined
+    : (materialized?: TransactionBuilder): void => {
+      if (materialized === undefined || abiFunction === undefined) return;
+      // A returned event can precede a later void callee. The complete materialized run, rather than the
+      // return index or the old input coordinate, identifies the root's rewritten chunks.
+      finalArgs[dynamicOutputArgumentIndex] = BigInt(resolveMaterializedDynamicWriteOutputBase({
+        route: abiFunction, stateLayout, contract: host.inner, categoryId: host.categoryId,
+        outputs: materialized.outputs, start: 0, end: materialized.outputs.length,
+        allowProvisionalChunks: true,
+        selectedDynamicWrites: new Set(abiFunction.dynamicWrites ?? []),
+      }));
+    };
   const selectedRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments;
   const dynamicWriteActive = selectedRows === undefined
     ? dynamicChunkVars.length > 0 || (abiFunction?.dynamicWrites?.length ?? 0) > 0
@@ -579,7 +616,8 @@ export function constructCreateBuilderTransactionBuilder(
     }
     return changed;
   };
-  if (refreshPhysicalDelegateInputIndex || refreshTopLevelDynamicChunkInputBase
+  if (refreshPhysicalDelegateInputIndex || refreshTopLevelSelfIdentityInput
+    || refreshTopLevelDynamicChunkInputBase || refreshTopLevelDynamicChunkOutputBase
     || topLevelReturnWitnessGroups.length > 0 || abiFunction !== undefined) {
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_FORWARD_ARGS === '1') {
@@ -592,7 +630,9 @@ export function constructCreateBuilderTransactionBuilder(
     }
     builder._setMasterUnlockerRefresher((materialized) => {
       if (refreshPhysicalDelegateInputIndex) refreshPhysicalDelegateInputIndex(builder, materialized);
+      refreshTopLevelSelfIdentityInput?.(materialized);
       refreshTopLevelDynamicChunkInputBase?.(materialized);
+      refreshTopLevelDynamicChunkOutputBase?.(materialized);
       refreshTopLevelExternalCallInputIndices();
       refreshTopLevelReturnWitnesses(materialized);
       refreshTopLevelPredOutWitnesses(materialized);

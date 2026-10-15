@@ -16,7 +16,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 
 /** Stable digest of the physical state geometry used by child-genesis recipes. */
 export function childStateLayoutDigest(
-  layout: Pick<StateLayout, 'variables' | 'dataNftCount' | 'commitmentLimit' | 'structs' | 'collections'>,
+  layout: Pick<StateLayout, 'variables' | 'dataNftCount' | 'commitmentLimit' | 'taggedDataNfts' | 'structs' | 'collections'>,
 ): string {
   const definitions = new Map((layout.structs ?? []).map((definition) => [definition.name, definition]));
   const reachable = new Map<string, StructDefinitionInfo>();
@@ -66,6 +66,7 @@ export function childStateLayoutDigest(
       })),
     ...(collections.length > 0 && { collections }),
     ...(structs.length > 0 && { structs }),
+    ...(layout.taggedDataNfts === true && { taggedDataNfts: true }),
   };
   return binToHex(sha256(utf8ToBin(JSON.stringify(canonical))));
 }
@@ -137,8 +138,8 @@ function bindMintingAuthorityLock(masterLock?: Uint8Array): Script {
     // [index, tail, head], the whole unlocking starting as the tail.
     Op.OP_DUP, Op.OP_INPUTBYTECODE, Op.OP_0,
     Op.OP_BEGIN,
-    // A head too short for a push header takes the tail back and is cut to 512 bytes again.
-    Op.OP_SIZE, Op.OP_3, Op.OP_LESSTHAN,
+    // A head too short for the largest push header takes the tail back and is cut to 512 bytes again.
+    Op.OP_SIZE, Op.OP_5, Op.OP_LESSTHAN,
     Op.OP_IF,
     Op.OP_SWAP, Op.OP_CAT,
     Op.OP_SIZE, encodeInt(512n), Op.OP_GREATERTHAN,
@@ -148,8 +149,10 @@ function bindMintingAuthorityLock(masterLock?: Uint8Array): Script {
     Op.OP_1, ...readUnsigned,
     Op.OP_DUP, encodeInt(75n), Op.OP_GREATERTHAN,
     Op.OP_IF,
-    Op.OP_DUP, encodeInt(78n), Op.OP_LESSTHAN,
-    Op.OP_IF, encodeInt(75n), Op.OP_SUB, ...readUnsigned,
+    Op.OP_DUP, encodeInt(79n), Op.OP_LESSTHAN,
+    // PUSHDATA1/2/4 use one, two and four length bytes; the opcode difference gives 1/2/3.
+    Op.OP_IF, encodeInt(75n), Op.OP_SUB,
+    Op.OP_DUP, Op.OP_3, Op.OP_NUMEQUAL, Op.OP_ADD, ...readUnsigned,
     Op.OP_ELSE, encodeInt(79n), encodeInt(97n), Op.OP_WITHIN, Op.OP_VERIFY, Op.OP_0,
     Op.OP_ENDIF,
     Op.OP_ENDIF,
@@ -1370,6 +1373,11 @@ export function isMultiDataNftLayout(layout: StateLayout): boolean {
   return layout.dataNftCount > 1;
 }
 
+/** Whether the record wire format includes an authenticated NFT-index prefix. */
+export function hasDataNftIndexTags(layout: StateLayout): boolean {
+  return layout.taggedDataNfts === true || isMultiDataNftLayout(layout);
+}
+
 /**
  * The nftIndex tag prepended to a multi-data-NFT commitment: the index encoded as a pushdata int
  * (1 byte for indices 0-16). Identical to how the compiler stamps and verifies it on-chain.
@@ -1392,7 +1400,7 @@ export function buildPushdataCommitment(
     .sort((a, b) => a.fieldIndex - b.fieldIndex);
 
   const parts: Uint8Array[] = [];
-  if (isMultiDataNftLayout(layout)) {
+  if (hasDataNftIndexTags(layout)) {
     parts.push(encodeNftIndexTag(nftIndex));
   }
   for (const field of fieldsForNft) {
@@ -1447,7 +1455,7 @@ export function parsePushdataCommitment(
   let offset = 0;
 
   // Multi-data-NFT commitments carry a leading nftIndex tag - verify and skip it before the fields.
-  if (isMultiDataNftLayout(layout)) {
+  if (hasDataNftIndexTags(layout)) {
     const { value: tag, bytesConsumed } = decodePushdataValue(bytes, offset, 'bigint');
     if (Number(tag) !== nftIndex) {
       throw new Error(`parsePushdataCommitment: nftIndex tag mismatch for NFT index ${nftIndex}: got ${tag}`);

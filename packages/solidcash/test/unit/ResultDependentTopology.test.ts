@@ -1,6 +1,9 @@
 import { binToHex } from '@bitauth/libauth';
-import type { Artifact, ExternalCallAbi, ExternalCallExpression } from '@solidcash/utils';
+import {
+  encodeBlockOracleCommitment, type Artifact, type ExternalCallAbi, type ExternalCallExpression,
+} from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
+import { bindBlockOracleLock } from '../../src/oracle/block-oracle-lock.js';
 import {
   AtomicMessageBusComposition, compose, composeDiscoveredGraph, type PreparedAtomicMessageBusCall,
 } from '../../src/message-bus/compose.js';
@@ -77,6 +80,42 @@ function fixture(): ResultPropagationContext & {
 }
 
 describe('result-dependent topology propagation', () => {
+  it('selects time-gated delegate calls from the bound oracle commitment', async () => {
+    const ctx = fixture();
+    const root = ctx.descriptors[0];
+    const artifact = { ...root.artifact, usesBlockOracle: true, abi: [{ ...root.artifact.abi[0]!,
+      resultConsumers: undefined,
+      externalCalls: [{ ...sources[1]!, condition: {
+        kind: 'binary', operator: '>=',
+        left: { kind: 'state', name: '__block_timestamp', type: 'uint256' },
+        right: { kind: 'literal', type: 'uint256', value: '100' },
+      } }],
+    }] } as Artifact;
+    const oracleLock = Uint8Array.of(0x51, 0x52);
+    const unrelatedLock = Uint8Array.of(0x53);
+    let timestamp = 99n;
+    const requested: string[] = [];
+    Object.assign(root.contract.inner, {
+      blockOracleLock: unrelatedLock,
+      provider: { getUtxosForLockingBytecode: async (lock: Uint8Array) => {
+        requested.push(binToHex(lock));
+        return [{ token: { nft: { capability: 'mutable', commitment: binToHex(encodeBlockOracleCommitment(
+          new Uint8Array(20), { number: 1n, timestamp, difficulty: 0n, size: 0n, totalFees: 0n,
+            coinbase: new Uint8Array() },
+        )) } } }];
+      } },
+    });
+    bindBlockOracleLock(artifact, oracleLock);
+    const call = { ...root, executionArtifact: artifact };
+    const discover = (): ReturnType<typeof discoverInitialCallTopology> => discoverInitialCallTopology(
+      call, new Uint8Array(),
+      async () => ({ __block_timestamp: 0n }));
+    expect((await discover()).calls.map((item) => item.callsiteId)).toEqual([undefined]);
+    timestamp = 100n;
+    expect((await discover()).calls.map((item) => item.callsiteId)).toEqual([undefined, 1]);
+    expect(requested).toEqual(['5152', '5152']);
+  });
+
   it('does not prune a producer-result require from a provisional false seed', async () => {
     const ctx = fixture();
     const root = ctx.descriptors[0];

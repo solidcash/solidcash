@@ -38,6 +38,7 @@ import { settlement } from './value-chunk-persist.js';
 
 export type OrchestrateCreateBuilderNestedComposeCallsiteHost = {
   readonly categoryId: string;
+  readonly sharedBlockOracleLocks: Set<string>;
   readonly inner: any;
   readonly signer: any;
   readonly logicalNonceSigner: any;
@@ -469,6 +470,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     const assembledSlots = await assembleCreateBuilderNestedComposeSlotsImpl(
       {
         inner: host.inner,
+        sharedBlockOracleLocks: host.sharedBlockOracleLocks,
         signer: host.signer,
         logicalNonceSigner: host.logicalNonceSigner,
         encodeStoredElementSource: (...a: any[]) => host.encodeStoredElementSource(...a),

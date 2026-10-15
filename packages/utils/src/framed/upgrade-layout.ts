@@ -10,6 +10,7 @@
  */
 
 import type { CollectionInfo, StateLayout, StateVariableInfo, StructDefinitionInfo } from '../artifact.js';
+import { hasDataNftIndexTags } from '../state.js';
 
 /** Whether a new layout may replace an old one behind the same records, or the first declaration that stops it. */
 export type UpgradeLayoutVerdict =
@@ -107,6 +108,9 @@ function collectionChange(old: CollectionInfo, next: CollectionInfo | undefined)
  * that stops it: a kept field, then an added one, then a struct, then a collection.
  */
 export function readUpgradeLayoutVerdict(old: StateLayout, next: StateLayout): UpgradeLayoutVerdict {
+  if (old.dataNftCount > 0 && hasDataNftIndexTags(old) !== hasDataNftIndexTags(next)) {
+    return { ok: false, name: '(records)', reason: 'changes the NFT-index tag encoding of existing records' };
+  }
   const nextFields = new Map(next.variables.map((variable) => [variable.name, variable]));
   for (const variable of inRecordOrder(old)) {
     const reason = fieldChange(variable, nextFields.get(variable.name));

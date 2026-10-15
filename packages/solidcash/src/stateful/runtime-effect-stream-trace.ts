@@ -54,6 +54,7 @@ function parseEventRecord(body: Uint8Array): RuntimeEffectStreamRecord | undefin
  */
 export function extractRuntimeEffectStreamRuns(
   trace: readonly AuthenticationProgramStateCommon[],
+  options: { includeCompactRecords?: boolean } = {},
 ): RuntimeEffectStreamRun[] {
   const runs = new Map<number, { remaining: number; records: RuntimeEffectStreamRecord[] }>();
   for (const state of trace) {
@@ -68,6 +69,25 @@ export function extractRuntimeEffectStreamRuns(
     }
     if (stack[stack.length - 7]!.length !== 32) continue;
     const index = stack[stack.length - 1]!;
+    // The compact verifier holds [owner, base, remaining, index, commitment, lock35, index]. Its earlier
+    // records remain compact commitments on the alt stack, so learn only this exact record and re-probe to
+    // reach the next. Callers which resize a whole chunked run retain the complete-run-only default.
+    const compactLock = stack[stack.length - 2]!;
+    if (options.includeCompactRecords && compactLock.length === 35
+      && compactLock[0] === 0xaa && compactLock[1] === 0x20 && compactLock[34] === 0x87
+      && binToHex(index) === binToHex(stack[stack.length - 4]!)) {
+      const base = Number(decodeScriptNumber(stack[stack.length - 6]!));
+      const remaining = Number(decodeScriptNumber(stack[stack.length - 5]!));
+      const outputIndex = Number(decodeScriptNumber(index));
+      const commitment = stack[stack.length - 3]!;
+      if (Number.isSafeInteger(base) && base >= 0 && Number.isSafeInteger(remaining) && remaining > 0
+        && Number.isSafeInteger(outputIndex) && outputIndex === base + remaining - 1 && commitment.length <= 128) {
+        runs.set(outputIndex, { remaining: 1, records: [{
+          commitment: binToHex(commitment), lockingBytecode: Uint8Array.from(compactLock),
+        }] });
+      }
+      continue;
+    }
     if (binToHex(index) !== binToHex(stack[stack.length - 3]!)) continue;
     const current = parseEventRecord(stack[stack.length - 2]!);
     if (current === undefined) continue;
@@ -101,6 +121,7 @@ const streamVmCache = new WeakMap<NetworkProvider, {
  */
 export function traceRuntimeEffectStreamRuns(
   provider: NetworkProvider, program: StreamProbeProgram,
+  options: { includeCompactRecords?: boolean } = {},
 ): RuntimeEffectStreamRun[] {
   let cached = streamVmCache.get(provider);
   if (cached === undefined) {
@@ -122,7 +143,7 @@ export function traceRuntimeEffectStreamRuns(
   cached.states.length = 0;
   try {
     cached.vm.evaluate(program);
-    return extractRuntimeEffectStreamRuns(cached.states);
+    return extractRuntimeEffectStreamRuns(cached.states, options);
   } finally {
     cached.states.length = 0;
   }

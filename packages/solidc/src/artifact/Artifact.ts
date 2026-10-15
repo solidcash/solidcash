@@ -35,6 +35,7 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
+import { stateNftPackingLimit } from '../semantic/maxEncodedSize.js';
 import { hasEffectiveCallValue, hasExternalCallValueEffect } from '../semantic/branchOps.js';
 import { externalResultEncoding } from '../semantic/ExternalResultEncoding.js';
 import {
@@ -3114,12 +3115,23 @@ function buildFunctionAbiMetadata(
     // set from the exact producerResult components which code generation and the SDK evaluate.
     const producerByCallsite = new Map(slots.map((slot) => [slot.slotIndex, slot] as const));
     const result = new Map<string, ExternalResultConsumerAbi>();
+    const canonicalRecipes = new Map<string, WeakMap<ExternalCallExpression, ExternalCallExpression>>();
     const canonicalize = (
       expression: ExternalCallExpression,
       consumerCallsiteId: number,
       lane: number | 'condition' | 'iterationDomain',
       dominanceCallsiteId = consumerCallsiteId,
     ): ExternalCallExpression => {
+      // A reconstructed local can share its earlier values through many fields. Preserve that DAG while
+      // normalizing, without reusing a producer's validation or dependency edges in another consumer lane.
+      const context = `${consumerCallsiteId}:${lane}:${dominanceCallsiteId}`;
+      let recipes = canonicalRecipes.get(context);
+      if (recipes === undefined) {
+        recipes = new WeakMap();
+        canonicalRecipes.set(context, recipes);
+      }
+      const cached = recipes.get(expression);
+      if (cached !== undefined) return cached;
       const rewrite = (child: ExternalCallExpression | undefined): ExternalCallExpression | undefined =>
         child && canonicalize(child, consumerCallsiteId, lane, dominanceCallsiteId);
       const rewriteSource = (source: ExternalCallArgSource | undefined): ExternalCallArgSource | undefined =>
@@ -3149,7 +3161,10 @@ function buildFunctionAbiMetadata(
         ...(expression.args && { args: expression.args.map((child) => rewrite(child)!) }),
         ...(expression.statements && { statements: expression.statements.map(rewriteStatement) }),
       };
-      if (normalized.kind !== 'externalCall' && normalized.kind !== 'producerResult') return normalized;
+      if (normalized.kind !== 'externalCall' && normalized.kind !== 'producerResult') {
+        recipes.set(expression, normalized);
+        return normalized;
+      }
       const producerCallsiteId = normalized.callsiteId;
       const producer = producerCallsiteId === undefined
         ? undefined : producerByCallsite.get(producerCallsiteId);
@@ -3177,13 +3192,15 @@ function buildFunctionAbiMetadata(
         producerSourceCallsiteId,
         resultIndex,
       });
-      return {
+      const producerResult: ExternalCallExpression = {
         kind: 'producerResult',
         callsiteId: producerCallsiteId,
         sourceCallsiteId: producerSourceCallsiteId,
         resultIndex,
         ...(normalized.type && { type: normalized.type }),
       };
+      recipes.set(expression, producerResult);
+      return producerResult;
     };
     const canonicalizeSources = (
       sources: ExternalCallArgSource[] | undefined,
@@ -3888,6 +3905,9 @@ function buildFunctionAbiMetadata(
         }
         return {
           callsiteId: ec.slotIndex,
+          ...(compilerOptions.composition !== 'framed' && ec.readonlyReturnBindingSelector !== undefined && {
+            readonlyReturnBinding: { version: 1 as const, selector: binToHex(ec.readonlyReturnBindingSelector) },
+          }),
           ...(ec.sourceEffectOrdinal !== undefined && { sourceEffectOrdinal: ec.sourceEffectOrdinal }),
           ...(ec.sourceCallNode && {
             sourceLocation: {
@@ -4482,6 +4502,8 @@ export function generateArtifact(
         ? Math.max(...contract.stateVariables.map((sv) => sv.nftIndex)) + 1
         : 0,
       commitmentLimit: compilerOptions.commitmentLimit ?? 128,
+      ...(compilerOptions.tagSingletonDataNfts === true && contract.stateVariables.length > 0
+        && contract.stateVariables.every((variable) => variable.nftIndex === 0) && { taggedDataNfts: true as const }),
       ...(contract.constructorDef && {
         constructorInputs: contract.constructorDef.parameters.map((p) => ({
           name: p.name,
@@ -4692,6 +4714,7 @@ export function generateArtifact(
         enforceFinalRequire: compilerOptions.enforceFinalRequire,
         allowUnsafeOperations: compilerOptions.allowUnsafeOperations,
         commitmentLimit: compilerOptions.commitmentLimit,
+        ...(compilerOptions.tagSingletonDataNfts === true && { tagSingletonDataNfts: true }),
         messageBus: compilerOptions.messageBus,
         // Published only when the source chose it: omitting it follows the mode, which `resolveAddressForm`
         // re-derives on the artifact, so an artifact that names no form reads back the one its compile used
@@ -4740,7 +4763,8 @@ function buildExternalInterfaceInfo(
       nftIndex++; fieldIndex = 0; currentNftUsed = 0;
     } else if (isStruct) {
       // Struct must be placed last in its NFT (same rule as SymbolTableTraversal)
-      if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+      if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex,
+        compilerOptions.tagSingletonDataNfts) && currentNftUsed > 0) {
         nftIndex++; fieldIndex = 0; currentNftUsed = 0;
       }
       variables.push({ name: sv.name, type: typeStr, nftIndex, fieldIndex });
@@ -4748,7 +4772,8 @@ function buildExternalInterfaceInfo(
       // Force next var to go to a new NFT since struct must be last
       nftIndex++; fieldIndex = 0; currentNftUsed = 0;
     } else {
-      if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+      if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex,
+        compilerOptions.tagSingletonDataNfts) && currentNftUsed > 0) {
         nftIndex++; fieldIndex = 0; currentNftUsed = 0;
       }
       variables.push({ name: sv.name, type: typeStr, nftIndex, fieldIndex });
@@ -4789,6 +4814,7 @@ function buildExternalInterfaceInfo(
       variables,
       dataNftCount,
       commitmentLimit,
+      ...(compilerOptions.tagSingletonDataNfts === true && dataNftCount === 1 && { taggedDataNfts: true as const }),
       ...(collections && { collections }),
     },
     ...(ifaceFunctions.length > 0 && { abi: ifaceFunctions }),

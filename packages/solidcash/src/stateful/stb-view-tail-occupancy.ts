@@ -8,6 +8,7 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
+import { sameIndexScidIdentityInputIndices } from './same-index-scid.js';
 import {
   isOpReturnLockingBytecode,
   redirectViewTailOffOpReturn,
@@ -64,8 +65,10 @@ export function writeViewTailsAfterWriterOccupancy(
 ): void {
   const tailReturns = host.tailReturnEventOutputs();
   if (tailReturns.length === 0) return;
+  const fixedIdentityIndices = sameIndexScidIdentityInputIndices(host.allInputs);
   const suffixChunkCountForPack = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
   const packOptions: ViewTailPackOptions = {
+    reservedIndices: fixedIdentityIndices,
     band: host.getChunkableValueWriteBand(),
     suffixStart: suffixChunkCountForPack > 0
       ? builder.outputs.length - suffixChunkCountForPack - 1
@@ -94,7 +97,7 @@ export function writeViewTailsAfterWriterOccupancy(
   const suffixStart = suffixChunkCount > 0
     ? builder.outputs.length - suffixChunkCount - 1
     : builder.outputs.length;
-  const reserved = new Set<number>();
+  const reserved = new Set<number>(fixedIdentityIndices);
   for (const [index, input] of host.allInputs.entries()) {
     const cap = input.token?.nft?.capability;
     if (cap === 'minting' || cap === 'mutable') reserved.add(index);
@@ -106,7 +109,7 @@ export function writeViewTailsAfterWriterOccupancy(
     })
     : [];
   const placements = new Map(planned);
-  if (padDestinations.length === tailReturns.length) {
+  if (padDestinations.length === tailReturns.length && fixedIdentityIndices.size === 0) {
     const orderedIdentities = tailReturns.map((event) => event.identity);
     for (const [offset, identity] of orderedIdentities.entries()) {
       const plannedIndex = planned.get(identity) ?? padDestinations[offset];
@@ -184,6 +187,7 @@ export function writeViewTailsAfterWriterOccupancy(
       plannedIndex: group?.plannedReturnOutputIndex,
       returnIndex: group?.returnOutputIndex,
       suffixStart: separator,
+      reservedIndices: fixedIdentityIndices,
       outputs: builder.outputs,
     });
     if (redirected === undefined) {
@@ -217,6 +221,10 @@ export function writeViewTailsAfterWriterOccupancy(
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
       }
       outputIndex = nextIndex;
+    }
+    // A late separator redirect must retain the input-bearing identity reservations too.
+    if (fixedIdentityIndices.has(outputIndex)) {
+      throw new Error('View return redirection collides with an input-bearing identity output.');
     }
     builder.outputs[outputIndex] = output;
     returnOutputRefs?.set(event.identity, output);

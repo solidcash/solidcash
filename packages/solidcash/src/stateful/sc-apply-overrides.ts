@@ -144,7 +144,7 @@ export async function applyOverrides(
   const validatePreparedFrames = (): void => {
     if (host.parentContract && host.functionArgs) {
       const selected = host.compilerRoute?.abiFunction ?? host.selectedAbiFunction();
-      if (selected) host.parentContract._validateAbiFrame(selected, host.functionArgs, {
+      if (selected) host.functionArgs = host.parentContract._validateAbiFrame(selected, host.functionArgs, {
         implicitMsgSenderCategory: host.compilerRoute?.abiFunction.name === '__message_bus1',
       });
     }
@@ -153,7 +153,13 @@ export async function applyOverrides(
       const callArgs = (call.compilerRoute?.args ?? call.args) as FunctionArgument[];
       const selected = call.compilerRoute?.abiFunction
         ?? call.contract._resolveCallAbi(call.functionName, callArgs);
-      if (selected) call.contract._validateAbiFrame(selected, callArgs);
+      if (selected) {
+        const normalized = call.contract._validateAbiFrame(selected, callArgs);
+        // Keep the validated frame for materialization too; a delegate's semantic arguments do not pass
+        // through its proxy forwarder's _createBuilder argument normalization.
+        if (call.compilerRoute) call.compilerRoute.args = normalized;
+        else call.args = normalized;
+      }
     }
   };
   validatePreparedFrames();

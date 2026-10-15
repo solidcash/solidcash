@@ -4,7 +4,7 @@
  * discovery, bases/unlockers, direct-call arg witnesses, and outState reads.
  */
 
-import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   encodePushdataValue,
@@ -20,8 +20,10 @@ import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import type { ExternalCallInfo } from './StatefulContract.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
+import { ensureOrdinarySelfIdentityBand } from './ordinary-self-identity.js';
 import { findDeploymentByAddressValue } from './deployment-registry.js';
 import {
+  deriveValueChunkProducerChildPath,
   type ValueChunkProducerPathDisposition,
 } from './ValueChunkProducerIdentity.js';
 import {
@@ -161,6 +163,12 @@ export async function orchestrateCreateBuilderExternalCalls(
     isComputedBlockhashKey,
   } = params;
   const externalOutStateUtxoGroups = params.externalOutStateUtxoGroups;
+  const sharedBlockOracleLocks = new Set<string>();
+  if (host.inner.blockOracleLock !== undefined
+    && abiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')) {
+    sharedBlockOracleLocks.add(binToHex(host.inner.blockOracleLock));
+  }
+
 
   // Handle external function calls (cross-contract calls via interfaces)
   const rootProducerPath: ValueChunkProducerPathDisposition = Object.freeze({
@@ -336,15 +344,16 @@ export async function orchestrateCreateBuilderExternalCalls(
         bAbiFunc,
         bBlockLayout,
         bHasLoop,
-        bDirectChunkValue,
-        bValueChunkOutputCount,
         bKeccak,
         bDynamicChunkInputs,
       } = nestedPrelude;
       const bSc = nestedPrelude.bSc as unknown as any;
+      let bDirectChunkValue = nestedPrelude.bDirectChunkValue;
+      let bValueChunkOutputCount = nestedPrelude.bValueChunkOutputCount;
 
       // Build B's full block inputs when B's function has entries/events/transfers
       let bBlockInputs: UnlockableUtxo[] | undefined;
+      let bStreamedEventPlan: ExternalCallUtxoGroup['streamedEventPlan'];
       // X13: set once B's block is confirmed to carry a funding input at its published returnEvent offset.
       let bReturnEventInBlock = false;
       const bCompilerInternalArgs: Record<string, FunctionArgument> = {};
@@ -361,6 +370,7 @@ export async function orchestrateCreateBuilderExternalCalls(
       if (bBlockLayout && callInfo) {
         const nestedBlockCtx = {
           bBlockInputs,
+          bStreamedEventPlan,
           bReturnEventInBlock,
           bCompilerInternalArgs,
           bPlannedEntryInserts,
@@ -374,6 +384,7 @@ export async function orchestrateCreateBuilderExternalCalls(
           bStatelayout,
           bRequiredNftIndices,
           bValueChunkOutputCount,
+          bDirectChunkValue,
           bKeccak,
           compilerRoute,
           callInfo,
@@ -386,6 +397,8 @@ export async function orchestrateCreateBuilderExternalCalls(
           {
             getUtxos: (address: string) => host.inner.provider.getUtxos(address),
             keysMatch: (...a: any[]) => host.keysMatch(...a),
+            encodeStoredElementSource: (...a: any[]) => host.callerContract._encodeStoredElementSource(...a),
+            sharedBlockOracleLocks,
             hasSigner: Boolean(host.signer),
             hasSharedFunder: () => Boolean(sharedFunderPool && sharedFunderPool.length > 0),
             shiftSharedFunder: () => sharedFunderPool?.shift(),
@@ -403,6 +416,9 @@ export async function orchestrateCreateBuilderExternalCalls(
         );
         bBlockInputs = nestedBlockCtx.bBlockInputs;
         bReturnEventInBlock = nestedBlockCtx.bReturnEventInBlock;
+        bStreamedEventPlan = nestedBlockCtx.bStreamedEventPlan;
+        bDirectChunkValue = nestedBlockCtx.bDirectChunkValue;
+        bValueChunkOutputCount = nestedBlockCtx.bValueChunkOutputCount;
       }
 
       // A direct view callee must co-spend the chunks it reads after its published block. The
@@ -500,6 +516,16 @@ export async function orchestrateCreateBuilderExternalCalls(
             bEntryLoopCollection,
             bValueChunkOutputCount,
             bDirectChunkValue,
+            ordinaryProducerPath: !compilerRoute && !ec.batchInvocations
+              && (ec.occurrence === 'once' || (ec.occurrence === 'conditional' && ec.maximumOccurrences === 1))
+              ? deriveValueChunkProducerChildPath({
+                parent: rootProducerPath,
+                parentExecutionLockingBytecode: host.inner.lockingBytecode,
+                parentSelector: abiFunction?.selector,
+                sourceCallsiteId: ec.callsiteId,
+                occurrenceIndex: 0,
+                sourceEffectOrdinal: ec.sourceEffectOrdinal,
+              }) : undefined,
             callInfo,
             ec,
             externalCategoryId,
@@ -508,6 +534,10 @@ export async function orchestrateCreateBuilderExternalCalls(
             returnProbeOnly: overrides?.returnProbeOnly,
           } as any,
         );
+        const materializedGroup = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];
+        if (bStreamedEventPlan && materializedGroup.sharedGroupIndex === undefined) {
+          materializedGroup.streamedEventPlan = bStreamedEventPlan;
+        }
         if (bDynamicChunkResources.length > 0 && bBlockInputs !== undefined) {
           const first = [...bDynamicChunkResources].sort((left, right) => left.blockSlot - right.blockSlot)[0]!;
           pendingDynamicChunkInputFills.push({
@@ -693,7 +723,16 @@ export async function orchestrateCreateBuilderExternalCalls(
         provider: host.inner.provider,
         physicalRootLockingBytecode: params.physicalSelfAddress,
         rootLogicalAddress: params.rootLogicalAddress,
+        blockOracle: host.inner.blockOracleLock !== undefined
+          && abiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')
+          ? { lock: host.inner.blockOracleLock,
+            inputIndex: (overrides?.blockBase ?? 0)
+              + abiFunction.blockLayout.slots.find((slot) => slot.kind === 'blockInfoOracle')!.offset }
+          : undefined,
         pendingAnchorFills,
+        ensureOrdinarySelfIdentityBand: (contract, selected) => ensureOrdinarySelfIdentityBand(
+          contract, selected, identityAnchors, identityAnchorBandByAddress,
+        ),
         selectorParamSlot,
         isComputedBlockhashKey,
         noteBhLocktime: (locktime) => { maxBhLocktime = Math.max(maxBhLocktime, locktime); },

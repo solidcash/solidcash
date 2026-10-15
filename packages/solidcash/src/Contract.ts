@@ -148,6 +148,22 @@ export function kernelRouteSignatureDensityReserveBytes(
   );
 }
 
+// Category, container and master scans visit the whole transaction, including sibling participants' bands.
+// Their cost does not follow this route's own effect count. Reserve a density length of eight bytes per
+// physical input/output slot (6,400 cost units), alongside the existing journal/effect/signature reserves.
+// This is a capacity allowance, not a proof of arbitrary handler cost: finalized-byte VM validation remains
+// authoritative, and the reserve cannot grow the complete unlocking script beyond the consensus byte limit.
+function kernelRouteScanDensityReserveBytes(
+  routeBytesWithoutReserve: number, existingReserve: number, physicalSlots: number, convention: string | undefined,
+): number {
+  if (convention !== 'kernel-row-loop') return existingReserve;
+  const desired = Math.max(existingReserve, physicalSlots * 8 - routeBytesWithoutReserve);
+  // A nonempty large reserve uses PUSHDATA2's three-byte header; conservatively leave that header even when
+  // a shorter reserve would use a smaller push. An already oversized route still fails its normal size gate.
+  const room = Math.max(0, ConsensusBch2026.maximumBytecodeLength - routeBytesWithoutReserve - 3);
+  return Math.min(room, KERNEL_ROUTE_DENSITY_MAX_RESERVE_BYTES, desired);
+}
+
 /** Attach the V5 canonical manifest to the root compiler-route frame, without changing its ABI arguments. */
 export function withCompilerRouteMessageEnvelope(
   unlocker: ContractUnlocker, messageEnvelope: Uint8Array, maximumInputBytes: number,
@@ -349,8 +365,8 @@ export class Contract<
       throw new Error('Salt must be 520 bytes or less');
     }
     this.category = this.options.category;
-    const providerLock = (this.provider as { blockOracleLock?: Uint8Array }).blockOracleLock;
-    this.blockOracleLock = (this.options as { blockOracleLock?: Uint8Array }).blockOracleLock ?? providerLock;
+    const providerLock = this.provider.blockOracleLock;
+    this.blockOracleLock = this.options.blockOracleLock ?? providerLock;
     if (this.blockOracleLock !== undefined && (artifact.blockOracleLockSlots?.length ?? 0) > 0) {
       bindBlockOracleLock(artifact, this.blockOracleLock);
     }
@@ -908,8 +924,8 @@ export class Contract<
       if (!(blob instanceof Uint8Array)) throw new Error('message-bus batch batchBlob must encode as bytes');
       const positionalPush = scriptToBytecode([blob]);
       // Preserve the historical positional frame without carrying the callManifest in the master. The
-      // artifact-specialized verifier inputs carry the canonical callManifest. Kernel journal routes retain a
-      // bounded payload in this already-discarded slot: their record scans can otherwise exceed BCH-2026's
+      // artifact-specialized verifier inputs carry the canonical callManifest. Kernel routes retain a
+      // bounded payload in this already-discarded slot: their transaction scans can otherwise exceed BCH-2026's
       // operation-density budget despite remaining below every absolute operation and script-size limit.
       const kernelJournalRoute = abiFunction.inputs.some(
         (input) => input.name === '__internal__kernelJournalAccessStreams',
@@ -917,28 +933,35 @@ export class Contract<
       const kernelJournalAccessIndex = abiFunction.inputs.findIndex(
         (input) => input.name === '__internal__kernelJournalAccessStreams',
       );
-      const reservedPositionalPush = scriptToBytecode([
-        new Uint8Array(kernelJournalRoute
-          ? kernelRouteDensityReserveBytes(args[kernelJournalAccessIndex])
-          : kernelRouteEffectDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention)
-            + kernelRouteSignatureDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention)),
-      ]);
+      const existingReserve = kernelJournalRoute
+        ? kernelRouteDensityReserveBytes(args[kernelJournalAccessIndex])
+        : kernelRouteEffectDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention)
+          + kernelRouteSignatureDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention);
       let cachedOrdinary: Uint8Array | undefined;
       let cachedCompilerRoute: Uint8Array | undefined;
+      let cachedReserveBytes: number | undefined;
       const generateUnlockingBytecode = (
         options: GenerateUnlockingBytecodeOptions,
       ): Uint8Array => {
         const ordinary = unlocker.generateUnlockingBytecode(options);
+        const reserveBytes = kernelRouteScanDensityReserveBytes(
+          ordinary.length + positionalPush.length, existingReserve,
+          options.transaction.inputs.length + options.transaction.outputs.length,
+          this.artifact.messageBus?.convention,
+        );
         // The base unlocker returns the same byte-array instance when its witnesses are transaction-independent.
         // Reuse the corresponding compiler-route frame too; otherwise every probe recopies the complete P2SH
         // redeem script merely to insert two small positional pushes.
-        if (ordinary === cachedOrdinary && cachedCompilerRoute !== undefined) return cachedCompilerRoute;
+        if (ordinary === cachedOrdinary && reserveBytes === cachedReserveBytes
+          && cachedCompilerRoute !== undefined) return cachedCompilerRoute;
+        const reservedPositionalPush = scriptToBytecode([new Uint8Array(reserveBytes)]);
         // The selector is always the minimal push4 frame (5 bytes). Duplicate
         // the executable blob here as the canonical positional second push;
         // the message-bus batch covenant proves this copy equals its decoded batchBlob arg. Both historical
         // positional items stay below the complete ABI frame, so the route can discard them uniformly before
         // any hidden argument is addressed.
         cachedOrdinary = ordinary;
+        cachedReserveBytes = reserveBytes;
         cachedCompilerRoute = new Uint8Array([
           ...ordinary.slice(0, 5),
           ...positionalPush,

@@ -2,7 +2,7 @@ import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   type Artifact, type AbiFunction, asmToBytecode, attachDecodedAccessors, buildEventNftCovenantScript,
-  computeEventNameHash,
+  computeEventNameHash, hasDataNftIndexTags,
 } from '@solidcash/utils';
 import {
   ContractFactory, type DeployedContract, type DeployContractOptions, selectGenesisFundingUtxo,
@@ -832,7 +832,7 @@ async function deployFramedProxyThroughFactory<TImpl extends Artifact>(
   }
   const handle = await framedProxyHandle(
     implementationArtifact, signer, deployment.proxy.categoryId, deployment.implementation.categoryId,
-    deployment.proxy.address,
+    deployment.proxy.address, proxyArtifact,
   );
   // The handle is the deployed contract a suite calls through, and the deployment's own record sits beside it as
   // `proxyDeployment`: a bare name on the handle belongs to the implementation's entries, so the record is nested
@@ -878,9 +878,11 @@ async function framedCallerFunding(signer: Signer): Promise<FramedProxyCallerFun
  */
 async function framedProxyHandle(
   implementationArtifact: Artifact, signer: Signer, proxyCategoryId: string,
-  implementationCategoryId: string, proxyAddress: Uint8Array,
+  implementationCategoryId: string, proxyAddress: Uint8Array, proxyArtifact: Artifact,
 ): Promise<ConnectedStatefulContract<Artifact>> {
   const { Contract } = await import('../Contract.js');
+  const { deployMaster } = await import('../framed/deploy/material.js');
+  const { framedValidator } = await import('solidc/runtime');
   const inner = new Contract(implementationArtifact, [] as never, {
     provider: signer.provider, category: hexToBin(proxyCategoryId),
   });
@@ -891,6 +893,13 @@ async function framedProxyHandle(
   if (typeof encoded === 'string') {
     throw new Error(`The framed proxy's own address is not encodable: ${encoded}`);
   }
+  if (proxyArtifact.stateLayout === undefined) throw new Error('A framed proxy must publish its state layout');
+  handle._framedStateOwner = {
+    layout: proxyArtifact.stateLayout,
+    masterLockingBytecode: deployMaster(
+      proxyArtifact, hexToBin(proxyCategoryId), framedValidator.buildValidatorProgram(),
+    ).lockingBytecode,
+  };
   handle._framedProxyImplementationCategory = implementationCategoryId;
   handle._framedProxyAddress = encoded.address;
   handle._signer = signer;
@@ -1131,13 +1140,19 @@ export function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact):
   const nextLayout = next.stateLayout;
   if (!prevLayout || !nextLayout) return;
   // upgradeProxy retargets the implementation without migrating the proxy's existing data NFTs.
-  // Even a 1 -> 2 increase changes NFT 0's commitment: multi-NFT layouts prefix every NFT with an
-  // index tag. A newly added NFT would also have no live UTXO to read or spend.
+  // An untagged singleton becoming a multi-NFT layout changes NFT 0's commitment: multiple records carry
+  // index tags. A newly added NFT would also have no live UTXO to read or spend.
   if (nextLayout.dataNftCount !== prevLayout.dataNftCount) {
     throw new Error(
       'Upgrade layout incompatibility: data NFT count changed '
       + `(old: ${prevLayout.dataNftCount}, new: ${nextLayout.dataNftCount}). `
       + 'Retargeting does not migrate existing proxy commitments or create data NFTs.',
+    );
+  }
+  if (prevLayout.dataNftCount > 0 && hasDataNftIndexTags(prevLayout) !== hasDataNftIndexTags(nextLayout)) {
+    throw new Error(
+      'Upgrade layout incompatibility: data NFT index-tag encoding changed. '
+      + 'Retargeting does not migrate existing proxy commitments.',
     );
   }
   const oldStructs = prevLayout.structs ?? [];

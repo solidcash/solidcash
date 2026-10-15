@@ -6,6 +6,7 @@ import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import { parseChunkCommitment } from '@solidcash/utils';
+import { followsProbeEquality } from '../stateful/probe-instruction-sequence.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { gateWouldApplyRepairsIfRecipe } from './materialization-mode.js';
@@ -209,10 +210,7 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
       beforeOperation: (unknownState) => {
         const state = unknownState as AuthenticationProgramStateCommon;
         const opcode = state.instructions[state.ip]?.opcode;
-        const nextOpcode = state.instructions[state.ip + 1]?.opcode;
-        const tightEquality = nextOpcode === Op.OP_EQUALVERIFY
-          || (nextOpcode === Op.OP_EQUAL
-            && state.instructions[state.ip + 2]?.opcode === Op.OP_VERIFY);
+        const tightEquality = followsProbeEquality(state);
         if (opcode !== Op.OP_OUTPUTTOKENCOMMITMENT
           || !tightEquality
           || state.controlStack.some((frame) => frame === false)

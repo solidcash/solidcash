@@ -7,10 +7,11 @@ import {
   type AbiFunction,
   buildEventNftCovenantScript,
   computeEventNameHash,
-  encodeNftIndexTag,
+  parsePushdataCommitment,
   type FunctionBlockLayout,
 } from '@solidcash/utils';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
+import { sameIndexScidIdentityInputIndices } from './same-index-scid.js';
 import type { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { addressToLockScript, calculateDust, scriptToLockingBytecode } from '../utils.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
@@ -84,13 +85,41 @@ export function repairNestedCalleeOutputs(
 ): void {
   // A callee's identity anchor is permissionless to spend, so consuming it without recreating it would destroy
   // that contract's logical identity. Recreate each one verbatim, mirroring the input ordering.
-  for (const anchor of host.externalIdentityAnchorUtxos) {
-    builder.addOutput({
-      to: anchor.unlocker.generateLockingBytecode(),
-      amount: anchor.satoshis,
-      token: anchor.token,
-    });
-  }
+  const fixedIdentityIndices = sameIndexScidIdentityInputIndices(host.allInputs);
+  const restoreIdentity = (anchor: UnlockableUtxo): void => {
+    const output = {
+      to: anchor.unlocker.generateLockingBytecode(), amount: anchor.satoshis, token: anchor.token,
+    };
+    // A direct leaf's foreign-input scan preserves own immutable NFTs at INPUTINDEX. Framed masters skip
+    // that scan, and callers/delegates admit their sender anchor at another coordinate. Claim only the
+    // compiler-described same-index identities before deferred output-only chunk runs.
+    const category = anchor.token?.category.toLowerCase();
+    const inputIndex = host.allInputs.findIndex((input) => (
+      input.txid.toLowerCase() === anchor.txid.toLowerCase() && input.vout === anchor.vout
+    ));
+    const index = fixedIdentityIndices.has(inputIndex) ? inputIndex : -1;
+    if (index < 0) {
+      builder.addOutput(output);
+      return;
+    }
+    while (builder.outputs.length < index) builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+    const existing = builder.outputs[index];
+    if (existing?.token !== undefined) {
+      if (existing.token.category.toLowerCase() === category
+        && existing.token.amount === anchor.token?.amount && existing.amount === anchor.satoshis
+        && existing.token.nft?.capability === anchor.token?.nft?.capability
+        && existing.token.nft?.commitment.toLowerCase() === anchor.token?.nft?.commitment.toLowerCase()
+        && binToHex(existing.to instanceof Uint8Array ? existing.to : addressToLockScript(existing.to))
+          === binToHex(output.to)) return;
+      throw new Error('Executing identity output collides with an independently owned covenant output.');
+    }
+    if (existing === undefined) builder.addOutput(output);
+    else {
+      builder.outputs[index] = output;
+      if (existing.amount > output.amount) builder.addOutput({ ...existing, amount: existing.amount - output.amount });
+    }
+  };
+  for (const anchor of host.externalIdentityAnchorUtxos) restoreIdentity(anchor);
   // Nested callee mapping INSERTs are not the
   // implementation's own delegated loop and must not sit in the impl trailing
   // band. Emit them after callee identity so the callee proxy's mutable-NFT
@@ -131,11 +160,7 @@ export function repairNestedCalleeOutputs(
     });
   }
   if (host.logicalIdentityUtxo) {
-    builder.addOutput({
-      to: host.logicalIdentityUtxo.unlocker.generateLockingBytecode(),
-      amount: host.logicalIdentityUtxo.satoshis,
-      token: host.logicalIdentityUtxo.token,
-    });
+    restoreIdentity(host.logicalIdentityUtxo);
   }
   debugAtomicOutputStage('identity-anchors');
 
@@ -475,50 +500,37 @@ export function repairNestedCalleeOutputs(
     };
   }
 
-  const commitmentBytes = (commitment: string | Uint8Array | undefined): Uint8Array => {
-    if (!commitment) return new Uint8Array();
-    return typeof commitment === 'string' ? hexToBin(commitment) : commitment;
-  };
-  // Rebuild of an immutable-only data NFT is not an identity. Restore the
-  // co-spent input commitment so the callee's UTXO==OUTPUT pin succeeds.
+  // Only a compiler-described immutable record may be restored. Its source is the
+  // group's exact data outpoint; category-wide scans also see collection nodes.
   for (const group of host.externalCallUtxoGroups) {
     if (!group.categoryId || !group.stateLayout) continue;
-    for (const nftIdx of group.requiredDataNftIndices) {
+    for (const [ordinal, nftIdx] of group.requiredDataNftIndices.entries()) {
       const nftVars = group.stateLayout.variables.filter((variable) => variable.nftIndex === nftIdx);
-      const taggedImmutable = nftVars.length > 0 && nftVars.every((variable) => variable.immutable);
-      const tag = encodeNftIndexTag(nftIdx);
-      const source = host.allInputs.find((input) => {
-        if (input.token?.category !== group.categoryId || input.token.nft?.capability !== 'mutable') return false;
-        const bytes = commitmentBytes(input.token.nft?.commitment);
-        return bytes.length >= tag.length && tag.every((byte, at) => bytes[at] === byte);
+      if (nftVars.length === 0 || !nftVars.every((variable) => variable.immutable)) continue;
+      const record = group.dataNftUtxos[ordinal];
+      const source = record && host.allInputs.find((input) =>
+        input.txid.toLowerCase() === record.txid.toLowerCase() && input.vout === record.vout);
+      if (!source?.token || source.token.category !== group.categoryId
+        || source.token.nft?.capability !== 'mutable' || !source.unlocker) continue;
+      const sourceHex = source.token.nft.commitment ?? '';
+      const decodesRecord = (hex: string): boolean => {
+        try {
+          // The schema verifies index tags only when its wire format carries them,
+          // and refuses trailing data for both tagged and legacy singleton records.
+          parsePushdataCommitment(hex, group.stateLayout, nftIdx);
+          return true;
+        } catch { return false; }
+      };
+      if (!decodesRecord(sourceHex)) continue;
+      const sourceLock = binToHex(source.unlocker.generateLockingBytecode());
+      const candidates = builder.outputs.filter((output) => {
+        if (output.token?.category !== group.categoryId || output.token.nft?.capability !== 'mutable') return false;
+        const outputLock = output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to);
+        return binToHex(outputLock) === sourceLock && decodesRecord(output.token.nft.commitment ?? '');
       });
-      if (!source?.token) continue;
-      const sourceBytes = commitmentBytes(source.token.nft?.commitment);
-      for (const output of builder.outputs) {
-        if (output.token?.category !== group.categoryId || output.token.nft?.capability !== 'mutable') continue;
-        const outBytes = commitmentBytes(output.token.nft?.commitment);
-        if (outBytes.length < tag.length || !tag.every((byte, at) => outBytes[at] === byte)) continue;
-        if (outBytes.length === sourceBytes.length && binToHex(outBytes) === binToHex(sourceBytes)) continue;
-        const emptyPubkeyDefault = outBytes.length === 35 && outBytes[1] === 0x21
-          && outBytes.slice(2).every((byte) => byte === 0);
-        if (!taggedImmutable && !emptyPubkeyDefault) continue;
-        output.token = cloneToken(source.token);
-      }
-    }
-  }
-  for (let index = 0; index < Math.min(host.allInputs.length, builder.outputs.length); index++) {
-    const input = host.allInputs[index];
-    const output = builder.outputs[index];
-    const category = input.token?.category;
-    if (!category || !nestedCategories.has(category)) continue;
-    if (input.token?.nft?.capability !== 'mutable' || output.token?.nft?.capability !== 'mutable') continue;
-    if (output.token?.category !== category) continue;
-    const inBytes = commitmentBytes(input.token.nft?.commitment);
-    const outBytes = commitmentBytes(output.token.nft?.commitment);
-    const emptyPubkeyDefault = outBytes.length === 35 && outBytes[1] === 0x21
-      && outBytes.slice(2).every((byte) => byte === 0);
-    if (emptyPubkeyDefault && inBytes.length > outBytes.length) {
-      output.token = cloneToken(input.token);
+      // Ambiguous records cannot establish an identity, including untagged singletons.
+      if (candidates.length !== 1) continue;
+      if (candidates[0].token?.nft?.commitment !== sourceHex) candidates[0].token = cloneToken(source.token);
     }
   }
   debugAtomicOutputStage('nested-state-restoration');

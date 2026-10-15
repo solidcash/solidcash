@@ -1,7 +1,12 @@
 import {
   AddressType, ArrayType, BytesType, EVENT_CHUNK_BYTES, FixedType, IntType, PrimitiveType, StructType, type Type,
-  ValueType,
+  ValueType, encodeNftIndexTag,
 } from '@solidcash/utils';
+
+/** Reserve the explicit opt-in tag while preserving historical packing when the option is absent. */
+export function stateNftPackingLimit(limit: number, nftIndex: number, tagSingletonDataNfts = false): number {
+  return limit - (tagSingletonDataNfts ? encodeNftIndexTag(nftIndex).length : 0);
+}
 
 /**
  * Widest pushdata encoding of an address: its locking bytecode is stored inline, and the widest form is

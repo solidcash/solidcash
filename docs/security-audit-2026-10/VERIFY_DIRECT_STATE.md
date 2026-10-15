@@ -1,5 +1,13 @@
 # Verification of DS-1, DS-3, DS-5, DS-6 and the DS-2+DS-3 chain (direct convention)
 
+Current follow-up status (2026-10-14): this is a historical code-read snapshot. Current fixes and remaining limits
+are tracked in [the integration audit](../security-audit-2026-10-feat-parity.md). The resumed-session DS-1 residual
+for a direct singleton conditional write without a source read is now verified locally: a skipped absent-key arm
+leaves no node, a changed predecessor successor is refused, and the taken insert settles
+([AuditTranscriptStateIntegrity.test.ts](../../packages/solidcash/test/e2e/AuditTranscriptStateIntegrity.test.ts)).
+This adds focused VM evidence; it does not widen support for multi-target conditional topology. The original
+findings and their original-tree confirmation below are retained as evidence, not as a current-head verdict.
+
 Tree: feat/per-call at abbb7e0ec (HEAD). Line numbers below are at HEAD. The df51215d6..HEAD diff does not touch any
 code cited here. GTT = packages/solidc/src/generation/GenerateTargetTraversal.ts, STT =
 packages/solidc/src/semantic/SymbolTableTraversal.ts. Read-only; nothing was compiled or run.

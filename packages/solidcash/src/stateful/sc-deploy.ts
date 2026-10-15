@@ -32,6 +32,7 @@ import { deriveDeployCommitments } from './sc-derive-deploy-commitments.js';
 import { headSentinelCommitment } from './SortedList.js';
 import type { DeployOptions, DeployResult } from './stateful-lifecycle-types.js';
 import { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
+import { blockhashKeeperGenesisOutput } from '../oracle/blockhash-keeper-deployment.js';
 
 async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigint> {
   const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
@@ -180,7 +181,11 @@ export async function deployStatefulContract<T extends Artifact>(
   const totalMessageBusVerifiers = dataNftAmount * BigInt(messageBusVerificationInputCount);
   const identityAnchors = options.identityAnchors ?? [];
   const totalIdentity = identityAnchors.reduce((sum, anchor) => sum + (anchor.amount ?? dataNftAmount), 0n);
-  const totalRequired = totalMaster + totalDataNft + totalEntryNft + totalEventNft + totalDynamicNft
+  const keeperBaton = blockhashKeeperGenesisOutput(
+    artifact, categoryId, options.blockhashKeeperPublicKey, options.blockhashKeeperAmount,
+  );
+  const totalRequired = (keeperBaton?.amount ?? 0n) + totalMaster + totalDataNft + totalEntryNft
+    + totalEventNft + totalDynamicNft
     + totalMessageBusVerifiers + totalIdentity + initialBalance + estimatedFee;
   const changeAmount = options.fundingUtxo.satoshis - totalRequired;
 
@@ -462,6 +467,7 @@ export async function deployStatefulContract<T extends Artifact>(
   // one-satoshi-per-byte relay floor. This matters for near-limit contracts whose redeem script is revealed by
   // the genesis input and whose constructor transaction is consequently larger than the contract itself.
   const totalTransferAmount = transferOutputs.reduce((sum, t) => sum + t.amount, 0n);
+  if (keeperBaton !== undefined) addFunded(keeperBaton);
   builder.addOutput({ to: options.changeAddress, amount: 1000n });
   // The unsigned template contains a shorter placeholder for the funding signature. Leave enough headroom for
   // the final P2PKH unlocking bytecode (and minor serialization-length changes after the change amount is set).

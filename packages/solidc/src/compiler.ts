@@ -143,7 +143,7 @@ import SymbolTableTraversal, {
 } from './semantic/SymbolTableTraversal.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
 import { publishStoredValueSources } from './semantic/stored-value-source.js';
-import { getEventChunkCount } from './semantic/maxEncodedSize.js';
+import { getEventChunkCount, stateNftPackingLimit } from './semantic/maxEncodedSize.js';
 import EnsureFinalRequireTraversal, {
   rejectFreeFunctionMissingReturns,
 } from './semantic/EnsureFinalRequireTraversal.js';
@@ -1981,6 +1981,7 @@ function externalHandlerKey(fn: FunctionDefinitionNode): string {
 function markDynamicChunkInputBaseFunctions(
   ast: Ast,
   inheritedKeys: ReadonlySet<string> = new Set(),
+  writeKeys: Set<string> = new Set(),
 ): Set<string> {
   const keys = new Set(inheritedKeys);
   const dynamicStateNames = new Set(ast.contract.stateVariables
@@ -2002,6 +2003,17 @@ function markDynamicChunkInputBaseFunctions(
       messageBusCloneSourceKey?: string;
     }).messageBusCloneSourceKey;
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
+    const writesDynamicState = footprint.writes.some((resource) => {
+      // Element/field mutations are collection resources before semantic lowering; whole-value writes use
+      // state resources. Both refer to the same declared dynamic continuation family.
+      const name = resource.startsWith('state:') ? resource.slice('state:'.length)
+        : resource.startsWith('collection:') ? resource.split(':')[1] : undefined;
+      return name !== undefined && dynamicStateNames.has(name);
+    });
+    if (writesDynamicState || writeKeys.has(sourceKey)
+      || (cloneSourceKey !== undefined && writeKeys.has(cloneSourceKey))) {
+      writeKeys.add(sourceKey);
+    }
     const directlyRequiresBase = [...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('state:') && dynamicStateNames.has(resource.slice('state:'.length)));
     if (directlyRequiresBase || keys.has(sourceKey)
@@ -4015,7 +4027,7 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
  * Publish typed child-genesis geometry independently of kernel admission. The resolved deployment node and
  * compiled child body are the authority; no contract, function, or application name participates.
  */
-function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: number): Array<{
+function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: number, tagSingletonDataNfts = false): Array<{
   state: ContractNode['stateVariables'][number]; nftIndex: number; fieldIndex: number;
 }> {
   const result: Array<{
@@ -4043,7 +4055,8 @@ function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: num
       nftIndex += 1;
       fieldIndex = 0;
     } else {
-      if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+      if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex, tagSingletonDataNfts)
+        && currentNftUsed > 0) {
         nftIndex += 1;
         fieldIndex = 0;
         currentNftUsed = 0;
@@ -4057,8 +4070,8 @@ function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: num
   return result;
 }
 
-function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number): number {
-  const variables = packedStateLayoutVariables(contract, commitmentLimit);
+function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number, tagSingletonDataNfts = false): number {
+  const variables = packedStateLayoutVariables(contract, commitmentLimit, tagSingletonDataNfts);
   return variables.length === 0 ? 0 : Math.max(...variables.map((variable) => variable.nftIndex)) + 1;
 }
 
@@ -4157,6 +4170,7 @@ function childDeploymentSites(
   compiledBytecodes: ReadonlyMap<string, Uint8Array>,
   commitmentLimit: number,
   helperFunctions: readonly FunctionDefinitionNode[] = [],
+  tagSingletonDataNfts = false,
 ): ChildDeploymentSiteAbi[] {
   const sites: ChildDeploymentSiteAbi[] = [];
   // Every site this function can report requires an InstantiationNode in the body, and
@@ -4207,7 +4221,7 @@ function childDeploymentSites(
     if (value instanceof InstantiationNode && value.isStatefulDeploy && value.referencedContract) {
       const analyzed = recipeAnalysis.get(value);
       const child = value.referencedContract;
-      const dataNftOutputCount = packedStateDataNftCount(child, commitmentLimit);
+      const dataNftOutputCount = packedStateDataNftCount(child, commitmentLimit, tagSingletonDataNfts);
       const creationBytecode = compiledBytecodes.get(child.name);
       if (!creationBytecode) throw new Error(`Missing compiled child body for deployment topology '${child.name}'`);
       const genesisState = value.constructorStateFoldComplete === true
@@ -4234,6 +4248,7 @@ function childDeploymentSites(
         })),
         dataNftCount: dataNftOutputCount,
         commitmentLimit,
+        ...(tagSingletonDataNfts && dataNftOutputCount === 1 && { taggedDataNfts: true }),
         structs: childDeploymentStructDefinitions(child.stateVariables),
         collections: childDeploymentCollectionDefinitions(child.collections),
       });
@@ -8965,7 +8980,7 @@ function synthesizeMessageBusRoute(
             const conditional = control !== 'straight';
             const child = statefulChildren.get(value.identifier.name)!;
             const packedChildVariables = packedStateLayoutVariables(
-              child, compilerOptions.commitmentLimit ?? 128,
+              child, compilerOptions.commitmentLimit ?? 128, compilerOptions.tagSingletonDataNfts,
             );
             const packedChildDataNftCount = packedChildVariables.length === 0 ? 0
               : Math.max(...packedChildVariables.map((variable) => variable.nftIndex)) + 1;
@@ -8982,6 +8997,8 @@ function synthesizeMessageBusRoute(
               })),
               dataNftCount: packedChildDataNftCount,
               commitmentLimit: compilerOptions.commitmentLimit ?? 128,
+              ...(compilerOptions.tagSingletonDataNfts === true && packedChildDataNftCount === 1
+                && { taggedDataNfts: true }),
               structs: childDeploymentStructDefinitions(child.stateVariables),
               collections: childDeploymentCollectionDefinitions(child.collections),
             }));
@@ -12189,14 +12206,10 @@ function synthesizeMessageBusRoute(
     : useBoundRoute ? MESSAGE_BUS_PLACEHOLDER_LOCK_HEX : '';
   const compactAllowsSelfdestructRetirement = [...kernelLifecycleHandlers.values()].includes('selfdestruct');
   const compactAtomicBinder = `
-        bigint activeMasterOutput = -1;
-        for (bigint masterOutput = 0; masterOutput < tx.outputs.length; masterOutput = masterOutput + 1) {
-          if (tx.outputs[masterOutput].lockingBytecode == ${kernelUpgradeMode
-    ? '__internal__upgradeBytecode' : 'tx.inputs[activeInputIndex].lockingBytecode'}
-            && tx.outputs[masterOutput].tokenCategory == tx.inputs[activeInputIndex].tokenCategory) {
-            activeMasterOutput = masterOutput;
-          }
-        }
+        bytes activeMasterCategory = tx.inputs[activeInputIndex].tokenCategory;
+        bytes activeMasterLock = ${kernelUpgradeMode
+    ? '__internal__upgradeBytecode' : 'tx.inputs[activeInputIndex].lockingBytecode'};
+        bigint activeMasterOutput = __message_bus_find_last_output(activeMasterCategory, activeMasterLock);
         require(tx.inputs[activeInputIndex].tokenCategory.length == 33);
         require(tx.inputs[activeInputIndex].tokenCategory.slice(32, 33) == hex"02");
         ${compactAllowsSelfdestructRetirement ? `
@@ -12486,6 +12499,182 @@ function synthesizeMessageBusRoute(
           }
         }
   `;
+  // Keep transaction-wide scans in shallow frames: their per-slot assignments must not rotate the
+  // verifier's large manifest/row frame on every iteration. Both hosts use these same checks.
+  const atomicScanHelpers = `
+      function __message_bus_find_last_output(bytes category, bytes lockingBytecode) internal view returns (bigint) {
+        // A backwards search can stop on its first exact match while retaining the original last-match rule.
+        // Keep the scan frame shallow and skip unrelated categories before inspecting locking bytecode.
+        bigint result = -1;
+        bigint output = tx.outputs.length;
+        if (output > 0) {
+          do {
+            do { output = output - 1; }
+            while (output > 0 && tx.outputs[output].tokenCategory != category);
+            if (tx.outputs[output].tokenCategory == category) {
+              if (tx.outputs[output].lockingBytecode == lockingBytecode) { result = output; }
+            }
+          } while (output > 0 && result < 0);
+        }
+        return result;
+      }
+      function __message_bus_empty_pad(bigint input, bigint output) internal view returns (bool) {
+        // All three terms are nonnegative. Eager evaluation avoids conditional dispatch on every pad;
+        // both coordinates are already within the authenticated participant block.
+        return bytes.concat(tx.inputs[input].tokenCategory, tx.outputs[output].tokenCategory).length
+          + bigint(tx.inputs[input].lockingBytecode != hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}")
+          + bigint(tx.outputs[output].lockingBytecode != hex"51") == 0;
+      }
+      function __message_bus_minting_outputs() internal view returns (bytes) {
+        bytes outputs = hex"";
+        if (tx.outputs.length > 0) {
+          bigint output = 0;
+          do {
+            if (tx.outputs[output].tokenCategory.length == 33) {
+              if (tx.outputs[output].tokenCategory.slice(32, 33) == hex"02") {
+                outputs = bytes.concat(outputs, toPaddedBytes(output, 4));
+              }
+            }
+            output = output + 1;
+          } while (output < tx.outputs.length);
+        }
+        return outputs;
+      }
+      function __message_bus_last_output(
+        bytes outputs, bytes category, bytes lockingBytecode
+      ) internal view returns (bigint) {
+        // Every participant master is minting. Preserve the last exact match across all outputs, including
+        // duplicates outside participant blocks, using the shared census rather than rescanning every pad.
+        bigint result = -1;
+        for (bigint at = 0; at < outputs.length; at = at + 4) {
+          bigint output = int(bytes.concat(outputs.slice(at, at + 4), hex"00"));
+          if (tx.outputs[output].tokenCategory == category) {
+            if (tx.outputs[output].lockingBytecode == lockingBytecode) { result = output; }
+          }
+        }
+        return result;
+      }
+      function __message_bus_physical_counts(
+        bigint activeBase, bigint activeOutputBase, bigint activeBlockSize, bytes activeCategory,
+        bigint activeReturnOutput${kernelDeploymentHandlers.size === 0 ? '' : ', bytes activeDeploymentTargets'}
+        ${sidecarVerificationMode ? ', bytes activeSidecarTargets' : ''}
+      ) internal view returns (bigint, bigint, bigint, bigint, bigint, bigint) {
+        bytes activeMutableCategory = bytes.concat(activeCategory, hex"01");
+        bigint physicalSatoshiContainers = 0;
+        bigint physicalTokenContainers = 0;
+        bigint physicalValueOutputs = 0;
+        bigint physicalTokenOutputs = 0;
+        bigint physicalEventOutputs = 0;
+        bigint physicalResourceEndpoints = 0;
+        // One pass per slot. Token categories are 0, 32 or 33 bytes, and the satoshi, token-container, value and
+        // token-output counts are mutually exclusive: the first two need a non-funder input, the last two a
+        // funder input, each pair split by an empty or present category.
+        bigint end = activeBase + activeBlockSize;
+        bigint outputDelta = activeOutputBase - activeBase;
+        // The participant parser proves activeBlockSize >= fixedSize >= 1 before this helper is called.
+        bigint slot = activeBase;
+        do {
+          // A token-free dummy input paired with OP_TRUE contributes zero to all six physical counts.
+          // Check that neutral shape before creating the classifier frame for this slot.
+          if (!__message_bus_empty_pad(slot, outputDelta + slot)) {
+            bigint outputSlot = outputDelta + slot;
+            bytes inCategory = tx.inputs[slot].tokenCategory;
+            bytes outCategory = tx.outputs[outputSlot].tokenCategory;
+            // Token-free pads cannot be resources, events, deployments or token transfers. Classify their
+            // satoshi/value role without traversing the token-only checks or target lists.
+            if (inCategory.length + outCategory.length == 0) {
+              if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
+                if (tx.outputs[outputSlot].lockingBytecode != hex"51") {
+                  physicalValueOutputs = physicalValueOutputs + 1;
+                }
+              } else if (tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode) {
+                physicalSatoshiContainers = physicalSatoshiContainers + 1;
+              }
+            } else {
+              ${kernelDeploymentHandlers.size === 0 ? '' : `bigint isDeploymentSlot = 0;
+              for (bigint deployment = 0; deployment < activeDeploymentTargets.length;
+                deployment = deployment + 4) {
+                bigint deploymentStart = int(bytes.concat(
+                  activeDeploymentTargets.slice(deployment, deployment + 2), hex"00"
+                ));
+                bigint deploymentCount = int(bytes.concat(
+                  activeDeploymentTargets.slice(deployment + 2, deployment + 4), hex"00"
+                ));
+                if (outputSlot >= deploymentStart && outputSlot < deploymentStart + deploymentCount) {
+                  isDeploymentSlot = 1;
+                }
+              }`}
+              ${sidecarVerificationMode ? `bigint isSidecarSlot = 0;
+              for (bigint sidecar = 0;
+                sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
+                if (slot == int(bytes.concat(
+                  activeSidecarTargets.slice(sidecar, sidecar + 2), hex"00"))) {
+                  isSidecarSlot = 1;
+                }
+              }` : ''}
+              if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
+                if (outCategory.length == 0) {
+                  if (tx.outputs[outputSlot].lockingBytecode != hex"51") {
+                    physicalValueOutputs = physicalValueOutputs + 1;
+                  }
+                } else if (${kernelDeploymentHandlers.size === 0 ? '' : 'isDeploymentSlot == 0 && '}
+                  // Participant-owned state/event NFTs use the participant category and are authenticated as
+                  // resource/event rows. A tcTransfer category is necessarily foreign to that participant in this
+                  // admitted shape; excluding the local category prevents trailing chunk mints from satisfying the
+                  // token-settlement cardinality check.
+                  outCategory.slice(0, 32) != activeCategory) {
+                  physicalTokenOutputs = physicalTokenOutputs + 1;
+                }
+              } else if (inCategory.length == 0) {
+                if (outCategory.length == 0
+                  && tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode) {
+                  physicalSatoshiContainers = physicalSatoshiContainers + 1;
+                }
+              } else if (${sidecarVerificationMode ? 'isSidecarSlot == 0 && ' : ''}inCategory.slice(0, 32) != activeCategory) {
+                physicalTokenContainers = physicalTokenContainers + 1;
+              }
+              // The return coordinate publishes a mutable participant NFT, but it is authenticated separately by
+              // the result-vector commitment below. It is not a state-resource endpoint and must not inflate the
+              // resource cardinality merely because the route returns a value.
+              if (inCategory.length + outCategory.length > 0 && outputSlot != activeReturnOutput) {
+                if (inCategory == activeMutableCategory) {
+                  physicalResourceEndpoints = physicalResourceEndpoints + 1;
+                }
+                if (outCategory == activeMutableCategory) {
+                  physicalResourceEndpoints = physicalResourceEndpoints + 1;
+                }
+                if (outCategory == activeCategory) {
+                  // Event rows always carry their encoded effect. Empty immutable NFTs are reserved frame/resource
+                  // endpoints, not emitted events, even when they use the participant's category. CREATE/proxy
+                  // logical-identity anchors (SCID v1: magic||version) are also not callManifest event rows;
+                  // counting them as physical events breaks event-only (no dataNft) compose when the identity is
+                  // minted onto a previously tokenless pad while kind-2 only records the real emit.
+                  if (inCategory != activeCategory
+                    && tx.outputs[outputSlot].nftCommitment.length > 0
+                    && (tx.outputs[outputSlot].nftCommitment.length < 5
+                      || tx.outputs[outputSlot].nftCommitment.slice(0, 5) != hex"5343494401")
+                    && tx.outputs[outputSlot].tokenAmount == 0) {
+                    physicalEventOutputs = physicalEventOutputs + 1;
+                  }
+                } else if (inCategory == activeCategory
+                  // Delegate execution can relocate an existing immutable participant NFT (for example, its logical
+                  // identity anchor) to another slot in the same authenticated block. Count net creation, not a
+                  // slot-local category transition, so such moves cancel while newly emitted event NFTs remain.
+                  && tx.inputs[slot].nftCommitment.length > 0
+                  && (tx.inputs[slot].nftCommitment.length < 5
+                    || tx.inputs[slot].nftCommitment.slice(0, 5) != hex"5343494401")
+                  && tx.inputs[slot].tokenAmount == 0) {
+                  physicalEventOutputs = physicalEventOutputs - 1;
+                }
+              }
+            }
+          }
+          slot = slot + 1;
+        } while (slot < end);
+        return (physicalSatoshiContainers, physicalTokenContainers, physicalValueOutputs,
+          physicalTokenOutputs, physicalEventOutputs, physicalResourceEndpoints);
+      }
+  `;
   const inlinedAtomicVerifierBody = `
         bytes manifestVersion = callManifest.slice(0, 8);
         ${compilerOptions.messageBusKernel === true
@@ -12501,6 +12690,8 @@ function synthesizeMessageBusRoute(
         require(participantCount >= 2 && participantCount <= 8);
         bool manifestOutputIdentity = ${atomicManifestOutputIdentityExpression};
         bool manifestSignatureFrames = ${atomicManifestSignatureFrameExpression};
+        bytes mintingOutputs = hex"";
+        if (!manifestOutputIdentity) { mintingOutputs = __message_bus_minting_outputs(); }
         bigint activeMembership = 0;
         bigint activeBase = 65535;
         bigint activeParticipant = 255;
@@ -12589,15 +12780,8 @@ function synthesizeMessageBusRoute(
                 && tx.outputs[participantOutputBase].value == tx.inputs[base].value);
             }
           } else {
-            bytes baseCategory = tx.inputs[base].tokenCategory;
-            for (bigint participantOutput = 0; participantOutput < tx.outputs.length;
-              participantOutput = participantOutput + 1) {
-              if (tx.outputs[participantOutput].tokenCategory == baseCategory) {
-                if (tx.outputs[participantOutput].lockingBytecode == participantOutputLbc) {
-                  participantOutputBase = participantOutput;
-                }
-              }
-            }
+            participantOutputBase = __message_bus_last_output(
+              mintingOutputs, tx.inputs[base].tokenCategory, participantOutputLbc);
             if (participantOutputBase < 0 && tx.outputs[base].tokenCategory.length == 0) {
               require(tx.outputs[base].value == tx.inputs[base].value);
               participantOutputBase = base;
@@ -13338,15 +13522,16 @@ function synthesizeMessageBusRoute(
         // snapshot as defense in depth when the participant is entirely static. A mixed participant can
         // legitimately contain mutating sibling rows, so snapshotting its final block merely because one row
         // is static rejects those authenticated siblings and adds no row-local protection.
-        // A return-event slot may publish the authenticated result vector; all other slots of an all-static
-        // participant remain byte-for-byte and value-for-value preserved.
+        // A return-event slot may publish the authenticated result vector. Exact token-free neutral pads may
+        // keep their canonical OP_TRUE output, including shared-oracle duplicates. All other slots remain
+        // byte-for-byte preserved, and every slot preserves its complete input value.
         if (${kernelLifecycleHandlers.size > 0 ? 'activeLifecycleMode == 0 && ' : ''}
           activeStaticInvocationRows > 0 && activeStaticInvocationRows == consumedLocalRows) {
           for (bigint slot = activeBase;
             slot < activeBase + activeBlockSize; slot = slot + 1) {
             bigint outputSlot = activeOutputBase + slot - activeBase;
             require(tx.outputs[outputSlot].value == tx.inputs[slot].value);
-            if (outputSlot != activeReturnOutput) {
+            if (outputSlot != activeReturnOutput && !__message_bus_empty_pad(slot, outputSlot)) {
               require(tx.outputs[outputSlot].lockingBytecode == tx.inputs[slot].lockingBytecode);
               require(tx.outputs[outputSlot].tokenCategory == tx.inputs[slot].tokenCategory);
               require(tx.outputs[outputSlot].tokenAmount == tx.inputs[slot].tokenAmount);
@@ -13357,98 +13542,11 @@ function synthesizeMessageBusRoute(
             }
           }
         }
-        bytes activeMutableCategory = bytes.concat(activeCategory, hex"01");
-        bigint physicalSatoshiContainers = 0;
-        bigint physicalTokenContainers = 0;
-        bigint physicalValueOutputs = 0;
-        bigint physicalTokenOutputs = 0;
-        bigint physicalEventOutputs = 0;
-        bigint physicalResourceEndpoints = 0;
-        // One pass per slot. Token categories are 0, 32 or 33 bytes, and the satoshi, token-container, value and
-        // token-output counts are mutually exclusive: the first two need a non-funder input, the last two a
-        // funder input, each pair split by an empty or present category.
-        for (bigint slot = activeBase;
-          slot < activeBase + activeBlockSize; slot = slot + 1) {
-          bigint outputSlot = activeOutputBase + slot - activeBase;
-          bytes inCategory = tx.inputs[slot].tokenCategory;
-          bytes outCategory = tx.outputs[outputSlot].tokenCategory;
-          ${kernelDeploymentHandlers.size === 0 ? '' : `bigint isDeploymentSlot = 0;
-          for (bigint deployment = 0; deployment < activeDeploymentTargets.length;
-            deployment = deployment + 4) {
-            bigint deploymentStart = int(bytes.concat(
-              activeDeploymentTargets.slice(deployment, deployment + 2), hex"00"
-            ));
-            bigint deploymentCount = int(bytes.concat(
-              activeDeploymentTargets.slice(deployment + 2, deployment + 4), hex"00"
-            ));
-            if (outputSlot >= deploymentStart && outputSlot < deploymentStart + deploymentCount) {
-              isDeploymentSlot = 1;
-            }
-          }`}
-          ${sidecarVerificationMode ? `bigint isSidecarSlot = 0;
-          for (bigint sidecar = 0;
-            sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
-            if (slot == int(bytes.concat(
-              activeSidecarTargets.slice(sidecar, sidecar + 2), hex"00"))) {
-              isSidecarSlot = 1;
-            }
-          }` : ''}
-          if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
-            if (outCategory.length == 0) {
-              if (tx.outputs[outputSlot].lockingBytecode != hex"51") {
-                physicalValueOutputs = physicalValueOutputs + 1;
-              }
-            } else if (${kernelDeploymentHandlers.size === 0 ? '' : 'isDeploymentSlot == 0 && '}
-              // Participant-owned state/event NFTs use the participant category and are authenticated as
-              // resource/event rows. A tcTransfer category is necessarily foreign to that participant in this
-              // admitted shape; excluding the local category prevents trailing chunk mints from satisfying the
-              // token-settlement cardinality check.
-              outCategory.slice(0, 32) != activeCategory) {
-              physicalTokenOutputs = physicalTokenOutputs + 1;
-            }
-          } else if (inCategory.length == 0) {
-            if (outCategory.length == 0
-              && tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode) {
-              physicalSatoshiContainers = physicalSatoshiContainers + 1;
-            }
-          } else if (${sidecarVerificationMode ? 'isSidecarSlot == 0 && ' : ''}inCategory.slice(0, 32) != activeCategory) {
-            physicalTokenContainers = physicalTokenContainers + 1;
-          }
-          // The return coordinate publishes a mutable participant NFT, but it is authenticated separately by
-          // the result-vector commitment below. It is not a state-resource endpoint and must not inflate the
-          // resource cardinality merely because the route returns a value.
-          if (inCategory.length + outCategory.length > 0 && outputSlot != activeReturnOutput) {
-            if (inCategory == activeMutableCategory) {
-              physicalResourceEndpoints = physicalResourceEndpoints + 1;
-            }
-            if (outCategory == activeMutableCategory) {
-              physicalResourceEndpoints = physicalResourceEndpoints + 1;
-            }
-            if (outCategory == activeCategory) {
-              // Event rows always carry their encoded effect. Empty immutable NFTs are reserved frame/resource
-              // endpoints, not emitted events, even when they use the participant's category. CREATE/proxy
-              // logical-identity anchors (SCID v1: magic||version) are also not callManifest event rows;
-              // counting them as physical events breaks event-only (no dataNft) compose when the identity is
-              // minted onto a previously tokenless pad while kind-2 only records the real emit.
-              if (inCategory != activeCategory
-                && tx.outputs[outputSlot].nftCommitment.length > 0
-                && (tx.outputs[outputSlot].nftCommitment.length < 5
-                  || tx.outputs[outputSlot].nftCommitment.slice(0, 5) != hex"5343494401")
-                && tx.outputs[outputSlot].tokenAmount == 0) {
-                physicalEventOutputs = physicalEventOutputs + 1;
-              }
-            } else if (inCategory == activeCategory
-              // Delegate execution can relocate an existing immutable participant NFT (for example, its logical
-              // identity anchor) to another slot in the same authenticated block. Count net creation, not a
-              // slot-local category transition, so such moves cancel while newly emitted event NFTs remain.
-              && tx.inputs[slot].nftCommitment.length > 0
-              && (tx.inputs[slot].nftCommitment.length < 5
-                || tx.inputs[slot].nftCommitment.slice(0, 5) != hex"5343494401")
-              && tx.inputs[slot].tokenAmount == 0) {
-              physicalEventOutputs = physicalEventOutputs - 1;
-            }
-          }
-        }
+        bigint physicalSatoshiContainers, bigint physicalTokenContainers, bigint physicalValueOutputs,
+          bigint physicalTokenOutputs, bigint physicalEventOutputs, bigint physicalResourceEndpoints =
+          __message_bus_physical_counts(activeBase, activeOutputBase, activeBlockSize, activeCategory,
+            activeReturnOutput${kernelDeploymentHandlers.size === 0 ? '' : ', activeDeploymentTargets'}
+            ${sidecarVerificationMode ? ', activeSidecarTargets' : ''});
         require(activeResourceEndpoints == physicalResourceEndpoints);
         require(activeSatoshiContainerRows == physicalSatoshiContainers);
         require(activeTokenContainerRows == physicalTokenContainers);
@@ -13686,6 +13784,7 @@ function synthesizeMessageBusRoute(
         return (payload, nextAt);
       }` : '';
   const helperSource = `${preamble}    contract __MessageBusHost() {
+      ${atomicScanHelpers}
       ${directPushHelperSource}
       ${graphCallManifestLoader}
       ${atomicCallManifestLoader}
@@ -14046,10 +14145,14 @@ function synthesizeMessageBusRoute(
       })))).flat();
   }
   route.location = contract.location;
-  for (const helper of helpers) helper.location = contract.location;
+  for (const helper of helpers) {
+    helper.location = contract.location;
+    helper.compilerGeneratedHelper = true;
+  }
   contract.functions.push(...helpers, route);
   if ((useBoundRoute || compilerOptions.messageBusKernel === true) && !offloadedVerifier) {
     const verifierHost = `${preamble}    contract __MessageBusVerifierHost() {
+      ${atomicScanHelpers}
       ${directPushHelperSource}
       function ${MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM}(
         bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
@@ -15304,7 +15407,10 @@ function compileResolvedAst(
   }
   // Dynamic-state syntax is still present here. Preserve its physical input-base requirement by stable source
   // identity before collection/dynamic journal lowering value-threads those accesses through ordinary locals.
-  const dynamicChunkInputBaseFunctionKeys = markDynamicChunkInputBaseFunctions(ast);
+  const dynamicChunkWriteFunctionKeys = new Set<string>();
+  const dynamicChunkInputBaseFunctionKeys = markDynamicChunkInputBaseFunctions(
+    ast, new Set(), dynamicChunkWriteFunctionKeys,
+  );
   const stateExternalPointerNames = ast.contract.stateVariables
     .filter((state) => state.type instanceof FunctionType && state.type.isExternal)
     .map((state) => state.name);
@@ -15680,17 +15786,27 @@ function compileResolvedAst(
       || fn.modifiers.includes(FunctionModifier.PRIVATE));
   // Public entry points can also be called internally. A state/collection- or call-touching public callee owns
   // direct-route witnesses that do not exist as source-level arguments at its call site; inline that body into
-  // the caller's physical frame before SymbolTableTraversal adds those parameters. Keep its dispatched definition.
+  // the caller's physical frame before SymbolTableTraversal adds those parameters. In the direct convention,
+  // a void `this.f()` has the same inherited execution context and needs that frame too. Returning self-calls
+  // retain their existing invoked-read fence after pending mapping writes. Keep the dispatched definition.
   const publicEntryNames = new Set(ast.contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name));
+  const directVoidSelfCallKeys = new Set(ast.contract.functions
+    .filter((fn) => fn.returnTypes.length === 0 && mergedCompilerOptions.composition !== 'framed')
+    .map((fn) => `${fn.name}/${fn.parameters.length}`));
   let hasInternallyCalledPublicEntry = false;
+  let hasDirectVoidSelfCall = false;
   if (publicEntryNames.size > 0) {
     for (const fn of ast.contract.functions) {
       if (!fn.body) continue;
-      const found = { internalCall: false };
+      const found = { internalCall: false, directVoidSelfCall: false };
       walkInvocationAst(fn.body, (node) => {
-        if (node instanceof FunctionCallNode && publicEntryNames.has(node.identifier.name)
-          && !node.fromThisCall) found.internalCall = true;
+        if (!(node instanceof FunctionCallNode) || !publicEntryNames.has(node.identifier.name)) return;
+        if (!node.fromThisCall) found.internalCall = true;
+        else if (directVoidSelfCallKeys.has(`${node.identifier.name}/${node.parameters.length}`)) {
+          found.directVoidSelfCall = true;
+        }
       });
+      hasDirectVoidSelfCall ||= found.directVoidSelfCall;
       hasInternallyCalledPublicEntry = found.internalCall;
       if (hasInternallyCalledPublicEntry) break;
     }
@@ -15720,7 +15836,7 @@ function compileResolvedAst(
   // whenever an internal helper exists; the traversal's own eligibility checks retain the cheap no-op path.
   // An entry another body calls by name is inlined there too: a mapping write's batch witnesses are the entry's own
   // parameters, which that call does not pass.
-  if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers) && inlinesOwnCalls) {
+  if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers) && (inlinesOwnCalls || hasDirectVoidSelfCall)) {
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.evmCompat ?? false,
       inlineDelegateStateHelpers,
@@ -15792,6 +15908,7 @@ function compileResolvedAst(
   // tell it ran). If-convert it to an unconditional predicated write `m[k] = cond ? default : m[k]`.
   if (needsCollectionJournal) ast = ast.accept(new IfConvertConditionalEntryOp(
     mergedCompilerOptions.messageBusKernel === true,
+    mergedCompilerOptions.messageBus === false && mergedCompilerOptions.composition !== 'framed',
   )) as Ast;
 
   // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
@@ -15953,7 +16070,7 @@ function compileResolvedAst(
 
   // Reapply the pre-lowering requirement to the final logical functions and compiler-owned handler clones, while
   // also discovering any dynamic-state dependency synthesized after the first survey.
-  markDynamicChunkInputBaseFunctions(ast, dynamicChunkInputBaseFunctionKeys);
+  markDynamicChunkInputBaseFunctions(ast, dynamicChunkInputBaseFunctionKeys, dynamicChunkWriteFunctionKeys);
 
   // Recovery compute is funded by the physical entrypoint even when the builtin sits behind imported/library
   // helpers (e.g. ECDSA.recover -> two tryRecover overloads -> ecrecover). Symbol resolution happens in the next
@@ -16105,6 +16222,24 @@ function compileResolvedAst(
       ));
     }
   }
+  // Ordinary direct writers can follow several physical callee blocks, including a non-returning callee
+  // after the last returned event. Neither that event nor the old input chunk identifies the output band.
+  // Preserve the source write footprint across journal lowering and publish the materialized coordinate;
+  // the dynamic-write covenant still verifies every chunk's exact lock, category, and commitment there.
+  // Framed entries use their declared record coordinates, and delegates retain their suffix convention.
+  if (mergedCompilerOptions.composition !== 'framed') {
+    for (const fn of ast.contract.functions) {
+      if (!fn.isEntryPoint || fn.messageBusRoute || fn.graphEmissionHandler
+        || fn.modifiers.includes(FunctionModifier.DELEGATE)
+        || !dynamicChunkWriteFunctionKeys.has(externalHandlerKey(fn))
+        || ((fn.externalCalls?.length ?? 0) === 0 && (fn.lowLevelCalls?.length ?? 0) === 0)
+        || fn.parameters.some((parameter) => parameter.name === '__internal__dynamicChunkOutputBase')) continue;
+      const dynamicOutputBase = new ParameterNode(PrimitiveType.BIGINT, '__internal__dynamicChunkOutputBase');
+      dynamicOutputBase.location = fn.location;
+      fn.parameters.push(dynamicOutputBase);
+    }
+  }
+
   // Graph-emission handlers execute as OP_DEFINE subroutines inside the hidden route's physical participant
   // block. Their external edges are callManifest rows, not additional co-spent slots, so their independently
   // inferred function layout is intentionally absent. Dynamic state reads/writes in those handlers must still
@@ -16152,14 +16287,25 @@ function compileResolvedAst(
       functionsByName.set(fn.name, group);
     }
     const routeFootprintCache = createFootprintAnalysisCache(dynamicStateNames);
+    const routeDynamicWrites = new Set<string>();
+    const dynamicResourceName = (resource: string): string | undefined => {
+      const name = resource.startsWith('state:') ? resource.slice('state:'.length)
+        : resource.startsWith('collection:') ? resource.split(':')[1] : undefined;
+      return name !== undefined && dynamicStateNames.has(name) ? name : undefined;
+    };
     const footprintDynamicResources = ast.contract.functions
       .filter((fn) => fn !== messageBusRoute && fn.messageBusEligible)
       .flatMap((fn) => {
         const footprint = analyseFunctionFootprint(fn, functionsByName, routeFootprintCache);
+        // An opaque effect cannot prove that a sibling resource remains read-only. Keep every dynamic resource
+        // under the existing write settlement in that case rather than exempting a cached journal value.
+        if (footprint.unknown) for (const name of dynamicStateNames) routeDynamicWrites.add(name);
+        for (const resource of footprint.writes) {
+          const name = dynamicResourceName(resource);
+          if (name !== undefined) routeDynamicWrites.add(name);
+        }
         return [...footprint.reads, ...footprint.writes]
-          .filter((resource) => resource.startsWith('state:'))
-          .map((resource) => resource.slice('state:'.length))
-          .filter((name) => dynamicStateNames.has(name));
+          .map(dynamicResourceName).filter((name): name is string => name !== undefined);
       });
     // Route dynReads/Writes may still be unpopulated this early; fall back to every dynamic state name when
     // any eligible handler emits chunkable/entry-loop NEWs that must sit after the route-preserved dyn band.
@@ -16175,6 +16321,8 @@ function compileResolvedAst(
       ...footprintDynamicResources,
       ...(needsDynBandForChunkableOrLoop ? [...dynamicStateNames] : []),
     ].filter((name) => dynamicStateNames.has(name)))];
+    const routeReadOnlyDynamicResources = routeDynamicResources.filter((name) => !routeDynamicWrites.has(name));
+    messageBusRoute.messageBusRouteReadOnlyDynamicResources = routeReadOnlyDynamicResources;
     type MessageBusClone = FunctionDefinitionNode & { messageBusCloneSourceKey?: string };
     const graphCloneBySource = new Map<FunctionDefinitionNode, FunctionDefinitionNode>();
     for (const clone of ast.contract.functions.filter((fn) =>
@@ -16242,6 +16390,7 @@ function compileResolvedAst(
       }
       if (routeClone || directlyDispatchedSource) {
         fn.messageBusRouteDynamicResources = routeDynamicResources;
+        fn.messageBusRouteReadOnlyDynamicResources = routeReadOnlyDynamicResources;
       }
       if ((routeClone || directlyDispatchedSource)
         && fixedHandlerEntries.length > 0 && messageBusRoute.entryAccesses?.length) {
@@ -16588,6 +16737,7 @@ function compileResolvedAst(
   for (const fn of ast.contract.functions) {
     const deployments = childDeploymentSites(
       fn, compiledBytecodes, mergedCompilerOptions.commitmentLimit!, ast.contract.functions,
+      mergedCompilerOptions.tagSingletonDataNfts,
     );
     if (deployments.length > 0) childDeploymentsBySignature.set(deploymentTopologyKey(fn), deployments);
   }
@@ -19950,6 +20100,7 @@ function compileReferencedContracts(
     }
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp(
       compilerOptions.messageBusKernel === true,
+      compilerOptions.messageBus === false && compilerOptions.composition !== 'framed',
     )) as Ast;
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;
     singleAst = singleAst.accept(new HoistBranchLocalExtcallTargets()) as Ast;
@@ -20683,13 +20834,13 @@ function predictExpressionPrefix(
   input: { LA(i: number): number; LT(i: number): { text?: string | undefined } },
 ): number | undefined {
   const first = input.LA(1);
-  const lparen = SolidCashParser.T__56;
-  const lbrack = SolidCashParser.T__81;
+  const lparen = PARSER_LITERAL_TOKENS.leftParen;
+  const lbrack = PARSER_LITERAL_TOKENS.leftBracket;
   if (first === lparen) {
     // `(type(T)).member` is a distinct metatype prefix, not a grouped expression.
-    if (input.LA(2) === SolidCashParser.T__62) return undefined;
-    const rparen = SolidCashParser.T__57;
-    const dot = SolidCashParser.T__6;
+    if (input.LA(2) === PARSER_LITERAL_TOKENS.typeKeyword) return undefined;
+    const rparen = PARSER_LITERAL_TOKENS.rightParen;
+    const dot = PARSER_LITERAL_TOKENS.dot;
     if ((input.LA(2) === SolidCashParser.Identifier && input.LA(3) === rparen && input.LA(4) === lparen)
       || (input.LA(2) === SolidCashParser.Identifier && input.LA(3) === dot
         && input.LA(4) === SolidCashParser.Identifier && input.LA(5) === rparen && input.LA(6) === lparen)) {
@@ -20700,8 +20851,8 @@ function predictExpressionPrefix(
   if (first === SolidCashParser.Identifier) {
     // `uint(x)` is a typeCast alternative, not a call; let ATN keep that split.
     if (input.LT(1).text === 'uint') return undefined;
-    const lbrace = SolidCashParser.T__3;
-    const dot = SolidCashParser.T__6;
+    const lbrace = PARSER_LITERAL_TOKENS.leftBrace;
+    const dot = PARSER_LITERAL_TOKENS.dot;
     const second = input.LA(2);
     // Mirrors the grammar's hasFunctionCallAhead: `x.y(` is the namespaced call only when `y` is an Identifier; a
     // soft keyword there (`bar.leave(..)`) is a member call on the identifier.
@@ -20724,35 +20875,36 @@ function predictExpressionPrefix(
     || first === SolidCashParser.BoundedBytes || first === SolidCashParser.CryptoType
     || first === SolidCashParser.UnsafeCast || first === SolidCashParser.BoundedSignedFixed
     || first === SolidCashParser.BoundedUnsignedFixed
-    || first === SolidCashParser.T__90 || first === SolidCashParser.T__66
-    || first === SolidCashParser.T__88 || first === SolidCashParser.T__89) {
+    || first === PARSER_LITERAL_TOKENS.address || first === PARSER_LITERAL_TOKENS.payable
+    || first === PARSER_LITERAL_TOKENS.fixed || first === PARSER_LITERAL_TOKENS.ufixed) {
     const second = input.LA(2);
     if (second === lparen || second === lbrack) return EXPRESSION_ALT_CAST;
   }
-  if (first === SolidCashParser.T__41) return EXPRESSION_ALT_THIS;
-  if (first === SolidCashParser.T__91) return EXPRESSION_ALT_CONSTRUCTED;
-  if (first === SolidCashParser.T__127 || first === SolidCashParser.T__128) {
+  if (first === PARSER_LITERAL_TOKENS.thisKeyword) return EXPRESSION_ALT_THIS;
+  if (first === PARSER_LITERAL_TOKENS.newKeyword) return EXPRESSION_ALT_CONSTRUCTED;
+  if (first === PARSER_LITERAL_TOKENS.txOutputs || first === PARSER_LITERAL_TOKENS.txInputs) {
     return EXPRESSION_ALT_INTROSPECTION;
   }
-  if (first === SolidCashParser.T__62) return EXPRESSION_ALT_TYPE_INTROSPECTION;
-  if (first === SolidCashParser.T__13 || first === SolidCashParser.T__26 || first === SolidCashParser.T__130) {
+  if (first === PARSER_LITERAL_TOKENS.typeKeyword) return EXPRESSION_ALT_TYPE_INTROSPECTION;
+  if (first === PARSER_LITERAL_TOKENS.minus || first === PARSER_LITERAL_TOKENS.bitwiseNot
+    || first === PARSER_LITERAL_TOKENS.logicalNot) {
     return EXPRESSION_ALT_UNARY;
   }
   if (first === lbrack) return EXPRESSION_ALT_ARRAY_LITERAL;
-  if (first === SolidCashParser.T__118 || first === SolidCashParser.T__119
-    || first === SolidCashParser.T__120 || first === SolidCashParser.T__121) {
+  if (first === PARSER_LITERAL_TOKENS.abiEncode || first === PARSER_LITERAL_TOKENS.abiEncodePacked
+    || first === PARSER_LITERAL_TOKENS.abiEncodeWithSelector || first === PARSER_LITERAL_TOKENS.abiEncodeWithSignature) {
     return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_ENCODE : EXPRESSION_ALT_BARE_ABI;
   }
-  if (first === SolidCashParser.T__122) {
+  if (first === PARSER_LITERAL_TOKENS.abiEncodeCall) {
     return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_ENCODE_CALL : EXPRESSION_ALT_BARE_ABI;
   }
-  if (first === SolidCashParser.T__123 || first === SolidCashParser.T__124) {
+  if (first === PARSER_LITERAL_TOKENS.bytesConcat || first === PARSER_LITERAL_TOKENS.stringConcat) {
     return EXPRESSION_ALT_BYTES_CONCAT;
   }
-  if (first === SolidCashParser.T__125) {
+  if (first === PARSER_LITERAL_TOKENS.abiDecode) {
     return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_DECODE : EXPRESSION_ALT_BARE_ABI;
   }
-  if (first === SolidCashParser.T__126) {
+  if (first === PARSER_LITERAL_TOKENS.abiDecodeAt) {
     return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_DECODE_AT : EXPRESSION_ALT_BARE_ABI;
   }
   return undefined;
@@ -20780,6 +20932,48 @@ function tokenTypeByLiteral(literal: string): number | undefined {
   return undefined;
 }
 
+// Resolve grammar literals once: ANTLR's anonymous T__ indices move when a grammar rule adds a keyword.
+// Named lexer tokens remain stable references; fast paths must bind literal tokens to the active grammar.
+function requiredParserLiteralToken(literal: string): number {
+  const token = tokenTypeByLiteral(literal);
+  if (token === undefined) throw new Error(`Missing parser literal token ${literal}`);
+  return token;
+}
+const PARSER_LITERAL_TOKENS = {
+  semicolon: requiredParserLiteralToken("';'"),
+  leftBrace: requiredParserLiteralToken("'{'"),
+  comma: requiredParserLiteralToken("','"),
+  rightBrace: requiredParserLiteralToken("'}'"),
+  dot: requiredParserLiteralToken("'.'"),
+  minus: requiredParserLiteralToken("'-'"),
+  greaterOrEqual: requiredParserLiteralToken("'>='"),
+  bitwiseNot: requiredParserLiteralToken("'~'"),
+  thisKeyword: requiredParserLiteralToken("'this'"),
+  assign: requiredParserLiteralToken("'='"),
+  leftParen: requiredParserLiteralToken("'('"),
+  rightParen: requiredParserLiteralToken("')'"),
+  typeKeyword: requiredParserLiteralToken("'type'"),
+  payable: requiredParserLiteralToken("'payable'"),
+  leftBracket: requiredParserLiteralToken("'['"),
+  rightBracket: requiredParserLiteralToken("']'"),
+  fixed: requiredParserLiteralToken("'fixed'"),
+  ufixed: requiredParserLiteralToken("'ufixed'"),
+  address: requiredParserLiteralToken("'address'"),
+  newKeyword: requiredParserLiteralToken("'new'"),
+  abiEncode: requiredParserLiteralToken("'abi.encode'"),
+  abiEncodePacked: requiredParserLiteralToken("'abi.encodePacked'"),
+  abiEncodeWithSelector: requiredParserLiteralToken("'abi.encodeWithSelector'"),
+  abiEncodeWithSignature: requiredParserLiteralToken("'abi.encodeWithSignature'"),
+  abiEncodeCall: requiredParserLiteralToken("'abi.encodeCall'"),
+  bytesConcat: requiredParserLiteralToken("'bytes.concat'"),
+  stringConcat: requiredParserLiteralToken("'string.concat'"),
+  abiDecode: requiredParserLiteralToken("'abi.decode'"),
+  abiDecodeAt: requiredParserLiteralToken("'abi.decodeAt'"),
+  txOutputs: requiredParserLiteralToken("'tx.outputs'"),
+  txInputs: requiredParserLiteralToken("'tx.inputs'"),
+  logicalNot: requiredParserLiteralToken("'!'"),
+};
+
 function installExpressionPrefixFastPath(parser: SolidCashParser): void {
   const interp = parser._interp;
   const prefixState = interp.atn.decisionToState[EXPRESSION_PREFIX_DECISION] as { ruleIndex?: number } | undefined;
@@ -20803,15 +20997,15 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
   if (!prefixOk && !postfixOk && !postfixInnerOk && !statementOk
     && !yulBlockOk && !yulStatementOk && !yulExpressionOk) return;
   const orig = interp.adaptivePredict.bind(interp);
-  const rparen = SolidCashParser.T__57;
-  const comma = SolidCashParser.T__4;
-  const semi = SolidCashParser.T__1;
-  const rbrack = SolidCashParser.T__82;
-  const rbrace = SolidCashParser.T__5;
-  const assign = SolidCashParser.T__47;
-  const lbrace = SolidCashParser.T__3;
-  const lbrack = SolidCashParser.T__81;
-  const lparen = SolidCashParser.T__56;
+  const rparen = PARSER_LITERAL_TOKENS.rightParen;
+  const comma = PARSER_LITERAL_TOKENS.comma;
+  const semi = PARSER_LITERAL_TOKENS.semicolon;
+  const rbrack = PARSER_LITERAL_TOKENS.rightBracket;
+  const rbrace = PARSER_LITERAL_TOKENS.rightBrace;
+  const assign = PARSER_LITERAL_TOKENS.assign;
+  const lbrace = PARSER_LITERAL_TOKENS.leftBrace;
+  const lbrack = PARSER_LITERAL_TOKENS.leftBracket;
+  const lparen = PARSER_LITERAL_TOKENS.leftParen;
   const requireTok = tokenTypeByLiteral("'require'");
   const ifTok = tokenTypeByLiteral("'if'");
   const emitTok = tokenTypeByLiteral("'emit'");
@@ -21064,7 +21258,7 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
         if (input.LA(2) !== lparen) return orig(input, decision, ctx);
         // `timeOpStatement` and ordinary `requireStatement` share the `require (` prefix. Preserve the grammar's
         // exact `require ( TxVar >=` distinction in this optimized decision.
-        return input.LA(3) === SolidCashParser.TxVar && input.LA(4) === SolidCashParser.T__22
+        return input.LA(3) === SolidCashParser.TxVar && input.LA(4) === PARSER_LITERAL_TOKENS.greaterOrEqual
           ? STATEMENT_ALT_TIME_OP : STATEMENT_ALT_REQUIRE;
       }
       if (token === ifTok) return STATEMENT_ALT_IF;

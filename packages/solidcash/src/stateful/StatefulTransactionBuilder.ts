@@ -28,6 +28,7 @@ import { eventContinuationLockingBytecode, joinEventContinuations } from './even
 import { type Utxo, type UnlockableUtxo, type TransactionDetails, isContractUnlocker, type Unlocker } from '../interfaces.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
+import { sameIndexScidIdentityInputIndices } from './same-index-scid.js';
 
 /** Select a continuation lock without allowing compatibility state to override a live covenant pin. */
 export function selectValueChunkRedeemLock(parts: {
@@ -1629,6 +1630,7 @@ export class StatefulTransactionBuilder {
   private _refreshedUnlockerSyncHost(): RefreshedUnlockerSyncHost {
     const self = this;
     return {
+      coordinateBase: this.getComposedBlockBase(),
       allInputs: this.allInputs,
       get masterUtxo() { return self.masterUtxo; },
       set masterUtxo(next) { self.masterUtxo = next; },
@@ -2947,6 +2949,7 @@ export class StatefulTransactionBuilder {
 
   viewTailPackOptions(suffixStart?: number): ViewTailPackOptions {
     return {
+      reservedIndices: sameIndexScidIdentityInputIndices(this.allInputs),
       band: this.getChunkableValueWriteBand(),
       // Input and output counts are independent once return witnesses, computed
       // outputs, and suffix sidecars are materialized. Only enforce a suffix
@@ -3159,6 +3162,7 @@ export class StatefulTransactionBuilder {
           allowed.add(master + slot.offset);
         }
       }
+      for (const offset of group.streamedEventPlan?.outputs.keys() ?? []) allowed.add(master + offset);
       allowedByCategory.set(group.categoryId, allowed);
     }
     for (const claim of lowLevelCallImmutableEventDestinations(

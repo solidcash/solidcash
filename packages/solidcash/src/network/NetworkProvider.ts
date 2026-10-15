@@ -55,6 +55,11 @@ export default interface NetworkProvider {
    */
   network: Network;
 
+  /** Shared block-info oracle covenant, pinned into reader contracts. */
+  blockOracleLock?: Uint8Array;
+  /** Category used by the oracle covenant (display byte order). */
+  blockOracleCategory?: Uint8Array;
+
   /** Optional provider-specific consensus limits. Omitted providers use BCH production limits. */
   consensusLimits?: ConsensusLimits;
   /** Optional relay-policy behavior. Omitted providers use production policy. */

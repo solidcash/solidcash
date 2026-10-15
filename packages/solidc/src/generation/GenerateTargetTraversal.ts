@@ -40488,9 +40488,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // "exactly 1 master output" pin (2 dynamic-state chunks vs expected 1). Top-relative
       // ROLL is correct here: verify-count extras sit above this frame.
       const dropNow = ['(dyn_i)', '(dyn_nnew)', '(dyn_run_width)', '(dyn_chunkaddr)', ...wPriorTempNames];
-      if (this.currentFunctionIsDelegate && writesInDeclOrder.length === 1) {
+      if (this.currentFunctionIsDelegate && writesInDeclOrder.length === 1
+        && !this.coSpendPreservedDynValues.has(valueStackName)) {
         // One written dynamic variable: do not keep the value for a
-        // later sibling offset. Leaving it leaks the 174-byte blob into the epilogue.
+        // later sibling offset. Leaving it leaks the 174-byte blob into the epilogue. A value marked for an
+        // array-external-call co-spend must survive to emitExternalCallVerification, which drops it after the
+        // co-spend loop reads the array from it.
         dropNow.push(valueStackName);
       } else {
         // A delegate route with several dynamic writes anchors the whole chunk family from the output suffix.

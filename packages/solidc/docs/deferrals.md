@@ -1359,7 +1359,17 @@ stateless/stateful autoderivation + RETURNING-loop (increment 1) units are all V
 (`TypedComputedLoopDispatch.test.ts` / `StatefulComputedLoopDispatch.test.ts`); the next sub-step is part 3
 (collect-phase multi-use grouping) then part 1 (the shared read+write co-spend).
 
-## vmap-sorted mapping WRITE inside a delegate (proxy) function - DEFERRED 2026-07-20
+## vmap-sorted mapping WRITE inside a delegate (proxy) function - RESOLVED 2026-10-15 (deferred 2026-07-20)
+
+**RESOLVED (verified 2026-10-15).** The 7-layer recipe shipped: the impl function's `entryLoopWrites` route into
+`loopEntryVars` keyed off `lowLevelCallUtxoGroups`, the NEW-node loopEntry is seeded and Phase-2 derived, and the
+delegate path reorders the loopEntry input/output before the low-level-call region with the funder and index
+accounting corrected. A default (vmap-sorted) `users[msg.sender] = v` insert now settles through `deployProxy`, the
+NEW node is minted in the proxy block before the impl, and the value plus the contract's own state read back.
+Pinned by `solidcash/test/e2e/UpgradesDeployProxy.test.ts` ("writes a msg.sender-keyed vmap from inside a delegate"),
+`DelegateVerifiedMappingWrite.test.ts` (UPDATE settles; INSERT boundary), and the pin controls
+`DelegateCollectionOutputPin.test.ts` + `S1MultiSlotCardinality.test.ts` (forged/extra node appends still refused).
+Original analysis below.
 
 **What.** `users[msg.sender] = v` (or any sorted-mapping write) inside a `delegate` function, called through
 `upgrades.deployProxy`, fails closed when the mapping is vmap-SORTED (the default). The NON-sorted case SHIPPED
@@ -1747,11 +1757,13 @@ output-only slots right after the `deploy` master (`SymbolTableTraversal` deploy
 no longer shares the first trailing slot with the child's genesis data-NFT outputs. The SDK orders child outputs
 into that region (`stb-build-inputs.ts` `deploy`/`deployDataNft`, `sc-deploy-from.ts`). The `createPair` shape is
 pinned by `solidcash/test/e2e/CreatePairDeployVMap.test.ts` and `DeployFromContract.test.ts` ("typed child combined
-with a vmap insert"). The guard in `sc-deploy-from.ts` now refuses only legacy artifacts whose ABI lacks
-`deployDataNft` slots (recompile to pick up the layout). Original analysis below.
+with a vmap insert"). The permuted-child-output negative is pinned by the same file ("rejects a createPair
+transaction whose child data-NFT output is permuted against an entry output"): swapping a child data-NFT output with
+a factory entry output fails covenant validation. The guard in `sc-deploy-from.ts` now refuses only legacy artifacts
+whose ABI lacks `deployDataNft` slots (recompile to pick up the layout). Original analysis below.
 
-**STILL DEFERRED.** `StatefulContract.deployFrom` refuses a deploy function that both writes vmap mapping entries
-and instantiates a child with data NFTs:
+**ORIGINAL ANALYSIS (superseded).** `StatefulContract.deployFrom` used to refuse a deploy function that both writes
+vmap mapping entries and instantiates a child with data NFTs:
 
 ```
 Deploy function 'createPair' combines a typed stateful child with vmap mapping access.
@@ -1790,10 +1802,13 @@ writes, `SortedList.planBatchUpsert` resolves the slot/proof/next/predecessor wi
 (`sc-resolve-create-builder-entry-abi.ts`, `sc-fix-create-builder-delegate-unlockers.ts`). The visible-vs-internal
 arity guard in `Contract.createUnlocker` is satisfied by the fully specified internal vector, so the
 `SushiBar.enter` → `SushiToken.transferFrom` shape is no longer refused by that guard. Cross-contract sorted writes
-are pinned by `CrossContractSortedWrite.test.ts`. Original analysis below.
+are pinned by `CrossContractSortedWrite.test.ts` (UPDATE, INSERT, msg.sender-keyed), and the wrong-predecessor
+negative is pinned by the same file ("rejects a wrong predecessor proof co-spent for the callee batch"): co-spending a
+different entry as the callee's batch predecessor fails covenant validation rather than writing. Original analysis
+below.
 
-**STILL DEFERRED.** Calling a callee whose function writes vmap mapping entries fails before any transaction is
-built:
+**ORIGINAL ANALYSIS (superseded).** Calling a callee whose function writes vmap mapping entries failed before any
+transaction was built:
 
 ```
 Incorrect number of arguments passed to function transferFrom. Expected 3 arguments (address,address,uint256) but got 4

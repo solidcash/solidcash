@@ -1529,7 +1529,9 @@ baked into `packages/utils/src/ecrecover-compute-library.ts` (the 3rd baked lock
 `probeEcrecoverSplit3` fallback and `buildEcrecoverComputeSidecars3` A/M/B3 co-spend when the 2-way window is
 empty, and the compiler reserves three `ecrecoverSideCar` slots per call (A, M, B).
 `packages/solidcash/test/e2e/EcrecoverWidth0.test.ts` recovers a measured width-0 signature through the A/M/B3
-split and rejects a tampered witness (fail closed). REMAINING: a width-0 signature inside a runtime-bound
+split and rejects a tampered witness (fail closed). The outlined-helper A/B/stride frame contexts are threaded
+in the caller's physical push order (stride, B, A at the OP_DEFINE boundary), which keeps the existing stateless
+helper-recovery probe reading A rather than the stride. REMAINING: a width-0 signature inside a runtime-bound
 ecrecover loop still throws fail-closed, because the loop co-spends the 2-way A/B pair at stride 2 rather than
 the A/M/B triple at stride 3.
 

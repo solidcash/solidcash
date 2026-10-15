@@ -2133,9 +2133,8 @@ hash back; `bench/mistswap-native/repro-bento.mjs` deploys BentoBoxMock; `test/P
 ## MasterChef / MasterChefV2: message-bus preflight OP_VERIFY (2026-08-07)
 
 **ROOT CAUSE FINALIZED (2026-10-15): the split regression and a zero-trip state-array loop resolver gap are
-fixed; the original `add` preflight OP_VERIFY is re-exposed, traced, and bisected to a double-applied
-`poolInfo.push` length increment in the split-delegate dynamic-write witness.** The split codegen regression is
-named and fixed:
+fixed; the original `add` preflight OP_VERIFY is re-exposed, traced, and bisected to the split-delegate
+`poolInfo.push` entry-output geometry.** The split codegen regression is named and fixed:
 `emitDynamicWriteVerification` dropped the `poolInfo` read-modify-write value in the delegate single-write
 cleanup even when `coSpendPreservedDynValues` marked it for the array-external-call co-spend, so the later
 `emitExternalCallVerification` cleanup threw `Expected variable '__internal__dynwrite_value_poolInfo' does not
@@ -2177,25 +2176,24 @@ the 24-test census. The input-0 covenant trace (`SOLIDC_DEBUG_COVENANT_TRACE=1`,
 `setMaterializationMode('devOracle')`) names the site: a 50-instruction output-scan helper (invoke id `ae`) that
 walks the transaction outputs comparing 32-byte collection commitment families and ends with
 `op=0x9d OP_NUMEQUALVERIFY` failing on a searched slot index of `81` (-1, not found) against `<empty>` (0). The
-scan compares the route's expected post-state commitment `f5345e06…ba401` against the witness's
-`f5345e06…ba402`, so the write-back slot is never found.
+scan compares the route's expected output token category `f5345e06…` against the witness's
+`f5345e06…ba402` capability/geometry, so the write-back output is never found at the required coordinate.
 
-Bisected (2026-10-15): the differing last byte IS the post-push `poolInfo` collection length/count. A minimal
-split repro (`SplitAddPushPreflight.test.ts`: struct `PoolInfo{IERC20 lpToken; uint256 allocPoint; uint256
-lastRewardBlock; uint256 accSushiPerShare}`, `PoolInfo[] poolInfo`, `uint256 totalAllocPoint`, `add` =
-`massUpdatePools()` (zero-trip at add time) + `totalAllocPoint += ap` + `poolInfo.push(...)`, compiled with
-`compileStringSplit({forceSplit,messageBus,evmCompat})`) fails with the SAME input-0 OP_NUMEQUALVERIFY in the
-same `body=50` scan. Its trace shows the route searches for the collection commitment family
-`e1e1…e1e101` (the state category `e1e1…e1` with last byte `01`, the post-push length) while the witness
-synthesizes `e1e1…e1e102` (last byte `02`): the SDK's split-delegate array-push write-back double-applies the
-length increment, so the expected family is absent and the scan's found index stays `-1`. Plain `push` (no loop)
-and plain `scalar write + push` (no loop) both SETTLE, so the off-by-one is triggered by the zero-trip
-`massUpdatePools` array-co-spend loop sharing the route: `StateArrayPushNode` publishes both a scalar length-slot
-write (`0 → 1`) and a collection-entry write, and the split-delegate dynamic-write witness counts the length
-increment twice when the co-spend loop's element write is present in the same route. This is the same
-dynamic-write verification family as the already-fixed `emitDynamicWriteVerification` bug, now narrowed to the
-array-push length delta. Evidence: `masterchef-add-skip3-trace.log`, `minimal-split-add.log`,
-`masterchef-census-now.log`, `compose-callee-debug.log` in the goal scratch.
+Bisected (2026-10-15): the differing byte is the NFT CAPABILITY byte of the 33-byte output token category
+(32-byte base category + `01` mutable / `02` minting), not a length. The failing `body=50` scan builds the
+expected entry category as `masterCategory || 0x01` (mutable) and walks the outputs comparing each 33-byte
+category to it, ending with `OP_NUMEQUALVERIFY` on the found-index accumulator (`81` = -1, not found) against
+`0`. A minimal split repro (`SplitAddPushPreflight.test.ts`: struct
+`PoolInfo{IERC20 lpToken; uint256 allocPoint; uint256 lastRewardBlock; uint256 accSushiPerShare}`,
+`PoolInfo[] poolInfo`, `uint256 totalAllocPoint`, `add` = `massUpdatePools()` (zero-trip at add time) +
+`totalAllocPoint += ap` + `poolInfo.push(...)`, compiled with `compileStringSplit({forceSplit,messageBus,
+evmCompat})`) fails with the SAME input-0 OP_NUMEQUALVERIFY in the same `body=50` scan. The split-delegate
+`add` witness materializes the mutable-category outputs (the data NFT and the pushed `poolInfo` entry) at
+coordinates the route's scan does not find at the required index, because the zero-trip `massUpdatePools`
+array-co-spend loop shares the route: plain `push` (no loop) and plain `scalar write + push` (no loop) both
+SETTLE. This is the same dynamic-write/entry-output family as the already-fixed `emitDynamicWriteVerification`
+bug. Evidence: `masterchef-add-skip3-trace.log`, `minimal-split-add.log`, `masterchef-census-now.log`,
+`compose-callee-debug.log` in the goal scratch.
 
 The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with
 

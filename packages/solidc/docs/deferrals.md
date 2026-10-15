@@ -2142,11 +2142,15 @@ cleanup even when `coSpendPreservedDynValues` marked it for the array-external-c
 exist on the stack`. The fix keeps the marked value; pinned by `DynamicWriteArraySplit.test.ts`.
 
 With the split fixed, `MasterChef` now splits (`MasterChef.split.json`, facet deploy succeeds) and the suite
-reaches cross-contract composition instead of the constructor byte gate. Current census before the refusal-1 fix
-(clean committed tree, 100KB ceiling): 7 failed / 1 passed — 3 harness arity failures (`dev`/`approve` called
-with an unstripped `{ from }` override) and 4 `Delegate external call to IERC20.balanceOf is not connected ...
-Resolved target: undefined` (from `sc-resolve-create-builder-nested-compose-callee.ts`). After the refusal-1 fix
-the 4 `not connected` failures re-expose the preflight OP_VERIFY below.
+reaches cross-contract composition instead of the constructor byte gate. Final census (clean build of committed
+HEAD `59e81f7cb`, both files through `bench/mistswap-native`, captured to `masterchef-census.log` in the goal
+scratch): 25 failed / 1 passed — MasterChef 7/8 (4 preflight OP_VERIFY + 3 harness
+arity failures) and MasterChefV2 18/18 (all preflight OP_VERIFY), both files present. The 3 arity failures
+(`dev`/`approve` called with an unstripped `{ from }` override) are the separate drop-in gap and mask 2 further
+MasterChef preflight failures (`should give proper SUSHIs allocation to each pool`,
+`should stop giving bonus SUSHIs after the bonus period ends`), so the preflight failure count is 22 in this
+census where the original report had 24. Every preflight failure shows the exact
+`messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.`
 
 Refusal 1 — `IERC20.balanceOf is not connected` (2026-10-15, instrumented and traced, then FIXED). The throw
 fires on the `add(...)` transaction, not on `deposit`: `add` inlines `massUpdatePools()`, whose `balanceOf`
@@ -2190,7 +2194,7 @@ only from `sortedBatchInfo` (sorted-batch MAPPING collections) — dynamic-ARRAY
 a red herring: a split push WITHOUT the loop (`SplitPushNoLoop` scratch test) fails the same conservation check,
 so this is a split-delegate dynamic-array-push defect, not a loop/compose issue. Evidence:
 `masterchef-add-skip3-trace.log`, `minimal-split-add.log`, `split-push-noloop.log`, `seed-debug2.log`,
-`masterchef-census-now.log`, `compose-callee-debug.log` in the goal scratch.
+`masterchef-census.log`, `masterchef-census-now.log`, `compose-callee-debug.log` in the goal scratch.
 
 The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with
 

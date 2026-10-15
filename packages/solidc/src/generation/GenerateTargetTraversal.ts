@@ -9027,9 +9027,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_COMPUTE_BLOCK_BASE, true);
       }
       if (node.functionId !== undefined && this.outlinedRecoveryInputFunctionIds.has(node.functionId)) {
-        this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_A_INDEX, true);
-        this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_B_INDEX, true);
+        // The caller pushes A, then B, then stride, so the physical frame order (bottom to top, below the
+        // declared parameters) is A, B, stride. pushToStack(name, true) appends to the tracked BOTTOM, so the
+        // declarations must run in the same bottom-to-top order for the tracked depths to match the VM.
         this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_STRIDE, true);
+        this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_B_INDEX, true);
+        this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_A_INDEX, true);
       }
       // A DEFINE'd route handler shares the caller's stack, so the authenticated owner parameter's distance from
       // the BOTTOM depends on what the caller left under the argument band - the frame model cannot know it, and

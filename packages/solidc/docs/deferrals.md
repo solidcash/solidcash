@@ -1804,8 +1804,16 @@ arity guard in `Contract.createUnlocker` is satisfied by the fully specified int
 `SushiBar.enter` → `SushiToken.transferFrom` shape is no longer refused by that guard. Cross-contract sorted writes
 are pinned by `CrossContractSortedWrite.test.ts` (UPDATE, INSERT, msg.sender-keyed), and the wrong-predecessor
 negative is pinned by the same file ("rejects a wrong predecessor proof co-spent for the callee batch"): co-spending a
-different entry as the callee's batch predecessor fails covenant validation rather than writing. Original analysis
-below.
+different entry as the callee's batch predecessor fails covenant validation rather than writing.
+
+**STILL GAP (measured 2026-10-15).** The single-collection UPDATE/INSERT/msg.sender shapes above settle, but the
+full `SushiBar.enter` -> `SushiToken.transferFrom` shape - one callee writing BOTH `_balances[from]/_balances[to]`
+(a two-slot `linear` batch mixing an update and an insert) and the nested `_allowances[from][msg.sender]` - does
+NOT settle: the plain external-call block assembles the callee entry inputs correctly (the insert predecessor is
+matched), but its entry OUTPUTS come out mis-ordered (the rewritten predecessor lands in a fixed target slot, the
+insert's NEW node is missing) and the token master covenant rejects at `OP_VERIFY`. The mixed update+insert linear
+batch output materialization on the plain path is the remaining piece; the single-write-per-collection batch keeps
+its byte-for-byte behavior. Original analysis below.
 
 **ORIGINAL ANALYSIS (superseded).** Calling a callee whose function writes vmap mapping entries failed before any
 transaction was built:

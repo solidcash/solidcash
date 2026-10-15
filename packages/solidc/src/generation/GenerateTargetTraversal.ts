@@ -80,6 +80,8 @@ import {
   KECCAK_CHAIN_FINAL_COVENANT_HASH,
   ECRECOVER_COMPUTE_A_COVENANT_HASH,
   ECRECOVER_COMPUTE_B_COVENANT_HASH,
+  ECRECOVER_COMPUTE_B2_COVENANT_HASH,
+  ECRECOVER_COMPUTE_B3_COVENANT_HASH,
   ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH,
   ECRECOVER_COMPUTE_A_SHARED_LOCK,
   ECRECOVER_COMPUTE_B_SHARED_LOCK,
@@ -2289,6 +2291,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private outlinedRecoveryInputFunctionIds: Set<number> = new Set();
 
   private static readonly OUTLINED_RECOVERY_A_INDEX = '__internal__outlinedRecoveryAIndex';
+  private static readonly OUTLINED_RECOVERY_B_INDEX = '__internal__outlinedRecoveryBIndex';
+  private static readonly OUTLINED_RECOVERY_STRIDE = '__internal__outlinedRecoveryStride';
 
   private static readonly OUTLINED_TRAILING_BASE = '__internal__outlinedTrailingBase';
 
@@ -3929,10 +3933,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const offsetsOf = (fn: FunctionDefinitionNode): number[] => (fn.blockLayout?.slots ?? [])
         .filter((slot) => slot.kind === 'ecrecoverSideCar').map((slot) => slot.offset);
       const first = offsetsOf(entries[0]);
-      if (first.length !== 2 || first[1] !== first[0] + 1) continue;
+      if (first.length !== 3 || first[1] !== first[0] + 1 || first[2] !== first[0] + 2) continue;
       if (!entries.every((entry) => {
         const offsets = offsetsOf(entry);
-        return offsets.length === 2 && offsets[0] === first[0] && offsets[1] === first[1];
+        return offsets.length === 3 && offsets[0] === first[0] && offsets[1] === first[1] && offsets[2] === first[2];
       })) continue;
       if ((target.ecrecoverEvmCallCount ?? 0) > 0) {
         const keccakOffsetsOf = (fn: FunctionDefinitionNode): number[] => (fn.blockLayout?.slots ?? [])
@@ -6412,10 +6416,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const sideCarOffsets = (fn: FunctionDefinitionNode): number[] => (fn.blockLayout?.slots ?? [])
         .filter((slot) => slot.kind === 'ecrecoverSideCar').map((slot) => slot.offset);
       const first = sideCarOffsets(entries[0]);
-      if (first.length !== 2 || first[1] !== first[0] + 1) continue;
+      if (first.length !== 3 || first[1] !== first[0] + 1 || first[2] !== first[0] + 2) continue;
       if (!entries.every((entry) => {
         const offsets = sideCarOffsets(entry);
-        return offsets.length === 2 && offsets[0] === first[0] && offsets[1] === first[1];
+        return offsets.length === 3 && offsets[0] === first[0] && offsets[1] === first[1] && offsets[2] === first[2];
       })) continue;
       if ((target.ecrecoverEvmCallCount ?? 0) > 0) {
         const keccakOffsetsOf = (fn: FunctionDefinitionNode): number[] => (fn.blockLayout?.slots ?? [])
@@ -9024,6 +9028,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (node.functionId !== undefined && this.outlinedRecoveryInputFunctionIds.has(node.functionId)) {
         this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_A_INDEX, true);
+        this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_B_INDEX, true);
+        this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_STRIDE, true);
       }
       // A DEFINE'd route handler shares the caller's stack, so the authenticated owner parameter's distance from
       // the BOTTOM depends on what the caller left under the argument band - the frame model cannot know it, and
@@ -15079,12 +15085,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       );
       if (threadedA >= 0) {
         // OP_INVOKE shares the caller's physical stack; the callee's hidden frame is above unrelated caller
-        // values and is therefore not transaction-bottom-relative. Its declared top depth is stable here.
-        this.emit(encodeInt(BigInt(threadedA)), loc);
+        // values and is therefore not transaction-bottom-relative. The caller threaded the exact A and B
+        // coordinates plus the per-call stride (2 stateless / 3 stateful) for the helper's own effect ordinal.
+        const threadedB = this.getStackIndex(
+          GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_B_INDEX, true,
+        );
+        const strideIdx = this.getStackIndex(
+          GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_STRIDE, true,
+        );
+        this.emit(encodeInt(BigInt(role === 'A' ? threadedA : threadedB)), loc);
         this.emit(Op.OP_PICK, loc);
-        const relative = 2 * effectOrdinal + (role === 'B' ? 1 : 0);
-        if (relative > 0) {
-          this.emit(encodeInt(BigInt(relative)), loc);
+        if (effectOrdinal > 0) {
+          // The PICK above shifted every deeper item down by one; pick the stride at its adjusted depth.
+          this.emit(encodeInt(BigInt(strideIdx + 1)), loc);
+          this.emit(Op.OP_PICK, loc);
+          this.emit(encodeInt(BigInt(effectOrdinal)), loc);
+          this.emit(Op.OP_MUL, loc);
           this.emit(Op.OP_ADD, loc);
         }
         return;
@@ -15251,8 +15267,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitBindAltStackedRedeemLock(loc);
       dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantB
       this.emit(Op.OP_HASH256, loc);
+      // Accept the stateless 2-way B (A immediately before), the stateful 2-way B2 (A two inputs before, past the
+      // M/funder slot), and the 3-way B3 (M immediately before). Each commits the same recovered pubkey.
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(hexToBin(ECRECOVER_COMPUTE_B3_COVENANT_HASH), loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(hexToBin(ECRECOVER_COMPUTE_B2_COVENANT_HASH), loc);
+      this.emit(Op.OP_EQUAL, loc);
       this.emit(hexToBin(ECRECOVER_COMPUTE_B_COVENANT_HASH), loc);
-      this.emit(Op.OP_EQUALVERIFY, loc);                                // B integrity
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_BOOLOR, loc);
+      this.emit(Op.OP_BOOLOR, loc);
+      this.emit(Op.OP_VERIFY, loc);                                   // B integrity
     }
 
     // 4. read the recovered pubkey from B's output commitment (34 B: parity || Qx as a 33-byte LITTLE-endian VM
@@ -16509,9 +16536,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (ordinal === undefined) {
         throw new Error(`Missing stable recovery-effect identity at call to '${targetFunc.name}'`);
       }
-      this.emitRecoveryAInputIndex(ordinal, locationData);
+      // Thread the A and B coordinates plus the per-call stride, so one shared outlined body serves both the
+      // stateless 2-slot layout (stride 2) and the stateful 3-slot layout (stride 3).
+      this.emitRecoveryInputIndex(ordinal, 'A', locationData);
       this.pushToStack(`(__outlined_recovery_a_${targetFunc.functionId})`);
-      hiddenContextCount += 1;
+      this.emitRecoveryInputIndex(ordinal, 'B', locationData);
+      this.pushToStack(`(__outlined_recovery_b_${targetFunc.functionId})`);
+      this.emit(encodeInt(this.currentFunction.blockLayout ? 3n : 2n), locationData);
+      this.pushToStack(`(__outlined_recovery_stride_${targetFunc.functionId})`);
+      hiddenContextCount += 3;
     }
     // A side-car helper can be reached from both a direct delegate entry (resources beside the executor) and a
     // compiler-routed delegate entry (resources in the authenticated participant block). Pass the actual compute
@@ -48664,22 +48697,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
-  /** Push the exact A-sidecar input for one recovery effect in the current invocation context. */
-  private emitRecoveryAInputIndex(effectOrdinal: number, locationData: SingleLocationData): void {
-    const inherited = this.getStackIndex(
-      GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_A_INDEX, true,
-    );
+  /** Push the exact A or B side-car input for one recovery effect in the current invocation context. */
+  private emitRecoveryInputIndex(effectOrdinal: number, role: 'A' | 'B', locationData: SingleLocationData): void {
+    const name = role === 'A'
+      ? GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_A_INDEX
+      : GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_B_INDEX;
+    const inherited = this.getStackIndex(name, true);
     if (inherited >= 0) {
+      const strideIdx = this.getStackIndex(
+        GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_STRIDE, true,
+      );
       this.emit(encodeInt(BigInt(inherited)), locationData);
       this.emit(Op.OP_PICK, locationData);
       if (effectOrdinal > 0) {
-        this.emit(encodeInt(BigInt(2 * effectOrdinal)), locationData);
+        // The PICK above shifted every deeper item down by one; pick the stride at its adjusted depth.
+        this.emit(encodeInt(BigInt(strideIdx + 1)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(encodeInt(BigInt(effectOrdinal)), locationData);
+        this.emit(Op.OP_MUL, locationData);
         this.emit(Op.OP_ADD, locationData);
       }
       return;
     }
     if (this.currentFunction.blockLayout) {
-      this.emitBlockSlotIndex('ecrecoverSideCar', 3 * effectOrdinal, locationData);
+      this.emitBlockSlotIndex(
+        'ecrecoverSideCar', role === 'A' ? 3 * effectOrdinal : 3 * effectOrdinal + 2, locationData,
+      );
       return;
     }
     // A stateless entry has no authenticated owner-relative block. Its recovery pairs remain the final fixed
@@ -48700,7 +48743,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       );
     }
     this.emit(Op.OP_TXINPUTCOUNT, locationData);
-    this.emit(encodeInt(BigInt(2 * (total - effectOrdinal) + evm)), locationData);
+    this.emit(encodeInt(BigInt(2 * (total - effectOrdinal) + evm + (role === 'B' ? -1 : 0))), locationData);
     this.emit(Op.OP_SUB, locationData);
   }
 

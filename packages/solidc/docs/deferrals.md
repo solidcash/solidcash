@@ -1518,17 +1518,20 @@ for evm). Triples... (well, +50%s) the side-car count per recovery, which also p
 FIXED historical signatures (where re-signing is impossible) in bulk. Detail in memory
 ecrecover_builtin.md (2026-07-20b section).
 
-**PARTLY RESOLVED 2026-10-15 (middle covenant generated + baked; SDK/compiler wiring remains).** The
+**RESOLVED 2026-10-15 for a straight-line width-0 recovery; the dynamic-loop case remains deferred.** The
 3-covenant split's hard cryptographic core is now done and VM-verified: `research/ecrecover-poc/middle.mjs`
 proves the A->M->B body math on the real BCH-2026 VM (A ladders to C1, the new middle covenant M is a pure
 ladder C1->C2 committing H_M, B ladders C2->Q; recovered pubkey == ethers, forged C1/C2 checkpoints rejected),
 and `research/ecrecover-poc/gen-middle-sidecar.mjs` generates the deployable self-preserving covenants with the
 A->M->B hash chain and verifies the full 3-input spend. The generated `M` and `B3` covenants + their hashes are
 baked into `packages/utils/src/ecrecover-compute-library.ts` (the 3rd baked lock;
-`buildEcrecoverComputeRedeem`/`ecrecoverComputeLockingBytecode` accept `M`/`B3`). REMAINING before a width-0 sig
-settles end-to-end: the SDK `probeEcrecoverSplit` 3-way fallback + `buildEcrecoverComputeSidecars` A/M/B
-co-spend, and the compiler's 3-slot-per-call `ecrecoverSideCar` block layout (+ stride-3 loop indexing for the
-loop case). Until those land a width-0 signature still throws fail-closed.
+`buildEcrecoverComputeRedeem`/`ecrecoverComputeLockingBytecode` accept `M`/`B3`). The SDK now runs the 3-way
+`probeEcrecoverSplit3` fallback and `buildEcrecoverComputeSidecars3` A/M/B3 co-spend when the 2-way window is
+empty, and the compiler reserves three `ecrecoverSideCar` slots per call (A, M, B).
+`packages/solidcash/test/e2e/EcrecoverWidth0.test.ts` recovers a measured width-0 signature through the A/M/B3
+split and rejects a tampered witness (fail closed). REMAINING: a width-0 signature inside a runtime-bound
+ecrecover loop still throws fail-closed, because the loop co-spends the 2-way A/B pair at stride 2 rather than
+the A/M/B triple at stride 3.
 
 ---
 

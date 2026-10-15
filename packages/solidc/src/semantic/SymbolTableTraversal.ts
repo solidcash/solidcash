@@ -18401,14 +18401,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // ecrecover recovery side-cars: each ecrecoverPubKey call rides a consecutive PAIR of self-preserving 1:1
-    // slots - A (checkpoints the GLV ladder) then B (finishes -> commits the recovered pubkey). Codegen reads
-    // input[master+offsetA] (bind the sig args) and output[master+offsetB] (the pubkey). slotIndex = call index.
+    // ecrecover recovery side-cars: each ecrecoverPubKey call rides a consecutive TRIPLE of self-preserving 1:1
+    // slots - A (checkpoints the GLV ladder to C1), M (3-way-only pure ladder C1->C2, a funder for a normal 2-way
+    // signature), then B (finishes -> commits the recovered pubkey). Codegen reads input[master+offsetA] (bind the
+    // sig args) and output[master+offsetB] (the pubkey). slotIndex = 3*callIndex (+1 M, +2 B).
     if (node.ecrecoverCompute) {
       const eCalls = node.ecrecoverCallCount ?? 0;
       for (let i = 0; i < eCalls; i++) {
-        slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: 2 * i });     // A (checkpoint)
-        slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: 2 * i + 1 }); // B (pubkey)
+        slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: 3 * i });     // A (checkpoint C1)
+        slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: 3 * i + 1 }); // M (3-way C1->C2 / funder)
+        slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: 3 * i + 2 }); // B (pubkey)
       }
     }
     const existingEcrecover = slots.filter((slot) => slot.kind === 'ecrecoverSideCar').length;

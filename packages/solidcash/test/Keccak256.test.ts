@@ -71,7 +71,7 @@ describe('keccak256 builtin (side-car library)', () => {
 const STATEFUL_SOURCE = `
 contract StatefulKeccak() {
     int counter;
-    function bump(bytes preimage, bytes32 expected) {
+    function bump(bytes32 preimage, bytes32 expected) {
         require(keccak256(preimage) == expected);
         this.counter = this.counter + 1;
     }
@@ -335,11 +335,11 @@ const CALLEE_KECCAK = `
 pragma solidcash >=0.8.0;
 interface ICalleeK {
     public int counter;
-    function bump(bytes preimage, bytes32 expected);
+    function bump(bytes32 preimage, bytes32 expected);
 }
 contract CalleeK() is ICalleeK {
     int counter;
-    function bump(bytes preimage, bytes32 expected) {
+    function bump(bytes32 preimage, bytes32 expected) {
         require(keccak256(preimage) == expected);
         this.counter = this.counter + 1;
     }
@@ -349,7 +349,7 @@ const CALLER_NO_KECCAK = `
 pragma solidcash >=0.8.0;
 interface ICalleeK {
     public int counter;
-    function bump(bytes preimage, bytes32 expected);
+    function bump(bytes32 preimage, bytes32 expected);
 }
 contract CallerK(bytes calleeAddr) {
     int lastSeen;

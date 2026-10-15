@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { keccak_256 } from '@noble/hashes/sha3.js';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { keccakChainLockingBytecode } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import type NetworkProvider from '../../src/network/NetworkProvider.js';
 import { getContractFactory } from '../../src/stateful/index.js';
@@ -27,9 +29,13 @@ contract ChainHasher {
 const ARTIFACT = compileString(SOURCE, { forceStateful: true, enforceFinalRequire: false });
 
 type Deployed = {
-  getFunction(name: string): (...args: unknown[]) => { send(): Promise<unknown> };
+  getFunction(name: string): (...args: unknown[]) => {
+    build(): Promise<{ inputs: Array<{ unlocker: { generateLockingBytecode(): Uint8Array } }> }>;
+    send(): Promise<unknown>;
+  };
   withProvider(runner: NetworkProvider): Deployed;
   provider: NetworkProvider;
+  categoryId: string;
 };
 
 const deploy = async (): Promise<Deployed> => {
@@ -47,6 +53,15 @@ describe('stateful chained keccak256 side-cars', () => {
   it('hashes a >407-byte runtime argument through the chained START/CONT/FINAL side-cars', async () => {
     const hasher = await deploy();
     const preimage = bigPreimage();
+    // The FINAL side-car carries the full preimage, so a 2000-byte input splits into 15 chained blocks: the
+    // settled transaction must co-spend more than one START/CONT/FINAL side-car input, not one fixed slot.
+    const built = await hasher.getFunction('record')(preimage).build();
+    const salt = hexToBin(hasher.categoryId).slice().reverse();
+    const chainLocks = new Set((['start', 'cont', 'final'] as const).map((kind) =>
+      binToHex(keccakChainLockingBytecode(salt, kind, true))));
+    const chainSideCarInputs = built.inputs.filter((input) =>
+      chainLocks.has(binToHex(input.unlocker.generateLockingBytecode())));
+    expect(chainSideCarInputs.length).toBeGreaterThan(1);
     await hasher.getFunction('record')(preimage).send();
     await expect(hasher.getFunction('check')(keccak_256(preimage)).send()).resolves.toBeDefined();
   }, 300_000);

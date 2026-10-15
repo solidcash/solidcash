@@ -2142,10 +2142,19 @@ exist on the stack`. The fix keeps the marked value; pinned by `DynamicWriteArra
 With the split fixed, `MasterChef` now splits (`MasterChef.split.json`, facet deploy succeeds) and the suite
 reaches cross-contract composition instead of the constructor byte gate. The next stacked refusal is SDK-side,
 before the preflight: `Delegate external call to IERC20.balanceOf is not connected. Connect 'IERC20' on the
-implementation before calling through the proxy` (from `sc-resolve-create-builder-nested-compose-callee.ts`),
-plus three harness arity failures (`dev`/`approve` called with an unstripped `{ from }` override). The recorded
+implementation before calling through the proxy` (from `sc-resolve-create-builder-nested-compose-callee.ts`).
+
+Named cause of that refusal (traced 2026-10-15): the `balanceOf` callsite's `addressSource` is
+`poolInfo[__sp0_pid].lpToken` — a loop-indexed array-element field expression (`arrayAccess(poolInfo, loopIndex)
+→ field(lpToken)`). `resolveExternalArgs` does not evaluate a loop-index source statically, so `addressValue` is
+`undefined`, no deployment is selected, and the resolver throws before the preflight. The deployments ARE
+registered (two `ERC20Mock`s plus `SushiToken` and the `MasterChef` facets), so this is not a missing registry
+entry: the compose path must plan the runtime array co-spend (like the compiler's `emitArrayExternalCallLoop`)
+instead of statically resolving one callee. The unused `findDeploymentImplementing` helper cannot help either —
+the address is a runtime loop index, not an interface-name mismatch. Three harness arity failures (`dev`/`approve`
+called with an unstripped `{ from }` override) are a separate drop-in gap. The recorded
 `preflight ... at input 0: OP_VERIFY` census is therefore still not reachable until that compose connection is
-resolved. Evidence: `masterchef-census-fixed.log` (25 failed / 1 passed) in the goal scratch.
+resolved. Evidence: `masterchef-census-fixed.log` (25 failed / 1 passed) and `delegate-debug.log` in the goal scratch.
 
 The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with
 

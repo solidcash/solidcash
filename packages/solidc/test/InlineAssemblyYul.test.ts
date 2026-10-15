@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
-import { bytecodeToAsm, hash256 } from '@solidcash/utils';
+import { bytecodeToAsm, hash256, sourceMapToLocationData } from '@solidcash/utils';
 import { UnsupportedInlineAssemblyError } from '../src/Errors.js';
 
 // Phase 1 of Yul inline-assembly support: the Yul sub-grammar parses (no more opaque ':' ParseError on `:=`)
@@ -589,11 +589,25 @@ describe('Yul memory (constant-offset scratch)', () => {
   });
 });
 
+// The assembly-statement bytecode region for source lines `lines`, canonicalized by dropping stack-layout
+// plumbing (PICK/ROLL/DUP/... and their numeric immediates). The prologue legitimately differs between a
+// materialized param and an already-resolved local __yulmem buffer and shifts the stack depth, so the raw
+// bytecode differs; what must match is the MEMORY-op body (the mstore/mload splice = SPLIT/CAT/NUM2BIN/...).
+const memoryOpBody = (src: string, lines: number[]): string[] => {
+  const artifact = compileString(src, { evmCompat: true });
+  const tokens = artifact.bytecode.split(' ');
+  const locations = sourceMapToLocationData(artifact.debug.sourceMap);
+  const region: string[] = [];
+  for (let i = 0; i < Math.min(tokens.length, locations.length); i += 1) {
+    const line = locations[i].location?.start.line;
+    if (line !== undefined && lines.includes(line)) region.push(tokens[i]);
+  }
+  const STACK_PLUMBING = new Set(['OP_PICK', 'OP_ROLL', 'OP_INVOKE', 'OP_DUP', 'OP_SWAP', 'OP_OVER', 'OP_ROT',
+    'OP_2DUP', 'OP_2SWAP', 'OP_3DUP', 'OP_2OVER', 'OP_2ROT', 'OP_NIP', 'OP_DROP', 'OP_TUCK', 'OP_2DROP', 'OP_0']);
+  return region.filter((token) => !/^OP_[0-9]+$/.test(token) && !STACK_PLUMBING.has(token));
+};
+
 describe('bytes/string memory params and named returns as __yulmem pointers (mstore/mload/mcopy/keccak256)', () => {
-  // materializeParams / materializeNamedBytesReturn insert a compiler-owned `__memb_*`/`__memret_*` buffer whose
-  // pointer allocation cannot be spelled from user source, so byte-identity is asserted between the two source
-  // spellings that ride the SAME materialization (bytes == string) rather than against a hand-written
-  // materialized-local prologue.
   const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
   it('materializes a bytes memory param used as a pointer (mstore/mload/mcopy/keccak256 over add(p,off))', () => {
     expect(cc('contract C(){function f(bytes memory p, uint256 n) returns (bytes32 r) {'
@@ -613,6 +627,16 @@ describe('bytes/string memory params and named returns as __yulmem pointers (mst
       + ' assembly { mstore(o, 32) mstore(add(o,0x20), w) } } }',
       { evmCompat: true });
     expect(mk('bytes').bytecode).toBe(mk('string').bytecode);
+  });
+  it('lowers the param pointer-ops body identically to the already-resolved local __yulmem buffer', () => {
+    // The prologue legitimately differs (a param deserialize loop vs a local fresh alloc) and shifts the stack
+    // depth, so the raw bytecode differs; the mstore/mload MEMORY-op body must match modulo that plumbing.
+    const paramSrc = 'contract C {\n function f(bytes memory p) returns (bytes32 r) {\n'
+      + '  assembly { mstore(add(p, 0x20), 1) r := mload(add(p, 0x20)) }\n }\n}';
+    const localSrc = 'contract C {\n function f(bytes32 w) returns (bytes32 r) {\n'
+      + '  bytes memory b = new bytes(32);\n'
+      + '  assembly { mstore(add(b, 0x20), 1) r := mload(add(b, 0x20)) }\n }\n}';
+    expect(memoryOpBody(paramSrc, [3])).toEqual(memoryOpBody(localSrc, [4]));
   });
   it('keeps the bridge-handled mload read on an unbounded bytes memory param', () => {
     // mload(add(buf,32)) on a bytes memory param is also a materialization candidate; the read must still

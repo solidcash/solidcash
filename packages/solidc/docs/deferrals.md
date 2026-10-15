@@ -2481,3 +2481,12 @@ records) with every input checked by the ordinary VM. Changed commitments, capab
 records are refused. Compact trace extraction remains explicit opt-in and observes no unseen prefix. Two focused
 trace unit cases and two adjacent plain batch cases pass. No BCHN evidence was collected. General nested loop
 cardinality is outside this fix: this planner requires the published lifted top-level multiplicity of one.
+
+**Re-verified (2026-10-15).** The merge seam is applied on both plain-path row builders: owner-local `batch()` rows
+flow through `batchRaw` (`sc-batch-raw.ts:384`) and the external-callee row builder applies it at
+`sc-build-repeated-external-batch.ts:254`. Added a unit case (`MessageBusHandlerMetadata.test.ts`) driving
+`mergePublishedMessageBusHandlerMetadata` with a raw `emits` handler against a published `runtimeLoopEvents:
+[{ eventSignatures: ['Ping(uint256)'], stream: true }]`; the merged handler retains the published stream and drops
+`emits`. Re-ran the focused unit file (7/7) and `KernelPlainStreamedCallee.test.ts` (2/2, compact `[7n]`/`[8n]`
+commitments, 3+2 chunked record chain with head/continuation lock order, hostile mutations/reordering refused).
+Captured output: `{SCRATCH}/plain-streamed-unit.log`, `{SCRATCH}/plain-streamed-e2e.log`.

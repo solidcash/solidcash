@@ -30,6 +30,20 @@ describe('message-bus published handler metadata', () => {
     ]);
     expect(merged.dynamicWrites).toEqual([]);
   });
+
+  it('retains the published runtimeLoopEvents stream and drops the raw emits', () => {
+    const raw: AbiFunction = {
+      type: 'function', name: 'emit', selector: 'cccccccc', inputs: [], outputs: [],
+      emits: [{ eventName: 'Ping', eventSignature: 'Ping(uint256)', emitIndex: 0 }],
+    };
+    const published: AbiFunction = {
+      type: 'function', name: 'emit', selector: 'cccccccc', inputs: [], outputs: [],
+      runtimeLoopEvents: [{ eventSignatures: ['Ping(uint256)'], stream: true }],
+    };
+    const merged = mergePublishedMessageBusHandlerMetadata(raw, [published]);
+    expect(merged.runtimeLoopEvents).toEqual([{ eventSignatures: ['Ping(uint256)'], stream: true }]);
+    expect(merged.emits).toBeUndefined();
+  });
 });
 
 describe('route push-value witnesses', () => {

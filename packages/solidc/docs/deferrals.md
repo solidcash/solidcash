@@ -2142,10 +2142,11 @@ cleanup even when `coSpendPreservedDynValues` marked it for the array-external-c
 exist on the stack`. The fix keeps the marked value; pinned by `DynamicWriteArraySplit.test.ts`.
 
 With the split fixed, `MasterChef` now splits (`MasterChef.split.json`, facet deploy succeeds) and the suite
-reaches cross-contract composition instead of the constructor byte gate. Current census (clean committed tree,
-100KB ceiling): 7 failed / 1 passed — 3 harness arity failures (`dev`/`approve` called with an unstripped
-`{ from }` override) and 4 `Delegate external call to IERC20.balanceOf is not connected ... Resolved target:
-undefined` (from `sc-resolve-create-builder-nested-compose-callee.ts`). No preflight OP_VERIFY is reachable.
+reaches cross-contract composition instead of the constructor byte gate. Current census before the refusal-1 fix
+(clean committed tree, 100KB ceiling): 7 failed / 1 passed — 3 harness arity failures (`dev`/`approve` called
+with an unstripped `{ from }` override) and 4 `Delegate external call to IERC20.balanceOf is not connected ...
+Resolved target: undefined` (from `sc-resolve-create-builder-nested-compose-callee.ts`). After the refusal-1 fix
+the 4 `not connected` failures re-expose the preflight OP_VERIFY below.
 
 Refusal 1 — `IERC20.balanceOf is not connected` (2026-10-15, instrumented and traced, then FIXED). The throw
 fires on the `add(...)` transaction, not on `deposit`: `add` inlines `massUpdatePools()`, whose `balanceOf`
@@ -2180,7 +2181,7 @@ scan compares the route's expected post-state commitment `f5345e06…ba401` agai
 `f5345e06…ba402`, so the write-back slot is never found.
 
 Bisected (2026-10-15): the differing last byte IS the post-push `poolInfo` collection length/count. A minimal
-split repro (`MinimalAddPush.test.ts`: struct `PoolInfo{IERC20 lpToken; uint256 allocPoint; uint256
+split repro (`SplitAddPushPreflight.test.ts`: struct `PoolInfo{IERC20 lpToken; uint256 allocPoint; uint256
 lastRewardBlock; uint256 accSushiPerShare}`, `PoolInfo[] poolInfo`, `uint256 totalAllocPoint`, `add` =
 `massUpdatePools()` (zero-trip at add time) + `totalAllocPoint += ap` + `poolInfo.push(...)`, compiled with
 `compileStringSplit({forceSplit,messageBus,evmCompat})`) fails with the SAME input-0 OP_NUMEQUALVERIFY in the

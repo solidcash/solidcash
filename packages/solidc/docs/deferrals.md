@@ -1760,7 +1760,14 @@ pinned by `solidcash/test/e2e/CreatePairDeployVMap.test.ts` and `DeployFromContr
 with a vmap insert"). The permuted-child-output negative is pinned by the same file ("rejects a createPair
 transaction whose child data-NFT output is permuted against an entry output"): swapping a child data-NFT output with
 a factory entry output fails covenant validation. The guard in `sc-deploy-from.ts` now refuses only legacy artifacts
-whose ABI lacks `deployDataNft` slots (recompile to pick up the layout). Original analysis below.
+whose ABI lacks `deployDataNft` slots (recompile to pick up the layout).
+
+**Literal source pin (verified 2026-10-15).** The full vendored MistSwap `UniswapV2Factory`/`UniswapV2Pair` source
+now compiles whole (`split: 'off'`, `maximumInputBytes: 100_000`, `evmCompat`, `allowUnsafeOperations`) and runs
+end to end: `deployFrom` supplies the `__internal__dynamicChunkInputBase` sentinel for `allPairs.push` and
+materializes the wide `PairCreated` event across its `event`/`eventChunk` slots with the compiler's evm-notation
+encoding, so `createPair` deploys a pair, both `getPair` directions read back, and the permuted child data-NFT
+output is refused. Pinned by `solidcash/test/e2e/UniswapV2FactoryLiteral.test.ts`. Original analysis below.
 
 **ORIGINAL ANALYSIS (superseded).** `StatefulContract.deployFrom` used to refuse a deploy function that both writes
 vmap mapping entries and instantiates a child with data NFTs:

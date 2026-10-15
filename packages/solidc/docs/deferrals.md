@@ -2132,8 +2132,9 @@ hash back; `bench/mistswap-native/repro-bento.mjs` deploys BentoBoxMock; `test/P
 
 ## MasterChef / MasterChefV2: message-bus preflight OP_VERIFY (2026-08-07)
 
-**PARTLY DIAGNOSED (2026-10-15): the split regression is fixed; the preflight OP_VERIFY is still masked by two
-stacked SDK-side refusals, both named below.** The split codegen regression is named and fixed:
+**ROOT CAUSE REACHED (2026-10-15): the split regression and a zero-trip state-array loop resolver gap are
+fixed, and the original `add` preflight OP_VERIFY is re-exposed and traced to the `poolInfo.push` state-write
+verification.** The split codegen regression is named and fixed:
 `emitDynamicWriteVerification` dropped the `poolInfo` read-modify-write value in the delegate single-write
 cleanup even when `coSpendPreservedDynValues` marked it for the array-external-call co-spend, so the later
 `emitExternalCallVerification` cleanup threw `Expected variable '__internal__dynwrite_value_poolInfo' does not
@@ -2145,18 +2146,17 @@ reaches cross-contract composition instead of the constructor byte gate. Current
 `{ from }` override) and 4 `Delegate external call to IERC20.balanceOf is not connected ... Resolved target:
 undefined` (from `sc-resolve-create-builder-nested-compose-callee.ts`). No preflight OP_VERIFY is reachable.
 
-Refusal 1 — `IERC20.balanceOf is not connected` (2026-10-15, instrumented and traced). The throw fires on the
-`add(...)` transaction, not on `deposit`: `add` inlines `massUpdatePools()`, whose `balanceOf` callsite is
-published as `occurrence: 'loop'`, `loopArrayVar: 'poolInfo'`, `addressSource = poolInfo[loopIndex].lpToken`. At
-`add` time `poolInfo` is EMPTY, so the loop is zero-trip; `resolveExternalArgs` reads the empty state array and
-returns `undefined`, no deployment is selected, and the resolver throws before the VM. Two skip guards both fail
-to drop the zero-trip loop: `usesEmptyArrayElement` in `sc-resolve-create-builder-nested-compose-callee.ts` only
-inspects FUNCTION-ARGUMENT `arrayElement` sources (not a `loopArrayVar` over a STATE array), and
-`materializeCreateBuilderLowLevelStatefulCall` keeps a `loop` callsite whenever `planExternalCallOccurrences`
-returns `undefined`, which it does for the empty state array. Passing `_withUpdate=false` does not help: the
-loop callsite is still published and still refused. Deployments ARE registered (two `ERC20Mock`s plus
-`SushiToken` and the `MasterChef` facets), so this is a zero-trip/state-array loop skip gap, not a missing
-registry entry.
+Refusal 1 — `IERC20.balanceOf is not connected` (2026-10-15, instrumented and traced, then FIXED). The throw
+fires on the `add(...)` transaction, not on `deposit`: `add` inlines `massUpdatePools()`, whose `balanceOf`
+callsite is published as `occurrence: 'loop'`, `loopArrayVar: 'poolInfo'`,
+`addressSource = poolInfo[loopIndex].lpToken`. At `add` time `poolInfo` is EMPTY, so the loop is zero-trip;
+`resolveExternalArgs` reads the empty state array and returns `undefined`, no deployment is selected, and the
+resolver throws before the VM. The guard `usesEmptyArrayElement` only inspected FUNCTION-ARGUMENT
+`arrayElement` sources (not a `loopArrayVar` over a STATE array), and the loop-nested `SushiToken.mint`
+callsites (no `loopArrayVar`, sharing the loop counter) were likewise kept. Fixed by
+`isZeroTripStateArrayLoop` in `sc-resolve-create-builder-nested-compose-callee.ts` (pinned by
+`ZeroTripStateArrayLoop.test.ts`): a delegate-compose `loop` callsite over an empty state array, or a
+loop-nested sibling sharing its counter with one, is now skipped before callee resolution.
 
 Refusal 2 — `messageBus: result-dependent loop has no compiler iteration domain` (2026-10-15, focused
 multi-row repro). When a signer drives the same `massUpdatePools`-shaped loop (source loop over `poolInfo`,
@@ -2168,16 +2168,22 @@ shape (no `iterationDomain`, only `loopArrayVar`), so a direct `massUpdatePools`
 graph planner cannot enumerate a `loopArrayVar`-driven result-dependent loop without the compiler publishing an
 affine domain.
 
-Focused single-row proof (2026-10-15): a struct-array `PoolInfo[]` whose `poolInfo[pid].lpToken` is the
-external-call callee, populated through the SDK's normal `push` state write and then read by a
-forward-parameter `update(pid)`, SETTLES. The route covenant and its array-element compose witness are sound for
-one row; the defect is specific to the multi-row/loop shape. The input-0 covenant-failure trace gate
-(`SOLIDC_DEBUG_COVENANT_TRACE=1` with `setMaterializationMode('devOracle')`) fires and prints
-`[covenant VM trace] input 0: Program failed an OP_VERIFY operation.` with a 5-op failing body
-`OP_PICK OP_SWAP OP_OVER OP_GREATERTHAN OP_VERIFY` — the compiler's `emitBoundsCheck` array-index
-`require(index < length)` check — confirming that the OP_VERIFY the preflight reports is the array-element
-access bounds check, reached only when the synthesized witness carries an inconsistent array length/index for a
-loop row. Evidence: `masterchef-census-now.log`, `compose-callee-debug.log`, `masterchef-preflight-bypass2.log`,
+Re-exposed preflight and its trace (2026-10-15): with refusal 1 fixed, `MasterChef.add(100, lp, true)` no longer
+throws `not connected`; it reaches the original failure —
+`messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.` — the exact error of
+the 24-test census. The input-0 covenant trace (`SOLIDC_DEBUG_COVENANT_TRACE=1`,
+`setMaterializationMode('devOracle')`) names the site: a 50-instruction output-scan helper (invoke id `ae`) that
+walks the transaction outputs comparing 32-byte state-write commitments and ends with
+`op=0x9d OP_NUMEQUALVERIFY` failing on a searched slot index of `81` (-1, not found) against `<empty>` (0). The
+scan compares the route's expected post-state commitment `f5345e06…ba401` against the witness's
+`f5345e06…ba402` (last byte differs), so the write-back slot is never found. This is the `poolInfo.push`
+state-write verification in the split delegate `add` route — the same dynamic-write verification family as the
+already-fixed `emitDynamicWriteVerification` bug, but for the array-push shape: the SDK-synthesized post-state
+commitment does not match what the route recomputes. The next bisection target is that commitment's last-byte
+delta (post-push `poolInfo` length/count serialization). A focused single-row struct-array callee
+(populated via `push`, read via forward-parameter `update(pid)`) SETTLES, so the defect is specific to the
+`add`-route push + inlined-loop write-back, not the array-element compose itself. Evidence:
+`masterchef-census-now.log`, `compose-callee-debug.log`, `masterchef-add-skip3-trace.log`,
 `multirrow-repro2.log`, `masterchef-repro.log` in the goal scratch.
 
 The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with

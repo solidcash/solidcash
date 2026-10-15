@@ -295,9 +295,9 @@ describe('the genesis-shape transcript, decided by the on-chain program', () => 
     expect(vmVerdict(withWriterBlock(tx, writerBlock(2)), 1).accepted).toBe(false);
   });
 
-  // The on-chain V11 walk reads spent inputs only, so a minted root's self is whatever the transcript says.
-  // V5 then accepts a callee sender that copies that self. The derivation rejects the same transaction.
-  test('a forged minted-root self passes the validator and fails V11 in the derivation', () => {
+  // A minted root's self has to be the address of its output's category. The derivation reports V11, and the
+  // facet reads that output and refuses a self that names another category.
+  test('a forged minted-root self fails on chain and as V11 in the derivation', () => {
     const authorized = validatorAddress(categoryOf('audit-expected-authority'), PROGRAM);
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Guarded {'
@@ -345,7 +345,7 @@ describe('the genesis-shape transcript, decided by the on-chain program', () => 
       )),
     };
     expect(model(changed).rejection?.reason).toBe('V11_SELF_NOT_CONTRACT_ADDRESS');
-    const verdicts = [0, 1, 2].map((index) => vmVerdict(changed, index));
-    expect(verdicts.map((verdict) => verdict.accepted)).toEqual([true, true, false]);
+    // The facet carries the minted-root rule. A transaction the facet refuses does not settle.
+    expect(vmVerdict(changed, 1).accepted).toBe(false);
   });
 });

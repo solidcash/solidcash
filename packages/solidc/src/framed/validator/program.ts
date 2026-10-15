@@ -729,14 +729,23 @@ function emitMintedMasterCompleteness(e: Emitter): void {
   e.op(O.OP_ENDIF);
 }
 
-/** V4: one minted master is a genesis root: a ROOT frame with no P2PKH caller and no origin. */
+/**
+ * V4: one minted master is a genesis root: a ROOT frame with no P2PKH caller and no origin, whose `self` is the
+ * address of its own output's category.
+ *
+ * Entry `[count, rest]`, exit `[count, rest']` with this master consumed. The output index stays until `self` is
+ * compared, because a minted master has no input for {@link emitFrameAddresses} to read. The address is derived
+ * from the mutable pin, the same pin a spent master's V11 check uses: the output token carries the minting
+ * capability, and that byte is replaced before the hash.
+ */
 function emitOneMintedMasterRootRule(e: Emitter): void {
   const O = Opcodes;
   takeUnsignedCount(e, 1);
-  e.op(O.OP_NIP);
+  e.op(O.OP_OVER, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
   takeUnsignedCount(e, 2);
   e.op(O.OP_SWAP, O.OP_SPLIT);
   e.op(O.OP_SWAP);
+  // `[count, output, rest, block]`. Kind, caller and origin, as before.
   e.count(3).op(O.OP_SPLIT, O.OP_NIP);
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
@@ -747,7 +756,20 @@ function emitOneMintedMasterRootRule(e: Emitter): void {
   e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUALVERIFY);
+  // `[count, output, rest, afterOrigin]`. Skip the validator reference and the sender; `self` is the claim.
+  e.script(takeFixedWidthField(2));
+  e.op(O.OP_NIP);
+  e.script(takeLengthPrefixedField());
+  e.op(O.OP_NIP);
+  e.script(takeLengthPrefixedField());
   e.op(O.OP_DROP);
+  // `[count, output, rest, self]`. The output's category, with the mutable capability the address is pinned to.
+  e.count(2).op(O.OP_PICK, O.OP_OUTPUTTOKENCATEGORY);
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP);
+  e.push(Uint8Array.from([TokenCapability.MUTABLE])).op(O.OP_CAT);
+  e.script(addressFromPinScript({ fromAltStack: true }));
+  e.op(O.OP_EQUALVERIFY);
+  e.op(O.OP_NIP);
 }
 
 /** V4: every minted master is a genesis root frame with no P2PKH caller and no origin. */
@@ -3498,10 +3520,11 @@ function emitFirstWindow(e: Emitter, stride: number, offset: number, width: numb
 }
 
 /**
- * A covered master whose address comes from its own category presents that category's address.
+ * A spent master whose address comes from its own category presents that category's address.
  *
  * Entry `[M]`, exit `[M]`. Frames that run with their caller's address are not decided here. The address is the
- * P2SH32 lock of this program pinned to the master's own category, which is what the spent token reports.
+ * P2SH32 lock of this program pinned to the master's own category, which is what the spent token reports. A minted
+ * master has no input, so its `self` is checked from the output in {@link emitOneMintedMasterRootRule}.
  */
 function emitFrameAddresses(e: Emitter): void {
   const O = Opcodes;

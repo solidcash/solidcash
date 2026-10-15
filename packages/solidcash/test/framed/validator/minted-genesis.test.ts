@@ -163,6 +163,28 @@ function model(tx: FramedTransaction): ReturnType<typeof decideValidator> {
   return decideValidator(tx, { validatorTemplate: PROGRAM, validatorInputIndex: 0 });
 }
 
+/** Replaces the minted root carried in the validator's transcript. */
+function withMintedRoot(tx: FramedTransaction, block: WitnessBlock): FramedTransaction {
+  const transcript = encodeMintedTranscript({
+    roots: [],
+    masters: [2],
+    mintedMasters: [{ output: 3, block }],
+    settles: [],
+  });
+  return {
+    ...tx,
+    inputs: tx.inputs.map((input) => (input.index === 0
+      ? {
+        ...input,
+        unlockingBytecode: new Uint8Array([
+          ...encodeDataPush(transcript),
+          ...encodeDataPush(validatorRedeemScript(writerCategory, PROGRAM)),
+        ]),
+      }
+      : input)),
+  };
+}
+
 /** Replaces the writer's witness block. */
 function withWriterBlock(tx: FramedTransaction, block: WitnessBlock): FramedTransaction {
   return {
@@ -222,6 +244,12 @@ describe('the genesis-shape transcript, decided by the derivation', () => {
         : input)),
     };
     expect(model(forged).rejection?.reason).toBe('V4_ROOT_ORIGIN_MISMATCH');
+  });
+
+  test('refuses a minted root that records a sender', () => {
+    const tx = transaction(writerBlock(mintedRef(3)), [honestCall()]);
+    const forged = withMintedRoot(tx, { ...proxyBlock([honestCall()]), sender: new Uint8Array([0x01]) });
+    expect(model(forged).rejection?.reason).toBe('V4_MINTED_ROOT_SENDER');
   });
 });
 
@@ -347,5 +375,11 @@ describe('the genesis-shape transcript, decided by the on-chain program', () => 
     expect(model(changed).rejection?.reason).toBe('V11_SELF_NOT_CONTRACT_ADDRESS');
     // The facet carries the minted-root rule. A transaction the facet refuses does not settle.
     expect(vmVerdict(changed, 1).accepted).toBe(false);
+  });
+
+  test('a minted root that records a sender fails on chain', () => {
+    const tx = transaction(writerBlock(mintedRef(3)), [honestCall()]);
+    const forged = withMintedRoot(tx, { ...proxyBlock([honestCall()]), sender: new Uint8Array([0x01]) });
+    expect(vmVerdict(forged, 1).accepted).toBe(false);
   });
 });

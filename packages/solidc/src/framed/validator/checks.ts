@@ -284,6 +284,9 @@ export function checkV4(state: DerivationState): void {
     if (block.callerRef !== INDEX_NONE || block.originRef !== INDEX_NONE) {
       check('V4', 'V4_ROOT_ORIGIN_MISMATCH', mintedRefIndex(root));
     }
+    // A genesis root has no P2PKH caller. Its sender is what a delegate callee copies as msg.sender, so a
+    // non-empty claim would be an unauthenticated identity.
+    if (block.sender.length !== 0) check('V4', 'V4_MINTED_ROOT_SENDER', mintedRefIndex(root));
   }
 
   for (const master of state.masterSet) {

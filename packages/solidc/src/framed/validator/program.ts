@@ -116,6 +116,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V4_ROOT_INPUT_MISSING',
   'V4_ROOT_CALLER_NOT_P2PKH',
   'V4_ROOT_ORIGIN_MISMATCH',
+  'V4_MINTED_ROOT_SENDER',
   'V4_NON_ROOT_CALLER_NOT_A_MASTER',
   'V5_CALLEE_NOT_A_MASTER',
   'V5_CALLER_MISMATCH',
@@ -730,8 +731,8 @@ function emitMintedMasterCompleteness(e: Emitter): void {
 }
 
 /**
- * V4: one minted master is a genesis root: a ROOT frame with no P2PKH caller and no origin, whose `self` is the
- * address of its own output's category.
+ * V4: one minted master is a genesis root: a ROOT frame with no P2PKH caller and no origin, an empty sender, and a
+ * `self` that is the address of its own output's category.
  *
  * Entry `[count, rest]`, exit `[count, rest']` with this master consumed. The output index stays until `self` is
  * compared, because a minted master has no input for {@link emitFrameAddresses} to read. The address is derived
@@ -756,11 +757,14 @@ function emitOneMintedMasterRootRule(e: Emitter): void {
   e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUALVERIFY);
-  // `[count, output, rest, afterOrigin]`. Skip the validator reference and the sender; `self` is the claim.
+  // `[count, output, rest, afterOrigin]`. Skip the validator reference. The sender must be empty: a delegate
+  // callee copies it as msg.sender, and a genesis root has no caller to authenticate one.
   e.script(takeFixedWidthField(2));
   e.op(O.OP_NIP);
   e.script(takeLengthPrefixedField());
-  e.op(O.OP_NIP);
+  e.op(O.OP_SWAP, O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUALVERIFY);
+  e.op(O.OP_DROP);
   e.script(takeLengthPrefixedField());
   e.op(O.OP_DROP);
   // `[count, output, rest, self]`. The output's category, with the mutable capability the address is pinned to.
@@ -772,7 +776,7 @@ function emitOneMintedMasterRootRule(e: Emitter): void {
   e.op(O.OP_NIP);
 }
 
-/** V4: every minted master is a genesis root frame with no P2PKH caller and no origin. */
+/** V4: every minted master is a genesis root frame with no P2PKH caller, no origin, and an empty sender. */
 function emitMintedMasterRootRules(e: Emitter): void {
   const O = Opcodes;
   emitVersionOnTop(e, 0);

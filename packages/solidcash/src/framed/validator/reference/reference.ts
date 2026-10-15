@@ -310,6 +310,7 @@ class ReferenceRun {
       if (block.callerRef !== INDEX_NONE || block.originRef !== INDEX_NONE) {
         this.reject('V4', 'ROOT_ORIGIN_IS_NOT_ITS_CALLER', mintedRefIndex(root));
       }
+      if (block.sender.length !== 0) this.reject('V4', 'A_MINTED_ROOT_SENDER_IS_NOT_EMPTY', mintedRefIndex(root));
     }
 
     for (const master of this.masters) {

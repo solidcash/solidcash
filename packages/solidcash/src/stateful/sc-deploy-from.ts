@@ -15,8 +15,11 @@ import {
   childStateLayoutDigest,
   computeEventNameHash,
   dynamicLenKey,
+  encodeEventParameter,
   encodePushdataValue,
+  EVENT_CHUNK_BYTES,
   parsePushdataCommitment,
+  splitEventPayload,
   scriptToAsm,
   splitValueIntoChunks,
   validateChildDeploymentGenesisState,
@@ -57,6 +60,7 @@ import {
   artifactAddressForm, artifactUsesSolidityAbi, sortAddressPair, sortedAddressPairPacked,
 } from './solidityAbi.js';
 import { encodeExternalReturnValues } from './external-return-encoding.js';
+import { eventContinuationLockingBytecode } from './event-chunks.js';
 import type {
   DeployFromOptions, DeployFromResult,
 } from './stateful-lifecycle-types.js';
@@ -750,6 +754,23 @@ export async function deployFromStatefulContract<T extends Artifact>(
     }
   }
 
+  // Fill any remaining hidden deploy inputs with their canonical plain-path sentinels. A dynamic chunk write
+  // (allPairs.push) appends chunks as NEW outputs and co-spends no existing chunk inputs, so the negative
+  // sentinel makes the covenant reconstruct its output base (the same value the standalone-call path uses).
+  while (finalArgs.length < deployAbi.inputs.length) {
+    const input = deployAbi.inputs[finalArgs.length];
+    if (input.name === '__internal__dynamicChunkInputBase'
+      || input.name === '__internal__dynamicChunkOutputBase'
+      || input.name === '__internal__valueChunkOutputBase'
+      || input.name === '__internal__activeVerifierIndex') {
+      finalArgs = [...finalArgs, -1n];
+    } else {
+      throw new Error(
+        `deployFrom cannot resolve hidden deploy argument '${input.name}'. Recompile or extend the deploy path.`,
+      );
+    }
+  }
+
   // Placeholder entry NFT outputs for the VM probe (commitments derived from the trace).
   const entryPlaceholderOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
   for (const info of entryInfos) {
@@ -1040,7 +1061,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
       : isAnonymous
         ? getAnonymousEventNftAddress(factory.inner, factory.categoryId)
         : getEventNftAddress(factory.inner, factory.categoryId, emitInfo.eventSignature);
-    let eventCommitment = '00';
+    let eventPayload = '00';
     // createPair PairCreated(token0, token1, pair, allPairs.length) - all args known off-chain.
     if (
       eventDef
@@ -1052,23 +1073,47 @@ export async function deployFromStatefulContract<T extends Artifact>(
       const eventArgs: unknown[] = [
         sortedTokenLbcs[0], sortedTokenLbcs[1], pairAddressValue, nextAllPairsLength,
       ];
-      const parts = eventDef.parameters.map((p, i) => encodePushdataValue(
-        eventArgs[i] as StateValue, p.type, factoryLayout.structs,
+      // Encode exactly as the wide-event covenant does: evm-notation numbers keep their natural width, so a
+      // uint256 arg is 32 bytes (not the variable-length VM number encodePushdataValue would produce).
+      const parts = eventDef.parameters.map((p, i) => encodeEventParameter(
+        eventArgs[i] as StateValue, p, factoryLayout.structs,
       ));
       const total = parts.reduce((n, p) => n + p.length, 0);
-      const commitmentBytes = new Uint8Array(total);
+      const payload = new Uint8Array(total);
       let off = 0;
-      for (const part of parts) { commitmentBytes.set(part, off); off += part.length; }
-      eventCommitment = binToHex(commitmentBytes);
+      for (const part of parts) { payload.set(part, off); off += part.length; }
+      eventPayload = binToHex(payload);
     }
+    const chunks = splitEventPayload(
+      hexToBin(eventPayload), factoryLayout.commitmentLimit ?? EVENT_CHUNK_BYTES,
+    );
     eventPlaceholderOutputs.push({
       to: eventNftAddress,
       amount: dataNftAmount,
       token: {
         category: factory.categoryId, amount: 0n,
-        nft: { capability: 'none', commitment: eventCommitment },
+        nft: { capability: 'none', commitment: binToHex(chunks[0]) },
       },
     });
+    // A wide emit's continuation chunks occupy the eventChunk slots immediately after its event slot. A chunk the
+    // payload does not reach stays a neutral no-token output so the return event and child genesis keep their
+    // fixed block-layout offsets (the covenant verifies an absent own-category token at that slot).
+    const eventChunkSlots = (deployAbi.blockLayout?.slots ?? []).filter(
+      (slot) => slot.kind === 'eventChunk' && slot.slotIndex === emitInfo.emitIndex,
+    ).sort((a, b) => (a.chunk ?? 0) - (b.chunk ?? 0));
+    for (let chunk = 1; chunk <= eventChunkSlots.length; chunk++) {
+      const data = chunks[chunk];
+      eventPlaceholderOutputs.push(data === undefined
+        ? { to: new Uint8Array([0x51]), amount: 1000n }
+        : {
+          to: eventContinuationLockingBytecode(factory.categoryId, emitInfo.eventSignature, isAnonymous),
+          amount: dataNftAmount,
+          token: {
+            category: factory.categoryId, amount: 0n,
+            nft: { capability: 'none', commitment: binToHex(data) },
+          },
+        });
+    }
   }
 
   // Dynamic-storage writes trail the fixed block after vmap batch P' (covenant: blockSize +

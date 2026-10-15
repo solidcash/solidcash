@@ -846,6 +846,7 @@ export interface AbiFunction {
   // iteration count) compute side-cars into the trailing region [blockSize, ..)
   keccakChainReads?: boolean;   // a direct, unbounded preimage routes through the chained START/CONT/FINAL side-cars
   // in the trailing region (one per 136-byte block, FINAL last)
+  keccakLoopPrecedesTrailingUser?: boolean; // a direct keccak loop runs BEFORE a runtime mapping loop in source order
   // ecrecoverPubKey uses a co-spent recovery side-car pair per call; send() co-spends 2N inputs.
   ecrecoverCompute?: boolean;
   // Per ecrecoverPubKey call (in order), its [hash, v, r, s] parameter names.

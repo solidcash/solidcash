@@ -2459,6 +2459,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private keccakLoopCounterName: string = '(loop_keccak_counter)'; // keccak side-cars read-so-far (dynamic keccak loop)
   private keccakLoopActive: boolean = false;        // a dynamic keccak256 loop counter is live on the stack
+  // A direct (non-route) function whose dynamic keccak loop shares its trailing band with a sorted-insert/
+  // upsert/entry mapping loop. The route cursors above are pushed as LOCAL names so each family can seed its
+  // counter from the accumulated width of the families that precede it in source order.
+  private directKeccakTrailingCursorsActive = false;
+  private directTrailingUserSeen = false;
   private ecrecoverLoopCounterName: string = '(loop_ecrecover_counter)'; // recovery pairs read-so-far (dynamic loop)
   private ecrecoverLoopActive: boolean = false;     // a dynamic ecrecover loop counter is live on the stack
   private functionMultiSiteDeploy: boolean = false; // 2+ sites w/ a conditional: function counters
@@ -35495,6 +35500,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.entryLoopActive) return false;
     const write = this.findLoopEntryWrite(block);
     if (!write?.collection) return false;
+    this.directTrailingUserSeen = true;
+    if (this.currentFunction.keccakInLoop === true) {
+      this.ensureDirectKeccakTrailingCursors(loc, false);
+    }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_LOOP === '1') {
       console.error('loop-entry-write-setup', {
         function: this.currentFunction.name, collection: write.collection.name,
@@ -35593,6 +35602,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.sortedInsertLoopActive) return false;
     const writeNode = this.findSortedInsertLoopWrite(block);
     if (!writeNode) return false;
+    this.directTrailingUserSeen = true;
+    if (this.currentFunction.keccakInLoop === true) {
+      this.ensureDirectKeccakTrailingCursors(loc, false);
+    }
     const collection = writeNode.collection!;
     // IfConvertConditionalEntryOp may clone a predicated loop write after entry-slot assignment. Recover the one
     // runtime-loop slot for this collection; the key recipe below still has to validate before setup can succeed.
@@ -36609,6 +36622,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.sortedUpsertLoopActive) return false;
     const writeNode = this.findSortedUpsertLoopWrite(block, excludedStreams);
     if (!writeNode) return false;
+    this.directTrailingUserSeen = true;
+    if (this.currentFunction.keccakInLoop === true) {
+      this.ensureDirectKeccakTrailingCursors(loc, false);
+    }
     const collection = writeNode.collection!;
     const streamKey = this.sortedUpsertStreamKey(writeNode);
     const streamPermutation = this.runtimeCounterPermutationName(writeNode) ?? collection.name;
@@ -39718,6 +39735,68 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
   }
 
+  /**
+   * A direct function whose dynamic keccak loop shares the trailing band with a runtime mapping loop
+   * (sorted-insert/upsert/entry write). The route cursors are activated as LOCAL names so each family seeds its
+   * counter from the widths accumulated by the families that precede it in source order.
+   */
+  private ensureDirectKeccakTrailingCursors(loc: SingleLocationData, keccakLoopPrecedes: boolean): void {
+    if (this.directKeccakTrailingCursorsActive || this.runtimeLoopEntryInputCountActive) return;
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT);
+    this.runtimeLoopEntryInputCountActive = true;
+    this.runtimeLoopEntryOutputCountActive = true;
+    this.directKeccakTrailingCursorsActive = true;
+    if (keccakLoopPrecedes) this.currentFunction.keccakLoopPrecedesTrailingUser = true;
+  }
+
+  /** Whether `node`'s body writes a mapping inside a loop (sorted insert/upsert or entry-write). */
+  private functionHasTrailingMappingLoop(node: FunctionDefinitionNode): boolean {
+    if (!node.body) return false;
+    const seen = new WeakSet<object>();
+    const semanticBackReferences = new Set([
+      'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+      'referencedContract', 'stateVariable', 'collection',
+    ]);
+    const blockHasMappingWrite = (block: Node): boolean => {
+      const inner = new WeakSet<object>();
+      const walk = (n: Node): boolean => {
+        if (inner.has(n)) return false;
+        inner.add(n);
+        if (n instanceof MappingAssignNode) return true;
+        for (const key of Object.keys(n)) {
+          if (semanticBackReferences.has(key)) continue;
+          const value = (n as unknown as Record<string, unknown>)[key];
+          if (value instanceof Node) { if (walk(value)) return true; }
+          else if (Array.isArray(value)) {
+            for (const item of value) if (item instanceof Node && walk(item)) return true;
+          }
+        }
+        return false;
+      };
+      return walk(block);
+    };
+    const walk = (n: Node): boolean => {
+      if (seen.has(n)) return false;
+      seen.add(n);
+      if (n instanceof WhileNode || n instanceof DoWhileNode) {
+        if (blockHasMappingWrite(n.block)) return true;
+      }
+      for (const key of Object.keys(n)) {
+        if (semanticBackReferences.has(key)) continue;
+        const value = (n as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) { if (walk(value)) return true; }
+        else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node && walk(item)) return true;
+        }
+      }
+      return false;
+    };
+    return walk(node.body);
+  }
+
   // A dynamic (runtime-bound) keccak256 loop reads one compute side-car per iteration from the region right after
   // the master [master+blockSize+counter): stateful contracts use their compile-time blockSize, stateless ones
   // use blockSize 1 (master + the side-cars immediately after it, absolute-forward from OP_INPUTINDEX). Push a
@@ -39734,18 +39813,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.currentFunctionIsMessageBusRoute) return false;
     if (!this.currentFunction.keccakCompute) return false;
     if (!this.blockHasKeccakCall(block)) return false;
+    // A direct function with BOTH a keccak loop and a runtime mapping loop shares one trailing band: activate the
+    // input/output cursors and seed the keccak counter from the widths already consumed by earlier families.
+    if (this.functionHasTrailingMappingLoop(this.currentFunction)) {
+      this.ensureDirectKeccakTrailingCursors(loc, !this.directTrailingUserSeen);
+    }
     this.currentFunction.keccakLoopReads = true; // tells the SDK to progressively co-spend N runtime side-cars
-    this.emit(encodeInt(0n), loc);
+    if (this.runtimeLoopEntryInputCountActive) {
+      this.emitPickCompilerRouteFrameValue(
+        GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT, loc,
+      );
+    } else {
+      this.emit(encodeInt(0n), loc);
+    }
     this.pushToStack(this.keccakLoopCounterName);
     this.keccakLoopActive = true;
     return true;
   }
 
-  // Tear down a dynamic keccak loop after OP_UNTIL: drop the counter. No count-pin is needed - each iteration
+  // Tear down a dynamic keccak loop after OP_UNTIL. No count-pin is needed - each iteration
   // BINDS its side-car's preimage == the running value, so extra/missing trailing side-cars fail closed (a
   // missing one aborts the read; an extra one is an independent self-preserving UTXO the master never reads).
+  // When the shared trailing cursors are active, advance them by this loop's side-car width so later families
+  // start after it.
   private emitLoopKeccakTeardown(loc: SingleLocationData): void {
     if (!this.keccakLoopActive) return;
+    if (this.runtimeLoopEntryInputCountActive && this.directKeccakTrailingCursorsActive) {
+      this.emitAccumulateRuntimeLoopEntryInputs(this.keccakLoopCounterName, loc);
+      this.emitAccumulateRuntimeLoopEntryOutputs(this.keccakLoopCounterName, loc);
+    }
     const idx = this.getStackIndex(this.keccakLoopCounterName);
     this.emit(encodeInt(BigInt(idx)), loc);
     this.emit(Op.OP_ROLL, loc);

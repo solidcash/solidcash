@@ -2841,6 +2841,10 @@ export class StatefulTransactionBuilder {
       get blockhashCoSpendSlotOrdinals() { return self.blockhashCoSpendSlotOrdinals; },
       get keccakComputeCoSpendUtxos() { return self.keccakComputeCoSpendUtxos; },
       get keccakLoopSideCars() { return self.keccakLoopSideCars; },
+      get keccakLoopPrecedesTrailingUser() {
+        return (self.masterUtxo?.unlocker as { abiFunction?: { keccakLoopPrecedesTrailingUser?: boolean } })
+          ?.abiFunction?.keccakLoopPrecedesTrailingUser === true;
+      },
       get ecrecoverComputeCoSpendUtxos() { return self.ecrecoverComputeCoSpendUtxos; },
       get lowLevelCallRawInputs() { return self.lowLevelCallRawInputs; },
       get iterationEntryInputs() { return self.iterationEntryInputs; },

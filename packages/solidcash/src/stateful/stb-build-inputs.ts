@@ -29,6 +29,7 @@ export interface BuildInputsHost {
   blockhashCoSpendSlotOrdinals?: number[];
   keccakComputeCoSpendUtxos: UnlockableUtxo[];
   keccakLoopSideCars: UnlockableUtxo[];
+  keccakLoopPrecedesTrailingUser: boolean;
   ecrecoverComputeCoSpendUtxos: UnlockableUtxo[];
   lowLevelCallRawInputs: UnlockableUtxo[];
   iterationEntryInputs: UnlockableUtxo[];
@@ -156,13 +157,24 @@ export function buildInputs(
     // collection-iteration inputs only), while the batch's additional entry nodes exist only on the output side.
     // Balance that output-only expansion after every authenticated input resource; placing these neutral funders
     // before dynamic chunks shifts a valid chunk run away from the compiler-published input coordinate.
-    const trailingInputs = [
-      ...host.iterationEntryInputs,
-      ...host.dynamicChunkInputs,
-      ...trailingInsertPredecessors,
-      ...(host.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
-      ...host.keccakLoopSideCars,
-    ];
+    // A direct keccak loop and a runtime mapping loop share the trailing band. The compiler seeds each family's
+    // counter from the widths accumulated by the families that precede it in source order, so the physical inputs
+    // must follow that same order (keccak side-cars first when the keccak loop precedes the mapping loop).
+    const trailingInputs = host.keccakLoopPrecedesTrailingUser
+      ? [
+        ...host.iterationEntryInputs,
+        ...host.dynamicChunkInputs,
+        ...host.keccakLoopSideCars,
+        ...trailingInsertPredecessors,
+        ...(host.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
+      ]
+      : [
+        ...host.iterationEntryInputs,
+        ...host.dynamicChunkInputs,
+        ...trailingInsertPredecessors,
+        ...(host.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
+        ...host.keccakLoopSideCars,
+      ];
     let trailingIdx = 0;
     let trailingDisposalIdx = 0;
     const trailingDisposalOffsets = new Set(

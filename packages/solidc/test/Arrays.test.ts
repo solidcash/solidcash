@@ -104,7 +104,8 @@ describe('local array-element assignment', () => {
     // 753 in the merged tree: ungating the mutability rules shrank the shape, and the audit's runtime range
     // checks add bytes back, so the budget stays the one this line already carried rather than the shrink's 700.
     // 792 after the October hardening (standalone return-carrier refusal, canonical array-parameter walk).
-    expect(artifact.debug.bytecode.length / 2).toBeLessThan(810);
+    // 819 measured after the trailing batch-width binding landed on the direct convention.
+    expect(artifact.debug.bytecode.length / 2).toBeLessThan(830);
   });
 
   it('forwards a complete fixed-array projection at an external return boundary', () => {

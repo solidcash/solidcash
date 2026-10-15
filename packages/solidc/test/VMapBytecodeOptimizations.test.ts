@@ -32,7 +32,8 @@ describe('general vmap bytecode sharing', () => {
     // headroom below BCH's 10KB consensus ceiling while still catching accidental framework-scale growth.
     // Raised again (4122.5 measured) by the October covenant hardening: every direct function now binds entry
     // addresses to the master lock and runs the container, foreign-token and mutable-output scans.
-    expect(artifact.bytecode.length / 2).toBeLessThan(4300);
+    // 4335 measured after the trailing batch-width binding landed on the direct convention.
+    expect(artifact.bytecode.length / 2).toBeLessThan(4350);
   });
 
   it('shares a collection-specific entry address across reads and writes', () => {
@@ -49,7 +50,8 @@ describe('general vmap bytecode sharing', () => {
       .filter((id) => [...asm.matchAll(new RegExp(`(?:^| )${id} OP_INVOKE(?: |$)`, 'g'))].length >= 2);
     expect(shared.length).toBeGreaterThanOrEqual(1);
     // 4415.5 measured after the October covenant hardening (master-lock entry addresses, per-function scans).
-    expect(artifact.bytecode.length / 2).toBeLessThan(4600);
+    // 4630.5 measured after the trailing batch-width binding landed on the direct convention.
+    expect(artifact.bytecode.length / 2).toBeLessThan(4650);
   });
 
   it('shares the authenticated-absence bracket after three reads', () => {

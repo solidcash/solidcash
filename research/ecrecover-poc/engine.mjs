@@ -258,6 +258,28 @@ async function main() {
   const rejB = !!runInput(covB, witB(CHUNKA, tblBad), compExp, 30).error;
   console.log(`  negatives: A forged rinv rejected=${rejA}  B forged table rejected=${rejB}`);
   console.log(`\n  2-INPUT SELF-VERIFYING RECOVERY (A sig+mask, B table, both <8.03M): ${!rA.error && qMatch && rejA && rejB ? 'PROVEN vs ethers' : 'FAIL'}`);
+
+  // Reference-input covenant dedup measurement (deferrals 2026-07-20 gate): each input's scriptSig is the
+  // budget-funding floor `(41 + scriptSigLen) * 800 >= opCost`. The full pair embeds the covenant in the P2SH
+  // redeem; a reference input would load the first pair's covenant and OP_INVOKE it instead. The win exists only
+  // if the covenant bytes EXCEED the floor, i.e. if dropping them does not just refill the scriptSig with pad.
+  const floorFor = (cost) => Math.ceil(cost / 800) - 41;
+  const fullScriptSig = (wit, cov) => Math.min(10000, Math.max(asm(wit).length + asm(cov).length + 3, floorFor(1)));
+  const costA = Number(rA.metrics.operationCost), costB = Number(rB.metrics.operationCost);
+  const witALen = asm(pushA).length, witBLen = asm(pushB).length;
+  const covALen = asm(covA).length, covBLen = asm(covB).length;
+  const floorA = floorFor(costA), floorB = floorFor(costB);
+  const fullA = Math.min(10000, Math.max(witALen + covALen + 3, floorA));
+  const fullB = Math.min(10000, Math.max(witBLen + covBLen + 3, floorB));
+  const refA = Math.max(floorA + 40, witALen + 40);   // tiny redeem (load+invoke ~40B) + pad
+  const refB = Math.max(floorB + 40, witBLen + 40);
+  const delta = (fullA + fullB) - (refA + refB);
+  console.log('\n=== reference-input covenant dedup measurement ===');
+  console.log(`  covenant A ${covALen}B  B ${covBLen}B | witnesses A ${witALen}B  B ${witBLen}B`);
+  console.log(`  op-cost A ${costA} (floor ${floorA}B)  B ${costB} (floor ${floorB}B)`);
+  console.log(`  full pair   A ${fullA}B  B ${fullB}B  = ${fullA + fullB}B/recovery`);
+  console.log(`  reference   A ${refA}B  B ${refB}B  = ${refA + refB}B/recovery`);
+  console.log(`  per-recovery delta = ${delta}B -> ${delta > 200 ? 'SIZE WIN' : 'NET-NEUTRAL / NET-NEGATIVE'} (op-budget floor ${delta > 200 ? 'beaten' : 'not beaten'})`);
 }
 
 // exported for the production-covenant builder (gen-ecrecover-sidecar.mjs) which wraps this proven verification+ladder

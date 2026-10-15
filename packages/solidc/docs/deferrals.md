@@ -1515,6 +1515,15 @@ bind its own argBlob, `OP_INVOKE`, self-preserve) + a way to fund its ~8M budget
 the size win is real (measure reference-input scriptSig vs a full pair) BEFORE building - the budget floor
 must be beaten first, else it is net-zero.
 
+**MEASURED (2026-10-15): the size win is NOT there; the variant is NOT built.** The real BCH-2026 VM
+measurement (`research/ecrecover-poc/engine.mjs`, now printing the dedup gate; captured to
+`ecrecover-dedup-measure.log` in the goal scratch) gives: covenant A 4320 B / B 338 B, witnesses A 1860 B /
+B 1893 B, op-cost A 7,537,147 (scriptSig floor 9,381 B) / B 7,479,862 (floor 9,309 B). The full pair's
+scriptSig is floor-bound (9,381 + 9,309 = 18,690 B per recovery): the covenant bytes already fit INSIDE the
+budget floor, so they are free. A reference input would still need the same floor plus the ~40-byte
+load/invoke overhead (9,421 + 9,349 = 18,770 B) — a **-80 B net-negative** per recovery. The op-budget floor
+is not beaten, so the reference-input covenant variant stays unbuilt, exactly as the objective gates.
+
 **Revisit if.** The op-budget model changes to not scale with scriptSig length, OR a budget-sharing
 mechanism lands - then covenant dedup turns the ~20KB/recovery footprint into ~10KB + small, multiplying the
 per-tx recovery count. Related: the tx-size wall noted in docs/ecrecover.md (Loops) and the width-0 3-covenant

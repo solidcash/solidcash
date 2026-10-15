@@ -2132,7 +2132,31 @@ hash back; `bench/mistswap-native/repro-bento.mjs` deploys BentoBoxMock; `test/P
 
 ## MasterChef / MasterChefV2: message-bus preflight OP_VERIFY (2026-08-07)
 
-**NEWLY VISIBLE, NOT YET DIAGNOSED.** 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) fail with
+**DIAGNOSED (2026-10-15): the recorded preflight OP_VERIFY is masked at HEAD by a split-path codegen
+regression.** The committed tree no longer splits `MasterChef.sol` (nor `MasterChefV2.sol`); `compileFileSplit`
+aborts in code generation with
+
+```
+StackVariableUnavailableError: Expected variable '__internal__dynwrite_value_poolInfo' does not exist on the stack
+  at getStackIndex → emitExternalCallVerification → visitFunctionDefinition (message-bus route entry point)
+```
+
+The concrete defect: message-bus route synthesis for a loop over a dynamically-written array
+(`massUpdatePools` → inlined `updatePool` → `poolInfo[i].lpToken.balanceOf(...)` plus
+`poolInfo[i].accSushiPerShare = ...`) marks the `poolInfo` read-modify-write value for the array-external-call
+co-spend cleanup (`coSpendPreservedDynValues`, dropped at the end of `emitExternalCallVerification`), but the
+synthesized route function never places `__internal__dynwrite_value_poolInfo` on its stack, so the cleanup's
+`getStackIndex` throws. A focused 22-line `MiniChef.sol` (loop + struct-field external call + array element
+write) reproduces the identical error under `compileFileSplit({ messageBus: true, maxShardBytes: 4000 })`.
+
+Because the split now fails, the unsplit constructor witness is 101,903 B and exceeds the 100,000-byte input
+ceiling, so every MasterChef/MasterChefV2 test currently dies at deploy (`unlocking bytecode exceeds ...
+100000 bytes`) before any message-bus preflight runs; the earlier `preflight ... at input 0: OP_VERIFY` census
+(24 tests) is therefore not reachable from HEAD and belongs to the last compiler that split these two files.
+Evidence: `masterchef-census.log` (26/26 constructor byte-gate failures) and `masterchef-repro.log` (focused
+repro stack) in the goal scratch.
+
+The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with
 
 ```
 messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
@@ -2143,10 +2167,6 @@ These two files had never reported a result before: their vitest workers died wi
 whenever the box was loaded, so ~24 tests were silently missing from every earlier count. They complete on an
 idle machine, and `poolOptions.forks.execArgv: ['--max-old-space-size=4096']` is now set in the project's
 `vitest.solidhat.config.ts`. **Treat any MistSwap total that omits these two files as incomplete.**
-
-MasterChef is 10,837 bytes and MasterChefV2 13,789, so both are split, and both take a synthesized message-bus
-route. Nothing beyond the preflight message has been established - no bisect, no trace. Start with
-`SOLIDCASH_COVENANT_TRACE=1` and the same instrumentation used for the constructor wall above.
 
 ## keccak256 of a preimage larger than one side-car's block budget (2026-08-07)
 

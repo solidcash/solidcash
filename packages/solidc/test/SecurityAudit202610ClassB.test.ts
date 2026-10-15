@@ -197,7 +197,18 @@ describe('October 2026 class B holes', () => {
     const openerEntry = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, entryHash, openerLock));
     expect(rewrite(openerEntry, openerLock, openerUnlock), 'CRYPTO-4 entry bound master').toBe(true);
     const openerSatoshi = scriptToBytecode(buildSatoshiContainerCovenantScript(CATEGORY, openerLock));
-    expect(drain(openerSatoshi, satoshiDrain, openerLock, openerUnlock), 'CRYPTO-4 satoshi bound master').toBe(true);
+    const openerSatoshiLock = p2sh32(openerSatoshi);
+    expect(drain(openerSatoshi, {
+      lockingBytecode: openerSatoshiLock, valueSatoshis: 40_000n,
+    }, openerLock, openerUnlock), 'DX-1 bound master keeps the container lock').toBe(true);
+    expect(drain(openerSatoshi, satoshiDrain, openerLock, openerUnlock), 'DX-1 satoshi bound master').not.toBe(true);
+    const openerToken = scriptToBytecode(buildTokenContainerCovenantScript(CATEGORY, foreign, openerLock));
+    const openerTokenLock = p2sh32(openerToken);
+    expect(drain(openerToken, {
+      lockingBytecode: openerTokenLock, valueSatoshis: VALUE,
+      token: { category: foreign, amount: 600n },
+    }, openerLock, openerUnlock), 'DX-2 bound master keeps the token container').toBe(true);
+    expect(drain(openerToken, tokenDrain, openerLock, openerUnlock), 'DX-2 token bound master').not.toBe(true);
     const categoryId = binToHex(CATEGORY);
     const collection = 'rec';
     const chunkSlot = new Uint8Array(32);

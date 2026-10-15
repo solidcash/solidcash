@@ -13,9 +13,10 @@ import { compileProxyArtifact } from './generate-core.js';
 export * from './generate-core.js';
 
 /** Compiles the proxy generated from an implementation's declaration and returns its artifact. */
-export function buildProxyArtifact(implementationArtifact: Artifact): Artifact {
+export function buildProxyArtifact(implementationArtifact: Artifact, hopGuard?: Uint8Array): Artifact {
   return compileProxyArtifact(
     implementationArtifact,
     (source, options) => compileStringMulti(source, options),
+    hopGuard,
   );
 }

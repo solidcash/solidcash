@@ -2399,6 +2399,49 @@ export function isComputedBlockhashKey(key: string): boolean {
 }
 
 /**
+ * `[]` -> `[]`. Direct container master path (the covenant built with the contract's 35-byte lock).
+ *
+ * The output at this input keeps the container lock, or it is a zero-value zero-token placeholder. A kept lock
+ * also keeps the token category. The satoshi and fungible amounts are the master's to account: an authorized
+ * transfer debits them, and a call that names no transfer leaves them on the lock. The category-only covenant is
+ * the framed container; its change is not at this input's index, so this pin is not part of that script.
+ */
+function directMasterOutputPin(): Script {
+  return [
+    Op.OP_INPUTINDEX,
+    Op.OP_DUP,
+    Op.OP_OUTPUTBYTECODE,
+    Op.OP_OVER,
+    Op.OP_UTXOBYTECODE,
+    Op.OP_EQUAL,
+    Op.OP_IF,
+    Op.OP_DUP,
+    Op.OP_UTXOTOKENCATEGORY,
+    Op.OP_SIZE,
+    Op.OP_NIP,
+    Op.OP_IF,
+    Op.OP_DUP,
+    Op.OP_OUTPUTTOKENCATEGORY,
+    Op.OP_SWAP,
+    Op.OP_UTXOTOKENCATEGORY,
+    Op.OP_EQUALVERIFY,
+    Op.OP_ELSE,
+    Op.OP_DROP,
+    Op.OP_ENDIF,
+    Op.OP_ELSE,
+    // Both checks read this input's output. OUTPUTVALUE consumes the index, so keep a copy for the amount.
+    Op.OP_DUP,
+    Op.OP_OUTPUTVALUE,
+    encodeInt(0n),
+    Op.OP_NUMEQUALVERIFY,
+    Op.OP_OUTPUTTOKENAMOUNT,
+    encodeInt(0n),
+    Op.OP_NUMEQUALVERIFY,
+    Op.OP_ENDIF,
+  ];
+}
+
+/**
  * Build the token container covenant script for holding foreign tokens on behalf
  * of a stateful master contract.
  *
@@ -2429,6 +2472,7 @@ export function buildTokenContainerCovenantScript(
     Op.OP_EQUALVERIFY,
     catInternal,
     Op.OP_EQUALVERIFY,
+    ...(masterLock !== undefined ? directMasterOutputPin() : []),
     Op.OP_ELSE,
     // Merge path: output preserves locking bytecode, value, FT amount, and category
     Op.OP_DUP,
@@ -2531,6 +2575,7 @@ export function buildSatoshiContainerCovenantScript(
     Op.OP_EQUALVERIFY, // minting capability
     catInternal,
     Op.OP_EQUALVERIFY, // expected category
+    ...(masterLock !== undefined ? directMasterOutputPin() : []),
     Op.OP_ELSE,
     // === Merge path (flag=0): output preserves locking bytecode, value, token category, and FT amount ===
     Op.OP_DUP, // preserve mergeOutputIndex for value check

@@ -286,4 +286,46 @@ describe('audit SDKFRAMED-2: a framed proxy is minted initialized, so no uniniti
     await expect(deployment).rejects.toThrow(/needs `callerFunding`/);
     await expectNothingBroadcast(run);
   }, 600_000);
+
+  it('refuses a stranger in the hop window, then the deployer\'s hop initializes the proxy', async () => {
+    const run = await funded(artifacts.Impl!);
+    const strangerLock = encodeLockingBytecodeP2pkh(bobPkh);
+    const strangerCoin = { txid: 'b1'.repeat(32), vout: 0, satoshis: 100_000n };
+    await run.network.addUtxo(binToHex(strangerLock), strangerCoin);
+    let strangerRefused: string | undefined;
+    const deployment = await deployFramedProxy({
+      ...run.options,
+      initializeAs: 'hop',
+      callerFunding: run.callerFunding,
+      beforeHopBroadcast: async ({ proxyCategoryId }): Promise<void> => {
+        // The two geneses are live, the hop is not: a stranger enters `initialize` naming its own lock.
+        try {
+          const stranger = await callFramedProxyEntry({
+            provider: run.network,
+            implementationArtifact: artifacts.Impl!,
+            proxyCategoryId,
+            implementationCategoryId: run.options.implementationDeploy.fundingUtxo.txid,
+            functionName: 'initialize',
+            args: [strangerLock],
+            callerUtxo: strangerCoin,
+            callerLockingBytecode: strangerLock,
+            funder: new SignatureTemplate(bobPriv).unlockP2PKH(),
+            vm: compositionMachine(),
+          });
+          expect(stranger.accepted, stranger.verdicts.map((verdict) => verdict.objection).join('; ')).toBe(false);
+          expect(stranger.broadcast).toBeUndefined();
+        } catch (error) {
+          strangerRefused = error instanceof Error ? error.message : String(error);
+          expect(strangerRefused).toMatch(/VERIFY|refused|required|sender|initialize/i);
+        }
+      },
+    });
+
+    expect(strangerRefused !== undefined || run.sent.length === 3).toBe(true);
+    expect(run.sent).toStrictEqual([
+      deployment.implementation.tx.txid, deployment.proxy.tx.txid, deployment.initialize.broadcast.txid,
+    ]);
+    const state = await readFramedState(run.network, deployment.proxy.categoryId, layout);
+    expect(state.byNft[0]!.initialized).toBe(1n);
+  }, 600_000);
 });

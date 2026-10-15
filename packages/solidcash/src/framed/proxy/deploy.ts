@@ -202,6 +202,12 @@ export interface FramedProxyDeployOptions {
   readonly externals?: Readonly<Record<string, FramedProxyExternal>>;
   /** The machine the initialize transaction is evaluated on. Defaults to the provider's BCH-2026 machine. */
   readonly vm?: Machine;
+  /**
+   * A hook the hop path calls after both geneses are published and before the hop is applied, so a caller can
+   * observe the window an uninitialized proxy would otherwise open (audit SDKFRAMED-2). The proxy's fallback
+   * already refuses a stranger there, so a hook that only observes does not re-open it.
+   */
+  readonly beforeHopBroadcast?: (context: { readonly proxyCategoryId: string }) => void | Promise<void>;
 }
 
 /** One deployed contract, with the address its masters and validators sit under. */
@@ -1075,7 +1081,10 @@ export async function deployFramedProxy(
   options: FramedProxyDeployOptions,
 ): Promise<FramedProxyDeployment> {
   const { implementationArtifact } = options;
-  const proxyArtifact = options.proxyArtifact ?? buildProxyArtifact(implementationArtifact);
+  const separateHop = options.initializeAs === 'hop';
+  const proxyArtifact = options.proxyArtifact ?? buildProxyArtifact(
+    implementationArtifact, separateHop ? options.callerLockingBytecode : undefined,
+  );
   requireProxyShape(proxyArtifact);
   requireSharedLayout(implementationArtifact, proxyArtifact);
   requireServedEntry(implementationArtifact, options.initialize.functionName,
@@ -1092,7 +1101,6 @@ export async function deployFramedProxy(
     }
   }
   // A separate hop is what initializes the proxy then, so one that cannot be broadcast is refused (SDKFRAMED-2).
-  const separateHop = options.initializeAs === 'hop';
   const { callerFunding } = options;
   if (separateHop && callerFunding === undefined) {
     throw new FramedProxyDeployError(
@@ -1424,8 +1432,13 @@ export async function deployFramedProxy(
     : initialized ?? proxy;
 
   // 3. Everything is built and accepted: the implementation's genesis and the proxy's (and a separate hop) go out
-  // back to back, in that order.
+  // back to back, in that order. A hop's window (uninitialized proxy published, hop not yet applied) is exposed to
+  // the hook once both geneses are live; the proxy's fallback still refuses a stranger there (SDKFRAMED-2).
   try {
+    if (separateHop && options.beforeHopBroadcast !== undefined) {
+      await staging.releaseFirst(2);
+      await options.beforeHopBroadcast({ proxyCategoryId: proxy.categoryId });
+    }
     await staging.release();
   } catch (error) {
     throw new FramedProxyDeployError(

@@ -333,6 +333,70 @@ describe('October 2026 class C holes', () => {
     expect(spend(true), 'DS-6 plain delete slot').not.toBe(true);
   });
 
+  it('DS-6 a message-bus route cannot skip a branched sorted batch with a bad slot or a short commitment', () => {
+    const artifact = compileString(
+      `${P} contract C { mapping(int => int) m;`
+      + ' function drop(int k, int sel) { if (sel > 0) { require(k != 3); delete m[k]; } require(true); }'
+      + ' function set(int k, int v, int sel) { if (sel > 0) { require(k != 3); this.m[k] = v; } require(true); } }',
+      { messageBus: true, forceStateful: true },
+    );
+    const drop = artifact.abi.find((entry) => entry.name === 'drop');
+    const set = artifact.abi.find((entry) => entry.name === 'set');
+    if (!drop || !set) throw new Error(`missing route arms; ${artifact.abi.map((entry) => entry.name).join(',')}`);
+    const redeem = scriptToBytecode(asmToScript(artifact.bytecode));
+    const contractLock = p2sh32(redeem);
+    const dispatch = artifact.messageBus?.routeInBytecode === true;
+    const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'm')!;
+    const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
+      CATEGORY, computeCollectionHash(collection.signature), contractLock,
+    ));
+    const entryLock = p2sh32(entryRedeem);
+    const zero = new Uint8Array(32);
+    const keptSlot = keyToSlotMulti([num(7n)]);
+    const kept = encodeEntryCommitment(keptSlot, zero, num(1n));
+    const other = encodeEntryCommitment(keyToSlotMulti([num(42n)]), zero, num(9n));
+    const spend = (
+      fn: AbiFunction, slot: Uint8Array, commitment: Uint8Array, outputCommitment: Uint8Array, sel: bigint,
+    ): true | string => {
+      const values: Record<string, Uint8Array> = {};
+      for (const entry of fn.inputs) {
+        if (entry.name === 'k') values[entry.name] = num(7n);
+        else if (entry.name === 'v') values[entry.name] = num(2n);
+        else if (entry.name === 'sel') values[entry.name] = num(sel);
+        else if (/^__internal__vmapBatchSlot_\d+$/.test(entry.name)) values[entry.name] = slot;
+        else if (entry.name.includes('vmapBatchProof')) values[entry.name] = num(1n);
+        else if (entry.name.includes('vmapBatchNext')) values[entry.name] = zero;
+        else if (entry.name.includes('vmapBatchPredOut')) values[entry.name] = num(-1n);
+        else if (entry.name.includes('TrailingCount')) values[entry.name] = num(0n);
+        else if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+        else throw new Error(`unexpected input ${entry.name}`);
+      }
+      const layout = fn.blockLayout?.slots.find((entry) => entry.kind === 'entry');
+      if (!layout || layout.offset !== 1) throw new Error(`entry offset ${layout?.offset}`);
+      return verdict([
+        { lockingBytecode: contractLock, valueSatoshis: VALUE, token: tokenOf('minting', new Uint8Array()) },
+        { lockingBytecode: entryLock, valueSatoshis: VALUE, token: tokenOf('mutable', commitment) },
+      ], {
+        version: 2, locktime: 0,
+        inputs: [
+          input(0, redeemUnlock(fn, redeem, values, dispatch)),
+          input(1, pushesOf([num(0n), num(1n), entryRedeem])),
+        ],
+        outputs: [
+          { lockingBytecode: contractLock, valueSatoshis: VALUE, token: tokenOf('minting', new Uint8Array()) },
+          { lockingBytecode: entryLock, valueSatoshis: VALUE, token: tokenOf('mutable', outputCommitment) },
+        ],
+      });
+    };
+    expect(spend(drop, keptSlot, kept, kept, 0n), 'DS-6 route delete arm kept').toBe(true);
+    expect(spend(drop, keptSlot, kept, encodeEntryCommitment(keptSlot, zero, num(0n)), 1n), 'DS-6 route delete taken')
+      .toBe(true);
+    expect(spend(set, keptSlot, kept, encodeEntryCommitment(keptSlot, zero, num(2n)), 1n), 'DS-6 route write arm')
+      .toBe(true);
+    expect(spend(drop, new Uint8Array(32).fill(0x11), kept, other, 0n), 'DS-6 route mismatched slot').not.toBe(true);
+    expect(spend(drop, keptSlot, Uint8Array.of(1, 2, 3, 4), other, 0n), 'DS-6 route short commitment').not.toBe(true);
+  });
+
   it('DX-4 a standalone callee cannot sit beside its own return carrier, and a carrier-less call can', () => {
     const artifact = compileString(
       `${P} contract Quoter { int q; function quote() public returns (int) { return this.q; } }`,

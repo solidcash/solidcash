@@ -63,6 +63,17 @@ memory/string/yul VM tests + the ECDSA signature-split bridge tests all green. T
 cleared: `HEX_DIGITS` (`fa67b4fc`), `getStringSlot` in a library free fn (`612e4cda`), `using ShortStrings for *` in
 an imported inherited parent ctor (`f05620ce`).
 
+**RESOLVED (2026-10-15) for the PARAM + uninitialized named-return cases.** `materializeParams`
+(`LowerMemoryModel`) now materializes a `bytes memory`/`string memory` PARAM that inline assembly reads or writes
+as a pointer: it renames the param's Yul `YulPathNode` references to a fresh `__memb_*` buffer (and, when assembly
+REASSIGNS the param, the high-level uses too), then prepends a byte-by-byte deserialize loop from the ABI
+value-copy. `materializeNamedBytesReturn` does the same for an uninitialized named-return `bytes`/`string` (the EVM
+null pointer 0, so `add(dst, off)` arithmetic stays relative to zero). The bridge-handled signature-split read
+(`mload(add(sig, 32))` / `byte(0, mload(add(sig, 96)))`) is unaffected: fixed `bytesN` params are not materialization
+candidates and unbounded `bytes memory` reads still compile. Locked by `InlineAssemblyYul.test.ts`
+(`bytes/string memory params and named returns as __yulmem pointers`): mstore/mload/mcopy/keccak256 over
+`add(p, off)`, string==bytes byte-identity, uninitialized named-return bytes/string, and the bridge read.
+
 **EACCToken then advanced PAST ShortStrings through TWO more OZ Math library-helper walls, both FIXED (commit
 `03c2e383`):** (1) `Math.tryAdd` `unchecked { uint c=a+b; if(c<a) return(false,0); return(true,c); }` crashed codegen
 "Expected variable 'c' does not exist on the stack" - an early return inside an `unchecked` block was never nested
@@ -311,6 +322,12 @@ that item's low value. Bundled with the bytes/string-param deferral.
 
 **Revisit if.** The param-pointer item is taken up (this rides on the same materialization).
 
+**RESOLVED (2026-10-15).** `materializeNamedBytesReturn` materializes an uninitialized named-return
+`bytes`/`string` used in assembly as the EVM null pointer (0), renames the Yul references to a `__memret_*` local,
+and redirects the terminal return; `add(dst, off)` arithmetic then stays relative to zero and later
+`mstore`/`mcopy` write through the buffer. Locked by `InlineAssemblyYul.test.ts`
+(`materializes an uninitialized named-return bytes/string used as a pointer`).
+
 ---
 
 ## Compound byte writes on a converted bytes buffer  — 2026-07-15
@@ -323,6 +340,11 @@ only relocates the plain `=` form), so such a buffer falls back to value-copy.
 pointer optimization is missed. Not worth a read-modify-write byte-splice path yet.
 
 **Revisit if.** A contract hot-path does compound byte writes on a buffer it also drives via assembly.
+
+**RESOLVED (2026-10-15).** The compound byte write now emits the in-place splice: the AstBuilder's
+`desugarBytesElementWrite` rebuild and `LowerMemoryModel`'s element-write fusion collapse `b[i] op= v` on a local
+`__yulmem`-candidate buffer to the same bytecode as `b[i] = b[i] op v` (for `+=`/`|=`/`&=`). Locked by
+`storage-collections.test.ts` (`local bytes compound writes are byte-identical to the in-place splice`).
 
 ---
 

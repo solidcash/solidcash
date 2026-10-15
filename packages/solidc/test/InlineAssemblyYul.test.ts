@@ -589,6 +589,34 @@ describe('Yul memory (constant-offset scratch)', () => {
   });
 });
 
+describe('bytes/string memory params and named returns as __yulmem pointers (mstore/mload/mcopy/keccak256)', () => {
+  const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
+  it('materializes a bytes memory param used as a pointer (mstore/mload/mcopy/keccak256 over add(p,off))', () => {
+    expect(cc('contract C(){function f(bytes memory p, uint256 n) returns (bytes32 r) {'
+      + ' assembly { mstore(add(p,0x20), 1) mcopy(0, add(p,0x20), 32) r := mload(0)'
+      + ' r := keccak256(add(p,0x20), n) } } }')).toBe('C');
+  });
+  it('materializes a string memory param byte-identically to the bytes memory form', () => {
+    const mk = (t: string): string => compileString(
+      `contract C(){function f(${t} memory p) returns (bytes32 r) {`
+      + ' assembly { r := mload(add(p,0x20)) mstore(add(p,0x20), 1) } } }',
+      { evmCompat: true });
+    expect(mk('bytes').bytecode).toBe(mk('string').bytecode);
+  });
+  it('materializes an uninitialized named-return bytes/string used as a pointer', () => {
+    expect(cc('contract C(){function f(bytes32 w) returns (bytes memory o) {'
+      + ' assembly { mstore(o, 32) mstore(add(o,0x20), w) } } }')).toBe('C');
+    expect(cc('contract C(){function f(bytes32 w) returns (string memory o) {'
+      + ' assembly { mstore(o, 32) mstore(add(o,0x20), w) } } }')).toBe('C');
+  });
+  it('keeps the bridge-handled mload read on an unbounded bytes memory param', () => {
+    // mload(add(buf,32)) on a bytes memory param is also a materialization candidate; the read must still
+    // compile through the parseBytesPtr/bytesMemorySlice bridge (the ECDSA signature-split shape).
+    expect(cc('contract C(){function f(bytes memory buf) returns (bytes32 r) {'
+      + ' assembly { r := mload(add(buf, 32)) } } }')).toBe('C');
+  });
+});
+
 // OZ Address / SafeERC20 assembly builtins: revert(ptr,size) aborts, mload(<bytes var>) is its length,
 // extcodesize(addr) is addr.code.length. All lower (they are not EVM-fundamental).
 describe('Yul revert / extcodesize / bytes-length mload (OZ Address/SafeERC20)', () => {

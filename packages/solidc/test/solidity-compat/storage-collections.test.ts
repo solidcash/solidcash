@@ -535,6 +535,14 @@ describe('bytes element compound write (data[i] |= v / &=)', () => {
     { evmCompat: true });
     expect(s.bytecode).toBe(h.bytecode);
   });
+  it('local bytes compound writes are byte-identical to the in-place splice (b[i] op= v == b[i] = b[i] op v)', () => {
+    const mk = (body: string): string => compileString(
+      'contract C { function f(bytes memory b, uint256 i, bytes1 v) external { ' + body + ' require(true); } }',
+      { evmCompat: true }).bytecode;
+    for (const op of ['+', '|', '&']) {
+      expect(mk(`b[i] ${op}= v;`)).toBe(mk(`b[i] = b[i] ${op} v;`));
+    }
+  });
 });
 
 describe('contract-typed arrays resolve to address arrays (contract handle = address)', () => {

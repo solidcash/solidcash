@@ -3,6 +3,8 @@
  * flattened allInputs, and mirror refreshed carrier masters.
  */
 
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { isContractUnlocker } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo, Unlocker } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -11,6 +13,7 @@ import { syncBuilderInputsFromAllInputs } from './persist-predecessor-layout.js'
 export interface RefreshedUnlockerSyncHost {
   /** Mutable flattened input list — callers rewrite slots after unlocker refresh. */
   readonly allInputs: UnlockableUtxo[];
+  readonly coordinateBase?: number;
   masterUtxo: UnlockableUtxo;
   masterUnlockerRefresher?: (builder?: TransactionBuilder) => Unlocker;
 }
@@ -41,6 +44,28 @@ export function syncBuilderUnlockers(
   refreshMasterUnlocker(host, builder);
   const refreshed = syncBuilderInputsFromAllInputs(builder.inputs, host.allInputs);
   builder.inputs.splice(0, builder.inputs.length, ...refreshed);
+  // Nested readers may precede a growing root continuation band. Their oracle index names the
+  // final selected physical input, so an earlier block-relative coordinate is provisional.
+  for (const input of builder.inputs) {
+    const { unlocker } = input;
+    if (!isContractUnlocker(unlocker)) continue;
+    const position = unlocker.abiFunction.inputs.findIndex((parameter) =>
+      parameter.name === '__internal__blockOracleInputIndex');
+    if (position < 0) continue;
+    const lock = unlocker.contract.blockOracleLock;
+    if (lock === undefined) throw new Error('Block oracle reader has no bound oracle lock');
+    const lockHex = binToHex(lock);
+    const matches = builder.inputs.flatMap((candidate, index) => (
+      candidate.token?.nft?.capability === 'mutable'
+        && binToHex(candidate.unlocker.generateLockingBytecode()) === lockHex ? [index] : []
+    ));
+    if (matches.length !== 1) throw new Error('Block oracle reader requires one authenticated oracle input');
+    const oracleInputIndex = BigInt((host.coordinateBase ?? 0) + matches[0]);
+    if (unlocker.params[position] === oracleInputIndex) continue;
+    unlocker.params[position] = oracleInputIndex;
+    unlocker.syncEncodedArgsFromParams?.([position]);
+  }
+
 }
 
 /** Mirror refreshed carrier masters into both the flattened and materialized input lists. */

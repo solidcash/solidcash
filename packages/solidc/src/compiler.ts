@@ -1981,6 +1981,7 @@ function externalHandlerKey(fn: FunctionDefinitionNode): string {
 function markDynamicChunkInputBaseFunctions(
   ast: Ast,
   inheritedKeys: ReadonlySet<string> = new Set(),
+  writeKeys: Set<string> = new Set(),
 ): Set<string> {
   const keys = new Set(inheritedKeys);
   const dynamicStateNames = new Set(ast.contract.stateVariables
@@ -2002,6 +2003,17 @@ function markDynamicChunkInputBaseFunctions(
       messageBusCloneSourceKey?: string;
     }).messageBusCloneSourceKey;
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
+    const writesDynamicState = footprint.writes.some((resource) => {
+      // Element/field mutations are collection resources before semantic lowering; whole-value writes use
+      // state resources. Both refer to the same declared dynamic continuation family.
+      const name = resource.startsWith('state:') ? resource.slice('state:'.length)
+        : resource.startsWith('collection:') ? resource.split(':')[1] : undefined;
+      return name !== undefined && dynamicStateNames.has(name);
+    });
+    if (writesDynamicState || writeKeys.has(sourceKey)
+      || (cloneSourceKey !== undefined && writeKeys.has(cloneSourceKey))) {
+      writeKeys.add(sourceKey);
+    }
     const directlyRequiresBase = [...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('state:') && dynamicStateNames.has(resource.slice('state:'.length)));
     if (directlyRequiresBase || keys.has(sourceKey)
@@ -15395,7 +15407,10 @@ function compileResolvedAst(
   }
   // Dynamic-state syntax is still present here. Preserve its physical input-base requirement by stable source
   // identity before collection/dynamic journal lowering value-threads those accesses through ordinary locals.
-  const dynamicChunkInputBaseFunctionKeys = markDynamicChunkInputBaseFunctions(ast);
+  const dynamicChunkWriteFunctionKeys = new Set<string>();
+  const dynamicChunkInputBaseFunctionKeys = markDynamicChunkInputBaseFunctions(
+    ast, new Set(), dynamicChunkWriteFunctionKeys,
+  );
   const stateExternalPointerNames = ast.contract.stateVariables
     .filter((state) => state.type instanceof FunctionType && state.type.isExternal)
     .map((state) => state.name);
@@ -16055,7 +16070,7 @@ function compileResolvedAst(
 
   // Reapply the pre-lowering requirement to the final logical functions and compiler-owned handler clones, while
   // also discovering any dynamic-state dependency synthesized after the first survey.
-  markDynamicChunkInputBaseFunctions(ast, dynamicChunkInputBaseFunctionKeys);
+  markDynamicChunkInputBaseFunctions(ast, dynamicChunkInputBaseFunctionKeys, dynamicChunkWriteFunctionKeys);
 
   // Recovery compute is funded by the physical entrypoint even when the builtin sits behind imported/library
   // helpers (e.g. ECDSA.recover -> two tryRecover overloads -> ecrecover). Symbol resolution happens in the next
@@ -16207,6 +16222,24 @@ function compileResolvedAst(
       ));
     }
   }
+  // Ordinary direct writers can follow several physical callee blocks, including a non-returning callee
+  // after the last returned event. Neither that event nor the old input chunk identifies the output band.
+  // Preserve the source write footprint across journal lowering and publish the materialized coordinate;
+  // the dynamic-write covenant still verifies every chunk's exact lock, category, and commitment there.
+  // Framed entries use their declared record coordinates, and delegates retain their suffix convention.
+  if (mergedCompilerOptions.composition !== 'framed') {
+    for (const fn of ast.contract.functions) {
+      if (!fn.isEntryPoint || fn.messageBusRoute || fn.graphEmissionHandler
+        || fn.modifiers.includes(FunctionModifier.DELEGATE)
+        || !dynamicChunkWriteFunctionKeys.has(externalHandlerKey(fn))
+        || ((fn.externalCalls?.length ?? 0) === 0 && (fn.lowLevelCalls?.length ?? 0) === 0)
+        || fn.parameters.some((parameter) => parameter.name === '__internal__dynamicChunkOutputBase')) continue;
+      const dynamicOutputBase = new ParameterNode(PrimitiveType.BIGINT, '__internal__dynamicChunkOutputBase');
+      dynamicOutputBase.location = fn.location;
+      fn.parameters.push(dynamicOutputBase);
+    }
+  }
+
   // Graph-emission handlers execute as OP_DEFINE subroutines inside the hidden route's physical participant
   // block. Their external edges are callManifest rows, not additional co-spent slots, so their independently
   // inferred function layout is intentionally absent. Dynamic state reads/writes in those handlers must still

@@ -28,6 +28,7 @@ import { ContractFactory, getContractFactory as sdkGetContractFactory, deployCon
 import type { SplitContractBundle } from 'solidcash/dist/stateful/SplitContractBundle.js';
 import { randomUtxo } from 'solidcash/dist/utils.js';
 import * as ethersUtils from './ethers-utils.js';
+import { getCreateAddressForComposition } from './ethers-shim.js';
 import * as nh from './network-helpers.js';
 import { setActiveProvider } from './network-helpers.js';
 import {
@@ -296,6 +297,7 @@ export function loadArtifactOrSplitByName(artifactsDir: string, name: string): A
 
 interface EthersOptions {
   artifactsDir: string;
+  composition?: 'direct' | 'framed';
   accountsPath?: string;
   accountSatoshis?: bigint;
   recoveryProjection: 'p2pkh' | 'evm';
@@ -523,6 +525,8 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
 
   const ethers: SolidcashEthers = {
     ...ethersUtils,
+    getCreateAddress: (tx: { from: string; nonce: number | bigint }) =>
+      getCreateAddressForComposition(tx, opts.composition),
     provider: ethersProvider,
     getSigners,
     verifyMessage: opts.recoveryProjection === 'p2pkh' ? verifyMessageP2pkh : verifyMessageEvm,
@@ -594,6 +598,8 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
   const mnemonic = mnemonicFor(selectedConfig);
   const ethersOpts: EthersOptions = {
     artifactsDir: config.paths.artifacts,
+    composition: config.composition ?? (config.compiler?.composition === 'framed' ? 'framed'
+      : 'direct'),
     // Keep getSigners() and the hardhat-shaped config.networks.*.accounts.path view identical. Ported suites
     // commonly reconstruct HDNodeWallets from that published path and expect wallet i to be signer i.
     accountsPath: config.accounts?.path ?? HARDHAT_ACCOUNT_BRANCH,

@@ -2954,26 +2954,29 @@ export function sharedNodeWritersBefore(callees: readonly HopCallee[]): Readonly
 }
 
 /**
- * For each callee frame, the frames that write a node it also writes before it does, created or spent.
+ * For each callee frame, the frames that write a node it reads or writes before it does, created or spent.
  *
- * A node a frame's body creates is no deployment's, so the frames the plan places after it name it only by the
- * slot they both write: the view one of them leaves is stated by its own settle, and the frame that writes the
- * same node continues from it.
+ * A node a frame's body creates is no deployment's, so the frames the plan places after it name it only by its
+ * slot: the view and whole chunked value the writer leaves are stated by its own settle, and a later reader or
+ * writer continues from them.
  */
 export function writtenNodeWritersBefore(callees: readonly HopCallee[]): ReadonlyMap<number, readonly number[]> {
   const before = new Map<number, number[]>();
   const written = new Map<string, number[]>();
   callees.forEach((callee, frame) => {
     const owner = callee.recordOwner === undefined ? callee : callees[callee.recordOwner]!;
-    for (const node of callee.entryWrites?.writtenNodes ?? []) {
-      const id = sharedNodeId(bytesToHex(owner.category), node.collection, node.slot);
-      const writers = written.get(id) ?? [];
+    const writtenIds = (callee.entryWrites?.writtenNodes ?? []).map((node) =>
+      sharedNodeId(bytesToHex(owner.category), node.collection, node.slot));
+    for (const id of new Set([...callee.readNodes.map((node) => node.id), ...writtenIds])) {
       const earlier = before.get(frame) ?? [];
       // A writer the frame runs inside settles after it; the view it left is learned by deriving it up to its call.
-      for (const writer of writers) {
+      for (const writer of written.get(id) ?? []) {
         if (!earlier.includes(writer) && !entersFrame(callees, writer, frame)) earlier.push(writer);
       }
       before.set(frame, earlier);
+    }
+    for (const id of writtenIds) {
+      const writers = written.get(id) ?? [];
       if (!writers.includes(frame)) writers.push(frame);
       written.set(id, writers);
     }

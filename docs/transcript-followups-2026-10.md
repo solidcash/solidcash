@@ -1,6 +1,6 @@
 # Resumed-session follow-ups
 
-Goal: complete the seven follow-ups identified from Claude session `7d9e436e`.
+Goal: complete the seven original follow-ups identified from Claude session `7d9e436e` and the six subsequent follow-ups recorded below.
 Starting point: `feat/per-call` at `64c351077`. Work branch: `feat/transcript-followups`.
 
 ## Constraints
@@ -11,6 +11,51 @@ Starting point: `feat/per-call` at `64c351077`. Work branch: `feat/transcript-fo
 - Keep the independently active `vmap-items` worktree intact; do not merge or alter its work without coordination.
 - Use persistent build and focused test watchers. Run the final project-reference build before handoff.
 - Keep consensus rules and security checks intact; a green relaxed-capacity test alone does not prove deployability.
+
+## Six subsequent follow-ups (2026-10-14, complete)
+
+This pass starts at `371cb72b1` in `.worktrees/transcript-followups`. The fresh-session handoff was read and
+removed as requested; its six acceptance items remain tracked here. The seven original items below remain the
+completed baseline. No BCHN service, full suite, or full marketplace ladder is authorized for this pass.
+
+| Follow-up | Current evidence | Status |
+| --- | --- | --- |
+| Whitelist and growing history | Baseline exact selection reproduced two failures: `closeJob` VM settlement and negative uint256 argument planning. Neutral regressions guided authenticated-clock and partial-activation fixes. Final fresh-artifact unchanged selection: **2 passed, 64 skipped, 78.06s** (`should whitelist worker`, `update job many times, get history`), including existing state/event/history assertions through 30 events. | Complete |
+| Framed full-state inventory and rebinding | Proxy owner schema and deployed master lock retained; implementation-only state, owner pointer classification and dynamic chunks checked through signer/provider rebinding. Focused acceptance + direct control: 2 passed, 3 skipped, 22.83s on the integrated build. | Focused acceptance passed |
+| DS-6 function-pointer reads | Unresolved non-pure pointer effects now fail closed, including expression/nested calls; pure pointers and inlined getters retain supported behavior. Four selected titles: 4 passed, 68 skipped, 12.48s on the integrated build. No accepted stale-read exploit reproduced. | Focused acceptance passed |
+| Computed chunked create then pure read | Missing writer dependency reproduced and fixed by including read nodes. Exact returned/persisted note, runtime timestamp, signed broadcast, all encoded input VMs and wrong/empty reader witnesses checked; new case + repeated-append control: 2 passed, 16.31s on the integrated build. | Focused acceptance passed |
+| Immutable callee repair schema | Legacy singleton default-restoration failure reproduced at the repair host boundary. Exact grouped outpoint + strict schema/lock identity replace unconditional tags and pubkey shape guesses. Expanded matrix: 17 passed (5.13s); honest nested immutable-return path: 1 passed, 17 skipped (17.94s), both on the integrated build. Natural end-to-end provisional-default trigger remains unproven; the repair-boundary failure is proven. | Focused acceptance passed |
+| Offline stock-limit inventory | Final complete-artifact [inventory](marketplace-stock-inventory-2026-10.md) and reproducible `scripts/marketplace-stock-inventory.mjs` measure all 19 artifacts, both generated proxies, and validator head/facet. All seven implementation masters (16,927–94,012 bytes) exceed the stock 10,000-byte stack-item ceiling. Published commitment allowance is 10 MB vs stock 128 bytes; schema defaults are separately labeled lower bounds. No stock deployability claim follows from the relaxed semantic fixture. | Complete offline inventory |
+
+The final normal complete compile after the compiler activation fixes completed 9 jobs / 19 artifacts / 0 cache
+hits. Artifact JSONs are newer than the latest emitted compiler JavaScript (17:06:51 UTC); their SHA-256 values
+are recorded in the stock inventory. The proxied lane and fixture freshness gates pass without bypasses.
+Diagnostic variable names were checked (none inherited), and the final commands explicitly unset `SOLIDC_*`,
+`FRAMED_HOP_TRACE` and `TESTS_USE_REGTEST`. `compiler.tagSingletonDataNfts: true` and the enlarged mock capacities
+are retained. Canonical marketplace tests and sources are unchanged.
+
+The new neutral conditional alias-update test passes both authenticated-clock branches, preserves a long note,
+verifies exact reserved/transferred amounts, checks every final signed input of the first close and submits both
+transactions (1 passed, 12.44s). The unsigned-difference test verifies increases, equal no-op, skipped refund and
+taken refund with exact persisted ledger/sink state and accepted broadcasts (1 passed, 14.90s). A compiler test
+also verifies known necessary AND conjuncts survive an unsupported introspection, while an unresolved OR stays
+conservative (1 passed, 5.68s). These fixes select behavior by expression effects and authenticated oracle facts.
+
+Final marketplace command from worktree root:
+
+```sh
+env -u TESTS_USE_REGTEST -u FRAMED_HOP_TRACE SOLIDCASH_MARKETPLACE_WORKER_HEAP_MB=6144 \
+  yarn vitest run --config vitest.marketplace.config.ts \
+  -t 'should whitelist worker$|update job many times, get history$'
+```
+
+The process also removed all inherited `SOLIDC_*` variables before launch (none were present). It exited zero.
+The unchanged whitelist title took 12.929s; the unchanged growing-history title took 60.695s. No other marketplace
+titles ran. No BCHN services, live-node tests, full suites or full marketplace ladder ran during this pass.
+
+Logs for this pass use `/tmp/transcript-followups-*`. One-shot project-reference build, affected TypeScript lint,
+source-tree guard and `git diff --check` pass; the inventory script passes `node --check` and executed successfully.
+The optional performance work is excluded.
 
 ## Work and acceptance evidence
 
@@ -24,7 +69,7 @@ Starting point: `feat/per-call` at `64c351077`. Work branch: `feat/transcript-fo
 | 6 | Refresh marketplace artifacts and run its planned ladder checkpoint | Full normal compile with current compiler context, then all three selected titles pass | Complete: offline mock checkpoint 3/3, 63 skipped; current artifacts and clean validation |
 | 7 | Reconcile decisions and audit status | D26 and older residuals match implementation and verified results | Complete for scoped findings and recorded checkpoint outcome |
 
-## Current evidence and handoff
+## Original seven-item baseline evidence (before this pass)
 
 Item 6 completed on 2026-10-14. The final complete normal compile produced 19 artifacts from 9 source jobs
 (0 cache hits). The proxied lane and fixture freshness gate passed. With diagnostic variables unset, the unchanged

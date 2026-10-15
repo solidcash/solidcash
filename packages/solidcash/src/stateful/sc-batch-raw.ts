@@ -830,19 +830,25 @@ export function batchRaw(
           ?? capability.route.entryAccesses!.indexOf(selectedAccess);
         const directSlot = directAccess.slotIndex ?? directIndex;
         const selectedBatch = selected?.sortedBatchInfo?.find((batch) => batch.slotIndices.includes(directSlot));
-        if (selectedBatch !== undefined
-          && (operations.includes('write') || operations.includes('delete') || guardedRead)) {
+        const publishedBatch = capability.route.sortedBatchInfo?.find((batch) =>
+          batch.collection === directAccess.collection && batch.slotIndices.includes(selectedSlot));
+        // A callable can lack a direct batch while sharing the compiled route's physical collection family.
+        // Keep every selected route lane when another collection narrows the union: read lanes publish an
+        // unchanged proof node, and writer lanes retain their predecessor/output census.
+        const routeCensus = publishedBatch !== undefined
+          && operations.some((operation) => ['read', 'write', 'delete'].includes(operation));
+        if ((selectedBatch !== undefined
+          && (operations.includes('write') || operations.includes('delete') || guardedRead)) || routeCensus) {
           if (!guardedRead) activeRouteSortedBatchSlots.add(selectedSlot);
-          const publishedBatch = capability.route.sortedBatchInfo?.find((batch) =>
-            batch.collection === selectedBatch.collection);
-          const activeBatch = activeRouteSortedBatches.get(selectedBatch.collection)
+          const collection = selectedBatch?.collection ?? publishedBatch!.collection;
+          const activeBatch = activeRouteSortedBatches.get(collection)
             ?? { slots: new Set<number>(), linear: publishedBatch?.linear === true };
           activeBatch.slots.add(selectedSlot);
           // Runtime narrowing may select a direct handler whose ordinary ABI uses linear rank/row witnesses.
           // The physical kernel route is the authority for its own ABI: do not synthesize witness families the
           // published route did not expose merely because the selected source handler has richer geometry.
           activeBatch.linear ||= publishedBatch?.linear === true;
-          activeRouteSortedBatches.set(selectedBatch.collection, activeBatch);
+          activeRouteSortedBatches.set(collection, activeBatch);
         }
         const prior = activeRouteEntryOperations.get(selectedSlot) ?? [];
         activeRouteEntryOperations.set(

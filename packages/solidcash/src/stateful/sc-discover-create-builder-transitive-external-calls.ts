@@ -2,7 +2,7 @@
  * phase-boundary extract: SC _createBuilder extract — discover transitive B→C external-call groups.
  */
 
-import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction, Artifact, ExternalCallAbi, StateLayout, StateValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
@@ -13,6 +13,8 @@ import { encodeExternalReturnValue } from './external-return-encoding.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
+import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
+import { resolveOrdinarySelfIdentity } from './ordinary-self-identity.js';
 
 export type TransitiveExternalContract = {
   categoryId: string;
@@ -56,7 +58,8 @@ export async function resolveTransitiveExternalContract(
   if (connected) return connected as TransitiveExternalContract;
   if (!edge.addressSource) return undefined;
   const state = await caller.getState();
-  const selfAddress = hexToBin(caller.inner.lockingBytecode);
+  const selfAddress = (await resolveOrdinarySelfIdentity(caller, abi))?.unlocker.generateLockingBytecode()
+    ?? hexToBin(caller.inner.lockingBytecode);
   const hydrated = edge.addressSource.kind === 'expression' && edge.addressSource.expression
     ? await caller._hydrateExternalPredicateState(
       [edge.addressSource.expression], [...args], caller.inner.artifact, state, abi.inputs,
@@ -86,9 +89,13 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
     const directGroup = externalCallUtxoGroups[directIdx];
     const bContract = directGroup.externalContract as TransitiveExternalContract;
     const bAbi = bContract.inner.artifact.abi;
-    const bAbiFunc = bAbi.find((f) => f.name === directGroup.functionName);
+    const bAbiFunc = directGroup.compilerRoute
+      ? bAbi.find((f) => f.name === directGroup.functionName)
+      : resolveStatefulAbiFunction(bContract.inner.artifact, directGroup.functionName, directGroup.functionArgs);
 
     if (!bAbiFunc?.externalCalls?.length) continue;
+    const bSelfIdentity = directGroup.compilerRoute ? undefined : await resolveOrdinarySelfIdentity(bContract, bAbiFunc);
+    const bSelfAddress = bSelfIdentity?.unlocker.generateLockingBytecode() ?? hexToBin(bContract.inner.lockingBytecode);
 
     for (const bEc of bAbiFunc.externalCalls) {
       // Resolve C from the exact compiler-published address when B has no connect-time interface binding.
@@ -133,13 +140,13 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       if (argumentExpressions.length > 0) {
         bState = await bContract._hydrateExternalPredicateState(
           argumentExpressions, directGroup.functionArgs, bContract.inner.artifact, bState,
-          bAbiFunc.inputs, hexToBin(bContract.inner.lockingBytecode),
+          bAbiFunc.inputs, bSelfAddress,
         );
       }
       // Resolve C's args from B's compiler-published sources.
       const cArgs = bContract._resolveExternalArgs(
         cArgSources, directGroup.functionArgs, bContract.inner.artifact, bState, bAbiFunc.inputs,
-        undefined, 0, false, hexToBin(bContract.inner.lockingBytecode),
+        undefined, 0, false, bSelfAddress,
       );
       if (cArgs === undefined && cArgSources?.some((s) => s.kind === 'expression')) {
         throw new Error(
@@ -161,9 +168,11 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       }
 
       const cStateLayout = cContract.inner.stateLayout!;
-      const cRequiredNftIndices = bEc.requiredDataNftIndices;
-      const cAbiFunction = cContract.inner.artifact.abi.find((candidate) =>
-        candidate.name === cFunctionName);
+      const cAbiFunction = rawMatches[0]
+        ?? resolveStatefulAbiFunction(cContract.inner.artifact, cFunctionName, cArgs ?? []);
+      // The connected concrete handler declares its complete fixed-state footprint; an interface may publish
+      // no data slots even when that handler reads and updates a fixed-state NFT.
+      const cRequiredNftIndices = [...(cAbiFunction?.requiredNftIndices ?? bEc.requiredDataNftIndices)];
       // The ordinary transitive A→B→C discovery path does not pass through nested graph expansion. Seed a
       // read-only C result here so B can decode it while its own return is derived. This is an advancing seed,
       // never a substitute for final transaction validation: state-writing/unknown callees still use VM proof.
@@ -173,7 +182,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
         try {
           const value = await cContract._deriveReturnValue(
             cFunctionName, cArgs ?? [], undefined, cAbiFunction, undefined,
-            hexToBin(bContract.inner.lockingBytecode), bContract.categoryId,
+            bSelfAddress, bContract.categoryId,
           );
           const returnEncoding = resolveExternalResultEncoding(
             cAbiFunction.resultEncoding, cContract.inner.artifact,
@@ -217,7 +226,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
         externalContract: cContract as any,
         callerIdentity: {
           categoryId: bContract.categoryId,
-          lockingBytecode: bContract.inner.lockingBytecode,
+          lockingBytecode: binToHex(bSelfAddress),
         },
         logicalFunctionName: cFunctionName,
         ...(precomputedReturnCommitment && { precomputedReturnCommitment }),

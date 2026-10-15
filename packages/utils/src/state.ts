@@ -138,8 +138,8 @@ function bindMintingAuthorityLock(masterLock?: Uint8Array): Script {
     // [index, tail, head], the whole unlocking starting as the tail.
     Op.OP_DUP, Op.OP_INPUTBYTECODE, Op.OP_0,
     Op.OP_BEGIN,
-    // A head too short for a push header takes the tail back and is cut to 512 bytes again.
-    Op.OP_SIZE, Op.OP_3, Op.OP_LESSTHAN,
+    // A head too short for the largest push header takes the tail back and is cut to 512 bytes again.
+    Op.OP_SIZE, Op.OP_5, Op.OP_LESSTHAN,
     Op.OP_IF,
     Op.OP_SWAP, Op.OP_CAT,
     Op.OP_SIZE, encodeInt(512n), Op.OP_GREATERTHAN,
@@ -149,8 +149,10 @@ function bindMintingAuthorityLock(masterLock?: Uint8Array): Script {
     Op.OP_1, ...readUnsigned,
     Op.OP_DUP, encodeInt(75n), Op.OP_GREATERTHAN,
     Op.OP_IF,
-    Op.OP_DUP, encodeInt(78n), Op.OP_LESSTHAN,
-    Op.OP_IF, encodeInt(75n), Op.OP_SUB, ...readUnsigned,
+    Op.OP_DUP, encodeInt(79n), Op.OP_LESSTHAN,
+    // PUSHDATA1/2/4 use one, two and four length bytes; the opcode difference gives 1/2/3.
+    Op.OP_IF, encodeInt(75n), Op.OP_SUB,
+    Op.OP_DUP, Op.OP_3, Op.OP_NUMEQUAL, Op.OP_ADD, ...readUnsigned,
     Op.OP_ELSE, encodeInt(79n), encodeInt(97n), Op.OP_WITHIN, Op.OP_VERIFY, Op.OP_0,
     Op.OP_ENDIF,
     Op.OP_ENDIF,

@@ -16,6 +16,7 @@ afterEach(() => {
 
 const harness = (): ReturnType<typeof createHardhatRuntimeEnvironment> => {
   const hre = createHardhatRuntimeEnvironment(resolveConfig({
+    composition: 'framed',
     networks: { mock: { type: 'mock' } }, defaultNetwork: 'mock',
     accounts: { count: 1, satoshis: 1_234_567n },
   }));

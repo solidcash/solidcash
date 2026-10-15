@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeDataPush, utf8ToBin } from '@bitauth/libauth';
+import { binToHex, encodeDataPush, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import {
-  INDEX_NONE, VALUE_INLINE_LIMIT, concatBytes, encodeWitnessBlock, hash160, splitFirstPush, type WitnessBlock,
+  INDEX_NONE, VALUE_INLINE_LIMIT, blockOracleFieldBytes, concatBytes, encodeWitnessBlock, hash160, splitFirstPush,
+  type WitnessBlock,
 } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
@@ -24,8 +25,7 @@ import {
  * plan whose book frame declares a chunk record of the value otherwise is refused by the book's own frame.
  *
  * A book that stamps with the clock reads the block oracle, which a framed body finds by its lock, so the planner
- * co-spends it beside the callee's master. This path co-spends nothing for a callee yet, so that call is refused by
- * name before any frame is built.
+ * co-spends it beside the callee's master. The root and every later callee reuse that one authenticated input.
  */
 
 /** The book and desk, the book's filing stamping each record with `stamp`. */
@@ -60,6 +60,9 @@ const source = (stamp: string): string => [
 
 const artifacts = compileFramed(source('uint64(id + 1)'));
 const clockArtifacts = compileFramed(source('uint64(block.timestamp)'));
+const sharedClockArtifacts = compileFramed(source('uint64(block.timestamp)').replace(
+  '    last = book.open(id, note);', '    require(block.timestamp > 0); last = book.open(id, note);',
+));
 
 /** Notes long enough that the record holding one crosses what its node holds inline. */
 const NOTE = 'abcdefghijklmnopqrstuvwxyz'.repeat(4);
@@ -177,16 +180,30 @@ describe('a plain root whose callee writes a record its own body computes part o
     expect(refusedOn(settled, withBlock(settled, book!.master, block))).toContain(book!.master);
   }, 600_000);
 
-  it('refuses by name a book that stamps with the clock, whose block oracle this path does not co-spend', async () => {
-    const world = await newWorld(0x63);
-    const book = await deployPlain(world, clockArtifacts.Book!);
-    const desk = await deployPlain(world, clockArtifacts.Desk!, [book.address]);
-    const refused = await enterPlain(world, desk, 'file', [ID, NOTE], {
-      Book: { artifact: book.artifact, categoryId: book.categoryId },
-    });
-    expect(refused.result).toBeUndefined();
-    expect(refused.error?.message).toBe('entry "file" makes 1 external call(s): the callee "Book.open()" reads the '
-      + 'block oracle, which this call path does not co-spend for a callee yet');
-    expect(refused.coinSpent).toBe(false);
+  it.each([false, true])('co-spends the callee clock once when the root also reads it: %s', async (rootReads) => {
+    const world = await newWorld(rootReads ? 0x64 : 0x63);
+    const selected = rootReads ? sharedClockArtifacts : clockArtifacts;
+    const book = await deployPlain(world, selected.Book!);
+    const desk = await deployPlain(world, selected.Desk!, [book.address]);
+    const result = await enter({ world, book, desk }, 'file', [ID, NOTE], ['Book.open()', 'Desk.file()']);
+    const lock = world.network.blockOracleLock!;
+    const oracleIndices = result.sourceOutputs.flatMap((output, index) =>
+      (binToHex(output.lockingBytecode) === binToHex(lock) ? [index] : []));
+    expect(oracleIndices).toHaveLength(1);
+    const oracleIndex = oracleIndices[0]!;
+    const oracle = result.sourceOutputs[oracleIndex]!;
+    const timestamp = blockOracleFieldBytes(oracle.token!.nft!.commitment, 'timestamp');
+    let expected = 0n;
+    for (let index = timestamp.length - 1; index >= 0; index -= 1) expected = (expected << 8n) | BigInt(timestamp[index]!);
+    expect(await view({ world, book, desk }, book, 'atOf', [ID])).toBe(expected);
+    const frame = result.completed.find((candidate) => candidate.functionName === 'Book.open()')!;
+    const index = result.draft.layout.participants.find((placed) => placed.id === frame.master)!.index;
+    // A mutable NFT at another lock cannot replace the oracle this callee's emitted bytecode pins.
+    const forgedSources = [...result.sourceOutputs];
+    forgedSources[oracleIndex] = { ...oracle, lockingBytecode: hexToBin('aa20' + '77'.repeat(32) + '87') };
+    const vm = compositionMachine();
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: index, sourceOutputs: forgedSources, transaction: result.transaction,
+    }))).not.toBe(true);
   }, 600_000);
 });

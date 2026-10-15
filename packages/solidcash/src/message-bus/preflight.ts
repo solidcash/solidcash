@@ -6,7 +6,8 @@ import type { Transaction } from '@bitauth/libauth/build/lib/vm/instruction-sets
 import { bigIntToVmNumber, decodeAuthenticationInstructions, encodeAuthenticationInstructions, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
-import { scriptToBytecode } from '@solidcash/utils';
+import { scriptToBytecode, type Artifact } from '@solidcash/utils';
+import { boundArtifactProgramHex } from '../oracle/block-oracle-lock.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { rememberPreparedCovenantValidation } from '../network/prepared-covenant-receipt.js';
@@ -2801,7 +2802,7 @@ export function mapMessageBusVmFailure(
         delegateArtifact?: unknown;
       };
       for (const [selector, body] of Object.entries(artifact.functionBodies ?? {})) {
-        if (body.toLowerCase() !== executedBody) continue;
+        if (boundArtifactProgramHex(artifact as Artifact, body) !== executedBody) continue;
         const requireStatement = artifact.debug?.functionDebug?.[selector]?.requires
           ?.find((entry) => entry.ip === failure.ip! - 1)
           ?? artifact.debug?.functionDebug?.[selector]?.requires
@@ -2814,7 +2815,7 @@ export function mapMessageBusVmFailure(
       // selector body. Match the VM's exact decoded body against the compiler's invokeDebug table as well;
       // source-map proximity or the route selector cannot identify a nested guard safely.
       for (const [identifier, body] of Object.entries(artifact.debug?.invokeDebug ?? {})) {
-        if (body.bytecode.toLowerCase() !== executedBody) continue;
+        if (boundArtifactProgramHex(artifact as Artifact, body.bytecode) !== executedBody) continue;
         const requireStatement = body.requires.find((entry) => entry.ip === failure.ip! - 1)
           ?? body.requires.find((entry) => entry.ip === failure.ip);
         if (requireStatement !== undefined) {
@@ -3016,7 +3017,8 @@ export function mapMessageBusVmFailure(
       /returnOutputIdx/i.test(abiInput.name)
         ? [{ name: abiInput.name, value: String(unlockerParams.params?.[i]) }] : []
     ));
-    if (idxParams.length > 0) console.error('preflight-return-idx', { inputIndex, idxParams, rawVmReason });
+    if (idxParams.length > 0 && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_RETURN_IDX === '1') console.error('preflight-return-idx', { inputIndex, idxParams, rawVmReason });
   }
   // layout invariant attribution attribution: name the owning contract/function and layout coordinate witnesses so
   // "input 225 OP_VERIFY" carries participant/resource/expected-output context without a full operand dump.

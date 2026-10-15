@@ -122,7 +122,12 @@ workflow itself were not run here. Source evidence: the resumed session's `scrat
   (`m[a] = v; if (c) delete m[k];`) is refused at compile, keys differing included, because its write could be lost;
   settling it would need chunk runs staged on the delete's node.
 - DS-6: an external self-call (`this.get(k)`) that reads the mapping between a swap-remove write and its delete is
-  refused at compile (`DirectInvokedStaleReadError`); function-pointer calls there are not covered.
+  refused at compile (`DirectInvokedStaleReadError`). Unresolved indirect calls there, including expression callees
+  and calls inside an invoked helper, fail closed (`DirectIndirectStaleReadError`) unless their function type proves
+  they are pure. Non-pure pointers are refused for both same-key and different-key runtime arguments: target-specific
+  effect resolution remains unsupported. Inlined internal getters observe pending same-key values and the other
+  key's own value. The neutral pointer reproduction compiled before this guard, but even its honest pending-value
+  call failed VM preflight; it did not establish an accepted stale-read exploit.
 - DS-1 follow-up, fixed for a direct singleton conditional scalar write: if-conversion had inserted an enumerable
   zero-valued node on the skipped absent-key path. The source branch now retains its activity flag; compiler and
   SDK use the existing activity settlement to keep the predecessor unchanged and remove the planned insert.

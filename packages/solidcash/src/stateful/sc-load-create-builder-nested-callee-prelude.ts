@@ -176,10 +176,7 @@ export async function loadCreateBuilderNestedCalleePrelude(
 
   // Build B's full block inputs when B's function has entries/events/transfers
   const bSc = callInfo.externalContract;
-  const bAbiFunc = compilerRoute?.abiFunction ?? (bSc
-    ? (bSc.inner.artifact.abi as readonly AbiFunction[])
-      .find((f) => f.name === callInfo.functionName)
-    : undefined);
+  const bAbiFunc = compilerRoute?.abiFunction ?? selectedConcreteAbi;
   const bBlockLayout = bAbiFunc?.blockLayout;
   const directDynamicWrites = new Set(compilerRoute ? [] : bAbiFunc?.dynamicWrites ?? []);
   const bDynamicChunkInputs = bStatelayout.variables
@@ -200,7 +197,8 @@ export async function loadCreateBuilderNestedCalleePrelude(
   // this tied to the compiler's entry effect and valueParam metadata: selecting a merely type-compatible
   // argument would be ambiguous for functions with multiple dynamic values or collection writes.
   const bDirectChunkValues = (bAbiFunc?.entryAccesses ?? []).flatMap((access) => {
-    if (!access.operations.includes('write') || access.valueParam === undefined) return [];
+    if (!access.operations.includes('write') || access.valueParam === undefined
+      || access.arrayMutation !== undefined) return [];
     const collection = bStatelayout.collections?.find((candidate) => (
       candidate.name === access.collection || candidate.signature === access.collection
     ));

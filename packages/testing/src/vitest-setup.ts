@@ -37,8 +37,10 @@ const mochaContext: Record<string, unknown> = {
 };
 
 const bindContext = (fn: unknown): unknown => (typeof fn === 'function'
-  ? function boundToMochaContext(this: unknown, ...args: unknown[]): unknown {
-    return (fn as AnyFn).apply(mochaContext, args);
+  ? function boundToMochaContext(this: unknown): unknown {
+    // Vitest 5 parses suite-hook parameters as fixture dependencies, so this wrapper must declare none.
+    // eslint-disable-next-line prefer-rest-params -- retain all callback arguments without a parsed rest parameter
+    return (fn as AnyFn).apply(mochaContext, Array.from(arguments));
   }
   : fn);
 

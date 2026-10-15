@@ -3047,6 +3047,10 @@ export interface ExternalCallSlot {
   // MD1: the callee function's compile-time selector, baked as a constant OP_EQUALVERIFY for a regular call so a
   // spender cannot substitute a different method of the callee via the (previously trusted) witness param.
   compileTimeSelector?: Uint8Array;
+  /** Interface-proven readonly entry; used only for direct return-frame authentication. */
+  readonlyReturnSelector?: Uint8Array;
+  /** Set only when codegen emits the direct shared-readonly return equality check. */
+  readonlyReturnBindingSelector?: Uint8Array;
   // Same-address varying-method pointer: the RUNTIME selector expression (`cond ? a.selector : b.selector`).
   // The epilogue evaluates it and asserts the co-spent callee's selector == it, instead of the witness param.
   runtimeSelector?: ExpressionNode;

@@ -15,6 +15,7 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { boundArtifactProgramHex } from '../oracle/block-oracle-lock.js';
 import {
   decodeEvmInvocationResult,
   decodeEvmInvocationResultPrefix,
@@ -360,7 +361,7 @@ export function probeRequireMessage(
     let matched = false;
     for (const artifact of candidates) {
       for (const body of Object.values(artifact.debug?.invokeDebug ?? {})) {
-        if (body.bytecode.toLowerCase() !== activeBodyHex.toLowerCase()) continue;
+        if (boundArtifactProgramHex(artifact, body.bytecode) !== activeBodyHex.toLowerCase()) continue;
         matched = true;
         const requirement = body.requires.find((entry) => entry.ip === errorIp - 1)
           ?? body.requires.find((entry) => entry.ip === errorIp);

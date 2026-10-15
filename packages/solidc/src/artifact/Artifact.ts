@@ -3115,12 +3115,23 @@ function buildFunctionAbiMetadata(
     // set from the exact producerResult components which code generation and the SDK evaluate.
     const producerByCallsite = new Map(slots.map((slot) => [slot.slotIndex, slot] as const));
     const result = new Map<string, ExternalResultConsumerAbi>();
+    const canonicalRecipes = new Map<string, WeakMap<ExternalCallExpression, ExternalCallExpression>>();
     const canonicalize = (
       expression: ExternalCallExpression,
       consumerCallsiteId: number,
       lane: number | 'condition' | 'iterationDomain',
       dominanceCallsiteId = consumerCallsiteId,
     ): ExternalCallExpression => {
+      // A reconstructed local can share its earlier values through many fields. Preserve that DAG while
+      // normalizing, without reusing a producer's validation or dependency edges in another consumer lane.
+      const context = `${consumerCallsiteId}:${lane}:${dominanceCallsiteId}`;
+      let recipes = canonicalRecipes.get(context);
+      if (recipes === undefined) {
+        recipes = new WeakMap();
+        canonicalRecipes.set(context, recipes);
+      }
+      const cached = recipes.get(expression);
+      if (cached !== undefined) return cached;
       const rewrite = (child: ExternalCallExpression | undefined): ExternalCallExpression | undefined =>
         child && canonicalize(child, consumerCallsiteId, lane, dominanceCallsiteId);
       const rewriteSource = (source: ExternalCallArgSource | undefined): ExternalCallArgSource | undefined =>
@@ -3150,7 +3161,10 @@ function buildFunctionAbiMetadata(
         ...(expression.args && { args: expression.args.map((child) => rewrite(child)!) }),
         ...(expression.statements && { statements: expression.statements.map(rewriteStatement) }),
       };
-      if (normalized.kind !== 'externalCall' && normalized.kind !== 'producerResult') return normalized;
+      if (normalized.kind !== 'externalCall' && normalized.kind !== 'producerResult') {
+        recipes.set(expression, normalized);
+        return normalized;
+      }
       const producerCallsiteId = normalized.callsiteId;
       const producer = producerCallsiteId === undefined
         ? undefined : producerByCallsite.get(producerCallsiteId);
@@ -3178,13 +3192,15 @@ function buildFunctionAbiMetadata(
         producerSourceCallsiteId,
         resultIndex,
       });
-      return {
+      const producerResult: ExternalCallExpression = {
         kind: 'producerResult',
         callsiteId: producerCallsiteId,
         sourceCallsiteId: producerSourceCallsiteId,
         resultIndex,
         ...(normalized.type && { type: normalized.type }),
       };
+      recipes.set(expression, producerResult);
+      return producerResult;
     };
     const canonicalizeSources = (
       sources: ExternalCallArgSource[] | undefined,
@@ -3889,6 +3905,9 @@ function buildFunctionAbiMetadata(
         }
         return {
           callsiteId: ec.slotIndex,
+          ...(compilerOptions.composition !== 'framed' && ec.readonlyReturnBindingSelector !== undefined && {
+            readonlyReturnBinding: { version: 1 as const, selector: binToHex(ec.readonlyReturnBindingSelector) },
+          }),
           ...(ec.sourceEffectOrdinal !== undefined && { sourceEffectOrdinal: ec.sourceEffectOrdinal }),
           ...(ec.sourceCallNode && {
             sourceLocation: {

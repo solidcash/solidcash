@@ -104,7 +104,8 @@ export function placeTailReturnAfterSwappedTokenBlock(
       ? builder.outputs.length - suffixChunkCount - 1
       : builder.outputs.length),
   );
-  const writerSlots = new Set<number>();
+  const fixedIdentityIndices = host.viewTailPackOptions().reservedIndices ?? new Set<number>();
+  const writerSlots = new Set<number>(fixedIdentityIndices);
   const returnSlot = tokenGroup?.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent');
   if (returnSlot) writerSlots.add(master + returnSlot.offset);
   for (const index of host.declaredMutableEntrySlotIndices()) writerSlots.add(index);
@@ -184,6 +185,7 @@ export function placeTailReturnAfterSwappedTokenBlock(
         plannedIndex: group?.plannedReturnOutputIndex,
         returnIndex: group?.returnOutputIndex,
         suffixStart,
+        reservedIndices: fixedIdentityIndices,
         outputs: builder.outputs,
       });
       if (redirected === undefined) {
@@ -219,6 +221,9 @@ export function placeTailReturnAfterSwappedTokenBlock(
           nft: { capability: 'none', commitment },
         },
       };
+      if (fixedIdentityIndices.has(placedIndex)) {
+        throw new Error('View return redirection collides with an input-bearing identity output.');
+      }
       builder.outputs[placedIndex] = output;
       returnOutputRefs?.set(event.identity, output);
       host.builtReturnEventOutputIndices.set(event.identity, placedIndex);

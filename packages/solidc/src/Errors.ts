@@ -996,6 +996,14 @@ export class DirectInvokedStaleReadError extends SolidCashError {
   }
 }
 
+/** An unresolved indirect target may read a sorted entry whose pending value lives in the caller's registers. */
+export class DirectIndirectStaleReadError extends SolidCashError {
+  constructor(public node: Node, written: string) {
+    super(node, `an indirect call with unresolved state-read effects after the write of \`${written}\` is not `
+      + 'supported on the direct convention: read it before the write, or use an inlined internal getter');
+  }
+}
+
 /**
  * A constructor reads a verified-mapping entry after a write whose key may name it and which keeps no value: the read
  * would take the genesis default rather than the value the write stored.

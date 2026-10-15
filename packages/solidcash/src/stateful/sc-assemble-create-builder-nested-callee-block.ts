@@ -6,12 +6,17 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
+  blockOracleReadUnlocking,
   parseEntryCommitment,
   joinValueChunks,
   parseValueChunkCommitment,
   sha256 as sha256Sync,
   VALUE_CHUNK_SIZE,
   VALUE_HEAD_SIZE,
+  VALUE_INLINE_LIMIT,
+  encodePushdataValue,
+  type EntryAccessAbi,
+  type Artifact,
   type AbiFunction,
   type StateLayout,
 } from '@solidcash/utils';
@@ -34,10 +39,17 @@ import {
 import { isMsgSenderKeySource } from './soft-state-overlays.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { planNestedStreamedEvents, type NestedStreamedEventPlan } from './nested-streamed-events.js';
+import { deriveChunkableArrayValueChannels } from './resource-fold-route.js';
+import { blockOracleLockFor, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
 
 export interface AssembleCreateBuilderNestedCalleeBlockHost {
   getUtxos(address: string): Promise<Utxo[]>;
   keysMatch(a: unknown, b: unknown, keyType: string): boolean;
+  encodeStoredElementSource(
+    access: EntryAccessAbi, elementType: string, args: FunctionArgument[], handler: AbiFunction,
+    artifact: Artifact, state: Record<string, unknown>,
+  ): Uint8Array | undefined;
+  readonly sharedBlockOracleLocks: Set<string>;
   readonly hasSigner: boolean;
   hasSharedFunder(): boolean;
   shiftSharedFunder(): UnlockableUtxo | undefined;
@@ -67,11 +79,12 @@ export interface AssembleCreateBuilderNestedCalleeBlockCtx {
   bHasLoop: boolean;
   bSc: { inner: any } | null;
   bAbiFunc: AbiFunction | undefined;
-  bState: { masterUtxo: Utxo };
+  bState: { masterUtxo: Utxo; state?: Record<string, unknown> };
   bDataNfts: UnlockableUtxo[];
   bStatelayout: StateLayout;
   bRequiredNftIndices: readonly number[];
   bValueChunkOutputCount: number;
+  bDirectChunkValue?: Uint8Array;
   bKeccak: { inputs: UnlockableUtxo[] };
   compilerRoute: ExternalCallUtxoGroup['compilerRoute'] | undefined;
   callInfo: {
@@ -103,7 +116,6 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
     bDataNfts,
     bStatelayout,
     bRequiredNftIndices,
-    bValueChunkOutputCount,
     bKeccak,
     compilerRoute,
     callInfo,
@@ -119,7 +131,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
     // funding INPUT there or B's input extent is shorter than its output extent (X13).
     const fullBlockKinds = new Set(
       ['entry', 'satoshiContainer', 'tokenContainer', 'transfer', 'tcTransfer', 'event', 'keccakSideCar',
-        'blockhashOracle'],
+        'blockhashOracle', 'blockInfoOracle'],
     );
     const hadFullBlockKinds = bBlockLayout.slots.some((s) => fullBlockKinds.has(s.kind));
     // A loop-expanded slot shares ONE contiguous return-event band across its iterations, so its callees
@@ -213,6 +225,27 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
             // covenant fails loudly rather than mispositioning the block.
             const kInput = bKeccak.inputs[slot.slotIndex ?? 0];
             ctx.bBlockInputs.push(kInput ?? await makeFunder());
+            break;
+          }
+          case 'blockInfoOracle': {
+            // The selected callee pins its own oracle, even when the caller never reads the clock.
+            // A prior reader keeps the single co-spend; this fixed slot then remains a balanced pad.
+            const lock = bSc.inner.blockOracleLock ?? blockOracleLockFor(bSc.inner.artifact);
+            if (lock === undefined) throw new Error('Nested block oracle reader has no bound oracle lock');
+            const lockHex = binToHex(lock);
+            if (host.sharedBlockOracleLocks.has(lockHex)) {
+              ctx.bBlockInputs.push(await makeFunder());
+              break;
+            }
+            const found = await bSc.inner.provider.getUtxosForLockingBytecode(lock);
+            const oracle = found.find((utxo: Utxo) => utxo.token?.nft?.capability === 'mutable');
+            if (oracle?.token?.category === undefined) throw new Error('block oracle UTXO is not available');
+            const category = hexToBin(oracle.token.category);
+            ctx.bBlockInputs.push({ ...oracle, unlocker: {
+              generateLockingBytecode: () => lock,
+              generateUnlockingBytecode: () => blockOracleReadUnlocking(category),
+            } });
+            host.sharedBlockOracleLocks.add(lockHex);
             break;
           }
           case 'returnEvent':
@@ -485,6 +518,42 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                     }
                   }
                   ctx.bCompilerInternalArgs[witnessName] = witness;
+                  // One straight-line ordinary append has the same authenticated value channels as a routed
+                  // push. Reserve its complete result before NEW and identity outputs compete for slots;
+                  // the proof witness remains the exact predecessor/target pre-value the VM authenticates.
+                  const writtenChunkable = (bAbiFunc.entryAccesses ?? []).filter((access) =>
+                    access.operations.includes('write') && bStatelayout.collections?.some((collection) =>
+                      collection.chunkableValue && (collection.name === access.collection
+                        || collection.signature === access.collection)));
+                  const targetSlot = ctx.bCompilerInternalArgs[
+                    `__internal__vmapBatchSlot_${slot.slotIndex ?? 0}`
+                  ];
+                  if (!compilerRoute && ctx.bDirectChunkValue === undefined
+                    && bAbiFunc.sourceEffectOrder === 'linear' && writtenChunkable.length === 1
+                    && writtenChunkable[0] === bEntryAccess && bEntryAccess.activation === undefined
+                    && bEntryAccess.chunkableArrayValue && bEntryAccess.arrayMutation === 'push'
+                    && bEntryAccess.storedElementSource?.version === 1 && bCollection.valueType.endsWith('[]')
+                    && targetSlot instanceof Uint8Array && targetSlot.length === 32) {
+                    const recipeState: Record<string, unknown> = { ...bState.state };
+                    const selectedArtifact = bSc.inner.artifact as Artifact;
+                    const oracleLock = selectedArtifact.usesBlockOracle === true
+                      ? blockOracleLockFor(selectedArtifact) ?? bSc.inner.blockOracleLock : undefined;
+                    const timestamp = oracleLock === undefined ? undefined
+                      : await readBlockOracleTimestamp(bSc.inner.provider, oracleLock);
+                    if (timestamp !== undefined) recipeState.__block_timestamp = timestamp;
+                    const currentElement = host.encodeStoredElementSource(
+                      bEntryAccess, bCollection.valueType.slice(0, -2), bRouteArgs, bAbiFunc,
+                      selectedArtifact, recipeState,
+                    );
+                    if (currentElement !== undefined) {
+                      const storedPreValue = binToHex(proof.slot) === binToHex(targetSlot) ? witness
+                        : encodePushdataValue([], bCollection.valueType, bStatelayout.structs);
+                      const { postValue } = deriveChunkableArrayValueChannels({ storedPreValue, currentElement });
+                      ctx.bDirectChunkValue = postValue;
+                      ctx.bValueChunkOutputCount = postValue.length > VALUE_INLINE_LIMIT
+                        ? Math.ceil((postValue.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE) : 0;
+                    }
+                  }
                 }
                 const unlocker = createEntryNftUnlocker(
                   bSc.inner, ctx.bBlockInputs.length, externalCategoryId, bEntryAccess.collection,
@@ -672,7 +741,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
           }
           ctx.bBlockInputs.push(await makeFunder());
         }
-        for (let index = 0; index < bValueChunkOutputCount; index += 1) {
+        for (let index = 0; index < ctx.bValueChunkOutputCount; index += 1) {
           ctx.bBlockInputs.push(await makeFunder());
         }
       }

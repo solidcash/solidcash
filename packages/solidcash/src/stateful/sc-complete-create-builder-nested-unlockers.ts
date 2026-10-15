@@ -26,6 +26,7 @@ import {
   resolveAbsolutePredOut,
 } from './writer-event-delegate-layout.js';
 import { computedStateWriterGroupIndex } from './writer-group-selection.js';
+import { resolveOrdinarySelfIdentity, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import {
   callerIdentityAnchorBand,
   isRoutePushValueWitnessName,
@@ -116,6 +117,10 @@ export async function completeCreateBuilderNestedUnlockers(
       ?? (child.externalContract.inner.artifact.abi as readonly AbiFunction[])
         .find((f) => f.name === child.functionName);
     if (!childFn) continue;
+    const childSelfIdentity = !child.compilerRoute
+      ? await resolveOrdinarySelfIdentity(child.externalContract, childFn) : undefined;
+    const childSelfIdentityBand = childSelfIdentity === undefined ? undefined
+      : await host.ensureNestedIdentityAnchorBand(childSelfIdentity.logicalAddress);
     let visible = 0;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
       console.error('nested-route-internal-args', child.functionName,
@@ -149,12 +154,13 @@ export async function completeCreateBuilderNestedUnlockers(
           contract,
           artifact: child.logicalArtifact ?? child.externalContract.inner.artifact,
           state: (await nestedFullState(contract)).state,
-          executionSelfAddress: hexToBin(child.externalContract.inner.lockingBytecode),
+          executionSelfAddress: childSelfIdentity?.unlocker.generateLockingBytecode()
+            ?? hexToBin(child.externalContract.inner.lockingBytecode),
         };
       })(),
     );
     const childAnchorFillPositions: {
-      argIndex: number; name: string; band?: number; categoryId?: string; proxyRoute: boolean;
+      argIndex: number; name: string; band?: number; categoryId?: string; proxyRoute: boolean; required?: boolean;
     }[] = [];
     const childParentGroupIndex = allGroupParentIndices[groupIdx];
     const childCallerCategoryId = child.callerIdentity?.categoryId
@@ -245,6 +251,13 @@ export async function completeCreateBuilderNestedUnlockers(
         child.internalArgs,
       );
       if (routePushValue !== undefined) return routePushValue;
+      if (!child.compilerRoute && usesOrdinarySelfIdentity(childFn)
+        && input.name === '__internal__graphSelfIdentityInput') {
+        if (childSelfIdentityBand !== undefined) childAnchorFillPositions.push({
+          argIndex: inputIndex, name: input.name, band: childSelfIdentityBand, proxyRoute: false, required: true,
+        });
+        return -1n;
+      }
       if (['__internal__activeVerifierIndex', '__internal__graphFixedSize',
         '__internal__graphSelfIdentityInput',
         '__internal__graphBlockSize', '__internal__graphSettlementBoundary',

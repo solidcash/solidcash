@@ -1230,12 +1230,23 @@ export async function assembleAtomicComposition(
         handler.selector?.toLowerCase() === selected.selector.toLowerCase());
     });
     const selectedDynamicWrites = new Set(selectedHandlers.flatMap((handler) => handler?.dynamicWrites ?? []));
-    const selectedReadOnlyDynamicLocks = [...new Set(selectedHandlers.flatMap((handler) =>
-      handler?.dynamicReads ?? []))].flatMap((name) => {
-      if (selectedDynamicWrites.has(name)) return [];
-      const variable = participant.artifact.stateLayout?.variables.find((candidate) =>
-        candidate.name === name && candidate.dynamic);
-      return variable === undefined ? [] : [addressToLockScript(getDynamicChunkAddress(
+    if (selectedHandlers.every((handler) => handler !== undefined) && selectedDynamicWrites.size === 0) {
+      // A union route can own writers which this authenticated batch never selects. Preserve its readable
+      // dynamic inputs while disabling the route-wide write settlement, including in a delegated executor.
+      for (const input of local.inputs) {
+        if (!isContractUnlocker(input.unlocker)
+          || input.unlocker.abiFunction.name !== participant.artifact.messageBus?.route.name) continue;
+        const baseIndex = input.unlocker.abiFunction.inputs.findIndex((parameter) =>
+          parameter.name === '__internal__dynamicChunkInputBase');
+        const value = baseIndex < 0 ? undefined : input.unlocker.params[baseIndex];
+        if (typeof value !== 'bigint' || value < 0n) continue;
+        input.unlocker.params[baseIndex] = -(value + 3n);
+        input.unlocker.syncEncodedArgsFromParams?.([baseIndex]);
+      }
+    }
+    const selectedReadOnlyDynamicLocks = (participant.artifact.stateLayout?.variables ?? []).flatMap((variable) => {
+      if (!variable.dynamic || selectedDynamicWrites.has(variable.name)) return [];
+      return [addressToLockScript(getDynamicChunkAddress(
         contract.inner, categories[participant.participant], variable.name, variable.type,
       ))];
     });
@@ -1694,6 +1705,9 @@ export async function assembleAtomicComposition(
           + `slots, expected balanced block size ${blockSize}`,
       );
     }
+    // Settle unchanged chunk twins before deriving physical output claims. Restoring them only before
+    // publication can displace a predecessor after its layout-resolver claim has already been frozen.
+    reassertRoutedReadOnlyDynamicChunkTwins(local.outputs, local.inputs, selectedReadOnlyDynamicLocks);
     // `fixedSuffix` prevents compaction of the participant, but it does not erase the compiler-published
     // trailing band. Computed chunk claims are validated against that band before `minimumActualSize` is forced
     // back to the full block below; using blockSize here turns the valid range into an empty interval.

@@ -164,7 +164,19 @@ export function reassertScidIdentityOutputs(
     }
     const existing = outputs[target];
     if (existing && !existing.token && (existing.amount ?? 0n) > 50_000n) {
-      outputs.splice(target + 1, 0, { ...existing, amount: (existing.amount ?? 0n) - 1000n });
+      // The replacement may be inside a compiler-owned block. A local insertion would shift every
+      // later entry, event and continuation coordinate; keep funder change after those fixed outputs.
+      // Keep only terminal OP_RETURN markers at the end; an interior marker is a fixed output too.
+      let suffix = outputs.length;
+      while (suffix > 0) {
+        const output = outputs[suffix - 1];
+        const bytes = output.to instanceof Uint8Array ? output.to : undefined;
+        if (bytes?.length !== 1 || bytes[0] !== 0x6a) break;
+        suffix -= 1;
+      }
+      outputs.splice(suffix, 0, {
+        ...existing, amount: (existing.amount ?? 0n) - (input.satoshis ?? 1200n),
+      });
     }
     outputs[target] = {
       to: lock,

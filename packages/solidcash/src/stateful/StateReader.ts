@@ -181,6 +181,7 @@ export class StateReader {
    */
   readState(
     dataNftUtxos: Utxo[],
+    dynamicChunks?: { categoryId: string; byVariable: Record<string, Utxo[]> },
   ): Record<string, StateValue> {
     const result: Record<string, StateValue> = {};
 
@@ -198,6 +199,7 @@ export class StateReader {
       }
     }
 
+    if (dynamicChunks) this.assembleDynamicVars(result, dynamicChunks.categoryId, dynamicChunks.byVariable);
     return result;
   }
 

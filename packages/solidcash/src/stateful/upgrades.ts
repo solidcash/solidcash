@@ -832,7 +832,7 @@ async function deployFramedProxyThroughFactory<TImpl extends Artifact>(
   }
   const handle = await framedProxyHandle(
     implementationArtifact, signer, deployment.proxy.categoryId, deployment.implementation.categoryId,
-    deployment.proxy.address,
+    deployment.proxy.address, proxyArtifact,
   );
   // The handle is the deployed contract a suite calls through, and the deployment's own record sits beside it as
   // `proxyDeployment`: a bare name on the handle belongs to the implementation's entries, so the record is nested
@@ -878,9 +878,11 @@ async function framedCallerFunding(signer: Signer): Promise<FramedProxyCallerFun
  */
 async function framedProxyHandle(
   implementationArtifact: Artifact, signer: Signer, proxyCategoryId: string,
-  implementationCategoryId: string, proxyAddress: Uint8Array,
+  implementationCategoryId: string, proxyAddress: Uint8Array, proxyArtifact: Artifact,
 ): Promise<ConnectedStatefulContract<Artifact>> {
   const { Contract } = await import('../Contract.js');
+  const { deployMaster } = await import('../framed/deploy/material.js');
+  const { framedValidator } = await import('solidc/runtime');
   const inner = new Contract(implementationArtifact, [] as never, {
     provider: signer.provider, category: hexToBin(proxyCategoryId),
   });
@@ -891,6 +893,13 @@ async function framedProxyHandle(
   if (typeof encoded === 'string') {
     throw new Error(`The framed proxy's own address is not encodable: ${encoded}`);
   }
+  if (proxyArtifact.stateLayout === undefined) throw new Error('A framed proxy must publish its state layout');
+  handle._framedStateOwner = {
+    layout: proxyArtifact.stateLayout,
+    masterLockingBytecode: deployMaster(
+      proxyArtifact, hexToBin(proxyCategoryId), framedValidator.buildValidatorProgram(),
+    ).lockingBytecode,
+  };
   handle._framedProxyImplementationCategory = implementationCategoryId;
   handle._framedProxyAddress = encoded.address;
   handle._signer = signer;

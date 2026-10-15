@@ -569,6 +569,8 @@ export function viewTailOccupancyCap(
 }
 
 export type ViewTailPackOptions = {
+  /** Input-bearing identities which the selected executable pins at the same output coordinate. */
+  reservedIndices?: ReadonlySet<number>;
   band?: { start: number; end: number };
   /** First reserved suffix index (OP_RETURN / value chunks). Tails must not land here. */
   suffixStart?: number;

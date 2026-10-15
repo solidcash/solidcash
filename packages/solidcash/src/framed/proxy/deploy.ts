@@ -2999,8 +2999,8 @@ async function planAndSettleHop(options: {
   const heldPlanOf = async (): Promise<
   { readonly externalPlan: HopExternalPlan; readonly settled: SettledHop } | undefined
   > => {
-    // The held reading only restates a declaration for a node one frame of this hop writes and an earlier one wrote
-    // as well, and a created node is the shape no deployment holds: a hop without one is not planned again.
+    // The held reading restates a declaration for a node an earlier frame of this hop wrote, whether this frame
+    // reads or writes it. A created node is the shape no deployment holds: a hop without one is not planned again.
     if (![...writtenNodeWritersBefore(externalPlan.callees).values()].some((writers) => writers.length > 0)) {
       return undefined;
     }
@@ -5305,6 +5305,11 @@ export async function callFramedProxyEntry(
   const recordAmounts = proxyPools.records.map((record) => record.satoshis);
   // Read once: the hop co-spends this oracle, and a stored clock value is the time it holds.
   const blockOracle = await hopBlockOracle(provider, oracleLock, implementationArtifact, options.functionName);
+  // Call predicates and write recipes read the same clock the body authenticates from this co-spent oracle.
+  const executionState = {
+    ...deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
+    ...(blockOracle === undefined ? {} : blockOracleClock(blockOracle)),
+  };
 
   // The mapping nodes the entry only reads, planned the way a proxied callee's are: from the proxy's own nodes and
   // records, read with the proxy's layout, and the call data the frame receives. Each is named by its collection and
@@ -5328,8 +5333,7 @@ export async function callFramedProxyEntry(
     nodesByCollection: proxyPools.nodesByCollection,
     // A key the entry's write publishes as a state read is the value the delegate frame itself reads on the
     // proxy's own records, so those records are decoded into the same view its data slots carry.
-    state: deploymentStateValues(proxyArtifact.stateLayout!, options.proxyCategoryId, proxyPools) as
-      Readonly<Record<string, StateValue>>,
+    state: executionState as Readonly<Record<string, StateValue>>,
   };
   // The values the proxy's nodes hold, which the delegate frame reads: the facts a guarded write is decided from, and
   // the key a write reads out of another mapping.
@@ -5379,7 +5383,7 @@ export async function callFramedProxyEntry(
   // The events and hashes the entry's loops repeat, counted against the same facts its calls are resolved from.
   const loopTurns = implementationLoopTurns({
     artifact: implementationArtifact, functionName: options.functionName, args,
-    stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
+    stateValues: executionState,
     selfAddress: proxyMaster.address, senderAddress: options.callerLockingBytecode,
   });
   // The emits a branch guards that the delegate frame's facts decide its body skips, decided as its writes are.
@@ -5477,7 +5481,7 @@ export async function callFramedProxyEntry(
       planHopExternalCalls({
         provider, artifact: implementationArtifact, functionName: options.functionName,
         args, externals: options.externals ?? {}, validatorProgram,
-        stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
+        stateValues: executionState,
         entryDeployment: { categoryId: options.proxyCategoryId, deployment: proxyPools, layout: classificationLayout },
         reentrantRoot,
         selfAddress: proxyMaster.address,

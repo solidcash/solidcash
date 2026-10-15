@@ -76,7 +76,6 @@ import {
   MappingFieldAssignNode,
   MethodCallNode,
   MethodCallStatementNode,
-  NewArrayNode,
   Node,
   NullaryOpNode,
   ParameterNode,
@@ -101,6 +100,7 @@ import {
 import { cloneNodeReplacing } from '../../ast/clone.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../../ast/Operator.js';
 import { walkInvocationAst } from '../../analysis/InvocationAnalysis.js';
+import { singleLiteralElement } from '../../analysis/InitializedArrayElement.js';
 import { isDirectOwnerTransferNode } from '../../semantic/branchOps.js';
 import type { MasterCallSite, MasterTailShape, SiteArgument } from './frame-tail.js';
 import { BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName } from './batch-witness-derivation.js';
@@ -490,56 +490,6 @@ function boundKeyExpression(
     : node;
   if (resolved === undefined) return undefined;
   return singleLiteralElement(resolved, entry) ?? resolved;
-}
-
-/**
- * The local a literal-index read belongs to.
- *
- * The array is that local, or the one `new T[](N)` it was copied from. Inlining a helper argument substitutes the
- * allocation into the key (`disallowed[0]` becomes `(new address[](1))[0]`), and N identifies the local when only
- * one allocation of that size exists.
- */
-function arrayElementLocal(array: ExpressionNode, entry: FunctionDefinitionNode): string | undefined {
-  if (array instanceof IdentifierNode) return array.name;
-  if (!(array instanceof NewArrayNode) || !(array.size instanceof IntLiteralNode)) return undefined;
-  const size = array.size.value;
-  let name: string | undefined;
-  let count = 0;
-  walkInvocationAst(entry.body, (node) => {
-    if (!(node instanceof VariableDefinitionNode) || !(node.expression instanceof NewArrayNode)) return;
-    if (!(node.expression.size instanceof IntLiteralNode) || node.expression.size.value !== size) return;
-    count += 1;
-    name = node.name;
-  });
-  return count === 1 ? name : undefined;
-}
-
-/**
- * The one value stored at a literal index of a local array, or undefined when that store is not a single assignment.
- *
- * Any other write of the array (another index, a push, a pop, a delete, or a whole-array assign) leaves the element
- * unresolved, so the caller refuses the key rather than hashing a value the body may not still hold.
- */
-function singleLiteralElement(node: ExpressionNode, entry: FunctionDefinitionNode): ExpressionNode | undefined {
-  if (!(node instanceof ArrayAccessNode) || !(node.index instanceof IntLiteralNode)) return undefined;
-  const name = arrayElementLocal(node.array, entry);
-  if (name === undefined) return undefined;
-  const index = node.index.value;
-  let value: ExpressionNode | undefined;
-  let count = 0;
-  let otherWrite = false;
-  walkInvocationAst(entry.body, (current) => {
-    if (current instanceof ArrayAssignNode && current.name === name) {
-      if (current.index instanceof IntLiteralNode && current.index.value === index) {
-        count += 1;
-        value = current.value;
-      } else otherWrite = true;
-    } else if ((current instanceof ArrayPushNode || current instanceof ArrayPopNode
-      || current instanceof ArrayDeleteNode) && current.name === name) {
-      otherWrite = true;
-    } else if (current instanceof AssignNode && current.identifier.name === name) otherWrite = true;
-  });
-  return !otherWrite && count === 1 ? value : undefined;
 }
 
 /**

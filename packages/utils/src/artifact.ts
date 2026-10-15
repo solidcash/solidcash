@@ -1477,6 +1477,8 @@ export interface CallsiteCallerIdentityAbi {
  * Do not invent source identity from proxy/delegate/locking bytecode.
  */
 export interface ExternalCallAbi {
+  /** Direct unconditional zero-argument readonly aliases share one authenticated return value. */
+  readonlyReturnBinding?: { version: 1; selector: string };
   /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
   callsiteId?: number;
   /** Compiler-authored function-local program point of this call effect. */

@@ -73,7 +73,9 @@ import {
   createVirtualMachineBch2026ForProvider,
 } from '../network/createVirtualMachine.js';
 import { Contract } from '../Contract.js';
-import { type ConstructorArgument, type FunctionArgument, encodeFunctionArgument } from '../Argument.js';
+import {
+  type ConstructorArgument, type FunctionArgument, encodeFunctionArgument, normalizeSolidityBytesArgument,
+} from '../Argument.js';
 import type { AbiToFunctionMap } from '../types/type-inference.js';
 import type { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
@@ -117,6 +119,7 @@ import {
   KERNEL_JOURNAL_RECORDS,
   assertKernelJournalRecordBudget,
   defaultInternalFunctionArg,
+  compilerRouteUsesPhysicalWrapper,
   kernelJournalAccessStreamPlaceholders,
   kernelJournalRecordSegmentWitnesses,
   kernelReadCarrierOwnsDuplicateProof,
@@ -127,8 +130,10 @@ import {
   type GraphEcrecoverCall,
   type MessageBusRuntimeAbiFunction,
 } from './kernel-route-planning.js';
+import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
-import { readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
+import { blockOracleLockFor, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
+import { selectRootBlockOracleReader, takeNestedBlockOracleInput } from './block-oracle-reader-selection.js';
 import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type {
@@ -166,6 +171,7 @@ import {
   getTokenContainerAddress,
   getSatoshiContainerAddress,
   getContractState,
+  type FramedStateOwner,
   createDataNftUnlocker,
   createEntryNftUnlocker,
   createReadOnlyEntryNftUnlocker,
@@ -3876,7 +3882,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * categories are read to place the inputs.
    */
   _framedProxyImplementationCategory?: string;
-  /** The address a framed proxy's handle presents: the proxy's own master pool, not the implementation's. */
+  /** The framed proxy's authenticated owner schema and exact deployed master lock. */
+  _framedStateOwner?: FramedStateOwner;
+  /** The address a framed proxy's handle presents: its validator address, addrV(category). */
   _framedProxyAddress?: string;
   /**
    * The address a plain framed handle presents: the contract's own address, `addrV(category)`, carried rather
@@ -4340,6 +4348,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     (sc as StatefulContract)._deployDefaults = { ...this._deployDefaults };
     (sc as StatefulContract)._signer = signer;
     (sc as StatefulContract)._logicalNonceSigner = signer;
+    (sc as StatefulContract)._framedStateOwner = this._framedStateOwner;
     (sc as StatefulContract)._framedProxyImplementationCategory = this._framedProxyImplementationCategory;
     (sc as StatefulContract)._framedProxyAddress = this._framedProxyAddress;
     (sc as StatefulContract)._framedAddress = this._framedAddress;
@@ -4364,6 +4373,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const [name, lib] of this._libraryRegistry) {
       (sc as StatefulContract)._libraryRegistry.set(name, lib);
     }
+    (sc as StatefulContract)._framedStateOwner = this._framedStateOwner;
+    (sc as StatefulContract)._framedProxyImplementationCategory = this._framedProxyImplementationCategory;
+    (sc as StatefulContract)._framedProxyAddress = this._framedProxyAddress;
+    (sc as StatefulContract)._framedAddress = this._framedAddress;
     if (this._signer) (sc as StatefulContract)._signer = this._signer;
     if (this._logicalNonceSigner) (sc as StatefulContract)._logicalNonceSigner = this._logicalNonceSigner;
     (sc as StatefulContract)._logicalAddress = this._logicalAddress;
@@ -4617,7 +4630,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   async getState(): Promise<Record<string, StateValueType>> {
     await this._ensureResolved();
-    const onChainState = await getContractState(this.inner, this.categoryId);
+    const onChainState = await getContractState(this.inner, this.categoryId, undefined, this._framedStateOwner);
     const state = onChainState.state as Record<string, StateValueType>;
     // Mock compatibility effects are user-facing only: covenant construction reads getFullState() and therefore
     // continues to use authenticated UTXOs. Ignore private metadata keys which are not declared state variables.
@@ -4778,7 +4791,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   async getFullState(): Promise<OnChainState> {
     await this._ensureResolved();
-    return getContractState(this.inner, this.categoryId);
+    return getContractState(this.inner, this.categoryId, undefined, this._framedStateOwner);
   }
 
   /** @internal Resolve one compiler-published fixed-effect activation predicate against authenticated state. */
@@ -6586,6 +6599,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       return call.addressParam ? [call.addressParam] : [];
     }));
     const normalized = args.map((arg, index) => {
+      // Imported Solidity callers may pass a native signer address where an EVM caller supplied its
+      // hexadecimal identity as bytes. Normalize that identity before validation and retain the result
+      // in the actual argument frame, so hashes and witnesses use the same bytes that were validated.
+      if (this.inner.artifact.compiler?.options?.evmCompat === true) {
+        const bytes = normalizeSolidityBytesArgument(arg, frameInputs[index]?.type ?? '');
+        if (bytes !== arg) return bytes;
+      }
       if (frameInputs[index]?.type !== 'address') return arg;
       const addressArg = typeof arg === 'object' && arg !== null && !(arg instanceof Uint8Array)
         && typeof (arg as { address?: unknown }).address === 'string'
@@ -6746,21 +6766,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       registeredSelf ? registeredExecutionLockingBytecode(registeredSelf) ?? this.inner.lockingBytecode
         : this.inner.lockingBytecode,
     );
-    // The registry lock is the bytecode a frame presents as address(this) and as the caller's
-    // msg.sender. A CREATE anchor (_logicalAddress) is a different script; substituting it fails
-    // the covenant's hash160(self) check against the input that is actually executing.
+    // Legacy entries use the executing registry lock. An entry with a published own-self witness can instead
+    // authenticate its CREATE identity, independently of the identity it forwards as a child's caller.
     const registeredSelfAddress = registeredSelf?.lockingBytecode
       ? hexToBin(registeredSelf.lockingBytecode) : hexToBin(this.inner.lockingBytecode);
     const authenticatedSelfAddress = registeredSelfAddress;
-    const publicSelfAddress = authenticatedSelfAddress;
     const storedLogicalLock = this._logicalAddress === undefined
       ? undefined : addressToLockScript(this._logicalAddress);
     const logicalCreateLock = storedLogicalLock !== undefined
       && binToHex(storedLogicalLock).toLowerCase() !== binToHex(authenticatedSelfAddress).toLowerCase()
       ? storedLogicalLock : undefined;
+    const authenticatesOwnSelf = usesOrdinarySelfIdentity(abiFunction)
+      && !compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction);
+    const publicSelfAddress = authenticatesOwnSelf && logicalCreateLock !== undefined
+      ? logicalCreateLock : authenticatedSelfAddress;
     const publicSelfIdentity = Object.freeze({
       categoryId: this.categoryId,
-      lockingBytecode: binToHex(authenticatedSelfAddress),
+      lockingBytecode: binToHex(logicalCreateLock ?? authenticatedSelfAddress),
     });
     const requiredNftIndices = abiFunction?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
@@ -6776,13 +6798,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       abiFunction,
     );
     timing('state-loaded');
-    // A block.timestamp recipe reads `__block_timestamp`, the shared oracle's field. This state has no such register.
-    const oracleLock = this.inner.artifact.usesBlockOracle === true ? this.inner.blockOracleLock : undefined;
-    const oracleTimestamp = oracleLock === undefined
-      ? undefined : await readBlockOracleTimestamp(this.inner.provider, oracleLock);
-    const recipeState: Record<string, StateValue> = oracleTimestamp === undefined
-      ? onChainState.state : { ...onChainState.state, __block_timestamp: oracleTimestamp };
-
     const statefulCall = (name: string): FunctionArgument[] | undefined => (
       functionName === name ? args
         : overrides?.calls?.find((call): call is Extract<CallInfo, { type: 'stateful' }> =>
@@ -6859,6 +6874,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       this.inner.artifact,
       overrides?.calls ?? [],
     );
+    // Stored-value recipes execute in the selected implementation's context. A proxy's physical forwarder
+    // need not read time itself, even when its selected delegate recipe does. Bind the same authenticated
+    // oracle lock as that implementation, rather than inferring time from the provider's wall clock.
+    const oracleLock = entryArtifact.usesBlockOracle === true
+      ? blockOracleLockFor(entryArtifact) ?? this.inner.blockOracleLock : undefined;
+    const oracleTimestamp = oracleLock === undefined
+      ? undefined : await readBlockOracleTimestamp(this.inner.provider, oracleLock);
+    const recipeState: Record<string, StateValue> = oracleTimestamp === undefined
+      ? onChainState.state : { ...onChainState.state, __block_timestamp: oracleTimestamp };
+
     // Carrier coverage changes physical input/output ownership. Resolve it as soon as the effective entry handler
     // and selected route rows are known, before any journal provider lookup can mask a deterministic coverage
     // failure. The resulting mode is batch-wide: unrelated selections stay legacy, complete coverage defers, and
@@ -11425,7 +11450,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         signer: this._signer,
         externalRegistry: this._externalRegistry,
         callerContract: this,
-        getFullState: () => this.getFullState(),
+        // Predicates plan the same authenticated clock and state that stored-value recipes and the VM read.
+        getFullState: async () => ({ ...onChainState, state: recipeState }),
         resolveExternalArgs: (...a: any[]) => (this as any)._resolveExternalArgs(...a),
         buildRepeatedExternalBatch: (...a: any[]) => (this as any)._buildRepeatedExternalBatch(...a),
         resolveExternalKeccakSideCars: (...a: any[]) => (this as any)._resolveExternalKeccakSideCars(...a),
@@ -11555,6 +11581,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let nestedFunderIndex = lowLevelNestedCaches.nestedFunderIndex;
     // low-level-nested-caches-complete (size-guarded end marker for prepareCreateBuilderLowLevelNestedCaches)
 
+    const selectRootOracleReader = (): ReturnType<typeof selectRootBlockOracleReader<Contract>> =>
+      selectRootBlockOracleReader(this.inner, abiFunction, lowLevelCallUtxoGroups.map((group, groupIndex) => ({
+        rootOwned: !nestedDelegateProxyGroupByLowLevel.has(groupIndex),
+        reader: group.externalContract.inner,
+        callMode: group.callMode,
+        abiFunction: group.compilerRoute?.abiFunction
+          ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+            .find((candidate) => candidate.name === group.functionName),
+      })));
+    const nestedBlockOracleLocks = new Set<string>();
+    for (const group of externalCallUtxoGroups) {
+      if (group.sharedGroupIndex !== undefined) continue;
+      const offset = group.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle')?.offset;
+      const input = offset === undefined ? undefined : group.blockInputs?.[offset];
+      if (input?.token?.nft?.capability === 'mutable') {
+        nestedBlockOracleLocks.add(binToHex(input.unlocker.generateLockingBytecode()));
+      }
+    }
     if (lowLevelCalls && lowLevelCalls.length > 0) {
       const resolvedCalls = overrides?.calls ?? [];
 
@@ -11624,6 +11668,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 {
                   categoryId: this.categoryId,
                   inner: this.inner,
+                  sharedBlockOracleLocks: nestedBlockOracleLocks,
                   signer: this._signer,
                   logicalNonceSigner: this._logicalNonceSigner,
                   externalRegistry: this._externalRegistry,
@@ -12190,32 +12235,44 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       blockhashCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       maxBhLocktime = resolved.reduce((m, cs) => Math.max(m, cs.locktime), 0);
     }
-    const readsOracleSlot = (fn: AbiFunction | undefined): boolean => fn?.usesBlockOracle === true
-      && fn.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle') === true;
     // A forwarder slices no oracle itself, but the implementation it delegates to may. That reader pins the lock
     // its own contract was built with. Outside a compiler route its recreate rides the implementation band.
-    const oracleDelegate = readsOracleSlot(abiFunction) ? undefined : lowLevelCallUtxoGroups.find((group) =>
-      group.callMode === 'delegatecall' && readsOracleSlot(group.compilerRoute?.abiFunction
-        ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
-          .find((candidate) => candidate.name === group.functionName)));
+    const rootOracleReader = selectRootOracleReader();
+    const oracleDelegate = rootOracleReader?.delegateIndex === undefined
+      ? undefined : lowLevelCallUtxoGroups[rootOracleReader.delegateIndex];
     delegateBlockInfoOracle = oracleDelegate !== undefined && oracleDelegate.compilerRoute === undefined;
-    if (readsOracleSlot(abiFunction) || oracleDelegate !== undefined) {
-      const reader = oracleDelegate?.externalContract.inner ?? this.inner;
+    if (rootOracleReader !== undefined) {
+      const { reader } = rootOracleReader;
       const lock = reader.blockOracleLock;
       if (lock === undefined) {
         throw new Error(`${reader.name} reads the block oracle, and no oracle lock was provided`);
       }
-      const found = await this.inner.provider.getUtxosForLockingBytecode(lock);
-      const oracle = found.find((utxo) => utxo.token?.nft?.capability === 'mutable');
-      if (oracle?.token?.category === undefined) throw new Error('block oracle UTXO is not available');
-      const category = hexToBin(oracle.token.category);
-      blockInfoCoSpendUtxos = [{
-        ...oracle,
-        unlocker: {
-          generateLockingBytecode: (): Uint8Array => lock,
-          generateUnlockingBytecode: (): Uint8Array => blockOracleReadUnlocking(category),
+      // Nested readers materialize their own pinned authority before a promoted delegate can change
+      // which root-side band is selected. Move that exact input into the final root band, preserving
+      // the nested fixed slot with a balanced funding input instead of promising a future co-spend.
+      const nestedOracle = takeNestedBlockOracleInput(
+        externalCallUtxoGroups, lowLevelCallUtxoGroups, lock, () => {
+          const funder = sharedFunderPool?.shift();
+          if (funder === undefined) throw new Error('Insufficient funding UTXOs to preserve nested oracle slot');
+          markSharedFunder(funder);
+          return funder;
         },
-      }];
+      );
+      if (nestedOracle !== undefined) {
+        blockInfoCoSpendUtxos = [nestedOracle];
+      } else {
+        const found = await this.inner.provider.getUtxosForLockingBytecode(lock);
+        const oracle = found.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+        if (oracle?.token?.category === undefined) throw new Error('block oracle UTXO is not available');
+        const category = hexToBin(oracle.token.category);
+        blockInfoCoSpendUtxos = [{
+          ...oracle,
+          unlocker: {
+            generateLockingBytecode: (): Uint8Array => lock,
+            generateUnlockingBytecode: (): Uint8Array => blockOracleReadUnlocking(category),
+          },
+        }];
+      }
     }
 
     // Recovery runs first because an EVM projection contributes its verified uncompressed public key to the

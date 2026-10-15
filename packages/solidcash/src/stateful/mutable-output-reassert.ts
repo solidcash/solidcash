@@ -170,6 +170,7 @@ export function redirectViewTailOffOpReturn(parts: {
   plannedIndex?: number;
   returnIndex?: number;
   suffixStart?: number;
+  reservedIndices?: ReadonlySet<number>;
   outputs: ReadonlyArray<{
     to?: Uint8Array | string;
     token?: { nft?: { capability?: string; commitment?: Uint8Array | string } };
@@ -178,10 +179,11 @@ export function redirectViewTailOffOpReturn(parts: {
   const { placedIndex, outputs } = parts;
   if (placedIndex < 0 || placedIndex >= outputs.length) return placedIndex;
   const isSeparatorSlot = isOpReturnLockingBytecode(outputs[placedIndex]?.to)
+    || parts.reservedIndices?.has(placedIndex)
     || (parts.suffixStart !== undefined && placedIndex === parts.suffixStart);
   if (!isSeparatorSlot) return placedIndex;
   const usable = (index: number | undefined): index is number => {
-    if (index === undefined || index < 0 || index >= outputs.length) return false;
+    if (index === undefined || index < 0 || index >= outputs.length || parts.reservedIndices?.has(index)) return false;
     if (isOpReturnLockingBytecode(outputs[index]?.to)) return false;
     if (parts.suffixStart !== undefined && index === parts.suffixStart) return false;
     // Anything at/after the live OP_RETURN is past the reverse-index trailer.
@@ -433,6 +435,7 @@ export function reassertReadOnlyMutableOneToOnes(
   outputs: Output[],
   inputs: ReadonlyArray<Pick<UnlockableUtxo, 'txid' | 'vout'>>,
   readOnlyInputs: ReadonlyArray<UnlockableUtxo>,
+  preserveOutputOrder = false,
 ): number {
   const inputIndices = new Map(inputs.map((input, index) => (
     [`${input.txid.toLowerCase()}:${input.vout}`, index]
@@ -446,17 +449,31 @@ export function reassertReadOnlyMutableOneToOnes(
     return outputMatchesLock(output, lock);
   };
   let restored = 0;
+  const restoredIndices = new Set<number>();
   for (const input of readOnlyInputs) {
     if (!input.unlocker || input.token?.nft?.capability !== 'mutable') continue;
     const index = inputIndices.get(`${input.txid.toLowerCase()}:${input.vout}`);
     if (index === undefined) continue;
     while (outputs.length <= index) outputs.push({ to: Uint8Array.of(0x51), amount: 1000n });
     const lock = input.unlocker.generateLockingBytecode();
-    if (matches(outputs[index], input, lock)) continue;
+    if (matches(outputs[index], input, lock)) {
+      if (preserveOutputOrder) restoredIndices.add(index);
+      continue;
+    }
     const relocated = outputs.findIndex((output, candidate) => (
-      candidate !== index && matches(output, input, lock)
+      candidate !== index && (!preserveOutputOrder || !restoredIndices.has(candidate))
+      && matches(output, input, lock)
     ));
     if (relocated >= 0) {
+      if (preserveOutputOrder) {
+        // A routed chunk run leads an ordered event stream. Moving its exact twin into place must retain
+        // the relative order of intervening outputs, including several occurrences of the same event.
+        const [twin] = outputs.splice(relocated, 1);
+        outputs.splice(index, 0, twin);
+        restoredIndices.add(index);
+        restored += 1;
+        continue;
+      }
       const displaced = outputs[index];
       outputs[index] = outputs[relocated];
       outputs[relocated] = displaced ?? { to: Uint8Array.of(0x51), amount: 1000n };
@@ -469,6 +486,7 @@ export function reassertReadOnlyMutableOneToOnes(
       amount: input.satoshis,
       token: cloneToken(input.token),
     };
+    if (preserveOutputOrder) restoredIndices.add(index);
     restored += 1;
   }
   return restored;
@@ -491,7 +509,7 @@ export function reassertRoutedReadOnlyDynamicChunkTwins(
       && unlocker.contract.artifact.contractName?.startsWith('ChunkNft_') === true
       && locks.has(binToHex(unlocker.generateLockingBytecode()));
   });
-  return reassertReadOnlyMutableOneToOnes(outputs, inputs, chunks);
+  return reassertReadOnlyMutableOneToOnes(outputs, inputs, chunks, true);
 }
 
 /**

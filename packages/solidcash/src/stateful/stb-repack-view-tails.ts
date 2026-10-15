@@ -44,6 +44,7 @@ export function repackViewTailsAfterMaterialization(
   host: RepackViewTailsHost,
   builder: TransactionBuilder,
 ): boolean {
+  const fixedIdentityIndices = host.viewTailPackOptions().reservedIndices ?? new Set<number>();
   const planned = host.externalCallUtxoGroups
     .map((group, index) => (
       group.returnOutputIndex !== undefined
@@ -66,6 +67,7 @@ export function repackViewTailsAfterMaterialization(
     lastCollidingMutableWriterIndex(builder.outputs, planned),
     viewTailOccupancyCap(planned, host.getChunkableValueWriteBand()),
     derivedEnd,
+    ...planned.filter((index) => fixedIdentityIndices.has(index)),
   );
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1') {
@@ -87,7 +89,7 @@ export function repackViewTailsAfterMaterialization(
   const suffixStart = suffixChunkCount > 0
     ? builder.outputs.length - suffixChunkCount - 1
     : builder.outputs.length;
-  const reserved = new Set<number>();
+  const reserved = new Set<number>(fixedIdentityIndices);
   for (const [index, input] of host.allInputs.entries()) {
     const cap = input.token?.nft?.capability;
     if (cap === 'minting' || cap === 'mutable') reserved.add(index);
@@ -101,7 +103,8 @@ export function repackViewTailsAfterMaterialization(
     builder.outputs, viewGroups.length, { suffixStart, reserved, preferBefore: writerEnd },
   );
   const reassigned = new Map<number, number>();
-  if (padDestinations.length === viewGroups.length) {
+  if (padDestinations.length === viewGroups.length
+    && fixedIdentityIndices.size === 0) {
     const packOptions = host.viewTailPackOptions(suffixStart);
     for (const [offset, { index, group }] of viewGroups.entries()) {
       reassigned.set(index, clampViewTailPlacement({

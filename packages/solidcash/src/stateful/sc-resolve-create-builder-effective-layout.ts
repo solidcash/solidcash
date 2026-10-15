@@ -9,6 +9,7 @@ import {
   type ResolvedLogicalIdentity,
 } from './logical-identity.js';
 import { selectDelegateExecutionLayout } from './writer-event-delegate-layout.js';
+import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 
 export type ResolveCreateBuilderEffectiveLayoutHost = {
   readonly inner: {
@@ -91,13 +92,19 @@ export async function resolveCreateBuilderEffectiveLayout(
   // have the funder loop position the same index twice, and a plain send has to keep the event where it is.
   // A returning implementation with no event resolves to the offset the forwarder already published, so this
   // is a no-op there and the layout object is left exactly as it was.
-  const returnSlotMoved = delegateReturnEventOffset !== undefined
-    && effectiveBlockLayout?.slots.some((s: any) => s.kind === 'returnEvent' && s.offset !== delegateReturnEventOffset);
+  const returnSlotMoved = delegateReturnEventOffset !== undefined && effectiveBlockLayout !== undefined
+    && !effectiveBlockLayout.slots.some((s: any) => s.kind === 'returnEvent'
+      && s.offset === delegateReturnEventOffset);
   if (effectiveBlockLayout && returnSlotMoved) {
+    // A compact forwarding ABI may have no return slot at all. Reserve the implementation's output-only
+    // return coordinate on both sides before trailing read-only chunks, just as for a relocated slot.
+    const hasReturnSlot = effectiveBlockLayout.slots.some((s: any) => s.kind === 'returnEvent');
     effectiveBlockLayout = {
       ...effectiveBlockLayout,
-      slots: effectiveBlockLayout.slots.map((s: any) => (s.kind === 'returnEvent'
-        ? { ...s, offset: delegateReturnEventOffset! } : s)),
+      slots: hasReturnSlot
+        ? effectiveBlockLayout.slots.map((s: any) => (s.kind === 'returnEvent'
+          ? { ...s, offset: delegateReturnEventOffset! } : s))
+        : [...effectiveBlockLayout.slots, { kind: 'returnEvent', offset: delegateReturnEventOffset! }],
     };
   }
   if (effectiveBlockLayout && (delegateEventSlots.length > 0 || returnSlotMoved)) {
@@ -124,9 +131,8 @@ export async function resolveCreateBuilderEffectiveLayout(
     logicalAddress: host.getLogicalAddress(),
     externalGroups: externalCallUtxoGroups.length,
   });
-  // address(this) is always the active input's exact bytecode. A nested call which observes msg.sender also
-  // needs this contract's stable public identity anchor when this is a CREATE/proxy facade; native contracts
-  // have no logical address and the callee falls back to the authenticated minting-master input bytecode.
+  // A selected own-self witness or a nested msg.sender observer needs this contract's stable CREATE anchor.
+  // Native contracts have no logical address and retain the authenticated minting-master input bytecode.
   const nestedUsesMsgSender = [...externalCallUtxoGroups, ...lowLevelCallUtxoGroups].some((group) => {
     const called = group.compilerRoute?.abiFunction
       ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
@@ -134,7 +140,7 @@ export async function resolveCreateBuilderEffectiveLayout(
     return called?.usesMsgSender === true;
   });
   const logicalIdentity = overrides?.logicalIdentity
-    ?? (nestedUsesMsgSender && host.getLogicalAddress()
+    ?? ((nestedUsesMsgSender || usesOrdinarySelfIdentity(abiFunction)) && host.getLogicalAddress()
       ? await resolveLogicalIdentity(host.inner.provider, host.getLogicalAddress()!)
       : undefined);
   if (logicalIdentity && !host.getLogicalAddress()) {

@@ -603,24 +603,56 @@ const memoryOpBody = (src: string, lines: number[]): string[] => {
     if (line !== undefined && lines.includes(line)) region.push(tokens[i]);
   }
   const STACK_PLUMBING = new Set(['OP_PICK', 'OP_ROLL', 'OP_INVOKE', 'OP_DUP', 'OP_SWAP', 'OP_OVER', 'OP_ROT',
-    'OP_2DUP', 'OP_2SWAP', 'OP_3DUP', 'OP_2OVER', 'OP_2ROT', 'OP_NIP', 'OP_DROP', 'OP_TUCK', 'OP_2DROP', 'OP_0']);
+    'OP_2DUP', 'OP_2SWAP', 'OP_3DUP', 'OP_2OVER', 'OP_2ROT', 'OP_NIP', 'OP_DROP', 'OP_TUCK', 'OP_2DROP', 'OP_0',
+    'OP_TOALTSTACK', 'OP_FROMALTSTACK']);
   return region.filter((token) => !/^OP_[0-9]+$/.test(token) && !STACK_PLUMBING.has(token));
 };
 
 describe('bytes/string memory params and named returns as __yulmem pointers (mstore/mload/mcopy/keccak256)', () => {
   const cc = (src: string): string => compileString(src, { evmCompat: true }).contractName;
-  it('materializes a bytes memory param used as a pointer (mstore/mload/mcopy/keccak256 over add(p,off))', () => {
-    expect(cc('contract C(){function f(bytes memory p, uint256 n) returns (bytes32 r) {'
-      + ' assembly { mstore(add(p,0x20), 1) mcopy(0, add(p,0x20), 32) r := mload(0)'
-      + ' r := keccak256(add(p,0x20), n) } } }')).toBe('C');
+
+  // Every mandated shape in one cross-product: 4 materializations (bytes/string param, bytes/string named
+  // return) x 4 pointer ops. The SAME op body is spliced (via __PTR__) into the materialized source and the
+  // already-resolved local __yulmem buffer, and their assembly-region memory-op bodies must match.
+  const OPS: Record<string, string> = {
+    mstore: 'mstore(add(__PTR__, 0x20), 1)',
+    mload: 'let w := mload(add(__PTR__, 0x20)) mstore(add(__PTR__, 0x20), w)',
+    mcopy: 'mcopy(0, add(__PTR__, 0x20), 32)',
+    keccak256: 'let w := keccak256(add(__PTR__, 0x20), 32) mstore(add(__PTR__, 0x20), w)',
+  };
+  const MATERIALIZED: Record<string, (op: string) => string> = {
+    'param-bytes': (op) => `contract C {\n function f(bytes memory p) {\n  assembly { ${op.replace(/__PTR__/g, 'p')} }\n`
+      + '  require(true);\n }\n}',
+    'param-string': (op) => `contract C {\n function f(string memory p) {\n  assembly { ${op.replace(/__PTR__/g, 'p')} }\n`
+      + '  require(true);\n }\n}',
+    'namedreturn-bytes': (op) => `contract C {\n function f() returns (bytes memory o) {\n`
+      + `  assembly { ${op.replace(/__PTR__/g, 'o')} }\n }\n}`,
+    'namedreturn-string': (op) => `contract C {\n function f() returns (string memory o) {\n`
+      + `  assembly { ${op.replace(/__PTR__/g, 'o')} }\n }\n}`,
+  };
+  const localBuffer = (op: string): string => `contract C {\n function f() {\n  bytes memory b = new bytes(32);\n`
+    + `  assembly { ${op.replace(/__PTR__/g, 'b')} }\n  require(true);\n }\n}`;
+
+  it('lowers every materialization x pointer-op to the local __yulmem buffer memory-op body', () => {
+    for (const [materialization, materialized] of Object.entries(MATERIALIZED)) {
+      for (const [opName, opBody] of Object.entries(OPS)) {
+        const matRegion = memoryOpBody(materialized(opBody), [3]);
+        const localRegion = memoryOpBody(localBuffer(opBody), [4]);
+        expect(matRegion, `${materialization} ${opName} produced no assembly region`).not.toHaveLength(0);
+        expect(localRegion, `local ${opName} produced no assembly region`).not.toHaveLength(0);
+        expect(matRegion, `${materialization} ${opName} memory-op body mismatch`).toEqual(localRegion);
+      }
+    }
   });
-  it('materializes a string memory param byte-identically to the bytes memory form', () => {
+
+  it('materializes a string param byte-identically to the bytes form', () => {
     const mk = (t: string): string => compileString(
       `contract C(){function f(${t} memory p) returns (bytes32 r) {`
       + ' assembly { r := mload(add(p,0x20)) mstore(add(p,0x20), 1) } } }',
       { evmCompat: true });
     expect(mk('bytes').bytecode).toBe(mk('string').bytecode);
   });
+
   it('materializes an uninitialized named-return string byte-identically to the bytes form', () => {
     const mk = (t: string): string => compileString(
       `contract C(){function f(bytes32 w) returns (${t} memory o) {`
@@ -628,16 +660,7 @@ describe('bytes/string memory params and named returns as __yulmem pointers (mst
       { evmCompat: true });
     expect(mk('bytes').bytecode).toBe(mk('string').bytecode);
   });
-  it('lowers the param pointer-ops body identically to the already-resolved local __yulmem buffer', () => {
-    // The prologue legitimately differs (a param deserialize loop vs a local fresh alloc) and shifts the stack
-    // depth, so the raw bytecode differs; the mstore/mload MEMORY-op body must match modulo that plumbing.
-    const paramSrc = 'contract C {\n function f(bytes memory p) returns (bytes32 r) {\n'
-      + '  assembly { mstore(add(p, 0x20), 1) r := mload(add(p, 0x20)) }\n }\n}';
-    const localSrc = 'contract C {\n function f(bytes32 w) returns (bytes32 r) {\n'
-      + '  bytes memory b = new bytes(32);\n'
-      + '  assembly { mstore(add(b, 0x20), 1) r := mload(add(b, 0x20)) }\n }\n}';
-    expect(memoryOpBody(paramSrc, [3])).toEqual(memoryOpBody(localSrc, [4]));
-  });
+
   it('keeps the bridge-handled mload read on an unbounded bytes memory param', () => {
     // mload(add(buf,32)) on a bytes memory param is also a materialization candidate; the read must still
     // compile through the parseBytesPtr/bytesMemorySlice bridge (the ECDSA signature-split shape).

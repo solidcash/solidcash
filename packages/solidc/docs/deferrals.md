@@ -2143,13 +2143,13 @@ exist on the stack`. The fix keeps the marked value; pinned by `DynamicWriteArra
 
 With the split fixed, `MasterChef` now splits (`MasterChef.split.json`, facet deploy succeeds) and the suite
 reaches cross-contract composition instead of the constructor byte gate. Final census (clean build of committed
-HEAD `59e81f7cb`, both files through `bench/mistswap-native`, captured to `masterchef-census.log` in the goal
-scratch): 25 failed / 1 passed — MasterChef 7/8 (4 preflight OP_VERIFY + 3 harness
-arity failures) and MasterChefV2 18/18 (all preflight OP_VERIFY), both files present. The 3 arity failures
-(`dev`/`approve` called with an unstripped `{ from }` override) are the separate drop-in gap and mask 2 further
-MasterChef preflight failures (`should give proper SUSHIs allocation to each pool`,
-`should stop giving bonus SUSHIs after the bonus period ends`), so the preflight failure count is 22 in this
-census where the original report had 24. Every preflight failure shows the exact
+HEAD `59e81f7cb` plus the override-stripping fix, both files through `bench/mistswap-native`, captured to
+`masterchef-census.log` in the goal scratch): 24 failed / 2 passed — MasterChef 6/8 and MasterChefV2 18/18,
+both files present, and every one of the 24 failures is the exact preflight OP_VERIFY. The unstripped-`{from}`
+arity gap is fixed by `stripTrailingEthersOverrides` in `sc-build-namespaces.ts` (applied in the `call`
+namespace and the `SplitContract` ethers-parity wrappers, pinned by `EthersOverrideStripping.test.ts`): a
+positional trailing `{from: …}` transaction override is dropped before ABI validation instead of being counted
+as a contract argument. Every preflight failure shows the exact
 `messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.`
 
 Refusal 1 — `IERC20.balanceOf is not connected` (2026-10-15, instrumented and traced, then FIXED). The throw

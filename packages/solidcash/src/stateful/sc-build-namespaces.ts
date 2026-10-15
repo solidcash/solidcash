@@ -46,6 +46,31 @@ export interface BuildNamespacesHost<TArtifact extends Artifact = Artifact> {
   ): StatefulFunctionCall;
 }
 
+/**
+ * Transaction overrides a ported hardhat suite passes positionally as the LAST argument
+ * (`chef.connect(alice).approve(spender, "1000", { from: alice.address })`). The ethers drop-in surfaces the
+ * contract through this namespace, so the override must be dropped here rather than forwarded as a contract
+ * argument. A struct argument is an object whose keys are struct FIELD names; require the `from` marker (and
+ * only override keys) so a `{ value: X }` struct argument is never mis-stripped.
+ */
+const ETHERS_OVERRIDE_KEYS = new Set([
+  'from', 'nonce', 'gasLimit', 'gasPrice', 'maxPriorityFeePerGas', 'maxFeePerGas',
+  'value', 'chainId', 'accessList', 'customData', 'ccipReadEnabled', 'blobGasPrice', 'blobGasLimit',
+]);
+
+function stripTrailingEthersOverrides(args: FunctionArgument[]): FunctionArgument[] {
+  const last = args[args.length - 1];
+  if (typeof last !== 'object' || last === null || last instanceof Uint8Array || Array.isArray(last)) {
+    return args;
+  }
+  const keys = Object.keys(last);
+  if (keys.length === 0 || !keys.includes('from')) return args;
+  if (keys.every((key) => ETHERS_OVERRIDE_KEYS.has(key))) return args.slice(0, -1);
+  return args;
+}
+
+export { stripTrailingEthersOverrides };
+
 export function buildNamespaces<TArtifact extends Artifact>(
   host: BuildNamespacesHost<TArtifact>,
   contract: Contract<TArtifact>,
@@ -104,10 +129,10 @@ export function buildNamespaces<TArtifact extends Artifact>(
   const callerFor = (abiFunction: AbiFunction): NamespaceCall => {
     const caller = abiFunction.modifiers?.includes('deploy')
       ? (...args: any[]): DeployFunctionCall => host.createDeployFunctionCall(
-        abiFunction.name, args as FunctionArgument[],
+        abiFunction.name, stripTrailingEthersOverrides(args as FunctionArgument[]),
       )
       : (...args: any[]): StatefulFunctionCall => host.createStatefulFunctionCall(
-        abiFunction.name, args as FunctionArgument[], abiFunction,
+        abiFunction.name, stripTrailingEthersOverrides(args as FunctionArgument[]), abiFunction,
       );
     return caller as NamespaceCall;
   };
@@ -128,6 +153,7 @@ export function buildNamespaces<TArtifact extends Artifact>(
       ? callers[0].caller
       : aritySelectsExactly
         ? (...args: FunctionArgument[]) => {
+          args = stripTrailingEthersOverrides(args);
           const selected = callers.find(({ abiFunction }) => visibleArity(abiFunction) === args.length);
           if (!selected) {
             throw new Error(

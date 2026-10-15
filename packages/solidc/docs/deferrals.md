@@ -513,7 +513,7 @@ ONE block on-chain; `start` seeds the zero state, `cont` reads the previous side
 against `@noble/hashes/sha3.js` for 136..1000-byte preimages (`research/keccak-poc/test-chain.mjs`), and baked as
 `KECCAK_CHAIN_{START,CONT,FINAL}_COVENANT` + hashes in `packages/utils/src/keccak-compute-library.ts`, with
 `splitKeccakChainBlocks` / `buildKeccakChainRedeem` / `keccakChainLockingBytecode` and the VM-chain unit test
-`packages/utils/test/keccak-chain-library.test.ts` (5/5). The commitment byte order is `lane24 || ... || lane0`
+`packages/utils/test/keccak-chain-library.test.ts` (6/6). The commitment byte order is `lane24 || ... || lane0`
 (reversed), chosen so the covenant's front-to-back `<8> OP_SPLIT` reproduces the absorb frame. Soundness: each
 side-car's on-chain permutation means a tampered chain fails the contract's final-digest bind; intermediates are
 chained by introspection, not SDK-computed state. The FINAL covenant carries the FULL preimage (extracting the
@@ -521,8 +521,11 @@ last `len % 136` bytes on-chain, solo-seeding the zero state when the argument h
 contract-side `<pad> <preimage> <width> <redeem>` bind and hash check stay sound. The SDK
 `resolveKeccakComputeCoSpends` routes a direct unbounded single-call preimage through the chained slots, the
 compiler reserves a trailing region and reads the FINAL side-car at `trailingBase + floor(len/136)`, and
-`packages/solidcash/test/e2e/KeccakChainSidecar.test.ts` settles a 12 KB preimage whose digest matches
-`@noble/hashes/sha3.js keccak_256`.
+`packages/solidcash/test/e2e/KeccakChainSidecar.test.ts` settles a 2000-byte (>407-byte) preimage whose read-back
+digest matches `@noble/hashes/sha3.js keccak_256`. The FINAL side-car carries the full preimage in its unlocking
+bytecode, so a real network's 10,000-byte per-input consensus limit caps a chained preimage at roughly 6.4 KB (and
+the whole transaction must still fit the 100 KB standard relay ceiling); the original 12 KB draft was only
+mocknet-valid.
 
 **Why deferred.** (1) The trailing region has ONE runtime-counter-indexed band; two independent counter-indexed
 users have nowhere sound to interleave. Reproduced 2026-10-15: a direct stateful function with a dynamic keccak

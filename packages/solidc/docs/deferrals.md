@@ -2132,29 +2132,53 @@ hash back; `bench/mistswap-native/repro-bento.mjs` deploys BentoBoxMock; `test/P
 
 ## MasterChef / MasterChefV2: message-bus preflight OP_VERIFY (2026-08-07)
 
-**PARTLY DIAGNOSED (2026-10-15): the split regression is fixed; the preflight OP_VERIFY is still masked by a
-second, SDK-side compose refusal.** The split codegen regression is named and fixed: `emitDynamicWriteVerification`
-dropped the `poolInfo` read-modify-write value in the delegate single-write cleanup even when
-`coSpendPreservedDynValues` marked it for the array-external-call co-spend, so the later
+**PARTLY DIAGNOSED (2026-10-15): the split regression is fixed; the preflight OP_VERIFY is still masked by two
+stacked SDK-side refusals, both named below.** The split codegen regression is named and fixed:
+`emitDynamicWriteVerification` dropped the `poolInfo` read-modify-write value in the delegate single-write
+cleanup even when `coSpendPreservedDynValues` marked it for the array-external-call co-spend, so the later
 `emitExternalCallVerification` cleanup threw `Expected variable '__internal__dynwrite_value_poolInfo' does not
 exist on the stack`. The fix keeps the marked value; pinned by `DynamicWriteArraySplit.test.ts`.
 
 With the split fixed, `MasterChef` now splits (`MasterChef.split.json`, facet deploy succeeds) and the suite
-reaches cross-contract composition instead of the constructor byte gate. The next stacked refusal is SDK-side,
-before the preflight: `Delegate external call to IERC20.balanceOf is not connected. Connect 'IERC20' on the
-implementation before calling through the proxy` (from `sc-resolve-create-builder-nested-compose-callee.ts`).
+reaches cross-contract composition instead of the constructor byte gate. Current census (clean committed tree,
+100KB ceiling): 7 failed / 1 passed — 3 harness arity failures (`dev`/`approve` called with an unstripped
+`{ from }` override) and 4 `Delegate external call to IERC20.balanceOf is not connected ... Resolved target:
+undefined` (from `sc-resolve-create-builder-nested-compose-callee.ts`). No preflight OP_VERIFY is reachable.
 
-Named cause of that refusal (traced 2026-10-15): the `balanceOf` callsite's `addressSource` is
-`poolInfo[__sp0_pid].lpToken` — a loop-indexed array-element field expression (`arrayAccess(poolInfo, loopIndex)
-→ field(lpToken)`). `resolveExternalArgs` does not evaluate a loop-index source statically, so `addressValue` is
-`undefined`, no deployment is selected, and the resolver throws before the preflight. The deployments ARE
-registered (two `ERC20Mock`s plus `SushiToken` and the `MasterChef` facets), so this is not a missing registry
-entry: the compose path must plan the runtime array co-spend (like the compiler's `emitArrayExternalCallLoop`)
-instead of statically resolving one callee. The unused `findDeploymentImplementing` helper cannot help either —
-the address is a runtime loop index, not an interface-name mismatch. Three harness arity failures (`dev`/`approve`
-called with an unstripped `{ from }` override) are a separate drop-in gap. The recorded
-`preflight ... at input 0: OP_VERIFY` census is therefore still not reachable until that compose connection is
-resolved. Evidence: `masterchef-census-fixed.log` (25 failed / 1 passed) and `delegate-debug.log` in the goal scratch.
+Refusal 1 — `IERC20.balanceOf is not connected` (2026-10-15, instrumented and traced). The throw fires on the
+`add(...)` transaction, not on `deposit`: `add` inlines `massUpdatePools()`, whose `balanceOf` callsite is
+published as `occurrence: 'loop'`, `loopArrayVar: 'poolInfo'`, `addressSource = poolInfo[loopIndex].lpToken`. At
+`add` time `poolInfo` is EMPTY, so the loop is zero-trip; `resolveExternalArgs` reads the empty state array and
+returns `undefined`, no deployment is selected, and the resolver throws before the VM. Two skip guards both fail
+to drop the zero-trip loop: `usesEmptyArrayElement` in `sc-resolve-create-builder-nested-compose-callee.ts` only
+inspects FUNCTION-ARGUMENT `arrayElement` sources (not a `loopArrayVar` over a STATE array), and
+`materializeCreateBuilderLowLevelStatefulCall` keeps a `loop` callsite whenever `planExternalCallOccurrences`
+returns `undefined`, which it does for the empty state array. Passing `_withUpdate=false` does not help: the
+loop callsite is still published and still refused. Deployments ARE registered (two `ERC20Mock`s plus
+`SushiToken` and the `MasterChef` facets), so this is a zero-trip/state-array loop skip gap, not a missing
+registry entry.
+
+Refusal 2 — `messageBus: result-dependent loop has no compiler iteration domain` (2026-10-15, focused
+multi-row repro). When a signer drives the same `massUpdatePools`-shaped loop (source loop over `poolInfo`,
+per-row `balanceOf` plus element write-back) the atomic graph composer's result-topology pass
+(`compose-result-topology.ts` ~line 495) refuses it: the callsite is published with `loopArrayVar: 'poolInfo'`
+but NO affine `iterationDomain`, and for a non-`legacy-unroll` kernel artifact the pass only enumerates loop
+occurrences from `iterationDomain`. `MasterChef.massUpdatePools`'s published `balanceOf` callsite has the same
+shape (no `iterationDomain`, only `loopArrayVar`), so a direct `massUpdatePools` reaches this same refusal. The
+graph planner cannot enumerate a `loopArrayVar`-driven result-dependent loop without the compiler publishing an
+affine domain.
+
+Focused single-row proof (2026-10-15): a struct-array `PoolInfo[]` whose `poolInfo[pid].lpToken` is the
+external-call callee, populated through the SDK's normal `push` state write and then read by a
+forward-parameter `update(pid)`, SETTLES. The route covenant and its array-element compose witness are sound for
+one row; the defect is specific to the multi-row/loop shape. The input-0 covenant-failure trace gate
+(`SOLIDC_DEBUG_COVENANT_TRACE=1` with `setMaterializationMode('devOracle')`) fires and prints
+`[covenant VM trace] input 0: Program failed an OP_VERIFY operation.` with a 5-op failing body
+`OP_PICK OP_SWAP OP_OVER OP_GREATERTHAN OP_VERIFY` — the compiler's `emitBoundsCheck` array-index
+`require(index < length)` check — confirming that the OP_VERIFY the preflight reports is the array-element
+access bounds check, reached only when the synthesized witness carries an inconsistent array length/index for a
+loop row. Evidence: `masterchef-census-now.log`, `compose-callee-debug.log`, `masterchef-preflight-bypass2.log`,
+`multirrow-repro2.log`, `masterchef-repro.log` in the goal scratch.
 
 The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with
 

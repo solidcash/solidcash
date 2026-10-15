@@ -2286,14 +2286,18 @@ for a direct, unbounded single-call `bytes`/`string` preimage (`GenerateTargetTr
 `trailingBase + size(arg)/136`, FINAL covenant hash, `keccakChainReads` published on the ABI), reserves a
 256-slot trailing region for it (`SymbolTableTraversal.ts`), and the SDK routes the preimage through
 `buildKeccakChainSidecars` into that trailing band (`sc-resolve-keccak-compute-co-spends.ts`,
-`StatefulContract.ts`, `stb-build-inputs.ts`; unit coverage
-`packages/solidcash/test/unit/KeccakChainSidecar.test.ts` 3/3). The plain stateful `send()` balanced assembly
-admits the chained trailing inputs, and `packages/solidcash/test/e2e/KeccakChainSidecar.test.ts` settles a
-12 KB runtime preimage whose read-back digest equals `@noble/hashes/sha3.js keccak_256` (2/2, including the
-unfunded-refusal companion). The under-threshold single-compute side-car path and the loop/straight-line mix
-layouts are unchanged. Remaining boundary: the compiler-reserved 256-slot trailing band holds one side-car per
-136-byte block, so a single preimage longer than 255 full blocks + 135 bytes (~34 KB) still exceeds the reserved
-band and is refused by the balanced trailing-capacity check.
+`StatefulContract.ts`, `stb-build-inputs.ts`, and the state-derivation probe
+`sc-derive-commitments.ts`; unit coverage `packages/solidcash/test/unit/KeccakChainSidecar.test.ts` 3/3 and
+`packages/solidcash/test/unit/KeccakChainDerivationProbe.test.ts` 1/1). The plain stateful `send()` balanced
+assembly admits the chained trailing inputs, and `packages/solidcash/test/e2e/KeccakChainSidecar.test.ts`
+settles a 12 KB runtime preimage whose read-back digest equals `@noble/hashes/sha3.js keccak_256` (2/2,
+including the unfunded-refusal companion). The under-threshold single-compute side-car path and the
+loop/straight-line mix layouts are unchanged. Remaining boundaries: (1) the compiler-reserved 256-slot trailing
+band holds one side-car per 136-byte block, so a single preimage longer than 255 full blocks + 135 bytes
+(~34 KB) still exceeds the reserved band and is refused by the balanced trailing-capacity check; (2) a factory
+`deploy` function that hashes a >407-byte runtime argument derives its post-call state through the chained probe,
+but the `deployFrom` final assembly does not yet co-spend the chained side-cars, so that combination still
+refuses (fail closed).
 
 **Acceptance:** `keccak256(x)` for a 12 KB runtime `x` settles and reads back the same digest `keccak_256`
 computes off-chain; the refusal above still fires when the caller declines to fund the chain.

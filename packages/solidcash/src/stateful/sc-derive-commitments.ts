@@ -6,12 +6,13 @@ import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import {
   type AbiFunction,
+  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   buildPushdataCommitment,
   parsePushdataCommitment,
   type StateValue,
 } from '@solidcash/utils';
 import type { Contract } from '../Contract.js';
-import type { Output, Unlocker, Utxo } from '../interfaces.js';
+import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type { StateValueType } from '../types/state-inference.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
@@ -34,6 +35,19 @@ export interface DeriveCommitmentsHost {
   resolveKeccakComputeCoSpends(...args: any[]): any;
   resolveEcrecoverComputeCoSpends(...args: any[]): any;
 }
+
+/** Neutral filler for output-only/fixed covenant slots the probe never reads (mirrors the dummy funder lock). */
+const PROBE_FILLER_LOCK = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
+
+const makeProbeFiller = (index: number): UnlockableUtxo => ({
+  txid: `${'fe'.repeat(28)}${index.toString(16).padStart(8, '0')}`,
+  vout: 0,
+  satoshis: 1000n,
+  unlocker: {
+    generateLockingBytecode: () => PROBE_FILLER_LOCK,
+    generateUnlockingBytecode: () => Uint8Array.of(0x01, 0x51),
+  },
+});
 
 export async function deriveCommitments(
   host: DeriveCommitmentsHost,
@@ -103,7 +117,8 @@ export async function deriveCommitments(
     // keccak256 compute side-cars at the keccakSideCar slots (right after blockhash): the probe co-spends
     // them so the master's VM run can bind each preimage and read each result R_i from the recreation.
     let keccakProbeCoSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }> = [];
-    if (abiFunction.keccakCompute && !abiFunction.keccakLoopReads && host.categoryId) {
+    if (abiFunction.keccakCompute && !abiFunction.keccakLoopReads && !abiFunction.keccakChainReads
+      && host.categoryId) {
       const resolution = await host.resolveKeccakComputeCoSpends(abiFunction, args, {
         masterUtxo, stateInputUnlocker, dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
       });
@@ -117,6 +132,33 @@ export async function deriveCommitments(
         abiFunction, args, undefined, { deferUnresolved: true },
       )).coSpends;
     }
+    // A direct unbounded keccak256 chained read routes its preimage through START/CONT/FINAL side-cars in the
+    // trailing region. The FINAL side-car sits at trailingBase + fullBlocks (SIZE(preimage)/136). Resolve the
+    // chain here and position it after every fixed slot (entries/containers/deploy ride extraInputs/extraOutputs)
+    // so the master's FINAL-slot read binds the real preimage and reads the digest from the FINAL recreation.
+    let keccakChainProbeInputs: UnlockableUtxo[] = [];
+    let keccakChainProbeRecreates: Output[] = [];
+    let keccakChainInputPadCount = 0;
+    let keccakChainOutputPadCount = 0;
+    if (abiFunction.keccakChainReads && host.categoryId) {
+      const resolution = await host.resolveKeccakComputeCoSpends(abiFunction, args, {
+        masterUtxo, stateInputUnlocker, dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
+      });
+      keccakChainProbeInputs = resolution.chain?.sideCars ?? [];
+      keccakChainProbeRecreates = resolution.chain?.recreates ?? [];
+      const trailingBase = abiFunction.blockLayout?.trailingBase ?? abiFunction.blockLayout?.blockSize
+        ?? (1 + filteredDataNftUtxos.length);
+      const fixedPrefix = 1 + filteredDataNftUtxos.length + bhProbeCoSpends.length
+        + keccakProbeCoSpends.length + ecrecoverProbeCoSpends.length;
+      keccakChainInputPadCount = Math.max(0, trailingBase - fixedPrefix - (extraInputs?.length ?? 0));
+      keccakChainOutputPadCount = Math.max(0, trailingBase - fixedPrefix - (extraOutputs?.length ?? 0));
+    }
+    const keccakChainInputPads = Array.from(
+      { length: keccakChainInputPadCount }, (_, index) => makeProbeFiller(index),
+    );
+    const keccakChainOutputPads = Array.from(
+      { length: keccakChainOutputPadCount }, (_, index) => makeProbeFiller(0x1000 + index),
+    );
 
     // Wrap the VM probe + extraction in AutoDerivationError so failures are
     // cleanly distinguishable from programming bugs or configuration errors.
@@ -153,6 +195,11 @@ export async function deriveCommitments(
             probeBuilder.addInput(utxo, unlocker);
           }
         }
+
+        // keccak256 chained side-cars at the trailing slots, after every fixed slot, so the FINAL side-car
+        // lands at trailingBase + fullBlocks, exactly where the master reads it.
+        if (keccakChainInputPads.length > 0) probeBuilder.addInputs(keccakChainInputPads);
+        if (keccakChainProbeInputs.length > 0) probeBuilder.addInputs(keccakChainProbeInputs);
 
         // Output 0: master UTXO preserved
         probeBuilder.addOutput({
@@ -193,6 +240,13 @@ export async function deriveCommitments(
             probeBuilder.addOutput(output);
           }
         }
+
+        // keccak256 chained side-car recreations carry the running state and the FINAL digest; neutral fillers
+        // pad any fixed slot the extra outputs did not reach so the FINAL recreation stays at trailingBase.
+        for (const pad of keccakChainOutputPads) {
+          probeBuilder.addOutput({ to: pad.unlocker.generateLockingBytecode(), amount: pad.satoshis });
+        }
+        for (const recreate of keccakChainProbeRecreates) probeBuilder.addOutput(recreate);
 
         const { transaction, sourceOutputs } = probeBuilder.buildLibauthProgram();
         return evaluateProbeTrace(host.inner.provider, { inputIndex: 0, sourceOutputs, transaction });

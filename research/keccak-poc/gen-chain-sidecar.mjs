@@ -93,7 +93,7 @@ const STATELESS_TAIL =
 const STATEFUL_TAIL = STATELESS_TAIL.replace(
   'OP_INPUTINDEX OP_TXOUTPUTCOUNT OP_ADD OP_TXINPUTCOUNT OP_SUB', 'OP_INPUTINDEX');
 
-function covenantAsm(stateLoad, absorbAndFinish) {
+function covenantAsm(stateLoad, absorbAndFinish, tail) {
   return `${BRAND_ASM}OP_DROP `          // drop pad -> [block]
     + `${ROUND_DEFINE_ASM} `
     + `<0x${CHAIN_STEP_HEX}> <${CHAIN_STEP_ID}> OP_DEFINE `
@@ -101,26 +101,61 @@ function covenantAsm(stateLoad, absorbAndFinish) {
     + `${stateLoad} `                     // -> [25 lanes]
     + 'OP_FROMALTSTACK '                  // -> [25 lanes, block]
     + `${absorbAndFinish} `               // -> [commitment]
-    + `${STATEFUL_TAIL}`;
+    + `${tail}`;
 }
 
-const START_COVENANT = asm(covenantAsm(ZERO_STATE_ASM, `<${CHAIN_STEP_ID}> OP_INVOKE ${COMBINE_STATE_ASM}`));
-const CONT_COVENANT = asm(covenantAsm(
-  `OP_INPUTINDEX OP_1SUB OP_OUTPUTTOKENCOMMITMENT ${SPLIT_STATE_ASM}`,
-  `<${CHAIN_STEP_ID}> OP_INVOKE ${COMBINE_STATE_ASM}`));
-const FINAL_COVENANT = asm(covenantAsm(
-  `OP_INPUTINDEX OP_1SUB OP_OUTPUTTOKENCOMMITMENT ${SPLIT_STATE_ASM}`,
-  `${PAD_BLOCK_ASM} <${CHAIN_STEP_ID}> OP_INVOKE ${SQUEEZE_ASM}`));
+const START_ASM = `${ZERO_STATE_ASM}`;
+const CONT_ASM = `OP_INPUTINDEX OP_1SUB OP_OUTPUTTOKENCOMMITMENT ${SPLIT_STATE_ASM}`;
+// FINAL is mode-aware: mode 3 = solo (zero state), mode 1 = final (previous committed state). The unlocking
+// pushes [mode, block, pad, salt] so small preimages use ONE solo side-car and large ones end in a final side-car,
+// both at the same covenant hash the contract bakes.
+const FINAL_STATE_ASM =
+  'OP_DUP OP_3 OP_NUMEQUAL OP_IF OP_DROP ' + `${ZERO_STATE_ASM} `
+  + 'OP_ELSE OP_1 OP_NUMEQUALVERIFY '
+  + `OP_INPUTINDEX OP_1SUB OP_OUTPUTTOKENCOMMITMENT ${SPLIT_STATE_ASM} `
+  + 'OP_ENDIF';
+const FINAL_ASM = `${PAD_BLOCK_ASM} <${CHAIN_STEP_ID}> OP_INVOKE ${SQUEEZE_ASM}`;
+const START_STEP = `<${CHAIN_STEP_ID}> OP_INVOKE ${COMBINE_STATE_ASM}`;
+const CONT_STEP = `<${CHAIN_STEP_ID}> OP_INVOKE ${COMBINE_STATE_ASM}`;
+
+function finalCovenant(tail) {
+  // [mode, block, pad, salt] -> brand -> drop pad -> [mode, block]; stash block, load state by mode.
+  return asm(`${BRAND_ASM}OP_DROP `
+    + `${ROUND_DEFINE_ASM} `
+    + `<0x${CHAIN_STEP_HEX}> <${CHAIN_STEP_ID}> OP_DEFINE `
+    + 'OP_TOALTSTACK '
+    + `${FINAL_STATE_ASM} `
+    + 'OP_FROMALTSTACK '
+    + `${FINAL_ASM} `
+    + `${tail}`);
+}
+
+const START_COVENANT = asm(covenantAsm(START_ASM, START_STEP, STATEFUL_TAIL));
+const CONT_COVENANT = asm(covenantAsm(CONT_ASM, CONT_STEP, STATEFUL_TAIL));
+const FINAL_COVENANT = finalCovenant(STATEFUL_TAIL);
+const START_COVENANT_STATELESS = asm(covenantAsm(START_ASM, START_STEP, STATELESS_TAIL));
+const CONT_COVENANT_STATELESS = asm(covenantAsm(CONT_ASM, CONT_STEP, STATELESS_TAIL));
+const FINAL_COVENANT_STATELESS = finalCovenant(STATELESS_TAIL);
 
 const buildRedeem = (salt, covenant) => Uint8Array.from([0x20, ...salt, ...covenant]);
 const lockOf = (salt, covenant) => p2sh32(buildRedeem(salt, covenant));
 
 console.log('chain step', binToHex(asm(CHAIN_STEP_ASM)).length / 2, 'B');
-console.log('start covenant', START_COVENANT.length, 'B hash', binToHex(hash256(START_COVENANT)));
-console.log('cont covenant ', CONT_COVENANT.length, 'B hash', binToHex(hash256(CONT_COVENANT)));
-console.log('final covenant', FINAL_COVENANT.length, 'B hash', binToHex(hash256(FINAL_COVENANT)));
+console.log('start covenant (stateful)', START_COVENANT.length, 'B hash', binToHex(hash256(START_COVENANT)));
+console.log('cont covenant  (stateful)', CONT_COVENANT.length, 'B hash', binToHex(hash256(CONT_COVENANT)));
+console.log('final covenant (stateful)', FINAL_COVENANT.length, 'B hash', binToHex(hash256(FINAL_COVENANT)));
+console.log('start covenant (stateless)', START_COVENANT_STATELESS.length, 'B hash', binToHex(hash256(START_COVENANT_STATELESS)));
+console.log('cont covenant  (stateless)', CONT_COVENANT_STATELESS.length, 'B hash', binToHex(hash256(CONT_COVENANT_STATELESS)));
+console.log('final covenant (stateless)', FINAL_COVENANT_STATELESS.length, 'B hash', binToHex(hash256(FINAL_COVENANT_STATELESS)));
 console.log('\nKECCAK_CHAIN_START_COVENANT', binToHex(START_COVENANT));
 console.log('\nKECCAK_CHAIN_CONT_COVENANT', binToHex(CONT_COVENANT));
 console.log('\nKECCAK_CHAIN_FINAL_COVENANT', binToHex(FINAL_COVENANT));
+console.log('\nKECCAK_CHAIN_START_COVENANT_STATELESS', binToHex(START_COVENANT_STATELESS));
+console.log('\nKECCAK_CHAIN_CONT_COVENANT_STATELESS', binToHex(CONT_COVENANT_STATELESS));
+console.log('\nKECCAK_CHAIN_FINAL_COVENANT_STATELESS', binToHex(FINAL_COVENANT_STATELESS));
 
-export { START_COVENANT, CONT_COVENANT, FINAL_COVENANT, buildRedeem, lockOf, CHAIN_STEP_ASM };
+export {
+  START_COVENANT, CONT_COVENANT, FINAL_COVENANT,
+  START_COVENANT_STATELESS, CONT_COVENANT_STATELESS, FINAL_COVENANT_STATELESS,
+  buildRedeem, lockOf, CHAIN_STEP_ASM,
+};

@@ -60,6 +60,10 @@ function build(preimageHex) {
   };
   const inputUnlockings = covenants.map((c, i) => {
     const block = i < fullBlocks.length ? fullBlocks[i] : remainder;
+    // FINAL is mode-aware: mode 1 = final (previous committed state). Push [mode, block, pad, redeem].
+    if (i === fullBlocks.length) {
+      return Uint8Array.from([0x51, ...pushData(block), ...pushData(new Uint8Array(PAD_LEN)), ...pushData(buildRedeem(C, c))]);
+    }
     return Uint8Array.from([...pushData(block), ...pushData(new Uint8Array(PAD_LEN)), ...pushData(buildRedeem(C, c))]);
   });
 

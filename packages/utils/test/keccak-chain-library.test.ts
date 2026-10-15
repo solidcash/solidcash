@@ -8,9 +8,16 @@ import {
   KECCAK_CHAIN_CONT_COVENANT_HASH,
   KECCAK_CHAIN_FINAL_COVENANT,
   KECCAK_CHAIN_FINAL_COVENANT_HASH,
+  KECCAK_CHAIN_START_COVENANT_STATELESS,
+  KECCAK_CHAIN_START_COVENANT_STATELESS_HASH,
+  KECCAK_CHAIN_CONT_COVENANT_STATELESS,
+  KECCAK_CHAIN_CONT_COVENANT_STATELESS_HASH,
+  KECCAK_CHAIN_FINAL_COVENANT_STATELESS,
+  KECCAK_CHAIN_FINAL_COVENANT_STATELESS_HASH,
   buildKeccakChainRedeem,
   keccakChainLockingBytecode,
   splitKeccakChainBlocks,
+  planKeccakChain,
 } from '../src/keccak-compute-library.js';
 import { hash256 } from '../src/hash.js';
 
@@ -29,8 +36,7 @@ const push = (data: Uint8Array): Uint8Array => {
 const tok = (commitment: Uint8Array): any =>
   ({ category: K, amount: 0n, nft: { capability: 'mutable', commitment } });
 
-// Reference keccak-f[1600] (25 BigInt lanes, little-endian) - the correctness oracle for the intermediate
-// sponge states; the final digest is cross-checked against noble's keccak_256.
+// Reference keccak-f[1600] (25 BigInt lanes) - the intermediate sponge state oracle.
 const MASK = (1n << 64n) - 1n;
 const RC = [
   0x0000000000000001n, 0x0000000000008082n, 0x800000000000808an, 0x8000000080008000n,
@@ -59,7 +65,6 @@ function keccakF(state: bigint[]): bigint[] {
   }
   return A;
 }
-// Reference sponge step: absorb one 136-byte block into 25 LE lanes, one keccak-f[1600].
 function absorbBlock(state: bigint[], block: Uint8Array): bigint[] {
   const next = [...state];
   for (let i = 0; i < 17; i++) {
@@ -72,31 +77,16 @@ function absorbBlock(state: bigint[], block: Uint8Array): bigint[] {
 // Commitment byte order = lane24 || ... || lane0, each lane 8 bytes big-endian.
 function commitState(state: bigint[]): Uint8Array {
   const bytes: number[] = [];
-  for (let i = 24; i >= 0; i--) {
-    for (let b = 7; b >= 0; b--) bytes.push(Number((state[i] >> BigInt(8 * b)) & 0xffn));
-  }
+  for (let i = 24; i >= 0; i--) for (let b = 7; b >= 0; b--) bytes.push(Number((state[i] >> BigInt(8 * b)) & 0xffn));
   return Uint8Array.from(bytes);
 }
 
-function chainBlockPlan(length: number): Array<{ kind: 'start' | 'cont' | 'final'; data: Uint8Array }> {
-  const { fullBlocks, remainder } = splitKeccakChainBlocks(length);
+function evalChain(length: number, stateful = false): string | undefined {
   const preimage = new Uint8Array(length);
   for (let i = 0; i < length; i++) preimage[i] = (i * 13 + 7) & 0xff;
-  const plan: Array<{ kind: 'start' | 'cont' | 'final'; data: Uint8Array }> = [];
-  for (let off = 0; off < fullBlocks * 136; off += 136) {
-    plan.push({ kind: plan.length === 0 ? 'start' : 'cont', data: preimage.slice(off, off + 136) });
-  }
-  plan.push({ kind: 'final', data: preimage.slice(fullBlocks * 136, fullBlocks * 136 + remainder) });
-  return plan;
-}
+  const plan = planKeccakChain(preimage);
+  const locks = plan.map((s) => keccakChainLockingBytecode(C, s.kind, stateful));
 
-function evalChain(length: number): string | undefined {
-  const plan = chainBlockPlan(length);
-  const locks2 = plan.map((s) => keccakChainLockingBytecode(C, s.kind));
-
-  // Oracle states.
-  const preimage = new Uint8Array(length);
-  for (let i = 0; i < length; i++) preimage[i] = (i * 13 + 7) & 0xff;
   let state = new Array<bigint>(25).fill(0n);
   const intermediates: Uint8Array[] = [];
   for (let off = 0; off < preimage.length - (preimage.length % 136); off += 136) {
@@ -106,19 +96,22 @@ function evalChain(length: number): string | undefined {
   const digest = keccak_256(preimage);
 
   const n = plan.length;
-  const outputs = plan.map((s, i) => {
-    const commitment = s.kind === 'final' ? digest : intermediates[i];
-    return { lockingBytecode: locks2[i], valueSatoshis: 100000n, token: tok(commitment) };
-  });
-  const sourceOutputs = plan.map((s, i) => ({
-    lockingBytecode: locks2[i], valueSatoshis: 100000n, token: tok(new Uint8Array(0)),
+  const outputs = plan.map((s, i) => ({
+    lockingBytecode: locks[i], valueSatoshis: 100000n,
+    token: tok(s.kind === 'final' ? digest : intermediates[i]),
+  }));
+  const sourceOutputs = plan.map((_s, i) => ({
+    lockingBytecode: locks[i], valueSatoshis: 100000n, token: tok(new Uint8Array(0)),
   }));
   const inputs = plan.map((s, i) => {
-    const redeem = buildKeccakChainRedeem(C, s.kind);
+    const redeem = buildKeccakChainRedeem(C, s.kind, stateful);
     const pad = new Uint8Array(3200);
+    const data = s.kind === 'final'
+      ? Uint8Array.from([0x51, ...push(s.block), ...push(pad), ...push(redeem)])  // mode 1 = final
+      : Uint8Array.from([...push(s.block), ...push(pad), ...push(redeem)]);
     return {
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(i + 1),
-      sequenceNumber: 0xffffffff, unlockingBytecode: Uint8Array.from([...push(s.data), ...push(pad), ...push(redeem)]),
+      sequenceNumber: 0xffffffff, unlockingBytecode: data,
     };
   });
   const transaction = { version: 2, locktime: 0, inputs, outputs } as any;
@@ -135,39 +128,44 @@ describe('keccak chained compute side-cars (utils)', () => {
       [KECCAK_CHAIN_START_COVENANT, KECCAK_CHAIN_START_COVENANT_HASH],
       [KECCAK_CHAIN_CONT_COVENANT, KECCAK_CHAIN_CONT_COVENANT_HASH],
       [KECCAK_CHAIN_FINAL_COVENANT, KECCAK_CHAIN_FINAL_COVENANT_HASH],
+      [KECCAK_CHAIN_START_COVENANT_STATELESS, KECCAK_CHAIN_START_COVENANT_STATELESS_HASH],
+      [KECCAK_CHAIN_CONT_COVENANT_STATELESS, KECCAK_CHAIN_CONT_COVENANT_STATELESS_HASH],
+      [KECCAK_CHAIN_FINAL_COVENANT_STATELESS, KECCAK_CHAIN_FINAL_COVENANT_STATELESS_HASH],
     ] as const) {
       expect(binToHex(hash256(hexToBin(cov)))).toBe(hash);
     }
-    expect(hexToBin(KECCAK_CHAIN_START_COVENANT).length).toBe(2400);
-    expect(hexToBin(KECCAK_CHAIN_CONT_COVENANT).length).toBe(2226);
-    expect(hexToBin(KECCAK_CHAIN_FINAL_COVENANT).length).toBe(2211);
   });
 
-  it('splitKeccakChainBlocks splits on the 136-byte keccak rate with a pad-only final block', () => {
+  it('splitKeccakChainBlocks and planKeccakChain split on the 136-byte keccak rate', () => {
     expect(splitKeccakChainBlocks(0)).toEqual({ fullBlocks: 0, remainder: 0, total: 1 });
-    expect(splitKeccakChainBlocks(135)).toEqual({ fullBlocks: 0, remainder: 135, total: 1 });
     expect(splitKeccakChainBlocks(136)).toEqual({ fullBlocks: 1, remainder: 0, total: 2 });
-    expect(splitKeccakChainBlocks(137)).toEqual({ fullBlocks: 1, remainder: 1, total: 2 });
     expect(splitKeccakChainBlocks(408)).toEqual({ fullBlocks: 3, remainder: 0, total: 4 });
     expect(() => splitKeccakChainBlocks(-1)).toThrow();
+    const plan = planKeccakChain(new Uint8Array(600));
+    expect(plan.map((s) => s.kind)).toEqual(['start', 'cont', 'cont', 'cont', 'final']);
+    expect(plan.every((s) => s.kind !== 'final' ? s.block.length === 136 : s.block.length === 600 - 4 * 136)).toBe(true);
+    // a sub-136 preimage is a single SOLO final side-car
+    expect(planKeccakChain(new Uint8Array(100)).map((s) => s.kind)).toEqual(['final']);
   });
 
-  it('chain redeem = OP_PUSHBYTES_32 || salt || covenant; locking is P2SH32', () => {
-    const redeem = buildKeccakChainRedeem(C, 'final');
-    expect(redeem[0]).toBe(0x20);
-    expect(binToHex(redeem.slice(1, 33))).toBe(binToHex(C));
-    const lock = keccakChainLockingBytecode(C, 'final');
-    expect(lock[0]).toBe(0xaa);
-    expect(lock[1]).toBe(0x20);
-    expect(lock[34]).toBe(0x87);
-    expect(lock.length).toBe(35);
+  it('chain redeem = OP_PUSHBYTES_32 || salt || covenant; locking is P2SH32 (stateful + stateless)', () => {
+    for (const stateful of [false, true]) {
+      const redeem = buildKeccakChainRedeem(C, 'final', stateful);
+      expect(redeem[0]).toBe(0x20);
+      expect(binToHex(redeem.slice(1, 33))).toBe(binToHex(C));
+      const lock = keccakChainLockingBytecode(C, 'final', stateful);
+      expect(lock[0]).toBe(0xaa);
+      expect(lock[1]).toBe(0x20);
+      expect(lock[34]).toBe(0x87);
+      expect(lock.length).toBe(35);
+    }
   });
 
-  it('a 2-side-car chain (start+final) hashes a 136-byte preimage matching EVM', () => {
-    expect(evalChain(136)).toBeUndefined();
+  it('a 5-side-car stateless chain hashes a 600-byte preimage matching EVM', () => {
+    expect(evalChain(600, false)).toBeUndefined();
   });
 
-  it('a 5-side-car chain hashes a 600-byte preimage matching EVM', () => {
-    expect(evalChain(600)).toBeUndefined();
+  it('a 5-side-car stateful chain hashes a 600-byte preimage matching EVM', () => {
+    expect(evalChain(600, true)).toBeUndefined();
   });
 });

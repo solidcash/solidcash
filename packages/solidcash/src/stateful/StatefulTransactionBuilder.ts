@@ -1819,8 +1819,6 @@ export class StatefulTransactionBuilder {
       preserveBlockLayoutWidth: this.preserveBlockLayoutWidth,
       blockLayout: this.blockLayout,
       ecrecoverComputeRecreates: this.ecrecoverComputeRecreates,
-      keccakLoopRecreates: this.keccakLoopRecreates,
-      keccakLoopFollowsTrailingUser: this.keccakLoopFollowsTrailingUser,
       externalOutStateUtxoGroups: this.externalOutStateUtxoGroups,
       externalCallStateUpdates: this.externalCallStateUpdates,
       externalCallStateRawCommitments: this.externalCallStateRawCommitments,
@@ -2297,6 +2295,8 @@ export class StatefulTransactionBuilder {
         llcOutputsHost: this._materializeLowLevelCallOutputsHost(),
         trailingIterationHost: this._materializeTrailingIterationEntriesHost(),
         runtimeLoopHost: this._materializeRuntimeLoopTrailingHost(),
+        keccakLoopRecreates: this.keccakLoopRecreates,
+        keccakLoopFollowsTrailingUser: this.keccakLoopFollowsTrailingUser,
       }),
       lateChunkFrameHost: () => ({
         delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,

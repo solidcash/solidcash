@@ -560,6 +560,17 @@ after the mapping entry band for the reversed order, so both the input and outpu
 covenant. `packages/solidcash/test/e2e/KeccakLoopTrailingUserReversed.test.ts` settles the reversed order with the
 correct digest.
 
+The CONTAINER-SPEND sibling is also RESOLVED: a function whose keccak loop is followed by a straight-line
+satoshi-container `this.transfer(...)` or token-container `this.tokens[cat].transfer(...)` now settles. The
+keccak-loop probe pads the fixed block slots between the data NFTs and the trailing base (the container UTXO plus
+a neutral funder for the output-only transfer/tcTransfer slot) via `_padKeccakLoopFrontRegion`, so the side-cars
+land at the compiler's `master + blockSize` coordinate; those slots' covenant checks run in the epilogue after the
+keccak loop, so the probe's self-preserving recreations never block preimage discovery. The side-car recreations
+are emitted at the start of the trailing band by `materializeMidBuildOutputsCascade` (after the fixed
+container/transfer/event/entry slots) instead of the front band, so their output coordinate matches blockSize.
+`packages/solidcash/test/e2e/KeccakLoopContainerSpend.test.ts` settles both container families with the correct
+digest.
+
 **RESOLVED 2026-10-15 (edge 2, transitive complex keccak + blockhash front-region).** Two fixes land together:
 (1) `_externalKeccakProbeCtx` now resolves B's own blockhash oracle co-spends against B's category and returns
 them as `frontRegionInputs` + `locktime` (the keccak probe materializes B's `__internal__blockhashInputIndex`
@@ -575,9 +586,10 @@ and a blockhash read (both contracts advance); `packages/solidcash/test/e2e/Tran
 covers blockhash without keccak. Pre-existing and unchanged: the direct-param transitive keccak (no blockhash)
 outState case still fails OP_VERIFY at HEAD before this change.
 
-**Revisit if.** A real contract needs a keccak loop beside a token/satoshi-container spend or a transfer loop in
-the same trailing region (the mapping-write sibling of edge 1 is resolved; the container/transfer sibling remains
-open).
+**Revisit if.** A real contract needs a keccak loop beside a RUNTIME-LOOP transfer (a `for(i)` whose body mints a
+runtime-variable number of transfer outputs, not the straight-line container spend above) in the same trailing
+region. The mapping-write sibling and the straight-line satoshi/token container-spend sibling of edge 1 are both
+resolved.
 
 **Soundness note (not a gap).** The complex-arg + transitive probes assume the keccak preimage depends only on
 the function's args/state, not on surrounding-tx introspection that differs between the isolated probe and the

@@ -3,6 +3,7 @@
  */
 
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+import type { Output } from '../interfaces.js';
 import {
   materializeOwnerEntriesContainersTransfers,
   type MaterializeOwnerEntriesContainersTransfersHost,
@@ -36,6 +37,9 @@ export interface MaterializeMidBuildOutputsCascadeHost {
   readonly llcOutputsHost: MaterializeLowLevelCallOutputsHost;
   readonly trailingIterationHost: MaterializeTrailingIterationEntriesHost;
   readonly runtimeLoopHost: MaterializeRuntimeLoopTrailingHost;
+  /** Keccak-loop side-car recreations emitted at the start of the trailing band (unless a mapping loop leads). */
+  readonly keccakLoopRecreates: readonly Output[];
+  readonly keccakLoopFollowsTrailingUser: boolean;
 }
 
 /**
@@ -69,6 +73,12 @@ export function materializeMidBuildOutputsCascade(
   materializeLowLevelCallOutputs(
     host.llcOutputsHost, builder, associatedDelegateOutputs,
   );
+
+  // Dynamic keccak loop side-cars open the trailing band. When the loop is not preceded by a mapping loop they
+  // sit at blockSize, right after every fixed block slot (entries/containers/transfers/events/returnEvent/LLC).
+  if (!host.keccakLoopFollowsTrailingUser) {
+    for (const rec of host.keccakLoopRecreates) builder.addOutput(rec);
+  }
 
   materializeTrailingIterationEntries(
     host.trailingIterationHost, builder, loopChunkBeforeCallees,

@@ -5338,6 +5338,66 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return { to: u.unlocker.generateLockingBytecode(), amount: u.satoshis, token: u.token };
   }
 
+  /**
+   * Fill the fixed block slots between the data NFTs and the keccak-loop trailing region so the loop probe's
+   * side-cars land at the compiler's `master + blockSize` coordinate. The read-only-data and blockhash slots are
+   * already in `baseFrontRegion` (in slot order); satoshi/token containers add their real UTXO, and every other
+   * slot (output-only transfer/event/returnEvent slots, or a container the build has not resolved) gets a neutral
+   * self-preserving funder. All of these families are checked in the epilogue AFTER the keccak loop, so the
+   * self-preserving funder recreations never block preimage discovery.
+   */
+  private _padKeccakLoopFrontRegion(
+    abiFunction: AbiFunction,
+    dataNftCount: number,
+    sidecarBase: number,
+    baseFrontRegion: UnlockableUtxo[],
+    satoshiContainerUtxo: UnlockableUtxo | undefined,
+    tokenContainers: readonly { utxo?: UnlockableUtxo }[],
+    blockInfoCoSpendUtxos: readonly UnlockableUtxo[],
+  ): UnlockableUtxo[] {
+    const result = [...baseFrontRegion];
+    let syntheticSeq = 0;
+    const syntheticFunder = (): UnlockableUtxo => {
+      syntheticSeq += 1;
+      const lock = Uint8Array.of(0x51); // OP_TRUE
+      return {
+        txid: `${'00'.repeat(28)}${syntheticSeq.toString(16).padStart(8, '0')}`,
+        vout: 0,
+        satoshis: 1000n,
+        unlocker: {
+          generateLockingBytecode: () => lock,
+          generateUnlockingBytecode: () => new Uint8Array(),
+        },
+      };
+    };
+    let tokenContainerCursor = 0;
+    const slots = abiFunction.blockLayout?.slots ?? [];
+    for (const slot of slots) {
+      if (slot.offset < 1 + dataNftCount || slot.offset >= sidecarBase) continue;
+      switch (slot.kind) {
+        case 'readOnlyDataNft':
+        case 'blockhashOracle':
+          break; // already packed into baseFrontRegion in slot order
+        case 'blockInfoOracle':
+          result.push(blockInfoCoSpendUtxos[0] ?? syntheticFunder());
+          break;
+        case 'satoshiContainer':
+          result.push(satoshiContainerUtxo ?? syntheticFunder());
+          break;
+        case 'tokenContainer': {
+          const info = tokenContainers[tokenContainerCursor];
+          tokenContainerCursor += 1;
+          result.push(info?.utxo ?? syntheticFunder());
+          break;
+        }
+        default:
+          result.push(syntheticFunder());
+          break;
+      }
+    }
+    return result;
+  }
+
   // Stateful DYNAMIC keccak loop: determine the runtime iteration count N and each iteration's preimage by a
   // PROGRESSIVE VM probe, then build N trailing compute side-cars. Each probe co-spends k trailing side-cars
   // (the first k-1 resolved, the k-th a placeholder) at [blockSize, blockSize+k) and reads the master; the loop
@@ -12446,6 +12506,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Dynamic loop: N (runtime) trailing side-cars, N + preimages found by a progressive VM probe. When a
       // mapping loop precedes the keccak loop in source order, its bracketing predecessors (and their exact
       // recreated chain outputs) occupy the front of the trailing band, so the probe co-spends them first.
+      const loopBlockSize = abiFunction.blockLayout?.blockSize ?? 1;
+      const loopSidecarBase = abiFunction.blockLayout?.trailingBase
+        ?? abiFunction.blockLayout?.slots.find((slot) => slot.kind === 'keccakSideCar')?.offset
+        ?? loopBlockSize;
+      const keccakLoopFrontRegion = this._padKeccakLoopFrontRegion(
+        abiFunction, filteredDataNftUtxos.length, loopSidecarBase, keccakFrontRegion,
+        satoshiContainerUtxo, tokenContainers, blockInfoCoSpendUtxos,
+      );
       const reversedTrailingPredecessors: { inputs: UnlockableUtxo[]; outputs: Output[] } = { inputs: [], outputs: [] };
       if (abiFunction.keccakLoopPrecedesTrailingUser !== true) {
         let predecessorCursor = 0;
@@ -12466,7 +12534,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const loop = await this._resolveStatefulKeccakLoop(
         abiFunction, derivationMasterUtxo, stateInputUnlocker, filteredDataNftUtxos, dataNftUnlockers,
-        keccakFrontRegion, maxBhLocktime, reversedTrailingPredecessors,
+        keccakLoopFrontRegion, maxBhLocktime, reversedTrailingPredecessors,
       );
       keccakLoopSideCars = loop.sideCars;
       keccakLoopRecreates = loop.recreates;

@@ -5,11 +5,12 @@ import { SplitContractBundle } from '../../src/stateful/index.js';
 import { createTestProvider } from '../test-util.js';
 import { alicePriv } from '../fixture/vars.js';
 
-// Minimal MasterChef.add shape that reaches the original preflight OP_VERIFY: a split-delegate route whose
-// poolInfo.push write-back is shared with a zero-trip massUpdatePools array-co-spend loop. The synthesized
-// post-push collection length is double-applied (2 instead of 1), so the route's commitment-family output-scan
-// fails OP_NUMEQUALVERIFY and the preflight reports "Program failed an OP_VERIFY operation". Documents the
-// defect while it is still open; flip the assertion to `resolves` when the length delta is fixed.
+// Minimal split-delegate dynamic-array push that reaches the original preflight OP_VERIFY: the split root
+// forwarder's emitOwnCategoryMutableNftConservation check counts the pushed poolInfo chunk as an excess
+// mutable output (dynamic-array chunk collections are never censused; censusedCollectionSignatures only covers
+// sorted-batch mappings), so the balance is -1 and OP_NUMEQUALVERIFY fails. The massUpdatePools loop is
+// incidental (a split push without it fails the same check). Documents the defect while it is still open;
+// flip the assertion to `resolves` when the censusing gap is fixed.
 const SRC = `pragma solidity 0.6.12;
 interface ICallee { function balanceOf(address) external view returns (uint256); }
 contract Chef {

@@ -33,6 +33,9 @@ export interface MaterializeRuntimeLoopTrailingHost {
   readonly runtimeLoopEventOutputs: readonly RuntimeLoopEventOutput[];
   readonly runtimeLoopTransferOutputs: readonly RuntimeLoopTransferOutput[];
   readonly loopEntryCommitments: ReadonlyMap<string, readonly string[]>;
+  /** Dynamic keccak loop recreates that follow the mapping entry band when the mapping loop precedes them. */
+  readonly keccakLoopRecreates: readonly Output[];
+  readonly keccakLoopFollowsTrailingUser: boolean;
   readonly kernelJournalSettlementOutputPlan: readonly unknown[];
   readonly kernelJournalEagerOutputPlan: readonly unknown[];
   readonly loopEntriesBeforeDynamicChunks: boolean;
@@ -234,6 +237,12 @@ export function materializeRuntimeLoopTrailing(
           appendLoopEntry(lv, commitment);
         }
       }
+    }
+
+    // A mapping loop that precedes the keccak loop emits its entry outputs first; the keccak side-car recreates
+    // follow that band (the compiler's shifted output coordinate adds the entry output width), before events.
+    if (host.keccakLoopFollowsTrailingUser) {
+      for (const rec of host.keccakLoopRecreates) builder.addOutput(rec);
     }
 
     // Runtime-loop events and their fixed peers are source-ordered records, independent of the permutation used

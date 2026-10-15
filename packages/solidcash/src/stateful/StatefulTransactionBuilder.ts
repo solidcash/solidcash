@@ -885,6 +885,15 @@ export class StatefulTransactionBuilder {
   private insertLoopPredecessorInputs: UnlockableUtxo[];
   private keccakLoopSideCars: UnlockableUtxo[];
   private keccakLoopRecreates: Output[];
+  private get keccakLoopPrecedesTrailingUser(): boolean {
+    return (this.masterUtxo?.unlocker as { abiFunction?: { keccakLoopPrecedesTrailingUser?: boolean } })
+      ?.abiFunction?.keccakLoopPrecedesTrailingUser === true;
+  }
+
+  private get keccakLoopFollowsTrailingUser(): boolean {
+    return !this.keccakLoopPrecedesTrailingUser && this.insertLoopPredecessorInputs.length > 0;
+  }
+
   private blockLayout?: FunctionBlockLayout;
   private messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly valueChunkWriteStagingSession: ValueChunkWriteStagingSession;
@@ -1811,6 +1820,7 @@ export class StatefulTransactionBuilder {
       blockLayout: this.blockLayout,
       ecrecoverComputeRecreates: this.ecrecoverComputeRecreates,
       keccakLoopRecreates: this.keccakLoopRecreates,
+      keccakLoopFollowsTrailingUser: this.keccakLoopFollowsTrailingUser,
       externalOutStateUtxoGroups: this.externalOutStateUtxoGroups,
       externalCallStateUpdates: this.externalCallStateUpdates,
       externalCallStateRawCommitments: this.externalCallStateRawCommitments,
@@ -1925,6 +1935,8 @@ export class StatefulTransactionBuilder {
       runtimeLoopEventOutputs: this.runtimeLoopEventOutputs,
       runtimeLoopTransferOutputs: this.runtimeLoopTransferOutputs,
       loopEntryCommitments: this.loopEntryCommitments,
+      keccakLoopRecreates: this.keccakLoopRecreates,
+      keccakLoopFollowsTrailingUser: this.keccakLoopFollowsTrailingUser,
       kernelJournalSettlementOutputPlan: this.kernelJournalSettlementOutputPlan,
       kernelJournalEagerOutputPlan: this.kernelJournalEagerOutputPlan,
       loopEntriesBeforeDynamicChunks: this.loopEntriesBeforeDynamicChunks,

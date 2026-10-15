@@ -541,22 +541,24 @@ recreations + locktime (the master path threads them, but the transitive path bu
 front-region band allocator). (2) Resolve B's blockhash/external-read co-spends inside `_externalKeccakProbeCtx`
 and pass them as `frontRegionInputs` (reuse the master's resolvers against B).
 
-**PARTLY RESOLVED 2026-10-15 (edge 1, keccak-loop-first source order).** The compiler now pushes
+**RESOLVED 2026-10-15 (edge 1, both source orders).** The compiler now pushes
 `RUNTIME_LOOP_ENTRY_INPUT_COUNT`/`OUTPUT_COUNT` as LOCAL cursors for a direct function whose dynamic keccak loop
 coexists with a sorted-insert/upsert/entry mapping loop, seeds the keccak counter from the input cursor, and
 accumulates its side-car width into both cursors at teardown; the sorted-insert/upsert bases already consume the
 cursors. The SDK orders the physical trailing inputs by the published `keccakLoopPrecedesTrailingUser` flag.
 `packages/solidcash/test/e2e/KeccakLoopTrailingUser.test.ts` settles a keccak loop BEFORE a sorted-insert loop
-with the correct digest. The REVERSED source order (mapping loop before keccak loop) is PARTLY RESOLVED: the SDK's
-`resolveStatefulKeccakLoop` probe now co-spends the mapping predecessors ahead of the keccak side-cars, a SHIFTED
+with the correct digest. The REVERSED source order (mapping loop before keccak loop) is RESOLVED: the SDK's
+`resolveStatefulKeccakLoop` probe co-spends the mapping predecessors ahead of the keccak side-cars, a SHIFTED
 single-preimage keccak side-car covenant (`research/keccak-poc/gen-compute-sidecar-shifted.mjs`, baked as
 `KECCAK256_COMPUTE_SHIFTED_COVENANT` + hash in `packages/utils`) recreates at
 `INPUTINDEX + (outputCursor - inputCursor)` so the side-car output lands past the mapping outputs, and the compiler
-reads that shifted output coordinate, and `stb-build-inputs.ts` orders the non-dense trailing inputs by
-`keccakLoopPrecedesTrailingUser`. STILL deferred: the final transaction aborts at the first keccak preimage bind
-(the decoded preimage is empty), consistent with the reversed path seeding the keccak loop counter from the
-un-advanced input cursor; `KeccakLoopTrailingUserReversed.test.ts` is committed `it.skip` pending that
-counter-seed fix.
+reads that shifted output coordinate (seeding the keccak loop counter from the accumulated
+`RUNTIME_LOOP_ENTRY_INPUT_COUNT`, which holds the mapping loop's predecessor width). `stb-build-inputs.ts` orders
+the physical trailing inputs as predecessors, keccak side-cars, then alignment funders, and the output assembly
+(`materializeOwnerFrontOutputs` / `materializeRuntimeLoopTrailing`) defers the keccak side-car recreates until
+after the mapping entry band for the reversed order, so both the input and output coordinates match the shifted
+covenant. `packages/solidcash/test/e2e/KeccakLoopTrailingUserReversed.test.ts` settles the reversed order with the
+correct digest.
 
 **RESOLVED 2026-10-15 (edge 2, transitive complex keccak + blockhash front-region).** Two fixes land together:
 (1) `_externalKeccakProbeCtx` now resolves B's own blockhash oracle co-spends against B's category and returns
@@ -573,7 +575,9 @@ and a blockhash read (both contracts advance); `packages/solidcash/test/e2e/Tran
 covers blockhash without keccak. Pre-existing and unchanged: the direct-param transitive keccak (no blockhash)
 outState case still fails OP_VERIFY at HEAD before this change.
 
-**Revisit if.** A real contract needs a keccak loop beside a mapping-write loop / container spend (1).
+**Revisit if.** A real contract needs a keccak loop beside a token/satoshi-container spend or a transfer loop in
+the same trailing region (the mapping-write sibling of edge 1 is resolved; the container/transfer sibling remains
+open).
 
 **Soundness note (not a gap).** The complex-arg + transitive probes assume the keccak preimage depends only on
 the function's args/state, not on surrounding-tx introspection that differs between the isolated probe and the

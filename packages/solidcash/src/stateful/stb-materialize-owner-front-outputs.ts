@@ -38,6 +38,8 @@ export interface MaterializeOwnerFrontOutputsHost {
   readonly blockLayout?: FunctionBlockLayout;
   readonly ecrecoverComputeRecreates: readonly Output[];
   readonly keccakLoopRecreates: readonly Output[];
+  /** True when a trailing mapping loop precedes the dynamic keccak loop; recreates then follow the entries. */
+  readonly keccakLoopFollowsTrailingUser: boolean;
   readonly externalOutStateUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly externalCallStateUpdates: ReadonlyMap<string, ReadonlyMap<string, StateValue>>;
   readonly externalCallStateRawCommitments: ReadonlyMap<string, ReadonlyMap<number, string>>;
@@ -170,7 +172,11 @@ export function materializeOwnerFrontOutputs(
 
   // Dynamic keccak loop: recreate the N trailing side-cars, each with its iteration result R_i. In the MVP
   // layout (no other front-region slots) these sit at [blockSize, blockSize+N) - right after the data NFTs.
-  for (const rec of host.keccakLoopRecreates) builder.addOutput(rec);
+  // When a mapping loop precedes the keccak loop the side-cars follow the mapping outputs, so
+  // materializeRuntimeLoopTrailing emits them after the entry band instead of here.
+  if (!host.keccakLoopFollowsTrailingUser) {
+    for (const rec of host.keccakLoopRecreates) builder.addOutput(rec);
+  }
 
   // ecrecover recovery-pair recreations (right after the keccak side-cars, matching the ecrecoverSideCar slots):
   // A commits H_A (the A->B binding hash), B commits the recovered pubkey Q. Built by buildEcrecoverComputeSidecars.

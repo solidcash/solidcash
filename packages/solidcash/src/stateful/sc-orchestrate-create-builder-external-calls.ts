@@ -70,6 +70,7 @@ export type OrchestrateCreateBuilderExternalCallsHost = {
   resolveExternalArgs: (...args: any[]) => any;
   buildRepeatedExternalBatch: (...args: any[]) => any;
   resolveExternalKeccakSideCars: (...args: any[]) => any;
+  resolveExternalBlockhashCoSpends: (...args: any[]) => any;
   keysMatch: (...args: any[]) => any;
   [key: string]: any;
 };
@@ -686,7 +687,8 @@ export async function orchestrateCreateBuilderExternalCalls(
       const emitCount = abiFunction?.emits?.length ?? 0;
 
       const outStateOutputCount = externalOutStateUtxoGroups.reduce(
-        (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.keccakRecreates?.length ?? 0), 0,
+        (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.blockhashCoSpendRecreates?.length ?? 0)
+          + (g.keccakRecreates?.length ?? 0), 0,
       );
       const baseOutputOffset = 1 + requiredNftIndices.length
       + externalReadUtxos.length + outStateOutputCount + externalCallOutputCount + lowLevelCallOutputCount;
@@ -782,6 +784,7 @@ export async function orchestrateCreateBuilderExternalCalls(
       {
         categoryId: host.categoryId,
         resolveExternalKeccakSideCars: (...a: any[]) => host.resolveExternalKeccakSideCars(...a),
+        resolveExternalBlockhashCoSpends: (...a: any[]) => host.resolveExternalBlockhashCoSpends(...a),
       },
       {
         abiFunction,
@@ -795,6 +798,7 @@ export async function orchestrateCreateBuilderExternalCalls(
     );
     finalArgs = outStateResult.finalArgs;
     outStateInputCount = outStateResult.outStateInputCount;
+    maxBhLocktime = Math.max(maxBhLocktime, outStateResult.maxBhLocktime);
   }
 
 

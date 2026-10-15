@@ -548,8 +548,22 @@ with the correct digest. STILL deferred: the REVERSED source order (mapping loop
 correct disjoint bands but the SDK's `resolveStatefulKeccakLoop` progressive probe does not yet co-spend the
 mapping predecessors ahead of the keccak side-cars, so it still fail-closes with "no side-car read found".
 
-**Revisit if.** A real contract needs a keccak loop beside a mapping-write loop / container spend (1), or a
-transitive callee that hashes a nested arg while reading a blockhash (2).
+**RESOLVED 2026-10-15 (edge 2, transitive complex keccak + blockhash front-region).** Two fixes land together:
+(1) `_externalKeccakProbeCtx` now resolves B's own blockhash oracle co-spends against B's category and returns
+them as `frontRegionInputs` + `locktime` (the keccak probe materializes B's `__internal__blockhashInputIndex`
+before building the unlocker), so `_extractStatefulKeccakPreimages` positions the probe past B's front-region.
+(2) The ordinary transitive outState path (`loadCreateBuilderOutStateReads`) previously had no blockhash support
+at all: B's master unlocker was built without `__internal__blockhashInputIndex`, so `generateUnlockingBytecode`
+failed closed with "blockhash(n) is only supported in stateful contracts". It now resolves B's blockhash oracle
+co-spends (`_resolveExternalBlockhashCoSpends`), materializes the index, carries `blockhashCoSpendUtxos` /
+`blockhashCoSpendRecreates` on the outState group, flattens them between B's data NFTs and keccak side-cars, and
+threads the max blockhash locktime into the transaction. Tests:
+`packages/solidcash/test/e2e/KeccakTransitiveFrontRegion.test.ts` settles a callee with BOTH a nested keccak arg
+and a blockhash read (both contracts advance); `packages/solidcash/test/e2e/TransitiveBlockhashOutState.test.ts`
+covers blockhash without keccak. Pre-existing and unchanged: the direct-param transitive keccak (no blockhash)
+outState case still fails OP_VERIFY at HEAD before this change.
+
+**Revisit if.** A real contract needs a keccak loop beside a mapping-write loop / container spend (1).
 
 **Soundness note (not a gap).** The complex-arg + transitive probes assume the keccak preimage depends only on
 the function's args/state, not on surrounding-tx introspection that differs between the isolated probe and the

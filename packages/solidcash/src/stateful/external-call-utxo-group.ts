@@ -365,6 +365,11 @@ export interface ExternalCallUtxoGroup {
   keccakInputs?: UnlockableUtxo[];
   /** B's keccak256 compute side-car recreation OUTPUTS (both paths), committing each computed R_i. */
   keccakRecreates?: Output[];
+  /** B's blockhash(n) oracle co-spend INPUTS (outState path: appended after dataNfts, before keccak side-cars,
+   * matching B's block-layout order master < dataNft < blockhashOracle < keccakSideCar). In slot order. */
+  blockhashCoSpendUtxos?: UnlockableUtxo[];
+  /** B's blockhash(n) oracle recreation OUTPUTS (outState path), self-preserving each (n->hash) oracle. */
+  blockhashCoSpendRecreates?: Output[];
   /** Cross-contract callee LOOP write (docs/deferrals.md #1): SDK-computed updated commitments for B's trailing loop
    * entries, in co-spend order. The trailing entries are appended to blockInputs starting at entryLoopStart. */
   entryLoopCommitments?: string[];

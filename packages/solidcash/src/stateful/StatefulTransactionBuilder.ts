@@ -6140,6 +6140,7 @@ export class StatefulTransactionBuilder {
       + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
     for (let i = 0; i < groupIdx; i++) {
       base += 1 + this.externalOutStateUtxoGroups[i].dataNftUtxos.length
+        + (this.externalOutStateUtxoGroups[i].blockhashCoSpendUtxos?.length ?? 0)
         + (this.externalOutStateUtxoGroups[i].keccakInputs?.length ?? 0);
     }
     return base;
@@ -6153,6 +6154,7 @@ export class StatefulTransactionBuilder {
       + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
     for (let i = 0; i < groupIdx; i++) {
       base += 1 + this.externalOutStateUtxoGroups[i].dataNftUtxos.length
+        + (this.externalOutStateUtxoGroups[i].blockhashCoSpendUtxos?.length ?? 0)
         + (this.externalOutStateUtxoGroups[i].keccakInputs?.length ?? 0);
     }
     return base;
@@ -6202,7 +6204,8 @@ export class StatefulTransactionBuilder {
       + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
     // Skip outState inputs
     for (const g of this.externalOutStateUtxoGroups) {
-      base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
+      base += 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
+        + (g.keccakInputs?.length ?? 0);
     }
     // A chunk run co-spent BEFORE the callees (see iterationChunksPrecedeCallees) shifts them by its count.
     if (this.iterationChunksPrecedeCallees()) base += this.iterationEntryInputs.length;
@@ -6257,7 +6260,8 @@ export class StatefulTransactionBuilder {
       + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
     // Skip outState outputs
     for (const g of this.externalOutStateUtxoGroups) {
-      base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
+      base += 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
+        + (g.keccakInputs?.length ?? 0);
     }
     // The read array's chunk preservation outputs precede the callee outputs only when its inputs precede the
     // callees (see build()), shifting them by the chunk count.
@@ -6394,7 +6398,8 @@ export class StatefulTransactionBuilder {
       + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
     // Skip outState inputs
     for (const g of this.externalOutStateUtxoGroups) {
-      base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
+      base += 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
+        + (g.keccakInputs?.length ?? 0);
     }
     // Skip external call inputs (use full block size when available)
     for (const g of this.externalCallUtxoGroups) {
@@ -6646,7 +6651,8 @@ export class StatefulTransactionBuilder {
     const keccakOutputCount = this.keccakComputeCoSpendUtxos.length;
     const ecrecoverOutputCount = this.ecrecoverComputeCoSpendUtxos.length;
     const outStateOutputCount = this.externalOutStateUtxoGroups.reduce(
-      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0), 0,
+      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
+        + (g.keccakInputs?.length ?? 0), 0,
     );
     const externalCallOutputCount = this.externalCallUtxoGroups.reduce(
       (sum, g) => (g.blockInputs ? sum + g.blockInputs.length : sum + 1 + g.dataNftUtxos.length), 0,
@@ -6796,7 +6802,8 @@ export class StatefulTransactionBuilder {
         + this.blockhashCoSpendUtxos.length + this.keccakComputeCoSpendUtxos.length
         + this.ecrecoverComputeCoSpendUtxos.length;
       for (const g of this.externalOutStateUtxoGroups) {
-        base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
+        base += 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
+          + (g.keccakInputs?.length ?? 0);
       }
       base += this.iterationEntryInputs.length;
       for (const g of this.externalCallUtxoGroups) {
@@ -6918,7 +6925,8 @@ export class StatefulTransactionBuilder {
     const keccakInputCount = this.keccakComputeCoSpendUtxos.length;
     const ecrecoverInputCount = this.ecrecoverComputeCoSpendUtxos.length;
     const outStateInputCount = this.externalOutStateUtxoGroups.reduce(
-      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0), 0,
+      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
+        + (g.keccakInputs?.length ?? 0), 0,
     );
     const externalCallInputCount = this.externalCallUtxoGroups.reduce(
       (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length)

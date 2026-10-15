@@ -241,6 +241,10 @@ export function materializeOwnerFrontOutputs(
       });
     }
 
+    // B's blockhash oracle recreations (after B's data NFT outputs, before keccak side-cars), matching the
+    // input order master < dataNft < blockhashOracle < keccakSideCar.
+    for (const rec of group.blockhashCoSpendRecreates ?? []) builder.addOutput(rec);
+
     // B's keccak256 side-car recreations (after B's data NFT outputs, matching the input order).
     for (const rec of group.keccakRecreates ?? []) builder.addOutput(rec);
   }

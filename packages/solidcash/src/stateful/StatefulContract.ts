@@ -5387,15 +5387,86 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // keccak preimages by evaluating B in an isolated mini-tx (like the direct stateful complex path, but on B).
   private async _externalKeccakProbeCtx(
     bContract: StatefulContract, bAbiFunc: AbiFunction, args: any[], externalCategoryId: string,
-  ): Promise<{ masterUtxo: Utxo; stateInputUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[] }> {
+  ): Promise<{
+      masterUtxo: Utxo; stateInputUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[];
+      frontRegionInputs?: UnlockableUtxo[]; locktime?: number;
+    }> {
     const bState = await bContract.getFullState();
     if (!bState.masterUtxo) throw new Error(`External contract master UTXO not found (category ${externalCategoryId}).`);
     const unlockFns = bContract.inner.unlock as Record<string, (...a: any[]) => Unlocker>;
-    const stateInputUnlocker = unlockFns[bAbiFunc.name]?.(...(args ?? []));
-    if (!stateInputUnlocker) throw new Error(`Cannot build an unlocker for external function ${bAbiFunc.name}.`);
     const dataNftUtxos = bState.dataNftUtxos;
     const dataNftUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(bContract.inner, 0, externalCategoryId));
-    return { masterUtxo: bState.masterUtxo, stateInputUnlocker, dataNftUtxos, dataNftUnlockers };
+    // B's own blockhash oracle slots sit between B's data NFTs and B's keccak side-cars. The probe mini-tx keeps
+    // B's master at input 0, so materialize B's __internal__blockhashInputIndex = slot offset before building the
+    // unlocker (the base Contract resolver refuses it), then co-spend the oracles + their locktime.
+    const bhSlot = bAbiFunc.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
+    const probeArgs = (bAbiFunc.blockhashReads?.length ?? 0) > 0 && bhSlot !== undefined
+      && bAbiFunc.inputs.some((input) => input.name === '__internal__blockhashInputIndex')
+      ? materializeInternalFunctionArgument(
+        args ?? [], bAbiFunc.inputs, '__internal__blockhashInputIndex', BigInt(bhSlot.offset),
+      )
+      : [...(args ?? [])];
+    const stateInputUnlocker = unlockFns[bAbiFunc.name]?.(...probeArgs);
+    if (!stateInputUnlocker) throw new Error(`Cannot build an unlocker for external function ${bAbiFunc.name}.`);
+    const frontRegionInputs: UnlockableUtxo[] = [];
+    let locktime = 0;
+    const bhSlots = bAbiFunc.blockLayout?.slots.filter((slot) => slot.kind === 'blockhashOracle') ?? [];
+    if ((bAbiFunc.blockhashReads?.length ?? 0) > 0 && bhSlots.length > 0) {
+      const resolved = await resolveBlockhashCoSpendsImpl(
+        { categoryId: externalCategoryId, inner: bContract.inner as any },
+        bAbiFunc, args, bhSlots[0].offset, bhSlots.length,
+        bState.masterUtxo, stateInputUnlocker, dataNftUtxos,
+      );
+      frontRegionInputs.push(...resolved.map((coSpend) => ({ ...coSpend.utxo, unlocker: coSpend.unlocker })));
+      locktime = resolved.reduce((max, coSpend) => Math.max(max, coSpend.locktime), 0);
+    }
+    return {
+      masterUtxo: bState.masterUtxo, stateInputUnlocker, dataNftUtxos, dataNftUnlockers,
+      ...(frontRegionInputs.length > 0 && { frontRegionInputs }),
+      ...(locktime > 0 && { locktime }),
+    };
+  }
+
+  // Resolve B's blockhash(n) oracle co-spends for a transitive external outState read (B's function reads
+  // blockhash). Mirrors _resolveBlockhashCoSpends but against B's category and with B's master/data NFT state,
+  // so B's outState probe can satisfy `require(blockhash(bn) == bh)` at B's blockhashOracle slot.
+  private async _resolveExternalBlockhashCoSpends(
+    bAbiFunc: AbiFunction | undefined, args: any[], externalCategoryId: string,
+    bContract?: StatefulContract | null,
+  ): Promise<{ inputs: UnlockableUtxo[]; recreates: Output[]; locktime: number }> {
+    if (!bAbiFunc || (bAbiFunc.blockhashReads?.length ?? 0) === 0 || !externalCategoryId) {
+      return { inputs: [], recreates: [], locktime: 0 };
+    }
+    if (!bContract) {
+      throw new Error('transitive blockhash(n) read needs the external contract instance; '
+        + 'call through withExternalCall().');
+    }
+    const bState = await bContract.getFullState();
+    if (!bState.masterUtxo) throw new Error(`External contract master UTXO not found (category ${externalCategoryId}).`);
+    const unlockFns = bContract.inner.unlock as Record<string, (...a: any[]) => Unlocker>;
+    const dataNftUtxos = bState.dataNftUtxos;
+    const bhSlots = bAbiFunc.blockLayout?.slots.filter((slot) => slot.kind === 'blockhashOracle') ?? [];
+    const bhSlot = bhSlots[0];
+    // Materialize B's __internal__blockhashInputIndex (the base Contract resolver refuses it), then resolve
+    // each oracle in slot order. Param reads use B's call args; computed reads probe B with its own state.
+    const probeArgs = bhSlot !== undefined
+      && bAbiFunc.inputs.some((input) => input.name === '__internal__blockhashInputIndex')
+      ? materializeInternalFunctionArgument(
+        args ?? [], bAbiFunc.inputs, '__internal__blockhashInputIndex', BigInt(bhSlot.offset),
+      )
+      : [...(args ?? [])];
+    const stateInputUnlocker = unlockFns[bAbiFunc.name]?.(...probeArgs);
+    if (!stateInputUnlocker) throw new Error(`Cannot build an unlocker for external function ${bAbiFunc.name}.`);
+    const resolved = await resolveBlockhashCoSpendsImpl(
+      { categoryId: externalCategoryId, inner: bContract.inner as any },
+      bAbiFunc, args, bhSlot?.offset ?? 0, bhSlots.length,
+      bState.masterUtxo, stateInputUnlocker, dataNftUtxos,
+    );
+    return {
+      inputs: resolved.map((coSpend) => ({ ...coSpend.utxo, unlocker: coSpend.unlocker })),
+      recreates: resolved.map((coSpend) => coSpend.recreate),
+      locktime: resolved.reduce((max, coSpend) => Math.max(max, coSpend.locktime), 0),
+    };
   }
 
   // Absolute input index of the first blockhashOracle slot + the slot count (master is input 0, so the slot
@@ -11472,6 +11543,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         resolveExternalArgs: (...a: any[]) => (this as any)._resolveExternalArgs(...a),
         buildRepeatedExternalBatch: (...a: any[]) => (this as any)._buildRepeatedExternalBatch(...a),
         resolveExternalKeccakSideCars: (...a: any[]) => (this as any)._resolveExternalKeccakSideCars(...a),
+        resolveExternalBlockhashCoSpends: (...a: any[]) => (this as any)._resolveExternalBlockhashCoSpends(...a),
         keysMatch: (...a: any[]) => (this as any)._keysMatch(...a),
       },
       {

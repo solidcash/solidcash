@@ -525,7 +525,12 @@ compiler reserves a trailing region and reads the FINAL side-car at `trailingBas
 `@noble/hashes/sha3.js keccak_256`.
 
 **Why deferred.** (1) The trailing region has ONE runtime-counter-indexed band; two independent counter-indexed
-users have nowhere sound to interleave. (2) B's probe context would need B's resolved front-region inputs +
+users have nowhere sound to interleave. Reproduced 2026-10-15: a direct stateful function with a dynamic keccak
+loop AND a sorted-insert mapping loop has no trailing region at all, and both the keccak side-car read and the
+sorted-insert predecessor/entry index count `master + blockSize + counter` from 0, so they collide and the master
+aborts (`packages/solidcash/test/e2e/KeccakLoopTrailingUser.test.ts` pins the fail-closed abort). The
+`RUNTIME_LOOP_ENTRY_INPUT/OUTPUT_COUNT` cursors that disjoin route loop families are not pushed for direct
+functions. (2) B's probe context would need B's resolved front-region inputs +
 recreations + locktime (the master path threads them, but the transitive path builds B's context from
 `getFullState`, not a full derivation).
 
@@ -2275,7 +2280,7 @@ pre-semantic, and `creationCode` only becomes bytes once the child has been comp
 
 **RESOLVED 2026-10-15.** The chained START/CONT/FINAL side-car covenants,
 `splitKeccakChainBlocks` / `planKeccakChain` / `keccakChainCommitments` / `buildKeccakChainSidecars`, and the
-real-VM chain test landed in commits `dea9dcf8e`, `f064c8cc3`, and `b28713515`
+real-VM chain test landed in commits `dea9dcf8e`, `f064c8cc3`, `b28713515`, and `cd0baa165`
 (`packages/utils/test/keccak-chain-library.test.ts` passes 6/6). The compiler now emits a FINAL chained read
 for a direct, unbounded single-call `bytes`/`string` preimage (`GenerateTargetTraversal.ts`: FINAL index
 `trailingBase + size(arg)/136`, FINAL covenant hash, `keccakChainReads` published on the ABI), reserves a
@@ -2286,7 +2291,9 @@ for a direct, unbounded single-call `bytes`/`string` preimage (`GenerateTargetTr
 admits the chained trailing inputs, and `packages/solidcash/test/e2e/KeccakChainSidecar.test.ts` settles a
 12 KB runtime preimage whose read-back digest equals `@noble/hashes/sha3.js keccak_256` (2/2, including the
 unfunded-refusal companion). The under-threshold single-compute side-car path and the loop/straight-line mix
-layouts are unchanged.
+layouts are unchanged. Remaining boundary: the compiler-reserved 256-slot trailing band holds one side-car per
+136-byte block, so a single preimage longer than 255 full blocks + 135 bytes (~34 KB) still exceeds the reserved
+band and is refused by the balanced trailing-capacity check.
 
 **Acceptance:** `keccak256(x)` for a 12 KB runtime `x` settles and reads back the same digest `keccak_256`
 computes off-chain; the refusal above still fires when the caller declines to fund the chain.

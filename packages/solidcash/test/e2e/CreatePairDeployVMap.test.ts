@@ -16,32 +16,32 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { addressToLockScript } from '../../src/utils.js';
 
-// A fresh UniswapV2Factory.createPair-shaped factory: a typed stateful Pair child plus a dual-direction
-// sorted nested mapping `pairs[tokenA][tokenB] = p`. The child's address (`Pair p = new Pair(...)`) is the
-// mapping value, matching Uniswap's `getPair(token0, token1) -> pair`.
+// A fresh UniswapV2Factory.createPair shape: a typed stateful UniswapV2Pair child plus a dual-direction
+// sorted nested mapping `getPair[tokenA][tokenB] = pair`. The child's address (`UniswapV2Pair p = new
+// UniswapV2Pair(...)`) is the mapping value, matching Uniswap's `getPair(token0, token1) -> pair`.
 const SOURCE = `
-contract Pair(bytes20 owner) {
+contract UniswapV2Pair(bytes20 owner) {
     int counter;
     function increment() { require(owner != bytes20(0)); this.counter = this.counter + 1; }
 }
-contract PairFactory() {
-    mapping(bytes32 => mapping(bytes32 => address)) pairs;
+contract UniswapV2Factory() {
+    mapping(bytes32 => mapping(bytes32 => address)) getPair;
     function createPair(bytes32 tokenA, bytes32 tokenB) {
-        Pair p = new Pair(bytes20(0));
-        require(this.pairs[tokenA][tokenB] == address(0));
-        this.pairs[tokenA][tokenB] = p;
-        this.pairs[tokenB][tokenA] = p;
+        UniswapV2Pair p = new UniswapV2Pair(bytes20(0));
+        require(this.getPair[tokenA][tokenB] == address(0));
+        this.getPair[tokenA][tokenB] = p;
+        this.getPair[tokenB][tokenA] = p;
     }
-    function getPair(bytes32 a, bytes32 b) view returns (address) { return this.pairs[a][b]; }
+    function pair(bytes32 a, bytes32 b) view returns (address) { return this.getPair[a][b]; }
 }`;
 // The deploy entry is permissionless on purpose: this suite pins the covenant's output topology, not its
 // authorization. The emitted covenant is unchanged, so every tampered transaction below still fails verify.
 const PERMISSIONLESS = { allowUnsafeOperations: true } as const;
 
-describe('createPair deployDataNft + dual getPair (fresh factory)', () => {
+describe('UniswapV2Factory.createPair deployDataNft + dual getPair', () => {
   const artifacts = compileStringMulti(SOURCE, PERMISSIONLESS);
-  const factoryArtifact = artifacts.PairFactory;
-  const childArtifact = artifacts.Pair;
+  const factoryArtifact = artifacts.UniswapV2Factory;
+  const childArtifact = artifacts.UniswapV2Pair;
 
   it('layout reserves deployDataNft and dual-direction entry accesses', () => {
     const createPair = factoryArtifact.abi.find((f) => f.name === 'createPair')!;
@@ -92,8 +92,8 @@ describe('createPair deployDataNft + dual getPair (fresh factory)', () => {
 
     // Both getPair directions read back the deployed pair's locking bytecode.
     const expectedLock = addressToLockScript(result.child.address);
-    const pairAB = await (factory as any).pairs(hexToBin(tokenA), hexToBin(tokenB));
-    const pairBA = await (factory as any).pairs(hexToBin(tokenB), hexToBin(tokenA));
+    const pairAB = await (factory as any).getPair(hexToBin(tokenA), hexToBin(tokenB));
+    const pairBA = await (factory as any).getPair(hexToBin(tokenB), hexToBin(tokenA));
     expect(pairAB).toBeInstanceOf(Uint8Array);
     expect(pairBA).toBeInstanceOf(Uint8Array);
     expect(binToHex(pairAB as Uint8Array)).toBe(binToHex(expectedLock));
@@ -165,7 +165,7 @@ describe('createPair deployDataNft + dual getPair (fresh factory)', () => {
         getDataNftAddress(result.child.inner, result.childCategoryId),
       );
       const entryLock = addressToLockScript(
-        getEntryNftAddress(factory.inner, factory.categoryId, 'pairs'),
+        getEntryNftAddress(factory.inner, factory.categoryId, 'getPair'),
       );
       const rejectMutation = async (
         mutate: (tx: ReturnType<typeof decodeTransactionUnsafe>, childDataIdx: number, entryIdx: number) => void,

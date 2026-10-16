@@ -5,8 +5,9 @@
  * not reproducible on the current tree. This script pins the exact inputs that produced it:
  *   - compiler: f74707345 (the commit that recorded the figure, before block-layout-v2),
  *   - corpus:   the EffectiveAcceleration checkout (Unicrow.sol last changed 2024-11-26, commit 868d525),
- *   - pass:     the July-shaped ReuseEntryLocalForWriteback port in ReuseEntryLocalForWritebackJuly.ts.txt
- *               (un-coalesced write-back run only; the kernel's early folded __mefw coalesce did not exist yet).
+ *   - pass:     the SHIPPED `packages/solidc/src/semantic/ReuseEntryLocalForWriteback.ts` (copied verbatim;
+ *               the July baseline predates the kernel's early `__mefw` coalesce, so the folded path simply does
+ *               not trigger there, and the pass is compiled against the July AST).
  *
  * It builds the pinned compiler in a cached throwaway worktree, compiles the corpus Unicrow twice (pass on / off),
  * and prints `5683 -> 5344` with the -339 B delta. Run manually with `npx tsx`; the corpus-gated test
@@ -22,7 +23,7 @@ const JULY_COMPILER = 'f7470734562777e897eca2f6030ed16764b123d8';
 const CORPUS = '/Code/effectiveacceleration.ai/contract/contracts/unicrow/Unicrow.sol';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const WORKTREE = path.join(os.tmpdir(), `solidcash-unicrow-339-${JULY_COMPILER.slice(0, 10)}`);
-const PASS_SOURCE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'ReuseEntryLocalForWritebackJuly.ts.txt');
+const PASS_SOURCE = path.join(REPO_ROOT, 'packages', 'solidc', 'src', 'semantic', 'ReuseEntryLocalForWriteback.ts');
 
 function run(cmd: string, cwd: string): void {
   execSync(cmd, { cwd, stdio: 'inherit' });
@@ -61,7 +62,6 @@ export function reproduceUnicrow339(): { without: number; withPass: number; delt
   if (!already) {
     fs.mkdirSync(path.dirname(WORKTREE), { recursive: true });
     run(`git worktree add -f ${WORKTREE} ${JULY_COMPILER}`, REPO_ROOT);
-    fs.copyFileSync(PASS_SOURCE, path.join(WORKTREE, 'packages/solidc/src/semantic/ReuseEntryLocalForWriteback.ts'));
     const compilerTs = path.join(WORKTREE, 'packages/solidc/src/compiler.ts');
     let src = fs.readFileSync(compilerTs, 'utf-8');
     src = src.replace(
@@ -79,6 +79,11 @@ export function reproduceUnicrow339(): { without: number; withPass: number; delt
     if (!src.includes('new ReuseEntryLocalForWriteback()')) throw new Error('compiler patch did not apply');
     fs.writeFileSync(compilerTs, src);
   }
+
+  // Always overwrite the pinned worktree's pass with the SHIPPED source, so this reproduction asserts the real
+  // ReuseEntryLocalForWriteback.ts, not a historical port. On the July baseline the folded `__mefw` path is dead
+  // (that coalesce was introduced later), so the un-coalesced run is what the pass folds.
+  fs.copyFileSync(PASS_SOURCE, path.join(WORKTREE, 'packages/solidc/src/semantic/ReuseEntryLocalForWriteback.ts'));
 
   const installed = fs.existsSync(path.join(WORKTREE, 'node_modules'));
   if (!installed) run('yarn install --ignore-scripts', WORKTREE);

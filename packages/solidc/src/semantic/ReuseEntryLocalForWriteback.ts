@@ -22,7 +22,7 @@ import {
   CollectionIterationNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
-import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
+import { cloneNode } from '../ast/clone.js';
 
 /**
  * Reuse an entry-read local for a whole-struct write-back (Unicrow `refund`):
@@ -212,15 +212,8 @@ export default class ReuseEntryLocalForWriteback extends AstTraversal {
   ): StatementNode | undefined {
     const ctor = folded.write.expression;
     if (!(ctor instanceof FunctionCallNode)) return undefined;
-    const rewritten = cloneNodeReplacing(ctor, (candidate) => {
-      if (candidate instanceof FieldAccessNode && candidate.expression instanceof IdentifierNode
-        && candidate.expression.name === folded.snapshot) {
-        const fa = new FieldAccessNode(this.ident(read.local, candidate.location), candidate.name);
-        fa.location = candidate.location;
-        return fa;
-      }
-      return undefined;
-    });
+    const rewritten = cloneNode(ctor);
+    this.rewriteSnapshotReads(rewritten, folded.snapshot, read.local);
     const write = new MappingAssignNode(
       folded.write.name,
       folded.write.keys.map((key) => cloneNode(key) as ExpressionNode),
@@ -228,6 +221,35 @@ export default class ReuseEntryLocalForWriteback extends AstTraversal {
     );
     write.location = folded.write.location;
     return write;
+  }
+
+  /**
+   * Replace `snapshot.f` field reads with `local.f` on an already-cloned tree. In-place is safe here because the
+   * tree is a fresh `cloneNode` copy, and the July-2026 baseline this pass is verified against does not carry
+   * `cloneNodeReplacing`, so the swap is spelled directly.
+   */
+  private rewriteSnapshotReads(node: Node, snapshot: string, local: string): Node {
+    if (node instanceof FieldAccessNode && node.expression instanceof IdentifierNode
+      && node.expression.name === snapshot) {
+      const fa = new FieldAccessNode(this.ident(local, node.location), node.name);
+      fa.location = node.location;
+      return fa;
+    }
+    for (const key of Object.keys(node)) {
+      if (key === 'location' || key === 'type' || key === 'symbolTable') continue;
+      const value = (node as unknown as Record<string, unknown>)[key];
+      if (value instanceof Node) {
+        (node as unknown as Record<string, unknown>)[key] = this.rewriteSnapshotReads(value, snapshot, local);
+      } else if (Array.isArray(value)) {
+        for (let idx = 0; idx < value.length; idx += 1) {
+          const item = value[idx];
+          if (item instanceof Node) {
+            value[idx] = this.rewriteSnapshotReads(item, snapshot, local);
+          }
+        }
+      }
+    }
+    return node;
   }
 
   private matchCoalescedWriteback(

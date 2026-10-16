@@ -1776,13 +1776,14 @@ explicit whole-struct write-back (`ReuseEntryLocalForWriteback.test.ts`). The RE
 corpus (the marketplace symlink `.marketplace/contracts/unicrow/Unicrow.sol` resolves to the sibling
 EffectiveAcceleration checkout): under the kernel route the write-back run is already folded by the kernel's early
 `CoalesceMappingEntryFieldWrites(true)`, so the pass now also re-targets that folded snapshot (`__mefw`) write at the
-`escrow` local. Criterion 5's magnitude is the July-2026 figure `5683 -> 5344` (-339 B), reproduced from the
-pre-block-layout-v2 compiler and the then-current corpus revision by the pinned reproduction in
-`ReuseEntryLocalForWritebackUnicrowRepro.test.ts` (corpus-gated, recorded under `{SCRATCH}/unicrow-repro.log`). On
-the current tree `ReuseEntryLocalForWritebackUnicrow.test.ts` verifies the invariant rather than a drifting
-absolute: it compiles the corpus `refund` with the pass disabled and enabled and asserts the enabled build is
-strictly smaller (the pass elides one entry re-read). The structural byte-identity and fail-closed reductions in
-`ReuseEntryLocalForWriteback.test.ts` stay the lock.
+`escrow` local. Criterion 5's recorded magnitude is the July-2026 figure `5683 -> 5344` (-339 B): the
+corpus-gated reproduction in `ReuseEntryLocalForWritebackUnicrowRepro.test.ts` copies the SHIPPED
+`ReuseEntryLocalForWriteback.ts` verbatim into the pinned pre-block-layout-v2 compiler (`f74707345`) and asserts
+that figure (recorded under `{SCRATCH}/unicrow-repro.log`); the folded `__mefw` path is simply dead on that baseline.
+On the current tree block-layout-v2 shrank the handler baseline ~2.8x, so the same shipped pass elides the same
+entry re-read for `2065 -> 1957` (-108 B), and `ReuseEntryLocalForWritebackUnicrow.test.ts` pins that current-tree
+magnitude. The structural byte-identity and fail-closed reductions in `ReuseEntryLocalForWriteback.test.ts` stay the
+lock.
 - **What it'd take:** a data-flow pass `ReuseEntryLocalForWriteback` (was fully written + VM-tested, green: solidc
   suite clean, 104 struct e2e, 5 behavioral/oracle tests) placed BEFORE RedesugarImportedStructFieldWrites (so an
   imported struct's `e.f=v` is still a MappingFieldAssign; a same-file struct's is a `e = S(..)` field-preserving

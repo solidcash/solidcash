@@ -8,8 +8,9 @@ import { reproduceUnicrow339 } from './repro/reproduce-unicrow-339.mjs';
  * The July-2026 figure `5683 -> 5344` (-339 B) is only true on the compiler revision that recorded it
  * (f74707345, before block-layout-v2 and the later codegen shrank the handler baseline ~3x). This test re-runs
  * the pinned reproduction (see test/repro/reproduce-unicrow-339.mts): it builds that revision in a throwaway
- * worktree, applies the July-shaped ReuseEntryLocalForWriteback port, and compiles the corpus Unicrow `refund`
- * twice. The corpus source itself is stable (Unicrow.sol last changed 2024-11-26).
+ * worktree, copies the SHIPPED `ReuseEntryLocalForWriteback.ts` in verbatim (the folded `__mefw` path is dead on
+ * that baseline, so the un-coalesced run is exercised), and compiles the corpus Unicrow `refund` twice. The corpus
+ * source itself is stable (Unicrow.sol last changed 2024-11-26).
  *
  * Gated on the corpus checkout exactly like the current-tree size test, so environments without the sibling
  * EffectiveAcceleration repo skip it.

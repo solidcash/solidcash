@@ -6962,9 +6962,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       && !compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction);
     const publicSelfAddress = authenticatesOwnSelf && logicalCreateLock !== undefined
       ? logicalCreateLock : authenticatedSelfAddress;
+    // The identity a CHILD callee observes as `msg.sender` is the caller's PHYSICAL executing lock, not its
+    // logical CREATE identity: `approve(chef.address, ..)` stores an allowance under the physical `chef.address`,
+    // so the callee's `msg.sender`-keyed entry must resolve to that same physical lock (model-B logical
+    // self-identity is the separate `publicSelfAddress` above).
     const publicSelfIdentity = Object.freeze({
       categoryId: this.categoryId,
-      lockingBytecode: binToHex(logicalCreateLock ?? authenticatedSelfAddress),
+      lockingBytecode: binToHex(authenticatedSelfAddress),
     });
     const requiredNftIndices = abiFunction?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);

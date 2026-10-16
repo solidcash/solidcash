@@ -137,11 +137,11 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
    * 800-per-byte budget times a 689-byte density control length. It still refuses and still passes, and it has
    * not measured a budget since X130 made `debug()` provider-faithful: `MOCK_CONSENSUS_LIMITS` publishes
    * `operationCostBudgetPerByte: 10_000_000`, 12,500x the stock value, so on the default profile no depth this
-   * handler survives can exceed the budget. Measured on this branch: `decrement(10_000)` refuses `Unsuccessful
-   * evaluation: completed with a non-truthy value on top of the stack`, and every depth from 4 to 40 BUILDS.
-   * The old assertion matched only the SDK's wrapper sentence, so it could not tell the two apart. With the
-   * current bytecode, depth 45 fits the stock density budget (6,144 under) and depth 46 is the smallest that
-   * reaches a concrete density refusal (15,963 over).
+   * handler survives can exceed the budget. Measured on this branch: depth 47 fits the stock density budget,
+   * depth 48 is the smallest depth that reaches a concrete density refusal (1,164,024 vs the 1,164,000 ceiling,
+   * 24 over, density control length 1455), and depth 49 exceeds the VM's 100-entry control stack even at the
+   * relaxed budget - so 48 is the unique overlap where the same invocation BUILDS relaxed and REFUSES stock.
+   * The old assertion matched only the SDK's wrapper sentence, so it could not tell the two apart.
    *
    * REPAIRED BY PINNING THE CEILING TO A PUBLISHED PROFILE. The subject runs against the STOCK BCH-2026
    * consensus budget, read from libauth's own `ConsensusBch2026` and never restated here, and the expected
@@ -156,7 +156,7 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
    * This row stages its own `MockNetworkProvider` rather than `createTestProvider()` because its subject is
    * the SDK's preflight decider - a pure VM decision on published consensus limits, with no node in it.
    */
-  const OVER_BUDGET_DEPTH = 46n;
+  const OVER_BUDGET_DEPTH = 48n;
   const STOCK_BUDGET = ConsensusBch2026.operationCostBudgetPerByte;
   // NOT MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte: that default is now the REAL 800, identical to
   // STOCK_BUDGET, which would silently collapse the control arm below into the subject and make the pair

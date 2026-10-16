@@ -2444,12 +2444,22 @@ external return events + low-level calls + iteration entries + loop entries. The
 lands at the covenant's `__internal__dynamicChunkOutputBase` and the deposit covenant passes. Committed
 `a250f75c2`. `MasterChefPoolInfoPush` 1/1, `SplitAddPushPreflight` 1/1, `SplitTo64Preflight` 2/2 still green.
 
-**Remaining (second defect, now revealed).** With input-0 fixed, `deposit` fails at input 9 (the co-spent LP
-`ERC20Mock.transferFrom`) with `OP_VERIFY` on the `SafeMath.sub` "transfer amount exceeds allowance" guard: the
-SDK co-spent the `_allowances` HEAD node (slot 0, empty value) instead of the approved `_allowances[bob][chef]`
-entry (value 1000), so the allowance reads 0. This is the `_allowances` nested-mapping entry keyed by
-`nullop:msg.sender` resolving to the wrong UTXO in the composed deposit (the approve stored it under bob/chef,
-but the deposit's LP co-spend selected the head). Separate from the chunk-placement defect; still open.
+**RESOLVED 2026-10-16 (the allowance-entry selection half).** The next wall was the co-spent LP
+`ERC20Mock.transferFrom` reverting "transfer amount exceeds allowance": the SDK's `_allowances` key used
+`publicSelfIdentity.lockingBytecode` = the logical CREATE lock (`aa20acae…`), while `approve(chef.address, …)`
+stored the allowance under the PHYSICAL `chef.address` (`aa206a2e…`), so the deposit co-spent the HEAD instead of
+the approved entry. `publicSelfIdentity.lockingBytecode` now resolves to the physical `authenticatedSelfAddress`
+(the identity a child observes as `msg.sender`), so the deposit co-spends the exact `_allowances[bob][chef]`
+entry (slot `13ea57c0…`, value 1000). Committed `24a61d5d1`. Pins still green.
+
+**Remaining (third wall, now revealed).** With input 0 and the allowance entry fixed, `deposit` fails at input 9
+(the LP `transferFrom` covenant) at `ip` near the block-entry input-bytecode check (window
+`OP_SUB OP_PICK OP_INPUTINDEX OP_ADD OP_UTXOBYTECODE OP_EQUALVERIFY`), comparing the MasterChef `userInfo` entry
+covenant lock `aa205301…` against the LP `_balances` entry covenant lock `aa20c53c…` (candidates
+`["1:11","35:aa205301…","35:aa20c53c…"]`). The LP covenant's caller-block entry coordinate reads the MasterChef
+block's `userInfo` entry input where it expects an LP `_balances` entry — a composed caller-block entry-coordinate
+mismatch in the direct convention. Still open.
+
 
 
 

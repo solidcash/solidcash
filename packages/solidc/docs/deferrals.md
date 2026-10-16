@@ -2463,7 +2463,27 @@ the MasterChef sorted-batch predecessor (userInfo HEAD) and the LP sorted-batch 
 same output 17 — the callee's relative `PredOut = blockSize` does not account for the caller's trailing
 predecessor that lands between the LP block and the LP's own trailing band. Fix site: resolve the nested callee's
 relative `PredOut`/trailing band AFTER the caller's sorted-batch predecessors, or order the two trailing bands.
-Still open.
+
+**PARTIAL FIX 2026-10-16 (callee trailing band resolves after the caller's).** `stb-materialized-predout-reconcile.ts`
+now shifts a nested participant's predecessor coordinate past the executing frame's complete trailing band when the
+natural coordinate falls at/after the caller's loop-entry base: `pastCallerTrailingBand` resolves
+`materializedPredOutBase` against the new `StatefulTransactionBuilder.getCallerTrailingBandEnd()`
+(`getChunkOutputBase() + dynamic/value chunks + identity anchors + runtime effects`), and
+`reassertMaterializedBatchPredecessorOutputs` shifts both `plannedEntryInserts[].outputBlockSlot` and
+`batchPredecessorOutputs[].outputBlockSlot` by the same rule. Result: the LP `_balances` PredOut now resolves to 20
+(the first free slot after userInfo HEAD 17, poolInfo chunk 18, logical-identity anchor 19) and the P' output
+materializes at 20 with the balances lock. The OLD lock-collision (`userInfo HEAD` vs `_balances` at output 17) is
+gone. `MasterChefPoolInfoPush` 1/1, `SplitAddPushPreflight` 1/1, `SplitTo64Preflight` 2/2 stay green.
+
+**Remaining (fourth wall, revealed after the PredOut shift).** With PredOut=20 and P' at 20, `deposit` still fails
+at input 9, now in a different 38-byte helper (`OP_SIZE OP_PICK OP_ROLL OP_SIZE OP_EQUALVERIFY OP_INPUTINDEX
+OP_OUTPUTTOKENCATEGORY`) comparing a 31-byte entry-covenant redeem script against the 94-byte caller identity
+(`1976a914…P2PKH…88ac 23aa206a2e…` = P2PKH(bob) + P2SH32(chef)). The two sizes disagree (31 vs 94), so the
+check refuses. The likely cause: the LP block's trailing P' funder input (still at input 17, the 9th block input)
+did not move with the P' output (now 20), so the balanced block's 9th input is consumed without a matching output at
+its coordinate and a later entry-input lock verification reads the wrong occupant. Fix site: move the nested
+callee's P' funder input with the P' output (or stop materializing the P' inside the callee's balanced block and
+emit it as a separate trailing resource). Still open.
 
 
 

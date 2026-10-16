@@ -1673,6 +1673,8 @@ export class StatefulTransactionBuilder {
       syncRefreshedCarrierMasters: (builder, carriers) => {
         this._syncRefreshedCarrierMasters(builder, carriers);
       },
+      getLoopEntryOutputBase: () => this.getLoopEntryOutputBase(),
+      getCallerTrailingBandEnd: () => this.getCallerTrailingBandEnd(),
     };
   }
 
@@ -5993,6 +5995,22 @@ export class StatefulTransactionBuilder {
   /** Number of mapping-entry outputs owned by this builder's balanced trailing frame. */
   getTrailingLoopEntryOutputCount(): number {
     return this._trailingLoopEntryOutputCount();
+  }
+
+  /**
+   * First output index past this frame's own trailing band (loop entries, dynamic/value chunks, identity
+   * anchors, runtime effects). A nested callee's trailing predecessor must resolve at or after this
+   * coordinate: the caller materializes its own trailing resources first, so a callee whose PredOut names a
+   * coordinate inside that band reads the caller's entry instead of its own.
+   */
+  getCallerTrailingBandEnd(): number {
+    let end = this.getChunkOutputBase();
+    end += this._dynamicChunkOutputCount();
+    end += this._valueChunkOutputCount();
+    end += this.externalIdentityAnchorUtxos.length + (this.logicalIdentityUtxo ? 1 : 0);
+    end += this.runtimeLoopEventOutputs.length + this.runtimeLoopTransferOutputs.length;
+    end += this.keccakLoopRecreates.length;
+    return end;
   }
 
   /**

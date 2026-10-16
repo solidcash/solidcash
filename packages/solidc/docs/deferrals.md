@@ -2682,12 +2682,17 @@ retry now preserves that relinked predecessor lane instead of treating the chain
 computed value-chunk run. The PredOut witness refresh accepts the relinked `slot || next || len4(0)` commitment for a
 `-3` chained delete instead of falling back to the old value and minting a duplicate predecessor. The chunkable
 default relink is tested by `AuditDS6DefaultRelink.test.ts` (unbounded `bytes` beside an insert), and
-`AuditDS6ChainOneNode.test.ts` remains 12/12. Still fail-closed: struct/array defaults (their default tail is
-recursive and not planned here), and more than one delete of a batch beside its writes. The multi-delete case is
-pinned by `AuditDS6ChainOneNode.test.ts` (`two deletes beside a write (fail-closed)`): two absent keys deleted
-beside a write in the same gap are refused at the master and leave the collection unchanged, because the compiler
-emits no chained-delete register for a batch with more than one delete (`chainedActivityDelete` returns a single
-slot only).
+`AuditDS6ChainOneNode.test.ts` remains 13/13.
+
+**UPDATE 2026-10-16 (verified, third).** The "more than one delete of a batch beside its writes" case now SETTLES.
+`chainedActivityDelete` became `chainedActivityDeletes` (returns every delete a write of the batch may run beside),
+each such delete gets its own chained-delete register, and the batch transition validates each register against a
+write that ran on its node. The predecessor value-take now loops the chained deletes and overrides the node's value
+only where the delete ran on it AND the delete's key is the node's own (`__internal__vmapBatchSlot_N` equals the
+proof's slot), so absent-key deletes leave the node alone. `AuditDS6ChainOneNode.test.ts` (`two deletes beside a
+write`) settles two absent keys deleted beside a write in their gap, and the node's own key deleted beside an absent
+key of its gap and a write. Still fail-closed: struct/array defaults (their default tail is recursive and not
+planned here).
 
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 

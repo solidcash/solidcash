@@ -374,18 +374,24 @@ describe('a delete and the write after it that run on one node', () => {
   }, 300_000);
 });
 
-describe('two deletes beside a write (fail-closed)', () => {
-  it('refuses two absent keys deleted beside a write in their gap', async () => {
+describe('two deletes beside a write', () => {
+  it('settles two absent keys deleted beside a write in their gap', async () => {
     const deployed = await deploy('dropTwoThenSet', 3);
     const { sc, fn } = deployed;
-    // Two deletes and the write all bracket the same node (7): each delete would need its own chained-delete
-    // register, which the compiler does not yet emit, so the batch fails closed and leaves the collection alone.
     const softDeletes = fn.sortedBatchInfo![0].slotIndices.filter((slotIndex) => softDeleteOf(fn, slotIndex));
     expect(softDeletes).toHaveLength(2);
     const [k, l, j] = await keysIn(deployed, 7n, 3);
-    await expect(sc.getFunction('dropTwoThenSet')(k, l, j, 300n, 1n).send()).rejects.toThrow();
-    await expectValues(sc, [[7n, 70n], [20n, 200n]]);
-    await expect(sc.getFunction('check')(k, 0n).send()).resolves.toBeDefined();
-    expect((await nodes(deployed)).all).toHaveLength(3);
+    await sc.getFunction('dropTwoThenSet')(k, l, j, 300n, 1n).send();
+    await expectValues(sc, [[k, 0n], [l, 0n], [j, 300n], [7n, 70n], [20n, 200n]]);
+    expect((await nodes(deployed)).all).toHaveLength(4);
+  }, 300_000);
+
+  it('settles the node\'s own key deleted beside an absent key of its gap and a write', async () => {
+    const deployed = await deploy('dropTwoThenSet', 3);
+    const { sc } = deployed;
+    const [l, j] = await keysIn(deployed, 7n, 2);
+    await sc.getFunction('dropTwoThenSet')(7n, l, j, 300n, 1n).send();
+    await expectValues(sc, [[7n, 0n], [l, 0n], [j, 300n], [20n, 200n]]);
+    expect((await nodes(deployed)).all).toHaveLength(4);
   }, 300_000);
 });

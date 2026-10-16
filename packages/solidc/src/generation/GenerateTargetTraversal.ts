@@ -13073,7 +13073,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // DS-6: a delete a write of its batch may run beside reads the node its proof names (emitBoundSortedCondDelete).
     const fn = this.currentFunction;
     if (fn && this.settlesSortedTargetsByActivity(fn) && (fn.sortedBatchInfo ?? []).some((batch) => (
-      this.chainedActivityDelete(fn, batch.slotIndices) === slotIndex))) {
+      this.chainedActivityDeletes(fn, batch.slotIndices).includes(slotIndex)))) {
       this.emit(encodeInt(0n), locationData);
       this.pushToStack(GenerateTargetTraversalWithLocation.chainedDeleteName(slotIndex));
     }
@@ -31598,14 +31598,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * DS-6: the one delete of an activity-settled batch that one call may run beside a write of it. It reads the node
+   * DS-6: the deletes of an activity-settled batch that one call may run beside a write of it. Each reads the node
    * its proof names, which is a write's that ran where the two share a node.
    */
-  private chainedActivityDelete(node: FunctionDefinitionNode, targets: readonly number[]): number | undefined {
+  private chainedActivityDeletes(node: FunctionDefinitionNode, targets: readonly number[]): number[] {
     const softDelete = (slot: number): boolean => this.sortedEntryLayout(node, slot)?.softDelete === true;
-    const deletes = targets.filter(softDelete);
-    return deletes.length === 1 && targets.some((slot) => !softDelete(slot)
-      && this.mayRunBoth(node.body, deletes[0], slot)) ? deletes[0] : undefined;
+    return targets.filter((deleted) => softDelete(deleted) && targets.some((slot) => !softDelete(slot)
+      && this.mayRunBoth(node.body, deleted, slot)));
   }
 
   /** DS-6: a body's chained delete's register: set where it ran on a node away from its own input. */
@@ -33393,12 +33392,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const earlierMatesOf = (slot: number): number[] => matesOf(slot)
         .filter((other) => targets.indexOf(other) < targets.indexOf(slot));
       // A chained delete reads its node at the input of a write that ran on it (its site holds the register).
-      const deleteCandidate = sharedActivity ? this.chainedActivityDelete(node, targets) : undefined;
-      const chainedDelete = deleteCandidate !== undefined && this.getStackIndex(
-        GenerateTargetTraversalWithLocation.chainedDeleteName(deleteCandidate), true,
-      ) >= 0 ? deleteCandidate : undefined;
-      const deleteMayRunWith = (slot: number): boolean => chainedDelete !== undefined
-        && this.mayRunBoth(node.body, chainedDelete, slot);
+      const deleteCandidates = sharedActivity ? this.chainedActivityDeletes(node, targets) : [];
+      const chainedDeletes = deleteCandidates.filter((deleted) => this.getStackIndex(
+        GenerateTargetTraversalWithLocation.chainedDeleteName(deleted), true,
+      ) >= 0);
+      const deleteMayRunWith = (slot: number): boolean => chainedDeletes
+        .some((deleted) => this.mayRunBoth(node.body, deleted, slot));
       const chainNames = pairs.flatMap(([first, second]) => [below(first, second), below(second, first)]);
       const settled = activity !== undefined || sharedActivity;
       const aliasWrite = targets.find((slot) => {
@@ -33472,15 +33471,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitVerifyCatBaseEqMaster(loc);
         arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
         directProofField('slot', 1); arg(`__internal__vmapBatchSlot_${slot}`, 2); bin(Op.OP_CAT);
-        if (link?.deleted === true && chainedDelete !== undefined) {
-          // A chained delete that ran on this node leaves it its registers' value.
-          pickTracked(GenerateTargetTraversalWithLocation.chainedDeleteName(chainedDelete), 2);
-          arg(`__internal__vmapBatchProof_${chainedDelete}`); arg(`__internal__vmapBatchProof_${slot}`);
-          bin(Op.OP_NUMEQUAL); bin(Op.OP_BOOLAND);
-          bin(Op.OP_IF);
-          pickTracked(`__entry_key_enc_${chainedDelete}`, 2); pickTracked(`__entry_value_enc_${chainedDelete}`, 3);
-          bin(Op.OP_CAT); this.emit(encodeInt(64n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
-          bin(Op.OP_ELSE); directProofField('value', 2); bin(Op.OP_ENDIF);
+        const chainedHere = link?.deleted === true ? chainedDeletes
+          .filter((deleted) => this.mayRunBoth(node.body, deleted, slot)) : [];
+        if (chainedHere.length > 0) {
+          // A chained delete whose key is this node's own leaves it its registers' default; an absent key's
+          // delete leaves the node alone. At most one delete has the node's key, so the chain is unambiguous.
+          directProofField('value', 2);
+          chainedHere.forEach((deleted) => {
+            pickTracked(GenerateTargetTraversalWithLocation.chainedDeleteName(deleted), 3);
+            arg(`__internal__vmapBatchProof_${deleted}`); arg(`__internal__vmapBatchProof_${slot}`);
+            bin(Op.OP_NUMEQUAL); bin(Op.OP_BOOLAND);
+            arg(`__internal__vmapBatchSlot_${deleted}`); directProofField('slot', 1); bin(Op.OP_EQUAL);
+            bin(Op.OP_BOOLAND);
+            bin(Op.OP_IF);
+            bin(Op.OP_DROP);
+            pickTracked(`__entry_value_enc_${deleted}`, 2);
+            bin(Op.OP_ENDIF);
+          });
         } else directProofField('value', 2);
         bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
         if (mates.length > 0) bin(Op.OP_ENDIF);
@@ -33545,13 +33552,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           }
           this.pushToStack(below(first, second)); this.pushToStack(below(second, first));
         }
-        if (chainedDelete !== undefined) {
+        for (const deleted of chainedDeletes) {
           // A delete that ran away from its own input names the input of a write that ran on its node.
-          const writes = targets.filter((slot) => !softDelete(slot) && deleteMayRunWith(slot));
-          pickTracked(GenerateTargetTraversalWithLocation.chainedDeleteName(chainedDelete)); bin(Op.OP_IF);
+          const writes = targets.filter((slot) => !softDelete(slot) && this.mayRunBoth(node.body, deleted, slot));
+          pickTracked(GenerateTargetTraversalWithLocation.chainedDeleteName(deleted)); bin(Op.OP_IF);
           writes.forEach((slot, at) => {
             pickTracked(flagOf(slot), at > 0 ? 1 : 0);
-            arg(`__internal__vmapBatchProof_${chainedDelete}`); arg(`__internal__vmapBatchProof_${slot}`);
+            arg(`__internal__vmapBatchProof_${deleted}`); arg(`__internal__vmapBatchProof_${slot}`);
             bin(Op.OP_NUMEQUAL); bin(Op.OP_BOOLAND);
             if (at > 0) bin(Op.OP_BOOLOR);
           });

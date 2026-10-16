@@ -3061,3 +3061,28 @@ parse cache key change.
 `base`, `fixedSize`, `participantCount`, `activeBase` and `input` now admits `run` (was
 `messageBus: undefined`). Root `yarn build` exits 0; the only root `yarn lint` error is in the concurrently
 authored, uncommitted `ReuseEntryLocalForWriteback.ts` (not these changes).
+
+## Iterating-entry outside-layout walk: unaccessed own-category mutable NFT could be re-emitted with a new commitment (DX-6/DS-3 residual, RESOLVED 2026-10-16)
+
+**What.** The October re-audit left DX-6/DS-3 open for one shape: a function with an entry slot marked `inLoop`
+(a loop writing a sorted mapping) or a nonempty `collectionIterations` early-returned from
+`emitPreserveOutsideLayoutOwnMutable`, so an own-category mutable NFT co-spent past the function's block — one the
+function does not step, at a lock that is NOT one of the contract's mintable locks (data, entry, or chunk) — could
+be re-emitted at the same lock with a different commitment and the same `0x01` category without any covenant check
+comparing commitments (`emitMutableOutputAllowed` only compared lock and category). The other DX-6/DS-3 shapes were
+already closed by the mintable-lock admission and the per-collection/data-record censuses.
+
+**Fix (shipped in the struct-array overwrite and chunked-loop update work).** `emitPreserveOutsideLayoutOwnMutable`
+no longer returns early for those shapes. It gates `admitMintableLocks` on an `inLoop` entry slot,
+`collectionIterations`, or a written dynamic variable, builds the data/entry/chunk mintable-lock list, and runs the
+outside-layout walk for every own-category mutable input past the block: a record at one of those mintable locks is
+admitted (its own checks cover it), while any other own-category mutable input is preserved 1:1 — bytecode,
+commitment, and category `OP_EQUALVERIFY` — so a drop is refused and a same-lock recommit with a different
+commitment fails the commitment pin. Scalar-only contracts stay on the shorter byte-identical walk.
+
+**Evidence.** `packages/solidcash/test/e2e/AuditOutsideLayoutWalk.test.ts` (1/1): an honest loop-write
+(`for(i) m[ks[i]] = vs[i]`, an `inLoop` entry slot, with an untouched data NFT) settles; the same tx re-forged to
+co-spend an own-category mutable NFT at a non-mintable P2SH32 lock and re-emit it at that lock with a different
+commitment is refused at the master with a mandatory-script-verify-flag failure; the honest tx still settles
+afterward. The message-bus route path authenticates those NFTs through the batch verifier and deliberately skips the
+walk (`!isCompilerMessageBusRoute`), unchanged.

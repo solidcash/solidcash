@@ -485,6 +485,18 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       ? namesCalledFrom([...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef, ...this.freeFns])
       : new Set<string>();
 
+    // Canonicalize a state/entry-touching returning helper with several early returns into the single-exit form
+    // before eligibility runs, so the Kashi `_isSolvent` shape (`if (c) return a; ... return z;`) inlines. The
+    // copy-local-key miscompile that originally blocked this was fixed 2026-08-04; the ternary nesting is
+    // evaluation-equivalent (each later guard is reached only when every earlier guard failed).
+    for (const fn of [...node.functions, ...this.freeFns]) {
+      if (fn.body && fn.returnTypes.length === 1
+        && (this.touchesOwnEntry(fn) || this.touchesScalarState(fn))) {
+        this.normalizeMultiEarlyReturn(fn);
+        this.analysisNodes.delete(fn);
+      }
+    }
+
     this.inlinedFns = new Set();
     this.rawSlotFreeFns = new Set();
     this.keepDefFns = new Set();
@@ -676,21 +688,29 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return stmts;
   }
 
-  private normalizeSimpleEarlyReturn(fn: FunctionDefinitionNode): void {
-    if (!fn.body || fn.returnTypes.length !== 1) return;
+  private normalizeSimpleEarlyReturn(fn: FunctionDefinitionNode): boolean {
+    if (!fn.body || fn.returnTypes.length !== 1) return false;
     const stmts = fn.body.statements ?? [];
-    if (stmts.length < 2) return;
+    if (stmts.length < 2) return false;
     const branch = stmts[stmts.length - 2];
     const tail = stmts[stmts.length - 1];
     if (!(branch instanceof BranchNode) || branch.elseBlock || !isSourceReturn(tail)
-      || tail.expressions.length !== 1) return;
+      || tail.expressions.length !== 1) return false;
     const arm = branch.ifBlock.statements ?? [];
-    if (arm.length !== 1 || !isSourceReturn(arm[0]) || arm[0].expressions.length !== 1) return;
+    if (arm.length !== 1 || !isSourceReturn(arm[0]) || arm[0].expressions.length !== 1) return false;
     const conditional = new TernaryOpNode(branch.condition, arm[0].expressions[0], tail.expressions[0]);
     conditional.location = branch.location;
     const ret = new ReturnNode([conditional]);
     ret.location = tail.location;
     fn.body.statements = [...stmts.slice(0, -2), ret];
+    return true;
+  }
+
+  // Repeatedly fold an early `if (c) return a;` + tail `return b;` pair into a nested ternary, so a helper with
+  // SEVERAL early returns reaches the single-tail-return form `eligibleShape` requires. Each fold is
+  // evaluation-equivalent and preserves the guard order (a later guard evaluates only when earlier ones failed).
+  private normalizeMultiEarlyReturn(fn: FunctionDefinitionNode): void {
+    for (let guard = 0; guard < 256 && this.normalizeSimpleEarlyReturn(fn); guard++) { /* fold */ }
   }
 
   // Solidity permits a multi-returning call to be forwarded as one return expression (`return target.f()`).

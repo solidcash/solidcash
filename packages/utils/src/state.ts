@@ -2422,8 +2422,12 @@ function directMasterOutputPin(): Script {
     Op.OP_IF,
     Op.OP_DUP,
     Op.OP_OUTPUTTOKENCATEGORY,
+    // UTXOTOKENCATEGORY returns the 32-byte category plus the 1-byte capability. The capability legitimately
+    // changes when the master spends an NFT out of the container, so the pin compares the category ID only.
+    encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP,
     Op.OP_SWAP,
     Op.OP_UTXOTOKENCATEGORY,
+    encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP,
     Op.OP_EQUALVERIFY,
     Op.OP_ELSE,
     Op.OP_DROP,

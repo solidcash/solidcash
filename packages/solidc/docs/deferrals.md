@@ -1555,7 +1555,8 @@ for evm). Triples... (well, +50%s) the side-car count per recovery, which also p
 FIXED historical signatures (where re-signing is impossible) in bulk. Detail in memory
 ecrecover_builtin.md (2026-07-20b section).
 
-**RESOLVED 2026-10-15 for a straight-line width-0 recovery; the dynamic-loop case remains deferred.** The
+**RESOLVED 2026-10-15 for a straight-line width-0 recovery, and RESOLVED 2026-10-16 for the dynamic-loop case
+(commit `f7d63ce9d`).** The
 3-covenant split's hard cryptographic core is now done and VM-verified: `research/ecrecover-poc/middle.mjs`
 proves the A->M->B body math on the real BCH-2026 VM (A ladders to C1, the new middle covenant M is a pure
 ladder C1->C2 committing H_M, B ladders C2->Q; recovered pubkey == ethers, forged C1/C2 checkpoints rejected),
@@ -1568,9 +1569,18 @@ empty, and the compiler reserves three `ecrecoverSideCar` slots per call (A, M, 
 `packages/solidcash/test/e2e/EcrecoverWidth0.test.ts` recovers a measured width-0 signature through the A/M/B3
 split and rejects a tampered witness (fail closed). The outlined-helper A/B/stride frame contexts are threaded
 in the caller's physical push order (stride, B, A at the OP_DEFINE boundary), which keeps the existing stateless
-helper-recovery probe reading A rather than the stride. REMAINING: a width-0 signature inside a runtime-bound
-ecrecover loop still throws fail-closed, because the loop co-spends the 2-way A/B pair at stride 2 rather than
-the A/M/B triple at stride 3.
+helper-recovery probe reading A rather than the stride. The dynamic-loop gap is closed the same way: a non-evm
+loop now co-spends the A/M/B triple at stride 3 (`[master+1+3k]` A / `[master+2+3k]` M or funder /
+`[master+3+3k]` B2/B3) - a 2-way recovery fills M with an inert balanced funder and reads B2 (A two inputs
+back), a width-0 recovery fills M with the middle covenant and reads B3 (M one input back); the compiler bakes
+`ECRECOVER_COMPUTE_B2_SHARED_LOCK`/`ECRECOVER_COMPUTE_B3_SHARED_LOCK` into the loop's `OP_UTXOBYTECODE`
+integrity check so either shape is accepted. `packages/solidcash/test/e2e/EcrecoverWidth0.test.ts` (`recovers a
+width-0 signature through the loop A/M/B3 fallback`, `rejects a tampered witness through the same loop
+fallback`) recovers the measured width-0 signature inside a runtime-bound `for (i<n)` loop through A/M/B3 and
+fails closed on a tampered witness, and `packages/solidcash/test/e2e/EcrecoverRecovery.test.ts` LOOP cases
+(fixed-bound N=2, runtime N=3/N=4) exercise the 2-way A+funder+B2 path. Remaining boundary: width-0 recoveries
+still triple the side-car count per recovery (as the original design noted), so the 100 KB standard tx-size wall
+binds earlier for loops containing width-0 signatures.
 
 ---
 

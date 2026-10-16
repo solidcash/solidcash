@@ -95,3 +95,81 @@ describe('DS-6 default relink for non-int value kinds', () => {
     await expect(sc.getFunction('check')(x, hexToBin('cafe')).send()).resolves.toBeDefined();
   }, 300_000);
 });
+
+describe('DS-6 default relink for struct/array value kinds', () => {
+  const STRUCT_SOURCE = `contract C {
+    struct P { int x; int y; }
+    mapping(int => P) m;
+    function set(int k, int x, int y) external { m[k] = P(x, y); require(true); }
+    function check(int k, int x, int y) external view { require(m[k].x == x); require(m[k].y == y); }
+    function dropThenSet(int k, int j, int x, int y, int sel) external {
+      if (sel > 0) { delete m[k]; m[j] = P(x, y); }
+      require(true);
+    }
+  }`;
+
+  const ARRAY_SOURCE = `contract C {
+    mapping(int => int[]) m;
+    function set(int k, int[] v) external { m[k] = v; require(true); }
+    function checkLen(int k, int expected) external view { require(m[k].length == expected); }
+    function dropThenSet(int k, int j, int[] v, int sel) external {
+      if (sel > 0) { delete m[k]; m[j] = v; }
+      require(true);
+    }
+  }`;
+
+  const CHUNKED_ARRAY_SOURCE = `contract C {
+    mapping(int => int[]) m;
+    function set(int k, int[] v) external { m[k] = v; require(true); }
+    function checkLen(int k, int expected) external view { require(m[k].length == expected); }
+    function dropThenSet(int k, int j, int[] v, int sel) external {
+      if (sel > 0) { delete m[k]; m[j] = v; }
+      require(true);
+    }
+  }`;
+
+  async function deploySource(source: string): Promise<Deployed> {
+    const provider = createTestProvider();
+    const artifact = compileString(source, { forceStateful: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const pinned = contract.category ? contract : contract.withCategory(hexToBin(categoryId));
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const fn = artifact.abi.find((entry) => entry.name === 'dropThenSet')!;
+    expect(fn.sortedBatchInfo).toHaveLength(1);
+    expect(fn.sortedBatchInfo![0].slotIndices).toHaveLength(2);
+    return { provider, sc, pinned, cat: categoryId };
+  }
+
+  it('relinks a struct node at its recursive default beside an insert', async () => {
+    const deployed = await deploySource(STRUCT_SOURCE);
+    const { sc } = deployed;
+    await sc.getFunction('set')(7n, 70n, 71n).send();
+    const x = await keyIn(deployed, 7n);
+    await sc.getFunction('dropThenSet')(7n, x, 300n, 301n, 1n).send();
+    await expect(sc.getFunction('check')(7n, 0n, 0n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(x, 300n, 301n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('keeps an inline int[] default relink fail-closed', async () => {
+    const deployed = await deploySource(ARRAY_SOURCE);
+    const { sc } = deployed;
+    await sc.getFunction('set')(7n, [70n]).send();
+    const x = await keyIn(deployed, 7n);
+    await expect(sc.getFunction('dropThenSet')(7n, x, [300n], 1n).send()).rejects.toThrow(
+      /OP_VERIFY/,
+    );
+  }, 300_000);
+
+  it('keeps a chunked (>60 B) int[] default relink fail-closed', async () => {
+    const deployed = await deploySource(CHUNKED_ARRAY_SOURCE);
+    const { sc } = deployed;
+    await sc.getFunction('set')(7n, [70n, 71n]).send();
+    const x = await keyIn(deployed, 7n);
+    await expect(sc.getFunction('dropThenSet')(7n, x, [300n, 301n], 1n).send()).rejects.toThrow(
+      /OP_VERIFY/,
+    );
+  }, 300_000);
+});

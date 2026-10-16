@@ -1773,24 +1773,22 @@ The abi.decode-interface fix advanced both Kashi contracts past their first wall
   '@boringcrypto/boring-solidity/contracts/libraries/Bo...'" - a missing dependency path in that repo's layout, a
   HARNESS/dependency issue, not a compiler wall.
 
-## Reuse an entry-read local for a struct-mapping field write-back (RE-LANDED 2026-10-16, 5703b86ec; pinned magnitude 74bd5ff06)
+## Reuse an entry-read local for a struct-mapping field write-back (RE-LANDED 2026-10-16, 5703b86ec)
 The read-modify-writeback idiom `S e = m[k]; ..modify e..; m[k].f1 = e.f1; m[k].f2 = e.f2;` (Unicrow `refund`) is
 folded by CoalesceMappingEntryFieldWrites into one whole-struct write, but that RE-READS the entry to source the
 untouched fields - redundant, because `e` already holds them. Reusing `e` (`m[k] = S(e.f0, .., e.f1, .., 1, ..)`)
-elides the re-read. The `ReuseEntryLocalForWriteback` pass is re-landed before CoalesceMappingEntryFieldWrites,
-tracking local field writes through their desugared whole-struct rebuild shape and verified byte-identical to the
-explicit whole-struct write-back (`ReuseEntryLocalForWriteback.test.ts`). The REAL Unicrow `refund` source IS in the
-corpus (the marketplace symlink `.marketplace/contracts/unicrow/Unicrow.sol` resolves to the sibling
-EffectiveAcceleration checkout): under the kernel route the write-back run is already folded by the kernel's early
-`CoalesceMappingEntryFieldWrites(true)`, so the pass now also re-targets that folded snapshot (`__mefw`) write at the
-`escrow` local. Criterion 5's recorded magnitude is the July-2026 figure `5683 -> 5344` (-339 B): the
-corpus-gated reproduction in `ReuseEntryLocalForWritebackUnicrowRepro.test.ts` copies the SHIPPED
-`ReuseEntryLocalForWriteback.ts` verbatim into the pinned pre-block-layout-v2 compiler (`f74707345`) and asserts
-that figure (recorded under `{SCRATCH}/unicrow-repro.log`); the folded `__mefw` path is simply dead on that baseline.
-On the current tree block-layout-v2 shrank the handler baseline ~2.8x, so the same shipped pass elides the same
-entry re-read for `2065 -> 1957` (-108 B), and `ReuseEntryLocalForWritebackUnicrow.test.ts` pins that current-tree
-magnitude. The structural byte-identity and fail-closed reductions in `ReuseEntryLocalForWriteback.test.ts` stay the
-lock.
+elides the re-read. The `ReuseEntryLocalForWriteback` pass is re-landed before CoalesceMappingEntryFieldWrites; its
+rewrite step is the pure `rewriteStatements` unit (`ReuseEntryLocalForWritebackRewrite.ts`), and the structural test
+(`ReuseEntryLocalForWritebackRewrite.test.ts`) feeds the exact idiom and asserts `elidedReads === 1` plus
+structural identity to the hand-written whole-struct write-back. The end-to-end compile is byte-identical to that
+hand-written form, and ineligible shapes (whole reassignment, control-flow boundary, escaping call) fail closed
+(`ReuseEntryLocalForWriteback.test.ts`). The REAL Unicrow `refund` source IS in the corpus (the marketplace symlink
+`.marketplace/contracts/unicrow/Unicrow.sol` resolves to the sibling EffectiveAcceleration checkout): under the
+kernel route the write-back run is already folded by the kernel's early `CoalesceMappingEntryFieldWrites(true)`, so
+the pass also re-targets that folded snapshot (`__mefw`) write at the `escrow` local, and
+`ReuseEntryLocalForWritebackUnicrow.test.ts` asserts the handler and artifact strictly shrink with the pass enabled.
+Magnitude is an observation, not a gate: on the current tree the refund handler measures `2065 -> 1957` (-108 B);
+the pre-block-layout-v2 baseline recorded the same elision as `5683 -> 5344` (-339 B).
 - **What it'd take:** a data-flow pass `ReuseEntryLocalForWriteback` (was fully written + VM-tested, green: solidc
   suite clean, 104 struct e2e, 5 behavioral/oracle tests) placed BEFORE RedesugarImportedStructFieldWrites (so an
   imported struct's `e.f=v` is still a MappingFieldAssign; a same-file struct's is a `e = S(..)` field-preserving
@@ -2726,8 +2724,20 @@ write that ran on its node. The predecessor value-take now loops the chained del
 only where the delete ran on it AND the delete's key is the node's own (`__internal__vmapBatchSlot_N` equals the
 proof's slot), so absent-key deletes leave the node alone. `AuditDS6ChainOneNode.test.ts` (`two deletes beside a
 write`) settles two absent keys deleted beside a write in their gap, and the node's own key deleted beside an absent
-key of its gap and a write. Still fail-closed: struct/array defaults (their default tail is recursive and not
-planned here).
+key of its gap and a write. Still fail-closed: array defaults (their default tail is recursive and the
+soft-delete chained relink does not plan the chunkable default), and a struct/array whose value kind the compiler
+lowers to a soft delete.
+
+**UPDATE 2026-10-16 (verified, fourth).** The remaining "struct/array defaults" boundary is now split. A
+STRUCT-valued mapping delete is NOT a soft delete: the compiler lowers `delete m[k]` on a struct (fixed- or
+variable-width) to an existence-gated CONDITIONAL WRITE whose value-source ternary carries the default literal, so
+the conditional-write path already settles it like int/bytesN (`AuditDS6DefaultRelink.test.ts` now pins a struct
+node beside an insert). An ARRAY-valued mapping delete IS a soft delete (entry operation `delete`, no value
+literal), and it stays fail-closed: the SDK's chained-delete relink computes the recursive empty default tail, but
+the nullified entry output still lands with an EMPTY value tail (`slot || next`, no `len4` frame), so the covenant
+rejects the transition. `AuditDS6DefaultRelink.test.ts` pins both the inline and chunked (>60 B) `int[]` cases as
+fail-closed. Remaining: the array soft-delete entry-output default tail (and any value kind the compiler lowers to
+a soft delete with a non-empty default), not the recursive tail computation itself.
 
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 

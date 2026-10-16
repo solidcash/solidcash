@@ -33,7 +33,8 @@ describe('general vmap bytecode sharing', () => {
     // Raised again (4122.5 measured) by the October covenant hardening: every direct function now binds entry
     // addresses to the master lock and runs the container, foreign-token and mutable-output scans.
     // 4335 measured after the trailing batch-width binding landed on the direct convention.
-    expect(artifact.bytecode.length / 2).toBeLessThan(4350);
+    // 4695 measured after the width-0 recovery A/M/B triples grew the shared front-region co-spend census.
+    expect(artifact.bytecode.length / 2).toBeLessThan(4700);
   });
 
   it('shares a collection-specific entry address across reads and writes', () => {
@@ -51,7 +52,8 @@ describe('general vmap bytecode sharing', () => {
     expect(shared.length).toBeGreaterThanOrEqual(1);
     // 4415.5 measured after the October covenant hardening (master-lock entry addresses, per-function scans).
     // 4630.5 measured after the trailing batch-width binding landed on the direct convention.
-    expect(artifact.bytecode.length / 2).toBeLessThan(4650);
+    // 4988 measured after the width-0 recovery A/M/B triples grew the shared front-region co-spend census.
+    expect(artifact.bytecode.length / 2).toBeLessThan(5000);
   });
 
   it('shares the authenticated-absence bracket after three reads', () => {
@@ -74,7 +76,8 @@ describe('general vmap bytecode sharing', () => {
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
     expect(compactHelperDefinitions(asm).length).toBeGreaterThanOrEqual(1);
-    expect(artifact.bytecode.length / 2).toBeLessThan(9300);
+    // 9420.5 measured after the width-0 recovery A/M/B triples grew the shared front-region co-spend census.
+    expect(artifact.bytecode.length / 2).toBeLessThan(9500);
   });
 
   it('allocates collision-free structural and field-prefix helpers across entry points', () => {

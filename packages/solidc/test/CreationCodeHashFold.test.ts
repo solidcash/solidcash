@@ -37,7 +37,7 @@ describe('keccak256(type(C).creationCode) folds to a constant', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract C() {
         bytes32 h;
-        function pin(bytes x) public { this.h = keccak256(x); }
+        function pin(bytes32 x) public { this.h = keccak256(x); }
       }`, { forceStateful: true });
     const fn = artifact.abi.find((f) => f.name === 'pin') as any;
     expect((fn?.blockLayout?.slots ?? [])

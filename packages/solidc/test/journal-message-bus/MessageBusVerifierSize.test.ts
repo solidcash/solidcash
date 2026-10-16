@@ -27,8 +27,8 @@ describe('atomic verifier bytecode specialization', () => {
     // atomic bus stage 2 (no PUSHDATA4 carrier arm under a 10,000 B blob bound, shared stack helpers): composed -56 B.
     // composed -25 B after the trailing batch-width binding moved the width witness out of the scalar verifier.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 543,
-      composed: 1800,
+      direct: 603,
+      composed: 1860,
       frameworkTax: 1257,
     });
     expect(composed).toBeLessThanOrEqual(1900);

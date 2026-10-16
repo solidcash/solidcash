@@ -833,9 +833,9 @@ describe('message-bus compilation selection', () => {
     expect(layout?.slots.some((slot) => slot.kind === 'dataNft')).toBe(true);
     expect(layout?.slots.some((slot) => slot.kind === 'entry')).toBe(true);
     const recovery = layout?.slots.filter((slot) => slot.kind === 'ecrecoverSideCar') ?? [];
-    // Reserve A/B pairs for the compiled recovery sites, not 255 speculative row copies.
-    expect(recovery.map((slot) => slot.slotIndex)).toEqual([0, 1, 2, 3]);
-    expect(recovery.length).toBeLessThan(2 * (artifact.messageBus?.maximumRows ?? 0));
+    // Reserve A/M/B triples for the compiled recovery sites, not 255 speculative row copies.
+    expect(recovery.map((slot) => slot.slotIndex)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(recovery.length).toBeLessThan(3 * (artifact.messageBus?.maximumRows ?? 0));
     expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
     expect(new Set(layout?.slots.map((slot) => slot.offset)).size).toBe(layout?.slots.length);
     expect(layout?.blockSize).toBe(Math.max(...layout!.slots.map((slot) => slot.offset)) + 1);

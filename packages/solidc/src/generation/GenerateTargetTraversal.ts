@@ -39017,6 +39017,83 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_IF, loc);
       this.scopeDepth += 1;
       // ---- UPDATE: mint output[..+outCounter] = coSlot|coNext|newValue ----
+      // Admit the consumed OLD value chunks of an in-place UPDATE. The co-spent entry's coValue stores
+      // len4++root++head for a chunked old value; rebuild the OLD root's chunk lock and append it to
+      // VALUE_CHUNK_LOCK_LIST, which emitSortedValueChunkPin filled with only the NEW lock. Without this the
+      // outside-layout walk preserves the consumed old chunks 1:1 (the output is the funder/new chunk while the
+      // input is the old chunk). The untracked coSlot/coNext/coValue are parked on the altstack so the lock
+      // reconstruction can use the tracked frame at depth 0. An inline old value (<= 60) has no chunks and its
+      // tail is too short to split, so the gate also keeps that case fail-closed.
+      if (isChunkableVal && op !== 'read') {
+        // wasChunked = BIN2NUM(coValue[0:4]) > 60.
+        this.emit(Op.OP_DUP, loc); // coValue copy (U=4)
+        this.emit(encodeInt(4n), loc); this.emit(Op.OP_SPLIT, loc); // (U=5)
+        this.emit(Op.OP_DROP, loc); this.emit(Op.OP_BIN2NUM, loc); // (U=4)
+        this.emit(encodeInt(60n), loc); this.emit(Op.OP_GREATERTHAN, loc); // wasChunked (U=4)
+        this.emit(Op.OP_IF, loc); // (U=3)
+        this.scopeDepth += 1;
+        // oldRoot = coValue[4:36].
+        this.emit(Op.OP_DUP, loc); // coValue copy (U=4)
+        this.emit(encodeInt(4n), loc); this.emit(Op.OP_SPLIT, loc); // len4, root||head (U=5)
+        this.emit(Op.OP_NIP, loc); // root||head (U=4)
+        this.emitTakeFirst32(loc); // root32 (U=4)
+        // Park coValue, coNext, coSlot on the altstack; root32 stays on the main stack.
+        this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // park coValue
+        this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // park coNext
+        this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // park coSlot
+        this.pushToStack('(old_root)');
+        this.emit(encodeInt(BigInt(hkIdx())), loc); this.emit(Op.OP_PICK, loc); // Hk
+        this.pushToStack('(old_slot)');
+        this.emitRecordsCategoryBase(loc);
+        this.pushToStack('(old_cat)');
+        const oldChunkHash = computeCollectionHash(valueChunkSignature(collection.name));
+        this.emitValueChunkP2sh32(oldChunkHash, '(old_slot)', '(old_root)', loc);
+        this.stack[0] = '(old_lock)';
+        const oldChunkBase = VALUE_CHUNK_LOCK_LIST;
+        const oldBandOrdinal = this.isDefineSubTraversal ? this.chunkLockListBandOrdinal() : undefined;
+        if (oldBandOrdinal !== undefined
+          || (!this.isDefineSubTraversal && this.getStackIndex(oldChunkBase, true) >= 0)) {
+          const oldBottom = oldBandOrdinal ?? this.stack.length - this.getStackIndex(oldChunkBase);
+          if (oldBandOrdinal !== undefined) {
+            this.emit(Op.OP_DEPTH, loc);
+            this.emit(encodeInt(BigInt(oldBandOrdinal)), loc);
+            this.emit(Op.OP_SUB, loc);
+          } else this.emit(encodeInt(BigInt(this.getStackIndex(oldChunkBase))), loc);
+          this.emit(Op.OP_PICK, loc);
+          this.emit(Op.OP_DUP, loc);
+          this.emit(Op.OP_SIZE, loc);
+          this.emit(Op.OP_NIP, loc);
+          this.emit(Op.OP_DUP, loc);
+          this.emit(encodeInt(35n), loc);
+          this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+          this.emit(Op.OP_SWAP, loc);
+          this.emit(encodeInt(35n), loc);
+          this.emit(Op.OP_MOD, loc);
+          this.emit(Op.OP_0, loc);
+          this.emit(Op.OP_NUMEQUAL, loc);
+          this.emit(Op.OP_BOOLAND, loc);
+          this.emit(Op.OP_IF, loc);
+          this.emit(encodeInt(BigInt(this.getStackIndex('(old_lock)') + 1)), loc);
+          this.emit(Op.OP_PICK, loc);
+          this.emit(Op.OP_CAT, loc);
+          this.emitReplaceAtBottomOrdinal(oldBottom, loc);
+          this.emit(Op.OP_ELSE, loc);
+          this.emit(Op.OP_DROP, loc);
+          this.emit(encodeInt(BigInt(this.getStackIndex('(old_lock)'))), loc);
+          this.emit(Op.OP_PICK, loc);
+          this.emitReplaceAtBottomOrdinal(oldBottom, loc);
+          this.emit(Op.OP_ENDIF, loc);
+        }
+        // Drop lock/slot/root and restore coSlot/coNext/coValue in the original order.
+        this.emit(Op.OP_DROP, loc); this.popFromStack(); // lock
+        this.emit(Op.OP_DROP, loc); this.popFromStack(); // slot
+        this.emit(Op.OP_DROP, loc); this.popFromStack(); // root
+        this.emit(Op.OP_FROMALTSTACK, loc); // coSlot
+        this.emit(Op.OP_FROMALTSTACK, loc); // coNext
+        this.emit(Op.OP_FROMALTSTACK, loc); // coValue
+        this.scopeDepth -= 1;
+        this.emit(Op.OP_ENDIF, loc); // wasChunked
+      }
       if (oldWitness) {
         // Only a present target owns coValue. On an insertion, the co-spent record is the predecessor and the
         // language-level mapping read is instead the value-type default (verified in the absent branch below).

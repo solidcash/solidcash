@@ -1180,16 +1180,17 @@ the read closed at the (collection, slot, digest) address). This entry's earlier
 **Revisit if.** A real port needs bulk array-value initialization across keys in one loop, OR the upsert-loop planner
 is refactored to a value-kind-generic shape for another reason (then the bytes branch is cheap + low-risk).
 
-**KNOWN OPEN (2026-10-16, in-place UPDATE of a chunked >60B value).** `ChunkedLoopRoundtrip.test.ts`'s
-"insert then in-place update of a 170-byte value" case is currently RED. The INSERT (`fill` with a new key) and
-read-back pass; the UPDATE (same key, a different 170-byte value) fails at input 0 in the
-`emitPreserveOutsideLayoutOwnMutable` 1:1 walk (`OP_OUTPUTBYTECODE OP_UTXOBYTECODE OP_EQUALVERIFY`): the old value
-chunks are co-spent at their OLD digest's `ValueChunkNft` lock and legitimately rewritten, but the walk's mintable
-lock list (`admitMintableLocks`) carries only the NEW value-chunk locks (`VALUE_CHUNK_LOCK_LIST`), not the old
-ones, so it refuses the consumed old-chunk input (output 2 is the funder, while input 2 is the old chunk). Fix site:
-append the old value-chunk locks to the mintable list during the write (the old digest is the hash in the entry's
-stored `len4++sha256` tail), or skip the 1:1 preservation for a consumed value-chunk input. Reproduced at `e16019bfe`
-(pre-existing, independent of the MasterChef.deposit trailing-base fix).
+**RESOLVED (2026-10-16, in-place UPDATE of a chunked >60B value).** `ChunkedLoopRoundtrip.test.ts`'s
+"insert then in-place update of a 170-byte value" case is now green. The UPDATE co-spends the entry's OLD
+continuation chunks at their OLD root's `ValueChunkNft` lock and legitimately recreates them under the NEW root;
+`emitSortedValueChunkPin` appended only the NEW lock to `VALUE_CHUNK_LOCK_LIST`, so the
+`emitPreserveOutsideLayoutOwnMutable` 1:1 walk refused the consumed old-chunk input. The fix (in
+`GenerateTargetTraversal.ts`, `emitNormalStep`'s UPDATE arm) rebuilds the OLD root's chunk lock from the co-spent
+entry's stored `len4++root++head` tail (gated on the stored length > 60, so an inline predecessor stays fail-closed)
+and appends it to `VALUE_CHUNK_LOCK_LIST` beside the new lock; the walk then admits both the consumed old chunks and
+the re-minted new chunks. Verified: `ChunkedLoopRoundtrip.test.ts` 1/1, `SortedArrayValueVaryingLoop.test.ts` 4/4
+(duplicate-key last-wins and the inline/chunk boundary), `ChunkedLoopAdversarial.test.ts` 3/3. The original
+fail-closed reproduction was at `e16019bfe` (pre-existing, independent of the MasterChef.deposit trailing-base fix).
 
 ## Composite sub-slot field access: top-level array-of-struct only - MOSTLY DONE 2026-07-20
 

@@ -1180,6 +1180,17 @@ the read closed at the (collection, slot, digest) address). This entry's earlier
 **Revisit if.** A real port needs bulk array-value initialization across keys in one loop, OR the upsert-loop planner
 is refactored to a value-kind-generic shape for another reason (then the bytes branch is cheap + low-risk).
 
+**KNOWN OPEN (2026-10-16, in-place UPDATE of a chunked >60B value).** `ChunkedLoopRoundtrip.test.ts`'s
+"insert then in-place update of a 170-byte value" case is currently RED. The INSERT (`fill` with a new key) and
+read-back pass; the UPDATE (same key, a different 170-byte value) fails at input 0 in the
+`emitPreserveOutsideLayoutOwnMutable` 1:1 walk (`OP_OUTPUTBYTECODE OP_UTXOBYTECODE OP_EQUALVERIFY`): the old value
+chunks are co-spent at their OLD digest's `ValueChunkNft` lock and legitimately rewritten, but the walk's mintable
+lock list (`admitMintableLocks`) carries only the NEW value-chunk locks (`VALUE_CHUNK_LOCK_LIST`), not the old
+ones, so it refuses the consumed old-chunk input (output 2 is the funder, while input 2 is the old chunk). Fix site:
+append the old value-chunk locks to the mintable list during the write (the old digest is the hash in the entry's
+stored `len4++sha256` tail), or skip the 1:1 preservation for a consumed value-chunk input. Reproduced at `e16019bfe`
+(pre-existing, independent of the MasterChef.deposit trailing-base fix).
+
 ## Composite sub-slot field access: top-level array-of-struct only - MOSTLY DONE 2026-07-20
 
 RESOLVED for almost everything: bool/enum leaf fields (6448f446) and NESTED ARRAYS-in-struct

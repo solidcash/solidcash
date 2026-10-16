@@ -77,7 +77,10 @@ describe('general vmap bytecode sharing', () => {
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
     expect(compactHelperDefinitions(asm).length).toBeGreaterThanOrEqual(1);
     // 9420.5 measured after the width-0 recovery A/M/B triples grew the shared front-region co-spend census.
-    expect(artifact.bytecode.length / 2).toBeLessThan(9500);
+    // 9659.5 measured after the outside-layout mutable walk began admitting a written dynamic var's old chunk
+    // (the fix that settles fixed-width struct chunk-array pushes and whole-element overwrites): the mintable
+    // lock build + admission check is per function that writes a dynamic var.
+    expect(artifact.bytecode.length / 2).toBeLessThan(9750);
   });
 
   it('allocates collision-free structural and field-prefix helpers across entry points', () => {

@@ -100,6 +100,9 @@ describe('StatefulContract.destroy()', () => {
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         initialState: { counter: 0n },
         changeAddress: p2pkh.address,
+        // The finalized-byte gate (X163) refuses a reclaim output below the 546-sat dust floor; fund the data
+        // NFT above the default 1,200 so the destroy sweep's `totalInputSats - fee` clears that floor.
+        dataNftAmount: 2_000n,
       });
 
       deployedContract = result.contract;
@@ -274,6 +277,8 @@ describe('StatefulContract.destroy()', () => {
         initialState: { counter: 0n },
         changeAddress: p2pkh.address,
         threadCount: 2,
+        // Same X163 dust-floor funding as the single-thread destroy above.
+        dataNftAmount: 2_000n,
       });
 
       const deployedContract = result.contract;

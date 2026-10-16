@@ -5,12 +5,11 @@ import { SplitContractBundle } from '../../src/stateful/index.js';
 import { createTestProvider } from '../test-util.js';
 import { alicePriv } from '../fixture/vars.js';
 
-// Minimal split-delegate dynamic-array push that reaches the original preflight OP_VERIFY: the split root
-// forwarder's emitOwnCategoryMutableNftConservation check counts the pushed poolInfo chunk as an excess
-// mutable output (dynamic-array chunk collections are never censused; censusedCollectionSignatures only covers
-// sorted-batch mappings), so the balance is -1 and OP_NUMEQUALVERIFY fails. The massUpdatePools loop is
-// incidental (a split push without it fails the same check). Documents the defect while it is still open;
-// flip the assertion to `resolves` when the censusing gap is fixed.
+// Minimal split-delegate dynamic-array push that previously reached the preflight OP_VERIFY: the split root
+// forwarder's emitOwnCategoryMutableNftConservation check counted the pushed poolInfo chunk as an excess
+// mutable output (dynamic-array chunk collections were never censused; censusedCollectionSignatures only
+// covered sorted-batch mappings), so the balance was -1 and OP_NUMEQUALVERIFY failed. The massUpdatePools loop
+// is incidental (a split push without it failed the same check). Regression pin for the censusing fix.
 const SRC = `pragma solidity 0.6.12;
 interface ICallee { function balanceOf(address) external view returns (uint256); }
 contract Chef {
@@ -33,8 +32,8 @@ contract Chef {
     }
 }`;
 
-describe('split add push preflight (documents defect)', () => {
-  it('fails the poolInfo.push commitment-family scan with the input-0 OP_VERIFY', async () => {
+describe('split add push preflight (censused dynamic-array chunks)', () => {
+  it('settles the poolInfo.push chunk without the input-0 OP_VERIFY', async () => {
     const compiled = compileStringSplit(SRC, { forceSplit: true, messageBus: true, evmCompat: true });
     const provider = createTestProvider();
     const signer = new Signer(alicePriv, provider);
@@ -50,8 +49,6 @@ describe('split add push preflight (documents defect)', () => {
         f.name, { fundingUtxo: funding[i + 1] },
       ])),
     });
-    await expect(deployed.call.add(100n).send()).rejects.toThrow(
-      /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
-    );
+    await expect(deployed.call.add(100n).send()).resolves.toBeDefined();
   }, 300_000);
 });

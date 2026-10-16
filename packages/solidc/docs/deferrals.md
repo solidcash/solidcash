@@ -2317,6 +2317,17 @@ first failing call is the SAME base `MasterChef.add` in its `beforeEach`, and it
 `body=50` / `op=0x9d` site, so the 24-test census is one defect: the pushed `poolInfo` chunk makes the
 own-category mutable balance -1.
 
+**RESOLVED 2026-10-16 (the conservation-check defect, MasterChef).** `censusedCollectionSignatures` (the split
+root's mutable-NFT exclusion set) now also includes the dynamic-ARRAY chunk signatures of the facet handler's
+`dynamicWrites`, resolved from `stateLayout.variables` via `dynamicChunkSignature(name, type)`, so the split
+root's `emitOwnCategoryMutableNftConservation` no longer counts a `poolInfo.push` chunk as an excess output.
+Pinned by `packages/solidcash/test/e2e/SplitAddPushPreflight.test.ts` (a split `add` that pushes a struct-array
+element now settles instead of aborting at the input-0 OP_VERIFY), with the split compiler suites
+(`DynamicWriteArraySplit`, `FunctionSplit`, `LargeContractSplitting`) and the split e2e siblings
+(`SplitFacetMsgSender`, `SplitLayoutAgreementX162`, `SplitMerge`) still green. MasterChef's remaining block
+below is the `BoringMath.to64` narrowing defect, which MasterChefV2 reaches once the conservation check no
+longer masks it.
+
 Second, distinct defect behind it (2026-10-15): once `MasterChef.add` is bypassed, `MasterChefV2.add`
 (`allocPoint.to64()` / `lastRewardBlock.to64()` narrowing) fails its own `BoringMath.to64` "uint64 Overflow"
 guard at `body=29` (invoke id `04`), `ip=11 op=0x88 OP_EQUALVERIFY` with `top=[440a02 81 80 00]`. `440a02` is

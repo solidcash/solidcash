@@ -48,7 +48,7 @@ import {
   hasUniqueKernelJournalDispositionCommitment, kernelJournalDispositionManifestDigest,
   type KernelJournalDispositionsAbi,
   MessageBusVerifierCapacityError, messageBusVerifierLockingBytecode,
-  childStateLayoutDigest, abiTypeString, implicitlyCastableSignature,
+  childStateLayoutDigest, abiTypeString, implicitlyCastableSignature, dynamicChunkSignature,
 } from '@solidcash/utils';
 import {
   generateArtifact, generateDeclarationArtifact, occurrenceInfoOf, resultArrayOutputOf,
@@ -19320,8 +19320,8 @@ function compileStringSplitUnchecked(
           const delegateEventOffsets = (layout?.slots ?? [])
             .filter((slot) => slot.kind === 'event' || slot.kind === 'eventChunk')
             .map((slot) => slot.offset - dataOffsets.filter((offset) => offset < slot.offset).length);
-          const censusedCollectionSignatures = [...new Set((handler?.sortedBatchInfo ?? [])
-            .map((batch) => {
+          const censusedCollectionSignatures = [...new Set([
+            ...(handler?.sortedBatchInfo ?? []).map((batch) => {
               const signature = artifact.stateLayout?.collections?.find(
                 (collection) => collection.name === batch.collection,
               )?.signature;
@@ -19329,7 +19329,17 @@ function compileStringSplitUnchecked(
                 throw new Error(`Missing split-delegate collection signature for '${batch.collection}'`);
               }
               return signature;
-            }))];
+            }),
+            ...(handler?.dynamicWrites ?? []).map((name) => {
+              const variable = artifact.stateLayout?.variables?.find(
+                (candidate) => candidate.name === name && candidate.dynamic === true,
+              );
+              if (variable === undefined) {
+                throw new Error(`Missing split-delegate dynamic-array signature for '${name}'`);
+              }
+              return dynamicChunkSignature(name, variable.type);
+            }),
+          ])];
           trialRoutes.set(plan.name, {
             facet: `${logicalName}__Facet${index}`,
             link,
@@ -19405,10 +19415,11 @@ function compileStringSplitUnchecked(
     const delegateEventOffsets = (layout?.slots ?? [])
       .filter((slot) => slot.kind === 'event' || slot.kind === 'eventChunk')
       .map((slot) => slot.offset - dataOffsets.filter((offset) => offset < slot.offset).length);
-    // A sorted batch emits both exact collection-address input and output scans in the facet. The root may
-    // leave only these collections out of its global mutable-NFT equality; the facet settles their count.
-    const censusedCollectionSignatures = [...new Set((handler?.sortedBatchInfo ?? [])
-      .map((batch) => {
+    // A sorted batch emits both exact collection-address input and output scans in the facet, and a dynamic-array
+    // write emits its chunk run. The root may leave these families out of its global mutable-NFT equality; the
+    // facet settles their count.
+    const censusedCollectionSignatures = [...new Set([
+      ...(handler?.sortedBatchInfo ?? []).map((batch) => {
         const signature = facet.artifact.stateLayout?.collections?.find(
           (collection) => collection.name === batch.collection,
         )?.signature;
@@ -19416,7 +19427,17 @@ function compileStringSplitUnchecked(
           throw new Error(`Missing split-delegate collection signature for '${batch.collection}'`);
         }
         return signature;
-      }))];
+      }),
+      ...(handler?.dynamicWrites ?? []).map((name) => {
+        const variable = facet.artifact.stateLayout?.variables?.find(
+          (candidate) => candidate.name === name && candidate.dynamic === true,
+        );
+        if (variable === undefined) {
+          throw new Error(`Missing split-delegate dynamic-array signature for '${name}'`);
+        }
+        return dynamicChunkSignature(name, variable.type);
+      }),
+    ])];
     routeByName.set(plan.name, {
       facet: facet.name,
       link: facet.link,

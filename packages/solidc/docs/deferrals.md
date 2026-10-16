@@ -1308,7 +1308,7 @@ delicate (every calldata op must agree on one layout); reuse the ABI encoders in
 **Revisit if.** A concrete port needs dynamic-calldata tail access (raw ABI decoding in assembly), or the calldata
 model is rebuilt for another reason - then `.offset` falls out of the head/tail layout.
 
-## bytes/string slot fields + address slot fields - DONE 2026-10-16 (03cd9c6e9, e4f89650d)
+## bytes/string slot fields + address slot fields - DONE 2026-10-16 (03cd9c6e9, e4f89650d, fec18dcb0)
 
 UPDATE: the short-string byte-array encoding IS built, VM-proven. `sstore(bytesVar.slot, constX)` decodes EVM's
 short-slot layout at COMPILE TIME (data left-aligned in the high bytes big-endian, low byte = 2*len; X==0 clears) ->
@@ -1768,7 +1768,7 @@ The abi.decode-interface fix advanced both Kashi contracts past their first wall
   '@boringcrypto/boring-solidity/contracts/libraries/Bo...'" - a missing dependency path in that repo's layout, a
   HARNESS/dependency issue, not a compiler wall.
 
-## Reuse an entry-read local for a struct-mapping field write-back (RE-LANDED 2026-10-16, 5703b86ec)
+## Reuse an entry-read local for a struct-mapping field write-back (RE-LANDED 2026-10-16, 5703b86ec; pinned magnitude 74bd5ff06)
 The read-modify-writeback idiom `S e = m[k]; ..modify e..; m[k].f1 = e.f1; m[k].f2 = e.f2;` (Unicrow `refund`) is
 folded by CoalesceMappingEntryFieldWrites into one whole-struct write, but that RE-READS the entry to source the
 untouched fields - redundant, because `e` already holds them. Reusing `e` (`m[k] = S(e.f0, .., e.f1, .., 1, ..)`)

@@ -2427,14 +2427,15 @@ closed end to end: `MasterChefPoolInfoPush.test.ts` 1/1 passes, and `MasterChefD
 `chef.add` (the previously failing call) and `lp.approve` to the FIRST failure at `chef.deposit(0, 100)` — still
 the same `messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.`. The deposit
 trace (captured to `masterchef-deposit-trace.log` in the goal scratch) pins a distinct third defect: input-0
-`deposit` fails at `ip 4874 opcode 0x88 OP_EQUALVERIFY` (window `147 82 121 147 118 205 85 121 136 118`)
-comparing two 35-byte P2SH32 locks — expected `aa20386fe87ff37c254ebfb9ea15dc424cf0b0db2848d7a9f3f88bd68874558dafb`
-vs actual `aa20afeb7448d387f1b91a3904dc57db31671047933e62f1c91c6740891cca5945d` — with the output index `0x12`
-(18) parked on the stack. Neither lock is the data-NFT (`aa20dfd1…`), the `poolInfo` entry (`aa205301…`), the
-master (`aa206a2e…`) nor the msg.sender P2PKH, so this is a record lock-PLACEMENT mismatch in the composed
-transaction: the SDK emits a `userInfo` entry (the flattened `userInfo__amount` / `userInfo__rewardDebt` nested
-mapping the deposit writes, keyed by `msg.sender`'s P2PKH, visible at stack depth 9) at one collection's covenant
-while the covenant verifies the other. Still open; the `add`/`to64` fixes do not cover it.
+`deposit` fails at `ip 4874 opcode 0x88 OP_EQUALVERIFY` comparing two 35-byte P2SH32 locks. Resolving the locks
+via `SOLIDC_DEBUG_ENTRY_ADDR=1` names them exactly: the EXPECTED lock `aa20386f…` is the ERC20Mock
+`_allowances` entry covenant (`_allowances:mapping(address => mapping(address => uint256))`, category
+`b949cfb3…`) that the co-spent LP `transferFrom` writes through `safeTransferFrom`, and the ACTUAL lock
+`aa20afeb…` is the MasterChef `poolInfo` dynamic-chunk covenant (`poolInfo:PoolInfo[]`, category `2b2c227b…`).
+So the composed deposit transaction places the MasterChef trailing `poolInfo` chunk output at the output index
+where the LP callee's `_allowances` entry output is expected — a composed-output-ordering collision between the
+caller's dynamic-array chunks and the external callee's sorted-entry block. The `add`/`to64` fixes do not cover
+it; the SDK assembly seam that orders `poolInfo` chunks relative to the LP callee's entry block is the fix site.
 
 
 The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with

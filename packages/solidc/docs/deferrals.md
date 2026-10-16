@@ -2629,7 +2629,7 @@ two absent keys in its gap, settle too. A forged link (one past a write of the c
 spent at a funded slot and an extra node beside the chain are refused at the master (AuditDS6ChainOneNode.test.ts).
 
 A delete one call may run beside a write of its batch (`if (s > 0) { delete m[k]; m[j] = v; }`,
-`chainedActivityDelete`, one delete per batch) reads the node its proof names. Away from its own input it sets a
+one chained delete per batch at the time) reads the node its proof names. Away from its own input it sets a
 register: its own slot must hold no node of the collection, and a write that ran must name the same proof, so the node
 is that write's group's. The node then settles as the writes leave it, the delete first: a write of the node's own key
 updates it, and the lowest insert relinks it at the value the delete's registers leave (the default where the deleted
@@ -2685,7 +2685,7 @@ default relink is tested by `AuditDS6DefaultRelink.test.ts` (unbounded `bytes` b
 `AuditDS6ChainOneNode.test.ts` remains 13/13.
 
 **UPDATE 2026-10-16 (verified, third).** The "more than one delete of a batch beside its writes" case now SETTLES.
-`chainedActivityDelete` became `chainedActivityDeletes` (returns every delete a write of the batch may run beside),
+The chained-delete helper became `chainedActivityDeletes` (returns every delete a write of the batch may run beside),
 each such delete gets its own chained-delete register, and the batch transition validates each register against a
 write that ran on its node. The predecessor value-take now loops the chained deletes and overrides the node's value
 only where the delete ran on it AND the delete's key is the node's own (`__internal__vmapBatchSlot_N` equals the

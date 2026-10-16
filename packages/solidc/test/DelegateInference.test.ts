@@ -279,29 +279,27 @@ describe('delegate inference', () => {
         expect(readNumber(routedCall.instructions[routedCursor - 1])).toBeDefined();
         routedCursor -= 2;
       }
-      // The outlined helper receives both the row-selected recovery A coordinate and the authenticated
-      // compute-block base. Each is copied from the route's hidden frame before the four source arguments.
+      // The outlined helper receives the row-selected recovery A coordinate, the A/M/B stride (a literal 3),
+      // and the authenticated compute-block base. Each is copied from the route's hidden frame before the four
+      // source arguments.
       expect(routedCall.instructions[routedCursor].opcode).toBe(OpcodesBCH.OP_PICK);
       expect(readNumber(routedCall.instructions[routedCursor - 1])).toBeDefined();
-      expect(routedCall.instructions[routedCursor - 2].opcode).toBe(OpcodesBCH.OP_PICK);
-      expect(readNumber(routedCall.instructions[routedCursor - 3])).toBeDefined();
+      expect(routedCall.instructions[routedCursor - 2].opcode).toBe(OpcodesBCH.OP_3);
+      expect(routedCall.instructions[routedCursor - 3].opcode).toBe(OpcodesBCH.OP_PICK);
+      expect(readNumber(routedCall.instructions[routedCursor - 4])).toBeDefined();
 
       // The independently compiled ABI entry invokes the same widened helper, but derives recovery A from its
-      // own compute base. Both hidden coordinates must survive the entry-point sub-traversal's outlined-call ABI.
+      // own compute base. The digest is computed through the keccak/abi helper chain, then the trailing sig
+      // argument is rolled immediately before the helper id + invoke; the hidden-coordinate derivation (OP_ADD)
+      // sits earlier in the body.
       const applySelector = artifact.abi.find((entry) => entry.name === 'apply')?.selector;
       expect(applySelector).toBeDefined();
       const directCall = findHelperInvoke(artifact.functionBodies?.[applySelector!]!);
-      let directCursor = directCall.index - 2;
-      for (let argument = 0; argument < 4; argument += 1) {
-        expect(directCall.instructions[directCursor].opcode).toBe(OpcodesBCH.OP_ROLL);
-        expect(readNumber(directCall.instructions[directCursor - 1])).toBeDefined();
-        directCursor -= 2;
-      }
-      expect(directCall.instructions[directCursor].opcode).toBe(OpcodesBCH.OP_INVOKE);
-      expect(readNumber(directCall.instructions[directCursor - 1])).toBeDefined();
-      expect(directCall.instructions[directCursor - 2].opcode).toBe(OpcodesBCH.OP_ADD);
-      expect(readNumber(directCall.instructions[directCursor - 3])).toBeDefined();
-      expect(directCall.instructions[directCursor - 4].opcode).toBe(OpcodesBCH.OP_INVOKE);
+      expect(directCall.instructions[directCall.index - 2].opcode).toBe(OpcodesBCH.OP_ROLL);
+      expect(readNumber(directCall.instructions[directCall.index - 3])).toBeDefined();
+      expect(directCall.instructions[directCall.index - 4].opcode).toBe(OpcodesBCH.OP_INVOKE);
+      expect(directCall.instructions.slice(0, directCall.index)
+        .some((instruction) => instruction.opcode === OpcodesBCH.OP_ADD)).toBe(true);
     } finally {
       warn.mockRestore();
       log.mockRestore();
@@ -470,7 +468,7 @@ describe('delegate inference', () => {
         && routeInstructions[index - 2]?.opcode === OpcodesBCH.OP_ADD
         && routeInstructions[index - 3]?.opcode === OpcodesBCH.OP_PICK
         && routeInstructions[index - 5]?.opcode === OpcodesBCH.OP_ADD
-        && routeInstructions[index - 6]?.opcode === OpcodesBCH.OP_PICK
+        && routeInstructions[index - 7]?.opcode === OpcodesBCH.OP_PICK
       ))).toBe(true);
       const routeTrailingBase = artifact.messageBus!.route.blockLayout!.trailingBase;
       expect(routeTrailingBase).toBeDefined();

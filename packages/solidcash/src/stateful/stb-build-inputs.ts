@@ -166,11 +166,15 @@ export function buildInputs(
   // A satoshi/token container occupies a fixed block slot before the trailing band. It must be placed at that
   // offset even when the transaction has no fee funder yet (the dense path positions block slots and appends
   // the trailing side-cars after them), otherwise a keccak-loop co-spend parks the container past the side-cars.
+  // A fixed-width frame (compose participant / delegate entry slots) cannot take that shortcut at construction:
+  // the dense path then requires every output-only slot to be padded, but funders are only allocated after the
+  // builder is constructed. Fall back to the legacy order there; `setFunderUtxos` rebuilds the inputs densely
+  // once the funder pool exists.
   const hasBlockSlotContainers = denseBlockLayout?.slots.some((slot) =>
     slot.kind === 'satoshiContainer' || slot.kind === 'tokenContainer') ?? false;
   const useDensePlacement = denseBlockLayout !== undefined
     && (host.funderUtxos.length > 0 || hasExternalGroups || identityPlacement.byOffset.size > 0
-      || hasBlockSlotContainers);
+      || (hasBlockSlotContainers && !host.preserveBlockLayoutWidth));
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_INPUT_ORDER === '1') {
     console.error('input-order-guard', JSON.stringify({

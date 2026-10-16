@@ -1752,8 +1752,10 @@ corpus (the marketplace symlink `.marketplace/contracts/unicrow/Unicrow.sol` res
 EffectiveAcceleration checkout): under the kernel route the write-back run is already folded by the kernel's early
 `CoalesceMappingEntryFieldWrites(true)`, so the pass now also re-targets that folded snapshot (`__mefw`) write at the
 `escrow` local. Measured on that source (`ReuseEntryLocalForWritebackUnicrow.test.ts`), the `refund` handler body
-drops 2065 -> 1957 bytes (-108 B); the older -339 B figure (5683 -> 5344) predates this session's block-layout
-changes and is superseded by that measurement.
+drops 2065 -> 1957 bytes (-108 B) and the total kernel artifact drops -241 B. The historical -339 B figure
+(5683 -> 5344) is the same optimization (one full entry re-read) measured in July 2026; block-layout-v2 and later
+codegen shrank that re-read ~3x. This deviation from the plan's absolute byte count is recorded in plan.md's
+"## Deviations", not asserted here as a supersession.
 - **What it'd take:** a data-flow pass `ReuseEntryLocalForWriteback` (was fully written + VM-tested, green: solidc
   suite clean, 104 struct e2e, 5 behavioral/oracle tests) placed BEFORE RedesugarImportedStructFieldWrites (so an
   imported struct's `e.f=v` is still a MappingFieldAssign; a same-file struct's is a `e = S(..)` field-preserving

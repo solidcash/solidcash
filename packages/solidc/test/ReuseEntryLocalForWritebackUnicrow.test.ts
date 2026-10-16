@@ -17,6 +17,10 @@ import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corp
  * is the `refund` handler-body byte delta: without the pass the fold re-reads the entry (2065 B), with it the local
  * supplies the carried-over fields (1957 B). The exact figure is pinned so bytecode drift from other passes is a
  * deliberate re-pin, not a silent regression; it also must remain strictly positive (a missed optimization).
+ *
+ * The plan's `~339 B (5683 -> 5344)` figure is the SAME optimization as July 2026: it elides one full entry re-read,
+ * whose absolute cost block-layout-v2 and later codegen shrank ~3x. The deviation is recorded in plan.md's
+ * "## Deviations"; this test pins the current magnitudes, not the stale absolute figure.
  */
 const contractsRoot = effectiveAccelerationContractsRoot();
 
@@ -50,5 +54,7 @@ describe.skipIf(contractsRoot === undefined)('ReuseEntryLocalForWriteback on the
     const withoutBytes = bodyBytes(withoutPass, refund!.selector);
     expect(withoutBytes - withBytes).toBe(108);
     expect(withoutBytes).toBeGreaterThan(withBytes);
+    // The refund route is cloned by the kernel, so the total artifact also shrinks; pin both magnitudes.
+    expect((withoutPass.bytecode.length - withPass.bytecode.length) / 2).toBe(241);
   });
 });

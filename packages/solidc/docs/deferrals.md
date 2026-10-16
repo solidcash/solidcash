@@ -2422,6 +2422,21 @@ maximum. Pinned by `packages/solidcash/test/e2e/SplitTo64Preflight.test.ts` (a s
 and the full `solidity-compat` compiler suite (1187 tests). Trace:
 `masterchefv2-add-trace.log` (both `chef.add` and `chef2.add` sites) in the goal scratch.
 
+**UPDATE 2026-10-16 (verified, next residual: `MasterChef.deposit`).** The two defects above are confirmed
+closed end to end: `MasterChefPoolInfoPush.test.ts` 1/1 passes, and `MasterChefDeposit.test.ts` now gets past
+`chef.add` (the previously failing call) and `lp.approve` to the FIRST failure at `chef.deposit(0, 100)` — still
+the same `messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.`. The deposit
+trace (captured to `masterchef-deposit-trace.log` in the goal scratch) pins a distinct third defect: input-0
+`deposit` fails at `ip 4874 opcode 0x88 OP_EQUALVERIFY` (window `147 82 121 147 118 205 85 121 136 118`)
+comparing two 35-byte P2SH32 locks — expected `aa20386fe87ff37c254ebfb9ea15dc424cf0b0db2848d7a9f3f88bd68874558dafb`
+vs actual `aa20afeb7448d387f1b91a3904dc57db31671047933e62f1c91c6740891cca5945d` — with the output index `0x12`
+(18) parked on the stack. Neither lock is the data-NFT (`aa20dfd1…`), the `poolInfo` entry (`aa205301…`), the
+master (`aa206a2e…`) nor the msg.sender P2PKH, so this is a record lock-PLACEMENT mismatch in the composed
+transaction: the SDK emits a `userInfo` entry (the flattened `userInfo__amount` / `userInfo__rewardDebt` nested
+mapping the deposit writes, keyed by `msg.sender`'s P2PKH, visible at stack depth 9) at one collection's covenant
+while the covenant verifies the other. Still open; the `add`/`to64` fixes do not cover it.
+
+
 The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with
 
 ```

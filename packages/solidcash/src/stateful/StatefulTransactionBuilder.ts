@@ -13,6 +13,7 @@ import {
   type Artifact,
   encodeChunkableValueTail,
   EVENT_CHUNK_BYTES,
+  isAuxiliaryBlockSlot,
 } from '@solidcash/utils';
 import { binToHex, binsAreEqual, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
@@ -6149,8 +6150,7 @@ export class StatefulTransactionBuilder {
    * Get the master input index for an external outState group.
    */
   getExternalOutStateMasterInputIndex(groupIdx: number): number {
-    let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
-      + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
+    let base = 1 + this.dataNftUtxos.length + this.frontRegionAuxiliaryWidth();
     for (let i = 0; i < groupIdx; i++) {
       base += 1 + this.externalOutStateUtxoGroups[i].dataNftUtxos.length
         + (this.externalOutStateUtxoGroups[i].blockhashCoSpendUtxos?.length ?? 0)
@@ -6163,8 +6163,7 @@ export class StatefulTransactionBuilder {
    * Get the output index where outState group's master NFT output starts.
    */
   getExternalOutStateOutputBase(groupIdx: number): number {
-    let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
-      + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
+    let base = 1 + this.requiredNftIndices.length + this.frontRegionAuxiliaryWidth();
     for (let i = 0; i < groupIdx; i++) {
       base += 1 + this.externalOutStateUtxoGroups[i].dataNftUtxos.length
         + (this.externalOutStateUtxoGroups[i].blockhashCoSpendUtxos?.length ?? 0)
@@ -6213,8 +6212,7 @@ export class StatefulTransactionBuilder {
     const found = master && this.allInputs.findIndex((input) => input.txid === master.txid
       && input.vout === master.vout);
     if (found !== undefined && found >= 0) return found;
-    let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
-      + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
+    let base = 1 + this.dataNftUtxos.length + this.frontRegionAuxiliaryWidth();
     // Skip outState inputs
     for (const g of this.externalOutStateUtxoGroups) {
       base += 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
@@ -6269,8 +6267,7 @@ export class StatefulTransactionBuilder {
       const aligned = this.getExternalCallMasterInputIndex(groupIdx);
       if (aligned >= 0) return aligned;
     }
-    let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
-      + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
+    let base = 1 + this.requiredNftIndices.length + this.frontRegionAuxiliaryWidth();
     // Skip outState outputs
     for (const g of this.externalOutStateUtxoGroups) {
       base += 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
@@ -6407,8 +6404,7 @@ export class StatefulTransactionBuilder {
       }
       return positionedBase;
     }
-    let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
-      + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
+    let base = 1 + this.dataNftUtxos.length + this.frontRegionAuxiliaryWidth();
     // Skip outState inputs
     for (const g of this.externalOutStateUtxoGroups) {
       base += 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
@@ -6659,10 +6655,7 @@ export class StatefulTransactionBuilder {
 
     const masterOutputCount = 1;
     const dataNftOutputCount = this.requiredNftIndices.length;
-    const readOnlyOutputCount = this.readOnlyDataNftUtxos.length;
-    const blockhashOutputCount = this.blockhashCoSpendUtxos.length;
-    const keccakOutputCount = this.keccakComputeCoSpendUtxos.length;
-    const ecrecoverOutputCount = this.ecrecoverComputeCoSpendUtxos.length;
+    const frontAuxiliaryOutputCount = this.frontRegionAuxiliaryWidth();
     const outStateOutputCount = this.externalOutStateUtxoGroups.reduce(
       (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
         + (g.keccakInputs?.length ?? 0), 0,
@@ -6691,9 +6684,8 @@ export class StatefulTransactionBuilder {
     // the witness-side formula in StatefulContract (returnEventOutputBase counts iterationEntryInputs).
     const chunkBeforeCalleeCount = this.iterationChunksPrecedeCallees() ? this.iterationEntryInputs.length : 0;
     // Low-level call outputs are now AFTER entries/SC/TCs/transfers/events (matching block layout)
-    return masterOutputCount + dataNftOutputCount + readOnlyOutputCount + blockhashOutputCount + keccakOutputCount
-      + ecrecoverOutputCount + outStateOutputCount + externalCallOutputCount + chunkBeforeCalleeCount
-      + leadingDelegateOutputCount;
+    return masterOutputCount + dataNftOutputCount + frontAuxiliaryOutputCount + outStateOutputCount
+      + externalCallOutputCount + chunkBeforeCalleeCount + leadingDelegateOutputCount;
   }
 
   /**
@@ -6737,6 +6729,24 @@ export class StatefulTransactionBuilder {
     if (entryOffsets.length === 0) return false;
     const maxEntry = Math.max(...entryOffsets);
     return this.blockLayout.slots.some((s) => s.offset > maxEntry);
+  }
+
+  /**
+   * Number of front-region auxiliary co-spend slots the owner block reserves, in the compiler's canonical band
+   * order. Derived from the block layout when available so a future band reorder is reflected automatically;
+   * manual builders without a layout use the dense active co-spend counts. Delegate `lowLevelCall` is excluded
+   * because the legacy assembly keeps it outside this band, and a delegated block-info oracle is excluded
+   * because its recreate rides the implementation band instead of the owner band.
+   */
+  private frontRegionAuxiliaryWidth(): number {
+    if (this.blockLayout) {
+      return this.blockLayout.slots.filter((slot) => slot.kind !== 'lowLevelCall'
+        && (slot.kind !== 'blockInfoOracle' || !this.delegateBlockInfoOracle)
+        && isAuxiliaryBlockSlot(slot)).length;
+    }
+    return this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
+      + (this.delegateBlockInfoOracle ? 0 : this.blockInfoCoSpendUtxos.length)
+      + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
   }
 
   /**
@@ -6811,9 +6821,7 @@ export class StatefulTransactionBuilder {
    */
   getReturnEventOutputBase(): number {
     if (this.delegateEntriesAfterLowLevel) {
-      let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length
-        + this.blockhashCoSpendUtxos.length + this.keccakComputeCoSpendUtxos.length
-        + this.ecrecoverComputeCoSpendUtxos.length;
+      let base = 1 + this.requiredNftIndices.length + this.frontRegionAuxiliaryWidth();
       for (const g of this.externalOutStateUtxoGroups) {
         base += 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
           + (g.keccakInputs?.length ?? 0);
@@ -6933,10 +6941,7 @@ export class StatefulTransactionBuilder {
 
     const masterInputCount = 1;
     const dataNftInputCount = this.dataNftUtxos.length;
-    const readOnlyInputCount = this.readOnlyDataNftUtxos.length;
-    const blockhashInputCount = this.blockhashCoSpendUtxos.length;
-    const keccakInputCount = this.keccakComputeCoSpendUtxos.length;
-    const ecrecoverInputCount = this.ecrecoverComputeCoSpendUtxos.length;
+    const frontAuxiliaryInputCount = this.frontRegionAuxiliaryWidth();
     const outStateInputCount = this.externalOutStateUtxoGroups.reduce(
       (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
         + (g.keccakInputs?.length ?? 0), 0,
@@ -6951,9 +6956,9 @@ export class StatefulTransactionBuilder {
     const entryInputCount = this.entryNfts.filter((e) => e.exists && e.utxo).length;
     const iterationEntryInputCount = this.iterationEntryInputs.length;
     const tokenContainerInputCount = this.tokenContainers.filter((d) => d.exists && d.utxo).length;
-    return masterInputCount + dataNftInputCount + readOnlyInputCount + blockhashInputCount + keccakInputCount
-      + ecrecoverInputCount + outStateInputCount + externalCallInputCount + lowLevelCallInputCount
-      + entryInputCount + iterationEntryInputCount + tokenContainerInputCount;
+    return masterInputCount + dataNftInputCount + frontAuxiliaryInputCount + outStateInputCount
+      + externalCallInputCount + lowLevelCallInputCount + entryInputCount + iterationEntryInputCount
+      + tokenContainerInputCount;
   }
 
   /**

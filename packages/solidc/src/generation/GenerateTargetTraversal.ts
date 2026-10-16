@@ -32056,6 +32056,80 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DUP, loc);
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [Hk, c, coSlot, coNext, coValue]
+    // DS-6: admit the consumed OLD value chunks of the deleted node, so the outside-layout walk consumes them
+    // instead of preserving them 1:1 against the replacement chunk (whose lock/root differ).
+    if (this.isChunkableValue(node.collection!.innermostValueType)
+      && this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0) {
+      this.emit(Op.OP_DUP, loc); // coValue copy
+      this.emit(encodeInt(4n), loc); this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc); this.emit(Op.OP_BIN2NUM, loc);
+      this.emit(encodeInt(60n), loc); this.emit(Op.OP_GREATERTHAN, loc); // wasChunked
+      this.emit(Op.OP_IF, loc);
+      this.scopeDepth += 1;
+      // oldRoot = coValue[4:36].
+      this.emit(Op.OP_DUP, loc); // coValue copy
+      this.emit(encodeInt(4n), loc); this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_NIP, loc); this.emitTakeFirst32(loc);
+      this.pushToStack('(old_root)');
+      // oldSlot = coSlot (the deleted node's own slot, not the write's key).
+      this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(old_slot)');
+      // Park coValue, coNext, coSlot, c on the altstack; the tracked root/slot stay on the main stack.
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_TOALTSTACK, loc);
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_TOALTSTACK, loc);
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_TOALTSTACK, loc);
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_TOALTSTACK, loc);
+      this.emitRecordsCategoryBase(loc);
+      this.pushToStack('(old_cat)');
+      const oldChunkHash = computeCollectionHash(valueChunkSignature(node.collection!.name));
+      this.emitValueChunkP2sh32(oldChunkHash, '(old_slot)', '(old_root)', loc);
+      this.stack[0] = '(old_lock)';
+      const oldChunkBase = VALUE_CHUNK_LOCK_LIST;
+      const oldBandOrdinal = this.isDefineSubTraversal ? this.chunkLockListBandOrdinal() : undefined;
+      if (oldBandOrdinal !== undefined
+        || (!this.isDefineSubTraversal && this.getStackIndex(oldChunkBase, true) >= 0)) {
+        const oldBottom = oldBandOrdinal ?? this.stack.length - this.getStackIndex(oldChunkBase);
+        if (oldBandOrdinal !== undefined) {
+          this.emit(Op.OP_DEPTH, loc);
+          this.emit(encodeInt(BigInt(oldBandOrdinal)), loc);
+          this.emit(Op.OP_SUB, loc);
+        } else this.emit(encodeInt(BigInt(this.getStackIndex(oldChunkBase))), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_DUP, loc);
+        this.emit(Op.OP_SIZE, loc);
+        this.emit(Op.OP_NIP, loc);
+        this.emit(Op.OP_DUP, loc);
+        this.emit(encodeInt(35n), loc);
+        this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+        this.emit(Op.OP_SWAP, loc);
+        this.emit(encodeInt(35n), loc);
+        this.emit(Op.OP_MOD, loc);
+        this.emit(Op.OP_0, loc);
+        this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_BOOLAND, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emit(encodeInt(BigInt(this.getStackIndex('(old_lock)') + 1)), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_CAT, loc);
+        this.emitReplaceAtBottomOrdinal(oldBottom, loc);
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.emit(encodeInt(BigInt(this.getStackIndex('(old_lock)'))), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emitReplaceAtBottomOrdinal(oldBottom, loc);
+        this.emit(Op.OP_ENDIF, loc);
+      }
+      // Drop lock/slot/root and restore c/coSlot/coNext/coValue in the original order.
+      this.emit(Op.OP_DROP, loc); this.popFromStack(); // lock
+      this.emit(Op.OP_DROP, loc); this.popFromStack(); // slot
+      this.emit(Op.OP_DROP, loc); this.popFromStack(); // root
+      this.emit(Op.OP_FROMALTSTACK, loc); // c
+      this.emit(Op.OP_FROMALTSTACK, loc); // coSlot
+      this.emit(Op.OP_FROMALTSTACK, loc); // coNext
+      this.emit(Op.OP_FROMALTSTACK, loc); // coValue
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ENDIF, loc);
+    }
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
     this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUAL, loc); // present
@@ -52039,7 +52113,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // correct treatment of a function that neither loops nor rewrites chunks.
     const admitMintableLocks = this.entrySlots.some((slot) => slot.inLoop)
       || (node.collectionIterations?.length ?? 0) > 0
-      || (node.dynamicWrites?.length ?? 0) > 0;
+      || (node.dynamicWrites?.length ?? 0) > 0
+      // A chunkable sorted-mapping value write/delete also spends its OLD value chunks at their chunk lock and
+      // recreates them (or drops them) at a different root, so those consumed chunk inputs must be admitted here
+      // instead of preserved 1:1. The hidden value-chunk lock-list witness is present whenever the function has
+      // such a write.
+      || this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0;
     const category = '(__outside_own_mutable)';
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);

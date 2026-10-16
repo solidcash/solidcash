@@ -2953,11 +2953,22 @@ no-chained-delete retry (`owners=[1], chainedDeletes=[]`) fails the P' check bec
 delete register's default instead of the co-spent input's old tail, while the un-relinked P' output still carries
 the old tail. A first compiler attempt to override `emitSortedValueUpsert`'s non-batch INSERT P' value was dead
 code: the inBatch write returns at the end of the `inBatch` block (line ~28915) before the non-batch INSERT arm, so
-`insertChainedDeletes` was never invoked for `dropThenSet`. Remaining: locate why the batch verifier's
-`directProofField('value', 2)` resolves to the delete register's default for the chunked retry (a depth/extra-item
-divergence masked for inline values, where old and default both settle), and why the chained-delete retry's
-subprogram covenant fails at frame 12. `AuditDS6DefaultRelink.test.ts` still pins both `int[]` cases fail-closed
-(6/6); `AuditDS6ChainOneNode.test.ts` 13/13 and `ChunkedArrays.test.ts` 15/15 stay green.
+`insertChainedDeletes` was never invoked for `dropThenSet`. `AuditDS6DefaultRelink.test.ts` keeps the inline
+`int[]` case settling and pins the chunked `int[]` case fail-closed; `AuditDS6ChainOneNode.test.ts` 13/13 and
+`ChunkedArrays.test.ts` 15/15 stay green.
+
+**UPDATE 2026-10-16 (verified, fourteenth).** The chunked `int[]` case now SETTLES. The frame-12 subprogram is the
+outside-layout walk's INPUT-side preservation check (`emitPreserveOutsideLayoutOwnMutable`), not the batch
+verifier: it freezes every own-category mutable input past the block 1:1 unless its lock is admitted. That walk's
+`admitMintableLocks` flag only admitted mintable locks for loop records, collection iterations, and dynamic-storage
+writes, so a chunkable sorted-mapping delete's consumed OLD value-chunk input (spent at the old `slot||root` chunk
+lock, replaced by a chunk at the new root) was preserved against the replacement chunk and failed the bytecode
+`EQUALVERIFY`. Fix (shipped): `admitMintableLocks` now also admits whenever the function carries the hidden
+value-chunk lock-list witness (`__internal__valueChunkOutputBase`, present for any chunkable sorted-mapping
+write/delete), and `emitBoundSortedCondDelete` rebuilds the deleted node's OLD value-chunk lock from the co-spent
+`coSlot` + `coValue[4:36]` and appends it to that lock list, so the walk admits the consumed chunk input instead of
+preserving it. Verified: `AuditDS6DefaultRelink.test.ts` now SETTLES the chunked (>60 B) `int[]` case (6/6);
+`AuditDS6ChainOneNode.test.ts` 13/13 and `ChunkedArrays.test.ts` 15/15 stay green (34/34).
 
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 

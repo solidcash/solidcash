@@ -2874,6 +2874,19 @@ same surplus-clone strip the composed path has (demote the highest-index old-val
 the pinned relinked lane). `AuditDS6DefaultRelink.test.ts` still pins both `int[]` cases fail-closed (6/6) and
 `AuditDS6ChainOneNode.test.ts` remains 13/13.
 
+**UPDATE 2026-10-16 (verified, ninth).** Implementing the demotion exposed a deeper misalignment, so the demotion
+alone does not settle the case. A direct-path `stripSurplusDirectLoopEntryClones` (same-lock, same-slot,
+different-commitment trailing clone) was tried at the end of `runBuildMidLateThroughTail`: it does demote the
+old-value node-7 clone, but the probe still refuses. Post-strip output capture shows the array build also carries a
+spurious trailing placeholder (`aa20953c…`, empty commitment) between the pinned relinked lane and the clone, so
+the collection's trailing region has two extra outputs and the `__internal__vmapBatchPredOut` witness/loop-entry
+base no longer agree (the probe requests an output index past the materialized count). Demoting in place leaves an
+extra funder the trailing-count check refuses; splicing shifts indices and breaks the absolute PredOut witness.
+The remaining fix is therefore to stop reserving the spurious chunkable-array trailing placeholder (and the
+old-value clone) at the source, so the loop-entry base and the PredOut witness stay aligned, rather than stripping
+after materialization. `AuditDS6DefaultRelink.test.ts` still pins both `int[]` cases fail-closed (6/6) and
+`AuditDS6ChainOneNode.test.ts` remains 13/13.
+
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 
 **What:** a delegated message-bus route binds the proxy's mapping entries and value chunks to the proxy master's lock

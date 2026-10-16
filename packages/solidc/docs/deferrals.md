@@ -2931,8 +2931,10 @@ the tail now mirrors `defaultSortedEntryValueTail` — an unbounded array uses `
 (`0100000000`), bytes/string keep `00000000`, scalars keep empty. Verified: `AuditDS6DefaultRelink.test.ts` now
 SETTLES the inline `int[]` case (and keeps bigint/bytes32/bytes/struct settling); `AuditDS6ChainOneNode.test.ts`
 13/13 and `ChunkedArrays.test.ts` 15/15 stay green (34/34). Remaining for the chunked case: the retry's derive
-probe still fails at ip 644 with a value-chunk pin — node x's entry tail stays EMPTY and the value-chunk output at
-the trailing pad does not match, so the chunked case stays pinned fail-closed.
+probe still fails at ip 644 with a value-chunk pin — the failing EQUALVERIFY compares the covenant's expected
+value-chunk lock against an EMPTY output (the `__internal__valueChunkOutputBase` coordinate reads past/away from
+the materialized value chunk), with node 7's OLD value `[70n, 71n]` still on the stack, so node x's entry tail
+stays EMPTY and the chunked case stays pinned fail-closed.
 
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 

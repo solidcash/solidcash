@@ -586,14 +586,21 @@ and a blockhash read (both contracts advance); `packages/solidcash/test/e2e/Tran
 covers blockhash without keccak. Pre-existing and unchanged: the direct-param transitive keccak (no blockhash)
 outState case still fails OP_VERIFY at HEAD before this change.
 
-**PARTLY RESOLVED (runtime-loop transfer sibling).** The compiler now admits a `for(i)` whose body mints a
+**RESOLVED (runtime-loop transfer sibling).** The compiler now admits a `for(i)` whose body mints a
 runtime-variable number of transfer outputs even when the contract has no sorted collection: the survey flags
 `needsRuntimeLoopTransferCounter` and routes the function through `LowerVMapCounterLoops`, an effect-only domain
 group is created when there is no mapping write, and `runtimeLoopTransfers` publishes the permutation plus an
-exact `iterationBound` (e.g. `recipients.length`) so the SDK can resolve the loop bound. The remaining gap is the
-SDK final assembly: the non-dense input path still parks the satoshi container after the keccak side-cars instead
-of at its block slot, and the N runtime-loop transfer outputs are not yet derived from the loop permutation, so
-the finalized transaction still aborts (`KeccakLoopRuntimeTransfer.test.ts`, committed `it.skip`).
+exact `iterationBound` (e.g. `recipients.length`) so the SDK can resolve the loop bound. The remaining assembly
+gaps were then closed: (1) the SDK derives the N transfer outputs from the published permutation bound and
+materializes them as a trailing `transfers` segment (direct path), (2) the satoshi container is forced onto its
+block slot through the dense input path when the block layout reserves a container slot, and (3) the keccak
+teardown now advances the shared trailing input/output cursors even when the runtime-loop permutation family
+already activated them in the function prologue, so the transfer outputs land after the keccak side-cars. The
+slot-scan satoshi conservation is skipped for runtime-loop BCH transfers, whose conservation is verified with the
+runtime transfer total by the effect verifier. Tests:
+`packages/solidcash/test/e2e/KeccakLoopRuntimeTransfer.test.ts` (unskipped) settles a keccak loop beside two
+runtime transfer outputs, and the keccak-loop siblings (`KeccakLoopTrailingUser`, `KeccakLoopTrailingUserReversed`,
+`KeccakLoopContainerSpend`, `KeccakChainSidecar`, `StatefulKeccakSideCarOrdinals`) still pass.
 
 **Soundness note (not a gap).** The complex-arg + transitive probes assume the keccak preimage depends only on
 the function's args/state, not on surrounding-tx introspection that differs between the isolated probe and the

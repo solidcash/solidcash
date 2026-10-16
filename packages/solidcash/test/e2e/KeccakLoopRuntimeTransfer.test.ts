@@ -47,12 +47,7 @@ async function deployKeccakSidecars(provider: ReturnType<typeof createTestProvid
 const p2pkhLock = (pkh: Uint8Array): string => binToHex(Uint8Array.from([0x76, 0xa9, 0x14, ...pkh, 0x88, 0xac]));
 
 describe('keccak loop beside a runtime-loop transfer (fail-closed edge a)', () => {
-  // TODO(keccak edge a, runtime-transfer sibling): the compiler now detects the runtime-loop transfer and
-  // publishes runtimeLoopTransfers with an exact iterationBound, and the SDK resolves the permutation. The
-  // remaining gap is the SDK final assembly: the non-dense input path parks the satoshi container after the
-  // keccak side-cars instead of at its block slot, and the runtime-loop transfer outputs are not yet derived as
-  // N recipients (the master aborts in the finalized preflight). Re-enable once those land.
-  it.skip('settles a keccak loop beside N runtime transfer outputs with the correct digest', async () => {
+  it('settles a keccak loop beside N runtime transfer outputs with the correct digest', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, { forceStateful: true, suppressWarnings: true });
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -72,7 +67,6 @@ describe('keccak loop beside a runtime-loop transfer (fail-closed edge a)', () =
     const recipientB = new Uint8Array(20).fill(0x44);
     const result = await sc.run(seed, BigInt(rounds), [recipientA, recipientB], 1000n).send();
     const locks = new Set(result.outputs.map((o) => binToHex(o.lockingBytecode)));
-    console.error('DBG-OUTPUTS', [...locks]);
     expect(locks.has(p2pkhLock(recipientA))).toBe(true);
     expect(locks.has(p2pkhLock(recipientB))).toBe(true);
     await expect(sc.check(target).send()).resolves.toBeDefined();

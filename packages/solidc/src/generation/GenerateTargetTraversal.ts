@@ -39801,7 +39801,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * counter from the widths accumulated by the families that precede it in source order.
    */
   private ensureDirectKeccakTrailingCursors(loc: SingleLocationData, keccakLoopPrecedes: boolean): void {
-    if (this.directKeccakTrailingCursorsActive || this.runtimeLoopEntryInputCountActive) return;
+    if (this.directKeccakTrailingCursorsActive) return;
+    // A runtime-loop permutation family activates the entry cursors in the function prologue (its permutation
+    // parameter carries the vmap prefix). The keccak loop still shares the trailing band with it, so record the
+    // relationship without pushing the cursors a second time.
+    if (this.runtimeLoopEntryInputCountActive) {
+      this.directKeccakTrailingCursorsActive = true;
+      if (keccakLoopPrecedes) this.currentFunction.keccakLoopPrecedesTrailingUser = true;
+      return;
+    }
     this.emit(encodeInt(0n), loc);
     this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
     this.emit(encodeInt(0n), loc);
@@ -39871,9 +39879,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.currentFunctionIsMessageBusRoute) return false;
     if (!this.currentFunction.keccakCompute) return false;
     if (!this.blockHasKeccakCall(block)) return false;
-    // A direct function with BOTH a keccak loop and a runtime mapping loop shares one trailing band: activate the
-    // input/output cursors and seed the keccak counter from the widths already consumed by earlier families.
-    if (this.functionHasTrailingMappingLoop(this.currentFunction)) {
+    // A direct function with BOTH a keccak loop and a runtime mapping/transfer loop shares one trailing band:
+    // activate the input/output cursors and seed the keccak counter from the widths already consumed by earlier
+    // families, so a later runtime-loop transfer/event verifies at blockSize + keccakSideCarWidth.
+    if (this.functionHasTrailingMappingLoop(this.currentFunction)
+      || (this.currentFunction.runtimeLoopTransfers?.length ?? 0) > 0
+      || (this.currentFunction.runtimeLoopEvents?.length ?? 0) > 0) {
       this.ensureDirectKeccakTrailingCursors(loc, !this.directTrailingUserSeen);
     }
     this.currentFunction.keccakLoopReads = true; // tells the SDK to progressively co-spend N runtime side-cars
@@ -50893,6 +50904,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (inputs) this.emitInputSlotScan(sat, admitAnchor, mint, outputs, loc);
     if (outputs) this.emitOutputSlotScan(sat, mutable, mint, residue, loc);
     if (!sat) return;
+    // A runtime-loop BCH transfer is conserved by emitRuntimeLoopEffectVerification, which verifies the container
+    // identity and then `containerInput <= containerOutput + runtimeTransferTotal`. This slot-scan aggregate only
+    // adds fixed pendingTransfers and loop-value sends, so repeating it for a runtime-loop transfer compares the
+    // raw container input against its raw output and rejects the authenticated spend.
+    if (this.functionContainsRuntimeLoopBchTransfer(this.currentFunction)) return;
     // [inSum, outSum]. A public call still authorizes a satoshi-container spend: the container covenant's master
     // path checks only that a minting NFT of the category is present. The inputs at the container lock may not
     // exceed its outputs plus the amounts this call actually transfers.

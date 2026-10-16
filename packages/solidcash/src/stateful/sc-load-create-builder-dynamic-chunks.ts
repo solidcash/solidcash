@@ -763,6 +763,7 @@ export async function loadCreateBuilderDynamicChunks(
       }) as FunctionArgument[];
       const directRuntimeArtifact = directRuntimeTransferFunction === delegateRouteAbi && delegateRouteGroup
         ? delegateRouteGroup.externalContract.inner.artifact : host.inner.artifact;
+      const offset = runtimeLoopTransferOutputs.length;
       await appendRuntimeTransfers(
         directRuntimeTransferFunction,
         directRuntimeArgs,
@@ -774,6 +775,10 @@ export async function loadCreateBuilderDynamicChunks(
         },
         -1,
       );
+      const count = runtimeLoopTransferOutputs.length - offset;
+      if (count > 0) {
+        runtimeLoopTransferSegments.push({ rowIndex: -1, offset, count });
+      }
     }
   }
   const runtimeLoopTrailingSegments: Array<

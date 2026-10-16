@@ -5672,6 +5672,7 @@ export class StatefulTransactionBuilder {
     // mapping-value continuations. Do not add nested jobEvents width here — that band is
     // shifted past this base in getChunkableValueWriteBand instead.
     return trailingBase
+      + (!this.keccakLoopFollowsTrailingUser ? this.keccakLoopRecreates.length : 0)
       + (this.loopEntriesBeforeDynamicChunks ? this._trailingLoopEntryOutputCount() : 0)
       + this.runtimeLoopEventOutputs.length
       + this.runtimeLoopTransferOutputs.length;

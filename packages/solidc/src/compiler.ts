@@ -12535,18 +12535,18 @@ function synthesizeMessageBusRoute(
       function __message_bus_find_last_output(bytes category, bytes lockingBytecode) internal view returns (bigint) {
         // A backwards search can stop on its first exact match while retaining the original last-match rule.
         // Keep the scan frame shallow and skip unrelated categories before inspecting locking bytecode.
-        bigint result = -1;
+        bigint __message_bus_result = -1;
         bigint output = tx.outputs.length;
         if (output > 0) {
           do {
             do { output = output - 1; }
             while (output > 0 && tx.outputs[output].tokenCategory != category);
             if (tx.outputs[output].tokenCategory == category) {
-              if (tx.outputs[output].lockingBytecode == lockingBytecode) { result = output; }
+              if (tx.outputs[output].lockingBytecode == lockingBytecode) { __message_bus_result = output; }
             }
-          } while (output > 0 && result < 0);
+          } while (output > 0 && __message_bus_result < 0);
         }
-        return result;
+        return __message_bus_result;
       }
       function __message_bus_empty_pad(bigint input, bigint output) internal view returns (bool) {
         // All three terms are nonnegative. Eager evaluation avoids conditional dispatch on every pad;
@@ -12575,14 +12575,14 @@ function synthesizeMessageBusRoute(
       ) internal view returns (bigint) {
         // Every participant master is minting. Preserve the last exact match across all outputs, including
         // duplicates outside participant blocks, using the shared census rather than rescanning every pad.
-        bigint result = -1;
+        bigint __message_bus_result = -1;
         for (bigint at = 0; at < outputs.length; at = at + 4) {
           bigint output = int(bytes.concat(outputs.slice(at, at + 4), hex"00"));
           if (tx.outputs[output].tokenCategory == category) {
-            if (tx.outputs[output].lockingBytecode == lockingBytecode) { result = output; }
+            if (tx.outputs[output].lockingBytecode == lockingBytecode) { __message_bus_result = output; }
           }
         }
-        return result;
+        return __message_bus_result;
       }
       function __message_bus_physical_counts(
         bigint activeBase, bigint activeOutputBase, bigint activeBlockSize, bytes activeCategory,

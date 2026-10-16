@@ -28,6 +28,16 @@ contract C() {
 
 // A recursive PURE helper whose result feeds a single state write: exercises the same walk (run -> sumTo ->
 // sumTo) and round-trips on-chain.
+const SELF_DENSE = `pragma solidcash >=0.8.0;
+contract C() {
+  int x;
+  function decrement(int i) {
+    this.x = this.x - i - i - i - i - i - i - i - i - i - i;
+    if (i > 1) { decrement(i - 1); }
+    require(i > 0);
+  }
+  function chk(int e) { require(this.x == e); }
+}`;
 const PURE = `pragma solidcash >=0.8.0;
 contract C() {
   int x;
@@ -137,10 +147,11 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
    * 800-per-byte budget times a 689-byte density control length. It still refuses and still passes, and it has
    * not measured a budget since X130 made `debug()` provider-faithful: `MOCK_CONSENSUS_LIMITS` publishes
    * `operationCostBudgetPerByte: 10_000_000`, 12,500x the stock value, so on the default profile no depth this
-   * handler survives can exceed the budget. Measured on this branch: depth 47 fits the stock density budget,
-   * depth 48 is the smallest depth that reaches a concrete density refusal (1,164,024 vs the 1,164,000 ceiling,
-   * 24 over, density control length 1455), and depth 49 exceeds the VM's 100-entry control stack even at the
-   * relaxed budget - so 48 is the unique overlap where the same invocation BUILDS relaxed and REFUSES stock.
+   * handler survives can exceed the budget. Measured on this branch with the denser `SELF_DENSE` handler (extra
+   * straight-line subtractions keep the density boundary observable after the container-covenant pin grew):
+   * depth 47 fits the stock density budget, depth 48 is the smallest depth that reaches a concrete density
+   * refusal, and depth 49 exceeds the VM's 100-entry control stack even at the relaxed budget - so 48 is the
+   * unique overlap where the same invocation BUILDS relaxed and REFUSES stock.
    * The old assertion matched only the SDK's wrapper sentence, so it could not tell the two apart.
    *
    * REPAIRED BY PINNING THE CEILING TO A PUBLISHED PROFILE. The subject runs against the STOCK BCH-2026
@@ -165,7 +176,7 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
 
   /** Stage the recursive contract against one published operation-cost budget. */
   const stageAtBudget = async (operationCostBudgetPerByte: number): Promise<StatefulContract<any>> => {
-    const artifact = compileString(SELF, { forceStateful: true });
+    const artifact = compileString(SELF_DENSE, { forceStateful: true });
     const staged = new MockNetworkProvider({
       consensusLimits: { ...MOCK_CONSENSUS_LIMITS, operationCostBudgetPerByte },
     });

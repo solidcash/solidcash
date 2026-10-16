@@ -1705,6 +1705,20 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitCast(node: CastNode): Node {
     node.expression = this.visit(node.expression);
+    // Solidity wraps a negative integer literal cast to an unsigned bounded type in two's complement:
+    // `uint64(-1) == type(uint64).max`, `uint64(-2) == max - 1`, and so on. Fold it to the wrapped constant
+    // here so a runtime comparison like `require(x <= uint64(-1))` compares against the real maximum instead
+    // of emitting the literal -1 followed by an out-of-range uintN bounds check.
+    if (this.evmCompat && node.sourceCast && !node.isUnsafe
+      && node.type instanceof IntType && !node.type.signed
+      && node.expression instanceof IntLiteralNode && node.expression.value < 0n) {
+      const modulus = 1n << BigInt(node.type.bits);
+      const wrapped = ((node.expression.value % modulus) + modulus) % modulus;
+      const literal = new IntLiteralNode(wrapped);
+      literal.type = node.type;
+      literal.location = node.location;
+      return literal;
+    }
     if (this.strictSolidityValidation && node.sourceCast
       && node.type instanceof BytesType && node.type.bound !== undefined) {
       if (node.expression instanceof IntLiteralNode && node.expression.value !== 0n) {

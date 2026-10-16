@@ -2324,19 +2324,22 @@ root's `emitOwnCategoryMutableNftConservation` no longer counts a `poolInfo.push
 Pinned by `packages/solidcash/test/e2e/SplitAddPushPreflight.test.ts` (a split `add` that pushes a struct-array
 element now settles instead of aborting at the input-0 OP_VERIFY), with the split compiler suites
 (`DynamicWriteArraySplit`, `FunctionSplit`, `LargeContractSplitting`) and the split e2e siblings
-(`SplitFacetMsgSender`, `SplitLayoutAgreementX162`, `SplitMerge`) still green. MasterChef's remaining block
-below is the `BoringMath.to64` narrowing defect, which MasterChefV2 reaches once the conservation check no
-longer masks it.
+(`SplitFacetMsgSender`, `SplitLayoutAgreementX162`, `SplitMerge`) still green.
 
-Second, distinct defect behind it (2026-10-15): once `MasterChef.add` is bypassed, `MasterChefV2.add`
-(`allocPoint.to64()` / `lastRewardBlock.to64()` narrowing) fails its own `BoringMath.to64` "uint64 Overflow"
-guard at `body=29` (invoke id `04`), `ip=11 op=0x88 OP_EQUALVERIFY` with `top=[440a02 81 80 00]`. `440a02` is
-the block oracle's `block.number` = 133700 (in range for uint64), but the outlined helper checks the SIGN byte of
-the literal `-1` from `uint64(-1)` (`OP_1NEGATE OP_DUP OP_9 OP_NUM2BIN OP_8 OP_SPLIT OP_NIP OP_0
-OP_EQUALVERIFY`, sign byte `80` != `00`) rather than the argument's range, so the guard fails for the in-range
-value. A minimal `to64(10)` on the same split+messageBus path settles (so ordinary narrowing is sound); the
-defect is specific to narrowing the block-oracle `block.number` value, and it is masked in the census by the
-conservation check above but will resurface for MasterChefV2 once that is fixed. Trace:
+Second, distinct defect behind it (2026-10-15, RESOLVED 2026-10-16): once `MasterChef.add` is bypassed,
+`MasterChefV2.add` (`allocPoint.to64()` / `lastRewardBlock.to64()` narrowing) failed its own `BoringMath.to64`
+"uint64 Overflow" guard at `body=29` (invoke id `04`), `ip=11 op=0x88 OP_EQUALVERIFY` with `top=[440a02 81 80
+00]`. `440a02` is the block oracle's `block.number` = 133700 (in range for uint64), but the outlined helper
+checked the SIGN byte of the literal `-1` from `uint64(-1)` (`OP_1NEGATE OP_DUP OP_9 OP_NUM2BIN OP_8 OP_SPLIT
+OP_NIP OP_0 OP_EQUALVERIFY`, sign byte `80` != `00`) rather than the argument's range, so the guard failed for
+the in-range value. The root cause was that `uint64(-1)` was not folded to `type(uint64).max` in evmCompat
+type checking: when the surrounding `require(a <= uint64(-1))` could not be whole-expression constant-folded
+(the left side is a runtime `block.number` or argument), codegen emitted the literal -1 followed by the uint64
+sign-byte bounds check. `TypeCheckTraversal.visitCast` now folds `uintN(negative literal)` to the wrapped
+two's-complement constant, so `uint64(-1)` becomes `type(uint64).max` and the comparison checks the real
+maximum. Pinned by `packages/solidcash/test/e2e/SplitTo64Preflight.test.ts` (a split message-bus
+`value.to64()` settles for an in-range runtime value and still refuses `2^64`), the ARITH-5 class-C VM tests,
+and the full `solidity-compat` compiler suite (1187 tests). Trace:
 `masterchefv2-add-trace.log` (both `chef.add` and `chef2.add` sites) in the goal scratch.
 
 The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with

@@ -290,6 +290,8 @@ export interface ExternalCallIterationDomainAbi {
 /** One repeated BCH-transfer segment produced by a runtime counter loop. */
 export interface RuntimeLoopTransferAbi {
   permutationParam: string;
+  /** Exact bound expression when the permutation's source domain is not recoverable from its legacy name. */
+  iterationBound?: ExternalCallExpression;
   siteCount: number;
   /** Effect kind per source site. Omitted by older artifacts whose sites are all plain BCH transfers. */
   siteKinds?: readonly ('bch' | 'token' | 'nft')[];

@@ -3568,8 +3568,17 @@ function buildFunctionAbiMetadata(
         transfer.runtimeLoopTransferCondition && conditions[index] === null)) {
         throw new Error(`Runtime transfer condition in '${func.name}' cannot be represented in artifact metadata`);
       }
+      const sourceBound = loop.permutationParam
+        ? func.runtimeCounterLoopBounds?.get(loop.permutationParam) : undefined;
+      const iterationBound = sourceBound && serializeCondition(
+        sourceBound, undefined, new Set(), new Set(),
+      );
+      if (sourceBound && !iterationBound) {
+        throw new Error(`Runtime transfer bound in '${func.name}' cannot be represented in artifact metadata`);
+      }
       return {
         permutationParam: loop.permutationParam,
+        ...(iterationBound && { iterationBound }),
         siteCount: transferSites.length,
         ...(transferSites.some((transfer) => transfer instanceof TokenContainerMethodStatementNode) && {
           siteKinds: transferSites.map((transfer) => transfer instanceof TokenContainerMethodStatementNode

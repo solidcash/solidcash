@@ -844,6 +844,7 @@ interface OptionalLoweringFeatures {
   needsBreakContinue: boolean;
   needsEarlyReturn: boolean;
   needsVMapCounter: boolean;
+  needsRuntimeLoopTransferCounter: boolean;
   needsAlphaRename: boolean;
   statefulnessSurveyComplete: boolean;
   hasContractInstantiation: boolean;
@@ -909,9 +910,32 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let needsBreakContinue = false;
   let needsEarlyReturn = false;
   let needsVMapCounter = false;
+  let needsRuntimeLoopTransferCounter = false;
   let needsAlphaRename = false;
   const definedFunctionNames = new Set<string>();
   const calledFunctionNames = new Set<string>();
+  const loopContainsRuntimeTransfer = (loop: WhileNode | DoWhileNode): boolean => {
+    const seen = new Set<Node>();
+    const walk = (candidate: Node): boolean => {
+      if (seen.has(candidate)) return false;
+      seen.add(candidate);
+      if (candidate instanceof TransferStatementNode || candidate instanceof TokenContainerMethodStatementNode) {
+        return true;
+      }
+      for (const key in candidate) {
+        if (key === 'location' || key === 'type' || key === 'name' || key === 'functionId'
+          || key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+          || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
+          || key === 'collection') continue;
+        const value = (candidate as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) { if (walk(value)) return true; } else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node && walk(item)) return true;
+        }
+      }
+      return false;
+    };
+    return walk(loop.block);
+  };
   while (pending.length > 0) {
     const node = pending.pop()!;
     if (seenNodes.has(node)) continue;
@@ -968,7 +992,12 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     // otherwise escapes the survey and reaches type validation before it can become a blob.
     if (node instanceof StructDefinitionNode
       && node.fields.some((field) => typeContainsFunction(field.type))) hasFunctionPointers = true;
-    if (node instanceof WhileNode || node instanceof DoWhileNode) needsLoop = true;
+    if (node instanceof WhileNode || node instanceof DoWhileNode) {
+      needsLoop = true;
+      // A runtime-loop transfer (a counter loop whose body mints transfer outputs) needs the counter-loop
+      // lowering even when the contract has no sorted collection, so its N outputs are derived, not one.
+      if (loopContainsRuntimeTransfer(node)) needsRuntimeLoopTransferCounter = true;
+    }
     if (node instanceof BreakNode || node instanceof ContinueNode) needsBreakContinue = true;
     if (node instanceof BranchNode || node instanceof UncheckedNode || node instanceof SwitchNode
       || node instanceof TryCatchNode
@@ -1062,6 +1091,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     needsBreakContinue,
     needsEarlyReturn,
     needsVMapCounter,
+    needsRuntimeLoopTransferCounter,
     needsAlphaRename,
     statefulnessSurveyComplete: true,
     hasContractInstantiation,
@@ -15495,7 +15525,7 @@ function compileResolvedAst(
     needsExternalCallLowering, needsInlineAssembly,
     needsTailRecursion, needsReturnInLoop, needsNamedReturns, needsReturnDesugaring, needsNestedBranchReturn,
     needsPostfixIncDec, needsMappingFieldCoalesce, needsLoop, needsBreakContinue,
-    needsEarlyReturn, needsVMapCounter, needsAlphaRename,
+    needsEarlyReturn, needsVMapCounter, needsRuntimeLoopTransferCounter, needsAlphaRename,
     statefulnessSurveyComplete, hasContractInstantiation, deploysWithValue, emitsEvent,
   } = surveyOptionalLowerings(ast);
   // The survey above answers for the whole unit, which for a multi-artifact compile is every sibling contract as
@@ -15524,9 +15554,11 @@ function compileResolvedAst(
 
   // Keep direct compilation's narrow permutation ABI stable. Message-bus compilation still needs the richer
   // analysis to classify legacy-unroll refusals, while kernel execution was already lowered at admission.
-  if (needsVMapCounter && needsLoop && !mergedCompilerOptions.messageBus) {
+  if (needsVMapCounter && needsLoop && !mergedCompilerOptions.messageBus
+    && !needsRuntimeLoopTransferCounter) {
     ast = ast.accept(new LowerLegacyVMapCounterLoops()) as Ast;
-  } else if (needsVMapCounter && needsLoop && mergedCompilerOptions.messageBusKernel !== true) {
+  } else if ((needsVMapCounter || needsRuntimeLoopTransferCounter) && needsLoop
+    && mergedCompilerOptions.messageBusKernel !== true) {
     ast = ast.accept(new LowerVMapCounterLoops(false)) as Ast;
   }
 

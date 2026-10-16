@@ -586,10 +586,14 @@ and a blockhash read (both contracts advance); `packages/solidcash/test/e2e/Tran
 covers blockhash without keccak. Pre-existing and unchanged: the direct-param transitive keccak (no blockhash)
 outState case still fails OP_VERIFY at HEAD before this change.
 
-**Revisit if.** A real contract needs a keccak loop beside a RUNTIME-LOOP transfer (a `for(i)` whose body mints a
-runtime-variable number of transfer outputs, not the straight-line container spend above) in the same trailing
-region. The mapping-write sibling and the straight-line satoshi/token container-spend sibling of edge 1 are both
-resolved.
+**PARTLY RESOLVED (runtime-loop transfer sibling).** The compiler now admits a `for(i)` whose body mints a
+runtime-variable number of transfer outputs even when the contract has no sorted collection: the survey flags
+`needsRuntimeLoopTransferCounter` and routes the function through `LowerVMapCounterLoops`, an effect-only domain
+group is created when there is no mapping write, and `runtimeLoopTransfers` publishes the permutation plus an
+exact `iterationBound` (e.g. `recipients.length`) so the SDK can resolve the loop bound. The remaining gap is the
+SDK final assembly: the non-dense input path still parks the satoshi container after the keccak side-cars instead
+of at its block slot, and the N runtime-loop transfer outputs are not yet derived from the loop permutation, so
+the finalized transaction still aborts (`KeccakLoopRuntimeTransfer.test.ts`, committed `it.skip`).
 
 **Soundness note (not a gap).** The complex-arg + transitive probes assume the keccak preimage depends only on
 the function's args/state, not on surrounding-tx introspection that differs between the isolated probe and the

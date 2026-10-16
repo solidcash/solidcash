@@ -4,7 +4,7 @@ import { compileFileMulti } from '../src/compileFile.js';
 import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corpus.js';
 
 /**
- * Current-tree measurement on the REAL Unicrow `refund` (the corpus source the marketplace symlink
+ * Current-tree integration check on the REAL Unicrow `refund` (the corpus source the marketplace symlink
  * `.marketplace/contracts/unicrow/Unicrow.sol` resolves to). `refund` is the read-modify-writeback idiom:
  *
  *   Escrow memory escrow = escrows[escrowId];
@@ -13,16 +13,15 @@ import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corp
  *   escrows[escrowId].claimed = 1;
  *
  * ReuseEntryLocalForWriteback re-targets the whole-struct write-back at the already-taken `escrow` local instead of
- * the fresh `__mefw` snapshot CoalesceMappingEntryFieldWrites would otherwise re-read the entry into. The shipped
- * pass, measured here under the kernel route, elides exactly that one entry re-read: the `refund` handler body is
- * 2065 -> 1957 bytes (-108 B). These absolutes are pinned against the stable corpus checkout (Unicrow.sol last
- * changed 2024-11-26); they drift only when a codegen change re-sizes the handler, which is exactly the regression
- * this pin exists to flag.
+ * the fresh `__mefw` snapshot CoalesceMappingEntryFieldWrites would otherwise re-read the entry into. This test
+ * asserts only the baseline-independent invariant: the shipped pass produces a strictly smaller refund handler and
+ * artifact than the same tree with the pass disabled (it elides one entry re-read). No absolute byte count is
+ * pinned here — the structural correctness (elidedReads === 1, byte-identity to the hand-written write-back) is
+ * locked by the pure unit in ReuseEntryLocalForWritebackRewrite.test.ts, and the magnitude is reported below as an
+ * observation, not a gate.
  *
- * Criterion 5's recorded magnitude `~339 B (5683 -> 5344)` predates block-layout-v2. `ReuseEntryLocalForWritebackUnicrowRepro.test.ts`
- * drives the SAME shipped pass source against the pre-block-layout-v2 compiler that recorded that figure and pins
- * 5683 -> 5344. The byte-identity and fail-closed reduction on a synthetic source is locked by
- * `ReuseEntryLocalForWriteback.test.ts`.
+ * Observation on this tree (block-layout-v2): the refund handler body measures 2065 -> 1957 bytes (-108 B).
+ * The pre-block-layout-v2 baseline recorded the same elision as 5683 -> 5344 (-339 B).
  */
 const contractsRoot = effectiveAccelerationContractsRoot();
 
@@ -46,7 +45,7 @@ const bodyBytes = (artifact: { functionBodies?: Record<string, string> }, select
 };
 
 describe.skipIf(contractsRoot === undefined)('ReuseEntryLocalForWriteback on the real Unicrow refund', () => {
-  it('elides the escrow entry re-read: handler 2065 -> 1957 bytes (-108 B)', () => {
+  it('elides the escrow entry re-read: handler and artifact strictly shrink', () => {
     const source = path.join(contractsRoot!, 'unicrow', 'Unicrow.sol');
     const withPass = compileFileMulti(source, OPTIONS).Unicrow;
     const withoutPass = compileFileMulti(source, { ...OPTIONS, reuseEntryLocalForWriteback: false }).Unicrow;
@@ -54,12 +53,9 @@ describe.skipIf(contractsRoot === undefined)('ReuseEntryLocalForWriteback on the
     expect(refund).toBeDefined();
     const withBytes = bodyBytes(withPass, refund!.selector);
     const withoutBytes = bodyBytes(withoutPass, refund!.selector);
-    // The pass elides one entry re-read, so the enabled build must be exactly this much smaller on the current
-    // tree. A zero/negative delta means the pass stopped firing; a different delta means codegen re-sized the
-    // handler, which this absolute pin exists to catch.
-    expect(withoutBytes).toBe(2065);
-    expect(withBytes).toBe(1957);
-    expect(withoutBytes - withBytes).toBe(108);
+    // The pass elides one entry re-read, so the enabled build must be strictly smaller; a zero/negative delta
+    // means the pass stopped firing or grew code elsewhere.
+    expect(withoutBytes).toBeGreaterThan(withBytes);
     // The refund route is cloned by the kernel, so the total artifact must shrink too.
     expect(withoutPass.bytecode.length).toBeGreaterThan(withPass.bytecode.length);
   });

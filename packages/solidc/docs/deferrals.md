@@ -2768,6 +2768,23 @@ batched across transactions before the final upgrade, behind the old code's auth
 **Why deferred:** it is a covenant protocol for every record kind plus an SDK planner; the refusal fails closed
 meanwhile.
 
+**Implementation seams (verified against HEAD 2026-10-16).** The data-NFT half is the bounded first slice; the
+refusal still also gates mapping/array entries and containers, which keep their own covenants. Derived from the code:
+- The data-NFT covenant already has the destroy path (`flag=2`), but it requires the output at `INPUTINDEX` to hold a
+  DIFFERENT category, so a re-mint cannot sit at the old input's index. The migration layout is therefore
+  `out[0]=new master`, a non-category pad band at `out[1..N]`, re-minted data NFTs at `out[N+1..2N]` (replacement-bound
+  data-NFT covenant, `input[i].commitment == output[N+i].commitment`), and added data NFTs at `out[2N+1..2N+M]`.
+- `emitOwnCategoryMutableNftConservation`'s `allowUpgradeDataNftGrowth` branch already balances the `N` old inputs
+  against the `N+M` re-minted outputs, but its growth scan starts at `1 + dataNftCount`; for the migration it must
+  start at `1 + 2*dataNftCount` (otherwise it over-discounts the re-minted band). A new re-mint verification must pin
+  each re-minted output's replacement-bound lock and commitment copy.
+- SDK `sc-upgrade.ts` already rebuilds commitments and mints added data NFTs, but spends old data NFTs with `flag=1`
+  (write, same-lock) and places existing data-NFT outputs at the OLD covenant; it must switch to
+  `createDestroyDataNftUnlocker` (`flag=2`) and the pad/`getDataNftAddress(newContract, …)` band above.
+- `refuseUpgradeStrandingBoundRecords` must stop listing `state variables in data NFTs` while keeping the
+  mapping/array and container entries. The existing refusal is pinned by `Upgrade.test.ts` (28/28) and
+  `KernelUpgradeCompose.test.ts` (5/5).
+
 **STATUS 2026-10-16 (refusal verified on the real path).** The fail-closed refusal is pinned by the shipped e2e
 suites, re-run green: `packages/solidcash/test/e2e/Upgrade.test.ts` ("refuses an in-place upgrade that would strand
 lock-bound records", 4 cases, and the whole 28-test file passes) and

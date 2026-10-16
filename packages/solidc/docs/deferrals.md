@@ -2768,6 +2768,13 @@ batched across transactions before the final upgrade, behind the old code's auth
 **Why deferred:** it is a covenant protocol for every record kind plus an SDK planner; the refusal fails closed
 meanwhile.
 
+**STATUS 2026-10-16 (refusal verified on the real path).** The fail-closed refusal is pinned by the shipped e2e
+suites, re-run green: `packages/solidcash/test/e2e/Upgrade.test.ts` ("refuses an in-place upgrade that would strand
+lock-bound records", 4 cases, and the whole 28-test file passes) and
+`packages/solidcash/test/journal-message-bus/e2e/KernelUpgradeCompose.test.ts` ("refuses a participant that keeps
+records, and a replacement that adds state", 5/5). The open item remains the migration protocol itself; no record
+kind moves yet.
+
 ## Logical caller identity for native compiles (model B residual, 2026-10-14)
 
 **What:** packages/solidcash/test/journal-message-bus/e2e/KernelPhysicalCallerWithScidCompose.test.ts (skipped) needs a

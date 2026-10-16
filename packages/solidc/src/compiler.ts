@@ -256,6 +256,7 @@ import CoalesceStructFieldArrayWrites from './semantic/CoalesceStructFieldArrayW
 import OptimizeFixedArrayValues from './semantic/OptimizeFixedArrayValues.js';
 import CoalesceStateArrayStructFieldWrites from './semantic/CoalesceStateArrayStructFieldWrites.js';
 import CoalesceMappingEntryFieldWrites from './semantic/CoalesceMappingEntryFieldWrites.js';
+import ReuseEntryLocalForWriteback from './semantic/ReuseEntryLocalForWriteback.js';
 import RedesugarImportedUdvtWrap from './semantic/RedesugarImportedUdvtWrap.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
 import expandModifiers, { validateModifierDefinitions } from './semantic/ModifierExpansionTransformation.js';
@@ -15625,6 +15626,10 @@ function compileResolvedAst(
 
   // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
   if (needsPostfixIncDec) ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
+
+  // Reuse an already-taken entry-read local for the whole-struct write-back of a field-write run (Unicrow
+  // `refund`), before CoalesceMappingEntryFieldWrites would re-read the entry for the same write-back.
+  if (needsMappingFieldCoalesce) ast = ast.accept(new ReuseEntryLocalForWriteback()) as Ast;
 
   // Coalesce consecutive whole-field writes to the same vmap mapping entry (`m[k].a=x; m[k].b=y`) into one entry
   // read + one whole-struct write, replacing N sorted-mapping upserts with one.

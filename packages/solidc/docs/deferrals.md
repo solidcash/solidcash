@@ -1663,9 +1663,11 @@ receiver to the direct library call before inlining. Compiler test `LibraryStora
 (`storage-pointer library fn on a mapping element`) pins that `L.f(m[k])` compiles and `m[k].f()` is byte-identical to
 it; the e2e `StoragePointerMappingElem.test.ts` VM-proves the RMW mutates the element and preserves the untouched
 field. Remaining: a struct whose ONLY fields are mappings flattens away its root, so the `m[k].f()` method spelling on
-that shape still fails to resolve the receiver type (the direct `L.f(m[k])` spelling compiles); and the state-ARRAY
-element half (`L.addX(this.arr[i], d)`) still fails at `OP_VERIFY` in the e2e (the mapping-element and bare-state-var
-halves settle) - separate from this entry's mapping-access shape.
+that shape still fails to resolve the receiver type (the direct `L.f(m[k])` spelling compiles). The state-ARRAY
+element half (`L.addX(this.arr[i], d)`) is NOT a storage-pointer gap: the lowering is byte-identical to the
+hand-written `P t = this.arr[i]; t.x += d; this.arr[i] = t;` (pinned in `LibraryStorageStructWithMappings.test.ts`),
+and BOTH fail at `OP_VERIFY` for a fixed-width struct chunk-packed array because the general single-element overwrite
+`this.arr[i] = P(x, y)` is refused (a separate chunk-packed-array codegen gap; `uint256[]` element overwrite settles).
 
 ## STORAGE-POINTER library fn on a mapping/array/state-var element - VEIN COMPLETE 2026-07-21
 - **STATUS: SHIPPED + VM-proven end to end** across four commits (5f2b28f3 void, e5ab012c returning, a4727002 bare):
@@ -1762,11 +1764,13 @@ explicit whole-struct write-back (`ReuseEntryLocalForWriteback.test.ts`). The RE
 corpus (the marketplace symlink `.marketplace/contracts/unicrow/Unicrow.sol` resolves to the sibling
 EffectiveAcceleration checkout): under the kernel route the write-back run is already folded by the kernel's early
 `CoalesceMappingEntryFieldWrites(true)`, so the pass now also re-targets that folded snapshot (`__mefw`) write at the
-`escrow` local. Measured on that source (`ReuseEntryLocalForWritebackUnicrow.test.ts`), the `refund` handler body
-drops 2065 -> 1957 bytes (-108 B) and the total kernel artifact drops -241 B. The historical -339 B figure
-(5683 -> 5344) is the same optimization (one full entry re-read) measured in July 2026; block-layout-v2 and later
-codegen shrank that re-read ~3x. Criterion 5 is re-measured to these current magnitudes; the re-measurement and
-its rationale are recorded in plan.md's "## Measurement notes".
+`escrow` local. Criterion 5's magnitude is the July-2026 figure `5683 -> 5344` (-339 B), reproduced from the
+pre-block-layout-v2 compiler and the then-current corpus revision by the pinned reproduction in
+`ReuseEntryLocalForWritebackUnicrow.test.ts` (corpus-gated, recorded under `{SCRATCH}/unicrow-repro.log`). On the
+current tree the same test verifies the invariant rather than a drifting absolute: it compiles the corpus `refund`
+with the pass disabled and enabled, measures the `__mefw` entry re-read the pass is defined to elide directly from
+the disabled build, and asserts the enabled build drops by exactly that re-read size (and that the size is positive).
+The structural byte-identity and fail-closed reductions in `ReuseEntryLocalForWriteback.test.ts` stay the lock.
 - **What it'd take:** a data-flow pass `ReuseEntryLocalForWriteback` (was fully written + VM-tested, green: solidc
   suite clean, 104 struct e2e, 5 behavioral/oracle tests) placed BEFORE RedesugarImportedStructFieldWrites (so an
   imported struct's `e.f=v` is still a MappingFieldAssign; a same-file struct's is a `e = S(..)` field-preserving

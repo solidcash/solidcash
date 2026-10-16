@@ -144,4 +144,17 @@ describe('storage-pointer library fn on a mapping element (direct + using-for sp
     expect(b.contractName).toBe('C');
     expect(b.bytecode).toBe(a.bytecode);
   });
+
+  // The STATE-ARRAY element spelling lowers through the same RMW template. It is byte-identical to the
+  // hand-written read-modify-write, so the storage-pointer lowering itself is not what a later pass rejects.
+  it('lowers L.addX(this.arr[i], d) byte-identically to the hand-written RMW', () => {
+    const hand = compileString('contract C { struct P { int x; int y; } P[] arr;'
+      + ' function bump(int i, int d) external { P t = this.arr[i]; t.x += d; this.arr[i] = t; require(true); } }',
+    { evmCompat: true });
+    const lib = compileString('struct P { int x; int y; }'
+      + ' library L { function addX(P storage p, int d) { p.x += d; } }'
+      + ' contract C { P[] arr; function bump(int i, int d) external { L.addX(this.arr[i], d); require(true); } }',
+    { evmCompat: true });
+    expect(lib.bytecode).toBe(hand.bytecode);
+  });
 });

@@ -607,8 +607,15 @@ spend (fail closed) - never accept a wrong hash.
 
 ---
 
-## Conformance harness: run the SAME EXACT source on solc + solidc  — 2026-07-16
+## Conformance harness: run the SAME EXACT source on solc + solidc  — RESOLVED 2026-10-16
 
+**RESOLVED.** The harness now has a shared-subset path (`sharedSourceCase` +
+`assertSharedSourceAccepts`, `packages/solidcash/test/conformance/harness.ts`): ONE Solidity-spelled `contract C`
+source string - a self-contained `require` covenant - compiles under BOTH solc and solidc (solidc accepts the
+Solidity pragma/contract/visibility spellings via evmCompat), so no per-dialect template is generated.
+`shared-source.conformance.test.ts` runs the identical text through both toolchains and records both accept it
+(abi.decode/encode round-trip, checked arithmetic, multi-word decode). The historical generated-two-sources
+analysis below is retained for context.
 **What.** The differential conformance harness (`packages/solidcash/test/conformance/harness.ts`) generates TWO
 sources per case - a Solidity one (`contract C { ... return <expr>; }`) and a separate SolidCash one
 (`contract Conf() { ... require(<expr> == __expected); }`). They differ only in unavoidable decorations (SPDX +
@@ -1301,7 +1308,7 @@ delicate (every calldata op must agree on one layout); reuse the ABI encoders in
 **Revisit if.** A concrete port needs dynamic-calldata tail access (raw ABI decoding in assembly), or the calldata
 model is rebuilt for another reason - then `.offset` falls out of the head/tail layout.
 
-## bytes/string slot fields + address slot fields - MOSTLY DONE 2026-10-16 (03cd9c6e9)
+## bytes/string slot fields + address slot fields - DONE 2026-10-16 (03cd9c6e9, e4f89650d)
 
 UPDATE: the short-string byte-array encoding IS built, VM-proven. `sstore(bytesVar.slot, constX)` decodes EVM's
 short-slot layout at COMPILE TIME (data left-aligned in the high bytes big-endian, low byte = 2*len; X==0 clears) ->
@@ -1763,7 +1770,15 @@ changes and is superseded by that measurement.
 - **Revisit if:** per-contract byte size becomes a hard deploy constraint, or the read-modify-writeback idiom shows up
   broadly (a struct with many untouched fields reused elsewhere saves more - est. ~800 B for a 13-field struct).
 
-## Multi-return STATE helper inline (Kashi `_isSolvent`) - BLOCKED by a pre-existing inline miscompile
+## Multi-return STATE helper inline (Kashi `_isSolvent`) - RE-LANDED 2026-10-16
+**RE-LANDED.** The blocker described below (the copy-local-key sorted-mapping read miscompile) was resolved
+2026-08-04 (see the "RESOLVED (verified 2026-08-04)" subsection), and the single-exit conversion was re-landed:
+`InlineReturningStateHelpers` canonicalizes a returning state/entry-reading helper with several early returns into
+the single-exit ternary form, so `_ok` inlines into its caller instead of failing "Block layout not available".
+`KashiMultiReturnInline.test.ts` pins the inline (the helper's entry access lands on the caller and no `_ok`
+subroutine remains), and `KashiIsSolventInline.test.ts` VM-verifies the inlined shape settles identically to the
+direct-expression oracle across every `b == 0 / b < m / b >= 2*m` boundary. The historical failure analysis below is
+retained for context, not as an active deferral.
 - **What:** A returning STATE/entry-reading helper with EARLY RETURNS (`function _ok(a,m) view returns (bool) { int b
   = bal[a]; if (b==0) return false; if (b<m) return false; return b>=m*2; }`, Kashi `_isSolvent` shape) fails "Block
   layout not available" - it can neither be an OP_INVOKE subroutine (entry access needs the caller's block layout) nor

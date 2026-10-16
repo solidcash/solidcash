@@ -5663,11 +5663,22 @@ export class StatefulTransactionBuilder {
     }, 0);
     const externalReturnOutputCount = this.tailReturnEventOutputs()
       .filter((returnEvent) => returnEvent.categoryId !== this.categoryId).length;
-    // Co-spent logical/external identity anchors (immutable CREATE/SCID NFTs) are recreated before the local
-    // dynamic-chunk run, like the external call blocks above; they are outside this function's blockLayout too.
-    const identityAnchorOutputCount = this.externalIdentityAnchorUtxos.length + (this.logicalIdentityUtxo ? 1 : 0);
+    // Old dynamic-storage chunks and the sorted-batch loop-alignment funder are co-spent BEFORE the nested
+    // callee blocks (buildInputs places them between the owner block and the participants). They shift every
+    // participant one coordinate right, so the trailing band must count them; otherwise the caller's loop-entry
+    // base lands on the last participant output (MasterChef.deposit: poolInfo old chunk + userInfo alignment
+    // funder push the LP block from offset 7 to 9, and userInfo HEAD then collides with the LP balances P').
+    // Without external participants these resources sit directly at the ordinary trailing base, so they must
+    // not be double-counted.
+    const preCalleeDynamicChunkCount = externalCallOutputCount > 0 ? this.dynamicChunkInputs.length : 0;
+    const loopAlignmentFunderCount = externalCallOutputCount > 0 && this.loopEntriesBeforeDynamicChunks
+      ? Math.max(0, this._trailingLoopEntryOutputCount() - this.insertLoopPredecessorInputs.length)
+      : 0;
+    // Identity anchors are recreated AFTER the local dynamic-chunk run (repairNestedCalleeOutputs), so they do
+    // not contribute to the coordinate where the trailing band begins.
     const trailingBase = base + externalCallOutputCount + externalReturnOutputCount
-      + lowLevelCallOutputCount + this.iterationEntryInputs.length + identityAnchorOutputCount;
+      + lowLevelCallOutputCount + this.iterationEntryInputs.length
+      + preCalleeDynamicChunkCount + loopAlignmentFunderCount;
     if (this.delegateEntriesAfterLowLevel) {
       // Delegate-only loop entries are appended after the caller's reserved trailing block. They must not move
       // the caller's dynamic-chunk base into that delegate suffix; only local loop entries precede local chunks.

@@ -1301,6 +1301,67 @@ function calldataAggregateOffset(name: string): bigint | undefined {
   return 4n + BigInt(prefixWords) * 32n;
 }
 
+// roundUpToWord(len) = ((len + 31) / 32) * 32 - the EVM ABI's right-pad-to-a-multiple-of-32 rule.
+function roundUpToWord(len: ExpressionNode, src: YulNode): ExpressionNode {
+  const rounded = loc(new BinaryOpNode(
+    loc(new BinaryOpNode(addE(len, intLit(31n, src), src), BinaryOperator.DIV, intLit(32n, src)), src),
+    BinaryOperator.MUL, intLit(32n, src),
+  ), src);
+  return rounded;
+}
+
+// The ABI TAIL byte size of a dynamic calldata param: 32 (its length word) + its padded data. bytes/string pad
+// their byte length; a dynamic array pads elementCount * elementWordSize * 32 (already word-aligned). undefined =
+// a shape we do not model (a nested dynamic-element array), fail closed.
+function calldataTailSizeExpr(p: ParameterNode, src: YulNode): ExpressionNode | undefined {
+  if ((p.type instanceof BytesType && p.type.bound === undefined) || p.type === PrimitiveType.STRING) {
+    const size = loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(p.name), src)), src);
+    return addE(intLit(32n, src), roundUpToWord(size, src), src);
+  }
+  if (p.type instanceof ArrayType && p.type.bound === undefined) {
+    // A dynamic element's own tail is not part of the array's per-element stride, so a nested dynamic array is
+    // not modeled here (fail closed).
+    if (isDynamicCalldataType(p.type.elementType)) return undefined;
+    const elemWords = calldataHeadWords(p.type.elementType);
+    if (elemWords === undefined) return undefined;
+    const size = loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(p.name), src)), src);
+    const dataBytes = loc(new BinaryOpNode(size, BinaryOperator.MUL, intLit(BigInt(elemWords) * 32n, src)), src);
+    return addE(intLit(32n, src), dataBytes, src);
+  }
+  return undefined;
+}
+
+// The compile-time head byte size of the calldata (selector + head words); undefined for an unmodeled head shape.
+function calldataHeadBytes(): bigint | undefined {
+  let words = 0;
+  for (const p of currentParams) {
+    const w = calldataHeadWords(p.type);
+    if (w === undefined) return undefined;
+    words += w;
+  }
+  return 4n + BigInt(words) * 32n;
+}
+
+// The ABI byte offset of a dynamic param's DATA (`x.offset`) as an EXPRESSION: head size + 32 (skip x's own length
+// word) + the cumulative runtime tail of every PRECEDING dynamic param. The first dynamic param reduces to the
+// compile-time value; a later one is a runtime sum over the preceding params' lengths.
+function calldataDataOffsetExpr(name: string, src: YulNode): ExpressionNode | undefined {
+  const idx = currentParams.findIndex((p) => p.name === name);
+  if (idx < 0 || !isDynamicCalldataType(currentParams[idx].type)) return undefined;
+  const headBytes = calldataHeadBytes();
+  if (headBytes === undefined) return undefined;
+  let result: ExpressionNode = intLit(headBytes + 32n, src);
+  for (const p of currentParams.slice(0, idx)) {
+    if (!isDynamicCalldataType(p.type)) continue;
+    const tail = calldataTailSizeExpr(p, src);
+    if (tail === undefined) return undefined;
+    result = addE(result, tail, src);
+  }
+  return result;
+}
+
+
+
 function collectCalldataPointers(node: Node): void {
   if (node instanceof VariableDefinitionNode && node.modifier.includes('calldata')) {
     const array = node.expression instanceof ArrayAccessNode ? node.expression.array
@@ -1969,8 +2030,8 @@ function lowerValue(expr: YulExpressionNode): ExpressionNode {
         const field = currentSlots.get(slot)?.find((f) => f.sv.name === varName);
         return intLit(field ? field.bitOffset / 8n : 0n, expr);
       }
-      const off = calldataDataOffset(expr.base);
-      if (off !== undefined) return intLit(off, expr);
+      const off = calldataDataOffsetExpr(expr.base, expr);
+      if (off !== undefined) return off;
       throw new YulNotLowerable();
     }
     // `x.length` of a bytes/array calldata param: the byte/element length of the param value (or the mutable local).
@@ -3674,8 +3735,13 @@ export default class LowerInlineAssembly extends AstTraversal {
     }
     for (const p of node.parameters) {
       if (!p.modifier.includes('calldata') || !(p.type instanceof ArrayType || p.type instanceof StructType)) continue;
-      const offset = calldataAggregateOffset(p.name);
-      if (offset !== undefined) currentCalldataPointers.set(p.name, intLit(offset, node));
+      if (isDynamicCalldataType(p.type)) {
+        const offset = calldataDataOffsetExpr(p.name, node);
+        if (offset !== undefined) currentCalldataPointers.set(p.name, offset);
+      } else {
+        const offset = calldataAggregateOffset(p.name);
+        if (offset !== undefined) currentCalldataPointers.set(p.name, intLit(offset, node));
+      }
     }
     collectCalldataPointers(node.body);
     currentStorageAliases = new Map();
@@ -3758,7 +3824,7 @@ export default class LowerInlineAssembly extends AstTraversal {
         const [base, member] = key.split('.');
         const local = cdComponentLocal(base, member);
         const def = member === 'offset'
-          ? intLit(calldataDataOffset(base) ?? 0n, node)
+          ? (calldataDataOffsetExpr(base, node) ?? intLit(0n, node))
           : calldataReturnNames.has(base)
             ? intLit(0n, node)
             : loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(base), node)), node);

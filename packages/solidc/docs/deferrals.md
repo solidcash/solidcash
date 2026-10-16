@@ -1656,6 +1656,17 @@ deferral above (a cheaper ladder would help both).
 - **Revisit if:** BentoBox/Kashi/BoringRebase port is prioritized, OR the corpus shows `L.f(m[k])` storage-ptr frequency.
   NOTE overlaps the vmap/storage machinery under active churn - coordinate before landing.
 
+**RESOLVED 2026-10-16.** The mapping-element argument shape now compiles for the simple-struct BentoBox form. The
+read-modify-write template in `InlineStoragePointerCalls.elementAccess` handles `L.f(m[k])` and `m[k].f()` (both the
+`this.`-prefixed and bare spellings), and `RedesugarImportedUsingForCalls` rewrites the struct-valued mapping-element
+receiver to the direct library call before inlining. Compiler test `LibraryStorageStructWithMappings.test.ts`
+(`storage-pointer library fn on a mapping element`) pins that `L.f(m[k])` compiles and `m[k].f()` is byte-identical to
+it; the e2e `StoragePointerMappingElem.test.ts` VM-proves the RMW mutates the element and preserves the untouched
+field. Remaining: a struct whose ONLY fields are mappings flattens away its root, so the `m[k].f()` method spelling on
+that shape still fails to resolve the receiver type (the direct `L.f(m[k])` spelling compiles); and the state-ARRAY
+element half (`L.addX(this.arr[i], d)`) still fails at `OP_VERIFY` in the e2e (the mapping-element and bare-state-var
+halves settle) - separate from this entry's mapping-access shape.
+
 ## STORAGE-POINTER library fn on a mapping/array/state-var element - VEIN COMPLETE 2026-07-21
 - **STATUS: SHIPPED + VM-proven end to end** across four commits (5f2b28f3 void, e5ab012c returning, a4727002 bare):
   void + returning fn, mapping/array/state-var element, statement + expression position, direct + using-for spelling,

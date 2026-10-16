@@ -118,3 +118,30 @@ describe('library storage pointer to a struct with mappings and a dynamic array'
       .toBe('Holder');
   });
 });
+
+// A storage-pointer library fn called with a MAPPING-ELEMENT argument (`L.f(m[k])` / `m[k].f()`, the BentoBox
+// BoringRebase `totals[token].addElastic(x)` shape). InlineStoragePointerCalls lowers both spellings to the same
+// read-modify-write template, so the direct call and the using-for method call are byte-identical.
+describe('storage-pointer library fn on a mapping element (direct + using-for spellings)', () => {
+  const SP_STRUCT = 'struct Total { int elastic; int base; }';
+  const SP_LIBRARY = 'library L { function add(Total storage t, int d) internal { t.elastic += d; } }';
+
+  const direct = `${SP_STRUCT}${SP_LIBRARY}
+    contract C { mapping(address => Total) totals;
+      function bump(address token, int d) external { L.add(totals[token], d); require(true); } }`;
+
+  const method = `${SP_STRUCT}${SP_LIBRARY}
+    contract C { using L for Total; mapping(address => Total) totals;
+      function bump(address token, int d) external { totals[token].add(d); require(true); } }`;
+
+  it('compiles L.f(m[k]) on a mapping element', () => {
+    expect(compileString(direct, { evmCompat: true }).contractName).toBe('C');
+  });
+
+  it('compiles m[k].f() on a mapping element and is byte-identical to L.f(m[k])', () => {
+    const a = compileString(direct, { evmCompat: true });
+    const b = compileString(method, { evmCompat: true });
+    expect(b.contractName).toBe('C');
+    expect(b.bytecode).toBe(a.bytecode);
+  });
+});

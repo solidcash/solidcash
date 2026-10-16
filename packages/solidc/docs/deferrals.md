@@ -2862,6 +2862,18 @@ dedup that works for bytes/string does not fire for the array-valued write. `Aud
 pins the inline and chunked (>60 B) `int[]` cases as fail-closed (6/6), and `AuditDS6ChainOneNode.test.ts` remains
 13/13. Remaining: deduplicate the shared predecessor's old-value preservation against the relinked trailing lane.
 
+**UPDATE 2026-10-16 (verified, eighth).** The duplicate is a surplus trailing clone, and the direct path lacks the
+surplus strip that exists for composed groups. Registration state for the array retry is byte-for-byte identical to
+the settling bytes/string retry (`pending=[]`, `exact=[1]`, `loopEntry=[relinked]`, `pinned=true`), and the only ABI
+difference is `chunkableArrayValue: true`, so the divergence is in output materialization, not planning. The direct
+`StatefulTransactionBuilder.build()` runs `_stripSurplusLinearBatchEntryClones` and
+`_reassertTokenInsertNewLocks`, but both iterate `externalCallUtxoGroups`/`lowLevelCallUtxoGroups` (empty for a
+direct call), so no INSERT trailing-clone strip fires; `stripSurplusLinearBatchEntryClones` also gates on
+`trailingCount === 0` (pure UPDATE), which excludes this one-predecessor INSERT. The direct path therefore needs the
+same surplus-clone strip the composed path has (demote the highest-index old-value node-7 clone to a funder, keep
+the pinned relinked lane). `AuditDS6DefaultRelink.test.ts` still pins both `int[]` cases fail-closed (6/6) and
+`AuditDS6ChainOneNode.test.ts` remains 13/13.
+
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 
 **What:** a delegated message-bus route binds the proxy's mapping entries and value chunks to the proxy master's lock

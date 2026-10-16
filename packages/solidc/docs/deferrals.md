@@ -2835,6 +2835,22 @@ chunkable tail and the probe cannot publish the new node's value. `AuditDS6Defau
 inline and chunked (>60 B) `int[]` cases as fail-closed (6/6), and `AuditDS6ChainOneNode.test.ts` remains 13/13.
 Remaining: the array-valued write's value materialization beside an array soft delete.
 
+**UPDATE 2026-10-16 (verified, sixth).** The array `valueParam` half of that remaining item is now encoded. The
+batch target-value resolution (`resolvedWholeValue` in `StatefulContract`) previously left a chunkable
+`valueParam` array unresolved because `evalComputedKey`'s `id:` path only frames scalar/bytes params; the new
+node then fell through to trace derivation. It now `encodePushdataValue`s a non-`Uint8Array` `valueParam` array
+or struct against `collection.valueType` before the chunkable-tail framing, so the array write's NEW node is
+computed exactly like a bytes/string write.
+
+The array case still does NOT settle. The next blocker is the PREDECESSOR relink, not the value: the
+chained-delete relink (`defaultSortedEntryValueTail` -> `encodeEntryCommitment(slot, next, len4(1)||0x00)`) is
+planned and lands in `batchPredCommitments`, but the materialized predecessor output still carries the old value
+tail, so the insert's recreated-predecessor `EQUALVERIFY` (derive VM `ip 644`, `slot||next||len4(1)||0x00`
+against the output's `slot||next||<old tail>`) still refuses. The relinked predecessor commitment must reach the
+materialized trailing predecessor output (the loop-entry pin/re-derivation path), not just the batch plan.
+`AuditDS6DefaultRelink.test.ts` still pins the inline and chunked (>60 B) `int[]` cases as fail-closed (6/6), and
+`AuditDS6ChainOneNode.test.ts` remains 13/13. Remaining: publishing the relinked predecessor output value.
+
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 
 **What:** a delegated message-bus route binds the proxy's mapping entries and value chunks to the proxy master's lock

@@ -9180,6 +9180,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             && !valueAccess.valueSource.startsWith('call:')
             && !valueAccess.valueSource.startsWith('arrset(')
             ? evalComputedKey(valueAccess.valueSource, valueArgs, valueInputs) : undefined;
+          // A direct chunkable `valueParam` array/struct is a JS value `evalComputedKey` cannot frame (its `id:`
+          // path only encodes scalar/bytes params), so encode it to the pushdata blob before the chunkable-tail
+          // framing below. A bytes/string param is already a Uint8Array and is left as-is.
+          if (resolvedWholeValue === undefined && collection.chunkableValue
+            && valueAccess.valueParam !== undefined) {
+            const vIdx = valueInputs.findIndex((input) => input.name === valueAccess.valueParam);
+            const rawV = vIdx >= 0 ? valueArgs[vIdx] : undefined;
+            if (rawV !== undefined && !(rawV instanceof Uint8Array)
+              && (Array.isArray(rawV) || typeof rawV === 'object')) {
+              try {
+                resolvedWholeValue = encodePushdataValue(
+                  rawV as StateValue, collection.valueType, stateLayout.structs,
+                );
+              } catch {
+                resolvedWholeValue = undefined;
+              }
+            }
+          }
           if (resolvedWholeValue === undefined) {
             const selectedRecipes = activeMessageBusEntryRecipes?.get(slotIndex)
               ?.filter((recipe) => recipe.access.operations.includes('write')) ?? [];

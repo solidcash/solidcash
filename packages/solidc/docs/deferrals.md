@@ -426,32 +426,26 @@ nested write is fixed, re-test `m[k].inner.x()`; no call-side change is expected
 
 ---
 
-## Block layout v2: unified auxiliary co-spend band (2026-07-15)
+## Block layout v2: unified auxiliary co-spend band (2026-07-15) - RESOLVED 2026-10-16
 
 **What.** A refactor unifying every co-spent auxiliary - block/tx oracles (`blockhashOracle`), external
 libraries (keccak256 result-NFT side-car), external reads/calls - into ONE explicit front-region "auxiliary
-band" in `computeBlockLayout` (`semantic/SymbolTableTraversal.ts:7507`), with a single slot allocator and one
-SDK co-spend driver. Prompted by evaluating whether to "prepend" external-lib + oracle slots ahead of the
-contract's own outputs (docs/keccak-result-nft.md section 10).
+band" in `computeBlockLayout`, with a single slot allocator and one SDK co-spend driver.
 
-**Why deferred.** The intent (constant positions, variability isolated to the tail) is ALREADY the structure:
-`computeBlockLayout` front-loads the fixed co-spent slots (`master -> dataNft -> readOnlyDataNft ->
-blockhashOracle -> extcall-reserved -> ...`) and keeps runtime-variable outputs (transfer/tcTransfer/event/
-loop-entries) in the tail; offsets resolve centrally via `getBlockSlotOffset` (`GTT:563`). `blockhashOracle`
-is already a front-region "1:1 input/output slot" - the exact shape a keccak side-car needs. So keccak Phase 1
-just adds an `externalLibrary` slot kind as a `blockhashOracle` sibling; no reorg required. A full unification
-would REORDER slots across the 5 byte-matched covenant pairs + the green blockhashOracle / external-call /
-entry-NFT e2e suites - high validation cost, disproportionate to shipping single-hash keccak, and the
-per-mechanism versions already work. Hard constraint either way: `master` stays at offset 0 (state anchor for
-self-pin + auto-derivation), and the input/output index-alignment rationale must be preserved.
+**Resolved (in place, no layout-version bump).** The compiler's front region is now emitted by one allocator,
+`SymbolTableTraversal.computeAuxiliaryBand`, which walks the families in one canonical order immediately after
+`master`+`dataNft`: delegate `lowLevelCall`, `readOnlyDataNft` (external reads), `blockhashOracle`,
+`blockInfoOracle`, `keccakSideCar`, `ecrecoverSideCar`, then the external read/call offset reservations. The
+five ad-hoc per-family `slots.push` blocks are gone. Codegen keeps resolving offsets from the single
+`blockLayout.slots` source of truth (`getBlockSlotOffset`), and the SDK's direct assembly orders its front-region
+co-spends by iterating the same band slots (`AUXILIARY_BLOCK_SLOT_KINDS` / `orderedFrontRegionCoSpends` in
+`@solidcash/utils` and `stb-build-inputs.ts`), so input/output indices stay 1:1 by construction. The upgrade kept
+the existing canonical slot order and `master` at offset 0, so no `BlockSlotKind` or wire-format field changed and
+covenant bytes are byte-identical; a compiler test (`BlockLayoutAuxiliaryBand.test.ts`) pins the band. The
+delegate/proxy legacy prefix and the message-bus graph frame keep their own placement, which is outside the direct
+auxiliary band.
 
-**What it'd take.** A dedicated project: define an `auxiliaryBand` abstraction (ordered oracle+library+read+
-call slots) emitted right after master+dataNft; migrate `blockhashOracle` and the extcall/read reservations
-onto it; one SDK co-spend driver iterating the band; re-verify the 5 covenant pairs byte-for-byte; full
-stateful + oracle + extcall + entry e2e as the regression gate.
-
-**Revisit if.** A third+ built-in library/oracle lands and the per-mechanism placement code starts to
-duplicate, or a contract needs many heterogeneous co-spent auxiliaries whose ad-hoc ordering becomes fragile.
+---
 
 ---
 

@@ -50,8 +50,10 @@ describe('keccak256 compute-model selection (soundness gate)', () => {
   });
 
   it('a STATEFUL contract also uses compute, reading a keccakSideCar block-layout slot', () => {
+    // A BOUNDED arg keeps the fixed keccakSideCar slot; a single unbounded `bytes` arg would chain through the
+    // trailing region instead (see KeccakSideCarSlotX83.test.ts), so this slot assertion names the shape it tests.
     const a = compileString(
-      'contract C { int n; function f(bytes x, bytes32 e) public { require(keccak256(x) == e); this.n = this.n + 1; } }',
+      'contract C { int n; function f(bytes32 x, bytes32 e) public { require(keccak256(x) == e); this.n = this.n + 1; } }',
     );
     expect(fn(a).keccakCompute).toBe(true);
     expect(fn(a).keccakPreimageParams).toEqual(['x']);

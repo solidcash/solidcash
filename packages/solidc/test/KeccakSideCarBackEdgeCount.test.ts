@@ -42,7 +42,7 @@ describe('keccak256 side-car slots count only the function that emits them', () 
     }
     contract Parent {
       bytes32 s;
-      function f(bytes x) public {
+      function f(bytes32 x) public {
         this.s = keccak256(x);
         Child c = new Child();
       }
@@ -74,8 +74,8 @@ describe('keccak256 side-car slots count only the function that emits them', () 
       contract C() {
         bytes32 h;
         address owner;
-        function calc(bytes x) private view returns (bytes32) { return keccak256(x); }
-        constructor(bytes x) { owner = msg.sender; this.h = calc(x); }
+        function calc(bytes32 x) private view returns (bytes32) { return keccak256(x); }
+        constructor(bytes32 x) { owner = msg.sender; this.h = calc(x); }
         function get() public view returns (bytes32) { return this.h; }
       }`, { forceStateful: true });
     expect(keccakCalls(artifact, '__construct')).toBe(1);
@@ -108,8 +108,8 @@ describe('keccakPreimageParams retains every call across batched side-car slots'
     contract C() {
       bytes32 h;
       address owner;
-      function calc(bytes x) private view returns (bytes32) { return keccak256(x); }
-      constructor(bytes x) { owner = msg.sender; this.h = calc(x); }
+      function calc(bytes32 x) private view returns (bytes32) { return keccak256(x); }
+      constructor(bytes32 x) { owner = msg.sender; this.h = calc(x); }
       function get() public view returns (bytes32) { return this.h; }
     }`;
 

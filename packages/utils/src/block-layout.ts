@@ -9,6 +9,20 @@ export function isOutputOnlyBlockSlot(slot: Pick<BlockLayoutSlot, 'kind'>): bool
   return OUTPUT_ONLY_BLOCK_SLOT_KINDS.has(slot.kind);
 }
 
+/**
+ * Slots in the unified front-region auxiliary co-spend band. These sit between the contract's own data NFTs and
+ * the effect tail, in one canonical compiler order; the SDK co-spend driver iterates the emitted blockLayout
+ * slots in this same order so input/output indices stay 1:1. External read/call groups reserve offset space
+ * without a slot kind and are not listed here.
+ */
+export const AUXILIARY_BLOCK_SLOT_KINDS: ReadonlySet<BlockSlotKind> = new Set([
+  'lowLevelCall', 'readOnlyDataNft', 'blockhashOracle', 'blockInfoOracle', 'keccakSideCar', 'ecrecoverSideCar',
+]);
+
+export function isAuxiliaryBlockSlot(slot: Pick<BlockLayoutSlot, 'kind'>): boolean {
+  return AUXILIARY_BLOCK_SLOT_KINDS.has(slot.kind);
+}
+
 /** Translate a block-relative output/layout coordinate to the corresponding compact input coordinate. */
 export function blockInputOffset(layout: Pick<FunctionBlockLayout, 'blockSize' | 'slots'>, offset: number): number {
   if (!Number.isSafeInteger(offset) || offset < 0 || offset >= layout.blockSize) {

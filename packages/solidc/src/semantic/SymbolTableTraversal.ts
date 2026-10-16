@@ -18306,41 +18306,16 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
-   * Compute the 1:1 block layout for a stateful function.
-   * Slot ordering must match the SDK's StatefulTransactionBuilder.build() output ordering.
+   * The unified front-region auxiliary co-spend band. It allocates every co-spent family that sits between the
+   * contract's own data NFTs and the effect tail, in one canonical order, so the SDK's band driver can iterate
+   * the emitted blockLayout slots and reproduce input/output indices 1:1. External read/call groups reserve
+   * offset space for their callee data NFTs without emitting a slot kind.
    */
-  private computeBlockLayout(node: FunctionDefinitionNode): FunctionBlockLayout {
-    // Value-bearing contract creations are lowered into transfer operations before codegen, but their transfer
-    // metadata is otherwise collected after this layout is computed. Pre-scan here as well so the satoshi
-    // container and output-only transfer slots are present in the authoritative 1:1 block layout.
-    if (!node.transferInfos && !this.transferFreeFunctions.has(node)) {
-      const transferInfos: TransferInfo[] = [];
-      this.collectTransferStatements(node.body, transferInfos);
-      if (transferInfos.length > 0) node.transferInfos = transferInfos;
-    }
+  private computeAuxiliaryBand(
+    node: FunctionDefinitionNode, base: number, graphEcrecover: number,
+  ): { slots: BlockLayoutSlot[]; offset: number } {
     const slots: BlockLayoutSlot[] = [];
-    let offset = 0;
-    // X29: effect slots the route reserves on behalf of graph emission handlers it invokes behind OP_INVOKE.
-    const graphFrame = node.messageBusRoute ? node.graphEffectFrame : undefined;
-    const graphEvents = (graphFrame?.sites ?? 0) * (graphFrame?.eventWidth ?? 0);
-    const graphTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.transferWidth ?? 0);
-    const graphTokenTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.tokenTransferWidth ?? 0);
-    const graphEcrecover = (graphFrame?.sites ?? 0) * (graphFrame?.ecrecoverWidth ?? 0);
-    const graphDeployWidth = graphFrame?.deployWidth ?? 0;
-
-    // Master
-    slots.push({ kind: 'master', offset: offset++ });
-
-    // Data NFTs (requiredNftIndices not set yet - use all from state layout)
-    const contract = this.currentContract!;
-    const stateVars = contract.stateVariables ?? [];
-    const maxNftIndex = stateVars.length > 0
-      ? Math.max(...stateVars.map((sv) => sv.nftIndex ?? 0)) + 1 : 0;
-    const nftIndices = node.requiredNftIndices
-      ?? Array.from({ length: maxNftIndex }, (_, i) => i);
-    for (const nftIdx of nftIndices) {
-      slots.push({ kind: 'dataNft', offset: offset++, nftIndex: nftIdx });
-    }
+    let offset = base;
 
     // Delegate implementation input. The delegate covenant requires
     // `_proxyMasterIndex == OP_INPUTINDEX - (1 + dataNftCount)`, so the implementation must sit immediately
@@ -18431,6 +18406,54 @@ export default class SymbolTableTraversal extends AstTraversal {
         offset += 1 + slot.requiredDataNftIndices.length;
       }
     }
+
+    return { slots, offset };
+  }
+
+  /**
+   * Compute the 1:1 block layout for a stateful function.
+   * Slot ordering must match the SDK's StatefulTransactionBuilder.build() output ordering.
+   */
+  private computeBlockLayout(node: FunctionDefinitionNode): FunctionBlockLayout {
+    // Value-bearing contract creations are lowered into transfer operations before codegen, but their transfer
+    // metadata is otherwise collected after this layout is computed. Pre-scan here as well so the satoshi
+    // container and output-only transfer slots are present in the authoritative 1:1 block layout.
+    if (!node.transferInfos && !this.transferFreeFunctions.has(node)) {
+      const transferInfos: TransferInfo[] = [];
+      this.collectTransferStatements(node.body, transferInfos);
+      if (transferInfos.length > 0) node.transferInfos = transferInfos;
+    }
+    const slots: BlockLayoutSlot[] = [];
+    let offset = 0;
+    // X29: effect slots the route reserves on behalf of graph emission handlers it invokes behind OP_INVOKE.
+    const graphFrame = node.messageBusRoute ? node.graphEffectFrame : undefined;
+    const graphEvents = (graphFrame?.sites ?? 0) * (graphFrame?.eventWidth ?? 0);
+    const graphTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.transferWidth ?? 0);
+    const graphTokenTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.tokenTransferWidth ?? 0);
+    const graphEcrecover = (graphFrame?.sites ?? 0) * (graphFrame?.ecrecoverWidth ?? 0);
+    const graphDeployWidth = graphFrame?.deployWidth ?? 0;
+
+    // Master
+    slots.push({ kind: 'master', offset: offset++ });
+
+    // Data NFTs (requiredNftIndices not set yet - use all from state layout)
+    const contract = this.currentContract!;
+    const stateVars = contract.stateVariables ?? [];
+    const maxNftIndex = stateVars.length > 0
+      ? Math.max(...stateVars.map((sv) => sv.nftIndex ?? 0)) + 1 : 0;
+    const nftIndices = node.requiredNftIndices
+      ?? Array.from({ length: maxNftIndex }, (_, i) => i);
+    for (const nftIdx of nftIndices) {
+      slots.push({ kind: 'dataNft', offset: offset++, nftIndex: nftIdx });
+    }
+
+    // Unified front-region auxiliary co-spend band. Every co-spent family between the contract's own
+    // data NFTs and the effect tail (delegate, external read, blockhash/block-info oracles, keccak/ecrecover
+    // side-cars, external read/call reservations) is allocated by ONE driver in a canonical order, so the
+    // SDK can iterate the emitted blockLayout slots and reproduce input/output indices 1:1.
+    const band = this.computeAuxiliaryBand(node, offset, graphEcrecover);
+    slots.push(...band.slots);
+    offset = band.offset;
 
     // Entries. A loop-write entry (inLoop) has NO fixed slot - its runtime-variable count of outputs sits in the
     // trailing region [blockSize, blockSize+N), indexed by the covenant's runtime counter (emitLoopEntryWrite).

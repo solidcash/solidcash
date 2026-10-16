@@ -4,6 +4,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { isAuxiliaryBlockSlot } from '@solidcash/utils';
 import type { AbiFunction, FunctionBlockLayout } from '@solidcash/utils';
 import type { TransactionBuilderOptions } from '../TransactionBuilder.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
@@ -84,6 +85,59 @@ export function orderPostBlockTrailingAndReadInputs<T>(
   trailing: readonly T[], readOnly: readonly T[],
 ): T[] {
   return [...trailing, ...readOnly];
+}
+
+/**
+ * The front-region auxiliary co-spend band, ordered by the compiler's blockLayout slots. One driver walks the
+ * emitted auxiliary slots (between the data NFTs and the effect tail) and pulls each family's next co-spend by
+ * cursor, so the SDK's input order always matches the compiler's band order. `lowLevelCall` delegate inputs are
+ * excluded: direct delegate assembly keeps its own placement (see buildInputs' legacy delegate prefix).
+ */
+export function orderedFrontRegionCoSpends(
+  layout: FunctionBlockLayout | undefined,
+  dataNftCount: number,
+  host: {
+    readOnlyDataNftUtxos: UnlockableUtxo[];
+    blockhashCoSpendUtxos: UnlockableUtxo[];
+    blockInfoCoSpendUtxos?: UnlockableUtxo[];
+    keccakComputeCoSpendUtxos: UnlockableUtxo[];
+    ecrecoverComputeCoSpendUtxos: UnlockableUtxo[];
+  },
+): UnlockableUtxo[] {
+  if (!layout) {
+    // A manual builder has no authoritative block layout; use the compiler's canonical band order directly.
+    return [
+      ...host.readOnlyDataNftUtxos, ...host.blockhashCoSpendUtxos,
+      ...(host.blockInfoCoSpendUtxos ?? []),
+      ...host.keccakComputeCoSpendUtxos, ...host.ecrecoverComputeCoSpendUtxos,
+    ];
+  }
+  const auxSlots = layout.slots
+    .filter((slot) => slot.offset >= 1 + dataNftCount && isAuxiliaryBlockSlot(slot) && slot.kind !== 'lowLevelCall');
+  let readOnlyIdx = 0, bhIdx = 0, kIdx = 0, erIdx = 0;
+  const ordered: UnlockableUtxo[] = [];
+  for (const slot of auxSlots) {
+    switch (slot.kind) {
+      case 'readOnlyDataNft':
+        if (readOnlyIdx < host.readOnlyDataNftUtxos.length) ordered.push(host.readOnlyDataNftUtxos[readOnlyIdx++]);
+        break;
+      case 'blockhashOracle':
+        if (bhIdx < host.blockhashCoSpendUtxos.length) ordered.push(host.blockhashCoSpendUtxos[bhIdx++]);
+        break;
+      case 'blockInfoOracle':
+        if (host.blockInfoCoSpendUtxos?.[0] !== undefined) ordered.push(host.blockInfoCoSpendUtxos[0]);
+        break;
+      case 'keccakSideCar':
+        if (kIdx < host.keccakComputeCoSpendUtxos.length) ordered.push(host.keccakComputeCoSpendUtxos[kIdx++]);
+        break;
+      case 'ecrecoverSideCar':
+        if (erIdx < host.ecrecoverComputeCoSpendUtxos.length) ordered.push(host.ecrecoverComputeCoSpendUtxos[erIdx++]);
+        break;
+      default:
+        break;
+    }
+  }
+  return ordered;
 }
 
 export function buildInputs(
@@ -883,9 +937,8 @@ export function buildInputs(
   // (their base is computed as blockSize+chunkCount), not in the pre-entry external-call slot.
   if (host.iterationEntryInputs.length > 0 && externalCallInputs.length > 0) {
     return [
-      host.masterUtxo, ...host.dataNftUtxos, ...host.readOnlyDataNftUtxos, ...host.blockhashCoSpendUtxos,
-      ...(host.blockInfoCoSpendUtxos ?? []),
-      ...host.keccakComputeCoSpendUtxos, ...host.ecrecoverComputeCoSpendUtxos,
+      host.masterUtxo, ...host.dataNftUtxos,
+      ...orderedFrontRegionCoSpends(host.blockLayout, host.dataNftUtxos.length, host),
       ...externalOutStateInputs,
       ...lowLevelCallInputs, ...host.lowLevelCallRawInputs,
       ...entryInputs, ...host.iterationEntryInputs, ...trailingLoopInputs,
@@ -896,9 +949,8 @@ export function buildInputs(
     ];
   }
   return [
-    host.masterUtxo, ...host.dataNftUtxos, ...host.readOnlyDataNftUtxos, ...host.blockhashCoSpendUtxos,
-    ...(host.blockInfoCoSpendUtxos ?? []),
-    ...host.keccakComputeCoSpendUtxos, ...host.ecrecoverComputeCoSpendUtxos,
+    host.masterUtxo, ...host.dataNftUtxos,
+    ...orderedFrontRegionCoSpends(host.blockLayout, host.dataNftUtxos.length, host),
     ...externalOutStateInputs, ...externalCallInputs,
     ...lowLevelCallInputs, ...host.lowLevelCallRawInputs,
     ...entryInputs, ...host.iterationEntryInputs, ...trailingLoopInputs,

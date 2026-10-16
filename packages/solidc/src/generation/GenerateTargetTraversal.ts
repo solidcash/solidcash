@@ -51956,8 +51956,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.framedMaster || this.readsRecordsFromFrame) return;
     const blockSize = node.blockLayout?.blockSize;
     if (blockSize === undefined || blockSize <= 0) return;
-    const stepped = this.entrySlots.some((slot) => slot.inLoop)
-      || (node.collectionIterations?.length ?? 0) > 0;
+    // The walk must admit a record at a mintable lock only when such a record can sit outside the block: a loop
+    // record, or a written dynamic var's OLD chunk (spent at its chunk lock and recreated with a different
+    // commitment). Otherwise the shorter walk below preserves every own-category mutable 1:1, which is the only
+    // correct treatment of a function that neither loops nor rewrites chunks.
+    const admitMintableLocks = this.entrySlots.some((slot) => slot.inLoop)
+      || (node.collectionIterations?.length ?? 0) > 0
+      || (node.dynamicWrites?.length ?? 0) > 0;
     const category = '(__outside_own_mutable)';
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
@@ -51965,9 +51970,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack(category);
     this.emit(new Uint8Array([0x01]), loc);
     this.emit(Op.OP_CAT, loc);
-    if (stepped) {
-      // The locks a legitimate loop record sits at. The 32-byte category base is rebuilt from the pin, then
-      // every data, entry, and chunk lock is concatenated and kept on the alternate stack for the walk.
+    // The locks a legitimate record sits at (data, entry, and chunk locks). The 32-byte category base is rebuilt
+    // from the pin, then every data, entry, and chunk lock is concatenated and kept on the alternate stack for the
+    // walk, so a written chunk/loop record is admitted instead of preserved (output == input).
+    if (admitMintableLocks) {
       this.emit(encodeInt(BigInt(this.getStackIndex(category))), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(encodeInt(32n), loc);
@@ -51992,8 +51998,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    if (stepped) {
-      // [category, i]. Skip a loop record at a mintable lock; refuse every other own-category mutable.
+    // [category, i]. Skip a record at a mintable lock (a consumed/rewritten chunk, a written entry, or a data
+    // record the function already closed); refuse every other own-category mutable by preserving it 1:1.
+    if (admitMintableLocks) {
       this.emit(Op.OP_DUP, loc);
       this.emit(Op.OP_UTXOBYTECODE, loc);
       this.emitInputLockAdmitted(loc);
@@ -52014,7 +52021,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_OVER, loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
-    if (stepped) this.emit(Op.OP_ENDIF, loc);
+    if (admitMintableLocks) this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_DUP, loc);
@@ -52023,8 +52030,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, loc);
     this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_DROP, loc);
-    if (stepped) this.emit(Op.OP_FROMALTSTACK, loc);
-    if (stepped) this.emit(Op.OP_DROP, loc);
+    if (admitMintableLocks) {
+      this.emit(Op.OP_FROMALTSTACK, loc);
+      this.emit(Op.OP_DROP, loc);
+    }
     this.popFromStack(1);
   }
 

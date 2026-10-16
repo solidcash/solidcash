@@ -1665,21 +1665,23 @@ it; the e2e `StoragePointerMappingElem.test.ts` VM-proves the RMW mutates the el
 field. Remaining: a struct whose ONLY fields are mappings flattens away its root, so the `m[k].f()` method spelling on
 that shape still fails to resolve the receiver type (the direct `L.f(m[k])` spelling compiles). The state-ARRAY
 element half (`L.addX(this.arr[i], d)`) is NOT a storage-pointer gap: the lowering is byte-identical to the
-hand-written `P t = this.arr[i]; t.x += d; this.arr[i] = t;` (pinned in `LibraryStorageStructWithMappings.test.ts`),
-and BOTH fail at `OP_VERIFY` for a fixed-width struct chunk-packed array because the general single-element overwrite
-`this.arr[i] = P(x, y)` is refused (a separate chunk-packed-array codegen gap; `uint256[]` element overwrite settles).
+hand-written `P t = this.arr[i]; t.x += d; this.arr[i] = t;` (pinned in `LibraryStorageStructWithMappings.test.ts`).
+Both previously failed at `OP_VERIFY` because of the chunk-preserve bug below; that is now fixed, so
+`L.addX(this.arr[i], d)`, `this.arr[i] = P(x, y)`, and a second `this.arr.push(P(x, y))` all settle.
 
-**ROOT CAUSE REFINED (2026-10-16).** The array is FRAMED on both sides, not tight: the compiler's
+**ROOT CAUSE REFINED (2026-10-16) + FIXED.** The array is FRAMED on both sides, not tight: the compiler's
 `generation/utils.ts isFixedWidthType` already excludes `StructType`, and the SDK's string-based `isFixedWidthType`
 fails for a struct type string, so both encode `P[]` as `pushdata(count) ++ framed(field0) ++ ...`. The chunk write
-blob is therefore correct (`push1` and `arr[0]` read settle). Two things then fail for a SHORT framed value: (1) the
-SDK's dynamic-chunk derivation oscillates because `extractCommitmentMapFromTrace` also observes the covenant's
-read-only PRESERVE pin (old chunk == new chunk) at the same output index and alternates it with the real write pin;
-(2) the covenant itself still checks that the OLD chunk input commitment equals the NEW chunk output commitment (a
-preserve pin) during the write epilogue, which is only true for a read-only chunk and is violated by an in-place
-rewrite (4-byte one-element chunk -> 8-byte two-element chunk). A first attempt to reject the stale preserve pin by
-chunk-data length regressed `ChunkedArrays.test.ts` (10 failures) and was reverted; both halves remain open. The
-write epilogue's preserve pin was traced to an OP_INVOKE-outlined helper but not yet fixed.
+blob is therefore correct (`push1` and `arr[0]` read settle). The real failure was the catch-all
+`emitPreserveOutsideLayoutOwnMutable`: its shorter walk (no loop records) preserved EVERY own-category mutable input
+at index >= blockSize 1:1 (output == input), including a written dynamic var's OLD chunk, which the write epilogue
+legitimately rewrites in place (4-byte one-element chunk -> 8-byte two-element chunk). Fix: the walk now builds the
+mintable record locks and admits a record at one of them whenever the function has loop records/iterations OR a
+written dynamic var (`node.dynamicWrites`), so the consumed old chunk is no longer preserved. `uint256[]` and
+`struct-with-string` chunk arrays already settled because their old chunk's data length differed or their write
+path took the admitting branch. Verified by the new e2e `StructArrayElementOverwrite.test.ts` (2/2: push two
+fixed-width struct elements, whole-element overwrite, field/neighbour preservation), `ChunkedArrays.test.ts` (15/15),
+and `StoragePointerMappingElem.test.ts` (4/4, including the previously failing state-array element half).
 
 ## STORAGE-POINTER library fn on a mapping/array/state-var element - VEIN COMPLETE 2026-07-21
 - **STATUS: SHIPPED + VM-proven end to end** across four commits (5f2b28f3 void, e5ab012c returning, a4727002 bare):

@@ -199,6 +199,37 @@ const vmapRuntimeInputCountName = (collection: string): string =>
 const vmapRuntimeOutputCountName = (collection: string): string =>
   `${VMAP_RUNTIME_OUTPUT_COUNT_PREFIX}${collection}`;
 
+const EMPTY_ENTRY_VALUE_TAIL = new Uint8Array();
+
+/**
+ * The value tail the sorted-entry covenant writes when a chained present delete nullifies its node
+ * (`delete m[k]` assigns the type default), or undefined when that default is not statically planned here
+ * (struct/array defaults are recursive; enums and function pointers stay fail-closed). Mirrors the compiler's
+ * `emitDefaultValue` plus the value-kind tail framing in GenerateTargetTraversal: int/bool/bigint/fixed
+ * nullify to the minimal VM number (empty for 0/false), bytesN to N zero bytes, pubkey to 33 zero bytes,
+ * address/sig/datasig to empty, and unbounded bytes/string to the 4-byte zero length prefix.
+ */
+function defaultSortedEntryValueTail(valueType: string): Uint8Array | undefined {
+  if (parseArrayTypeString(valueType) !== undefined) return undefined;
+  if (valueType === 'bool' || valueType === 'bigint'
+    || /^u?int\d*$/.test(valueType) || /^u?fixed\d*x\d*$/.test(valueType)) {
+    return EMPTY_ENTRY_VALUE_TAIL;
+  }
+  const bytesN = /^(?:byte|bytes(\d+))$/.exec(valueType);
+  if (bytesN) {
+    const width = bytesN[1] === undefined ? 1 : Number(bytesN[1]);
+    if (width >= 1 && width <= 32) return new Uint8Array(width);
+    return undefined;
+  }
+  if (valueType === 'pubkey') return new Uint8Array(33);
+  // Unbounded bytes/string and struct/array defaults are length-framed / recursive and stay fail-closed here.
+  if (valueType === 'address' || valueType === 'address payable'
+    || valueType === 'sig' || valueType === 'datasig') {
+    return EMPTY_ENTRY_VALUE_TAIL;
+  }
+  return undefined;
+}
+
 function vmapCounterPermutationValues(
   bound: bigint,
   spec: VmapCounterPermutationSpec,
@@ -8857,6 +8888,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // names the first owner's input, which it reads where it runs beside that write.
         const lentSlots = new Set<number>();
         const lentOwners = new Map<number, number>();
+        // The default value tail a chained present delete nullifies its node to (DS-6); undefined keeps the
+        // kind fail-closed (struct/array/enum/fn-ptr defaults are not statically planned here).
+        const chainedDeleteDefaultTail = defaultSortedEntryValueTail(collection.valueType);
         if (settlesByActivity && batch.slotIndices.length > 1
           && batch.slotIndices.some((slotIndex) => softDeleteSlots.includes(slotIndex))) {
           const byNode = new Map<string, number[]>();
@@ -8865,8 +8899,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const uid = spent ? `${spent.txid}:${spent.vout}` : undefined;
             if (uid !== undefined) byNode.set(uid, [...(byNode.get(uid) ?? []), slotIndex]);
           }
-          // A deleted value reads as empty for these kinds.
-          const emptyDefault = /^(bool|u?int\d*)$/.test(collection.valueType);
           for (const members of [...byNode.values()].filter((group) => group.length > 1)) {
             const listed = members.filter((slotIndex) => overrides?.sortedNodeOwners?.includes(slotIndex));
             const first = members.find((slotIndex) => !batchAliasSkips.has(slotIndex)) ?? members[0];
@@ -8879,7 +8911,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (memberWrites.length > 1) sortedNodeOwnerAlternatives.push({ owners: memberWrites });
               const present = members.filter((slotIndex) => softDeleteSlots.includes(slotIndex)
                 && !noOpSlots.has(slotIndex));
-              if (memberWrites.length > 0 && present.length > 0 && emptyDefault) {
+              if (memberWrites.length > 0 && present.length > 0 && chainedDeleteDefaultTail !== undefined) {
                 sortedNodeOwnerAlternatives.push({ owners: memberWrites, chainedDeletes: present });
               }
             }
@@ -8950,7 +8982,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const at = predOutputs.findIndex((output) => bytesToSlotValue(output.slot) === deleted);
           if (at < 0) continue;
           const node = decodeEntryCommitment(predOutputs[at].commitment);
-          predOutputs[at] = { ...predOutputs[at], commitment: encodeEntryCommitment(node.slot, node.nextKey) };
+          predOutputs[at] = {
+            ...predOutputs[at],
+            commitment: encodeEntryCommitment(
+              node.slot, node.nextKey, chainedDeleteDefaultTail ?? EMPTY_ENTRY_VALUE_TAIL,
+            ),
+          };
         }
         // An all-update batch has no rewritten predecessor suffix. Do not publish an empty
         // collection family: a routed counter loop may independently own non-empty rewritten

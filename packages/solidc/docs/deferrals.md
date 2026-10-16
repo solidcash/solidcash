@@ -2573,8 +2573,9 @@ output j has j below the input count with a matching input (no new entries). Lay
 per view call, non-view calls byte-identical, no SDK change. Gaps: nested calls of the callee do not inherit
 read-only; satoshi and fungible-token movements of the callee are not pinned without value/amount checks.
 
-**Why deferred:** it is a semantic-versus-size trade-off on every contract that calls view functions; it needs a
-decision, then an adversarial review like the other covenant changes.
+**Why deferred:** it is a semantic-versus-size trade-off on every contract that calls view functions. The decision
+below rejected the flag; the entry stays open with the ~45 B/view-call cost stated, so it needs no further action
+unless a real port requires implicit STATICCALL semantics on view/pure declarations.
 
 **DECISION 2026-10-14 (reject the implicit `readOnlyDeclared` flag).** The cost is ~45 B on every direct-composition
 call through a `view`/`pure` interface declaration, including the common read-only getter calls that never touch

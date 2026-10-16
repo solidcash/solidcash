@@ -2434,8 +2434,23 @@ via `SOLIDC_DEBUG_ENTRY_ADDR=1` names them exactly: the EXPECTED lock `aa20386f�
 `aa20afeb…` is the MasterChef `poolInfo` dynamic-chunk covenant (`poolInfo:PoolInfo[]`, category `2b2c227b…`).
 So the composed deposit transaction places the MasterChef trailing `poolInfo` chunk output at the output index
 where the LP callee's `_allowances` entry output is expected — a composed-output-ordering collision between the
-caller's dynamic-array chunks and the external callee's sorted-entry block. The `add`/`to64` fixes do not cover
-it; the SDK assembly seam that orders `poolInfo` chunks relative to the LP callee's entry block is the fix site.
+caller's dynamic-array chunks and the external callee's sorted-entry block.
+
+**RESOLVED 2026-10-16 (the output-ordering half).** The off-by-one was the co-spent logical/external identity
+anchor (immutable CREATE/SCID NFT) being recreated before the local dynamic-chunk run but NOT counted in
+`StatefulTransactionBuilder.getChunkOutputBase()`, which only summed blockSize + external-call blockInputs +
+external return events + low-level calls + iteration entries + loop entries. The fix adds
+`externalIdentityAnchorUtxos.length + (logicalIdentityUtxo ? 1 : 0)` to the trailing base, so the poolInfo chunk
+lands at the covenant's `__internal__dynamicChunkOutputBase` and the deposit covenant passes. Committed
+`a250f75c2`. `MasterChefPoolInfoPush` 1/1, `SplitAddPushPreflight` 1/1, `SplitTo64Preflight` 2/2 still green.
+
+**Remaining (second defect, now revealed).** With input-0 fixed, `deposit` fails at input 9 (the co-spent LP
+`ERC20Mock.transferFrom`) with `OP_VERIFY` on the `SafeMath.sub` "transfer amount exceeds allowance" guard: the
+SDK co-spent the `_allowances` HEAD node (slot 0, empty value) instead of the approved `_allowances[bob][chef]`
+entry (value 1000), so the allowance reads 0. This is the `_allowances` nested-mapping entry keyed by
+`nullop:msg.sender` resolving to the wrong UTXO in the composed deposit (the approve stored it under bob/chef,
+but the deposit's LP co-spend selected the head). Separate from the chunk-placement defect; still open.
+
 
 
 The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with

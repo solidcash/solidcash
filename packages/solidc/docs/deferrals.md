@@ -2934,7 +2934,10 @@ SETTLES the inline `int[]` case (and keeps bigint/bytes32/bytes/struct settling)
 probe still fails at ip 644 with a value-chunk pin — the failing EQUALVERIFY compares the covenant's expected
 value-chunk lock against an EMPTY output (the `__internal__valueChunkOutputBase` coordinate reads past/away from
 the materialized value chunk), with node 7's OLD value `[70n, 71n]` still on the stack, so node x's entry tail
-stays EMPTY and the chunked case stays pinned fail-closed.
+stays EMPTY and the chunked case stays pinned fail-closed. Further trace: the value at the failing comparison is
+the OLD `[70n, 71n]` (not the new `[300n, 301n]`), so the WRITE's value-chunk pin computes the chunk from the
+wrong on-stack value in the chained-delete retry — the value source for slot 1's chunk pin reads the
+predecessor's authenticated value instead of the `valueParam` `v`.
 
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 

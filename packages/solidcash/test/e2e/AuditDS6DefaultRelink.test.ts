@@ -85,13 +85,13 @@ describe('DS-6 default relink for non-int value kinds', () => {
     await expect(sc.getFunction('check')(x, hexToBin('bb'.repeat(32))).send()).resolves.toBeDefined();
   }, 300_000);
 
-  it('keeps an unbounded bytes node beside an insert fail-closed', async () => {
+  it('relinks an unbounded bytes node at empty bytes beside an insert', async () => {
     const deployed = await deploy('bytes');
     const { sc } = deployed;
     await sc.getFunction('set')(7n, hexToBin('deadbeef')).send();
     const x = await keyIn(deployed, 7n);
-    // Chunkable value kinds stay fail-closed: the delete-op default relink and its write-ownership retry are
-    // not yet planned (the length-framed default needs the value-chunk census to observe the length change).
-    await expect(sc.getFunction('dropThenSet')(7n, x, hexToBin('cafe'), 1n).send()).rejects.toThrow();
+    await sc.getFunction('dropThenSet')(7n, x, hexToBin('cafe'), 1n).send();
+    await expect(sc.getFunction('check')(7n, new Uint8Array()).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('check')(x, hexToBin('cafe')).send()).resolves.toBeDefined();
   }, 300_000);
 });

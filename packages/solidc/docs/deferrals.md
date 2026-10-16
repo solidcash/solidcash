@@ -2644,9 +2644,8 @@ included, were byte-identical before the alias path. Alias bodies whose write an
 delete since (not measured).
 
 Still failing closed: two writes of one key that ran on one node (the runtime alias of `m[i] = v; m[j] = w` with
-`i == j`; plain top-level writes with no delete compose instead, 9b478f894), more than one delete of a batch beside
-its writes, and a deleted node's own key beside an insert where the value kind's default is not empty (the SDK does
-not plan that relink).
+`i == j`; plain top-level writes with no delete compose instead, 9b478f894), and more than one delete of a batch beside
+its writes.
 
 **UPDATE 2026-10-13 (verified 2026-10-14).** The first of the three ("two writes of one key that both run on one
 node") now SETTLES: `b94440c61`/`4b13e7188` replace the outdated refusal pin with a ledger check and make a runtime
@@ -2665,6 +2664,15 @@ the nullified chunkable node's `len4(0)` default tail must be planned so the val
 change. `AuditDS6DefaultRelink.test.ts` pins that an unbounded `bytes` node beside an insert stays fail-closed.
 `AuditDS6ChainOneNode.test.ts` remains 11/11. Still fail-closed: unbounded `bytes`/`string`, struct/array defaults,
 and more than one delete of a batch beside its writes.
+
+**UPDATE 2026-10-16 (verified, second).** The unbounded `bytes`/`string` case now SETTLES. The SDK plans the
+chunkable default relink (`len4(0)`) for `bytes`/`string` in `defaultSortedEntryValueTail`, and the write-ownership
+retry now preserves that relinked predecessor lane instead of treating the chained delete as a computed update or a
+computed value-chunk run. The PredOut witness refresh accepts the relinked `slot || next || len4(0)` commitment for a
+`-3` chained delete instead of falling back to the old value and minting a duplicate predecessor. The chunkable
+default relink is tested by `AuditDS6DefaultRelink.test.ts` (unbounded `bytes` beside an insert), and
+`AuditDS6ChainOneNode.test.ts` remains 11/11. Still fail-closed: struct/array defaults (their default tail is
+recursive and not planned here), and more than one delete of a batch beside its writes.
 
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 

@@ -222,11 +222,15 @@ function defaultSortedEntryValueTail(valueType: string): Uint8Array | undefined 
     return undefined;
   }
   if (valueType === 'pubkey') return new Uint8Array(33);
-  // Unbounded bytes/string and struct/array defaults are length-framed / recursive and stay fail-closed here.
+  if (valueType === 'bytes' || valueType === 'string') {
+    // The length-framed default: `len4(0)` with no inline payload.
+    return encodeChunkableValueTail(EMPTY_ENTRY_VALUE_TAIL);
+  }
   if (valueType === 'address' || valueType === 'address payable'
     || valueType === 'sig' || valueType === 'datasig') {
     return EMPTY_ENTRY_VALUE_TAIL;
   }
+  // Struct/array defaults are recursive and stay fail-closed here.
   return undefined;
 }
 
@@ -8411,7 +8415,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (list.has(slot) && isSoleActiveFixedCollectionWrite(access.collection, slotIndex)) {
                 computedValueUpdateCollections.add(access.collection);
               }
-            } else if (!inactiveMessageBusEntrySlots.has(slotIndex)
+            } else if (!inactiveMessageBusEntrySlots.has(slotIndex) && !isSoftDelete
               && (activeMessageBusWriteCollections === undefined
                 || activeMessageBusWriteCollections.includes(access.collection))) {
               let kernelEncodedValue: Uint8Array | undefined;
@@ -8539,7 +8543,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               // A computed UPDATE (present key) mints no NEW node; pin its loop entry EMPTY so the loop-entry
               // derivation does not misread the value-chunk pin's OP_OUTPUTTOKENCOMMITMENT calls as a phantom NEW.
-              if (list.has(slot)) computedValueUpdateCollections.add(access.collection);
+              // A chained softDelete relinks its node at the default value in the batch's predecessor lane (DS-6);
+              // that lane must keep the planned commitment, not be pinned empty.
+              if (list.has(slot) && !isSoftDelete) computedValueUpdateCollections.add(access.collection);
             }
             // Overwrite GC: if this UPDATE replaces a LONG old value, reclaim its old chunks (old digest tail).
             if (list.has(slot)) {

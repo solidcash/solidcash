@@ -531,15 +531,21 @@ export function constructCreateBuilderTransactionBuilder(
         abiFunction, finalArgs, Number(slot), predecessorCommitment ?? '',
       )) continue;
       // DS-6: a lent delete of the node's own key (-3) naming this proof may have run on it: the planned relink then
-      // carries the default value (empty for the kinds the plan relinks so) in place of the node's own.
+      // carries the value type's default tail in place of the node's own. Chunkable kinds (bytes/string) relink at
+      // `len4(0)`; scalar kinds keep no tail.
       const argOf = (name: string): unknown => finalArgs[abiFunction.inputs.findIndex((c) => c.name === name)];
+      const deletedBatch = (abiFunction.sortedBatchInfo ?? []).find((batch) =>
+        batch.slotIndices.includes(Number(slot)));
+      const deletedCollection = deletedBatch === undefined ? undefined
+        : stateLayout.collections?.find((collection) => collection.name === deletedBatch.collection);
+      const deletedDefaultTail = deletedCollection?.chunkableValue === true ? '00000000' : '';
       const deletedPredOut = expectedPredOut !== undefined && (abiFunction.sortedBatchInfo ?? []).some((batch) => (
         batch.slotIndices.includes(Number(slot)) && batch.slotIndices.some((other) => {
           const deleted = argOf(`__internal__vmapBatchSlot_${other}`);
           return argOf(`__internal__vmapBatchPredOut_${other}`) === -3n
             && argOf(`__internal__vmapBatchProof_${other}`) === proofOffset && deleted instanceof Uint8Array
             && binToHex(deleted) === expectedPredOut.slice(0, 64).toLowerCase();
-        }))) ? expectedPredOut.slice(0, 128).toLowerCase() : undefined;
+        }))) ? `${expectedPredOut.slice(0, 128)}${deletedDefaultTail}`.toLowerCase() : undefined;
       if (current >= 0n && sameLock(outputLock(Number(current)), required)
         && (expectedPredOut === undefined
           || commitmentOf(Number(current))?.toLowerCase() === expectedPredOut.toLowerCase()

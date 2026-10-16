@@ -1258,14 +1258,15 @@ STALE element-slot bits, BCH zero-fills (a footgun EVM has, BCH's clean model do
 the fund-relevant blob surgery can get review. Do it with the other array/* deep work (element-slot writes
 `sstore(keccak256(0,32)+i, v)`), not as a standalone increment.
 
-## Calldata `.offset` on dynamic params - MOSTLY DONE 2026-07-20 (cebd086b, ac82db9f)
+## Calldata `.offset` on dynamic params - RESOLVED 2026-10-16 (21fb2289e)
 
 RESOLVED for the READ + ASSIGN forms. `x.offset` of a FIRST dynamic calldata param = the compile-time ABI data
 position `4 + headWords*32 + 32` (cebd086b; not a fake position - the exact value EVM computes, VM-proven 0x44 /
 0x84). `x.offset := v` / `x.length := v` (a calldata-slice re-point) = a function-scoped mutable local, read back
-across blocks (ac82db9f). Corpus +2 (calldata_offset_read, calldata_offset_read_write). REMAINING: a dynamic param
-that is NOT the first (cumulative runtime tail) and calldata_array_read (nested calldata arrays: `uint[2][] calldata`,
-`uint[2] calldata t = x[1]; s := t` - reading a calldata fixed-array element as a value; a separate deeper feature).
+across blocks (ac82db9f). Corpus +2 (calldata_offset_read, calldata_offset_read_write). A dynamic param that is NOT
+the first now resolves `.offset` to a RUNTIME tail expression (head + cumulative padded length of the preceding
+dynamic params), and nested calldata fixed-array pointers (`uint[2] calldata t = x[1]; s := t`) inherit that runtime
+base; VM tests in `CalldataOffsetTail.test.ts` pin the offset and the decoded element values.
 Original analysis (now largely resolved) below.
 
 ## Calldata `.offset` on dynamic params - DEFERRED 2026-07-20
@@ -1300,7 +1301,7 @@ delicate (every calldata op must agree on one layout); reuse the ABI encoders in
 **Revisit if.** A concrete port needs dynamic-calldata tail access (raw ABI decoding in assembly), or the calldata
 model is rebuilt for another reason - then `.offset` falls out of the head/tail layout.
 
-## bytes/string slot fields + address slot fields - PARTLY DONE 2026-07-20 (8bd5e708, 419673d1)
+## bytes/string slot fields + address slot fields - MOSTLY DONE 2026-10-16 (03cd9c6e9)
 
 UPDATE: the short-string byte-array encoding IS built, VM-proven. `sstore(bytesVar.slot, constX)` decodes EVM's
 short-slot layout at COMPILE TIME (data left-aligned in the high bytes big-endian, low byte = 2*len; X==0 clears) ->
@@ -1308,11 +1309,12 @@ short-slot layout at COMPILE TIME (data left-aligned in the high bytes big-endia
 encoding `len<32 ? uint256(bytes32((b ++ zeros ++ bytes1(2*len)).reverse())) : 2*len+1` (419673d1, corpus
 byte_array_storage_layout; uint256(bytesN) is little-endian so the big-endian blob is reversed - VM-confirmed). +3
 corpus. The BYTE-REVERSAL was VM-proven step-by-step (b="dead" -> exact 0x64656164<<224|8), NOT a blind miscompile.
-REMAINING bytes: LONG-string RESIZE (`sstore(b.slot, oddX)` odd low byte -> len (X-1)/2) + the keccak-DATA-region
-write/read (`sstore(keccak256(0,b.slot), data)` / `sload(keccak256(0,32))`, dirty_storage_bytes_long,
-delete_bytes_array), invalid-encoding corners, and the bytes-push-LOOP SDK state-derivation gap (a plain bytes push
-loop fails auto-derivation even without assembly - orthogonal SDK limitation). address slots = bounded-address
-(Section 10: against). Original analysis (now partly resolved) below.
+LONG-string RESIZE (`sstore(b.slot, oddX)` odd low byte -> len (X-1)/2) and the keccak-DATA-region write/read are
+built; a stateful SDK round-trip (`BytesSlotFieldState.test.ts`) pins the stored bytes, and `bytesDataBaseName` was
+fixed to key on the type alone (its old `sv.isDynamic` check ran before SymbolTableTraversal set the flag, so the
+write fell through to `__evm_storage`). Invalid-encoding corners fail closed. REMAINING: the bytes-push-LOOP SDK
+state-derivation gap (a plain bytes push loop fails auto-derivation even without assembly - orthogonal SDK
+limitation). address slots = bounded-address (Section 10: against). Original analysis (now partly resolved) below.
 
 ## bytes/string slot fields + address slot fields - DEFERRED 2026-07-20 (per-file evidence added)
 
@@ -1722,11 +1724,14 @@ The abi.decode-interface fix advanced both Kashi contracts past their first wall
   '@boringcrypto/boring-solidity/contracts/libraries/Bo...'" - a missing dependency path in that repo's layout, a
   HARNESS/dependency issue, not a compiler wall.
 
-## Reuse an entry-read local for a struct-mapping field write-back (IMPLEMENTED then REVERTED 2026-07-21)
+## Reuse an entry-read local for a struct-mapping field write-back (RE-LANDED 2026-10-16, 5703b86ec)
 The read-modify-writeback idiom `S e = m[k]; ..modify e..; m[k].f1 = e.f1; m[k].f2 = e.f2;` (Unicrow `refund`) is
 folded by CoalesceMappingEntryFieldWrites into one whole-struct write, but that RE-READS the entry to source the
 untouched fields - redundant, because `e` already holds them. Reusing `e` (`m[k] = S(e.f0, .., e.f1, .., 1, ..)`)
-elides the re-read.
+elides the re-read. The `ReuseEntryLocalForWriteback` pass is re-landed before CoalesceMappingEntryFieldWrites,
+tracking local field writes through their desugared whole-struct rebuild shape and verified byte-identical to the
+explicit whole-struct write-back (`ReuseEntryLocalForWriteback.test.ts`). The exact Unicrow `refund` source is not
+in the repo, so the -339 B delta is not re-measured here.
 - **What it'd take:** a data-flow pass `ReuseEntryLocalForWriteback` (was fully written + VM-tested, green: solidc
   suite clean, 104 struct e2e, 5 behavioral/oracle tests) placed BEFORE RedesugarImportedStructFieldWrites (so an
   imported struct's `e.f=v` is still a MappingFieldAssign; a same-file struct's is a `e = S(..)` field-preserving

@@ -451,6 +451,14 @@ export function getEventNftContinuationAddress(
   );
 }
 
+/**
+ * The input sequence that satisfies an event covenant's 144-block `OP_CHECKSEQUENCEVERIFY`. The covenant pushes the
+ * bare VM number 144, which BIP-68 reads as a BLOCK-height relative locktime (type bit 22 clear), so the input's
+ * sequence must match: disable bit (31) clear, type bit (22) clear, low 16 bits 144. Destroy sweeps event head and
+ * continuation NFTs with this sequence, so the sweep can spend them once their 144-block age has elapsed.
+ */
+export const EVENT_NFT_RELATIVE_LOCK_SEQUENCE = 0x00000090;
+
 export function getTokenContainerAddress(
   contract: Contract<any, any>, categoryId: string, tokenContainerCategoryId: string,
 ): string {
@@ -834,6 +842,31 @@ export function createAnonymousEventNftUnlocker(
     covenantScript,
     [],
     [],
+  );
+}
+
+/**
+ * Unlocker for a wide event's continuation chunk. The chunk sits at the named event covenant seeded with the
+ * `#continuation` hash (always P2SH32, matching `getEventNftContinuationAddress`); its unlock is the same empty
+ * covenant push as the head, gated by the 144-block `OP_CHECKSEQUENCEVERIFY`.
+ */
+export function createEventContinuationNftUnlocker(
+  contract: Contract<any, any>, categoryId: string, eventNameOrSignature: string,
+): ContractUnlocker {
+  validateCategoryId(categoryId);
+  const eventSignature = resolveEventSignature(contract.artifact, eventNameOrSignature);
+  const events: readonly EventDefinitionAbi[] = contract.artifact.events ?? [];
+  const anonymous = events.find((event) => event.signature === eventSignature)?.anonymous === true;
+  const covenantScript = buildEventNftCovenantScript(
+    hexToBin(categoryId), computeEventContinuationHash(eventSignature, anonymous),
+  );
+  return createCovenantContractUnlocker(
+    contract,
+    `EventContinuationNft_${categoryId.slice(0, 8)}`,
+    covenantScript,
+    [],
+    [],
+    'p2sh32',
   );
 }
 

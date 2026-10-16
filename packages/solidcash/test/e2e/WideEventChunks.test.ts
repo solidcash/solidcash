@@ -12,6 +12,7 @@ import {
 import {
   createFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos,
 } from '../test-util.js';
+import { bobAddress } from '../fixture/vars.js';
 
 /**
  * An event whose payload can exceed one 128-byte NFT commitment reserves one output per chunk: chunk 0 at its
@@ -37,6 +38,7 @@ contract WideLog() {
     emit Narrow(value);
     this.counter = this.counter + value;
   }
+  function destroy() selfdestruct { require(true); }
 }`;
 
 const words = [1, 2, 3, 4, 5].map((fill) => new Uint8Array(32).fill(fill));
@@ -188,4 +190,24 @@ describe('events wider than one NFT commitment', () => {
         .some((slot: any) => slot.kind === 'eventChunk')).toBe(true);
     }
   });
+
+  it('destroy sweeps a wide event head and its continuation chunks', async () => {
+    const { sc, categoryId, salted, provider } = await deploy();
+    await (sc as any).publish(...words).send();
+    const definition = artifact.events!.find((event) => event.name === 'Wide')!;
+    const headAddress = getEventNftAddress(salted, categoryId, definition.signature);
+    const continuationAddress = getEventNftContinuationAddress(salted, categoryId, definition.signature);
+    // The emit produced one head commitment and one continuation chunk.
+    expect(await provider.getUtxos(headAddress)).toHaveLength(1);
+    expect(await provider.getUtxos(continuationAddress)).toHaveLength(1);
+    // The event covenant carries a 144-block relative timelock; elapse it so the sweep can spend both NFTs.
+    await (provider as any).mine(144);
+    const result = await StatefulContract.destroy({
+      provider, contract: sc, destroyFunctionName: 'destroy', destroyFunctionArgs: [], recipient: bobAddress,
+    });
+    expect(result.txs).toHaveLength(1);
+    // Both the head and the continuation chunks are swept into the reclaim output.
+    expect(await provider.getUtxos(headAddress)).toHaveLength(0);
+    expect(await provider.getUtxos(continuationAddress)).toHaveLength(0);
+  }, 300_000);
 });

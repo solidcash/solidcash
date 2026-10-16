@@ -2071,7 +2071,13 @@ Still deferred:
 - Nested external-call and delegatecall callees: their unused chunk slots get funding inputs and token-free
   pass-through outputs, so payloads that fit one commitment keep working, but a nested payload that needs chunks is
   not learned or materialized and the callee covenant refuses it.
-- `destroy()` does not collect continuation chunk UTXOs (anyone can spend them after 144 blocks).
+- `destroy()` **RESOLVED 2026-10-16** - now collects continuation chunk UTXOs alongside the event head NFTs. Both
+  ride the same event covenant with a 144-block `OP_CHECKSEQUENCEVERIFY`, so the sweep adds each with the matching
+  block-based sequence (`EVENT_NFT_RELATIVE_LOCK_SEQUENCE` = `0x00000090`) and burns them into the reclaim output;
+  the head sweep needed the same sequence (it previously ran with the default final sequence and could never pass
+  the CSV). `packages/solidcash/test/e2e/WideEventChunks.test.ts` `destroy sweeps a wide event head and its
+  continuation chunks` emits a two-commitment payload, elapses the timelock, destroys, and asserts both the head and
+  continuation addresses hold no UTXOs.
 
 Widened 2026-10-14 (atomic bus redesign, stage 1): every kernel handler whose emits stream takes the stream, narrow
 ones included, so a route keeps its 255 event windows only for a handler that cannot stream (a conditional or

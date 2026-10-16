@@ -2816,6 +2816,25 @@ rejects the transition. `AuditDS6DefaultRelink.test.ts` pins both the inline and
 fail-closed. Remaining: the array soft-delete entry-output default tail (and any value kind the compiler lowers to
 a soft delete with a non-empty default), not the recursive tail computation itself.
 
+**UPDATE 2026-10-16 (verified, fifth).** The array soft-delete default tail half of that remaining item is now
+planned. The compiler's `emitDefaultValue` for an unbounded array emits `encodeInt(0)` then
+`emitPushdataEncode(bigint)`, which is the single `OP_0` byte, and `emitChunkableValueTail` frames it as
+`len4(1) || 0x00` (5 bytes) — not the `len4(0)` empty-bytes/string tail. The SDK's `defaultSortedEntryValueTail`
+now returns `encodeChunkableValueTail([0x00])` for an unbounded array (`parseArrayTypeString` with no bound), so
+the chained-delete relink retry (`sortedChainedDeletes`) is enabled for array-valued soft deletes and the
+predecessor lane is relinked at `slot || next || 0100000000`. Bounded arrays stay fail-closed: they are
+fixed-width and lower to a conditional write, whose write path already plans the default.
+
+The array case still does NOT settle: the chained-delete retry now reaches the insert's predecessor-output check,
+where the array-valued WRITE beside the soft delete fails in the derive probe (VM `ip 644`, the
+`predOut >= 0` guard of the insert's recreated-predecessor check) with and without the chained delete, so the
+delete-default tail is not the blocker. The insert's own value materialization is the next step: the new-node
+planner (`StatefulContract` around the `chunkableValue` INSERT `newNode` computation) only frames a string or
+`Uint8Array` value, so a `valueParam` array (`int[] v`) is never `encodePushdataValue`-encoded into the insert's
+chunkable tail and the probe cannot publish the new node's value. `AuditDS6DefaultRelink.test.ts` still pins the
+inline and chunked (>60 B) `int[]` cases as fail-closed (6/6), and `AuditDS6ChainOneNode.test.ts` remains 13/13.
+Remaining: the array-valued write's value materialization beside an array soft delete.
+
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 
 **What:** a delegated message-bus route binds the proxy's mapping entries and value chunks to the proxy master's lock

@@ -204,13 +204,21 @@ const EMPTY_ENTRY_VALUE_TAIL = new Uint8Array();
 /**
  * The value tail the sorted-entry covenant writes when a chained present delete nullifies its node
  * (`delete m[k]` assigns the type default), or undefined when that default is not statically planned here
- * (struct/array defaults are recursive; enums and function pointers stay fail-closed). Mirrors the compiler's
+ * (struct defaults are recursive; enums and function pointers stay fail-closed). Mirrors the compiler's
  * `emitDefaultValue` plus the value-kind tail framing in GenerateTargetTraversal: int/bool/bigint/fixed
  * nullify to the minimal VM number (empty for 0/false), bytesN to N zero bytes, pubkey to 33 zero bytes,
- * address/sig/datasig to empty, and unbounded bytes/string to the 4-byte zero length prefix.
+ * address/sig/datasig to empty, unbounded bytes/string to the 4-byte zero length prefix, and an unbounded
+ * array to the pushdata-encoded empty length prefix (`OP_0`, one byte) framed as `len4(1) || 0x00`.
  */
 function defaultSortedEntryValueTail(valueType: string): Uint8Array | undefined {
-  if (parseArrayTypeString(valueType) !== undefined) return undefined;
+  const arrayInfo = parseArrayTypeString(valueType);
+  if (arrayInfo !== undefined) {
+    // Only an unbounded array is chunkable; the compiler lowers `delete m[k]` on an unbounded array to a
+    // soft delete whose default is `encodeInt(0) || pushdataEncode(bigint)` = the single `OP_0` byte.
+    // Bounded arrays are fixed-width and lower to a conditional write, which the write path already plans.
+    if (arrayInfo.bound === undefined) return encodeChunkableValueTail(new Uint8Array([0x00]));
+    return undefined;
+  }
   if (valueType === 'bool' || valueType === 'bigint'
     || /^u?int\d*$/.test(valueType) || /^u?fixed\d*x\d*$/.test(valueType)) {
     return EMPTY_ENTRY_VALUE_TAIL;
@@ -230,7 +238,7 @@ function defaultSortedEntryValueTail(valueType: string): Uint8Array | undefined 
     || valueType === 'sig' || valueType === 'datasig') {
     return EMPTY_ENTRY_VALUE_TAIL;
   }
-  // Struct/array defaults are recursive and stay fail-closed here.
+  // Struct defaults are recursive and stay fail-closed here.
   return undefined;
 }
 

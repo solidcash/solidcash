@@ -1505,7 +1505,13 @@ a mapping. Detail + re-entry points in memory events_in_delegate_gap.md.
 
 ---
 
-## buffered state journal + cross-contract message bus (architecture research)  - 2026-07-20
+## buffered state journal + cross-contract message bus (architecture research)  - IMPLEMENTED 2026-07-21
+
+RESOLVED as shipped. P1 (scalar write-back journal), P2 (buffered mapping/collection writes flushed through
+vmap) and P3 (the message bus) all landed with their own suites: `ScalarJournal.test.ts` / `CollectionJournal.test.ts`
+(compiler lowering), `journal-message-bus/e2e/ScalarJournalRelease1.test.ts` (scalar-journal loop settle),
+`journal-message-bus/e2e/StatefulRecursion.test.ts` (recursive state-writer settle + over-budget/unbounded
+refusals), and the `Kernel*` message-bus suites. The original analysis below is kept as the design record.
 
 **What.** A future architecture that would make state/covenant-touching functions into real
 `OP_INVOKE` subroutines (fixing recursive state-writers and generic loop-calls of state helpers) via
@@ -2624,9 +2630,16 @@ alias of two writes settle as one node holding the later value. Remaining fail-c
 one delete of a batch beside its writes, and a deleted node's own key beside an insert where the value kind's
 default is not empty (the SDK does not plan that relink).
 
-**Proposed design:** deletes past one fold their registers in batch order; the SDK plans the default value of every kind.
-
-**Why deferred:** no tested shape deletes twice beside its writes.
+**UPDATE 2026-10-16 (verified).** The second case ("a deleted node's own key beside an insert where the value
+kind's default is not empty") is now RESOLVED for every statically-known non-chunkable scalar value kind. The SDK
+plans the chained-delete relink at the type's default tail instead of always at the empty tail: `bigint`,
+`fixed`/`ufixed`, `address`/`address payable`, `sig`/`datasig` nullify to empty, `bytesN`/`byte` to N zero bytes,
+and `pubkey` to 33 zero bytes, alongside the existing `bool`/`int`/`uint` empty default. `AuditDS6DefaultRelink.test.ts`
+settles a `bigint` node (previously a false fail-closed: its default is empty but the gate excluded it) and a
+`bytes32` node (32 zero bytes) beside an insert, and pins that an unbounded `bytes` node stays fail-closed.
+`AuditDS6ChainOneNode.test.ts` remains 11/11. Still fail-closed: unbounded `bytes`/`string` (their default is a
+4-byte length-framed tail, and the nullified chunkable node needs the value-chunk census to see the length change),
+struct/array defaults (recursive), and more than one delete of a batch beside its writes.
 
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 

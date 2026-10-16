@@ -2792,15 +2792,22 @@ refusal still also gates mapping/array entries and containers, which keep their 
   under `messageBusKernel: true` too: its direct entry migrates, and the message-bus lane simply offers no upgrade for
   it. The existing refusal was pinned by `Upgrade.test.ts` (28/28) and `KernelUpgradeCompose.test.ts` (5/5).
 
-**STATUS 2026-10-16 (data-NFT half resolved).** The bounded data-NFT migration is implemented and verified:
-`refuseUpgradeStrandingBoundRecords` no longer lists state variables; the census growth scan starts at
-`1 + 2*dataNftCount`; a new re-mint verification pins each re-minted output's replacement-bound lock; the value
-preservation points at the re-mint band and the same-index auto-covenant checks are skipped; and the SDK spends old
-data NFTs with `flag=2`, emits the non-category pad band and re-mints at the new data-NFT covenant. Pinned by
-`packages/solidcash/test/e2e/DataNftUpgradeMigration.test.ts` (3/3: same-geometry value carry, longer-layout overflow
-mint, and the stranded-old-lock re-mint is refused), plus the updated `Upgrade.test.ts` (28/28) and
-`KernelUpgradeCompose.test.ts` (5/5). Remaining: mapping/array entries and satoshi/token containers still strand, so
-their refusal stays, and the migration still needs a bounded per-record batched protocol for those kinds.
+**STATUS 2026-10-16 (data-NFT and satoshi-container halves resolved).** The bounded data-NFT migration and the
+satoshi-container migration are implemented and verified. Data NFTs: `refuseUpgradeStrandingBoundRecords` no longer
+lists state variables; the census growth scan starts at `1 + 2*dataNftCount`; a new re-mint verification pins each
+re-minted output's replacement-bound lock; the value preservation points at the re-mint band and the same-index
+auto-covenant checks are skipped; the SDK spends old data NFTs with `flag=2`, emits the non-category pad band and
+re-mints at the new data-NFT covenant. Satoshi container: the refusal no longer lists it; `emitSlotScans` skips the
+same-lock container aggregate for a direct upgrade; a new `emitUpgradeSatoshiContainerMigrationCheck` pins the old
+container input, the zero-value drain at its index, and the re-mint at `out[2+2*dataNftCount]` at the
+replacement-bound covenant with its value; the SDK spends it with its `flag=1` master path and re-mints it (the
+container must exist on-chain — it does once the contract has held BCH — or the SDK refuses). Pinned by
+`packages/solidcash/test/e2e/DataNftUpgradeMigration.test.ts` (3/3), `SatoshiContainerUpgradeMigration.test.ts` (3/3,
+including the container/data-NFT coexistence that shifts the re-mint band and growth scan, and the stranded-old-lock
+re-mint refusal), plus the updated `Upgrade.test.ts` (28/28) and `KernelUpgradeCompose.test.ts` (5/5). Remaining:
+mapping/array entries and token containers still strand, so their refusal stays; their populations are unbounded
+(one entry per key, one container per foreign token category), so they need a bounded per-record batched protocol
+behind the old code's authorization rather than the single-transaction migration above.
 
 ## Logical caller identity for native compiles (model B residual, 2026-10-14)
 

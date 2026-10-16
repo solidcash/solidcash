@@ -964,8 +964,9 @@ describe('StatefulContract.upgrade()', () => {
       expect(() => compileString(MAPPING_UPGRADE)).toThrow(/keeps .*mapping or array entries/);
     });
 
-    it('refuses a contract that co-spends a satoshi container or a token container', () => {
-      expect(() => compileString(SATOSHI_CONTAINER_UPGRADE, MASTER_ONLY)).toThrow(/keeps .*a satoshi container/);
+    it('admits a satoshi container (it re-mints at the replacement lock) and refuses token containers', () => {
+      const satoshiArtifact = compileString(SATOSHI_CONTAINER_UPGRADE, MASTER_ONLY);
+      expect(satoshiArtifact.stateLayout!.dataNftCount).toBe(0);
       expect(() => compileString(TOKEN_CONTAINER_UPGRADE, MASTER_ONLY)).toThrow(/keeps .*token containers/);
     });
 

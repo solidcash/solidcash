@@ -1713,6 +1713,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private dataNftPreserveIds = new Map<number, bigint>();
   private dataNftCommitPreserveIds = new Map<number, bigint>();
   private dataNftOutputCommitmentIds = new Map<number, bigint>();
+  /** Set once per contract: any entry's block layout keeps a satoshi container, so an upgrade must migrate it. */
+  private contractKeepsSatoshiContainer = false;
   private nativeLegacyMathFunctions = new Set<FunctionDefinitionNode>();
   private compactHelperIds = {
     next: -12n,
@@ -2988,6 +2990,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     t.dataNftCount = this.dataNftCount;
     t.collectionDefinitions = this.collectionDefinitions;
     t.stateVariables = this.stateVariables;
+    t.contractKeepsSatoshiContainer = this.contractKeepsSatoshiContainer;
     t.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
     t.sharedCheckBody = { masterOrdinal };
   }
@@ -5135,6 +5138,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.stateVariables = node.stateVariables;
     this.collectionCount = node.collections.length;
     this.collectionDefinitions = node.collections;
+    // A contract keeps a satoshi container when any entry's block layout reserves its slot. The semantic pass
+    // publishes this on the contract node once the block layouts are known; the per-function layouts are
+    // recomputed later in this traversal.
+    this.contractKeepsSatoshiContainer = node.keepsSatoshiContainer;
     // Dynamic helpers use the shortest available script-number IDs while remaining disjoint from every user
     // function in this contract. Four-byte selectors naturally remain distinct; small internal IDs are reserved.
     const contractFunctionsForIds = [
@@ -6830,6 +6837,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.upgradeSignatureFenceIds = this.upgradeSignatureFenceIds;
       probe.stack = [...this.stack];
       probe.stateVariables = this.stateVariables;
+      probe.contractKeepsSatoshiContainer = this.contractKeepsSatoshiContainer;
       probe.collectionCount = this.collectionCount;
       probe.collectionDefinitions = this.collectionDefinitions;
       probe.dataNftCount = this.dataNftCount;
@@ -7134,6 +7142,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Copy necessary context for state-accessing functions
     subTraversal.stateVariables = this.stateVariables;
+    subTraversal.contractKeepsSatoshiContainer = this.contractKeepsSatoshiContainer;
     subTraversal.collectionCount = this.collectionCount;
     subTraversal.collectionDefinitions = this.collectionDefinitions;
     subTraversal.dataNftCount = this.dataNftCount;
@@ -7536,6 +7545,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.framedAcceptsValue = this.framedAcceptsValue;
       subTraversal.framedValueWitnessCount = this.framedValueWitnessCount;
       subTraversal.stateVariables = this.stateVariables;
+      subTraversal.contractKeepsSatoshiContainer = this.contractKeepsSatoshiContainer;
       subTraversal.collectionCount = this.collectionCount;
       subTraversal.collectionDefinitions = this.collectionDefinitions;
       subTraversal.dataNftCount = this.dataNftCount;
@@ -10219,8 +10229,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && node.externalCalls && node.externalCalls.some((ec) => ec.hasReturnValues)) {
         this.emitExternalReturnEventVerification(node);
       }
+      // A direct upgrade migrates the satoshi container to the replacement lock, so the same-lock slot scan (which
+      // would read the zero-value drain as the container's output) is replaced by the migration check.
       const scansSatoshi = !this.framedMaster && !this.functionHasDelegatecall && isStatefulContract
-        && unsafeTier === null && !isSelfdestruct && !this.graphTransferFlagActive;
+        && unsafeTier === null && !isSelfdestruct && !this.graphTransferFlagActive
+        && !this.directUpgradeMigratesSatoshiContainer(node);
       // A function that never names `tokens[...]` still has to keep every other container. Gating this scan
       // on the function's own slots let `touch()` drain a fungible or NFT container. The forwarder skips it, so a
       // direct delegate scans the proxy's containers, whose locks bind the proxy master.
@@ -10252,7 +10265,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
           this.emitOwnCategoryMutableNftConservation(node, upgradeMintsDataNfts);
-          if (upgradeMintsDataNfts) this.emitUpgradeDataNftMigrationCheck(node);
+          if (upgradeMintsDataNfts) {
+            this.emitUpgradeDataNftMigrationCheck(node);
+            this.emitUpgradeSatoshiContainerMigrationCheck(node);
+          }
         } else {
           this.emitMasterSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -10284,7 +10300,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
           this.emitOwnCategoryMutableNftConservation(node, upgradeMintsDataNfts);
-          if (upgradeMintsDataNfts) this.emitUpgradeDataNftMigrationCheck(node);
+          if (upgradeMintsDataNfts) {
+            this.emitUpgradeDataNftMigrationCheck(node);
+            this.emitUpgradeSatoshiContainerMigrationCheck(node);
+          }
         } else {
           this.emitMasterSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -49513,7 +49532,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The only excess outputs allowed are a contiguous run right after the re-minted data-NFT band, each at the
       // canonical data-NFT covenant of this category bound to the replacement's lock. Count that run back into the
       // balance; the count above still refuses a mutable output beyond the run or at another locking bytecode.
-      this.emit(encodeInt(BigInt(1 + 2 * this.dataNftCount)), loc);
+      this.emit(encodeInt(BigInt(1 + 2 * this.dataNftCount + this.upgradeContainerOutputShift(node))), loc);
       this.pushToStack('(upgrade_new_data_j)');
       this.emit(Op.OP_BEGIN, loc);
       this.emit(Op.OP_DUP, loc);
@@ -49581,6 +49600,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && node.messageBusUpgradeRoute !== true;
   }
 
+  /** A direct upgrade must also re-mint the contract's satoshi container at the replacement lock. */
+  private directUpgradeMigratesSatoshiContainer(node: FunctionDefinitionNode): boolean {
+    return this.contractKeepsSatoshiContainer
+      && node.modifiers.includes(FunctionModifier.UPGRADE)
+      && node.messageBusEligible !== true
+      && node.messageBusUpgradeRoute !== true;
+  }
+
+  /**
+   * The number of fixed output indices the satoshi-container migration inserts ahead of the added-data-NFT run:
+   * one zero-value drain pad at the container's input index (right after the data-NFT pad band), and one re-mint.
+   */
+  private upgradeContainerOutputShift(node: FunctionDefinitionNode): number {
+    return this.directUpgradeMigratesSatoshiContainer(node) ? 2 : 0;
+  }
+
+  /** The data-NFT re-mint band starts one output later when the container drain pad occupies the slot before it. */
+  private upgradeContainerReMintShift(node: FunctionDefinitionNode): number {
+    return this.directUpgradeMigratesSatoshiContainer(node) ? 1 : 0;
+  }
+
   /**
    * CRYPTO-4 data-NFT migration: the census above balances the count, and this pins the re-mint location. Each
    * re-minted data NFT output at `1 + dataNftCount + i` must sit at the canonical data-NFT covenant bound to the
@@ -49607,8 +49647,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc); // [replacementLock, C]
     this.emitDataNftLbc(loc, true); // [covenant]
     this.stack[0] = '(upgrade_migration_covenant)';
+    const reMintShift = this.upgradeContainerReMintShift(node);
     for (let i = 0; i < n; i += 1) {
-      const outIdx = 1 + n + i;
+      const outIdx = 1 + n + reMintShift + i;
       // Each re-minted output must be at the replacement-bound data-NFT covenant.
       this.emit(encodeInt(BigInt(outIdx)), loc);
       this.emit(Op.OP_OUTPUTBYTECODE, loc);        // [cov, outBytecode]
@@ -49618,6 +49659,67 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (upgrade_migration_covenant)
+  }
+
+  /**
+   * CRYPTO-4 satoshi-container migration: the old container (bound to the old master lock) is spent with its
+   * flag=1 master path, drained at its input index, and re-minted at the replacement-bound covenant carrying its
+   * value. The layout puts the container input at `1 + dataNftCount`, the zero-value drain at the same output
+   * index (right after the data-NFT pad band), and the re-mint at `2 + 2*dataNftCount` (before the added data-NFT
+   * run, which therefore starts two outputs later than in a data-NFT-only upgrade).
+   */
+  private emitUpgradeSatoshiContainerMigrationCheck(node: FunctionDefinitionNode): void {
+    if (!this.directUpgradeMigratesSatoshiContainer(node)) return;
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+    const containerIdx = 1 + this.dataNftCount;
+    const reMintIdx = 2 + 2 * this.dataNftCount;
+
+    // Phase 1: input[containerIdx] is the old container covenant; output[containerIdx] is the zero-value drain.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // C ++ 0x02
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc); // C
+    this.pushToStack('(sc_migration_cat)');
+    this.emitSatoshiContainerLbc(loc); // [oldCovenant]
+    this.stack[0] = '(sc_old_covenant)';
+    this.emit(encodeInt(BigInt(containerIdx)), loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc); // [cov, inBytecode]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(sc_old_covenant)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);          // [cov, inBytecode, cov]
+    this.emit(Op.OP_EQUALVERIFY, loc);   // [cov]
+    this.emit(encodeInt(BigInt(containerIdx)), loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);   // [cov, drainValue]
+    this.emit(encodeInt(0n), loc);       // [cov, drainValue, 0]
+    this.emit(Op.OP_NUMEQUALVERIFY, loc); // [cov]
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (sc_old_covenant)
+
+    // Phase 2: output[reMintIdx] is the replacement-bound covenant and carries the container's value.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // C ++ 0x02
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc); // C
+    this.pushToStack('(sc_migration_cat)');
+    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__upgradeBytecode'))), loc);
+    this.emit(Op.OP_PICK, loc);  // [replacementLock, C]
+    this.emit(Op.OP_SWAP, loc);  // [C, replacementLock]
+    this.encodeLockAndCategory(loc);
+    this.emitBoundSatoshiContainerCovenant(loc); // [newCovenant]
+    this.stack[0] = '(sc_new_covenant)';
+    this.emit(encodeInt(BigInt(reMintIdx)), loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc); // [cov, outBytecode]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(sc_new_covenant)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);            // [cov, outBytecode, cov]
+    this.emit(Op.OP_EQUALVERIFY, loc);     // [cov]
+    this.emit(encodeInt(BigInt(containerIdx)), loc);
+    this.emit(Op.OP_UTXOVALUE, loc);       // [cov, inValue]
+    this.emit(encodeInt(BigInt(reMintIdx)), loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);     // [cov, inValue, outValue]
+    this.emit(Op.OP_EQUALVERIFY, loc);     // [cov]
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (sc_new_covenant)
   }
 
   /** Require exactly one proxy master and exactly N proxy data NFTs at their respective locking bytecodes. */
@@ -52098,10 +52200,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const emitIndex = (side: 'in' | 'out'): void => {
         if (this.readsRecordsFromFrame) this.emitRecordBlockBase(side, locationData);
         else this.emitMasterInputIndex(locationData);
-        // A direct upgrade re-mints each data NFT one dataNftCount further along (past the pad band), so the
-        // output it preserves sits at `compactOffset + dataNftCount`, not `compactOffset`.
+        // A direct upgrade re-mints each data NFT one dataNftCount further along (past the pad band and any
+        // container drain), so the output it preserves sits at `compactOffset + dataNftCount + shift`.
         const offset = side === 'out' && this.directUpgradeMigratesDataNfts(node)
-          ? compactOffset + this.dataNftCount : compactOffset;
+          ? compactOffset + this.dataNftCount + this.upgradeContainerReMintShift(node) : compactOffset;
         this.emit(encodeInt(BigInt(offset)), locationData);
         this.emit(Op.OP_ADD, locationData);
       };

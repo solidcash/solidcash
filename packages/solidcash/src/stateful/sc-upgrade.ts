@@ -17,7 +17,9 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
 import {
   createDestroyDataNftUnlocker,
+  createSatoshiContainerUnlocker,
   getDataNftAddress,
+  getSatoshiContainerAddress,
 } from './covenant-helpers.js';
 import type { UpgradeOptions, UpgradeResult } from './stateful-lifecycle-types.js';
 
@@ -185,6 +187,27 @@ export async function upgradeStatefulContract<T extends Artifact>(
     builder.addInput(filteredDataNftUtxos[i], dataNftUnlockers[i]);
   }
 
+  // CRYPTO-4 satoshi-container migration: the container (bound to the old master lock) is spent with its flag=1
+  // master path, drained at its input index, and re-minted at the replacement-bound covenant. The contract keeps
+  // a container when any entry's block layout reserves its slot; the container UTXO must exist to migrate (it
+  // always does once the contract has held BCH, since transfers recreate it at the same covenant).
+  const keepsSatoshiContainer = oldContract.inner.artifact.abi.some((fn) =>
+    fn.blockLayout?.slots.some((slot) => slot.kind === 'satoshiContainer'));
+  let satoshiContainerUtxo: Utxo | undefined;
+  if (keepsSatoshiContainer) {
+    const satoshiAddress = getSatoshiContainerAddress(oldContract.inner, categoryId);
+    const containerUtxos = await provider.getUtxos(satoshiAddress);
+    satoshiContainerUtxo = containerUtxos.find((utxo) => utxo.token === undefined);
+    if (!satoshiContainerUtxo) {
+      throw new Error(
+        `Upgrade migrates the satoshi container, but none exists at ${satoshiAddress}. `
+        + 'Fund the satoshi container (or drain it) before upgrading.',
+      );
+    }
+    // Input 1+N: the old satoshi container, spent by the old master still at the old lock.
+    builder.addInput(satoshiContainerUtxo, createSatoshiContainerUnlocker(oldContract.inner, 0, categoryId));
+  }
+
   // The old data NFTs are destroyed (flag=2) and re-minted at the replacement's lock with their values carried
   // into the new state layout: parse the old commitment with the old layout, then rebuild with the new layout so
   // new fields are initialised with default values. Additional data NFTs the longer layout needs are minted from
@@ -246,15 +269,24 @@ export async function upgradeStatefulContract<T extends Artifact>(
     },
   });
 
-  // CRYPTO-4 data-NFT migration layout, matching the compiler's census and re-mint verification:
-  //   out[0]       = new master
-  //   out[1..N]    = a non-category pad band (the flag=2 destroy covenant requires output[INPUTINDEX] to hold a
-  //                  DIFFERENT category, so a re-mint cannot sit at the old input's index)
-  //   out[N+1..2N] = re-minted data NFTs at the replacement-bound covenant, each copying its old commitment
-  //   out[2N+1..]  = added data NFTs for the extended layout
+  // CRYPTO-4 data-NFT migration layout, matching the compiler's census and re-mint verification. When the
+  // satoshi container migrates too, its zero-value drain occupies out[N+1] and its re-mint out[2N+2]:
+  //   out[0]         = new master
+  //   out[1..N]      = a non-category pad band (the flag=2 destroy covenant requires output[INPUTINDEX] to hold a
+  //                    DIFFERENT category, so a re-mint cannot sit at the old input's index)
+  //   out[N+1]       = the satoshi container's zero-value drain (when present)
+  //   out[N+2..2N+1] = re-minted data NFTs at the replacement-bound covenant, each carrying its old commitment
+  //   out[2N+2]      = the satoshi container re-mint at the replacement-bound covenant (when present)
+  //   out[2N+3..]    = added data NFTs for the extended layout
   // A zero-value bare OP_RETURN pad needs no funding and is exempt from dust.
   const oldNftCount = filteredDataNftUtxos.length;
   for (let i = 0; i < oldNftCount; i++) {
+    builder.addOutput({ to: Uint8Array.of(0x6a), amount: 0n });
+  }
+
+  // The satoshi container's flag=1 master path requires output[INPUTINDEX] to be a zero-value drain; its re-mint
+  // carries the container's value at the replacement-bound covenant.
+  if (satoshiContainerUtxo) {
     builder.addOutput({ to: Uint8Array.of(0x6a), amount: 0n });
   }
 
@@ -276,6 +308,13 @@ export async function upgradeStatefulContract<T extends Artifact>(
           commitment: newCommitment,
         },
       },
+    });
+  }
+
+  if (satoshiContainerUtxo) {
+    builder.addOutput({
+      to: getSatoshiContainerAddress(newContract, categoryId),
+      amount: satoshiContainerUtxo.satoshis,
     });
   }
 

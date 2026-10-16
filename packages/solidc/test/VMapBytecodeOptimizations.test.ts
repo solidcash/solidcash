@@ -34,7 +34,8 @@ describe('general vmap bytecode sharing', () => {
     // addresses to the master lock and runs the container, foreign-token and mutable-output scans.
     // 4335 measured after the trailing batch-width binding landed on the direct convention.
     // 4695 measured after the width-0 recovery A/M/B triples grew the shared front-region co-spend census.
-    expect(artifact.bytecode.length / 2).toBeLessThan(4700);
+    // 4711 measured after the direct entry's message-bus-eligibility census widened.
+    expect(artifact.bytecode.length / 2).toBeLessThan(4750);
   });
 
   it('shares a collection-specific entry address across reads and writes', () => {
@@ -53,7 +54,8 @@ describe('general vmap bytecode sharing', () => {
     // 4415.5 measured after the October covenant hardening (master-lock entry addresses, per-function scans).
     // 4630.5 measured after the trailing batch-width binding landed on the direct convention.
     // 4988 measured after the width-0 recovery A/M/B triples grew the shared front-region co-spend census.
-    expect(artifact.bytecode.length / 2).toBeLessThan(5000);
+    // 5004 measured after the direct entry's message-bus-eligibility census widened.
+    expect(artifact.bytecode.length / 2).toBeLessThan(5050);
   });
 
   it('shares the authenticated-absence bracket after three reads', () => {

@@ -699,10 +699,10 @@ export default class SolidCashParser extends Parser {
 	// redirect an ordinary complex-lvalue tuple assignment to the nested-pattern rule.
 	hasNestedTuplePatternAhead(): boolean {
 	  const input = this._input;
-	  const lparen = SolidCashParser.T__56;
-	  const rparen = SolidCashParser.T__57;
+	  const lparen = SolidCashParser.T__57;
+	  const rparen = SolidCashParser.T__58;
 	  const comma = SolidCashParser.T__4;
-	  const assign = SolidCashParser.T__47;
+	  const assign = SolidCashParser.T__48;
 	  let depth = 0;
 	  let itemStart = false;
 	  for (let i = 1; i < 4096; i++) {

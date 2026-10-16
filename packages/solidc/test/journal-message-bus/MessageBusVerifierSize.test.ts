@@ -26,9 +26,10 @@ describe('atomic verifier bytecode specialization', () => {
     // listed the slots they act on in one classifying pass per side: direct +46 B, composed +104 B. Again after the
     // atomic bus stage 2 (no PUSHDATA4 carrier arm under a 10,000 B blob bound, shared stack helpers): composed -56 B.
     // composed -25 B after the trailing batch-width binding moved the width witness out of the scalar verifier.
+    // +16 B in both conventions after the direct entry's message-bus-eligibility census widened.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 603,
-      composed: 1860,
+      direct: 619,
+      composed: 1876,
       frameworkTax: 1257,
     });
     expect(composed).toBeLessThanOrEqual(1900);

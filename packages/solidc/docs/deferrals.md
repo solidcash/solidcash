@@ -2775,8 +2775,8 @@ reaches user state only through the explicit `this.x` form, so the shadow is una
 stays strict. Bytecode is unchanged (local/parameter names are erased); only the generated source text and its
 parse cache key change.
 
-**Evidence.** `KernelAdmission.test.ts` is green on the target title; the full file runs 688/689 with the one
-remaining failure a 60 s timeout on "publishes quadratic-counter event prefixes ..." that passes in isolation
-(~15 s, environmental load from the same run). A probe of the same fold shape with state vars named `output`,
-`at`, `slot`, `end`, `cursor`, `base`, `fixedSize`, `participantCount`, `activeBase` and `input` now admits
-`run` (was `messageBus: undefined`). Root `yarn build` and `yarn lint` exit 0.
+**Evidence.** `KernelAdmission.test.ts` is 689/689 green, and `yarn test:compiler:changed` passes 426 files /
+7172 tests. A probe of the same fold shape with state vars named `output`, `at`, `slot`, `end`, `cursor`,
+`base`, `fixedSize`, `participantCount`, `activeBase` and `input` now admits `run` (was
+`messageBus: undefined`). Root `yarn build` exits 0; the only root `yarn lint` error is in the concurrently
+authored, uncommitted `ReuseEntryLocalForWriteback.ts` (not these changes).

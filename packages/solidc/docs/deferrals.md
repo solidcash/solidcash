@@ -2905,6 +2905,20 @@ before the VM exposes the chunkable-array tail. Remaining fix: locate and remove
 its arm runs), then verify the probe reaches node x's value. `AuditDS6DefaultRelink.test.ts` pins both `int[]`
 cases fail-closed (6/6) and `AuditDS6ChainOneNode.test.ts` is 13/13.
 
+**UPDATE 2026-10-16 (verified, eleventh).** The `00` placeholder half is now fixed at the source; a duplicate P'
+still remains, so the array case does not settle yet. Root cause of the `00`: the direct chunkable-array
+`valueParam` write was registered as a TRACE-DERIVED computed value-chunk run (`computedValueChunkRuns` ->
+`registerValueChunkVar` -> a seeded `00` continuation at the dummy funder lock), because the direct
+value-chunk mint in `StatefulContract` (~line 8404) framed only `Uint8Array`/`string`/scalar values and a JS
+array value fell through. Fix (shipped): `arrayDirectBytes` now `encodePushdataValue`s a non-`Uint8Array`
+array/struct `valueParam`, so an inline value (<= 60 B) mints no phantom continuation and a long value is split
+exactly via `valueChunkMints`. Verified: the chained-delete retry's derive-probe output count dropped 6 -> 5 (the
+`00` placeholder is gone), and the settle-path suites stay green (`AuditDS6DefaultRelink` bytes/string/struct,
+`AuditDS6ChainOneNode`, `ChunkedArrays` = 34/34). Remaining: the retry's derive probe still fails at ip 644 with a
+DUPLICATE P' (`slot=7,next=x` materialized twice, intermittently 4- vs 5-output builds), so both retry
+alternatives still error and the caller falls back to the original builder (ip 552). `AuditDS6DefaultRelink.test.ts`
+still pins both `int[]` cases fail-closed (6/6) and `AuditDS6ChainOneNode.test.ts` is 13/13.
+
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 
 **What:** a delegated message-bus route binds the proxy's mapping entries and value chunks to the proxy master's lock

@@ -8402,6 +8402,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const raw = vIdx >= 0 ? entryArgs[vIdx] : undefined;
             const directBytes = typeof raw === 'string'
               ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
+            // A chunkable array/struct `valueParam` is a JS value the bytes/string/scalar paths above do not
+            // frame. Encode it to the pushdata blob so an inline value mints no phantom continuation and a long
+            // value is split exactly, instead of being registered below as a trace-derived computed run.
+            const arrayDirectBytes = directBytes === undefined && raw !== undefined
+              && !(raw instanceof Uint8Array) && (Array.isArray(raw) || typeof raw === 'object')
+              ? ((): Uint8Array | undefined => {
+                try {
+                  return encodePushdataValue(raw as StateValue, collection.valueType, stateLayout.structs);
+                } catch {
+                  return undefined;
+                }
+              })()
+              : undefined;
             // A compiler-published deterministic expression is as reproducible as a direct parameter. Resolve it
             // before registering a computed chunk run: inline values own no continuation outputs, while long
             // values can be split exactly. Reserving a phantom chunk for each literal shifts every later trailing
@@ -8410,7 +8423,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // Evaluating it as one key can misread a nested `lit:`/`id:` segment as a CashAddress and loses
             // the typed field encoding. The authenticated computed-value path below owns aggregate values.
             const structuredValue = stateLayout.structs?.some((struct) => struct.name === collection.valueType);
-            const vBytes = directBytes ?? (structuredValue ? undefined : evalComputedKey(
+            const vBytes = directBytes ?? arrayDirectBytes ?? (structuredValue ? undefined : evalComputedKey(
               access.valueSource, entryArgs, entryAbiFunction!.inputs,
               onChainState.state as Record<string, StateValue>,
             ));

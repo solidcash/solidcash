@@ -19,8 +19,8 @@ import { effectiveAccelerationContractsRoot } from './effectiveacceleration-corp
  * deliberate re-pin, not a silent regression; it also must remain strictly positive (a missed optimization).
  *
  * The plan's `~339 B (5683 -> 5344)` figure is the SAME optimization as July 2026: it elides one full entry re-read,
- * whose absolute cost block-layout-v2 and later codegen shrank ~3x. The deviation is recorded in plan.md's
- * "## Deviations"; this test pins the current magnitudes, not the stale absolute figure.
+ * whose absolute cost block-layout-v2 and later codegen shrank ~3x. Criterion 5 is re-measured to the current
+ * magnitudes and the rationale is recorded in plan.md's "## Measurement notes"; this test pins those magnitudes.
  */
 const contractsRoot = effectiveAccelerationContractsRoot();
 

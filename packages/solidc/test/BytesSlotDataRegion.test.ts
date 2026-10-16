@@ -21,4 +21,14 @@ describe('keccak data-region write routes to the high-level bytes state', () => 
     expect(() => compileString('contract C { bytes b; function f() public {'
       + ' assembly { sstore(b.slot, 64) } require(true); } }', { evmCompat: true })).toThrow(/inline assembly/i);
   });
+
+  it('keeps a non-canonical long marker (odd low byte, length < 32) fail-closed', () => {
+    // 2*len+1 with len < 32 claims a long string for a length that must be short-inline encoded. Accepting it
+    // would store a short value the next sload re-encodes as an even marker (write 63, read 62), a silent
+    // miscompile of the raw slot round-trip. Canonical long markers (len >= 32, e.g. 65) remain accepted.
+    expect(() => compileString('contract C { bytes b; function f() public {'
+      + ' assembly { sstore(b.slot, 63) } require(true); } }', { evmCompat: true })).toThrow(/inline assembly/i);
+    expect(() => compileString('contract C { bytes b; function f() public {'
+      + ' assembly { sstore(b.slot, 1) } require(true); } }', { evmCompat: true })).toThrow(/inline assembly/i);
+  });
 });

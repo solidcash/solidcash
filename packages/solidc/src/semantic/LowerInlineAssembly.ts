@@ -2156,6 +2156,10 @@ function bytesSlotConstWrite(varName: string, valArg: YulExpressionNode, src: Yu
   const lowByte = val & 0xffn;
   if (lowByte % 2n !== 0n) {
     const len = (val - 1n) / 2n;
+    // A canonical long marker is 2*len+1 with len >= 32. An odd marker for len < 32 is non-canonical (that length
+    // must be short-inline encoded); accepting it would store a short value that the next sload re-encodes as
+    // even, silently breaking the raw write->read round-trip. Fail closed.
+    if (len < 32n) return undefined;
     knownLongBytesLengths.set(varName, len);
     return loc(new StateAssignNode(varName, newBytes(intLit(len, src), src)), src);
   }

@@ -17800,9 +17800,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (upgrade === undefined) return;
     const slots = [...contract.functions, contract.fallbackDef, contract.receiveDef]
       .flatMap((fn) => fn?.blockLayout?.slots ?? []);
-    // Publish the container surface to the upgrade codegen: the satoshi container migrates, the token container
-    // still strands (its per-foreign-category population is unbounded).
+    // Publish the container surface to the upgrade codegen: the satoshi and token containers migrate on a direct
+    // upgrade; the per-foreign-category token container population is bounded by the SDK-provided category list.
     contract.keepsSatoshiContainer = slots.some((slot) => slot.kind === 'satoshiContainer');
+    contract.keepsTokenContainer = slots.some((slot) => slot.kind === 'tokenContainer');
     // Data NFTs and the satoshi container migrate on a pure direct upgrade (the bounded half of CRYPTO-4). A
     // message-bus kernel upgrade route (in-place append) keeps them at the old lock and still strands them, so it
     // stays refused. The route is synthesized before this pass, so its `messageBusUpgradeRoute` marker is present.
@@ -17811,7 +17812,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       ...(!upgradeMigratesDataNfts && contract.stateVariables.length > 0
         ? ['state variables in data NFTs'] : []),
       ...(contract.collections.length > 0 ? ['mapping or array entries'] : []),
-      ...(slots.some((slot) => slot.kind === 'tokenContainer') ? ['token containers'] : []),
     ];
     if (records.length > 0) throw new UpgradeStrandsBoundStateError(upgrade, upgrade.name, records);
   }

@@ -101,6 +101,8 @@ export interface UpgradeOptions<T extends Artifact = Artifact> {
   fundingUtxo?: Utxo;                // required when new layout needs additional data NFTs
   funder?: Unlocker;                  // required when new layout needs additional data NFTs
   changeAddress?: string;             // change address for leftover funding satoshis
+  /** Foreign token category IDs of the token containers to migrate (at most one per upgrade). */
+  tokenContainerCategoryIds?: string[];
 }
 
 export interface UpgradeResult<T extends Artifact = Artifact> {

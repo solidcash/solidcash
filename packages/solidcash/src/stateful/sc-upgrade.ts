@@ -18,8 +18,10 @@ import { addressToLockScript } from '../utils.js';
 import {
   createDestroyDataNftUnlocker,
   createSatoshiContainerUnlocker,
+  createTokenContainerUnlocker,
   getDataNftAddress,
   getSatoshiContainerAddress,
+  getTokenContainerAddress,
 } from './covenant-helpers.js';
 import type { UpgradeOptions, UpgradeResult } from './stateful-lifecycle-types.js';
 
@@ -208,6 +210,41 @@ export async function upgradeStatefulContract<T extends Artifact>(
     builder.addInput(satoshiContainerUtxo, createSatoshiContainerUnlocker(oldContract.inner, 0, categoryId));
   }
 
+  // CRYPTO-4 token-container migration (bounded to one foreign category): the old container is spent with its
+  // flag=1 master path, drained at its input index, and re-minted at the replacement-bound covenant carrying its
+  // foreign category, amount and value. The caller must name the foreign category; a contract holding more than
+  // one foreign token category cannot migrate them all in this single-transaction upgrade.
+  const keepsTokenContainer = oldContract.inner.artifact.abi.some((fn) =>
+    fn.blockLayout?.slots.some((slot) => slot.kind === 'tokenContainer'));
+  const tokenContainerCategoryIds = options.tokenContainerCategoryIds ?? [];
+  let tokenContainerUtxo: Utxo | undefined;
+  if (keepsTokenContainer) {
+    if (tokenContainerCategoryIds.length === 0) {
+      throw new Error(
+        'Upgrade migrates a token container, but no tokenContainerCategoryIds were provided. '
+        + 'Pass the foreign token category of each token container to migrate (at most one).',
+      );
+    }
+    if (tokenContainerCategoryIds.length > 1) {
+      throw new Error(
+        'This upgrade migrates at most one token container per transaction. '
+        + 'A contract holding several foreign categories needs the batched per-record migration protocol.',
+      );
+    }
+    const tcAddress = getTokenContainerAddress(oldContract.inner, categoryId, tokenContainerCategoryIds[0]);
+    const containerUtxos = await provider.getUtxos(tcAddress);
+    tokenContainerUtxo = containerUtxos.find((utxo) => utxo.token !== undefined);
+    if (!tokenContainerUtxo) {
+      throw new Error(
+        `Upgrade migrates the token container, but none exists at ${tcAddress} `
+        + `for foreign category ${tokenContainerCategoryIds[0]}.`,
+      );
+    }
+    builder.addInput(tokenContainerUtxo, createTokenContainerUnlocker(
+      oldContract.inner, 0, categoryId, tokenContainerCategoryIds[0],
+    ));
+  }
+
   // The old data NFTs are destroyed (flag=2) and re-minted at the replacement's lock with their values carried
   // into the new state layout: parse the old commitment with the old layout, then rebuild with the new layout so
   // new fields are initialised with default values. Additional data NFTs the longer layout needs are minted from
@@ -285,8 +322,12 @@ export async function upgradeStatefulContract<T extends Artifact>(
   }
 
   // The satoshi container's flag=1 master path requires output[INPUTINDEX] to be a zero-value drain; its re-mint
-  // carries the container's value at the replacement-bound covenant.
+  // carries the container's value at the replacement-bound covenant. The token container's master path requires the
+  // same zero-value/zero-token drain at its input index (one output later when the satoshi container is present).
   if (satoshiContainerUtxo) {
+    builder.addOutput({ to: Uint8Array.of(0x6a), amount: 0n });
+  }
+  if (tokenContainerUtxo) {
     builder.addOutput({ to: Uint8Array.of(0x6a), amount: 0n });
   }
 
@@ -315,6 +356,15 @@ export async function upgradeStatefulContract<T extends Artifact>(
     builder.addOutput({
       to: getSatoshiContainerAddress(newContract, categoryId),
       amount: satoshiContainerUtxo.satoshis,
+    });
+  }
+
+  // Re-mint the token container at the replacement-bound covenant, carrying its foreign token and value.
+  if (tokenContainerUtxo) {
+    builder.addOutput({
+      to: getTokenContainerAddress(newContract, categoryId, tokenContainerCategoryIds[0]),
+      amount: tokenContainerUtxo.satoshis,
+      token: tokenContainerUtxo.token,
     });
   }
 

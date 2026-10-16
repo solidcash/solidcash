@@ -2801,15 +2801,23 @@ re-mints at the new data-NFT covenant. Satoshi container: the refusal no longer 
 same-lock container aggregate for a direct upgrade; a new `emitUpgradeSatoshiContainerMigrationCheck` pins the old
 container input, the zero-value drain at its index, and the re-mint at `out[2+2*dataNftCount]` at the
 replacement-bound covenant with its value; the SDK spends it with its `flag=1` master path and re-mints it (the
-container must exist on-chain — it does once the contract has held BCH — or the SDK refuses). Pinned by
+container must exist on-chain — it does once the contract has held BCH — or the SDK refuses). Token container: the
+refusal no longer lists it; a new `emitUpgradeTokenContainerMigrationCheck` reads the foreign category from the
+container input's own UTXO category (category-agnostic), pins the old container input, its zero-value/zero-token
+drain, and the re-mint at the replacement-bound token-container covenant carrying the foreign category, amount and
+value; the foreign-token keep scan exempts that one input index (the migration moves it to a different lock, so the
+same-lock keep is skipped inline). The SDK spends it with `createTokenContainerUnlocker` (flag=1) and re-mints it,
+taking the foreign category from `UpgradeOptions.tokenContainerCategoryIds`; at most one foreign category migrates
+per upgrade, so a contract holding several foreign token categories still needs the batched protocol below. Pinned by
 `packages/solidcash/test/e2e/DataNftUpgradeMigration.test.ts` (3/3), `SatoshiContainerUpgradeMigration.test.ts` (3/3,
 including the container/data-NFT coexistence that shifts the re-mint band and growth scan, and the stranded-old-lock
-re-mint refusal), plus the updated `Upgrade.test.ts` (28/28) and `KernelUpgradeCompose.test.ts` (5/5).
+re-mint refusal), `TokenContainerUpgradeMigration.test.ts` (2/2, including the stranded-old-lock re-mint refusal),
+plus the updated `Upgrade.test.ts` and `KernelUpgradeCompose.test.ts` (5/5).
 
-**Remaining (entries and token containers; design verified against HEAD 2026-10-16).** Mapping/array entries and
-token containers still strand, so their refusal stays. Their populations are unbounded — one entry per key, one
-container per foreign token category — so they cannot ride the single-transaction migration above; the residual is a
-bounded per-record batched protocol behind the old code's authorization. The seams:
+**Remaining (entries; design verified against HEAD 2026-10-16).** Mapping/array entries still strand, so their
+refusal stays. Their population is unbounded — one entry per key — so they cannot ride the single-transaction
+migration above; the residual is a bounded per-record batched protocol behind the old code's authorization. The
+seams:
 
 - **Entries.** `buildEntryNftCovenantScript` (packages/utils/src/state.ts) has a flag=1 write path that verifies
   `bindMintingAuthorityLock(masterLock)` at the witnessed master index plus the category base, with NO output
@@ -2818,11 +2826,6 @@ bounded per-record batched protocol behind the old code's authorization. The sea
   (`getEntryNftAddress` passes `collectionSignature`), so every key of a collection shares one locking bytecode and
   the key lives in the NFT commitment. An upgrade keeps a collection's key/value types, so the commitment is
   byte-preservable across the migration: the re-mint is the same commitment at the replacement-bound covenant.
-- **Token containers.** `buildTokenContainerCovenantScript`'s flag=1 master path is `bindMintingAuthorityLock` plus
-  `directMasterOutputPin`, which admits the output at `INPUTINDEX` only when it is either same-lock or a
-  0-value/0-token drain — the exact shape the satoshi-container migration already uses, so a drained old container
-  becomes a 0-value/0-token output and is re-minted at `getTokenContainerAddress(newContract, categoryId,
-  tokenContainerCategoryId)`.
 - **Why not one transaction.** `emitOwnCategoryMutableNftConservation`'s census counts own-category 0x01-of-C
   mutable inputs and demands the count equal `dataNftCount` (GenerateTargetTraversal.ts:49500). Entries are
   0x01-of-C mutable and share the category, so a master transaction that co-spends K entries has `dataNftCount + K`
@@ -2831,14 +2834,13 @@ bounded per-record batched protocol behind the old code's authorization. The sea
 - **The batch protocol.** A compiler-synthesized OLD-code entry (not `upgrade`-modified, so it preserves the old
   master at its input index and is not refused) takes the replacement lock as the existing
   `__internal__upgradeBytecode` argument, spends a bounded batch of up to K entries with `createEntryNftUnlocker`
-  (flag=1) and/or drains up to K token containers with `createTokenContainerUnlocker` (flag=1), and re-mints each at
-  the replacement-bound covenant with the same commitment/category/amount, computing the target lock in script the
-  way `emitUpgradeSatoshiContainerMigrationCheck` already computes the replacement-bound satoshi covenant. K is a
-  compile-time bound sized to the 10,000-byte script, so the compiler emits a finite loop; the SDK planner repeats
-  batches until `getUtxos(entryAddress)` / container discovery is empty. The final `upgrade` entry then sees no
-  entries and no containers, and the census admits exactly the data NFTs.
+  (flag=1), and re-mints each at the replacement-bound covenant with the same commitment/category, computing the
+  target lock in script the way `emitUpgradeSatoshiContainerMigrationCheck` already computes the replacement-bound
+  satoshi covenant. K is a compile-time bound sized to the 10,000-byte script, so the compiler emits a finite loop;
+  the SDK planner repeats batches until `getUtxos(entryAddress)` is empty. The final `upgrade` entry then sees no
+  entries, and the census admits exactly the data NFTs.
 - **The refusal stays** until that migration entry and planner exist: it is the fail-closed guard that stops a direct
-  upgrade while old-bound records remain.
+  upgrade while old-bound entries remain.
 
 ## Logical caller identity for native compiles (model B residual, 2026-10-14)
 

@@ -964,10 +964,11 @@ describe('StatefulContract.upgrade()', () => {
       expect(() => compileString(MAPPING_UPGRADE)).toThrow(/keeps .*mapping or array entries/);
     });
 
-    it('admits a satoshi container (it re-mints at the replacement lock) and refuses token containers', () => {
+    it('admits a satoshi container and a token container (both re-mint at the replacement lock)', () => {
       const satoshiArtifact = compileString(SATOSHI_CONTAINER_UPGRADE, MASTER_ONLY);
       expect(satoshiArtifact.stateLayout!.dataNftCount).toBe(0);
-      expect(() => compileString(TOKEN_CONTAINER_UPGRADE, MASTER_ONLY)).toThrow(/keeps .*token containers/);
+      const tokenArtifact = compileString(TOKEN_CONTAINER_UPGRADE, MASTER_ONLY);
+      expect(tokenArtifact.stateLayout!.dataNftCount).toBe(0);
     });
 
     // The kernel message-bus lane never synthesizes its in-place-append upgrade route for a participant that keeps

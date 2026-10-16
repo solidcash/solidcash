@@ -2831,16 +2831,25 @@ seams:
   0x01-of-C mutable and share the category, so a master transaction that co-spends K entries has `dataNftCount + K`
   mutable inputs and fails the exact-count check. The census cannot distinguish them by category; it must
   distinguish them by locking bytecode (the entry covenant LBC differs from the data-NFT covenant LBC).
-- **The batch protocol.** A compiler-synthesized OLD-code entry (not `upgrade`-modified, so it preserves the old
-  master at its input index and is not refused) takes the replacement lock as the existing
-  `__internal__upgradeBytecode` argument, spends a bounded batch of up to K entries with `createEntryNftUnlocker`
-  (flag=1), and re-mints each at the replacement-bound covenant with the same commitment/category, computing the
-  target lock in script the way `emitUpgradeSatoshiContainerMigrationCheck` already computes the replacement-bound
-  satoshi covenant. K is a compile-time bound sized to the 10,000-byte script, so the compiler emits a finite loop;
-  the SDK planner repeats batches until `getUtxos(entryAddress)` is empty. The final `upgrade` entry then sees no
-  entries, and the census admits exactly the data NFTs.
-- **The refusal stays** until that migration entry and planner exist: it is the fail-closed guard that stops a direct
-  upgrade while old-bound entries remain.
+- **The batch protocol.** A `migrateRecords`-modified OLD-code entry (a new lifecycle modifier, not
+  `upgrade`-modified, so it preserves the old master at its input index and is not refused) takes the replacement
+  lock as the injected `__internal__upgradeBytecode` argument, spends one entry with `createEntryNftUnlocker`
+  (flag=1), and re-mints it at the replacement-bound covenant with the same commitment/category/value, computing the
+  target lock in script the way `emitUpgradeSatoshiContainerMigrationCheck` computes the replacement-bound satoshi
+  covenant. `emitMigrateRecordsEntryMigrationCheck` pins input[1] at the old entry covenant and output[1] at the
+  replacement-bound covenant, and the existing `emitOwnCategoryMutableNftConservation` balance keeps the census exact.
+  The SDK drains `getUtxos(entryAddress)` one entry per transaction inside `upgradeStatefulContract`, then runs the
+  final upgrade. The first slice supports one collection; a multi-collection contract is refused at compile time.
+
+**RESOLVED 2026-10-16 (all four CRYPTO-4 record kinds).** Data NFTs, the satoshi container, the token container and
+mapping/array entries all migrate under the replacement-bound covenant. The entries half adds the `migrateRecords`
+modifier (grammar + `FunctionModifier` + `__internal__upgradeBytecode` injection), `emitMigrateRecordsEntryMigrationCheck`
+(pin old/new covenants + commitment/category/value preservation), the lifted collection refusal, and the SDK
+co-spend loop. Pinned by `MappingEntryUpgradeMigration.test.ts` (2/2: the replacement reads the migrated entry and
+the old covenant is drained; a stranded-old-lock re-mint is refused), plus the updated `Upgrade.test.ts` (admits a
+mapping) and the other CRYPTO-4 suites. Residual: one `migrateRecords` batch migrates one entry of one collection,
+and one `upgrade` migrates one token container; several collections or several foreign token categories still need a
+selector/loop form.
 
 ## Logical caller identity for native compiles (model B residual, 2026-10-14)
 

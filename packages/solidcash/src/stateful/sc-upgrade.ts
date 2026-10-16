@@ -17,9 +17,11 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
 import {
   createDestroyDataNftUnlocker,
+  createEntryNftUnlocker,
   createSatoshiContainerUnlocker,
   createTokenContainerUnlocker,
   getDataNftAddress,
+  getEntryNftAddress,
   getSatoshiContainerAddress,
   getTokenContainerAddress,
 } from './covenant-helpers.js';
@@ -120,7 +122,7 @@ export async function upgradeStatefulContract<T extends Artifact>(
   const addressType = options.addressType ?? oldContract.inner.addressType;
 
   // Get on-chain state to find the master UTXO
-  const onChainState = await oldContract.getFullState();
+  let onChainState = await oldContract.getFullState();
   if (!onChainState.masterUtxo) {
     throw new Error(
       `Master UTXO not found for contract '${oldContract.name}' `
@@ -128,7 +130,7 @@ export async function upgradeStatefulContract<T extends Artifact>(
     );
   }
 
-  const masterUtxo = onChainState.masterUtxo;
+  let masterUtxo = onChainState.masterUtxo;
 
   // Create the new contract instance self-pinned to the same categoryId
   const newContract = new Contract(newArtifact, newConstructorArgs as any, {
@@ -136,6 +138,86 @@ export async function upgradeStatefulContract<T extends Artifact>(
     addressType,
     category: hexToBin(categoryId),
   });
+
+  // CRYPTO-4 entry batched migration: drain every collection's entries at the replacement-bound entry covenant,
+  // one entry per transaction, behind the migrateRecords entry's authorization, before the upgrade moves the
+  // master. The replacement-bound covenant only becomes spendable once the upgrade runs, so the order matters.
+  const collections = oldContract.inner.artifact.stateLayout?.collections ?? [];
+  if (collections.length > 0) {
+    const migrateAbi = oldContract.inner.artifact.abi.find((f) => (
+      f.modifiers?.includes('migrateRecords')
+      && (options.migrateRecordsFunctionName === undefined || f.name === options.migrateRecordsFunctionName)
+    ));
+    if (!migrateAbi) {
+      throw new Error(
+        'Upgrade migrates mapping/array entries, but the old contract declares no migrateRecords entry. '
+        + 'Add a migrateRecords function and pass migrateRecordsFunctionArgs.',
+      );
+    }
+    if (!options.migrateRecordsFunctionArgs) {
+      throw new Error(
+        'Upgrade migrates mapping/array entries; pass migrateRecordsFunctionArgs (the migrateRecords entry args).',
+      );
+    }
+    const migrateArgs = [...options.migrateRecordsFunctionArgs, addressToLockScript(newContract.tokenAddress)];
+    const changeAddr = options.changeAddress
+      ?? (options.funder ? options.funder.generateLockingBytecode() : undefined)
+      ?? oldContract.inner.address;
+    const { TransactionBuilder: RecordTxBuilder } = await import('../TransactionBuilder.js');
+    for (const collection of collections) {
+      const entryAddress = getEntryNftAddress(oldContract.inner, categoryId, collection.signature);
+      for (let guard = 0; guard < 20_000; guard++) {
+        const entries = await provider.getUtxos(entryAddress);
+        const entry = entries.find((utxo) => utxo.token !== undefined);
+        if (!entry) break;
+        const state = await oldContract.getFullState();
+        const master = state.masterUtxo;
+        if (!master) throw new Error('Master UTXO not found during entry migration.');
+
+        const builder = new RecordTxBuilder({ provider });
+        builder.addInput(master, (oldContract.inner.unlock as any)[migrateAbi.name](...migrateArgs));
+        builder.addInput(entry, createEntryNftUnlocker(oldContract.inner, 0, categoryId, collection.signature));
+        // Fee funder (a fresh dummy UTXO each batch on the mock provider).
+        const funder: Utxo = {
+          txid: (guard + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 10_000n,
+        };
+        await (provider as any).addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), funder);
+        builder.addInput(funder, {
+          generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
+          generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+        });
+        builder.addOutput({
+          to: oldContract.inner.tokenAddress,
+          amount: master.satoshis,
+          token: {
+            category: categoryId,
+            amount: master.token?.amount ?? 0n,
+            nft: { capability: 'minting', commitment: master.token?.nft?.commitment ?? '' },
+          },
+        });
+        builder.addOutput({
+          to: getEntryNftAddress(newContract, categoryId, collection.signature),
+          amount: entry.satoshis,
+          token: entry.token,
+        });
+        builder.addOutput({ to: changeAddr, amount: 1000n }); // placeholder, adjusted below
+        const recordFee = await computeFeeFromBuilder(builder);
+        const changeAmount = funder.satoshis - recordFee;
+        if (changeAmount > 0n) {
+          builder.outputs[builder.outputs.length - 1] = {
+            ...builder.outputs[builder.outputs.length - 1], amount: changeAmount,
+          };
+        } else {
+          builder.outputs.pop();
+        }
+        await builder.send();
+      }
+    }
+  }
+
+  // The entry migration re-created the master, so refresh the on-chain state before the upgrade spends it.
+  onChainState = await oldContract.getFullState();
+  masterUtxo = onChainState.masterUtxo!;
 
   const filteredDataNftUtxos = requiredNftIndices.map((idx) => onChainState.dataNftUtxos[idx]);
   if (filteredDataNftUtxos.some((u) => u === undefined)) {

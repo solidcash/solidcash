@@ -948,10 +948,9 @@ describe('StatefulContract.upgrade()', () => {
   });
 
   // Every record a contract keeps is bound to its master's exact lock (CRYPTO-4). An in-place upgrade moves the master
-  // to the replacement's lock. Data NFTs now migrate (the bounded re-mint half of CRYPTO-4), while mappings, arrays
-  // and containers still strand, so only those are refused.
-  describe('refuses an in-place upgrade that would strand lock-bound records', () => {
-    const strands = /is an in-place upgrade, but this contract keeps .* cannot follow it/;
+  // to the replacement's lock. Data NFTs, containers and mapping/array entries now migrate, so the upgrade is
+  // admitted and the SDK drains the records before it moves the master.
+  describe('admits an in-place upgrade that migrates lock-bound records', () => {
 
     it('admits a contract with data NFTs (they re-mint at the replacement lock)', () => {
       const artifact = compileString(DATA_NFT_UPGRADE);
@@ -959,9 +958,9 @@ describe('StatefulContract.upgrade()', () => {
       expect(artifact.abi.find((f) => f.name === 'migrate')!.requiredNftIndices).toEqual([0]);
     });
 
-    it('refuses a contract with a mapping', () => {
-      expect(() => compileString(MAPPING_UPGRADE)).toThrow(strands);
-      expect(() => compileString(MAPPING_UPGRADE)).toThrow(/keeps .*mapping or array entries/);
+    it('admits a contract with a mapping (its entries migrate via the migrateRecords entry)', () => {
+      const artifact = compileString(MAPPING_UPGRADE);
+      expect(artifact.abi.find((f) => f.name === 'migrate')!.modifiers).toContain('upgrade');
     });
 
     it('admits a satoshi container and a token container (both re-mint at the replacement lock)', () => {

@@ -3896,7 +3896,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // An upgrade intentionally changes the master locking bytecode, so ordinary self-preservation cannot bind
     // it. Carry the SDK-selected replacement bytecode as an authenticated covenant argument instead. This must
     // be compiler-owned: a wallet signature may legally use SIGHASH_NONE and cannot be the security boundary.
-    if (node.modifiers.includes(FunctionModifier.UPGRADE)) {
+    if (node.modifiers.includes(FunctionModifier.UPGRADE)
+      || node.modifiers.includes(FunctionModifier.MIGRATE_RECORDS)) {
       const targetParam = new ParameterNode(new BytesType(), '__internal__upgradeBytecode');
       targetParam.location = node.location;
       node.parameters.push(targetParam);
@@ -6234,6 +6235,36 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (mods.includes(FunctionModifier.UPGRADE) && mods.includes(FunctionModifier.PRIVATE)) {
       throw new InvalidModifierCombinationError(node, "'upgrade' functions must be externally callable");
+    }
+
+    // migrateRecords is a bounded per-record batch entry: it preserves the master and re-mints entries at the
+    // replacement lock before the final upgrade. It is only meaningful in a stateful contract with collections.
+    if (mods.includes(FunctionModifier.MIGRATE_RECORDS) && !isStatefulContract) {
+      throw new InvalidModifierCombinationError(node, "'migrateRecords' is only valid in stateful contracts");
+    }
+    if (mods.includes(FunctionModifier.MIGRATE_RECORDS) && mods.includes(FunctionModifier.UNSAFE)) {
+      throw new InvalidModifierCombinationError(node, "'migrateRecords' and 'unsafe' are mutually exclusive");
+    }
+    if (mods.includes(FunctionModifier.MIGRATE_RECORDS) && mods.includes(FunctionModifier.PURE)) {
+      throw new InvalidModifierCombinationError(node, "'migrateRecords' and 'pure' are mutually exclusive");
+    }
+    if (mods.includes(FunctionModifier.MIGRATE_RECORDS) && mods.includes(FunctionModifier.VIEW)) {
+      throw new InvalidModifierCombinationError(node, "'migrateRecords' and 'view' are mutually exclusive");
+    }
+    if (mods.includes(FunctionModifier.MIGRATE_RECORDS) && mods.includes(FunctionModifier.INTERNAL)) {
+      throw new InvalidModifierCombinationError(node, "'migrateRecords' functions must be externally callable");
+    }
+    if (mods.includes(FunctionModifier.MIGRATE_RECORDS) && mods.includes(FunctionModifier.PRIVATE)) {
+      throw new InvalidModifierCombinationError(node, "'migrateRecords' functions must be externally callable");
+    }
+    if (mods.includes(FunctionModifier.MIGRATE_RECORDS) && mods.includes(FunctionModifier.UPGRADE)) {
+      throw new InvalidModifierCombinationError(node, "'migrateRecords' and 'upgrade' are mutually exclusive");
+    }
+    if (mods.includes(FunctionModifier.MIGRATE_RECORDS) && mods.includes(FunctionModifier.SELFDESTRUCT)) {
+      throw new InvalidModifierCombinationError(node, "'migrateRecords' and 'selfdestruct' are mutually exclusive");
+    }
+    if (mods.includes(FunctionModifier.MIGRATE_RECORDS) && mods.includes(FunctionModifier.DELEGATE)) {
+      throw new InvalidModifierCombinationError(node, "'migrateRecords' and 'delegate' are mutually exclusive");
     }
 
     // deploy is only meaningful in stateful contracts
@@ -17811,7 +17842,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     const records = [
       ...(!upgradeMigratesDataNfts && contract.stateVariables.length > 0
         ? ['state variables in data NFTs'] : []),
-      ...(contract.collections.length > 0 ? ['mapping or array entries'] : []),
     ];
     if (records.length > 0) throw new UpgradeStrandsBoundStateError(upgrade, upgrade.name, records);
   }

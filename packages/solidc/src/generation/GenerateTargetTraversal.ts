@@ -10032,6 +10032,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const isSelfdestruct = node.modifiers.includes(FunctionModifier.SELFDESTRUCT);
     const isSplit = node.modifiers.includes(FunctionModifier.SPLIT);
     const isMerge = node.modifiers.includes(FunctionModifier.MERGE);
+    // A migrateRecords entry is the bounded per-record batch: it preserves the master and re-mints a co-spent
+    // entry at the replacement-bound covenant, one entry per transaction, before the final upgrade moves it.
+    const isMigrateRecords = node.modifiers.includes(FunctionModifier.MIGRATE_RECORDS)
+      && node.messageBusUpgradeRoute !== true;
 
     // Split/merge: dedicated covenant verification (handled in later steps)
     if (isSplit) {
@@ -10325,6 +10329,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
       this.mintCountFoldable = false;
+      if (isMigrateRecords) {
+        this.emitMigrateRecordsEntryMigrationCheck(node);
+      }
       // The delegate owns the proxy transition. Pin the fixed proxy master/data output population by locking
       // bytecode while allowing the individually authenticated mapping and dynamic-chunk families to grow/shrink.
       if (!this.functionHasDelegatecall && this.currentFunctionIsDelegate && !isSelfdestruct) {
@@ -49855,6 +49862,77 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, loc);       // [cov]
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (tc_new_covenant)
+  }
+
+  /**
+   * CRYPTO-4 entry batched migration (bounded to one entry per transaction, one collection). The old entry is
+   * spent with its flag=1 master path (destroy, no output preservation), and re-minted at the replacement-bound
+   * entry covenant with the same commitment, category and value. The SDK loops this entry over
+   * `getUtxos(entryAddress)` until the collection is empty, then runs the final upgrade. A contract with several
+   * collections still needs a selector form; the first slice refuses it at compile time.
+   */
+  private emitMigrateRecordsEntryMigrationCheck(node: FunctionDefinitionNode): void {
+    if (this.collectionDefinitions.length !== 1) {
+      throw new Error(
+        `'${node.name}' migrates records, but the contract has ${this.collectionDefinitions.length} collections; `
+        + 'the bounded migration currently supports exactly one collection',
+      );
+    }
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+    const signature = this.vmapCollectionSignature(this.collectionDefinitions[0].name)!;
+    const collectionHash = computeCollectionHash(signature);
+    const entryIdx = 1;
+
+    // Phase 1: input[entryIdx] is the old entry covenant (bound to the old master lock).
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // C ++ 0x02
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc); // C
+    this.pushToStack('(migrate_records_cat)');
+    this.emitEntryP2sh32(collectionHash, loc); // [oldCovenant], consumes C
+    this.stack[0] = '(migrate_old_cov)';
+    this.emit(encodeInt(BigInt(entryIdx)), loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc); // [cov, inBytecode]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(migrate_old_cov)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);          // [cov, inBytecode, cov]
+    this.emit(Op.OP_EQUALVERIFY, loc);   // [cov]
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (migrate_old_cov)
+
+    // Phase 2: output[entryIdx] is the replacement-bound entry covenant of the same collection.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // C ++ 0x02
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc); // C
+    this.pushToStack('(migrate_records_cat)');
+    this.emitBoundEntryP2sh32(collectionHash, loc, { stack: '__internal__upgradeBytecode' }); // [newCovenant]
+    this.stack[0] = '(migrate_new_cov)';
+    this.emit(encodeInt(BigInt(entryIdx)), loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc); // [cov, outBytecode]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(migrate_new_cov)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);            // [cov, outBytecode, cov]
+    this.emit(Op.OP_EQUALVERIFY, loc);     // [cov]
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (migrate_new_cov)
+
+    // Commitment, category and value preservation between the destroyed entry and its re-mint.
+    this.emit(encodeInt(BigInt(entryIdx)), loc);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(encodeInt(BigInt(entryIdx)), loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(encodeInt(BigInt(entryIdx)), loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(BigInt(entryIdx)), loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(encodeInt(BigInt(entryIdx)), loc);
+    this.emit(Op.OP_UTXOVALUE, loc);
+    this.emit(encodeInt(BigInt(entryIdx)), loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
   }
 
   /** Require exactly one proxy master and exactly N proxy data NFTs at their respective locking bytecodes. */

@@ -29,6 +29,7 @@ export enum FunctionModifier {
   DELEGATE = 'delegate',
   SPLIT = 'split',
   MERGE = 'merge',
+  MIGRATE_RECORDS = 'migrateRecords',
 }
 
 export enum StateVariableVisibility {

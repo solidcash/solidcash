@@ -103,6 +103,9 @@ export interface UpgradeOptions<T extends Artifact = Artifact> {
   changeAddress?: string;             // change address for leftover funding satoshis
   /** Foreign token category IDs of the token containers to migrate (at most one per upgrade). */
   tokenContainerCategoryIds?: string[];
+  /** The migrateRecords entry to drain mapping/array entries before the upgrade (name + its user args). */
+  migrateRecordsFunctionName?: string;
+  migrateRecordsFunctionArgs?: FunctionArgument[];
 }
 
 export interface UpgradeResult<T extends Artifact = Artifact> {

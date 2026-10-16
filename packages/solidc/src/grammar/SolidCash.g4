@@ -149,8 +149,8 @@ hasNestedTuplePatternAhead(): boolean {
 // that distinction directly and keep the fast prediction path equivalent to LL.
 hasFunctionCallAhead(): boolean {
   const input = this._input;
-  const lparen = SolidCashParser.T__56;
-  const rparen = SolidCashParser.T__57;
+  const lparen = SolidCashParser.T__57;
+  const rparen = SolidCashParser.T__58;
   const dot = SolidCashParser.T__6;
   const lbrace = SolidCashParser.T__3;
   const first = input.LA(1);
@@ -219,7 +219,7 @@ userDefinableOperator
 anyIdentifier
     : Identifier
     | 'delegate' | 'upgrade' | 'selfdestruct' | 'unsafe' | 'packed' | 'entries' | 'error' | 'global' | 'revert'
-    | 'transient' | 'leave' | 'fallback' | 'receive' | 'enumerable' | 'require'
+    | 'transient' | 'leave' | 'fallback' | 'receive' | 'enumerable' | 'require' | 'migrateRecords'
     | CryptoType | BchUnit
     | {this.isMalformedBoundedTypeName(this._input.LT(1).text ?? '')}?
       (BoundedBytes | BoundedSignedInt | BoundedUnsignedInt | BoundedSignedFixed | BoundedUnsignedFixed)
@@ -439,7 +439,7 @@ customModifierInvocation
     ;
 
 functionModifier
-    : 'pure' | 'view' | 'internal' | 'external' | 'public' | 'private' | 'payable' | overrideSpecifier | 'virtual' | unsafeModifier | 'upgrade' | 'selfdestruct' | 'delegate'
+    : 'pure' | 'view' | 'internal' | 'external' | 'public' | 'private' | 'payable' | overrideSpecifier | 'virtual' | unsafeModifier | 'upgrade' | 'selfdestruct' | 'delegate' | 'migrateRecords'
     ;
 
 overrideSpecifier

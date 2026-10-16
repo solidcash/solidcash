@@ -32,6 +32,10 @@ const SOURCE = `contract ChainOneNode {
     if (sel > 0) { require(k != 3); delete m[k]; m[j] = v; }
     require(true);
   }
+  function dropTwoThenSet(int k, int l, int j, int v, int sel) external {
+    if (sel > 0) { require(k != 3); require(l != 3); delete m[k]; delete m[l]; m[j] = v; }
+    require(true);
+  }
 }`;
 
 type Provider = ReturnType<typeof createTestProvider>;
@@ -367,5 +371,21 @@ describe('a delete and the write after it that run on one node', () => {
     const { hex, write, drop, spend } = await chainedDelete(deployed, x, y);
     spendAtFunded(spend, deployed.fn, drop, write, twenty);
     await refuseThenSettle(deployed, spend.encode(), hex, [[y, 300n], [x, 0n], [7n, 70n], [20n, 200n]], 4);
+  }, 300_000);
+});
+
+describe('two deletes beside a write (fail-closed)', () => {
+  it('refuses two absent keys deleted beside a write in their gap', async () => {
+    const deployed = await deploy('dropTwoThenSet', 3);
+    const { sc, fn } = deployed;
+    // Two deletes and the write all bracket the same node (7): each delete would need its own chained-delete
+    // register, which the compiler does not yet emit, so the batch fails closed and leaves the collection alone.
+    const softDeletes = fn.sortedBatchInfo![0].slotIndices.filter((slotIndex) => softDeleteOf(fn, slotIndex));
+    expect(softDeletes).toHaveLength(2);
+    const [k, l, j] = await keysIn(deployed, 7n, 3);
+    await expect(sc.getFunction('dropTwoThenSet')(k, l, j, 300n, 1n).send()).rejects.toThrow();
+    await expectValues(sc, [[7n, 70n], [20n, 200n]]);
+    await expect(sc.getFunction('check')(k, 0n).send()).resolves.toBeDefined();
+    expect((await nodes(deployed)).all).toHaveLength(3);
   }, 300_000);
 });

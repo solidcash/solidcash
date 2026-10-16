@@ -2682,8 +2682,12 @@ retry now preserves that relinked predecessor lane instead of treating the chain
 computed value-chunk run. The PredOut witness refresh accepts the relinked `slot || next || len4(0)` commitment for a
 `-3` chained delete instead of falling back to the old value and minting a duplicate predecessor. The chunkable
 default relink is tested by `AuditDS6DefaultRelink.test.ts` (unbounded `bytes` beside an insert), and
-`AuditDS6ChainOneNode.test.ts` remains 11/11. Still fail-closed: struct/array defaults (their default tail is
-recursive and not planned here), and more than one delete of a batch beside its writes.
+`AuditDS6ChainOneNode.test.ts` remains 12/12. Still fail-closed: struct/array defaults (their default tail is
+recursive and not planned here), and more than one delete of a batch beside its writes. The multi-delete case is
+pinned by `AuditDS6ChainOneNode.test.ts` (`two deletes beside a write (fail-closed)`): two absent keys deleted
+beside a write in the same gap are refused at the master and leave the collection unchanged, because the compiler
+emits no chained-delete register for a batch with more than one delete (`chainedActivityDelete` returns a single
+slot only).
 
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 

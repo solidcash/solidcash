@@ -2401,8 +2401,8 @@ idle machine, and `poolOptions.forks.execArgv: ['--max-old-space-size=4096']` is
 
 ## keccak256 of a preimage larger than one side-car's block budget (2026-08-07)
 
-**PARTLY RESOLVED; the remaining half is deferred.** A keccak compute side-car funds three 64-byte blocks
-(~407 B) per input, so a larger preimage is refused:
+**RESOLVED.** A keccak compute side-car funds three 64-byte blocks (~407 B) per input, so a larger preimage
+was refused until the chained START/CONT/FINAL path below landed. The original refusal was:
 
 ```
 keccak256 preimage too large (12509 B = 92 blocks); a single side-car input funds at most 3 keccak blocks

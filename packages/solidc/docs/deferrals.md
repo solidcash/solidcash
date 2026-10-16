@@ -2939,6 +2939,26 @@ the OLD `[70n, 71n]` (not the new `[300n, 301n]`), so the WRITE's value-chunk pi
 wrong on-stack value in the chained-delete retry — the value source for slot 1's chunk pin reads the
 predecessor's authenticated value instead of the `valueParam` `v`.
 
+**UPDATE 2026-10-16 (verified, thirteenth).** The twelfth's "value-chunk pin reads the predecessor value" is
+refined; the value-chunk pin itself is CORRECT. `SOLIDC_DEBUG_VALUE_CHUNK_PIN` shows slot 1's pin has
+`vName=(value)`, `expression=v`, and the pin's scan trace (VM ips 379-391) uses the NEW value `[300n,301n]`
+(`52 2c01…00 2d01…00`) as the chunk digest source. The failing `EQUALVERIFY` is the function-level batch
+verifier's INSERT predecessor-value check (`singleTarget` in `emitSortedBatchTransitionVerification`, VM ip 643 in
+the 882-instruction `dropThenSet` frame), not the value-chunk scan: it compares the computed
+`slot(7) || Hk(x) || 0100000000` (69 B) against the materialized P' output carrying the OLD chunked tail
+(`slot(7) || Hk(x) || len4(67)||sha256||head28`, 128 B). The `singleTarget` chained-delete override IS emitted
+(`chainedHere=[0]`), so the chained-delete retry (`owners=[1], chainedDeletes=[0]`) passes this P' check; its derive
+probe then fails EARLIER in an invoked subprogram (frame 12, ip 13 — the value-chunk or entry-NFT covenant). The
+no-chained-delete retry (`owners=[1], chainedDeletes=[]`) fails the P' check because the computed value picks the
+delete register's default instead of the co-spent input's old tail, while the un-relinked P' output still carries
+the old tail. A first compiler attempt to override `emitSortedValueUpsert`'s non-batch INSERT P' value was dead
+code: the inBatch write returns at the end of the `inBatch` block (line ~28915) before the non-batch INSERT arm, so
+`insertChainedDeletes` was never invoked for `dropThenSet`. Remaining: locate why the batch verifier's
+`directProofField('value', 2)` resolves to the delete register's default for the chunked retry (a depth/extra-item
+divergence masked for inline values, where old and default both settle), and why the chained-delete retry's
+subprogram covenant fails at frame 12. `AuditDS6DefaultRelink.test.ts` still pins both `int[]` cases fail-closed
+(6/6); `AuditDS6ChainOneNode.test.ts` 13/13 and `ChunkedArrays.test.ts` 15/15 stay green.
+
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 
 **What:** a delegated message-bus route binds the proxy's mapping entries and value chunks to the proxy master's lock

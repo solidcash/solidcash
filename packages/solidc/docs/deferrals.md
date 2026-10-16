@@ -2630,16 +2630,17 @@ alias of two writes settle as one node holding the later value. Remaining fail-c
 one delete of a batch beside its writes, and a deleted node's own key beside an insert where the value kind's
 default is not empty (the SDK does not plan that relink).
 
-**UPDATE 2026-10-16 (verified).** The second case ("a deleted node's own key beside an insert where the value
-kind's default is not empty") is now RESOLVED for every statically-known non-chunkable scalar value kind. The SDK
-plans the chained-delete relink at the type's default tail instead of always at the empty tail: `bigint`,
-`fixed`/`ufixed`, `address`/`address payable`, `sig`/`datasig` nullify to empty, `bytesN`/`byte` to N zero bytes,
-and `pubkey` to 33 zero bytes, alongside the existing `bool`/`int`/`uint` empty default. `AuditDS6DefaultRelink.test.ts`
-settles a `bigint` node (previously a false fail-closed: its default is empty but the gate excluded it) and a
-`bytes32` node (32 zero bytes) beside an insert, and pins that an unbounded `bytes` node stays fail-closed.
-`AuditDS6ChainOneNode.test.ts` remains 11/11. Still fail-closed: unbounded `bytes`/`string` (their default is a
-4-byte length-framed tail, and the nullified chunkable node needs the value-chunk census to see the length change),
-struct/array defaults (recursive), and more than one delete of a batch beside its writes.
+**UPDATE 2026-10-16 (verified, corrected).** The second case splits by how the compiler lowers the delete.
+For `int`-like and fixed-width value kinds (`bool`/`int`/`uint`/`bigint`/`fixed`/`ufixed`/`bytesN`/`address`/
+`pubkey`/`sig`/`datasig`) the delete is a CONDITIONAL WRITE whose `valueSource` ternary carries the default
+literal, so the chained-write path already settles it; `AuditDS6DefaultRelink.test.ts` now pins `bigint` and
+`bytes32` beside an insert (`18ef2e4c0`). For unbounded `bytes`/`string` (and struct/array) the compiler emits a
+softDelete `delete` operation with no value literal, so the SDK's `chainedDeletes` relink is the only path, and it
+is still fail-closed: the SDK also needs to retry the write as the node owner with the delete chained onto it, and
+the nullified chunkable node's `len4(0)` default tail must be planned so the value-chunk census observes the length
+change. `AuditDS6DefaultRelink.test.ts` pins that an unbounded `bytes` node beside an insert stays fail-closed.
+`AuditDS6ChainOneNode.test.ts` remains 11/11. Still fail-closed: unbounded `bytes`/`string`, struct/array defaults,
+and more than one delete of a batch beside its writes.
 
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 

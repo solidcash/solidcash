@@ -1638,8 +1638,11 @@ function bytesDataBaseName(kecc: YulExpressionNode): string | undefined {
   const slotNum = slotWord === undefined ? undefined : constSlotOf(slotWord);
   if (slotNum === undefined) return undefined;
   const fields = currentSlots.get(slotNum);
-  if (fields?.length === 1 && fields[0].sv.isDynamic
-    && fields[0].sv.type instanceof BytesType && fields[0].sv.type.bound === undefined) {
+  // `bytes`/`string` state vars get their `isDynamic` flag in SymbolTableTraversal (after this lowering pass), so
+  // key on the type alone - matching bytesSlotVarName - rather than the not-yet-set flag.
+  if (fields?.length === 1
+    && ((fields[0].sv.type instanceof BytesType && fields[0].sv.type.bound === undefined)
+      || fields[0].sv.type === PrimitiveType.STRING)) {
     return fields[0].sv.name;
   }
   return undefined;

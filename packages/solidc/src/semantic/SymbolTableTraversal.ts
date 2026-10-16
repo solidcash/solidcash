@@ -17835,6 +17835,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // upgrade; the per-foreign-category token container population is bounded by the SDK-provided category list.
     contract.keepsSatoshiContainer = slots.some((slot) => slot.kind === 'satoshiContainer');
     contract.keepsTokenContainer = slots.some((slot) => slot.kind === 'tokenContainer');
+    contract.tokenContainerCount = slots.filter((slot) => slot.kind === 'tokenContainer').length;
     // Data NFTs and the satoshi container migrate on a pure direct upgrade (the bounded half of CRYPTO-4). A
     // message-bus kernel upgrade route (in-place append) keeps them at the old lock and still strands them, so it
     // stays refused. The route is synthesized before this pass, so its `messageBusUpgradeRoute` marker is present.

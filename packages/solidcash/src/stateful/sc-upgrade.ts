@@ -292,39 +292,35 @@ export async function upgradeStatefulContract<T extends Artifact>(
     builder.addInput(satoshiContainerUtxo, createSatoshiContainerUnlocker(oldContract.inner, 0, categoryId));
   }
 
-  // CRYPTO-4 token-container migration (bounded to one foreign category): the old container is spent with its
-  // flag=1 master path, drained at its input index, and re-minted at the replacement-bound covenant carrying its
-  // foreign category, amount and value. The caller must name the foreign category; a contract holding more than
-  // one foreign token category cannot migrate them all in this single-transaction upgrade.
-  const keepsTokenContainer = oldContract.inner.artifact.abi.some((fn) =>
-    fn.blockLayout?.slots.some((slot) => slot.kind === 'tokenContainer'));
+  // CRYPTO-4 token-container migration: the old containers are spent with their flag=1 master path, drained at
+  // their input indices, and re-minted at the replacement-bound covenant carrying each foreign category, amount and
+  // value. The compiler reserves one slot per token-container access site, so the caller must name exactly that
+  // many foreign categories (a contract with fewer live containers must still drain that many).
+  const tokenContainerCount = oldContract.inner.artifact.abi
+    .flatMap((fn) => fn.blockLayout?.slots ?? [])
+    .filter((slot) => slot.kind === 'tokenContainer').length;
   const tokenContainerCategoryIds = options.tokenContainerCategoryIds ?? [];
-  let tokenContainerUtxo: Utxo | undefined;
-  if (keepsTokenContainer) {
-    if (tokenContainerCategoryIds.length === 0) {
+  const tokenContainerUtxos: Utxo[] = [];
+  if (tokenContainerCount > 0) {
+    if (tokenContainerCategoryIds.length !== tokenContainerCount) {
       throw new Error(
-        'Upgrade migrates a token container, but no tokenContainerCategoryIds were provided. '
-        + 'Pass the foreign token category of each token container to migrate (at most one).',
+        `Upgrade migrates ${tokenContainerCount} token container(s), but ${tokenContainerCategoryIds.length} `
+        + 'tokenContainerCategoryIds were provided. Pass one foreign token category per reserved slot.',
       );
     }
-    if (tokenContainerCategoryIds.length > 1) {
-      throw new Error(
-        'This upgrade migrates at most one token container per transaction. '
-        + 'A contract holding several foreign categories needs the batched per-record migration protocol.',
-      );
+    for (const tcCatId of tokenContainerCategoryIds) {
+      const tcAddress = getTokenContainerAddress(oldContract.inner, categoryId, tcCatId);
+      const containerUtxos = await provider.getUtxos(tcAddress);
+      const containerUtxo = containerUtxos.find((utxo) => utxo.token !== undefined);
+      if (!containerUtxo) {
+        throw new Error(
+          `Upgrade migrates the token container, but none exists at ${tcAddress} `
+          + `for foreign category ${tcCatId}.`,
+        );
+      }
+      tokenContainerUtxos.push(containerUtxo);
+      builder.addInput(containerUtxo, createTokenContainerUnlocker(oldContract.inner, 0, categoryId, tcCatId));
     }
-    const tcAddress = getTokenContainerAddress(oldContract.inner, categoryId, tokenContainerCategoryIds[0]);
-    const containerUtxos = await provider.getUtxos(tcAddress);
-    tokenContainerUtxo = containerUtxos.find((utxo) => utxo.token !== undefined);
-    if (!tokenContainerUtxo) {
-      throw new Error(
-        `Upgrade migrates the token container, but none exists at ${tcAddress} `
-        + `for foreign category ${tokenContainerCategoryIds[0]}.`,
-      );
-    }
-    builder.addInput(tokenContainerUtxo, createTokenContainerUnlocker(
-      oldContract.inner, 0, categoryId, tokenContainerCategoryIds[0],
-    ));
   }
 
   // The old data NFTs are destroyed (flag=2) and re-minted at the replacement's lock with their values carried
@@ -409,7 +405,7 @@ export async function upgradeStatefulContract<T extends Artifact>(
   if (satoshiContainerUtxo) {
     builder.addOutput({ to: Uint8Array.of(0x6a), amount: 0n });
   }
-  if (tokenContainerUtxo) {
+  for (let containerIndex = 0; containerIndex < tokenContainerUtxos.length; containerIndex++) {
     builder.addOutput({ to: Uint8Array.of(0x6a), amount: 0n });
   }
 
@@ -441,12 +437,13 @@ export async function upgradeStatefulContract<T extends Artifact>(
     });
   }
 
-  // Re-mint the token container at the replacement-bound covenant, carrying its foreign token and value.
-  if (tokenContainerUtxo) {
+  // Re-mint each token container at the replacement-bound covenant, carrying its foreign token and value.
+  for (let i = 0; i < tokenContainerUtxos.length; i++) {
+    const containerUtxo = tokenContainerUtxos[i];
     builder.addOutput({
-      to: getTokenContainerAddress(newContract, categoryId, tokenContainerCategoryIds[0]),
-      amount: tokenContainerUtxo.satoshis,
-      token: tokenContainerUtxo.token,
+      to: getTokenContainerAddress(newContract, categoryId, tokenContainerCategoryIds[i]),
+      amount: containerUtxo.satoshis,
+      token: containerUtxo.token,
     });
   }
 

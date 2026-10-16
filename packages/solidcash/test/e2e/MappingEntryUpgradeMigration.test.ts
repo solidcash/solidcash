@@ -60,6 +60,53 @@ contract LedgerV2(pubkey admin) {
 }
 `;
 
+// Two collections: the migrateRecords check must select the collection from the entry's locking bytecode.
+const MULTI_V1 = `
+pragma solidcash >=0.8.0;
+
+contract MultiV1(pubkey admin) {
+    mapping(bytes20 => int) public balances;
+    mapping(bytes20 => int) public allowances;
+
+    function set(sig s, bytes20 holder, int amount) {
+        require(checkSig(s, admin));
+        this.balances[holder] = amount;
+    }
+
+    function allow(sig s, bytes20 holder, int amount) {
+        require(checkSig(s, admin));
+        this.allowances[holder] = amount;
+    }
+
+    function migrateEntry(sig s) migrateRecords {
+        require(checkSig(s, admin));
+    }
+
+    function migrate(sig s) upgrade {
+        require(checkSig(s, admin));
+    }
+}
+`;
+
+const MULTI_V2 = `
+pragma solidcash >=0.8.0;
+
+contract MultiV2(pubkey admin) {
+    mapping(bytes20 => int) public balances;
+    mapping(bytes20 => int) public allowances;
+
+    function set(sig s, bytes20 holder, int amount) {
+        require(checkSig(s, admin));
+        this.balances[holder] = amount;
+    }
+
+    function allow(sig s, bytes20 holder, int amount) {
+        require(checkSig(s, admin));
+        this.allowances[holder] = amount;
+    }
+}
+`;
+
 describe('StatefulContract.upgrade() mapping-entry migration (CRYPTO-4)', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -152,5 +199,40 @@ describe('StatefulContract.upgrade() mapping-entry migration (CRYPTO-4)', () => 
     mutated.outputs[1].lockingBytecode = stranded.slice();
     await expect(provider.sendRawTransaction(binToHex(encodeTransaction(mutated))))
       .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+  });
+
+  it('selects each collection by the entry locking bytecode and drains both', async () => {
+    const multiV1 = compileString(MULTI_V1);
+    const multiV2 = compileString(MULTI_V2);
+    const fundingUtxo: Utxo = { txid: 'a1cd'.repeat(16), vout: 0, satoshis: 100_000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
+    const deployed = await StatefulContract.deploy(multiV1, [alicePub], {
+      provider,
+      fundingUtxo,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: p2pkh.address,
+    });
+    const { contract, categoryId } = deployed;
+    await contract.call.set(new SignatureTemplate(alicePriv), HOLDER(), 42n).send();
+    await contract.call.allow(new SignatureTemplate(alicePriv), HOLDER(), 99n).send();
+
+    const result = await StatefulContract.upgrade({
+      provider,
+      oldContract: contract,
+      upgradeFunctionName: 'migrate',
+      upgradeFunctionArgs: [new SignatureTemplate(alicePriv)],
+      migrateRecordsFunctionArgs: [new SignatureTemplate(alicePriv)],
+      newArtifact: multiV2,
+      newConstructorArgs: [alicePub],
+      ...(await upgradeFunding('a2cd')),
+    });
+
+    const readBack = async (name: string): Promise<bigint> => {
+      const address = getEntryNftAddress(result.contract.inner, categoryId, name);
+      const entry = SortedList.fromUtxos(await provider.getUtxos(address)).find(keyToSlot(HOLDER()));
+      return entry === undefined ? 0n : vmNumberToBigInt(entry.value);
+    };
+    expect(await readBack('balances')).toBe(42n);
+    expect(await readBack('allowances')).toBe(99n);
   });
 });

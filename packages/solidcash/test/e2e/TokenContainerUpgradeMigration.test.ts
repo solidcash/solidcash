@@ -166,3 +166,105 @@ describe('StatefulContract.upgrade() token-container migration (CRYPTO-4)', () =
       .rejects.toThrow(/mandatory-script-verify-flag-failed/);
   });
 });
+
+// Two token-container access sites: the upgrade migrates both foreign categories in the one transaction.
+const TOKEN_A = 'aa'.repeat(32);
+const TOKEN_B = 'cc'.repeat(32);
+
+const MULTI_TC_V1 = `
+pragma solidcash >=0.8.0;
+
+contract MultiTokenV1(pubkey admin) {
+    function payA(bytes32 tokenCategory, bytes20 recipient, int amount) {
+        this.tokens[tokenCategory].transfer(recipient, amount);
+    }
+
+    function payB(bytes32 tokenCategory, bytes20 recipient, int amount) {
+        this.tokens[tokenCategory].transfer(recipient, amount);
+    }
+
+    function migrate(sig s) upgrade {
+        require(checkSig(s, admin));
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}
+`;
+
+const MULTI_TC_V2 = `
+pragma solidcash >=0.8.0;
+
+contract MultiTokenV2(pubkey admin) {
+    function payA(bytes32 tokenCategory, bytes20 recipient, int amount) {
+        this.tokens[tokenCategory].transfer(recipient, amount);
+    }
+
+    function payB(bytes32 tokenCategory, bytes20 recipient, int amount) {
+        this.tokens[tokenCategory].transfer(recipient, amount);
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}
+`;
+
+describe('StatefulContract.upgrade() multi-token-container migration (CRYPTO-4)', () => {
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+
+  const v1 = compileString(MULTI_TC_V1, { forceStateful: true });
+  const v2 = compileString(MULTI_TC_V2, { forceStateful: true });
+
+  it('re-mints both token containers at the replacement lock', async () => {
+    const fundingUtxo: Utxo = { txid: 'b1cd'.repeat(16), vout: 0, satoshis: 100_000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
+    const deployed = await StatefulContract.deploy(v1, [alicePub], {
+      provider,
+      fundingUtxo,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: p2pkh.address,
+    });
+    const { contract, categoryId } = deployed;
+
+    const fund = async (category: string, label: string): Promise<void> => {
+      const containerUtxo: Utxo = {
+        txid: label.repeat(16), vout: 0, satoshis: 2_000n,
+        token: { category, amount: 1_000n },
+      };
+      await provider.addUtxo(getTokenContainerAddress(contract.inner, categoryId, category), containerUtxo);
+    };
+    await fund(TOKEN_A, 'aacd');
+    await fund(TOKEN_B, 'bbcd');
+
+    const upgradeFunding: Utxo = { txid: 'b2cd'.repeat(16), vout: 0, satoshis: 100_000n };
+    await provider.addUtxo('51', upgradeFunding);
+    const result = await StatefulContract.upgrade({
+      provider,
+      oldContract: contract,
+      upgradeFunctionName: 'migrate',
+      upgradeFunctionArgs: [new SignatureTemplate(alicePriv)],
+      newArtifact: v2,
+      newConstructorArgs: [alicePub],
+      tokenContainerCategoryIds: [TOKEN_A, TOKEN_B],
+      fundingUtxo: upgradeFunding,
+      funder: { generateLockingBytecode: (): Uint8Array => hexToBin('51'), generateUnlockingBytecode: (): Uint8Array => new Uint8Array() },
+      changeAddress: p2pkh.address,
+    });
+
+    const outputs = getTxOutputs(result.tx);
+    const reMintedForeign = outputs.filter((output) => output.token !== undefined && output.token.nft === undefined);
+    expect(reMintedForeign.map((output) => output.token!.category).sort()).toEqual([TOKEN_A, TOKEN_B].sort());
+
+    const newLocks = [TOKEN_A, TOKEN_B].map((category) =>
+      binToHex(addressToLockScript(getTokenContainerAddress(result.contract.inner, categoryId, category))));
+    const outputLocks = result.tx.outputs.map((output) => binToHex(output.lockingBytecode));
+    expect(newLocks.every((lock) => outputLocks.includes(lock))).toBe(true);
+
+    // The replacement can still pay from each migrated container.
+    await result.contract.call.payA(hexToBin(TOKEN_A), alicePkh, 250n).send();
+    await result.contract.call.payB(hexToBin(TOKEN_B), alicePkh, 250n).send();
+  });
+});

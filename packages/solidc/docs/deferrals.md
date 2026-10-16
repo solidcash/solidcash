@@ -2839,17 +2839,22 @@ seams:
   covenant. `emitMigrateRecordsEntryMigrationCheck` pins input[1] at the old entry covenant and output[1] at the
   replacement-bound covenant, and the existing `emitOwnCategoryMutableNftConservation` balance keeps the census exact.
   The SDK drains `getUtxos(entryAddress)` one entry per transaction inside `upgradeStatefulContract`, then runs the
-  final upgrade. The first slice supports one collection; a multi-collection contract is refused at compile time.
+  final upgrade. The selector matches input[1] against every collection's old covenant (an unrolled nested IF) and
+  requires output[1] at the corresponding replacement-bound covenant, so several collections drain in one pass.
 
-**RESOLVED 2026-10-16 (all four CRYPTO-4 record kinds).** Data NFTs, the satoshi container, the token container and
+**RESOLVED 2026-10-16 (all four CRYPTO-4 record kinds).** Data NFTs, the satoshi container, token containers and
 mapping/array entries all migrate under the replacement-bound covenant. The entries half adds the `migrateRecords`
 modifier (grammar + `FunctionModifier` + `__internal__upgradeBytecode` injection), `emitMigrateRecordsEntryMigrationCheck`
-(pin old/new covenants + commitment/category/value preservation), the lifted collection refusal, and the SDK
-co-spend loop. Pinned by `MappingEntryUpgradeMigration.test.ts` (2/2: the replacement reads the migrated entry and
-the old covenant is drained; a stranded-old-lock re-mint is refused), plus the updated `Upgrade.test.ts` (admits a
-mapping) and the other CRYPTO-4 suites. Residual: one `migrateRecords` batch migrates one entry of one collection,
-and one `upgrade` migrates one token container; several collections or several foreign token categories still need a
-selector/loop form.
+(pin old/new covenants + commitment/category/value preservation, with a per-collection selector), the lifted collection
+refusal, and the SDK co-spend loop. The token-container half reserves one slot per token-container access site
+(`ContractNode.tokenContainerCount`) and `emitUpgradeTokenContainerMigrationCheck` loops them, so several foreign
+categories migrate in the one upgrade; the SDK matches `tokenContainerCategoryIds` to that count. Pinned by
+`MappingEntryUpgradeMigration.test.ts` (3/3: single collection, stranded-old-lock refusal, and a two-collection
+selector), `TokenContainerUpgradeMigration.test.ts` (3/3: single container, stranded-old-lock refusal, and two
+foreign categories), plus the updated `Upgrade.test.ts` (admits a mapping) and the other CRYPTO-4 suites. Residual: the
+entry batch migrates one entry per transaction (the SDK loops), and the token-container count must match the number
+of reserved access sites (a live container count below the site count is refused); a fully dynamic per-record scan
+remains deferred.
 
 ## Logical caller identity for native compiles (model B residual, 2026-10-14)
 

@@ -194,6 +194,9 @@ export class ContractNode extends Node implements Named {
   // Set by SymbolTableTraversal once block layouts are known: any entry reserves a token container slot (holding a
   // foreign token category), so an in-place upgrade must migrate those containers. Read by the upgrade codegen.
   keepsTokenContainer: boolean = false;
+  // Number of token-container slots the contract reserves (the maximum any single entry's block layout holds):
+  // the bounded count an in-place upgrade can migrate in one transaction.
+  tokenContainerCount: number = 0;
   // Set when the contract instantiates a stateful child (`new T()` where T has state): deploying it IS a deploy,
   // so this contract is made stateful to host the (implied) deploy covenant. Read by both the symbol-table pass
   // (block-layout allocation) and artifact generation (so the SDK sees a zero-state stateful contract).

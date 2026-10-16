@@ -2470,11 +2470,20 @@ decision, then an adversarial review like the other covenant changes.
 **DECISION 2026-10-14 (reject the implicit `readOnlyDeclared` flag).** The cost is ~45 B on every direct-composition
 call through a `view`/`pure` interface declaration, including the common read-only getter calls that never touch
 callee state; that tax is disproportionate to a gap the explicit `.staticcall()` spelling already closes for the
-callers that need it (`I(a).m.staticcall()` and low-level `staticcall` both pin the callee's master and data NFTs).
-The proposed scan also has two known gaps — nested callee calls do not inherit read-only, and the callee's satoshi /
-fungible-token movements are not pinned — so the flag would be incomplete as a read-only guarantee. Retained deferral:
-revisit only if a real port needs implicit STATICCALL semantics on view/pure declarations. The entry remains open with
-the ~45 B/view-call cost stated.
+callers that need it (`I(a).m.staticcall()` and low-level `staticcall` both pin the callee's master and the data
+NFTs the caller's DECLARED type publishes — for a bare interface with no state declarations that list is empty, so
+only the master is pinned). The proposed scan also has two known gaps — nested callee calls do not inherit
+read-only, and the callee's satoshi / fungible-token movements are not pinned — so the flag would be incomplete as
+a read-only guarantee. Retained deferral: revisit only if a real port needs implicit STATICCALL semantics on
+view/pure declarations. The entry remains open with the ~45 B/view-call cost stated.
+
+**VERIFIED 2026-10-16 (boundary pinned).** `packages/solidc/test/StaticCallDirectPinning.test.ts` pins the exact
+preservation boundary at the shipped compile path: a direct `.staticcall()` through a BARE interface publishes
+`requiredDataNftIndices: []` (only the callee master commitment is checked), through a state-declaring interface
+(`public int counter`) it publishes `requiredDataNftIndices: [0]` (master plus that data NFT), and a plain
+`I(bare).bump()` view/pure declaration runs REGULAR with no `callMode` and no static preservation. So the mapping /
+data-NFT gap for bare interfaces is real, and the DECISION's "already closes" holds only where the caller's declared
+type names the callee's data NFTs.
 
 ## A framed proxy's `initialize` that calls another contract is not atomic (audit SDKFRAMED-2 residual, 2026-10-12)
 

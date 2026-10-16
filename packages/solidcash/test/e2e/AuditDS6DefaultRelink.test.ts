@@ -153,14 +153,14 @@ describe('DS-6 default relink for struct/array value kinds', () => {
     await expect(sc.getFunction('check')(x, 300n, 301n).send()).resolves.toBeDefined();
   }, 300_000);
 
-  it('keeps an inline int[] default relink fail-closed', async () => {
+  it('relinks an inline int[] default beside an insert', async () => {
     const deployed = await deploySource(ARRAY_SOURCE);
     const { sc } = deployed;
     await sc.getFunction('set')(7n, [70n]).send();
     const x = await keyIn(deployed, 7n);
-    await expect(sc.getFunction('dropThenSet')(7n, x, [300n], 1n).send()).rejects.toThrow(
-      /OP_VERIFY/,
-    );
+    await sc.getFunction('dropThenSet')(7n, x, [300n], 1n).send();
+    await expect(sc.getFunction('checkLen')(7n, 0n).send()).resolves.toBeDefined();
+    await expect(sc.getFunction('checkLen')(x, 1n).send()).resolves.toBeDefined();
   }, 300_000);
 
   it('keeps a chunked (>60 B) int[] default relink fail-closed', async () => {

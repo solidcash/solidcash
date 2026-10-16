@@ -2919,6 +2919,21 @@ DUPLICATE P' (`slot=7,next=x` materialized twice, intermittently 4- vs 5-output 
 alternatives still error and the caller falls back to the original builder (ip 552). `AuditDS6DefaultRelink.test.ts`
 still pins both `int[]` cases fail-closed (6/6) and `AuditDS6ChainOneNode.test.ts` is 13/13.
 
+**UPDATE 2026-10-16 (verified, twelfth).** The duplicate P' is now fixed; the INLINE array case settles, and only
+the CHUNKED (>60 B) array case remains fail-closed. Root cause of the duplicate: `refreshTopLevelPredOutWitnesses`
+(in `sc-construct-create-builder-transaction-builder.ts`, run from the master-unlocker refresher during
+`finalizeBuildStamp`'s `syncBuilderUnlockers`) re-materializes a predecessor output when the planned PredOut
+coordinate no longer carries the expected commitment, after first searching for an already-materialized P'. Its
+`deletedDefaultTail` hardcoded `'00000000'` (the bytes/string `len4(0)` default) for every chunkable collection,
+so for an unbounded ARRAY (whose planned relink carries `len4(1) || 0x00` = `0100000000`) the search never matched
+the materialized P' and the refresher minted a second, wrong-tail predecessor at a trailing pad. Fix (shipped):
+the tail now mirrors `defaultSortedEntryValueTail` — an unbounded array uses `encodeChunkableValueTail([0x00])`
+(`0100000000`), bytes/string keep `00000000`, scalars keep empty. Verified: `AuditDS6DefaultRelink.test.ts` now
+SETTLES the inline `int[]` case (and keeps bigint/bytes32/bytes/struct settling); `AuditDS6ChainOneNode.test.ts`
+13/13 and `ChunkedArrays.test.ts` 15/15 stay green (34/34). Remaining for the chunked case: the retry's derive
+probe still fails at ip 644 with a value-chunk pin — node x's entry tail stays EMPTY and the value-chunk output at
+the trailing pad does not match, so the chunked case stays pinned fail-closed.
+
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 
 **What:** a delegated message-bus route binds the proxy's mapping entries and value chunks to the proxy master's lock

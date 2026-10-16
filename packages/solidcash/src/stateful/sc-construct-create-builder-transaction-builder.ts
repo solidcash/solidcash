@@ -4,7 +4,13 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction, FunctionBlockLayout, StateLayout } from '@solidcash/utils';
+import {
+  type AbiFunction,
+  type FunctionBlockLayout,
+  type StateLayout,
+  encodeChunkableValueTail,
+  parseArrayTypeString,
+} from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -538,7 +544,17 @@ export function constructCreateBuilderTransactionBuilder(
         batch.slotIndices.includes(Number(slot)));
       const deletedCollection = deletedBatch === undefined ? undefined
         : stateLayout.collections?.find((collection) => collection.name === deletedBatch.collection);
-      const deletedDefaultTail = deletedCollection?.chunkableValue === true ? '00000000' : '';
+      // Mirrors `defaultSortedEntryValueTail`: unbounded bytes/string nullify to `len4(0)`, while an unbounded
+      // ARRAY nullifies to the pushdata-encoded empty array (`OP_0`, one byte) framed as `len4(1) || 0x00`. Using
+      // the bytes/string tail for an array makes the planned predecessor look different from the materialized one,
+      // so the P'-search below misses it and mints a duplicate predecessor output.
+      const deletedArray = deletedCollection === undefined
+        ? undefined : parseArrayTypeString(deletedCollection.valueType);
+      const deletedDefaultTail = deletedCollection === undefined || deletedCollection.chunkableValue !== true
+        ? ''
+        : deletedArray !== undefined && deletedArray.bound === undefined
+          ? binToHex(encodeChunkableValueTail(new Uint8Array([0x00])))
+          : '00000000';
       const deletedPredOut = expectedPredOut !== undefined && (abiFunction.sortedBatchInfo ?? []).some((batch) => (
         batch.slotIndices.includes(Number(slot)) && batch.slotIndices.some((other) => {
           const deleted = argOf(`__internal__vmapBatchSlot_${other}`);

@@ -2887,6 +2887,24 @@ old-value clone) at the source, so the loop-entry base and the PredOut witness s
 after materialization. `AuditDS6DefaultRelink.test.ts` still pins both `int[]` cases fail-closed (6/6) and
 `AuditDS6ChainOneNode.test.ts` remains 13/13.
 
+**UPDATE 2026-10-16 (verified, tenth).** The source-level fix was attempted but is still not landed; this update
+corrects the ninth's description of the extras with exact derive-probe output shapes. The failing point is the
+CHAINED-DELETE retry's derive probe, which fails at VM ip 644 (OP_VERIFY) for BOTH alternatives
+(`owners=[write]` and `owners=[write], chainedDeletes=[delete]`), so the caller falls back to the original builder
+and the final preflight then fails at ip 552. The chained-delete retry materializes six outputs instead of four:
+master, an OP_TRUE placeholder for the deleted slot, the inserted node x with an EMPTY value tail (`slot||next`
+only, missing the `[300n]` chunkable tail), the relinked predecessor P' (`slot=7, next=x`), a spurious
+FORGE_LOCK (`aa20953c…`) mutable `00` placeholder, and a second copy of P'. The ninth's "old-value clone" is in
+fact the original builder's preservation; the retry's extras are the `00` placeholder plus a DUPLICATE P'.
+`setLoopEntryCommitments(m, [P'])` is called once and `materializeRuntimeLoopTrailing` appends exactly one P', so
+the `00` and the duplicate P' are emitted by a later conservation/derived-entry reassert, not by the loop-entry
+planner. Node x's empty tail follows from the same probe refusal: slot 1 is a guarded write (`guardedBatchWriteSlots`),
+so its exact `exactBatchTargetSlots` value is left un-pinned for trace derivation, and the ip 644 halt happens
+before the VM exposes the chunkable-array tail. Remaining fix: locate and remove the post-materialization
+`00`+duplicate-P' reassert for the direct chunkable-array chained delete (or pin the exact linear-batch target when
+its arm runs), then verify the probe reaches node x's value. `AuditDS6DefaultRelink.test.ts` pins both `int[]`
+cases fail-closed (6/6) and `AuditDS6ChainOneNode.test.ts` is 13/13.
+
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 
 **What:** a delegated message-bus route binds the proxy's mapping entries and value chunks to the proxy master's lock

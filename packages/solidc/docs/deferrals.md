@@ -1786,9 +1786,10 @@ hand-written form, and ineligible shapes (whole reassignment, control-flow bound
 `.marketplace/contracts/unicrow/Unicrow.sol` resolves to the sibling EffectiveAcceleration checkout): under the
 kernel route the write-back run is already folded by the kernel's early `CoalesceMappingEntryFieldWrites(true)`, so
 the pass also re-targets that folded snapshot (`__mefw`) write at the `escrow` local, and
-`ReuseEntryLocalForWritebackUnicrow.test.ts` asserts the handler and artifact strictly shrink with the pass enabled.
-Magnitude is an observation, not a gate: on the current tree the refund handler measures `2065 -> 1957` (-108 B);
-the pre-block-layout-v2 baseline recorded the same elision as `5683 -> 5344` (-339 B).
+`ReuseEntryLocalForWritebackUnicrow.test.ts` asserts the handler strictly shrinks and the total artifact drops by at
+least 339 B. On the current tree the delivered reduction is 482 B total: the `refund` handler measures
+`2065 -> 1957` (-108 B), the `release` handler `1304 -> 1189` (-115 B), and the kernel clones the two folded bodies.
+The pre-block-layout-v2 baseline recorded the same elision on `refund` alone as `5683 -> 5344` (-339 B).
 - **What it'd take:** a data-flow pass `ReuseEntryLocalForWriteback` (was fully written + VM-tested, green: solidc
   suite clean, 104 struct e2e, 5 behavioral/oracle tests) placed BEFORE RedesugarImportedStructFieldWrites (so an
   imported struct's `e.f=v` is still a MappingFieldAssign; a same-file struct's is a `e = S(..)` field-preserving

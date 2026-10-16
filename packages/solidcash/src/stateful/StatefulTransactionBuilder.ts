@@ -5661,8 +5661,11 @@ export class StatefulTransactionBuilder {
     }, 0);
     const externalReturnOutputCount = this.tailReturnEventOutputs()
       .filter((returnEvent) => returnEvent.categoryId !== this.categoryId).length;
+    // Co-spent logical/external identity anchors (immutable CREATE/SCID NFTs) are recreated before the local
+    // dynamic-chunk run, like the external call blocks above; they are outside this function's blockLayout too.
+    const identityAnchorOutputCount = this.externalIdentityAnchorUtxos.length + (this.logicalIdentityUtxo ? 1 : 0);
     const trailingBase = base + externalCallOutputCount + externalReturnOutputCount
-      + lowLevelCallOutputCount + this.iterationEntryInputs.length;
+      + lowLevelCallOutputCount + this.iterationEntryInputs.length + identityAnchorOutputCount;
     if (this.delegateEntriesAfterLowLevel) {
       // Delegate-only loop entries are appended after the caller's reserved trailing block. They must not move
       // the caller's dynamic-chunk base into that delegate suffix; only local loop entries precede local chunks.

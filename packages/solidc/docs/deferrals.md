@@ -2452,13 +2452,18 @@ the approved entry. `publicSelfIdentity.lockingBytecode` now resolves to the phy
 (the identity a child observes as `msg.sender`), so the deposit co-spends the exact `_allowances[bob][chef]`
 entry (slot `13ea57c0…`, value 1000). Committed `24a61d5d1`. Pins still green.
 
-**Remaining (third wall, now revealed).** With input 0 and the allowance entry fixed, `deposit` fails at input 9
-(the LP `transferFrom` covenant) at `ip` near the block-entry input-bytecode check (window
-`OP_SUB OP_PICK OP_INPUTINDEX OP_ADD OP_UTXOBYTECODE OP_EQUALVERIFY`), comparing the MasterChef `userInfo` entry
-covenant lock `aa205301…` against the LP `_balances` entry covenant lock `aa20c53c…` (candidates
-`["1:11","35:aa205301…","35:aa20c53c…"]`). The LP covenant's caller-block entry coordinate reads the MasterChef
-block's `userInfo` entry input where it expects an LP `_balances` entry — a composed caller-block entry-coordinate
-mismatch in the direct convention. Still open.
+**Remaining (third wall, now revealed, diagnosed).** With input 0 and the allowance entry fixed, `deposit` fails
+at input 9 (the LP `transferFrom` covenant) in an 8-byte outlined helper (`OP_SUB OP_PICK OP_INPUTINDEX OP_ADD
+OP_UTXOBYTECODE OP_EQUALVERIFY`) that verifies an entry-input lock. The LP `_balances[chef]` INSERT's
+`__internal__vmapBatchPredOut_1` witness resolves to absolute output 17 (relative `blockSize` 8 + the LP callee's
+output base 9), but output 17 carries the MasterChef `userInfo` HEAD predecessor (`aa205301…`); the helper
+compares it against the LP `_balances` entry lock (`aa20c53c…`) and fails. Root: the composed trailing band places
+the MasterChef sorted-batch predecessor (userInfo HEAD) and the LP sorted-batch predecessor (balances P') at the
+same output 17 — the callee's relative `PredOut = blockSize` does not account for the caller's trailing
+predecessor that lands between the LP block and the LP's own trailing band. Fix site: resolve the nested callee's
+relative `PredOut`/trailing band AFTER the caller's sorted-batch predecessors, or order the two trailing bands.
+Still open.
+
 
 
 

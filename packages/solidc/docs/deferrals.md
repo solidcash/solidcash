@@ -2761,16 +2761,22 @@ Captured output: `{SCRATCH}/plain-streamed-unit.log`, `{SCRATCH}/plain-streamed-
 admitted. The fold itself was sound (`recursiveStateHandler` stayed undefined); the failure was a cascade from
 a `VariableRedefinitionError: Redefinition of variable result`.
 
-**Why.** The generated message-bus helper text declares a generic local `bigint result = -1;` in
-`__message_bus_find_last_output` and `__message_bus_last_output`. When a user contract has a state variable
-named `result`, the semantic symbol pass refuses the generated local because native solidcash forbids a local
-shadowing a state variable (only `evmCompat` allows that shadow). The caught error is attributed as
-`mixed-scalar-and-collection-route-not-enabled`, and the scalar-state route never forms.
+**Why.** The generated message-bus helper/verifier text declares generic locals and parameters (`result`,
+`output`, `at`, `slot`, `end`, `cursor`, `base`, `fixedSize`, `participantCount`, `activeBase`, `input`, ...) in
+the atomic scan helpers and the verifier. When a user contract has a state variable with one of those names,
+the semantic symbol pass refuses the generated binding because native solidcash forbids a local/parameter
+shadowing a state variable (only `evmCompat` allows that shadow). The caught `VariableRedefinitionError` is
+attributed as `mixed-scalar-and-collection-route-not-enabled`, and the scalar-state route never forms.
 
-**Fix.** The two generated helpers now use the compiler-owned name `__message_bus_result` for that local, so a
-user state variable cannot collide with it. Bytecode is unchanged (local names are erased); only the generated
-source text and its parse cache key change.
+**Fix.** Two changes. (1) `__message_bus_find_last_output` and `__message_bus_last_output` use the
+compiler-owned name `__message_bus_result` instead of the generic `result`. (2) `SymbolTableTraversal` now lets
+a compiler-generated local or parameter shadow a state-variable name in native compiles too: generated code
+reaches user state only through the explicit `this.x` form, so the shadow is unambiguous, while native source
+stays strict. Bytecode is unchanged (local/parameter names are erased); only the generated source text and its
+parse cache key change.
 
 **Evidence.** `KernelAdmission.test.ts` is green on the target title; the full file runs 688/689 with the one
 remaining failure a 60 s timeout on "publishes quadratic-counter event prefixes ..." that passes in isolation
-(~15 s, environmental load from the same run). Root `yarn build` and `yarn lint` exit 0.
+(~15 s, environmental load from the same run). A probe of the same fold shape with state vars named `output`,
+`at`, `slot`, `end`, `cursor`, `base`, `fixedSize`, `participantCount`, `activeBase` and `input` now admits
+`run` (was `messageBus: undefined`). Root `yarn build` and `yarn lint` exit 0.

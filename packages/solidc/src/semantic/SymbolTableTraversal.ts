@@ -2408,8 +2408,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     // the same name as its function, `function max(..) returns (int max)`, which is legal Solidity. Both live at
     // contract/library level, so this never masks a genuine same-scope param/local collision. Native solidcash
     // keeps the strict check.
-    const shadowsOuter = this.compilerOptions.evmCompat
-      && (existing?.symbolType === SymbolType.STATE_VARIABLE || existing?.symbolType === SymbolType.FUNCTION);
+    // Compiler-generated code (message-bus route/verifier helpers) reaches user state only through `this.x`,
+    // so a generated parameter may shadow a state-variable name without ambiguity; native source stays strict.
+    const generatedParameter = generatedOriginOf(node.location) !== undefined;
+    const shadowsOuter = (existing?.symbolType === SymbolType.FUNCTION && this.compilerOptions.evmCompat)
+      || (existing?.symbolType === SymbolType.STATE_VARIABLE
+        && (this.compilerOptions.evmCompat || generatedParameter));
     if (existing && !shadowsOuter) {
       throw new VariableRedefinitionError(node);
     }
@@ -12768,8 +12772,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Solidity. set() below adds it to the inner scope, so the shadow resolves correctly. Shadowing an outer
       // LOCAL that is still live is NOT accepted: codegen slots locals by name, so a live shadow would reuse the
       // outer's slot and miscompile - a clean rejection is sound; disjoint sibling scopes reuse names fine.
-      const shadowsOuter = this.compilerOptions.evmCompat
-        && (existing.symbolType === SymbolType.FUNCTION || existing.symbolType === SymbolType.STATE_VARIABLE);
+      // Compiler-generated code (message-bus route/verifier helpers) reaches user state only through the
+      // explicit `this.x` form, so a generated local may shadow a state-variable name without ambiguity.
+      // Native source stays strict: the evmCompat gate is what relaxes it for user code.
+      const generatedLocal = generatedOriginOf(node.location) !== undefined;
+      const shadowsOuter = (existing.symbolType === SymbolType.FUNCTION && this.compilerOptions.evmCompat)
+        || (existing.symbolType === SymbolType.STATE_VARIABLE
+          && (this.compilerOptions.evmCompat || generatedLocal));
       if (!loopReuse && !shadowsOuter) {
         throw new VariableRedefinitionError(node);
       }

@@ -2851,6 +2851,17 @@ materialized trailing predecessor output (the loop-entry pin/re-derivation path)
 `AuditDS6DefaultRelink.test.ts` still pins the inline and chunked (>60 B) `int[]` cases as fail-closed (6/6), and
 `AuditDS6ChainOneNode.test.ts` remains 13/13. Remaining: publishing the relinked predecessor output value.
 
+**UPDATE 2026-10-16 (verified, seventh).** The loop-entry side now publishes the relinked predecessor value, and
+the remaining refusal is a DUPLICATE predecessor output, not a missing relink. Probe-output capture for the
+chained-delete retry shows the trailing predecessor emitted TWICE: the pinned loop entry
+(`slot || next || len4(1)||0x00`, `pinned=true`, `loopEntryBase=3`) plus a second trailing mutable NFT carrying the
+OLD value tail (`slot || next || len4(34)||<old array>`). The transaction then has five outputs where the covenant
+expects four, and the extra old-value node-7 output fails the collection census. The chained-delete relink should
+REPLACE the entry-preservation re-emission of the shared predecessor rather than add a second trailing lane; the
+dedup that works for bytes/string does not fire for the array-valued write. `AuditDS6DefaultRelink.test.ts` still
+pins the inline and chunked (>60 B) `int[]` cases as fail-closed (6/6), and `AuditDS6ChainOneNode.test.ts` remains
+13/13. Remaining: deduplicate the shared predecessor's old-value preservation against the relinked trailing lane.
+
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 
 **What:** a delegated message-bus route binds the proxy's mapping entries and value chunks to the proxy master's lock

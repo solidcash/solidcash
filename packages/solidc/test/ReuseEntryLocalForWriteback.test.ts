@@ -3,9 +3,10 @@ import { compileString } from './direct-compile.js';
 
 /**
  * ReuseEntryLocalForWriteback reuses the entry-read local for a whole-struct write-back, pre-empting the fresh
- * snapshot CoalesceMappingEntryFieldWrites would otherwise take. The exact Unicrow `refund` source is not in the
- * repo, so the shape is reconstructed synthetically: `S e = m[k]; e.a = ..; m[k].a = e.a; m[k].b = ..;`.
- * Sorted (vmap) mappings are the backend both passes target.
+ * snapshot CoalesceMappingEntryFieldWrites would otherwise take. The pass's soundness gates are exercised here
+ * against the synthetic value-copy shape `S e = m[k]; e.a = ..; m[k].a = e.a; m[k].b = ..;`; the real Unicrow
+ * `refund` size delta is pinned in ReuseEntryLocalForWritebackUnicrow.test.ts. Sorted (vmap) mappings are the
+ * backend both passes target.
  */
 
 const OPT = { evmCompat: true, sortedMappings: ['m'], forceStateful: true };

@@ -1312,9 +1312,13 @@ corpus. The BYTE-REVERSAL was VM-proven step-by-step (b="dead" -> exact 0x646561
 LONG-string RESIZE (`sstore(b.slot, oddX)` odd low byte -> len (X-1)/2) and the keccak-DATA-region write/read are
 built; a stateful SDK round-trip (`BytesSlotFieldState.test.ts`) pins the stored bytes, and `bytesDataBaseName` was
 fixed to key on the type alone (its old `sv.isDynamic` check ran before SymbolTableTraversal set the flag, so the
-write fell through to `__evm_storage`). Invalid-encoding corners fail closed. REMAINING: the bytes-push-LOOP SDK
-state-derivation gap (a plain bytes push loop fails auto-derivation even without assembly - orthogonal SDK
-limitation). address slots = bounded-address (Section 10: against). Original analysis (now partly resolved) below.
+write fell through to `__evm_storage`). Invalid-encoding corners fail closed. The bytes-push-LOOP gap is RESOLVED
+2026-10-16: a counter-bounded `for` loop desugars `b.push(x)` to `b = b + x`, which previously hit the
+pending-value write model (emitted once, runs N times) and derived a wrong length header (97 for a 33-byte push
+loop). `CacheDynamicArrayInLoop` now also caches unbounded `bytes`/`string` state vars written in a loop
+(read-once / mutate-local / write-once), and `BytesPushLoopState.test.ts` drives both a `for` and a `while` bytes
+push loop through the SDK and asserts `getState()` returns the exact pushed bytes. address slots = bounded-address
+(Section 10: against). Original analysis (now partly resolved) below.
 
 ## bytes/string slot fields + address slot fields - DEFERRED 2026-07-20 (per-file evidence added)
 
@@ -1736,8 +1740,13 @@ folded by CoalesceMappingEntryFieldWrites into one whole-struct write, but that 
 untouched fields - redundant, because `e` already holds them. Reusing `e` (`m[k] = S(e.f0, .., e.f1, .., 1, ..)`)
 elides the re-read. The `ReuseEntryLocalForWriteback` pass is re-landed before CoalesceMappingEntryFieldWrites,
 tracking local field writes through their desugared whole-struct rebuild shape and verified byte-identical to the
-explicit whole-struct write-back (`ReuseEntryLocalForWriteback.test.ts`). The exact Unicrow `refund` source is not
-in the repo, so the -339 B delta is not re-measured here.
+explicit whole-struct write-back (`ReuseEntryLocalForWriteback.test.ts`). The REAL Unicrow `refund` source IS in the
+corpus (the marketplace symlink `.marketplace/contracts/unicrow/Unicrow.sol` resolves to the sibling
+EffectiveAcceleration checkout): under the kernel route the write-back run is already folded by the kernel's early
+`CoalesceMappingEntryFieldWrites(true)`, so the pass now also re-targets that folded snapshot (`__mefw`) write at the
+`escrow` local. Measured on that source (`ReuseEntryLocalForWritebackUnicrow.test.ts`), the `refund` handler body
+drops 2065 -> 1957 bytes (-108 B); the older -339 B figure (5683 -> 5344) predates this session's block-layout
+changes and is superseded by that measurement.
 - **What it'd take:** a data-flow pass `ReuseEntryLocalForWriteback` (was fully written + VM-tested, green: solidc
   suite clean, 104 struct e2e, 5 behavioral/oracle tests) placed BEFORE RedesugarImportedStructFieldWrites (so an
   imported struct's `e.f=v` is still a MappingFieldAssign; a same-file struct's is a `e = S(..)` field-preserving

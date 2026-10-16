@@ -15629,7 +15629,10 @@ function compileResolvedAst(
 
   // Reuse an already-taken entry-read local for the whole-struct write-back of a field-write run (Unicrow
   // `refund`), before CoalesceMappingEntryFieldWrites would re-read the entry for the same write-back.
-  if (needsMappingFieldCoalesce) ast = ast.accept(new ReuseEntryLocalForWriteback()) as Ast;
+  // `reuseEntryLocalForWriteback: false` is the measurement-only escape hatch the size-regression test uses.
+  if (needsMappingFieldCoalesce && mergedCompilerOptions.reuseEntryLocalForWriteback !== false) {
+    ast = ast.accept(new ReuseEntryLocalForWriteback()) as Ast;
+  }
 
   // Coalesce consecutive whole-field writes to the same vmap mapping entry (`m[k].a=x; m[k].b=y`) into one entry
   // read + one whole-struct write, replacing N sorted-mapping upserts with one.

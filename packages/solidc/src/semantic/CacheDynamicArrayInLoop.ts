@@ -34,7 +34,7 @@ import {
   AssignNode,
   BoolLiteralNode,
 } from '../ast/AST.js';
-import { ArrayType, PrimitiveType } from '@solidcash/utils';
+import { ArrayType, PrimitiveType, isDynamicStorageType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
@@ -73,7 +73,13 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.dynArrays = new Map();
     for (const sv of node.stateVariables) {
-      if (sv.isDynamic && sv.type instanceof ArrayType) this.dynArrays.set(sv.name, sv);
+      // Unbounded bytes/string (isDynamicStorageType) have the same chunk-backed pending-value write model as a
+      // dynamic array: `b = b + x` (the desugared `b.push(x)`) inside a loop emits the write once but runs it N
+      // times. Arrays are marked isDynamic at parse time; bytes/string are not until a later pass, so match on the
+      // type directly for them.
+      if ((sv.isDynamic && sv.type instanceof ArrayType) || isDynamicStorageType(sv.type)) {
+        this.dynArrays.set(sv.name, sv);
+      }
     }
     if (this.dynArrays.size === 0) return node;
 
@@ -220,9 +226,11 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
     }
   }
 
-  // The dynamic-array name written by a write statement, else undefined. A bare `arr[i] = x` parses to an
+  // The dynamic-storage name written by a write statement, else undefined. A bare `arr[i] = x` parses to an
   // ArrayAssignNode (state-or-local resolved by name in semantic), while `arr.push/pop` and `this.arr[i]=`
-  // are the StateArray* nodes - so both shapes are write targets when the name is a dynamic array.
+  // are the StateArray* nodes - so both shapes are write targets when the name is a dynamic array. A whole-value
+  // `StateAssignNode` is how `bytes/string` append (`b = b + x`, desugared from `b.push(x)`) and whole
+  // `this.arr = expr` both reach codegen.
   private writeTargetName(stmt: StatementNode): string | undefined {
     if ((stmt instanceof StateArrayPushNode || stmt instanceof StateArrayPopNode
       || stmt instanceof StateArrayAssignNode || stmt instanceof StateArrayDeleteNode
@@ -231,6 +239,7 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
       && this.dynArrays.has(stmt.name)) {
       return stmt.name;
     }
+    if (stmt instanceof StateAssignNode && this.dynArrays.has(stmt.name)) return stmt.name;
     return undefined;
   }
 

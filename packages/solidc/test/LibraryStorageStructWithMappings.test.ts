@@ -158,3 +158,30 @@ describe('storage-pointer library fn on a mapping element (direct + using-for sp
     expect(lib.bytecode).toBe(hand.bytecode);
   });
 });
+
+// The same mapping-element shape where the value struct has NO scalar leaves (mapping-only). Its root mapping is
+// flattened to per-field collections (`totals__a`/`totals__b`), so the method spelling must recover the value
+// struct from those leaves to desugar back to the direct library call.
+describe('storage-pointer library fn on a mapping-only struct element (direct + using-for spellings)', () => {
+  const SP_STRUCT = 'struct S { mapping(int => int) a; mapping(int => int) b; }';
+  const SP_LIBRARY = 'library L { function f(S storage s, int x) internal { s.a[x] = x; } }';
+
+  const direct = `${SP_STRUCT}${SP_LIBRARY}
+    contract C { mapping(int => S) m;
+      function bump(int k, int x) external { L.f(this.m[k], x); require(true); } }`;
+
+  const method = `${SP_STRUCT}${SP_LIBRARY}
+    contract C { using L for S; mapping(int => S) m;
+      function bump(int k, int x) external { this.m[k].f(x); require(true); } }`;
+
+  it('compiles L.f(this.m[k]) on a mapping-only struct element', () => {
+    expect(compileString(direct, { evmCompat: true }).contractName).toBe('C');
+  });
+
+  it('compiles this.m[k].f() on a mapping-only struct element and is byte-identical to L.f(this.m[k])', () => {
+    const a = compileString(direct, { evmCompat: true });
+    const b = compileString(method, { evmCompat: true });
+    expect(b.contractName).toBe('C');
+    expect(b.bytecode).toBe(a.bytecode);
+  });
+});

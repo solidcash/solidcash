@@ -1663,8 +1663,13 @@ receiver to the direct library call before inlining. Compiler test `LibraryStora
 (`storage-pointer library fn on a mapping element`) pins that `L.f(m[k])` compiles and `m[k].f()` is byte-identical to
 it; the e2e `StoragePointerMappingElem.test.ts` VM-proves the RMW mutates the element and preserves the untouched
 field. Remaining: a struct whose ONLY fields are mappings flattens away its root, so the `m[k].f()` method spelling on
-that shape still fails to resolve the receiver type (the direct `L.f(m[k])` spelling compiles). The state-ARRAY
-element half (`L.addX(this.arr[i], d)`) is NOT a storage-pointer gap: the lowering is byte-identical to the
+that shape still failed to resolve the receiver type because the flattened root `m` carried no type. **RESOLVED
+2026-10-16 (mapping-only struct root).** `RedesugarImportedUsingForCalls.resolveExprType` now recovers a
+flattened-value mapping's struct type from its per-field leaves (`m__a`/`m__b` -> the value struct `S`) when the root
+`m` is absent, so `this.m[k].f()` desugars to `L.f(this.m[k])` before inlining and stays byte-identical to the direct
+spelling. Pinned by `LibraryStorageStructWithMappings.test.ts` (`storage-pointer library fn on a mapping-only struct
+element`, direct + using-for spellings byte-identical). The state-ARRAY element half (`L.addX(this.arr[i], d)`) is
+NOT a storage-pointer gap: the lowering is byte-identical to the
 hand-written `P t = this.arr[i]; t.x += d; this.arr[i] = t;` (pinned in `LibraryStorageStructWithMappings.test.ts`).
 Both previously failed at `OP_VERIFY` because of the chunk-preserve bug below; that is now fixed, so
 `L.addX(this.arr[i], d)`, `this.arr[i] = P(x, y)`, and a second `this.arr.push(P(x, y))` all settle.

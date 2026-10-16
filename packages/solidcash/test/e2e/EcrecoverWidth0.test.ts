@@ -2,9 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { ethers } from 'ethers';
-import { ecrecoverComputeLockingBytecode } from '@solidcash/utils';
-import { Contract } from '../../src/index.js';
+import { ecrecoverComputeLockingBytecode, SHARED_LIBRARY_SALT } from '@solidcash/utils';
+import { Contract, TransactionBuilder } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
@@ -79,5 +80,66 @@ describe('ecrecover width-0 signatures (3-covenant A->M->B split)', () => {
     await expect(sc.bump(h, BigInt(WIDTH0.v), r, tampered).send())
       .rejects.toThrow(/OP_VERIFY|non-truthy/);
     expect((await sc.getState()).count).toBe(1n);
+  }, 300_000);
+});
+
+// A runtime-bound loop co-spends one A/M/B triple per iteration (stride 3). A width-0 signature has an empty 2-way
+// window, so the SDK must fall back to the 3-way A/M/B3 split inside the loop, exactly as the straight-line path does.
+const LOOP_N = `
+contract AuthLoopN(pubkey owner) {
+    function verify(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int n) {
+        for (int i = 0; i < n; i++) {
+            require(ecrecoverPubKey(h[i], v[i], r[i], s[i]) == owner);
+        }
+    }
+}`;
+
+describe('ecrecover width-0 signatures inside a runtime-bound loop', () => {
+  // Fresh provider per send: the success send consumes the contract UTXO, and a second send on the same provider
+  // would see both the recreated output and any top-up, pushing the contract input past the loop's front-of-tx rule.
+  const setup = async (): Promise<{
+    provider: MockNetworkProvider; contract: Contract;
+    h: Uint8Array; r: Uint8Array; s: Uint8Array;
+  }> => {
+    const sig = ethers.Signature.from({ r: `0x${WIDTH0.r}`, s: `0x${WIDTH0.s}`, v: WIDTH0.v });
+    const owner = hexToBin(
+      ethers.SigningKey.computePublicKey(
+        ethers.SigningKey.recoverPublicKey(`0x${WIDTH0.digest}`, sig), true,
+      ).slice(2),
+    );
+    const artifact = compileString(LOOP_N);
+    expect(artifact.abi.find((fn) => fn.name === 'verify')?.ecrecoverLoopReads).toBe(true);
+    const provider = new MockNetworkProvider();
+    const contract = new Contract(artifact, [owner], { provider });
+    await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
+    // The non-evm loop co-spends A/M/B per iteration: 2-way reads A+B2 (M slot is an SDK-synthesized funder),
+    // width-0 reads A+M+B3. Deploy the three covenant pools (A is shared by both modes).
+    for (const role of ['A', 'B2', 'M', 'B3'] as const) {
+      await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(SHARED_LIBRARY_SALT, role)), {
+        ...randomUtxo({ satoshis: 100_000n }),
+        token: { category: SIDECAR_CAT, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      });
+    }
+    return { provider, contract, h: leBytes(WIDTH0.digest), r: leBytes(WIDTH0.r), s: leBytes(WIDTH0.s) };
+  };
+
+  it('recovers a width-0 signature through the loop A/M/B3 fallback', async () => {
+    const { provider, contract, h, r, s } = await setup();
+    const tx = await new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(),
+        contract.unlock.verify([h], [BigInt(WIDTH0.v)], [r], [s], 1n))
+      .addOutput({ to: contract.address, amount: 800_000n })
+      .send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+  }, 300_000);
+
+  it('rejects a tampered witness through the same loop fallback', async () => {
+    const { provider, contract, h, r } = await setup();
+    const tampered = toLeBytes(BigInt(`0x${WIDTH0.s}`) + 1n);
+    await expect(new TransactionBuilder({ provider })
+      .addInputs(await contract.getUtxos(),
+        contract.unlock.verify([h], [BigInt(WIDTH0.v)], [r], [tampered], 1n))
+      .addOutput({ to: contract.address, amount: 800_000n })
+      .send()).rejects.toThrow(/OP_VERIFY|non-truthy/);
   }, 300_000);
 });

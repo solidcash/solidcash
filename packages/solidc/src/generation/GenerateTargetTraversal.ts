@@ -86,6 +86,8 @@ import {
   ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH,
   ECRECOVER_COMPUTE_A_SHARED_LOCK,
   ECRECOVER_COMPUTE_B_SHARED_LOCK,
+  ECRECOVER_COMPUTE_B2_SHARED_LOCK,
+  ECRECOVER_COMPUTE_B3_SHARED_LOCK,
   isChunkableValueType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
   outlineSharedSpans,
@@ -15078,10 +15080,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const n = fn.ecrecoverCallCount ?? 1;
     const E = fn.ecrecoverEvmCallCount ?? 0;
     const loop = this.ecrecoverLoopActive;
-    // Per-iteration side-car stride in a loop: 2 for ecrecoverPubKey/P2pkh (A,B), 3 for ecrecoverEvm (A,B, keccak K),
-    // laid out forward at [master + stride*counter + slot]: A=+1, B=+2, K=+3. The recovery pair + keccak side-car all
-    // self-preserve (input idx == output idx) so the same index serves for the input and the recreated output.
-    const loopStride = isEvm ? 3n : 2n;
+    // Per-iteration side-car stride in a loop: 3 for both shapes, laid out forward at
+    // [master + stride*counter + slot]. Non-evm loops co-spend A/M/B (A=+1, M=+2, B=+3); evm loops co-spend
+    // A/B/K (A=+1, B=+2, K=+3). All loop side-cars self-preserve (input idx == output idx) so the same index
+    // serves for the input and the recreated output.
+    const loopStride = 3n;
     const basisSlots = fn.blockLayout || i !== 0
       ? []
       : (this.ecrecoverSideCarBasis?.blockLayout?.slots ?? [])
@@ -15096,7 +15099,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(slot), loc); this.emit(Op.OP_ADD, loc);                                   // + slot
     };
     const slotIdx = (role: 'A' | 'B', _isOutput = false): void => {
-      if (loop) { emitLoopSideCarIndex(role === 'A' ? 1n : 2n); return; }
+      if (loop) {
+        // Non-evm loops co-spend the A/M/B triple (stride 3): A=+1, M=+2, B=+3 (B2 2-way or B3 width-0). Evm loops
+        // keep A/B/K (stride 3): A=+1, B=+2, K=+3.
+        emitLoopSideCarIndex(role === 'A' ? 1n : (isEvm ? 2n : 3n));
+        return;
+      }
       if (this.framedMaster) {
         // A framed frame's side-car pair is placed immediately after its own input, one pair per call, so the body
         // locates A/B from `OP_INPUTINDEX`, not from the records' owner a frame that runs on its caller's records
@@ -15252,8 +15260,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(1); // argBlob consumed by the bind -> keep the tracker synced
       // 3. side-car B integrity via OP_UTXOBYTECODE (B is NOT read: only its integrity + output Q matter).
       slotIdx('B'); this.emit(Op.OP_UTXOBYTECODE, loc);              // [lockB]
-      this.emit(ECRECOVER_COMPUTE_B_SHARED_LOCK, loc);
-      this.emit(Op.OP_EQUALVERIFY, loc);                            // B integrity
+      if (isEvm) {
+        this.emit(ECRECOVER_COMPUTE_B_SHARED_LOCK, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);                          // B integrity (A immediately before)
+      } else {
+        // Non-evm loops co-spend A/M/B: a 2-way recovery fills M with a funder and reads B2 (A two inputs back), a
+        // width-0 recovery fills M with the middle covenant and reads B3 (M one input back). Accept either lock.
+        this.emit(Op.OP_DUP, loc);                                   // [lockB, lockB]
+        this.emit(ECRECOVER_COMPUTE_B3_SHARED_LOCK, loc);
+        this.emit(Op.OP_EQUAL, loc);                                 // [lockB, isB3]
+        this.emit(Op.OP_OVER, loc);                                  // [lockB, isB3, lockB]
+        this.emit(ECRECOVER_COMPUTE_B2_SHARED_LOCK, loc);
+        this.emit(Op.OP_EQUAL, loc);                                 // [lockB, isB3, isB2]
+        this.emit(Op.OP_BOOLOR, loc);                                // [lockB, isB3||isB2]
+        this.emit(Op.OP_NIP, loc);                                   // [isB3||isB2]
+        this.emit(Op.OP_VERIFY, loc);                                // B integrity
+      }
     } else {
       slotIdx('A');
       this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
@@ -39929,9 +39951,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return false;
   }
 
-  // A dynamic (runtime-bound) ecrecover loop reads one recovery PAIR per iteration from the forward region
-  // [master+1+2*counter] (A) / [master+2+2*counter] (B). Push a 0-based counter before OP_BEGIN;
-  // emitEcrecoverComputeCall reads pair `counter`, binds argBlob, reads Q, and increments the counter each iteration.
+  // A dynamic (runtime-bound) ecrecover loop reads one recovery TRIPLE per iteration from the forward region
+  // [master+1+3*counter] (A) / [master+2+3*counter] (M or funder) / [master+3+3*counter] (B2/B3). Push a 0-based
+  // counter before OP_BEGIN; emitEcrecoverComputeCall reads triple `counter`, binds argBlob, reads Q, and increments
+  // the counter each iteration.
   private emitLoopEcrecoverSetup(block: Node, loc: SingleLocationData): boolean {
     if (this.ecrecoverLoopActive) return false;
     if (this.currentFunctionIsMessageBusRoute) return false;

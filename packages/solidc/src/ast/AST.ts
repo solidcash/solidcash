@@ -1033,8 +1033,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   // order, so its side-cars occupy the front of the shared trailing band
   keccakChainReads?: boolean;   // a direct, unbounded preimage routes through the chained START/CONT/FINAL side-cars
   // in the trailing region; the SDK co-spends one side-car per 136-byte block + the FINAL digest carrier
-  ecrecoverLoopReads?: boolean; // a dynamic ecrecoverPubKey loop reads one recovery PAIR per iteration from the
-  // forward region [master+1+2k]; the SDK co-spends N pairs (N = the sig-array length)
+  ecrecoverLoopReads?: boolean; // a dynamic ecrecoverPubKey loop reads one recovery TRIPLE per iteration from the
+  // forward region [master+1+3k]; the SDK co-spends N triples (N = the sig-array length)
   ecrecoverCompute?: boolean;   // ecrecoverPubKey uses a co-spent recovery side-car PAIR (A+B) per call; the SDK
   // auto-co-spends them and the contract reads the recovered pubkey from B's output
   ecrecoverArgParams?: ((string | null)[])[]; // per ecrecoverPubKey call (codegen emission order): the [hash,v,r,s]

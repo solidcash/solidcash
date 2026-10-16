@@ -81,6 +81,11 @@ export function ecrecoverComputeLockingBytecode(salt: Uint8Array, role: 'A' | 'B
  */
 export const ECRECOVER_COMPUTE_A_SHARED_LOCK = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'A');
 export const ECRECOVER_COMPUTE_B_SHARED_LOCK = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'B');
+// The A/M/B stride-3 loop layout: a 2-way recovery fills M with a funder and reads B2 (A two inputs back), a
+// width-0 recovery fills M with the middle covenant and reads B3 (M one input back). Both shared-salt locks are
+// baked so the loop's cheap OP_UTXOBYTECODE integrity check accepts either shape.
+export const ECRECOVER_COMPUTE_B2_SHARED_LOCK = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'B2');
+export const ECRECOVER_COMPUTE_B3_SHARED_LOCK = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'B3');
 
 /** The result-NFT commitment for a recovery: parity byte (0x02/0x03) || Qx as a 33-byte LE VM number (34 B total). */
 export function ecrecoverComputeResultCommitment(recoveredPubkey: Uint8Array): Uint8Array {

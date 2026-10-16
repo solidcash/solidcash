@@ -856,7 +856,7 @@ export interface AbiFunction {
   ecrecoverEvmFlags?: readonly boolean[]; // also identifies calls that need a keccak side-car
   /** Closed, source-ordered compute operands, evaluated only from authenticated invocation values. */
   computeSideCarRecipes?: ComputeSideCarRecipesAbi;
-  ecrecoverLoopReads?: boolean; // dynamic ecrecover loop: the SDK co-spends one recovery pair per sig-array element
+  ecrecoverLoopReads?: boolean; // dynamic ecrecover loop: the SDK co-spends one recovery triple per sig-array element
 }
 
 /**

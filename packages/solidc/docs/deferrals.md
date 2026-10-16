@@ -2773,24 +2773,34 @@ refusal still also gates mapping/array entries and containers, which keep their 
 - The data-NFT covenant already has the destroy path (`flag=2`), but it requires the output at `INPUTINDEX` to hold a
   DIFFERENT category, so a re-mint cannot sit at the old input's index. The migration layout is therefore
   `out[0]=new master`, a non-category pad band at `out[1..N]`, re-minted data NFTs at `out[N+1..2N]` (replacement-bound
-  data-NFT covenant, `input[i].commitment == output[N+i].commitment`), and added data NFTs at `out[2N+1..2N+M]`.
+  data-NFT covenant), and added data NFTs at `out[2N+1..2N+M]`.
 - `emitOwnCategoryMutableNftConservation`'s `allowUpgradeDataNftGrowth` branch already balances the `N` old inputs
   against the `N+M` re-minted outputs, but its growth scan starts at `1 + dataNftCount`; for the migration it must
   start at `1 + 2*dataNftCount` (otherwise it over-discounts the re-minted band). A new re-mint verification must pin
-  each re-minted output's replacement-bound lock and commitment copy.
+  each re-minted output's replacement-bound lock.
+- The value-preservation pass (`emitValuePreservation`) and the auto-covenant pass (`emitAutoCovenantVerification`)
+  both pinned a data NFT's input to the output at the SAME index; for the migration they must point the value check at
+  the re-mint output and skip the bytecode/category/commitment preservation (the re-mint changes the lock and the
+  rebuilt commitment). The rebuilt commitment cannot be byte-compared by the compiler (the replacement layout is
+  opaque), so the values are pinned by the direct upgrade's SIGHASH_ALL signature fence instead.
 - SDK `sc-upgrade.ts` already rebuilds commitments and mints added data NFTs, but spends old data NFTs with `flag=1`
   (write, same-lock) and places existing data-NFT outputs at the OLD covenant; it must switch to
   `createDestroyDataNftUnlocker` (`flag=2`) and the pad/`getDataNftAddress(newContract, …)` band above.
 - `refuseUpgradeStrandingBoundRecords` must stop listing `state variables in data NFTs` while keeping the
-  mapping/array and container entries. The existing refusal is pinned by `Upgrade.test.ts` (28/28) and
-  `KernelUpgradeCompose.test.ts` (5/5).
+  mapping/array and container entries. A message-bus kernel route never synthesizes its in-place-append upgrade lane
+  for a participant that keeps records (there is no data NFT to append into), so a record-keeping participant compiles
+  under `messageBusKernel: true` too: its direct entry migrates, and the message-bus lane simply offers no upgrade for
+  it. The existing refusal was pinned by `Upgrade.test.ts` (28/28) and `KernelUpgradeCompose.test.ts` (5/5).
 
-**STATUS 2026-10-16 (refusal verified on the real path).** The fail-closed refusal is pinned by the shipped e2e
-suites, re-run green: `packages/solidcash/test/e2e/Upgrade.test.ts` ("refuses an in-place upgrade that would strand
-lock-bound records", 4 cases, and the whole 28-test file passes) and
-`packages/solidcash/test/journal-message-bus/e2e/KernelUpgradeCompose.test.ts` ("refuses a participant that keeps
-records, and a replacement that adds state", 5/5). The open item remains the migration protocol itself; no record
-kind moves yet.
+**STATUS 2026-10-16 (data-NFT half resolved).** The bounded data-NFT migration is implemented and verified:
+`refuseUpgradeStrandingBoundRecords` no longer lists state variables; the census growth scan starts at
+`1 + 2*dataNftCount`; a new re-mint verification pins each re-minted output's replacement-bound lock; the value
+preservation points at the re-mint band and the same-index auto-covenant checks are skipped; and the SDK spends old
+data NFTs with `flag=2`, emits the non-category pad band and re-mints at the new data-NFT covenant. Pinned by
+`packages/solidcash/test/e2e/DataNftUpgradeMigration.test.ts` (3/3: same-geometry value carry, longer-layout overflow
+mint, and the stranded-old-lock re-mint is refused), plus the updated `Upgrade.test.ts` (28/28) and
+`KernelUpgradeCompose.test.ts` (5/5). Remaining: mapping/array entries and satoshi/token containers still strand, so
+their refusal stays, and the migration still needs a bounded per-record batched protocol for those kinds.
 
 ## Logical caller identity for native compiles (model B residual, 2026-10-14)
 

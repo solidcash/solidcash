@@ -220,14 +220,17 @@ describe('kernel in-place append upgrade composition', () => {
     }).build()).rejects.toThrow(/requires exactly one replacement target/);
   }, 180_000);
 
-  // The in-place append layout has no data NFT to append into: a participant keeping records is refused at compile,
-  // and a replacement that adds state to a record-free one is refused at composition.
-  it('refuses a participant that keeps records, and a replacement that adds state', async () => {
-    expect(() => compileString(`contract StatefulVersion() {
+  // The in-place append layout has no data NFT to append into. A participant keeping records now compiles: its
+  // direct entry re-mints the data NFTs at the replacement lock (the bounded CRYPTO-4 migration), and the kernel
+  // lane never synthesizes an in-place-append upgrade route for it. A replacement that adds state to a record-free
+  // participant is still refused at composition.
+  it('admits a participant that keeps records, and refuses a replacement that adds state', async () => {
+    const stateful = compileString(`contract StatefulVersion() {
       int stored;
       function setStored(int next) public { this.stored = next; require(true); }
       function replace() public upgrade { require(true); }
-    }`, KERNEL)).toThrow(/is an in-place upgrade, but this contract keeps state variables in data NFTs/);
+    }`, KERNEL);
+    expect(stateful.stateLayout!.dataNftCount).toBe(1);
     const { current, coordinator, fee } = await setup();
     const extended = compileString(`contract ExtendedVersion(int domain) {
       int added;

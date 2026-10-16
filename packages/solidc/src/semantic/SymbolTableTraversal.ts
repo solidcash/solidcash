@@ -17800,11 +17800,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (upgrade === undefined) return;
     const slots = [...contract.functions, contract.fallbackDef, contract.receiveDef]
       .flatMap((fn) => fn?.blockLayout?.slots ?? []);
-    // A lowering may add state of its own, such as the message bus's event hold.
-    const declared = contract.stateVariables.some((sv) => !sv.name.startsWith('__'));
+    // Data NFTs migrate on a pure direct upgrade (the re-mint half of CRYPTO-4). A message-bus kernel upgrade
+    // route (in-place append) keeps them at the old lock and still strands them, so it stays refused. The route is
+    // synthesized before this pass, so its `messageBusUpgradeRoute` marker is already present.
+    const upgradeMigratesDataNfts = !contract.functions.some((fn) => fn.messageBusUpgradeRoute === true);
     const records = [
-      ...(contract.stateVariables.length > 0
-        ? [declared ? 'state variables in data NFTs' : 'compiler-added state in data NFTs'] : []),
+      ...(!upgradeMigratesDataNfts && contract.stateVariables.length > 0
+        ? ['state variables in data NFTs'] : []),
       ...(contract.collections.length > 0 ? ['mapping or array entries'] : []),
       ...(slots.some((slot) => slot.kind === 'satoshiContainer') ? ['a satoshi container'] : []),
       ...(slots.some((slot) => slot.kind === 'tokenContainer') ? ['token containers'] : []),

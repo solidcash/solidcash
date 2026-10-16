@@ -948,13 +948,15 @@ describe('StatefulContract.upgrade()', () => {
   });
 
   // Every record a contract keeps is bound to its master's exact lock (CRYPTO-4). An in-place upgrade moves the master
-  // to the replacement's lock, so the compiler refuses an upgrade entry beside any record: it would strand them.
+  // to the replacement's lock. Data NFTs now migrate (the bounded re-mint half of CRYPTO-4), while mappings, arrays
+  // and containers still strand, so only those are refused.
   describe('refuses an in-place upgrade that would strand lock-bound records', () => {
     const strands = /is an in-place upgrade, but this contract keeps .* cannot follow it/;
 
-    it('refuses a contract with data NFTs', () => {
-      expect(() => compileString(DATA_NFT_UPGRADE)).toThrow(strands);
-      expect(() => compileString(DATA_NFT_UPGRADE)).toThrow(/keeps .*state variables in data NFTs/);
+    it('admits a contract with data NFTs (they re-mint at the replacement lock)', () => {
+      const artifact = compileString(DATA_NFT_UPGRADE);
+      expect(artifact.stateLayout!.dataNftCount).toBe(1);
+      expect(artifact.abi.find((f) => f.name === 'migrate')!.requiredNftIndices).toEqual([0]);
     });
 
     it('refuses a contract with a mapping', () => {
@@ -967,11 +969,14 @@ describe('StatefulContract.upgrade()', () => {
       expect(() => compileString(TOKEN_CONTAINER_UPGRADE, MASTER_ONLY)).toThrow(/keeps .*token containers/);
     });
 
-    // The kernel's in-place append upgrade leaves the records at the old lock as well.
-    it('refuses the kernel lane\'s in-place upgrade of a contract with data NFTs', () => {
-      expect(() => compileString(DATA_NFT_UPGRADE, {
+    // The kernel message-bus lane never synthesizes its in-place-append upgrade route for a participant that keeps
+    // records (there is no data NFT to append into), so a record-keeping participant still compiles: its direct
+    // entry migrates the data NFTs and the message-bus route simply offers no upgrade for it.
+    it('admits the kernel lane\'s compile of a contract with data NFTs', () => {
+      const artifact = compileString(DATA_NFT_UPGRADE, {
         forceStateful: true, messageBus: true, messageBusKernel: true,
-      })).toThrow(strands);
+      });
+      expect(artifact.stateLayout!.dataNftCount).toBe(1);
     });
   });
 });

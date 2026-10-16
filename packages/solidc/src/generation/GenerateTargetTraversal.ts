@@ -10252,6 +10252,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
           this.emitOwnCategoryMutableNftConservation(node, upgradeMintsDataNfts);
+          if (upgradeMintsDataNfts) this.emitUpgradeDataNftMigrationCheck(node);
         } else {
           this.emitMasterSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -10283,6 +10284,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
           this.emitOwnCategoryMutableNftConservation(node, upgradeMintsDataNfts);
+          if (upgradeMintsDataNfts) this.emitUpgradeDataNftMigrationCheck(node);
         } else {
           this.emitMasterSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -35180,6 +35182,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // For each accessed data NFT, verify covenant properties
     for (const [nftIdx, compactOffset] of this.compactOffsetMap) {
+      // A direct upgrade destroys and re-mints its data NFTs at a different output index; the census and the
+      // re-mint lock check replace these same-index preservation checks.
+      if (this.directUpgradeMigratesDataNfts(node)) continue;
       const fields = nftFields.get(nftIdx);
       const hasWrite = fields?.some((sv) => this.pendingStateWrites.has(`${sv.nftIndex}:${sv.fieldIndex}`));
       // A scalar the body wrote before a call and read again past it is closed: the slot still holds the pre-call
@@ -49505,10 +49510,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(); // (loop_j)
 
     if (allowUpgradeDataNftGrowth) {
-      // The only excess outputs allowed are a contiguous run right after the old data-NFT outputs, each at the
+      // The only excess outputs allowed are a contiguous run right after the re-minted data-NFT band, each at the
       // canonical data-NFT covenant of this category bound to the replacement's lock. Count that run back into the
       // balance; the count above still refuses a mutable output beyond the run or at another locking bytecode.
-      this.emit(encodeInt(BigInt(1 + this.dataNftCount)), loc);
+      this.emit(encodeInt(BigInt(1 + 2 * this.dataNftCount)), loc);
       this.pushToStack('(upgrade_new_data_j)');
       this.emit(Op.OP_BEGIN, loc);
       this.emit(Op.OP_DUP, loc);
@@ -49562,6 +49567,57 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(); // (mutable_balance)
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (this_cat_mutable)
+  }
+
+  /**
+   * True when this direct upgrade entry migrates its data NFTs: the old records are destroyed (flag=2) and
+   * re-minted at the replacement-bound covenant. The same-lock preservation checks (value, bytecode, category,
+   * commitment) therefore must not pin the old input to an output at the same index.
+   */
+  private directUpgradeMigratesDataNfts(node: FunctionDefinitionNode): boolean {
+    return this.dataNftCount > 0
+      && node.modifiers.includes(FunctionModifier.UPGRADE)
+      && node.messageBusEligible !== true
+      && node.messageBusUpgradeRoute !== true;
+  }
+
+  /**
+   * CRYPTO-4 data-NFT migration: the census above balances the count, and this pins the re-mint location. Each
+   * re-minted data NFT output at `1 + dataNftCount + i` must sit at the canonical data-NFT covenant bound to the
+   * replacement's lock, so a destroyed record cannot be re-minted at the old (stranded) lock. The values themselves
+   * are pinned by the direct upgrade's SIGHASH_ALL signature fence (the authorizer signs every output, including
+   * the rebuilt commitments); the compiler cannot compare old and new commitment bytes because the replacement
+   * layout is opaque. Direct (non-framed) upgrades only: the layout is `out[0]=master`, a non-category pad band at
+   * `out[1..N]` (required by the data-NFT flag=2 destroy check), re-mints at `out[N+1..2N]`, and added data NFTs
+   * at `out[2N+1..2N+M]`.
+   */
+  private emitUpgradeDataNftMigrationCheck(node: FunctionDefinitionNode): void {
+    const n = this.dataNftCount;
+    if (n === 0) return;
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+    // Category C from the master, then the replacement lock the self-preservation check pinned.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // C ++ 0x02
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc); // C
+    this.pushToStack('(migration_category)');
+    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__upgradeBytecode'))), loc);
+    this.emit(Op.OP_PICK, loc); // [C, replacementLock]
+    this.emit(Op.OP_SWAP, loc); // [replacementLock, C]
+    this.emitDataNftLbc(loc, true); // [covenant]
+    this.stack[0] = '(upgrade_migration_covenant)';
+    for (let i = 0; i < n; i += 1) {
+      const outIdx = 1 + n + i;
+      // Each re-minted output must be at the replacement-bound data-NFT covenant.
+      this.emit(encodeInt(BigInt(outIdx)), loc);
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);        // [cov, outBytecode]
+      this.emit(encodeInt(BigInt(this.getStackIndex('(upgrade_migration_covenant)') + 1)), loc);
+      this.emit(Op.OP_PICK, loc);                  // [cov, outBytecode, cov]
+      this.emit(Op.OP_EQUALVERIFY, loc);           // [cov]
+    }
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (upgrade_migration_covenant)
   }
 
   /** Require exactly one proxy master and exactly N proxy data NFTs at their respective locking bytecodes. */
@@ -52042,7 +52098,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const emitIndex = (side: 'in' | 'out'): void => {
         if (this.readsRecordsFromFrame) this.emitRecordBlockBase(side, locationData);
         else this.emitMasterInputIndex(locationData);
-        this.emit(encodeInt(BigInt(compactOffset)), locationData);
+        // A direct upgrade re-mints each data NFT one dataNftCount further along (past the pad band), so the
+        // output it preserves sits at `compactOffset + dataNftCount`, not `compactOffset`.
+        const offset = side === 'out' && this.directUpgradeMigratesDataNfts(node)
+          ? compactOffset + this.dataNftCount : compactOffset;
+        this.emit(encodeInt(BigInt(offset)), locationData);
         this.emit(Op.OP_ADD, locationData);
       };
       // Exact satoshi preservation: inputValue == outputValue

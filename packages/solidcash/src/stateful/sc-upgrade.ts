@@ -16,7 +16,7 @@ import type { Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
 import {
-  createDataNftUnlocker,
+  createDestroyDataNftUnlocker,
   getDataNftAddress,
 } from './covenant-helpers.js';
 import type { UpgradeOptions, UpgradeResult } from './stateful-lifecycle-types.js';
@@ -164,8 +164,10 @@ export async function upgradeStatefulContract<T extends Artifact>(
 
   // Create the unlocker for the old contract's upgrade function
   const stateInputUnlocker = (oldContract.inner.unlock as any)[upgradeFunctionName](...finalArgs);
+  // CRYPTO-4 data-NFT migration: spend each old data NFT with flag=2 (destroy, which still binds the old master
+  // lock while the old master is an input), then re-mint a copy at the replacement-bound covenant.
   const dataNftUnlockers = filteredDataNftUtxos.map(
-    () => createDataNftUnlocker(oldContract.inner, 0, categoryId),
+    () => createDestroyDataNftUnlocker(oldContract.inner, 0, categoryId),
   );
 
   // Build the upgrade transaction
@@ -183,12 +185,10 @@ export async function upgradeStatefulContract<T extends Artifact>(
     builder.addInput(filteredDataNftUtxos[i], dataNftUnlockers[i]);
   }
 
-  // Outputs 1..N: data NFTs with commitments rebuilt for the new state layout.
-  // When the new contract extends state (appends new variables), we parse the
-  // old commitment using the old layout, then rebuild using the new layout so
-  // that new fields are initialised with default values.
-  // When state overflows into additional NFTs, new data NFTs are minted
-  // using funds from the caller-provided funding UTXO.
+  // The old data NFTs are destroyed (flag=2) and re-minted at the replacement's lock with their values carried
+  // into the new state layout: parse the old commitment with the old layout, then rebuild with the new layout so
+  // new fields are initialised with default values. Additional data NFTs the longer layout needs are minted from
+  // the caller-provided funding UTXO.
   const oldLayout = oldContract.inner.stateLayout!;
   const newLayout = newArtifact.stateLayout!;
   const dataNftAmount = 1200n;
@@ -246,15 +246,27 @@ export async function upgradeStatefulContract<T extends Artifact>(
     },
   });
 
-  // Rebuild existing data NFT outputs with new-layout commitments
-  for (let i = 0; i < filteredDataNftUtxos.length; i++) {
+  // CRYPTO-4 data-NFT migration layout, matching the compiler's census and re-mint verification:
+  //   out[0]       = new master
+  //   out[1..N]    = a non-category pad band (the flag=2 destroy covenant requires output[INPUTINDEX] to hold a
+  //                  DIFFERENT category, so a re-mint cannot sit at the old input's index)
+  //   out[N+1..2N] = re-minted data NFTs at the replacement-bound covenant, each copying its old commitment
+  //   out[2N+1..]  = added data NFTs for the extended layout
+  // A zero-value bare OP_RETURN pad needs no funding and is exempt from dust.
+  const oldNftCount = filteredDataNftUtxos.length;
+  for (let i = 0; i < oldNftCount; i++) {
+    builder.addOutput({ to: Uint8Array.of(0x6a), amount: 0n });
+  }
+
+  // Re-mint existing data NFTs with their old values carried into the new layout.
+  for (let i = 0; i < oldNftCount; i++) {
     const nftUtxo = filteredDataNftUtxos[i];
     const nftIdx = requiredNftIndices[i];
 
     const newCommitment = buildPushdataCommitment(newLayout, oldState, nftIdx);
 
     builder.addOutput({
-      to: dataNftUnlockers[i].generateLockingBytecode(),
+      to: getDataNftAddress(newContract, categoryId),
       amount: nftUtxo.satoshis,
       token: {
         category: categoryId,

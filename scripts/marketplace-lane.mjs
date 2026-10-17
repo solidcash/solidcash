@@ -181,6 +181,12 @@ function report() {
   console.log('  mkdir -p node_modules/.experimental-vitest-cache');
   console.log('  node packages/solidhat/dist/cli.js compile');
   console.log('  SOLIDCASH_MARKETPLACE_WORKER_HEAP_MB=6144 npx vitest run --config vitest.marketplace.config.ts');
+  console.log('');
+  console.log('run the same lane against patched BCHN:');
+  console.log('  scripts/build-bchn-relaxed.sh');
+  console.log('  docker compose -f docker-compose.marketplace.yml up -d');
+  console.log('  SOLIDCASH_MARKETPLACE_NETWORK=regtest SOLIDCASH_MARKETPLACE_WORKER_HEAP_MB=6144 \\');
+  console.log('    npx vitest run --config vitest.marketplace.config.ts');
   const problems = name ? checkLane(name) : [];
   for (const problem of problems) console.log(`  ! ${problem}`);
   return problems.length;

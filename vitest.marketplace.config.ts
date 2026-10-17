@@ -9,6 +9,15 @@ const require = createRequire(import.meta.url);
 const cipher = (entry: string): string => require.resolve(`@noble/ciphers/${entry}.js`);
 const worktreeRoot = fileURLToPath(new URL('.', import.meta.url));
 const projectRoot = fileURLToPath(new URL('./.marketplace/project/', import.meta.url));
+// The regtest lane talks to a real BCHN RPC. Keep the IPFS service hermetic while allowing exactly that
+// origin through the offline guard; mock runs keep the empty allow list.
+if (process.env.SOLIDCASH_MARKETPLACE_NETWORK === 'regtest') {
+  const rpcUrl = (process.env.REGTEST_RPC_URL ?? 'http://127.0.0.1:18443').replace(/\/$/, '');
+  const allowed = (process.env.SOLIDCASH_OFFLINE_ALLOW ?? '').split(',').map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (!allowed.includes(rpcUrl)) allowed.push(rpcUrl);
+  process.env.SOLIDCASH_OFFLINE_ALLOW = allowed.join(',');
+}
 const requestedWorkerHeapMb = Number.parseInt(
   process.env.SOLIDCASH_MARKETPLACE_WORKER_HEAP_MB ?? '8192', 10,
 );

@@ -28,6 +28,7 @@ export {
   FullStackNetworkProvider,
   RegtestNetworkProvider,
   type ConsensusLimits,
+  type NetworkPolicy,
 } from './network/index.js';
 export { randomUtxo, randomToken, randomNFT } from './utils.js';
 export { gatherBchUtxos, gatherFungibleTokenUtxos, type GatherUtxosResult } from './transaction-utils.js';

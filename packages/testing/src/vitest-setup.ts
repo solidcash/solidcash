@@ -175,12 +175,12 @@ const hre = await initHre(process.env.SOLIDCASH_PROJECT_ROOT ?? process.cwd());
 // When snapshot fixtures are active, restore is handled above — skip the full provider reset.
 beforeEach(async () => {
   const provider = hre.ethers?.provider as {
-    reset?: () => void;
+    reset?: () => void | Promise<void>;
     getSigners?: (count?: number, opts?: { fundingUtxos?: number }) => Promise<unknown[]>;
   } | undefined;
   if (fixtureSnapshotReady) return;
   if (provider && typeof provider.reset === 'function') {
-    provider.reset();
+    await provider.reset();
     clearCollectionValueRecords();
     try { clearDeployments(provider as never); } catch { /* ignore */ }
     try { clearSoftBentoTotals(); } catch { /* ignore */ }

@@ -12,7 +12,7 @@ import { SigningKey as EthersSigningKey } from 'ethers/crypto';
 import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from 'ethers/hash';
 import { getBytes as getEthersBytes } from 'ethers/utils';
 import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
-import type { Network, NetworkProvider, ConstructorArgument, Utxo } from 'solidcash';
+import type { Network, NetworkProvider, ConstructorArgument, Utxo, ConsensusLimits, NetworkPolicy } from 'solidcash';
 import type {
   ContractRunner, ConnectedStatefulContract, SplitContract, SplitDeployOptions,
   DeployedContract, DeployContractOptions,
@@ -98,6 +98,8 @@ export function createProvider(name: string, netCfg: NetworkConfig | undefined):
       rpcUrl: netCfg?.rpc?.url,
       rpcUser: netCfg?.rpc?.user,
       rpcPassword: netCfg?.rpc?.password,
+      consensusLimits: netCfg?.consensus as ConsensusLimits | undefined,
+      policy: netCfg?.policy as NetworkPolicy | undefined,
     });
     case 'electrum': {
       if (configuredNetwork === undefined) {
@@ -328,19 +330,18 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
   const { artifactsDir, accountsPath } = opts;
   // Every deploy in the project starts from this convention; a call's own trailing overrides refine it.
   const deployDefaults: DeployContractOptions = opts.logicalIdentity ? {} : { logicalNonce: false };
-  const regtestFunding = new Map<string, Promise<void>>();
-  const fundRegtestSigner = async (signer: Signer, satoshis: bigint | undefined): Promise<void> => {
-    if (!(provider instanceof RegtestNetworkProvider) || satoshis === undefined) return;
-    const address = signer.getAddress();
-    let funding = regtestFunding.get(address);
-    if (!funding) {
-      funding = (async () => {
-        const existing = await provider.getUtxos(address);
-        if (existing.length === 0) await provider.addUtxo(address, randomUtxo({ satoshis }));
-      })();
-      regtestFunding.set(address, funding);
+  const fundRegtestSigner = async (
+    signer: Signer, satoshis: bigint, desiredCount: number,
+  ): Promise<void> => {
+    if (!(provider instanceof RegtestNetworkProvider)) return;
+    // No local cache: a fixture snapshot restore rewinds the chain, so an address that was funded when
+    // this provider was first seen can be empty again. Re-checking the node is the source of truth.
+    // Each `addUtxo` is its own transaction with the requested output at vout 0, which is the geometry
+    // CREATE look-ahead reserves. Fund serially because every call spends a shared wallet coin.
+    const existing = await provider.getUtxos(signer.getAddress());
+    for (let index = existing.length; index < desiredCount; index += 1) {
+      await provider.addUtxo(signer.getAddress(), randomUtxo({ satoshis }));
     }
-    await funding;
   };
   const resolveArtifact = <T extends Artifact>(a: T | SplitArtifactBundle | string): T | SplitArtifactBundle =>
     (typeof a === 'string' ? loadArtifactOrSplitByName(artifactsDir, a) : a) as T | SplitArtifactBundle;
@@ -350,7 +351,9 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
   let cachedSigner: Signer | undefined;
   const defaultRunner = (): ContractRunner => {
     const anyProvider = provider as unknown as { getSigners?: unknown };
-    if (typeof anyProvider.getSigners !== 'function') return provider; // live net: no local signer
+    // Regtest has local HD signers even though its provider has no `getSigners` fast path. Live networks
+    // (Electrum, Bitcoin RPC) do not, and a factory without a signer needs the provider as its runner.
+    if (typeof anyProvider.getSigners !== 'function' && provider.network !== Networks.REGTEST) return provider;
     const cacheable = provider as unknown as { getCachedSigner?: (index: number, opts: object) => Signer };
     cachedSigner ??= typeof cacheable.getCachedSigner === 'function'
       ? cacheable.getCachedSigner(0, { mnemonic, path: accountsPath })
@@ -378,8 +381,13 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     }
     const signers = signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath })
       .map(withEthersMessageSigning);
-    const satoshis = o.satoshis ?? opts.accountSatoshis;
-    await Promise.all(signers.map((signer) => fundRegtestSigner(signer, satoshis)));
+    const satoshis = o.satoshis ?? opts.accountSatoshis ?? 100_000_000n;
+    const fundingUtxos = o.fundingUtxos ?? 4;
+    for (const [index, signer] of signers.entries()) {
+      // The default deployer performs every CREATE in a fixture. Give it enough genesis-eligible vout-0
+      // coins for the child contracts; the other participants only spend.
+      await fundRegtestSigner(signer, satoshis, index === 0 ? Math.max(fundingUtxos, 16) : fundingUtxos);
+    }
     return signers;
   };
 
@@ -543,7 +551,9 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
         initialIndex: index, count: 1, path: accountsPath,
       });
       const connected = withEthersMessageSigning(signer);
-      await fundRegtestSigner(connected, o.satoshis ?? opts.accountSatoshis);
+      await fundRegtestSigner(
+        connected, o.satoshis ?? opts.accountSatoshis ?? 100_000_000n, index === 0 ? 16 : 4,
+      );
       return connected;
     },
     getContractFactory: contractFactory,

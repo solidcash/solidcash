@@ -1,0 +1,49 @@
+# Marketplace lane: patched BCHN with regtest-only consensus-limit overrides.
+#
+# Build the image first:
+#   scripts/build-bchn-relaxed.sh
+#
+# Then start only the node. The SDK mines one block per broadcast, so the application stack's
+# `miner` service is deliberately absent: a background miner would race fixture snapshots.
+services:
+  bchn:
+    image: ${BCHN_IMAGE:-solidcash/bchn-relaxed:29.2.1}
+    command: >
+      -regtest
+      -server=1
+      -txindex=1
+      -persistmempool=0
+      -rpcuser=user
+      -rpcpassword=password
+      -rpcallowip=127.0.0.1
+      -rpcallowip=10.0.0.0/8
+      -rpcallowip=172.16.0.0/12
+      -rpcallowip=192.168.0.0/16
+      -rpcbind=0.0.0.0
+      -acceptnonstdtxn=1
+      -minrelaytxfee=0.00000001
+      -dustrelayfee=0.00000001
+      -mintxfee=0.00000001
+      -blockmintxfee=0.00000001
+      -maxtxfee=100
+      -maxmempool=2048
+      -blockmaxsize=100000000
+      -maxscriptsigsize=10000000
+      -maxstackitemsize=10000000
+      -maxtxsize=100000000
+      -maxtokencommitmentsize=10000000
+      -maxopcostperinputbyte=1000000
+      -maxhashitersperinputbyte=10000000
+    ports:
+      - "127.0.0.1:${BCHN_RPC_PORT:-18443}:18443"
+    volumes:
+      - bchn-marketplace-data:/data/.bitcoin
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=user", "-rpcpassword=password", "getblockchaininfo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  bchn-marketplace-data:

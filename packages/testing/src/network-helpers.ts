@@ -16,7 +16,7 @@ export interface TestNetworkProvider {
   getBlockHeight(): Promise<number>;
   getBlockTime(): number;
   setNextBlockTimestamp(ts: number | bigint): void;
-  increaseTime(seconds: number | bigint): number;
+  increaseTime(seconds: number | bigint): number | Promise<number>;
   mine(count?: number): Promise<void>;
   mineUpTo(height: number): Promise<void>;
   addUtxo(addressOrLockingBytecode: string, utxo: { txid: string; vout: number; satoshis: bigint }): Promise<unknown>;
@@ -132,7 +132,7 @@ export const time = {
   /** Advance the timestamp by `seconds` immediately and mine a block (height + 1); returns the new timestamp. */
   increase: async (seconds: number | bigint): Promise<number> => {
     const p = getActiveProvider();
-    const ts = p.increaseTime(seconds); // effective on the tip now, so block.* reads see it
+    const ts = await p.increaseTime(seconds); // effective on the tip now, so block.* reads see it
     await p.mine(1);
     return ts;
   },
@@ -141,7 +141,7 @@ export const time = {
     const p = getActiveProvider();
     const ts = timestamp instanceof Date ? Math.floor(timestamp.getTime() / 1000) : Number(timestamp);
     const delta = ts - p.getBlockTime();
-    if (delta !== 0) p.increaseTime(delta); // effective now (Hardhat mines a block AT this timestamp)
+    if (delta !== 0) await p.increaseTime(delta); // effective now (Hardhat mines a block AT this timestamp)
     await p.mine(1);
   },
   /** Set the NEXT block's timestamp WITHOUT mining (unix seconds or a Date). */

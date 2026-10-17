@@ -1,5 +1,11 @@
 # Regtest at `88cc906ec`: what a real node proved, and what it cannot
 
+> **Update (2026-10-17).** The stock-node limits below still hold. A patched BCHN now exposes regtest-only
+> overrides for them, and the regtest lane has fixture snapshots and time travel. See
+> [BCHN marketplace consensus relaxation](../bchn-marketplace-consensus-relaxation.md). Build the node with
+> `scripts/build-bchn-relaxed.sh` and use `docker-compose.marketplace.yml`. The measurements below remain the
+> reason the patch exists.
+
 ## The stack
 
 `docker-compose.regtest.yml` with `bchn` (BCHN v29.0.0), `fulcrum` and `miner`. The two images are

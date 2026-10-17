@@ -18,12 +18,54 @@ import { hexToBin, binToHex, isHex } from '@bitauth/libauth/build/lib/format/hex
 import { decodeTransactionUnsafe, encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { type Utxo, Network, type TokenDetails } from '../interfaces.js';
 import type NetworkProvider from './NetworkProvider.js';
+import type { ConsensusLimits, NetworkPolicy } from './NetworkProvider.js';
+import type { SnapshotRestorer } from './MockNetworkProvider.js';
 import { getNetworkPrefix } from '../utils.js';
 
 export interface RegtestProviderOptions {
   rpcUrl?: string;
   rpcUser?: string;
   rpcPassword?: string;
+  /** Published SDK limits for preflight. The node's limits must be configured to match. */
+  consensusLimits?: ConsensusLimits;
+  policy?: NetworkPolicy;
+}
+
+interface GetBlockHeaderTime {
+  method: 'getblockheader';
+  params: [hashOrHeight: string | number, verbosity: true];
+  // `mediantime` is BCHN's median-time-past, the value `LOCKTIME_MEDIAN_TIME_PAST` checks against.
+  response: { hash: string; height: number; time: number; mediantime: number };
+}
+
+interface ClearMempool {
+  method: 'clearmempool';
+  params: [];
+  response: boolean;
+}
+
+interface SetMockTime {
+  method: 'setmocktime';
+  params: [timestamp: number];
+  response: null;
+}
+
+interface InvalidateBlock {
+  method: 'invalidateblock';
+  params: [blockhash: string];
+  response: null;
+}
+
+interface RegtestSnapshotState {
+  height: number;
+  hash: string;
+  mockTime: number;
+  tipTime: number;
+  pendingBlockTimestamp: number | undefined;
+  retainedMinting: Map<string, { txid: string; vout: number; satoshis: bigint }>;
+  categoryOfLabel: Map<string, string>;
+  importedAddresses: Set<string>;
+  tokenUtxos: Map<string, Map<string, Utxo>>;
 }
 
 export interface TokenGenesisOutput {
@@ -34,6 +76,8 @@ export interface TokenGenesisOutput {
 
 export default class RegtestNetworkProvider implements NetworkProvider {
   public network: Network = Network.REGTEST;
+  public consensusLimits?: ConsensusLimits;
+  public policy?: NetworkPolicy;
 
   private rpc: BchnRpcClient;
   private readRpc: BchnRpcClient;
@@ -41,6 +85,14 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private miningAddress: string = '';
   private ready: Promise<void> | undefined;
   private importedAddresses = new Set<string>();
+  private snapshotNonce = 0;
+  private snapshotRestorers = new Map<string, SnapshotRestorer>();
+  /** Local mock time; zero means the node's system clock is in use. */
+  private mockTime = 0;
+  /** Latest known tip timestamp, used while mock time is unset. */
+  private tipTime = 0;
+  /** Timestamp applied to the next mined block by `evm_setNextBlockTimestamp`. */
+  private pendingBlockTimestamp: number | undefined;
 
   // X74. Category bookkeeping. A CashTokens category exists only where a transaction spent its own genesis
   // outpoint, so the provider cannot conjure one on request; what it CAN do is keep the category's minting NFT
@@ -50,6 +102,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // requested category, and never substitutes for a category it can actually mint into.
   private retainedMinting = new Map<string, { txid: string; vout: number; satoshis: bigint }>();
   private categoryOfLabel = new Map<string, string>();
+  // BCHN's wallet cannot enumerate UTXOs by token category. Track the category-bearing outputs this
+  // process broadcasts; that is the set framed deployments use to tell masters, validators and records apart.
+  private tokenUtxos = new Map<string, Map<string, Utxo>>();
   private retainAddress: string = '';
   private retainLockingBytecode: Uint8Array = new Uint8Array();
   private static readonly RETAINED_MINT_SATOSHIS = 2_000n;
@@ -62,6 +117,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       rpcUser = 'user',
       rpcPassword = 'password',
     } = options;
+
+    this.consensusLimits = options.consensusLimits;
+    this.policy = options.policy;
 
     // 60s (vs the wrapper's 5s default): resource-heavy live transactions can occasionally keep one BCHN RPC
     // request active for slightly more than 30s. This remains below the 180s per-test regtest budget.
@@ -101,7 +159,29 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     const result = await this.readRpc.request<ListUnspent>(
       'listunspent', 0, 9999999, [address], false, { includeTokens: true },
     );
-    return result.map((u) => this.listUnspentItemToUtxo(u));
+    const merged = new Map(result.map((u) => {
+      const utxo = this.listUnspentItemToUtxo(u);
+      return [`${utxo.txid}:${utxo.vout}`, utxo] as const;
+    }));
+    // The wallet cannot rescan history for an address imported after its outputs were mined. Serve the
+    // category-bearing outputs this provider already broadcast for that lock.
+    for (const utxo of this.trackedAt(binToHex(this.toLockingBytecode(address)))) {
+      merged.set(`${utxo.txid}:${utxo.vout}`, utxo);
+    }
+    return [...merged.values()];
+  }
+
+  async getUtxosByTokenCategory(categoryId: string): Promise<Utxo[]> {
+    await this.ensureReady();
+    const wanted = new Set([categoryId.toLowerCase()]);
+    try {
+      wanted.add(binToHex(hexToBin(categoryId).reverse()).toLowerCase());
+    } catch { /* not a byte string; exact match only */ }
+    const found: Utxo[] = [];
+    for (const [category, bucket] of this.tokenUtxos) {
+      if (wanted.has(category.toLowerCase())) found.push(...bucket.values());
+    }
+    return found;
   }
 
   async getUtxosForLockingBytecode(lockingBytecode: Uint8Array | string): Promise<Utxo[]> {
@@ -114,8 +194,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       if (typeof result !== 'string') addresses.push(result.address);
     }
     if (addresses.length === 0) {
-      // Non-standard script - can't convert to address for listunspent
-      return [];
+      // Non-standard script - the wallet cannot list it, but a broadcast output can still be tracked.
+      return this.trackedAt(binToHex(bin));
     }
     const utxos: Utxo[] = [];
     for (const addr of addresses) {
@@ -124,6 +204,18 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     // Token-aware and ordinary CashAddresses encode the same locking bytecode. BCHN's wallet therefore returns
     // the same outpoint for both queries; expose a UTXO set, not a duplicated concatenation of those two views.
     return [...new Map(utxos.map((utxo) => [`${utxo.txid}:${utxo.vout}`, utxo])).values()];
+  }
+
+  private trackedAt(lockingBytecodeHex: string): Utxo[] {
+    const found: Utxo[] = [];
+    for (const bucket of this.tokenUtxos.values()) {
+      for (const utxo of bucket.values()) {
+        if (utxo.lockingBytecode !== undefined && binToHex(utxo.lockingBytecode) === lockingBytecodeHex) {
+          found.push(utxo);
+        }
+      }
+    }
+    return found;
   }
 
   async getBlockHeight(): Promise<number> {
@@ -144,6 +236,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   async sendRawTransaction(txHex: string): Promise<string> {
     await this.ensureReady();
     const txid = await this.rpc.request<SendRawTransaction>('sendrawtransaction', txHex);
+    this.trackTokenOutputs(txHex, txid);
     await this.mine(1);
     return txid;
   }
@@ -420,20 +513,210 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   }
 
   // ---------------------------------------------------------------------------
-  // Test helper: mine / reset
+  // Test helper: mine / reset / snapshots / time travel
   // ---------------------------------------------------------------------------
 
   async mine(count: number = 1): Promise<void> {
     await this.ensureReady();
+    if (this.pendingBlockTimestamp !== undefined) {
+      await this.setMockTime(this.pendingBlockTimestamp);
+      this.mockTime = this.pendingBlockTimestamp;
+      this.tipTime = this.pendingBlockTimestamp;
+      this.pendingBlockTimestamp = undefined;
+    }
     await this.rpc.request<GenerateToAddress>('generatetoaddress', count, this.miningAddress);
+    // BCHN admits an nLocktime only below median-time-past, and the SDK stamps one second behind
+    // `getBlockTime()`. Track the node's MTP rather than the newest header's wall-clock time.
+    this.tipTime = await this.readTipTime();
+    this.fundingCandidates = undefined;
   }
 
-  // eslint-disable-next-line class-methods-use-this
-  async reset(): Promise<void> { /* no-op on regtest */ }
+  /**
+   * Clear provider caches without rewinding the chain. Fixture snapshots own chain rewinds; a reset that
+   * invalidated blocks would also invalidate those snapshots, so the chain is left alone here.
+   */
+  async reset(): Promise<void> {
+    this.fundingCandidates = undefined;
+    this.feeFunderPool.clear();
+    this.feeFunderRefill.clear();
+    this.feeFunderSizeRequests.clear();
+    this.pendingBlockTimestamp = undefined;
+    this.mockTime = 0;
+    await this.setMockTime(0);
+    this.tipTime = await this.readTipTime();
+  }
+
+  /** Median-time-past of the tip, which is the node's time basis for nLocktime finality. */
+  getBlockTime(): number {
+    return this.tipTime || Math.floor(Date.now() / 1000);
+  }
+
+  /** Apply a timestamp to the next mined block. The node is only changed when that block is mined. */
+  setNextBlockTimestamp(timestamp: number | bigint): void {
+    this.pendingBlockTimestamp = Number(timestamp);
+  }
+
+  /**
+   * Advance the node's mock clock. Median-time-past only moves after several blocks, so mine a full
+   * median window (11 blocks) at the new time; the SDK's stamp and the node's finality check then agree.
+   */
+  async increaseTime(seconds: number | bigint): Promise<number> {
+    const base = this.tipTime || Math.floor(Date.now() / 1000);
+    const timestamp = Math.max(0, base + Number(seconds));
+    await this.setMockTime(timestamp);
+    this.mockTime = timestamp;
+    await this.mine(11);
+    return timestamp;
+  }
+
+  async takeSnapshot(): Promise<SnapshotRestorer> {
+    await this.ensureReady();
+    const height = await this.readRpc.request<GetBlockCount>('getblockcount');
+    const hash = await this.readRpc.request<GetBlockHash>('getblockhash', height);
+    const snapshotId = `regtest-${this.snapshotNonce++}`;
+    const state: RegtestSnapshotState = {
+      height,
+      hash,
+      mockTime: this.mockTime,
+      tipTime: this.tipTime,
+      pendingBlockTimestamp: this.pendingBlockTimestamp,
+      retainedMinting: new Map(this.retainedMinting),
+      categoryOfLabel: new Map(this.categoryOfLabel),
+      importedAddresses: new Set(this.importedAddresses),
+      tokenUtxos: new Map([...this.tokenUtxos].map(([category, bucket]) => [category, new Map(bucket)])),
+    };
+    return {
+      snapshotId,
+      restore: async (): Promise<void> => {
+        await this.restoreSnapshot(state);
+      },
+    };
+  }
+
+  /**
+   * Hardhat's raw JSON-RPC surface. The EVM time helpers map to BCHN's regtest mock clock; snapshot and mine
+   * map to the same primitives `loadFixture` uses.
+   */
+  async send(method: string, params: unknown[] = []): Promise<unknown> {
+    switch (method) {
+      case 'evm_snapshot': {
+        const restorer = await this.takeSnapshot();
+        this.snapshotRestorers.set(restorer.snapshotId, restorer);
+        return restorer.snapshotId;
+      }
+      case 'evm_revert': {
+        const restorer = this.snapshotRestorers.get(String(params[0]));
+        if (!restorer) return false;
+        await restorer.restore();
+        return true;
+      }
+      case 'evm_mine':
+        await this.mine(1);
+        return '0x0';
+      case 'evm_increaseTime':
+        return this.increaseTime(Number(params[0]));
+      case 'evm_setNextBlockTimestamp':
+        this.setNextBlockTimestamp(Number(params[0]));
+        return null;
+      case 'evm_setAutomine':
+      case 'evm_setIntervalMining':
+        return null; // every broadcast already mines one block
+      case 'eth_blockNumber':
+        return `0x${(await this.getBlockHeight()).toString(16)}`;
+      case 'eth_chainId':
+      case 'net_version':
+        return '0x0';
+      default:
+        throw new Error(`RegtestNetworkProvider.send: unsupported JSON-RPC method '${method}'.`);
+    }
+  }
+
+  /**
+   * Rewind to a snapshot by invalidating the first block above it. BCHN returns the disconnected
+   * transactions to the mempool, so `clearmempool` drops them before the next test starts.
+   */
+  private async restoreSnapshot(state: RegtestSnapshotState): Promise<void> {
+    const height = await this.readRpc.request<GetBlockCount>('getblockcount');
+    if (height < state.height) {
+      throw new Error(
+        `regtest snapshot restore: chain is at ${height}, below snapshot height ${state.height}`,
+      );
+    }
+    if (height > state.height) {
+      const firstAbove = await this.readRpc.request<GetBlockHash>('getblockhash', state.height + 1);
+      await this.rpc.request<InvalidateBlock>('invalidateblock', firstAbove);
+    }
+    const restoredHash = await this.readRpc.request<GetBlockHash>('getblockhash', state.height);
+    if (restoredHash !== state.hash) {
+      throw new Error(
+        `regtest snapshot restore: block ${state.height} is ${restoredHash}, expected ${state.hash}`,
+      );
+    }
+    await this.rpc.request<ClearMempool>('clearmempool');
+
+    this.retainedMinting = new Map(state.retainedMinting);
+    this.categoryOfLabel = new Map(state.categoryOfLabel);
+    this.importedAddresses = new Set(state.importedAddresses);
+    this.tokenUtxos = new Map(
+      [...state.tokenUtxos].map(([category, bucket]) => [category, new Map(bucket)]),
+    );
+    this.fundingCandidates = undefined;
+    this.feeFunderPool.clear();
+    this.feeFunderRefill.clear();
+    this.feeFunderSizeRequests.clear();
+    this.pendingBlockTimestamp = state.pendingBlockTimestamp;
+    this.mockTime = state.mockTime;
+    this.tipTime = state.tipTime;
+    await this.setMockTime(state.mockTime);
+  }
+
+  private async readTipTime(): Promise<number> {
+    const height = await this.readRpc.request<GetBlockCount>('getblockcount');
+    const hash = await this.readRpc.request<GetBlockHash>('getblockhash', height);
+    const header = await this.readRpc.request<GetBlockHeaderTime>('getblockheader', hash, true);
+    return header.mediantime;
+  }
+
+  private async setMockTime(timestamp: number): Promise<void> {
+    await this.rpc.request<SetMockTime>('setmocktime', timestamp);
+  }
 
   // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
+
+  private trackTokenOutputs(txHex: string, txid: string): void {
+    const tx = decodeTransactionUnsafe(hexToBin(txHex));
+    for (const input of tx.inputs) {
+      const key = `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`;
+      for (const bucket of this.tokenUtxos.values()) bucket.delete(key);
+    }
+    tx.outputs.forEach((output, vout) => {
+      if (output.token === undefined) return;
+      const category = binToHex(output.token.category);
+      const utxo: Utxo = {
+        txid,
+        vout,
+        satoshis: output.valueSatoshis,
+        lockingBytecode: output.lockingBytecode.slice(),
+        confirmations: 1,
+        token: {
+          amount: output.token.amount,
+          category,
+          nft: output.token.nft ? {
+            capability: output.token.nft.capability,
+            commitment: binToHex(output.token.nft.commitment),
+          } : undefined,
+        },
+      };
+      let bucket = this.tokenUtxos.get(category);
+      if (!bucket) {
+        bucket = new Map();
+        this.tokenUtxos.set(category, bucket);
+      }
+      bucket.set(`${txid}:${vout}`, utxo);
+    });
+  }
 
   private buildLibauthTx(
     input: { txid: string; vout: number },
@@ -498,7 +781,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     if (!signed.complete) {
       throw new Error(`Failed to sign: ${signed.errors?.map((e) => e.error).join(', ')}`);
     }
-    return this.rpc.request<SendRawTransaction>('sendrawtransaction', signed.hex);
+    const txid = await this.rpc.request<SendRawTransaction>('sendrawtransaction', signed.hex);
+    this.trackTokenOutputs(signed.hex, txid);
+    return txid;
   }
 
   // The requested output is always built first and `fundSignSend` appends change AFTER every output it was
@@ -616,6 +901,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     if (height < 200) {
       await this.rpc.request<GenerateToAddress>('generatetoaddress', 200 - height, this.miningAddress);
     }
+    this.tipTime = await this.readTipTime();
   }
 
   private toLockingBytecode(addressOrHex: string): Uint8Array {
@@ -636,6 +922,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       txid: u.txid,
       vout: u.vout,
       satoshis: BigInt(u.amount.toFixed(8).replace('.', '')),
+      lockingBytecode: hexToBin(u.scriptPubKey),
       confirmations: u.confirmations,
       token: u.tokenData ? {
         amount: BigInt(u.tokenData.amount),

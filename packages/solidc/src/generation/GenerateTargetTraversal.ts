@@ -656,6 +656,8 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
  */
 /** Compiler-added hidden ABI parameter carrying the authenticated participant owner of a route frame. */
 const MESSAGE_BUS_OWNER_INPUT = '__internal__messageBusOwnerInput';
+/** Route-local flag set when the authenticated row selector names a handler that writes dynamic state. */
+const MESSAGE_BUS_DYNAMIC_WRITE_ACTIVE = '__message_bus_dynamic_write_active';
 /** Stable route-band coordinate for a graph participant's physical owner input. */
 const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 /** The value-chunk lock list the mutable-output check admits: the chunk-base witness, or a route-owned item. */
@@ -40694,15 +40696,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A write that executes must locate its chunk run. The only honest absent-base sentinel is `-1` (the SDK
     // publishes it when this frame claimed no dyn band, and the coordinate then reconstructs from the layout).
     // Values below `-1` encode a *read-only* run coordinate (`-(base + 3)`), which the SDK reserves for frames that
-    // do not write dynamic state. A compiler route participant legitimately runs such a lane (its broad writes are
-    // settled through the route owner), so only a plain direct entry is refused outright: before this check any
-    // caller set the free witness below -1 and every chunk commitment/count/consumption check below was skipped.
-    // ROUTE RESIDUAL (audit DYN-1): a route row can still carry the encoded sentinel; closing that needs a
-    // per-handler runtime activity flag, which this change does not add.
+    // do not write dynamic state. A plain direct entry and a message-bus writer clone both refuse it outright;
+    // before this check any caller set the free witness below -1 and every chunk commitment/count/consumption
+    // check below was skipped. The route program, proxy frames and delegates that do not run a writer clone keep
+    // the established inactive lane because the route verifier settles their band.
     const dynamicBaseIndex = this.getStackIndex('__internal__dynamicChunkInputBase', true);
     const routeParticipant = this.ownsMessageBusParticipantBlock() || this.usesProxyStateBlockBase()
       || this.currentFunctionIsDelegate;
-    if (dynamicBaseIndex >= 0 && !routeParticipant) {
+    // A handler clone that writes dynamic state is only invoked from its authenticated selector branch, and the
+    // SDK sends the read-only sentinel only when NO selected handler writes. A free route witness could otherwise
+    // select the writer row and pass a base below -1, taking the old skip (audit DYN-1 route lane).
+    const routeWriteClone = this.currentFunction.messageBusCloneSourceKey !== undefined
+      && this.pendingDynamicWrites.size > 0;
+    // The route body carries the union's write settlement, so it runs the verification for every selected row.
+    // Its synthesized source sets this flag only inside an authenticated writer selector branch; a writer row may
+    // not take the read-only sentinel (audit DYN-1 route lane). Inactive rows keep the established skip below.
+    const routeWriteFlagIndex = this.isCompilerMessageBusRoute()
+      ? this.getStackIndex(MESSAGE_BUS_DYNAMIC_WRITE_ACTIVE, true) : -1;
+    if (routeWriteFlagIndex >= 0) {
+      this.emitPickTrackedFromBottom(MESSAGE_BUS_DYNAMIC_WRITE_ACTIVE, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emitDynamicChunkBasePick(loc);
+      this.emit(encodeInt(-1n), loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_VERIFY, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
+    if (dynamicBaseIndex >= 0 && (!routeParticipant || routeWriteClone)) {
       this.emitDynamicChunkBasePick(loc);
       this.emit(encodeInt(-1n), loc);
       this.emit(Op.OP_GREATERTHANOREQUAL, loc);

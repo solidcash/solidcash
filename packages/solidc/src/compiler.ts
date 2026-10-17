@@ -11301,6 +11301,15 @@ function synthesizeMessageBusRoute(
   // parser builds `FieldAccess(address(this), "value")` instead of a StateAccessNode. Keep this spelling helper
   // route-wide so public getters and fixed-array identity pins round-trip through the same native parser.
   const routeStateReference = (name: string): string => `this.${name === 'value' ? ' value' : name}`;
+  // Audit DYN-1 route lane: the route body carries the union's dynamic write settlement, so its selector branch
+  // must publish whether the authenticated row names a writer. Only a batch that selects no writer may use the
+  // SDK's read-only sentinel (`-(base + 3)`).
+  const handlerWritesDynamicState = (fn: FunctionDefinitionNode): boolean => {
+    const footprint = eligibleFootprint(fn);
+    return [...footprint.writes].some((resource) => resource.startsWith('state:')
+      && dynamicState.has(resource.slice('state:'.length)));
+  };
+  const routeHasDynamicWriter = eligible.some(handlerWritesDynamicState);
   const buildDecodeAndCall = (
     captureResults = false, rowIndex?: number, rowExpression = String(rowIndex ?? 0),
     markDispatch = false,
@@ -11311,6 +11320,8 @@ function synthesizeMessageBusRoute(
         && (fn.returnTypes[index] as FunctionType).isExternal
         && (fn.returnedSelfFunctionTargetSets?.[index]?.length ?? 0) > 0;
       const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
+      const dynamicWriteFlag = routeHasDynamicWriter && handlerWritesDynamicState(fn)
+        ? '__message_bus_dynamic_write_active = 1;' : '';
       const upgradeAuthorization = kernelUpgradeMode && fn.modifiers.includes(FunctionModifier.UPGRADE)
         ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
           __message_bus_upgrade_position = ${rowExpression};` : '';
@@ -11940,7 +11951,7 @@ function synthesizeMessageBusRoute(
       const tuplesDispatched = fixedTupleGroups.length > 0 && lifecycleKind !== 'merge'
         && !(rowIndex !== undefined && rowIndex > 0 && entryShape);
       const rowKeyChecks = tuplesDispatched ? `${ordinaryKeyChecks}\n${swappableKeyCheck}` : keyChecks;
-      return `${condition} { ${upgradeAuthorization} ${fixedChunkableWriteAuthorization}
+      return `${condition} { ${dynamicWriteFlag} ${upgradeAuthorization} ${fixedChunkableWriteAuthorization}
         ${signatureAuthorization} ${decode} ${rowKeyChecks} ${outStateBoundaryChecks}
         ${lifecycleAuthorization} ${wrappedDispatch}
         require(rowArgs == rowArgs); }`;
@@ -13923,6 +13934,7 @@ function synthesizeMessageBusRoute(
         ${kernelUpgradeMode ? 'bigint __message_bus_upgrade_count = 0;' : ''}
         ${kernelUpgradeMode ? 'bigint __message_bus_upgrade_position = -1;' : ''}
         ${kernelV2SignatureFence ? 'bigint __message_bus_signature_count = 0;' : ''}
+        ${routeHasDynamicWriter ? 'bigint __message_bus_dynamic_write_active = 0;' : ''}
         ${fixedIterationEntryPins}
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${routeMaximumBlobBytes});

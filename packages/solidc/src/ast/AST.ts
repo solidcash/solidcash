@@ -526,6 +526,8 @@ export class FunctionDefinitionNode extends Node implements Named {
    * item (depth 0) and can be captured without depending on any frame-model position.
    */
   messageBusOwnerIsLastArgument?: boolean;
+  /** Set on compiler-cloned message-bus handlers; identifies the source handler the clone was made from. */
+  messageBusCloneSourceKey?: string;
   /**
    * The message-bus route's declared input names, in push order. A route handler shares the caller's stack, so these
    * values are physically BELOW the handler's argument block; seeding them into the handler's frame model is what

@@ -567,12 +567,17 @@ tooling code.
 
 ## Fix status (implementation pass, 2026-10-17)
 
-- DYN-1 (direct entries): FIXED. `emitDynamicWriteVerification` refuses a non-route frame whose
+- DYN-1 (direct and route entries): FIXED. `emitDynamicWriteVerification` refuses a frame whose
   `__internal__dynamicChunkInputBase` is below -1 (`-1 OP_GREATERTHANOREQUAL OP_VERIFY`) before any chunk check, so
-  a forged chunk cannot ride a sentinel base. Test: `packages/solidcash/test/e2e/AuditDynamicBaseSentinel.test.ts`
-  (honest write/read settles; forged base + forged commitment refused at input 0). The message-bus build's direct
-  entry carries the refusal. ROUTE RESIDUAL (still open): route participant lanes legitimately carry the encoded
-  read-only sentinel (`-(base + 3)`) and keep the old skip; closing that needs a per-handler runtime activity flag.
+  a forged chunk cannot ride a sentinel base. Tests:
+  `packages/solidcash/test/e2e/AuditDynamicBaseSentinel.test.ts` (honest direct write/read settles; forged base +
+  forged commitment refused) and `packages/solidcash/test/e2e/AuditRouteDynamicBase.test.ts` (a routed writer row
+  with a forged base and forged chunk is refused, while the honest routed write and an honest read-only sentinel
+  lane settle). The message-bus route lane is closed by an authenticated activity flag: `synthesizeMessageBusRoute`
+  sets `__message_bus_dynamic_write_active = 1` only inside the selector branch of a handler whose footprint writes
+  dynamic state, and the route frame requires `base >= -1` when that flag is set. A batch that selects no writer
+  keeps the SDK's read-only sentinel (`-(base + 3)`) and its inactive skip. Handler clones that write dynamic state
+  (`messageBusCloneSourceKey` plus pending writes) take the same strict refusal.
 - ECR-1: FIXED without a side-car protocol fork. The consuming contract now requires B3's predecessor input to reveal
   the M covenant and the input before it to reveal the A covenant (`requirePredecessorCovenant` in
   `GenerateTargetTraversal.ts`), and the loop path requires the M shared lock when B is B3. The 2-way B/B2 paths are

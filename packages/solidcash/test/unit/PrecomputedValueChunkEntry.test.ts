@@ -39,6 +39,7 @@ function fixture(overrides: Record<string, unknown> = {}): {
     entryNfts, entryRawCommitments, pinnedEntrySlots, addValueChunkOutput: vi.fn(),
     loopEntryVars: [], loopEntryCommitments: new Map(),
     requiredLoopEntryCounts: new Map(), pinnedLoopEntries: new Set(),
+    categoryId: '12'.repeat(32),
   }) as StatefulTransactionBuilder;
   return {
     builder, entryRawCommitments, pinnedEntrySlots,

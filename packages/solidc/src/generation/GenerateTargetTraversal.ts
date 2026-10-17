@@ -48421,7 +48421,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitMasterValuePreservation(locationData: SingleLocationData): void {
     const skipRetirement = this.beginAtomicSelfdestructExclusion(locationData);
     const mergeTail = this.beginAtomicMergeTailExclusion(locationData);
-    if (!this.currentFunctionIsDelegate && !this.usesMessageBusOwnerBlockBase()
+    // A mode-2 survivor carries every consumed master's satoshis (audit MERGE-1), so its output grows rather
+    // than staying equal; the route's lifecycle verification pins the exact total. Every other case keeps the
+    // exact master-value equality.
+    const lifecycleModeIndex = this.currentFunctionIsMessageBusRoute
+      ? this.getStackIndex('__message_bus_active_lifecycle_mode', true) : -1;
+    const relaxedMergeValue = lifecycleModeIndex >= 0
+      && this.getStackIndex('__internal__lifecycleOwnerInput', true) >= 0;
+    if (!relaxedMergeValue && !this.currentFunctionIsDelegate && !this.usesMessageBusOwnerBlockBase()
       && this.invokeSubroutineIfDefined(
         GenerateTargetTraversalWithLocation.MASTER_VALUE_PRES_SUBROUTINE_ID, locationData)) {
       if (mergeTail) this.emit(Op.OP_ENDIF, locationData);
@@ -48429,8 +48436,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
 
-    // Master UTXO exact satoshi preservation: inputValue == outputValue
-    this.emitOwnerPreservation(Op.OP_UTXOVALUE, Op.OP_OUTPUTVALUE, Op.OP_EQUALVERIFY, locationData);
+    if (relaxedMergeValue) {
+      this.emitPickTrackedFromBottom('__message_bus_active_lifecycle_mode', locationData);
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_NUMEQUAL, locationData);
+      this.emit(Op.OP_IF, locationData);
+      // The survivor may grow by the consumed masters' value; the lifecycle check supplies the exact sum.
+      this.emitOwnerPreservation(Op.OP_UTXOVALUE, Op.OP_OUTPUTVALUE, Op.OP_LESSTHANOREQUAL, locationData);
+      this.emit(Op.OP_ELSE, locationData);
+      this.emitOwnerPreservation(Op.OP_UTXOVALUE, Op.OP_OUTPUTVALUE, Op.OP_EQUALVERIFY, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+    } else {
+      // Master UTXO exact satoshi preservation: inputValue == outputValue
+      this.emitOwnerPreservation(Op.OP_UTXOVALUE, Op.OP_OUTPUTVALUE, Op.OP_EQUALVERIFY, locationData);
+    }
 
     // Master UTXO fungible token amount preservation: outputAmount >= inputAmount
     this.emitOwnerPreservation(Op.OP_UTXOTOKENAMOUNT, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_LESSTHANOREQUAL, locationData);
@@ -50662,29 +50681,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 1. Master self-preservation (LBC + category + capability)
     this.emitMasterSelfPreservation(node);
 
-    // 2. Value preservation on master (satoshis)
-    this.emitMergeOwnerInputIndex(locationData);
-    this.emit(Op.OP_UTXOVALUE, locationData);
-    this.pushToStack('(value_in)');
-    this.emitMergeOwnerInputIndex(locationData);
-    this.emit(Op.OP_OUTPUTVALUE, locationData);
-    this.pushToStack('(value_out)');
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-    this.popFromStack(2);
-
-    // 2b. Commitment preservation on surviving master (prevents state corruption during merge)
+    // 2. Commitment preservation on surviving master (prevents state corruption during merge)
     this.emitMasterCommitmentPreservation(node);
-
-    // 2c. FT amount preservation on surviving master (input <= output)
-    this.emitMergeOwnerInputIndex(locationData);
-    this.emit(Op.OP_UTXOTOKENAMOUNT, locationData);
-    this.pushToStack('(ft_in)');
-    this.emitMergeOwnerInputIndex(locationData);
-    this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
-    this.pushToStack('(ft_out)');
-    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
-    this.popFromStack(2);
 
     // 3. Get merge count N from function parameter
     const mergeIdx = this.getStackIndex(node.mergeCountParam!);
@@ -50748,6 +50746,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, locationData); // master_cat_cap
     this.popFromStack();
     this.emit(Op.OP_DROP, locationData); // merge_n
+    this.popFromStack();
+
+    // 4b. Conservation: the survivor carries its own value/FT plus every consumed master's (audit MERGE-1).
+    // Without this, a merge recreated the survivor at its own value and left the consumed masters' satoshis and
+    // surplus fungible amount free to be sent anywhere.
+    this.emitSumConsumedMasters(node, Op.OP_UTXOVALUE, locationData);
+    this.pushToStack('(merge_value_sum)');
+    this.emitMergeOwnerInputIndex(locationData);
+    this.emit(Op.OP_UTXOVALUE, locationData);
+    this.emit(Op.OP_ADD, locationData);
+    this.emitMergeOwnerInputIndex(locationData);
+    this.emit(Op.OP_OUTPUTVALUE, locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.popFromStack();
+    this.emitSumConsumedMasters(node, Op.OP_UTXOTOKENAMOUNT, locationData);
+    this.pushToStack('(merge_ft_sum)');
+    this.emitMergeOwnerInputIndex(locationData);
+    this.emit(Op.OP_UTXOTOKENAMOUNT, locationData);
+    this.emit(Op.OP_ADD, locationData);
+    this.emitMergeOwnerInputIndex(locationData);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
+    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
     this.popFromStack();
 
     // 5. Verify exactly 1 minting output (only surviving master)
@@ -50815,6 +50836,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
 
     this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /**
+   * `[] -> [sum]`: the total of `op` (`OP_UTXOVALUE` or `OP_UTXOTOKENAMOUNT`) over the consumed masters at
+   * inputs `master + prefix + 1 .. master + prefix + N`. The accumulator lives on the altstack so the loop's
+   * main-stack shape stays `[i]`; N is the merge-count parameter.
+   */
+  private emitSumConsumedMasters(node: FunctionDefinitionNode, op: Op, loc: SingleLocationData): void {
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emitPickTrackedFromBottom(node.mergeCountParam!, loc); // [i]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_GREATERTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(BigInt(node.requiredNftIndices?.length ?? 0)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(op, loc);                       // [i, amount]
+    this.emit(Op.OP_FROMALTSTACK, loc);       // [i, amount, sum]
+    this.emit(Op.OP_ADD, loc);                // [i, sum]
+    this.emit(Op.OP_TOALTSTACK, loc);         // [i]
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);               // i
+    this.emit(Op.OP_FROMALTSTACK, loc);       // [sum]
   }
 
   /**
@@ -52233,35 +52287,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_TOALTSTACK, loc);
     }
     const emitInspect = (): void => {
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(BigInt(this.getStackIndex(category) + 2)), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    // [category, i]. Skip a record at a mintable lock (a consumed/rewritten chunk, a written entry, or a data
-    // record the function already closed); refuse every other own-category mutable by preserving it 1:1.
-    if (admitMintableLocks) {
       this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(category) + 2)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      // [category, i]. Skip a record at a mintable lock (a consumed/rewritten chunk, a written entry, or a data
+      // record the function already closed); refuse every other own-category mutable by preserving it 1:1.
+      if (admitMintableLocks) {
+        this.emit(Op.OP_DUP, loc);
+        this.emit(Op.OP_UTXOBYTECODE, loc);
+        this.emitInputLockAdmitted(loc);
+        this.emit(Op.OP_NOTIF, loc);
+      }
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);
+      this.emit(Op.OP_OVER, loc);
       this.emit(Op.OP_UTXOBYTECODE, loc);
-      this.emitInputLockAdmitted(loc);
-      this.emit(Op.OP_NOTIF, loc);
-    }
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_OUTPUTBYTECODE, loc);
-    this.emit(Op.OP_OVER, loc);
-    this.emit(Op.OP_UTXOBYTECODE, loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
-    this.emit(Op.OP_OVER, loc);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
-    this.emit(Op.OP_OVER, loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+      this.emit(Op.OP_OVER, loc);
+      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+      this.emit(Op.OP_OVER, loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
       if (admitMintableLocks) this.emit(Op.OP_ENDIF, loc);
       this.emit(Op.OP_ENDIF, loc);
     };

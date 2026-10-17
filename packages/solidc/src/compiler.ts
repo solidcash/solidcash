@@ -12489,13 +12489,10 @@ function synthesizeMessageBusRoute(
               && activeMaximumSize == activeBlockSize);
             require(tx.outputs[activeBase].lockingBytecode == tx.inputs[activeBase].lockingBytecode
               && tx.outputs[activeBase].tokenCategory == tx.inputs[activeBase].tokenCategory
-              && tx.outputs[activeBase].nftCommitment == tx.inputs[activeBase].nftCommitment
-              && tx.outputs[activeBase].value == tx.inputs[activeBase].value);
+              && tx.outputs[activeBase].nftCommitment == tx.inputs[activeBase].nftCommitment);
             if (activeLifecycleMode == 1) {
-              require(tx.outputs[activeBase].tokenAmount == tx.inputs[activeBase].tokenAmount);
-            } else {
-              require(activeLifecycleMode == 2
-                && tx.outputs[activeBase].tokenAmount >= tx.inputs[activeBase].tokenAmount);
+              require(tx.outputs[activeBase].value == tx.inputs[activeBase].value
+                && tx.outputs[activeBase].tokenAmount == tx.inputs[activeBase].tokenAmount);
             }
             for (bigint prefixOffset = 1; prefixOffset < activeFixedSize;
               prefixOffset = prefixOffset + 1) {
@@ -12513,6 +12510,8 @@ function synthesizeMessageBusRoute(
               || (activeLifecycleMode == 2
                 && lifecycleMintingInputs == activeLifecycleCount + 1
                 && lifecycleMintingOutputs == 1));
+            bigint mergeConsumedValue = 0;
+            bigint mergeConsumedFt = 0;
             for (bigint lifecycleOffset = 0; lifecycleOffset < activeLifecycleCount;
               lifecycleOffset = lifecycleOffset + 1) {
               bigint lifecycleSlot = activeBase + activeFixedSize + lifecycleOffset;
@@ -12527,7 +12526,16 @@ function synthesizeMessageBusRoute(
                 require(tx.inputs[lifecycleSlot].lockingBytecode == activeParticipantLbc
                   && tx.inputs[lifecycleSlot].tokenCategory == bytes.concat(activeCategory, hex"02")
                   && tx.outputs[lifecycleSlot].tokenCategory.length == 0);
+                mergeConsumedValue = mergeConsumedValue + tx.inputs[lifecycleSlot].value;
+                mergeConsumedFt = mergeConsumedFt + tx.inputs[lifecycleSlot].tokenAmount;
               }
+            }
+            if (activeLifecycleMode == 2) {
+              // Audit MERGE-1: the survivor carries every consumed master's value and fungible amount, so a merge
+              // can neither redirect them to another output nor leave them behind.
+              require(tx.outputs[activeBase].value == tx.inputs[activeBase].value + mergeConsumedValue);
+              require(tx.outputs[activeBase].tokenAmount
+                >= tx.inputs[activeBase].tokenAmount + mergeConsumedFt);
             }
           }
         }

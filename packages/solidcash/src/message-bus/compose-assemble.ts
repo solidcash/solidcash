@@ -1121,6 +1121,9 @@ export async function assembleAtomicComposition(
         throw new Error(`messageBus: merge participant ${participant.participant} lacks its survivor`);
       }
       let mergedTokenAmount = masterOutput.token.amount;
+      // Audit MERGE-1: the survivor carries every consumed master's satoshis; the consumed tail slots stay as
+      // tokenless placeholders so output indexes keep matching input indexes for the route's lifecycle checks.
+      let mergedValue = masterOutput.amount;
       for (const consumed of merge.consumedMasters) {
         if (consumed.token?.category.toLowerCase() !== categories[participant.participant].toLowerCase()
             || consumed.token.nft?.capability !== 'minting') {
@@ -1129,11 +1132,13 @@ export async function assembleAtomicComposition(
           );
         }
         mergedTokenAmount += consumed.token.amount ?? 0n;
+        mergedValue += consumed.satoshis;
         local.addInput(consumed, routeUnlocker);
-        local.addOutput({ to: options.changeAddress, amount: consumed.satoshis });
+        local.addOutput({ to: options.changeAddress, amount: 0n });
       }
       local.outputs[0] = {
         ...masterOutput,
+        amount: mergedValue,
         token: { ...masterOutput.token, amount: mergedTokenAmount },
       };
     }

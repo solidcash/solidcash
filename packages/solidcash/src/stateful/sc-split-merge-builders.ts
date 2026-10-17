@@ -171,13 +171,16 @@ export async function buildMergeTransactionBuilder(
     builder.addInput(fundingUtxo, config.fundingUnlocker!);
   }
 
-  // Output 0: surviving master preserved
+  // Output 0: surviving master preserved, carrying every consumed master's value and fungible amount
+  // (audit MERGE-1: the covenant requires the survivor to hold the summed totals).
+  const consumedSatoshis = config.consumedMasters.reduce((sum, u) => sum + u.satoshis, 0n);
+  const consumedFt = config.consumedMasters.reduce((sum, u) => sum + (u.token?.amount ?? 0n), 0n);
   builder.addOutput({
     to: contract.tokenAddress,
-    amount: masterUtxo.satoshis,
+    amount: masterUtxo.satoshis + consumedSatoshis,
     token: {
       category: categoryId,
-      amount: 0n,
+      amount: (masterUtxo.token?.amount ?? 0n) + consumedFt,
       nft: { capability: 'minting', commitment: masterUtxo.token?.nft?.commitment ?? '' },
     },
   });
@@ -187,15 +190,14 @@ export async function buildMergeTransactionBuilder(
   builder.addOutput({ to: config.changeAddress, amount: 1000n }); // placeholder
   const fee = config.fee ?? await host.computeFeeFromBuilder(builder);
 
-  // Change output (reclaim consumed masters' satoshis minus fee)
-  const consumedSatoshis = config.consumedMasters.reduce((sum, u) => sum + u.satoshis, 0n);
+  // Change output (funding minus fee; the consumed masters settle into the survivor)
   const fundingSatoshis = fundingUtxos.reduce((sum, u) => sum + u.satoshis, 0n);
-  const changeAmount = consumedSatoshis + fundingSatoshis - fee;
+  const changeAmount = fundingSatoshis - fee;
   if (changeAmount < 0n) {
     builder.outputs.pop(); // remove placeholder
     throw new Error(
       `Insufficient funding for merge: need ${fee} sats for fee `
-      + `but only have ${consumedSatoshis + fundingSatoshis} sats from consumed + funding UTXOs.`,
+      + `but only have ${fundingSatoshis} sats from funding UTXOs.`,
     );
   }
   if (changeAmount > 0n) {

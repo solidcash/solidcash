@@ -283,10 +283,10 @@ RESOLVED 2026-07-19/20 (case b + same-gap chains): a NEW recipient whose predece
 (credited / untouched / HEAD / debited msg.sender); self-transfer + duplicate (incl. scalar) also work - see the
 multiTransfer entry above. The `= <param>` wart is RESOLVED too (`d08584f2`): it now routes to the upsert loop
 (update+insert), keeping same-gap chaining. STILL FAIL-CLOSED (sound, not complete): scalar `-=` duplicate (no
-pending-defer), cross-contract msg.sender, function-pointer values. **CORRECTED 2026-10-16:** the 2D
-`m[k][i][j]` item in this list is no longer fail-closed — `DesugarNestedArrayWrite` lowers it to a whole-value
-read + local nested write + write-back, pinned by `MappingArray2dWrite.test.ts` (vmap `m[k][i][j] = v` settles) and
-`VMapRemainingBoundaries.test.ts` (compiles).
+pending-defer), cross-contract msg.sender. **CORRECTED 2026-10-16:** the 2D `m[k][i][j]` and function-pointer value
+items in this list are no longer fail-closed — the 2D write desugars via `DesugarNestedArrayWrite`
+(`MappingArray2dWrite.test.ts`), and a function-pointer mapping value round-trips as a functionId on the wire
+(`FunctionTypeState.test.ts`, 5/5, incl. a two-handler sorted dispatch table).
 
 **One real HOLE found + FIXED (commit `af6e894a`): vmap `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike
@@ -1011,12 +1011,12 @@ so read-after-write `m[k][j]=m[k][j-1]+1` reads the value being built (value-ver
 `SortedArrayCacheInLoop` (loop build+fill, read-after-write prefix, consecutive set02); fail-close boundary in
 `SortedArrayWriteFailClose`. Commits: (this line's change).
 
-STILL fail-closed (sound, not silent): function-pointer element values (no vmap path). **CORRECTED 2026-10-16:** the
-other two items this bullet listed are now RESOLVED — a DIFFERENT-key insert loop `for(i) m[k[i]]=v` routes through
-the per-iteration upsert loop (`SortedArrayValueLoop.test.ts` / `SortedUpsertLoop.test.ts`), and a
-MULTI-DIMENSIONAL array element write `m[k][i][j]` on `mapping(K => T[][])` is lowered by
-`DesugarNestedArrayWrite` to a whole-value read-modify-write-back (`MappingArray2dWrite.test.ts` /
-`VMapRemainingBoundaries.test.ts`). Note the existing default-model `UnrollFixedBoundEntryLoop`
+**RESOLVED 2026-10-16:** the function-pointer element value path EXISTS — an internal function pointer (and an
+external self-ref `this.f`) is stored as its functionId in the entry commitment and dispatches through the vmap
+sorted list, pinned by `packages/solidcash/test/e2e/FunctionTypeState.test.ts` (5/5, register + invoke, two distinct
+handlers in one sorted list, scalar external self-ref, and the upgrade remap refusal). The earlier "no vmap path"
+note was stale. Only the scalar `-=` duplicate and cross-contract `msg.sender` remain fail-closed in this section.
+Note the existing default-model `UnrollFixedBoundEntryLoop`
 (whole-entry fixed loops, ArrayAssignNode form) still unrolls - unifying it onto the cache-in-loop model would remove the
 unroll, but it is wired + tested (CorpusGapFixes), a separate change.
 

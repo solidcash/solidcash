@@ -25,4 +25,16 @@ describe('vmap resolved value-kind boundaries', () => {
         } }`, { forceStateful: true });
     expect(artifact.contractName).toBe('C');
   });
+
+  it('compiles a function-pointer element value mapping (functionId on the wire)', () => {
+    const artifact = compileString(`pragma solidcash ^0.13.0;
+      contract C() { mapping(bytes4 => function(int) returns (int)) routes;
+        function double(int x) internal returns (int) { return x * 2; }
+        function register(bytes4 sel) public { this.routes[sel] = double; require(true); }
+        function invoke(bytes4 sel, int v, int expected) public {
+          function(int) returns (int) h = this.routes[sel];
+          require(h(v) == expected);
+        } }`, { forceStateful: true });
+    expect(artifact.contractName).toBe('C');
+  });
 });

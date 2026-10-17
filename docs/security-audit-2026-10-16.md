@@ -223,6 +223,43 @@ Fix direction: require each consumed master's satoshis to arrive at a pinned des
 contract's satoshi container), and require the survivor's output fungible amount to be at least the **sum** of the
 consumed inputs' amounts (or pin every own-category fungible output to the survivor's lock).
 
+### FRAMED-CONT-1 (HIGH, source-traced; framed composition) A standalone framed spend that handles no value leaves its containers unprotected
+
+Attacker: any caller of a public framed function that neither accepts value nor sends it (a plain state update or
+admin setter). Shape: spend that master **standalone** (no validator input), co-spend the contract's satoshi
+container with `flag = 1`, and/or a token container, and send the container's BCH or tokens to the attacker.
+
+Why nothing refuses it:
+
+- A framed deployment builds its containers **without** a master lock (`directConventionMasterLock` returns
+  `undefined` for `composition.convention === 'framed'`, `packages/solidcash/src/stateful/covenant-helpers.ts:286-288`,
+  used at `477` and `898`). The container covenant therefore omits `directMasterOutputPin`
+  (`packages/utils/src/state.ts:2479`, `2579`); its master arm checks only the authority lock, minting capability and
+  category, so any output shape is allowed.
+- The master's container accounting is only `valueChecks` (`packages/solidc/src/framed/master/master-head.ts:1070-1155`),
+  emitted only `if (this.handlesValue)` (`459`), where `handlesValue = acceptsValue || sendCount > 0 ||
+  paysThroughCalls` (`381`). A body with none of the three calls `assertZeroValue()` (`659`).
+- The frame's `value` is a **witness field** the reader leaves (`master-head.ts:16`), not a value derived from
+  container growth, so `assertZeroValue` only requires the attacker to write zero there.
+- `assertStandalone` requires `callCount == 0` and frame kind `ROOT` (`973-978`), which a plain setter satisfies, so
+  the no-validator arm is reachable for exactly the functions that handle no value.
+- The direct convention's scans are excluded for a framed master: `scansSatoshi = !this.framedMaster && ...` and
+  `scansForeign = !this.framedMaster && ...` (`GenerateTargetTraversal.ts:10252-10259`).
+
+The validator does cover this: V7's `checkContractValue` sums every container input/output
+(`packages/solidc/src/framed/validator/checks.ts:558-590`). A standalone frame attaches no validator
+(`assertNoValidator`, `master-head.ts:1189-1194`), so the exposure is exactly the no-validator path. The same
+applies to a foreign token container: the keep rules are direct-only and V7 sums only the satoshi container.
+
+Impact: theft of the contract's BCH balance and of any custodied foreign tokens, in a framed contract that holds
+them and exposes at least one non-value function. This is DX-1/DX-2's shape on the framed backend, which the direct
+fix (the container output pin) does not reach.
+
+Fix direction: in `standaloneFrameChecks`, always require container growth `>= 0` (not only when `handlesValue`),
+and add a foreign-token keep for a framed standalone spend, or attach the validator to every spend. Omitting the
+master lock from the container is what lets it survive an upgrade at a new lock, so the master-side check is the
+right place.
+
 ### CONT-1 (MEDIUM, source-traced) An unnamed token container's NFT commitment is not kept
 
 Attacker: anyone who can satisfy any public function of a direct stateful contract that holds a foreign mutable or

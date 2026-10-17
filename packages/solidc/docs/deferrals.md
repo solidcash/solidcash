@@ -294,7 +294,8 @@ multiTransfer entry above. The `= <param>` wart is RESOLVED too (`d08584f2`): it
 (update+insert), keeping same-gap chaining. **CORRECTED 2026-10-16:** the scalar `-=` duplicate is RESOLVED too —
 pending-defer is activated for `-` (its insert path stays gated off, since a debit cannot create an entry), pinned
 by `SortedUpsertLoop.test.ts` (`accumulates a SCALAR -= duplicate (100 - 30 - 30 = 40; non-adjacent grouped)`).
-Remaining fail-closed: cross-contract msg.sender (RED at HEAD, see the multitransfer entry below). **CORRECTED
+No item in this list remains fail-closed (cross-contract msg.sender was RESOLVED 2026-10-16, see the multitransfer
+entry above). **CORRECTED
 2026-10-16:** the 2D `m[k][i][j]` and function-pointer value
 items in this list are no longer fail-closed — the 2D write desugars via `DesugarNestedArrayWrite`
 (`MappingArray2dWrite.test.ts`), and a function-pointer mapping value round-trips as a functionId on the wire
@@ -1027,7 +1028,7 @@ so read-after-write `m[k][j]=m[k][j-1]+1` reads the value being built (value-ver
 external self-ref `this.f`) is stored as its functionId in the entry commitment and dispatches through the vmap
 sorted list, pinned by `packages/solidcash/test/e2e/FunctionTypeState.test.ts` (5/5, register + invoke, two distinct
 handlers in one sorted list, scalar external self-ref, and the upgrade remap refusal). The earlier "no vmap path"
-note was stale. Only the scalar `-=` duplicate and cross-contract `msg.sender` remain fail-closed in this section.
+note was stale. No item in this section remains fail-closed.
 Note the existing default-model `UnrollFixedBoundEntryLoop`
 (whole-entry fixed loops, ArrayAssignNode form) still unrolls - unifying it onto the cache-in-loop model would remove the
 unroll, but it is wired + tested (CorpusGapFixes), a separate change.

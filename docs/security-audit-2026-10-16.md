@@ -608,8 +608,13 @@ tooling code.
   input commitment, in addition to lock, full category and amount. Test:
   `packages/solidcash/test/e2e/AuditContainerCommitment.test.ts` (a rewritten commitment is refused, the identical
   spend settles). Verified the pre-fix build ACCEPTS the rewrite.
-- WT-1/WT-2: PARTIAL. Direct entries now walk every input and skip only `[master, master + blockSize)`, and admit
+- WT-1/WT-2: FIXED. Direct entries now walk every input and skip only `[master, master + blockSize)`, and admit
   only the record families the call rewrites (its loop collections, its written dynamic variables, and its value
-  chunks). Route participants keep the previous relative walk and full family list because their record block and
-  dynamic band are settled by the route verifier and the transaction carries the verifier/sibling blocks below the
-  master. Existing census/chunk/container suites pass; no new direct e2e places a record before the master.
+  chunks). The exit test is `i < 0`, so inputs below a nonzero master are inspected; the upper arm keeps
+  `i >= master + blockSize`. Route participants keep the previous relative walk and full family list because their
+  record block and dynamic band are settled by the route verifier and the transaction carries the verifier/sibling
+  blocks below the master. Evidence: `CollectionReadInputCensus.test.ts` (6 cases; a smuggled/rewritten extra node
+  is refused at the master and the honest spend settles), `AuditContainerCommitment.test.ts` (CONT-1 commitment
+  pin), and the existing chunk/container suites. The SDK and the direct entry pin the master at input 0, and a
+  hand-built spend that moves it to input 1 was refused by the direct prologue before the walk could run, so the
+  below-master arm is a defensive bound for shapes the prologue admits rather than an SDK-reachable layout.

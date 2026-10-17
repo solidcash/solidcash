@@ -516,6 +516,12 @@ block-oracle keeper.
   entry even in a contract with scalar state; the positional coupling is consistent today. It is fragile if a future
   migration also co-spends data NFTs (to re-encode them), which would move the entry. Advisory, not a vulnerability.
   A migration that does co-spend a data NFT at 1 fails closed: no selector arm matches the old entry covenant.
+- `selfdestruct` does not pin the satoshi container or any token container: `emitValuePreservation` and
+  `scansSatoshi` are skipped for it, and message-bus mode 3 requires only the master/prefix slot values to be
+  preserved. The SDK's `destroy` does co-spend them (`packages/solidcash/src/stateful/sc-destroy.ts:369-427`). A
+  caller that omits them destroys the master and leaves the containers permanently unspendable, because their
+  covenant's master path needs a master of the category. That is a self-inflicted liveness hazard for the
+  authorized caller (and an honest client is fine), worth a doc warning next to `selfdestruct`.
 ## Threat-model assumptions worth documenting in user docs
 
 - An `upgrade`/`deploy`/`split`/`merge` body that authorizes by `checkDataSig`, a hash preimage, or a raw

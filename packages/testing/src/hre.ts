@@ -414,7 +414,21 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       const p = providerOverride ?? provider;
       const s = HDSigner.createRandom(p);
       const fundable = p as unknown as { addUtxo?: (a: string, u: Utxo) => Promise<Utxo> };
-      if (typeof fundable.addUtxo === 'function') void fundable.addUtxo(s.getAddress(), randomUtxo({ satoshis: 1_000_000n }));
+      if (typeof fundable.addUtxo === 'function') {
+        // Fund lazily, when the wallet is actually read. A suite may restore a fixture between createRandom()
+        // and the call; eager funding would land above that snapshot and be invalidated. Re-checking also
+        // re-funds a wallet whose previous coin was spent by an earlier call.
+        const ensureFunded = async (): Promise<void> => {
+          if ((await p.getUtxos(s.getAddress())).length === 0) {
+            await fundable.addUtxo!(s.getAddress(), randomUtxo({ satoshis: 1_000_000n }));
+          }
+        };
+        const originalGetUtxos = s.getUtxos.bind(s);
+        (s as unknown as { getUtxos: () => Promise<Utxo[]> }).getUtxos = async () => {
+          await ensureFunded();
+          return originalGetUtxos();
+        };
+      }
       return withEthersMessageSigning(s);
     }
   }

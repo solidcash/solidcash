@@ -4,7 +4,6 @@ import {
   type GetBlockCount,
   type GetBlockHash,
   type GetNewAddress,
-  type FundRawTransaction,
   type SignRawTransactionWithWallet,
   type SendRawTransaction,
   type GetRawTransactionVerbosity0,
@@ -14,13 +13,18 @@ import {
   type ImportAddress,
 } from '@mr-zwets/bchn-api-wrapper';
 import { cashAddressToLockingBytecode, lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { hexToBin, binToHex, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeTransactionUnsafe, encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+import {
+  blockOracleFieldValue, blockOracleLockingBytecode, encodeBlockOracleCommitment, hash160,
+  type BlockOracleCommitmentFields,
+} from '@solidcash/utils';
 import { type Utxo, Network, type TokenDetails } from '../interfaces.js';
 import type NetworkProvider from './NetworkProvider.js';
 import type { ConsensusLimits, NetworkPolicy } from './NetworkProvider.js';
 import type { SnapshotRestorer } from './MockNetworkProvider.js';
-import { getNetworkPrefix } from '../utils.js';
+import { getNetworkPrefix, publicKeyToP2PKHLockingBytecode, randomUtxo } from '../utils.js';
 
 export interface RegtestProviderOptions {
   rpcUrl?: string;
@@ -56,6 +60,30 @@ interface InvalidateBlock {
   response: null;
 }
 
+interface GetRawMempoolVerbose {
+  method: 'getrawmempool';
+  params: [verbose: true];
+  response: Record<string, unknown>;
+}
+
+interface RescanBlockchain {
+  method: 'rescanblockchain';
+  params: [startHeight?: number];
+  response: { start_height: number; stop_height: number };
+}
+
+interface ListTransactions {
+  method: 'listtransactions';
+  params: [account?: string, count?: number, skip?: number, includeWatchonly?: boolean];
+  response: Array<{ txid: string; confirmations: number; abandoned?: boolean }>;
+}
+
+interface AbandonTransaction {
+  method: 'abandontransaction';
+  params: [txid: string];
+  response: null;
+}
+
 interface RegtestSnapshotState {
   height: number;
   hash: string;
@@ -66,6 +94,7 @@ interface RegtestSnapshotState {
   categoryOfLabel: Map<string, string>;
   importedAddresses: Set<string>;
   tokenUtxos: Map<string, Map<string, Utxo>>;
+  broadcastUtxos: Map<string, Utxo>;
 }
 
 export interface TokenGenesisOutput {
@@ -78,6 +107,23 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   public network: Network = Network.REGTEST;
   public consensusLimits?: ConsensusLimits;
   public policy?: NetworkPolicy;
+  public blockOracleLock?: Uint8Array;
+  public blockOracleCategory?: Uint8Array;
+
+  /** Deterministic owner key; its P2PKH pays the oracle update fee. */
+  private readonly blockOracleOwnerKey = Uint8Array.from(
+    { length: 32 }, (_byte, index) => (index === 31 ? 0x44 : 0x11),
+  );
+  private blockOracleOwnerAddress = '';
+  private blockOracleInstalled = false;
+  private blockOracleRefreshing = false;
+  /** Serializes wallet funding and contract broadcasts: concurrent sends otherwise race one wallet coin. */
+  private sendQueue: Promise<void> = Promise.resolve();
+  /** Reentrant lock around UTXO selection + wallet funding; nested addUtxo calls run under the outer lock. */
+  private fundingQueue: Promise<void> = Promise.resolve();
+  private fundingDepth = 0;
+  /** Wallet coins selected as funding inputs; hidden from caller-coin reads until their tx is mined. */
+  private reservedFunding = new Set<string>();
 
   private rpc: BchnRpcClient;
   private readRpc: BchnRpcClient;
@@ -93,6 +139,10 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private tipTime = 0;
   /** Timestamp applied to the next mined block by `evm_setNextBlockTimestamp`. */
   private pendingBlockTimestamp: number | undefined;
+  /** Monotonic time for ordinary mines, never rewound by a snapshot. */
+  private lastMinedTimestamp = 0;
+  /** Nonzero while `increaseTime` holds the clock across its median window and oracle update. */
+  private holdMockTime = 0;
 
   // X74. Category bookkeeping. A CashTokens category exists only where a transaction spent its own genesis
   // outpoint, so the provider cannot conjure one on request; what it CAN do is keep the category's minting NFT
@@ -105,6 +155,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // BCHN's wallet cannot enumerate UTXOs by token category. Track the category-bearing outputs this
   // process broadcasts; that is the set framed deployments use to tell masters, validators and records apart.
   private tokenUtxos = new Map<string, Map<string, Utxo>>();
+  // Every output this process broadcasts, so a validator/facet output mined before its address is imported is
+  // still visible through getUtxosForLockingBytecode (the wallet cannot rescan history for imported addresses).
+  private broadcastUtxos = new Map<string, Utxo>();
   private retainAddress: string = '';
   private retainLockingBytecode: Uint8Array = new Uint8Array();
   private static readonly RETAINED_MINT_SATOSHIS = 2_000n;
@@ -159,14 +212,16 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     const result = await this.readRpc.request<ListUnspent>(
       'listunspent', 0, 9999999, [address], false, { includeTokens: true },
     );
-    const merged = new Map(result.map((u) => {
+    const entries = result.map((u): [string, Utxo] => {
       const utxo = this.listUnspentItemToUtxo(u);
-      return [`${utxo.txid}:${utxo.vout}`, utxo] as const;
-    }));
+      return [`${utxo.txid}:${utxo.vout}`, utxo];
+    }).filter(([key]) => !this.reservedFunding.has(key));
+    const merged = new Map<string, Utxo>(entries);
     // The wallet cannot rescan history for an address imported after its outputs were mined. Serve the
     // category-bearing outputs this provider already broadcast for that lock.
-    for (const utxo of this.trackedAt(binToHex(this.toLockingBytecode(address)))) {
-      merged.set(`${utxo.txid}:${utxo.vout}`, utxo);
+    for (const utxo of await this.trackedAt(binToHex(this.toLockingBytecode(address)))) {
+      const key = `${utxo.txid}:${utxo.vout}`;
+      if (!merged.has(key)) merged.set(key, utxo);
     }
     return [...merged.values()];
   }
@@ -177,11 +232,24 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     try {
       wanted.add(binToHex(hexToBin(categoryId).reverse()).toLowerCase());
     } catch { /* not a byte string; exact match only */ }
-    const found: Utxo[] = [];
-    for (const [category, bucket] of this.tokenUtxos) {
-      if (wanted.has(category.toLowerCase())) found.push(...bucket.values());
+    // The wallet knows every imported data/proxy address; a tracked-only answer loses records that a
+    // fixture restore recreated without replaying the process's own broadcast history.
+    const wallet = await this.readRpc.request<ListUnspent>(
+      'listunspent', 0, 9999999, [], true, { includeTokens: true },
+    );
+    const merged = new Map<string, Utxo>();
+    for (const item of wallet) {
+      const utxo = this.listUnspentItemToUtxo(item);
+      merged.set(`${utxo.txid}:${utxo.vout}`, utxo);
     }
-    return found;
+    for (const [category, bucket] of this.tokenUtxos) {
+      if (!wanted.has(category.toLowerCase())) continue;
+      for (const utxo of bucket.values()) merged.set(`${utxo.txid}:${utxo.vout}`, utxo);
+    }
+    const found = [...merged.values()].filter((utxo) => (
+      utxo.token !== undefined && wanted.has(utxo.token.category.toLowerCase())
+    ));
+    return this.liveOnly(found);
   }
 
   async getUtxosForLockingBytecode(lockingBytecode: Uint8Array | string): Promise<Utxo[]> {
@@ -206,16 +274,17 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     return [...new Map(utxos.map((utxo) => [`${utxo.txid}:${utxo.vout}`, utxo])).values()];
   }
 
-  private trackedAt(lockingBytecodeHex: string): Utxo[] {
-    const found: Utxo[] = [];
-    for (const bucket of this.tokenUtxos.values()) {
-      for (const utxo of bucket.values()) {
-        if (utxo.lockingBytecode !== undefined && binToHex(utxo.lockingBytecode) === lockingBytecodeHex) {
-          found.push(utxo);
-        }
-      }
-    }
-    return found;
+  private async trackedAt(lockingBytecodeHex: string): Promise<Utxo[]> {
+    return this.liveOnly([...this.broadcastUtxos.values()].filter((utxo) => (
+      utxo.lockingBytecode !== undefined && binToHex(utxo.lockingBytecode) === lockingBytecodeHex
+    )));
+  }
+
+  private async liveOnly(utxos: Utxo[]): Promise<Utxo[]> {
+    const live = await Promise.all(utxos.map(async (utxo) => (
+      await this.isLiveOutpoint(utxo.txid, utxo.vout) ? utxo : undefined
+    )));
+    return live.filter((utxo): utxo is Utxo => utxo !== undefined);
   }
 
   async getBlockHeight(): Promise<number> {
@@ -234,11 +303,19 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   }
 
   async sendRawTransaction(txHex: string): Promise<string> {
-    await this.ensureReady();
-    const txid = await this.rpc.request<SendRawTransaction>('sendrawtransaction', txHex);
-    this.trackTokenOutputs(txHex, txid);
-    await this.mine(1);
-    return txid;
+    return this.serializeSend(async () => {
+      await this.ensureReady();
+      const txid = await this.rpc.request<SendRawTransaction>('sendrawtransaction', txHex);
+      this.trackBroadcastOutputs(txHex, txid);
+      await this.mine(1);
+      return txid;
+    });
+  }
+
+  private async serializeSend<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.sendQueue.then(operation, operation);
+    this.sendQueue = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   // ---------------------------------------------------------------------------
@@ -255,6 +332,31 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private static readonly DUMMY_FUNDER_LBC = 'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
 
   async addUtxo(address: string, utxo: Utxo): Promise<Utxo> {
+    return this.withFundingLock(() => this.addUtxoUnlocked(address, utxo));
+  }
+
+  private async withFundingLock<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.fundingDepth > 0) return operation();
+    const run = this.fundingQueue.then(async () => {
+      this.fundingDepth += 1;
+      try {
+        return await operation();
+      } finally {
+        this.fundingDepth -= 1;
+      }
+    }, async () => {
+      this.fundingDepth += 1;
+      try {
+        return await operation();
+      } finally {
+        this.fundingDepth -= 1;
+      }
+    });
+    this.fundingQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private async addUtxoUnlocked(address: string, utxo: Utxo): Promise<Utxo> {
     await this.ensureReady();
 
     // Fast path: serve pre-created fee funders for the STB dummy pattern
@@ -271,14 +373,27 @@ export default class RegtestNetworkProvider implements NetworkProvider {
         }
         await this.feeFunderRefill.get(wanted);
       }
-      const pool = this.feeFunderPool.get(wanted);
-      if (pool !== undefined && pool.length > 0) {
-        const pooled = pool.pop()!;
-        utxo.txid = pooled.txid;
-        utxo.vout = pooled.vout;
-        utxo.satoshis = pooled.satoshis;
-        return pooled;
+      const pool = this.feeFunderPool.get(wanted) ?? [];
+      const takeLive = async (): Promise<Utxo | undefined> => {
+        while (pool.length > 0) {
+          const pooled = pool.pop()!;
+          // A fixture restore can race an in-flight refill and leave an entry at a disconnected height.
+          if (await this.isLiveOutpoint(pooled.txid, pooled.vout)) return pooled;
+        }
+        return undefined;
+      };
+      let pooled = await takeLive();
+      if (pooled === undefined) {
+        await this.refillFeeFunderPool(wanted);
+        pooled = await takeLive();
       }
+      if (pooled === undefined) throw new Error(`no live fee funder for ${wanted} satoshis`);
+      utxo.txid = pooled.txid;
+      utxo.vout = pooled.vout;
+      utxo.satoshis = pooled.satoshis;
+      utxo.lockingBytecode = pooled.lockingBytecode;
+      utxo.confirmations = pooled.confirmations;
+      return utxo;
     }
 
     if (!isHex(address)) await this.importAddressIfNeeded(address);
@@ -313,7 +428,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       throw e;
     }
     let txid: string;
-
+    try {
     if (utxo.token) {
       // No such category exists on this chain, so there is nothing to mint into and nothing being displaced:
       // this is a genesis. Its real category is reported back on the returned UTXO, and both it and the
@@ -348,6 +463,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     utxo.satoshis = result.satoshis;
     if (result.token) utxo.token = result.token;
     return result;
+    } finally {
+      this.releaseFunding(fundingInput);
+    }
   }
 
   /**
@@ -376,12 +494,28 @@ export default class RegtestNetworkProvider implements NetworkProvider {
         + 'genesis transaction (addTokenUtxosDynamic) instead.',
       );
     }
-    const retained = this.retainedMinting.get(category);
+    let retained = this.retainedMinting.get(category);
     if (!retained) {
       throw new Error(
         `RegtestNetworkProvider.addUtxo cannot mint into category ${category}: no minting NFT is retained for `
         + 'it, so the request cannot be satisfied. It is NOT served with a different category.',
       );
+    }
+    if (!(await this.isLiveOutpoint(retained.txid, retained.vout))) {
+      // A restore or an interleaved mint can leave the in-memory pointer one hop behind. Follow the live
+      // minting NFT at the provider's retain address instead of spending a dead outpoint.
+      const live = (await this.getUtxosByTokenCategory(category)).find((candidate) => (
+        candidate.token?.nft?.capability === 'minting'
+        && candidate.lockingBytecode !== undefined
+        && binToHex(candidate.lockingBytecode) === binToHex(this.retainLockingBytecode)
+      ));
+      if (live === undefined) {
+        throw new Error(
+          `RegtestNetworkProvider.addUtxo cannot mint into category ${category}: its minting NFT is not live.`,
+        );
+      }
+      retained = { txid: live.txid, vout: live.vout, satoshis: live.satoshis };
+      this.retainedMinting.set(category, retained);
     }
 
     const unsignedTx = this.buildLibauthTx(retained, [{
@@ -465,6 +599,12 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   async addTokenUtxosDynamic(
     outputsFactory: (categoryId: string) => TokenGenesisOutput[],
   ): Promise<{ categoryId: string; utxos: Utxo[] }> {
+    return this.withFundingLock(() => this.addTokenUtxosDynamicUnlocked(outputsFactory));
+  }
+
+  private async addTokenUtxosDynamicUnlocked(
+    outputsFactory: (categoryId: string) => TokenGenesisOutput[],
+  ): Promise<{ categoryId: string; utxos: Utxo[] }> {
     await this.ensureReady();
     await this.rpc.request<GenerateToAddress>('generatetoaddress', 1, this.miningAddress);
 
@@ -505,11 +645,144 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     const unsignedTx = this.buildLibauthTx(
       genesisInput, [...libauthOutputs, this.retainedMintingOutput(categoryId)],
     );
-    const txid = await this.fundSignSend(unsignedTx);
-    await this.mine(1);
-    this.recordCategory(categoryId, txid, retainedVout);
+    try {
+      const txid = await this.fundSignSend(unsignedTx);
+      await this.mine(1);
+      this.recordCategory(categoryId, txid, retainedVout);
+      return this.collectCreatedUtxos(txid, categoryId, outputs, retainedVout);
+    } finally {
+      this.releaseFunding(genesisInput);
+    }
+  }
 
-    return this.collectCreatedUtxos(txid, categoryId, outputs, retainedVout);
+  // ---------------------------------------------------------------------------
+  // Test helper: real block-info oracle
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Deploy a real block-info oracle at a genesis category. The mock provider installs an in-memory oracle; on a
+   * live chain the NFT must have a real CashTokens category, so this creates a vout-0 genesis and publishes its
+   * p2sh32 covenant as `blockOracleLock`.
+   */
+  private async installBlockOracle(): Promise<void> {
+    const ownerPubkey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
+    const ownerPkh = hash160(ownerPubkey);
+    const ownerAddressResult = lockingBytecodeToCashAddress({
+      bytecode: publicKeyToP2PKHLockingBytecode(ownerPubkey),
+      prefix: getNetworkPrefix(this.network),
+    });
+    const ownerAddress = typeof ownerAddressResult === 'string'
+      ? ownerAddressResult
+      : ownerAddressResult.address;
+    this.blockOracleOwnerAddress = ownerAddress;
+    await this.addUtxo(ownerAddress, randomUtxo({ satoshis: 100_000_000n }));
+
+    const commitment = encodeBlockOracleCommitment(ownerPkh, await this.oracleFields());
+    const { categoryId } = await this.addTokenUtxosDynamic((category) => {
+      const lock = blockOracleLockingBytecode(hexToBin(category));
+      const addressResult = lockingBytecodeToCashAddress({
+        bytecode: lock,
+        prefix: getNetworkPrefix(this.network),
+        tokenSupport: true,
+      });
+      const address = typeof addressResult === 'string' ? addressResult : addressResult.address;
+      return [{
+        address,
+        satoshis: 10_000n,
+        token: {
+          amount: 0n,
+          nft: { capability: 'mutable' as const, commitment: binToHex(commitment) },
+        },
+      }];
+    });
+    this.blockOracleCategory = hexToBin(categoryId);
+    this.blockOracleLock = blockOracleLockingBytecode(this.blockOracleCategory);
+  }
+
+  private async oracleFields(number?: bigint): Promise<BlockOracleCommitmentFields> {
+    return {
+      number: number ?? BigInt(await this.getBlockHeight()),
+      // A final update can publish at most the last second below median-time-past.
+      timestamp: BigInt(Math.max(0, this.getBlockTime() - 1)),
+      difficulty: 0n,
+      size: 1000n,
+      totalFees: 0n,
+      coinbase: hexToBin(`76a914${'00'.repeat(20)}88ac`),
+    };
+  }
+
+  /**
+   * Push the node's current height and time into the oracle through its signed update path. The mock provider
+   * rewrites its in-memory NFT; a real node admits only a covenant spend, so this pays the keeper fee and
+   * CLTV-anchors the new timestamp.
+   */
+  async refreshBlockOracle(): Promise<void> {
+    const lock = this.blockOracleLock;
+    const category = this.blockOracleCategory;
+    if (lock === undefined || category === undefined || this.blockOracleRefreshing) return;
+    const oracle = (await this.getUtxosForLockingBytecode(lock))
+      .find((utxo) => utxo.token?.nft?.capability === 'mutable');
+    if (oracle?.token?.nft === undefined) return;
+    const current = hexToBin(oracle.token.nft.commitment);
+    const currentTimestamp = current.length >= 30 ? blockOracleFieldValue(current, 'timestamp') : 0n;
+    const desired = await this.oracleFields();
+    if (desired.timestamp <= currentTimestamp) return;
+
+    const fields = {
+      ...desired,
+      number: current.length >= 30 ? blockOracleFieldValue(current, 'number') : desired.number,
+    };
+    const commitment = encodeBlockOracleCommitment(
+      hash160(secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array), fields,
+    );
+    const funding = await this.pickOracleFeeCoin();
+    this.blockOracleRefreshing = true;
+    try {
+      const [{ TransactionBuilder }, signatureModule, { blockOracleUpdateUnlocker }] = await Promise.all([
+        import('../TransactionBuilder.js'),
+        import('../SignatureTemplate.js'),
+        import('../oracle/blockOracleUpdater.js'),
+      ]);
+      const SignatureTemplate = signatureModule.default;
+      await new TransactionBuilder({ provider: this })
+        .addInput(oracle, blockOracleUpdateUnlocker(
+          category, lock, this.blockOracleOwnerKey, commitment,
+        ))
+        .addInput(funding, new SignatureTemplate(this.blockOracleOwnerKey).unlockP2PKH())
+        .addOutput({
+          to: lock,
+          amount: oracle.satoshis,
+          token: {
+            category: oracle.token.category,
+            amount: 0n,
+            nft: { capability: 'mutable', commitment: binToHex(commitment) },
+          },
+        })
+        .addOutput({ to: this.blockOracleOwnerAddress, amount: funding.satoshis - 1000n })
+        .setLocktime(Number(desired.timestamp))
+        .send();
+    } finally {
+      this.blockOracleRefreshing = false;
+    }
+  }
+
+  private async isLiveOutpoint(txid: string, vout: number): Promise<boolean> {
+    try {
+      return await this.readRpc.request<GetTxOut>('gettxout', txid, vout, true) !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  private async pickOracleFeeCoin(): Promise<Utxo> {
+    const ownerPubkey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
+    const coin = (await this.getUtxosForLockingBytecode(publicKeyToP2PKHLockingBytecode(ownerPubkey)))
+      .filter((utxo) => utxo.token === undefined)
+      .sort((left, right) => Number(right.satoshis - left.satoshis))[0];
+    if (coin === undefined || coin.satoshis < 2000n) {
+      throw new Error('the block oracle owner has no coin to pay an update fee');
+    }
+    return coin;
   }
 
   // ---------------------------------------------------------------------------
@@ -522,7 +795,18 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       await this.setMockTime(this.pendingBlockTimestamp);
       this.mockTime = this.pendingBlockTimestamp;
       this.tipTime = this.pendingBlockTimestamp;
+      this.lastMinedTimestamp = this.pendingBlockTimestamp;
       this.pendingBlockTimestamp = undefined;
+    } else if (this.holdMockTime === 0) {
+      // A fixture restore disconnects a block but BCHN keeps it marked invalid. Re-mining the same template
+      // (same time and transactions) would produce the same hash and be rejected, so every ordinary mine moves
+      // the mock clock forward by at least one second. `lastMinedTimestamp` deliberately survives snapshots.
+      const timestamp = Math.max(
+        this.tipTime + 1, Math.floor(Date.now() / 1000), this.lastMinedTimestamp + 1,
+      );
+      await this.setMockTime(timestamp);
+      this.mockTime = timestamp;
+      this.lastMinedTimestamp = timestamp;
     }
     await this.rpc.request<GenerateToAddress>('generatetoaddress', count, this.miningAddress);
     // BCHN admits an nLocktime only below median-time-past, and the SDK stamps one second behind
@@ -561,11 +845,21 @@ export default class RegtestNetworkProvider implements NetworkProvider {
    * median window (11 blocks) at the new time; the SDK's stamp and the node's finality check then agree.
    */
   async increaseTime(seconds: number | bigint): Promise<number> {
-    const base = this.tipTime || Math.floor(Date.now() / 1000);
-    const timestamp = Math.max(0, base + Number(seconds));
+    const base = Math.max(this.tipTime, this.lastMinedTimestamp, Math.floor(Date.now() / 1000));
+    // One extra second lets the oracle publish `MTP - 1` at the requested timestamp; the oracle covenant
+    // cannot publish the current MTP because its own nLocktime must stay below MTP.
+    const timestamp = Math.max(0, base + Number(seconds) + 1);
     await this.setMockTime(timestamp);
     this.mockTime = timestamp;
-    await this.mine(11);
+    this.lastMinedTimestamp = timestamp;
+    // Ten blocks move the median window to `timestamp`; the signed oracle update is the eleventh block.
+    this.holdMockTime = timestamp;
+    try {
+      await this.mine(10);
+      await this.refreshBlockOracle();
+    } finally {
+      this.holdMockTime = 0;
+    }
     return timestamp;
   }
 
@@ -584,6 +878,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       categoryOfLabel: new Map(this.categoryOfLabel),
       importedAddresses: new Set(this.importedAddresses),
       tokenUtxos: new Map([...this.tokenUtxos].map(([category, bucket]) => [category, new Map(bucket)])),
+      broadcastUtxos: new Map(this.broadcastUtxos),
     };
     return {
       snapshotId,
@@ -653,6 +948,20 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       );
     }
     await this.rpc.request<ClearMempool>('clearmempool');
+    // Invalidateblock leaves wallet entries from the disconnected branch looking spendable. Rescan first so
+    // those entries lose their stale confirmations, abandon the txs that are no longer in the mempool, then
+    // rescan once more so the wallet's coin set matches the restored UTXO set.
+    await this.rpc.request<RescanBlockchain>('rescanblockchain', 0);
+    const mempool = new Set(Object.keys(await this.readRpc.request<GetRawMempoolVerbose>('getrawmempool', true)));
+    const walletTxs = await this.readRpc.request<ListTransactions>('listtransactions', '*', 1000, 0, true);
+    for (const txid of new Set(walletTxs.map((tx) => tx.txid))) {
+      const entry = walletTxs.find((tx) => tx.txid === txid && tx.confirmations === 0 && !tx.abandoned);
+      if (entry === undefined || mempool.has(txid)) continue;
+      try {
+        await this.rpc.request<AbandonTransaction>('abandontransaction', txid);
+      } catch { /* already conflicted or abandoned */ }
+    }
+    await this.rpc.request<RescanBlockchain>('rescanblockchain', 0);
 
     this.retainedMinting = new Map(state.retainedMinting);
     this.categoryOfLabel = new Map(state.categoryOfLabel);
@@ -660,6 +969,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.tokenUtxos = new Map(
       [...state.tokenUtxos].map(([category, bucket]) => [category, new Map(bucket)]),
     );
+    this.broadcastUtxos = new Map(state.broadcastUtxos);
     this.fundingCandidates = undefined;
     this.feeFunderPool.clear();
     this.feeFunderRefill.clear();
@@ -685,36 +995,38 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // Internal helpers
   // ---------------------------------------------------------------------------
 
-  private trackTokenOutputs(txHex: string, txid: string): void {
+  private trackBroadcastOutputs(txHex: string, txid: string): void {
     const tx = decodeTransactionUnsafe(hexToBin(txHex));
     for (const input of tx.inputs) {
       const key = `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`;
+      this.broadcastUtxos.delete(key);
       for (const bucket of this.tokenUtxos.values()) bucket.delete(key);
     }
     tx.outputs.forEach((output, vout) => {
-      if (output.token === undefined) return;
-      const category = binToHex(output.token.category);
+      const key = `${txid}:${vout}`;
       const utxo: Utxo = {
         txid,
         vout,
         satoshis: output.valueSatoshis,
         lockingBytecode: output.lockingBytecode.slice(),
         confirmations: 1,
-        token: {
+        token: output.token === undefined ? undefined : {
           amount: output.token.amount,
-          category,
+          category: binToHex(output.token.category),
           nft: output.token.nft ? {
             capability: output.token.nft.capability,
             commitment: binToHex(output.token.nft.commitment),
           } : undefined,
         },
       };
-      let bucket = this.tokenUtxos.get(category);
+      this.broadcastUtxos.set(key, utxo);
+      if (utxo.token === undefined) return;
+      let bucket = this.tokenUtxos.get(utxo.token.category);
       if (!bucket) {
         bucket = new Map();
-        this.tokenUtxos.set(category, bucket);
+        this.tokenUtxos.set(utxo.token.category, bucket);
       }
-      bucket.set(`${txid}:${vout}`, utxo);
+      bucket.set(key, utxo);
     });
   }
 
@@ -756,11 +1068,15 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       for (let i = 0; i < pool.length; i += 1) {
         const u = pool[i];
         if (vout0Only && u.vout !== 0) continue;
+        if (this.reservedFunding.has(`${u.txid}:${u.vout}`)) continue;
         // eslint-disable-next-line no-await-in-loop
         const out = await this.readRpc.request<GetTxOut>('gettxout', u.txid, u.vout, true) as
           GetTxOut['response'] | null;
         pool.splice(i, 1);
-        if (out) return u;
+        if (out) {
+          this.reservedFunding.add(`${u.txid}:${u.vout}`);
+          return u;
+        }
         i -= 1;
       }
       // Nothing usable left in the cache. Re-list once; a second miss is a real exhaustion.
@@ -769,21 +1085,82 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     throw new Error('No live wallet UTXOs available (>=1 BCH). Mine more blocks.');
   }
 
+  private releaseFunding(item: { txid: string; vout: number }): void {
+    this.reservedFunding.delete(`${item.txid}:${item.vout}`);
+  }
+
   private async fundSignSend(unsignedHex: string): Promise<string> {
-    // Count outputs to place change after them
-    const decoded = decodeTransactionUnsafe(hexToBin(unsignedHex));
-    const funded = await this.rpc.request<FundRawTransaction>(
-      'fundrawtransaction', unsignedHex, { changePosition: decoded.outputs.length },
-    );
-    const signed = await this.rpc.request<SignRawTransactionWithWallet>(
-      'signrawtransactionwithwallet', funded.hex,
-    );
-    if (!signed.complete) {
-      throw new Error(`Failed to sign: ${signed.errors?.map((e) => e.error).join(', ')}`);
+    return this.serializeSend(async () => {
+    const tx = decodeTransactionUnsafe(hexToBin(unsignedHex));
+    const sats = (value: number): bigint => BigInt(Math.round(value * 1e8));
+    const inputValue = async (txid: string, vout: number): Promise<bigint> => {
+      const out = await this.readRpc.request<GetTxOut>('gettxout', txid, vout, true) as
+        GetTxOut['response'] | null;
+      if (out === null) throw new Error(`funding input ${txid}:${vout} is not live`);
+      return sats(out.value);
+    };
+
+    let valueIn = 0n;
+    const retainedKeys = new Set([...this.retainedMinting.values()]
+      .map((utxo) => `${utxo.txid}:${utxo.vout}`));
+    const tokenCategories = new Set(tx.outputs
+      .filter((output) => output.token !== undefined)
+      .map((output) => binToHex(output.token!.category)));
+    const liveInputs: typeof tx.inputs = [];
+    for (const input of tx.inputs) {
+      const txid = binToHex(input.outpointTransactionHash);
+      const key = `${txid}:${input.outpointIndex}`;
+      try {
+        valueIn += await inputValue(txid, input.outpointIndex);
+        liveInputs.push(input);
+      } catch (error) {
+        // A dead tokenless funding input can be replaced below. A genesis/category anchor or the retained
+        // minting NFT cannot: its outpoint is part of the transaction's consensus meaning.
+        if (retainedKeys.has(key) || tokenCategories.has(txid)) throw error;
+      }
     }
-    const txid = await this.rpc.request<SendRawTransaction>('sendrawtransaction', signed.hex);
-    this.trackTokenOutputs(signed.hex, txid);
-    return txid;
+    tx.inputs = liveInputs;
+    const valueOut = tx.outputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
+    const fee = 1_000n;
+    const added: ListUnspentItem[] = [];
+    let needed = valueOut + fee - valueIn;
+    try {
+      while (needed > 0n) {
+        const funding = await this.pickLiveFundingInput(false);
+        const value = await inputValue(funding.txid, funding.vout);
+        tx.inputs.push({
+          outpointTransactionHash: hexToBin(funding.txid),
+          outpointIndex: funding.vout,
+          sequenceNumber: 0xfffffffe,
+          unlockingBytecode: new Uint8Array(),
+        });
+        added.push(funding);
+        valueIn += value;
+        needed -= value;
+      }
+      const change = valueIn - valueOut - fee;
+      if (change > 546n) {
+        tx.outputs.push({
+          lockingBytecode: this.toLockingBytecode(this.miningAddress),
+          valueSatoshis: change,
+        });
+      }
+      const signed = await this.rpc.request<SignRawTransactionWithWallet>(
+        'signrawtransactionwithwallet', binToHex(encodeTransaction(tx)),
+      );
+      if (!signed.complete) {
+        throw new Error(`Failed to sign: ${signed.errors?.map((e) => e.error).join(', ')}`);
+      }
+      const txid = await this.rpc.request<SendRawTransaction>('sendrawtransaction', signed.hex);
+      this.trackBroadcastOutputs(signed.hex, txid);
+      // Confirm before returning: callers mine as well, but a second funding selection must never see a
+      // just-spent coin while it is still unconfirmed.
+      await this.mine(1);
+      return txid;
+    } finally {
+      for (const funding of added) this.releaseFunding(funding);
+    }
+    });
   }
 
   // The requested output is always built first and `fundSignSend` appends change AFTER every output it was
@@ -854,8 +1231,12 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       lockingBytecode: this.toLockingBytecode(addr),
       valueSatoshis: RegtestNetworkProvider.VOUT0_FUNDING_SATOSHIS,
     }]);
-    await this.fundSignSend(unsignedHex);
-    await this.mine(1);
+    try {
+      await this.fundSignSend(unsignedHex);
+      await this.mine(1);
+    } finally {
+      this.releaseFunding(fundingInput);
+    }
     // The coin just minted is not in the cached list, and the caller is about to ask for exactly it.
     this.fundingCandidates = undefined;
   }
@@ -879,15 +1260,32 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       fundingInput,
       Array.from({ length: needed }, () => ({ lockingBytecode: lbc, valueSatoshis: satoshis })),
     );
-    const txid = await this.fundSignSend(unsignedHex);
-    await this.mine(1);
-    for (let i = 0; i < needed; i++) pool.push({ txid, vout: i, satoshis });
-    this.feeFunderPool.set(satoshis, pool);
+    try {
+      const txid = await this.fundSignSend(unsignedHex);
+      await this.mine(1);
+      for (let i = 0; i < needed; i++) {
+        pool.push({ txid, vout: i, satoshis, lockingBytecode: lbc, confirmations: 1 });
+      }
+      this.feeFunderPool.set(satoshis, pool);
+    } finally {
+      this.releaseFunding(fundingInput);
+    }
   }
 
   private async ensureReady(): Promise<void> {
     if (!this.ready) this.ready = this.initialize();
-    return this.ready;
+    await this.ready;
+    // Install after the base ready promise resolves: oracle setup itself uses addUtxo/addTokenUtxos, which call
+    // back into ensureReady.
+    if (!this.blockOracleInstalled) {
+      this.blockOracleInstalled = true;
+      try {
+        await this.installBlockOracle();
+      } catch (error) {
+        this.blockOracleInstalled = false;
+        throw error;
+      }
+    }
   }
 
   private async initialize(): Promise<void> {

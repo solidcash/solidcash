@@ -177,6 +177,7 @@ beforeEach(async () => {
   const provider = hre.ethers?.provider as {
     reset?: () => void | Promise<void>;
     getSigners?: (count?: number, opts?: { fundingUtxos?: number }) => Promise<unknown[]>;
+    network?: string;
   } | undefined;
   if (fixtureSnapshotReady) return;
   if (provider && typeof provider.reset === 'function') {
@@ -185,7 +186,10 @@ beforeEach(async () => {
     try { clearDeployments(provider as never); } catch { /* ignore */ }
     try { clearSoftBentoTotals(); } catch { /* ignore */ }
     // Re-fund signers after reset (getSigners only funds once per key without reset of fundedSignerKeys).
-    if (typeof provider.getSigners === 'function') {
+    // Regtest reset does not rewind the chain: funding here would create coins above the fixture snapshot that
+    // the test's own loadFixture restore immediately invalidates. The fixture's first getSigners call funds the
+    // accounts below its snapshot; later restores bring those coins back.
+    if (typeof provider.getSigners === 'function' && provider.network !== 'regtest') {
       await provider.getSigners(20, { fundingUtxos: 4 });
     }
   }

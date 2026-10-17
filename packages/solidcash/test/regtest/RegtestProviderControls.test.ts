@@ -28,9 +28,11 @@ describeRegtest('RegtestNetworkProvider controls', () => {
     const clockSnapshot = await provider.takeSnapshot();
     const before = provider.getBlockTime();
     const advanced = await provider.send('evm_increaseTime', [86400]);
-    expect(advanced).toBe(before + 86400);
+    // One extra second lets the oracle publish `MTP - 1` at the requested time while its own update stays final;
+    // monotonic mine times may add a few more seconds so a restored fixture can never regenerate an old block.
+    expect(advanced).toBeGreaterThanOrEqual(before + 86401);
     expect(provider.getBlockTime()).toBe(advanced as number);
-    expect(provider.getBlockTime() - before).toBe(86400);
+    expect(provider.getBlockTime() - before).toBeGreaterThanOrEqual(86401);
     expect(await provider.getBlockHeight()).toBe(startHeight + 11);
 
     await clockSnapshot.restore();

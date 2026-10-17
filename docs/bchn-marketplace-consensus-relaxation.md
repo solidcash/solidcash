@@ -179,17 +179,44 @@ it would mine blocks while a fixture snapshot is active. The SDK mines one block
 - Reset the node volume (`docker compose ... down -v`) between suite runs. A second deployment at the same
   logical address finds the previous run's anchor and is refused as ambiguous.
 
-## Remaining blocker: block oracle
+## Block oracle fixture
 
-The time-travel marketplace case (`close job > close job after timeout`) reaches `publishJobPost`, which reads
-`block.timestamp`. The mock provider installs a synthetic block-info oracle and publishes `blockOracleLock` /
-`blockOracleCategory`. `RegtestNetworkProvider` has neither, so the framed call refuses with
-`entry "publishJobPost" reads the block oracle, and no oracle lock was provided`.
+`RegtestNetworkProvider` now deploys a real block-info oracle. It creates a vout-0 genesis at the oracle's
+p2sh32 covenant, publishes the category and lock as `blockOracleCategory` / `blockOracleLock`, and funds a
+deterministic owner key for updates.
 
-Running the marketplace suite end to end on regtest needs a real oracle fixture: a category genesis whose
-output is `blockOracleLockingBytecode(category)` with a mutable NFT commitment, published as the provider's
-`blockOracleLock` / `blockOracleCategory`, or an equivalent mock/regtest oracle installation hook. That is
-independent of the consensus-limit patch and the snapshot/time-travel work.
+`evm_increaseTime` mines ten blocks to move the median window, then pushes the new timestamp through the
+oracle covenant's signed update path as the eleventh block. The oracle record therefore follows the node's
+clock instead of a mock rewrite. This unblocks `publishJobPost` and every `block.timestamp` reader.
+
+## Relaxed-limit proof
+
+`packages/solidcash/test/regtest/RelaxedConsensusLimit.test.ts` builds a P2SH32 spend whose redeem script,
+scriptSig push, and stack item all exceed the production 10,000-byte limits. It sends the same shape to the
+relaxed node and to a stock BCHN v29.0.0 regtest node. The relaxed node accepts it; the stock node rejects it
+with `scriptsig-size (code 64)`. Run it with both nodes running:
+
+```sh
+TESTS_USE_REGTEST=true BCHN_RELAXED=true \
+  REGTEST_RPC_URL=http://127.0.0.1:18450 \
+  BCHN_STOCK_RPC_URL=http://127.0.0.1:18451 \
+  npx vitest run test/regtest/RelaxedConsensusLimit.test.ts
+```
+
+## Full marketplace suite
+
+The full suite runs against the patched node. Snapshot restores use monotonic block times so BCHN never
+re-mines a block hash it previously marked invalid, and the regtest provider filters every tracked UTXO with
+`gettxout` before serving it so a restored fixture cannot spend a dead coin.
+
+Latest complete run: **46 passed, 20 failed (66 total)**. The failures start in the `take job` group, whose
+tests call `deployMarketplaceWithUsersAndJob` several times inside one test. Each call restores the same fixture
+snapshot in the middle of a test; a later funding input can be spent by an earlier in-test restore, producing
+`funding input ... is not live` or `Missing inputs`. Every test after that group inherits the inconsistent
+chain/wallet state and fails in a cascade.
+
+The focused flow, the time-travel case, and every test before `take job` pass. Remaining work is a per-test
+chain/wallet reset (or making the in-test fixture restores independent) for those multi-restore tests.
 
 ## Remaining constraints
 
@@ -203,7 +230,8 @@ independent of the consensus-limit patch and the snapshot/time-travel work.
   (`deployContractsFixture` and `getWalletsFixture`) snapshot at the same chain height.
 - The standard transaction-size policy limit (100,000 bytes) has no dedicated option. `-acceptnonstdtxn=1`
   bypasses the standardness check, so the marketplace lane does not need one.
-- The block-oracle fixture remains missing; the time-travel marketplace case cannot complete without it.
+- The block oracle is a real regtest covenant with a deterministic owner key. It is a test fixture, not a
+  production keeper.
 
 ## Evidence
 

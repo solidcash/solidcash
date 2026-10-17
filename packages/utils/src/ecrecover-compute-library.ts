@@ -86,6 +86,10 @@ export const ECRECOVER_COMPUTE_B_SHARED_LOCK = ecrecoverComputeLockingBytecode(n
 // baked so the loop's cheap OP_UTXOBYTECODE integrity check accepts either shape.
 export const ECRECOVER_COMPUTE_B2_SHARED_LOCK = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'B2');
 export const ECRECOVER_COMPUTE_B3_SHARED_LOCK = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'B3');
+// The middle checkpoint covenant of the width-0 3-way split. B3 reads its running state from the output of the
+// INPUT one before it, so the contract pins that input to this lock; otherwise any output carrying a chosen
+// checkpoint can stand in for M and B3 ladders from an attacker-chosen accumulator (audit ECR-1).
+export const ECRECOVER_COMPUTE_M_SHARED_LOCK = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'M');
 
 /** The result-NFT commitment for a recovery: parity byte (0x02/0x03) || Qx as a 33-byte LE VM number (34 B total). */
 export function ecrecoverComputeResultCommitment(recoveredPubkey: Uint8Array): Uint8Array {

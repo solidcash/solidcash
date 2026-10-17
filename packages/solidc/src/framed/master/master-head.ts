@@ -56,7 +56,7 @@ import {
   type MasterTailShape,
 } from './frame-tail.js';
 import {
-  callValuesScript, containerGrowthScript, containerLockScript, sendRunValuesScript,
+  callValuesScript, containerGrowthScript, containerLockScript, selfContainerLockScript, sendRunValuesScript,
 } from './value.js';
 import { mastersRecreatedInPlaceScript } from './lifecycle.js';
 
@@ -656,7 +656,10 @@ class HeadEmitter {
     this.assertSenderIsTheCallersLock();
     this.assertOriginIsTheCallersLock();
     this.assertSelfEqualsReservedAddress();
-    if (!this.handlesValue) this.assertZeroValue();
+    if (!this.handlesValue) {
+      this.assertZeroValue();
+      this.assertContainersDidNotShrink();
+    }
     this.emitSingleMasterCheck();
     this.stack.length = 0;
     this.stack.push('origin', 'sender', 'value', 'self');
@@ -972,6 +975,9 @@ class HeadEmitter {
 
   /** N1's second half: the frame is a user's, it makes no call, and it is its category's only master. */
   private assertStandalone(): void {
+    // The no-validator arm of a composed-capable master is a standalone spend. A body that handles no value has no
+    // legitimate reason to let its contract's containers shrink (audit FRAMED-CONT-1).
+    if (!this.handlesValue) this.assertContainersDidNotShrink();
     if (this.callCount > 0) {
       this.emitRefusal();
     }
@@ -1286,6 +1292,17 @@ class HeadEmitter {
     this.pick('self');
     this.pushAddressSlot();
     this.equalVerify();
+  }
+
+  /**
+   * Audit FRAMED-CONT-1: the framed convention builds its containers without a master-lock pin (the lock must
+   * survive an upgrade), so the master is the only place a co-spent container is accounted for. Growth is
+   * outputs-at-the-lock minus inputs-at-it, so `>= 0` is exactly "nothing left the contracts's containers".
+   */
+  private assertContainersDidNotShrink(): void {
+    this.emitBytes(new Uint8Array(selfContainerLockScript()));
+    this.emitBytes(new Uint8Array(containerGrowthScript()));
+    this.emitOp(Opcodes.OP_0, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
   }
 
   private assertZeroValue(): void {

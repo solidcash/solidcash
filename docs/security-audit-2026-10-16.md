@@ -564,3 +564,36 @@ Confirmed by source tracing: DYN-1 (critical), ECR-1 (critical), FRAMED-CONT-1 (
 commitment limit), WT-1 (low). Closed after tracing: ROUTE-SKIP-1, ROUTE-READ-1. No VM run was made for any
 finding; DYN-1, ECR-1, FRAMED-CONT-1 and MERGE-1 are the four that most need one. This pass read no website, bench, fixture, or
 tooling code.
+
+## Fix status (implementation pass, 2026-10-17)
+
+- DYN-1 (direct entries): FIXED. `emitDynamicWriteVerification` refuses a non-route frame whose
+  `__internal__dynamicChunkInputBase` is below -1 (`-1 OP_GREATERTHANOREQUAL OP_VERIFY`) before any chunk check, so
+  a forged chunk cannot ride a sentinel base. Test: `packages/solidcash/test/e2e/AuditDynamicBaseSentinel.test.ts`
+  (honest write/read settles; forged base + forged commitment refused at input 0). The message-bus build's direct
+  entry carries the refusal. ROUTE RESIDUAL (still open): route participant lanes legitimately carry the encoded
+  read-only sentinel (`-(base + 3)`) and keep the old skip; closing that needs a per-handler runtime activity flag.
+- ECR-1: FIXED without a side-car protocol fork. The consuming contract now requires B3's predecessor input to reveal
+  the M covenant and the input before it to reveal the A covenant (`requirePredecessorCovenant` in
+  `GenerateTargetTraversal.ts`), and the loop path requires the M shared lock when B is B3. The 2-way B/B2 paths are
+  unchanged because their result is a pure function of the call's own arguments. Test:
+  `packages/solidcash/test/e2e/AuditEcrecoverMiddleInput.test.ts` (an arbitrary input standing in for M is refused;
+  the honest width-0 recovery settles). Verified the pre-fix build ACCEPTS the substitution.
+- FRAMED-CONT-1: PARTIAL. A standalone framed frame that handles no value now requires satoshi-container growth
+  `>= 0` in both the pure standalone arm and the composed master's no-validator arm
+  (`assertContainersDidNotShrink`, `master-head.ts`). A framed foreign token container is still not kept by the
+  master (the satoshi rule does not cover it); the fix direction remains to add a framed foreign keep. Test:
+  `packages/solidc/test/framed/StandaloneContainerGrowth.test.ts` (master ASM carries the rule).
+- MERGE-1: OPEN. Every sound destination rule changes the SDK's merge output layout (consumed value currently goes
+  to the caller's change output), so a half-landed rule would brick honest merges. Fix direction unchanged: require
+  each consumed master's satoshis at a pinned destination and the survivor's fungible amount to cover the summed
+  consumed amounts, and update `sc-split-merge.ts` in the same change.
+- CONT-1: FIXED. `emitForeignContainerKeep` now requires the unnamed container's output NFT commitment to equal its
+  input commitment, in addition to lock, full category and amount. Test:
+  `packages/solidcash/test/e2e/AuditContainerCommitment.test.ts` (a rewritten commitment is refused, the identical
+  spend settles). Verified the pre-fix build ACCEPTS the rewrite.
+- WT-1/WT-2: PARTIAL. Direct entries now walk every input and skip only `[master, master + blockSize)`, and admit
+  only the record families the call rewrites (its loop collections, its written dynamic variables, and its value
+  chunks). Route participants keep the previous relative walk and full family list because their record block and
+  dynamic band are settled by the route verifier and the transaction carries the verifier/sibling blocks below the
+  master. Existing census/chunk/container suites pass; no new direct e2e places a record before the master.

@@ -83,11 +83,13 @@ import {
   ECRECOVER_COMPUTE_B_COVENANT_HASH,
   ECRECOVER_COMPUTE_B2_COVENANT_HASH,
   ECRECOVER_COMPUTE_B3_COVENANT_HASH,
+  ECRECOVER_COMPUTE_M_COVENANT_HASH,
   ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH,
   ECRECOVER_COMPUTE_A_SHARED_LOCK,
   ECRECOVER_COMPUTE_B_SHARED_LOCK,
   ECRECOVER_COMPUTE_B2_SHARED_LOCK,
   ECRECOVER_COMPUTE_B3_SHARED_LOCK,
+  ECRECOVER_COMPUTE_M_SHARED_LOCK,
   isChunkableValueType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
   outlineSharedSpans,
@@ -15310,15 +15312,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         // Non-evm loops co-spend A/M/B: a 2-way recovery fills M with a funder and reads B2 (A two inputs back), a
         // width-0 recovery fills M with the middle covenant and reads B3 (M one input back). Accept either lock.
+        // A B3's middle side-car must itself be the genuine M covenant, so the checkpoint B3 ladders from is one M
+        // produced and not an output an attacker chose (audit ECR-1). The A the chain reads is this call's own A
+        // slot (+1), which is checked immediately above.
         this.emit(Op.OP_DUP, loc);                                   // [lockB, lockB]
         this.emit(ECRECOVER_COMPUTE_B3_SHARED_LOCK, loc);
         this.emit(Op.OP_EQUAL, loc);                                 // [lockB, isB3]
-        this.emit(Op.OP_OVER, loc);                                  // [lockB, isB3, lockB]
+        this.emit(Op.OP_IF, loc);
+        this.emit(Op.OP_DROP, loc);                                  // [ ]
+        emitLoopSideCarIndex(2n);
+        this.emit(Op.OP_UTXOBYTECODE, loc);
+        this.emit(ECRECOVER_COMPUTE_M_SHARED_LOCK, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(Op.OP_DUP, loc);                                   // [lockB, lockB]
         this.emit(ECRECOVER_COMPUTE_B2_SHARED_LOCK, loc);
-        this.emit(Op.OP_EQUAL, loc);                                 // [lockB, isB3, isB2]
-        this.emit(Op.OP_BOOLOR, loc);                                // [lockB, isB3||isB2]
-        this.emit(Op.OP_NIP, loc);                                   // [isB3||isB2]
+        this.emit(Op.OP_EQUAL, loc);                                 // [lockB, isB2]
+        this.emit(Op.OP_SWAP, loc);                                  // [isB2, lockB]
+        this.emit(ECRECOVER_COMPUTE_B_SHARED_LOCK, loc);
+        this.emit(Op.OP_EQUAL, loc);                                 // [isB2, isB]
+        this.emit(Op.OP_BOOLOR, loc);
         this.emit(Op.OP_VERIFY, loc);                                // B integrity
+        this.emit(Op.OP_ENDIF, loc);
       }
     } else {
       slotIdx('A');
@@ -15362,17 +15377,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_HASH256, loc);
       // Accept the stateless 2-way B (A immediately before), the stateful 2-way B2 (A two inputs before, past the
       // M/funder slot), and the 3-way B3 (M immediately before). Each commits the same recovered pubkey.
-      this.emit(Op.OP_DUP, loc);
-      this.emit(Op.OP_DUP, loc);
+      //
+      // ECR-1: the predecessor B ladders from must be the chain this call's own A started, not an arbitrary
+      // output an attacker placed there. For B and B2 the predecessor input is pinned to this call's A slot. For
+      // B3 the input before B must additionally run the M covenant (checked from its revealed redeem, so the
+      // salted lock needs no constant), and the input before M is this call's A slot. Before this, an attacker
+      // put any output with `hash256(argBlob||shared||C2')` at B-1 and B3 ladded from a chosen checkpoint.
+      const requirePredecessorCovenant = (
+        offset: bigint, argCount: number, covenantHash: string,
+      ): void => {
+        slotIdx('B');
+        this.emit(encodeInt(offset), loc);
+        this.emit(Op.OP_SUB, loc);
+        this.emit(Op.OP_INPUTBYTECODE, loc);
+        for (let field = 0; field < argCount; field += 1) {
+          this.emitGenericPushdataDecode(raw, loc);
+          this.emit(Op.OP_NIP, loc);
+        }
+        // The redeem push (PUSHDATA2 for a multi-KB covenant), then its 33-byte salt prefix.
+        this.emit(encodeInt(3n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+        this.emit(encodeInt(BigInt(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH)), loc);
+        this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+        this.emit(Op.OP_HASH256, loc);
+        this.emit(hexToBin(covenantHash), loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);
+      };
+      this.emit(Op.OP_DUP, loc);                                      // [hB, hB]
       this.emit(hexToBin(ECRECOVER_COMPUTE_B3_COVENANT_HASH), loc);
       this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_IF, loc);                                       // [hB]
+      requirePredecessorCovenant(1n, 4, ECRECOVER_COMPUTE_M_COVENANT_HASH);
+      requirePredecessorCovenant(2n, 4, ECRECOVER_COMPUTE_A_COVENANT_HASH);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DUP, loc);                                      // [hB, hB]
       this.emit(hexToBin(ECRECOVER_COMPUTE_B2_COVENANT_HASH), loc);
       this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_IF, loc);                                       // [hB]
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DUP, loc);                                      // [hB, hB]
       this.emit(hexToBin(ECRECOVER_COMPUTE_B_COVENANT_HASH), loc);
-      this.emit(Op.OP_EQUAL, loc);
-      this.emit(Op.OP_BOOLOR, loc);
-      this.emit(Op.OP_BOOLOR, loc);
-      this.emit(Op.OP_VERIFY, loc);                                   // B integrity
+      this.emit(Op.OP_EQUALVERIFY, loc);                              // [hB]
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_DROP, loc);                                     // hB
     }
 
     // 4. read the recovered pubkey from B's output commitment (34 B: parity || Qx as a 33-byte LITTLE-endian VM
@@ -40642,10 +40689,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ADD, loc);
   }
 
-  private emitDynamicWriteVerification(node: FunctionDefinitionNode, guardInactiveRoute = true): void {
+  private emitDynamicWriteVerification(node: FunctionDefinitionNode, guardInactiveDelegate = true): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
+    // A write that executes must locate its chunk run. The only honest absent-base sentinel is `-1` (the SDK
+    // publishes it when this frame claimed no dyn band, and the coordinate then reconstructs from the layout).
+    // Values below `-1` encode a *read-only* run coordinate (`-(base + 3)`), which the SDK reserves for frames that
+    // do not write dynamic state. A compiler route participant legitimately runs such a lane (its broad writes are
+    // settled through the route owner), so only a plain direct entry is refused outright: before this check any
+    // caller set the free witness below -1 and every chunk commitment/count/consumption check below was skipped.
+    // ROUTE RESIDUAL (audit DYN-1): a route row can still carry the encoded sentinel; closing that needs a
+    // per-handler runtime activity flag, which this change does not add.
     const dynamicBaseIndex = this.getStackIndex('__internal__dynamicChunkInputBase', true);
-    if (guardInactiveRoute && dynamicBaseIndex >= 0) {
+    const routeParticipant = this.ownsMessageBusParticipantBlock() || this.usesProxyStateBlockBase()
+      || this.currentFunctionIsDelegate;
+    if (dynamicBaseIndex >= 0 && !routeParticipant) {
+      this.emitDynamicChunkBasePick(loc);
+      this.emit(encodeInt(-1n), loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_VERIFY, loc);
+    } else if (guardInactiveDelegate && dynamicBaseIndex >= 0) {
       const stackBefore = [...this.stack];
       this.emitDynamicChunkBasePick(loc);
       this.emit(encodeInt(-1n), loc);
@@ -51939,6 +52001,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_LESSTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);
+    // Audit CONT-1: a container this call does not name must also keep its NFT commitment. A container's covenant
+    // authorizes any spend beside the master, so without this an attacker rewrote a custodied foreign NFT's
+    // commitment (or replaced it through the mutable capability) on an unrelated call.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
     if (ownedContainer) this.emit(Op.OP_ENDIF, loc);
   }
 
@@ -52111,9 +52181,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // record, or a written dynamic var's OLD chunk (spent at its chunk lock and recreated with a different
     // commitment). Otherwise the shorter walk below preserves every own-category mutable 1:1, which is the only
     // correct treatment of a function that neither loops nor rewrites chunks.
-    const admitMintableLocks = this.entrySlots.some((slot) => slot.inLoop)
-      || (node.collectionIterations?.length ?? 0) > 0
-      || (node.dynamicWrites?.length ?? 0) > 0
+    // Only the record families this call actually rewrites may sit outside the block: a runtime loop's own
+    // collection, a written dynamic variable's OLD chunks, and the value chunks a long mapping write consumes.
+    // Admitting every record lock let a call co-spend and rewrite an entry of a collection it never named.
+    const loopCollections = new Set<string>([
+      ...this.entrySlots.filter((slot) => slot.inLoop).map((slot) => slot.collection),
+      ...(node.collectionIterations ?? []).map((iteration) => iteration.collection),
+    ]);
+    const writtenDynamic = [...new Set([
+      ...(node.dynamicWrites ?? []), ...this.pendingDynamicWrites.keys(),
+    ])];
+    // A route participant's record block is settled by the route verifier, and its dynamic band is shared across
+    // handlers, so the walk keeps the full family list there. A plain direct entry admits only what it rewrites.
+    const routeParticipantWalk = this.ownsMessageBusParticipantBlock() || this.usesProxyStateBlockBase()
+      || this.currentFunctionIsDelegate;
+    const admitMintableLocks = (routeParticipantWalk
+      ? (this.entrySlots.some((slot) => slot.inLoop) || (node.collectionIterations?.length ?? 0) > 0
+        || (node.dynamicWrites?.length ?? 0) > 0)
+      : loopCollections.size > 0 || writtenDynamic.length > 0)
       // A chunkable sorted-mapping value write/delete also spends its OLD value chunks at their chunk lock and
       // recreates them (or drops them) at a different root, so those consumed chunk inputs must be admitted here
       // instead of preserved 1:1. The hidden value-chunk lock-list witness is present whenever the function has
@@ -52136,23 +52221,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SPLIT, loc);
       this.emit(Op.OP_DROP, loc);
       this.emitMintableRecordLocks(
-        this.collectionDefinitions.map((collection) => this.vmapCollectionSignature(collection.name)), loc,
+        routeParticipantWalk
+          ? this.collectionDefinitions.map((collection) => this.vmapCollectionSignature(collection.name))
+          : this.collectionDefinitions
+            .filter((collection) => loopCollections.has(collection.name))
+            .map((collection) => this.vmapCollectionSignature(collection.name)),
+        loc,
+        routeParticipantWalk ? {} : { dynamicNames: writtenDynamic, includeDataLock: false },
       );
       this.emit(Op.OP_NIP, loc);
       this.emit(Op.OP_TOALTSTACK, loc);
     }
-    this.emit(Op.OP_TXINPUTCOUNT, loc);
-    this.emit(Op.OP_BEGIN, loc);
-    this.emit(Op.OP_1SUB, loc);
-    this.emit(Op.OP_DUP, loc);
-    // The loop iterates ABSOLUTE transaction input indices, so the block boundary must be the master's absolute
-    // index plus the relative block size. Comparing a raw blockSize against an absolute index lets a cross-contract
-    // callee (master > 0) preserve its own entry/data NFT, which the sorted write legitimately rewrites.
-    this.emitMasterInputIndex(loc);
-    this.emit(encodeInt(BigInt(blockSize)), loc);
-    this.emit(Op.OP_ADD, loc);
-    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
-    this.emit(Op.OP_IF, loc);
+    const emitInspect = (): void => {
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emit(encodeInt(BigInt(this.getStackIndex(category) + 2)), loc);
@@ -52182,15 +52262,63 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_OVER, loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
-    if (admitMintableLocks) this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(BigInt(blockSize)), loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_UNTIL, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_DROP, loc);
+      if (admitMintableLocks) this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    };
+    if (routeParticipantWalk) {
+      // A route participant's block is settled by the route verifier, and the transaction carries the verifier and
+      // sibling participant blocks below it. Keep the established walk there: only inputs past this participant's
+      // block are treated as records.
+      this.emit(Op.OP_TXINPUTCOUNT, loc);
+      this.emit(Op.OP_BEGIN, loc);
+      this.emit(Op.OP_1SUB, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(BigInt(blockSize)), loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      emitInspect();
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(BigInt(blockSize)), loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_UNTIL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emit(Op.OP_DROP, loc);
+    } else {
+      this.emit(Op.OP_TXINPUTCOUNT, loc);
+      this.emit(Op.OP_BEGIN, loc);
+      this.emit(Op.OP_1SUB, loc);
+      // [category, i]. Exit at i < 0 (the old relative exit test stopped at `i < blockSize`, which skipped every
+      // input below a master that is not input 0). The block is [master, master + blockSize); everything else is
+      // inspected, including records placed before the master.
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emit(encodeBool(true), loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emitMasterInputIndex(loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_IF, loc);
+      emitInspect();
+      this.emit(encodeBool(false), loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emitMasterInputIndex(loc);
+      this.emit(encodeInt(BigInt(blockSize)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      emitInspect();
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(encodeBool(false), loc);
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_UNTIL, loc);
+      this.emit(Op.OP_DROP, loc);
+    }
     if (admitMintableLocks) {
       this.emit(Op.OP_FROMALTSTACK, loc);
       this.emit(Op.OP_DROP, loc);
@@ -52409,7 +52537,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** `[base]` -> `[base, locks]`: each lock this contract may mint a record at, 35 bytes apiece. */
-  private emitMintableRecordLocks(signatures: readonly (string | undefined)[], loc: SingleLocationData): void {
+  private emitMintableRecordLocks(
+    signatures: readonly (string | undefined)[],
+    loc: SingleLocationData,
+    options?: { dynamicNames?: readonly string[]; includeDataLock?: boolean },
+  ): void {
     this.emit(Op.OP_0, loc);
     // [base, locks]. A rebuilt lock replaces one untracked copy; the tracked base stays put.
     const append = (build: () => void): void => {
@@ -52419,7 +52551,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.stack.splice(0, this.stack.length, ...saved);
       this.emit(Op.OP_CAT, loc);
     };
-    if (this.dataNftCount > 0) {
+    if ((options?.includeDataLock ?? true) && this.dataNftCount > 0) {
       append(() => {
         if (this.directConvention && !this.framedMaster) {
           this.emitRecordMasterLockUnder(loc);
@@ -52433,6 +52565,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     for (const sv of this.stateVariables) {
       if (!sv.isDynamic) continue;
+      if (options?.dynamicNames !== undefined && !options.dynamicNames.includes(sv.name)) continue;
       const chunkHash = computeCollectionHash(computeCollectionSignature(sv.name, sv.type.toString()));
       append(() => this.emitSortedEntryAddress(chunkHash, loc));
     }

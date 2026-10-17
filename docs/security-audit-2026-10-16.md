@@ -613,8 +613,8 @@ tooling code.
   chunks). The exit test is `i < 0`, so inputs below a nonzero master are inspected; the upper arm keeps
   `i >= master + blockSize`. Route participants keep the previous relative walk and full family list because their
   record block and dynamic band are settled by the route verifier and the transaction carries the verifier/sibling
-  blocks below the master. Evidence: `CollectionReadInputCensus.test.ts` (6 cases; a smuggled/rewritten extra node
-  is refused at the master and the honest spend settles), `AuditContainerCommitment.test.ts` (CONT-1 commitment
-  pin), and the existing chunk/container suites. The SDK and the direct entry pin the master at input 0, and a
-  hand-built spend that moves it to input 1 was refused by the direct prologue before the walk could run, so the
-  below-master arm is a defensive bound for shapes the prologue admits rather than an SDK-reachable layout.
+  blocks below the master. Tests: `AuditOutsideLayoutRecord.test.ts` places an own-category mutable record at an
+  arbitrary P2SH32 lock at input 0, with the master shifted to input 1 through the real stateful call builder: a
+  rewritten commitment is refused at the master, and the same spend with the record preserved settles.
+  `CollectionReadInputCensus.test.ts` (6 cases) covers records outside the block at counted locks,
+  `AuditContainerCommitment.test.ts` covers CONT-1, and the existing chunk/container suites pass.

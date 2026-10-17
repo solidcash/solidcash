@@ -108,12 +108,12 @@ byte-length pin are refreshed, and the `MessageBusVerifierSize` pin is refreshed
 `release-security-conformance` now exit 0.
 
 What still blocks 0.13.1 is `kernel-beta-gate`'s `sdk-journal` phase: 33 message-bus composition e2e tests fail
-with `messageBus: BCH-2026 preflight failed at input N: Program failed an OP_VERIFY operation`. The block-layout
-v2 refactor (`745a72ddd`) unified the front-region auxiliary co-spend band in the compiler and the SDK's direct
-path (`orderedFrontRegionCoSpends` in `stb-build-inputs.ts`), but the message-bus composition assembly path
-(`compose-assembly-runtime.ts`) was not updated to honor the new band, so its assembled input order no longer
-matches the emitted covenants. That is a soundness-adjacent regression, not a pin refresh, and it needs dedicated
-engineering before release.
+across 17 files. Investigation for this review established that the composition path does honor the block-layout
+v2 band (`_batchRaw` → `_createBuilder` → `buildInputs` → `orderedFrontRegionCoSpends`), so the missing-ordering
+hypothesis does not hold. The failures trace to the recent ecrecover A/M/B3 change (`3e9990084`, ~9 stale tests),
+October covenant-hardening byte-size regressions (`d6821a812`/`f19f0b709`), two stale capacity snapshots, and
+remaining proxy-vmap/keccak/nested-returning VM failures that the hardening authors must reconcile with the
+message-bus assembly. This is real engineering work on the kernel beta, not a pin refresh.
 
 Remaining suite hygiene (non-blocking to the gates, but must be triaged): 2 utils byte-length pins, 5 solidc
 bytecode-size pins, and 5 non-journal solidcash failures (2 contract-size overflows, 2 logical-identity, 1
@@ -211,10 +211,25 @@ The forbidden-name fence is fixed in `aad8767c3`: the three `Unicrow` comment li
 reports `matched`. The `compiler-journal` phase passes after the `MessageBusVerifierSize` re-pin (`1368112ac`).
 
 The gate now fails only at `sdk-journal` (`yarn workspace solidcash vitest run test/journal-message-bus`): 33
-message-bus composition e2e failures, the same set listed above. The block-layout-v2 commit unified the
-front-region auxiliary band in the compiler and the SDK's direct path but did not update the message-bus
-composition assembly, so the composed input order no longer satisfies the emitted covenants. This is the
-release-blocking item.
+message-bus composition e2e failures across 17 files. Root-cause analysis during this review found that the
+evaluator's original hypothesis does not hold: the composition path already routes through
+`orderedFrontRegionCoSpends`. Kernel participants build via `_batchRaw` → `_createBuilder` →
+`StatefulTransactionBuilder.build()` → `buildInputs`, which iterates the emitted block-layout auxiliary band,
+so block-layout v2's input ordering is applied there. The failures trace instead to more recent, unreconciled
+compiler/SDK changes:
+
+- **ecrecover A/M/B3 (`3e9990084`)**: the compiler now reserves three `ecrecoverSideCar` slots per call
+  (A/M/B) and the resolver provisions A/B2/M/B3, but ~9 message-bus e2e tests still expect two slots and
+  manually provision role `B`. The composed verifier then fails preflight at its shared input.
+- **Byte-size regressions from the October covenant hardening (`d6821a812`/`f19f0b709`)**: some composed
+  unlocking scripts now exceed the BCH-2026 per-input byte limit (e.g. 10,113 bytes) and two fixtures exceed
+  the 10,000-byte deploy limit.
+- **Stale capacity snapshots**: `AtomicMessageBusCapacity` operation-cost pins drifted.
+- **Remaining VM covenant failures** in proxy vmap RMW and keccak/nested-returning composition still need the
+  covenant-hardening authors to reconcile with the message-bus assembly.
+
+This is the release-blocking item: the kernel-beta proof inventory and the recent security work have not been
+reconciled.
 
 ### `release-security-conformance` triage (resolved)
 

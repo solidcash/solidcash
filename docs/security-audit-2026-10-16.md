@@ -494,3 +494,35 @@ block-oracle keeper.
   body that also re-encodes values would.
 - A public lifecycle entry (`split`, `merge`, `migrateRecords`, `upgrade`) is authorized only by its own body.
   The compiler emits the topology checks, not an access policy.
+
+## Additional surfaces read (2026-10-17, later pass)
+
+- Event settlement (`emitEventCovenantVerification`, `emitNotTakenEventSlotBinding`,
+  `emitOwnCategoryImmutableNftOutputPin`, `GenerateTargetTraversal.ts:45694-46052`, `50191-50320`): for every
+  emitted event the output's commitment and event covenant lock are pinned; a conditional emit that did not run
+  requires the reserved index to hold an **empty commitment** (or to be past the output count); a runtime loop's
+  event span comes from compiler-tracked temps, not witnesses. The SEC-15 per-slot form binds every unreached
+  ordinal of a graph handler's window. No new issue.
+- `unsafe` tiers (`SymbolTableTraversal.ts:5335-5373`): tiers 1 and 2 forbid state writes, entries, events,
+  transfers, token containers, external calls/reads, deploys, and out-state reads, so only master/data-NFT
+  preservation remains to be checked. Advisory: `unsafe` with no argument is tier 0 (no covenant checks at all),
+  and the compiler accepts it silently; user docs should say so next to the modifier, since omitting the argument
+  is easy.
+- Token-container transfers (`emitTokenContainerTransferCovenantVerification`, `54342-54480`): the output at the
+  reserved `tcTransfer` slot is pinned to the call's `to`, amount, category (display→internal reversed, capability
+  handled) and, for NFTs, the commitment. The debit side is the container covenant plus `DX-2`'s preservation.
+- `migrateRecords` positions (`emitMigrateRecordsEntryMigrationCheck`, `50042-50110`): the check uses absolute
+  input/output index 1 while the master is located by `emitMasterInputIndex`. For a direct call with the master at
+  index 0 the layout is exact. With a master at a higher index the check still only migrates a genuine old entry
+  into a replacement-bound entry at global index 1, with commitment, category and value preserved, so it is a
+  layout assumption rather than a hole. Advisory: state the master-at-0 layout requirement for `migrateRecords`.
+- `unsafe(0)` / merge / split / `migrateRecords` authorization: the compiler emits topology rules, not an access
+  policy. A public lifecycle entry is exactly as strong as its body's `require`s.
+
+## Final status of this pass
+
+Confirmed by source tracing: DYN-1 (critical), ECR-1 (critical), MERGE-1 (medium-high), CONT-1 (medium), MIG-1
+(medium, design), WT-2 (medium), KCHAIN-1 (low on consensus rules; forged-digest primitive under the mock's
+commitment limit), WT-1 (low). Closed after tracing: ROUTE-SKIP-1, ROUTE-READ-1. No VM run was made for any
+finding; DYN-1, ECR-1 and MERGE-1 are the three that most need one. This pass read no website, bench, fixture, or
+tooling code.

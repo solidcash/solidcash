@@ -2191,6 +2191,12 @@ Still deferred:
 - Nested external-call and delegatecall callees: their unused chunk slots get funding inputs and token-free
   pass-through outputs, so payloads that fit one commitment keep working, but a nested payload that needs chunks is
   not learned or materialized and the callee covenant refuses it.
+  **PINNED 2026-10-16 (external-call harness).** `packages/solidcash/test/e2e/NestedCalleeWideEvent.test.ts` (2/2)
+  drives a caller that invokes a callee through the real `.withExternalCall(...).send()` path: a nested NARROW emit
+  (`Narrow(int)`) settles and the callee state advances, while a nested WIDE emit (`Wide(bytes32 x5)` = 165 B) fails
+  `messageBus: BCH-2026 preflight failed at input 2: Program failed an OP_VERIFY operation.` — the callee covenant
+  refuses its unmaterialized continuation chunk. The delegatecall spelling shares the same nested block assembly and
+  is not separately harnessed.
 - `destroy()` **RESOLVED 2026-10-16** - now collects continuation chunk UTXOs alongside the event head NFTs. Both
   ride the same event covenant with a 144-block `OP_CHECKSEQUENCEVERIFY`, so the sweep adds each with the matching
   block-based sequence (`EVENT_NFT_RELATIVE_LOCK_SEQUENCE` = `0x00000090`) and burns them into the reclaim output;

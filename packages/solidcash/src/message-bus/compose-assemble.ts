@@ -1134,7 +1134,10 @@ export async function assembleAtomicComposition(
         mergedTokenAmount += consumed.token.amount ?? 0n;
         mergedValue += consumed.satoshis;
         local.addInput(consumed, routeUnlocker);
-        local.addOutput({ to: options.changeAddress, amount: 0n });
+        // Audit MERGE-1: the consumed tail keeps a tokenless output slot at its input index, but its value is
+        // pinned to the survivor. A zero-sat output at the caller's change address is below the relay dust floor
+        // on a standard provider, so use an OP_RETURN placeholder, which is dust-exempt.
+        local.addOutput({ to: Uint8Array.from([0x6a]), amount: 0n });
       }
       local.outputs[0] = {
         ...masterOutput,

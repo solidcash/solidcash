@@ -580,17 +580,24 @@ tooling code.
   (`messageBusCloneSourceKey` plus pending writes) take the same strict refusal.
 - ECR-1: FIXED without a side-car protocol fork. The consuming contract now requires B3's predecessor input to reveal
   the M covenant and the input before it to reveal the A covenant (`requirePredecessorCovenant` in
-  `GenerateTargetTraversal.ts`), and the loop path requires the M shared lock when B is B3. The 2-way B/B2 paths are
-  unchanged because their result is a pure function of the call's own arguments. Test:
-  `packages/solidcash/test/e2e/AuditEcrecoverMiddleInput.test.ts` (an arbitrary input standing in for M is refused;
-  the honest width-0 recovery settles). Verified the pre-fix build ACCEPTS the substitution.
-- FRAMED-CONT-1: FIXED for the exposed container. A standalone framed frame that handles no value now requires
-  satoshi-container growth `>= 0` in both the pure standalone arm and the composed master's no-validator arm
-  (`assertContainersDidNotShrink`, `master-head.ts`). The framed codegen has no token-container surface: no
-  `tokens[...]` access is lowered for a framed master and the framed SDK ships no token-container builder, so the
-  reachable container is the satoshi one; a framed token container would need a new codegen path before a keep rule
-  could apply to it. Test: `packages/solidc/test/framed/StandaloneContainerGrowth.test.ts` (master ASM carries the
-  rule).
+  `GenerateTargetTraversal.ts`). The revealed redeem is also bound to the predecessor's actual locking bytecode:
+  the script recomputes the P2SH32 lock `OP_HASH256 hash256(redeem) OP_EQUAL` and compares it to
+  `OP_UTXOBYTECODE`, so a bare input that merely publishes the genuine redeem bytes in its unlocking is refused.
+  The loop path requires the M shared lock when B is B3. The 2-way B/B2 paths are unchanged because their result is
+  a pure function of the call's own arguments. Test:
+  `packages/solidcash/test/e2e/AuditEcrecoverMiddleInput.test.ts` (both the empty-unlocking substitution and the
+  public-push substitution are refused; the honest width-0 recovery settles). Verified the pre-fix build ACCEPTS the
+  substitution.
+- FRAMED-CONT-1: FIXED. A standalone framed frame that handles no value requires satoshi-container growth `>= 0` in
+  both the pure standalone arm and the composed master's no-validator arm (`assertContainersDidNotShrink`,
+  `master-head.ts`). The framed token container covenant (built without a master lock) now keeps its custody itself:
+  `framedTokenContainerKeep` requires the output at the container's index to recreate its lock, full token
+  category, fungible amount, NFT commitment and satoshi value. Tests:
+  `packages/solidcash/test/framed/AuditFramedContainerRedirect.test.ts` drives the shipped framed call harness: a
+  captured no-value call with the satoshi container co-spent and its value redirected is refused at the master,
+  while the same call without the container settles; a framed token container co-spent with the captured master
+  unlock is refused when its tokens move to the caller's lock and accepted when recreated at its index.
+  `packages/solidc/test/framed/StandaloneContainerGrowth.test.ts` also carries the master ASM rule.
 - MERGE-1: FIXED. The survivor output must now carry the summed value and fungible amount of every consumed master.
   Direct merges sum `OP_UTXOVALUE`/`OP_UTXOTOKENAMOUNT` over the consumed tail and require
   `survivor_out.value == survivor_in.value + sum` and `survivor_out.tokenAmount >= survivor_in.tokenAmount + sum`
@@ -598,12 +605,15 @@ tooling code.
   sums in its synthesized route verification, and the survivor's ordinary master-value preservation is relaxed to
   `>=` only on a mode-2 lifecycle owner so the exact route sum remains the binding rule. The SDK layouts moved with
   the covenant: `StatefulContract.merge`, `sc.call ... withConsumedMasters`, and
-  `messageBus.compose({ lifecycleMerges })` all place consumed satoshis on the survivor (compose keeps tokenless
-  zero-value tail outputs so input/output indexes stay aligned). Tests:
+  `messageBus.compose({ lifecycleMerges })` all place consumed satoshis on the survivor; compose keeps tokenless
+  OP_RETURN tail outputs at the consumed input indexes, which are dust-exempt on a standard provider. A merge whose
+  funding inputs cannot cover the fee now throws instead of building a zero-fee transaction. Tests:
   `packages/solidcash/test/e2e/AuditMergeConservation.test.ts` (honest merge settles with the summed value/FT at
   the survivor; the same captured transaction with the consumed satoshis moved to change, or the surplus FT moved to
-  change, is refused at input 0) and `KernelAtomicMergeLifecycle.test.ts` /
-  `KernelAtomicMergeReadLifecycle.test.ts` (routed merge(2) settles, survivor FT consolidated).
+  change, is refused at input 0), `AuditMergeRouteDust.test.ts` (the routed merge composes and relays under
+  `enforceDust: true`), `SplitMerge.test.ts` (an empty funding list is refused), and
+  `KernelAtomicMergeLifecycle.test.ts` / `KernelAtomicMergeReadLifecycle.test.ts` (routed merge(2) settles,
+  survivor FT consolidated).
 - CONT-1: FIXED. `emitForeignContainerKeep` now requires the unnamed container's output NFT commitment to equal its
   input commitment, in addition to lock, full category and amount. Test:
   `packages/solidcash/test/e2e/AuditContainerCommitment.test.ts` (a rewritten commitment is refused, the identical

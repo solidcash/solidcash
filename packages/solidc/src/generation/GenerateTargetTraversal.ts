@@ -15396,8 +15396,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitGenericPushdataDecode(raw, loc);
           this.emit(Op.OP_NIP, loc);
         }
-        // The redeem push (PUSHDATA2 for a multi-KB covenant), then its 33-byte salt prefix.
+        // The redeem push (PUSHDATA2 for a multi-KB covenant).
         this.emit(encodeInt(3n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+        // ECR-1: the revealed redeem must be the predecessor's actual script. Hashing bytes found in the
+        // unlocking script alone let any bare input publish `0x20 || salt || M_redeem` and stand in for the
+        // covenant without ever executing it. Bind the full redeem to the P2SH32 lock
+        // `OP_HASH256 <hash256(redeem)> OP_EQUAL`, then check the role from the covenant-only hash below.
+        this.emit(Op.OP_DUP, loc);
+        this.emit(Op.OP_HASH256, loc);
+        this.emit(hexToBin('aa20'), loc);
+        this.emit(Op.OP_SWAP, loc);
+        this.emit(Op.OP_CAT, loc);
+        this.emit(hexToBin('87'), loc);
+        this.emit(Op.OP_CAT, loc);
+        slotIdx('B');
+        this.emit(encodeInt(offset), loc);
+        this.emit(Op.OP_SUB, loc);
+        this.emit(Op.OP_UTXOBYTECODE, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);
         this.emit(encodeInt(BigInt(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH)), loc);
         this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
         this.emit(Op.OP_HASH256, loc);

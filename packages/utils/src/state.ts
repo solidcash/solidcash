@@ -2446,6 +2446,24 @@ function directMasterOutputPin(): Script {
 }
 
 /**
+ * `[]` -> `[]`. Framed token container master path.
+ *
+ * The framed convention builds containers without a master lock and its SDK has no container output layout, so
+ * the container covenant itself keeps the custody: the output at this input's index recreates the container's
+ * lock, full token category, fungible amount, NFT commitment and satoshi value (audit FRAMED-CONT-1).
+ */
+function framedTokenContainerKeep(): Script {
+  return [
+    Op.OP_INPUTINDEX,
+    Op.OP_DUP, Op.OP_OUTPUTBYTECODE, Op.OP_INPUTINDEX, Op.OP_UTXOBYTECODE, Op.OP_EQUALVERIFY,
+    Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
+    Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENAMOUNT, Op.OP_EQUALVERIFY,
+    Op.OP_DUP, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
+    Op.OP_OUTPUTVALUE, Op.OP_INPUTINDEX, Op.OP_UTXOVALUE, Op.OP_GREATERTHANOREQUAL, Op.OP_VERIFY,
+  ];
+}
+
+/**
  * Build the token container covenant script for holding foreign tokens on behalf
  * of a stateful master contract.
  *
@@ -2476,7 +2494,7 @@ export function buildTokenContainerCovenantScript(
     Op.OP_EQUALVERIFY,
     catInternal,
     Op.OP_EQUALVERIFY,
-    ...(masterLock !== undefined ? directMasterOutputPin() : []),
+    ...(masterLock !== undefined ? directMasterOutputPin() : framedTokenContainerKeep()),
     Op.OP_ELSE,
     // Merge path: output preserves locking bytecode, value, FT amount, and category
     Op.OP_DUP,

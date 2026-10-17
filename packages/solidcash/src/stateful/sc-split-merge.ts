@@ -295,6 +295,14 @@ export async function mergeStatefulContract(options: MergeOptions): Promise<Merg
   const actualMergeFee = options.fee ?? await computeFeeFromBuilder(builder);
   const totalFunding = fundingUtxos.reduce((sum, u) => sum + u.satoshis, 0n);
   const changeAmount = totalFunding - actualMergeFee;
+  if (changeAmount < 0n) {
+    builder.outputs.pop(); // remove placeholder
+    // The consumed masters' satoshis are pinned to the survivor, so only the funding inputs can pay the fee.
+    throw new Error(
+      `Insufficient funding for merge: need ${actualMergeFee} sats for fee `
+      + `but only have ${totalFunding} sats from funding UTXOs.`,
+    );
+  }
   if (changeAmount > 0n) {
     builder.outputs[builder.outputs.length - 1] = {
       ...builder.outputs[builder.outputs.length - 1], amount: changeAmount,

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe,
   encodeTransaction, hexToBin } from '@bitauth/libauth';
-import { ethers } from 'ethers';
 import { buildEcrecoverComputeRedeem, ecrecoverComputeLockingBytecode } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { Contract } from '../../src/index.js';
@@ -102,6 +101,7 @@ describe('ECR-1: B3 only ladders from a genuine middle covenant', () => {
       ...fake,
       token: { category: SIDECAR_CAT, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
     });
+    const honestMUnlocking = tx.inputs[mIndex]!.unlockingBytecode.slice();
     tx.inputs[mIndex] = {
       outpointTransactionHash: hexToBin(fake.txid),
       outpointIndex: 0,
@@ -112,6 +112,20 @@ describe('ECR-1: B3 only ladders from a genuine middle covenant', () => {
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
     expect(outcome).not.toBe('ACCEPTED');
     expectScriptRejection(outcome, 0);
+    expect((await sc.getState()).count).toBe(1n);
+
+    // Public-push bypass: the same bare OP_1 lock, but the unlocking publishes the genuine M redeem bytes. The
+    // hash of those bytes matches, so only binding the hash to the predecessor's locking script can refuse it.
+    tx.inputs[mIndex] = {
+      outpointTransactionHash: hexToBin(fake.txid),
+      outpointIndex: 0,
+      sequenceNumber: 0xffffffff,
+      unlockingBytecode: honestMUnlocking,
+    };
+    const bypassOutcome = await provider.sendRawTransaction(binToHex(encodeTransaction(tx)))
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    expect(bypassOutcome).not.toBe('ACCEPTED');
+    expectScriptRejection(bypassOutcome, 0);
     expect((await sc.getState()).count).toBe(1n);
 
     // The honest transaction built on the same outpoint still settles.

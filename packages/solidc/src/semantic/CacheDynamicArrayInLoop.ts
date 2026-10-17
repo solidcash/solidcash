@@ -256,9 +256,13 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
     for (const [key, value] of Object.entries(node)) {
       if (found) break;
       if (key === 'location' || key === 'type' || key === 'symbolTable') continue;
-      if (value instanceof Node && this.readsStateVar(value, name)) { found = true; break; }
-      else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node && this.readsStateVar(item, name)) { found = true; break; }
+      if (value instanceof Node && this.readsStateVar(value, name)) {
+        found = true;
+        break;
+      } else if (Array.isArray(value)) {
+        for (const item of value) {
+          if (item instanceof Node && this.readsStateVar(item, name)) { found = true; break; }
+        }
       }
     }
     return found;

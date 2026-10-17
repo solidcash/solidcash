@@ -2,8 +2,10 @@
 
 Status: in progress. Findings are appended as they are found; a later section may refine an earlier one.
 
-Summary so far: DYN-1 (CRITICAL), ECR-1 (CRITICAL, needs a VM run), ROUTE-SKIP-1 (HIGH, unconfirmed against route admission), WT-2 (MEDIUM), WT-1 (LOW), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
-KCHAIN-1 (LOW on consensus limits, forged-digest primitive under the mock's limit), ROUTE-READ-1 (suspected).
+Summary so far: DYN-1 (CRITICAL), ECR-1 (CRITICAL, needs a VM run), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
+WT-2 (MEDIUM), KCHAIN-1 (LOW on consensus limits, forged-digest primitive under the mock's limit), WT-1 (LOW).
+Closed after tracing: ROUTE-SKIP-1 and ROUTE-READ-1 (handler clones never batch; LOW hardening note on the
+name-based guard).
 
 Not yet read on this pass: framed validator and master deltas since `056f4036b`, message-bus lifecycle and
 compose SDK, block oracle updater, website, and tooling. `ecrecover` was read only for the side-car chain binding
@@ -123,7 +125,27 @@ digest (`compiler.ts:12845-12849`) covers the batch rows, but no reference was f
 active-row set. If nothing does, an active handler can be made to see `m[k] == default` (for example a nonce or a
 `used[k]` flag reading as zero or false, which permits replay, or an allowance reading as zero). Not yet confirmed.
 
-### ROUTE-SKIP-1 (HIGH if admitted routes reach it; source-traced) A compiler route's sorted write is skipped when the spender sets `predOut = -2`
+### ROUTE-SKIP-1 (DOWNGRADED 2026-10-17 to LOW hardening: closed by the scalar clone path)
+
+Correction after tracing clone batch assignment. Route writes execute inside handler clones, which are all named
+`__message_bus_*` (`nameMessageBusClone`, `compiler.ts:10503-10512`). In `SymbolTableTraversal.ts:4048-4054`,
+`ownsCollectionTopology` is true for `node.name.startsWith('__message_bus_') && !node.messageBusRoute`, and a clone
+is not the route itself. So every clone gets `sortedBatchInfo = undefined`. A clone's writes therefore take the
+scalar upload path (`inBatch` false, `GenerateTargetTraversal.ts:28622`), where `predOut` is not read at all, and
+its reads cannot take the `routeBatch` default arm (`27816-27818` requires `sortedBatchInfo`). The route function's
+own body dispatches rows and contains no source writes or reads. The `-2` gate on the general batch
+(`33960-33961`) is therefore reachable only by the synthesized route object, whose writes do not exist.
+
+That closes both ROUTE-SKIP-1 and ROUTE-READ-1 as written, on the current naming convention. Residual (LOW): the
+protection is a *name* test (`__message_bus_` prefix) rather than a typed property. Any future clone family, renamed
+clone, or inlined handler that keeps `sortedBatchInfo` would re-open the general branch, which accepts `-2` for
+direct functions too whenever a batch is nonlinear (an alias/conditional-delete slot makes `linear` false at
+`SymbolTableTraversal.ts:4062-4067`). Recommend replacing the name test with an explicit `ownRecordsScalarOnly`
+flag and refusing `-2` outright on a non-route batch.
+
+The analysis below records the original reasoning and stands as the description of why a typed guard is wanted.
+
+### ROUTE-SKIP-1 (original entry; see the downgrade above; HIGH if admitted routes reach it; source-traced) A compiler route's sorted write is skipped when the spender sets `predOut = -2`
 
 This generalizes ROUTE-READ-1 to writes. On a compiler message-bus route, each sorted-map write slot carries
 spender-chosen witnesses `Slot/Proof/Next/PredOut`. `predOut == -2` is the "inactive row" sentinel, and it is

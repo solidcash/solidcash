@@ -2,7 +2,7 @@
 
 Status: in progress. Findings are appended as they are found; a later section may refine an earlier one.
 
-Summary so far: DYN-1 (CRITICAL), ECR-1 (CRITICAL, needs a VM run), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
+Summary so far: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, needs a VM run), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
 WT-2 (MEDIUM), KCHAIN-1 (LOW on consensus limits, forged-digest primitive under the mock's limit), WT-1 (LOW).
 Closed after tracing: ROUTE-SKIP-1 and ROUTE-READ-1 (handler clones never batch; LOW hardening note on the
 name-based guard).

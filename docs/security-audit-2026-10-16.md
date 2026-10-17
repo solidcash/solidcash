@@ -3,7 +3,7 @@
 Status: in progress. Findings are appended as they are found; a later section may refine an earlier one.
 
 Summary so far: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, needs a VM run), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
-WT-2 (MEDIUM), KCHAIN-1 (LOW on consensus limits, forged-digest primitive under the mock's limit), WT-1 (LOW).
+WT-2 (LOW), KCHAIN-1 (LOW on consensus limits, forged-digest primitive under the mock's limit), WT-1 (LOW).
 Closed after tracing: ROUTE-SKIP-1 and ROUTE-READ-1 (handler clones never batch; LOW hardening note on the
 name-based guard).
 
@@ -363,7 +363,7 @@ Fix direction: B3 must require the output at `B-1` to sit at the M covenant's lo
 must require the output at `M-1` to be A's lock. Alternatively, the contract can check the M slot's input lock like it
 checks A and B.
 
-### WT-1 (LOW, revised from MEDIUM) The outside-layout pin now admits every record lock unconditionally
+### WT-1 (LOW, hardening) The outside-layout pin now admits every record lock unconditionally
 
 Committed during this audit as `fb0bba34f` ("admit rewritten chunks in the outside-layout mutable walk"). The edit to `emitPreserveOutsideLayoutOwnMutable` (`GenerateTargetTraversal.ts:51955-52028`) removes
 the `stepped` gate. Before it, a function with no in-loop entry slot and no collection iteration preserved every
@@ -395,55 +395,32 @@ example, a function that writes `string name` admits every entry lock of every c
 an unrelated mapping can be rewritten under the count-only census. The fix direction is unchanged: admit only the
 locks the function actually rewrites.
 
-### WT-2 (MEDIUM, revised from HIGH) The outside-layout walk stops before the block when the master is not input 0
+### WT-2 (LOW, revised from MEDIUM) The outside-layout walk's exit test is relative while its entry test is absolute
 
-`a56314f36` changed the entry test of the walk to `i >= master + blockSize` (absolute), but the loop's exit test
-is still `i < blockSize` (relative; `emitPreserveOutsideLayoutOwnMutable`, the `OP_DUP <blockSize> OP_LESSTHAN
-OP_UNTIL` tail). The walk counts down from `txInputCount - 1` and stops at the first `i < blockSize`. With the master
-at absolute index `m > 0`:
+`a56314f36` changed the walk's entry test to `i >= master + blockSize` (absolute) but left the loop's exit test as
+`i < blockSize` (relative; `emitPreserveOutsideLayoutOwnMutable`, the `OP_DUP <blockSize> OP_LESSTHAN OP_UNTIL`
+tail). With the master at absolute index `m > 0`, inputs in `[blockSize, m + blockSize)` are skipped by the entry
+test, and inputs `< blockSize` are never visited at all. The walk therefore no longer covers an own-category mutable
+input placed before the master, and the attacker chooses `m` by ordering inputs (the master index is `OP_INPUTINDEX`
+and no rule pins it to 0).
 
-- Inputs `i` in `[m + blockSize, ...)` are checked, as intended.
-- Inputs in `[blockSize, m + blockSize)` are skipped by the entry test. They are the block itself plus `m` inputs
-  that are not in the block when `m > blockSize`. When `m > blockSize`, nothing else excludes an outside input at
-  `[blockSize, m)`.
-- Inputs `i < blockSize` are never visited, because the loop exits there. That includes every input below the
-  master.
+What keeps it from being exploitable, traced 2026-10-17:
 
-So any own-category mutable input placed **before** the master (index `< m`) escapes this check entirely. A
-direct contract's master is usually input 0, but not always. The SDK places a contract's block after a funder or
-after another participant in a composed or cross-contract call. That is exactly the case `a56314f36` was written
-for ("a cross-contract callee (master at absolute index > 0)"). An attacker builds the transaction, chooses the
-master's index, and puts an unnamed own-category data, entry, or chunk NFT in front of the master. Through the
-record covenant's master arm (flag 1, which any master spend authorizes), they recreate it with another commitment.
-Of the other checks, the address counts (`emitDataRecordCensus`, `emitFixedSlotCollectionCount`) only count.
-`emitPreserveUnaccessedChunk` preserves unwritten chunks wherever they sit, so chunks of an unwritten variable are
-still safe. Data records and entries are not.
+- An extra entry of a collection the function does not name fails `emitFixedSlotCollectionCount`
+  (`GenerateTargetTraversal.ts:52024-52031`): the input count at the collection address is pinned to the number of
+  named slots (zero).
+- An extra data record fails `emitDataRecordCensus` (`52036-52041`): the data-lock input count is pinned to the
+  accessed-record count. `emitPreserveUnreadDataRecords` pins the accessed ones at their offsets.
+- Chunks of a dynamic variable the function does not write are pinned 1:1 by `emitUnwrittenChunkCensus`.
+- Chunks of a written variable and value chunks are covered only by the dynamic-write verifier, which is DYN-1 and
+  not this finding.
+- Replacing a named slot's UTXO with a different genuine entry fails that slot's key-hash or bracket check.
+- The output scan's `emitMutableOutputAllowed` still refuses an own-category mutable output at an arbitrary lock
+  unless a mutable input at that same lock and category exists, which limits what can be created at all.
 
-Before `a56314f36` the entry test was relative too, so the walk covered every `i >= blockSize`, inputs before the
-master included (it over-preserved the callee's own block, which is the bug that commit fixed). The fix opened
-this hole while closing that one.
-
-Can the attacker choose `m`? For a plain direct function the master index is `OP_INPUTINDEX`
-(`emitMasterInputIndex`, `GenerateTargetTraversal.ts:48931-48933`), and every block coordinate is relative to it. So
-the attacker makes `m` large by putting their own inputs first (P2PKH funding inputs, or the unnamed record
-itself). No check requires the master to be input 0. The record covenants address their master by a witness index
-(`<masterInputIndex> <flag>` in `buildEntryNftCovenantScript`, `bindMintingAuthorityLock`), so a record at index
-`< m` can name the master at `m`. This needs no cooperation from anyone.
-
-Which functions it reaches: the walk runs only from `emitDirectCollectionCensus`, which runs only where C3
-(`countsOwnCategoryNfts`, `GenerateTargetTraversal.ts:10165-10168`) is off. A function with no entry access,
-token container, dynamic write, or deploy keeps C3, which counts own-category mutable inputs and outputs over all
-indices but does not compare commitments. So even there, an unnamed record before the master can be rewritten
-at the same count. C3 never stopped a rewrite. That is DX-6/DS-3's open "count, not commitment" residual, and it
-applies to every function. For C3 functions the outside walk does not run at all, so this hole is the pre-existing
-DX-6/DS-3 one. Correction to that: a C3 function preserves its accessed data records at their offsets
-(`emitAutoCovenantVerification`, `emitPreserveRecordAtOffset`), but an unaccessed map entry beside a C3 function is
-held only by the count. Rewriting `balances[victim]` beside a function that does not touch `balances` passes C3.
-Whether the earlier audit (`SECURITY-AUDIT-2026-10.md:115`, DS-3) treated this as covered, or whether a later fix
-added a commitment pin for C3 functions, needs checking. The 2026-10-15 reaudit rated DS-3 open, so this is
-consistent: unaccessed map entries are rewritable beside any function. That is the most serious open item in the
-tree, and WT-2 widens its reach. WT-2 adds the C3-off functions (any function with entry access, a dynamic write, or a token
-container) for inputs before the master.
+So WT-2 is a real boundary defect and a loss of defense-in-depth, with no reachable theft found on this tree. Fix
+it by iterating every input and skipping only `[m, m + blockSize)` (exit on `i == 0`), which also removes the
+reliance on the counts above.
 
 ## Coverage on the 2026-10-17 pass
 

@@ -3111,7 +3111,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitSelfLockingBytecode(locationData: SingleLocationData): void {
     const witness = '__internal__graphSelfIdentityInput';
     const bandOrdinal = this.declaredBandOrdinal(witness);
-    const hasWitness = bandOrdinal !== undefined || this.stack.includes(witness);
+    // An OP_INVOKE'd subroutine never receives the CREATE-anchor witness: its caller resolves `address(this)`
+    // to the physical master, so the witness parameter is unsupplied (and reading it there can land on a route
+    // input). The direct entry body keeps the witness path where the SDK supplies the real anchor.
+    const hasWitness = bandOrdinal !== undefined
+      || (this.stack.includes(witness) && !this.isDefineSubTraversal);
     this.emitMasterInputIndex(locationData);
     if (!hasWitness) {
       this.emitOwnerSide(Op.OP_UTXOBYTECODE, Op.OP_OUTPUTBYTECODE, locationData);

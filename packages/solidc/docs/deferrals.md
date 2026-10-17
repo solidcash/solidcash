@@ -125,7 +125,12 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   slot, cannot touch alice's balance). Insert+update+read + tx.origin all pass. The old compile fail-close
   (`assertSortedKeyDrivable`, `bfbd652b`) is REMOVED - the case is supported. Needs a connected Signer (else a clear
   error). Cross-contract msg.sender (non-zero `_msgSenderCategory` = a caller contract, not a P2PKH) is out of scope
-  (reverts, fail-closed). **multitransfer's DEBIT half `for(i) bal[msg.sender] -= amts[i]` = RESOLVED 2026-07-19
+  (reverts, fail-closed). **RED AT HEAD 2026-10-16:** the cross-contract sorted-write suite that pins this
+  (`CrossContractSortedWrite.test.ts`, UPDATE/INSERT/msg.sender-keyed) now fails all four cases at the callee with
+  `messageBus: BCH-2026 preflight failed at input 2 (ip 214, failing opcode 136 OP_EQUALVERIFY)`: the callee's entry
+  OUTPUT still carries the OLD value (10) where the covenant derived the new value (99), a stale commitment in the
+  cross-contract sorted-write materialization. Evidence: `{SCRATCH}/cross-contract-sorted-write-red.log`.
+  **multitransfer's DEBIT half `for(i) bal[msg.sender] -= amts[i]` = RESOLVED 2026-07-19
   (`12dafc89`, MsgSenderVMap):** `CacheMappingEntryInLoop` now accepts an INVARIANT nullary key (a `KeyKind` = id |
   nullary), so the msg.sender RMW-in-loop reads bal[msg.sender] once -> accumulates -> ONE flush (the flush is the
   proven single msg.sender write). VM-proven: `bal[msg.sender]=100` then `debitMany([10,20,30]) = 40` exactly, `chk(60)`
@@ -282,8 +287,11 @@ RESOLVED 2026-07-19/20 (case b + same-gap chains): a NEW recipient whose predece
 (case b) NOW WORKS (pending-defer + order-independent reorder); 2+ new in ONE gap NOW CHAIN off any predecessor
 (credited / untouched / HEAD / debited msg.sender); self-transfer + duplicate (incl. scalar) also work - see the
 multiTransfer entry above. The `= <param>` wart is RESOLVED too (`d08584f2`): it now routes to the upsert loop
-(update+insert), keeping same-gap chaining. STILL FAIL-CLOSED (sound, not complete): scalar `-=` duplicate (no
-pending-defer), cross-contract msg.sender. **CORRECTED 2026-10-16:** the 2D `m[k][i][j]` and function-pointer value
+(update+insert), keeping same-gap chaining. **CORRECTED 2026-10-16:** the scalar `-=` duplicate is RESOLVED too —
+pending-defer is activated for `-` (its insert path stays gated off, since a debit cannot create an entry), pinned
+by `SortedUpsertLoop.test.ts` (`accumulates a SCALAR -= duplicate (100 - 30 - 30 = 40; non-adjacent grouped)`).
+Remaining fail-closed: cross-contract msg.sender (RED at HEAD, see the multitransfer entry below). **CORRECTED
+2026-10-16:** the 2D `m[k][i][j]` and function-pointer value
 items in this list are no longer fail-closed — the 2D write desugars via `DesugarNestedArrayWrite`
 (`MappingArray2dWrite.test.ts`), and a function-pointer mapping value round-trips as a functionId on the wire
 (`FunctionTypeState.test.ts`, 5/5, incl. a two-handler sorted dispatch table).
@@ -2029,6 +2037,12 @@ arity guard in `Contract.createUnlocker` is satisfied by the fully specified int
 are pinned by `CrossContractSortedWrite.test.ts` (UPDATE, INSERT, msg.sender-keyed), and the wrong-predecessor
 negative is pinned by the same file ("rejects a wrong predecessor proof co-spent for the callee batch"): co-spending a
 different entry as the callee's batch predecessor fails covenant validation rather than writing.
+
+**RED AT HEAD 2026-10-16.** `CrossContractSortedWrite.test.ts` now fails all four cases (UPDATE, INSERT,
+msg.sender-keyed, wrong-predecessor negative) at the callee with `messageBus: BCH-2026 preflight failed at input 2
+(ip 214, failing opcode 136 OP_EQUALVERIFY)`: the callee's entry OUTPUT still carries the OLD value where the
+covenant derived the NEW value — a stale cross-contract sorted-write commitment. Evidence:
+`{SCRATCH}/cross-contract-sorted-write-red.log`. This reopens the cross-contract sorted-write gap.
 
 **STILL GAP NOTE CORRECTED (re-verified 2026-10-15).** An earlier probe of the full `SushiBar.enter` ->
 `SushiToken.transferFrom` shape (one callee writing both `_balances[from]/_balances[to]` in a two-slot `linear`

@@ -539,8 +539,8 @@ block-oracle keeper.
 
 ## Final status of this pass
 
-Confirmed by source tracing: DYN-1 (critical), ECR-1 (critical), MERGE-1 (medium-high), CONT-1 (medium), MIG-1
+Confirmed by source tracing: DYN-1 (critical), ECR-1 (critical), FRAMED-CONT-1 (high, framed), MERGE-1 (medium-high), CONT-1 (medium), MIG-1
 (medium, design), WT-2 (medium), KCHAIN-1 (low on consensus rules; forged-digest primitive under the mock's
 commitment limit), WT-1 (low). Closed after tracing: ROUTE-SKIP-1, ROUTE-READ-1. No VM run was made for any
-finding; DYN-1, ECR-1 and MERGE-1 are the three that most need one. This pass read no website, bench, fixture, or
+finding; DYN-1, ECR-1, FRAMED-CONT-1 and MERGE-1 are the four that most need one. This pass read no website, bench, fixture, or
 tooling code.

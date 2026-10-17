@@ -52145,7 +52145,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_1SUB, loc);
     this.emit(Op.OP_DUP, loc);
+    // The loop iterates ABSOLUTE transaction input indices, so the block boundary must be the master's absolute
+    // index plus the relative block size. Comparing a raw blockSize against an absolute index lets a cross-contract
+    // callee (master > 0) preserve its own entry/data NFT, which the sorted write legitimately rewrites.
+    this.emitMasterInputIndex(loc);
     this.emit(encodeInt(BigInt(blockSize)), loc);
+    this.emit(Op.OP_ADD, loc);
     this.emit(Op.OP_GREATERTHANOREQUAL, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DUP, loc);

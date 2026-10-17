@@ -125,11 +125,15 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   slot, cannot touch alice's balance). Insert+update+read + tx.origin all pass. The old compile fail-close
   (`assertSortedKeyDrivable`, `bfbd652b`) is REMOVED - the case is supported. Needs a connected Signer (else a clear
   error). Cross-contract msg.sender (non-zero `_msgSenderCategory` = a caller contract, not a P2PKH) is out of scope
-  (reverts, fail-closed). **RED AT HEAD 2026-10-16:** the cross-contract sorted-write suite that pins this
-  (`CrossContractSortedWrite.test.ts`, UPDATE/INSERT/msg.sender-keyed) now fails all four cases at the callee with
-  `messageBus: BCH-2026 preflight failed at input 2 (ip 214, failing opcode 136 OP_EQUALVERIFY)`: the callee's entry
-  OUTPUT still carries the OLD value (10) where the covenant derived the new value (99), a stale commitment in the
-  cross-contract sorted-write materialization. Evidence: `{SCRATCH}/cross-contract-sorted-write-red.log`.
+  (reverts, fail-closed). **RESOLVED 2026-10-16 (was RED AT HEAD):** the cross-contract sorted-write suite that pins
+  this (`CrossContractSortedWrite.test.ts`, UPDATE/INSERT/msg.sender-keyed) failed all four cases at the callee with
+  `messageBus: BCH-2026 preflight failed at input 2 (ip 214, failing opcode 136 OP_EQUALVERIFY)` — the callee's entry
+  OUTPUT carried the OLD value (10) while the covenant derived the new value (99). Root cause: the preserve walk in
+  `emitPreserveOutsideLayoutOwnMutable` compared an ABSOLUTE input index against the RELATIVE block size, so a
+  cross-contract callee (master at absolute index > 0) satisfied `index >= blockSize` and wrongly preserved its own
+  entry/data NFT 1:1. Fixed by comparing against `masterAbsoluteIndex + blockSize`; the SDK progressive-entry
+  derivation also now skips preserve observations (expected == co-spent input's own commitment) so the stale old
+  value never overwrites the learned new commitment. Evidence: `{SCRATCH}/cross-contract-sorted-write-green.log`.
   **multitransfer's DEBIT half `for(i) bal[msg.sender] -= amts[i]` = RESOLVED 2026-07-19
   (`12dafc89`, MsgSenderVMap):** `CacheMappingEntryInLoop` now accepts an INVARIANT nullary key (a `KeyKind` = id |
   nullary), so the msg.sender RMW-in-loop reads bal[msg.sender] once -> accumulates -> ONE flush (the flush is the
@@ -2038,11 +2042,16 @@ are pinned by `CrossContractSortedWrite.test.ts` (UPDATE, INSERT, msg.sender-key
 negative is pinned by the same file ("rejects a wrong predecessor proof co-spent for the callee batch"): co-spending a
 different entry as the callee's batch predecessor fails covenant validation rather than writing.
 
-**RED AT HEAD 2026-10-16.** `CrossContractSortedWrite.test.ts` now fails all four cases (UPDATE, INSERT,
+**RESOLVED 2026-10-16 (was RED AT HEAD).** `CrossContractSortedWrite.test.ts` failed all four cases (UPDATE, INSERT,
 msg.sender-keyed, wrong-predecessor negative) at the callee with `messageBus: BCH-2026 preflight failed at input 2
-(ip 214, failing opcode 136 OP_EQUALVERIFY)`: the callee's entry OUTPUT still carries the OLD value where the
-covenant derived the NEW value — a stale cross-contract sorted-write commitment. Evidence:
-`{SCRATCH}/cross-contract-sorted-write-red.log`. This reopens the cross-contract sorted-write gap.
+(ip 214, failing opcode 136 OP_EQUALVERIFY)`: the callee's entry OUTPUT carried the OLD value where the covenant
+derived the NEW value — a stale cross-contract sorted-write commitment. Root cause + fix: the preserve walk in
+`emitPreserveOutsideLayoutOwnMutable` compared an ABSOLUTE input index against the RELATIVE block size, so a
+cross-contract callee (master at absolute index > 0) satisfied `index >= blockSize` and wrongly preserved its own
+entry/data NFT 1:1 (old value). The boundary is now `masterAbsoluteIndex + blockSize`, and
+`deriveFullPhase1ProgressiveEntries` skips preserve observations (expected == the co-spent input's own commitment).
+Pinned by `CrossContractSortedWrite.test.ts` (4/4) plus the adjacent cross-contract suites. Evidence:
+`{SCRATCH}/cross-contract-sorted-write-green.log`.
 
 **STILL GAP NOTE CORRECTED (re-verified 2026-10-15).** An earlier probe of the full `SushiBar.enter` ->
 `SushiToken.transferFrom` shape (one callee writing both `_balances[from]/_balances[to]` in a two-slot `linear`

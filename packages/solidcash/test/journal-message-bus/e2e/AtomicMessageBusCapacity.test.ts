@@ -86,26 +86,26 @@ interface CapacityReading {
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_189, callManifestBytes: 294,
-    worstOperationCost: 475_342, worstMaximumOperationCost: 1_904_800,
-    worstRatio: 0.2495495590088198,
+    transactionBytes: 24_271, callManifestBytes: 294,
+    worstOperationCost: 27_321, worstMaximumOperationCost: 112_800,
+    worstRatio: 0.24220744680851064,
     inputOperationCosts: [
-      489_197, 475_342, 695, 934_974, 786_296, 27_321,
+      452_864, 446_411, 695, 956_651, 817_087, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_439_200, 1_904_800, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_462_400, 1_947_200, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_672, callManifestBytes: 294,
-    worstOperationCost: 2_483_629, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.34330822182903903,
+    transactionBytes: 24_743, callManifestBytes: 294,
+    worstOperationCost: 2_372_851, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.327995549043459,
     inputOperationCosts: [
-      474_904, 499_602, 695, 2_483_629, 2_001_909, 27_321,
+      444_580, 468_952, 695, 2_372_851, 1_913_013, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_388_800, 2_341_600, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_412_000, 2_375_200, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });

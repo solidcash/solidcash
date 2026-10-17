@@ -2151,6 +2151,11 @@ Still deferred:
   5×bytes32 helper emit settles as a 128-byte head plus its continuation record, joined back to the exact payload).
   The remaining helper shape is a helper called INSIDE a branch or loop, whose emit reduces to the conditional /
   looped emit below after inlining (wide → `KERNEL_LAYOUT` refusal, narrow → keeps its window).
+  **REFINED 2026-10-16 (conditional/looped emit boundary).** A LOOPED NARROW emit is also not deferred: it lowers to
+  a runtime counter-loop event (`runtimeLoopEvents`), one record per iteration. A looped WIDE emit is refused
+  (`KERNEL_LAYOUT`) because the counter-loop records are one commitment per record and do not chunk. A conditional
+  emit keeps its window (narrow) or is refused by name (wide). Pinned by
+  `KernelConditionalLoopedEmitAdmission.test.ts` (4/4).
 - The record count is read off the verifier's stacks, so it needs a participant probe that reaches the handler's
   end; a compose pass whose isolated participant probe stops earlier leaves the count to a later pass. Compose's own
   event discovery still falls back to a complete trace of a participant input when a slot is unread, as before.

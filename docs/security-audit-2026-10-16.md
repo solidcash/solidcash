@@ -511,10 +511,11 @@ block-oracle keeper.
   liveness gap in the migration path, not a fund-loss path. The loop also re-creates the master at the **old** lock
   each step (`sc-upgrade.ts:193-201`), so an interrupted migration leaves part of a mapping at the new-bound entry
   covenant, which the old code cannot read (keys read as absent). Fold this into MIG-1's liveness note.
-- `migrateRecords` hardcodes the entry at absolute input/output index 1 while data NFTs occupy 1..N in a direct
-  layout. The check is fail-closed: a data NFT at index 1 does not match the old entry covenant and every selector
-  arm fails. It means the migration path is only usable on a contract whose migrateRecords layout puts the entry at
-  1, which the SDK does. Advisory, not a vulnerability.
+- `migrateRecords` hardcodes the entry at absolute input/output index 1. The SDK's layout co-spends only the
+  master (0), the entry (1) and a funder (2), and does not co-spend the contract's data NFTs, so index 1 holds the
+  entry even in a contract with scalar state; the positional coupling is consistent today. It is fragile if a future
+  migration also co-spends data NFTs (to re-encode them), which would move the entry. Advisory, not a vulnerability.
+  A migration that does co-spend a data NFT at 1 fails closed: no selector arm matches the old entry covenant.
 ## Threat-model assumptions worth documenting in user docs
 
 - An `upgrade`/`deploy`/`split`/`merge` body that authorizes by `checkDataSig`, a hash preimage, or a raw

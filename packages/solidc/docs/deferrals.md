@@ -2156,6 +2156,9 @@ Still deferred:
   (`KERNEL_LAYOUT`) because the counter-loop records are one commitment per record and do not chunk. A conditional
   emit keeps its window (narrow) or is refused by name (wide). Pinned by
   `KernelConditionalLoopedEmitAdmission.test.ts` (4/4).
+  **REFINED 2026-10-16 (legacy-route wide event).** On a LEGACY route (`messageBusKernel: false`, no runtime effect
+  stream) a handler that emits a wide event is refused and not admitted; a narrow event keeps the route's per-row
+  event band. Pinned by `KernelLegacyWideEventAdmission.test.ts` (2/2).
 - The record count is read off the verifier's stacks, so it needs a participant probe that reaches the handler's
   end; a compose pass whose isolated participant probe stops earlier leaves the count to a later pass. Compose's own
   event discovery still falls back to a complete trace of a participant input when a slot is unread, as before.

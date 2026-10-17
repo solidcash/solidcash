@@ -2144,6 +2144,13 @@ Still deferred:
   kernel), and codegen throws `EVENT_PAYLOAD_EXCEEDS_COMMITMENT` if a wide window emit still reaches a route, graph
   handler or framed frame. A conditional stream emit needs a published condition (the builder plans one head per
   site and only grows it); a mixed event/transfer stream needs the learner to read transfer records too.
+  **REFINED 2026-10-16 (helper emit).** An emit in a PRIVATE helper called exactly once at the handler's top level
+  is NOT deferred: private helpers are inlined into the handler body before admission, so the helper's emit streams
+  exactly like an own top-level emit. Verified by `KernelHelperEmitAdmission.test.ts` (wide helper emit admitted
+  `stream: true, chunked: true`; narrow helper emit admitted compact) and `KernelStreamedHelperEvent.test.ts` (a
+  5×bytes32 helper emit settles as a 128-byte head plus its continuation record, joined back to the exact payload).
+  The remaining helper shape is a helper called INSIDE a branch or loop, whose emit reduces to the conditional /
+  looped emit below after inlining (wide → `KERNEL_LAYOUT` refusal, narrow → keeps its window).
 - The record count is read off the verifier's stacks, so it needs a participant probe that reaches the handler's
   end; a compose pass whose isolated participant probe stops earlier leaves the count to a later pass. Compose's own
   event discovery still falls back to a complete trace of a participant input when a slot is unread, as before.

@@ -84,7 +84,7 @@ describe('kernel self ecrecover sidecar under composition', () => {
 
     const salt = new Uint8Array(32);
     const sidecarCategory = 'ed'.repeat(32);
-    for (const role of ['A', 'B'] as const) {
+    for (const role of ['A', 'B2', 'M', 'B3'] as const) {
       await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {
         ...randomUtxo({ satoshis: 100_000n }),
         token: {
@@ -119,17 +119,17 @@ describe('kernel self ecrecover sidecar under composition', () => {
     const offsets = accArtifact.messageBus!.route.blockLayout!.slots
       .filter((slot) => slot.kind === 'ecrecoverSideCar')
       .map((slot) => slot.offset);
-    // One A/B pair per syntactic recovery call (not maximumRows×2 kernel capacity padding).
-    expect(offsets.length).toBe(2);
+    // One A/M/B triple per syntactic recovery call (not maximumRows×3 kernel capacity padding).
+    expect(offsets.length).toBe(3);
     expect(vmRejects(canonical)).toBe(false);
 
     const wrongRecreation = await composition.build();
-    wrongRecreation.outputs[offsets[1]] = {
-      ...wrongRecreation.outputs[offsets[1]],
+    wrongRecreation.outputs[offsets[2]] = {
+      ...wrongRecreation.outputs[offsets[2]],
       token: {
-        ...wrongRecreation.outputs[offsets[1]].token!,
+        ...wrongRecreation.outputs[offsets[2]].token!,
         nft: {
-          ...wrongRecreation.outputs[offsets[1]].token!.nft!,
+          ...wrongRecreation.outputs[offsets[2]].token!.nft!,
           commitment: '00'.repeat(33),
         },
       },

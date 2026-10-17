@@ -36,6 +36,7 @@ function fixture(overrides: Record<string, unknown> = {}): {
   };
   const entryNfts = [{ ...entry, slotIndex: 1 }, { ...entry, slotIndex: 4, ...overrides }];
   const builder = Object.assign(Object.create(StatefulTransactionBuilder.prototype), {
+    categoryId: '12'.repeat(32),
     entryNfts, entryRawCommitments, pinnedEntrySlots, addValueChunkOutput: vi.fn(),
     loopEntryVars: [], loopEntryCommitments: new Map(),
     requiredLoopEntryCounts: new Map(), pinnedLoopEntries: new Set(),

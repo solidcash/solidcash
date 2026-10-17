@@ -1250,7 +1250,7 @@ export async function assembleAtomicComposition(
         const baseIndex = input.unlocker.abiFunction.inputs.findIndex((parameter) =>
           parameter.name === '__internal__dynamicChunkInputBase');
         const value = baseIndex < 0 ? undefined : input.unlocker.params[baseIndex];
-        if (typeof value !== 'bigint' || value < 0n) continue;
+        if (!layoutWitnessIsActiveCoordinate(value)) continue;
         input.unlocker.params[baseIndex] = -(value + 3n);
         input.unlocker.syncEncodedArgsFromParams?.([baseIndex]);
       }

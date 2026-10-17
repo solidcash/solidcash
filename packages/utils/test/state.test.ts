@@ -593,7 +593,8 @@ describe('buildEntryNftCovenantScript (dual-path)', () => {
   });
 
   it('should use the category-pinned form', () => {
-    expect(scriptToBytecode(buildEntryNftCovenantScript(categoryId, collectionHash))).toHaveLength(212);
+    // 216 after block-layout v2 grew the entry covenant by 4 bytes; re-pinned to the current emission.
+    expect(scriptToBytecode(buildEntryNftCovenantScript(categoryId, collectionHash))).toHaveLength(216);
   });
 
   it('should contain self-preservation in read-only path but not in write path', () => {
@@ -641,10 +642,11 @@ describe('buildValueChunkCovenantScript (digested domain)', () => {
   const slot = new Uint8Array(32).fill(0x11);
   const root = new Uint8Array(32).fill(0x22);
 
-  it('commits to the tagged collection/slot/root tuple in 224 bytes', () => {
+  it('commits to the tagged collection/slot/root tuple in 228 bytes', () => {
     const domain = computeValueChunkDomain(collectionHash, slot, root);
     const script = buildValueChunkCovenantScript(categoryId, collectionHash, slot, root);
-    expect(scriptToBytecode(script)).toHaveLength(224);
+    // 228 after block-layout v2 grew the value-chunk covenant by 4 bytes; re-pinned to the current emission.
+    expect(scriptToBytecode(script)).toHaveLength(228);
     expect(script.some((item) => item instanceof Uint8Array && item.length === 32
       && item.every((byte, index) => byte === domain[index]))).toBe(true);
   });

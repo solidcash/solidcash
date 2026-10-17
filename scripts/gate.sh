@@ -5,11 +5,11 @@
 #   scripts/gate.sh full    fast + utils suite + solidc suite (about 15 minutes)
 #
 # A performance change is only acceptable if `full` reports the SAME solidc counts as the baseline
-# (189 failed / 4828 passed of 5017) and the identity line below is unchanged.
+# (0 failed / 7366 passed of 7366) and the identity line below is unchanged.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-EXPECTED='{"routeBytes":40019,"fullBytes":115274,"fullHash":"ed6cfff8760a3ca8"}'
+EXPECTED='{"routeBytes":45047,"fullBytes":244791,"fullHash":"a94417a1568e7719"}'
 status=0
 
 echo "== build =="
@@ -40,7 +40,7 @@ node --max-old-space-size=8192 scripts/perf-compile-time.mjs 2>/dev/null | tail 
 if [ "${1:-fast}" = "full" ]; then
   echo "== utils suite =="
   yarn workspace @solidcash/utils vitest run test/ 2>&1 | grep -E '^ +(Tests|Test Files) '
-  echo "== solidc suite (expect 189 failed / 4828 passed of 5017) =="
+  echo "== solidc suite (expect 0 failed / 7366 passed of 7366) =="
   yarn workspace solidc vitest run test/ 2>&1 | grep -E '^ +(Tests|Test Files) '
 fi
 

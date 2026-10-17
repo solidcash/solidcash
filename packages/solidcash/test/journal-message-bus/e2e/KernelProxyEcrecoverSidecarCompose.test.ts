@@ -50,7 +50,7 @@ const fundEcrecoverSidecars = async (
     : [new Uint8Array(32), hexToBin(categoryId).reverse()];
   const sidecarCategory = 'ed'.repeat(32);
   for (const salt of salts) {
-    for (const role of ['A', 'B'] as const) {
+    for (const role of ['A', 'B2', 'M', 'B3'] as const) {
       await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {
         ...randomUtxo({ satoshis: 100_000n }),
         token: {
@@ -69,7 +69,7 @@ const ecrecoverRecreates = (
 ): typeof outputs => {
   const salts = [new Uint8Array(32), hexToBin(categoryId).reverse()];
   const locks = new Set(
-    salts.flatMap((salt) => (['A', 'B'] as const)
+    salts.flatMap((salt) => (['A', 'B2', 'M', 'B3'] as const)
       .map((role) => binToHex(ecrecoverComputeLockingBytecode(salt, role)).toLowerCase())),
   );
   return outputs.filter((output) => {

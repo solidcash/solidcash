@@ -1,6 +1,6 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { keccakComputeLockingBytecode } from '@solidcash/utils';
+import { keccakChainLockingBytecode, keccakComputeLockingBytecode } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../../src/index.js';
@@ -105,7 +105,10 @@ describe('kernel compute sidecar non-empty', () => {
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },
     );
-    const lock = binToHex(keccakComputeLockingBytecode(hexToBin(categoryId).slice().reverse(), true));
+    // A single unbounded-bytes keccak preimage routes through the chained START/CONT/FINAL side-car model; a
+    // 32-byte preimage needs exactly one FINAL side-car. Fund that covenant, not the fixed-slot compute lock.
+    const salt = hexToBin(categoryId).slice().reverse();
+    const lock = binToHex(keccakChainLockingBytecode(salt, 'final', true));
     await provider.addUtxo(lock, {
       ...({ txid: 'aa'.repeat(32), vout: 0, satoshis: 100_000n }),
       token: {

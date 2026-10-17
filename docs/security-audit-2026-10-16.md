@@ -34,7 +34,7 @@ precondition that is common), MEDIUM (needs an uncommon shape or privileged part
 
 ## Findings
 
-### DYN-1 (CRITICAL, source-traced) A direct dynamic write skips all chunk verification when the spender passes a base below -1
+### DYN-1 (CRITICAL, source-traced; direct and route builds) A dynamic write skips all chunk verification when the spender passes a base below -1
 
 Attacker: anyone who may call a direct (non-route) function that writes a dynamic state variable (`string`, `bytes`,
 `T[]` kept in chunk NFTs). The authorization the function itself requires still applies. Many such functions are
@@ -92,7 +92,7 @@ binding digest (`compiler.ts:12880-12882` hashes the manifest, base, row count a
 works through a route row, and the default `auto` build keeps the direct entry as well (the ABI above still lists
 `setName` with the witness). This makes DYN-1 reach every stateful build, not only direct ones.
 
-### ROUTE-READ-1 (suspected, HIGH if confirmed) A route's sorted-map read returns the default when the spender marks it inactive
+### ROUTE-READ-1 (CLOSED 2026-10-17 after tracing; kept for the record) A route's sorted-map read returns the default when the spender marks it inactive
 
 Attacker: a spender of a compiler message-bus route whose active handler reads `m[k]` for a key that exists.
 Shape: set the read slot's `__internal__vmapBatchProof_<slot>` to a negative value and do not co-spend the node.

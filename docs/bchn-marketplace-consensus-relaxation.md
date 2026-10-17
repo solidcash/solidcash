@@ -215,8 +215,17 @@ snapshot in the middle of a test; a later funding input can be spent by an earli
 `funding input ... is not live` or `Missing inputs`. Every test after that group inherits the inconsistent
 chain/wallet state and fails in a cascade.
 
-The focused flow, the time-travel case, and every test before `take job` pass. Remaining work is a per-test
-chain/wallet reset (or making the in-test fixture restores independent) for those multi-restore tests.
+The focused flow, the time-travel case, and every test before `take job` pass. Two isolation strategies were
+tried and reverted:
+
+- Per-test reset to a base chain snapshot (with fixture caches cleared): 7 passed, 59 failed. Cached deployment
+  handles no longer matched the reset chain.
+- Re-executing fixtures on regtest instead of restoring their snapshots: 43 passed, 7 failed. Tests that reuse
+  a fixture's contracts across multiple in-test job setups lost their token approvals
+  (`ERC20InsufficientAllowance`).
+
+Remaining work needs a snapshot that restores the wallet's coin set together with the chain, or fixture-aware
+recreation that preserves approvals and category identity across in-test restores.
 
 ## Remaining constraints
 

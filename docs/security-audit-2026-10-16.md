@@ -7,13 +7,14 @@ WT-2 (MEDIUM), KCHAIN-1 (LOW on consensus limits, forged-digest primitive under 
 Closed after tracing: ROUTE-SKIP-1 and ROUTE-READ-1 (handler clones never batch; LOW hardening note on the
 name-based guard).
 
-Not yet read on this pass: framed validator and master deltas since `056f4036b`, message-bus lifecycle and
-compose SDK, block oracle updater, website, and tooling. `ecrecover` was read only for the side-car chain binding
+Remaining unread: the framed validator's field-level checks past those cited in the 2026-10-15 audit, the message-bus
+compose/layout SDK, the website, benches, and tooling. The `ecrecover` covenants were read only for chain binding
 (not the field and ladder arithmetic).
 
-Recommended next steps: (1) a VM test for DYN-1 (patch the base witness to -5 on a `setName` call and forge a chunk)
-and for ECR-1 (a width-0 recovery with a forged `B-1` output); (2) resolve ROUTE-READ-1 by tracing read-lane
-activity against the route row set.
+Recommended next steps: (1) a VM test for DYN-1 (patch the base witness to -5 on a `setName` call and forge a chunk);
+(2) a VM test for ECR-1 (a width-0 recovery whose `B-1` output is an attacker commitment); (3) a VM test for
+MERGE-1 (merge with the consumed masters' satoshis sent to the spender's output); (4) decide whether public
+`migrateRecords` should require a committed upgrade target (MIG-1).
 
 ## Scope and baseline
 
@@ -439,3 +440,57 @@ added a commitment pin for C3 functions, needs checking. The 2026-10-15 reaudit 
 consistent: unaccessed map entries are rewritable beside any function. That is the most serious open item in the
 tree, and WT-2 widens its reach. WT-2 adds the C3-off functions (any function with entry access, a dynamic write, or a token
 container) for inputs before the master.
+
+## Coverage on the 2026-10-17 pass
+
+Read in full or in the cited functions: the outside-layout walk and its census neighbours (WT-1/WT-2), direct and
+route sorted-batch transitions (`GenerateTargetTraversal.ts:33496-34360`), upsert gating (`28615-28710`), value-chunk
+pinning (`28353-28530`, `27514-27575`), split/merge (`50588-50980`), upgrade self-preservation and data-NFT
+migration (`49265-49300`, `49770-49961`), the SIGHASH_ALL fence (`15738-15800`), external return-event settlement
+(`47870-47990`), `msg.sender` (`53005-53215`), container covenants and their deltas (`utils/src/state.ts:1900-2580`),
+the route binding digest and lifecycle modes (`compiler.ts:12230-12535`), the trailing batch width binding
+(`32279-32327`), the clone batch-assignment rule (`SymbolTableTraversal.ts:4030-4067`), the SDK signer, and the
+block-oracle keeper.
+
+### Surfaces read with no new issue
+
+- Split (`emitSplitCovenantVerification`): the master keeps its LBC, category and capability, value, commitment and
+  fungible amount; each new master sits at the same LBC with an empty commitment and a zero fungible amount; and
+  `emitSplitMintingCount` pins the transaction-wide minting count to exactly `N + 1`.
+- Value chunks (`emitSortedValueChunkPin`, `emitChunkableValueTail`, `emitChunkableValueRead`): the entry tail is
+  `len4 || sha256(value) || head28` for a long value, the write pins the exact output set by chunk address, count and
+  per-index commitment `slot || digest || pushdata(i) || slice`, and the read verifies the supplied witness against
+  the stored digest. A duplicate, missing or extra chunk fails the count.
+- Route signature fence (`compiler.ts:11321-11335`): every transaction-signature leaf parsed from a batch must end
+  in `0x41` or `0x61`, so `SIGHASH_NONE`/`SINGLE` cannot authorize a route row.
+- Upgrade data-NFT migration: re-mints only at the replacement-bound canonical data-NFT covenant. Values are not
+  byte-compared (the replacement layout is opaque), which is sound because the authorizer's `checkSig`/
+  `checkMultiSig` calls in an upgrade/deploy/split/merge body are fenced to base sighash `ALL`
+  (`fencesUpgradeSignatures`, `15745-15756`).
+- External return events (`emitExternalReturnEventVerification`): the return carrier must carry the callee's
+  category, `none` capability, zero fungible amount, `OP_TRUE` locking bytecode, and at most 1200 satoshis.
+- `msg.sender` (`emitMsgSender`, `emitMsgSenderMintingVerification`): a nonzero category must name exactly one
+  co-spent minting input (not the executing input), and the sender is that input's lock. A zero category falls back
+  to `tx.origin`.
+- Trailing batch width (`emitBatchTrailingCountBinding`): `__internal__vmapBatchTrailingCount` is recomputed from
+  the topology witnesses and compared, so it is not a free coordinate.
+- `SignatureTemplate`: defaults to `ALL|UTXOS`, rejects unknown bits and `UTXOS|ANYONECANPAY`, and warns on weak
+  modes; the atomic message-bus path requires hash type `1`.
+- Ordinary `upgrade` master path: the full category with capability is preserved and the output lock equals the
+  witness `__internal__upgradeBytecode`; trust in that witness is the upgrade entry's own authorization.
+- Block oracle keeper (`oracle/blockOracleUpdater.ts`): updates are signed `SIGHASH_ALL|UTXOS` with the keeper key
+  the oracle commitment already names; the n->hash mints spend the keeper baton. No new issue.
+- `d60f17ae9` (container master pin compares 32 bytes): an unnamed container is still held to its full category by
+  `emitForeignContainerKeep` (`51779-51783`), so a capability downgrade on a call that names no container is
+  refused. A named container is held by its transfer covenant.
+
+## Threat-model assumptions worth documenting in user docs
+
+- An `upgrade`/`deploy`/`split`/`merge` body that authorizes by `checkDataSig`, a hash preimage, or a raw
+  outpoint comparison instead of `checkSig`/`checkMultiSig` does not get the sighash fence. The compiler cannot
+  fence a check it does not recognize. The data-NFT migration's value pinning then depends on that other
+  authorization binding the outputs.
+- `migrateRecords` is not a lifecycle modifier for the fence (it needs none, since it preserves commitments), but a
+  body that also re-encodes values would.
+- A public lifecycle entry (`split`, `merge`, `migrateRecords`, `upgrade`) is authorized only by its own body.
+  The compiler emits the topology checks, not an access policy.

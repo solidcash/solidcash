@@ -228,7 +228,10 @@ Progress and remaining work:
   nested returning graph arguments (`KernelNestedReturningGraphArgCompose`,
   `KernelNestedReturningStructAddressCompose`), a direct keccak sidecar category change
   (`KernelComputeSidecarNonEmpty`), and a composed unlocking script over the byte limit
-  (`AtomicMessageBusCompose` pooled mapping return). These need the hardening authors.
+  (`AtomicMessageBusCompose` pooled mapping return). These trace to the covenant hardening in `d6821a812`
+  (Oct 13, ~1,988 lines in `GenerateTargetTraversal.ts`, including the `emitSortedEntryAddress` →
+  `emitEntryP2sh32` entry-address rewrite), which was landed without reconciling the proxy delegate, message-bus
+  composition, and direct keccak sidecar paths. They need the hardening authors.
 
 This is the release-blocking item: the kernel-beta proof inventory and the recent security work have not been
 fully reconciled.

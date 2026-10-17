@@ -90,7 +90,7 @@ const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>>
     worstOperationCost: 27_321, worstMaximumOperationCost: 112_800,
     worstRatio: 0.24220744680851064,
     inputOperationCosts: [
-      452_864, 446_411, 695, 956_651, 817_087, 27_321,
+      452_864, 446_411, 695, 957_029, 817_401, 27_321,
     ],
     inputMaximumOperationCosts: [
       2_462_400, 1_947_200, 34_400, 7_234_400, 7_234_400, 112_800,
@@ -99,10 +99,10 @@ const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>>
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
     transactionBytes: 24_743, callManifestBytes: 294,
-    worstOperationCost: 2_372_851, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.327995549043459,
+    worstOperationCost: 2_373_863, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.3281354362490324,
     inputOperationCosts: [
-      444_580, 468_952, 695, 2_372_851, 1_913_013, 27_321,
+      444_580, 468_952, 695, 2_373_863, 1_915_023, 27_321,
     ],
     inputMaximumOperationCosts: [
       2_412_000, 2_375_200, 34_400, 7_234_400, 7_234_400, 112_800,

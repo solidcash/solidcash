@@ -502,6 +502,19 @@ block-oracle keeper.
   `emitForeignContainerKeep` (`51779-51783`), so a capability downgrade on a call that names no container is
   refused. A named container is held by its transfer covenant.
 
+- Framed container exposure confirmed at the single-master rule: `requireSingleMasterScript` counts only inputs whose
+  token category equals the master's pin (`frame-tail.ts:710-740`), so a tokenless satoshi container or a foreign
+  token container is not excluded from a standalone spend. This is the last premise FRAMED-CONT-1 needed.
+- `StatefulContract.upgrade`'s entry-migration loop creates its fee funder with `provider.addUtxo`
+  (`packages/solidcash/src/stateful/sc-upgrade.ts:178-189`). That method exists only on the mock provider, and it is
+  called unguarded, so an upgrade of a contract with collections cannot run against Electrum/regtest/BCHN. This is a
+  liveness gap in the migration path, not a fund-loss path. The loop also re-creates the master at the **old** lock
+  each step (`sc-upgrade.ts:193-201`), so an interrupted migration leaves part of a mapping at the new-bound entry
+  covenant, which the old code cannot read (keys read as absent). Fold this into MIG-1's liveness note.
+- `migrateRecords` hardcodes the entry at absolute input/output index 1 while data NFTs occupy 1..N in a direct
+  layout. The check is fail-closed: a data NFT at index 1 does not match the old entry covenant and every selector
+  arm fails. It means the migration path is only usable on a contract whose migrateRecords layout puts the entry at
+  1, which the SDK does. Advisory, not a vulnerability.
 ## Threat-model assumptions worth documenting in user docs
 
 - An `upgrade`/`deploy`/`split`/`merge` body that authorizes by `checkDataSig`, a hash preimage, or a raw

@@ -85,7 +85,7 @@ describe('kernel foreign ecrecover sidecar under composition', () => {
 
     const salt = new Uint8Array(32);
     const sidecarCategory = 'ed'.repeat(32);
-    for (const role of ['A', 'B2', 'M', 'B3'] as const) {
+    for (const role of ['A', 'B'] as const) {
       await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {
         ...randomUtxo({ satoshis: 100_000n }),
         token: {
@@ -112,8 +112,8 @@ describe('kernel foreign ecrecover sidecar under composition', () => {
     const offsets = sinkArtifact.messageBus!.route.blockLayout!.slots
       .filter((slot) => slot.kind === 'ecrecoverSideCar')
       .map((slot) => sinkBaseOffset + slot.offset);
-    // One A/M/B triple per syntactic recovery call (not maximumRows×3 kernel capacity padding).
-    expect(offsets.length).toBe(3);
+    // One A/B pair per syntactic recovery call (not maximumRows×2 kernel capacity padding).
+    expect(offsets.length).toBe(2);
     expect(vmRejects(canonical)).toBe(false);
 
     const sinkRoute = canonical.inputs.findIndex((input) => 'contract' in input.unlocker
@@ -122,12 +122,12 @@ describe('kernel foreign ecrecover sidecar under composition', () => {
     expect(sinkRoute).toBeGreaterThanOrEqual(0);
 
     const wrongRecreation = await composition.build();
-    wrongRecreation.outputs[offsets[2]] = {
-      ...wrongRecreation.outputs[offsets[2]],
+    wrongRecreation.outputs[offsets[1]] = {
+      ...wrongRecreation.outputs[offsets[1]],
       token: {
-        ...wrongRecreation.outputs[offsets[2]].token!,
+        ...wrongRecreation.outputs[offsets[1]].token!,
         nft: {
-          ...wrongRecreation.outputs[offsets[2]].token!.nft!,
+          ...wrongRecreation.outputs[offsets[1]].token!.nft!,
           commitment: '00'.repeat(33),
         },
       },

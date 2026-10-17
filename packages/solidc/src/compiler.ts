@@ -12636,13 +12636,7 @@ function synthesizeMessageBusRoute(
             // satoshi/value role without traversing the token-only checks or target lists.
             if (inCategory.length + outCategory.length == 0) {
               if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
-                // A self-preserving balanced funder (dummy-funder input and dummy-funder output) is a neutral
-                // co-spend, for example the M slot of a 2-way ecrecover A/M/B triple. It is not a BCH transfer,
-                // so it must not be counted as a value output. Only a dummy-funder input whose output is a real
-                // recipient lock is a value row.
-                if (tx.outputs[outputSlot].lockingBytecode != hex"51"
-                  && tx.outputs[outputSlot].lockingBytecode
-                    != hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
+                if (tx.outputs[outputSlot].lockingBytecode != hex"51") {
                   physicalValueOutputs = physicalValueOutputs + 1;
                 }
               } else if (tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode) {
@@ -15655,8 +15649,8 @@ function compileResolvedAst(
   // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
   if (needsPostfixIncDec) ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
 
-  // Reuse an already-taken entry-read local for the whole-struct write-back of a field-write run, before
-  // CoalesceMappingEntryFieldWrites would re-read the entry for the same write-back.
+  // Reuse an already-taken entry-read local for the whole-struct write-back of a field-write run (Unicrow
+  // `refund`), before CoalesceMappingEntryFieldWrites would re-read the entry for the same write-back.
   // `reuseEntryLocalForWriteback: false` is the measurement-only escape hatch the size-regression test uses.
   if (needsMappingFieldCoalesce && mergedCompilerOptions.reuseEntryLocalForWriteback !== false) {
     ast = ast.accept(new ReuseEntryLocalForWriteback()) as Ast;

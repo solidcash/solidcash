@@ -2273,7 +2273,7 @@ describe('messageBus.compose atomic transaction', () => {
     );
     const salt = new Uint8Array(32);
     const sidecarCategory = 'ed'.repeat(32);
-    for (const role of ['A', 'B2', 'M', 'B3'] as const) {
+    for (const role of ['A', 'B'] as const) {
       await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {
         ...randomUtxo({ satoshis: 100_000n }),
         token: {
@@ -2296,27 +2296,27 @@ describe('messageBus.compose atomic transaction', () => {
     const offsets = sinkArtifact.messageBus!.route.blockLayout!.slots
       .filter((slot) => slot.kind === 'ecrecoverSideCar')
       .map((slot) => sinkBaseOffset + slot.offset);
-    // One A/M/B triple per syntactic recovery call. Kernel maximumRows no longer pads unused triples into the
+    // One A/B pair per syntactic recovery call. Kernel maximumRows no longer pads unused pairs into the
     // route block (that forced blockSize ~82 and broke proxy×ecrecover MessageBusVerifier compose).
     // Multi-row recovery batches that also emit/transfer still grow via graphEffectFrame.
-    expect(offsets).toHaveLength(3);
+    expect(offsets).toHaveLength(2);
     expect(vmRejects(canonical)).toBe(false);
     const wrongRecreation = await composition.build();
-    wrongRecreation.outputs[offsets[2]] = {
-      ...wrongRecreation.outputs[offsets[2]],
+    wrongRecreation.outputs[offsets[1]] = {
+      ...wrongRecreation.outputs[offsets[1]],
       token: {
-        ...wrongRecreation.outputs[offsets[2]].token!,
-        nft: { ...wrongRecreation.outputs[offsets[2]].token!.nft!, commitment: '00'.repeat(33) },
+        ...wrongRecreation.outputs[offsets[1]].token!,
+        nft: { ...wrongRecreation.outputs[offsets[1]].token!.nft!, commitment: '00'.repeat(33) },
       },
     };
     expect(vmRejects(wrongRecreation)).toBe(true);
     const swapped = await composition.build();
-    [swapped.inputs[offsets[0]], swapped.inputs[offsets[2]]] = [
-      swapped.inputs[offsets[2]], swapped.inputs[offsets[0]],
+    [swapped.inputs[offsets[0]], swapped.inputs[offsets[1]]] = [
+      swapped.inputs[offsets[1]], swapped.inputs[offsets[0]],
     ];
     expect(vmRejects(swapped)).toBe(true);
     const duplicated = await composition.build();
-    duplicated.inputs[offsets[2]] = { ...duplicated.inputs[offsets[0]] };
+    duplicated.inputs[offsets[1]] = { ...duplicated.inputs[offsets[0]] };
     expect(vmRejects(duplicated)).toBe(true);
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);

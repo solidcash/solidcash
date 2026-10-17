@@ -2,7 +2,8 @@
 
 This document triages the six named audit residuals and the five named unconditional skips, then states the
 overall 0.13.1 release recommendation. Gate and suite evidence is recorded at the bottom; the gate commands are
-run exactly as shipped.
+run exactly as shipped, and no gate pin, test assertion, or compiler/SDK behavior was changed as part of this
+review.
 
 ## Audit residuals
 
@@ -99,150 +100,80 @@ The unconditional return-event ordering coverage is regtest-gated; unbounded ret
 
 ## Overall recommendation
 
-**Not yet release-ready. One real blocker remains: the message-bus kernel composition suite is red.**
-
-The six residuals are all fail-closed or resolved, and the five skips are non-blocking edge/diagnostics coverage.
-The mechanical and stale-pin gate failures found in this review are now fixed: `gate.sh`'s bytecode-identity pin
-is refreshed, the three forbidden `Unicrow` comment names are removed, the X50 proxy artifact and its forwarder
-byte-length pin are refreshed, and the `MessageBusVerifierSize` pin is refreshed. `scripts/gate.sh full` and
-`release-security-conformance` now exit 0.
-
-What still blocks 0.13.1 is `kernel-beta-gate`'s `sdk-journal` phase: 21 message-bus e2e tests still fail across
-11 files, down from the original 33. This review fixed the verifier side of the ecrecover A/M/B3 regression:
-`__message_bus_physical_counts` was counting the tokenless M funder of a 2-way ecrecover triple as a value
-output, desynchronizing `physicalValueOutputs` from `activeValueRows`; the classifier now excludes a
-self-preserving dummy-funder slot (`5c40fe016`). With that, the ecrecover fixtures were updated to provision
-A/B2/M/B3 and expect three slots, and the two `AtomicMessageBusCapacity` snapshots were re-pinned. The remaining
-21 failures are a separate class of October covenant-hardening regressions: proxy-owned mapping/vmap writes,
-chunkable-collection writes, nested returning graph arguments, a direct keccak sidecar category change, and one
-composed unlocking-script over the byte limit. Those need the hardening authors, not a verifier pin refresh.
-
-Remaining suite hygiene (non-blocking to the gates, but must be triaged): 2 utils byte-length pins, 5 solidc
-bytecode-size pins, and 5 non-journal solidcash failures (2 contract-size overflows, 2 logical-identity, 1
-`PredOut` compose). Details are below.
+**Not release-ready.** The six residuals and five skips are triaged as non-blocking, but the release gates are red:
+`gate.sh` fails its frozen bytecode identity, `kernel-beta-gate` fails with 33 `sdk-journal` test failures plus a
+forbidden-name fence, `release-security-conformance` fails its X50 proxy guardrail, and `yarn test` bails at
+`@solidcash/utils`. Details below. The gate pins and test assertions were deliberately left untouched so the
+verdict reflects the shipped scripts, not a self-chosen baseline.
 
 ## Gate and suite evidence
 
-Recorded below as each gate completes; captured under the goal scratch dir.
-
 | Gate | Result | Evidence |
 |---|---|---|
-| `scripts/gate.sh fast` | pass | subset of `full`; bytecode identity now matches after the pin refresh |
-| `scripts/gate.sh full` | **pass** | exit 0: build ok; bytecode identity ok (`45047/244791/a94417a1568e7719`); utils `2 failed \| 510 passed (512)`; solidc `5 failed \| 7361 passed (7366)` |
+| `scripts/gate.sh fast` | **fail (triaged)** | exit 1: build ok; bytecode identity changed — `actual {"routeBytes":45047,"fullBytes":244791,"fullHash":"dcd8c1e0e0f12656"}` vs `expected {"routeBytes":40019,"fullBytes":115274,"fullHash":"ed6cfff8760a3ca8"}` |
+| `scripts/gate.sh full` | **fail (triaged)** | exit 1: same identity; utils `2 failed \| 510 passed (512)`; solidc `6 failed \| 7360 passed (7366)` vs documented `189 failed / 4828 passed of 5017` |
 | `release-package-smoke` | pass | exit 0 |
 | `release-docs-snippets` | pass | exit 0 |
 | `release-corpus-baseline` | pass | exit 0 |
 | `release-application-conformance` | pass | exit 0 |
 | `release-application-regtest` | **environment-blocked** | exit 1: BchnRpcClient `fetch failed` — no BCHN/Fulcrum docker stack |
 | `release-generated-project-smoke` | pass | exit 0 |
-| `release-security-conformance` | **pass** | exit 0: all 15 scenarios, including the regenerated X50 proxy freshness check |
-| `kernel-beta-gate` | **fail (triaged)** | exit 1 at `sdk-journal`: 21 failures remain (11 files); `compiler-journal` now fully green (96 files / 1619 tests); the name fence passes |
-| `yarn test` | **fail (triaged)** | exit 1: bails at `@solidcash/utils` — `2 failed \| 510 passed (512)`; remaining workspaces run individually (see workspace-suite-counts table) |
+| `release-security-conformance` | **fail (triaged)** | exit 1: `X50DefaultProxyRegenerated.test.ts` — shipped proxy artifact stale, and its 308-byte forwarder pin is stale (compiler emits 350 bytes) |
+| `kernel-beta-gate` | **fail (triaged)** | exit 1: three forbidden `Unicrow` comment lines; after the name fence, `sdk-journal` reports 33 failures (17 files) |
+| `yarn test` | **fail (triaged)** | exit 1: bails at `@solidcash/utils` — `1 failed \| 26 passed (27)` files, `2 failed \| 510 passed (512)` tests |
 
-### `gate.sh` bytecode-identity triage (resolved)
+### `gate.sh` bytecode-identity triage
 
-The frozen `EXPECTED` identity was a pre-change baseline (`routeBytes:40019, fullBytes:115274,
-fullHash:ed6cfff8760a3ca8`). This branch carries the item-10 features, block-layout v2, and the security fixes,
-so the produced artifact legitimately differs. The pin is refreshed to the current measurement
-(`routeBytes:45047, fullBytes:244791, fullHash:a94417a1568e7719`) in `273001b7a` (after the verifier
-classifier fix), and `gate.sh full` now exits 0.
+`scripts/gate.sh` is the performance-regression gate with a frozen `EXPECTED` identity
+(`routeBytes:40019, fullBytes:115274, fullHash:ed6cfff8760a3ca8`). This branch produces
+(`routeBytes:45047, fullBytes:244791, fullHash:dcd8c1e0e0f12656`), so the gate exits 1. The build and timing
+portions pass; the identity FAIL means the frozen baseline predates the accumulated semantic changes (item-10
+features, block-layout v2, the security fixes) and must be re-pinned by the release owner when those changes are
+accepted. The gate's printed solidc counts (`6 failed | 7360 passed (7366)`) also deviate from its documented
+baseline (`189 failed / 4828 passed of 5017`), so that baseline is stale too.
 
-### Solidc suite triage (5 failures)
+### Solidc suite triage (6 failures)
 
-`gate.sh full` prints `5 failed | 7361 passed (7366)`. All five are stale bytecode-size/optimization-shape pins
-from block-layout v2:
+The six failing solidc tests are all stale bytecode-size/optimization-shape pins:
 
 - `test/VMapBytecodeOptimizations.test.ts` (3):
   - `general vmap bytecode sharing > keeps depth-sensitive sorted-output authentication inline`
   - `general vmap bytecode sharing > shares a collection-specific entry address across reads and writes`
   - `general vmap bytecode sharing > shares repeated composite state traversal by structural type`
+- `test/journal-message-bus/MessageBusVerifierSize.test.ts` (1):
+  - `atomic verifier bytecode specialization > moves the global verifier out of the scalar master and keeps both covenants deployable`
 - `test/framed/master/direct-path-identity.test.ts` (2):
   - `the direct convention is unchanged > emits the pinned bytecode for a stateful contract with a signature check`
   - `the direct convention is unchanged > emits the pinned bytecode for a stateful contract that reads msg.sender`
 
-`test/journal-message-bus/MessageBusVerifierSize.test.ts` was re-pinned in `1368112ac` (direct 619→629, composed
-1876→1881, framework tax 1257→1252) and now passes. These remaining pins are refresh work, not evidence of a
+These are expectation pins that the accumulated changes moved; they are pin refresh work, not evidence of a
 behavioral miscompile.
 
 ### `yarn test` triage
 
 `yarn test` is `lerna run test --ignore solidcash-examples && yarn workspace testing-suite test`; lerna bails on
-the first failing package, so the run stopped at `@solidcash/utils` before reaching solidc, solidcash, or the
+the first failing package, so it stopped at `@solidcash/utils` before reaching solidc, solidcash, or the
 testing-suite. The two failures are byte-length pins in `packages/utils/test/state.test.ts`:
 
 - `buildEntryNftCovenantScript (dual-path) > should use the category-pinned form`: expected 212, got 216.
 - `buildValueChunkCovenantScript (digested domain) > commits to the tagged collection/slot/root tuple in 224 bytes`: expected 224, got 228.
 
-Both covenant scripts grew by 4 bytes under block-layout v2. Because lerna bails at the first failure, the
-remaining workspaces were then run individually to collect their milestone counts.
-
-### Workspace suite counts
-
-| Workspace | Command | Result |
-|---|---|---|
-| `@solidcash/utils` | `gate.sh full` | `1 failed \| 26 passed (27)` files; `2 failed \| 510 passed (512)` tests |
-| `solidc` | `gate.sh full` | `2 failed \| 459 passed (461)` files; `5 failed \| 7361 passed (7366)` tests |
-| `solidcash` | `yarn workspace solidcash test` | `14 failed \| 962 passed \| 26 skipped (1002)` files; `26 failed \| 5950 passed \| 4 expected fail \| 167 skipped \| 5 todo (6152)` tests |
-| `@solidcash/testing` | `yarn workspace @solidcash/testing test` | `25 passed (25)` files; `113 passed (113)` tests |
-| `testing-suite` | `yarn workspace testing-suite test` | `7 passed (7)` files; `27 passed (27)` tests |
-
-The solidcash count is the current post-fix measurement: 26 remain — 21 message-bus composition (the
-`kernel-beta-gate` `sdk-journal` set), 2 contract-size overflows, 2 logical-identity, and 1 `PredOut` compose.
-The solidc count reflects the `MessageBusVerifierSize` re-pin in `1368112ac`.
-
-### Solidcash SDK suite triage (26 remaining failures)
-
-- **21 message-bus/kernel composition failures** across 11 files under `test/journal-message-bus/e2e/` (the
-  `kernel-beta-gate` `sdk-journal` set: proxy-owned mapping/vmap writes, chunkable-collection writes, nested
-  returning graph arguments, a direct keccak sidecar category change, and one composed unlocking script over the
-  byte limit). The representative error is `messageBus: BCH-2026 preflight failed at input N: Program failed an
-  OP_VERIFY operation` from `packages/solidcash/src/message-bus/preflight.ts`. These trace to `d6821a812`.
-- **`test/framed/deploy/constructor-dynamic-mint.test.ts` — 2/2 failures.** `ConstructorDynamicMint` compiles to
-  10294/10327 bytes, exceeding the 10000-byte input-script limit by 294/327 bytes (block-layout-v2 growth).
-- **`test/unit/LogicalIdentityPreservation.test.ts` — 2 failures.** Logical `CREATE` identity preservation
-  (`FakeToken.json` across the marketplace fixture transfer/approve sequence).
-- **`test/unit/PredOutSentinelComposeSync.test.ts` — 1 failure.** Layout-sentinel / `PredOut` compose sync gates
-  on `layoutWitnessIsActiveCoordinate`.
+Both covenant scripts grew by 4 bytes under block-layout v2.
 
 ### `kernel-beta-gate` triage
 
-The forbidden-name fence is fixed in `aad8767c3`: the three `Unicrow` comment lines in
-`packages/solidc/src/compiler.ts`, `packages/utils/src/artifact.ts`, and
-`packages/solidc/src/semantic/ReuseEntryLocalForWriteback.ts` are renamed away, so the source-fingerprint phase
-reports `matched`. The `compiler-journal` phase passes after the `MessageBusVerifierSize` re-pin (`1368112ac`).
+The gate fails first on its forbidden-application-name fence: three kernel comment lines added since the census
+commit contain `Unicrow` (`packages/solidc/src/compiler.ts`, `packages/utils/src/artifact.ts`,
+`packages/solidc/src/semantic/ReuseEntryLocalForWriteback.ts`). That is a comment-only leak and needs a rename.
+After the name fence, the gate's `sdk-journal` phase reports 33 message-bus composition e2e failures across 17
+files under `test/journal-message-bus/e2e/` (proxy vmap/keccak composition, chunkable-collection writes, nested
+returning graph arguments, direct keccak sidecar category, and a composed unlocking script over the byte limit).
+The representative error is `messageBus: BCH-2026 preflight failed at input N: Program failed an OP_VERIFY
+operation`. These are real covenant/SDK regressions, not pin refreshes, and need triage by the hardening authors.
 
-The gate now fails only at `sdk-journal` (`yarn workspace solidcash vitest run test/journal-message-bus`): 21
-failures across 11 files, down from 33. The `compiler-journal` phase is fully green (96 files / 1619 tests).
-Progress and remaining work:
+### `release-security-conformance` triage
 
-- **ecrecover A/M/B3 — FIXED.** The detached verifier's `__message_bus_physical_counts` classified the
-  tokenless M funder of a 2-way ecrecover A/M/B triple as a value output, desynchronizing the verifier
-  covenant. Fixed in `5c40fe016` (exclude a self-preserving dummy-funder slot from the value-output count), and
-  the ecrecover fixtures now provision A/B2/M/B3 and expect three slots.
-- **`AtomicMessageBusCapacity` — FIXED** (re-pinned in `63257b553`).
-- **Remaining 21 failures — disposition: BLOCKING.** All 21 fail the `sdk-journal` release gate, so the
-  release cannot proceed until they are resolved. They are a separate October covenant-hardening class; the
-  proxy vmap group was traced to a concrete mechanism: the direct proxy-delegate vmap RMW materializes both a
-  leftover empty-value entry placeholder (slot 0 / empty tail) and the authenticated update node, and the SDK's
-  `stripSurplusEmptyCollectionEntriesForHost` intentionally skips the direct fixed-entry path
-  (`activeGroups.length === 0 && blockLayout.slots has 'entry'`). The `d6821a812` sorted-batch hardening
-  (`settlesSortedTargetsByActivity` / `sortedTargetActivity`) now makes the covenant refuse that leftover, which
-  the earlier covenant tolerated.
-
-| Failure group | Files | Count | Disposition |
-|---|---|---|---|
-| Proxy-owned mapping/vmap writes | `KernelProxyRouteLayoutWitnessCompose`, `KernelProxyKeccakSidecarCompose`, `KernelSelfToProxyVmapRmwCompose`, `KernelProxyOwnedVmapRmwCompose`, `KernelProxySortedInsertPredOutCompose`, `KernelProxyToProxyVmapRmwCompose` | 9 | blocking — reconcile sorted-batch settlement with `d6821a812` covenant |
-| Chunkable-collection writes | `KernelMultiContinuationResourceCompose` | 8 | blocking — reconcile chunk census with the hardened covenant |
-| Nested returning graph arguments | `KernelNestedReturningGraphArgCompose`, `KernelNestedReturningStructAddressCompose` | 2 | blocking — reconcile graph-argument binding |
-| Direct keccak sidecar category | `KernelComputeSidecarNonEmpty` | 1 | blocking — reconcile sidecar output category |
-| Composed unlocking script over byte limit | `AtomicMessageBusCompose` pooled mapping return | 1 | blocking — reduce codegen size below the 10,000-byte per-input limit |
-
-This is the release-blocking item: the kernel-beta proof inventory and the recent security work have not been
-fully reconciled.
-
-### `release-security-conformance` triage (resolved)
-
-The gate's X50 scenario failed because the shipped `defaultProxyArtifact.ts` was stale and its forwarder
-byte-length pin was 308 bytes against the current 350-byte emit. Fixed in `aad8767c3`: the artifact is
-regenerated via `scripts/regenerate-default-proxy.ts` and the X50 pin is refreshed to 350. The full
-`release-security-conformance` run now exits 0.
+`X50DefaultProxyRegenerated.test.ts` fails on both guardrails for the shipped
+`packages/solidcash/src/stateful/defaultProxyArtifact.ts`: the freshness assertion fails because the shipped
+artifact is stale, and the forwarder byte-length pin is 308 bytes while the current compiler emits 350 bytes. The
+release owner must regenerate `defaultProxyArtifact.ts` and refresh the pin once the 42-byte growth is accepted.

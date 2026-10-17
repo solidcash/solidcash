@@ -10,7 +10,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { rewriteStatements, type WritebackMapping } from './ReuseEntryLocalForWritebackRewrite.js';
 
 /**
- * Reuse an entry-read local for a whole-struct write-back:
+ * Reuse an entry-read local for a whole-struct write-back (Unicrow `refund`):
  *
  *   Escrow e = escrows[id];
  *   e.split = a; e.consensus = b;

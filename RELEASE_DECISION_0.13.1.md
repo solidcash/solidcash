@@ -99,15 +99,17 @@ The unconditional return-event ordering coverage is regtest-gated; unbounded ret
 
 ## Overall recommendation
 
-**Not yet release-ready as-is. Ship after the mechanical refreshes below are landed.**
+**Not yet release-ready as-is. Ship after the triage and refreshes below are landed.**
 
 The six residuals are all fail-closed or resolved, and the five skips are non-blocking edge/diagnostics coverage:
-no soundness blocker hides in either list. The remaining blockers are mechanical gate failures, not design
-defects — every one is a stale byte-length/identity pin (from `745a72ddd` block-layout v2) or a forbidden-name
-comment, plus one gate that needs the BCHN/Fulcrum docker stack:
+no soundness blocker hides in either list. The blockers are gate and suite failures. Several are stale
+byte-length/identity pins from `745a72ddd` (block-layout v2) or a forbidden-name comment, but the solidcash SDK
+suite additionally surfaces a real runtime `TypeError` and message-bus preflight failures that need triage:
 
-1. `yarn test` is red: `@solidcash/utils/test/state.test.ts` pins two covenant scripts at 212 and 224 bytes,
-   but the current compiler emits 216 and 228.
+1. `yarn test` is red and lerna bails at the first failure. Run individually, the workspaces total: utils
+   `2 failed`, solidc `6 failed`, solidcash `45 failed`, `@solidcash/testing` `0 failed`, testing-suite
+   `0 failed`. The solidcash 45 include a `TypeError` in the create-builder path, 33 message-bus preflight
+   `OP_VERIFY` failures, and two contracts over the 10000-byte input limit.
 2. `kernel-beta-gate` is red: three kernel comment lines carry the forbidden `Unicrow` name. A comment rename
    makes the gate pass.
 3. `release-security-conformance` is red: the shipped `defaultProxyArtifact.ts` is stale, and the X50 test's
@@ -133,7 +135,7 @@ Recorded below as each gate completes; captured under the goal scratch dir.
 | `release-generated-project-smoke` | pass | exit 0 |
 | `release-security-conformance` | **fail (triaged)** | exit 1: `X50DefaultProxyRegenerated.test.ts` — shipped proxy artifact stale, and its 308-byte forwarder pin is stale (compiler emits 350 bytes) |
 | `kernel-beta-gate` | **fail (triaged)** | exit 1: forbidden `Unicrow` names in three kernel comment lines |
-| `yarn test` | **fail (triaged)** | exit 1: stopped at `@solidcash/utils` — `1 failed \| 26 passed (27)` files, `2 failed \| 510 passed (512)` tests |
+| `yarn test` | **fail (triaged)** | exit 1: bails at `@solidcash/utils` — `2 failed \| 510 passed (512)`; remaining workspaces run individually (see workspace-suite-counts table) |
 
 ### `gate.sh` bytecode-identity triage
 
@@ -174,8 +176,40 @@ testing-suite. The two failures are byte-length pins in `packages/utils/test/sta
 - `buildEntryNftCovenantScript (dual-path) > should use the category-pinned form`: expected 212, got 216.
 - `buildValueChunkCovenantScript (digested domain) > commits to the tagged collection/slot/root tuple in 224 bytes`: expected 224, got 228.
 
-Both covenant scripts grew by 4 bytes under block-layout v2. The solidc and utils suites were additionally
-exercised by `gate.sh full`; the solidcash SDK suite and testing-suite milestones were not reached in this pass.
+Both covenant scripts grew by 4 bytes under block-layout v2. Because lerna bails at the first failure, the
+remaining workspaces were then run individually to collect their milestone counts.
+
+### Workspace suite counts
+
+| Workspace | Command | Result |
+|---|---|---|
+| `@solidcash/utils` | `gate.sh full` | `1 failed \| 26 passed (27)` files; `2 failed \| 510 passed (512)` tests |
+| `solidc` | `gate.sh full` | `3 failed \| 458 passed (461)` files; `6 failed \| 7360 passed (7366)` tests |
+| `solidcash` | `yarn workspace solidcash test` | `21 failed \| 955 passed \| 26 skipped (1002)` files; `45 failed \| 5931 passed \| 4 expected fail \| 167 skipped \| 5 todo (6152)` tests |
+| `@solidcash/testing` | `yarn workspace @solidcash/testing test` | `25 passed (25)` files; `113 passed (113)` tests |
+| `testing-suite` | `yarn workspace testing-suite test` | `7 passed (7)` files; `27 passed (27)` tests |
+
+### Solidcash SDK suite triage (45 failures)
+
+All 45 failures are on the reviewed `master` tree (the only committed change in this review is the two Markdown
+documents). They group into:
+
+- **33 message-bus/kernel composition failures** across 17 files under `test/journal-message-bus/e2e/`
+  (`KernelMultiContinuationResourceCompose` 8, `KernelProxyRouteLayoutWitnessCompose` 4,
+  `KernelProxyEcrecoverSidecarCompose` 3, `AtomicMessageBusCompose` 3, `AtomicMessageBusCapacity` 2,
+  `KernelProxyForeignEcrecoverCompose` 2, and 11 files with 1 each). The representative error is
+  `messageBus: BCH-2026 preflight failed at input N: Program failed an OP_VERIFY operation` from
+  `packages/solidcash/src/message-bus/preflight.ts`. These need a real triage, not a pin refresh.
+- **`test/unit/PrecomputedValueChunkEntry.test.ts` — 7/7 failures.** `TypeError: Cannot read properties of
+  undefined (reading 'toLowerCase')` at
+  `packages/solidcash/src/stateful/sc-register-create-builder-builder-state.ts:456`
+  (`builder.rootCategoryId` is `undefined` in the create-builder path).
+- **`test/framed/deploy/constructor-dynamic-mint.test.ts` — 2/2 failures.** `ConstructorDynamicMint` compiles to
+  10294/10327 bytes, exceeding the 10000-byte input-script limit by 294/327 bytes (block-layout-v2 growth).
+- **`test/unit/LogicalIdentityPreservation.test.ts` — 2 failures.** Logical `CREATE` identity preservation
+  (`FakeToken.json` across the marketplace fixture transfer/approve sequence).
+- **`test/unit/PredOutSentinelComposeSync.test.ts` — 1 failure.** Layout-sentinel / `PredOut` compose sync gates
+  on `layoutWitnessIsActiveCoordinate`.
 
 ### `kernel-beta-gate` triage
 

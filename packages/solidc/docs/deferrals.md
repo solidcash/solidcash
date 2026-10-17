@@ -2148,6 +2148,14 @@ Still deferred:
   end; a compose pass whose isolated participant probe stops earlier leaves the count to a later pass. Compose's own
   event discovery still falls back to a complete trace of a participant input when a slot is unread, as before.
 - Unbounded `string` / `bytes` event parameters still count as 9 B on routes and are not streamed.
+  **RESOLVED 2026-10-16.** `unboundedEventNames` (compiler.ts) now treats an unbounded `bytes`/`string`
+  parameter — and a struct holding one — as able to grow past one commitment, exactly like a dynamic array
+  (`holdsUnboundedValue` replaces the array-only `holdsDynamicArray`). A kernel handler whose top-level emit has
+  such a parameter therefore streams CHUNKED (`messageBusEventStreamChunked: true`) instead of leaving a compact
+  one-commitment record that a wide payload would overflow. Verified by
+  `packages/solidcash/test/e2e/KernelStreamedBytesEvent.test.ts` (2/2): the `Blob(bytes)` handler is admitted
+  chunked and a 200-byte payload settles as a 128-byte head under the event covenant plus its continuation
+  records, joined back to the exact encoded payload; `KernelStreamedWideEvents.test.ts` stays 4/4.
 - Byte identity: a route with a stream handler changes (trailing band, fewer windows), including a kernel handler that
   emits a dynamic-array event at its top level, which was a narrow window before.
 - Investigated 2026-10-13, nothing landed: making the graph frame's `eventWidth` count chunk outputs is the wrong

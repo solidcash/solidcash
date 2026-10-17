@@ -3777,19 +3777,21 @@ function wideEventNames(ast: Ast, chunkBytes: number): Set<string> {
     .map((event) => event.name));
 }
 
-/** True when `type` holds a dynamic array, so no static bound limits its encoded size. */
-function holdsDynamicArray(type: Type, seen = new Set<object>()): boolean {
-  if (type instanceof ArrayType) return type.bound === undefined || holdsDynamicArray(type.elementType, seen);
+/** True when `type`'s encoded size has no static bound: a dynamic array or an unbounded bytes/string. */
+function holdsUnboundedValue(type: Type, seen = new Set<object>()): boolean {
+  if (type instanceof ArrayType) return type.bound === undefined || holdsUnboundedValue(type.elementType, seen);
+  if (type instanceof BytesType) return type.bound === undefined;
+  if (type === PrimitiveType.STRING) return true;
   if (!(type instanceof StructType) || seen.has(type)) return false;
   seen.add(type);
-  return type.fields.some((field) => holdsDynamicArray(field.type, seen));
+  return type.fields.some((field) => holdsUnboundedValue(field.type, seen));
 }
 
-/** Names of the events visible to `ast` a dynamic array can grow past any one commitment (`getEventChunkCount`
- * counts such a parameter as 9 bytes). */
+/** Names of the events visible to `ast` whose payload can grow past any one commitment (`getEventChunkCount`
+ * counts such a parameter as 9 bytes): a dynamic array or an unbounded string/bytes parameter. */
 function unboundedEventNames(ast: Ast): Set<string> {
   return new Set(visibleEventDefinitions(ast)
-    .filter((event) => event.parameters.some((parameter) => holdsDynamicArray(parameter.type)))
+    .filter((event) => event.parameters.some((parameter) => holdsUnboundedValue(parameter.type)))
     .map((event) => event.name));
 }
 

@@ -2,7 +2,7 @@
 
 Status: in progress. Findings are appended as they are found; a later section may refine an earlier one.
 
-Summary so far: DYN-1 (CRITICAL), ECR-1 (CRITICAL, needs a VM run), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
+Summary so far: DYN-1 (CRITICAL), ECR-1 (CRITICAL, needs a VM run), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
 WT-2 (MEDIUM), KCHAIN-1 (LOW on consensus limits, forged-digest primitive under the mock's limit), WT-1 (LOW).
 Closed after tracing: ROUTE-SKIP-1 and ROUTE-READ-1 (handler clones never batch; LOW hardening note on the
 name-based guard).
@@ -188,6 +188,36 @@ Fixed map writes on routes that use `sortedBatchInfo` are not covered by it.
 Fix direction: derive each slot's activity on chain from the dispatched selector (the route already decodes
 `rowSelector`), and require `predOut != -2 && proof > 0` for every slot the selected handler owns.
 
+### MERGE-1 (MEDIUM-HIGH; source-traced) A merge does not conserve or pin the consumed threads' satoshis or surplus fungible tokens
+
+Two paths, same gap.
+
+Direct merge (`emitMergeCovenantVerification`, `GenerateTargetTraversal.ts:50588-50757`):
+
+- The survivor path requires `input value == output value` for the survivor only (`50606-50612`), so merged value
+  cannot be added to it there.
+- Each consumed master's input (window `(owner + D, owner + D + N]`) must share the survivor's lock and minting
+  category. Its fungible amount only needs `self_ft <= survivor_output_ft` (`50720-50730`), checked
+  **per input**. Nothing pins where that master's satoshis go, and nothing sums the fungible amounts.
+
+Message-bus merge (`lifecycleVerification` mode 2, `compiler.ts:12485-12532`): the survivor keeps its own value
+exactly (`12490-12497`), the consumed slots must be minting inputs recreated with an empty category (`12527-12531`),
+and there is **no value or fungible-amount term for the consumed slots at all**.
+
+Attacker: whoever can satisfy the merge entry. If the body guards merge with the admin's signature, this is a
+malicious-admin surface. If merge is public (a plausible "consolidate shards" utility), any spender can do it.
+Shape: choose the survivor as any minting master of the category, co-spend any other masters in the window, and
+send their satoshis to an output of the attacker's choice. For fungible tokens, send the surplus of the category to
+a separate own-category output (consensus forbids inflation, not reassignment). The consumed masters' state
+commitments are burned by design, so their per-thread state is lost too.
+
+What the honest SDK does: `sc-split-merge.ts:293-304` adds the consumed satoshis plus funding minus fee to the
+user's change address. The script accepts any destination, so the SDK's behavior is a convention, not a rule.
+
+Fix direction: require each consumed master's satoshis to arrive at a pinned destination (the survivor or the
+contract's satoshi container), and require the survivor's output fungible amount to be at least the **sum** of the
+consumed inputs' amounts (or pin every own-category fungible output to the survivor's lock).
+
 ### CONT-1 (MEDIUM, source-traced) An unnamed token container's NFT commitment is not kept
 
 Attacker: anyone who can satisfy any public function of a direct stateful contract that holds a foreign mutable or
@@ -301,6 +331,16 @@ freely depends on how B3's ladder uses `Cblob`. It holds the running accumulator
 accumulator shifts the result by a chosen point, and Q* is then a free choice. The `Zinv` witness has to match the
 attacker's own Q*, which they can compute.
 
+Exploit detail (2026-10-17): the non-loop path does not bind B's `argBlob` to the contract's either. It drops B's
+first five unlocking fields and only verifies B's covenant hash (`15357-15375`). So the attacker is free to choose
+B's `argBlob`, `sharedBlob` and `Cblob`. The predecessor output's commitment just has to equal
+`hash256(argBlob || sharedBlob || Cblob)`, which they compute, and `Cblob` is the checkpoint B3 ladders from. The
+salt check inside B3 (`SALT_CHECK`) compares the unlocking salt to input 0's token category base, so input 0 must
+be the contract master (the attacker arranges that) and the side-car lock is the public salted P2SH32. Any output
+at index `B-1` with a 32-byte NFT commitment (any category, any lock) supplies the forged checkpoint. No VM
+subtlety is needed beyond B3 accepting a 32-byte commitment and reading its own three fields. This is a
+signature-forgery primitive for every contract that authenticates with `ecrecoverPubKey`/`ecrecoverP2pkh`.
+
 Shipped bytecode check: the baked `ECRECOVER_COMPUTE_B3_COVENANT` opens with the salt brand
 (`OP_DUP <0^32> OP_EQUAL OP_IF ... OP_0 OP_UTXOTOKENCATEGORY ...`, which reads input 0, not the predecessor), then
 `54 7a 75 53 79 53 79 53 79 7e 7e aa c0 8c d2 88`, which is
@@ -399,29 +439,3 @@ added a commitment pin for C3 functions, needs checking. The 2026-10-15 reaudit 
 consistent: unaccessed map entries are rewritable beside any function. That is the most serious open item in the
 tree, and WT-2 widens its reach. WT-2 adds the C3-off functions (any function with entry access, a dynamic write, or a token
 container) for inputs before the master.
-
-What can be done with it: rewrite or destroy any data record or map entry of the contract beside any public
-function that touches a mapping, a dynamic value, or a token container. The count censuses (`emitDataRecordCensus`, `emitFixedSlotCollectionCount`) still hold the number of
-records. The attacker re-emits the record at the same lock with a new commitment: a balance, an owner, an
-allowance. In practice: steal a mapping balance by rewriting `balances[attacker]` up, then withdraw. This is
-CRITICAL if no other check covers it; the census note above is the only remaining guard, and it does not read
-commitments. Rated HIGH until someone confirms that no per-entry check elsewhere reaches an index `< m`.
-
-Fix direction: iterate the whole input range and skip only `[m, m + blockSize)`, i.e. replace the exit test with
-`i == 0` and the entry test with `i < m || i >= m + blockSize`.
-
-## Surfaces read with no new issue
-
-- Native `msg.sender` (`emitMsgSender`, `emitMsgSenderMintingVerification`, `GenerateTargetTraversal.ts:53005-53215`):
-  a nonzero `__internal__msgSenderCategory` must name exactly one co-spent minting input (not this input), and the
-  sender is that input's lock. A forged category names a contract the attacker would have to co-spend, whose own
-  script then runs. A zero category falls back to `tx.origin`. No new issue.
-- `SignatureTemplate` (`packages/solidcash/src/SignatureTemplate.ts:21-73`): defaults to `ALL|UTXOS`, refuses
-  unknown bits and `UTXOS|ANYONECANPAY`, and warns on weak modes. The message-bus atomic path requires
-  `hashType == 1` (`message-bus/atomic.ts:173-174`). No new issue.
-- Ordinary `upgrade` master path (`emitUpgradeSelfPreservation`, `49277-49299`): the full category with capability
-  is preserved and the output lock equals the witness `__internal__upgradeBytecode`. Trust in that witness is the
-  function's own authorization by design.
-- `d60f17ae9` (container master pin compares 32 bytes): an unnamed container is still held to its full category
-  by `emitForeignContainerKeep` (`51779-51783`), so a capability downgrade on a call that names no container is
-  refused. A named container is held by its transfer covenant.

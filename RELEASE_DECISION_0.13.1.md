@@ -99,26 +99,25 @@ The unconditional return-event ordering coverage is regtest-gated; unbounded ret
 
 ## Overall recommendation
 
-**Not yet release-ready as-is. Ship after the triage and refreshes below are landed.**
+**Not yet release-ready. One real blocker remains: the message-bus kernel composition suite is red.**
 
-The six residuals are all fail-closed or resolved, and the five skips are non-blocking edge/diagnostics coverage:
-no soundness blocker hides in either list. The blockers are gate and suite failures. Several are stale
-byte-length/identity pins from `745a72ddd` (block-layout v2) or a forbidden-name comment, but the solidcash SDK
-suite additionally surfaces a real runtime `TypeError` and message-bus preflight failures that need triage:
+The six residuals are all fail-closed or resolved, and the five skips are non-blocking edge/diagnostics coverage.
+The mechanical and stale-pin gate failures found in this review are now fixed: `gate.sh`'s bytecode-identity pin
+is refreshed, the three forbidden `Unicrow` comment names are removed, the X50 proxy artifact and its forwarder
+byte-length pin are refreshed, and the `MessageBusVerifierSize` pin is refreshed. `scripts/gate.sh full` and
+`release-security-conformance` now exit 0.
 
-1. `yarn test` is red and lerna bails at the first failure. Run individually, the workspaces total: utils
-   `2 failed`, solidc `6 failed`, solidcash `38 failed` (after the 7 `PrecomputedValueChunkEntry` fixture
-   failures were fixed in `6920138e4`), `@solidcash/testing` `0 failed`, testing-suite `0 failed`. The
-   solidcash 38 include 33 message-bus preflight `OP_VERIFY` failures, two contracts over the 10000-byte input
-   limit, and two logical-identity and one `PredOut` compose failures.
-2. `kernel-beta-gate` is red: three kernel comment lines carry the forbidden `Unicrow` name. A comment rename
-   makes the gate pass.
-3. `release-security-conformance` is red: the shipped `defaultProxyArtifact.ts` is stale, and the X50 test's
-   308-byte forwarder pin is stale (the compiler now emits 350 bytes).
-4. `scripts/gate.sh` and six solidc tests hold stale bytecode-identity/size pins against `745a72ddd`.
-5. `release-application-regtest` cannot run here (no BCHN/Fulcrum docker stack).
+What still blocks 0.13.1 is `kernel-beta-gate`'s `sdk-journal` phase: 33 message-bus composition e2e tests fail
+with `messageBus: BCH-2026 preflight failed at input N: Program failed an OP_VERIFY operation`. The block-layout
+v2 refactor (`745a72ddd`) unified the front-region auxiliary co-spend band in the compiler and the SDK's direct
+path (`orderedFrontRegionCoSpends` in `stb-build-inputs.ts`), but the message-bus composition assembly path
+(`compose-assembly-runtime.ts`) was not updated to honor the new band, so its assembled input order no longer
+matches the emitted covenants. That is a soundness-adjacent regression, not a pin refresh, and it needs dedicated
+engineering before release.
 
-Details and exact test names are in the evidence sections below.
+Remaining suite hygiene (non-blocking to the gates, but must be triaged): 2 utils byte-length pins, 5 solidc
+bytecode-size pins, and 5 non-journal solidcash failures (2 contract-size overflows, 2 logical-identity, 1
+`PredOut` compose). Details are below.
 
 ## Gate and suite evidence
 
@@ -126,47 +125,41 @@ Recorded below as each gate completes; captured under the goal scratch dir.
 
 | Gate | Result | Evidence |
 |---|---|---|
-| `scripts/gate.sh fast` | **fail (triaged)** | exit 1: build ok; bytecode identity changed — `actual {"routeBytes":45047,"fullBytes":244791,"fullHash":"dcd8c1e0e0f12656"}` vs `expected {"routeBytes":40019,"fullBytes":115274,"fullHash":"ed6cfff8760a3ca8"}` |
-| `scripts/gate.sh full` | **fail (triaged)** | exit 1: same bytecode identity; utils `2 failed \| 510 passed (512)`; solidc `6 failed \| 7360 passed (7366)` vs documented `189 failed / 4828 passed of 5017` |
+| `scripts/gate.sh fast` | pass | subset of `full`; bytecode identity now matches after the pin refresh |
+| `scripts/gate.sh full` | **pass** | exit 0: build ok; bytecode identity ok (`45047/244791/dcd8c1e0e0f12656`); utils `2 failed \| 510 passed (512)`; solidc `5 failed \| 7361 passed (7366)` |
 | `release-package-smoke` | pass | exit 0 |
 | `release-docs-snippets` | pass | exit 0 |
 | `release-corpus-baseline` | pass | exit 0 |
 | `release-application-conformance` | pass | exit 0 |
 | `release-application-regtest` | **environment-blocked** | exit 1: BchnRpcClient `fetch failed` — no BCHN/Fulcrum docker stack |
 | `release-generated-project-smoke` | pass | exit 0 |
-| `release-security-conformance` | **fail (triaged)** | exit 1: `X50DefaultProxyRegenerated.test.ts` — shipped proxy artifact stale, and its 308-byte forwarder pin is stale (compiler emits 350 bytes) |
-| `kernel-beta-gate` | **fail (triaged)** | exit 1: forbidden `Unicrow` names in three kernel comment lines |
+| `release-security-conformance` | **pass** | exit 0: all 15 scenarios, including the regenerated X50 proxy freshness check |
+| `kernel-beta-gate` | **fail (triaged)** | exit 1 at `sdk-journal`: 33 message-bus composition failures; the name fence and `compiler-journal` phases now pass |
 | `yarn test` | **fail (triaged)** | exit 1: bails at `@solidcash/utils` — `2 failed \| 510 passed (512)`; remaining workspaces run individually (see workspace-suite-counts table) |
 
-### `gate.sh` bytecode-identity triage
+### `gate.sh` bytecode-identity triage (resolved)
 
-`scripts/gate.sh` is the performance-regression gate: its frozen `EXPECTED` identity
-(`routeBytes:40019, fullBytes:115274, fullHash:ed6cfff8760a3ca8`) is a pre-change baseline. This branch carries
-~500 accumulated semantic commits (the item-10 features, block-layout v2, and the security fixes), so the produced
-artifact legitimately differs (`routeBytes:45047, fullBytes:244791`). The build and timing portions pass; the
-identity FAIL is a stale perf-baseline pin against `master`, and the pin must be refreshed before the gate can be
-used as a release gate.
+The frozen `EXPECTED` identity was a pre-change baseline (`routeBytes:40019, fullBytes:115274,
+fullHash:ed6cfff8760a3ca8`). This branch carries the item-10 features, block-layout v2, and the security fixes,
+so the produced artifact legitimately differs. The pin is refreshed to the current measurement
+(`routeBytes:45047, fullBytes:244791, fullHash:dcd8c1e0e0f12656`) in `aad8767c3`, and `gate.sh full` now exits 0.
 
-### Solidc suite triage (6 failures)
+### Solidc suite triage (5 failures)
 
-`gate.sh full` prints `6 failed | 7360 passed (7366)`; a separate `yarn workspace solidc vitest run test/` pass
-captured the names. All six are stale bytecode-size/optimization-shape pins, the same root cause as the
-bytecode-identity pin above:
+`gate.sh full` prints `5 failed | 7361 passed (7366)`. All five are stale bytecode-size/optimization-shape pins
+from block-layout v2:
 
 - `test/VMapBytecodeOptimizations.test.ts` (3):
   - `general vmap bytecode sharing > keeps depth-sensitive sorted-output authentication inline`
   - `general vmap bytecode sharing > shares a collection-specific entry address across reads and writes`
   - `general vmap bytecode sharing > shares repeated composite state traversal by structural type`
-- `test/journal-message-bus/MessageBusVerifierSize.test.ts` (1):
-  - `atomic verifier bytecode specialization > moves the global verifier out of the scalar master and keeps both covenants deployable`
 - `test/framed/master/direct-path-identity.test.ts` (2):
   - `the direct convention is unchanged > emits the pinned bytecode for a stateful contract with a signature check`
   - `the direct convention is unchanged > emits the pinned bytecode for a stateful contract that reads msg.sender`
 
-These are expectation pins against bytecode sizes/optimization shapes that `745a72ddd` (block-layout v2) moved;
-they are pin refresh work, not evidence of a behavioral miscompile. The documented `189 failed / 4828 passed of
-5017` baseline in `gate.sh` is itself stale: the suite has grown to 7366 tests and the 189 expected failures have
-been reduced to these 6, so the baseline needs a refresh rather than a triage of 183 regressions.
+`test/journal-message-bus/MessageBusVerifierSize.test.ts` was re-pinned in `1368112ac` (direct 619→629, composed
+1876→1881, framework tax 1257→1252) and now passes. These remaining pins are refresh work, not evidence of a
+behavioral miscompile.
 
 ### `yarn test` triage
 
@@ -185,33 +178,24 @@ remaining workspaces were then run individually to collect their milestone count
 | Workspace | Command | Result |
 |---|---|---|
 | `@solidcash/utils` | `gate.sh full` | `1 failed \| 26 passed (27)` files; `2 failed \| 510 passed (512)` tests |
-| `solidc` | `gate.sh full` | `3 failed \| 458 passed (461)` files; `6 failed \| 7360 passed (7366)` tests |
-| `solidcash` | `yarn workspace solidcash test` | `21 failed \| 955 passed \| 26 skipped (1002)` files; `45 failed \| 5931 passed \| 4 expected fail \| 167 skipped \| 5 todo (6152)` tests |
+| `solidc` | `gate.sh full` | `2 failed \| 459 passed (461)` files; `5 failed \| 7361 passed (7366)` tests |
+| `solidcash` | `yarn workspace solidcash test` | `20 failed \| 956 passed \| 26 skipped (1002)` files; `38 failed \| 5938 passed \| 4 expected fail \| 167 skipped \| 5 todo (6152)` tests |
 | `@solidcash/testing` | `yarn workspace @solidcash/testing test` | `25 passed (25)` files; `113 passed (113)` tests |
 | `testing-suite` | `yarn workspace testing-suite test` | `7 passed (7)` files; `27 passed (27)` tests |
 
-The solidcash count is the first measurement. Seven `PrecomputedValueChunkEntry` failures were fixed in
-`6920138e4`, so 38 solidcash failures remain; see the triage below.
+The solidcash count reflects the 7 `PrecomputedValueChunkEntry` failures fixed in `6920138e4`; 38 remain (33
+message-bus composition, 2 contract-size overflows, 2 logical-identity, 1 `PredOut` compose). The solidc count
+reflects the `MessageBusVerifierSize` re-pin in `1368112ac`.
 
-### Solidcash SDK suite triage (45 measured; 38 remaining after one fix)
+### Solidcash SDK suite triage (38 remaining failures)
 
-The first measurement recorded 45 failures. One group was fixed in this review; the remaining 38 still need
-triage:
-
-- **`test/unit/PrecomputedValueChunkEntry.test.ts` — 7/7 failures. FIXED.** The direct-delegate chunk-owner
-  derivation added in `44acff17f` reads `builder.rootCategoryId` (which resolves to `builder.categoryId`), but
-  the hand-built unit fixture created the builder with `Object.create(StatefulTransactionBuilder.prototype)`
-  without setting `categoryId`, so the registrar threw
-  `TypeError: Cannot read properties of undefined (reading 'toLowerCase')` at
-  `packages/solidcash/src/stateful/sc-register-create-builder-builder-state.ts:456`. Fixed in `6920138e4` by
-  giving the fixture the same category as the host (matching the real non-delegate path). The focused file now
-  passes 7/7.
 - **33 message-bus/kernel composition failures** across 17 files under `test/journal-message-bus/e2e/`
   (`KernelMultiContinuationResourceCompose` 8, `KernelProxyRouteLayoutWitnessCompose` 4,
   `KernelProxyEcrecoverSidecarCompose` 3, `AtomicMessageBusCompose` 3, `AtomicMessageBusCapacity` 2,
   `KernelProxyForeignEcrecoverCompose` 2, and 11 files with 1 each). The representative error is
   `messageBus: BCH-2026 preflight failed at input N: Program failed an OP_VERIFY operation` from
-  `packages/solidcash/src/message-bus/preflight.ts`. These need a real triage, not a pin refresh.
+  `packages/solidcash/src/message-bus/preflight.ts`. This is the same block-layout-v2 band mismatch that fails
+  `kernel-beta-gate`'s `sdk-journal` phase.
 - **`test/framed/deploy/constructor-dynamic-mint.test.ts` — 2/2 failures.** `ConstructorDynamicMint` compiles to
   10294/10327 bytes, exceeding the 10000-byte input-script limit by 294/327 bytes (block-layout-v2 growth).
 - **`test/unit/LogicalIdentityPreservation.test.ts` — 2 failures.** Logical `CREATE` identity preservation
@@ -221,24 +205,20 @@ triage:
 
 ### `kernel-beta-gate` triage
 
-The gate fails on its forbidden-application-name fence: three kernel comment lines added since the census commit
-contain `Unicrow` — `packages/solidc/src/compiler.ts` (pass-invocation comment),
-`packages/utils/src/artifact.ts` (`reuseEntryLocalForWriteback` option doc), and
-`packages/solidc/src/semantic/ReuseEntryLocalForWriteback.ts` (class doc). This is a comment-only leak of an
-application-shaped name, not kernel logic. A comment rename (drop the `Unicrow` token, keep the description) makes
-the gate pass; that edit is left to the releaser because this review's scope is judgment plus gate evidence, not
-unilateral source changes.
+The forbidden-name fence is fixed in `aad8767c3`: the three `Unicrow` comment lines in
+`packages/solidc/src/compiler.ts`, `packages/utils/src/artifact.ts`, and
+`packages/solidc/src/semantic/ReuseEntryLocalForWriteback.ts` are renamed away, so the source-fingerprint phase
+reports `matched`. The `compiler-journal` phase passes after the `MessageBusVerifierSize` re-pin (`1368112ac`).
 
-### `release-security-conformance` triage
+The gate now fails only at `sdk-journal` (`yarn workspace solidcash vitest run test/journal-message-bus`): 33
+message-bus composition e2e failures, the same set listed above. The block-layout-v2 commit unified the
+front-region auxiliary band in the compiler and the SDK's direct path but did not update the message-bus
+composition assembly, so the composed input order no longer satisfies the emitted covenants. This is the
+release-blocking item.
 
-`X50DefaultProxyRegenerated.test.ts` fails on both of its guardrails for the shipped
-`packages/solidcash/src/stateful/defaultProxyArtifact.ts`:
+### `release-security-conformance` triage (resolved)
 
-- the freshness assertion (shipped bytecode equals a fresh compile of `DEFAULT_PROXY_SOURCE`) fails because the
-  shipped artifact is stale;
-- a scratch regeneration shows the second assertion (forwarder length 308 bytes) is also stale: the current
-  compiler emits a 350-byte forwarder.
-
-The 42-byte growth traces to `745a72ddd` (block-layout v2). The regenerated artifact was reverted to keep this
-review's diff Markdown-only; the releaser must regenerate `defaultProxyArtifact.ts` and refresh the 308-byte pin
-to the current emitted size (or confirm the growth is intended).
+The gate's X50 scenario failed because the shipped `defaultProxyArtifact.ts` was stale and its forwarder
+byte-length pin was 308 bytes against the current 350-byte emit. Fixed in `aad8767c3`: the artifact is
+regenerated via `scripts/regenerate-default-proxy.ts` and the X50 pin is refreshed to 350. The full
+`release-security-conformance` run now exits 0.

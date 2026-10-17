@@ -28,6 +28,23 @@ import {
 } from './ValueChunkProducerIdentity.js';
 import { describeValueChunkWrites } from './writer-group-selection.js';
 
+/**
+ * The batch trailing width is the number of DISTINCT non-negative PredOut lanes the batch witnesses name, which
+ * is exactly what the covenant's `emitBatchTrailingCountBinding` counts. Several inserts that share one
+ * predecessor publish one rewritten predecessor lane, not one per insert; `bPlannedEntryInserts.length` overcounts
+ * those shared-gap batches and made the covenant refuse the composed settlement.
+ */
+export function directVmapBatchTrailingCount(
+  internalArgs: Record<string, unknown>,
+): bigint {
+  const lanes = new Set<bigint>();
+  for (const [name, value] of Object.entries(internalArgs)) {
+    if (/^__internal__vmapBatchPredOut_\d+$/.test(name)
+      && typeof value === 'bigint' && value >= 0n) lanes.add(value);
+  }
+  return BigInt(lanes.size);
+}
+
 export interface PushCreateBuilderDirectExternalCallGroupHost {
   deriveReturnValue(...args: any[]): Promise<unknown>;
   resolveLoopArgs(occurrenceIndex: number): FunctionArgument[] | undefined;
@@ -134,7 +151,9 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     && !Object.prototype.hasOwnProperty.call(
       bCompilerInternalArgs, '__internal__vmapBatchTrailingCount',
     )) {
-    bCompilerInternalArgs.__internal__vmapBatchTrailingCount = BigInt(bPlannedEntryInserts.length);
+    bCompilerInternalArgs.__internal__vmapBatchTrailingCount = directVmapBatchTrailingCount(
+      bCompilerInternalArgs,
+    );
   }
 
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
@@ -282,7 +301,9 @@ export async function pushCreateBuilderDirectExternalCallGroup(
         ...((bAbiFunc?.sortedBatchInfo?.length ?? 0) > 0 && {
           internalArgs: {
             ...bCompilerInternalArgs,
-            __internal__vmapBatchTrailingCount: BigInt(bPlannedEntryInserts.length),
+            __internal__vmapBatchTrailingCount: directVmapBatchTrailingCount(
+              bCompilerInternalArgs,
+            ),
           },
         }),
       },

@@ -52358,18 +52358,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (routeParticipantWalk) {
       // A route participant's block is settled by the route verifier, and the transaction carries the verifier and
       // sibling participant blocks below it. Keep the established walk there: only inputs past this participant's
-      // block are treated as records.
+      // block are treated as records. The loop iterates ABSOLUTE transaction input indices, so the block boundary
+      // must be the block master's absolute index plus the relative block size. A proxy delegate's master witness
+      // names the proxy, not its own executor input, so use the authenticated delegate resource base for that
+      // shape; a raw blockSize lets a cross-contract callee (master > 0) preserve its own entry/data NFT, which a
+      // sorted write legitimately rewrites.
+      const delegateParticipant = this.usesProxyStateBlockBase() || this.currentFunctionIsDelegate;
+      const emitBlockBoundary = (): void => {
+        if (delegateParticipant) this.emitDelegateResourceBase(loc);
+        else this.emitMasterInputIndex(loc);
+        this.emit(encodeInt(BigInt(blockSize)), loc);
+        this.emit(Op.OP_ADD, loc);
+      };
       this.emit(Op.OP_TXINPUTCOUNT, loc);
       this.emit(Op.OP_BEGIN, loc);
       this.emit(Op.OP_1SUB, loc);
       this.emit(Op.OP_DUP, loc);
-      this.emit(encodeInt(BigInt(blockSize)), loc);
+      emitBlockBoundary();
       this.emit(Op.OP_GREATERTHANOREQUAL, loc);
       this.emit(Op.OP_IF, loc);
       emitInspect();
       this.emit(Op.OP_ENDIF, loc);
       this.emit(Op.OP_DUP, loc);
-      this.emit(encodeInt(BigInt(blockSize)), loc);
+      emitBlockBoundary();
       this.emit(Op.OP_LESSTHAN, loc);
       this.emit(Op.OP_UNTIL, loc);
       this.emit(Op.OP_DROP, loc);

@@ -220,18 +220,22 @@ Progress and remaining work:
   covenant. Fixed in `5c40fe016` (exclude a self-preserving dummy-funder slot from the value-output count), and
   the ecrecover fixtures now provision A/B2/M/B3 and expect three slots.
 - **`AtomicMessageBusCapacity` — FIXED** (re-pinned in `63257b553`).
-- **Remaining 21 failures** are a separate October covenant-hardening class. The proxy vmap group was traced to
-  a concrete mechanism: the direct proxy-delegate vmap RMW materializes both a leftover empty-value entry
-  placeholder (slot 0 / empty tail) and the authenticated update node, and the SDK's
+- **Remaining 21 failures — disposition: BLOCKING.** All 21 fail the `sdk-journal` release gate, so the
+  release cannot proceed until they are resolved. They are a separate October covenant-hardening class; the
+  proxy vmap group was traced to a concrete mechanism: the direct proxy-delegate vmap RMW materializes both a
+  leftover empty-value entry placeholder (slot 0 / empty tail) and the authenticated update node, and the SDK's
   `stripSurplusEmptyCollectionEntriesForHost` intentionally skips the direct fixed-entry path
   (`activeGroups.length === 0 && blockLayout.slots has 'entry'`). The `d6821a812` sorted-batch hardening
   (`settlesSortedTargetsByActivity` / `sortedTargetActivity`) now makes the covenant refuse that leftover, which
-  the earlier covenant tolerated. The remaining failures — chunkable-collection writes
-  (`KernelMultiContinuationResourceCompose`), nested returning graph arguments (`KernelNestedReturning*`),
-  direct keccak sidecar category (`KernelComputeSidecarNonEmpty`), and a composed unlocking script over the
-  byte limit (`AtomicMessageBusCompose` pooled mapping return) — trace to the same hardening commit
-  (Oct 13, ~1,988 lines in `GenerateTargetTraversal.ts`). They need the hardening authors to reconcile the
-  sorted-batch settlement and the SDK strip with the stricter covenant.
+  the earlier covenant tolerated.
+
+| Failure group | Files | Count | Disposition |
+|---|---|---|---|
+| Proxy-owned mapping/vmap writes | `KernelProxyRouteLayoutWitnessCompose`, `KernelProxyKeccakSidecarCompose`, `KernelSelfToProxyVmapRmwCompose`, `KernelProxyOwnedVmapRmwCompose`, `KernelProxySortedInsertPredOutCompose`, `KernelProxyToProxyVmapRmwCompose` | 9 | blocking — reconcile sorted-batch settlement with `d6821a812` covenant |
+| Chunkable-collection writes | `KernelMultiContinuationResourceCompose` | 8 | blocking — reconcile chunk census with the hardened covenant |
+| Nested returning graph arguments | `KernelNestedReturningGraphArgCompose`, `KernelNestedReturningStructAddressCompose` | 2 | blocking — reconcile graph-argument binding |
+| Direct keccak sidecar category | `KernelComputeSidecarNonEmpty` | 1 | blocking — reconcile sidecar output category |
+| Composed unlocking script over byte limit | `AtomicMessageBusCompose` pooled mapping return | 1 | blocking — reduce codegen size below the 10,000-byte per-input limit |
 
 This is the release-blocking item: the kernel-beta proof inventory and the recent security work have not been
 fully reconciled.

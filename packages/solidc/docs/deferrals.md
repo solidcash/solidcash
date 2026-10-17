@@ -2159,6 +2159,11 @@ Still deferred:
   **REFINED 2026-10-16 (legacy-route wide event).** On a LEGACY route (`messageBusKernel: false`, no runtime effect
   stream) a handler that emits a wide event is refused and not admitted; a narrow event keeps the route's per-row
   event band. Pinned by `KernelLegacyWideEventAdmission.test.ts` (2/2).
+  **REFINED 2026-10-16 (runtime-transfer + emit boundary).** A handler that runs a runtime transfer loop and emits a
+  CHUNKED wide event is refused (`KERNEL_LAYOUT`, `events-require-planned-closure`): the chunked event stream's
+  records would have to share the trailing band with the transfer records, and the learner cannot read transfer
+  records yet. A COMPACT narrow emit beside the same loop still streams (`runtimeLoopEvents`). Pinned by
+  `KernelRuntimeTransferEmitAdmission.test.ts` (2/2).
 - The record count is read off the verifier's stacks, so it needs a participant probe that reaches the handler's
   end; a compose pass whose isolated participant probe stops earlier leaves the count to a later pass. Compose's own
   event discovery still falls back to a complete trace of a participant input when a slot is unread, as before.

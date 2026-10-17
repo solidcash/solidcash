@@ -100,3 +100,71 @@ describe('nested external-call callee wide events', () => {
     expect(message).toContain('OP_VERIFY');
   }, 300_000);
 });
+
+/**
+ * The DELEGATECALL spelling of the same boundary. The implementation is compiled to its `delegateArtifact` and the
+ * proxy reaches it through `fallback(bytes input) { impl.delegatecall(input); }`. A delegate emit lands in the
+ * PROXY's category, and the delegate's own block reserves its event + continuation chunk slots; a nested wide emit
+ * needs those chunks learned and materialized just like the external-call case.
+ */
+const DELEGATE_IMPL = `pragma solidcash >=0.8.0;
+contract Impl() {
+  bigint counter;
+  event Narrow(int value);
+  event Wide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e);
+  function fireNarrow(int value) public {
+    this.counter = this.counter + value;
+    emit Narrow(value);
+    require(true);
+  }
+  function fireWide(bytes32 a) public {
+    this.counter = this.counter + 1;
+    emit Wide(a, a, a, a, a);
+    require(true);
+  }
+}`;
+
+const DELEGATE_PROXY = `pragma solidcash >=0.8.0;
+contract Proxy() {
+  bigint counter;
+  function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+  fallback(bytes input) external {
+    address impl = address(0x76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac);
+    impl.delegatecall(input);
+    require(input.length > 0);
+  }
+}`;
+
+describe('nested delegatecall callee wide events', () => {
+  const provider = createTestProvider();
+
+  const deploy = async (): Promise<{ proxySc: StatefulContract; implSc: StatefulContract }> => {
+    const proxyContract = new Contract(
+      compileString(DELEGATE_PROXY, { allowUnsafeOperations: true }), [], { provider },
+    );
+    const { categoryId: proxyCatId } = await setupStatefulUtxos(
+      provider, proxyContract, proxyContract.artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+    const implContract = new Contract(compileString(DELEGATE_IMPL), [], { provider }).asDelegate();
+    const { categoryId: implCatId } = await setupStatefulUtxos(
+      provider, implContract, implContract.artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+    return {
+      proxySc: StatefulContract.withCategory(proxyContract, proxyCatId),
+      implSc: StatefulContract.withCategory(implContract, implCatId),
+    };
+  };
+
+  it('settles a nested delegatecallee emit that fits one commitment', async () => {
+    const { proxySc, implSc } = await deploy();
+    const tx = await proxySc.call.__fallback().withDelegatecall(implSc, 'fireNarrow', [7n]).send();
+    expect(tx.txid).toBeDefined();
+  });
+
+  it('settles a wide nested delegatecallee emit (chunks materialized by the delegate path)', async () => {
+    const { proxySc, implSc } = await deploy();
+    const tx = await proxySc.call.__fallback().withDelegatecall(implSc, 'fireWide', [a32(0x5a)]).send();
+    expect(tx.txid).toBeDefined();
+    expect((await proxySc.getState()).counter).toBe(1n);
+  }, 300_000);
+});

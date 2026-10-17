@@ -2195,8 +2195,13 @@ Still deferred:
   drives a caller that invokes a callee through the real `.withExternalCall(...).send()` path: a nested NARROW emit
   (`Narrow(int)`) settles and the callee state advances, while a nested WIDE emit (`Wide(bytes32 x5)` = 165 B) fails
   `messageBus: BCH-2026 preflight failed at input 2: Program failed an OP_VERIFY operation.` — the callee covenant
-  refuses its unmaterialized continuation chunk. The delegatecall spelling shares the same nested block assembly and
-  is not separately harnessed.
+  refuses its unmaterialized continuation chunk.
+  **CORRECTED 2026-10-16 (delegatecall spelling — SETTLES).** The delegatecall spelling does NOT share that boundary:
+  the same file's delegatecall describe (4/4) runs the implementation through `impl.delegatecall(input)` behind a
+  proxy fallback, and the WIDE delegate emit SETTLES (`send()` validates, the proxy counter advances to 1). The
+  delegate's own block layout materializes its event head + continuation chunks through the direct wide-event path,
+  because the delegate executes in the proxy's context but owns its own block slots. Only the EXTERNAL-CALL nested
+  callee wide emit remains fail-closed.
 - `destroy()` **RESOLVED 2026-10-16** - now collects continuation chunk UTXOs alongside the event head NFTs. Both
   ride the same event covenant with a 144-block `OP_CHECKSEQUENCEVERIFY`, so the sweep adds each with the matching
   block-based sequence (`EVENT_NFT_RELATIVE_LOCK_SEQUENCE` = `0x00000090`) and burns them into the reclaim output;

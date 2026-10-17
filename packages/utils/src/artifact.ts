@@ -150,10 +150,9 @@ export interface CompilerOptions {
   // option; setting it yields the delegate variant as the primary artifact.
   autoDelegate?: boolean;
   /**
-   * Size optimization: reuse an already-taken entry-read local for a whole-struct write-back (Unicrow
-   * `refund`). Default true. `false` is a measurement-only escape hatch that keeps the write-back on the
-   * CoalesceMappingEntryFieldWrites re-read path, so a regression test can compare the two sizes; it must not
-   * be used for deployed artifacts.
+   * Size optimization: reuse an already-taken entry-read local for a whole-struct write-back. Default true.
+   * `false` is a measurement-only escape hatch that keeps the write-back on the CoalesceMappingEntryFieldWrites
+   * re-read path, so a regression test can compare the two sizes; it must not be used for deployed artifacts.
    */
   reuseEntryLocalForWriteback?: boolean;
   // Compiler-generated atomic composition route and write-back journal. Omitted selects automatically from

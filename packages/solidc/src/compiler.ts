@@ -15649,8 +15649,8 @@ function compileResolvedAst(
   // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
   if (needsPostfixIncDec) ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
 
-  // Reuse an already-taken entry-read local for the whole-struct write-back of a field-write run (Unicrow
-  // `refund`), before CoalesceMappingEntryFieldWrites would re-read the entry for the same write-back.
+  // Reuse an already-taken entry-read local for the whole-struct write-back of a field-write run, before
+  // CoalesceMappingEntryFieldWrites would re-read the entry for the same write-back.
   // `reuseEntryLocalForWriteback: false` is the measurement-only escape hatch the size-regression test uses.
   if (needsMappingFieldCoalesce && mergedCompilerOptions.reuseEntryLocalForWriteback !== false) {
     ast = ast.accept(new ReuseEntryLocalForWriteback()) as Ast;

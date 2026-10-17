@@ -128,7 +128,7 @@ Recorded below as each gate completes; captured under the goal scratch dir.
 | Gate | Result | Evidence |
 |---|---|---|
 | `scripts/gate.sh fast` | pass | subset of `full`; bytecode identity now matches after the pin refresh |
-| `scripts/gate.sh full` | **pass** | exit 0: build ok; bytecode identity ok (`45047/244791/dcd8c1e0e0f12656`); utils `2 failed \| 510 passed (512)`; solidc `5 failed \| 7361 passed (7366)` |
+| `scripts/gate.sh full` | **pass** | exit 0: build ok; bytecode identity ok (`45047/244791/a94417a1568e7719`); utils `2 failed \| 510 passed (512)`; solidc `5 failed \| 7361 passed (7366)` |
 | `release-package-smoke` | pass | exit 0 |
 | `release-docs-snippets` | pass | exit 0 |
 | `release-corpus-baseline` | pass | exit 0 |
@@ -144,7 +144,8 @@ Recorded below as each gate completes; captured under the goal scratch dir.
 The frozen `EXPECTED` identity was a pre-change baseline (`routeBytes:40019, fullBytes:115274,
 fullHash:ed6cfff8760a3ca8`). This branch carries the item-10 features, block-layout v2, and the security fixes,
 so the produced artifact legitimately differs. The pin is refreshed to the current measurement
-(`routeBytes:45047, fullBytes:244791, fullHash:dcd8c1e0e0f12656`) in `aad8767c3`, and `gate.sh full` now exits 0.
+(`routeBytes:45047, fullBytes:244791, fullHash:a94417a1568e7719`) in `273001b7a` (after the verifier
+classifier fix), and `gate.sh full` now exits 0.
 
 ### Solidc suite triage (5 failures)
 
@@ -181,23 +182,21 @@ remaining workspaces were then run individually to collect their milestone count
 |---|---|---|
 | `@solidcash/utils` | `gate.sh full` | `1 failed \| 26 passed (27)` files; `2 failed \| 510 passed (512)` tests |
 | `solidc` | `gate.sh full` | `2 failed \| 459 passed (461)` files; `5 failed \| 7361 passed (7366)` tests |
-| `solidcash` | `yarn workspace solidcash test` | `20 failed \| 956 passed \| 26 skipped (1002)` files; `38 failed \| 5938 passed \| 4 expected fail \| 167 skipped \| 5 todo (6152)` tests |
+| `solidcash` | `yarn workspace solidcash test` | `14 failed \| 962 passed \| 26 skipped (1002)` files; `26 failed \| 5950 passed \| 4 expected fail \| 167 skipped \| 5 todo (6152)` tests |
 | `@solidcash/testing` | `yarn workspace @solidcash/testing test` | `25 passed (25)` files; `113 passed (113)` tests |
 | `testing-suite` | `yarn workspace testing-suite test` | `7 passed (7)` files; `27 passed (27)` tests |
 
-The solidcash count reflects the 7 `PrecomputedValueChunkEntry` failures fixed in `6920138e4`; 38 remain (33
-message-bus composition, 2 contract-size overflows, 2 logical-identity, 1 `PredOut` compose). The solidc count
-reflects the `MessageBusVerifierSize` re-pin in `1368112ac`.
+The solidcash count is the current post-fix measurement: 26 remain — 21 message-bus composition (the
+`kernel-beta-gate` `sdk-journal` set), 2 contract-size overflows, 2 logical-identity, and 1 `PredOut` compose.
+The solidc count reflects the `MessageBusVerifierSize` re-pin in `1368112ac`.
 
-### Solidcash SDK suite triage (38 remaining failures)
+### Solidcash SDK suite triage (26 remaining failures)
 
-- **33 message-bus/kernel composition failures** across 17 files under `test/journal-message-bus/e2e/`
-  (`KernelMultiContinuationResourceCompose` 8, `KernelProxyRouteLayoutWitnessCompose` 4,
-  `KernelProxyEcrecoverSidecarCompose` 3, `AtomicMessageBusCompose` 3, `AtomicMessageBusCapacity` 2,
-  `KernelProxyForeignEcrecoverCompose` 2, and 11 files with 1 each). The representative error is
-  `messageBus: BCH-2026 preflight failed at input N: Program failed an OP_VERIFY operation` from
-  `packages/solidcash/src/message-bus/preflight.ts`. This is the same block-layout-v2 band mismatch that fails
-  `kernel-beta-gate`'s `sdk-journal` phase.
+- **21 message-bus/kernel composition failures** across 11 files under `test/journal-message-bus/e2e/` (the
+  `kernel-beta-gate` `sdk-journal` set: proxy-owned mapping/vmap writes, chunkable-collection writes, nested
+  returning graph arguments, a direct keccak sidecar category change, and one composed unlocking script over the
+  byte limit). The representative error is `messageBus: BCH-2026 preflight failed at input N: Program failed an
+  OP_VERIFY operation` from `packages/solidcash/src/message-bus/preflight.ts`. These trace to `d6821a812`.
 - **`test/framed/deploy/constructor-dynamic-mint.test.ts` — 2/2 failures.** `ConstructorDynamicMint` compiles to
   10294/10327 bytes, exceeding the 10000-byte input-script limit by 294/327 bytes (block-layout-v2 growth).
 - **`test/unit/LogicalIdentityPreservation.test.ts` — 2 failures.** Logical `CREATE` identity preservation

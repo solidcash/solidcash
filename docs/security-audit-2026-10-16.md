@@ -605,13 +605,15 @@ tooling code.
   sums in its synthesized route verification, and the survivor's ordinary master-value preservation is relaxed to
   `>=` only on a mode-2 lifecycle owner so the exact route sum remains the binding rule. The SDK layouts moved with
   the covenant: `StatefulContract.merge`, `sc.call ... withConsumedMasters`, and
-  `messageBus.compose({ lifecycleMerges })` all place consumed satoshis on the survivor; compose keeps tokenless
-  OP_RETURN tail outputs at the consumed input indexes, which are dust-exempt on a standard provider. A merge whose
-  funding inputs cannot cover the fee now throws instead of building a zero-fee transaction. Tests:
+  `messageBus.compose({ lifecycleMerges })` all place consumed satoshis on the survivor; compose keeps a tokenless,
+  dust-paying output at each consumed input index, funded from the fee tail's change (BCHN relays at most one
+  OP_RETURN output, so zero-sat OP_RETURN placeholders are not usable for N>1). A merge whose funding inputs cannot
+  cover the fee now throws instead of building a zero-fee transaction. Tests:
   `packages/solidcash/test/e2e/AuditMergeConservation.test.ts` (honest merge settles with the summed value/FT at
   the survivor; the same captured transaction with the consumed satoshis moved to change, or the surplus FT moved to
   change, is refused at input 0), `AuditMergeRouteDust.test.ts` (the routed merge composes and relays under
-  `enforceDust: true`), `SplitMerge.test.ts` (an empty funding list is refused), and
+  `enforceDust: true` with at most one OP_RETURN and every output above dust; a captured routed merge whose consumed
+  value or surplus FT is moved to change is refused), `SplitMerge.test.ts` (an empty funding list is refused), and
   `KernelAtomicMergeLifecycle.test.ts` / `KernelAtomicMergeReadLifecycle.test.ts` (routed merge(2) settles,
   survivor FT consolidated).
 - CONT-1: FIXED. `emitForeignContainerKeep` now requires the unnamed container's output NFT commitment to equal its

@@ -15,7 +15,7 @@ import type { ContractUnlocker, Output, UnlockableUtxo, Unlocker, Utxo } from '.
 import { isContractUnlocker } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { withCompilerRouteMessageEnvelope, withProxyForwardMessageEnvelope } from '../Contract.js';
-import { addressToLockScript } from '../utils.js';
+import { addressToLockScript, calculateDust } from '../utils.js';
 import {
   decodeAuthenticatedProducerResultVector, StatefulContract, StatefulFunctionCall,
 } from '../stateful/StatefulContract.js';
@@ -1135,9 +1135,12 @@ export async function assembleAtomicComposition(
         mergedValue += consumed.satoshis;
         local.addInput(consumed, routeUnlocker);
         // Audit MERGE-1: the consumed tail keeps a tokenless output slot at its input index, but its value is
-        // pinned to the survivor. A zero-sat output at the caller's change address is below the relay dust floor
-        // on a standard provider, so use an OP_RETURN placeholder, which is dust-exempt.
-        local.addOutput({ to: Uint8Array.from([0x6a]), amount: 0n });
+        // pinned to the survivor. A zero-sat output is below the relay dust floor, and BCHN relays at most one
+        // OP_RETURN output, so the slot is a dust-paying output funded from the fee tail's change.
+        local.addOutput({
+          to: options.changeAddress,
+          amount: BigInt(calculateDust({ to: options.changeAddress, amount: 0n })),
+        });
       }
       local.outputs[0] = {
         ...masterOutput,

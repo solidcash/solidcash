@@ -124,12 +124,12 @@ describe('kernel self ecrecover sidecar under composition', () => {
     expect(vmRejects(canonical)).toBe(false);
 
     const wrongRecreation = await composition.build();
-    wrongRecreation.outputs[offsets[1]] = {
-      ...wrongRecreation.outputs[offsets[1]],
+    wrongRecreation.outputs[offsets[2]] = {
+      ...wrongRecreation.outputs[offsets[2]],
       token: {
-        ...wrongRecreation.outputs[offsets[1]].token!,
+        ...wrongRecreation.outputs[offsets[2]].token!,
         nft: {
-          ...wrongRecreation.outputs[offsets[1]].token!.nft!,
+          ...wrongRecreation.outputs[offsets[2]].token!.nft!,
           commitment: '00'.repeat(33),
         },
       },

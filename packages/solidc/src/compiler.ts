@@ -12636,7 +12636,13 @@ function synthesizeMessageBusRoute(
             // satoshi/value role without traversing the token-only checks or target lists.
             if (inCategory.length + outCategory.length == 0) {
               if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
-                if (tx.outputs[outputSlot].lockingBytecode != hex"51") {
+                // A self-preserving balanced funder (dummy-funder input and dummy-funder output) is a neutral
+                // co-spend, for example the M slot of a 2-way ecrecover A/M/B triple. It is not a BCH transfer,
+                // so it must not be counted as a value output. Only a dummy-funder input whose output is a real
+                // recipient lock is a value row.
+                if (tx.outputs[outputSlot].lockingBytecode != hex"51"
+                  && tx.outputs[outputSlot].lockingBytecode
+                    != hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
                   physicalValueOutputs = physicalValueOutputs + 1;
                 }
               } else if (tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode) {

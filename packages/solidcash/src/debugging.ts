@@ -163,7 +163,7 @@ const debugSingleScenario = (
   const lockingSteps = fullDebugSteps.slice(
     findLastIndex(fullDebugSteps, (state) => state.ip === 0 && state.controlStack.length === 0),
   );
-  // Drop a deployer's `<salt> OP_DROP` from main-script steps so their pointers match the artifact's.
+  // Drop a deployer's salt and category pin from main-script steps so their pointers match the artifact's.
   const saltLength = deployerSaltLength(artifact, lockingSteps[0]);
   const inMainScript = (step: AuthenticationProgramStateCommon): boolean =>
     !step.controlStack.some((item) => typeof item === 'object' && item !== null);
@@ -651,17 +651,24 @@ const logDebugSteps = (
   });
 };
 
-// generateTemplateLockScript opens a salted contract's script with `<salt> OP_DROP`, which the artifact's pointers
-// do not count. Only that exact shape is recognised, so every other script is left as it is.
+// generateTemplateLockScript opens a salted contract's script with `<salt> OP_DROP`, then a stateful contract's
+// category pin `<category> OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY`, which the artifact's pointers do not
+// count. Only those exact shapes are recognised, so every other script is left as it is.
 const deployerSaltLength = (
   artifact: Artifact | undefined, entry: AuthenticationProgramStateCommon | undefined,
 ): number => {
   if (!artifact || !entry) return 0;
-  const [push, drop] = entry.instructions;
-  if (!push || !('data' in push) || drop?.opcode !== Op.OP_DROP) return 0;
+  const at = (index: number): AuthenticationInstruction | undefined => entry.instructions[index];
+  const isPush = (index: number): boolean => at(index) !== undefined && 'data' in at(index)!;
+  let length = isPush(0) && at(1)?.opcode === Op.OP_DROP ? 2 : 0;
+  if (isPush(length) && at(length + 1)?.opcode === Op.OP_INPUTINDEX
+    && at(length + 2)?.opcode === Op.OP_UTXOTOKENCATEGORY && at(length + 3)?.opcode === Op.OP_EQUALVERIFY) {
+    length += 4;
+  }
+  if (length === 0) return 0;
   const bytecode = artifact.debug ? hexToBin(artifact.debug.bytecode) : asmToBytecode(artifact.bytecode);
   const own = artifact.constructorInputs.length + decodeAuthenticationInstructions(bytecode).length;
-  return entry.instructions.length === own + 2 ? 2 : 0;
+  return entry.instructions.length === own + length ? length : 0;
 };
 
 const getFinalExecutedVerifyIp = (executedDebugSteps: AuthenticationProgramStateCommon[]): number => {

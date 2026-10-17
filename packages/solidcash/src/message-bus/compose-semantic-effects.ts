@@ -48,7 +48,9 @@ export interface ObserveComposeSemanticEffectsContext {
   valueSlots: readonly { participant: number; offset: number }[];
   tokenSlots: readonly { participant: number; offset: number }[];
   sidecarSlots: readonly { participant: number; offset: number; kind: AtomicSidecarSlotEffect['kind'] }[];
-  eventSlots: () => readonly { participant: number; offset: number; runtimeRow?: number; eventSignature?: string }[];
+  eventSlots: () => readonly {
+    participant: number; offset: number; runtimeRow?: number; eventSignature?: string; chunked?: true;
+  }[];
   incompleteParticipants: ReadonlySet<number>;
   valueChunkConvergence: { ownedOutputs: readonly number[] };
   eventLockingBytecodes: (participant: PlanParticipant) => string[];
@@ -414,6 +416,9 @@ export function observeComposeSemanticEffects(
     const indices = (eventSlotsByParticipant.get(participant.participant) ?? [])
       .map((slot) => participantBase + slot.offset);
     if (indices.length === 0) continue;
+    // Stream records sit in the trailing band, outside any window selection, and are never inactive templates.
+    const streamTargets = new Set((eventSlotsByParticipant.get(participant.participant) ?? [])
+      .filter((slot) => slot.runtimeRow !== undefined).map((slot) => participantBase + slot.offset));
     const eventLocks = ctx.eventLockingBytecodes(participant);
     const eventLockSet = new Set(eventLocks);
     const participantEnd = participantBase
@@ -458,7 +463,7 @@ export function observeComposeSemanticEffects(
       // before the following OUTPUTBYTECODE pin and the trace cannot reconstruct the payload.
       const callsiteLock = ctx.eventLockingBytecodeAtOffset(participant, index - participantBase);
       const activeTemplate = active.includes(index);
-      return (selectedEventOffsets === undefined
+      return (streamTargets.has(index) || selectedEventOffsets === undefined
         || selectedEventOffsets.has(index - participantBase))
         && (expectation?.commitment.length ?? 0) > 0
         // A commitment mismatch stops the faithful VM trace before the handler can execute its following
@@ -468,10 +473,17 @@ export function observeComposeSemanticEffects(
         && (expectation?.lockingBytecode !== undefined || schemaLock !== undefined
           || callsiteLock !== undefined || activeTemplate);
     });
-    const inactive = indices.map((index) => ctx.provisional.outputs[index]).find((output) => !output.token);
+    const inactive = indices.filter((index) => !streamTargets.has(index))
+      .map((index) => ctx.provisional.outputs[index]).find((output) => !output.token);
+    // A chunk of a chunked event need not parse as any schema, and a short one can parse as the wrong one.
+    const chunkedTargets = new Set((eventSlotsByParticipant.get(participant.participant) ?? [])
+      .filter((slot) => slot.chunked).map((slot) => participantBase + slot.offset));
     if (!inactive && targets.some((target) => !active.includes(target))) {
       throw new Error('messageBus: event-frame relocation has no canonical inactive output');
     }
+    // A stream the trace has not read yet has nothing to relocate.
+    if (!inactive && targets.length === 0 && active.length > 0
+      && indices.every((index) => streamTargets.has(index))) continue;
     if (!inactive && targets.length === 0 && active.length > 0) {
       throw new Error('messageBus: inactive event frame has no canonical empty output');
     }
@@ -481,14 +493,17 @@ export function observeComposeSemanticEffects(
     if (!template) throw new Error('messageBus: active event frame has no output template');
     const targetTemplates = new Map(targets.map((target) => [target, ctx.provisional.outputs[target]]));
     if (inactive) {
-      for (const index of new Set([...indices, ...active])) ctx.provisional.outputs[index] = { ...inactive };
+      for (const index of new Set([...indices, ...active])) {
+        if (!streamTargets.has(index)) ctx.provisional.outputs[index] = { ...inactive };
+      }
     }
     targets.forEach((target, index) => {
       const expectation = expectationAt(target)!;
       // A flattened route trace can expose a sibling event identity beside the reached handler's payload.
       // Prefer the unique event schema published by the selected handlers; retain the trace for genuinely
       // ambiguous same-schema events, where the commitment alone cannot identify a named covenant.
-      const decodedLock = ctx.eventLockingBytecodeForCommitment(participant, expectation.commitment);
+      const decodedLock = chunkedTargets.has(target)
+        ? undefined : ctx.eventLockingBytecodeForCommitment(participant, expectation.commitment);
       const callsiteLock = ctx.eventLockingBytecodeAtOffset(participant, target - participantBase);
       const current = targetTemplates.get(target);
       const currentLock = typeof current?.to === 'string'

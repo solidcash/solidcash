@@ -56,7 +56,6 @@ contract SimpleToken(pubkey admin) {
         emit Transfer(from, to, amount);
     }
 
-    function migrate(sig s) upgrade onlyAdmin(s) { }
     function destroy(sig s) selfdestruct onlyAdmin(s) { }
 }
 ```
@@ -67,7 +66,6 @@ Key design decisions:
 - **`balances`** - verified mapping backed by authenticated, linked entry NFTs and omission proofs
 - **`Transfer`** event - persistent on-chain event log
 - **`onlyAdmin`** modifier - reusable auth check
-- **`migrate`** - upgrade modifier for future versioning
 
 ## Step 2: Compile
 
@@ -80,12 +78,9 @@ This produces `SimpleToken.json` and optionally `SimpleToken.artifact.ts` (with 
 ## Step 3: Deploy
 
 ```typescript title="deploy.ts"
-import {
-    ContractFactory,
-    ElectrumNetworkProvider,
-    SignatureTemplate,
-    Signer,
-} from 'solidcash';
+import { SignatureTemplate, Signer } from 'solidcash';
+import { ContractFactory } from 'solidcash/contract-factory';
+import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 import artifact from './SimpleToken.json' assert { type: 'json' };
 
 const provider = new ElectrumNetworkProvider('chipnet');
@@ -164,65 +159,27 @@ for (const evt of events) {
 
 ## Step 6: Upgrade
 
-When you need to add features, create a V2 contract with the new state layout:
+`SimpleToken` cannot upgrade in place. Its `totalSupply` and `balances` live in data and entry NFTs bound to the
+master's exact lock, and an `upgrade` function would move the master to new bytecode, leaving those records
+unspendable. The compiler therefore refuses `upgrade` in a contract that keeps state.
 
-```solidity title="SimpleTokenV2.scash"
-contract SimpleTokenV2(pubkey admin) {
-    int public totalSupply;
-    mapping(bytes20 => int) public balances;
-    bool public paused;                  // NEW field
+Decide how the code may evolve before deploying:
 
-    modifier onlyAdmin(sig s) {
-        require(checkSig(s, admin));
-        _;
-    }
+- a contract whose whole state lives in its master NFT can declare an `upgrade` function, and its replacement may
+  add state; or
+- a contract that keeps state can sit behind a custom proxy whose authenticated implementation pointer can change
+  (the built-in `deployProxy()` proxy is pinned to one implementation).
 
-    function mint(bytes20 to, int amount, sig s) onlyAdmin(s) {
-        require(!this.paused, "Contract paused");
-        // ... same as before
-    }
-
-    function pause(sig s) onlyAdmin(s) {
-        this.paused = true;
-    }
-
-    function migrate(sig s) upgrade onlyAdmin(s) { }
-    // ... retain the other V1 entry points
-}
-```
-
-```typescript
-import v2Artifact from './SimpleTokenV2.json' assert { type: 'json' };
-
-const [upgradeFunding] = await signer.getUtxos();
-
-const { contract: upgraded } = await StatefulContract.upgrade({
-    provider,
-    oldContract: contract,
-    upgradeFunctionName: 'migrate',
-    upgradeFunctionArgs: [adminSig],
-    newArtifact: v2Artifact,
-    newConstructorArgs: [adminPub],
-    fundingUtxo: upgradeFunding,
-    funder: signer.unlockP2PKH(),
-    changeAddress: signer.address,
-});
-```
-
-The category ID is preserved while the physical contract address changes. Existing state (`totalSupply`,
-`balances`) carries over and the appended `paused` field defaults to `false`. See
-[Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
+See [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
 
 ## Step 7: Test
 
 ```typescript title="SimpleToken.test.ts"
 import { describe, it, expect, beforeAll } from 'vitest';
 import 'solidcash/vitest';
-import {
-    ContractFactory,
-    MockNetworkProvider,
-    SignatureTemplate,
-} from 'solidcash';
+import { SignatureTemplate } from 'solidcash';
+import { ContractFactory } from 'solidcash/contract-factory';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 import artifact from './SimpleToken.json' assert { type: 'json' };
 
 describe('SimpleToken', () => {
@@ -299,7 +256,8 @@ describe('SimpleToken', () => {
 3. **Index durable audit history** - event NFTs are easy to query while unspent, but anyone may clean them up after
    144 blocks. Persist them in an application index if history must outlive the current UTXO set.
 4. **Implement access control** - always gate sensitive operations with `checkSig` or similar checks.
-5. **Plan for upgrades** - include an `upgrade` modifier function from the start so you can evolve the contract.
+5. **Plan for upgrades** - a contract that keeps state cannot upgrade in place; choose a proxy before deploying if
+   its code must change later.
 6. **Use the `unsafe` modifier sparingly** - it allows raw transaction introspection but relaxes covenant safety checks.
 7. **Test with MockNetworkProvider** - fast, deterministic, no network dependency.
 

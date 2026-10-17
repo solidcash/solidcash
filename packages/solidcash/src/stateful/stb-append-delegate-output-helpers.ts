@@ -35,6 +35,8 @@ export interface AppendDelegateOutputHelpersHost {
   readonly externalCallEntryOutputs: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly delegateComputeResources: boolean;
   readonly compilerRouteDelegateBlock: boolean;
+  /** Set only when the delegated implementation, not the owner, co-spends the block-info oracle. */
+  readonly blockInfoCoSpendUtxos: readonly UnlockableUtxo[];
   readonly keccakComputeCoSpendUtxos: readonly UnlockableUtxo[];
   readonly keccakComputeCommitments: readonly string[];
   readonly categoryId: string;
@@ -191,9 +193,18 @@ export function createAppendDelegateOutputHelpers(
         .filter((slot) => slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar')
         .reduce((max, slot) => Math.max(max, slot.offset), -1) ?? -1
       : -1;
-    const lastImplementationResourceOffset = Math.max(lastTransferOffset, lastComputeOffset);
+    const oracle = host.blockInfoCoSpendUtxos[0];
+    const oracleOffset = oracle === undefined ? -1
+      : delegateFn?.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle')?.offset ?? -1;
+    const lastImplementationResourceOffset = Math.max(lastTransferOffset, lastComputeOffset, oracleOffset);
     for (let offset = occupied; offset <= lastImplementationResourceOffset; offset += 1) {
       const slot = delegateFn?.blockLayout?.slots.find((candidate) => candidate.offset === offset);
+      if (oracle !== undefined && slot?.kind === 'blockInfoOracle') {
+        builder.addOutput({
+          to: oracle.unlocker.generateLockingBytecode(), amount: oracle.satoshis, token: cloneToken(oracle.token),
+        });
+        continue;
+      }
       if (host.delegateComputeResources && slot?.kind === 'keccakSideCar') {
         const sidecarIndex = slot.slotIndex ?? 0;
         const sidecar = host.keccakComputeCoSpendUtxos[sidecarIndex];

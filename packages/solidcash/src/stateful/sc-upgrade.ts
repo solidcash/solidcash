@@ -7,6 +7,7 @@ import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   buildPushdataCommitment,
   parsePushdataCommitment,
+  hasDataNftIndexTags,
   type Artifact,
   type StateValue,
 } from '@solidcash/utils';
@@ -15,8 +16,14 @@ import type { Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
 import {
-  createDataNftUnlocker,
+  createDestroyDataNftUnlocker,
+  createEntryNftUnlocker,
+  createSatoshiContainerUnlocker,
+  createTokenContainerUnlocker,
   getDataNftAddress,
+  getEntryNftAddress,
+  getSatoshiContainerAddress,
+  getTokenContainerAddress,
 } from './covenant-helpers.js';
 import type { UpgradeOptions, UpgradeResult } from './stateful-lifecycle-types.js';
 
@@ -95,11 +102,27 @@ export async function upgradeStatefulContract<T extends Artifact>(
     }
   }
 
+  const previousLayout = oldContract.inner.artifact.stateLayout;
+  const requiredNftIndices = upgradeAbi.requiredNftIndices
+    ?? Array.from({ length: oldContract.inner.stateLayout!.dataNftCount }, (_, i) => i);
+  // This API explicitly decodes and rebuilds commitments. A changed tag format must rebuild every old record;
+  // otherwise an unspent record would retain bytes the replacement cannot decode.
+  if (previousLayout && hasDataNftIndexTags(previousLayout) !== hasDataNftIndexTags(newArtifact.stateLayout)) {
+    const rebuilt = new Set(requiredNftIndices);
+    if (Array.from({ length: previousLayout.dataNftCount }, (_, index) => index)
+      .some((index) => !rebuilt.has(index))) {
+      throw new Error(
+        'Upgrade layout incompatibility: changing data NFT index-tag encoding requires re-encoding '
+        + 'every existing data NFT; the upgrade function omits a record.',
+      );
+    }
+  }
+
   const categoryId = oldContract.categoryId;
   const addressType = options.addressType ?? oldContract.inner.addressType;
 
   // Get on-chain state to find the master UTXO
-  const onChainState = await oldContract.getFullState();
+  let onChainState = await oldContract.getFullState();
   if (!onChainState.masterUtxo) {
     throw new Error(
       `Master UTXO not found for contract '${oldContract.name}' `
@@ -107,7 +130,7 @@ export async function upgradeStatefulContract<T extends Artifact>(
     );
   }
 
-  const masterUtxo = onChainState.masterUtxo;
+  let masterUtxo = onChainState.masterUtxo;
 
   // Create the new contract instance self-pinned to the same categoryId
   const newContract = new Contract(newArtifact, newConstructorArgs as any, {
@@ -116,9 +139,85 @@ export async function upgradeStatefulContract<T extends Artifact>(
     category: hexToBin(categoryId),
   });
 
-  // Determine which data NFTs the upgrade function needs
-  const requiredNftIndices = upgradeAbi.requiredNftIndices
-    ?? Array.from({ length: oldContract.inner.stateLayout!.dataNftCount }, (_, i) => i);
+  // CRYPTO-4 entry batched migration: drain every collection's entries at the replacement-bound entry covenant,
+  // one entry per transaction, behind the migrateRecords entry's authorization, before the upgrade moves the
+  // master. The replacement-bound covenant only becomes spendable once the upgrade runs, so the order matters.
+  const collections = oldContract.inner.artifact.stateLayout?.collections ?? [];
+  if (collections.length > 0) {
+    const migrateAbi = oldContract.inner.artifact.abi.find((f) => (
+      f.modifiers?.includes('migrateRecords')
+      && (options.migrateRecordsFunctionName === undefined || f.name === options.migrateRecordsFunctionName)
+    ));
+    if (!migrateAbi) {
+      throw new Error(
+        'Upgrade migrates mapping/array entries, but the old contract declares no migrateRecords entry. '
+        + 'Add a migrateRecords function and pass migrateRecordsFunctionArgs.',
+      );
+    }
+    if (!options.migrateRecordsFunctionArgs) {
+      throw new Error(
+        'Upgrade migrates mapping/array entries; pass migrateRecordsFunctionArgs (the migrateRecords entry args).',
+      );
+    }
+    const migrateArgs = [...options.migrateRecordsFunctionArgs, addressToLockScript(newContract.tokenAddress)];
+    const changeAddr = options.changeAddress
+      ?? (options.funder ? options.funder.generateLockingBytecode() : undefined)
+      ?? oldContract.inner.address;
+    const { TransactionBuilder: RecordTxBuilder } = await import('../TransactionBuilder.js');
+    for (const collection of collections) {
+      const entryAddress = getEntryNftAddress(oldContract.inner, categoryId, collection.signature);
+      for (let guard = 0; guard < 20_000; guard++) {
+        const entries = await provider.getUtxos(entryAddress);
+        const entry = entries.find((utxo) => utxo.token !== undefined);
+        if (!entry) break;
+        const state = await oldContract.getFullState();
+        const master = state.masterUtxo;
+        if (!master) throw new Error('Master UTXO not found during entry migration.');
+
+        const builder = new RecordTxBuilder({ provider });
+        builder.addInput(master, (oldContract.inner.unlock as any)[migrateAbi.name](...migrateArgs));
+        builder.addInput(entry, createEntryNftUnlocker(oldContract.inner, 0, categoryId, collection.signature));
+        // Fee funder (a fresh dummy UTXO each batch on the mock provider).
+        const funder: Utxo = {
+          txid: (guard + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 10_000n,
+        };
+        await (provider as any).addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), funder);
+        builder.addInput(funder, {
+          generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
+          generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+        });
+        builder.addOutput({
+          to: oldContract.inner.tokenAddress,
+          amount: master.satoshis,
+          token: {
+            category: categoryId,
+            amount: master.token?.amount ?? 0n,
+            nft: { capability: 'minting', commitment: master.token?.nft?.commitment ?? '' },
+          },
+        });
+        builder.addOutput({
+          to: getEntryNftAddress(newContract, categoryId, collection.signature),
+          amount: entry.satoshis,
+          token: entry.token,
+        });
+        builder.addOutput({ to: changeAddr, amount: 1000n }); // placeholder, adjusted below
+        const recordFee = await computeFeeFromBuilder(builder);
+        const changeAmount = funder.satoshis - recordFee;
+        if (changeAmount > 0n) {
+          builder.outputs[builder.outputs.length - 1] = {
+            ...builder.outputs[builder.outputs.length - 1], amount: changeAmount,
+          };
+        } else {
+          builder.outputs.pop();
+        }
+        await builder.send();
+      }
+    }
+  }
+
+  // The entry migration re-created the master, so refresh the on-chain state before the upgrade spends it.
+  onChainState = await oldContract.getFullState();
+  masterUtxo = onChainState.masterUtxo!;
 
   const filteredDataNftUtxos = requiredNftIndices.map((idx) => onChainState.dataNftUtxos[idx]);
   if (filteredDataNftUtxos.some((u) => u === undefined)) {
@@ -151,8 +250,10 @@ export async function upgradeStatefulContract<T extends Artifact>(
 
   // Create the unlocker for the old contract's upgrade function
   const stateInputUnlocker = (oldContract.inner.unlock as any)[upgradeFunctionName](...finalArgs);
+  // CRYPTO-4 data-NFT migration: spend each old data NFT with flag=2 (destroy, which still binds the old master
+  // lock while the old master is an input), then re-mint a copy at the replacement-bound covenant.
   const dataNftUnlockers = filteredDataNftUtxos.map(
-    () => createDataNftUnlocker(oldContract.inner, 0, categoryId),
+    () => createDestroyDataNftUnlocker(oldContract.inner, 0, categoryId),
   );
 
   // Build the upgrade transaction
@@ -170,12 +271,62 @@ export async function upgradeStatefulContract<T extends Artifact>(
     builder.addInput(filteredDataNftUtxos[i], dataNftUnlockers[i]);
   }
 
-  // Outputs 1..N: data NFTs with commitments rebuilt for the new state layout.
-  // When the new contract extends state (appends new variables), we parse the
-  // old commitment using the old layout, then rebuild using the new layout so
-  // that new fields are initialised with default values.
-  // When state overflows into additional NFTs, new data NFTs are minted
-  // using funds from the caller-provided funding UTXO.
+  // CRYPTO-4 satoshi-container migration: the container (bound to the old master lock) is spent with its flag=1
+  // master path, drained at its input index, and re-minted at the replacement-bound covenant. The contract keeps
+  // a container when any entry's block layout reserves its slot; the container UTXO must exist to migrate (it
+  // always does once the contract has held BCH, since transfers recreate it at the same covenant).
+  const keepsSatoshiContainer = oldContract.inner.artifact.abi.some((fn) =>
+    fn.blockLayout?.slots.some((slot) => slot.kind === 'satoshiContainer'));
+  let satoshiContainerUtxo: Utxo | undefined;
+  if (keepsSatoshiContainer) {
+    const satoshiAddress = getSatoshiContainerAddress(oldContract.inner, categoryId);
+    const containerUtxos = await provider.getUtxos(satoshiAddress);
+    satoshiContainerUtxo = containerUtxos.find((utxo) => utxo.token === undefined);
+    if (!satoshiContainerUtxo) {
+      throw new Error(
+        `Upgrade migrates the satoshi container, but none exists at ${satoshiAddress}. `
+        + 'Fund the satoshi container (or drain it) before upgrading.',
+      );
+    }
+    // Input 1+N: the old satoshi container, spent by the old master still at the old lock.
+    builder.addInput(satoshiContainerUtxo, createSatoshiContainerUnlocker(oldContract.inner, 0, categoryId));
+  }
+
+  // CRYPTO-4 token-container migration: the old containers are spent with their flag=1 master path, drained at
+  // their input indices, and re-minted at the replacement-bound covenant carrying each foreign category, amount and
+  // value. The compiler reserves one slot per token-container access site, so the caller must name exactly that
+  // many foreign categories (a contract with fewer live containers must still drain that many).
+  const tokenContainerCount = oldContract.inner.artifact.abi
+    .flatMap((fn) => fn.blockLayout?.slots ?? [])
+    .filter((slot) => slot.kind === 'tokenContainer').length;
+  const tokenContainerCategoryIds = options.tokenContainerCategoryIds ?? [];
+  const tokenContainerUtxos: Utxo[] = [];
+  if (tokenContainerCount > 0) {
+    if (tokenContainerCategoryIds.length !== tokenContainerCount) {
+      throw new Error(
+        `Upgrade migrates ${tokenContainerCount} token container(s), but ${tokenContainerCategoryIds.length} `
+        + 'tokenContainerCategoryIds were provided. Pass one foreign token category per reserved slot.',
+      );
+    }
+    for (const tcCatId of tokenContainerCategoryIds) {
+      const tcAddress = getTokenContainerAddress(oldContract.inner, categoryId, tcCatId);
+      const containerUtxos = await provider.getUtxos(tcAddress);
+      const containerUtxo = containerUtxos.find((utxo) => utxo.token !== undefined);
+      if (!containerUtxo) {
+        throw new Error(
+          `Upgrade migrates the token container, but none exists at ${tcAddress} `
+          + `for foreign category ${tcCatId}.`,
+        );
+      }
+      tokenContainerUtxos.push(containerUtxo);
+      builder.addInput(containerUtxo, createTokenContainerUnlocker(oldContract.inner, 0, categoryId, tcCatId));
+    }
+  }
+
+  // The old data NFTs are destroyed (flag=2) and re-minted at the replacement's lock with their values carried
+  // into the new state layout: parse the old commitment with the old layout, then rebuild with the new layout so
+  // new fields are initialised with default values. Additional data NFTs the longer layout needs are minted from
+  // the caller-provided funding UTXO.
   const oldLayout = oldContract.inner.stateLayout!;
   const newLayout = newArtifact.stateLayout!;
   const dataNftAmount = 1200n;
@@ -233,15 +384,40 @@ export async function upgradeStatefulContract<T extends Artifact>(
     },
   });
 
-  // Rebuild existing data NFT outputs with new-layout commitments
-  for (let i = 0; i < filteredDataNftUtxos.length; i++) {
+  // CRYPTO-4 data-NFT migration layout, matching the compiler's census and re-mint verification. When the
+  // satoshi container migrates too, its zero-value drain occupies out[N+1] and its re-mint out[2N+2]:
+  //   out[0]         = new master
+  //   out[1..N]      = a non-category pad band (the flag=2 destroy covenant requires output[INPUTINDEX] to hold a
+  //                    DIFFERENT category, so a re-mint cannot sit at the old input's index)
+  //   out[N+1]       = the satoshi container's zero-value drain (when present)
+  //   out[N+2..2N+1] = re-minted data NFTs at the replacement-bound covenant, each carrying its old commitment
+  //   out[2N+2]      = the satoshi container re-mint at the replacement-bound covenant (when present)
+  //   out[2N+3..]    = added data NFTs for the extended layout
+  // A zero-value bare OP_RETURN pad needs no funding and is exempt from dust.
+  const oldNftCount = filteredDataNftUtxos.length;
+  for (let i = 0; i < oldNftCount; i++) {
+    builder.addOutput({ to: Uint8Array.of(0x6a), amount: 0n });
+  }
+
+  // The satoshi container's flag=1 master path requires output[INPUTINDEX] to be a zero-value drain; its re-mint
+  // carries the container's value at the replacement-bound covenant. The token container's master path requires the
+  // same zero-value/zero-token drain at its input index (one output later when the satoshi container is present).
+  if (satoshiContainerUtxo) {
+    builder.addOutput({ to: Uint8Array.of(0x6a), amount: 0n });
+  }
+  for (let containerIndex = 0; containerIndex < tokenContainerUtxos.length; containerIndex++) {
+    builder.addOutput({ to: Uint8Array.of(0x6a), amount: 0n });
+  }
+
+  // Re-mint existing data NFTs with their old values carried into the new layout.
+  for (let i = 0; i < oldNftCount; i++) {
     const nftUtxo = filteredDataNftUtxos[i];
     const nftIdx = requiredNftIndices[i];
 
     const newCommitment = buildPushdataCommitment(newLayout, oldState, nftIdx);
 
     builder.addOutput({
-      to: dataNftUnlockers[i].generateLockingBytecode(),
+      to: getDataNftAddress(newContract, categoryId),
       amount: nftUtxo.satoshis,
       token: {
         category: categoryId,
@@ -251,6 +427,23 @@ export async function upgradeStatefulContract<T extends Artifact>(
           commitment: newCommitment,
         },
       },
+    });
+  }
+
+  if (satoshiContainerUtxo) {
+    builder.addOutput({
+      to: getSatoshiContainerAddress(newContract, categoryId),
+      amount: satoshiContainerUtxo.satoshis,
+    });
+  }
+
+  // Re-mint each token container at the replacement-bound covenant, carrying its foreign token and value.
+  for (let i = 0; i < tokenContainerUtxos.length; i++) {
+    const containerUtxo = tokenContainerUtxos[i];
+    builder.addOutput({
+      to: getTokenContainerAddress(newContract, categoryId, tokenContainerCategoryIds[i]),
+      amount: containerUtxo.satoshis,
+      token: containerUtxo.token,
     });
   }
 

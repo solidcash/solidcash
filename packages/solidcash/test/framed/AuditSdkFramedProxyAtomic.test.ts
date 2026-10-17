@@ -52,6 +52,19 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `     IWriter(0x${binToHex(WRITER)}).bump();`
   + '     require(msg.sender == expected);'
   + '   }'
+  + ' }'
+  // A minted genesis root has no P2PKH caller, so an atomic initializer must not bind msg.sender.
+  + ` contract Atomic {${STATE}`
+  + '   function initialize() {'
+  + `     IWriter(0x${binToHex(WRITER)}).bump();`
+  + '   }'
+  + ' }'
+  + ` contract StuckAtomic {${STATE}`
+  + '   function initialize() {'
+  + `     IWriter(0x${binToHex(WRITER)}).bump();`
+  + '     require(this.initialized == 7, "not ready");'
+  + '     this.initialized = 1;'
+  + '   }'
   + ' }';
 
 const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
@@ -201,22 +214,51 @@ describe('audit SDKFRAMED-2: a framed proxy is minted initialized, so no uniniti
     await expectNothingBroadcast(run);
   }, 600_000);
 
-  it('refuses an initializer that calls another contract by default, and runs it only as an explicit hop', async () => {
-    const run = await funded(artifacts.Calling!);
+  it('deploys a calling initializer atomically through the proxy genesis frame, and keeps the hop escape hatch', async () => {
+    // The default now runs the Writer's frame inside the proxy's own genesis: one proxy genesis whose records
+    // already carry the Writer's state change, and no uninitialized proxy genesis is ever broadcast.
+    const run = await funded(artifacts.Atomic!);
     const externals = await deployWriter(run.network);
-    await expect(deployFramedProxy({ ...run.options, externals }))
-      .rejects.toThrow(/calls another contract \(Writer\..*`initializeAs: 'hop'`/);
-    await expectNothingBroadcast(run);
-
-    // The documented exception: the uninitialized genesis, then the hop, broadcast back to back.
     const deployment = await deployFramedProxy({
-      ...run.options, externals, initializeAs: 'hop', callerFunding: run.callerFunding,
+      ...run.options, initialize: { functionName: 'initialize' }, externals,
     });
-    expect(run.sent).toStrictEqual([
-      deployment.implementation.tx.txid, deployment.proxy.tx.txid, deployment.initialize.broadcast.txid,
-    ]);
+    expect(run.sent).toStrictEqual([deployment.implementation.tx.txid, deployment.proxy.tx.txid]);
+    expect(deployment.initialize.broadcast.txid).toBe(deployment.proxy.tx.txid);
+    // The genesis spends its own funding coin and the participants its frames run, never the caller's coin.
+    expect(deployment.proxy.tx.inputs.some((input) =>
+      binToHex(input.outpointTransactionHash) === run.caller.txid)).toBe(false);
+    expect(await callerCoinLive(run)).toBe(true);
     const writer = await readFramedState(run.network, WRITER_CATEGORY, artifacts.Writer!.stateLayout!);
     expect(writer.byNft[0]!.count).toBe(1n);
+    // The proxy's own genesis still mints its record carrying the implementation's address, as a probe would.
+    const recordLock = binToHex(stateRecordLockingBytecode(deployment.proxy.categoryId));
+    const records = deployment.proxy.tx.outputs.filter((output) => binToHex(output.lockingBytecode) === recordLock);
+    expect(records.map((output) => binToHex(output.token!.nft!.commitment))).toStrictEqual([
+      buildPushdataCommitment(layout, { implementation: deployment.implementation.address, initialized: 0n }, 0),
+    ]);
+
+    // A caller that binds msg.sender still asks for the separate hop, which broadcasts both geneses and the hop.
+    const hopped = await funded(artifacts.Calling!);
+    const hoppedExternals = await deployWriter(hopped.network);
+    const hoppedDeployment = await deployFramedProxy({
+      ...hopped.options, externals: hoppedExternals, initializeAs: 'hop', callerFunding: hopped.callerFunding,
+    });
+    expect(hopped.sent).toStrictEqual([
+      hoppedDeployment.implementation.tx.txid, hoppedDeployment.proxy.tx.txid,
+      hoppedDeployment.initialize.broadcast.txid,
+    ]);
+    const hoppedWriter = await readFramedState(
+      hopped.network, WRITER_CATEGORY, artifacts.Writer!.stateLayout!);
+    expect(hoppedWriter.byNft[0]!.count).toBe(1n);
+  }, 600_000);
+
+  it('broadcasts nothing when a calling initializer reverts inside the genesis frame', async () => {
+    const run = await funded(artifacts.StuckAtomic!);
+    const externals = await deployWriter(run.network);
+    await expect(deployFramedProxy({
+      ...run.options, initialize: { functionName: 'initialize' }, externals,
+    })).rejects.toThrow(/not ready/);
+    await expectNothingBroadcast(run);
   }, 600_000);
 
   it('runs a separate hop when asked, broadcasting the two geneses and the hop back to back', async () => {
@@ -243,5 +285,47 @@ describe('audit SDKFRAMED-2: a framed proxy is minted initialized, so no uniniti
     await expect(deployment).rejects.toThrow(FramedProxyDeployError);
     await expect(deployment).rejects.toThrow(/needs `callerFunding`/);
     await expectNothingBroadcast(run);
+  }, 600_000);
+
+  it('refuses a stranger in the hop window, then the deployer\'s hop initializes the proxy', async () => {
+    const run = await funded(artifacts.Impl!);
+    const strangerLock = encodeLockingBytecodeP2pkh(bobPkh);
+    const strangerCoin = { txid: 'b1'.repeat(32), vout: 0, satoshis: 100_000n };
+    await run.network.addUtxo(binToHex(strangerLock), strangerCoin);
+    let strangerRefused: string | undefined;
+    const deployment = await deployFramedProxy({
+      ...run.options,
+      initializeAs: 'hop',
+      callerFunding: run.callerFunding,
+      beforeHopBroadcast: async ({ proxyCategoryId }): Promise<void> => {
+        // The two geneses are live, the hop is not: a stranger enters `initialize` naming its own lock.
+        try {
+          const stranger = await callFramedProxyEntry({
+            provider: run.network,
+            implementationArtifact: artifacts.Impl!,
+            proxyCategoryId,
+            implementationCategoryId: run.options.implementationDeploy.fundingUtxo.txid,
+            functionName: 'initialize',
+            args: [strangerLock],
+            callerUtxo: strangerCoin,
+            callerLockingBytecode: strangerLock,
+            funder: new SignatureTemplate(bobPriv).unlockP2PKH(),
+            vm: compositionMachine(),
+          });
+          expect(stranger.accepted, stranger.verdicts.map((verdict) => verdict.objection).join('; ')).toBe(false);
+          expect(stranger.broadcast).toBeUndefined();
+        } catch (error) {
+          strangerRefused = error instanceof Error ? error.message : String(error);
+          expect(strangerRefused).toMatch(/VERIFY|refused|required|sender|initialize/i);
+        }
+      },
+    });
+
+    expect(strangerRefused !== undefined || run.sent.length === 3).toBe(true);
+    expect(run.sent).toStrictEqual([
+      deployment.implementation.tx.txid, deployment.proxy.tx.txid, deployment.initialize.broadcast.txid,
+    ]);
+    const state = await readFramedState(run.network, deployment.proxy.categoryId, layout);
+    expect(state.byNft[0]!.initialized).toBe(1n);
   }, 600_000);
 });

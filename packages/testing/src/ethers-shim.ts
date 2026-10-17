@@ -3,12 +3,10 @@
  * from its subpaths - so a project-wide `ethers` alias does NOT recurse into this file - and overrides only the
  * EVM CREATE-address predictors.
  *
- * On Bitcoin Cash a stateful contract's identity is its token category: the genesis funding UTXO's txid (vout 0),
- * optionally salted. It is NOT f(deployer, nonce), so `getCreateAddress`/`getCreate2Address` cannot be used
- * plainly. They are redirected to a deterministic BCH p2sh32 address so ported code that precomputes addresses
- * (e.g. to break a circular deploy dependency) still runs. The REAL deployed address comes from
- * `contract.getAddress()` after deploy - i.e. the SDK builder `new Contract(artifact, args, { category, salt })`
- * - which is what code should rely on for an address that matches an on-chain contract.
+ * Direct deployments expose an authenticated logical CREATE identity derived from the deployer and nonce.
+ * Framed deployments expose addrV(category), predicted from their reserved genesis funding UTXO. The runtime's
+ * composition convention selects the same address domain as deployment, including forward references used to
+ * initialize contracts which call one another.
  */
 export * from 'ethers/abi';
 export * from 'ethers/address';
@@ -226,16 +224,30 @@ function prefixOf(from: string): Prefix {
 }
 
 /**
- * BCH redirect for ethers `getCreateAddress({ from, nonce })` (see file docs - identity is category, not nonce).
- * When a framed look-ahead is open for the deployer, the nonce maps to the reserved genesis UTXO and the answer is
- * that UTXO's `addrV(category)` locking bytecode, which is where the deployment will actually land. Otherwise the
- * logical CREATE address stands in.
+ * Predict the address exposed by the selected deployment convention. An unspecified standalone convention
+ * retains a caller's explicit framed look-ahead; HRE connections always supply their resolved convention.
  */
-export function getCreateAddress(tx: { from: string; nonce: number | bigint }): string {
-  if (framedDeploy.createLookaheadForAddress(tx.from) !== undefined) {
+export function getCreateAddressForComposition(
+  tx: { from: string; nonce: number | bigint }, composition?: 'direct' | 'framed',
+): string {
+  // A nonce read reserves genesis funding in either convention. The reservation does not select the address
+  // domain: direct deployments expose logical CREATE identities, while framed deployments expose addrV(category).
+  if (composition !== 'direct' && framedDeploy.createLookaheadForAddress(tx.from) !== undefined) {
     return binToHex(framedDeploy.predictCreateAddress(tx.from, tx.nonce));
   }
   return deriveLogicalCreateAddress(tx.from, tx.nonce);
+}
+
+export function getCreateAddress(tx: { from: string; nonce: number | bigint }): string {
+  // Keep this read cycle-free: hre.ts imports the ethers shim and publishes its active resolved configuration
+  // on the same process-global slot. A standalone shim without an HRE retains its explicit look-ahead behavior.
+  const config = (globalThis as { __solidcashActiveHre?: {
+    config: { composition?: 'direct' | 'framed'; compiler?: { composition?: unknown } };
+  } }).__solidcashActiveHre?.config;
+  const composition = config === undefined ? undefined
+    : config.composition ?? config.compiler?.composition ?? 'direct';
+  return getCreateAddressForComposition(tx,
+    composition === 'direct' || composition === 'framed' ? composition : undefined);
 }
 
 /** BCH redirect for ethers `getCreate2Address(from, salt, initCodeHash)` (the salt maps to our CREATE2 segment). */

@@ -13,6 +13,7 @@ import { StatefulContract } from '../../../src/stateful/index.js';
 import * as messageBus from '../../../src/message-bus/index.js';
 import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { BlockOracleUpdater, type RpcLike } from '../../../src/oracle/blockOracleUpdater.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { decodeKernelEntryJournalAccesses } from '../../../src/stateful/KernelEntryJournal.js';
@@ -2210,7 +2211,8 @@ describe('kernel loop message-bus compose', () => {
     await expect(contract.call.seed(key, value).send()).resolves.toBeDefined();
 
     const slot = keyToSlotMulti([bigIntToVmNumber(key)]);
-    const oldChunkAddress = getValueChunkAddress(inner, categoryId, 'payloads', slot, sha256.hash(value));
+    // Value-chunk covenants bind the master's lock: read them at the category-pinned master's address.
+    const oldChunkAddress = getValueChunkAddress(contract.inner, categoryId, 'payloads', slot, sha256.hash(value));
     const oldChunks = await provider.getUtxos(oldChunkAddress);
     expect(oldChunks.length).toBeGreaterThan(1);
 
@@ -2541,9 +2543,15 @@ describe('kernel loop message-bus compose', () => {
   }, 180_000);
 });
 
-describe('kernel scalar-signature rows', () => {
-  it('executes the synthesized block-oracle updater through the row loop', async () => {
+// The owner's update reads no rpc.
+const UNUSED_RPC: RpcLike = { request: async (): Promise<never> => { throw new Error('unused'); } };
+
+// The owner update is a signed spend of the shared oracle covenant, so the kernel synthesizes no updater row.
+describe('kernel block-oracle rows', () => {
+  it('has no updater row and reads an owner-signed oracle update through the row loop', async () => {
     const provider = createTestProvider();
+    // Only the mock provider mints the block oracle a reader pins.
+    if (!('setBlockOracleFields' in provider)) return;
     const artifact = compileString(`contract KernelBlockOracle() {
       mapping(int => int) values;
       function seed(int key, int value) public {
@@ -2554,36 +2562,47 @@ describe('kernel scalar-signature rows', () => {
         require(block.timestamp == expected);
       }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) =>
-      handler.name === '__updateBlockOracle')).toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.map((handler) => handler.name)).not.toContain('__updateBlockOracle');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'readTimestamp'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.usesBlockOracle).toBe(true);
+    expect(artifact.stateLayout!.variables.map((variable) => variable.name)).not.toContain('__block_timestamp');
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
-      provider,
-      inner,
-      artifact.stateLayout!,
-      { __block_timestamp: 0n, __blockOracleOwner: alicePub },
-      { saltContract: true },
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
+    // A time-type update keeps the number, does not rewind the timestamp, and is final only below the mock's
+    // median time past (its tip time), so the oracle starts below the time it publishes (CRYPTO-5/6).
+    const fields = {
+      number: BigInt(await provider.getBlockHeight()), timestamp: 1_699_990_000n,
+      difficulty: 0n, size: 1n, totalFees: 0n, coinbase: hexToBin('00'),
+    };
+    provider.setBlockOracleFields(fields);
+    const published = 1_699_999_999n;
+    const owner = new BlockOracleUpdater({
+      contract: inner, categoryId, keeperKey: provider.blockOracleOwnerKey, rpc: UNUSED_RPC,
+    });
+    await owner.pushUpdate({ ...fields, timestamp: published }, Number(published));
+    expect(await owner.oracleTimestamp()).toBe(published);
+
     const contract = StatefulContract.withCategory(inner, categoryId);
-    const call = contract.batch([{
-      function: '__updateBlockOracle',
-      args: [new SignatureTemplate(alicePriv), 1_700_000_000n],
-    }]);
+    const call = contract.batch([{ function: 'readTimestamp', args: [published] }]);
     const builder = await call.build();
     const vm = createVirtualMachineBch2026ForProvider(provider);
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    expect(sourceOutputs.some((output) => binToHex(output.lockingBytecode) === binToHex(provider.blockOracleLock)))
+      .toBe(true);
     for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
       expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
         .toBe(true);
     }
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({
-      __block_timestamp: 1_700_000_000n,
-    });
   }, 180_000);
+});
 
+describe('kernel scalar-signature rows', () => {
   it('signs two aligned route-witness elements against the invoked handler body', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelSigned(pubkey owner) {
@@ -3922,7 +3941,7 @@ describe('kernel composite counter-key settlement', () => {
 
     const collectionLocks = ['a', 'b'].map((name) => {
       const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === name)!;
-      return binToHex(addressToLockScript(getEntryNftAddress(inner, categoryId, collection.signature)));
+      return binToHex(addressToLockScript(getEntryNftAddress(contract.inner, categoryId, collection.signature)));
     });
     const crossCollectionOutputs = collectionLocks.map((lock) => transaction.outputs
       .map((output, index) => ({ output, index }))
@@ -6085,7 +6104,8 @@ describe('kernel composite counter-key settlement', () => {
       .toEqual([0, 0, 0, 1]);
 
     const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === 'slots')!;
-    const entryLock = addressToLockScript(getEntryNftAddress(inner, categoryId, collection.signature));
+    // Entry covenants bind the master's lock: the entry outputs sit at the category-pinned master's address.
+    const entryLock = addressToLockScript(getEntryNftAddress(contract.inner, categoryId, collection.signature));
     const hostile = builder.buildLibauthTransaction();
     const entryOutput = hostile.outputs.find((output) =>
       binToHex(output.lockingBytecode) === binToHex(entryLock)

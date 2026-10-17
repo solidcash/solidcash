@@ -21,7 +21,7 @@ import {
   selectAuthenticatedCollectionValue,
   storedChunkableValueRoots,
 } from './authenticated-collection-value.js';
-import { getValueChunkAddress } from './covenant-helpers.js';
+import { getValueChunkAddress, getValueChunkLockingBytecode } from './covenant-helpers.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
 import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.js';
@@ -32,6 +32,8 @@ const VALUE_CHUNK_SCAN_MAX = 256;
 export type DeriveFullPhase2ValueChunksHost = {
   readonly categoryId: string;
   readonly inner: Contract<any, any>;
+  /** The records' physical state owner lock for a delegate: the proxy master's 35-byte lock, when set. */
+  readonly stateOwnerLock?: Uint8Array;
 };
 
 export type DeriveFullPhase2ValueChunksResult = {
@@ -106,16 +108,21 @@ export function deriveFullPhase2ApplyValueChunks(
           collection?.valueType, stateLayout.structs,
         );
         const traceItemsHex = new Set(traceItems.map(binToHex));
+        const chunkLock = (root: Uint8Array): Uint8Array => (
+          host.stateOwnerLock !== undefined
+            ? getValueChunkLockingBytecode(
+              host.categoryId, vcv.collection, vcv.slot!, root, host.stateOwnerLock,
+            )
+            : addressToLockScript(getValueChunkAddress(
+              host.inner, host.categoryId, vcv.collection, vcv.slot!, root,
+            ))
+        );
         const matched = rooted.find((value) => {
-          const address = getValueChunkAddress(
-            host.inner, host.categoryId, vcv.collection, vcv.slot!, sha256Sync(value),
-          );
-          return traceItemsHex.has(binToHex(addressToLockScript(address)));
+          const lockingBytecode = chunkLock(sha256Sync(value));
+          return traceItemsHex.has(binToHex(lockingBytecode));
         });
         if (matched) {
-          const lockingBytecode = addressToLockScript(getValueChunkAddress(
-            host.inner, host.categoryId, vcv.collection, vcv.slot, sha256Sync(matched),
-          ));
+          const lockingBytecode = chunkLock(sha256Sync(matched));
           const exact = splitValueIntoValueChunks(matched)
             .map((chunk, index) => buildValueChunkCommitment(index, chunk));
           const lockChanged = binToHex(vcv.lockingBytecode) !== binToHex(lockingBytecode);

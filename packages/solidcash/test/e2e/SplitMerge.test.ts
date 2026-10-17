@@ -588,5 +588,37 @@ describe('SplitMerge', () => {
         changeAddress: p2pkh.address,
       })).rejects.toThrow('Merge count is 2 but 1 consumed UTXOs provided');
     });
+
+    it('should reject merge funding that cannot cover the fee', async () => {
+      // Create the consumed masters first, then merge with no funding input: the survivor carries the consumed
+      // value, so a zero-fee transaction must be refused rather than broadcast.
+      const splitFunding: Utxo = { txid: 'f6cd'.repeat(16), vout: 0, satoshis: 50000n };
+      await provider.addUtxo(p2pkh.address, splitFunding);
+      await StatefulContract.split({
+        provider,
+        contract: deployedContract,
+        splitFunctionName: 'fork',
+        splitFunctionArgs: [2n, new SignatureTemplate(alicePriv)],
+        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        fundingUtxos: [splitFunding],
+        changeAddress: p2pkh.address,
+      });
+      const minting = (await provider.getUtxos(deployedContract.inner.tokenAddress)).filter(
+        (utxo) => utxo.token?.category === deployedContract.categoryId
+          && utxo.token?.nft?.capability === 'minting',
+      );
+      expect(minting.length).toBe(3);
+
+      await expect(StatefulContract.merge({
+        provider,
+        contract: deployedContract,
+        mergeFunctionName: 'consolidate',
+        mergeFunctionArgs: [2n, new SignatureTemplate(alicePriv)],
+        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        consumedMasterUtxos: minting.slice(1),
+        fundingUtxos: [],
+        changeAddress: p2pkh.address,
+      })).rejects.toThrow('Insufficient funding for merge');
+    });
   });
 });

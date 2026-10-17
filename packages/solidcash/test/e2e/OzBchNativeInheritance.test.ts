@@ -1,7 +1,7 @@
 import {
   beforeAll, describe, expect, it,
 } from 'vitest';
-import { binToHex, encodeTransaction } from '@bitauth/libauth';
+import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { compileFile, compileFileSplit } from 'solidc';
 import { asmToScript, buildChunkCommitment, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import type { Utxo } from '../../src/interfaces.js';
@@ -37,12 +37,12 @@ beforeAll(() => {
 });
 
 describe('BchNative with npm OpenZeppelin ERC20', () => {
-  it('composes with the unmodified OZ 5.0.2 implementation below 9.1 KB', () => {
-    // The evmCompat event notation writes each Transfer/Approval `uint256` as its packed 32 big-endian bytes
-    // instead of the platform's shared little-endian push, which costs the emitted sites 34 bytes (8_990 ->
-    // 9_024). 9_100 keeps the budget meaningful and well inside the 10_000-byte P2SH script limit; the 9_000
-    // shard budget in the facet test below is what decides whether the contract needs a split.
-    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_100);
+  it('composes with the unmodified OZ 5.0.2 implementation below 9.5 KB', () => {
+    // 9_100 held (9_024) before the October per-entry hardening. Its checks, the return and event pins and the
+    // one-target transitions are shared helpers now (9_417); 9_100 again needs the two-target transition and the
+    // batch write tails shared across entries. 9_500 stays well inside the 10_000-byte P2SH script limit; the
+    // 9_000 shard budget in the facet test below is what decides whether the contract needs a split.
+    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_500);
     expect(artifact.contractName).toBe('OzNativeToken');
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of [
@@ -65,7 +65,8 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     }, {
       saltContract: true,
       extraOutputs: (category) => Object.entries(labels).map(([name, value]) => ({
-        address: getDynamicChunkAddress(inner, category, name, 'string'),
+        // A chunk binds the master lock, which is the category-pinned contract's.
+        address: getDynamicChunkAddress(inner.withCategory(hexToBin(category)), category, name, 'string'),
         satoshis: 1_200n,
         token: {
           amount: 0n,
@@ -90,7 +91,10 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     }, {
       saltContract: true,
       extraOutputs: (category) => [{
-        address: getTokenContainerAddress(inner, category, category), satoshis: 1_200n, token: { amount: 1_000n },
+        // The container binds the master lock, which is the category-pinned contract's.
+        address: getTokenContainerAddress(inner.withCategory(hexToBin(category)), category, category),
+        satoshis: 1_200n,
+        token: { amount: 1_000n },
       }, {
         address: bob.getAddress(), satoshis: 100_000n, token: { amount: 5n },
       }],

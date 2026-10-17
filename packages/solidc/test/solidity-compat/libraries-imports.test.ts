@@ -684,6 +684,18 @@ describe('MasterChefV2 semantic walls (struct scoping + using-for receiver resol
     expect(() => compileString(`pragma solidity ^0.8.0; ${bm} contract C { using BoringMath for uint256;`
       + ' function f(uint256 x) public view returns (uint256) { return block.number.sub(x); } }', opts)).not.toThrow();
   });
+  it('using-for method widens a uint128 ARGUMENT to the uint256 binding (BoringMath .sub on a Rebase field)', () => {
+    // BentoBoxV1 deposit() line 835's trailing `.sub(total.elastic)` aspect: the receiver is uint256 and
+    // `total.elastic` is a uint128 struct field. Overload resolution must widen the argument to uint256 for
+    // BoringMath.sub. (This is distinct from the line-835 `_tokenBalanceOf` PARAM-BLOAT wall, whose regression
+    // lives in ExternalCalls.test.ts.)
+    expect(() => compileString(`pragma solidity ^0.8.0; ${bm}`
+      + ' contract C { using BoringMath for uint256; struct Rebase { uint128 elastic; }'
+      + ' mapping(address => Rebase) totals;'
+      + ' function _tokenBalanceOf(address t) internal view returns (uint256) { return totals[t].elastic; }'
+      + ' function f(address t) public view returns (uint256) { return _tokenBalanceOf(t).sub(totals[t].elastic); } }',
+    opts)).not.toThrow();
+  });
 });
 
 describe('RETURNING storage-pointer library fn on a mapping element (BentoBox addElastic, stmt + expr position)', () => {

@@ -11,6 +11,8 @@ export type ProjectCreateBuilderDelegateSlotsResult = {
     kind: BlockSlotKind;
     offset: number;
     slotIndex?: number;
+    chunk?: number;
+    conditional?: boolean;
   }>;
   delegateReturnEventOffset: number | undefined;
   returnEmitBlockOffset: number | undefined;
@@ -31,6 +33,8 @@ export function projectCreateBuilderDelegateSlots(params: {
     kind: BlockSlotKind;
     offset: number;
     slotIndex?: number;
+    chunk?: number;
+    conditional?: boolean;
   }>;
   delegateReturnEventOffset: number | undefined;
   returnEmitOutputIndex: number;
@@ -58,8 +62,8 @@ export function projectCreateBuilderDelegateSlots(params: {
     }[]).find((f) => f.name === g.functionName);
     const extra = (gFn?.blockLayout?.slots ?? []).filter((s) => s.kind !== 'master' && s.kind !== 'dataNft');
     const projectableKinds = new Set<BlockSlotKind>([
-      'blockhashOracle', 'keccakSideCar', 'ecrecoverSideCar',
-      'entry', 'tokenContainer', 'tcTransfer', 'event', 'returnEvent',
+      'blockhashOracle', 'blockInfoOracle', 'keccakSideCar', 'ecrecoverSideCar',
+      'entry', 'tokenContainer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent',
     ]);
     if (extra.length === 0 || !extra.every((slot) => projectableKinds.has(slot.kind))) continue;
     const existingCallSlot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'lowLevelCall');
@@ -77,6 +81,7 @@ export function projectCreateBuilderDelegateSlots(params: {
         kind: s.kind,
         offset,
         ...(s.slotIndex !== undefined && { slotIndex: s.slotIndex }),
+        ...(s.chunk !== undefined && { chunk: s.chunk, conditional: true }),
       });
     }
   }

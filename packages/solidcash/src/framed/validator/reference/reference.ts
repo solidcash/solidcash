@@ -26,6 +26,8 @@ import {
   INDEX_NONE,
   FramedEncodingError,
   TokenCapability,
+  TRANSCRIPT_VERSION,
+  TRANSCRIPT_VERSION_MINTED,
   WITNESS_BLOCK_MAGIC,
   WITNESS_BLOCK_VERSION,
   argsHash,
@@ -33,13 +35,18 @@ import {
   assertRecordEntry,
   buildSatoshiContainerCovenantScript,
   bytesEqual,
+  decodeMintedTranscript,
   decodeTranscript,
   entryLeavesCommitmentUnchanged,
+  isMintedRef,
+  mintedRef,
+  mintedRefIndex,
   scriptToBytecode,
   selfIsCodeConstant,
   splitFirstPush,
   validatorAddress,
   validatorRedeemScript,
+  type MintedMaster,
   type RecordEntry,
   type Transcript,
   type WitnessBlock,
@@ -88,6 +95,7 @@ class ReferenceRun {
   settles = new Set<string>();
   category: Uint8Array = new Uint8Array(0);
   transcript?: Transcript;
+  mintedMasters: MintedMaster[] = [];
   order: { master: number; segment: number }[] = [];
 
   constructor(
@@ -106,6 +114,11 @@ class ReferenceRun {
   }
 
   ownCategory(master: number): Uint8Array {
+    if (isMintedRef(master)) {
+      const output = outputByIndex(this.transaction, mintedRefIndex(master));
+      if (output === undefined) this.reject('V5', 'CALLEE_IS_NOT_A_COVERED_MASTER', master);
+      return output!.token.category;
+    }
     const input = inputByIndex(this.transaction, master);
     if (input === undefined) this.reject('V5', 'CALLEE_IS_NOT_A_COVERED_MASTER', master);
     return input!.token.category;
@@ -128,12 +141,26 @@ class ReferenceRun {
     if (!eq(frames![1]!, expectedRedeem)) this.reject('V2', 'VALIDATOR_REDEEM_SCRIPT_IS_NOT_THE_PINNED_PROGRAM', index);
     if (!eq(input!.lockingBytecode, expectedLock)) this.reject('V2', 'VALIDATOR_LOCK_IS_NOT_THE_DERIVED_ADDRESS', index);
     let transcript: Transcript;
+    let mintedMasters: MintedMaster[];
     try {
-      transcript = decodeTranscript(frames![0]!);
+      const payload = frames![0]!;
+      if (payload.length < 4) throw new FramedEncodingError('truncated transcript');
+      const version = payload[3];
+      if (version === TRANSCRIPT_VERSION) {
+        transcript = decodeTranscript(payload);
+        mintedMasters = [];
+      } else if (version === TRANSCRIPT_VERSION_MINTED) {
+        const minted = decodeMintedTranscript(payload);
+        transcript = minted;
+        mintedMasters = minted.mintedMasters;
+      } else {
+        throw new FramedEncodingError(`unsupported transcript version: ${version}`);
+      }
     } catch (error) {
       this.reject('V2', `TRANSCRIPT_DOES_NOT_DECODE: ${(error as Error).message}`, index);
     }
     this.transcript = transcript!;
+    this.mintedMasters = mintedMasters!;
 
     for (const root of transcript!.roots) {
       if (inputByIndex(this.transaction, root) === undefined) this.reject('V2', 'ROOT_IS_NOT_AN_INPUT', root);
@@ -148,6 +175,12 @@ class ReferenceRun {
         this.reject('V2', `MASTER_WITNESS_BLOCK_DOES_NOT_DECODE: ${(error as Error).message}`, master);
       }
       this.blocks.set(master, block!);
+    }
+    for (const minted of mintedMasters!) {
+      if (outputByIndex(this.transaction, minted.output) === undefined) {
+        this.reject('V2', 'MINTED_MASTER_IS_NOT_AN_OUTPUT', minted.output);
+      }
+      this.blocks.set(mintedRef(minted.output), minted.block);
     }
     for (const settled of transcript!.settles) {
       for (const stateInput of settled.stateInputs) {
@@ -214,7 +247,11 @@ class ReferenceRun {
     for (const [at, master] of declared.entries()) {
       if (declared.indexOf(master) !== at) this.reject('V3', 'TRANSCRIPT_LISTS_A_MASTER_TWICE', master);
     }
-    this.masters = new Set(declared);
+    const mintedIds = this.mintedMasters.map((minted) => mintedRef(minted.output));
+    for (const [at, master] of mintedIds.entries()) {
+      if (mintedIds.indexOf(master) !== at) this.reject('V3', 'TRANSCRIPT_LISTS_A_MASTER_TWICE', master);
+    }
+    this.masters = new Set([...declared, ...mintedIds]);
 
     const pointsHere = new Set<number>();
     for (const input of this.transaction.inputs) {
@@ -234,6 +271,15 @@ class ReferenceRun {
     for (const candidate of pointsHere) {
       if (!this.masters.has(candidate)) this.reject('V3', 'A_MASTER_POINTING_HERE_IS_NOT_LISTED', candidate);
     }
+    for (const minted of this.mintedMasters) {
+      const output = outputByIndex(this.transaction, minted.output);
+      if (output === undefined || !masterToken(output.token)) {
+        this.reject('V3', 'TRANSCRIPT_LISTS_A_MASTER_THAT_DOES_NOT_POINT_HERE', minted.output);
+      }
+      if (minted.block.validatorRef !== this.context.validatorInputIndex) {
+        this.reject('V3', 'TRANSCRIPT_LISTS_A_MASTER_THAT_DOES_NOT_POINT_HERE', minted.output);
+      }
+    }
   }
 
   checkV4(): void {
@@ -241,7 +287,10 @@ class ReferenceRun {
     for (const [at, root] of roots.entries()) {
       if (roots.indexOf(root) !== at) this.reject('V4', 'TRANSCRIPT_LISTS_A_ROOT_TWICE', root);
     }
-    const rootSet = new Set(roots);
+    const mintedRoots = this.mintedMasters
+      .filter((minted) => minted.block.kind === FrameKind.ROOT)
+      .map((minted) => mintedRef(minted.output));
+    const rootSet = new Set([...roots, ...mintedRoots]);
 
     for (const master of this.masters) {
       const enteredByUser = this.master(master).kind === FrameKind.ROOT;
@@ -255,6 +304,13 @@ class ReferenceRun {
       if (caller === undefined) this.reject('V4', 'ROOT_CALLER_IS_NOT_AN_INPUT', block.callerRef);
       if (!userLock(caller!.lockingBytecode)) this.reject('V4', 'ROOT_CALLER_IS_NOT_A_USER', block.callerRef);
       if (block.originRef !== block.callerRef) this.reject('V4', 'ROOT_ORIGIN_IS_NOT_ITS_CALLER', root);
+    }
+    for (const root of mintedRoots) {
+      const block = this.master(root);
+      if (block.callerRef !== INDEX_NONE || block.originRef !== INDEX_NONE) {
+        this.reject('V4', 'ROOT_ORIGIN_IS_NOT_ITS_CALLER', mintedRefIndex(root));
+      }
+      if (block.sender.length !== 0) this.reject('V4', 'A_MINTED_ROOT_SENDER_IS_NOT_EMPTY', mintedRefIndex(root));
     }
 
     for (const master of this.masters) {
@@ -298,6 +354,10 @@ class ReferenceRun {
           if (calleeBlock.value !== callerBlock.value) this.reject('V5', 'AN_INTERNAL_CALLEE_DOES_NOT_INHERIT_THE_VALUE', callee);
           if (!eq(calleeBlock.sender, callerBlock.sender)) this.reject('V5', 'AN_INTERNAL_CALLEE_DOES_NOT_INHERIT_THE_SENDER', callee);
           if (!eq(calleeBlock.self, callerBlock.self)) this.reject('V5', 'AN_INTERNAL_CALLEE_DOES_NOT_INHERIT_SELF', callee);
+          const calleeInput = inputByIndex(this.transaction, callee);
+          if (calleeInput === undefined || !eq(calleeInput.lockingBytecode, call.target)) {
+            this.reject('V5', 'AN_INTERNAL_CALLEES_LOCK_IS_NOT_THE_RECORDED_TARGET', callee);
+          }
           if (!eq(this.ownCategory(callee), this.contextOf(caller))) {
             this.reject('V5', 'AN_INTERNAL_CALLEE_IS_NOT_A_FACET_OF_THE_CONTEXT', callee);
           }
@@ -322,7 +382,11 @@ class ReferenceRun {
         callersOf.set(call.calleeRef, (callersOf.get(call.calleeRef) ?? 0) + 1);
       }
     }
-    const rootSet = new Set(this.transcript!.roots);
+    const rootSet = new Set([
+      ...this.transcript!.roots,
+      ...this.mintedMasters.filter((minted) => minted.block.kind === FrameKind.ROOT)
+        .map((minted) => mintedRef(minted.output)),
+    ]);
     for (const master of this.masters) {
       if (rootSet.has(master)) continue;
       const count = callersOf.get(master) ?? 0;
@@ -334,7 +398,12 @@ class ReferenceRun {
   checkV6(): void {
     const seen = new Set<number>();
     const order: { master: number; segment: number }[] = [];
-    for (const root of this.transcript!.roots) {
+    const roots = [
+      ...this.transcript!.roots,
+      ...this.mintedMasters.filter((minted) => minted.block.kind === FrameKind.ROOT)
+        .map((minted) => mintedRef(minted.output)),
+    ];
+    for (const root of roots) {
       if (seen.has(root)) this.reject('V6', 'THE_WALK_REACHES_A_MASTER_TWICE', root);
       seen.add(root);
       const stack: { master: number; next: number }[] = [{ master: root, next: 0 }];
@@ -585,9 +654,16 @@ class ReferenceRun {
 
   checkV9(): void {
     const roots = this.transcript!.roots;
-    if (roots.length === 0) this.reject('V9', 'NO_ROOT_SETS_THE_OWNER_POLICY', this.context.validatorInputIndex);
-    const first = roots[0]!;
-    if (!eq(this.ownCategory(first), this.category)) this.reject('V9', 'THE_FIRST_ROOTS_CATEGORY_IS_NOT_THE_VALIDATORS', first);
+    const firstMinted = this.mintedMasters.find((minted) => minted.block.kind === FrameKind.ROOT);
+    if (roots.length === 0 && firstMinted === undefined) {
+      this.reject('V9', 'NO_ROOT_SETS_THE_OWNER_POLICY', this.context.validatorInputIndex);
+    }
+    if (roots.length > 0) {
+      const first = roots[0]!;
+      if (!eq(this.ownCategory(first), this.category)) {
+        this.reject('V9', 'THE_FIRST_ROOTS_CATEGORY_IS_NOT_THE_VALIDATORS', first);
+      }
+    }
   }
 
   checkV10(): void {

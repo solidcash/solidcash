@@ -211,6 +211,7 @@ import type {
   ForOfEntriesStatementContext,
   ForInStatementContext,
   ForOfStatementContext,
+  ForWindowStatementContext,
   TypeIntrospectionContext,
   UncheckedStatementContext,
   SwitchStatementContext,
@@ -250,6 +251,7 @@ import {
   StateVariableNameCollisionError, TernaryTypeMismatchError, NestedSelfdestructError,
   UnsupportedTypeError, VersionError,
 } from '../Errors.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 // Compound-assignment operators desugared to `target <binop> rhs`.
 const COMPOUND_OPS: Record<string, BinaryOperator> = {
@@ -295,7 +297,7 @@ let warnedFixedPoint = false;
 function warnFixedPointOnce(): void {
   if (warnedFixedPoint) return;
   warnedFixedPoint = true;
-  console.log('Warning: fixed-point (fixed/ufixed types, decimal literals) is not implemented in Solidity '
+  emitCompilerWarning('Warning: fixed-point (fixed/ufixed types, decimal literals) is not implemented in Solidity '
     + '(solc: "Fixed point types not implemented"); solidcash compiles it with its own decimal-scaled-integer '
     + 'implementation, which differs - do not assume cross-compiler parity.');
 }
@@ -4105,6 +4107,9 @@ export default class AstBuilder
     if (ctx.forOfStatement()) {
       return this.visit(ctx.forOfStatement()) as StatementNode;
     }
+    if (ctx.forWindowStatement()) {
+      return this.visit(ctx.forWindowStatement()) as CollectionIterationNode;
+    }
     return this.visit(ctx.forStatement()) as BlockNode;
   }
 
@@ -4153,6 +4158,23 @@ export default class AstBuilder
       CollectionIterationMode.VALUES, collectionName,
       undefined, undefined, valueType, valueName, body,
     );
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
+  visitForWindowStatement(ctx: ForWindowStatementContext): CollectionIterationNode {
+    const valueType = this.resolveType(ctx.typeName().getText());
+    const valueName = ctx.Identifier(0).getText();
+    const collectionName = ctx.Identifier(1).getText();
+    const cursorName = ctx.Identifier(2).getText();
+    const windowBound = Number(ctx.NumberLiteral().getText());
+    const body = this.visit(ctx.block()) as BlockNode;
+    const node = new CollectionIterationNode(
+      CollectionIterationMode.VALUES, collectionName,
+      undefined, undefined, valueType, valueName, body,
+    );
+    node.windowCursor = cursorName;
+    node.windowBound = windowBound;
     node.location = Location.fromCtx(ctx);
     return node;
   }
@@ -5675,7 +5697,7 @@ export default class AstBuilder
       }
       const loc = Location.fromCtx(ctx);
       const line = this.diagLine(loc.start?.line);
-      console.log(
+      emitCompilerWarning(
         `Warning: hex literal '${hexString}'${line} has an odd number of digits; its last nibble will be `
         + `zero-extended into a full byte (0x${hexContent} -> 0x${binToHex(hexToBin(hexContent))}). `
         + 'Use an even number of hex digits.',
@@ -6271,17 +6293,21 @@ export default class AstBuilder
       return assign;
     }
 
-    // Bytes var element write `data[i] op= v` (state OR local/memory) -> reassign the whole blob with byte i
-    // replaced: `data = data[0:i] ++ (data[i] op v) ++ data[i+1:]` (plain `=` uses v directly). Reuses the bytes
-    // slice/concat codegen (like .push/.pop). ++/-- excluded (isIncDec) - byte inc/dec is not a Solidity form.
+    // Bytes var element write `data[i] op= v` (state OR local/memory). A LOCAL write stays a raw ArrayAssignNode:
+    // LowerMemoryModel lowers it to a single-byte splice when the buffer is a __yulmem pointer, and
+    // DesugarLocalBytesElementWrite value-copies (the whole-blob rebuild) the ones that fall back. A compound
+    // `op=` writes `b[i] op v` through that same splice, so a __yulmem candidate emits the in-place
+    // read-modify-write (byte-identical to `b[i] = b[i] op v`) rather than a whole-blob rebuild. State bytes have
+    // no pointer representation, so they keep the direct slice+concat rebuild. ++/-- excluded (isIncDec).
     if (!isThis && !isIncDec && !hasMember && keyFns.length === 1 && valueCtx
       && (this.bytesStateVarNames.has(rawName) || this.localBytesVars.has(rawName))) {
       const isState = this.bytesStateVarNames.has(rawName);
-      // A LOCAL bytes plain `=` element write stays a raw ArrayAssignNode: LowerMemoryModel lowers it to a single-
-      // byte splice when the buffer is a __yulmem pointer, and DesugarLocalBytesElementWrite value-copies (the
-      // whole-blob rebuild) the ones that fall back. State bytes and compound ops keep the rebuild directly.
-      if (!isState && op === '=') {
-        const aa = new ArrayAssignNode(rawName, keyFns[0](), this.visit(valueCtx) as ExpressionNode);
+      if (!isState) {
+        const value = this.visit(valueCtx) as ExpressionNode;
+        const writeValue = op === '='
+          ? value
+          : sourceBinaryOp(new ArrayAccessNode(new IdentifierNode(rawName), keyFns[0]()), COMPOUND_OPS[op], value);
+        const aa = new ArrayAssignNode(rawName, keyFns[0](), writeValue);
         aa.location = loc;
         return aa;
       }
@@ -7936,7 +7962,7 @@ export default class AstBuilder
       } else if (name === 'gas') {
         options.gas = expr;
         const line = this.diagLine(opt.start?.line);
-        console.log(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
+        emitCompilerWarning(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
       } else {
         throw new ParseError(
           `Unknown call option '${name}'. Only 'value', 'salt', and 'gas' are supported`,
@@ -7967,7 +7993,7 @@ export default class AstBuilder
     } else if (optName === 'gas') {
       callOpts.gas = optExpr;
       const line = this.diagLine(ctx.start?.line);
-      console.log(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
+      emitCompilerWarning(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
     } else {
       throw new ParseError(
         `Unknown legacy call option '.${optName}(..)'. Only 'value' and 'gas' are supported`,
@@ -8067,7 +8093,7 @@ export default class AstBuilder
       // on BCH, so they are inert and dropped (like the other EVM shims).
       const optNote = callOpts ? ' ({value}/{gas} call options are inert on a self-call and ignored)' : '';
       const spelling = selfCastReceiver ? `${object.identifier.name}(this).${methodName}` : `this.${methodName}`;
-      console.log(`Warning: '${spelling}(...)'${line} is an external self-call in Solidity; on BCH it is a `
+      emitCompilerWarning(`Warning: '${spelling}(...)'${line} is an external self-call in Solidity; on BCH it is a `
         + `direct internal call to '${methodName}' (no separate calldata, msg.sender is not re-set to self)${optNote}.`);
       const id = new IdentifierNode(methodName);
       id.location = Location.fromCtx(ctx);

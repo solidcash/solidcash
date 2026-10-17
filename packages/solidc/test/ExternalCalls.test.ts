@@ -214,7 +214,7 @@ describe('Low-level call options + tuple-slot modifiers + value units', () => {
 
   it('evmCompat .call(data) compiles a presence pin for the callee input', () => {
     const artifact = compileString(
-      'contract C() { int n; function f(address to, bytes data) {'
+      'contract C() { uint n; function f(address to, bytes data) {'
       + ' (bool ok, bytes res) = to.call(data); require(ok); this.n = res.length; } }',
       { evmCompat: true },
     );
@@ -549,7 +549,7 @@ describe('SBE-7: ether-send via low-level call{value:}', () => {
     const artifact = compileString(
       'function invoke(address dst, bytes data, int value) returns (bytes) { '
       + '(bool ok, bytes ret) = dst.call{value: value}(data); require(ok); return ret; } '
-      + 'contract C() { int n; function f(address dst, bytes data) { '
+      + 'contract C() { uint n; function f(address dst, bytes data) { '
       + 'bytes ret = invoke(dst, data, 0); this.n = ret.length; } }',
       { evmCompat: true },
     );
@@ -566,7 +566,7 @@ describe('SBE-7: ether-send via low-level call{value:}', () => {
       + 'return invoke(dst, data, value); } '
       + 'function safeRelay(address dst, bytes data) returns (bytes) { '
       + 'return relay(dst, data, 0); } '
-      + 'contract C() { int n; function f(address dst, bytes data) { '
+      + 'contract C() { uint n; function f(address dst, bytes data) { '
       + 'bytes ret = safeRelay(dst, data); this.n = ret.length; } }',
       { evmCompat: true },
     );
@@ -677,6 +677,44 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' return v.deposit(a); } function f(IVault v, uint a) public {'
       + ' (uint x, uint y) = wrap(v, a); this.n = x + y; require(this.n >= x); } }';
     expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
+  });
+
+  it('inlines a state-var-target value-returning external-call helper (Kashi _isSolvent)', () => {
+    // `_isSolvent(address,bool,uint256)` calls `bentoBox.toAmount(..)` on an interface-typed STATE var. The
+    // external call injects synthetic covenant params (externalCallInputBase / extcallAnchorIdx /
+    // externalReturnOutputIdx) which used to bloat the internal helper's signature and fail its call sites.
+    // The helper is inlined, so those params land on the entry point instead.
+    const src = 'interface IBentoBox { function toAmount(address token, uint256 share, bool roundUp)'
+      + ' external view returns (uint256 amount); }'
+      + ' contract C { IBentoBox bentoBox; uint256 exchangeRate;'
+      + ' function _isSolvent(address user, bool open, uint256 rate) internal view returns (bool) {'
+      + ' return bentoBox.toAmount(user, 1, false) >= rate; }'
+      + ' function f(address user) public view returns (bool) {'
+      + ' return _isSolvent(user, false, exchangeRate); } }';
+    const a = compileString(src, { evmCompat: true });
+    expect(a.contractName).toBe('C');
+    const f = a.abi.find((entry) => entry.name === 'f');
+    expect(f?.externalCalls?.[0].functionName).toBe('toAmount');
+    expect(f?.inputs.some((input) => input.name === '__internal__externalCallInputBase')).toBe(true);
+  });
+
+  it('inlines a param-target value-returning external-call helper (BentoBox _tokenBalanceOf)', () => {
+    // `_tokenBalanceOf(IERC20 token)` calls `token.balanceOf(address(this))` on an interface-typed PARAM. The
+    // external call injected synthetic covenant params (data / externalCallInputBase / selector /
+    // externalReturnOutputIdx) into the internal helper's signature, so the BentoBoxV1 line-835 call
+    // `_tokenBalanceOf(token)` failed "Found parameters (address) ... where (address,bytes,bigint,bytes4,bigint)
+    // were expected". The helper is inlined, so the synthetic params land on the entry point instead of bloating
+    // `_tokenBalanceOf`'s signature.
+    const src = 'interface IERC20 { function balanceOf(address a) external view returns (uint256); }'
+      + ' contract C {'
+      + ' function _tokenBalanceOf(IERC20 token) internal view returns (uint256) {'
+      + ' return token.balanceOf(address(this)); }'
+      + ' function f(IERC20 token) public view returns (uint256) { return _tokenBalanceOf(token); } }';
+    const a = compileString(src, { evmCompat: true });
+    expect(a.contractName).toBe('C');
+    const f = a.abi.find((entry) => entry.name === 'f');
+    expect(f?.externalCalls?.[0].functionName).toBe('balanceOf');
+    expect(f?.inputs.some((input) => input.name === '__internal__externalCallInputBase')).toBe(true);
   });
 
   it('lowers a recursive external-call helper and binds its loop-local returned target', () => {

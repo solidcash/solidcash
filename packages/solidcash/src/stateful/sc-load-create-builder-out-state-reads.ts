@@ -8,6 +8,7 @@ import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
 
 export type CreateBuilderOutStateCallInfo = {
   externalContract: {
@@ -34,6 +35,12 @@ export interface LoadCreateBuilderOutStateReadsHost {
     externalCategoryId: string,
     bContract: unknown,
   ): Promise<{ inputs: UnlockableUtxo[]; recreates: Output[] }>;
+  resolveExternalBlockhashCoSpends(
+    bAbiFunc: AbiFunction | undefined,
+    args: FunctionArgument[],
+    externalCategoryId: string,
+    bContract: unknown,
+  ): Promise<{ inputs: UnlockableUtxo[]; recreates: Output[]; locktime: number }>;
 }
 
 /**
@@ -51,9 +58,10 @@ export async function loadCreateBuilderOutStateReads(
     externalReadUtxos: readonly unknown[];
     finalArgs: FunctionArgument[];
   },
-): Promise<{ finalArgs: FunctionArgument[]; outStateInputCount: number }> {
+): Promise<{ finalArgs: FunctionArgument[]; outStateInputCount: number; maxBhLocktime: number }> {
   let finalArgs = params.finalArgs;
   let outStateInputCount = 0;
+  let maxBhLocktime = 0;
   const {
     abiFunction, externalCalls, outStateOverrideCalls, externalOutStateUtxoGroups,
     requiredNftIndices, externalReadUtxos,
@@ -121,6 +129,10 @@ export async function loadCreateBuilderOutStateReads(
       const bOsKeccak = await host.resolveExternalKeccakSideCars(
         bOsAbiFunc, callInfo.args, externalCategoryId, callInfo.externalContract as unknown,
       );
+      const bOsBlockhash = await host.resolveExternalBlockhashCoSpends(
+        bOsAbiFunc, callInfo.args, externalCategoryId, callInfo.externalContract as unknown,
+      );
+      maxBhLocktime = Math.max(maxBhLocktime, bOsBlockhash.locktime);
 
       externalOutStateUtxoGroups.push({
         categoryId: externalCategoryId,
@@ -131,13 +143,18 @@ export async function loadCreateBuilderOutStateReads(
         functionName: callInfo.functionName,
         functionArgs: callInfo.args,
         externalContract: callInfo.externalContract as any,
+        ...(bOsBlockhash.inputs.length > 0 && {
+          blockhashCoSpendUtxos: bOsBlockhash.inputs,
+          blockhashCoSpendRecreates: bOsBlockhash.recreates,
+        }),
         ...(bOsKeccak.inputs.length > 0 && { keccakInputs: bOsKeccak.inputs, keccakRecreates: bOsKeccak.recreates }),
       });
     }
 
     // Compute outState input count for base offset adjustments
     outStateInputCount = externalOutStateUtxoGroups.reduce(
-      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0), 0,
+      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
+        + (g.keccakInputs?.length ?? 0), 0,
     );
 
     // Inject _externalOutStateInputBase if ABI expects it (i.e. not all shared)
@@ -166,12 +183,25 @@ export async function loadCreateBuilderOutStateReads(
       // If callee uses msg.sender, append our category
       const bAbiFuncs = group.externalContract.inner.artifact.abi as readonly { name: string; usesMsgSender?: boolean }[];
       const bAbiFunc = bAbiFuncs.find((f) => f.name === group.functionName);
+      const bOsAbi = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+        .find((f) => f.name === group.functionName);
       let bFinalArgs = [...group.functionArgs];
       if (bAbiFunc?.usesMsgSender) {
         // EVM delegatecall preserves the original caller. A zero category selects tx.origin in emitMsgSender;
         // passing the proxy category would incorrectly make onlyOwner compare against the proxy itself.
         bFinalArgs = [...bFinalArgs, group.callMode === 'delegatecall'
           ? new Uint8Array(32) : hexToBin(host.categoryId).reverse()];
+      }
+      // B reads blockhash(n): materialize its __internal__blockhashInputIndex (the base Contract resolver
+      // refuses it) before building the master unlocker, so generateUnlockingBytecode does not re-derive it.
+      const bhSlot = bOsAbi?.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
+      if (bhSlot !== undefined && bOsAbi?.inputs.some(
+        (input) => input.name === '__internal__blockhashInputIndex',
+      )) {
+        bFinalArgs = materializeInternalFunctionArgument(
+          bFinalArgs, bOsAbi.inputs, '__internal__blockhashInputIndex',
+          BigInt(masterInputIndex + bhSlot.offset),
+        );
       }
 
       // Create B's master unlocker
@@ -180,9 +210,10 @@ export async function loadCreateBuilderOutStateReads(
       );
       group.masterUtxo = { ...group.masterUtxo, unlocker: bMasterUnlocker } as UnlockableUtxo;
 
-      currentOutStateBase += 1 + group.dataNftUtxos.length + (group.keccakInputs?.length ?? 0);
+      currentOutStateBase += 1 + group.dataNftUtxos.length + (group.blockhashCoSpendUtxos?.length ?? 0)
+        + (group.keccakInputs?.length ?? 0);
     }
   }
 
-  return { finalArgs, outStateInputCount };
+  return { finalArgs, outStateInputCount, maxBhLocktime };
 }

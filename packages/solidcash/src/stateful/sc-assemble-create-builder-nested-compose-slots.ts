@@ -8,6 +8,7 @@ import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/l
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
+  blockOracleReadUnlocking,
   computeCollectionHash,
   encodePushdataValue,
   joinValueChunks,
@@ -27,6 +28,7 @@ import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose-prepared-invocation.js';
 import { addressToLockScript } from '../utils.js';
+import { blockOracleLockFor, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
 import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import {
   createDynamicChunkUnlocker,
@@ -82,6 +84,7 @@ const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
 
 export type AssembleCreateBuilderNestedComposeSlotsHost = {
   readonly inner: { provider: any };
+  readonly sharedBlockOracleLocks: Set<string>;
   readonly signer: { getAddress(): string } | undefined;
   readonly logicalNonceSigner: { getAddress(): string } | undefined;
   encodeStoredElementSource: (...args: any[]) => any;
@@ -185,6 +188,14 @@ export async function assembleCreateBuilderNestedComposeSlots(
   const sharedPriorDelegateFunctionArgs = params.sharedPriorDelegateFunctionArgs as
     FunctionArgument[] | undefined;
   const sharedLogicalArtifact = params.sharedLogicalArtifact as Artifact;
+  const selectedOracleReader = proxyCallee?.implementation?.inner ?? callee.inner;
+  const selectedOracleLock = selectedOracleReader.blockOracleLock as Uint8Array | undefined
+    ?? blockOracleLockFor(sharedLogicalArtifact);
+  const recipeOracleLock = sharedLogicalArtifact.usesBlockOracle === true ? selectedOracleLock : undefined;
+  const recipeTimestamp = recipeOracleLock === undefined
+    ? undefined : await readBlockOracleTimestamp(host.inner.provider, recipeOracleLock);
+  const recipeState = recipeTimestamp === undefined
+    ? childState.state : { ...childState.state, __block_timestamp: recipeTimestamp };
   // A delegated callee's records belong to its proxy. A direct delegate and a compiler route alike bind them to the
   // proxy master's lock.
   const recordContract = callee.inner;
@@ -280,6 +291,24 @@ export async function assembleCreateBuilderNestedComposeSlots(
           // transferFrom's _balances[from] lands at offset 3 and offset 4
           // becomes a P2PKH hole (output 30 after the 4-wide minting swap).
           childBlockInputs.push(data ?? takeFunder());
+        }
+      } else if (slot.kind === 'blockInfoOracle') {
+        // Preserve the selected deployment's pin and reserve one physical co-spend across nested readers.
+        const lock = selectedOracleLock;
+        if (lock === undefined) throw new Error('Nested block oracle reader has no bound oracle lock');
+        const lockHex = binToHex(lock);
+        if (host.sharedBlockOracleLocks.has(lockHex)) {
+          childBlockInputs.push(takeFunder());
+        } else {
+          const found = await host.inner.provider.getUtxosForLockingBytecode(lock) as Utxo[];
+          const oracle = found.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+          if (oracle?.token?.category === undefined) throw new Error('block oracle UTXO is not available');
+          const category = hexToBin(oracle.token.category);
+          childBlockInputs.push({ ...oracle, unlocker: {
+            generateLockingBytecode: () => lock,
+            generateUnlockingBytecode: () => blockOracleReadUnlocking(category),
+          } });
+          host.sharedBlockOracleLocks.add(lockHex);
         }
       } else if (slot.kind === 'entry') {
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -835,7 +864,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
                 legacyJobEventCompatibility: legacyCompatibility,
                 resolveElement: (row, rowAccess, elementType) => host.encodeStoredElementSource(
                   rowAccess, elementType, [...row.args], row.handler, sharedLogicalArtifact,
-                  (childState as { state?: Record<string, unknown> })?.state,
+                  recipeState,
                 ),
               }) : undefined;
             const routeLeading = foldedRoute?.leading;
@@ -869,8 +898,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
               && terminalStored.rowAccess.storedElementSource?.version === 1
               ? host.encodeStoredElementSource(
                 terminalStored.rowAccess, elementType, [...terminalStored.row.args],
-                terminalStored.row.handler, sharedLogicalArtifact,
-                (childState as { state?: Record<string, unknown> })?.state,
+                terminalStored.row.handler, sharedLogicalArtifact, recipeState,
               ) : undefined;
             const channels = deriveChunkableArrayValueChannels({
               preValueWitness: childValueWitnesses.get(routeSlot),

@@ -118,3 +118,70 @@ describe('library storage pointer to a struct with mappings and a dynamic array'
       .toBe('Holder');
   });
 });
+
+// A storage-pointer library fn called with a MAPPING-ELEMENT argument (`L.f(m[k])` / `m[k].f()`, the BentoBox
+// BoringRebase `totals[token].addElastic(x)` shape). InlineStoragePointerCalls lowers both spellings to the same
+// read-modify-write template, so the direct call and the using-for method call are byte-identical.
+describe('storage-pointer library fn on a mapping element (direct + using-for spellings)', () => {
+  const SP_STRUCT = 'struct Total { int elastic; int base; }';
+  const SP_LIBRARY = 'library L { function add(Total storage t, int d) internal { t.elastic += d; } }';
+
+  const direct = `${SP_STRUCT}${SP_LIBRARY}
+    contract C { mapping(address => Total) totals;
+      function bump(address token, int d) external { L.add(totals[token], d); require(true); } }`;
+
+  const method = `${SP_STRUCT}${SP_LIBRARY}
+    contract C { using L for Total; mapping(address => Total) totals;
+      function bump(address token, int d) external { totals[token].add(d); require(true); } }`;
+
+  it('compiles L.f(m[k]) on a mapping element', () => {
+    expect(compileString(direct, { evmCompat: true }).contractName).toBe('C');
+  });
+
+  it('compiles m[k].f() on a mapping element and is byte-identical to L.f(m[k])', () => {
+    const a = compileString(direct, { evmCompat: true });
+    const b = compileString(method, { evmCompat: true });
+    expect(b.contractName).toBe('C');
+    expect(b.bytecode).toBe(a.bytecode);
+  });
+
+  // The STATE-ARRAY element spelling lowers through the same RMW template. It is byte-identical to the
+  // hand-written read-modify-write, so the storage-pointer lowering itself is not what a later pass rejects.
+  it('lowers L.addX(this.arr[i], d) byte-identically to the hand-written RMW', () => {
+    const hand = compileString('contract C { struct P { int x; int y; } P[] arr;'
+      + ' function bump(int i, int d) external { P t = this.arr[i]; t.x += d; this.arr[i] = t; require(true); } }',
+    { evmCompat: true });
+    const lib = compileString('struct P { int x; int y; }'
+      + ' library L { function addX(P storage p, int d) { p.x += d; } }'
+      + ' contract C { P[] arr; function bump(int i, int d) external { L.addX(this.arr[i], d); require(true); } }',
+    { evmCompat: true });
+    expect(lib.bytecode).toBe(hand.bytecode);
+  });
+});
+
+// The same mapping-element shape where the value struct has NO scalar leaves (mapping-only). Its root mapping is
+// flattened to per-field collections (`totals__a`/`totals__b`), so the method spelling must recover the value
+// struct from those leaves to desugar back to the direct library call.
+describe('storage-pointer library fn on a mapping-only struct element (direct + using-for spellings)', () => {
+  const SP_STRUCT = 'struct S { mapping(int => int) a; mapping(int => int) b; }';
+  const SP_LIBRARY = 'library L { function f(S storage s, int x) internal { s.a[x] = x; } }';
+
+  const direct = `${SP_STRUCT}${SP_LIBRARY}
+    contract C { mapping(int => S) m;
+      function bump(int k, int x) external { L.f(this.m[k], x); require(true); } }`;
+
+  const method = `${SP_STRUCT}${SP_LIBRARY}
+    contract C { using L for S; mapping(int => S) m;
+      function bump(int k, int x) external { this.m[k].f(x); require(true); } }`;
+
+  it('compiles L.f(this.m[k]) on a mapping-only struct element', () => {
+    expect(compileString(direct, { evmCompat: true }).contractName).toBe('C');
+  });
+
+  it('compiles this.m[k].f() on a mapping-only struct element and is byte-identical to L.f(this.m[k])', () => {
+    const a = compileString(direct, { evmCompat: true });
+    const b = compileString(method, { evmCompat: true });
+    expect(b.contractName).toBe('C');
+    expect(b.bytecode).toBe(a.bytecode);
+  });
+});

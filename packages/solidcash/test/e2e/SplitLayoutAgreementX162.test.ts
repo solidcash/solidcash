@@ -1,18 +1,14 @@
 import { readFileSync } from 'fs';
 import { describe, expect, it } from 'vitest';
-import { parsePushdataCommitment } from '@solidcash/utils';
 import { compileStringSplit } from '../direct-compile.js';
-import {
-  Signer,
-  SignatureTemplate,
-} from '../../src/index.js';
+import { Signer } from '../../src/index.js';
 import {
   ContractFactory,
   SplitContractBundle,
   StatefulContract,
 } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
-import { alicePriv, alicePub } from '../fixture/vars.js';
+import { alicePriv } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
 /**
@@ -81,7 +77,6 @@ async function fundedSigner(): Promise<Signer> {
 
 const GENESIS = {
   own: 0n, AStorage__a: 0n, BStorage__b: 0n, CStorage__c: 0n,
-  __block_timestamp: 0n, __blockOracleOwner: alicePub,
 };
 
 describe('X162: a divided ERC-7201 split bundle agrees about storage, loads, and spends', () => {
@@ -93,8 +88,13 @@ describe('X162: a divided ERC-7201 split bundle agrees about storage, loads, and
     // the shard-dependent one rather than a contract with nothing to disagree about.
     expect(rootSlots).toEqual(expect.arrayContaining([
       expect.stringContaining('AStorage__a@'), expect.stringContaining('BStorage__b@'),
-      expect.stringContaining('CStorage__c@'), expect.stringContaining('__block_timestamp@'),
+      expect.stringContaining('CStorage__c@'),
     ]));
+    expect(rootSlots.some((slot) => slot.startsWith('__block_'))).toBe(false);
+    const touchB = bundle.manifest.routes.find((route: { function: string }) => route.function === 'touchB');
+    const touchBFacet = bundle.facets[touchB.target];
+    expect(touchBFacet.abi.find((fn: { name: string }) => fn.name === 'touchB')?.usesBlockOracle).toBe(true);
+    expect(touchBFacet.blockOracleLockSlots?.length).toBeGreaterThan(0);
     for (const info of bundle.manifest.facets) {
       expect(slots(bundle.facets[info.name].stateLayout), `${info.name} layout`).toEqual(rootSlots);
     }
@@ -150,44 +150,14 @@ describe('X162: a divided ERC-7201 split bundle agrees about storage, loads, and
     expect(afterC.own).toBe(9n);
     expect(afterC.AStorage__a).toBe(5n);
 
-    // A function that STAYS ON THE ROOT: the compiler-generated oracle update, which is a real state
-    // transition on the root script rather than a delegated one.
-    const rootRoute = bundle.manifest.routes.find((r: any) => r.function === '__updateBlockOracle');
-    expect(rootRoute.target).toBe('root');
-    // The mock keeper already moved the register to the tip time, and the owner cannot rewind it.
-    const stamp = BigInt((signer.provider as { getBlockTime(): number }).getBlockTime()) + 1n;
-    const oracleCall = deployed.call.__updateBlockOracle(new SignatureTemplate(alicePriv), stamp)
-      .setState({ __block_timestamp: stamp });
-    const built = await oracleCall.build();
-    const tx = built.buildLibauthTransaction();
-    // The root script commits this output. send() then mines, and the mock keeper rewrites a timestamp-only
-    // oracle: this contract has no __block_number, so the signed update has no height to stand on and the
-    // refresh replaces it with the new tip (the default mock time plus the mined height). Read the covenant
-    // commitment here, before that rewrite.
-    const timestampNft = bundle.root.stateLayout.variables.find(
-      (variable: { name: string }) => variable.name === '__block_timestamp',
-    ).nftIndex as number;
-    const committed = tx.outputs.flatMap((output: any) => {
-      const commitment = output.token?.nft?.commitment as Uint8Array | undefined;
-      if (commitment === undefined || commitment.length === 0) return [];
-      try {
-        return [parsePushdataCommitment(
-          Buffer.from(commitment).toString('hex'), bundle.root.stateLayout, timestampNft,
-        )];
-      } catch {
-        return [];
-      }
-    });
-    expect(committed).toHaveLength(1);
-    expect(committed[0].__block_timestamp).toBe(stamp);
-    expect(committed[0].CStorage__c).toBe(9n);
-    await oracleCall.send();
-    const afterOracle = await deployed.root.getState();
-    expect(afterOracle.AStorage__a).toBe(5n);
-    expect(afterOracle.CStorage__c).toBe(9n);
-    expect(afterOracle.__block_timestamp).toBe(BigInt(
-      (signer.provider as { getBlockTime(): number }).getBlockTime(),
-    ));
+    // touchB is the function that slices the shared oracle. It lives on a facet, and the namespaces written
+    // by the other facets are still the ones this spend left behind.
+    const timedRoute = bundle.manifest.routes.find((route: { function: string }) => route.function === 'touchB');
+    expect(timedRoute.target).not.toBe('root');
+    expect(bundle.facets[timedRoute.target].usesBlockOracle).toBe(true);
+    const afterNamespaces = await deployed.root.getState();
+    expect(afterNamespaces.AStorage__a).toBe(5n);
+    expect(afterNamespaces.CStorage__c).toBe(9n);
   }, 300_000);
 });
 

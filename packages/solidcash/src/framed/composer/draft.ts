@@ -38,6 +38,7 @@ import {
   encodeArgumentList,
   encodeMinimalDataPush,
   hash256,
+  mintedRef,
   sha256,
   type CallRecord,
   type FrameKindValue,
@@ -46,12 +47,14 @@ import {
 } from '@solidcash/utils';
 import { readComputedDeclaration } from '../deploy/declaration.js';
 import {
+  INDEX_NONE_REFERENCE,
   assembleComposition,
   bindContractValidators,
   type CompositionAssembly,
   type CompositionPlan,
   type PlannedCall,
   type PlannedMaster,
+  type PlannedMintedMaster,
   type PlannedUserInput,
   type PlannedValidators,
   validatorFacetsOf,
@@ -244,6 +247,26 @@ export interface DraftCall {
   readonly deferred?: boolean;
 }
 
+/**
+ * A master the transaction mints rather than spends, as the plan states it. Its caller and origin are `INDEX_NONE`
+ * (a genesis root has no P2PKH caller), its block rides in the validator transcript, and its records are stated in
+ * full because no run of its own learns them.
+ */
+export interface DraftMintedMaster {
+  readonly master: string;
+  readonly contract: string;
+  readonly frame: FrameWitness;
+  readonly calls: readonly DraftCall[];
+  readonly retval: Uint8Array;
+  readonly segments: readonly (readonly DraftRecordEntry[])[];
+  readonly events: readonly number[];
+  readonly sends: readonly number[];
+  /** The long mapping values the block lists, when the frame reads any. */
+  readonly values?: readonly Uint8Array[];
+  /** The output the transaction mints for this master. */
+  readonly output: DraftTrailingOutput;
+}
+
 /** One execution as the plan intends it, without the witnesses the derivation produces. */
 export interface DraftMaster {
   readonly master: string;
@@ -287,6 +310,8 @@ export interface DraftMaster {
 /** The whole plan the composer lays out, assembles and hands to the derivation. */
 export interface CompositionDraftPlan {
   readonly blocks: readonly ContractBlock[];
+  /** The masters the transaction mints, whose blocks ride in the validator transcript (v0x03). */
+  readonly mintedMasters?: readonly DraftMintedMaster[];
   readonly userInputs: readonly PlannedUserInput[];
   readonly masters: readonly DraftMaster[];
   /**
@@ -376,7 +401,10 @@ export function requireLearnedViews(draft: CompositionDraft): void {
 
 /** The declared return value of every master the plan runs, keyed by identity. */
 function retvalsByMaster(plan: CompositionDraftPlan): Map<string, Uint8Array> {
-  return new Map(plan.masters.map((master) => [master.master, master.retval]));
+  return new Map([
+    ...plan.masters.map((master) => [master.master, master.retval] as const),
+    ...(plan.mintedMasters ?? []).map((minted) => [minted.master, minted.retval] as const),
+  ]);
 }
 
 /**
@@ -424,6 +452,26 @@ function toCompositionPlan(
       ...(master.values === undefined ? {} : { values: master.values }),
       ...(master.dispatches === undefined ? {} : { dispatches: master.dispatches }),
     })),
+    ...(plan.mintedMasters === undefined ? {} : {
+      mintedMasters: plan.mintedMasters.map((minted): PlannedMintedMaster => ({
+        master: minted.master,
+        contract: minted.contract,
+        frame: minted.frame,
+        calls: minted.calls.map((call): PlannedCall => ({
+          kind: call.kind,
+          callee: call.callee,
+          target: call.target,
+          value: call.value,
+          argumentPushes: call.argumentPushes,
+          result: callResultOf(call, retvals),
+        })),
+        retval: minted.retval,
+        segments: segments.get(minted.master)!,
+        events: minted.events,
+        sends: minted.sends,
+        ...(minted.values === undefined ? {} : { values: minted.values }),
+      })),
+    }),
     ...(plan.validator === undefined ? {} : { validator: plan.validator }),
   };
 }
@@ -499,6 +547,29 @@ export function composeDraft(
     normalizedSegments.set(master.master, segments);
     unstatedByMaster.set(master.master, byPlaceholder);
   }
+  // A minted master's records are stated in full: no run of its own learns a view, so an unstated one is refused.
+  for (const minted of plan.mintedMasters ?? []) {
+    const ends = new Map<number, Uint8Array>();
+    const segments = minted.segments.map((segment) => segment.map((entry) => {
+      const record = entry.in === INDEX_NONE ? entry.out : entry.in;
+      const carried = entry.viewIn === 'carried' ? ends.get(record) : entry.viewIn;
+      if (carried === undefined) {
+        throw new CompositionDraftError(
+          `the minted master "${minted.master}" declares record ${String(record)} as carrying on `
+          + 'from a declaration it does not have',
+        );
+      }
+      if (entry.viewOut === undefined) {
+        throw new CompositionDraftError(
+          `the minted master "${minted.master}" leaves a record's written view unstated, which nothing learns`,
+        );
+      }
+      const viewOut = entry.viewOut === 'carried' ? carried : entry.viewOut;
+      ends.set(record, viewOut);
+      return { in: entry.in, out: entry.out, viewIn: carried, viewOut };
+    }));
+    normalizedSegments.set(minted.master, segments);
+  }
 
   // The side-car witnesses no run has learned yet, by placeholder, and the side-cars the learned ones settled.
   const unlearnedWitnesses = new Map<string, DraftComputedWitness>();
@@ -522,8 +593,24 @@ export function composeDraft(
     }
     indices.set(user.id, user.index);
   }
+  // The references a witness block carries: the input indices above, plus a minted master named by `mintedRef(output)`
+  // and the sentinel a genesis frame's origin uses. These do not name inputs, so they stay out of `indices`.
+  const references = new Map<string, number>(indices);
+  references.set(INDEX_NONE_REFERENCE, INDEX_NONE);
+  (plan.mintedMasters ?? []).forEach((minted, position) => {
+    const output = assembly.outputs.mintedMasterIndices[position];
+    if (output === undefined) {
+      throw new CompositionDraftError(`the plan mints "${minted.master}" past the minted output region`);
+    }
+    references.set(minted.master, mintedRef(output));
+  });
 
   const mastersById = new Map(plan.masters.map((master) => [master.master, master]));
+  // The calls a master's block walks, keyed by identity for both the spent masters and the minted ones.
+  const draftCallsById = new Map<string, readonly DraftCall[]>([
+    ...plan.masters.map((master) => [master.master, master.calls] as const),
+    ...(plan.mintedMasters ?? []).map((minted) => [minted.master, minted.calls] as const),
+  ]);
   const retvals = retvalsByMaster(plan);
 
   // Each contract is bound to the validator whose block hosts it or whose coverage names it.
@@ -533,19 +620,19 @@ export function composeDraft(
   const blocks = new Map<string, WitnessBlock>();
   for (const master of plan.masters) {
     const validator = binding.byContract.get(master.contract);
-    const validatorRef = validator === undefined ? INDEX_NONE : requireIndex(indices, validator.id, 'validator');
+    const validatorRef = validator === undefined ? INDEX_NONE : requireIndex(references, validator.id, 'validator');
     const calls: CallRecord[] = master.calls.map((call) => ({
       kind: call.kind,
       target: call.target,
       value: call.value,
-      calleeRef: call.deferred === true ? requireIndex(indices, call.callee, 'callee') : UNFILLED_CALLEE_REF,
+      calleeRef: call.deferred === true ? requireIndex(references, call.callee, 'callee') : UNFILLED_CALLEE_REF,
       argsHash: callArgsHash(call),
       result: callResultOf(call, retvals),
     }));
     blocks.set(master.master, {
       kind: master.frame.kind,
-      callerRef: requireIndex(indices, master.enteredBy, 'caller'),
-      originRef: requireIndex(indices, master.origin, 'origin'),
+      callerRef: requireIndex(references, master.enteredBy, 'caller'),
+      originRef: requireIndex(references, master.origin, 'origin'),
       validatorRef,
       sender: master.frame.sender,
       self: master.frame.self,
@@ -556,6 +643,35 @@ export function composeDraft(
       events: [...master.events],
       sends: [...master.sends],
       ...(master.values === undefined || master.values.length === 0 ? {} : { values: [...master.values] }),
+    });
+  }
+  // A minted master's block is fixed outright: a genesis root has no caller or origin, and its calls are resolved
+  // now rather than filled by a derivation step, because no run of its own exists to fill them.
+  for (const minted of plan.mintedMasters ?? []) {
+    const validator = binding.byContract.get(minted.contract);
+    const validatorRef = validator === undefined ? INDEX_NONE : requireIndex(references, validator.id, 'validator');
+    const calls: CallRecord[] = minted.calls.map((call) => ({
+      kind: call.kind,
+      target: call.target,
+      value: call.value,
+      calleeRef: requireIndex(references, call.callee, 'callee'),
+      argsHash: callArgsHash(call),
+      result: callResultOf(call, retvals),
+    }));
+    blocks.set(minted.master, {
+      kind: minted.frame.kind,
+      callerRef: INDEX_NONE,
+      originRef: INDEX_NONE,
+      validatorRef,
+      sender: minted.frame.sender,
+      self: minted.frame.self,
+      value: minted.frame.value,
+      retval: minted.retval,
+      calls,
+      segments: normalizedSegments.get(minted.master)!.map((segment) => [...segment]),
+      events: [...minted.events],
+      sends: [...minted.sends],
+      ...(minted.values === undefined || minted.values.length === 0 ? {} : { values: [...minted.values] }),
     });
   }
 
@@ -612,19 +728,23 @@ export function composeDraft(
     const walked: (readonly RecordEntry[])[] = [];
     const visited = new Set<string>();
     const visit = (id: string): void => {
-      const master = mastersById.get(id);
+      const calls = draftCallsById.get(id);
       const block = blocks.get(id);
-      if (master === undefined || block === undefined || visited.has(id)) return;
+      if (calls === undefined || block === undefined || visited.has(id)) return;
       visited.add(id);
       block.segments.forEach((segment, at) => {
         walked.push(segment);
-        const call = master.calls[at];
+        const call = calls[at];
         if (call !== undefined) visit(call.callee);
       });
     };
-    const roots = plan.masters.filter((master) => !mastersById.has(master.enteredBy))
-      .sort((left, right) => (indices.get(left.master) ?? 0) - (indices.get(right.master) ?? 0));
-    for (const master of [...roots, ...plan.masters]) visit(master.master);
+    const roots = [
+      ...plan.masters.filter((master) => !mastersById.has(master.enteredBy))
+        .sort((left, right) => (indices.get(left.master) ?? 0) - (indices.get(right.master) ?? 0))
+        .map((master) => master.master),
+      ...(plan.mintedMasters ?? []).map((minted) => minted.master),
+    ];
+    for (const master of [...roots, ...plan.masters.map((candidate) => candidate.master)]) visit(master);
     return walked;
   };
 
@@ -671,8 +791,12 @@ export function composeDraft(
   };
 
   // Every participant recreates at its own index; the plan's trailing outputs take the indices past the
-  // participants, which no input recreates; the funders' recreations follow the trailing outputs.
-  const trailing = placeTrailingOutputs(layout, plan.trailingOutputs ?? []);
+  // participants, which no input recreates; the funders' recreations follow the trailing outputs. A minted master's
+  // output leads the trailing region, so its index is the one the transcript names.
+  const trailing = placeTrailingOutputs(layout, [
+    ...(plan.mintedMasters ?? []).map((minted) => minted.output),
+    ...(plan.trailingOutputs ?? []),
+  ]);
   const participantIds = layout.participants.map((placed) => placed.id);
   const participantSet = new Set(participantIds);
   const funderIds = orderedIds.filter((id) => !participantSet.has(id));

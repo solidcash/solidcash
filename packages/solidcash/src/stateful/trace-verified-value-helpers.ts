@@ -149,6 +149,7 @@ export function computeConvergenceKey(
   entryCommitments?: string[],
   eventCommitments?: string[],
   entryLoopCommitments?: string[],
+  runtimeEventCommitments?: string[],
 ): string {
   const parts: string[] = [String(commitmentProgress)];
   // Include actual commitment content (not just count) so that changed values
@@ -164,6 +165,9 @@ export function computeConvergenceKey(
   }
   if (entryLoopCommitments) {
     for (const c of entryLoopCommitments) parts.push(`le:${c}`);
+  }
+  if (runtimeEventCommitments) {
+    for (const c of runtimeEventCommitments) parts.push(`re:${c}`);
   }
   if (derivedTransfers) {
     for (const t of derivedTransfers) {

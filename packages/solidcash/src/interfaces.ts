@@ -214,6 +214,8 @@ export interface TransactionDetails extends Transaction {
 }
 
 export interface ContractOptions {
+  /** Override the provider's shared block-info oracle lock for this reader. */
+  blockOracleLock?: Uint8Array;
   provider: NetworkProvider,
   addressType?: AddressType,
   // User CREATE2-style salt: a dead push baked into the script for deterministic / counterfactual address

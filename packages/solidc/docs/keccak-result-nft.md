@@ -233,11 +233,12 @@ before master" is deep and regressive; the front region AFTER master already giv
 there is no reason to. The layout's input/output index-alignment rationale (e.g. token containers placed to
 keep input indices matching output indices) must also be preserved by any future reorder.
 
-**DEFERRED (strong suggestion):** a "block layout v2" refactor unifying all co-spent auxiliaries (oracles,
-libraries, external reads/calls) into one explicit front-region band with a single allocator + one SDK
-co-spend driver. Right long-term shape, but a reorder across the 5 byte-matched covenant pairs + the green
-`blockhashOracle` / external-call / entry-NFT e2e suites - disproportionate to shipping single-hash keccak,
-and the per-mechanism versions already work. Do it as a separate, e2e-gated project. See docs/deferrals.md.
+**RESOLVED 2026-10-16 (in place, no layout-version bump):** the "block layout v2" refactor is landed as
+`SymbolTableTraversal.computeAuxiliaryBand` — one ordered allocator that emits the whole front-region auxiliary
+co-spend band (delegate `lowLevelCall`, `readOnlyDataNft`, `blockhashOracle`, `blockInfoOracle`, `keccakSideCar`,
+`ecrecoverSideCar`, then external read/call reservations) right after `master`+`dataNft`. The SDK orders the same
+band by iterating the emitted slots (`AUXILIARY_BLOCK_SLOT_KINDS` / `orderedFrontRegionCoSpends`). The upgrade
+kept the existing slot order and `master` at offset 0, so covenant bytes are unchanged. See docs/deferrals.md.
 
 ## 12. Phase 1b: DEFAULT + arbitrary length + transparent send (2026-07-16)
 

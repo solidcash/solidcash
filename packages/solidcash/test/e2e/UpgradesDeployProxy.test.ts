@@ -204,12 +204,10 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     const artifact = compileString(TIMED_DELEGATE_IMPL);
     const proxy = await upgrades.deployProxy(getContractFactory(artifact, signer), []);
 
-    const deployed = await proxy.proxy.getState();
-    expect(deployed.__block_timestamp).toBeGreaterThan(0n);
-
+    // The send mines a block afterwards, so the oracle the capture slices holds the time before it.
+    const oracleTime = BigInt(signer.provider.getBlockTime());
     const tx = await (proxy as any).capture().send();
-    expect(proxyState(tx, proxy.proxy.categoryId, artifact.stateLayout).captured)
-      .toBe(deployed.__block_timestamp);
+    expect(proxyState(tx, proxy.proxy.categoryId, artifact.stateLayout).captured).toBe(oracleTime);
   });
 
   it('auto-detects an OZ initializer in Solidity import-compat mode', async () => {
@@ -464,8 +462,8 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     await addProvenUtxo(signer.provider, signer.getAddress());
     const calleeArtifact = compileString(`pragma solidcash >=0.8.0;
       contract ValueSource() {
-        int marker;
-        function twice(int value) view returns (int) { return value * 2; }
+        int immutable marker;
+        function twice(int value) view returns (int) { return value * 2 + this.marker; }
       }`, { evmCompat: true });
     const implArtifact = compileString(`pragma solidcash >=0.8.0;
       interface IValueSource { function twice(int value) external view returns (int); }
@@ -475,12 +473,14 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
         function run(address source, int value) public { this.result = IValueSource(source).twice(value); }
       }`, { evmCompat: true });
     const callee = await getContractFactory(calleeArtifact, signer).deploy({ initialState: { marker: 1n } });
+    const original = (await callee.getFullState()).dataNftUtxos.map((utxo) => utxo.token!.nft!.commitment);
     const proxy = await upgrades.deployProxy(
       getContractFactory(implArtifact, signer),
       [],
     );
     const tx = await (proxy as any).run(callee.inner.lockingBytecode, 7n).send();
-    expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).result).toBe(14n);
+    expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).result).toBe(15n);
+    expect((await callee.getFullState()).dataNftUtxos.map((utxo) => utxo.token!.nft!.commitment)).toEqual(original);
   });
 
   // Nested proxy emit+return composition still requires a dedicated cross-owner event/return layout.

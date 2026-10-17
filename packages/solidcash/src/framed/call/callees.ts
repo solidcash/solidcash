@@ -24,7 +24,7 @@
  * frame's own close, and the call is planned again from it, as the hop plans its callee's (`planCalleeWrites`).
  *
  * A shape this path does not settle yet is refused by name: a callee behind a proxy; one that sends value the call
- * reaches or co-spends a side-car; reaches of one collection one transaction cannot carry; and
+ * reaches or co-spends a compute side-car; reaches of one collection one transaction cannot carry; and
  * a deployment entered twice whose frames name data records that no order of its block keeps side by side. A site,
  * of the entry or of a callee frame, whose argument reads an earlier call's result stops the plan before it
  * (`blocked`), and a call the entry guards on one is stated from the results the plan was made from
@@ -36,8 +36,8 @@
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  bytesEqual, bytesToHex, FrameKind, INDEX_NONE, sha256, witnessKindOf, type Artifact, type PublishedWriteSegment,
-  type RecordEntry,
+  bytesEqual, bytesToHex, FrameKind, INDEX_NONE, sha256, witnessKindOf, type Artifact, type FunctionSplitBundle,
+  type PublishedWriteSegment, type RecordEntry,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
@@ -59,6 +59,7 @@ import {
   type DraftSourceOutput,
   type FrameRequest,
   type PlannedSettlement,
+  type RecoverySideCars,
   type TransactionLayout,
 } from '../composer/index.js';
 import {
@@ -76,6 +77,7 @@ import {
   sharedNodeWritersBefore,
   type HopCallee, type HopCalleeRecord, type HopExternalPlan, type HopPlanBlock, type FramedProxyExternal,
 } from '../proxy/external-calls.js';
+import { blockOracleSideCarId } from './block-oracle.js';
 import { adjacentRecordOrder, frameDataRecordIndices, namedDataRecordIndices } from './entry-records.js';
 import { publishedLoopEffects } from './loop-turns.js';
 
@@ -105,6 +107,8 @@ export interface PlannedCallees {
   readonly callees: readonly HopCallee[];
   /** The live UTXO of every callee participant, keyed by the id the plan places it under. */
   readonly utxos: ReadonlyMap<string, Utxo>;
+  /** The authenticated oracle input, placed once beside the first callee that reads it. */
+  readonly sideCars: ReadonlyMap<string, RecoverySideCars>;
   /** One block per callee deployment, in placement order: its masters and the records its frames declare. */
   readonly blocks: readonly ContractBlock[];
   /** The callee blocks, each once, which the root's validator covers. */
@@ -156,6 +160,8 @@ export interface CalleePlanOptions {
   /** The root's own address, `address(this)`, and its caller's lock, `msg.sender`. */
   readonly selfAddress: Uint8Array;
   readonly senderAddress: Uint8Array;
+  /** The clock of the oracle the root co-spends, shared by its call predicates and write recipes. */
+  readonly blockClock?: Readonly<Record<string, bigint>>;
   /** The results earlier calls returned, as a stopped plan's frames handed them back (`reachedResultKey`). */
   readonly reachedResults?: ReadonlyMap<string, FunctionArgument>;
   /** The results the entry's own guards read, by callsite id, as the callees of an earlier plan returned them. */
@@ -165,6 +171,15 @@ export interface CalleePlanOptions {
    * it (`CalleeValues.writeValues`): the write is planned from it, which sizes its run of chunk records.
    */
   readonly calleeWriteValues?: ReadonlyMap<string, Uint8Array>;
+  /**
+   * The per-entry bundle the root belongs to.
+   *
+   * A call back to this category spends the callee's shard, at that shard's lock, rather than another copy of
+   * the caller's own master.
+   */
+  readonly split?: FunctionSplitBundle;
+  /** Outpoints already claimed, keyed by category, so a callee does not spend the root's master. */
+  readonly takenMasters?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** The keys the root and the caller's named deployments are handed to the planner under, which no interface can be. */
@@ -330,9 +345,37 @@ function withSpelledCalls(plan: HopExternalPlan, artifact: Artifact, entry: stri
   };
 }
 
+/** Compute side-cars remain unsupported; an oracle is placed as the hop places its shared oracle. */
+function sideCarRefusal(label: string, master: string, sideCars: RecoverySideCars | undefined): string | undefined {
+  if (sideCars === undefined || sideCars.ids.length === 0) return undefined;
+  if (sideCars.ids.every((id) => id === blockOracleSideCarId(master))) {
+    return undefined;
+  }
+  return `${label} co-spends a side-car, which this call path does not plan yet`;
+}
+
 /** The shape one callee frame takes that this path does not settle yet, or undefined for one it does. */
-function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefined {
+function unservedCallee(callee: HopCallee, sideCars: RecoverySideCars | undefined): string | undefined {
   const label = `the callee "${callee.functionName}"`;
+  const sideCarWhy = sideCarRefusal(label, callee.master, sideCars);
+  // A legal internal cut writes no state. Its further calls are other cuts of the same contract. The
+  // write-segment refusal below is for a frame whose artifact publishes a write this path cannot place.
+  if (callee.kind === FrameKind.INTERNAL) {
+    if (callee.retvalFrom !== undefined || callee.recordOwner !== undefined) {
+      return `${label} sits behind a proxy, whose delegate frame this call path does not plan yet`;
+    }
+    const internalAbi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
+    const internalSend = (internalAbi?.transfers ?? []).some((transfer) => transfer.condition === undefined);
+    if (internalSend || (callee.takenSends?.length ?? 0) > 0) {
+      return `${label} sends value on a path the call reaches, which this call path does not plan for a callee yet`;
+    }
+    if (sideCarWhy !== undefined) return sideCarWhy;
+    if (publishedLoopEffects(callee.artifact, callee.entry) !== undefined) {
+      return `${label} emits, sends or hashes once per turn of a loop, which this call path does not plan for `
+        + 'a callee yet';
+    }
+    return undefined;
+  }
   if (callee.kind !== FrameKind.CALL && callee.kind !== FrameKind.STATIC) {
     return `${label} is entered as a delegate frame, which this call path does not plan yet`;
   }
@@ -349,7 +392,7 @@ function unservedCallee(callee: HopCallee, sideCars: boolean): string | undefine
   if (unguarded || (callee.takenSends?.length ?? 0) > 0) {
     return `${label} sends value on a path the call reaches, which this call path does not plan for a callee yet`;
   }
-  if (sideCars) return `${label} co-spends a side-car, which this call path does not plan yet`;
+  if (sideCarWhy !== undefined) return sideCarWhy;
   if (publishedLoopEffects(callee.artifact, callee.entry) !== undefined) {
     return `${label} emits, sends or hashes once per turn of a loop, which this call path does not plan for a callee `
       + 'yet';
@@ -394,13 +437,16 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       args: options.args,
       externals,
       validatorProgram: options.validatorProgram,
-      stateValues: deploymentStateValues(layout, options.categoryId, options.deployment),
+      stateValues: { ...deploymentStateValues(layout, options.categoryId, options.deployment),
+        ...options.blockClock },
       entryDeployment: { categoryId: options.categoryId, deployment: options.deployment, layout },
       selfAddress: options.selfAddress,
       senderAddress: options.senderAddress,
       ...(options.reachedResults === undefined ? {} : { reachedResults: options.reachedResults }),
       ...(options.externalReturns === undefined ? {} : { externalReturns: options.externalReturns }),
       ...(options.calleeWriteValues === undefined ? {} : { calleeWriteValues: options.calleeWriteValues }),
+      ...(options.split === undefined ? {} : { split: options.split, splitCategoryId: options.categoryId }),
+      ...(options.takenMasters === undefined ? {} : { takenMasters: options.takenMasters }),
     });
   } catch (error) {
     if (!(error instanceof FramedProxyDeployError)) throw error;
@@ -411,7 +457,7 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
   // the site from the results the plan was made from: the call learns those results from the calls' own frames and
   // plans again (`call.ts`).
   for (const callee of plan.callees) {
-    const why = unservedCallee(callee, plan.sideCars.has(callee.master));
+    const why = unservedCallee(callee, plan.sideCars.get(callee.master));
     if (why !== undefined) refuse(why);
   }
   // A deployment entered more than once is settled by the validator, which chains its records' views across its
@@ -445,7 +491,12 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       `the callee "${frames[split]!.functionName}" reads its data records of "${block}" side by side, and no `
       + 'order of the records the call\'s other frames of that contract name keeps them so',
     ));
-    return { contract: block, masters: frames.map((frame) => frame.master), state: ordered };
+    const recovery = Object.fromEntries(frames.flatMap((frame) => {
+      const ids = plan.sideCars.get(frame.master)?.ids;
+      return ids === undefined || ids.length === 0 ? [] : [[frame.master, ids]];
+    }));
+    return { contract: block, masters: frames.map((frame) => frame.master), state: ordered,
+      ...(Object.keys(recovery).length === 0 ? {} : { recovery }) };
   });
   const artifacts = [...new Set(plan.callees.map((callee) => callee.artifact))];
   const eventCount = plan.callees.reduce((total, callee) => total + emitsOf(callee).length, 0);
@@ -453,7 +504,8 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
     + (callee.entryWrites?.learningCandidates.length ?? 0), 0);
   return {
     calls: plan.calls, callBases: plan.callBases, callsiteIds: plan.callsiteIds,
-    conditionalProducers: plan.conditionalProducers, callees: plan.callees, utxos: plan.utxos, blocks,
+    conditionalProducers: plan.conditionalProducers, callees: plan.callees, utxos: plan.utxos,
+    sideCars: plan.sideCars, blocks,
     contracts: [...byBlock.keys()], artifacts, eventCount, learnable,
     ...(plan.blocked === undefined ? {} : { blocked: plan.blocked }),
   };
@@ -534,6 +586,12 @@ export function calleeFrames(options: {
     readonly masters: ReadonlyMap<string, number>;
     readonly startViews: ReadonlyMap<string, ReadonlyMap<string, Uint8Array>>;
   };
+  /**
+   * The root's own block, when the root is another master of a callee's deployment. The calls enter that block once
+   * more than the callee frames alone, so a record a callee writes there chains across the root's segments the way a
+   * contract entered by several frames does.
+   */
+  readonly rootBlock?: string;
 }): CalleeFrames {
   const { planned, layout, values } = options;
   const { callees } = planned;
@@ -556,8 +614,15 @@ export function calleeFrames(options: {
   const chainEnds = new Map<string, Uint8Array>();
   const enteredOf = new Map<string, number>();
   for (const callee of callees) enteredOf.set(callee.block, (enteredOf.get(callee.block) ?? 0) + 1);
+  // The root spends a master of this block beside the callees. A record written here chains across the root's own
+  // segments, which the walk reaches between the call and the segment after it.
+  if (options.rootBlock !== undefined) {
+    enteredOf.set(options.rootBlock, (enteredOf.get(options.rootBlock) ?? 0) + 1);
+  }
   const chainedRecords = new Set<string>();
-  const inputs: Record<string, DraftInput> = {};
+  const inputs: Record<string, DraftInput> = Object.assign(
+    {}, ...[...planned.sideCars.values()].map((sideCar) => sideCar.inputs),
+  );
   const eventOutputs: DraftSourceOutput[] = [];
   const createdOutputs: DraftSourceOutput[] = [];
   // The output each node an earlier frame created sits at, by the node's own identity: a later frame of its contract

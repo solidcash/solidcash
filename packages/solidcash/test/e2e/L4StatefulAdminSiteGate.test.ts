@@ -275,8 +275,9 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
   it('1d. GUARD: the identical batched destroy with exact automatic fees settles BOTH batches', async () => {
     // The generated covenant has grown beyond the historical 1,924-byte fixed-fee fixture. Let the builder price
     // each batch from its finalized size; this keeps the positive control relayable while row 1c continues to
-    // isolate the deliberately underfunded dust output.
-    const d = await deploy(2_000n);
+    // isolate the deliberately underfunded dust output. The October covenant hardening (records bound to the
+    // master lock, CRYPTO-4) grew each batch past 2,000 bytes, so each record funds its batch with 3,000.
+    const d = await deploy(3_000n);
     const result = await StatefulContract.destroy({
       provider: d.provider,
       contract: d.contract,

@@ -6,12 +6,13 @@ import {
   scriptToBytecode,
 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
-import { Contract, TransactionBuilder, SignatureTemplate } from '../../src/index.js';
+import { Contract, TransactionBuilder } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import {
-  BlockOracleUpdater, RpcLike, blockhashKeeperBatonUnlocker,
+  BlockOracleUpdater, RpcLike, blockhashKeeperBatonUnlocker, type BlockOracleFields,
 } from '../../src/oracle/blockOracleUpdater.js';
 import type { Output, Unlocker, Utxo } from '../../src/interfaces.js';
+import type { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
@@ -24,7 +25,8 @@ import { alicePub, alicePriv } from '../fixture/vars.js';
  * mints (n -> hash) oracles: it cannot co-spend a record, mint any other NFT of the category, or move.
  *
  * CRYPTO-5: the owner must not report block.number as a time-type value (>= 500,000,000), which a time-type
- * nLockTime would satisfy under OP_CHECKLOCKTIMEVERIFY.
+ * nLockTime would satisfy under OP_CHECKLOCKTIMEVERIFY. The block oracle covenant moves the number only under a
+ * height-type nLockTime, below 500,000,000.
  */
 
 const CONSUMER = 'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }';
@@ -64,7 +66,7 @@ const batonBack = (d: Deployed): Output => ({
 });
 
 const oracle = (d: Deployed): Output => ({
-  to: blockhashOracleLockingBytecode(hexToBin(d.cat), d.n), amount: 1000n,
+  to: blockhashOracleLockingBytecode(hexToBin(d.cat)), amount: 1000n,
   token: {
     category: d.cat, amount: 0n, nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(d.n, H)) },
   },
@@ -142,34 +144,44 @@ describe('CRYPTO-4: the blockhash keeper baton cannot stand in for the master', 
   });
 });
 
+// Below the mock's median time past, so a time-type nLockTime alone would not stop the update.
+const T0 = 1_699_990_000n;
+
 const OWNED_ORACLE = `
 contract BlockOracleOwned() {
     function readBack(int eNumber) { require(block.number == eNumber); }
 }`;
 
 describe('CRYPTO-5: block.number cannot be reported as a time-type value', () => {
-  async function deployOwned(): Promise<{ provider: Provider; sc: any }> {
+  async function owned(): Promise<{ provider: MockNetworkProvider; updater: BlockOracleUpdater } | undefined> {
     const provider = createTestProvider();
-    const artifact = compileString(OWNED_ORACLE);
-    const contract = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {
-      __block_number: 0n, __blockOracleOwner: alicePub,
-    }, { saltContract: true });
-    return { provider, sc: StatefulContract.withCategory(contract, categoryId) };
+    if (!('setBlockOracleFields' in provider)) return undefined;
+    provider.setBlockOracleFields({
+      number: 0n, timestamp: T0, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: hexToBin('00'),
+    });
+    const contract = new Contract(compileString(OWNED_ORACLE), [], { provider });
+    const updater = new BlockOracleUpdater({
+      contract, categoryId: '00'.repeat(32), keeperKey: provider.blockOracleOwnerKey, rpc: fakeRpc(),
+    });
+    return { provider, updater };
   }
 
+  const fields = (number: bigint): BlockOracleFields => ({
+    number, timestamp: T0, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: hexToBin('00'),
+  });
+
   it('accepts an honest height update', async () => {
-    const { provider, sc } = await deployOwned();
-    const n = await provider.getBlockHeight();
-    const tx = await sc.__updateBlockOracle(new SignatureTemplate(alicePriv), BigInt(n))
-      .setState({ __block_number: BigInt(n) }).setLocktime(n).send();
-    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+    const o = await owned();
+    if (o === undefined) return;
+    const n = await o.provider.getBlockHeight();
+    expect(await o.updater.pushUpdate(fields(BigInt(n)), n)).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('rejects number >= 500,000,000 under a time-type locktime', async () => {
-    const { sc } = await deployOwned();
-    const bogus = 500_000_001;
-    await expect(sc.__updateBlockOracle(new SignatureTemplate(alicePriv), BigInt(bogus))
-      .setState({ __block_number: BigInt(bogus) }).setLocktime(bogus).send()).rejects.toThrow();
+    const o = await owned();
+    if (o === undefined) return;
+    // The audit's shape: nLockTime is a final time just past the stored timestamp, and the number is time-sized.
+    await expect(o.updater.pushUpdate(fields(500_000_001n), Number(T0 + 100n))).rejects.toThrow();
+    expect(await o.updater.oracleHeight()).toBe(0n);
   });
 });

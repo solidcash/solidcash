@@ -90,6 +90,8 @@ export interface CompilerOptions {
   // exists only as an explicit migration/testing escape hatch for contracts that knowingly accept takeover.
   allowUnsafeOperations?: boolean;
   commitmentLimit?: number;
+  /** Encode an NFT-index tag even when fixed state occupies only one data NFT. Opt-in wire-layout choice. */
+  tagSingletonDataNfts?: boolean;
   // Solidity-source compatibility and EVM byte-parity mode: resolve `.sol` imports as solidcash sources,
   // accept `pragma solidity`, apply Solidity literal/type semantics, and emit EVM-faithful ABI words (32-byte
   // big-endian two's-complement) for the abi.* family.
@@ -147,6 +149,13 @@ export interface CompilerOptions {
   // proxy-implementable functions `delegate` so source never needs the keyword (Solidity has none). Not a user
   // option; setting it yields the delegate variant as the primary artifact.
   autoDelegate?: boolean;
+  /**
+   * Size optimization: reuse an already-taken entry-read local for a whole-struct write-back (Unicrow
+   * `refund`). Default true. `false` is a measurement-only escape hatch that keeps the write-back on the
+   * CoalesceMappingEntryFieldWrites re-read path, so a regression test can compare the two sizes; it must not
+   * be used for deployed artifacts.
+   */
+  reuseEntryLocalForWriteback?: boolean;
   // Compiler-generated atomic composition route and write-back journal. Omitted selects automatically from
   // source-level atomic call-graph edges; `true` opts out of that narrowing and requests a route for a
   // graph-free contract, still falling back to direct-only when none can be built; `false` requests direct-only
@@ -190,6 +199,12 @@ export interface CompilerOptions {
    * convention is published on `artifact.composition`.
    */
   composition?: 'direct' | 'framed';
+  /**
+   * How a split compile places code. `off` is one artifact. `size` is the state-affinity packer
+   * (`state-affinity-best-fit-v2`). `func` is one framed master per ABI entry (`per-entry-v1`).
+   * Omitted on {@link compileStringSplit} means `size`. A boolean is not a mode.
+   */
+  split?: 'off' | 'size' | 'func';
   // Limit eager/lazy proxy implementation variants in large multi-contract projects. Omitted preserves the
   // default behavior; when supplied, only matching contract names receive `delegateArtifact`.
   delegateArtifactContracts?: readonly string[];
@@ -249,6 +264,13 @@ export interface RuntimeLoopEventAbi {
   effectSequence?: number;
   /** Per-site order among all event and transfer effects in this segment. */
   effectOrder?: readonly number[];
+  /**
+   * Each occurrence settles as consecutive records, one per commitment-sized chunk of its payload: the head at the
+   * event covenant, the rest at its continuation covenant. The record count is learned from the trace.
+   */
+  chunked?: true;
+  /** A kernel route handler's top-level emits, settled on its runtime effect stream instead of event windows. */
+  stream?: true;
 }
 
 export interface RuntimeLoopIterationDomainAbi {
@@ -275,6 +297,8 @@ export interface ExternalCallIterationDomainAbi {
 /** One repeated BCH-transfer segment produced by a runtime counter loop. */
 export interface RuntimeLoopTransferAbi {
   permutationParam: string;
+  /** Exact bound expression when the permutation's source domain is not recoverable from its legacy name. */
+  iterationBound?: ExternalCallExpression;
   siteCount: number;
   /** Effect kind per source site. Omitted by older artifacts whose sites are all plain BCH transfers. */
   siteKinds?: readonly ('bch' | 'token' | 'nft')[];
@@ -326,6 +350,7 @@ export type BlockSlotKind =
   | 'dataNft'
   | 'readOnlyDataNft'
   | 'blockhashOracle'
+  | 'blockInfoOracle'
   | 'keccakSideCar'
   | 'ecrecoverSideCar'
   | 'entry'
@@ -334,6 +359,8 @@ export type BlockSlotKind =
   | 'transfer'
   | 'tcTransfer'
   | 'event'
+  /** Continuation chunk `chunk` (>= 1) of the wide emit at `slotIndex`; follows that emit's `event` slot. */
+  | 'eventChunk'
   | 'returnEvent'
   | 'deploy'
   /** Child data-NFT genesis outputs that follow a `deploy` slot (factory createPair-style). */
@@ -349,7 +376,8 @@ export type BlockSlotKind =
 export interface BlockLayoutSlot {
   kind: BlockSlotKind;
   offset: number;           // compile-time offset from block start (= from master)
-  slotIndex?: number;       // for entry/tokenContainer/transfer/event/tcTransfer
+  slotIndex?: number;       // for entry/tokenContainer/transfer/event/eventChunk/tcTransfer
+  chunk?: number;           // eventChunk: the payload chunk this output carries (>= 1)
   nftIndex?: number;        // for dataNft/readOnlyDataNft
   conditional?: boolean;    // true if slot may be inactive (in if/else branch)
   // entry: a branch delete lowered to an existence-gated soft-delete write (SDK derives it as a write, not a drop)
@@ -810,6 +838,8 @@ export interface AbiFunction {
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
   // the (n->hash) oracle UTXO as a trailing input.
   blockhashReads?: readonly string[];
+  /** The body slices the block-info oracle commitment. The SDK co-spends that UTXO and fills its input index. */
+  usesBlockOracle?: boolean;
   blockLayout?: FunctionBlockLayout;
   isFallback?: boolean;
   isReceive?: boolean;
@@ -823,6 +853,9 @@ export interface AbiFunction {
   // deploy MORE side-cars than the static count (the loop bound is the real minimum)
   keccakLoopReads?: boolean;    // STATEFUL dynamic keccak loop: the SDK progressively co-spends N (runtime
   // iteration count) compute side-cars into the trailing region [blockSize, ..)
+  keccakChainReads?: boolean;   // a direct, unbounded preimage routes through the chained START/CONT/FINAL side-cars
+  // in the trailing region (one per 136-byte block, FINAL last)
+  keccakLoopPrecedesTrailingUser?: boolean; // a direct keccak loop runs BEFORE a runtime mapping loop in source order
   // ecrecoverPubKey uses a co-spent recovery side-car pair per call; send() co-spends 2N inputs.
   ecrecoverCompute?: boolean;
   // Per ecrecoverPubKey call (in order), its [hash, v, r, s] parameter names.
@@ -830,7 +863,7 @@ export interface AbiFunction {
   ecrecoverEvmFlags?: readonly boolean[]; // also identifies calls that need a keccak side-car
   /** Closed, source-ordered compute operands, evaluated only from authenticated invocation values. */
   computeSideCarRecipes?: ComputeSideCarRecipesAbi;
-  ecrecoverLoopReads?: boolean; // dynamic ecrecover loop: the SDK co-spends one recovery pair per sig-array element
+  ecrecoverLoopReads?: boolean; // dynamic ecrecover loop: the SDK co-spends one recovery triple per sig-array element
 }
 
 /**
@@ -878,6 +911,10 @@ export interface CollectionIterationAbi {
   collection: string;
   mode: 'entries' | 'keys' | 'values';
   iterationIndex: number;
+  /** Windowed (paginated) iteration: the register state variable holding the cursor (a 32-byte slot). */
+  windowCursor?: string;
+  /** Windowed iteration: the maximum number of entries walked per transaction. */
+  windowBound?: number;
 }
 
 export interface FunctionDebugInformation {
@@ -1456,6 +1493,8 @@ export interface CallsiteCallerIdentityAbi {
  * Do not invent source identity from proxy/delegate/locking bytecode.
  */
 export interface ExternalCallAbi {
+  /** Direct unconditional zero-argument readonly aliases share one authenticated return value. */
+  readonlyReturnBinding?: { version: 1; selector: string };
   /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
   callsiteId?: number;
   /** Compiler-authored function-local program point of this call effect. */
@@ -1587,6 +1626,8 @@ export interface StateLayout {
   variables: readonly StateVariableInfo[];
   dataNftCount: number;
   commitmentLimit: number;
+  /** Explicit index-tag encoding for singleton records; absent preserves the historical count-based format. */
+  taggedDataNfts?: true;
   constructorInputs?: readonly AbiInput[];
   deployReads?: readonly DeployReadHint[];
   collections?: readonly CollectionInfo[];
@@ -1884,6 +1925,18 @@ export interface CompositionPlaceholders {
   templateHashOffset?: number;
 }
 
+/**
+ * One push of a helper-lock sentinel in a function-split master.
+ *
+ * `offset` is the push opcode. The 35-byte payload starts at `offset + 1` and is still the compile-time
+ * sentinel; deployment replaces that payload with the filled P2SH32 of the named helper. The name is the
+ * helper's profile key, `name(types)`.
+ */
+export interface InternalHelperLockSlot {
+  readonly name: string;
+  readonly offset: number;
+}
+
 /** One external call of a framed entry, as published: the call's index and what it targets. */
 export interface PublishedCallSite {
   /**
@@ -2089,6 +2142,10 @@ export interface Artifact {
    */
   delegateProxyStateOutputCountPinned?: boolean;
   usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
+  /** A function reads the block-info oracle commitment. The update is not an entry of this contract. */
+  usesBlockOracle?: boolean;
+  /** Offsets of the 35-byte oracle-lock sentinel in the published bytecode. The offset is the push opcode. */
+  blockOracleLockSlots?: readonly number[];
   // Same source compiled with its proxy-implementable functions in delegate mode (state writes retargeted to a
   // co-spent proxy master). Present when the contract can serve as a proxy implementation; the SDK deploys and
   // calls this variant behind a proxy, so source never needs an explicit `delegate` modifier. One level deep.
@@ -2122,6 +2179,11 @@ export interface Artifact {
     balanceReaders?: readonly string[];
     /** The source's pool resizes, served beside the head (spec R2b); absent when it declares none. */
     lifecycle?: PublishedFramedLifecycle;
+    /**
+     * Helper-lock sentinels this master pushes. Deployment replaces each payload with that helper's filled
+     * lock. Absent when the master calls no cut helper.
+     */
+    internalHelperLocks?: readonly InternalHelperLockSlot[];
   };
   messageBus?: {
     version: 1;
@@ -2512,6 +2574,78 @@ export interface SplitArtifactBundle {
   manifest: SplitManifest;
 }
 
+/** Frame kinds a function shard's master head admits. */
+export type FunctionSplitFrameKind = 'ROOT' | 'CALL' | 'STATIC' | 'DELEGATE' | 'INTERNAL';
+
+/**
+ * One ABI entry's master under `split: 'func'`.
+ *
+ * `lock` is the P2SH32 of the published redeem script. That script still holds the category and address
+ * placeholders, so genesis fills them and mints the P2SH32 of the filled program. `mastersByLock` groups
+ * those filled locks. The commitment is not part of either lock.
+ */
+export interface FunctionSplitShard {
+  /** ABI selector, 8 hex characters, no `0x` prefix. Overloads of one name differ here. */
+  selector: string;
+  /** Source function name. Two shards may share it when they are overloads. */
+  function: string;
+  acceptedFrameKinds: readonly FunctionSplitFrameKind[];
+  artifact: Artifact;
+  /** P2SH32 of {@link artifact}'s published redeem script, hex. */
+  lock: string;
+  /** Whole-spend bytes the capacity check measured: redeem script plus the spend reserve. */
+  wholeSpendBytes: number;
+}
+
+/**
+ * A helper master cut out of an over-cap caller.
+ *
+ * It has no ABI row and no selector in {@link FunctionSplitBundle.abi}. Its head admits only `INTERNAL`.
+ */
+export interface FunctionSplitInternalCut {
+  name: string;
+  artifact: Artifact;
+  /** P2SH32 of the helper redeem script, hex, placeholders still empty. */
+  lock: string;
+  wholeSpendBytes: number;
+  /** Selectors of the entries whose call record names this helper. */
+  callerSelectors: readonly string[];
+}
+
+/**
+ * One function's loader. The script pushes that function's code hash and selector, and the lock is the
+ * P2SH32 of that script. Locks differ per function. The commitment is not an input to the lock.
+ */
+export interface FunctionSplitLoader {
+  selector: string;
+  /** `hash256` of the shard redeem script, hex. */
+  codeHash: string;
+  /** Loader redeem script, hex. */
+  script: string;
+  /** P2SH32 of {@link script}, hex. */
+  lock: string;
+}
+
+/**
+ * A framed per-entry split. Tooling branches on `format`; this is not a size-split bundle.
+ *
+ * `logical` is the monolithic framed artifact of the same source, with no executed kernel route.
+ * `internalCuts` is empty unless a measured caller was over the whole-spend cap and a helper was cut.
+ */
+export interface FunctionSplitBundle {
+  format: 'solidcash-split-v2';
+  algorithm: 'per-entry-v1';
+  composition: 'framed';
+  logicalContractName: string;
+  abi: readonly AbiFunction[];
+  stateLayoutFingerprint: string;
+  logical: Artifact;
+  shards: readonly FunctionSplitShard[];
+  internalCuts: readonly FunctionSplitInternalCut[];
+  loaders: readonly FunctionSplitLoader[];
+  messageBus: { available: false };
+}
+
 /** How a published occurrence bound reads back, with the unknown legs made explicit. */
 export interface OccurrenceBound {
   kind: 'once' | 'conditional' | 'loop';
@@ -2671,7 +2805,9 @@ export function describeProvenance(provenance: ReadValueProvenance): string {
   }
 }
 
-export function formatSplitArtifactBundle(bundle: SplitArtifactBundle, format: 'json' | 'ts'): string {
+export function formatSplitArtifactBundle(
+  bundle: SplitArtifactBundle | FunctionSplitBundle, format: 'json' | 'ts',
+): string {
   if (format === 'ts') {
     const normalised = JSON.parse(JSON.stringify(bundle));
     return `export default ${stringifyAsTs(normalised)} as const;\n`;

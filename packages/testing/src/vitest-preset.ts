@@ -18,10 +18,13 @@
 import { fileURLToPath } from 'url';
 import type { Plugin } from 'vite';
 
+/** Vite alias entry: a string `find` also matches `find/...` subpaths, a RegExp only what it matches. */
+export interface ViteAliasEntry { find: string | RegExp; replacement: string }
+
 /** Minimal structural Vite/Vitest config shape (version-agnostic; `defineConfig` accepts it structurally). */
 export interface ViteLikeConfig {
   test?: { setupFiles?: string | string[]; env?: Record<string, string>; [k: string]: unknown };
-  resolve?: { alias?: Record<string, string>; [k: string]: unknown };
+  resolve?: { alias?: Record<string, string> | ViteAliasEntry[]; [k: string]: unknown };
   optimizeDeps?: { exclude?: string[]; [k: string]: unknown };
   plugins?: unknown[];
   solidcash?: {
@@ -36,6 +39,7 @@ export interface ViteLikeConfig {
 }
 
 const stub = (name: string): string => fileURLToPath(new URL(`./stubs/${name}.js`, import.meta.url));
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** The Hardhat/ethers/chai -> @solidcash/testing alias map (the heart of the drop-in). */
 export function hardhatAliases(): Record<string, string> {
@@ -87,7 +91,7 @@ export function cjsHardhatRequirePlugin(aliases: Record<string, string>): Plugin
     .sort((a, b) => b.length - a.length);
   const alt = specs.length === 0
     ? '(?!)'
-    : specs.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    : specs.map(escapeRegExp).join('|');
   // const { a, b: c } = require("hardhat")
   // Nested patterns like `{ utils: { keccak256, defaultAbiCoder } }` need balanced braces
   // (MistSwap kashipair / utilities) — a flat `[^}]+` stops at the inner `}`.
@@ -179,8 +183,18 @@ export function cjsHardhatRequirePlugin(aliases: Record<string, string>): Plugin
 /** Merge the SolidCash Hardhat-drop-in settings into a user Vitest config. */
 export function solidcashHardhatPreset(userConfig: ViteLikeConfig = {}): ViteLikeConfig {
   const { solidcash: solidcashOptions, ...viteConfig } = userConfig;
-  const userAlias = (userConfig.resolve?.alias ?? {}) as Record<string, string>;
-  const mergedAlias = { ...hardhatAliases(), ...userAlias };
+  const userAlias: Record<string, string> | ViteAliasEntry[] = userConfig.resolve?.alias ?? {};
+  const dropInAlias = hardhatAliases();
+  const mergedAlias = { ...dropInAlias, ...(Array.isArray(userAlias) ? {} : userAlias) };
+  // Drop-in specifiers match exactly: a string `ethers` would also send `ethers/crypto` to a missing `ethers-shim/crypto`.
+  // Entry-form user aliases go first, so they can still override a drop-in.
+  const alias: ViteAliasEntry[] = [
+    ...(Array.isArray(userAlias) ? userAlias : []),
+    ...Object.entries(mergedAlias).map(([find, replacement]) => ({
+      find: Object.hasOwn(dropInAlias, find) ? new RegExp(`^${escapeRegExp(find)}$`) : find,
+      replacement,
+    })),
+  ];
   const userExclude = userConfig.optimizeDeps?.exclude ?? [];
   const userSetup = userConfig.test?.setupFiles;
   const setupList = Array.isArray(userSetup) ? userSetup : userSetup ? [userSetup] : [];
@@ -201,7 +215,7 @@ export function solidcashHardhatPreset(userConfig: ViteLikeConfig = {}): ViteLik
     },
     resolve: {
       ...userConfig.resolve,
-      alias: mergedAlias,
+      alias,
     },
     test: {
       globals: true,

@@ -1,7 +1,7 @@
 import fs, { type PathLike } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import type { Artifact, ArtifactMap, SplitArtifactBundle } from '@solidcash/utils';
+import type { Artifact, ArtifactMap, FunctionSplitBundle, SplitArtifactBundle } from '@solidcash/utils';
 import { compileString, compileStringMulti, compileStringSplit, type CompileOptions, type SplitCompileOptions } from './compiler.js';
 
 // Read a file + build the node import resolver, returning the source and the options to pass to
@@ -81,10 +81,26 @@ export function compileFileMulti(codeFile: PathLike, compilerOptions: CompileOpt
   });
 }
 
-/** Compile a file to a statically-linked root/facet bundle. */
+/** Compile a file to a size-split bundle, a single artifact (`split: 'off'`), or a framed per-entry bundle. */
+export function compileFileSplit(
+  codeFile: PathLike,
+  compilerOptions: SplitCompileOptions & { split: 'func' },
+): FunctionSplitBundle;
+export function compileFileSplit(
+  codeFile: PathLike,
+  compilerOptions: SplitCompileOptions & { split: 'off' },
+): Artifact;
+export function compileFileSplit(
+  codeFile: PathLike,
+  compilerOptions?: SplitCompileOptions & { split?: 'size' },
+): SplitArtifactBundle;
+export function compileFileSplit(
+  codeFile: PathLike,
+  compilerOptions?: SplitCompileOptions,
+): Artifact | SplitArtifactBundle | FunctionSplitBundle;
 export function compileFileSplit(
   codeFile: PathLike, compilerOptions: SplitCompileOptions = {},
-): SplitArtifactBundle {
+): Artifact | SplitArtifactBundle | FunctionSplitBundle {
   const { code, options } = readSourceWithResolver(codeFile, compilerOptions);
   return compileStringSplit(code, { ...options, ...compilerOptions });
 }

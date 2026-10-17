@@ -215,7 +215,7 @@ export function assignPhysicalReturnIndices(
   // own `__internal__externalReturnOutputIdx*` coordinate. Planned coordinates can overlap (a shared participant's
   // owner and its alias can both plan one slot), and when a band sends the packer back to the plans, the later
   // family would land on the earlier one's output, where the earlier return then overwrites it.
-  const used = new Set<number>(assigned.values());
+  const used = new Set<number>([...assigned.values(), ...(packOptions?.reservedIndices ?? [])]);
   const claim = (desired: number, width: number): number => {
     let index = Math.max(0, desired);
     const overlaps = (candidate: number): boolean => {

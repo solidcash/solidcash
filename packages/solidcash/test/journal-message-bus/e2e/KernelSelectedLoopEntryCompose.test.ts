@@ -28,8 +28,10 @@ describe('kernel selected loop entries beside dynamic chunks', () => {
     const base = new Contract(artifact, [], { provider });
     const seeded = await setupStatefulUtxos(provider, base, artifact.stateLayout!, { archive: prior }, {
       saltContract: true,
+      // Chunk covenants bind the master's lock: seed them for the category-pinned master.
       extraOutputs: (categoryId) => splitValueIntoChunks(prior).map((chunk, index) => ({
-        address: getDynamicChunkAddress(base, categoryId, 'archive', 'bytes'), satoshis: 10_000n,
+        address: getDynamicChunkAddress(base.withCategory(hexToBin(categoryId)), categoryId, 'archive', 'bytes'),
+        satoshis: 10_000n,
         token: { amount: 0n, nft: {
           capability: 'mutable', commitment: buildChunkCommitment(index, chunk),
         } },

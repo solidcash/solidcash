@@ -6,6 +6,9 @@ import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { calculateDust } from '../utils.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { sameIndexScidIdentityInputIndices } from './same-index-scid.js';
+import { assignPhysicalReturnIndices } from './physical-return-layout.js';
+import { parseExternalCallReturnCoordinate } from './value-chunk-geometry.js';
 
 export interface CreateBuildSessionPreludeHost {
   readonly allInputs: readonly UnlockableUtxo[];
@@ -62,6 +65,22 @@ export function createBuildSessionPrelude(
     // compiler's 1,200-satoshi event-slot ceiling. Derive the floor from the serialized output
     // rather than assuming every return channel has the same width.
     output.amount = BigInt(Math.max(Number(output.amount), calculateDust(output)));
+    const reservedIdentities = sameIndexScidIdentityInputIndices(host.allInputs);
+    if (reservedIdentities.size > 0) {
+      const coordinate = parseExternalCallReturnCoordinate(identity);
+      const assigned = coordinate === undefined ? undefined : assignPhysicalReturnIndices(
+        host.externalCallUtxoGroups,
+        (category) => host.allInputs.findIndex((input) => input.token?.category.toLowerCase() === category.toLowerCase()
+          && input.token.nft?.capability === 'minting'),
+        -1, { reservedIndices: reservedIdentities },
+      ).get(coordinate.groupIndex);
+      // Append the whole assigned return family after its input-bearing reservations. Merely moving the
+      // witness leaves the early materializer on the old coordinate, before later tail repair can run.
+      const appendAt = assigned === undefined ? builder.outputs.length : assigned + coordinate!.part;
+      while (builder.outputs.length < appendAt || reservedIdentities.has(builder.outputs.length)) {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+      }
+    }
     builder.addOutput(output);
     returnOutputRefs.set(identity, output);
   };

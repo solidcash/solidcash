@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { encodeInt } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { VersionError } from '../src/index.js';
@@ -27,6 +27,38 @@ describe('date literals', () => {
       if (previous === undefined) delete process.env.TZ;
       else process.env.TZ = previous;
     }
+  });
+});
+
+describe('warningListener', () => {
+  const SOURCE = `contract C() {
+    fallback() external {
+      require(tx.version >= 1);
+    }
+  }`;
+
+  it('delivers a compiler warning to warningListener instead of the console', () => {
+    const warnings: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      compileString(SOURCE, {
+        warningListener: (warning) => { warnings.push(warning.message); },
+      });
+    } finally {
+      log.mockRestore();
+    }
+
+    expect(warnings.some((message) => message.includes('fallback() is a Solidity compatibility feature'))).toBe(true);
+    expect(log.mock.calls.some((call) => String(call[0]).includes('Warning:'))).toBe(false);
+  });
+
+  it('suppressWarnings discards warnings, including for a listener on the same compile', () => {
+    const warnings: string[] = [];
+    compileString(SOURCE, {
+      suppressWarnings: true,
+      warningListener: (warning) => { warnings.push(warning.message); },
+    });
+    expect(warnings).toEqual([]);
   });
 });
 

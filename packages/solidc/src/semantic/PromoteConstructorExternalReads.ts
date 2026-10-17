@@ -14,6 +14,7 @@ import {
 } from '../ast/AST.js';
 import { AddressType, type Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 /**
  * A Solidity constructor can read a value from another contract - `token0 = IERC20(pool.token0())`. BCH has no
@@ -95,7 +96,7 @@ export default class PromoteConstructorExternalReads extends AstTraversal {
     }
     if (this.promoted.length > 0) {
       const list = this.promoted.map((p) => `${p.param} = ${p.read}()`).join(', ');
-      console.warn(`Warning: constructor external read(s) hoisted to deploy inputs (${list}). BCH has no `
+      emitCompilerWarning(`Warning: constructor external read(s) hoisted to deploy inputs (${list}). BCH has no `
         + 'on-chain constructor; supply the resolved address(es) at deploy (read them off-chain from the '
         + 'target contract, or use the SDK resolveDeployReads helper). See docs/deploy-external-reads.md.');
     }

@@ -200,7 +200,8 @@ describe('Low-Level Address Call (.call and .staticcall as address members)', ()
       // Build a transaction with .withCall()
       // The payload must be the target function's selector - the caller's
       // covenant verifies the target's unlocking bytecode starts with it.
-      const targetAddress = hexToBin('0000000000000000000000000000000000000000');
+      // The co-spent callee must sit at the call's target lock.
+      const targetAddress = targetSc.inner.lockingBytecode;
       const setScoreAbi = targetArt.abi.find((f: any) => f.name === 'setScore')!;
       const payload = hexToBin(setScoreAbi.selector!);
 

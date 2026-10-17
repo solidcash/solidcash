@@ -16,8 +16,9 @@
  * `generate.browser.js` (the package's `browser` field) and refuses instead.
  */
 
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  isMultiDataNftLayout, parseType, type Artifact, type ArtifactMap, type StateLayout, type StateVariableInfo,
+  hasDataNftIndexTags, parseType, type Artifact, type ArtifactMap, type StateLayout, type StateVariableInfo,
   type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { FramedProxyDeployError } from './errors.js';
@@ -116,7 +117,7 @@ function reachableStructs(
  * The generated proxy source: the implementation's fields in coordinate order, the struct definitions they
  * reference, and the fallback that forwards to the address the `implementation` field holds.
  */
-export function generateProxySource(implementationArtifact: Artifact): string {
+export function generateProxySource(implementationArtifact: Artifact, hopGuard?: Uint8Array): string {
   const layout = implementationArtifact.stateLayout;
   if (layout === undefined) {
     throw new FramedProxyDeployError(
@@ -180,10 +181,18 @@ export function generateProxySource(implementationArtifact: Artifact): string {
   // the pin is never emitted. The void form still binds the delegated result — the frame keeps a call record for it
   // — and consumes the binding with a size test so nothing is left unused.
   const takesValue = takesDelegatedValue(implementationArtifact) ? ' payable' : '';
+  // A hop publishes the proxy's genesis uninitialized and runs `initialize` as a separate root call, so until that
+  // hop confirms only the deployer's own lock may enter the proxy (audit SDKFRAMED-2). The implementation's
+  // `initialized` field is the flag both the hop and the default genesis leave set, so the guard is emitted only
+  // when that field exists and a hop guard lock was supplied.
+  const hopGuardLine = hopGuard !== undefined
+    && layout.variables.some((variable) => variable.name === 'initialized')
+    ? `if (this.initialized == 0) require(msg.sender == address(hex"${binToHex(hopGuard)}"));`
+    : '';
   lines.push(carriesDelegateReturn(implementationArtifact)
-    ? `  fallback(bytes input) external${takesValue} returns (bytes) { (bool ok, bytes returned) = `
+    ? `  fallback(bytes input) external${takesValue} returns (bytes) { ${hopGuardLine} (bool ok, bytes returned) = `
       + `this.${IMPLEMENTATION_FIELD}.delegatecall(input); require(ok); return returned; }`
-    : `  fallback(bytes input) external${takesValue} { (bool ok, bytes returned) = `
+    : `  fallback(bytes input) external${takesValue} { ${hopGuardLine} (bool ok, bytes returned) = `
       + `this.${IMPLEMENTATION_FIELD}.delegatecall(input); require(ok); require(returned.length >= 0); }`);
   lines.push('}');
   return lines.join('\n');
@@ -241,10 +250,10 @@ export function readLayoutAgreement(implementationArtifact: Artifact, proxyArtif
     };
   }
   const own = proxyFields.slice(implementationFields.length);
-  // A layout with more than one record leads every commitment with the index it belongs to; a single-record one
-  // does not. The writer is the implementation's own frame, and the reader is whoever holds the proxy's layout, so
+  // Multi-record layouts and explicitly tagged singleton layouts lead commitments with their record index.
+  // The writer is the implementation's own frame, and the reader is whoever holds the proxy's layout, so
   // the two have to agree on that leading field or the write lands on a commitment the proxy cannot place.
-  if (isMultiDataNftLayout(implementation) !== isMultiDataNftLayout(proxy)) {
+  if (hasDataNftIndexTags(implementation) !== hasDataNftIndexTags(proxy)) {
     return {
       ok: false,
       reason: `the implementation "${implementationArtifact.contractName}" declares `
@@ -303,7 +312,7 @@ function requireMirroredLayout(implementation: Artifact, generated: Artifact): v
  */
 export type ProxySourceCompiler = (
   source: string,
-  options: { composition: 'framed'; commitmentLimit: number },
+  options: { composition: 'framed'; commitmentLimit: number; tagSingletonDataNfts?: boolean },
 ) => ArtifactMap;
 
 /**
@@ -313,14 +322,16 @@ export type ProxySourceCompiler = (
  * fields, so `requireSharedLayout` holds by construction.
  */
 export function compileProxyArtifact(
-  implementationArtifact: Artifact, compile: ProxySourceCompiler,
+  implementationArtifact: Artifact, compile: ProxySourceCompiler, hopGuard?: Uint8Array,
 ): Artifact {
-  const source = generateProxySource(implementationArtifact);
+  const source = generateProxySource(implementationArtifact, hopGuard);
   const layout = implementationArtifact.stateLayout!;
   const artifacts = compile(source, {
     composition: 'framed',
     // The record geometry the implementation was compiled with, so the same fields land in the same data NFTs.
     commitmentLimit: layout.commitmentLimit,
+    ...((layout.taggedDataNfts === true || implementationArtifact.compiler.options?.tagSingletonDataNfts === true)
+      && { tagSingletonDataNfts: true }),
   });
   const generated = artifacts[proxyName(implementationArtifact)];
   if (generated === undefined) {

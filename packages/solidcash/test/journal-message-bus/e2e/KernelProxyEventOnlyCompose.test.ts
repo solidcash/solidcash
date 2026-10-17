@@ -25,7 +25,7 @@ const KERNEL = {
 /**
  * Event-only Solidity implementation behind deployProxy (no user state vars). The compiler injects a public
  * `__messageBusHold` data NFT and an eligible `initialize()` that writes it so compose MessageBusVerifier
- * census matches write+emit geometry (dataNft@1, events@2+). Default SolidCashProxy has no hardcoded
+ * census matches write+emit geometry (dataNft@1, streamed records@2+). Default SolidCashProxy has no hardcoded
  * master+1 data NFT. Dispatch `.send()` and compose+executionArtifact×Probe both settle Ping onto the
  * proxy category.
  */
@@ -52,12 +52,12 @@ describe('kernel proxy event-only under composition', () => {
     expect(implArtifact.stateLayout?.dataNftCount).toBe(1);
     expect(implArtifact.stateLayout?.variables?.some((variable) => variable.name === '__messageBusHold'))
       .toBe(true);
-    expect(implArtifact.delegateArtifact?.messageBus?.route.blockLayout?.slots.find(
-      (slot) => slot.kind === 'dataNft',
-    )?.offset).toBe(1);
-    expect(implArtifact.delegateArtifact?.messageBus?.route.blockLayout?.slots.find(
-      (slot) => slot.kind === 'event',
-    )?.offset).toBe(2);
+    const delegateBus = implArtifact.delegateArtifact?.messageBus;
+    // The top-level emit streams: no event window, Ping settles in the trailing band right after the hold NFT.
+    expect(delegateBus?.handlers.find((handler) => handler.name === 'ping')?.runtimeLoopEvents)
+      .toEqual([expect.objectContaining({ eventSignatures: ['Ping(uint256)'], stream: true })]);
+    expect(delegateBus?.route.blockLayout?.slots.find((slot) => slot.kind === 'dataNft')?.offset).toBe(1);
+    expect(delegateBus?.route.blockLayout?.slots.find((slot) => slot.kind === 'trailing')?.offset).toBe(2);
 
     const deployed = await upgrades.deployProxy(
       getContractFactory(implArtifact, signer), {}, { initializer: false },

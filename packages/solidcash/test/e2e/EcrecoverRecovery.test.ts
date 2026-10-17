@@ -46,6 +46,20 @@ async function deployPair(provider: MockNetworkProvider, salt: Uint8Array, n: nu
   }
 }
 
+// A non-evm loop co-spends the A/M/B triple per iteration: 2-way reads A + B2 (with an SDK-synthesized inert funder
+// in the M slot), width-0 reads A + M + B3. Deploy the three covenant pools (A is shared with the 2-way B2 mode).
+async function deployLoopSet(provider: MockNetworkProvider, salt: Uint8Array, n: number): Promise<void> {
+  for (const role of ['A', 'B2', 'M', 'B3'] as const) {
+    const lock = binToHex(ecrecoverComputeLockingBytecode(salt, role));
+    for (let i = 0; i < n; i++) {
+      await provider.addUtxo(lock, {
+        ...randomUtxo({ satoshis: 100_000n }),
+        token: { category: SIDECAR_CAT, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      });
+    }
+  }
+}
+
 // ecrecoverEvm ALSO co-spends a keccak side-car (over the uncompressed key) per call. In a loop the keccak side-car
 // rides the STATEFUL (forward self-preserving) covenant, so `stateful` selects the loop variant.
 async function deployKeccak(provider: MockNetworkProvider, salt: Uint8Array, n: number, stateful = false): Promise<void> {
@@ -322,7 +336,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
       .send()).rejects.toThrow(NON_TRUTHY_INPUT_0);
   });
 
-  // LOOP: a fixed-bound loop over array-indexed sigs unrolls to N syntactic recovery calls (each its own pair), and
+  // LOOP: a fixed-bound loop over array-indexed sigs unrolls to N syntactic recovery calls (each its own triple), and
   // the loop variable substitution turns h[i] into h[0], h[1], ... which the SDK resolves per array element.
   const LOOP = `
   contract AuthLoop(pubkey owner) {
@@ -342,7 +356,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     const g0 = await goodRecovery('loop-0', w), g1 = await goodRecovery('loop-1', w);  // same signer, two messages
     const contract = new Contract(artifact, [g0.owner], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
-    await deployPair(provider, SHARED_LIBRARY_SALT, 2);   // one A+B pair per iteration
+    await deployLoopSet(provider, SHARED_LIBRARY_SALT, 2);   // one A/M/B triple per iteration
     const tx = await new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(),
         contract.unlock.verify([g0.h, g1.h], [g0.v, g1.v], [g0.r, g1.r], [g0.s, g1.s]))
@@ -352,7 +366,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
   });
 
   // The GENERAL case: a RUNTIME-bound loop (the count is a parameter, not a literal). The SDK co-spends N = the
-  // sig-array length pairs; the contract reads pair k forward at [master+1+2k] per iteration.
+  // sig-array length triples; the contract reads triple k forward at [master+1+3k] per iteration.
   const LOOP_N = `
   contract AuthLoopN(pubkey owner) {
       function verify(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int n) {
@@ -368,7 +382,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     const g = await Promise.all([0, 1, 2].map((k) => goodRecovery('loopn-' + k, w)));  // same signer, 3 messages
     const contract = new Contract(artifact, [g[0].owner], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
-    await deployPair(provider, SHARED_LIBRARY_SALT, 3);   // one A+B pair per iteration
+    await deployLoopSet(provider, SHARED_LIBRARY_SALT, 3);   // one A/M/B triple per iteration
     const tx = await new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(),
         contract.unlock.verify(g.map((x) => x.h), g.map((x) => x.v), g.map((x) => x.r), g.map((x) => x.s), 3n))
@@ -387,7 +401,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     const g = await Promise.all([0, 1, 2, 3].map((k) => goodRecovery('loop4-' + k, w)));
     const contract = new Contract(artifact, [g[0].owner], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 2_000_000n }));
-    await deployPair(provider, SHARED_LIBRARY_SALT, 4);
+    await deployLoopSet(provider, SHARED_LIBRARY_SALT, 4);
     const tx = await new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(),
         contract.unlock.verify(g.map((x) => x.h), g.map((x) => x.v), g.map((x) => x.r), g.map((x) => x.s), 4n))
@@ -484,7 +498,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     const g0 = await goodRecovery('loop-a', w), g1 = await goodRecovery('loop-b', other);  // g1 is a DIFFERENT signer
     const contract = new Contract(artifact, [g0.owner], { provider });  // owner = w, so g1 must fail
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
-    await deployPair(provider, SHARED_LIBRARY_SALT, 2);
+    await deployLoopSet(provider, SHARED_LIBRARY_SALT, 2);
     await expect(new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(),
         contract.unlock.verify([g0.h, g1.h], [g0.v, g1.v], [g0.r, g1.r], [g0.s, g1.s]))

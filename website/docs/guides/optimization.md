@@ -121,7 +121,7 @@ This optimization is considered advanced, as it steps away from the SolidCash ab
 
 ```solidity title="Example SolidCash code"
 contract Example(){
-  function Main(){
+  function Main(bool conditionFunction1, bool conditionFunction2, bool conditionFunction3){
     // logic applying to all if/else branches
     if(conditionFunction1){
        // logic function1

@@ -1295,10 +1295,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       write: ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode | MappingFieldAssignNode,
     ): string => keyExpressions(write).map(expressionShape).join('|');
     const counterLoopWork = (loop: WhileNode | DoWhileNode, logical: string): {
-      counterWrite: boolean; event: boolean; readRequirement: boolean;
+      counterWrite: boolean; event: boolean; readRequirement: boolean; transfer: boolean;
     } => {
       let counterWrite = false;
       let event = false;
+      let transfer = false;
       const containsCounterMappingRead = (candidate: Node): boolean => {
         if (candidate instanceof MappingAccessNode && candidate.keys.some((key) =>
           containsIdentifier(key, logical))) return true;
@@ -1340,6 +1341,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         // Such a site still participates in source-order assembly below, but must not be enrolled in a second
         // counter permutation or reserve its 64 outputs twice.
         if (x instanceof EmitStatementNode && !x.runtimeLoopEvent) event = true;
+        if (x instanceof TransferStatementNode || x instanceof TokenContainerMethodStatementNode) transfer = true;
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
             || key === 'resolvedFunction') continue;
@@ -1349,7 +1351,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       walk(loop.block);
-      return { counterWrite, event, readRequirement };
+      return { counterWrite, event, readRequirement, transfer };
     };
     // Analyze every candidate before mutating the AST. This keeps the lowering transactional: one unsupported
     // loop cannot leak an unused compiler-owned permutation into an otherwise ordinary ABI.
@@ -1359,7 +1361,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     // effect-only loops remain outside this pass until their own typed recipe lowering enrolls them explicitly.
     const counterWorkLoops = [...canonicalLoops].filter(([loop, canonical]) => {
       const work = counterLoopWork(loop, canonical.logical);
-      return work.counterWrite || work.event || work.readRequirement;
+      return work.counterWrite || work.event || work.readRequirement || work.transfer;
     });
     const visibleParameters = node.parameters.filter((parameter) =>
       !parameter.name.startsWith('__internal__'));
@@ -4266,7 +4268,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       if (sourceWhile || postTest) inspectSourceContinues(block);
-      if ((keyed.length === 0 && runtimeEmits.length === 0 && directRuntimeReadRequirements.length === 0)
+      if ((keyed.length === 0 && runtimeEmits.length === 0 && runtimeTransfers.length === 0
+        && directRuntimeReadRequirements.length === 0)
         || !selectionConditionSupported
         || keyed.some((write) => hasObservableEffect(write))
         || conditionalRuntimeEmit
@@ -5352,11 +5355,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           });
         }
       }
-      if (permutationGroups.size === 0 && runtimeEmits.length > 0) {
+      if (permutationGroups.size === 0 && (runtimeEmits.length > 0 || runtimeTransfers.length > 0)) {
         // No physical collection consumes this permutation. It is nevertheless covenant-authenticated below and
-        // is the exact repeat source for the runtime event stream. Keeping an empty collection/write projection
-        // prevents event-only loops from manufacturing a fake mapping resource or a journal cardinality remainder.
-        permutationGroups.set('__event_domain__', {
+        // is the exact repeat source for the runtime event/transfer stream. Keeping an empty collection/write
+        // projection prevents effect-only loops from manufacturing a fake mapping resource or a journal
+        // cardinality remainder.
+        permutationGroups.set('__effect_domain__', {
           collections: [], collectionWrites: [], selectionCondition: undefined, domainOnly: true,
         });
       }
@@ -5453,6 +5457,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const at = <T extends Node>(value: T): T => { value.location = location; return value; };
       const id = (name: string): IdentifierNode => at(new IdentifierNode(name));
       const lit = (value: bigint): IntLiteralNode => at(new IntLiteralNode(value));
+      // A witness length is compared with int256 proof values, so it keeps bigint under evmCompat.
+      const witnessLength = (name: string): UnaryOpNode => {
+        const length = at(new UnaryOpNode(UnaryOperator.SIZE, id(name)));
+        length.compilerLength = true;
+        return length;
+      };
       const binary = (left: ExpressionNode, operator: BinaryOperator, right: ExpressionNode): BinaryOpNode =>
         at(new BinaryOpNode(left, operator, right));
       const proofInt = new IntType(true, 256);
@@ -5893,7 +5903,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       )));
       for (const trace of prefixCountTraces) {
         prelude.push(at(new RequireNode(binary(
-          at(new UnaryOpNode(UnaryOperator.SIZE, id(trace.witnessParam))),
+          witnessLength(trace.witnessParam),
           BinaryOperator.EQ,
           binary(iterationCount(), BinaryOperator.PLUS, lit(1n)),
         ), 'vmap counter prefix-count trace length mismatch')));
@@ -5907,21 +5917,21 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             && write instanceof MappingAssignNode && valueTracePlans.get(write) === trace));
         for (const trace of traceParams) {
           prelude.push(at(new RequireNode(binary(
-            at(new UnaryOpNode(UnaryOperator.SIZE, id(trace.witnessParam))),
+            witnessLength(trace.witnessParam),
             BinaryOperator.EQ,
             iterationCount(),
           ), 'vmap counter value trace length mismatch')));
         }
         prelude.push(at(new RequireNode(binary(
-          at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),
+          witnessLength(group.hidden),
           group.expandedSelectionCondition ? BinaryOperator.LE : BinaryOperator.EQ,
           iterationCount(),
         ), 'vmap counter permutation length mismatch')));
         if (group.sourceIndexParam) {
           prelude.push(at(new RequireNode(binary(
-            at(new UnaryOpNode(UnaryOperator.SIZE, id(group.sourceIndexParam))),
+            witnessLength(group.sourceIndexParam),
             BinaryOperator.EQ,
-            at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),
+            witnessLength(group.hidden),
           ), 'vmap counter source index length mismatch')));
         }
         if (group.domainOnly) continue;
@@ -5992,7 +6002,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               BinaryOperator.AND,
               binary(
                 sourceIndexRead(group), BinaryOperator.LT,
-                at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),
+                witnessLength(group.hidden),
               ),
             ), 'vmap counter source index out of range')),
             at(new RequireNode(binary(
@@ -6098,7 +6108,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         canonical.parent.statements!.splice(insertionIndex + 1, 0, ...selectedGroups.map((group) =>
           at(new RequireNode(binary(
             id(group.settlementCursor), BinaryOperator.EQ,
-            at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),
+            witnessLength(group.hidden),
           ), 'vmap counter selection length mismatch'))));
       }
       for (const group of groups) {

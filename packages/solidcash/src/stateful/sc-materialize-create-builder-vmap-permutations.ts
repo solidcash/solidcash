@@ -65,8 +65,10 @@ export async function materializeCreateBuilderVmapPermutations(
     if (Array.isArray(nextArgs[hiddenIdx])) continue;
     const loopInfo = abiFunction?.sortedUpsertLoopInfo?.find((info) => info.varyingArrayParam === input.name);
     const eventLoop = abiFunction?.runtimeLoopEvents?.find((loop) => loop.permutationParam === input.name);
-    const domainInfo = loopInfo ?? (eventLoop?.iterationBound
-      ? { iterationBound: eventLoop.iterationBound } as SortedUpsertLoopAbi : undefined);
+    const transferLoop = abiFunction?.runtimeLoopTransfers?.find((loop) => loop.permutationParam === input.name);
+    const runtimeBound = eventLoop?.iterationBound ?? transferLoop?.iterationBound;
+    const domainInfo = loopInfo ?? (runtimeBound
+      ? { iterationBound: runtimeBound } as SortedUpsertLoopAbi : undefined);
     const countIdx = abiFunction!.inputs.findIndex((p) => p.name === permutationSpec.countName);
     if (countIdx < 0 && !domainInfo?.iterationBound) {
       throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument`);

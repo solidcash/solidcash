@@ -20,7 +20,7 @@ import {
   bytesToHex,
   computeCollectionHash,
   dynamicChunkSignature,
-  isMultiDataNftLayout,
+  hasDataNftIndexTags,
   parsePushdataCommitment,
   scriptToBytecode,
   type StateLayout,
@@ -172,6 +172,15 @@ export interface FramedDeploymentSet {
    * published collection derives appears only in `collectionNodes`.
    */
   readonly nodesByCollection: ReadonlyMap<string, readonly Utxo[]>;
+  /**
+   * The master pool partitioned by locking bytecode.
+   *
+   * The key is the locking-bytecode hex. Masters that publish no lock share the empty-string group, so a
+   * monolith whose UTXOs are untagged, and a monolith whose masters share one lock, are one group. A v2
+   * deployment has one group per entry lock. The commitment is not read: a minting NFT with a non-empty
+   * commitment is still a master and still sits in its lock's group.
+   */
+  readonly mastersByLock: ReadonlyMap<string, readonly Utxo[]>;
 }
 
 /** The lock hex of every chunkable variable's chunk covenant, keyed for classifying a deployment's UTXOs. */
@@ -217,15 +226,17 @@ function nftIndexOf(commitment: string, layout: StateLayout): number | undefined
  *
  * A minting NFT is a master, a mutable NFT with an empty commitment is a validator, a mutable NFT at the data-NFT
  * covenant whose commitment parses as the layout's pushdata encoding is a record at that data-NFT index, and any
- * other mutable NFT is a collection node. A UTXO that carries no lock is judged by its commitment alone. Records
- * come back in data-NFT order (the tag order a multi-NFT layout carries, otherwise by outpoint), so index `i` is
- * genuinely register `i`.
+ * other mutable NFT is a collection node. A UTXO that carries no lock is judged by its commitment alone, except
+ * that masters are also grouped by lock into `mastersByLock` (an absent lock shares one group). A minting NFT
+ * with a non-empty commitment is still a master. Records come back in data-NFT order (verified index tags
+ * when the layout publishes them, otherwise by outpoint), so index `i` is genuinely register `i`.
  */
 export function classifyFramedDeployment(
   utxos: readonly Utxo[],
   layout: StateLayout,
 ): FramedDeploymentSet {
   const masters: Utxo[] = [];
+  const mastersByLock = new Map<string, Utxo[]>();
   const validators: Utxo[] = [];
   const chunks: Utxo[] = [];
   const collectionNodes: Utxo[] = [];
@@ -262,6 +273,12 @@ export function classifyFramedDeployment(
     if (nft === undefined) continue;
     if (nft.capability === 'minting') {
       masters.push(utxo);
+      // The group is the lock. A missing lock shares the empty key; the commitment is not a key.
+      const masterLock = (utxo as { readonly lockingBytecode?: Uint8Array }).lockingBytecode;
+      const key = masterLock === undefined ? '' : bytesToHex(masterLock);
+      const group = mastersByLock.get(key) ?? [];
+      group.push(utxo);
+      mastersByLock.set(key, group);
       continue;
     }
     if (nft.capability !== 'mutable') continue;
@@ -292,15 +309,17 @@ export function classifyFramedDeployment(
     }
   }
   masters.sort((left, right) => left.vout - right.vout);
+  for (const group of mastersByLock.values()) group.sort((left, right) => left.vout - right.vout);
   validators.sort((left, right) => left.vout - right.vout);
   chunks.sort((left, right) => left.vout - right.vout);
   collectionNodes.sort((left, right) => left.vout - right.vout);
   for (const nodes of nodesByCollection.values()) nodes.sort((left, right) => left.vout - right.vout);
-  tagged.sort((left, right) => (isMultiDataNftLayout(layout)
+  tagged.sort((left, right) => (hasDataNftIndexTags(layout)
     ? left.nftIndex - right.nftIndex
     : left.utxo.vout - right.utxo.vout));
   return {
-    masters, validators, chunks, records: tagged.map((entry) => entry.utxo), collectionNodes, nodesByCollection,
+    masters, mastersByLock, validators, chunks, records: tagged.map((entry) => entry.utxo),
+    collectionNodes, nodesByCollection,
   };
 }
 

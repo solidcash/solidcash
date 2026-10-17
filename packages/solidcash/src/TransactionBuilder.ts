@@ -26,10 +26,10 @@ import { PLACEHOLDER_P2PKH_UNLOCKING_SIZE } from './constants.js';
 import type { NetworkProvider } from './network/index.js';
 import { traceBroadcast } from './tx-trace.js';
 import {
-  hash256, scriptToBytecode, buildSidecarRedeem, sidecarLockingBytecode, resolveLibraryBlob,
+  blockOracleReadUnlocking, hash256, scriptToBytecode, buildSidecarRedeem, sidecarLockingBytecode, resolveLibraryBlob,
   SHARED_LIBRARY_SALT, type ExternalLibraryAbi,
   buildKeccakComputeRedeem, keccakComputeLockingBytecode, KECCAK256_COMPUTE_COVENANT_HASH,
-  ecrecoverComputeLockingBytecode,
+  ecrecoverComputeLockingBytecode, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
 } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
@@ -37,8 +37,9 @@ import {
   learnKeccakPreimages, OP_INPUTBYTECODE, leSmallNumber,
 } from './keccak/keccakComputeSidecar.js';
 import {
-  buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, computeEcrecoverWitness,
-  extractEcrecoverArgBlobsFromTrace, probeEcrecoverSplit,
+  buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3,
+  computeEcrecoverWitness,
+  extractEcrecoverArgBlobsFromTrace, probeEcrecoverSplit, probeEcrecoverSplit3,
 } from './ecrecover/ecrecoverComputeSidecar.js';
 import type { EcrecoverWitness } from './ecrecover/ecrecoverRecovery.js';
 import {
@@ -49,7 +50,6 @@ import {
   validateInput,
   validateOutput,
   validateChangeLocks,
-  getOutputSize,
   calculateDust,
   formatLockingBytecode,
 } from './utils.js';
@@ -92,6 +92,29 @@ let keccakProbeVm: ReturnType<typeof createVirtualMachineBch2026> | undefined;
  */
 /** Budget/standardness cap on runtime keccak side-cars per transaction (matches the pure dynamic-loop path). */
 const MAX_KECCAK_LOOP_ITERS = 64;
+
+// A plain balanced funder for the M slot of a normal (2-way) recovery inside a non-evm loop. It carries no token
+// and recreates at the same P2SH32(OP_TRUE) lock, so it is input/output-neutral; the A and B2 covenants on either
+// side self-preserve their own categories. Only the mock/regtest providers can register this synthetic UTXO.
+const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
+const ecrecoverLoopFunderUnlocker: Unlocker = {
+  generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
+  generateUnlockingBytecode: () => new Uint8Array([0x01, 0x51]),
+};
+const ecrecoverLoopFunder = async (
+  provider: NetworkProvider & { addUtxo?: (address: string, utxo: Utxo) => Promise<Utxo> },
+  seed: number,
+): Promise<{ utxo: UnlockableUtxo; recreate: Output }> => {
+  const utxo: UnlockableUtxo = {
+    txid: (0xf0000 + seed).toString(16).padStart(64, '0'), vout: 0, satoshis: 10000n,
+    unlocker: ecrecoverLoopFunderUnlocker,
+  };
+  // Mock providers track every input's outpoint; register the synthetic funder so the final preflight can find it.
+  if (provider.addUtxo !== undefined) {
+    await provider.addUtxo.call(provider, binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), utxo);
+  }
+  return { utxo, recreate: { to: DUMMY_FUNDER_LOCKING_BYTECODE, amount: 10000n } };
+};
 
 function describeUnlocker(unlocker: Unlocker): string {
   if (isContractUnlocker(unlocker)) {
@@ -374,9 +397,10 @@ export class TransactionBuilder {
         ecrecoverEvmFlags?: readonly boolean[]; ecrecoverLoopReads?: boolean };
       if (!abiFn.ecrecoverCompute) continue;
       const salt = input.token?.category ? hexToBin(input.token.category) : SHARED_LIBRARY_SALT;
-      // Dynamic loop: one recovery PAIR per iteration, read forward from [master+1+2k]. Co-spend N (= sig-array length).
+      // Dynamic loop: one recovery TRIPLE per iteration, read forward from [master+1+3k]. Co-spend N (= sig-array
+      // length) triples.
       // Loop side-cars are ALWAYS shared-salt: the per-iteration integrity check is an OP_UTXOBYTECODE == baked shared
-      // lock (branding is not needed for soundness - the argBlob bind + A->B hash chain secures the recovered value).
+      // lock (branding is not needed for soundness - the argBlob bind + A->M->B hash chain secures the recovered value).
       if (abiFn.ecrecoverLoopReads) { await this.addStatelessEcrecoverLoopCoSpends(input, SHARED_LIBRARY_SALT); continue; }
       const unlocker = input.unlocker as unknown as {
         abiFunction: { inputs: readonly { name: string }[] }; params: unknown[];
@@ -528,15 +552,17 @@ export class TransactionBuilder {
   }
 
   /**
-   * Dynamic (runtime-bound) ecrecover loop `for (i<n) ecrecoverPubKey(h[i],..)`: co-spend one recovery PAIR per
-   * iteration in the forward region [master+1+2k]. N = the sig-array length (the loop iterates the arrays); the
-   * contract reads pair k at [master+1+2k]/[master+2+2k] (self-preserving) and BINDS its argBlob == (h[k],v[k],r[k],
-   * s[k]), so extra/missing pairs fail closed. Splices the pairs + recreations right after the master (input idx ==
-   * output idx). Mirrors addStatelessKeccakLoopCoSpends but for a 2-side-car pair per iteration.
+   * Dynamic (runtime-bound) ecrecover loop `for (i<n) ecrecoverPubKey(h[i],..)`: co-spend one recovery TRIPLE per
+   * iteration in the forward region [master+1+3k]. N = the sig-array length (the loop iterates the arrays); the
+   * contract reads triple k at [master+1+3k]/[master+2+3k]/[master+3+3k] (self-preserving) and BINDS its argBlob ==
+   * (h[k],v[k],r[k],s[k]), so extra/missing triples fail closed. Non-evm loops co-spend A/M/B: a 2-way recovery fills
+   * M with an inert funder and reads B2 (A two inputs back), a width-0 recovery fills M with the middle covenant and
+   * reads B3 (M one input back). Evm loops keep A/B/K (A=+1, B=+2, K=+3). Splices the side-cars + recreations right
+   * after the master (input idx == output idx).
    */
   private async addStatelessEcrecoverLoopCoSpends(input: UnlockableUtxo, salt: Uint8Array): Promise<void> {
     const contractIdx = this.inputs.indexOf(input);
-    const base = contractIdx + 1; // absolute-forward: pairs/recreations at [master+1 ..]
+    const base = contractIdx + 1; // absolute-forward: triples/recreations at [master+1 ..]
     if (base > this.outputs.length) {
       throw new Error('stateless dynamic ecrecover loop needs the spent contract near the front of the tx (its input '
         + `index + 1 must be <= the output count; got index ${contractIdx}, ${this.outputs.length} outputs).`);
@@ -547,7 +573,7 @@ export class TransactionBuilder {
       params: unknown[];
     };
     // ecrecoverEvm in the loop projects each recovered key to its EVM address, so each iteration ALSO co-spends a
-    // keccak side-car over the uncompressed key. Layout is then stride 3: [A, B, K] per iteration (else stride 2).
+    // keccak side-car over the uncompressed key. Layout is stride 3 for both: evm [A, B, K], non-evm [A, M, B2/B3].
     const isEvm = unlocker.abiFunction.ecrecoverEvmFlags?.[0] === true;
     // The single syntactic loop call records its args as "h[]" (array-indexed by the loop var); read those arrays.
     const [hp, vp, rp, sp] = (unlocker.abiFunction.ecrecoverArgParams ?? [[]])[0] ?? [];
@@ -561,21 +587,33 @@ export class TransactionBuilder {
     };
     const hs = arrOf(hp), vs = arrOf(vp), rs = arrOf(rp), ss = arrOf(sp);
     const N = hs.length;
-    const [lockA, lockB] = [ecrecoverComputeLockingBytecode(salt, 'A'), ecrecoverComputeLockingBytecode(salt, 'B')];
+    const lockA = ecrecoverComputeLockingBytecode(salt, 'A');
+    // Evm keeps the stateless 2-way B (A immediately before); non-evm 2-way reads B2 (A two inputs back, funder M in
+    // between) and width-0 reads B3 (M one input back).
+    const lockB = ecrecoverComputeLockingBytecode(salt, isEvm ? 'B' : 'B2');
+    const lockM = ecrecoverComputeLockingBytecode(salt, 'M');
+    const lockB3 = ecrecoverComputeLockingBytecode(salt, 'B3');
     // Loop keccak side-cars ride the STATEFUL covenant (forward self-preserving), at the shared salt (matches the
     // baked KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK the contract checks via OP_UTXOBYTECODE).
     const lockK = keccakComputeLockingBytecode(salt, true);
-    const [utxosA, utxosB, utxosK] = await Promise.all([
+    const [utxosA, utxosB, utxosM, utxosB3, utxosK] = await Promise.all([
       this.provider.getUtxosForLockingBytecode(lockA), this.provider.getUtxosForLockingBytecode(lockB),
+      isEvm ? Promise.resolve([] as Utxo[]) : this.provider.getUtxosForLockingBytecode(lockM),
+      isEvm ? Promise.resolve([] as Utxo[]) : this.provider.getUtxosForLockingBytecode(lockB3),
       isEvm ? this.provider.getUtxosForLockingBytecode(lockK) : Promise.resolve([] as Utxo[]),
     ]);
     const spent = (u: Utxo): boolean => this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout);
     const freeA = utxosA.filter((u) => !spent(u)), freeB = utxosB.filter((u) => !spent(u));
+    const freeM = utxosM.filter((u) => !spent(u)), freeB3 = utxosB3.filter((u) => !spent(u));
     const freeK = utxosK.filter((u) => !spent(u) && u.token?.nft?.capability === 'mutable');
-    if (freeA.length < N || freeB.length < N || (isEvm && freeK.length < N)) {
-      throw new Error(`dynamic ecrecover loop needs ${N} A + ${N} B${isEvm ? ` + ${N} keccak` : ''} side-car UTXOs; `
-        + `found ${freeA.length} A + ${freeB.length} B${isEvm ? ` + ${freeK.length} keccak` : ''}. Deploy one `
-        + `${isEvm ? 'A+B+keccak triple' : 'A+B pair'} per loop iteration.`);
+    if (freeA.length < N || freeB.length < N || (!isEvm && (freeM.length < N || freeB3.length < N))
+      || (isEvm && freeK.length < N)) {
+      const nonEvm = isEvm ? '' : ` + ${N} M + ${N} B3`;
+      const foundNonEvm = isEvm ? '' : ` + ${freeM.length} M + ${freeB3.length} B3`;
+      throw new Error(`dynamic ecrecover loop needs ${N} A + ${N} ${isEvm ? 'B' : 'B2'}${nonEvm}`
+        + `${isEvm ? ` + ${N} keccak` : ''} side-car UTXOs; found ${freeA.length} A + ${freeB.length} `
+        + `${isEvm ? 'B' : 'B2'}${foundNonEvm}${isEvm ? ` + ${freeK.length} keccak` : ''}. Deploy one `
+        + `${isEvm ? 'A+B+keccak triple' : 'A/B2/M/B3 set'} per loop iteration.`);
     }
     const sideCars: UnlockableUtxo[] = [];
     const recreates: Output[] = [];
@@ -583,20 +621,47 @@ export class TransactionBuilder {
       const hash = hs[k] as Uint8Array, r = rs[k] as Uint8Array, s = ss[k] as Uint8Array;
       const v = typeof vs[k] === 'bigint' ? Number(vs[k]) : Number(vs[k]);
       const wit = computeEcrecoverWitness(hash, v, r, s);
-      const chunkA = probeEcrecoverSplit(wit, salt, freeA[k], freeB[k]);
-      const {
-        unlockerA, recreateA, unlockerB, recreateB,
-      } = buildEcrecoverComputeSidecars(wit, chunkA, salt, freeA[k], freeB[k]);
-      sideCars.push({ ...freeA[k], unlocker: unlockerA }, { ...freeB[k], unlocker: unlockerB });
-      recreates.push(recreateA, recreateB);
       if (isEvm) {
+        const chunkA = probeEcrecoverSplit(wit, salt, freeA[k], freeB[k]);
+        const {
+          unlockerA, recreateA, unlockerB, recreateB,
+        } = buildEcrecoverComputeSidecars(wit, chunkA, salt, freeA[k], freeB[k]);
+        sideCars.push({ ...freeA[k], unlocker: unlockerA }, { ...freeB[k], unlocker: unlockerB });
+        recreates.push(recreateA, recreateB);
         // K keccak side-car over the 64-byte uncompressed key; the contract binds compress(preimage) == recovered Q.
         const { unlocker: unlockerK, recreate: recreateK } = buildKeccakComputeSidecar(
           wit.uncompressedPubkey, salt, freeK[k], true,
         );
         sideCars.push({ ...freeK[k], unlocker: unlockerK });
         recreates.push(recreateK);
+        continue;
       }
+      // Non-evm loop: A/M/B triple. Try the 2-way split first (A + inert M funder + B2); a width-0 signature has an
+      // empty 2-way window, so fall back to the 3-way A/M/B3 split (the same fallback the straight-line path uses).
+      let chunkA: number;
+      try {
+        chunkA = probeEcrecoverSplit(wit, salt, freeA[k], freeB[k]);
+      } catch {
+        const split = probeEcrecoverSplit3(wit, salt, freeA[k], freeM[k], freeB3[k]);
+        const built = buildEcrecoverComputeSidecars3(
+          wit, split.chunkA, split.chunkM, salt, freeA[k], freeM[k], freeB3[k],
+        );
+        sideCars.push(
+          { ...freeA[k], unlocker: built.unlockerA }, { ...freeM[k], unlocker: built.unlockerM },
+          { ...freeB3[k], unlocker: built.unlockerB },
+        );
+        recreates.push(built.recreateA, built.recreateM, built.recreateB);
+        continue;
+      }
+      const {
+        unlockerA, recreateA, unlockerB, recreateB,
+      } = buildEcrecoverComputeSidecars(wit, chunkA, salt, freeA[k], freeB[k], undefined, 'B2');
+      const funderProvider = this.provider as NetworkProvider & {
+        addUtxo?: (address: string, utxo: Utxo) => Promise<Utxo>;
+      };
+      const funder = await ecrecoverLoopFunder(funderProvider, contractIdx * 4096 + k);
+      sideCars.push({ ...freeA[k], unlocker: unlockerA }, funder.utxo, { ...freeB[k], unlocker: unlockerB });
+      recreates.push(recreateA, funder.recreate, recreateB);
     }
     this.inputs.splice(base, 0, ...sideCars);
     this.outputs.splice(base, 0, ...recreates);
@@ -950,6 +1015,47 @@ export class TransactionBuilder {
    * TransactionBuilder append. A blockhash reader reaching this builder means the call was NOT built through
    * StatefulContract, so fail loudly. Auto-invoked by send() before sidecars.
    */
+  /**
+   * Co-spend the block-info oracle and recreate it at the same index. A stateful block-layout slot already
+   * places it; this path is the stateless reader, whose script learns the index from the spent outputs.
+   */
+  async addRequiredBlockOracleCoSpends(): Promise<this> {
+    for (const input of [...this.inputs]) {
+      if (!isUnlockableUtxo(input) || !isContractUnlocker(input.unlocker)) continue;
+      const abi = input.unlocker.abiFunction;
+      if (abi.usesBlockOracle !== true) continue;
+      if (abi.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')) continue;
+      const lock = input.unlocker.contract.blockOracleLock;
+      if (lock === undefined) {
+        throw new Error(`${input.unlocker.contract.name} reads the block oracle, and no oracle lock was provided`);
+      }
+      if (this.inputs.some((spent) => isUnlockableUtxo(spent)
+        && bytesEqual(spent.unlocker.generateLockingBytecode(), lock))) continue;
+      const utxos = await this.provider.getUtxosForLockingBytecode(lock);
+      const oracle = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+      if (oracle?.token?.category === undefined) {
+        throw new Error('block oracle UTXO is not available');
+      }
+      const category = hexToBin(oracle.token.category);
+      while (this.outputs.length < this.inputs.length) {
+        this.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+      }
+      // The covenant checks output[inputIndex]. Insert the recreate there when outputs already run ahead.
+      const index = this.inputs.length;
+      this.addInput(oracle, {
+        generateLockingBytecode: () => lock,
+        generateUnlockingBytecode: () => blockOracleReadUnlocking(category),
+      });
+      this.addOutput({ to: lock, amount: oracle.satoshis, token: oracle.token });
+      const placed = this.outputs.length - 1;
+      if (placed !== index) {
+        const recreate = this.outputs.pop();
+        if (recreate !== undefined) this.outputs.splice(index, 0, recreate);
+      }
+    }
+    return this;
+  }
+
   async addRequiredBlockhashCoSpends(): Promise<this> {
     // blockhash(n) brands its (n->hash) oracle to the contract's OWN category (master-bound, stateful), so the
     // co-spend is resolved by StatefulContract via the blockhashOracle block-layout slot. A blockhash reader in
@@ -995,19 +1101,26 @@ export class TransactionBuilder {
       throw new Error(`Transaction does not have enough funds to cover the transaction fee rate of ${changeOutputOptions.feeRate} even without adding a change output. Current surplus: ${tentativeSurplus}, current fee: ${tentativeFee}, current change amount: ${tentativeChangeAmount}`);
     }
 
-    const changeOutputSize = getOutputSize({ to: changeOutputOptions.to, amount: tentativeSurplus });
-    const transactionSize = tentativeTransactionSize + BigInt(changeOutputSize);
-    const calculatedFee = BigInt(Math.ceil(changeOutputOptions.feeRate * Number(transactionSize)));
+    const changeOutput = { to: changeOutputOptions.to, amount: tentativeChangeAmount };
 
-    const changeAmount = tentativeSurplus - calculatedFee;
-    const changeOutput = { to: changeOutputOptions.to, amount: changeAmount };
-
-    if (changeAmount < calculateDust(changeOutput)) {
+    if (changeOutput.amount < calculateDust(changeOutput)) {
       this.changeLocks.BCH = true;
       return this;
     }
 
     this.addOutput(changeOutput);
+    try {
+      // A compiler-route density reserve depends on the complete input/output population. Measure with the
+      // change output present: adding only its serialized size misses growth in those unlocking scripts
+      // (and output-count varint boundaries). Satoshi amounts themselves always occupy eight bytes.
+      const transactionSize = this.getTransactionSize();
+      const calculatedFee = BigInt(Math.ceil(changeOutputOptions.feeRate * Number(transactionSize)));
+      changeOutput.amount = tentativeSurplus - calculatedFee;
+      if (changeOutput.amount < calculateDust(changeOutput)) this.outputs.pop();
+    } catch (error) {
+      this.outputs.pop();
+      throw error;
+    }
     this.changeLocks.BCH = true;
     return this;
   }
@@ -1338,6 +1451,7 @@ export class TransactionBuilder {
     if (!this.options.skipAutomaticCoSpends) {
       // Auto co-spend the blockhash(n) oracle (last input) before sidecars, which would otherwise claim it.
       await this.addRequiredBlockhashCoSpends();
+      await this.addRequiredBlockOracleCoSpends();
       // Auto co-spend keccak256 compute-and-commit side-cars (the default keccak model) from the recorded param.
       await this.addRequiredKeccakComputeCoSpends();
       // Auto co-spend ecrecoverPubKey recovery side-car pairs (A checkpoints, B commits the recovered pubkey).

@@ -41,6 +41,32 @@ export const WITNESS_BLOCK_VERSION = 0x01;
 /** Length of the `argsHash` field: the hash of a call's selector and argument pushes. */
 export const ARGS_HASH_LENGTH = 32;
 
+/**
+ * The high bit of a witness-block reference (`callerRef`, `originRef`, `validatorRef`, `calleeRef`): set when the
+ * reference names a master minted as an output in the same transaction, whose witness block the transcript carries
+ * inline. The low fifteen bits are the output index. `INDEX_NONE` (0xffff) stays the absent sentinel, so a minted
+ * reference may name output indices below `0x7fff`, far above the transcript's one-byte counts.
+ */
+export const MINTED_REF_FLAG = 0x8000;
+
+/** Whether a witness-block reference names a minted (output) master rather than a spent input. */
+export function isMintedRef(ref: number): boolean {
+  return (ref & MINTED_REF_FLAG) !== 0 && ref !== INDEX_NONE;
+}
+
+/** The flagged reference for a master minted at `outputIndex`. */
+export function mintedRef(outputIndex: number): number {
+  if (!Number.isInteger(outputIndex) || outputIndex < 0 || outputIndex > 0x7ffe) {
+    throw new FramedEncodingError(`minted reference output index out of range: ${String(outputIndex)}`);
+  }
+  return MINTED_REF_FLAG | outputIndex;
+}
+
+/** The output index a flagged reference names. */
+export function mintedRefIndex(ref: number): number {
+  return ref & ~MINTED_REF_FLAG;
+}
+
 /** One external call an execution made. */
 export interface CallRecord {
   /** The frame kind the callee ran in: `CALL`, `STATIC`, `DELEGATE`, `INTERNAL` or `CREATE`. */

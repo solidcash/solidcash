@@ -25,8 +25,8 @@ contract C() {
     require(checkSig(s, pk)); a = [[x], [y, z]];
   }
   function get(int i, int j, uint256 e) { require(a[i][j] == e); }
-  function rowlen(int i, int n) { require(a[i].length == n); }
-  function len(int n) { require(a.length == n); }
+  function rowlen(int i, uint n) { require(a[i].length == n); }
+  function len(uint n) { require(a.length == n); }
 }`;
 
 describe('variable-inner nested array uint256[][] (framed, differing row lengths)', () => {

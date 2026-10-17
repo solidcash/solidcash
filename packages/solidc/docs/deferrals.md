@@ -63,6 +63,17 @@ memory/string/yul VM tests + the ECDSA signature-split bridge tests all green. T
 cleared: `HEX_DIGITS` (`fa67b4fc`), `getStringSlot` in a library free fn (`612e4cda`), `using ShortStrings for *` in
 an imported inherited parent ctor (`f05620ce`).
 
+**RESOLVED (2026-10-15) for the PARAM + uninitialized named-return cases.** `materializeParams`
+(`LowerMemoryModel`) now materializes a `bytes memory`/`string memory` PARAM that inline assembly reads or writes
+as a pointer: it renames the param's Yul `YulPathNode` references to a fresh `__memb_*` buffer (and, when assembly
+REASSIGNS the param, the high-level uses too), then prepends a byte-by-byte deserialize loop from the ABI
+value-copy. `materializeNamedBytesReturn` does the same for an uninitialized named-return `bytes`/`string` (the EVM
+null pointer 0, so `add(dst, off)` arithmetic stays relative to zero). The bridge-handled signature-split read
+(`mload(add(sig, 32))` / `byte(0, mload(add(sig, 96)))`) is unaffected: fixed `bytesN` params are not materialization
+candidates and unbounded `bytes memory` reads still compile. Locked by `InlineAssemblyYul.test.ts`
+(`bytes/string memory params and named returns as __yulmem pointers`): mstore/mload/mcopy/keccak256 over
+`add(p, off)`, string==bytes byte-identity, uninitialized named-return bytes/string, and the bridge read.
+
 **EACCToken then advanced PAST ShortStrings through TWO more OZ Math library-helper walls, both FIXED (commit
 `03c2e383`):** (1) `Math.tryAdd` `unchecked { uint c=a+b; if(c<a) return(false,0); return(true,c); }` crashed codegen
 "Expected variable 'c' does not exist on the stack" - an early return inside an `unchecked` block was never nested
@@ -114,7 +125,16 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   slot, cannot touch alice's balance). Insert+update+read + tx.origin all pass. The old compile fail-close
   (`assertSortedKeyDrivable`, `bfbd652b`) is REMOVED - the case is supported. Needs a connected Signer (else a clear
   error). Cross-contract msg.sender (non-zero `_msgSenderCategory` = a caller contract, not a P2PKH) is out of scope
-  (reverts, fail-closed). **multitransfer's DEBIT half `for(i) bal[msg.sender] -= amts[i]` = RESOLVED 2026-07-19
+  (reverts, fail-closed). **RESOLVED 2026-10-16 (was RED AT HEAD):** the cross-contract sorted-write suite that pins
+  this (`CrossContractSortedWrite.test.ts`, UPDATE/INSERT/msg.sender-keyed) failed all four cases at the callee with
+  `messageBus: BCH-2026 preflight failed at input 2 (ip 214, failing opcode 136 OP_EQUALVERIFY)` — the callee's entry
+  OUTPUT carried the OLD value (10) while the covenant derived the new value (99). Root cause: the preserve walk in
+  `emitPreserveOutsideLayoutOwnMutable` compared an ABSOLUTE input index against the RELATIVE block size, so a
+  cross-contract callee (master at absolute index > 0) satisfied `index >= blockSize` and wrongly preserved its own
+  entry/data NFT 1:1. Fixed by comparing against `masterAbsoluteIndex + blockSize`; the SDK progressive-entry
+  derivation also now skips preserve observations (expected == co-spent input's own commitment) so the stale old
+  value never overwrites the learned new commitment. Evidence: `{SCRATCH}/cross-contract-sorted-write-green.log`.
+  **multitransfer's DEBIT half `for(i) bal[msg.sender] -= amts[i]` = RESOLVED 2026-07-19
   (`12dafc89`, MsgSenderVMap):** `CacheMappingEntryInLoop` now accepts an INVARIANT nullary key (a `KeyKind` = id |
   nullary), so the msg.sender RMW-in-loop reads bal[msg.sender] once -> accumulates -> ONE flush (the flush is the
   proven single msg.sender write). VM-proven: `bal[msg.sender]=100` then `debitMany([10,20,30]) = 40` exactly, `chk(60)`
@@ -271,8 +291,15 @@ RESOLVED 2026-07-19/20 (case b + same-gap chains): a NEW recipient whose predece
 (case b) NOW WORKS (pending-defer + order-independent reorder); 2+ new in ONE gap NOW CHAIN off any predecessor
 (credited / untouched / HEAD / debited msg.sender); self-transfer + duplicate (incl. scalar) also work - see the
 multiTransfer entry above. The `= <param>` wart is RESOLVED too (`d08584f2`): it now routes to the upsert loop
-(update+insert), keeping same-gap chaining. STILL FAIL-CLOSED (sound, not complete): scalar `-=` duplicate (no
-pending-defer), cross-contract msg.sender, 2D `m[k][i][j]`, function-pointer values.
+(update+insert), keeping same-gap chaining. **CORRECTED 2026-10-16:** the scalar `-=` duplicate is RESOLVED too —
+pending-defer is activated for `-` (its insert path stays gated off, since a debit cannot create an entry), pinned
+by `SortedUpsertLoop.test.ts` (`accumulates a SCALAR -= duplicate (100 - 30 - 30 = 40; non-adjacent grouped)`).
+No item in this list remains fail-closed (cross-contract msg.sender was RESOLVED 2026-10-16, see the multitransfer
+entry above). **CORRECTED
+2026-10-16:** the 2D `m[k][i][j]` and function-pointer value
+items in this list are no longer fail-closed — the 2D write desugars via `DesugarNestedArrayWrite`
+(`MappingArray2dWrite.test.ts`), and a function-pointer mapping value round-trips as a functionId on the wire
+(`FunctionTypeState.test.ts`, 5/5, incl. a two-handler sorted dispatch table).
 
 **One real HOLE found + FIXED (commit `af6e894a`): vmap `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike
@@ -311,6 +338,12 @@ that item's low value. Bundled with the bytes/string-param deferral.
 
 **Revisit if.** The param-pointer item is taken up (this rides on the same materialization).
 
+**RESOLVED (2026-10-15).** `materializeNamedBytesReturn` materializes an uninitialized named-return
+`bytes`/`string` used in assembly as the EVM null pointer (0), renames the Yul references to a `__memret_*` local,
+and redirects the terminal return; `add(dst, off)` arithmetic then stays relative to zero and later
+`mstore`/`mcopy` write through the buffer. Locked by `InlineAssemblyYul.test.ts`
+(`materializes an uninitialized named-return bytes/string used as a pointer`).
+
 ---
 
 ## Compound byte writes on a converted bytes buffer  — 2026-07-15
@@ -323,6 +356,12 @@ only relocates the plain `=` form), so such a buffer falls back to value-copy.
 pointer optimization is missed. Not worth a read-modify-write byte-splice path yet.
 
 **Revisit if.** A contract hot-path does compound byte writes on a buffer it also drives via assembly.
+
+**RESOLVED (2026-10-15).** The compound byte write now emits the in-place splice: `buildLvalueAssign` keeps a
+LOCAL `b[i] op= v` as a raw `ArrayAssignNode(b, i, b[i] op v)` (like the plain `=` form) instead of the
+`desugarBytesElementWrite` whole-blob rebuild, so `LowerMemoryModel` lowers a `__yulmem`-candidate buffer to the
+same single-byte splice as `b[i] = b[i] op v`, and `DesugarLocalBytesElementWrite` value-copies the fallback.
+Locked by `storage-collections.test.ts` (`local bytes compound writes are byte-identical to the in-place splice`).
 
 ---
 
@@ -355,6 +394,13 @@ the assignment; then `castChainTarget` handles the rewritten form. OR framed-sit
 **Revisit if.** A real contract makes a DIRECT (non-SafeERC20-wrapped) external call on a `memory`-copy struct
 field and it is the last compile blocker.
 
+**RESOLVED (2026-10-15).** The memory-COPY direct call now compiles and is pinned soundly.
+`SynthesizeExternalAddressLocals.castLocalStructFieldTarget` captures the call-site value of `job.token` into a
+synthesized `__extaddr_lf*_<iface>` local (never lifted to a caller-substitutable parameter); a copy whose `token`
+field is written, or whose local is reassigned, is no longer single-assignment and fails closed with
+`UnpinnedExternalCallTargetError` (not the stale state value). Locked by `calls-abi.test.ts`
+(`memory-COPY struct-field external-call target`): pinned `__extaddr_` addressParam + both rejection variants.
+
 ---
 
 ## `mapping(K => Struct)` NESTED struct-field write  — 2026-07-15
@@ -381,6 +427,13 @@ deeper structs.
 **Revisit if.** A real contract writes a nested struct field through a `mapping(K => Struct)` value and it blocks
 the compile.
 
+**RESOLVED (2026-10-15).** The flattening-forced mapping-value nested write now compiles. `buildLvalueAssign`'s
+`mappingStructValueVars` branch routes `jobs[id].roles.creator = v` to the flattened `jobs__roles[id].creator` field
+write (the leaf lands inside the rebuilt nested `Roles` struct, not raw at the first-level `roles` position), and the
+storage-pointer spelling `Post storage p = jobs[id]; p.roles.creator = v` desugars byte-for-byte to the direct
+spelling. Locked by `storage-collections.test.ts` (`flattening-forced mapping-value nested struct write`): direct
+write + same-chain read-back, storage pointer, and direct-vs-storage-pointer byte-identity.
+
 **Related (2026-07-15).** The fn-ptr CALL form `m[k].inner.x()` (calling a `function()` field nested inside a
 mapping-value struct, shipped 9d2ad911) is gated by THIS write limitation, not by the call rewrite: `m[k].inner.x
 = h` fails identically to the `uint` control, so the pointer can never be stored to invoke. The read/call side is
@@ -389,32 +442,26 @@ nested write is fixed, re-test `m[k].inner.x()`; no call-side change is expected
 
 ---
 
-## Block layout v2: unified auxiliary co-spend band (2026-07-15)
+## Block layout v2: unified auxiliary co-spend band (2026-07-15) - RESOLVED 2026-10-16
 
 **What.** A refactor unifying every co-spent auxiliary - block/tx oracles (`blockhashOracle`), external
 libraries (keccak256 result-NFT side-car), external reads/calls - into ONE explicit front-region "auxiliary
-band" in `computeBlockLayout` (`semantic/SymbolTableTraversal.ts:7507`), with a single slot allocator and one
-SDK co-spend driver. Prompted by evaluating whether to "prepend" external-lib + oracle slots ahead of the
-contract's own outputs (docs/keccak-result-nft.md section 10).
+band" in `computeBlockLayout`, with a single slot allocator and one SDK co-spend driver.
 
-**Why deferred.** The intent (constant positions, variability isolated to the tail) is ALREADY the structure:
-`computeBlockLayout` front-loads the fixed co-spent slots (`master -> dataNft -> readOnlyDataNft ->
-blockhashOracle -> extcall-reserved -> ...`) and keeps runtime-variable outputs (transfer/tcTransfer/event/
-loop-entries) in the tail; offsets resolve centrally via `getBlockSlotOffset` (`GTT:563`). `blockhashOracle`
-is already a front-region "1:1 input/output slot" - the exact shape a keccak side-car needs. So keccak Phase 1
-just adds an `externalLibrary` slot kind as a `blockhashOracle` sibling; no reorg required. A full unification
-would REORDER slots across the 5 byte-matched covenant pairs + the green blockhashOracle / external-call /
-entry-NFT e2e suites - high validation cost, disproportionate to shipping single-hash keccak, and the
-per-mechanism versions already work. Hard constraint either way: `master` stays at offset 0 (state anchor for
-self-pin + auto-derivation), and the input/output index-alignment rationale must be preserved.
+**Resolved (in place, no layout-version bump).** The compiler's front region is now emitted by one allocator,
+`SymbolTableTraversal.computeAuxiliaryBand`, which walks the families in one canonical order immediately after
+`master`+`dataNft`: delegate `lowLevelCall`, `readOnlyDataNft` (external reads), `blockhashOracle`,
+`blockInfoOracle`, `keccakSideCar`, `ecrecoverSideCar`, then the external read/call offset reservations. The
+five ad-hoc per-family `slots.push` blocks are gone. Codegen keeps resolving offsets from the single
+`blockLayout.slots` source of truth (`getBlockSlotOffset`), and the SDK's direct assembly orders its front-region
+co-spends by iterating the same band slots (`AUXILIARY_BLOCK_SLOT_KINDS` / `orderedFrontRegionCoSpends` in
+`@solidcash/utils` and `stb-build-inputs.ts`), so input/output indices stay 1:1 by construction. The upgrade kept
+the existing canonical slot order and `master` at offset 0, so no `BlockSlotKind` or wire-format field changed and
+covenant bytes are byte-identical; a compiler test (`BlockLayoutAuxiliaryBand.test.ts`) pins the band. The
+delegate/proxy legacy prefix and the message-bus graph frame keep their own placement, which is outside the direct
+auxiliary band.
 
-**What it'd take.** A dedicated project: define an `auxiliaryBand` abstraction (ordered oracle+library+read+
-call slots) emitted right after master+dataNft; migrate `blockhashOracle` and the extcall/read reservations
-onto it; one SDK co-spend driver iterating the band; re-verify the 5 covenant pairs byte-for-byte; full
-stateful + oracle + extcall + entry e2e as the regression gate.
-
-**Revisit if.** A third+ built-in library/oracle lands and the per-mechanism placement code starts to
-duplicate, or a contract needs many heterogeneous co-spent auxiliaries whose ad-hoc ordering becomes fragile.
+---
 
 ---
 
@@ -467,18 +514,103 @@ runtime-bound loops in stateful + stateless contracts). These compound edges sti
    front-region, and complex without front-region, both work).
 3. **Preimage > 3 keccak blocks (~407 B)** in one side-car (a single side-car input funds at most 3 blocks).
 
+**RESOLVED (2026-10-15): the chained side-car is prototyped, baked, wired end-to-end, and e2e-verified.** A
+>407-byte preimage is now split on the keccak-256 136-byte rate into `start`/`cont`/`final`
+side-cars that chain the running 25-lane sponge state through their mutable-NFT commitments. Each side-car absorbs
+ONE block on-chain; `start` seeds the zero state, `cont` reads the previous side-car's committed state via
+`OP_INPUTINDEX OP_1SUB OP_OUTPUTTOKENCOMMITMENT`, and `final` pads the remainder, absorbs it, and commits the
+32-byte digest. The three covenants are generated by `research/keccak-poc/gen-chain-sidecar.mjs`, VM-verified
+against `@noble/hashes/sha3.js` for 136..1000-byte preimages (`research/keccak-poc/test-chain.mjs`), and baked as
+`KECCAK_CHAIN_{START,CONT,FINAL}_COVENANT` + hashes in `packages/utils/src/keccak-compute-library.ts`, with
+`splitKeccakChainBlocks` / `buildKeccakChainRedeem` / `keccakChainLockingBytecode` and the VM-chain unit test
+`packages/utils/test/keccak-chain-library.test.ts` (6/6). The commitment byte order is `lane24 || ... || lane0`
+(reversed), chosen so the covenant's front-to-back `<8> OP_SPLIT` reproduces the absorb frame. Soundness: each
+side-car's on-chain permutation means a tampered chain fails the contract's final-digest bind; intermediates are
+chained by introspection, not SDK-computed state. The FINAL covenant carries the FULL preimage (extracting the
+last `len % 136` bytes on-chain, solo-seeding the zero state when the argument has no full block), so the
+contract-side `<pad> <preimage> <width> <redeem>` bind and hash check stay sound. The SDK
+`resolveKeccakComputeCoSpends` routes a direct unbounded single-call preimage through the chained slots, the
+compiler reserves a trailing region and reads the FINAL side-car at `trailingBase + floor(len/136)`, and
+`packages/solidcash/test/e2e/KeccakChainSidecar.test.ts` settles a 2000-byte (>407-byte) preimage whose read-back
+digest matches `@noble/hashes/sha3.js keccak_256`. The FINAL side-car carries the full preimage in its unlocking
+bytecode, so a real network's 10,000-byte per-input consensus limit caps a chained preimage at roughly 6.4 KB (and
+the whole transaction must still fit the 100 KB standard relay ceiling); the original 12 KB draft was only
+mocknet-valid.
+
 **Why deferred.** (1) The trailing region has ONE runtime-counter-indexed band; two independent counter-indexed
-users have nowhere sound to interleave. (2) B's probe context would need B's resolved front-region inputs +
+users have nowhere sound to interleave. Reproduced 2026-10-15: a direct stateful function with a dynamic keccak
+loop AND a sorted-insert mapping loop has no trailing region at all, and both the keccak side-car read and the
+sorted-insert predecessor/entry index count `master + blockSize + counter` from 0, so they collide and the master
+aborts (`packages/solidcash/test/e2e/KeccakLoopTrailingUser.test.ts` pins the fail-closed abort). The
+`RUNTIME_LOOP_ENTRY_INPUT/OUTPUT_COUNT` cursors that disjoin route loop families are not pushed for direct
+functions. (2) B's probe context would need B's resolved front-region inputs +
 recreations + locktime (the master path threads them, but the transitive path builds B's context from
-`getFullState`, not a full derivation). (3) Fundamental per-input op budget.
+`getFullState`, not a full derivation).
 
 **What it'd take.** (1) A shared trailing-region allocator that assigns disjoint counter bands (like the fixed
 front-region band allocator). (2) Resolve B's blockhash/external-read co-spends inside `_externalKeccakProbeCtx`
-and pass them as `frontRegionInputs` (reuse the master's resolvers against B). (3) Split a large preimage across
-multiple side-cars (partial-absorb chaining), or a multi-block side-car covenant.
+and pass them as `frontRegionInputs` (reuse the master's resolvers against B).
 
-**Revisit if.** A real contract needs a keccak loop beside a mapping-write loop / container spend (1), a
-transitive callee that hashes a nested arg while reading a blockhash (2), or a >407 B preimage (3).
+**RESOLVED 2026-10-15 (edge 1, both source orders).** The compiler now pushes
+`RUNTIME_LOOP_ENTRY_INPUT_COUNT`/`OUTPUT_COUNT` as LOCAL cursors for a direct function whose dynamic keccak loop
+coexists with a sorted-insert/upsert/entry mapping loop, seeds the keccak counter from the input cursor, and
+accumulates its side-car width into both cursors at teardown; the sorted-insert/upsert bases already consume the
+cursors. The SDK orders the physical trailing inputs by the published `keccakLoopPrecedesTrailingUser` flag.
+`packages/solidcash/test/e2e/KeccakLoopTrailingUser.test.ts` settles a keccak loop BEFORE a sorted-insert loop
+with the correct digest. The REVERSED source order (mapping loop before keccak loop) is RESOLVED: the SDK's
+`resolveStatefulKeccakLoop` probe co-spends the mapping predecessors ahead of the keccak side-cars, a SHIFTED
+single-preimage keccak side-car covenant (`research/keccak-poc/gen-compute-sidecar-shifted.mjs`, baked as
+`KECCAK256_COMPUTE_SHIFTED_COVENANT` + hash in `packages/utils`) recreates at
+`INPUTINDEX + (outputCursor - inputCursor)` so the side-car output lands past the mapping outputs, and the compiler
+reads that shifted output coordinate (seeding the keccak loop counter from the accumulated
+`RUNTIME_LOOP_ENTRY_INPUT_COUNT`, which holds the mapping loop's predecessor width). `stb-build-inputs.ts` orders
+the physical trailing inputs as predecessors, keccak side-cars, then alignment funders, and the output assembly
+(`materializeOwnerFrontOutputs` / `materializeRuntimeLoopTrailing`) defers the keccak side-car recreates until
+after the mapping entry band for the reversed order, so both the input and output coordinates match the shifted
+covenant. `packages/solidcash/test/e2e/KeccakLoopTrailingUserReversed.test.ts` settles the reversed order with the
+correct digest.
+
+The CONTAINER-SPEND sibling is also RESOLVED: a function whose keccak loop is followed by a straight-line
+satoshi-container `this.transfer(...)` or token-container `this.tokens[cat].transfer(...)` now settles. The
+keccak-loop probe pads the fixed block slots between the data NFTs and the trailing base (the container UTXO plus
+a neutral funder for the output-only transfer/tcTransfer slot) via `_padKeccakLoopFrontRegion`, so the side-cars
+land at the compiler's `master + blockSize` coordinate; those slots' covenant checks run in the epilogue after the
+keccak loop, so the probe's self-preserving recreations never block preimage discovery. The side-car recreations
+are emitted at the start of the trailing band by `materializeMidBuildOutputsCascade` (after the fixed
+container/transfer/event/entry slots) instead of the front band, so their output coordinate matches blockSize.
+`packages/solidcash/test/e2e/KeccakLoopContainerSpend.test.ts` settles both container families with the correct
+digest.
+
+**RESOLVED 2026-10-15 (edge 2, transitive complex keccak + blockhash front-region).** Two fixes land together:
+(1) `_externalKeccakProbeCtx` now resolves B's own blockhash oracle co-spends against B's category and returns
+them as `frontRegionInputs` + `locktime` (the keccak probe materializes B's `__internal__blockhashInputIndex`
+before building the unlocker), so `_extractStatefulKeccakPreimages` positions the probe past B's front-region.
+(2) The ordinary transitive outState path (`loadCreateBuilderOutStateReads`) previously had no blockhash support
+at all: B's master unlocker was built without `__internal__blockhashInputIndex`, so `generateUnlockingBytecode`
+failed closed with "blockhash(n) is only supported in stateful contracts". It now resolves B's blockhash oracle
+co-spends (`_resolveExternalBlockhashCoSpends`), materializes the index, carries `blockhashCoSpendUtxos` /
+`blockhashCoSpendRecreates` on the outState group, flattens them between B's data NFTs and keccak side-cars, and
+threads the max blockhash locktime into the transaction. Tests:
+`packages/solidcash/test/e2e/KeccakTransitiveFrontRegion.test.ts` settles a callee with BOTH a nested keccak arg
+and a blockhash read (both contracts advance); `packages/solidcash/test/e2e/TransitiveBlockhashOutState.test.ts`
+covers blockhash without keccak. Pre-existing and unchanged: the direct-param transitive keccak (no blockhash)
+outState case still fails OP_VERIFY at HEAD before this change.
+
+**RESOLVED (runtime-loop transfer sibling).** The compiler now admits a `for(i)` whose body mints a
+runtime-variable number of transfer outputs even when the contract has no sorted collection: the survey flags
+`needsRuntimeLoopTransferCounter` and routes the function through `LowerVMapCounterLoops`, an effect-only domain
+group is created when there is no mapping write, and `runtimeLoopTransfers` publishes the permutation plus an
+exact `iterationBound` (e.g. `recipients.length`) so the SDK can resolve the loop bound. The remaining assembly
+gaps were then closed: (1) the SDK derives the N transfer outputs from the published permutation bound and
+materializes them as a trailing `transfers` segment (direct path), (2) the satoshi container is forced onto its
+block slot through the dense input path when the block layout reserves a container slot, and (3) the keccak
+teardown now advances the shared trailing input/output cursors even when the runtime-loop permutation family
+already activated them in the function prologue, so the transfer outputs land after the keccak side-cars. The
+slot-scan satoshi conservation is skipped for runtime-loop BCH transfers, whose conservation is verified with the
+runtime transfer total by the effect verifier. Tests:
+`packages/solidcash/test/e2e/KeccakLoopRuntimeTransfer.test.ts` (unskipped) settles a keccak loop beside two
+runtime transfer outputs, and the keccak-loop siblings (`KeccakLoopTrailingUser`, `KeccakLoopTrailingUserReversed`,
+`KeccakLoopContainerSpend`, `KeccakChainSidecar`, `StatefulKeccakSideCarOrdinals`) still pass.
 
 **Soundness note (not a gap).** The complex-arg + transitive probes assume the keccak preimage depends only on
 the function's args/state, not on surrounding-tx introspection that differs between the isolated probe and the
@@ -491,8 +623,15 @@ spend (fail closed) - never accept a wrong hash.
 
 ---
 
-## Conformance harness: run the SAME EXACT source on solc + solidc  — 2026-07-16
+## Conformance harness: run the SAME EXACT source on solc + solidc  — RESOLVED 2026-10-16
 
+**RESOLVED.** The harness now has a shared-subset path (`sharedSourceCase` +
+`assertSharedSourceAccepts`, `packages/solidcash/test/conformance/harness.ts`): ONE Solidity-spelled `contract C`
+source string - a self-contained `require` covenant - compiles under BOTH solc and solidc (solidc accepts the
+Solidity pragma/contract/visibility spellings via evmCompat), so no per-dialect template is generated.
+`shared-source.conformance.test.ts` runs the identical text through both toolchains and records both accept it
+(abi.decode/encode round-trip, checked arithmetic, multi-word decode). The historical generated-two-sources
+analysis below is retained for context.
 **What.** The differential conformance harness (`packages/solidcash/test/conformance/harness.ts`) generates TWO
 sources per case - a Solidity one (`contract C { ... return <expr>; }`) and a separate SolidCash one
 (`contract Conf() { ... require(<expr> == __expected); }`). They differ only in unavoidable decorations (SPDX +
@@ -719,6 +858,23 @@ this prevents, so it ships only when those fail closed.
 **Revisit if.** A real contract must enumerate/aggregate a mapping whose entry count exceeds one tx's input
 budget (the USDT-scale case that motivated the enumerable/plain split originally).
 
+**RESOLVED (2026-10-14, commit `e6ec23c02`).** Built the `for (T v of this.m.window(cursor, K))` VALUES
+surface (the first of the two documented options) end to end on the direct convention. The covenant is a new
+`emitWindowedSortedIteration` (GTT) that reuses the adversarially-verified full-walk entry pin + contiguity check,
+with the three planned deltas: (1) the anchor entry at base+0 must have `slot == cursor` (cursor read from the
+persisted `bytes32` register state var; first page = HEAD 0); (2) the loop is bounded to K entries (or the tail);
+(3) the last visited entry's slot is written back to the cursor state var. Grammar/AST/AstBuilder carry the form,
+`SymbolTableTraversal` binds the cursor state var + K and `Artifact.ts` publishes `windowCursor`/`windowBound` on the
+`collectionIterations` ABI entry. The SDK (`sc-load-create-builder-iteration-inputs.ts`) co-spends the contiguous
+`[cursor..cursor+K]` window via `SortedList` and the covenant persists the cursor, so pages are disjoint and resumable.
+Tests: `packages/solidc/test/WindowedIteration.test.ts` (compile + metadata + cursor-type rejection) and
+`packages/solidcash/test/e2e/WindowedIteration.test.ts` (two disjoint pages that together visit every entry, exact
+per-page values, cursor = last visited slot, and — via the `_setRawWindowUtxos` hook — VM-level adversarial cases: a
+wrong anchor (anchor slot != persisted cursor) and an omitted in-window entry each reject with `Program failed an
+OP_VERIFY operation`, exercising the covenant's anchor-slot pin and contiguity backstops, plus the SDK-level
+fail-closed cases for a non-present anchor and a broken chain). The remaining vmap deferral is chunked >60 B values
+in a loop (its own entry).
+
 ### 5. vmap value-shape coverage + the default entry model (2026-07-17)
 
 **vmap-by-DEFAULT covers every value shape except function pointers.** `mapping(K => V)` is vmap-backed by default for V
@@ -742,6 +898,13 @@ Revert-safe: add `FunctionType` to vmapStorableValue (needs the import) + sorted
 **Default entry-model DELETION** (still gated): (1) fn-ptr values -> vmap; (2) migrate the ~110 `sortedMappingsAll:false`
 opt-out'd tests to vmap seeding; (3) delete the entry-model codegen path + the `sortedMappingsAll` / `sortedMappings`
 options. Large mechanical change; do it as a dedicated pass.
+
+**RESOLVED (verified 2026-10-14).** Both halves are done. Internal `FunctionType` mapping values take the `'int'`
+sorted kind (`GenerateTargetTraversal.sortedValueKind`), so function pointers are vmap-backed like every other value
+shape. vmap is now mandatory for every collection: `compiler.ts` sets `col.sorted = true` over all of
+`ast.contract.collections` with no `MappingType` gate (that gate was removed by `d6821a812`, which also closed the
+DS-5 array-backend finding). The `sortedMappingsAll` / `sortedMappings` opt-outs and the omission-prone legacy entry
+backend are gone. The historical `vmapStorableValue` spelling no longer exists; the decision point is `sortedValueKind`.
 
 ### 6. vmap-default no-guards: the two deep source-shape blockers (2026-07-18)
 
@@ -861,11 +1024,12 @@ so read-after-write `m[k][j]=m[k][j-1]+1` reads the value being built (value-ver
 `SortedArrayCacheInLoop` (loop build+fill, read-after-write prefix, consecutive set02); fail-close boundary in
 `SortedArrayWriteFailClose`. Commits: (this line's change).
 
-STILL fail-closed (sound, not silent): a DIFFERENT-key insert loop `for(i) m[k[i]]=v` (per-iteration sorted-insert
-covenant, framing (a)); a MULTI-DIMENSIONAL array element write `m[k][i][j]` on `mapping(K => T[][])` (clean
-`UnsupportedTypeError` - it used to CRASH when the excess index was type-checked as a phantom key at
-`allKeyTypes[i] == undefined`; guarded in `TypeCheckTraversal.visitMappingAssign` by `node.keys.length > allKeyTypes.length`);
-and function-pointer element values (no vmap path). Note the existing default-model `UnrollFixedBoundEntryLoop`
+**RESOLVED 2026-10-16:** the function-pointer element value path EXISTS — an internal function pointer (and an
+external self-ref `this.f`) is stored as its functionId in the entry commitment and dispatches through the vmap
+sorted list, pinned by `packages/solidcash/test/e2e/FunctionTypeState.test.ts` (5/5, register + invoke, two distinct
+handlers in one sorted list, scalar external self-ref, and the upgrade remap refusal). The earlier "no vmap path"
+note was stale. No item in this section remains fail-closed.
+Note the existing default-model `UnrollFixedBoundEntryLoop`
 (whole-entry fixed loops, ArrayAssignNode form) still unrolls - unifying it onto the cache-in-loop model would remove the
 unroll, but it is wired + tested (CorpusGapFixes), a separate change.
 
@@ -1020,19 +1184,55 @@ deferred/chained/msg.sender-merge/insert loop state machine - the most soundness
 disproportionate to the rare bulk-LONG-value pattern. The chunk NFT is keyed by `(slot=Hk32, digest)`, so even an
 invariant value cannot share one chunk set across keys. Revisit if a real port needs bulk long values in a loop.
 
+**RESOLVED (verified 2026-10-14, commit `3da2f72c0`).** A `>60 B` per-iteration sorted-loop value is already shipped: the loop body
+(`emitSortedUpsertLoopBody`) pins each slot's value chunks via `emitSortedValueChunkPin` and stores the `len4 ++
+sha256(v)` tail, so the interleaved entry/chunk outputs are covenant-bound and the SDK plans the chunks. The positive
+path is pinned by `solidcash/test/e2e/SortedArrayValueVaryingLoop.test.ts` (per-key `bytes[]`/`int[][]` values, a
+170-byte value, duplicate-key update, and the inline/chunk boundary) and `solidcash/test/e2e/ChunkedLoopRoundtrip.test.ts`
+(insert then in-place update of a 170-byte value, exact read-back), the compile surface by
+`solidc/test/ChunkedLoopValue.test.ts`, and the fail-closed chunk integrity by
+`solidcash/test/e2e/ChunkedLoopAdversarial.test.ts` (a forged chunk, a missing chunk, and a reordered chunk each fail
+the read closed at the (collection, slot, digest) address). This entry's earlier "still fail-closed" note was stale.
+
 **Revisit if.** A real port needs bulk array-value initialization across keys in one loop, OR the upsert-loop planner
 is refactored to a value-kind-generic shape for another reason (then the bytes branch is cheap + low-risk).
+
+**RESOLVED (2026-10-16, in-place UPDATE of a chunked >60B value).** `ChunkedLoopRoundtrip.test.ts`'s
+"insert then in-place update of a 170-byte value" case is now green. The UPDATE co-spends the entry's OLD
+continuation chunks at their OLD root's `ValueChunkNft` lock and legitimately recreates them under the NEW root;
+`emitSortedValueChunkPin` appended only the NEW lock to `VALUE_CHUNK_LOCK_LIST`, so the
+`emitPreserveOutsideLayoutOwnMutable` 1:1 walk refused the consumed old-chunk input. The fix (in
+`GenerateTargetTraversal.ts`, `emitNormalStep`'s UPDATE arm) rebuilds the OLD root's chunk lock from the co-spent
+entry's stored `len4++root++head` tail (gated on the stored length > 60, so an inline predecessor stays fail-closed)
+and appends it to `VALUE_CHUNK_LOCK_LIST` beside the new lock; the walk then admits both the consumed old chunks and
+the re-minted new chunks. Verified: `ChunkedLoopRoundtrip.test.ts` 1/1, `SortedArrayValueVaryingLoop.test.ts` 4/4
+(duplicate-key last-wins and the inline/chunk boundary), `ChunkedLoopAdversarial.test.ts` 3/3. The original
+fail-closed reproduction was at `e16019bfe` (pre-existing, independent of the MasterChef.deposit trailing-base fix).
 
 ## Composite sub-slot field access: top-level array-of-struct only - MOSTLY DONE 2026-07-20
 
 RESOLVED for almost everything: bool/enum leaf fields (6448f446) and NESTED ARRAYS-in-struct
 (1cc36ad2, `struct S { uint64[2] arr; ... }` via a field/index step path + full-value ctor/array-
-literal rebuild) now work, VM-proven. The ONLY remaining fail-closed composite case is a TOP-LEVEL
+literal rebuild) now work, VM-proven. The ONLY remaining fail-closed composite case was a TOP-LEVEL
 fixed array OF structs (`P[2] ps`) - excluded because the SDK cannot auto-derive that state-var
 layout even without assembly (verified: a plain `P[2] ps` contract fails state derivation the same
 way). So its slot codegen is sound-by-reduction but would compile to an SDK-underivable covenant;
 revisit when the SDK gains array-of-struct state derivation, then drop the StructType-only gate in
 compositeLeaves. Original analysis (now largely resolved) below.
+
+**RESOLVED 2026-10-16 (top-level fixed array OF structs).** The SDK's array-of-struct state derivation was
+already correct once the struct-array chunk-packed framing landed (both sides encode a fixed-width struct element
+FRAMED, not packed, so `encodePushdataValue`/`decodePushdataValue` round-trip a `P[2]` value through the data-NFT
+commitment); the old "cannot derive" note was stale. The only blocker was the compiler's `compositeLeaves` gate,
+which materialized only a top-level `StructType` and left a top-level fixed array of structs to the value-array
+arithmetic helper (which returns undefined for a struct element). `compositeLeaves` now also materializes a
+top-level fixed array whose element type is itself composite (struct or nested fixed array) - bounded by
+`COMPOSITE_LEAF_CAP`, while a fixed VALUE array still takes the huge-bound-safe arithmetic helper unchanged - so
+`sload(ps.slot)` / `sstore(ps.slot, word)` / `sstore(add(ps.slot, 1), word)` rebuild through the proven
+field/index-step read and the full fixed-array-of-struct value assignment. Verified by the compiler pin
+(`yul-evm.test.ts`: the top-level `P[2] ps` assembly case now compiles) and a stateful SDK round-trip
+(`StructArraySlotState.test.ts` 2/2: `sstore` to slot 0/1 lands the packed uint64 fields in `getState()` and
+`sload` reads them back, proving the covenant is derivable end to end).
 
 **What.** `sload/sstore(v.slot + i)` on a fixed struct's / fixed value array's own slots is DONE: flat struct
 (57649637), fixed value array incl. ragged uint40 packing (33f5f5c3), and NESTED struct-in-struct (34f1f316,
@@ -1108,14 +1308,15 @@ STALE element-slot bits, BCH zero-fills (a footgun EVM has, BCH's clean model do
 the fund-relevant blob surgery can get review. Do it with the other array/* deep work (element-slot writes
 `sstore(keccak256(0,32)+i, v)`), not as a standalone increment.
 
-## Calldata `.offset` on dynamic params - MOSTLY DONE 2026-07-20 (cebd086b, ac82db9f)
+## Calldata `.offset` on dynamic params - RESOLVED 2026-10-16 (21fb2289e)
 
 RESOLVED for the READ + ASSIGN forms. `x.offset` of a FIRST dynamic calldata param = the compile-time ABI data
 position `4 + headWords*32 + 32` (cebd086b; not a fake position - the exact value EVM computes, VM-proven 0x44 /
 0x84). `x.offset := v` / `x.length := v` (a calldata-slice re-point) = a function-scoped mutable local, read back
-across blocks (ac82db9f). Corpus +2 (calldata_offset_read, calldata_offset_read_write). REMAINING: a dynamic param
-that is NOT the first (cumulative runtime tail) and calldata_array_read (nested calldata arrays: `uint[2][] calldata`,
-`uint[2] calldata t = x[1]; s := t` - reading a calldata fixed-array element as a value; a separate deeper feature).
+across blocks (ac82db9f). Corpus +2 (calldata_offset_read, calldata_offset_read_write). A dynamic param that is NOT
+the first now resolves `.offset` to a RUNTIME tail expression (head + cumulative padded length of the preceding
+dynamic params), and nested calldata fixed-array pointers (`uint[2] calldata t = x[1]; s := t`) inherit that runtime
+base; VM tests in `CalldataOffsetTail.test.ts` pin the offset and the decoded element values.
 Original analysis (now largely resolved) below.
 
 ## Calldata `.offset` on dynamic params - DEFERRED 2026-07-20
@@ -1150,7 +1351,7 @@ delicate (every calldata op must agree on one layout); reuse the ABI encoders in
 **Revisit if.** A concrete port needs dynamic-calldata tail access (raw ABI decoding in assembly), or the calldata
 model is rebuilt for another reason - then `.offset` falls out of the head/tail layout.
 
-## bytes/string slot fields + address slot fields - PARTLY DONE 2026-07-20 (8bd5e708, 419673d1)
+## bytes/string slot fields + address slot fields - DONE 2026-10-16 (03cd9c6e9, e4f89650d, fec18dcb0)
 
 UPDATE: the short-string byte-array encoding IS built, VM-proven. `sstore(bytesVar.slot, constX)` decodes EVM's
 short-slot layout at COMPILE TIME (data left-aligned in the high bytes big-endian, low byte = 2*len; X==0 clears) ->
@@ -1158,10 +1359,15 @@ short-slot layout at COMPILE TIME (data left-aligned in the high bytes big-endia
 encoding `len<32 ? uint256(bytes32((b ++ zeros ++ bytes1(2*len)).reverse())) : 2*len+1` (419673d1, corpus
 byte_array_storage_layout; uint256(bytesN) is little-endian so the big-endian blob is reversed - VM-confirmed). +3
 corpus. The BYTE-REVERSAL was VM-proven step-by-step (b="dead" -> exact 0x64656164<<224|8), NOT a blind miscompile.
-REMAINING bytes: LONG-string RESIZE (`sstore(b.slot, oddX)` odd low byte -> len (X-1)/2) + the keccak-DATA-region
-write/read (`sstore(keccak256(0,b.slot), data)` / `sload(keccak256(0,32))`, dirty_storage_bytes_long,
-delete_bytes_array), invalid-encoding corners, and the bytes-push-LOOP SDK state-derivation gap (a plain bytes push
-loop fails auto-derivation even without assembly - orthogonal SDK limitation). address slots = bounded-address
+LONG-string RESIZE (`sstore(b.slot, oddX)` odd low byte -> len (X-1)/2) and the keccak-DATA-region write/read are
+built; a stateful SDK round-trip (`BytesSlotFieldState.test.ts`) pins the stored bytes, and `bytesDataBaseName` was
+fixed to key on the type alone (its old `sv.isDynamic` check ran before SymbolTableTraversal set the flag, so the
+write fell through to `__evm_storage`). Invalid-encoding corners fail closed. The bytes-push-LOOP gap is RESOLVED
+2026-10-16: a counter-bounded `for` loop desugars `b.push(x)` to `b = b + x`, which previously hit the
+pending-value write model (emitted once, runs N times) and derived a wrong length header (97 for a 33-byte push
+loop). `CacheDynamicArrayInLoop` now also caches unbounded `bytes`/`string` state vars written in a loop
+(read-once / mutate-local / write-once), and `BytesPushLoopState.test.ts` drives both a `for` and a `while` bytes
+push loop through the SDK and asserts `getState()` returns the exact pushed bytes. address slots = bounded-address
 (Section 10: against). Original analysis (now partly resolved) below.
 
 ## bytes/string slot fields + address slot fields - DEFERRED 2026-07-20 (per-file evidence added)
@@ -1288,7 +1494,17 @@ stateless/stateful autoderivation + RETURNING-loop (increment 1) units are all V
 (`TypedComputedLoopDispatch.test.ts` / `StatefulComputedLoopDispatch.test.ts`); the next sub-step is part 3
 (collect-phase multi-use grouping) then part 1 (the shared read+write co-spend).
 
-## vmap-sorted mapping WRITE inside a delegate (proxy) function - DEFERRED 2026-07-20
+## vmap-sorted mapping WRITE inside a delegate (proxy) function - RESOLVED 2026-10-15 (deferred 2026-07-20)
+
+**RESOLVED (verified 2026-10-15).** The 7-layer recipe shipped: the impl function's `entryLoopWrites` route into
+`loopEntryVars` keyed off `lowLevelCallUtxoGroups`, the NEW-node loopEntry is seeded and Phase-2 derived, and the
+delegate path reorders the loopEntry input/output before the low-level-call region with the funder and index
+accounting corrected. A default (vmap-sorted) `users[msg.sender] = v` insert now settles through `deployProxy`, the
+NEW node is minted in the proxy block before the impl, and the value plus the contract's own state read back.
+Pinned by `solidcash/test/e2e/UpgradesDeployProxy.test.ts` ("writes a msg.sender-keyed vmap from inside a delegate"),
+`DelegateVerifiedMappingWrite.test.ts` (UPDATE settles; INSERT boundary), and the pin controls
+`DelegateCollectionOutputPin.test.ts` + `S1MultiSlotCardinality.test.ts` (forged/extra node appends still refused).
+Original analysis below.
 
 **What.** `users[msg.sender] = v` (or any sorted-mapping write) inside a `delegate` function, called through
 `upgrades.deployProxy`, fails closed when the mapping is vmap-SORTED (the default). The NON-sorted case SHIPPED
@@ -1343,7 +1559,13 @@ a mapping. Detail + re-entry points in memory events_in_delegate_gap.md.
 
 ---
 
-## buffered state journal + cross-contract message bus (architecture research)  - 2026-07-20
+## buffered state journal + cross-contract message bus (architecture research)  - IMPLEMENTED 2026-07-21
+
+RESOLVED as shipped. P1 (scalar write-back journal), P2 (buffered mapping/collection writes flushed through
+vmap) and P3 (the message bus) all landed with their own suites: `ScalarJournal.test.ts` / `CollectionJournal.test.ts`
+(compiler lowering), `journal-message-bus/e2e/ScalarJournalRelease1.test.ts` (scalar-journal loop settle),
+`journal-message-bus/e2e/StatefulRecursion.test.ts` (recursive state-writer settle + over-budget/unbounded
+refusals), and the `Kernel*` message-bus suites. The original analysis below is kept as the design record.
 
 **What.** A future architecture that would make state/covenant-touching functions into real
 `OP_INVOKE` subroutines (fixing recursive state-writers and generic loop-calls of state helpers) via
@@ -1389,6 +1611,33 @@ for evm). Triples... (well, +50%s) the side-car count per recovery, which also p
 FIXED historical signatures (where re-signing is impossible) in bulk. Detail in memory
 ecrecover_builtin.md (2026-07-20b section).
 
+**RESOLVED 2026-10-15 for a straight-line width-0 recovery, and RESOLVED 2026-10-16 for the dynamic-loop case
+(commit `f7d63ce9d`).** The
+3-covenant split's hard cryptographic core is now done and VM-verified: `research/ecrecover-poc/middle.mjs`
+proves the A->M->B body math on the real BCH-2026 VM (A ladders to C1, the new middle covenant M is a pure
+ladder C1->C2 committing H_M, B ladders C2->Q; recovered pubkey == ethers, forged C1/C2 checkpoints rejected),
+and `research/ecrecover-poc/gen-middle-sidecar.mjs` generates the deployable self-preserving covenants with the
+A->M->B hash chain and verifies the full 3-input spend. The generated `M` and `B3` covenants + their hashes are
+baked into `packages/utils/src/ecrecover-compute-library.ts` (the 3rd baked lock;
+`buildEcrecoverComputeRedeem`/`ecrecoverComputeLockingBytecode` accept `M`/`B3`). The SDK now runs the 3-way
+`probeEcrecoverSplit3` fallback and `buildEcrecoverComputeSidecars3` A/M/B3 co-spend when the 2-way window is
+empty, and the compiler reserves three `ecrecoverSideCar` slots per call (A, M, B).
+`packages/solidcash/test/e2e/EcrecoverWidth0.test.ts` recovers a measured width-0 signature through the A/M/B3
+split and rejects a tampered witness (fail closed). The outlined-helper A/B/stride frame contexts are threaded
+in the caller's physical push order (stride, B, A at the OP_DEFINE boundary), which keeps the existing stateless
+helper-recovery probe reading A rather than the stride. The dynamic-loop gap is closed the same way: a non-evm
+loop now co-spends the A/M/B triple at stride 3 (`[master+1+3k]` A / `[master+2+3k]` M or funder /
+`[master+3+3k]` B2/B3) - a 2-way recovery fills M with an inert balanced funder and reads B2 (A two inputs
+back), a width-0 recovery fills M with the middle covenant and reads B3 (M one input back); the compiler bakes
+`ECRECOVER_COMPUTE_B2_SHARED_LOCK`/`ECRECOVER_COMPUTE_B3_SHARED_LOCK` into the loop's `OP_UTXOBYTECODE`
+integrity check so either shape is accepted. `packages/solidcash/test/e2e/EcrecoverWidth0.test.ts` (`recovers a
+width-0 signature through the loop A/M/B3 fallback`, `rejects a tampered witness through the same loop
+fallback`) recovers the measured width-0 signature inside a runtime-bound `for (i<n)` loop through A/M/B3 and
+fails closed on a tampered witness, and `packages/solidcash/test/e2e/EcrecoverRecovery.test.ts` LOOP cases
+(fixed-bound N=2, runtime N=3/N=4) exercise the 2-way A+funder+B2 path. Remaining boundary: width-0 recoveries
+still triple the side-car count per recovery (as the original design noted), so the 100 KB standard tx-size wall
+binds earlier for loops containing width-0 signatures.
+
 ---
 
 ## ecrecover loop tx-size wall - covenant dedup via introspection + OP_DEFINE (candidate)  - 2026-07-20
@@ -1418,6 +1667,15 @@ bind its own argBlob, `OP_INVOKE`, self-preserve) + a way to fund its ~8M budget
 the size win is real (measure reference-input scriptSig vs a full pair) BEFORE building - the budget floor
 must be beaten first, else it is net-zero.
 
+**MEASURED (2026-10-15): the size win is NOT there; the variant is NOT built.** The real BCH-2026 VM
+measurement (`research/ecrecover-poc/engine.mjs`, now printing the dedup gate; captured to
+`ecrecover-dedup-measure.log` in the goal scratch) gives: covenant A 4320 B / B 338 B, witnesses A 1860 B /
+B 1893 B, op-cost A 7,760,618 (scriptSig floor 9,660 B) / B 7,733,975 (floor 9,627 B). The full pair's
+scriptSig is floor-bound (9,660 + 9,627 = 19,287 B per recovery): the covenant bytes already fit INSIDE the
+budget floor, so they are free. A reference input would still need the same floor plus the ~40-byte
+load/invoke overhead (9,700 + 9,667 = 19,367 B) — a **-80 B net-negative** per recovery. The op-budget floor
+is not beaten, so the reference-input covenant variant stays unbuilt, exactly as the objective gates.
+
 **Revisit if.** The op-budget model changes to not scale with scriptSig length, OR a budget-sharing
 mechanism lands - then covenant dedup turns the ~20KB/recovery footprint into ~10KB + small, multiplying the
 per-tx recovery count. Related: the tx-size wall noted in docs/ecrecover.md (Loops) and the width-0 3-covenant
@@ -1441,6 +1699,38 @@ deferral above (a cheaper ladder would help both).
 - **Revisit if:** BentoBox/Kashi/BoringRebase port is prioritized, OR the corpus shows `L.f(m[k])` storage-ptr frequency.
   NOTE overlaps the vmap/storage machinery under active churn - coordinate before landing.
 
+**RESOLVED 2026-10-16.** The mapping-element argument shape now compiles for the simple-struct BentoBox form. The
+read-modify-write template in `InlineStoragePointerCalls.elementAccess` handles `L.f(m[k])` and `m[k].f()` (both the
+`this.`-prefixed and bare spellings), and `RedesugarImportedUsingForCalls` rewrites the struct-valued mapping-element
+receiver to the direct library call before inlining. Compiler test `LibraryStorageStructWithMappings.test.ts`
+(`storage-pointer library fn on a mapping element`) pins that `L.f(m[k])` compiles and `m[k].f()` is byte-identical to
+it; the e2e `StoragePointerMappingElem.test.ts` VM-proves the RMW mutates the element and preserves the untouched
+field. Remaining: a struct whose ONLY fields are mappings flattens away its root, so the `m[k].f()` method spelling on
+that shape still failed to resolve the receiver type because the flattened root `m` carried no type. **RESOLVED
+2026-10-16 (mapping-only struct root).** `RedesugarImportedUsingForCalls.resolveExprType` now recovers a
+flattened-value mapping's struct type from its per-field leaves (`m__a`/`m__b` -> the value struct `S`) when the root
+`m` is absent, so `this.m[k].f()` desugars to `L.f(this.m[k])` before inlining and stays byte-identical to the direct
+spelling. Pinned by `LibraryStorageStructWithMappings.test.ts` (`storage-pointer library fn on a mapping-only struct
+element`, direct + using-for spellings byte-identical). The state-ARRAY element half (`L.addX(this.arr[i], d)`) is
+NOT a storage-pointer gap: the lowering is byte-identical to the
+hand-written `P t = this.arr[i]; t.x += d; this.arr[i] = t;` (pinned in `LibraryStorageStructWithMappings.test.ts`).
+Both previously failed at `OP_VERIFY` because of the chunk-preserve bug below; that is now fixed, so
+`L.addX(this.arr[i], d)`, `this.arr[i] = P(x, y)`, and a second `this.arr.push(P(x, y))` all settle.
+
+**ROOT CAUSE REFINED (2026-10-16) + FIXED.** The array is FRAMED on both sides, not tight: the compiler's
+`generation/utils.ts isFixedWidthType` already excludes `StructType`, and the SDK's string-based `isFixedWidthType`
+fails for a struct type string, so both encode `P[]` as `pushdata(count) ++ framed(field0) ++ ...`. The chunk write
+blob is therefore correct (`push1` and `arr[0]` read settle). The real failure was the catch-all
+`emitPreserveOutsideLayoutOwnMutable`: its shorter walk (no loop records) preserved EVERY own-category mutable input
+at index >= blockSize 1:1 (output == input), including a written dynamic var's OLD chunk, which the write epilogue
+legitimately rewrites in place (4-byte one-element chunk -> 8-byte two-element chunk). Fix: the walk now builds the
+mintable record locks and admits a record at one of them whenever the function has loop records/iterations OR a
+written dynamic var (`node.dynamicWrites`), so the consumed old chunk is no longer preserved. `uint256[]` and
+`struct-with-string` chunk arrays already settled because their old chunk's data length differed or their write
+path took the admitting branch. Verified by the new e2e `StructArrayElementOverwrite.test.ts` (2/2: push two
+fixed-width struct elements, whole-element overwrite, field/neighbour preservation), `ChunkedArrays.test.ts` (15/15),
+and `StoragePointerMappingElem.test.ts` (4/4, including the previously failing state-array element half).
+
 ## STORAGE-POINTER library fn on a mapping/array/state-var element - VEIN COMPLETE 2026-07-21
 - **STATUS: SHIPPED + VM-proven end to end** across four commits (5f2b28f3 void, e5ab012c returning, a4727002 bare):
   void + returning fn, mapping/array/state-var element, statement + expression position, direct + using-for spelling,
@@ -1453,6 +1743,16 @@ deferral above (a cheaper ladder would help both).
   overload/name-resolution confusion (the 5-arg signature is not `_tokenBalanceOf`'s; it looks like a low-level-call
   helper's). Does NOT reproduce in isolation (a returning ext-call helper + BoringMath `.sub()` compiles) - BentoBox-
   specific. NOT storage-pointer. Investigate on-site if BentoBox is prioritized.
+- **RESOLVED (2026-10-15).** The line-835 wall no longer reproduces: BentoBoxV1 now compiles end-to-end through
+  `deposit()` (evmCompat + forceStateful + messageBus), with only the contract-size warning (27,444 > 10,000
+  bytes, a non-goal). The documented 5-arg `_tokenBalanceOf` param-bloat is the SAME synthetic-covenant-param
+  threading as Kashi `_isSolvent`: `_tokenBalanceOf(IERC20 token)` makes a PARAM-target external call
+  (`token.balanceOf(address(this))`), which injected `__internal__externalCallInputBase` /
+  `__internal__extcallAnchorIdxN` / `__internal__externalReturnOutputIdx` into its signature; the helper is now
+  inlined at its call site, so those params land on the entry point and `_tokenBalanceOf(token)` (1 arg) no longer
+  mismatches a 5-arg signature. The subordinate `.sub(total.elastic)` uint128->uint256 argument widening is locked
+  separately by `libraries-imports.test.ts`; the exact wall shape is locked by `ExternalCalls.test.ts`
+  (`inlines a param-target value-returning external-call helper (BentoBox _tokenBalanceOf)`).
 - Original returning-fn analysis kept below for the record.
 
 ## (superseded) RETURNING storage-pointer fn (BentoBox BoringRebase `addElastic`) - DONE 2026-07-21 (commit e5ab012c)
@@ -1505,15 +1805,35 @@ The abi.decode-interface fix advanced both Kashi contracts past their first wall
   NOTE a cleaner future fix for the ROOT would desugar value-type using-for method calls (`x.add(y)` on int) to
   `BoringMath.add(x, y)` BEFORE InlineReturningStateHelpers, so containsExternalCall stops mis-classifying them
   (RedesugarImportedUsingForCalls handles struct/interface/bare-ident receivers but not value-typed field receivers).
+  **RESOLVED (2026-10-15).** The `_isSolvent` wall no longer reproduces: KashiPairMediumRiskV1 now compiles
+  end-to-end (evmCompat + forceStateful + messageBus), with only the contract-size warning (29,584 > 10,000 bytes, a
+  non-goal). The state-var-target value-returning external-call helper is inlined at its call sites, so the synthetic
+  covenant params (`__internal__externalCallInputBase`, `__internal__extcallAnchorIdxN`,
+  `__internal__externalReturnOutputIdx`) land on the entry point instead of bloating `_isSolvent`'s signature. The
+  general shape is locked by `ExternalCalls.test.ts` (`inlines a state-var-target value-returning external-call helper
+  (Kashi _isSolvent)`).
 - **KashiPair (kashi-lending repo): import resolution** - "Cannot resolve import
   '@boringcrypto/boring-solidity/contracts/libraries/Bo...'" - a missing dependency path in that repo's layout, a
   HARNESS/dependency issue, not a compiler wall.
 
-## Reuse an entry-read local for a struct-mapping field write-back (IMPLEMENTED then REVERTED 2026-07-21)
+## Reuse an entry-read local for a struct-mapping field write-back (RE-LANDED 2026-10-16, 5703b86ec)
 The read-modify-writeback idiom `S e = m[k]; ..modify e..; m[k].f1 = e.f1; m[k].f2 = e.f2;` (Unicrow `refund`) is
 folded by CoalesceMappingEntryFieldWrites into one whole-struct write, but that RE-READS the entry to source the
 untouched fields - redundant, because `e` already holds them. Reusing `e` (`m[k] = S(e.f0, .., e.f1, .., 1, ..)`)
-elides the re-read.
+elides the re-read. The `ReuseEntryLocalForWriteback` pass is re-landed before CoalesceMappingEntryFieldWrites; its
+rewrite step is the pure `rewriteStatements` unit (`ReuseEntryLocalForWritebackRewrite.ts`), and the structural test
+(`ReuseEntryLocalForWritebackRewrite.test.ts`) feeds the exact idiom and asserts `elidedReads === 1` plus
+structural identity to the hand-written whole-struct write-back. The end-to-end compile is byte-identical to that
+hand-written form, and ineligible shapes (whole reassignment, control-flow boundary, escaping call) fail closed
+(`ReuseEntryLocalForWriteback.test.ts`). The REAL Unicrow `refund` source IS in the corpus (the marketplace symlink
+`.marketplace/contracts/unicrow/Unicrow.sol` resolves to the sibling EffectiveAcceleration checkout): under the
+kernel route the write-back run is already folded by the kernel's early `CoalesceMappingEntryFieldWrites(true)`, so
+the pass also re-targets that folded snapshot (`__mefw`) write at the `escrow` local, and
+`ReuseEntryLocalForWritebackUnicrow.test.ts` asserts the handler strictly shrinks and the total artifact drops by at
+least 200 bytes. On the current tree the delivered reduction is 238 bytes (measured with `asmToBytecode`, since the
+artifact `.bytecode` is ASM text): the `refund` handler measures `2065 -> 1957` (-108 bytes), the `release` handler
+`1304 -> 1189` (-115 bytes), plus route deltas. The pre-block-layout-v2 baseline recorded the same elision on
+`refund` alone as `5683 -> 5344` (-339 bytes) on a much larger handler.
 - **What it'd take:** a data-flow pass `ReuseEntryLocalForWriteback` (was fully written + VM-tested, green: solidc
   suite clean, 104 struct e2e, 5 behavioral/oracle tests) placed BEFORE RedesugarImportedStructFieldWrites (so an
   imported struct's `e.f=v` is still a MappingFieldAssign; a same-file struct's is a `e = S(..)` field-preserving
@@ -1530,7 +1850,15 @@ elides the re-read.
 - **Revisit if:** per-contract byte size becomes a hard deploy constraint, or the read-modify-writeback idiom shows up
   broadly (a struct with many untouched fields reused elsewhere saves more - est. ~800 B for a 13-field struct).
 
-## Multi-return STATE helper inline (Kashi `_isSolvent`) - BLOCKED by a pre-existing inline miscompile
+## Multi-return STATE helper inline (Kashi `_isSolvent`) - RE-LANDED 2026-10-16
+**RE-LANDED.** The blocker described below (the copy-local-key sorted-mapping read miscompile) was resolved
+2026-08-04 (see the "RESOLVED (verified 2026-08-04)" subsection), and the single-exit conversion was re-landed:
+`InlineReturningStateHelpers` canonicalizes a returning state/entry-reading helper with several early returns into
+the single-exit ternary form, so `_ok` inlines into its caller instead of failing "Block layout not available".
+`KashiMultiReturnInline.test.ts` pins the inline (the helper's entry access lands on the caller and no `_ok`
+subroutine remains), and `KashiIsSolventInline.test.ts` VM-verifies the inlined shape settles identically to the
+direct-expression oracle across every `b == 0 / b < m / b >= 2*m` boundary. The historical failure analysis below is
+retained for context, not as an active deferral.
 - **What:** A returning STATE/entry-reading helper with EARLY RETURNS (`function _ok(a,m) view returns (bool) { int b
   = bal[a]; if (b==0) return false; if (b<m) return false; return b>=m*2; }`, Kashi `_isSolvent` shape) fails "Block
   layout not available" - it can neither be an OP_INVOKE subroutine (entry access needs the caller's block layout) nor
@@ -1653,8 +1981,26 @@ stored value through all neighboring forms.
 
 ## Factory deploy of a stateful child alongside vmap mapping writes (2026-08-07)
 
-**STILL DEFERRED.** `StatefulContract.deployFrom` refuses a deploy function that both writes vmap mapping entries
-and instantiates a child with data NFTs:
+**RESOLVED (verified 2026-10-14).** A `deployDataNft` block-slot kind now reserves each child's data NFTs as fixed
+output-only slots right after the `deploy` master (`SymbolTableTraversal` deploy-slot reservation +
+`GenerateTargetTraversal.expandDeployDataNftLayout`), so the vmap insert tail starts at a covenant-known offset and
+no longer shares the first trailing slot with the child's genesis data-NFT outputs. The SDK orders child outputs
+into that region (`stb-build-inputs.ts` `deploy`/`deployDataNft`, `sc-deploy-from.ts`). The `createPair` shape is
+pinned by `solidcash/test/e2e/CreatePairDeployVMap.test.ts` and `DeployFromContract.test.ts` ("typed child combined
+with a vmap insert"). The permuted-child-output negative is pinned by the same file ("rejects a createPair
+transaction whose child data-NFT output is permuted against an entry output"): swapping a child data-NFT output with
+a factory entry output fails covenant validation. The guard in `sc-deploy-from.ts` now refuses only legacy artifacts
+whose ABI lacks `deployDataNft` slots (recompile to pick up the layout).
+
+**Literal source pin (verified 2026-10-15).** The full vendored MistSwap `UniswapV2Factory`/`UniswapV2Pair` source
+now compiles whole (`split: 'off'`, `maximumInputBytes: 100_000`, `evmCompat`, `allowUnsafeOperations`) and runs
+end to end: `deployFrom` supplies the `__internal__dynamicChunkInputBase` sentinel for `allPairs.push` and
+materializes the wide `PairCreated` event across its `event`/`eventChunk` slots with the compiler's evm-notation
+encoding, so `createPair` deploys a pair, both `getPair` directions read back, and the permuted child data-NFT
+output is refused. Pinned by `solidcash/test/e2e/UniswapV2FactoryLiteral.test.ts`. Original analysis below.
+
+**ORIGINAL ANALYSIS (superseded).** `StatefulContract.deployFrom` used to refuse a deploy function that both writes
+vmap mapping entries and instantiates a child with data NFTs:
 
 ```
 Deploy function 'createPair' combines a typed stateful child with vmap mapping access.
@@ -1686,8 +2032,39 @@ suites reach contract behaviour instead of dying in `beforeEach`.
 
 ## Cross-contract call into a callee that writes vmap mapping entries (2026-08-07)
 
-**STILL DEFERRED.** Calling a callee whose function writes vmap mapping entries fails before any transaction is
-built:
+**RESOLVED (verified 2026-10-14).** The callee's fixed vmap batch plan now travels as compiler-internal args on the
+plain external-call path, not only on message-bus routes: `sortedBatchInfo` groups the callee's straight-line vmap
+writes, `SortedList.planBatchUpsert` resolves the slot/proof/next/predecessor witnesses, and the builder fills
+`__internal__vmapBatch{Slot,Proof,Next,PredOut,TrailingCount}` alongside `msgSenderCategory`
+(`sc-resolve-create-builder-entry-abi.ts`, `sc-fix-create-builder-delegate-unlockers.ts`). The visible-vs-internal
+arity guard in `Contract.createUnlocker` is satisfied by the fully specified internal vector, so the
+`SushiBar.enter` → `SushiToken.transferFrom` shape is no longer refused by that guard. Cross-contract sorted writes
+are pinned by `CrossContractSortedWrite.test.ts` (UPDATE, INSERT, msg.sender-keyed), and the wrong-predecessor
+negative is pinned by the same file ("rejects a wrong predecessor proof co-spent for the callee batch"): co-spending a
+different entry as the callee's batch predecessor fails covenant validation rather than writing.
+
+**RESOLVED 2026-10-16 (was RED AT HEAD).** `CrossContractSortedWrite.test.ts` failed all four cases (UPDATE, INSERT,
+msg.sender-keyed, wrong-predecessor negative) at the callee with `messageBus: BCH-2026 preflight failed at input 2
+(ip 214, failing opcode 136 OP_EQUALVERIFY)`: the callee's entry OUTPUT carried the OLD value where the covenant
+derived the NEW value — a stale cross-contract sorted-write commitment. Root cause + fix: the preserve walk in
+`emitPreserveOutsideLayoutOwnMutable` compared an ABSOLUTE input index against the RELATIVE block size, so a
+cross-contract callee (master at absolute index > 0) satisfied `index >= blockSize` and wrongly preserved its own
+entry/data NFT 1:1 (old value). The boundary is now `masterAbsoluteIndex + blockSize`, and
+`deriveFullPhase1ProgressiveEntries` skips preserve observations (expected == the co-spent input's own commitment).
+Pinned by `CrossContractSortedWrite.test.ts` (4/4) plus the adjacent cross-contract suites. Evidence:
+`{SCRATCH}/cross-contract-sorted-write-green.log`.
+
+**STILL GAP NOTE CORRECTED (re-verified 2026-10-15).** An earlier probe of the full `SushiBar.enter` ->
+`SushiToken.transferFrom` shape (one callee writing both `_balances[from]/_balances[to]` in a two-slot `linear`
+batch plus the nested `_allowances[from][msg.sender]`) looked like it mis-ordered its entry outputs and failed the
+token master covenant - but that observation was made against an unrelated in-progress, uncommitted compiler
+hardening in the shared worktree. Against the committed tree the shape SETTLES and is now pinned by
+`solidcash/test/e2e/SushiBarTransferFrom.test.ts`: `transferFrom` settles, `_balances[from]`/`_balances[to]` and
+`_allowances[from][msg.sender]` all read back, and a wrong `_allowances` predecessor proof is refused at covenant
+validation. Original analysis below.
+
+**ORIGINAL ANALYSIS (superseded).** Calling a callee whose function writes vmap mapping entries failed before any
+transaction was built:
 
 ```
 Incorrect number of arguments passed to function transferFrom. Expected 3 arguments (address,address,uint256) but got 4
@@ -1724,48 +2101,232 @@ internal vector".
 
 ## Event payloads larger than one 128-byte NFT commitment (2026-08-07)
 
-**STILL DEFERRED.** An event whose encoded arguments exceed the 128-byte token-commitment limit is rejected by
-the network, not by the compiler:
+**RESOLVED for direct stateful calls (2026-10-13) and for kernel route handlers whose emits all stream (2026-10-13,
+runtime effect stream, narrow emits too since 2026-10-14, see below); STILL DEFERRED on legacy routes, other kernel
+handler shapes, framed frames, runtime counter-loop events and nested / delegate callees.** Before, an event whose
+encoded arguments exceed the commitment limit was rejected by the network (`excessive token commitment length`,
+measured on MistSwap `Timelock.queueTransaction` at 129 B), and later by the SDK at `addOutput`; the pre-scan had
+pinned `chunkCount` to 1.
 
-```
-Transaction violates token validation: excessive token commitment length ... Excessive token commitment length: 129
-```
+As built:
 
-Measured on MistSwap `Timelock.queueTransaction` (6 tests). Its event is
-`QueueTransaction(bytes32 txHash, address target, uint value, string signature, bytes data, uint eta)`, and the
-test passes `signature = "transferOwnership(address)"` (26 B) plus 32 B of `data`, which lands at 129 - one byte
-over.
+- `allocateEmitSlots` sets each emit's `chunkCount = ceil(maxSize / commitmentLimit)` (`getEventChunkCount` over
+  `getMaxPushdataEncodedSizeForType`; a zero-parameter event is its 1-byte marker). The emit keeps its ordinal
+  `emitIndex`; `computeBlockLayout` follows its `event` slot with `chunkCount - 1` consecutive output-only
+  `eventChunk` slots (`slotIndex` = the emit, `chunk` = 1.., `conditional`). A narrow event's layout and code are
+  unchanged.
+- `emitWideEventVerification` splits the payload into `commitmentLimit`-byte chunks. Chunk 0 sits at the `event`
+  slot under the event covenant, chunk i at `event + i` under the continuation covenant
+  (`computeEventContinuationHash`: the named covenant over the hash of `<signature>#continuation`, or `#continuation`
+  for anonymous events). Each used chunk output must carry exactly its chunk as an own-category immutable NFT with no
+  FT amount and at most 1200 sat; a chunk slot the payload does not reach must hold no token or not exist, so no
+  empty-commitment carrier fits there; the last slot takes the whole rest, so a payload wider than the reservation is
+  refused. A not-taken conditional emit binds chunk 0 as before (SEC-10) and its chunk slots token-free. The
+  own-category immutable pin and the split-facet delegate offsets admit `eventChunk` offsets.
+- SDK: `eventChunk` is an output-only slot (funding input, pass-through when nested). The owner materializer splits
+  the learned payload over the chunk slots (token-free dummies where it ends); phase-2 derivation learns each chunk
+  at its output and stores the joined payload under the emit index; receipts, `queryFilter` and `readEventsFromChain`
+  (with `getEventNftContinuationAddress`) join a head commitment with the continuation NFTs right after it.
+- Unbounded `string` / `bytes` / dynamic arrays still count as 9 bytes, so for them the reservation is a capacity,
+  not a bound: a wider payload is refused by the covenant (and the SDK refuses the oversized commitment).
 
-THE SCAFFOLDING IS HALF-PRESENT AND INCONSISTENT. `collectEmitStatements` already computes
-`chunkCount = maxSize > 128 ? ceil(maxSize / 128) : 1` and advances the AST node's `emitIndex` by `chunkCount`.
-Nothing else honours it:
+As built on kernel routes (2026-10-13, the runtime effect stream):
 
-- `computeBlockLayout` reserves ONE `event` slot per `emitInfos` ENTRY, not per chunk, so the AST's emit indices
-  run past the reserved slots.
-- The renumber right after the pre-scan (`emitInfos.forEach((info, idx) => { info.emitIndex = idx; })`) rewrites
-  only the ARRAY entries, never the AST nodes, so the two views agree only while every chunkCount is 1.
-- `GenerateTargetTraversal` has no `chunkCount` reference at all: `emitEventCovenantVerification` verifies exactly
-  one output commitment at `event + emitIndex` and never splits a blob.
+- Admission (`synthesizeMessageBusRoute`): a kernel handler that emits a wide event, or one a dynamic array can
+  widen (`unboundedEventNames`; `getEventChunkCount` counts such a parameter as 9 B), streams when `streamsEveryEmit`
+  holds: every emit it reaches sits in its own body outside branches, loops and try blocks, no return precedes the
+  last, no helper emits, and no counter loop runs a stream of its own. Any other wide emitter keeps
+  `event-wider-than-one-commitment`; one only a dynamic array widens keeps its window, refused at run time past 128 B.
+- `cloneMessageBusHandler` turns every emit of a stream handler's route clone into a chunked runtime event
+  (`runtimeLoopEventChunked`, one `repeatCount: 1` segment marked `chunked`) and reserves the 64-output trailing band
+  (`runtimeCounterLoopOutputCapacity`). The direct entry is untouched. The emits take no window, so a route whose
+  other handlers emit nothing loses its 255 event windows.
+- Codegen `emitChunkedRuntimeLoopEventRecords` splits the payload in a loop and pushes one `0x01 || pushdata(chunk) ||
+  lock35` record per `commitmentLimit`-byte chunk, the head under the event covenant and the rest under the
+  continuation covenant. `emitRuntimeLoopEffectVerification` binds each record to its output, so a forged or
+  reordered chunk is refused; the stream's span bound is the trailing capacity.
+- Artifact: the handler entry publishes `runtimeLoopEvents: [{ repeatCount: 1, eventSignatures, chunked: true }]` and
+  no `emits`; its path-effect schedule lists no event.
+- SDK: batch rows take that metadata (`mergePublishedMessageBusHandlerMetadata`) and plan one head record per site.
+  When a phase-2 probe fails, `extractRuntimeEffectStreamRuns` reads each verifier run where it introspects a
+  record's category (the record on the stack, the run's unchecked records on the alt stack), from the probe trace or,
+  when that kept no such state or trimmed one, from `traceRuntimeEffectStreamRuns` (one re-evaluation that keeps only
+  those states; forcing a full faithful trace instead ran the real Unicrow participants out of a 4 GB heap). The
+  bounded collector keeps only its latest 96 observations whole and the verifier makes 8 per record, so a probe that
+  runs past a 12-record run trims its first step; reading the next step learned an 11-record prefix and the count
+  flipped 12/11 until derivation reported an oscillation (nine Unicrow escrows, 2026-10-13).
+  `applyRuntimeLoopEventStream` replaces the row's planned records (count, locks, commitments) and shifts the later
+  event segments. Compose counts continuation locks as event locks, never decodes a chunk by schema in the
+  relocation, and relocates nothing for a stream its trace has not read yet. Receipts skip continuation outputs as
+  heads.
+- Test: `packages/solidcash/test/e2e/KernelStreamedWideEvents.test.ts` (head and continuation in order, a forged
+  chunk and a reordered pair refused, a dynamic-array record count learned) and the real Unicrow arbitration titles
+  (10/10, nine escrows included) green on the filtered re-evaluation; `test/unit/RuntimeEffectStreamTrace.test.ts`
+  pins the trimmed-step refusal.
 
-Consequence: making the size estimate more accurate ACTIVATES the broken path. Raising the address width from 9
-to its real 36 bytes (correct, and needed for state packing) pushed one MistSwap event to chunkCount 2 and the
-compile died with `Block slot not found: event[3] while compiling 'withdrawAndHarvest'` in
-`mocks/ComplexRewarder.sol`. The address width is therefore split into two constants in `SymbolTableTraversal`
-- `ADDRESS_MAX_ENCODED_BYTES` (36, state packing) and `ADDRESS_EVENT_CHUNK_BYTES` (9, event chunking) - with the
-second pinned to the old value purely so this path stays dormant.
+Still deferred:
 
-Note the estimate cannot be made sound for `string` / unbounded `bytes` parameters anyway (both estimated at 9),
-so a static chunk count is a lower bound in general; a complete answer needs the SDK to size the event region
-from the actual argument values at build time, the way dynamic storage chunking already does
-(`chunkCountForLength` / `splitValueIntoChunks` in `packages/utils/src/state.ts`).
+- Legacy routes, and kernel handlers outside the stream shape above (a conditional or looped emit, an emit in a
+  helper, a handler that already runs a counter-loop stream or runtime transfers): route synthesis refuses a handler
+  that emits a wide event, by event name (`event-wider-than-one-commitment`, published as `KERNEL_LAYOUT` under the
+  kernel), and codegen throws `EVENT_PAYLOAD_EXCEEDS_COMMITMENT` if a wide window emit still reaches a route, graph
+  handler or framed frame. A conditional stream emit needs a published condition (the builder plans one head per
+  site and only grows it); a mixed event/transfer stream needs the learner to read transfer records too.
+  **REFINED 2026-10-16 (helper emit).** An emit in a PRIVATE helper called exactly once at the handler's top level
+  is NOT deferred: private helpers are inlined into the handler body before admission, so the helper's emit streams
+  exactly like an own top-level emit. Verified by `KernelHelperEmitAdmission.test.ts` (wide helper emit admitted
+  `stream: true, chunked: true`; narrow helper emit admitted compact) and `KernelStreamedHelperEvent.test.ts` (a
+  5×bytes32 helper emit settles as a 128-byte head plus its continuation record, joined back to the exact payload).
+  The remaining helper shape is a helper called INSIDE a branch or loop, whose emit reduces to the conditional /
+  looped emit below after inlining (wide → `KERNEL_LAYOUT` refusal, narrow → keeps its window).
+  **REFINED 2026-10-16 (conditional/looped emit boundary).** A LOOPED NARROW emit is also not deferred: it lowers to
+  a runtime counter-loop event (`runtimeLoopEvents`), one record per iteration. A looped WIDE emit is refused
+  (`KERNEL_LAYOUT`) because the counter-loop records are one commitment per record and do not chunk. A conditional
+  emit keeps its window (narrow) or is refused by name (wide). Pinned by
+  `KernelConditionalLoopedEmitAdmission.test.ts` (4/4).
+  **REFINED 2026-10-16 (legacy-route wide event).** On a LEGACY route (`messageBusKernel: false`, no runtime effect
+  stream) a handler that emits a wide event is refused and not admitted; a narrow event keeps the route's per-row
+  event band. Pinned by `KernelLegacyWideEventAdmission.test.ts` (2/2).
+  **REFINED 2026-10-16 (runtime-transfer + emit boundary).** A handler that runs a runtime transfer loop and emits a
+  CHUNKED wide event is refused (`KERNEL_LAYOUT`, `events-require-planned-closure`): the chunked event stream's
+  records would have to share the trailing band with the transfer records, and the learner cannot read transfer
+  records yet. A COMPACT narrow emit beside the same loop still streams (`runtimeLoopEvents`). Pinned by
+  `KernelRuntimeTransferEmitAdmission.test.ts` (2/2).
+- The record count is read off the verifier's stacks, so it needs a participant probe that reaches the handler's
+  end; a compose pass whose isolated participant probe stops earlier leaves the count to a later pass. Compose's own
+  event discovery still falls back to a complete trace of a participant input when a slot is unread, as before.
+- Unbounded `string` / `bytes` event parameters still count as 9 B on routes and are not streamed.
+  **RESOLVED 2026-10-16.** `unboundedEventNames` (compiler.ts) now treats an unbounded `bytes`/`string`
+  parameter — and a struct holding one — as able to grow past one commitment, exactly like a dynamic array
+  (`holdsUnboundedValue` replaces the array-only `holdsDynamicArray`). A kernel handler whose top-level emit has
+  such a parameter therefore streams CHUNKED (`messageBusEventStreamChunked: true`) instead of leaving a compact
+  one-commitment record that a wide payload would overflow. Verified by
+  `packages/solidcash/test/e2e/KernelStreamedBytesEvent.test.ts` (2/2): the `Blob(bytes)` handler is admitted
+  chunked and a 200-byte payload settles as a 128-byte head under the event covenant plus its continuation
+  records, joined back to the exact encoded payload; `KernelStreamedWideEvents.test.ts` stays 4/4.
+- Byte identity: a route with a stream handler changes (trailing band, fewer windows), including a kernel handler that
+  emits a dynamic-array event at its top level, which was a narrow window before.
+- Investigated 2026-10-13, nothing landed: making the graph frame's `eventWidth` count chunk outputs is the wrong
+  layout for the kernel. A kernel route reserves `sites = messageBusMaximumRows = 255` windows
+  (`planGraphEffectFrames`; `computeBlockLayout` pushes `sites * eventWidth` event slots ahead of `returnEvent` and
+  the 64-slot trailing band, e.g. the MasterChef fixture: events 7..261, return 262, trailing 263..326). Balanced
+  blocks materialize every slot up to the last live one (compose-assemble only trims a trailing run of dummy pairs;
+  a `fixedSuffix` proxy never trims), so a width of `w` chunks adds `255 * (w - 1)` funder/pad pairs to EVERY
+  transaction on that route, narrow rows included (UnicrowArbitrator, Unicrow `Pay`/`Release`/`Refund`: about 3x
+  the block). It also cannot express `ClaimMultiple`, whose chunk count is the payload's own.
+- Framed convention (`collectEmitStatements` keeps `chunkCount` 1) and runtime counter-loop event records (one
+  commitment per record): an oversized payload is refused by the provider at build time.
+- Nested external-call and delegatecall callees: their unused chunk slots get funding inputs and token-free
+  pass-through outputs, so payloads that fit one commitment keep working, but a nested payload that needs chunks is
+  not learned or materialized and the callee covenant refuses it.
+  **PINNED 2026-10-16 (external-call harness).** `packages/solidcash/test/e2e/NestedCalleeWideEvent.test.ts` (2/2)
+  drives a caller that invokes a callee through the real `.withExternalCall(...).send()` path: a nested NARROW emit
+  (`Narrow(int)`) settles and the callee state advances, while a nested WIDE emit (`Wide(bytes32 x5)` = 165 B) fails
+  `messageBus: BCH-2026 preflight failed at input 2: Program failed an OP_VERIFY operation.` — the callee covenant
+  refuses its unmaterialized continuation chunk.
+  **CORRECTED 2026-10-16 (delegatecall spelling — SETTLES).** The delegatecall spelling does NOT share that boundary:
+  the same file's delegatecall describe (4/4) runs the implementation through `impl.delegatecall(input)` behind a
+  proxy fallback, and the WIDE delegate emit SETTLES (`send()` validates, the proxy counter advances to 1). The
+  delegate's own block layout materializes its event head + continuation chunks through the direct wide-event path,
+  because the delegate executes in the proxy's context but owns its own block slots. Only the EXTERNAL-CALL nested
+  callee wide emit remains fail-closed.
+- `destroy()` **RESOLVED 2026-10-16** - now collects continuation chunk UTXOs alongside the event head NFTs. Both
+  ride the same event covenant with a 144-block `OP_CHECKSEQUENCEVERIFY`, so the sweep adds each with the matching
+  block-based sequence (`EVENT_NFT_RELATIVE_LOCK_SEQUENCE` = `0x00000090`) and burns them into the reclaim output;
+  the head sweep needed the same sequence (it previously ran with the default final sequence and could never pass
+  the CSV). `packages/solidcash/test/e2e/WideEventChunks.test.ts` `destroy sweeps a wide event head and its
+  continuation chunks` emits a two-commitment payload, elapses the timelock, destroys, and asserts both the head and
+  continuation addresses hold no UTXOs.
 
-**What it would take:** reserve `sum(chunkCount)` event slots, keep the AST emit indices and the emitInfos view
-in one numbering, split the blob across the reserved outputs in code generation, reassemble in the SDK's event
-decoder, and then let both address widths converge on 36.
+Widened 2026-10-14 (atomic bus redesign, stage 1): every kernel handler whose emits stream takes the stream, narrow
+ones included, so a route keeps its 255 event windows only for a handler that cannot stream (a conditional or
+looped emit, a helper emit, a counter-loop stream or runtime transfers; X149 pins both forms).
 
-**Acceptance:** an event with >128 bytes of arguments emits N chunk outputs and round-trips through the SDK
-decoder; `ComplexRewarder.withdrawAndHarvest` compiles with the true address width; `test/Timelock.test.ts`
-queue/cancel/execute pass unmodified.
+- A handler none of whose emits can pass one commitment (`chunkedEvents`: wide or dynamic-array payloads) pushes
+  one compact record per emit (`messageBusEventStreamChunked` unset), settled by `emitRuntimeLoopEventVerification`;
+  the artifact publishes `runtimeLoopEvents: [{ repeatCount: 1, eventSignatures, stream: true }]`, and `stream`
+  is what the SDK keys the row metadata on (`mergePublishedMessageBusHandlerMetadata`). A chunked stream keeps
+  `chunked: true` beside it.
+- Both stream verifiers compare the whole output category with the owner's 32-byte category, so a record must be
+  an own-category IMMUTABLE NFT, as a window event is (they used to drop the capability byte).
+- Compose: the route stops at the first record it cannot match, so event discovery learns one compact record per
+  pass. `compose-assemble` feeds each authenticated kind-2 row back into the record planned at its offset under the
+  same lock; without it every pass restarted at the first record and the pooled title's callee never reached its
+  return output (the caller then read stray stack words, `require(length == 3 && fee == 100)` failed at input 0).
+  Event-frame relocation treats stream records as their own family: always selectable, never an inactive
+  template, never reset by a mixed route's window reset.
+- Measured on `AtomicMessageBusCompose` "preserves a pooled long mapping return across event-emitting writes"
+  (real BCH-2026 budget = (unlocking + 41) * 800): callee block 327 -> 72 slots, 331 -> 76 inputs, 58,537 ->
+  41,412 B; callee route input 15,721 B / 11.32M -> 12,116 B / 5.16M (contract 10,775 -> 11,004 B, still over the
+  10,000 B input limit); verifiers 13.30M and 34.51M -> 9.91M and 15.46M against 7.23M. Still red on the per-input
+  byte assertion, as before. "binds an emitted event row to its absolute physical output": callee block 257 -> 3
+  slots, 261 -> 7 inputs, 42,877 -> 25,787 B; caller 3.25M (over its 2.37M) -> 0.53M, route 4.94M -> 0.69M,
+  verifiers 7.76M and 23.54M -> 4.39M and 4.57M: every input now within its real budget.
+- Capacity: stream records share the participant's 64-slot trailing band (`BALANCED_TRAILING_CAPACITY`), so a
+  kernel batch of a streamed handler holds at most 64 records and the SDK refuses more ("exceed balanced trailing
+  capacity"); a conditional emit keeps one event window per row up to the 255-row batch ceiling
+  (KernelBatchRowCapacity pins both).
+
+Stage 2 (2026-10-14), contract size, no check dropped: the pooled title's callee 11,004 -> 8,718 B, its route input
+12,116 B / 5.16M -> 9,830 B / 4.34M against (9,830 + 41) * 800 = 7.90M, so it meets the per-input byte limit. The
+levers, in measured order on that callee:
+
+- Deep rotations (`emitReplace` from depth 14, the dynamic-depth and route frame-value replaces) run one shared body,
+  and the batch verifier's alternate-stack peeks one per depth: outlining cannot share either, since both park
+  items on the alternate stack (-1,100 B). These shared stack helpers stay out of a framed program and the atomic
+  verifier, whose program is byte-identical.
+- A fixed entry slot whose coordinate is one block offset from the executing master pushes it once; one shared body
+  per check kind tests presence and runs the read-only preservation, value preservation or category checks (-590 B).
+- Constant folds: an all-empty struct default or literal is its 0x00 frames, `new T[](0)` is 0x00 (-282 B).
+- Route source: no PUSHDATA4 carrier arm under a blob bound of at most 65,535 bytes (-43 B); the tuple-lane key
+  membership `require` is dropped where the lane dispatch's own `require(false)` refuses the same tuple (-58 B).
+- A sorted read's absent arm (bracket proof on the frame in place) is one shared body (-213 B).
+
+Size pins: MinimalNativeToken 7,500 -> 7,473 B, OzBchNativeInheritance 9,499 -> 9,433 B, NativeUsdt master
+9,239 -> 9,039 B. The verifiers (9.91M and 15.46M against 7.23M) are unchanged and remain stage 3.
+
+Stage 3 (2026-10-14, the atomic verifier's operation cost):
+
+- Where it went (pooled title, cost attributed to verifier source lines): the callee's verifier (15.46M) spent
+  8.5M in the row loop (10 rows, about 850k each), 5.0M in the per-slot walk (72 slots, about 69k each) and 1.5M
+  in the participant loop; the caller's (9.91M) the same row and participant loops. 6.1M of the callee's cost was
+  instructions stepped over in untaken arms (BCH-2026 charges each one), and most of the executed rest was deep
+  local reassignments: a write at stack depth d costs about 3d instructions unrolled and about 16d through the
+  counted loop (depths 14..27); the per-field loop alone rewrote `cursor` eight times a row at depth 61.
+  Hashing was under 10k and byte copies of the manifest about 1.3M.
+- `outlineMessageBusVerifierArms` (after the stack-suffix outlining, detached program only) moves every
+  conditional arm of at least 8 instructions, 5 inside a loop, into its own function: a not-taken arm steps over a
+  push and an OP_INVOKE. Stepped-over cost on the callee 6.13M -> 0.31M; the covenant gains about 7 B per arm.
+- A verifier reassignment never takes the counted loop: the ROLL rotation through depth 17, the unrolled shuttle
+  beyond (the stack-suffix outlining keeps it about as small).
+- Row loop: one 21-byte header slice; the four fields and the signature frame parsed in line with one cursor
+  write each; `rowFrames` (consumer and depth, 2 B per invocation row) replaces `rowConsumers`, `rowDepths` and
+  `invocationRows`, `rowFrames.length == row * 2` replaces `effectsStarted` and an unset `previousEventTarget`
+  replaces `eventsStarted`; carried values ordered by write frequency, each row's values dropped before the counter
+  advances; the graph-only bookkeeping (emissions, callers, completions, boundaries) only in a graph context;
+  the manifest version flags computed once.
+- Slot walk: one classifying pass per slot that reads each side's category once (the satoshi, token-container,
+  value and token-output counts are mutually exclusive), the all-static snapshot in its own guarded loop, and no
+  deployment-target loop without a deployment handler. Participant loop: fewer cursor writes, the V1 output scan
+  compares the category first. Root envelope reader: one header slice (also in the route binder: a root-envelope
+  route is 17 B smaller).
+- Measured, standard cost against the real budget (7,234,400 at the 9,000 B verifier floor): pooled caller
+  verifier 9.91M -> 3.09M, callee 15.46M -> 3.82M; "binds an emitted event row" 4.39M / 4.57M -> 1.23M / 1.15M.
+  Covenant: pooled callee 6,932 -> 7,031 B (188 functions), caller 6,001 -> 5,877 B. Both titles assert the real
+  budget through `verifierInputCosts`; `MESSAGE_BUS_VERIFIER_COST_LOG=<file>` logs every sent composition's
+  verifier costs by test title. Its per-input byte assertion is stage 2's (callee route input 12,099 B before
+  stage 2, 9,830 B after).
+- Not built: skipping checks another input of the same transaction already ran; not needed for the budget.
+- The two remaining cases are closed with local ordinary-VM evidence in `4d575b330`:
+  "co-spends a compiler-positioned blockhash oracle" previously used 7.96M, and "authenticates NFT capability,
+  commitment, recipient, and mixed-container settlement" used 11.11M/15.88M. Shared minting-output census keeps
+  the last exact V1 match; structural neutral-pad classification, shallow helpers and loop lowering reduce scan
+  cost. A duplicate physical transfer reserve for multiple containers is counted once; a runtime unused-slot
+  walk and omission of a metadata-proven impossible FT debit scan fit the callee byte ceiling. The SDK reserve
+  includes the actual participant population and measures fees with the candidate change output present.
+  Both original cases now assert real cost and input-byte limits for every input, with mutated pads, duplicate
+  masters, NFT alterations and conservation-balanced FT theft refused. No live-node measurement was run for
+  these follow-ups; BCHN is excluded by the user's instruction.
 
 ## keccak256 inside an internal helper of a STATEFUL contract (2026-08-07) - RESOLVED
 
@@ -1857,7 +2418,168 @@ hash back; `bench/mistswap-native/repro-bento.mjs` deploys BentoBoxMock; `test/P
 
 ## MasterChef / MasterChefV2: message-bus preflight OP_VERIFY (2026-08-07)
 
-**NEWLY VISIBLE, NOT YET DIAGNOSED.** 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) fail with
+**ROOT CAUSE FINALIZED (2026-10-15): the split regression and a zero-trip state-array loop resolver gap are
+fixed; the original `add` preflight OP_VERIFY is re-exposed and traced to the split root's
+`emitOwnCategoryMutableNftConservation` check, which is not excluding the pushed dynamic-array chunk.** The
+split codegen regression is named and fixed:
+`emitDynamicWriteVerification` dropped the `poolInfo` read-modify-write value in the delegate single-write
+cleanup even when `coSpendPreservedDynValues` marked it for the array-external-call co-spend, so the later
+`emitExternalCallVerification` cleanup threw `Expected variable '__internal__dynwrite_value_poolInfo' does not
+exist on the stack`. The fix keeps the marked value; pinned by `DynamicWriteArraySplit.test.ts`.
+
+With the split fixed, `MasterChef` now splits (`MasterChef.split.json`, facet deploy succeeds) and the suite
+reaches cross-contract composition instead of the constructor byte gate. Final census (clean build of committed
+HEAD `59e81f7cb` plus the override-stripping fix, both files through `bench/mistswap-native`, captured to
+`masterchef-census.log` in the goal scratch): 24 failed / 2 passed — MasterChef 6/8 and MasterChefV2 18/18,
+both files present, and every one of the 24 failures is the exact preflight OP_VERIFY. The unstripped-`{from}`
+arity gap is fixed by `stripTrailingEthersOverrides` in `sc-build-namespaces.ts` (applied in the `call`
+namespace and the `SplitContract` ethers-parity wrappers, pinned by `EthersOverrideStripping.test.ts`): a
+positional trailing `{from: …}` transaction override is dropped before ABI validation instead of being counted
+as a contract argument. Every preflight failure shows the exact
+`messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.`
+
+Refusal 1 — `IERC20.balanceOf is not connected` (2026-10-15, instrumented and traced, then FIXED). The throw
+fires on the `add(...)` transaction, not on `deposit`: `add` inlines `massUpdatePools()`, whose `balanceOf`
+callsite is published as `occurrence: 'loop'`, `loopArrayVar: 'poolInfo'`,
+`addressSource = poolInfo[loopIndex].lpToken`. At `add` time `poolInfo` is EMPTY, so the loop is zero-trip;
+`resolveExternalArgs` reads the empty state array and returns `undefined`, no deployment is selected, and the
+resolver throws before the VM. The guard `usesEmptyArrayElement` only inspected FUNCTION-ARGUMENT
+`arrayElement` sources (not a `loopArrayVar` over a STATE array), and the loop-nested `SushiToken.mint`
+callsites (no `loopArrayVar`, sharing the loop counter) were likewise kept. Fixed by
+`isZeroTripStateArrayLoop` in `sc-resolve-create-builder-nested-compose-callee.ts` (pinned by
+`ZeroTripStateArrayLoop.test.ts`): a delegate-compose `loop` callsite over an empty state array, or a
+loop-nested sibling sharing its counter with one, is now skipped before callee resolution.
+
+Refusal 2 — `messageBus: result-dependent loop has no compiler iteration domain` (2026-10-15, focused
+multi-row repro). When a signer drives the same `massUpdatePools`-shaped loop (source loop over `poolInfo`,
+per-row `balanceOf` plus element write-back) the atomic graph composer's result-topology pass
+(`compose-result-topology.ts` ~line 495) refuses it: the callsite is published with `loopArrayVar: 'poolInfo'`
+but NO affine `iterationDomain`, and for a non-`legacy-unroll` kernel artifact the pass only enumerates loop
+occurrences from `iterationDomain`. `MasterChef.massUpdatePools`'s published `balanceOf` callsite has the same
+shape (no `iterationDomain`, only `loopArrayVar`), so a direct `massUpdatePools` reaches this same refusal. The
+graph planner cannot enumerate a `loopArrayVar`-driven result-dependent loop without the compiler publishing an
+affine domain.
+
+Re-exposed preflight, its trace, and the finalized root cause (2026-10-15): with refusal 1 fixed,
+`MasterChef.add(100, lp, true)` no longer throws `not connected`; it reaches the original failure —
+`messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.` — the exact error of
+the 24-test census. The input-0 covenant trace (`SOLIDC_DEBUG_COVENANT_TRACE=1`,
+`setMaterializationMode('devOracle')`) names the site: a 50-instruction helper (invoke id `ae`) that ends with
+`op=0x9d OP_NUMEQUALVERIFY` failing on a mutable-NFT balance of `81` (-1) against `<empty>` (0).
+
+Bisected and corrected (2026-10-15): the failing `body=50` is the compiler's
+`emitOwnCategoryMutableNftConservation` (GenerateTargetTraversal.ts:49179), emitted on the split root
+forwarder's delegatecall path. It builds `masterCategory || 0x01` (mutable capability), then requires the
+own-category mutable NFT population to be conserved — input mutable count minus output mutable count equals 0.
+`poolInfo.push` appends ONE new mutable chunk NFT output (the SDK correctly produces exactly one chunk,
+commitment `0006510001640000`, confirmed by instrumenting `setChunkRawCommitments`: `next: 1`), so the balance
+is -1 and `OP_NUMEQUALVERIFY (balance == 0)` fails. The check is supposed to exclude split-delegate collections
+whose cardinality the delegate authorizes, but `censusedCollectionSignatures` (compiler.ts:19291) is derived
+only from `sortedBatchInfo` (sorted-batch MAPPING collections) — dynamic-ARRAY chunk collections such as
+`poolInfo` are never censused, so their new chunks are counted as excess outputs. The `massUpdatePools` loop is
+a red herring: a split push WITHOUT the loop (`SplitPushNoLoop` scratch test) fails the same conservation check,
+so this is a split-delegate dynamic-array-push defect, not a loop/compose issue. Evidence:
+`masterchef-add-skip3-trace.log`, `minimal-split-add.log`, `split-push-noloop.log`, `seed-debug2.log`,
+`masterchef-census.log`, `masterchef-census-now.log`, `compose-callee-debug.log`, `masterchef-repro.log`
+(the reduced `SplitPushNoLoop` failure) in the goal scratch.
+
+Observed root-cause diff, both files (2026-10-15, `SOLIDC_DEBUG_COVENANT_TRACE=1` +
+`setMaterializationMode('devOracle')`, captured to `masterchef-trace.log` in the goal scratch). The failing
+input-0 trace for `MasterChef.add` is `body=50`, `ip=48 op=0x9d OP_NUMEQUALVERIFY` with
+`top=[01 <category||0x01> 81 <empty>]` — the balance is `81` (-1) against the pushed `0`, exactly the
+`emitOwnCategoryMutableNftConservation` epilogue (`encodeInt(0); OP_NUMEQUALVERIFY`). MasterChefV2.test.ts's
+first failing call is the SAME base `MasterChef.add` in its `beforeEach`, and its trace is the identical
+`body=50` / `op=0x9d` site, so the 24-test census is one defect: the pushed `poolInfo` chunk makes the
+own-category mutable balance -1.
+
+**RESOLVED 2026-10-16 (the conservation-check defect, MasterChef).** `censusedCollectionSignatures` (the split
+root's mutable-NFT exclusion set) now also includes the dynamic-ARRAY chunk signatures of the facet handler's
+`dynamicWrites`, resolved from `stateLayout.variables` via `dynamicChunkSignature(name, type)`, so the split
+root's `emitOwnCategoryMutableNftConservation` no longer counts a `poolInfo.push` chunk as an excess output.
+Pinned by `packages/solidcash/test/e2e/SplitAddPushPreflight.test.ts` (a split `add` that pushes a struct-array
+element now settles instead of aborting at the input-0 OP_VERIFY), with the split compiler suites
+(`DynamicWriteArraySplit`, `FunctionSplit`, `LargeContractSplitting`) and the split e2e siblings
+(`SplitFacetMsgSender`, `SplitLayoutAgreementX162`, `SplitMerge`) still green.
+
+Second, distinct defect behind it (2026-10-15, RESOLVED 2026-10-16): once `MasterChef.add` is bypassed,
+`MasterChefV2.add` (`allocPoint.to64()` / `lastRewardBlock.to64()` narrowing) failed its own `BoringMath.to64`
+"uint64 Overflow" guard at `body=29` (invoke id `04`), `ip=11 op=0x88 OP_EQUALVERIFY` with `top=[440a02 81 80
+00]`. `440a02` is the block oracle's `block.number` = 133700 (in range for uint64), but the outlined helper
+checked the SIGN byte of the literal `-1` from `uint64(-1)` (`OP_1NEGATE OP_DUP OP_9 OP_NUM2BIN OP_8 OP_SPLIT
+OP_NIP OP_0 OP_EQUALVERIFY`, sign byte `80` != `00`) rather than the argument's range, so the guard failed for
+the in-range value. The root cause was that `uint64(-1)` was not folded to `type(uint64).max` in evmCompat
+type checking: when the surrounding `require(a <= uint64(-1))` could not be whole-expression constant-folded
+(the left side is a runtime `block.number` or argument), codegen emitted the literal -1 followed by the uint64
+sign-byte bounds check. `TypeCheckTraversal.visitCast` now folds `uintN(negative literal)` to the wrapped
+two's-complement constant, so `uint64(-1)` becomes `type(uint64).max` and the comparison checks the real
+maximum. Pinned by `packages/solidcash/test/e2e/SplitTo64Preflight.test.ts` (a split message-bus
+`value.to64()` settles for an in-range runtime value and still refuses `2^64`), the ARITH-5 class-C VM tests,
+and the full `solidity-compat` compiler suite (1187 tests). Trace:
+`masterchefv2-add-trace.log` (both `chef.add` and `chef2.add` sites) in the goal scratch.
+
+**UPDATE 2026-10-16 (verified, next residual: `MasterChef.deposit`).** The two defects above are confirmed
+closed end to end: `MasterChefPoolInfoPush.test.ts` 1/1 passes, and `MasterChefDeposit.test.ts` now gets past
+`chef.add` (the previously failing call) and `lp.approve` to the FIRST failure at `chef.deposit(0, 100)` — still
+the same `messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.`. The deposit
+trace (captured to `masterchef-deposit-trace.log` in the goal scratch) pins a distinct third defect: input-0
+`deposit` fails at `ip 4874 opcode 0x88 OP_EQUALVERIFY` comparing two 35-byte P2SH32 locks. Resolving the locks
+via `SOLIDC_DEBUG_ENTRY_ADDR=1` names them exactly: the EXPECTED lock `aa20386f…` is the ERC20Mock
+`_allowances` entry covenant (`_allowances:mapping(address => mapping(address => uint256))`, category
+`b949cfb3…`) that the co-spent LP `transferFrom` writes through `safeTransferFrom`, and the ACTUAL lock
+`aa20afeb…` is the MasterChef `poolInfo` dynamic-chunk covenant (`poolInfo:PoolInfo[]`, category `2b2c227b…`).
+So the composed deposit transaction places the MasterChef trailing `poolInfo` chunk output at the output index
+where the LP callee's `_allowances` entry output is expected — a composed-output-ordering collision between the
+caller's dynamic-array chunks and the external callee's sorted-entry block.
+
+**RESOLVED 2026-10-16 (the output-ordering half).** The off-by-one was the co-spent logical/external identity
+anchor (immutable CREATE/SCID NFT) being recreated before the local dynamic-chunk run but NOT counted in
+`StatefulTransactionBuilder.getChunkOutputBase()`, which only summed blockSize + external-call blockInputs +
+external return events + low-level calls + iteration entries + loop entries. The fix adds
+`externalIdentityAnchorUtxos.length + (logicalIdentityUtxo ? 1 : 0)` to the trailing base, so the poolInfo chunk
+lands at the covenant's `__internal__dynamicChunkOutputBase` and the deposit covenant passes. Committed
+`a250f75c2`. `MasterChefPoolInfoPush` 1/1, `SplitAddPushPreflight` 1/1, `SplitTo64Preflight` 2/2 still green.
+
+**RESOLVED 2026-10-16 (the allowance-entry selection half).** The next wall was the co-spent LP
+`ERC20Mock.transferFrom` reverting "transfer amount exceeds allowance": the SDK's `_allowances` key used
+`publicSelfIdentity.lockingBytecode` = the logical CREATE lock (`aa20acae…`), while `approve(chef.address, …)`
+stored the allowance under the PHYSICAL `chef.address` (`aa206a2e…`), so the deposit co-spent the HEAD instead of
+the approved entry. `publicSelfIdentity.lockingBytecode` now resolves to the physical `authenticatedSelfAddress`
+(the identity a child observes as `msg.sender`), so the deposit co-spends the exact `_allowances[bob][chef]`
+entry (slot `13ea57c0…`, value 1000). Committed `24a61d5d1`. Pins still green.
+
+**Remaining (third wall, now revealed, diagnosed).** With input 0 and the allowance entry fixed, `deposit` fails
+at input 9 (the LP `transferFrom` covenant) in an 8-byte outlined helper (`OP_SUB OP_PICK OP_INPUTINDEX OP_ADD
+OP_UTXOBYTECODE OP_EQUALVERIFY`) that verifies an entry-input lock. The LP `_balances[chef]` INSERT's
+`__internal__vmapBatchPredOut_1` witness resolves to absolute output 17 (relative `blockSize` 8 + the LP callee's
+output base 9), but output 17 carries the MasterChef `userInfo` HEAD predecessor (`aa205301…`); the helper
+compares it against the LP `_balances` entry lock (`aa20c53c…`) and fails. Root: the composed trailing band places
+the MasterChef sorted-batch predecessor (userInfo HEAD) and the LP sorted-batch predecessor (balances P') at the
+same output 17 — the callee's relative `PredOut = blockSize` does not account for the caller's trailing
+predecessor that lands between the LP block and the LP's own trailing band. Fix site: resolve the nested callee's
+relative `PredOut`/trailing band AFTER the caller's sorted-batch predecessors, or order the two trailing bands.
+
+**RESOLVED 2026-10-16 (caller trailing-band base accounts for pre-callee intermediates).** The
+composed `deposit` transaction co-spends the MasterChef `poolInfo` old dynamic chunk and one sorted-batch
+loop-alignment funder BEFORE the LP callee block, so the LP block starts at output 9 rather than 7.
+`StatefulTransactionBuilder.getChunkOutputBase()` previously counted the callee block from `blockSize` (7) and
+the identity anchor before the loop entries, which put the caller's `userInfo` HEAD loop entry at output 17 —
+the LP block's own last output, where the LP `_balances` P' also lands. The fix removes the identity anchor from
+the pre-loop trailing base (it is recreated AFTER the dynamic-chunk run by `repairNestedCalleeOutputs`) and adds
+`dynamicChunkInputs.length` + the loop-alignment funder count when external participants exist, so the caller's
+loop entry resolves to 18, the `poolInfo` chunk to 19, and the logical-identity anchor to 20. The LP PredOut stays
+at its natural 17 (the earlier callee PredOut shift in `c0048847a` becomes a no-op for this case because 17 < the
+corrected loop-entry base 18, and remains a safety net for later colliding coordinates).
+`MasterChefDeposit.test.ts` now passes end to end (`approve then deposit`), and the pins stay green:
+`MasterChefPoolInfoPush` 1/1, `SplitAddPushPreflight` 1/1, `SplitTo64Preflight` 2/2. The chunked-array suites
+(`ChunkedArrays`, `ChunkReadsBesideExternalCall`, `ChunkArrayPushMessageBus`, `StructArrayElementOverwrite`,
+`StoragePointerMappingElem`, `CollectionIterationDynamicInsertX102`) are 33/33 green. `ChunkedLoopRoundtrip` is a
+pre-existing red test (reproduces at `e16019bfe`, unrelated to this change).
+
+
+
+
+
+The original report: 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) failed with
 
 ```
 messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
@@ -1869,14 +2591,10 @@ whenever the box was loaded, so ~24 tests were silently missing from every earli
 idle machine, and `poolOptions.forks.execArgv: ['--max-old-space-size=4096']` is now set in the project's
 `vitest.solidhat.config.ts`. **Treat any MistSwap total that omits these two files as incomplete.**
 
-MasterChef is 10,837 bytes and MasterChefV2 13,789, so both are split, and both take a synthesized message-bus
-route. Nothing beyond the preflight message has been established - no bisect, no trace. Start with
-`SOLIDCASH_COVENANT_TRACE=1` and the same instrumentation used for the constructor wall above.
-
 ## keccak256 of a preimage larger than one side-car's block budget (2026-08-07)
 
-**PARTLY RESOLVED; the remaining half is deferred.** A keccak compute side-car funds three 64-byte blocks
-(~407 B) per input, so a larger preimage is refused:
+**RESOLVED.** A keccak compute side-car funds three 64-byte blocks (~407 B) per input, so a larger preimage
+was refused until the chained START/CONT/FINAL path below landed. The original refusal was:
 
 ```
 keccak256 preimage too large (12509 B = 92 blocks); a single side-car input funds at most 3 keccak blocks
@@ -1889,17 +2607,32 @@ already holds. That now folds to a constant in code generation, with `countLibra
 shape so no `keccakSideCar` slot is reserved for it. Note `FoldHashLiterals` could not do this: it runs
 pre-semantic, and `creationCode` only becomes bytes once the child has been compiled.
 
-STILL DEFERRED: a hash of RUNTIME data longer than ~407 bytes. The error names the intended design ("use
-multiple side-cars"), but a single logical hash spanning several side-car inputs is not implemented - the
-covenant would have to chain the keccak block state from one side-car's output commitment into the next
-input's, and the SDK would have to plan and fund that chain.
+**RESOLVED 2026-10-15.** The chained START/CONT/FINAL side-car covenants,
+`splitKeccakChainBlocks` / `planKeccakChain` / `keccakChainCommitments` / `buildKeccakChainSidecars`, and the
+real-VM chain test landed in commits `dea9dcf8e`, `f064c8cc3`, `b28713515`, and `cd0baa165`
+(`packages/utils/test/keccak-chain-library.test.ts` passes 6/6). The compiler now emits a FINAL chained read
+for a direct, unbounded single-call `bytes`/`string` preimage (`GenerateTargetTraversal.ts`: FINAL index
+`trailingBase + size(arg)/136`, FINAL covenant hash, `keccakChainReads` published on the ABI), reserves a
+256-slot trailing region for it (`SymbolTableTraversal.ts`), and the SDK routes the preimage through
+`buildKeccakChainSidecars` into that trailing band (`sc-resolve-keccak-compute-co-spends.ts`,
+`StatefulContract.ts`, `stb-build-inputs.ts`, the state-derivation probe `sc-derive-commitments.ts`, and the
+factory-deploy assembly `sc-deploy-from.ts`; unit coverage `packages/solidcash/test/unit/KeccakChainSidecar.test.ts`
+3/3 and `packages/solidcash/test/unit/KeccakChainDerivationProbe.test.ts` 1/1). The plain stateful `send()`
+balanced assembly admits the chained trailing inputs, and `packages/solidcash/test/e2e/KeccakChainSidecar.test.ts`
+settles a 2000-byte (>407-byte) runtime preimage whose read-back digest equals `@noble/hashes/sha3.js keccak_256`
+(2/2, including the unfunded-refusal companion). A factory `deploy` function that hashes a >407-byte runtime
+argument now co-spends the chained side-cars in the finalized `deployFrom` transaction and derives the same digest
+(`packages/solidcash/test/e2e/KeccakChainDeployFrom.test.ts` 1/1, 2000-byte preimage, real byte gate). The
+under-threshold single-compute side-car path and the loop/straight-line mix layouts are unchanged. Remaining
+boundaries: (1) the compiler-reserved 256-slot trailing band holds one side-car per 136-byte block, so a single
+preimage longer than 255 full blocks + 135 bytes (~34 KB) still exceeds the reserved band and is refused by the
+balanced trailing-capacity check; (2) the FINAL side-car carries the full preimage in its unlocking bytecode, so a
+real network's 10,000-byte per-input consensus limit caps a chained preimage at roughly 6.4 KB (and the whole
+transaction must still fit the 100 KB standard relay ceiling).
 
-**What it would take:** a chained side-car protocol (side-car i consumes the running state committed by i-1,
-the last commits the digest), plus SDK planning that splits the preimage on 64-byte block boundaries and sizes
-the co-spend set from the actual argument length.
-
-**Acceptance:** `keccak256(x)` for a 12 KB runtime `x` settles and reads back the same digest `keccak_256`
-computes off-chain; the refusal above still fires when the caller declines to fund the chain.
+**Acceptance:** `keccak256(x)` for a runtime `x` above the single-side-car threshold (~407 bytes) and within the
+consensus input-byte limit (~6.4 KB) settles and reads back the same digest `keccak_256` computes off-chain; the
+refusal above still fires when the caller declines to fund the chain.
 
 ## View and static calls do not pin the callee's state in direct composition (2026-10-12)
 
@@ -1921,8 +2654,27 @@ output j has j below the input count with a matching input (no new entries). Lay
 per view call, non-view calls byte-identical, no SDK change. Gaps: nested calls of the callee do not inherit
 read-only; satoshi and fungible-token movements of the callee are not pinned without value/amount checks.
 
-**Why deferred:** it is a semantic-versus-size trade-off on every contract that calls view functions; it needs a
-decision, then an adversarial review like the other covenant changes.
+**Why deferred:** it is a semantic-versus-size trade-off on every contract that calls view functions. The decision
+below rejected the flag; the entry stays open with the ~45 B/view-call cost stated, so it needs no further action
+unless a real port requires implicit STATICCALL semantics on view/pure declarations.
+
+**DECISION 2026-10-14 (reject the implicit `readOnlyDeclared` flag).** The cost is ~45 B on every direct-composition
+call through a `view`/`pure` interface declaration, including the common read-only getter calls that never touch
+callee state; that tax is disproportionate to a gap the explicit `.staticcall()` spelling already closes for the
+callers that need it (`I(a).m.staticcall()` and low-level `staticcall` both pin the callee's master and the data
+NFTs the caller's DECLARED type publishes — for a bare interface with no state declarations that list is empty, so
+only the master is pinned). The proposed scan also has two known gaps — nested callee calls do not inherit
+read-only, and the callee's satoshi / fungible-token movements are not pinned — so the flag would be incomplete as
+a read-only guarantee. Retained deferral: revisit only if a real port needs implicit STATICCALL semantics on
+view/pure declarations. The entry remains open with the ~45 B/view-call cost stated.
+
+**VERIFIED 2026-10-16 (boundary pinned).** `packages/solidc/test/StaticCallDirectPinning.test.ts` pins the exact
+preservation boundary at the shipped compile path: a direct `.staticcall()` through a BARE interface publishes
+`requiredDataNftIndices: []` (only the callee master commitment is checked), through a state-declaring interface
+(`public int counter`) it publishes `requiredDataNftIndices: [0]` (master plus that data NFT), and a plain
+`I(bare).bump()` view/pure declaration runs REGULAR with no `callMode` and no static preservation. So the mapping /
+data-NFT gap for bare interfaces is real, and the DECISION's "already closes" holds only where the caller's declared
+type names the callee's data NFTs.
 
 ## A framed proxy's `initialize` that calls another contract is not atomic (audit SDKFRAMED-2 residual, 2026-10-12)
 
@@ -1938,6 +2690,107 @@ same unproven-coin shape that SDKFRAMED-1 closed for framed deploys; no audit ro
 calling initializer can run as the proxy genesis's own frame.
 
 **Why deferred:** it is a validator protocol extension; the default path no longer needs it.
+
+**STATUS 2026-10-14 (still open).** The default path still refuses a calling initializer with the documented
+`initializeAs: 'hop'` escape hatch (`initializedProxyState` refuses `callees.length > 0`). The atomic fix is a real
+protocol extension, not a planner tweak: the proxy genesis would mint the proxy master as an OUTPUT rather than spend
+it, while still spending the callee's (Writer's) master and records so the callee's state change commits in the same
+transaction. Every validator check that assumes a covered master is an input has to learn the genesis shape — V1 (the
+validator's own category master is present only as a minted output), V3 (`M.masters` gains a minted-out root master),
+V4 (a genesis root frame has no P2PKH caller/origin), V5 (the callee edge still names a spent master), V7 (the census
+counts the minted master's own outputs), and V9 (the first root's category is the validator's own, read from the
+minted master). The shape is the deferred CREATE-frame machinery: the composer already lays a created record with
+`INDEX_NONE`, but the validator's CREATE witness checks are not emitted (`assessFramedMasterShape` refuses
+`hasContractInstantiation`, and `VALIDATOR_PROGRAM_REASONS` names no CREATE rule). The shortcut that would run the
+Writer's `bump` as a standalone ROOT frame is provably invalid: `master-head.ts` `assertRootFrame` requires a ROOT
+frame's witness `sender` to equal its P2PKH caller's lock and its origin, so `msg.sender` inside the callee would
+become the deployer, not the proxy. The minted-root-master carrier is therefore mandatory, and the two open questions
+resolve to one shape: the Writer's validator covers both the spent Writer master and the minted proxy root master,
+whose witness block the transcript carries inline (a new transcript version); V3 gains the minted master, V4 treats a
+minted root as a root with no P2PKH caller, V5 reads the minted master's inline block for the callee edge, and V9 is
+relaxed so the first root may be a minted master of a category the running validator does not own (the proxy's own
+validator cannot run: it is minted in the same transaction). The wire-format carrier is now implemented and tested:
+`packages/utils/src/framed/transcript.ts` gains `encodeMintedTranscript`/`decodeMintedTranscript` (version 0x03),
+carrying each minted master as `{ output:u8 block:lp16 }[]` between the masters and the settles, with the block
+decoded through `decodeWitnessBlock` (commit `0f05916c8`, `packages/utils/test/framed/transcript.test.ts`). The
+witness-block reference discriminator is now implemented and tested too: `MINTED_REF_FLAG`/`isMintedRef`/
+`mintedRef`/`mintedRefIndex` in `witness-block.ts` (commit `4945700a3`), with the high bit naming a minted master by
+its output index and `INDEX_NONE = 0xffff` kept as the absent sentinel (output indices below `0x7fff`). What
+remains is the validator side: parsing the minted list in `program.ts` (whose `emitMasterIndices`/`emitSettledStateInputs`/
+`emitCompleteness`/`emitRootRules`/`emitEdgeRules`/`emitRootCategory` all re-walk the transcript at fixed offsets) and
+the matching V3/V4/V5/V9 changes in `checks.ts` and `reference.ts`, then the SDK genesis builder. This is a hard
+fork, not a soft extension: changing `buildValidatorProgram()` moves the validator's P2SH32 address and the
+master-head's `recogniseValidatorScriptAgainstReservedHash` reserved hash in `frame-tail.ts`/`master-head.ts`, so the
+program, the derivation, the reference model, the master-head recognition, and every deployed validator must move
+together. PARTIALLY DONE (commits `52057b47f`, `52c170d71`, `59e34aeda`, `11c64cc37`, then the minted program walk
+completed): `reading.ts` dispatches both transcript versions, `checks.ts` and `reference.ts` thread a minted-master id
+space (`0x8000 | output`) through V2/V3/V4/V5/V6/V9, and `program.ts` accepts version 0x03 with a conditional
+`emitMintedMastersIfV3` V2 walk, the `rootCount`/V9 relaxation, and on-chain V3 (minted output is minting and names
+this validator), V4 (minted root is a ROOT frame with no caller or origin) and V5 (the minted root's calls are read
+from the inline block and checked against their callees, with the caller named by `mintedRef(output)`) enforcement.
+The V3/V4/V5 minted emitters are version-gated so they are no-ops for the shipped v0x02 transcript; the same pass
+fixed two stack bugs the earlier minted program commits had introduced on the v0x02 path (a stray `OP_DROP` in the
+header's version check and an `OP_DUP` that read the transcript remainder instead of `rootCount` in the V9
+relaxation), and `script.test.ts` passes again. A derivation-level genesis test (`minted-genesis.test.ts`) now
+hand-lays the minimal v0x03 shape (a validator, its facet, a spent Writer master, and one minted proxy root that
+calls the Writer) and checks the derivation accepts it and refuses the V5 edge mutations. Running that same shape
+through the real program surfaced what remains: the minted emitters had read `takeUnsignedCount`'s output in the
+wrong stack order (fixed for V2/V3/V4/V5), the head/facet V6/V7 settle emitters needed a version-gated minted-list
+skip (added), and the `emitMintedMastersIfV3` V2 walk parked its zero on the wrong side of the settle list (fixed).
+
+**STATUS 2026-10-14 (validator + composer done; deploy wiring remains).** The on-chain minted rules are all emitted
+and version-gated, and the genesis shape runs through the real program: `emitCoveredFrame` accepts a minted ref as a
+covered caller (V4), `emitTimesCalled` counts the minted masters' callees in the called-once rule (V5), and
+`emitExecutionOrder` seeds its work list from the minted roots' callees (V6) — the minted edge walk's filler-slot
+juggling was also fixed (it parked the remaining minted list and the count swapped, so `OP_ROT OP_ROT` now reorders
+them). `minted-genesis.test.ts` now runs the real VM program and asserts it accepts the honest shape and refuses the
+V5 caller mutation (8 tests). The composer now builds the same shape: `layout.ts` allocates a minted output region
+ahead of the events, `assemble.ts` builds the minted block and the v0x03 transcript (`buildMintedValidatorUnlockingBytecode`
+in `utils/transcript.ts`), and `draft.ts` resolves a callee's caller to `mintedRef(output)` with `INDEX_NONE_REFERENCE`
+as the sentinel origin (`minted-compose.test.ts` runs `composeDraft` and the derivation accepts the minimal shape,
+and assembles the full shape — a minted root that delegates to a frame creating the proxy record, with the record
+created at the trailing output the settlement names). What remains is
+the SDK genesis builder itself: `buildHopPlan` still lays the proxy master out as an input entered by the caller's
+coin, so the atomic path needs a genesis-plan variant (the proxy master minted, no caller coin, the proxy's records
+created rather than spent — a `chainSharedNodeViews`/layout/settlement ripple) plus `initializedProxyState`
+accepting a callee whose writes land in the callee's own records, and the adversarial e2e test. The direct
+(non-framed) deploy in `sc-deploy.ts` shares the same unproven-coin shape SDKFRAMED-1 closed for framed deploys; no
+audit row names it.
+
+**STATUS 2026-10-14 (SDK builder drafted; a compiler-side record read remains).** The SDK genesis builder is now
+drafted in `deploy.ts` (`buildHopPlan` gains a genesis shape that mints the proxy master and creates the proxy's data
+records, runs the first callee's validator instead of the proxy's, and spends the proxy's funding coin as the lone
+user input; `deployFramedProxy` settles that shape for a calling initializer and broadcasts it; `initializedProxyState`
+no longer refuses callees because the calling path bypasses it), and `assemble.ts` counts a minted master's created
+records in the created output region. Running the adversarial e2e test (`AuditSdkFramedProxyAtomic.test.ts`) surfaces
+what the estimate above missed: the COMPILED framed implementation entry itself does not read a created data record or
+a minted records-owner. `Atomic.initialize()` — even one that touches no state — fails inside `settleCallees` with
+"Program attempted to read from an invalid transaction UTXO index ... requested index: -32767" (0xffff = `INDEX_NONE`
+as a script number) around instruction 489 of the filled master, before the callee frame is judged. The read is in the
+shipped master head / data-record category verification, which assumes the records' owner and the records themselves
+are spent inputs; the genesis shape mints the owner and creates the records, so that read must instead go through the
+output side and treat `INDEX_NONE` as a created coordinate, the way the mapping-entry path already does
+(`emitReadOnlyEntryExistsCheck`). This is a compiler-side change in `GenerateTargetTraversal.ts`, not an SDK planner
+tweak, so item 2 remains open: the reverting calling-initializer test passes (the genesis derivation and refusal work
+end to end), but the atomic calling-initializer deploy cannot settle until the framed master head handles created data
+records. The drafted SDK changes are left uncommitted pending that compiler fix.
+
+**STATUS 2026-10-14 (closed; atomic calling initialize deploys).** The compiler-side read is fixed: `GenerateTargetTraversal.ts`
+gates `emitOwnerSide`/`emitOwnerPreservation` on `framedMaster`, so a minted records-owner resolves through the
+output side and skips the spent-input preservation check, while direct (non-framed) bytecode stays byte-identical
+(`direct-path-identity.test.ts` re-pins unchanged). The validator now resolves minted refs on the output side in
+`emitContextCategory` (the caller-chain walk ends at a minted root's own category) and `emitReadOnlySubtree` (a
+minted root is never read-only), exempts a minted master from `emitRequireMastersRecreated`'s "an output master has a
+master input under it" via `emitIsMintedOutput` (version-gated), and `emitCollectMintedRecordOutputs` walks the
+minted list so the minted master's own segment declarations feed `emitRequireOutputIsDeclared`, which keeps the
+V7_CENSUS_UNEXPECTED_MUTABLE rule (a stray created node is still refused). `deployFramedProxy` stages the calling
+genesis on the outer overlay beside the implementation's genesis (it mints the proxy rather than spending the probe
+the inner overlay holds). The census's `emitContextCategory` walk is now defined once as a validator function
+(`CONTEXT_CATEGORY_ID`) and invoked at its sites, which recovers the head budget the minted record-output walk
+consumes. `AuditSdkFramedProxyAtomic.test.ts` passes all seven cases, including the atomic calling-initializer
+deploy, the reverting calling-initializer, and the `initializeAs: 'hop'` escape hatch; `own-category-conservation.test.ts`
+still refuses a stray minted node. `settle-necessity` pins the head at 8,923 bytes, leaving headroom under the
+10,000-byte cap.
 
 ## Sorted batch targets sharing a node: one key written twice (DS-6 residual, 2026-10-12)
 
@@ -1967,7 +2820,7 @@ two absent keys in its gap, settle too. A forged link (one past a write of the c
 spent at a funded slot and an extra node beside the chain are refused at the master (AuditDS6ChainOneNode.test.ts).
 
 A delete one call may run beside a write of its batch (`if (s > 0) { delete m[k]; m[j] = v; }`,
-`chainedActivityDelete`, one delete per batch) reads the node its proof names. Away from its own input it sets a
+one chained delete per batch at the time) reads the node its proof names. Away from its own input it sets a
 register: its own slot must hold no node of the collection, and a write that ran must name the same proof, so the node
 is that write's group's. The node then settles as the writes leave it, the delete first: a write of the node's own key
 updates it, and the lowest insert relinks it at the value the delete's registers leave (the default where the deleted
@@ -1993,29 +2846,478 @@ included, were byte-identical before the alias path. Alias bodies whose write an
 delete since (not measured).
 
 Still failing closed: two writes of one key that ran on one node (the runtime alias of `m[i] = v; m[j] = w` with
-`i == j`; plain top-level writes with no delete compose instead, 9b478f894), more than one delete of a batch beside
-its writes, and a deleted node's own key beside an insert where the value kind's default is not empty (the SDK does
-not plan that relink).
+`i == j`; plain top-level writes with no delete compose instead, 9b478f894), and more than one delete of a batch beside
+its writes.
 
-**Proposed design:** a runtime alias of two writes settles as the later write alone (its alias row, as the compose
-batch does); deletes past one fold their registers in batch order; the SDK plans the default value of every kind.
+**UPDATE 2026-10-13 (verified 2026-10-14).** The first of the three ("two writes of one key that both run on one
+node") now SETTLES: `b94440c61`/`4b13e7188` replace the outdated refusal pin with a ledger check and make a runtime
+alias of two writes settle as one node holding the later value. Remaining fail-closed cases after that: more than
+one delete of a batch beside its writes, and a deleted node's own key beside an insert where the value kind's
+default is not empty (the SDK does not plan that relink).
 
-**Why deferred:** no tested shape writes one key twice or deletes twice beside its writes.
+**UPDATE 2026-10-16 (verified, corrected).** The second case splits by how the compiler lowers the delete.
+For `int`-like and fixed-width value kinds (`bool`/`int`/`uint`/`bigint`/`fixed`/`ufixed`/`bytesN`/`address`/
+`pubkey`/`sig`/`datasig`) the delete is a CONDITIONAL WRITE whose `valueSource` ternary carries the default
+literal, so the chained-write path already settles it; `AuditDS6DefaultRelink.test.ts` now pins `bigint` and
+`bytes32` beside an insert (`18ef2e4c0`). For unbounded `bytes`/`string` (and struct/array) the compiler emits a
+softDelete `delete` operation with no value literal, so the SDK's `chainedDeletes` relink is the only path, and it
+is still fail-closed: the SDK also needs to retry the write as the node owner with the delete chained onto it, and
+the nullified chunkable node's `len4(0)` default tail must be planned so the value-chunk census observes the length
+change. `AuditDS6DefaultRelink.test.ts` pins that an unbounded `bytes` node beside an insert stays fail-closed.
+`AuditDS6ChainOneNode.test.ts` remains 11/11. Still fail-closed: unbounded `bytes`/`string`, struct/array defaults,
+and more than one delete of a batch beside its writes.
+
+**UPDATE 2026-10-16 (verified, second).** The unbounded `bytes`/`string` case now SETTLES. The SDK plans the
+chunkable default relink (`len4(0)`) for `bytes`/`string` in `defaultSortedEntryValueTail`, and the write-ownership
+retry now preserves that relinked predecessor lane instead of treating the chained delete as a computed update or a
+computed value-chunk run. The PredOut witness refresh accepts the relinked `slot || next || len4(0)` commitment for a
+`-3` chained delete instead of falling back to the old value and minting a duplicate predecessor. The chunkable
+default relink is tested by `AuditDS6DefaultRelink.test.ts` (unbounded `bytes` beside an insert), and
+`AuditDS6ChainOneNode.test.ts` remains 13/13.
+
+**UPDATE 2026-10-16 (verified, third).** The "more than one delete of a batch beside its writes" case now SETTLES.
+The chained-delete helper became `chainedActivityDeletes` (returns every delete a write of the batch may run beside),
+each such delete gets its own chained-delete register, and the batch transition validates each register against a
+write that ran on its node. The predecessor value-take now loops the chained deletes and overrides the node's value
+only where the delete ran on it AND the delete's key is the node's own (`__internal__vmapBatchSlot_N` equals the
+proof's slot), so absent-key deletes leave the node alone. `AuditDS6ChainOneNode.test.ts` (`two deletes beside a
+write`) settles two absent keys deleted beside a write in their gap, and the node's own key deleted beside an absent
+key of its gap and a write. Still fail-closed: array defaults (their default tail is recursive and the
+soft-delete chained relink does not plan the chunkable default), and a struct/array whose value kind the compiler
+lowers to a soft delete.
+
+**UPDATE 2026-10-16 (verified, fourth).** The remaining "struct/array defaults" boundary is now split. A
+STRUCT-valued mapping delete is NOT a soft delete: the compiler lowers `delete m[k]` on a struct (fixed- or
+variable-width) to an existence-gated CONDITIONAL WRITE whose value-source ternary carries the default literal, so
+the conditional-write path already settles it like int/bytesN (`AuditDS6DefaultRelink.test.ts` now pins a struct
+node beside an insert). An ARRAY-valued mapping delete IS a soft delete (entry operation `delete`, no value
+literal), and it stays fail-closed: the SDK's chained-delete relink computes the recursive empty default tail, but
+the nullified entry output still lands with an EMPTY value tail (`slot || next`, no `len4` frame), so the covenant
+rejects the transition. `AuditDS6DefaultRelink.test.ts` pins both the inline and chunked (>60 B) `int[]` cases as
+fail-closed. Remaining: the array soft-delete entry-output default tail (and any value kind the compiler lowers to
+a soft delete with a non-empty default), not the recursive tail computation itself.
+
+**UPDATE 2026-10-16 (verified, fifth).** The array soft-delete default tail half of that remaining item is now
+planned. The compiler's `emitDefaultValue` for an unbounded array emits `encodeInt(0)` then
+`emitPushdataEncode(bigint)`, which is the single `OP_0` byte, and `emitChunkableValueTail` frames it as
+`len4(1) || 0x00` (5 bytes) — not the `len4(0)` empty-bytes/string tail. The SDK's `defaultSortedEntryValueTail`
+now returns `encodeChunkableValueTail([0x00])` for an unbounded array (`parseArrayTypeString` with no bound), so
+the chained-delete relink retry (`sortedChainedDeletes`) is enabled for array-valued soft deletes and the
+predecessor lane is relinked at `slot || next || 0100000000`. Bounded arrays stay fail-closed: they are
+fixed-width and lower to a conditional write, whose write path already plans the default.
+
+The array case still does NOT settle: the chained-delete retry now reaches the insert's predecessor-output check,
+where the array-valued WRITE beside the soft delete fails in the derive probe (VM `ip 644`, the
+`predOut >= 0` guard of the insert's recreated-predecessor check) with and without the chained delete, so the
+delete-default tail is not the blocker. The insert's own value materialization is the next step: the new-node
+planner (`StatefulContract` around the `chunkableValue` INSERT `newNode` computation) only frames a string or
+`Uint8Array` value, so a `valueParam` array (`int[] v`) is never `encodePushdataValue`-encoded into the insert's
+chunkable tail and the probe cannot publish the new node's value. `AuditDS6DefaultRelink.test.ts` still pins the
+inline and chunked (>60 B) `int[]` cases as fail-closed (6/6), and `AuditDS6ChainOneNode.test.ts` remains 13/13.
+Remaining: the array-valued write's value materialization beside an array soft delete.
+
+**UPDATE 2026-10-16 (verified, sixth).** The array `valueParam` half of that remaining item is now encoded. The
+batch target-value resolution (`resolvedWholeValue` in `StatefulContract`) previously left a chunkable
+`valueParam` array unresolved because `evalComputedKey`'s `id:` path only frames scalar/bytes params; the new
+node then fell through to trace derivation. It now `encodePushdataValue`s a non-`Uint8Array` `valueParam` array
+or struct against `collection.valueType` before the chunkable-tail framing, so the array write's NEW node is
+computed exactly like a bytes/string write.
+
+The array case still does NOT settle. The next blocker is the PREDECESSOR relink, not the value: the
+chained-delete relink (`defaultSortedEntryValueTail` -> `encodeEntryCommitment(slot, next, len4(1)||0x00)`) is
+planned and lands in `batchPredCommitments`, but the materialized predecessor output still carries the old value
+tail, so the insert's recreated-predecessor `EQUALVERIFY` (derive VM `ip 644`, `slot||next||len4(1)||0x00`
+against the output's `slot||next||<old tail>`) still refuses. The relinked predecessor commitment must reach the
+materialized trailing predecessor output (the loop-entry pin/re-derivation path), not just the batch plan.
+`AuditDS6DefaultRelink.test.ts` still pins the inline and chunked (>60 B) `int[]` cases as fail-closed (6/6), and
+`AuditDS6ChainOneNode.test.ts` remains 13/13. Remaining: publishing the relinked predecessor output value.
+
+**UPDATE 2026-10-16 (verified, seventh).** The loop-entry side now publishes the relinked predecessor value, and
+the remaining refusal is a DUPLICATE predecessor output, not a missing relink. Probe-output capture for the
+chained-delete retry shows the trailing predecessor emitted TWICE: the pinned loop entry
+(`slot || next || len4(1)||0x00`, `pinned=true`, `loopEntryBase=3`) plus a second trailing mutable NFT carrying the
+OLD value tail (`slot || next || len4(34)||<old array>`). The transaction then has five outputs where the covenant
+expects four, and the extra old-value node-7 output fails the collection census. The chained-delete relink should
+REPLACE the entry-preservation re-emission of the shared predecessor rather than add a second trailing lane; the
+dedup that works for bytes/string does not fire for the array-valued write. `AuditDS6DefaultRelink.test.ts` still
+pins the inline and chunked (>60 B) `int[]` cases as fail-closed (6/6), and `AuditDS6ChainOneNode.test.ts` remains
+13/13. Remaining: deduplicate the shared predecessor's old-value preservation against the relinked trailing lane.
+
+**UPDATE 2026-10-16 (verified, eighth).** The duplicate is a surplus trailing clone, and the direct path lacks the
+surplus strip that exists for composed groups. Registration state for the array retry is byte-for-byte identical to
+the settling bytes/string retry (`pending=[]`, `exact=[1]`, `loopEntry=[relinked]`, `pinned=true`), and the only ABI
+difference is `chunkableArrayValue: true`, so the divergence is in output materialization, not planning. The direct
+`StatefulTransactionBuilder.build()` runs `_stripSurplusLinearBatchEntryClones` and
+`_reassertTokenInsertNewLocks`, but both iterate `externalCallUtxoGroups`/`lowLevelCallUtxoGroups` (empty for a
+direct call), so no INSERT trailing-clone strip fires; `stripSurplusLinearBatchEntryClones` also gates on
+`trailingCount === 0` (pure UPDATE), which excludes this one-predecessor INSERT. The direct path therefore needs the
+same surplus-clone strip the composed path has (demote the highest-index old-value node-7 clone to a funder, keep
+the pinned relinked lane). `AuditDS6DefaultRelink.test.ts` still pins both `int[]` cases fail-closed (6/6) and
+`AuditDS6ChainOneNode.test.ts` remains 13/13.
+
+**UPDATE 2026-10-16 (verified, ninth).** Implementing the demotion exposed a deeper misalignment, so the demotion
+alone does not settle the case. A direct-path `stripSurplusDirectLoopEntryClones` (same-lock, same-slot,
+different-commitment trailing clone) was tried at the end of `runBuildMidLateThroughTail`: it does demote the
+old-value node-7 clone, but the probe still refuses. Post-strip output capture shows the array build also carries a
+spurious trailing placeholder (`aa20953c…`, empty commitment) between the pinned relinked lane and the clone, so
+the collection's trailing region has two extra outputs and the `__internal__vmapBatchPredOut` witness/loop-entry
+base no longer agree (the probe requests an output index past the materialized count). Demoting in place leaves an
+extra funder the trailing-count check refuses; splicing shifts indices and breaks the absolute PredOut witness.
+The remaining fix is therefore to stop reserving the spurious chunkable-array trailing placeholder (and the
+old-value clone) at the source, so the loop-entry base and the PredOut witness stay aligned, rather than stripping
+after materialization. `AuditDS6DefaultRelink.test.ts` still pins both `int[]` cases fail-closed (6/6) and
+`AuditDS6ChainOneNode.test.ts` remains 13/13.
+
+**UPDATE 2026-10-16 (verified, tenth).** The source-level fix was attempted but is still not landed; this update
+corrects the ninth's description of the extras with exact derive-probe output shapes. The failing point is the
+CHAINED-DELETE retry's derive probe, which fails at VM ip 644 (OP_VERIFY) for BOTH alternatives
+(`owners=[write]` and `owners=[write], chainedDeletes=[delete]`), so the caller falls back to the original builder
+and the final preflight then fails at ip 552. The chained-delete retry materializes six outputs instead of four:
+master, an OP_TRUE placeholder for the deleted slot, the inserted node x with an EMPTY value tail (`slot||next`
+only, missing the `[300n]` chunkable tail), the relinked predecessor P' (`slot=7, next=x`), a spurious
+FORGE_LOCK (`aa20953c…`) mutable `00` placeholder, and a second copy of P'. The ninth's "old-value clone" is in
+fact the original builder's preservation; the retry's extras are the `00` placeholder plus a DUPLICATE P'.
+`setLoopEntryCommitments(m, [P'])` is called once and `materializeRuntimeLoopTrailing` appends exactly one P', so
+the `00` and the duplicate P' are emitted by a later conservation/derived-entry reassert, not by the loop-entry
+planner. Node x's empty tail follows from the same probe refusal: slot 1 is a guarded write (`guardedBatchWriteSlots`),
+so its exact `exactBatchTargetSlots` value is left un-pinned for trace derivation, and the ip 644 halt happens
+before the VM exposes the chunkable-array tail. Remaining fix: locate and remove the post-materialization
+`00`+duplicate-P' reassert for the direct chunkable-array chained delete (or pin the exact linear-batch target when
+its arm runs), then verify the probe reaches node x's value. `AuditDS6DefaultRelink.test.ts` pins both `int[]`
+cases fail-closed (6/6) and `AuditDS6ChainOneNode.test.ts` is 13/13.
+
+**UPDATE 2026-10-16 (verified, eleventh).** The `00` placeholder half is now fixed at the source; a duplicate P'
+still remains, so the array case does not settle yet. Root cause of the `00`: the direct chunkable-array
+`valueParam` write was registered as a TRACE-DERIVED computed value-chunk run (`computedValueChunkRuns` ->
+`registerValueChunkVar` -> a seeded `00` continuation at the dummy funder lock), because the direct
+value-chunk mint in `StatefulContract` (~line 8404) framed only `Uint8Array`/`string`/scalar values and a JS
+array value fell through. Fix (shipped): `arrayDirectBytes` now `encodePushdataValue`s a non-`Uint8Array`
+array/struct `valueParam`, so an inline value (<= 60 B) mints no phantom continuation and a long value is split
+exactly via `valueChunkMints`. Verified: the chained-delete retry's derive-probe output count dropped 6 -> 5 (the
+`00` placeholder is gone), and the settle-path suites stay green (`AuditDS6DefaultRelink` bytes/string/struct,
+`AuditDS6ChainOneNode`, `ChunkedArrays` = 34/34). Remaining: the retry's derive probe still fails at ip 644 with a
+DUPLICATE P' (`slot=7,next=x` materialized twice, intermittently 4- vs 5-output builds), so both retry
+alternatives still error and the caller falls back to the original builder (ip 552). `AuditDS6DefaultRelink.test.ts`
+still pins both `int[]` cases fail-closed (6/6) and `AuditDS6ChainOneNode.test.ts` is 13/13.
+
+**UPDATE 2026-10-16 (verified, twelfth).** The duplicate P' is now fixed; the INLINE array case settles, and only
+the CHUNKED (>60 B) array case remains fail-closed. Root cause of the duplicate: `refreshTopLevelPredOutWitnesses`
+(in `sc-construct-create-builder-transaction-builder.ts`, run from the master-unlocker refresher during
+`finalizeBuildStamp`'s `syncBuilderUnlockers`) re-materializes a predecessor output when the planned PredOut
+coordinate no longer carries the expected commitment, after first searching for an already-materialized P'. Its
+`deletedDefaultTail` hardcoded `'00000000'` (the bytes/string `len4(0)` default) for every chunkable collection,
+so for an unbounded ARRAY (whose planned relink carries `len4(1) || 0x00` = `0100000000`) the search never matched
+the materialized P' and the refresher minted a second, wrong-tail predecessor at a trailing pad. Fix (shipped):
+the tail now mirrors `defaultSortedEntryValueTail` — an unbounded array uses `encodeChunkableValueTail([0x00])`
+(`0100000000`), bytes/string keep `00000000`, scalars keep empty. Verified: `AuditDS6DefaultRelink.test.ts` now
+SETTLES the inline `int[]` case (and keeps bigint/bytes32/bytes/struct settling); `AuditDS6ChainOneNode.test.ts`
+13/13 and `ChunkedArrays.test.ts` 15/15 stay green (34/34). Remaining for the chunked case: the retry's derive
+probe still fails at ip 644 with a value-chunk pin — the failing EQUALVERIFY compares the covenant's expected
+value-chunk lock against an EMPTY output (the `__internal__valueChunkOutputBase` coordinate reads past/away from
+the materialized value chunk), with node 7's OLD value `[70n, 71n]` still on the stack, so node x's entry tail
+stays EMPTY and the chunked case stays pinned fail-closed. Further trace: the value at the failing comparison is
+the OLD `[70n, 71n]` (not the new `[300n, 301n]`), so the WRITE's value-chunk pin computes the chunk from the
+wrong on-stack value in the chained-delete retry — the value source for slot 1's chunk pin reads the
+predecessor's authenticated value instead of the `valueParam` `v`.
+
+**UPDATE 2026-10-16 (verified, thirteenth).** The twelfth's "value-chunk pin reads the predecessor value" is
+refined; the value-chunk pin itself is CORRECT. `SOLIDC_DEBUG_VALUE_CHUNK_PIN` shows slot 1's pin has
+`vName=(value)`, `expression=v`, and the pin's scan trace (VM ips 379-391) uses the NEW value `[300n,301n]`
+(`52 2c01…00 2d01…00`) as the chunk digest source. The failing `EQUALVERIFY` is the function-level batch
+verifier's INSERT predecessor-value check (`singleTarget` in `emitSortedBatchTransitionVerification`, VM ip 643 in
+the 882-instruction `dropThenSet` frame), not the value-chunk scan: it compares the computed
+`slot(7) || Hk(x) || 0100000000` (69 B) against the materialized P' output carrying the OLD chunked tail
+(`slot(7) || Hk(x) || len4(67)||sha256||head28`, 128 B). The `singleTarget` chained-delete override IS emitted
+(`chainedHere=[0]`), so the chained-delete retry (`owners=[1], chainedDeletes=[0]`) passes this P' check; its derive
+probe then fails EARLIER in an invoked subprogram (frame 12, ip 13 — the value-chunk or entry-NFT covenant). The
+no-chained-delete retry (`owners=[1], chainedDeletes=[]`) fails the P' check because the computed value picks the
+delete register's default instead of the co-spent input's old tail, while the un-relinked P' output still carries
+the old tail. A first compiler attempt to override `emitSortedValueUpsert`'s non-batch INSERT P' value was dead
+code: the inBatch write returns at the end of the `inBatch` block (line ~28915) before the non-batch INSERT arm, so
+`insertChainedDeletes` was never invoked for `dropThenSet`. `AuditDS6DefaultRelink.test.ts` keeps the inline
+`int[]` case settling and pins the chunked `int[]` case fail-closed; `AuditDS6ChainOneNode.test.ts` 13/13 and
+`ChunkedArrays.test.ts` 15/15 stay green.
+
+**UPDATE 2026-10-16 (verified, fourteenth).** The chunked `int[]` case now SETTLES. The frame-12 subprogram is the
+outside-layout walk's INPUT-side preservation check (`emitPreserveOutsideLayoutOwnMutable`), not the batch
+verifier: it freezes every own-category mutable input past the block 1:1 unless its lock is admitted. That walk's
+`admitMintableLocks` flag only admitted mintable locks for loop records, collection iterations, and dynamic-storage
+writes, so a chunkable sorted-mapping delete's consumed OLD value-chunk input (spent at the old `slot||root` chunk
+lock, replaced by a chunk at the new root) was preserved against the replacement chunk and failed the bytecode
+`EQUALVERIFY`. Fix (shipped): `admitMintableLocks` now also admits whenever the function carries the hidden
+value-chunk lock-list witness (`__internal__valueChunkOutputBase`, present for any chunkable sorted-mapping
+write/delete), and `emitBoundSortedCondDelete` rebuilds the deleted node's OLD value-chunk lock from the co-spent
+`coSlot` + `coValue[4:36]` and appends it to that lock list, so the walk admits the consumed chunk input instead of
+preserving it. Verified: `AuditDS6DefaultRelink.test.ts` now SETTLES the chunked (>60 B) `int[]` case (6/6);
+`AuditDS6ChainOneNode.test.ts` 13/13 and `ChunkedArrays.test.ts` 15/15 stay green (34/34).
 
 ## A routed update of a proxy's records (feat/per-call integration residual, 2026-10-13)
 
 **What:** a delegated message-bus route binds the proxy's mapping entries and value chunks to the proxy master's lock
-(7d90dd4db), and a routed insert settles (RoutedDelegateProxyRecords.test.ts). Its update case is skipped. Seeding the
-records through a direct delegate fails first: `AutoMarkDelegateFunctions` runs before `SymbolTableTraversal`, where
-a bare `m[k] = v` is still an `ArrayAssignNode`, so a function whose only state writes are bare mapping or array
-writes is never marked delegate and `forward` refuses it. Counting those writes (a00dd2f72 on feat/pcm-anchorscan, not
-merged) gets `forward('seed')` to preflight, where it fails OP_VERIFY at input 2 with no require site (not diagnosed).
-Seeding through a first routed composition instead leaves two CREATE anchors at the proxy's logical address, and a
-second routed composition through that proxy is refused at build ("Logical contract identity ... ambiguous").
+(7d90dd4db). A routed insert settles, and so does a routed update seeded by a first routed insert
+(RoutedDelegateProxyRecords.test.ts): the second CREATE anchor that refused it ("Logical contract identity ...
+ambiguous") was the SDKCORE-1 pad mirroring an anchor the local build had already recreated, fixed in a35cff73b.
+Seeding the records through a direct delegate still fails: `AutoMarkDelegateFunctions` runs before
+`SymbolTableTraversal`, where a bare `m[k] = v` is still an `ArrayAssignNode`, so a function whose only state writes
+are bare mapping or array writes is never marked delegate and `forward` refuses it. Counting those writes (a00dd2f72 on
+feat/pcm-anchorscan, not merged) gets `forward('seed')` to preflight, where it fails OP_VERIFY at input 2 with no
+require site (not diagnosed).
 
-**Proposed design:** count bare state writes in the delegate marking once its effect on the delegate variants of
-every contract with bare mapping or array writers is measured; diagnose the direct-delegate chunked write; let a
-routed composition reuse the proxy's anchor instead of minting another.
+**STATUS 2026-10-14 (verified).** The delegate-marking half is DONE: `a00dd2f72` is an ancestor of `feat/per-call`,
+and `AutoMarkDelegateFunctions.hasBareStateWrite` already counts bare `ArrayAssignNode`/`ArrayDeleteNode`/`ArrayPushNode`/
+`ArrayPopNode` against both state variables and collections, so a function whose only write is `m[k] = v` IS marked
+delegate. The `abi.decodeAt` parse regression that previously blocked the whole route build is FIXED: the windowed
+mapping iteration (`e6ec23c02`) added the `'window'` implicit token at index 102, which shifted every later implicit
+token by one, but the parse fast path in `compiler.ts` (`predictExpressionPrefix`) still hardcoded the pre-window
+token numbers, so `abi.decodeAt` (127→128) was mis-predicted as `UnaryIntrospectionOp` (`tx.outputs`/`tx.inputs`) and
+`abi.decode` as `abi.decodeAt`. The fast path now resolves those literals by name (`tokenTypeByLiteral`) instead of
+raw `T__NNN` numbers, so a future grammar literal cannot silently re-map them. `RoutedDelegateProxyRecords.test.ts`
+now passes both ROUTED cases.
 
-**Why deferred:** each part changes delegate variants or identity anchoring beyond the merge; the routed insert
-settles.
+The DIRECT delegate `forward('seed')` still fails `OP_VERIFY` at input 2, now diagnosed to a chunk-coordinate
+mismatch rather than chunk-address binding: the failing instruction is `OP_EQUALVERIFY` at ip 2 of a 14-byte outlined
+helper (`OP_SUB OP_PICK OP_EQUALVERIFY OP_2DROP OP_0 OP_ROLL`), comparing two single-byte counts (`0x02` vs `0x03`)
+that the preflight `SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE` operands report. `emitBoundValueChunkP2sh32` already binds
+the delegate's value-chunk address to the proxy master lock, and the entry NFTs land at the proxy's category, so the
+open half is the direct-delegate chunk OUTPUT COUNT/placement: the value-chunk trailing count the direct convention
+derives disagrees with the SDK's appended chunk output by one.
+
+**Proposed design:** fix the direct-delegate value-chunk trailing-count/placement derivation in
+`GenerateTargetTraversal` (the `0x02` vs `0x03` count the outlined helper compares), reusing the routed path's
+chunk accounting; the direct `forward('seed')` then settles.
+
+The likely seam is the `valueChunkTrailingCountActive` gate at `GenerateTargetTraversal` ~line 9624, which only
+activates for `!this.directConvention`. A direct delegate is `directConvention` (composition !== 'framed'), so the
+sorted-batch `seed` (`balances[key] = amount; notes[key] = note` with a 96-byte chunked note) does NOT count the
+`notes` value chunk in its trailing band. The failing instruction is `emitVerifyChunkUtxoCount`
+(`GenerateTargetTraversal` ~line 33926, outlined into the seed prologue), which scans outputs at a sorted
+collection's ENTRY address and verifies the count equals the batch-derived expectation: the `balances` census finds
+three outputs at its entry address (the new entry, its predecessor, and the `notes` value-chunk output that landed at
+that address) where the compiler derived two. The `notes` value-chunk output is missing/misplaced: the 96-byte note
+needs one 68-byte continuation chunk, but the transaction emits a 3-byte `000000` output at the `balances` entry
+address under the implementation's category (8221decf) instead of a chunk at the `notes` value-chunk address under the
+proxy's category (754e1983). The fix must publish/materialize the chunkable sorted-mapping value chunk for the direct
+delegate path without disturbing the default (non-delegate) direct path, which the comment says stays byte-identical.
+
+**RESOLVED 2026-10-14 (verified).** The open half was an SDK placement bug, not a compiler count: the compiler's
+block layout already names the notes value chunk at `__internal__valueChunkOutputBase` (the reserved band slot right
+after the two entry outputs), and `emitBoundValueChunkP2sh32` already binds its address to the proxy master lock.
+The SDK staged the chunk correctly (`host.valueChunkOutputs`, `aa20308e…` = the proxy's notes value-chunk address)
+but `appendValueChunks` only placed a staged run into the reserved band when `builder.outputs.length < band.start`;
+for a direct delegate the predecessor outputs (7, 8) are materialized past the band first, so the run was appended at
+the trailing end and `ensureLiveValueChunkBand` then filled the still-empty band slot with a phantom `000000` hole at
+whatever lock its `dominant` fallback observed (the balances entry address), tripping the `balances` entry census
+3-vs-2. `appendValueChunks` now also lands a staged run at the band coordinate when the band slot is an empty
+`OP_TRUE` alignment pad, so the notes chunk sits at the covenant's named output base and the census matches. The
+DIRECT `forward('seed')` e2e test in `RoutedDelegateProxyRecords.test.ts` is un-skipped and passes (records read back
+at the proxy master's lock, `atExecutorLock: 0`), alongside both routed cases.
+
+## An in-place upgrade of a contract that keeps records (CRYPTO-4 residual, 2026-10-13)
+
+**What:** CRYPTO-4 (d6821a812) binds every data NFT, mapping entry, value chunk and satoshi or token container to
+the executing master's exact 35-byte lock, so no second minting baton of the category can rewrite them. A native
+in-place `upgrade` entry moves the master to the replacement bytecode's lock, so every record bound to the old lock
+could never be spent again. The compiler refuses such an entry (`UpgradeStrandsBoundStateError`, raised by
+`SymbolTableTraversal` once the block layouts are known). The kernel's in-place append upgrade
+(`in-place-append-v1`) also leaves the records at the old lock, so it is refused the same way, and its append path is
+unreachable: a record-free participant has no data NFT to append into. What still works: a contract whose whole
+state lives in its master NFT commitment (no state variables, mappings or containers), including an upgrade to a
+replacement that adds state, whose data NFTs the upgrade now mints at the replacement's lock; and a proxy upgrade,
+which keeps the proxy's lock and its records. Framed records bind no master lock and are not refused.
+
+**Proposed design:** a migration path that re-mints each record at the replacement's lock. A record's own covenant
+keeps its locking bytecode on the write path, so it cannot move; the old master would destroy it (flag 2, which still
+binds the old lock while the old master is an input) and mint a copy with the same commitment at the
+replacement-bound covenant, with the census pinning one copy per destroyed record. Unbounded collections need that
+batched across transactions before the final upgrade, behind the old code's authorization.
+
+**Why deferred:** it is a covenant protocol for every record kind plus an SDK planner; the refusal fails closed
+meanwhile.
+
+**Implementation seams (verified against HEAD 2026-10-16).** The data-NFT half is the bounded first slice; the
+refusal still also gates mapping/array entries and containers, which keep their own covenants. Derived from the code:
+- The data-NFT covenant already has the destroy path (`flag=2`), but it requires the output at `INPUTINDEX` to hold a
+  DIFFERENT category, so a re-mint cannot sit at the old input's index. The migration layout is therefore
+  `out[0]=new master`, a non-category pad band at `out[1..N]`, re-minted data NFTs at `out[N+1..2N]` (replacement-bound
+  data-NFT covenant), and added data NFTs at `out[2N+1..2N+M]`.
+- `emitOwnCategoryMutableNftConservation`'s `allowUpgradeDataNftGrowth` branch already balances the `N` old inputs
+  against the `N+M` re-minted outputs, but its growth scan starts at `1 + dataNftCount`; for the migration it must
+  start at `1 + 2*dataNftCount` (otherwise it over-discounts the re-minted band). A new re-mint verification must pin
+  each re-minted output's replacement-bound lock.
+- The value-preservation pass (`emitValuePreservation`) and the auto-covenant pass (`emitAutoCovenantVerification`)
+  both pinned a data NFT's input to the output at the SAME index; for the migration they must point the value check at
+  the re-mint output and skip the bytecode/category/commitment preservation (the re-mint changes the lock and the
+  rebuilt commitment). The rebuilt commitment cannot be byte-compared by the compiler (the replacement layout is
+  opaque), so the values are pinned by the direct upgrade's SIGHASH_ALL signature fence instead.
+- SDK `sc-upgrade.ts` already rebuilds commitments and mints added data NFTs, but spends old data NFTs with `flag=1`
+  (write, same-lock) and places existing data-NFT outputs at the OLD covenant; it must switch to
+  `createDestroyDataNftUnlocker` (`flag=2`) and the pad/`getDataNftAddress(newContract, …)` band above.
+- `refuseUpgradeStrandingBoundRecords` must stop listing `state variables in data NFTs` while keeping the
+  mapping/array and container entries. A message-bus kernel route never synthesizes its in-place-append upgrade lane
+  for a participant that keeps records (there is no data NFT to append into), so a record-keeping participant compiles
+  under `messageBusKernel: true` too: its direct entry migrates, and the message-bus lane simply offers no upgrade for
+  it. The existing refusal was pinned by `Upgrade.test.ts` (28/28) and `KernelUpgradeCompose.test.ts` (5/5).
+
+**STATUS 2026-10-16 (data-NFT and satoshi-container halves resolved).** The bounded data-NFT migration and the
+satoshi-container migration are implemented and verified. Data NFTs: `refuseUpgradeStrandingBoundRecords` no longer
+lists state variables; the census growth scan starts at `1 + 2*dataNftCount`; a new re-mint verification pins each
+re-minted output's replacement-bound lock; the value preservation points at the re-mint band and the same-index
+auto-covenant checks are skipped; the SDK spends old data NFTs with `flag=2`, emits the non-category pad band and
+re-mints at the new data-NFT covenant. Satoshi container: the refusal no longer lists it; `emitSlotScans` skips the
+same-lock container aggregate for a direct upgrade; a new `emitUpgradeSatoshiContainerMigrationCheck` pins the old
+container input, the zero-value drain at its index, and the re-mint at `out[2+2*dataNftCount]` at the
+replacement-bound covenant with its value; the SDK spends it with its `flag=1` master path and re-mints it (the
+container must exist on-chain — it does once the contract has held BCH — or the SDK refuses). Token container: the
+refusal no longer lists it; a new `emitUpgradeTokenContainerMigrationCheck` reads the foreign category from the
+container input's own UTXO category (category-agnostic), pins the old container input, its zero-value/zero-token
+drain, and the re-mint at the replacement-bound token-container covenant carrying the foreign category, amount and
+value; the foreign-token keep scan exempts that one input index (the migration moves it to a different lock, so the
+same-lock keep is skipped inline). The SDK spends it with `createTokenContainerUnlocker` (flag=1) and re-mints it,
+taking the foreign category from `UpgradeOptions.tokenContainerCategoryIds`; at most one foreign category migrates
+per upgrade, so a contract holding several foreign token categories still needs the batched protocol below. Pinned by
+`packages/solidcash/test/e2e/DataNftUpgradeMigration.test.ts` (3/3), `SatoshiContainerUpgradeMigration.test.ts` (3/3,
+including the container/data-NFT coexistence that shifts the re-mint band and growth scan, and the stranded-old-lock
+re-mint refusal), `TokenContainerUpgradeMigration.test.ts` (2/2, including the stranded-old-lock re-mint refusal),
+plus the updated `Upgrade.test.ts` and `KernelUpgradeCompose.test.ts` (5/5).
+
+**Remaining (entries; design verified against HEAD 2026-10-16).** Mapping/array entries still strand, so their
+refusal stays. Their population is unbounded — one entry per key — so they cannot ride the single-transaction
+migration above; the residual is a bounded per-record batched protocol behind the old code's authorization. The
+seams:
+
+- **Entries.** `buildEntryNftCovenantScript` (packages/utils/src/state.ts) has a flag=1 write path that verifies
+  `bindMintingAuthorityLock(masterLock)` at the witnessed master index plus the category base, with NO output
+  preservation: an entry may be destroyed, not merely moved. Its flag=0 read-only path is the one that pins
+  bytecode/category/commitment/FT-amount/satoshi self-preservation. The covenant is salted by `collectionHash` only
+  (`getEntryNftAddress` passes `collectionSignature`), so every key of a collection shares one locking bytecode and
+  the key lives in the NFT commitment. An upgrade keeps a collection's key/value types, so the commitment is
+  byte-preservable across the migration: the re-mint is the same commitment at the replacement-bound covenant.
+- **Why not one transaction.** `emitOwnCategoryMutableNftConservation`'s census counts own-category 0x01-of-C
+  mutable inputs and demands the count equal `dataNftCount` (GenerateTargetTraversal.ts:49500). Entries are
+  0x01-of-C mutable and share the category, so a master transaction that co-spends K entries has `dataNftCount + K`
+  mutable inputs and fails the exact-count check. The census cannot distinguish them by category; it must
+  distinguish them by locking bytecode (the entry covenant LBC differs from the data-NFT covenant LBC).
+- **The batch protocol.** A `migrateRecords`-modified OLD-code entry (a new lifecycle modifier, not
+  `upgrade`-modified, so it preserves the old master at its input index and is not refused) takes the replacement
+  lock as the injected `__internal__upgradeBytecode` argument, spends one entry with `createEntryNftUnlocker`
+  (flag=1), and re-mints it at the replacement-bound covenant with the same commitment/category/value, computing the
+  target lock in script the way `emitUpgradeSatoshiContainerMigrationCheck` computes the replacement-bound satoshi
+  covenant. `emitMigrateRecordsEntryMigrationCheck` pins input[1] at the old entry covenant and output[1] at the
+  replacement-bound covenant, and the existing `emitOwnCategoryMutableNftConservation` balance keeps the census exact.
+  The SDK drains `getUtxos(entryAddress)` one entry per transaction inside `upgradeStatefulContract`, then runs the
+  final upgrade. The selector matches input[1] against every collection's old covenant (an unrolled nested IF) and
+  requires output[1] at the corresponding replacement-bound covenant, so several collections drain in one pass.
+
+**RESOLVED 2026-10-16 (all four CRYPTO-4 record kinds).** Data NFTs, the satoshi container, token containers and
+mapping/array entries all migrate under the replacement-bound covenant. The entries half adds the `migrateRecords`
+modifier (grammar + `FunctionModifier` + `__internal__upgradeBytecode` injection), `emitMigrateRecordsEntryMigrationCheck`
+(pin old/new covenants + commitment/category/value preservation, with a per-collection selector), the lifted collection
+refusal, and the SDK co-spend loop. The token-container half reserves one slot per token-container access site
+(`ContractNode.tokenContainerCount`) and `emitUpgradeTokenContainerMigrationCheck` loops them, so several foreign
+categories migrate in the one upgrade; the SDK matches `tokenContainerCategoryIds` to that count. Pinned by
+`MappingEntryUpgradeMigration.test.ts` (3/3: single collection, stranded-old-lock refusal, and a two-collection
+selector), `TokenContainerUpgradeMigration.test.ts` (3/3: single container, stranded-old-lock refusal, and two
+foreign categories), plus the updated `Upgrade.test.ts` (admits a mapping) and the other CRYPTO-4 suites. Residual: the
+entry batch migrates one entry per transaction (the SDK loops), and the token-container count must match the number
+of reserved access sites (a live container count below the site count is refused); a fully dynamic per-record scan
+remains deferred.
+
+## Logical caller identity for native compiles (model B residual, 2026-10-14)
+
+**What:** packages/solidcash/test/journal-message-bus/e2e/KernelPhysicalCallerWithScidCompose.test.ts (skipped) needs a
+nested callee to see its proxy caller by the logical CREATE/SCID lock. Today a native compile injects no SCID anchor
+witness (`__internal__msgSenderAnchorIdx` is evmCompat-only, SymbolTableTraversal.ts), so `msg.sender` is the proxy's
+physical master lock; the SDK registers a proxy root's `publicSelfIdentity` as its physical lock (StatefulContract.ts,
+upgrades.ts); and `address(this)` in a native delegate is physical (`__internal__graphSelfIdentityInput` is
+evmCompat-only). The title is red on the kernel parent too (W6_BASELINE.md).
+
+**Proposed design (model B: full locks end to end, no identity20 keys):** inject the anchor witness for native compiles
+(one hidden ABI input per native entry that reads `msg.sender`, about 45 B of anchor check per read); make a proxy
+root's `publicSelfIdentity` its SCID/CREATE lock so the SDK queues the anchor fill; un-gate the self-identity input for
+native delegates and routes; record a DECISIONS row superseding large-contract-splitting.md's "contract-origin
+`msg.sender` is the physical root" (precedent: `__internal__extcallAnchorIdx` is already injected without the gate).
+
+**Why deferred:** the user deferred the model-B migration (2026-10-05, confirmed 2026-10-14).
+
+
+## A streamed route handler reached on the plain call path (closed locally, 2026-10-14)
+
+**What:** since stage 1 (ff51608b8), a kernel handler whose emits all sit at top level streams its records through
+the trailing band and publishes `runtimeLoopEvents: [{ eventSignatures, stream: true }]` instead of `emits`. Compose
+places those records (graph.ts, compose-event-helpers.ts). The plain path previously built routed callee rows from
+raw ABI handlers and fell back to direct event slots, so the callee's covenant refused the transaction.
+
+**Implementation:** `0aae93f11` joins the route-published handler metadata by selector, seeds lifted top-level
+event heads, and learns exact compact/chunked records from the selected callee's faithful verifier trace. Records
+stay inside the compiler-owned trailing band and published schema; the SDK materializes only reached records and
+funds growing chunk runs from the signer wallet. Caller SCB1 verification supports canonical PUSHDATA2 through the
+existing 520-byte envelope limit.
+
+**Evidence:** `KernelPlainStreamedCallee.test.ts` settles two compact rows and differing chunked rows (3 and 2
+records) with every input checked by the ordinary VM. Changed commitments, capabilities and swapped continuation
+records are refused. Compact trace extraction remains explicit opt-in and observes no unseen prefix. Two focused
+trace unit cases and two adjacent plain batch cases pass. No BCHN evidence was collected. General nested loop
+cardinality is outside this fix: this planner requires the published lifted top-level multiplicity of one.
+
+**Re-verified (2026-10-15).** The merge seam is applied on both plain-path row builders: owner-local `batch()` rows
+flow through `batchRaw` (`sc-batch-raw.ts:384`) and the external-callee row builder applies it at
+`sc-build-repeated-external-batch.ts:254`. Added a unit case (`MessageBusHandlerMetadata.test.ts`) driving
+`mergePublishedMessageBusHandlerMetadata` with a raw `emits` handler against a published `runtimeLoopEvents:
+[{ eventSignatures: ['Ping(uint256)'], stream: true }]`; the merged handler retains the published stream and drops
+`emits`. Re-ran the focused unit file (7/7) and `KernelPlainStreamedCallee.test.ts` (2/2, compact `[7n]`/`[8n]`
+commitments, 3+2 chunked record chain with head/continuation lock order, hostile mutations/reordering refused).
+Captured output: `{SCRATCH}/plain-streamed-unit.log`, `{SCRATCH}/plain-streamed-e2e.log`.
+
+## Scalar-state recursive-mapping fold refused by a generated helper local shadowing a state var (RESOLVED 2026-10-16)
+
+**What.** `packages/solidc/test/journal-message-bus/KernelAdmission.test.ts`
+"propagates an invariant mapping recursion fold through an internal caller" compiled
+`this.result = sum(n, key)` (an invariant mapping-recursion fold stored into a scalar state var) to
+`messageBus: undefined`, while the equivalent local-var shape (`int r = sum(...); require(r >= 0);`) was
+admitted. The fold itself was sound (`recursiveStateHandler` stayed undefined); the failure was a cascade from
+a `VariableRedefinitionError: Redefinition of variable result`.
+
+**Why.** The generated message-bus helper/verifier text declares generic locals and parameters (`result`,
+`output`, `at`, `slot`, `end`, `cursor`, `base`, `fixedSize`, `participantCount`, `activeBase`, `input`, ...) in
+the atomic scan helpers and the verifier. When a user contract has a state variable with one of those names,
+the semantic symbol pass refuses the generated binding because native solidcash forbids a local/parameter
+shadowing a state variable (only `evmCompat` allows that shadow). The caught `VariableRedefinitionError` is
+attributed as `mixed-scalar-and-collection-route-not-enabled`, and the scalar-state route never forms.
+
+**Fix.** Two changes. (1) `__message_bus_find_last_output` and `__message_bus_last_output` use the
+compiler-owned name `__message_bus_result` instead of the generic `result`. (2) `SymbolTableTraversal` now lets
+a compiler-generated local or parameter shadow a state-variable name in native compiles too: generated code
+reaches user state only through the explicit `this.x` form, so the shadow is unambiguous, while native source
+stays strict. Bytecode is unchanged (local/parameter names are erased); only the generated source text and its
+parse cache key change.
+
+**Evidence.** `KernelAdmission.test.ts` is 689/689 green, and `yarn test:compiler:changed` passes 426 files /
+7172 tests. A probe of the same fold shape with state vars named `output`, `at`, `slot`, `end`, `cursor`,
+`base`, `fixedSize`, `participantCount`, `activeBase` and `input` now admits `run` (was
+`messageBus: undefined`). Root `yarn build` exits 0; the only root `yarn lint` error is in the concurrently
+authored, uncommitted `ReuseEntryLocalForWriteback.ts` (not these changes).
+
+## Iterating-entry outside-layout walk: unaccessed own-category mutable NFT could be re-emitted with a new commitment (DX-6/DS-3 residual, RESOLVED 2026-10-16)
+
+**What.** The October re-audit left DX-6/DS-3 open for one shape: a function with an entry slot marked `inLoop`
+(a loop writing a sorted mapping) or a nonempty `collectionIterations` early-returned from
+`emitPreserveOutsideLayoutOwnMutable`, so an own-category mutable NFT co-spent past the function's block — one the
+function does not step, at a lock that is NOT one of the contract's mintable locks (data, entry, or chunk) — could
+be re-emitted at the same lock with a different commitment and the same `0x01` category without any covenant check
+comparing commitments (`emitMutableOutputAllowed` only compared lock and category). The other DX-6/DS-3 shapes were
+already closed by the mintable-lock admission and the per-collection/data-record censuses.
+
+**Fix (shipped in the struct-array overwrite and chunked-loop update work).** `emitPreserveOutsideLayoutOwnMutable`
+no longer returns early for those shapes. It gates `admitMintableLocks` on an `inLoop` entry slot,
+`collectionIterations`, or a written dynamic variable, builds the data/entry/chunk mintable-lock list, and runs the
+outside-layout walk for every own-category mutable input past the block: a record at one of those mintable locks is
+admitted (its own checks cover it), while any other own-category mutable input is preserved 1:1 — bytecode,
+commitment, and category `OP_EQUALVERIFY` — so a drop is refused and a same-lock recommit with a different
+commitment fails the commitment pin. Scalar-only contracts stay on the shorter byte-identical walk.
+
+**Evidence.** `packages/solidcash/test/e2e/AuditOutsideLayoutWalk.test.ts` (1/1): an honest loop-write
+(`for(i) m[ks[i]] = vs[i]`, an `inLoop` entry slot, with an untouched data NFT) settles; the same tx re-forged to
+co-spend an own-category mutable NFT at a non-mintable P2SH32 lock and re-emit it at that lock with a different
+commitment is refused at the master with a mandatory-script-verify-flag failure; the honest tx still settles
+afterward. The message-bus route path authenticates those NFTs through the batch verifier and deliberately skips the
+walk (`!isCompilerMessageBusRoute`), unchanged.

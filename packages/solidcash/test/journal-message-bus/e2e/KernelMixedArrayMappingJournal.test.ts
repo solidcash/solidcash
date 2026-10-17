@@ -78,7 +78,8 @@ describe('kernel independently indexed dynamic-array and mapping journals', () =
     const fee = await createBareP2pkhFeeFunder(provider);
     call.addInput(fee.utxo, fee.unlocker);
     const builder = await call.build();
-    return { provider, inner, categoryId, contract, call, builder };
+    // Record covenants bind the master's lock: callers derive record addresses from the pinned master.
+    return { provider, inner: contract.inner, categoryId, contract, call, builder };
   };
 
   const evaluate = (setup: Setup): Array<true | string> => {

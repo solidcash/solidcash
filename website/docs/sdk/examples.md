@@ -61,7 +61,8 @@ export const oracleAddress = encodeCashAddress('bchtest', 'p2pkhWithTokens', ora
 For development purposes, we'll use the `MockNetworkProvider` so you can simulate transactions in a 'mock' network environment. To do proper testing, you also need to add "mock" UTXOs to the `MockNetworkProvider`.
 
 ```ts title="hodl_vault.ts"
-import { Contract, SignatureTemplate, MockNetworkProvider, randomUtxo } from 'solidcash';
+import { Contract, SignatureTemplate, randomUtxo } from 'solidcash';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 import { compileFile } from 'solidc';
 import { URL } from 'url';
 
@@ -123,7 +124,8 @@ export class PriceOracle {
 Finally, we can put all of this together to create a working smart contract application. We use the generated keys as contract arguments directly or in a `SignatureTemplate` to create a transaction signature.
 
 ```ts title="hodl_vault.ts"
-import { Contract, SignatureTemplate, MockNetworkProvider, TransactionBuilder, randomUtxo } from 'solidcash';
+import { Contract, SignatureTemplate, TransactionBuilder, randomUtxo } from 'solidcash';
+import { MockNetworkProvider } from 'solidcash/network/mock';
 import { compileFile } from 'solidc';
 import { URL } from 'url';
 

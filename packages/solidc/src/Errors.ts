@@ -60,6 +60,7 @@ export type SolidcDiagnosticCode =
   | 'MESSAGE_BUS_REQUIRED'
   | 'FRAMED_CODEGEN_UNAVAILABLE'
   | 'FRAMED_UPGRADE_LAYOUT'
+  | 'STATE_RECORD_CAPACITY'
   // A Solidity-compat low-level call whose payload arguments the covenant cannot bind to the co-spent callee.
   | 'COMPAT_CALL_UNBOUND_ARGUMENTS'
   // A transaction-signature check left in an invoked subroutine, whose covered bytecode no SDK signature matches.
@@ -70,6 +71,10 @@ export type SolidcDiagnosticCode =
   | 'SPLIT_CLOSURE_CAPACITY'
   | 'SPLIT_ROOT_CAPACITY'
   | 'SPLIT_LAYOUT_CONFLICT'
+  | 'SPLIT_FUNC_REQUIRES_FRAMED'
+  | 'SPLIT_SIZE_REFUSES_FRAMED'
+  // An event payload wider than one NFT commitment, emitted where its continuation chunks have no layout.
+  | 'EVENT_PAYLOAD_EXCEEDS_COMMITMENT'
   // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
   | 'KERNEL_LAYOUT'
   | 'KERNEL_UNBOUNDED_KEY'
@@ -991,6 +996,14 @@ export class DirectInvokedStaleReadError extends SolidCashError {
   }
 }
 
+/** An unresolved indirect target may read a sorted entry whose pending value lives in the caller's registers. */
+export class DirectIndirectStaleReadError extends SolidCashError {
+  constructor(public node: Node, written: string) {
+    super(node, `an indirect call with unresolved state-read effects after the write of \`${written}\` is not `
+      + 'supported on the direct convention: read it before the write, or use an inlined internal getter');
+  }
+}
+
 /**
  * A constructor reads a verified-mapping entry after a write whose key may name it and which keeps no value: the read
  * would take the genesis default rather than the value the write stored.
@@ -1292,6 +1305,15 @@ export class MixedBlockOracleOwnershipError extends SolidCashError {
   }
 }
 
+/** A call to a block.* reader that cannot forward the reader's hidden oracle input index. */
+export class BlockOracleIndexNotForwardedError extends SolidCashError {
+  constructor(node: Node, callee: string) {
+    super(node, `'${callee}' reads block.* through the block oracle, whose input index is forwarded from its `
+      + 'caller as a hidden argument, and this call cannot forward it. Read block.* in the caller as well, '
+      + 'or pass the value in as an argument');
+  }
+}
+
 export class InvalidImmutableTypeError extends SolidCashError {
   constructor(node: Node, functionType = false) {
     super(
@@ -1443,6 +1465,22 @@ export class UnauthorizedLifecycleError extends SolidCashError {
     super(node, `Function '${funcName}' is a ${kind} entry without an unconditional trusted-key signature check `
       + `(require(checkSig(s, key)) where the caller cannot choose key). Any caller could ${effect}. `
       + 'Add genuine authorization, or set allowUnsafeOperations only if permissionless operation is intentional.');
+  }
+}
+
+/**
+ * CRYPTO-4 binds every record to the executing master's exact lock. An in-place upgrade moves the master to the
+ * replacement's lock, so a record the contract keeps could never be spent again.
+ */
+export class UpgradeStrandsBoundStateError extends SolidCashError {
+  constructor(node: Node, funcName: string, records: readonly string[]) {
+    const kept = records.length > 1
+      ? `${records.slice(0, -1).join(', ')} and ${records[records.length - 1]}` : records[0];
+    super(node, `Function '${funcName}' is an in-place upgrade, but this contract keeps ${kept}. Each such record `
+      + 'is bound to the master\'s exact lock, and the upgrade moves the master to the replacement bytecode\'s lock, '
+      + 'so the records cannot follow it and could never be spent again. An in-place upgrade works for a contract '
+      + 'whose whole state lives in its master NFT commitment (no state variables, mappings, or satoshi or token '
+      + 'containers); a proxy upgrade keeps the proxy\'s lock and its records.');
   }
 }
 

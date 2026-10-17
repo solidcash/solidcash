@@ -9,6 +9,7 @@ import {
   parsePushdataCommitment,
   type StateLayout,
   type StateValue,
+  isAuxiliaryBlockSlot,
 } from '@solidcash/utils';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
@@ -28,13 +29,15 @@ export interface MaterializeOwnerFrontOutputsHost {
   readonly delegateComputeResources: boolean;
   readonly compilerRouteDelegateBlock: boolean;
   readonly blockhashCoSpendUtxos: readonly UnlockableUtxo[];
+  readonly blockInfoCoSpendUtxos?: readonly UnlockableUtxo[];
+  /** The oracle belongs to the delegated implementation; its recreate is emitted with that band. */
+  readonly delegateBlockInfoOracle?: boolean;
   readonly blockhashCoSpendSlotOrdinals?: readonly number[];
   readonly keccakComputeCoSpendUtxos: readonly UnlockableUtxo[];
   readonly keccakComputeCommitments: readonly string[];
   readonly preserveBlockLayoutWidth: boolean;
   readonly blockLayout?: FunctionBlockLayout;
   readonly ecrecoverComputeRecreates: readonly Output[];
-  readonly keccakLoopRecreates: readonly Output[];
   readonly externalOutStateUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly externalCallStateUpdates: ReadonlyMap<string, ReadonlyMap<string, StateValue>>;
   readonly externalCallStateRawCommitments: ReadonlyMap<string, ReadonlyMap<number, string>>;
@@ -86,15 +89,15 @@ export function materializeOwnerFrontOutputs(
     });
   }
 
-  // Create read-only data NFT outputs (commitment preserved unchanged)
-  for (const roUtxo of host.readOnlyDataNftUtxos) {
-    builder.addOutput({
-      to: roUtxo.unlocker.generateLockingBytecode(),
-      amount: roUtxo.satoshis,
-      token: roUtxo.token,
-    });
-  }
-
+  // Unified front-region auxiliary co-spend band outputs. One driver walks the compiler's emitted band slots
+  // (readOnlyDataNft, blockhashOracle, blockInfoOracle, keccakSideCar, ecrecoverSideCar) and recreates each
+  // family in that order, matching the input driver. Positioned mode pads inactive slots at their offsets;
+  // dense mode emits only active co-spends. Manual builders without a layout use the canonical dense order.
+  const readOnlyOutputs = host.readOnlyDataNftUtxos.map((roUtxo): Output => ({
+    to: roUtxo.unlocker.generateLockingBytecode(),
+    amount: roUtxo.satoshis,
+    token: roUtxo.token,
+  }));
   const ownsFrontComputeResources = !host.delegateComputeResources || host.compilerRouteDelegateBlock;
   const blockhashOutput = (index: number): Output | undefined => {
     const bhUtxo = host.blockhashCoSpendUtxos[index];
@@ -116,49 +119,78 @@ export function materializeOwnerFrontOutputs(
       },
     } : undefined;
   };
-  if (host.preserveBlockLayoutWidth && host.blockLayout && ownsFrontComputeResources) {
-    const blockhashOrdinals = host.blockhashCoSpendSlotOrdinals
+  const blockInfoOutput = (): Output | undefined => {
+    if (host.delegateBlockInfoOracle) return undefined;
+    const oracle = host.blockInfoCoSpendUtxos?.[0];
+    return oracle === undefined ? undefined : {
+      to: oracle.unlocker.generateLockingBytecode(),
+      amount: oracle.satoshis,
+      token: oracle.token,
+    };
+  };
+  const blockhashOrdinals = host.blockhashCoSpendSlotOrdinals
     ?? host.blockhashCoSpendUtxos.map((_utxo, index) => index);
-    const fixedComputeSlots = host.blockLayout.slots.filter((slot) => (
-      slot.kind === 'blockhashOracle' || slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar'
-    )).sort((left, right) => left.offset - right.offset);
-    let blockhashOrdinal = 0;
-    for (const slot of fixedComputeSlots) {
-      while (builder.outputs.length < slot.offset) {
+
+  const auxSlots = host.blockLayout
+    ? host.blockLayout.slots.filter((slot) => isAuxiliaryBlockSlot(slot) && slot.kind !== 'lowLevelCall') : [];
+  let readOnlyIdx = 0, bhOrdinal = 0, kIdx = 0, erIdx = 0;
+  const positioned = host.preserveBlockLayoutWidth && host.blockLayout !== undefined && ownsFrontComputeResources;
+  const denseOutputs: Output[] = [];
+  const emitAt = (slotOffset: number, output: Output | undefined): void => {
+    if (positioned) {
+      while (builder.outputs.length < slotOffset) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
       }
-      let output: Output | undefined;
-      if (slot.kind === 'blockhashOracle') {
-        const activeIndex = blockhashOrdinals.indexOf(blockhashOrdinal++);
-        output = activeIndex >= 0 ? blockhashOutput(activeIndex) : undefined;
-      } else if (slot.kind === 'keccakSideCar') {
-        output = keccakOutput(slot.slotIndex ?? 0);
-      } else {
-        output = host.ecrecoverComputeRecreates[slot.slotIndex ?? 0];
-      }
       builder.addOutput(output ?? { to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
+    } else if (output) {
+      denseOutputs.push(output);
+    }
+  };
+  for (const slot of auxSlots) {
+    switch (slot.kind) {
+      case 'readOnlyDataNft':
+        emitAt(slot.offset, readOnlyIdx < readOnlyOutputs.length ? readOnlyOutputs[readOnlyIdx++] : undefined);
+        break;
+      case 'blockhashOracle': {
+        const activeIndex = positioned ? blockhashOrdinals.indexOf(bhOrdinal) : bhOrdinal;
+        bhOrdinal += 1;
+        emitAt(slot.offset, activeIndex >= 0 ? blockhashOutput(activeIndex) : undefined);
+        break;
+      }
+      case 'blockInfoOracle':
+        if (positioned && host.delegateBlockInfoOracle) break;
+        emitAt(slot.offset, blockInfoOutput());
+        break;
+      case 'keccakSideCar':
+        emitAt(slot.offset, ownsFrontComputeResources
+          ? keccakOutput(positioned ? (slot.slotIndex ?? 0) : kIdx++) : undefined);
+        break;
+      case 'ecrecoverSideCar':
+        emitAt(slot.offset, ownsFrontComputeResources
+          ? host.ecrecoverComputeRecreates[positioned ? (slot.slotIndex ?? 0) : erIdx++] : undefined);
+        break;
+      default:
+        break;
+    }
+  }
+  if (host.blockLayout === undefined) {
+    // Manual builder without a block layout: emit the canonical dense order directly.
+    for (const output of readOnlyOutputs) builder.addOutput(output);
+    for (let index = 0; index < host.blockhashCoSpendUtxos.length; index++) builder.addOutput(blockhashOutput(index)!);
+    const bio = blockInfoOutput();
+    if (bio) builder.addOutput(bio);
+    if (ownsFrontComputeResources) {
+      for (let index = 0; index < host.keccakComputeCoSpendUtxos.length; index++) builder.addOutput(keccakOutput(index)!);
+      for (const rec of host.ecrecoverComputeRecreates) builder.addOutput(rec);
     }
   } else {
-  // Legacy layouts emit their active compute resources densely; they do not publish inactive coordinates.
-    for (let index = 0; index < host.blockhashCoSpendUtxos.length; index++) {
-      builder.addOutput(blockhashOutput(index)!);
-    }
-    if (ownsFrontComputeResources) {
-      for (let index = 0; index < host.keccakComputeCoSpendUtxos.length; index++) {
-        builder.addOutput(keccakOutput(index)!);
-      }
-    }
+    for (const output of denseOutputs) builder.addOutput(output);
   }
 
-  // Dynamic keccak loop: recreate the N trailing side-cars, each with its iteration result R_i. In the MVP
-  // layout (no other front-region slots) these sit at [blockSize, blockSize+N) - right after the data NFTs.
-  for (const rec of host.keccakLoopRecreates) builder.addOutput(rec);
-
-  // ecrecover recovery-pair recreations (right after the keccak side-cars, matching the ecrecoverSideCar slots):
-  // A commits H_A (the A->B binding hash), B commits the recovered pubkey Q. Built by buildEcrecoverComputeSidecars.
-  if (ownsFrontComputeResources && !host.preserveBlockLayoutWidth) {
-    for (const rec of host.ecrecoverComputeRecreates) builder.addOutput(rec);
-  }
+  // Dynamic keccak loop side-car recreations are emitted by materializeMidBuildOutputsCascade at the start of
+  // the trailing band (after every fixed block slot), or by materializeRuntimeLoopTrailing when a mapping loop
+  // precedes the keccak loop. They no longer live here: containers/transfers/events are fixed slots emitted
+  // later in the cascade, and emitting the side-cars before them desynchronized the output coordinate.
 
   // Create external outState outputs (same pattern as external call preservation)
   for (const group of host.externalOutStateUtxoGroups) {
@@ -222,6 +254,10 @@ export function materializeOwnerFrontOutputs(
         },
       });
     }
+
+    // B's blockhash oracle recreations (after B's data NFT outputs, before keccak side-cars), matching the
+    // input order master < dataNft < blockhashOracle < keccakSideCar.
+    for (const rec of group.blockhashCoSpendRecreates ?? []) builder.addOutput(rec);
 
     // B's keccak256 side-car recreations (after B's data NFT outputs, matching the input order).
     for (const rec of group.keccakRecreates ?? []) builder.addOutput(rec);

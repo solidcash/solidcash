@@ -505,6 +505,43 @@ describe('clearer diagnostic for an external call on an interface-typed struct-f
   });
 });
 
+describe('memory-COPY struct-field external-call target (IFoo(job.token).transfer)', () => {
+  // `Job memory job = jobs[id]; IFoo(job.token).transfer(..)` is a single-assignment MEMORY COPY of a
+  // self-pinned state mapping value. The call must be pinned to the call-site value of `job.token` (a
+  // synthesized `__extaddr_` local), never lifted to a caller-substitutable parameter. A copy whose `token`
+  // field is written, or whose local is reassigned, no longer equals the state value, so it must fail closed.
+  const IFACE = 'interface IFoo { function transfer(address to, uint256 amount) external; }';
+  const JOB = 'struct Job { address token; uint256 fee; }';
+  it('pins the single-assignment memory-COPY cast target to a call-site local, not a param', () => {
+    const art = compileString(`${IFACE} ${JOB} contract C { mapping(uint256 => Job) jobs;`
+      + ' function f(uint256 id, address to) public {'
+      + ' Job memory job = jobs[id]; IFoo(job.token).transfer(to, 1); require(true); } }',
+    { evmCompat: true });
+    const fn = art.abi.find((f) => f.name === 'f');
+    const ec = fn?.externalCalls?.[0];
+    expect(ec?.addressParam).toMatch(/^__extaddr_/);
+    expect(fn?.inputs.map((i) => i.name)).not.toContain(ec?.addressParam);
+  });
+  it('rejects a memory-COPY whose token field is written before the call', () => {
+    expect(() => compileString(`${IFACE} ${JOB} contract C { mapping(uint256 => Job) jobs;`
+      + ' function f(uint256 id, address to, address replacement) public {'
+      + ' Job memory job = jobs[id]; job.token = replacement;'
+      + ' IFoo(job.token).transfer(to, 1); require(true); } }',
+    { evmCompat: true })).toThrow(
+      /external call target address must be a constructor\/function parameter or self-pinned state value/,
+    );
+  });
+  it('rejects a memory-COPY whole-local reassignment before the call', () => {
+    expect(() => compileString(`${IFACE} ${JOB} contract C { mapping(uint256 => Job) jobs;`
+      + ' function f(uint256 id, address to, address replacement) public {'
+      + ' Job memory job = jobs[id]; job = Job(replacement, 0);'
+      + ' IFoo(job.token).transfer(to, 1); require(true); } }',
+    { evmCompat: true })).toThrow(
+      /external call target address must be a constructor\/function parameter or self-pinned state value/,
+    );
+  });
+});
+
 describe('opaque MultiCall over a struct-array parameter (Multicall2 calls[i].target.call(calls[i].callData))', () => {
   // The opaque loop dispatch `targets[i].call(data[i])` (working over parallel address[]/bytes[] arrays) extended
   // to a struct-array param `Call[] { address target; bytes callData; }` where the target and calldata are FIELDS

@@ -28,5 +28,6 @@ describe('runPortedScript', () => {
     expect(result.stderr.join('\n')).toContain('upgradeProxy: no proxy is deployed at 0x405A');
     // The script's exit code does not leak into the process hosting it.
     expect(process.exitCode).toBe(hostExitCode);
-  }, 15_000);
+    // Above the 30 s bound and below the script's 60 s timeout, so the bound judges a slow cold load, not this timer.
+  }, 45_000);
 });

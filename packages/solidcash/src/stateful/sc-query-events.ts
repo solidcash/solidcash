@@ -8,6 +8,7 @@ import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   getAnonymousEventNftAddress,
   getEventNftAddress,
+  getEventNftContinuationAddress,
 } from './covenant-helpers.js';
 import {
   readAnonymousEventsFromChain,
@@ -55,6 +56,7 @@ export async function queryEvents(
     const allAnonymousDefs = eventDefs.filter((e: EventDefinitionAbi) => e.anonymous);
     const allEvents = await readAnonymousEventsFromChain(
       provider, anonymousAddress, host.categoryId, allAnonymousDefs, structs,
+      getEventNftContinuationAddress(host.inner, host.categoryId, eventDef.signature),
     );
 
     let filtered = allEvents.filter((e) => e.eventSignature === eventDef.signature);
@@ -81,5 +83,6 @@ export async function queryEvents(
   const eventAddress = getEventNftAddress(host.inner, host.categoryId, eventDef.signature);
   return readEventsFiltered(
     provider, eventAddress, host.categoryId, eventDef, filters, structs,
+    getEventNftContinuationAddress(host.inner, host.categoryId, eventDef.signature),
   );
 }

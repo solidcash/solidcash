@@ -35,7 +35,6 @@ const childArtifact = compileString(CHILD);
 describe('token transfer to a new child on deploy (deployFrom)', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const bare = new Contract(factoryArtifact, [], { provider });
 
   async function deployFactory(txid: string): Promise<{
     factory: Awaited<ReturnType<typeof StatefulContract.deploy>>['contract']; ftCategory: string;
@@ -47,7 +46,8 @@ describe('token transfer to a new child on deploy (deployFrom)', () => {
       funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
       initialState: { childCount: 0n }, changeAddress: p2pkh.address,
     });
-    const ft = await genesisFtContainer(provider, bare, deployed.categoryId, [1000n]);
+    // The container binds the master lock: the deployed (category-pinned) factory's.
+    const ft = await genesisFtContainer(provider, deployed.contract.inner, deployed.categoryId, [1000n]);
     return { factory: deployed.contract, ftCategory: ft.category };
   }
 
@@ -122,7 +122,6 @@ const multiChildArtifact = compileString(MULTI_CHILD);
 describe('multi-category token transfer on deploy (deployFrom)', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const bare = new Contract(multiArtifact, [], { provider });
 
   it('co-spends TWO token containers, recreates both remainders, transfers both to the child', async () => {
     const fu: Utxo = { txid: 'da01'.repeat(16), vout: 0, satoshis: 400000n };
@@ -132,8 +131,9 @@ describe('multi-category token transfer on deploy (deployFrom)', () => {
       funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
       initialState: { cc: 0n }, changeAddress: p2pkh.address,
     });
-    const ftA = await genesisFtContainer(provider, bare, deployed.categoryId, [1000n]);
-    const ftB = await genesisFtContainer(provider, bare, deployed.categoryId, [2000n]);
+    // The containers bind the master lock: the deployed (category-pinned) factory's.
+    const ftA = await genesisFtContainer(provider, deployed.contract.inner, deployed.categoryId, [1000n]);
+    const ftB = await genesisFtContainer(provider, deployed.contract.inner, deployed.categoryId, [2000n]);
 
     const g0: Utxo = { txid: 'da02'.repeat(16), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, g0);

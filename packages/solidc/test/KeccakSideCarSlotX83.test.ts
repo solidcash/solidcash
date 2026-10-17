@@ -80,6 +80,7 @@ const TWO_STRAIGHT = [
 interface KeccakAbiEntry {
   name: string;
   keccakInLoop?: boolean;
+  keccakChainReads?: boolean;
   keccakPreimageParams?: (string | null)[];
   blockLayout?: { blockSize: number; slots: { kind: string; slotIndex: number }[] };
 }
@@ -132,10 +133,12 @@ describe('X83: the shapes that compiled before keep their layouts', () => {
   // Each control asserts the LAYOUT as well as the compile: the mix reservation must not touch a function that
   // is all straight-line or all looped.
 
-  it('straightOnly: one call, one reserved slot [0], not in a loop', () => {
+  it('straightOnly: one unbounded call chains (no fixed slot, trailing region reserved)', () => {
     const entry = entryOf(STRAIGHT_ONLY);
     expect(entry.keccakInLoop).toBeFalsy();
-    expect(sideCarSlots(entry)).toEqual([0]);
+    expect(entry.keccakChainReads).toBe(true);
+    expect(sideCarSlots(entry)).toEqual([]);
+    expect(entry.blockLayout?.slots.some((slot) => slot.kind === 'trailing')).toBe(true);
     expect(entry.keccakPreimageParams).toEqual(['a']);
   });
 

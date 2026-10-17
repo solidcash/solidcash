@@ -2,13 +2,15 @@ import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-inst
 import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
 import {
-  type Artifact, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
+  type Artifact, blockhashCommitmentNumber, blockhashOracleLockingBytecode,
+  buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
+  blockOracleRedeemScript, blockOracleUpdateUnlocking, encodeBlockOracleCommitment, blockOracleFieldValue,
   buildPushdataCommitment, scriptToBytecode, encodeInt, hash160, hash256, type StateVariableInfo,
   blockhashKeeperBatonLockingBytecode, buildBlockhashKeeperBatonScript,
 } from '@solidcash/utils';
 import type { Contract } from '../Contract.js';
 import type { Utxo, Unlocker, GenerateUnlockingBytecodeOptions } from '../interfaces.js';
-import { createSighashPreimage } from '../utils.js';
+import { calculateDust, createSighashPreimage, toSigningSerializationType } from '../utils.js';
 import { readFramedState, type FramedState } from '../framed/deploy/records.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
@@ -17,15 +19,16 @@ import type NetworkProvider from '../network/NetworkProvider.js';
  * Off-chain keeper for a contract's block.* oracles (docs/block-and-transaction-properties.md). It subscribes to Fulcrum
  * block-header notifications and, on each new tip, maintains only the oracle(s) the contract actually uses:
  *
- *  - block-info register (block.number/timestamp/...): present iff the artifact has `__updateBlockOracle`.
- *    Reads the block from a BCHN JSON-RPC and pushes a signed + freshness-bound `__updateBlockOracle` when
- *    the chain is ahead of the on-chain register.
+ *  - block-info oracle (block.number/timestamp/...): present iff the artifact stamps usesBlockOracle. Reads
+ *    the block from a BCHN JSON-RPC and spends the shared oracle covenant (utils/block-oracle.ts) with a
+ *    signed update: a height update when the chain is ahead of its number, then a timestamp update when the
+ *    last final second (median time past - 1) is ahead of its timestamp.
  *  - n->hash oracle (blockhash(n)): present iff the artifact stamps usesBlockhash. Mints the per-block
- *    (n->hash) UTXO under the project-global oracle category. (Sweeping the one that aged out of the
- *    256-block window is a keeper follow-up; the covenant's permissionless tx.time>=n+256 wipe is in place.)
+ *    (n->hash) NFT at the master category's one oracle lock through the keeper baton covenant (audit
+ *    CRYPTO-4), and sweeps the pairs that aged out of the 256-block window.
  *
- * The keeper/operator private key signs both (the contract's baked `__blockOracleOwner` for block-info,
- * and the n->hash mint).
+ * The keeper/operator private key signs both (the owner hash in the oracle commitment for block-info, and
+ * the n->hash mint). Its P2PKH pays the block-info update fees and takes the swept dust.
  */
 
 // Any JSON-RPC client exposing `request(method, ...params)` (BchnRpcClient satisfies this).
@@ -40,10 +43,17 @@ export interface BlockOracleFields {
   size: bigint; // block size in bytes
   totalFees: bigint; // sum of tx fees, satoshis
   coinbase: Uint8Array; // coinbase output 0 locking bytecode
+  medianTime?: bigint; // median time past at this block, when the rpc reports it
 }
 
 // EVM-parity blockhash window.
 export const BLOCKHASH_WINDOW = 256;
+
+// Relay fee of one block-info update, paid by a coin at the keeper's P2PKH. The oracle keeps its value.
+const UPDATE_FEE = 2_000n;
+
+// Most aged-out pairs one sweep spends, so a backlog still sweeps as a standard-size transaction.
+const MAX_SWEEP_PAIRS = 100;
 
 // User-land defaults: mainnet -> public BCHN, regtest -> the docker stack (see docker-compose.regtest.yml).
 export const DEFAULT_RPC_URL: Record<string, string> = {
@@ -88,44 +98,25 @@ export async function fetchBlockOracleFields(rpc: RpcLike, hash: string): Promis
     size: BigInt(block.size),
     totalFees: coinbaseSum - blockSubsidySats(block.height),
     coinbase: hexToBin(coinbase.vout[0].scriptPubKey.hex),
+    ...(block.mediantime !== undefined && { medianTime: BigInt(block.mediantime) }),
   };
 }
 
-// Map fetched fields to the contract's injected registers, in the ABI order of __updateBlockOracle. Only
-// the registers the contract actually references are written (a contract may use a subset of block.*).
-function buildUpdate(
-  contract: Contract,
-  fields: BlockOracleFields,
-): { args: Array<bigint | Uint8Array>; state: Record<string, bigint | Uint8Array> } {
-  const byRegister: Record<string, bigint | Uint8Array> = {
-    __block_number: fields.number,
-    __block_timestamp: fields.timestamp,
-    __block_difficulty: fields.difficulty,
-    __block_size: fields.size,
-    __block_totalFees: fields.totalFees,
-    __block_coinbase: fields.coinbase,
-  };
-  const updateAbi = contract.artifact.abi.find((fn) => fn.name === '__updateBlockOracle');
-  if (!updateAbi) throw new Error('contract does not use block.* (no __updateBlockOracle in the ABI)');
-
-  const args: Array<bigint | Uint8Array> = [];
-  const state: Record<string, bigint | Uint8Array> = {};
-  for (const input of updateAbi.inputs) {
-    if (input.name === '__blockOracleSig') continue; // signature supplied separately
-    const register = `__block_${input.name.slice('__set_'.length)}`;
-    const value = byRegister[register];
-    if (value === undefined) throw new Error(`unexpected oracle setter param: ${input.name}`);
-    args.push(value);
-    state[register] = value;
-  }
-  return { args, state };
+/**
+ * A timestamp update CLTVs its timestamp under a time-type locktime, and that locktime is final only below the
+ * median time past. Publish at most the last final second.
+ */
+function finalTimestamp(fields: BlockOracleFields): bigint {
+  if (fields.medianTime === undefined) return fields.timestamp;
+  const last = fields.medianTime - 1n;
+  return fields.timestamp < last ? fields.timestamp : last;
 }
 
 export interface BlockOracleUpdaterConfig {
   contract: Contract;
   categoryId: string;
-  // Operator/keeper private key. Signs the block-info `__updateBlockOracle` (vs the baked
-  // `__blockOracleOwner`) and the n->hash oracle mints.
+  // Operator/keeper private key. Signs the block-info oracle update (its hash is the commitment's owner) and
+  // the n->hash oracle mints.
   keeperKey: Uint8Array;
   rpc: RpcLike;
   electrumHost?: string; // Fulcrum host for blockchain.headers.subscribe
@@ -134,6 +125,27 @@ export interface BlockOracleUpdaterConfig {
   // Override for the keeper's minting baton. By default it is the UTXO at the keeper baton covenant
   // (blockhashKeeperBatonLockingBytecode(category, keeper public key)), spent with blockhashKeeperBatonUnlocker.
   blockhashOracleMaster?: { utxo: Utxo; unlocker: Unlocker };
+}
+
+/** Unlocks the block-info oracle update path: the keeper signs, and `newCommitment` replaces the record. */
+export function blockOracleUpdateUnlocker(
+  categoryId: Uint8Array, lock: Uint8Array, keeperKey: Uint8Array, newCommitment: Uint8Array,
+): Unlocker {
+  const pubkey = secp256k1.derivePublicKeyCompressed(keeperKey) as Uint8Array;
+  const redeem = blockOracleRedeemScript(categoryId);
+  return {
+    generateLockingBytecode: (): Uint8Array => lock,
+    generateUnlockingBytecode: ({ transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions)
+    : Uint8Array => {
+      // SIGHASH_ALL | SIGHASH_UTXOS. The preimage and the signature byte both include the fork-id flag.
+      const sighashType = 0x21;
+      const signature = secp256k1.signMessageHashSchnorr(keeperKey, hash256(
+        createSighashPreimage(transaction, sourceOutputs, inputIndex, redeem, sighashType),
+      )) as Uint8Array;
+      const signed = Uint8Array.from([...signature, toSigningSerializationType(sighashType)]);
+      return blockOracleUpdateUnlocking(categoryId, pubkey, signed, newCommitment);
+    },
+  };
 }
 
 /** Unlocks the keeper baton covenant (audit CRYPTO-4) with `<keeper signature> <redeem>`. */
@@ -155,9 +167,9 @@ export function blockhashKeeperBatonUnlocker(categoryId: string, keeperKey: Uint
 export class BlockOracleUpdater {
   constructor(private readonly cfg: BlockOracleUpdaterConfig) {}
 
-  /** The contract writes a current-block register set (block.number/timestamp/...). */
+  /** The contract slices the block-info oracle commitment (block.number/timestamp/...). */
   static usesBlockInfo(artifact: Artifact): boolean {
-    return artifact.abi.some((fn) => fn.name === '__updateBlockOracle');
+    return artifact.usesBlockOracle === true;
   }
 
   /**
@@ -168,35 +180,88 @@ export class BlockOracleUpdater {
     return artifact.usesBlockhash === true;
   }
 
-  /** Current block-info oracle height from the on-chain __block_number register (0 if absent). */
+  /** Current block-info oracle height from the oracle commitment (0 if absent). */
   async oracleHeight(): Promise<bigint> {
-    const { StatefulContract } = await import('../stateful/StatefulContract.js');
-    const sc = StatefulContract.withCategory(this.cfg.contract, this.cfg.categoryId);
-    const state = await sc.getState();
-    return BigInt((state.__block_number as bigint | undefined) ?? 0n);
+    return blockOracleFieldValue(await this.currentCommitment(), 'number');
   }
 
-  /** Push a signed + freshness-bound block-info update for the given block fields. Returns the txid. */
-  async pushUpdate(fields: BlockOracleFields): Promise<string> {
-    const { StatefulContract } = await import('../stateful/StatefulContract.js');
-    const { args, state } = buildUpdate(this.cfg.contract, fields);
-    const sc = StatefulContract.withCategory(this.cfg.contract, this.cfg.categoryId);
-    const call = (sc as any).__updateBlockOracle(new SignatureTemplate(this.cfg.keeperKey), ...args)
-      .setState(state)
-      .setLocktime(Number(fields.number)); // freshness: require(tx.time >= number)
-    const tx = await call.send();
-    return tx.txid;
+  /** Current block-info oracle timestamp from the oracle commitment (0 if absent). */
+  async oracleTimestamp(): Promise<bigint> {
+    return blockOracleFieldValue(await this.currentCommitment(), 'timestamp');
   }
 
   /**
-   * Mint the (n -> hash) oracle UTXO at addr(n) under the oracle category, spending + recreating the
-   * keeper's minting baton. Returns the mint txid.
+   * Push a signed update of the oracle commitment. The owner hash already in it must match `keeperKey`.
+   * `locktime` defaults to the new block number: a height-type locktime CLTVs the number and keeps the
+   * stored timestamp, a time-type one CLTVs the timestamp and keeps the stored number (audit CRYPTO-5/6).
+   * The oracle keeps its value: a coin at the keeper's P2PKH pays the fee and takes the change.
+   */
+  async pushUpdate(fields: BlockOracleFields, locktime = Number(fields.number)): Promise<string> {
+    const { TransactionBuilder } = await import('../TransactionBuilder.js');
+    const provider = this.cfg.contract.provider;
+    const lock = provider.blockOracleLock;
+    const category = provider.blockOracleCategory;
+    if (lock === undefined || category === undefined) {
+      throw new Error('the provider has no block oracle covenant');
+    }
+    const utxos = await provider.getUtxosForLockingBytecode(lock);
+    const oracle = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+    if (oracle === undefined) throw new Error('block oracle UTXO is not available');
+    const pubkey = secp256k1.derivePublicKeyCompressed(this.cfg.keeperKey) as Uint8Array;
+    const newCommitment = encodeBlockOracleCommitment(hash160(pubkey), fields);
+    const funding = await this.feeCoin(UPDATE_FEE);
+    const tx = await new TransactionBuilder({ provider })
+      .addInput(oracle, blockOracleUpdateUnlocker(category, lock, this.cfg.keeperKey, newCommitment))
+      .addInput(funding, new SignatureTemplate(this.cfg.keeperKey).unlockP2PKH())
+      .addOutput({
+        to: lock,
+        amount: oracle.satoshis,
+        token: {
+          category: oracle.token!.category,
+          amount: oracle.token!.amount,
+          nft: { capability: 'mutable', commitment: binToHex(newCommitment) },
+        },
+      })
+      .addOutput({ to: this.keeperP2pkh(), amount: funding.satoshis - UPDATE_FEE })
+      .setLocktime(locktime)
+      .send();
+    return tx.txid;
+  }
+
+  // The largest token-free coin at the keeper's P2PKH, when it pays `fee` and leaves change above dust.
+  private async feeCoin(fee: bigint): Promise<Utxo> {
+    const to = this.keeperP2pkh();
+    const [coin] = (await this.cfg.contract.provider.getUtxosForLockingBytecode(to))
+      .filter((utxo) => utxo.token === undefined)
+      .sort((a, b) => Number(b.satoshis - a.satoshis));
+    if (coin === undefined || coin.satoshis - fee < BigInt(calculateDust({ to, amount: coin.satoshis }))) {
+      throw new Error(`the keeper's P2PKH holds no coin that pays the ${fee}-satoshi oracle update fee`);
+    }
+    return coin;
+  }
+
+  private async currentCommitment(): Promise<Uint8Array> {
+    const provider = this.cfg.contract.provider;
+    const lock = provider.blockOracleLock;
+    if (lock === undefined) return new Uint8Array();
+    const utxos = await provider.getUtxosForLockingBytecode(lock);
+    const commitment = utxos.find((utxo) => utxo.token?.nft)?.token?.nft?.commitment;
+    return commitment === undefined ? new Uint8Array() : hexToBin(commitment);
+  }
+
+  /**
+   * Mint the (n -> hash) oracle NFT at the category's one blockhash oracle lock, spending and recreating the
+   * keeper's minting baton (the keeper baton covenant unless overridden). Returns the mint txid.
    */
   async mintBlockhashPair(n: bigint, hash: Uint8Array): Promise<string> {
     const catHex = this.cfg.blockhashOracleCategory;
     if (!catHex) throw new Error('blockhashOracleCategory is required to mint (n->hash) pairs');
+    const category = catHex.toLowerCase();
     const master = this.cfg.blockhashOracleMaster ?? await this.keeperBaton(catHex);
-    const addrN = blockhashOracleLockingBytecode(hexToBin(catHex), n);
+    if (master.utxo.token?.category?.toLowerCase() !== category) {
+      throw new Error('blockhash oracle minting master must carry the master contract category');
+    }
+    const lock = blockhashOracleLockingBytecode(hexToBin(category));
     const commitment = binToHex(buildBlockhashCommitment(n, hash));
     const mintSats = 1000n;
     const fee = 1000n;
@@ -207,12 +272,12 @@ export class BlockOracleUpdater {
         to: master.unlocker.generateLockingBytecode(),
         amount: master.utxo.satoshis - mintSats - fee,
         token: master.utxo.token,
-      }) // recreate the minting master
+      })
       .addOutput({
-        to: addrN,
+        to: lock,
         amount: mintSats,
         token: { category: catHex, amount: 0n, nft: { capability: 'none', commitment } },
-      }) // mint the (n,hash) oracle NFT
+      })
       .setLocktime(Number(n)) // the baton covenant requires tx.time >= n
       .send();
     return tx.txid;
@@ -228,42 +293,49 @@ export class BlockOracleUpdater {
   }
 
   /**
-   * Sweep (burn) the (n->hash) oracle UTXO that aged out of the 256-block window, reclaiming its dust to
-   * the keeper's P2PKH. Best-effort: returns null if nothing sits at addr(n). Spends the covenant wipe
-   * path (flag 1) under tx.time >= n+256 - mineable once the chain reaches n+256. The covenant also lets
-   * anyone wipe, so this is a keeper convenience (reclaim dust), not a liveness dependency.
+   * Sweep (burn) the (n->hash) oracle UTXOs of block n and older, which aged out of the 256-block window, and
+   * reclaim their dust to the keeper's P2PKH in one batch that pays its fee at 1 sat/byte. Best-effort: returns
+   * null if no such pair is live, or if the batch cannot leave an output above dust (a later batch takes them).
+   * Spends the covenant wipe path (flag 1) under tx.time >= n+256 - mineable once the chain reaches n+256. The
+   * covenant also lets anyone wipe, so this is a keeper convenience (reclaim dust), not a liveness dependency.
    */
   async sweepBlockhashPair(n: bigint): Promise<string | null> {
     const catHex = this.cfg.blockhashOracleCategory;
     if (!catHex) throw new Error('blockhashOracleCategory is required to sweep (n->hash) pairs');
-    const cat = hexToBin(catHex);
-    const addrN = blockhashOracleLockingBytecode(cat, n);
-    const utxos = await this.cfg.contract.provider.getUtxosForLockingBytecode(addrN);
-    if (utxos.length === 0) return null;
+    const category = hexToBin(catHex);
+    const lock = blockhashOracleLockingBytecode(category);
+    // The wipe path spends only a capability-none NFT of the category, so anything else at the lock stays.
+    const wanted = catHex.toLowerCase();
+    const pairs = (await this.cfg.contract.provider.getUtxosForLockingBytecode(lock))
+      .filter(({ token }) => token !== undefined && token.category.toLowerCase() === wanted
+        && token.nft?.capability === 'none' && blockhashCommitmentNumber(hexToBin(token.nft.commitment)) <= n)
+      .slice(0, MAX_SWEEP_PAIRS);
+    if (pairs.length === 0) return null;
 
-    const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(cat, n));
-    const wipeUnlock = scriptToBytecode([encodeInt(1n), redeem]); // flag 1 = wipe branch
+    const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(category));
+    const wipeUnlock = scriptToBytecode([encodeInt(1n), redeem]);
     const unlocker = {
-      generateLockingBytecode: (): Uint8Array => addrN,
+      generateLockingBytecode: (): Uint8Array => lock,
       generateUnlockingBytecode: (): Uint8Array => wipeUnlock,
     };
 
     const { TransactionBuilder } = await import('../TransactionBuilder.js');
     const builder = new TransactionBuilder({ provider: this.cfg.contract.provider, allowImplicitNftBurn: true });
-    let reclaimed = 0n;
-    for (const utxo of utxos) {
-      builder.addInput(utxo, unlocker);
-      reclaimed += utxo.satoshis;
-    }
-    const fee = 1000n;
-    const tx = await builder
-      .addOutput({ to: this.keeperP2pkh(), amount: reclaimed - fee })
-      .setLocktime(Number(n + BigInt(BLOCKHASH_WINDOW)))
-      .send();
+    for (const utxo of pairs) builder.addInput(utxo, unlocker);
+    const to = this.keeperP2pkh();
+    const reclaimed = pairs.reduce((sum, utxo) => sum + utxo.satoshis, 0n);
+    const dust = BigInt(calculateDust({ to, amount: reclaimed }));
+    if (reclaimed < dust) return null;
+    builder.addOutput({ to, amount: reclaimed }).setLocktime(Number(n + BigInt(BLOCKHASH_WINDOW)));
+    // The wipe unlocking carries no signature, so this size is final.
+    const amount = reclaimed - builder.getTransactionSize();
+    if (amount < dust) return null;
+    builder.outputs[0] = { to, amount };
+    const tx = await builder.send();
     return tx.txid;
   }
 
-  // The keeper's own P2PKH locking bytecode (reclaim destination for swept dust).
+  // The keeper's own P2PKH locking bytecode: it pays block-info update fees and takes swept dust.
   private keeperP2pkh(): Uint8Array {
     const pub = secp256k1.derivePublicKeyCompressed(this.cfg.keeperKey);
     if (typeof pub === 'string') throw new Error(`invalid keeper key: ${pub}`);
@@ -272,7 +344,7 @@ export class BlockOracleUpdater {
 
   /**
    * Maintain the project-global (n->hash) oracle on a new tip: mint the tip's (n, hash) pair and sweep the
-   * pair that just aged out of the 256-block window (best-effort dust reclaim).
+   * pairs that aged out of the 256-block window (best-effort dust reclaim).
    */
   private async maintainBlockhashWindow(tip: number): Promise<void> {
     const hashHex: string = await this.cfg.rpc.request('getblockhash', tip);
@@ -281,7 +353,7 @@ export class BlockOracleUpdater {
   }
 
   /**
-   * Fetch the tip and maintain whichever oracle(s) this contract uses. Returns the block-info update txid
+   * Fetch the tip and maintain whichever oracle(s) this contract uses. Returns the last block-info update txid
    * (or null if the block-info oracle is absent or already current).
    */
   async syncOnce(): Promise<string | null> {
@@ -289,9 +361,22 @@ export class BlockOracleUpdater {
     const { artifact } = this.cfg.contract;
 
     let blockInfoTxid: string | null = null;
-    if (BlockOracleUpdater.usesBlockInfo(artifact) && BigInt(tip) > (await this.oracleHeight())) {
+    if (BlockOracleUpdater.usesBlockInfo(artifact)) {
+      const commitment = await this.currentCommitment();
+      const storedTimestamp = blockOracleFieldValue(commitment, 'timestamp');
+      let number = blockOracleFieldValue(commitment, 'number');
       const hash: string = await this.cfg.rpc.request('getblockhash', tip);
-      blockInfoTxid = await this.pushUpdate(await fetchBlockOracleFields(this.cfg.rpc, hash));
+      const fields = await fetchBlockOracleFields(this.cfg.rpc, hash);
+      // nLockTime is a height or a time, so the number and the timestamp move in separate updates.
+      if (fields.number > number) {
+        blockInfoTxid = await this.pushUpdate({ ...fields, timestamp: storedTimestamp }, Number(fields.number));
+        number = fields.number;
+      }
+      // A timestamp is final only below the median time past, so it needs the rpc to report one.
+      const timestamp = finalTimestamp(fields);
+      if (fields.medianTime !== undefined && timestamp > storedTimestamp) {
+        blockInfoTxid = await this.pushUpdate({ ...fields, number, timestamp }, Number(timestamp));
+      }
     }
     if (BlockOracleUpdater.usesBlockhash(artifact)) {
       await this.maintainBlockhashWindow(tip);
@@ -581,6 +666,8 @@ export async function syncMockBlockOracleDeployment(
 }
 
 export async function syncMockBlockOracles(provider: NetworkProvider): Promise<number> {
+  const refresh = (provider as { refreshBlockOracle?: () => void }).refreshBlockOracle;
+  if (refresh !== undefined) refresh.call(provider);
   const { listDeployments } = await import('../stateful/deployment-registry.js');
   return syncMockBlockOracleDeployments(provider, listDeployments(provider));
 }

@@ -4,7 +4,13 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction, FunctionBlockLayout, StateLayout } from '@solidcash/utils';
+import {
+  type AbiFunction,
+  type FunctionBlockLayout,
+  type StateLayout,
+  encodeChunkableValueTail,
+  parseArrayTypeString,
+} from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -13,11 +19,13 @@ import { isDisposableAlignmentPad } from './value-chunk-band-helpers.js';
 import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
 import { groupIndexForExternalCallSlot } from './physical-external-call.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
+import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import {
   compilerRouteUsesPhysicalWrapper,
   selectedMessageBusResourceMetadata,
 } from './message-bus-resource-routing.js';
 import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
+import { resolveMaterializedDynamicWriteOutputBase } from './stb-reconcile-dynamic-chunk-output-witnesses.js';
 import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import type { ExternalCallUtxoGroup, EntryNftInfo, TokenContainerInfo } from './external-call-utxo-group.js';
 import {
@@ -77,6 +85,8 @@ export function constructCreateBuilderTransactionBuilder(
     satoshiContainerUtxo: UnlockableUtxo | undefined;
     satoshiContainerLockingBytecode: Uint8Array | undefined;
     blockhashCoSpendUtxos: UnlockableUtxo[];
+    blockInfoCoSpendUtxos?: UnlockableUtxo[];
+    delegateBlockInfoOracle?: boolean;
     blockhashCoSpendSlotOrdinals: number[] | undefined;
     keccakComputeCoSpendUtxos: UnlockableUtxo[];
     keccakComputeCommitments: any;
@@ -128,7 +138,8 @@ export function constructCreateBuilderTransactionBuilder(
     runtimeLoopEventOutputs, runtimeLoopTransferOutputs, runtimeLoopTrailingSegments,
     kernelJournalSettlementOutputPlan, kernelJournalEagerOutputPlan, tokenContainers,
     tokenContainerLockingBytecodes, satoshiContainerUtxo, satoshiContainerLockingBytecode,
-    blockhashCoSpendUtxos, blockhashCoSpendSlotOrdinals, keccakComputeCoSpendUtxos,
+    blockhashCoSpendUtxos, blockInfoCoSpendUtxos, delegateBlockInfoOracle, blockhashCoSpendSlotOrdinals,
+    keccakComputeCoSpendUtxos,
     keccakComputeCommitments, delegateComputeResources, deferredKeccakCompute,
     deferredEcrecoverCompute, ecrecoverComputeCoSpendUtxos, ecrecoverComputeRecreates,
     keccakLoopSideCars, keccakLoopRecreates, externalOutStateUtxoGroups, externalCallUtxoGroups,
@@ -230,6 +241,8 @@ export function constructCreateBuilderTransactionBuilder(
     ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),
     ...(externalReadUtxos.length > 0 && { readOnlyDataNftUtxos: externalReadUtxos }),
     ...(blockhashCoSpendUtxos.length > 0 && { blockhashCoSpendUtxos }),
+    ...(blockInfoCoSpendUtxos && blockInfoCoSpendUtxos.length > 0 && { blockInfoCoSpendUtxos }),
+    ...(delegateBlockInfoOracle && { delegateBlockInfoOracle: true }),
     ...(blockhashCoSpendSlotOrdinals && { blockhashCoSpendSlotOrdinals }),
     ...(keccakComputeCoSpendUtxos.length > 0 && { keccakComputeCoSpendUtxos, keccakComputeCommitments }),
     ...(delegateComputeResources && { delegateComputeResources: true }),
@@ -290,6 +303,41 @@ export function constructCreateBuilderTransactionBuilder(
     }),
   });
   const firstRootDynamicChunk = dynamicReadChunkInputs[0] ?? dynamicChunkInputs[0];
+  const selfIdentityArgumentIndex = abiFunction?.inputs.findIndex((input) =>
+    input.name === '__internal__graphSelfIdentityInput') ?? -1;
+  const refreshTopLevelSelfIdentityInput = selfIdentityArgumentIndex < 0 || !usesOrdinarySelfIdentity(abiFunction)
+    || compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction)
+    ? undefined
+    : (materialized?: TransactionBuilder): void => {
+      if (logicalIdentity === undefined) {
+        finalArgs[selfIdentityArgumentIndex] = -1n;
+        return;
+      }
+      const target = logicalIdentity.anchor;
+      const localIndex = materialized
+        ? materialized.inputs.findIndex((input) => input.txid.toLowerCase() === target.txid.toLowerCase()
+          && input.vout === target.vout)
+        : builder.findInputIndexByOutpoint(target);
+      if (localIndex < 0) throw new Error('Selected own CREATE identity anchor is absent from the finalized transaction');
+      finalArgs[selfIdentityArgumentIndex] = BigInt(localIndex + (overrides?.blockBase ?? 0));
+    };
+  const dynamicOutputArgumentIndex = abiFunction?.inputs.findIndex((input) =>
+    input.name === '__internal__dynamicChunkOutputBase') ?? -1;
+  const refreshTopLevelDynamicChunkOutputBase = dynamicOutputArgumentIndex < 0
+    || overrides?.omitLocalFeeTail === true
+    || compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction)
+    ? undefined
+    : (materialized?: TransactionBuilder): void => {
+      if (materialized === undefined || abiFunction === undefined) return;
+      // A returned event can precede a later void callee. The complete materialized run, rather than the
+      // return index or the old input coordinate, identifies the root's rewritten chunks.
+      finalArgs[dynamicOutputArgumentIndex] = BigInt(resolveMaterializedDynamicWriteOutputBase({
+        route: abiFunction, stateLayout, contract: host.inner, categoryId: host.categoryId,
+        outputs: materialized.outputs, start: 0, end: materialized.outputs.length,
+        allowProvisionalChunks: true,
+        selectedDynamicWrites: new Set(abiFunction.dynamicWrites ?? []),
+      }));
+    };
   const selectedRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments;
   const dynamicWriteActive = selectedRows === undefined
     ? dynamicChunkVars.length > 0 || (abiFunction?.dynamicWrites?.length ?? 0) > 0
@@ -489,15 +537,31 @@ export function constructCreateBuilderTransactionBuilder(
         abiFunction, finalArgs, Number(slot), predecessorCommitment ?? '',
       )) continue;
       // DS-6: a lent delete of the node's own key (-3) naming this proof may have run on it: the planned relink then
-      // carries the default value (empty for the kinds the plan relinks so) in place of the node's own.
+      // carries the value type's default tail in place of the node's own. Chunkable kinds (bytes/string) relink at
+      // `len4(0)`; scalar kinds keep no tail.
       const argOf = (name: string): unknown => finalArgs[abiFunction.inputs.findIndex((c) => c.name === name)];
+      const deletedBatch = (abiFunction.sortedBatchInfo ?? []).find((batch) =>
+        batch.slotIndices.includes(Number(slot)));
+      const deletedCollection = deletedBatch === undefined ? undefined
+        : stateLayout.collections?.find((collection) => collection.name === deletedBatch.collection);
+      // Mirrors `defaultSortedEntryValueTail`: unbounded bytes/string nullify to `len4(0)`, while an unbounded
+      // ARRAY nullifies to the pushdata-encoded empty array (`OP_0`, one byte) framed as `len4(1) || 0x00`. Using
+      // the bytes/string tail for an array makes the planned predecessor look different from the materialized one,
+      // so the P'-search below misses it and mints a duplicate predecessor output.
+      const deletedArray = deletedCollection === undefined
+        ? undefined : parseArrayTypeString(deletedCollection.valueType);
+      const deletedDefaultTail = deletedCollection === undefined || deletedCollection.chunkableValue !== true
+        ? ''
+        : deletedArray !== undefined && deletedArray.bound === undefined
+          ? binToHex(encodeChunkableValueTail(new Uint8Array([0x00])))
+          : '00000000';
       const deletedPredOut = expectedPredOut !== undefined && (abiFunction.sortedBatchInfo ?? []).some((batch) => (
         batch.slotIndices.includes(Number(slot)) && batch.slotIndices.some((other) => {
           const deleted = argOf(`__internal__vmapBatchSlot_${other}`);
           return argOf(`__internal__vmapBatchPredOut_${other}`) === -3n
             && argOf(`__internal__vmapBatchProof_${other}`) === proofOffset && deleted instanceof Uint8Array
             && binToHex(deleted) === expectedPredOut.slice(0, 64).toLowerCase();
-        }))) ? expectedPredOut.slice(0, 128).toLowerCase() : undefined;
+        }))) ? `${expectedPredOut.slice(0, 128)}${deletedDefaultTail}`.toLowerCase() : undefined;
       if (current >= 0n && sameLock(outputLock(Number(current)), required)
         && (expectedPredOut === undefined
           || commitmentOf(Number(current))?.toLowerCase() === expectedPredOut.toLowerCase()
@@ -574,7 +638,8 @@ export function constructCreateBuilderTransactionBuilder(
     }
     return changed;
   };
-  if (refreshPhysicalDelegateInputIndex || refreshTopLevelDynamicChunkInputBase
+  if (refreshPhysicalDelegateInputIndex || refreshTopLevelSelfIdentityInput
+    || refreshTopLevelDynamicChunkInputBase || refreshTopLevelDynamicChunkOutputBase
     || topLevelReturnWitnessGroups.length > 0 || abiFunction !== undefined) {
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_FORWARD_ARGS === '1') {
@@ -587,7 +652,9 @@ export function constructCreateBuilderTransactionBuilder(
     }
     builder._setMasterUnlockerRefresher((materialized) => {
       if (refreshPhysicalDelegateInputIndex) refreshPhysicalDelegateInputIndex(builder, materialized);
+      refreshTopLevelSelfIdentityInput?.(materialized);
       refreshTopLevelDynamicChunkInputBase?.(materialized);
+      refreshTopLevelDynamicChunkOutputBase?.(materialized);
       refreshTopLevelExternalCallInputIndices();
       refreshTopLevelReturnWitnesses(materialized);
       refreshTopLevelPredOutWitnesses(materialized);

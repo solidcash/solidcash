@@ -63,7 +63,7 @@ describe('kernel route effect density reserve', () => {
     // cover the complete input-0 cost, not the one-instruction overrun the refusal message reports.
     const reserved = kernelRouteEffectDensityReserveBytes(route(effectFrame), 'kernel-row-loop');
     expect(reserved).toBe(
-      Math.ceil((255 * 8_000) / ConsensusBch2026.operationCostBudgetPerByte),
+      Math.ceil((255 * 12_000) / ConsensusBch2026.operationCostBudgetPerByte),
     );
     expect(reserved).toBeGreaterThan(0);
 

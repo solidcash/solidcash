@@ -1,10 +1,15 @@
+import { appendFileSync } from 'fs';
 import { encodeTransactionOutput } from '@bitauth/libauth';
+import { expect } from 'vitest';
 import {
   RegtestNetworkProvider,
   type ConsensusLimits,
   VmTarget,
 } from '../../../src/index.js';
 import { MockNetworkProvider } from '../../../src/network/mock/index.js';
+import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { TransactionBuilder } from '../../../src/TransactionBuilder.js';
+import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 
 /**
  * BCH-2026 semantic-only message bus test profile.
@@ -76,6 +81,51 @@ export function createMessageBusCapstoneTestProvider(): MockNetworkProvider | Re
     });
   }
   return liveCapstoneProvider;
+}
+
+export interface VerifierInputCost {
+  input: number;
+  cost: number;
+  /** BCH-2026 per-input budget: (unlocking bytes + 41) * 800. */
+  budget: number;
+}
+
+let costProvider: MockNetworkProvider | undefined;
+
+/**
+ * Each atomic verifier input's standard BCH-2026 operation cost beside its real budget. The relaxed profile
+ * evaluates under a far larger budget, so it never refuses an input that is over the real one. With
+ * MESSAGE_BUS_VERIFIER_COST_LOG set, every reading is appended to that file under the running test's name.
+ */
+export function verifierInputCosts(builder: TransactionBuilder): VerifierInputCost[] {
+  const transaction = builder.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  costProvider ??= createMessageBusSemanticTestProvider();
+  const vm = createVirtualMachineBch2026ForProvider(costProvider);
+  const costs = builder.inputs.flatMap((input, inputIndex) => {
+    if (input.token?.nft?.commitment.startsWith('4c335631') !== true) return [];
+    const { metrics } = vm.evaluate({ inputIndex, sourceOutputs, transaction }) as unknown as {
+      metrics: { operationCost: number };
+    };
+    const budget = (transaction.inputs[inputIndex].unlockingBytecode.length + 41) * 800;
+    return [{ input: inputIndex, cost: metrics.operationCost, budget }];
+  });
+  const log = process.env.MESSAGE_BUS_VERIFIER_COST_LOG;
+  if (log && costs.length > 0) {
+    appendFileSync(log, `${JSON.stringify({ test: expect.getState().currentTestName, costs })}\n`);
+  }
+  return costs;
+}
+
+// The cost log also reads every transaction a test sends, so a title needs no call of its own to be measured.
+if (process.env.MESSAGE_BUS_VERIFIER_COST_LOG) {
+  const { send } = TransactionBuilder.prototype;
+  TransactionBuilder.prototype.send = function sendWithVerifierCosts(
+    this: TransactionBuilder, ...args: unknown[]
+  ): Promise<never> {
+    verifierInputCosts(this);
+    return (send as (...inner: unknown[]) => Promise<never>).apply(this, args);
+  } as typeof send;
 }
 
 /** BCHN's default dust relay fee, in satoshis per kilobyte. */

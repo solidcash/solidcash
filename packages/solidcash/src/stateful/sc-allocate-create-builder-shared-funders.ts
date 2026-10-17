@@ -11,6 +11,7 @@ export type CreateBuilderSharedFunderExternalCall = {
     categoryId: string;
     inner: {
       artifact: {
+        messageBus?: { handlers: ReadonlyArray<{ runtimeLoopEvents?: readonly unknown[] }> };
         abi: ReadonlyArray<{
           name: string;
           blockLayout?: {
@@ -48,17 +49,22 @@ export async function allocateCreateBuilderSharedFunders(
     const ci = resolvedExternalCalls[si];
     if (!ci?.externalContract) continue;
     const bArt = ci.externalContract.inner.artifact;
+    // Lifted route events have no fixed event slots. Retain the full signer snapshot for their trailing
+    // heads and for continuation records learned from the callee's effect-verifier trace.
+    if (bArt.messageBus?.handlers.some((handler) => (handler.runtimeLoopEvents?.length ?? 0) > 0)) {
+      totalBFunders += 1;
+    }
     const bAbiFunc = bArt.abi.find((f) => f.name === (ci.functionName ?? ecSlot.functionName));
     const bLayout = bAbiFunc?.blockLayout;
     if (!bLayout) continue;
     const fullBlockKinds = new Set(
       ['entry', 'satoshiContainer', 'tokenContainer', 'transfer', 'tcTransfer', 'event', 'returnEvent',
-        'blockhashOracle'],
+        'blockhashOracle', 'blockInfoOracle'],
     );
     if (!bLayout.slots.some((s) => fullBlockKinds.has(s.kind))) continue;
     for (const s of bLayout.slots) {
-      if (['transfer', 'tcTransfer', 'event', 'returnEvent'].includes(s.kind)) totalBFunders++;
-      if (s.kind === 'blockhashOracle') totalBFunders++;
+      if (['transfer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent'].includes(s.kind)) totalBFunders++;
+      if (s.kind === 'blockhashOracle' || s.kind === 'blockInfoOracle') totalBFunders++;
       // entry/TC/SC funders also needed when UTXO doesn't exist, but we can't
       // cheaply check on-chain state here. Conservatively over-allocate:
       if (['entry', 'tokenContainer', 'satoshiContainer'].includes(s.kind)) totalBFunders++;

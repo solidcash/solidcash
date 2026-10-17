@@ -95,7 +95,7 @@ export function emptyToken(): TokenShape {
   return { category: EMPTY, capability: TokenCapability.NONE, hasNft: false, nftCommitment: EMPTY, amount: 0n };
 }
 
-/** A contract: its category and the locks its UTXOs sit at. The derivation reads none of those locks. */
+/** A contract: its category and the locks its UTXOs sit at. An INTERNAL call names the callee master's lock. */
 export interface ContractPlan {
   readonly id: string;
   readonly category: Uint8Array;
@@ -145,6 +145,11 @@ export interface SegmentPlan {
 export interface MasterPlan {
   readonly id: string;
   readonly contract: string;
+  /**
+   * This master's locking bytecode. Absent uses the contract's `masterLock`. An INTERNAL call records this
+   * lock as its target, so two helpers of one contract can sit at different locks.
+   */
+  readonly lock?: Uint8Array;
   /** The frame kind (section 4a). */
   readonly kind: number;
   /** The caller: a user id for a root frame, otherwise a master id. Callers precede callees in the plan. */
@@ -263,6 +268,7 @@ export function planComposition(plan: CompositionPlan): Composition {
     if (master === undefined) throw new CompositionPlanError(`unknown master ${id}`);
     return master;
   };
+  const lockOf = (master: MasterPlan): Uint8Array => master.lock ?? requireContract(master.contract).masterLock;
 
   // 1. Frame identity, in plan order (a caller precedes its callees).
   const frames = new Map<string, Frame>();
@@ -525,7 +531,9 @@ export function planComposition(plan: CompositionPlan): Composition {
       const value = kind === FrameKind.STATIC ? 0n : ((master.callValues ?? [])[at] ?? 0n);
       const target = kind === FrameKind.DELEGATE
         ? validatorAddress(requireContract(callee.contract).category, template)
-        : calleeFrame.self;
+        : kind === FrameKind.INTERNAL
+          ? lockOf(callee)
+          : calleeFrame.self;
       return {
         kind,
         target,
@@ -552,7 +560,7 @@ export function planComposition(plan: CompositionPlan): Composition {
     blocks.set(master.id, block);
     return {
       value: 10_000n,
-      lockingBytecode: contract.masterLock,
+      lockingBytecode: lockOf(master),
       token: masterTokenShape(contract.category),
       master: {
         block,

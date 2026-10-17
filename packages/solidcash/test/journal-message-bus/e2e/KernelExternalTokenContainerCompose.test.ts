@@ -29,10 +29,11 @@ describe('kernel external token-container composition', () => {
       const { categoryId } = await setupStatefulUtxos(
         provider, inner, artifact.stateLayout!, {}, { saltContract: true },
       );
-      const token = await genesisFtContainer(provider, inner, categoryId, [100n]);
+      const contract = StatefulContract.withCategory(inner, categoryId);
+      // Containers bind the master's lock: fund them for the category-pinned master.
+      const token = await genesisFtContainer(provider, contract.inner, categoryId, [100n]);
       const recipientFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
       const recipient = recipientFunder.unlocker.generateLockingBytecode();
-      const contract = StatefulContract.withCategory(inner, categoryId);
       const builder = await contract.batch([{
         function: 'move', args: [hexToBin(token.category), recipient, 7n],
       }]).build();

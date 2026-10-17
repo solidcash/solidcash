@@ -256,7 +256,7 @@ export const childDeploymentStructDefinitions = (
 /** Collection geometry embedded in a child layout digest; entries remain separate NFTs, never inline state. */
 export const childDeploymentCollectionDefinitions = (
   collections: readonly { name: string; type: ArrayType | MappingType; keyType: Type; innermostValueType: Type;
-    immutable: boolean; sorted: boolean; enumerable: boolean }[],
+    immutable: boolean; enumerable: boolean }[],
 ): CollectionInfo[] => collections.map((collection) => ({
   name: collection.name,
   signature: computeCollectionSignature(collection.name, collection.type.toString()),
@@ -268,10 +268,9 @@ export const childDeploymentCollectionDefinitions = (
     ...(collection.type.bound !== undefined && { bound: collection.type.bound }),
   }),
   ...(collection.immutable && { immutable: true }),
-  // Every mapping uses the verified sorted-entry backend. Canonicalize that mandatory property from the
-  // collection type itself: early kernel admission runs before the later normalization pass stamps `.sorted`,
-  // and layout authentication must be phase-independent.
-  ...((collection.type instanceof MappingType || collection.sorted) && { sorted: true }),
+  // Every collection, array or mapping, uses the verified sorted-entry backend. Kernel admission digests a child
+  // before the normalization pass stamps `.sorted`, so the mandatory property is canonical, not read.
+  sorted: true,
   ...(collection.enumerable && { enumerable: true }),
 }));
 

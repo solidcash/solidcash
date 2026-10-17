@@ -4,7 +4,9 @@
 
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
+  EVENT_CHUNK_BYTES,
   encodeEventParameter,
+  splitEventPayload,
   type EventDefinitionAbi,
   type FunctionBlockLayout,
   type StateLayout,
@@ -12,6 +14,7 @@ import {
 } from '@solidcash/utils';
 import type { Output } from '../interfaces.js';
 import { addressToLockScript } from '../utils.js';
+import { eventContinuationLockingBytecode } from './event-chunks.js';
 import { assignBalancedOutputAtOffset } from './writer-event-delegate-layout.js';
 
 export type PendingEventEmit = {
@@ -130,6 +133,7 @@ export function materializeOwnerEventNftOutputs(
       eventSlots,
     }));
   }
+  const chunkBytes = host.stateLayout.commitmentLimit ?? EVENT_CHUNK_BYTES;
   for (let eventSlot = 0; eventSlot < reservedEventSlots; eventSlot += 1) {
     // The emitting covenant resolves its own event NFT at `masterInputIndex + slotOffset`. A read-only chunk
     // packed into that output-only coordinate is restored to its input index later; appending the event leaves
@@ -137,15 +141,15 @@ export function materializeOwnerEventNftOutputs(
     // A published event slot names the emit ordinal in `slotIndex`; a layout predating that field is read in
     // offset order. Mixing the two would let an unindexed slot answer for an ordinal it does not own.
     const slotOffset = indexedOffsets.get(eventSlot) ?? orderedSlots[eventSlot]?.offset;
-    const placeEventOutput = (output: Output): void => {
-      if (slotOffset === undefined) {
+    const placeAt = (at: number | undefined, output: Output): void => {
+      if (at === undefined) {
         builder.addOutput(output);
         return;
       }
-      while (builder.outputs.length < slotOffset) {
+      while (builder.outputs.length < at) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
       }
-      const occupant = builder.outputs[slotOffset];
+      const occupant = builder.outputs[at];
       if (occupant?.token !== undefined && output.token !== undefined) {
         // A minting master owns its coordinate. Anything else packed here is shifted right so this event
         // lands on the output the covenant reads.
@@ -161,14 +165,35 @@ export function materializeOwnerEventNftOutputs(
           && occupant.token.category === output.token.category
           && (occupantCommit === '' || /^(00)+$/.test(occupantCommit));
         if (!placeholder) {
-          builder.outputs.splice(slotOffset, 0, output);
+          builder.outputs.splice(at, 0, output);
           return;
         }
       } else if (occupant?.token !== undefined) {
         builder.addOutput(output);
         return;
       }
-      assignBalancedOutputAtOffset(builder.outputs, slotOffset, output);
+      assignBalancedOutputAtOffset(builder.outputs, at, output);
+    };
+    const placeEventOutput = (output: Output): void => placeAt(slotOffset, output);
+    // A wide emit's continuation slots carry its later chunks; one the payload does not reach holds no token.
+    const chunkSlots = (host.blockLayout?.slots ?? [])
+      .filter((slot) => slot.kind === 'eventChunk' && slot.slotIndex === eventSlot)
+      .sort((left, right) => (left.chunk ?? 0) - (right.chunk ?? 0));
+    const placeChunks = (chunks: readonly string[], eventSignature?: string): void => {
+      for (const chunkSlot of chunkSlots) {
+        const commitment = chunks[chunkSlot.chunk ?? 0];
+        if (eventSignature === undefined || commitment === undefined || commitment === '') {
+          placeAt(chunkSlot.offset, { to: Uint8Array.of(0x51), amount: 1000n });
+          continue;
+        }
+        const anonymous = host.eventDefinitions.find((event) => event.signature === eventSignature)
+          ?.anonymous === true;
+        placeAt(chunkSlot.offset, {
+          to: eventContinuationLockingBytecode(host.categoryId, eventSignature, anonymous),
+          amount: 1200n,
+          token: { amount: 0n, category: host.categoryId, nft: { capability: 'none', commitment } },
+        });
+      }
     };
     const eo = eventOutputEntries[eventSlot];
     if (!eo) {
@@ -176,12 +201,15 @@ export function materializeOwnerEventNftOutputs(
       // later participant cannot slide into the gap; the route covenant separately excludes an own-category
       // NFT here, and the atomic callManifest lists only active immutable event outputs.
       placeEventOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+      placeChunks([]);
       continue;
     }
     const lockingBytecode = host.eventNftLockingBytecodes.get(eo.eventSignature);
     if (!lockingBytecode) {
       throw new Error(`No locking bytecode provided for event: ${eo.eventSignature}`);
     }
+    const chunks = chunkSlots.length === 0 ? [eo.commitment]
+      : splitEventPayload(hexToBin(eo.commitment), chunkBytes).map((chunk) => binToHex(chunk));
 
     placeEventOutput({
       to: lockingBytecode,
@@ -191,9 +219,10 @@ export function materializeOwnerEventNftOutputs(
         category: host.categoryId,
         nft: {
           capability: 'none',
-          commitment: eo.commitment,
+          commitment: chunks[0],
         },
       },
     });
+    placeChunks(chunks, eo.eventSignature);
   }
 }

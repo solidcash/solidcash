@@ -1,0 +1,465 @@
+{
+  "recordedAtUtc": "2026-10-15T03:19:30.214791+00:00",
+  "status": "validated merge",
+  "sourceBranch": "feat/transcript-followups",
+  "sourceCommit": "d3bbc9b6ed6d7e923fac3938781d401f77988738",
+  "targetBranch": "feat/per-call",
+  "targetPreviousCommit": "945b319f0b1d003664b83375ac743274fe7d2e8a",
+  "gitMergeConflicts": [],
+  "preservedTargetFeatures": [
+    "Windowed sorted-mapping iteration with persisted cursor and covenant anchor/contiguity guards",
+    "Chunked per-iteration sorted-mapping values and adversarial VM controls"
+  ],
+  "integrationFix": {
+    "path": "packages/solidc/src/compiler.ts",
+    "problem": "The window keyword renumbered ANTLR anonymous literal tokens. Parser fast paths retained old token numbers, misparsed ABI decode forms and caused lazy proxy delegate compilation to fail.",
+    "correction": "Resolve all 32 literal tokens once against the active generated grammar and use those constants in expression/statement fast paths.",
+    "independentReview": "All 32 mappings match the former literal meanings; all seven guarded ATN decision shapes remain unchanged.",
+    "productionSourceSha256": "b77de98b076238263e1805a91036222d70f0752ae0893725d75d5a9fce560360"
+  },
+  "validation": {
+    "build": {
+      "exitCode": 0,
+      "seconds": 29.43,
+      "log": "target-final-build.log"
+    },
+    "lint": {
+      "exitCode": 0,
+      "seconds": 29.82,
+      "log": "target-parser-final-lint.log"
+    },
+    "sourceTreeGuardExitCode": 0,
+    "whitespaceGuardExitCode": 0,
+    "tests": {
+      "compiler": {
+        "passed": 15,
+        "failed": 0,
+        "skipped": 0,
+        "log": "target-compiler-final-watch.log",
+        "exitCode": 0
+      },
+      "sdk": {
+        "passed": 172,
+        "failed": 0,
+        "skipped": 0,
+        "log": "target-sdk-watch-v2.log",
+        "exitCode": 0
+      },
+      "e2e": {
+        "passed": 17,
+        "failed": 0,
+        "skipped": 0,
+        "log": "target-e2e-final-watch.log",
+        "exitCode": 0
+      }
+    },
+    "totalFocusedPassed": 204,
+    "watchTermination": "Successful final test watches quit with q, exit 0; build watch explicitly stopped after reporting zero errors.",
+    "initialAttempts": "Compiler decoder suite and one proxy E2E failed before the literal-token fix. An initial SDK invocation repeated the maxWorkers option and exited before test discovery; corrected invocation passed 172 tests. Initial lint found one overlong line, corrected by line wrapping."
+  },
+  "marketplaceMatrixScope": "The preserved 262/0/0 full marketplace matrix applies to the recorded pre-merge frozen source. This combined per-call tree was validated with the build, lint, and 204 focused checks recorded here.",
+  "sourceCheckpointFormattingOnlyChange": "One extra blank line at EOF in InitializedArrayElement.ts was removed before committing the source checkpoint.",
+  "records": {
+    "target-build-watch.log": {
+      "sha256": "bd58e6abe15be1b395c70d3473b4f8594a8da9ca2c1ea031c4c4c7291ce14580",
+      "bytes": 234,
+      "content": "yarn run v1.22.22\n$ tsc -b tsconfig.packages.json --watch --preserveWatchOutput --assumeChangesOnlyAffectDirectDependencies\n\n3:16:19 AM - Starting compilation in watch mode...\n\n\n3:16:41 AM - Found 0 errors. Watching for file changes.\n"
+    },
+    "target-build.log": {
+      "sha256": "22dcbd0c28c5901b35c184143d2bdadce485b99866cb74e8eabd5efd523fcbfb",
+      "bytes": 220,
+      "content": "yarn run v1.22.22\n$ tsc -b tsconfig.packages.json && yarn workspace testing-suite compile\n$ tsx tasks/compile.ts\nUnchanged example.scash\nUnchanged golden_token.scash\nUnchanged transfer_with_timeout.scash\nDone in 44.44s.\n"
+    },
+    "target-clockless-delegate-diagnostic.json": {
+      "sha256": "cb08a6a1ccf01b94aedf25e90b423d3d3c6c7324331fe88ab087f71826c3eb0a",
+      "bytes": 1138,
+      "content": {
+        "recordedUtc": "2026-10-15T03:16:02.387714+00:00",
+        "cell": "/Code/cashscript/.worktrees/per-call",
+        "test": "KernelCalleeOnlyBlockOracle third clockless proxy case",
+        "sourceSha256": "a23813ec79ca5a91d3b07aa0806b08dbc17879eb0165e9a68f504c71ea41713b",
+        "readOnlyDiagnostic": "compile exact fixture with same options except suppressWarnings:false, inspect primary ABI and lazy getter, then read caller.delegateArtifact",
+        "primaryCollect": {
+          "writesState": true,
+          "modifiers": [
+            "public"
+          ]
+        },
+        "lazyDelegateGetterPresent": true,
+        "delegateResult": null,
+        "warning": "The message-bus route generated for 'ClockCaller' does not parse - Mismatched input 'abi.decodeAt' expecting {'tx.outputs', 'tx.inputs'} at Line 24, Column 38 - a position in the message-bus route generated for 'ClockCaller', NOT in your file.",
+        "cause": "Delegate eligibility succeeds. Lazy variant generation parses a generated abi.decodeAt expression with stale literal-token fast-path IDs; catch returns undefined and suppressWarnings masks cause. Root owns compiler literal-token repair.",
+        "sourceEdits": false,
+        "builds": false
+      }
+    },
+    "target-compiler-final-watch.log": {
+      "sha256": "8dc5128fcd38d7a96470d43728e67d029e432e700d6305837277c437bfdaa790",
+      "bytes": 3527,
+      "content": "yarn run v1.22.22\nwarning From Yarn 1.0 onwards, scripts don't require \"--\" for options to be forwarded. In a future version, any explicit \"--\" will be forwarded as-is to the scripts.\n$ yarn workspace solidc test:watch test/WindowedIteration.test.ts test/ChunkedLoopValue.test.ts test/CallProvenanceScope.test.ts test/Pushdata4Decode.test.ts test/DirectDynamicOutputBase.test.ts test/AbiEncoding.test.ts --watch --maxWorkers=1 --reporter=verbose\n$ vitest test/WindowedIteration.test.ts test/ChunkedLoopValue.test.ts test/CallProvenanceScope.test.ts test/Pushdata4Decode.test.ts test/DirectDynamicOutputBase.test.ts test/AbiEncoding.test.ts --watch --maxWorkers=1 --reporter=verbose\n\n DEV  v5.0.4 /Code/cashscript/.worktrees/per-call/packages/solidc\n\n \u2713 test/Pushdata4Decode.test.ts > native pushdata decoder width boundaries > decodes exact bytes through shared and inline decoders at PUSHDATA2/4 boundaries 58ms\n \u2713 test/Pushdata4Decode.test.ts > native pushdata decoder width boundaries > refuses truncated PUSHDATA4 lengths, payloads and invalid wide opcodes 15ms\n \u2713 test/CallProvenanceScope.test.ts > external-call operand provenance stays in its executable body > does not count an uninvoked function pointer target as an array push 1950ms\n \u2713 test/CallProvenanceScope.test.ts > external-call operand provenance stays in its executable body > keeps the statement prefix when reconstructing successive writes to one local 69ms\n \u2713 test/CallProvenanceScope.test.ts > external-call operand provenance stays in its executable body > projects typed fields through a framed struct join without depending on unused producer fields 99ms\n \u2713 test/CallProvenanceScope.test.ts > external-call operand provenance stays in its executable body > serializes an untouched field without retaining successive whole-struct rebuilds 203ms\n \u2713 test/DirectDynamicOutputBase.test.ts > ordinary direct dynamic output coordinates > preserves a partial struct-array write across journal lowering and later callee bands 1421ms\n \u2713 test/DirectDynamicOutputBase.test.ts > ordinary direct dynamic output coordinates > keeps framed writers on their declared record coordinates 660ms\n \u2713 test/ChunkedLoopValue.test.ts > chunked (>60 B) value in a sorted per-iteration loop > compiles a per-key bytes loop and publishes the chunkable upsert-loop metadata 65ms\n \u2713 test/ChunkedLoopValue.test.ts > chunked (>60 B) value in a sorted per-iteration loop > compiles a per-key string loop writing an invariant long value 29ms\n \u2713 test/AbiEncoding.test.ts > SBE-12: single-type abi.decode unwraps to the element type (not a 1-tuple) > uses a single-type decode in a boolean expression 16ms\n \u2713 test/AbiEncoding.test.ts > SBE-12: single-type abi.decode unwraps to the element type (not a 1-tuple) > assigns a single-type decode directly 9ms\n \u2713 test/AbiEncoding.test.ts > tuple destructuring with array-typed slots > accepts array types in destructuring slots ((uint[] memory a, uint[] memory b) = ...) 22ms\n \u2713 test/WindowedIteration.test.ts > windowed (paginated) sorted-mapping iteration > compiles the `.window(cursor, K)` form and publishes the cursor and bound 15ms\n \u2713 test/WindowedIteration.test.ts > windowed (paginated) sorted-mapping iteration > rejects a cursor that is not a bytes32 state variable 3ms\n\n Test Files  6 passed (6)\n      Tests  15 passed (15)\n   Start at  03:17:04\n   Duration  8.05s (tests 60%, import 26%, transform 13%)\n\n PASS  Waiting for file changes...\n       press h to show help, press q to quit\nDone in 62.93s.\n"
+    },
+    "target-compiler-watch.log": {
+      "sha256": "cd33503411475568e51f5ce4ef08fdebcbbf3b141624660c0031bca331288de6",
+      "bytes": 5128,
+      "content": "yarn run v1.22.22\nwarning From Yarn 1.0 onwards, scripts don't require \"--\" for options to be forwarded. In a future version, any explicit \"--\" will be forwarded as-is to the scripts.\n$ yarn workspace solidc test:watch test/WindowedIteration.test.ts test/ChunkedLoopValue.test.ts test/CallProvenanceScope.test.ts test/Pushdata4Decode.test.ts test/DirectDynamicOutputBase.test.ts --maxWorkers=1 --reporter=verbose\n$ vitest test/WindowedIteration.test.ts test/ChunkedLoopValue.test.ts test/CallProvenanceScope.test.ts test/Pushdata4Decode.test.ts test/DirectDynamicOutputBase.test.ts --maxWorkers=1 --reporter=verbose\n\n RUN  v5.0.4 /Code/cashscript/.worktrees/per-call/packages/solidc\n\n \u2713 test/CallProvenanceScope.test.ts > external-call operand provenance stays in its executable body > does not count an uninvoked function pointer target as an array push 973ms\n \u2713 test/CallProvenanceScope.test.ts > external-call operand provenance stays in its executable body > keeps the statement prefix when reconstructing successive writes to one local 81ms\n \u2713 test/CallProvenanceScope.test.ts > external-call operand provenance stays in its executable body > projects typed fields through a framed struct join without depending on unused producer fields 107ms\n \u2713 test/CallProvenanceScope.test.ts > external-call operand provenance stays in its executable body > serializes an untouched field without retaining successive whole-struct rebuilds 243ms\n \u2713 test/DirectDynamicOutputBase.test.ts > ordinary direct dynamic output coordinates > preserves a partial struct-array write across journal lowering and later callee bands 607ms\n \u2713 test/DirectDynamicOutputBase.test.ts > ordinary direct dynamic output coordinates > keeps framed writers on their declared record coordinates 614ms\n \u2713 test/ChunkedLoopValue.test.ts > chunked (>60 B) value in a sorted per-iteration loop > compiles a per-key bytes loop and publishes the chunkable upsert-loop metadata 69ms\n \u2713 test/ChunkedLoopValue.test.ts > chunked (>60 B) value in a sorted per-iteration loop > compiles a per-key string loop writing an invariant long value 32ms\n \u2713 test/WindowedIteration.test.ts > windowed (paginated) sorted-mapping iteration > compiles the `.window(cursor, K)` form and publishes the cursor and bound 21ms\n \u2713 test/WindowedIteration.test.ts > windowed (paginated) sorted-mapping iteration > rejects a cursor that is not a bytes32 state variable 4ms\n\n\u23af\u23af\u23af\u23af\u23af\u23af Failed Suites 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af\n\n FAIL  test/Pushdata4Decode.test.ts [ test/Pushdata4Decode.test.ts ]\nParseError: Mismatched input 'abi.decode' expecting 'abi.decodeAt' at Line 3, Column 35\n \u276f createParseError src/ast/error-listeners.ts:75:10\n     73|   const location = getTokenLocation(token) ?? createEmptyLocation(line\u2026\n     74|\n     75|   return new ParseError(capitalisedMessage, location);\n       |          ^\n     76| }\n     77|\n \u276f ThrowingErrorListener.syntaxError src/ast/error-listeners.ts:61:11\n \u276f ForwardingErrorListener.syntaxError src/ast/error-listeners.ts:37:24\n \u276f delegates ../../node_modules/antlr4/dist/webpack:/antlr4/src/antlr4/error/ProxyErrorListener.js:13:14\n \u276f this ../../node_modules/antlr4/dist/webpack:/antlr4/src/antlr4/error/ProxyErrorListener.js:13:9\n \u276f _syntaxErrors ../../node_modules/antlr4/dist/webpack:/antlr4/src/antlr4/Parser.js:314:14\n \u276f getExpectedTokens ../../node_modules/antlr4/dist/webpack:/antlr4/src/antlr4/error/DefaultErrorStrategy.js:281:31\n \u276f e ../../node_modules/antlr4/dist/webpack:/antlr4/src/antlr4/error/DefaultErrorStrategy.js:110:14\n \u276f SolidCashParser.expression src/grammar/SolidCashParser.ts:12909:22\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\nSerialized Error: { location: { start: { line: 3, column: 35, constructor: 'Function<Point>', offset: 'Function<offset>', toString: 'Function<toString>' }, end: { line: 3, column: 45, constructor: 'Function<Point>', offset: 'Function<offset>', toString: 'Function<toString>' }, generatedOrigin: undefined, sourceFileId: undefined, constructor: 'Function<Location>', text: 'Function<text>' } }\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/1]\u23af\n\n\n Test Files  1 failed | 4 passed (5)\n      Tests  10 passed (10)\n   Start at  03:13:17\n   Duration  7.80s (transform 44%, tests 41%, import 15%)\n\nerror Command failed with exit code 1.\ninfo Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.\nerror Command failed.\nExit code: 1\nCommand: /root/.nvm/versions/node/v22.22.0/bin/node\nArguments: /root/.nvm/versions/node/v22.22.0/lib/node_modules/yarn/lib/cli.js test:watch test/WindowedIteration.test.ts test/ChunkedLoopValue.test.ts test/CallProvenanceScope.test.ts test/Pushdata4Decode.test.ts test/DirectDynamicOutputBase.test.ts --maxWorkers=1 --reporter=verbose\nDirectory: /Code/cashscript/.worktrees/per-call/packages/solidc\nOutput:\n\ninfo Visit https://yarnpkg.com/en/docs/cli/workspace for documentation about this command.\nerror Command failed with exit code 1.\ninfo Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.\n"
+    },
+    "target-e2e-final-watch.log": {
+      "sha256": "6a4e34bd57d840b7c11efbfbc8b7b8b2f8d1150461280f6768ee7445b3748256",
+      "bytes": 4225,
+      "content": "yarn run v1.22.22\nwarning From Yarn 1.0 onwards, scripts don't require \"--\" for options to be forwarded. In a future version, any explicit \"--\" will be forwarded as-is to the scripts.\n$ yarn workspace solidcash test:e2e:watch test/e2e/WindowedIteration.test.ts test/e2e/ChunkedLoopRoundtrip.test.ts test/e2e/ChunkedLoopAdversarial.test.ts test/e2e/KernelCalleeOnlyBlockOracle.test.ts test/e2e/KernelDirectReadonlyReturnIdentity.test.ts test/e2e/KernelDirectLogicalSelf.test.ts --watch --maxWorkers=1 --reporter=verbose\n$ vitest --config vitest.e2e.config.ts test/e2e/WindowedIteration.test.ts test/e2e/ChunkedLoopRoundtrip.test.ts test/e2e/ChunkedLoopAdversarial.test.ts test/e2e/KernelCalleeOnlyBlockOracle.test.ts test/e2e/KernelDirectReadonlyReturnIdentity.test.ts test/e2e/KernelDirectLogicalSelf.test.ts --watch --maxWorkers=1 --reporter=verbose\n\n DEV  v5.0.4 /Code/cashscript/.worktrees/per-call/packages/solidcash\n\n \u2713 test/e2e/KernelCalleeOnlyBlockOracle.test.ts > callee-only authenticated block oracle > provisions only the nested reader pinned oracle with caller clock=false 3641ms\n \u2713 test/e2e/KernelCalleeOnlyBlockOracle.test.ts > callee-only authenticated block oracle > provisions only the nested reader pinned oracle with caller clock=true 1635ms\n \u2713 test/e2e/KernelCalleeOnlyBlockOracle.test.ts > callee-only authenticated block oracle > provisions the pinned oracle for a clockless proxy calling a clock-writing proxy 2103ms\n \u2713 test/e2e/KernelDirectReadonlyReturnIdentity.test.ts > ordinary readonly return aliases beside logical identities > keeps both getter results and the executing identity after a complete read-chunk band 3291ms\n \u2713 test/e2e/KernelDirectLogicalSelf.test.ts > ordinary direct logical self identity > passes authenticated CREATE self to a callee and rejects a forged own anchor 258ms\n \u2713 test/e2e/KernelDirectLogicalSelf.test.ts > ordinary direct logical self identity > authenticates an ordinary nested callee own identity independently of its incoming physical target 108ms\n \u2713 test/e2e/KernelDirectLogicalSelf.test.ts > ordinary direct logical self identity > retains physical self for a native deployment without a CREATE identity 78ms\n \u2713 test/e2e/ChunkedLoopRoundtrip.test.ts > chunked >60 B per-iteration loop: update + insert roundtrip > inserts a >60B value, updates it in place, and reads the exact value back 594ms\n \u2713 test/e2e/ChunkedLoopAdversarial.test.ts > chunked >60 B per-iteration loop: adversarial chunk verification > a forged chunk (bytes not matching the stored digest) fails the read closed 417ms\n \u2713 test/e2e/ChunkedLoopAdversarial.test.ts > chunked >60 B per-iteration loop: adversarial chunk verification > a missing chunk (fewer chunks than the value needs) fails the read closed 6ms\n \u2713 test/e2e/ChunkedLoopAdversarial.test.ts > chunked >60 B per-iteration loop: adversarial chunk verification > a reordered chunk (data swapped between equal-size chunks) fails the read closed 5ms\n \u2713 test/e2e/WindowedIteration.test.ts > Windowed (paginated) sorted-mapping iteration > compiles and publishes the window cursor/bound metadata 3ms\n \u2713 test/e2e/WindowedIteration.test.ts > Windowed (paginated) sorted-mapping iteration > walks two disjoint pages that together visit every entry and persist the cursor 213ms\n \u2713 test/e2e/WindowedIteration.test.ts > Windowed (paginated) sorted-mapping iteration > fails closed when the persisted cursor names a non-present anchor 11ms\n \u2713 test/e2e/WindowedIteration.test.ts > Windowed (paginated) sorted-mapping iteration > fails closed when the in-window chain is broken (an omitted entry) 10ms\n \u2713 test/e2e/WindowedIteration.test.ts > Windowed (paginated) sorted-mapping iteration > reverts at the covenant when the anchor slot does not match the persisted cursor (skip/stale cursor) 108ms\n \u2713 test/e2e/WindowedIteration.test.ts > Windowed (paginated) sorted-mapping iteration > reverts at the covenant when an in-window entry is omitted (broken contiguity) 21ms\n\n Test Files  6 passed (6)\n      Tests  17 passed (17)\n   Start at  03:17:05\n   Duration  34.47s (import 48%, tests 38%, transform 11%, setup 3%)\n\n PASS  Waiting for file changes...\n       press h to show help, press q to quit\nDone in 62.94s.\n"
+    },
+    "target-e2e-watch.log": {
+      "sha256": "13d520e83ff79f6790ef634a616e69bb5ed2a88e8e570ac77543a73c01d21999",
+      "bytes": 6440,
+      "content": "yarn run v1.22.22\nwarning From Yarn 1.0 onwards, scripts don't require \"--\" for options to be forwarded. In a future version, any explicit \"--\" will be forwarded as-is to the scripts.\n$ yarn workspace solidcash test:e2e:watch test/e2e/WindowedIteration.test.ts test/e2e/ChunkedLoopRoundtrip.test.ts test/e2e/ChunkedLoopAdversarial.test.ts test/e2e/KernelCalleeOnlyBlockOracle.test.ts test/e2e/KernelDirectReadonlyReturnIdentity.test.ts test/e2e/KernelDirectLogicalSelf.test.ts --maxWorkers=1 --reporter=verbose\n$ vitest --config vitest.e2e.config.ts test/e2e/WindowedIteration.test.ts test/e2e/ChunkedLoopRoundtrip.test.ts test/e2e/ChunkedLoopAdversarial.test.ts test/e2e/KernelCalleeOnlyBlockOracle.test.ts test/e2e/KernelDirectReadonlyReturnIdentity.test.ts test/e2e/KernelDirectLogicalSelf.test.ts --maxWorkers=1 --reporter=verbose\n\n RUN  v5.0.4 /Code/cashscript/.worktrees/per-call/packages/solidcash\n\n \u2713 test/e2e/KernelDirectLogicalSelf.test.ts > ordinary direct logical self identity > passes authenticated CREATE self to a callee and rejects a forged own anchor 352ms\n \u2713 test/e2e/KernelDirectLogicalSelf.test.ts > ordinary direct logical self identity > authenticates an ordinary nested callee own identity independently of its incoming physical target 76ms\n \u2713 test/e2e/KernelDirectLogicalSelf.test.ts > ordinary direct logical self identity > retains physical self for a native deployment without a CREATE identity 63ms\n \u2713 test/e2e/WindowedIteration.test.ts > Windowed (paginated) sorted-mapping iteration > compiles and publishes the window cursor/bound metadata 2ms\n \u2713 test/e2e/WindowedIteration.test.ts > Windowed (paginated) sorted-mapping iteration > walks two disjoint pages that together visit every entry and persist the cursor 143ms\n \u2713 test/e2e/WindowedIteration.test.ts > Windowed (paginated) sorted-mapping iteration > fails closed when the persisted cursor names a non-present anchor 5ms\n \u2713 test/e2e/WindowedIteration.test.ts > Windowed (paginated) sorted-mapping iteration > fails closed when the in-window chain is broken (an omitted entry) 5ms\n \u2713 test/e2e/WindowedIteration.test.ts > Windowed (paginated) sorted-mapping iteration > reverts at the covenant when the anchor slot does not match the persisted cursor (skip/stale cursor) 95ms\n \u2713 test/e2e/WindowedIteration.test.ts > Windowed (paginated) sorted-mapping iteration > reverts at the covenant when an in-window entry is omitted (broken contiguity) 21ms\n \u2713 test/e2e/KernelCalleeOnlyBlockOracle.test.ts > callee-only authenticated block oracle > provisions only the nested reader pinned oracle with caller clock=false 2504ms\n \u2713 test/e2e/KernelCalleeOnlyBlockOracle.test.ts > callee-only authenticated block oracle > provisions only the nested reader pinned oracle with caller clock=true 1007ms\n \u00d7 test/e2e/KernelCalleeOnlyBlockOracle.test.ts > callee-only authenticated block oracle > provisions the pinned oracle for a clockless proxy calling a clock-writing proxy 1755ms\n   \u2192 Implementation 'ClockCaller' has no inferred delegate variant and cannot be deployed behind a proxy. It needs an externally-callable function that mutates proxy-owned state.\n \u2713 test/e2e/KernelDirectReadonlyReturnIdentity.test.ts > ordinary readonly return aliases beside logical identities > keeps both getter results and the executing identity after a complete read-chunk band 3116ms\n \u2713 test/e2e/ChunkedLoopRoundtrip.test.ts > chunked >60 B per-iteration loop: update + insert roundtrip > inserts a >60B value, updates it in place, and reads the exact value back 489ms\n \u2713 test/e2e/ChunkedLoopAdversarial.test.ts > chunked >60 B per-iteration loop: adversarial chunk verification > a forged chunk (bytes not matching the stored digest) fails the read closed 312ms\n \u2713 test/e2e/ChunkedLoopAdversarial.test.ts > chunked >60 B per-iteration loop: adversarial chunk verification > a missing chunk (fewer chunks than the value needs) fails the read closed 6ms\n \u2713 test/e2e/ChunkedLoopAdversarial.test.ts > chunked >60 B per-iteration loop: adversarial chunk verification > a reordered chunk (data swapped between equal-size chunks) fails the read closed 6ms\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af\n\n FAIL  test/e2e/KernelCalleeOnlyBlockOracle.test.ts > callee-only authenticated block oracle > provisions the pinned oracle for a clockless proxy calling a clock-writing proxy\nError: Implementation 'ClockCaller' has no inferred delegate variant and cannot be deployed behind a proxy. It needs an externally-callable function that mutates proxy-owned state.\n \u276f Object.deployProxy src/stateful/upgrades.ts:996:13\n    994|       ?? (sourceArtifact.abi.some((f) => f.modifiers?.includes('delega\u2026\n    995|     if (!implArtifact) {\n    996|       throw new Error(\n       |             ^\n    997|         `Implementation '${sourceArtifact.contractName}' has no inferr\u2026\n    998|         + 'behind a proxy. It needs an externally-callable function th\u2026\n \u276f test/e2e/KernelCalleeOnlyBlockOracle.test.ts:99:35\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/1]\u23af\n\n\n Test Files  1 failed | 5 passed (6)\n      Tests  1 failed | 16 passed (17)\n   Start at  03:13:17\n   Duration  30.64s (import 43%, tests 33%, transform 21%, setup 3%)\n\n     Import  677 modules were evaluated 3491 times \u00b7 12.79s total, 43% of tracked time\n             ~10.31s faster with isolate: false \u2014 shared modules are evaluated once per worker instead of once per file\n             learn more: https://vitest.dev/guide/improving-performance#test-isolation\n\nerror Command failed with exit code 1.\ninfo Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.\nerror Command failed.\nExit code: 1\nCommand: /root/.nvm/versions/node/v22.22.0/bin/node\nArguments: /root/.nvm/versions/node/v22.22.0/lib/node_modules/yarn/lib/cli.js test:e2e:watch test/e2e/WindowedIteration.test.ts test/e2e/ChunkedLoopRoundtrip.test.ts test/e2e/ChunkedLoopAdversarial.test.ts test/e2e/KernelCalleeOnlyBlockOracle.test.ts test/e2e/KernelDirectReadonlyReturnIdentity.test.ts test/e2e/KernelDirectLogicalSelf.test.ts --maxWorkers=1 --reporter=verbose\nDirectory: /Code/cashscript/.worktrees/per-call/packages/solidcash\nOutput:\n\ninfo Visit https://yarnpkg.com/en/docs/cli/workspace for documentation about this command.\nerror Command failed with exit code 1.\ninfo Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.\n"
+    },
+    "target-final-build.log": {
+      "sha256": "944c40aec639376872a878bb502cdcc24115bfcc8477228f0f85803e06a4d1cb",
+      "bytes": 220,
+      "content": "yarn run v1.22.22\n$ tsc -b tsconfig.packages.json && yarn workspace testing-suite compile\n$ tsx tasks/compile.ts\nUnchanged example.scash\nUnchanged golden_token.scash\nUnchanged transfer_with_timeout.scash\nDone in 29.43s.\n"
+    },
+    "target-parser-atn-review.json": {
+      "sha256": "75bcb8df60662d6a64a75c08d1fd375b6d58c6ffc5ed83fc86a7305a97c344bc",
+      "bytes": 1392,
+      "content": {
+        "source": {
+          "167": {
+            "rule": "statement",
+            "stateType": 3,
+            "transitions": 31
+          },
+          "266": {
+            "rule": "yulBlock",
+            "stateType": 10,
+            "transitions": 2
+          },
+          "267": {
+            "rule": "yulStatement",
+            "stateType": 3,
+            "transitions": 13
+          },
+          "278": {
+            "rule": "yulExpression",
+            "stateType": 3,
+            "transitions": 3
+          },
+          "345": {
+            "rule": "expression",
+            "stateType": 3,
+            "transitions": 19
+          },
+          "360": {
+            "rule": "expression",
+            "stateType": 5,
+            "transitions": 23
+          },
+          "361": {
+            "rule": "expression",
+            "stateType": 10,
+            "transitions": 2
+          }
+        },
+        "target": {
+          "167": {
+            "rule": "statement",
+            "stateType": 3,
+            "transitions": 31
+          },
+          "266": {
+            "rule": "yulBlock",
+            "stateType": 10,
+            "transitions": 2
+          },
+          "267": {
+            "rule": "yulStatement",
+            "stateType": 3,
+            "transitions": 13
+          },
+          "278": {
+            "rule": "yulExpression",
+            "stateType": 3,
+            "transitions": 3
+          },
+          "345": {
+            "rule": "expression",
+            "stateType": 3,
+            "transitions": 19
+          },
+          "360": {
+            "rule": "expression",
+            "stateType": 5,
+            "transitions": 23
+          },
+          "361": {
+            "rule": "expression",
+            "stateType": 10,
+            "transitions": 2
+          }
+        },
+        "identicalDecisionShapes": true
+      }
+    },
+    "target-parser-final-lint.log": {
+      "sha256": "ef33a20a0bb1488fe70665e90ce2f52ebf6922da2c0eabbb12b4280b750dc61f",
+      "bytes": 130,
+      "content": "yarn run v1.22.22\n$ /Code/cashscript/.worktrees/per-call/node_modules/.bin/eslint packages/solidc/src/compiler.ts\nDone in 29.82s.\n"
+    },
+    "target-parser-focused-watch.log": {
+      "sha256": "c41b96a476e8627a37793c0863ce6fca15492a2b6d9410ef10a34804b7e2a27f",
+      "bytes": 1090,
+      "content": "yarn run v1.22.22\nwarning From Yarn 1.0 onwards, scripts don't require \"--\" for options to be forwarded. In a future version, any explicit \"--\" will be forwarded as-is to the scripts.\n$ yarn workspace solidc test:watch test/Pushdata4Decode.test.ts -t 'native pushdata decoder width boundaries' --watch --maxWorkers=1 --reporter=verbose\n$ vitest test/Pushdata4Decode.test.ts -t 'native pushdata decoder width boundaries' --watch --maxWorkers=1 --reporter=verbose\n\n DEV  v5.0.4 /Code/cashscript/.worktrees/per-call/packages/solidc\n\n \u2713 test/Pushdata4Decode.test.ts > native pushdata decoder width boundaries > decodes exact bytes through shared and inline decoders at PUSHDATA2/4 boundaries 58ms\n \u2713 test/Pushdata4Decode.test.ts > native pushdata decoder width boundaries > refuses truncated PUSHDATA4 lengths, payloads and invalid wide opcodes 14ms\n\n Test Files  1 passed (1)\n      Tests  2 passed (2)\n   Start at  03:16:20\n   Duration  3.64s (import 53%, transform 44%, tests 2%, worker 1%)\n\n PASS  Waiting for file changes...\n       press h to show help, press q to quit\nDone in 44.50s.\n"
+    },
+    "target-parser-lint.log": {
+      "sha256": "02eb7e7f559c7803352d760d5e2d88e46b4c0609ef2b7886bf1925e50e0747a7",
+      "bytes": 427,
+      "content": "yarn run v1.22.22\n$ /Code/cashscript/.worktrees/per-call/node_modules/.bin/eslint packages/solidc/src/compiler.ts\n\n/Code/cashscript/.worktrees/per-call/packages/solidc/src/compiler.ts\n  20889:1  error  This line has a length of 138. Maximum allowed is 125  max-len\n\n\u2716 1 problem (1 error, 0 warnings)\n\nerror Command failed with exit code 1.\ninfo Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.\n"
+    },
+    "target-parser-literal-review.json": {
+      "sha256": "1a5c83b32b8b30113b1ea8dab884da87cbcbaa7a3e6979c1ac48928f3381b3ec",
+      "bytes": 5513,
+      "content": {
+        "sourceCommit": "d3bbc9b6e",
+        "literalMappings": [
+          {
+            "oldReference": "T__1",
+            "oldTokenType": 2,
+            "literal": "';'",
+            "replacement": "semicolon",
+            "activeTokenType": 2
+          },
+          {
+            "oldReference": "T__3",
+            "oldTokenType": 4,
+            "literal": "'{'",
+            "replacement": "leftBrace",
+            "activeTokenType": 4
+          },
+          {
+            "oldReference": "T__4",
+            "oldTokenType": 5,
+            "literal": "','",
+            "replacement": "comma",
+            "activeTokenType": 5
+          },
+          {
+            "oldReference": "T__5",
+            "oldTokenType": 6,
+            "literal": "'}'",
+            "replacement": "rightBrace",
+            "activeTokenType": 6
+          },
+          {
+            "oldReference": "T__6",
+            "oldTokenType": 7,
+            "literal": "'.'",
+            "replacement": "dot",
+            "activeTokenType": 7
+          },
+          {
+            "oldReference": "T__13",
+            "oldTokenType": 14,
+            "literal": "'-'",
+            "replacement": "minus",
+            "activeTokenType": 14
+          },
+          {
+            "oldReference": "T__22",
+            "oldTokenType": 23,
+            "literal": "'>='",
+            "replacement": "greaterOrEqual",
+            "activeTokenType": 23
+          },
+          {
+            "oldReference": "T__26",
+            "oldTokenType": 27,
+            "literal": "'~'",
+            "replacement": "bitwiseNot",
+            "activeTokenType": 27
+          },
+          {
+            "oldReference": "T__41",
+            "oldTokenType": 42,
+            "literal": "'this'",
+            "replacement": "thisKeyword",
+            "activeTokenType": 42
+          },
+          {
+            "oldReference": "T__47",
+            "oldTokenType": 48,
+            "literal": "'='",
+            "replacement": "assign",
+            "activeTokenType": 48
+          },
+          {
+            "oldReference": "T__56",
+            "oldTokenType": 57,
+            "literal": "'('",
+            "replacement": "leftParen",
+            "activeTokenType": 57
+          },
+          {
+            "oldReference": "T__57",
+            "oldTokenType": 58,
+            "literal": "')'",
+            "replacement": "rightParen",
+            "activeTokenType": 58
+          },
+          {
+            "oldReference": "T__62",
+            "oldTokenType": 63,
+            "literal": "'type'",
+            "replacement": "typeKeyword",
+            "activeTokenType": 63
+          },
+          {
+            "oldReference": "T__66",
+            "oldTokenType": 67,
+            "literal": "'payable'",
+            "replacement": "payable",
+            "activeTokenType": 67
+          },
+          {
+            "oldReference": "T__81",
+            "oldTokenType": 82,
+            "literal": "'['",
+            "replacement": "leftBracket",
+            "activeTokenType": 82
+          },
+          {
+            "oldReference": "T__82",
+            "oldTokenType": 83,
+            "literal": "']'",
+            "replacement": "rightBracket",
+            "activeTokenType": 83
+          },
+          {
+            "oldReference": "T__88",
+            "oldTokenType": 89,
+            "literal": "'fixed'",
+            "replacement": "fixed",
+            "activeTokenType": 89
+          },
+          {
+            "oldReference": "T__89",
+            "oldTokenType": 90,
+            "literal": "'ufixed'",
+            "replacement": "ufixed",
+            "activeTokenType": 90
+          },
+          {
+            "oldReference": "T__90",
+            "oldTokenType": 91,
+            "literal": "'address'",
+            "replacement": "address",
+            "activeTokenType": 91
+          },
+          {
+            "oldReference": "T__91",
+            "oldTokenType": 92,
+            "literal": "'new'",
+            "replacement": "newKeyword",
+            "activeTokenType": 92
+          },
+          {
+            "oldReference": "T__118",
+            "oldTokenType": 119,
+            "literal": "'abi.encode'",
+            "replacement": "abiEncode",
+            "activeTokenType": 120
+          },
+          {
+            "oldReference": "T__119",
+            "oldTokenType": 120,
+            "literal": "'abi.encodePacked'",
+            "replacement": "abiEncodePacked",
+            "activeTokenType": 121
+          },
+          {
+            "oldReference": "T__120",
+            "oldTokenType": 121,
+            "literal": "'abi.encodeWithSelector'",
+            "replacement": "abiEncodeWithSelector",
+            "activeTokenType": 122
+          },
+          {
+            "oldReference": "T__121",
+            "oldTokenType": 122,
+            "literal": "'abi.encodeWithSignature'",
+            "replacement": "abiEncodeWithSignature",
+            "activeTokenType": 123
+          },
+          {
+            "oldReference": "T__122",
+            "oldTokenType": 123,
+            "literal": "'abi.encodeCall'",
+            "replacement": "abiEncodeCall",
+            "activeTokenType": 124
+          },
+          {
+            "oldReference": "T__123",
+            "oldTokenType": 124,
+            "literal": "'bytes.concat'",
+            "replacement": "bytesConcat",
+            "activeTokenType": 125
+          },
+          {
+            "oldReference": "T__124",
+            "oldTokenType": 125,
+            "literal": "'string.concat'",
+            "replacement": "stringConcat",
+            "activeTokenType": 126
+          },
+          {
+            "oldReference": "T__125",
+            "oldTokenType": 126,
+            "literal": "'abi.decode'",
+            "replacement": "abiDecode",
+            "activeTokenType": 127
+          },
+          {
+            "oldReference": "T__126",
+            "oldTokenType": 127,
+            "literal": "'abi.decodeAt'",
+            "replacement": "abiDecodeAt",
+            "activeTokenType": 128
+          },
+          {
+            "oldReference": "T__127",
+            "oldTokenType": 128,
+            "literal": "'tx.outputs'",
+            "replacement": "txOutputs",
+            "activeTokenType": 129
+          },
+          {
+            "oldReference": "T__128",
+            "oldTokenType": 129,
+            "literal": "'tx.inputs'",
+            "replacement": "txInputs",
+            "activeTokenType": 130
+          },
+          {
+            "oldReference": "T__130",
+            "oldTokenType": 131,
+            "literal": "'!'",
+            "replacement": "logicalNot",
+            "activeTokenType": 132
+          }
+        ],
+        "uniqueLiteralCount": 32,
+        "remainingNumericTokenReferences": [],
+        "exactOldCodeAfterSemanticTokenReplacementAndNewResolverRemoval": true,
+        "compilerSourceSha256": "e3e8fcef9aca027f59d47dbea216e68582a6a14c8357e326e13c2fb93ada05e7"
+      }
+    },
+    "target-sdk-watch-v2.log": {
+      "sha256": "d32bf50cca99933238fdef58f25d4850360506ef868387c6165fddf3591fc78c",
+      "bytes": 29683,
+      "content": "yarn run v1.22.22\nwarning From Yarn 1.0 onwards, scripts don't require \"--\" for options to be forwarded. In a future version, any explicit \"--\" will be forwarded as-is to the scripts.\n$ yarn workspace solidcash test:watch test/unit/BlockOracleReaderSelection.test.ts test/unit/NestedBlockOracleCoordinates.test.ts test/unit/AssignPhysicalReturnIndices.test.ts --reporter=verbose\n$ vitest --no-isolate --maxWorkers='60%' --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**' test/unit/BlockOracleReaderSelection.test.ts test/unit/NestedBlockOracleCoordinates.test.ts test/unit/AssignPhysicalReturnIndices.test.ts --reporter=verbose\n\n RUN  v5.0.4 /Code/cashscript/.worktrees/per-call/packages/solidcash\n\n \u2713 test/unit/NestedBlockOracleCoordinates.test.ts > nested block oracle coordinates > counts a shared physical dynamic read band once before a later oracle reader 18ms\n \u2713 test/unit/BlockOracleReaderSelection.test.ts > root block oracle band selection > reserves only the selected root pin when a delegate publishes a distinct pin 5ms\n \u2713 test/unit/BlockOracleReaderSelection.test.ts > root block oracle band selection > requires the selected effect and reserves only the first eligible delegate band 1ms\n \u2713 test/unit/BlockOracleReaderSelection.test.ts > root block oracle band selection > provisions the selected child pin before root selection without using an artifact fallback pin 3ms\n \u2713 test/unit/BlockOracleReaderSelection.test.ts > root block oracle band selection > promotes the exact final root pin and preserves aliased fixed slots and other pins 1ms\n \u2713 test/unit/BlockOracleReaderSelection.test.ts > root block oracle band selection > rejects ambiguous authority carriers and aliased witness disagreement before changing any slot 1ms\n \u2713 test/unit/BlockOracleReaderSelection.test.ts > root block oracle band selection > preserves a materialized oracle slot while keeping computed sidecar slots outside the pass-through path 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > delegate-only physical slot projection > removes proxy-resident data slots only for delegate-only execution 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > external event probe input > uses delegate geometry across alpha-renaming and ignores a decoy legacy name 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > materialized low-level-call block identity > selects contiguous block repair by layout and master outpoint across alpha-renaming 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > materialized low-level-call block identity > does not grant layout authority from a historical function name or ambiguous outpoint 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > materialized low-level-call block identity > repairs a renamed dense block by permutation without changing the input multiset 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > materialized low-level-call block identity > refuses sparse and specialized blocks handled by other materializers 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > materialized low-level-call block identity > skips shared companion claims without changing order 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > materialized low-level-call block identity > skips overlapping destination ranges owned by two otherwise disjoint blocks 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > describes scalar bytes/string and array continuations from the same collection effect metadata 2ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > confines application-name recovery to pre-kernel artifacts 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > reconstructs descriptor-free events only for legacy plans, ignoring a named kernel decoy 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > keeps nested delegate event repair legacy-only across misleading names 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > selects a renamed physical value writer from metadata and rejects a named decoy 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > selects a delegated writer from one authenticated resource before entry geometry materializes 2ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > recovers an alpha-renamed legacy writer from exact planned continuation geometry 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > uses the routed writer layout and collection even when its artifact contains a legacy-named decoy 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > selects publish ownership by renamed resource identity and collapses duplicate route views 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > resolves chunkable entry ownership from exact metadata and fails closed for kernel ambiguity 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > treats several well-formed keys in one collection as a multi-resource seed, not persist-band ownership 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > scopes persisted readiness to a renamed resource and rejects cross-builder legacy leakage 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > distinguishes multiple valid resources from malformed compiler identity 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > binds missing chunk categories to exact renamed write identity 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > selects token-band repair ownership by physical compiler layout, independent of handler name 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > fails closed when independent participants both claim token-band repair ownership 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > selects a renamed writer event from compiler route metadata and collapses duplicate views 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > fails closed on conflicting writer event slots, declarations, or observations 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > fails closed when independent chunkable writers claim different physical inputs 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > fails closed when one physical input ambiguously claims independent collections 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > authenticates an alpha-renamed update and rejects a same-category decoy collection 9ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > keeps persisted resources separate by collection hash and key slot within one category 8ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > protects renamed active collection locks and ignores a legacy-named decoy 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > publishes insert identity separately from an update 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > derives first-write semantics from renamed descriptors and ignores legacy-name decoys 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > distinguishes independent keys from conflicting views of one resource 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > rematerializes only an exact persisted update without competing INSERT destinations 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > refuses a category-free choice between two authenticated persisted resources 6ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > generic persisted value-chunk write identity > ties insert mode to the matching route slot in a multi-collection writer 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > reserves return append families before an input-bearing identity coordinate 2ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > refuses a late return redirect onto an identity pad before another owned output 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > reserves same-index identities before a shared leaf return of width 1 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > reserves same-index identities before a shared leaf return of width 2 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > retains an output index through deterministic P2SH32 reconstruction 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > relocates a misplaced SCID without reclaiming its authenticated output coordinate 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > distinguishes fixed entry outputs from other mutable participant slots 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > protects exact and legacy fixed data-NFT outputs from dynamic replay 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > reserves every output in assigned scalar and loop return witnesses 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > keeps planned tails when they already sit after every participant block 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > rebases in-block returns and colliding tails after a minting-band rotate 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > gives a writing physical group the in-block slot even when a later call is fused 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > materializes rolled loop returns even when pending return events were cleared 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > keeps a multi-part tail anchored at its authenticated part-zero return index 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > refuses in-block ownership when a fused writer still carries multi-width meceTags returns 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > refuses in-block ownership when the fused shared group carries a multi-part loop return 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > reserves loop-return width so a second meceTags slot is not the next occupant 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > keeps view tails after a token block even when blockInputs is shorter than blockSize 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > counts a sparse participant master and its data NFTs without optional block metadata 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > rebinds stale return witnesses from final output content without moving valid witnesses 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > finds a participant block colliding with a dynamic-output band by layout rather than function name 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > keeps whitelist publish band collision on the natural FakeToken start, not the slid public band 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > reserves output-only slots when a physical block has fewer token inputs than coordinates 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > detects a lane collision in output-only participant coordinates 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > includes an in-block return slid past a dynamic output band in materialized width 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > gathers serialized tail funders next to a colliding block without adding inputs 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not use a token-free P2SH covenant input as output-only block funding 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > gives a shared physical group the in-block slot when functionName writes state 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > gives a standalone proxy-dispatched view its declared in-block slot 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > packs view tails after a writer in-block slot past master+blockSize 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > keeps trailing INSERT predecessors inside the token occupancy so view tails start after P' 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > slides PredOut after view tails that occupy master+blockSize 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > resolves INSERT PredOut onto master+blockSize instead of a 1:1 entry slot 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > syncs drifted PredOut witnesses onto master + declared batch predecessor slots 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > places batch PredOut only at master + declared slot 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > strips invalid surplus collection locks that inflate OUTPUTBYTECODE cardinality 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > keeps balanced collection-entry identity fields from one declared owner 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > removes malformed occupants of a declared collection lock without needing an insert predecessor 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > uses the batch planner output slot instead of provisional return-tail occupancy 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > rebinds a materialized PredOut by authenticated predecessor content 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > strips extra own-category none-cap tails outside event and return slots 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > rebases a proxy-delegated initializer PredOut from the impl master, not minting+implSize 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > uses ABI blockLayout for a proxy delegate that has no kernel compilerRoute 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > pins exact linear sorted-batch keys even when the layout slot is conditional 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not treat a kernel linear string-mapping batch as a continuation writer 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > falls back to nested-callee sentinels for a vmap-batch slot with no planned batch 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > overwrites a balanced-block pad at a layout offset instead of appending past it 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > lets a fused writer overwrite view leftover PredOuts 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > promotes a fused writer batch plan onto the physical read carrier 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > rejects mixing distinct writer batch plans on one physical carrier 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > excludes a different non-routed shared handler from the physical writer plan 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > rebases a fused writer trailing predecessor onto the physical carrier trailing band 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > relocates only the planned INSERT PredOut and keeps leftover UPDATE sentinels 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > treats OP_TRUE view-true tails as PredOut holes 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > moves a sorted-batch predecessor clone to its compiler-declared output slot 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > materializes a predecessor over its same-owner empty entry placeholder 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not consume a token-free structural funder as the predecessor value 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not overwrite an unrelated mutable output at a predecessor coordinate 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > displaces a same-category foreign-collection lock at a planned predecessor slot 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > restores an authoritative planned predecessor over its provisional same-owner node 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not pack a view tail onto the writer slot after a 22\u219226 rotate 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > places loop parts on their assigned slots even when pending order is not width-major 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > packs view tails after a jobEvents mutable band without a token swap 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > computes the publishJobEvent band from impl + live nNew, not planned view tails 5ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > strips extra value-chunk locks past the planned nNew band 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not strip a consumed persist predecessor outside the write band 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > keeps UPDATE rematerialization on the session/persist Created digest lock 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not reuse a legacy persisted UPDATE lock without explicit legacy authority 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not seed a kernel persist band from an unowned legacy lock 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > rematerializes persist UPDATE only for empty-address dest, not Created or Whitelisted 11ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > encodes CollateralWithdrawn with the stamped timestamp the impl EQUALVERIFYs 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > quarantines nested timestamp adaptation to the exact legacy ABI schema 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > selects the post-append value whose sha256 is the chunk pin, not the Created witness 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > ignores oversized value-chunk extractor decoys before hashing or width selection 31ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > keeps an observed value-chunk run atomic when a staged run has the same commitments 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > uses the live jobEvents width so a 5-wide band still rotates FakeToken 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > places append-only continuations before an authenticated reverse suffix 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > reuses a planner-owned value-chunk band before allocating an append-only run 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > relocates a continuation only into a contiguous token-free alignment range 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not treat OP_TRUE none-cap view tails as colliding writers 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > prefers early OP_TRUE pads over the jobEvents band and SCID 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > puts PredOut after the assigned tail band, not on master+blockSize+2 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > displaces same-category OP_TRUE view tails instead of treating them as event holes 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > folds shared jobEvents nNew onto the physical owner group 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not let legacy child names alter kernel value-chunk ownership 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > reserves proxy pads so FakeToken starts after the live jobEvents band 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > reserves the shift and complete post-relocation participant span 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not undersize a minting swap below the live jobEvents band 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > canonicalizes writer bool returns according to their declared ABI framing 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > keeps legacy payload heuristics out of generic event placement 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not detach JobEvent-shaped receipts from an exact generic writer event 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > ranks return observations by authentication, not commitment byte length 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > recognizes only exact mutable NFT duplicates when reclaiming a return slot 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > removes relocated mutable copies before their canonical coordinate without merging canonical inputs 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > preserves compiler-owned trailing entry outputs while their commitments are provisional 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > restores read-only mutable twins to their authenticated input coordinates 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not overwrite a conflicting owned output without a relocated twin 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > restores selected read-only chunks ahead of a displaced mapping entry 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > places the extraTransfer return at the post-rotate minting master 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > treats transfer as the same minting-band occupant as transferFrom 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > classifies minting-band writers by compiler effects, not ERC source names 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not classify descriptor-free kernel participants by transfer-like source names 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > restores persisted continuations from transaction structure, independent of caller names 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > retains minting relocation after the master moves past from+width 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > inserts a nested minting master and drops a later P2PKH pad so tails stay put 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > converts leftover minting clones to pads when the master already occupies INPUTINDEX 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > ignores an unmaterialized output before the minting master 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > refreshes satoshis and token amount on an existing same-category minting occupant 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not insert a minting master onto a P2PKH hole or a foreign minting occupant 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > converts leftover empty collection placeholders to pads without moving neighbors 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > strips a 32-byte empty hash without depending on neighboring payload bytes 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > does not strip mixed empty+real entries without a planned count 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > keeps a linear sorted-batch of in-block nodes when planned count includes every key 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > leaves a frame's own entry slot outputs out of the planned lane width 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > classifies sorted-list HEAD vs node vs data-NFT tags 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > synthesizes a 64-byte empty-value P' from HEAD slot 0 and the NEW slot 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > repairs the whitelist publishJobPost occupancy band without moving tails or jobs 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > updates a stale same-lock predecessor to the 64-byte P' without splicing 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > overwrites a nested event at the input index and parks it on a later pad 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > detects one active chunkable array writer independently of function and collection names 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > honors active route writes and refuses ambiguous chunkable array collections 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > rewrites transferFrom NEW at master+4 to the P' collection lock 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > restores a 1:1 balances entry output overwritten by an allowances lock 0ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > rejects empty nested batch seeds and debits the co-spent balances input 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > rewrites a trailing balances PredOut lock when allowances occupies the absolute slot 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > moves a misplaced NEW commitment off the predecessor output onto master+4 1ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > derives insert-lock repair offsets from renamed compiler descriptors 2ms\n \u2713 test/unit/AssignPhysicalReturnIndices.test.ts > assignPhysicalReturnIndices > reorders a linear proof successor at descriptor-owned nonstandard offsets 1ms\n\n Test Files  3 passed (3)\n      Tests  172 passed (172)\n   Start at  03:13:32\n   Duration  3.86s (transform 57%, import 31%, setup 9%, tests 2%, worker 1%)\n\nDone in 4.90s.\n"
+    },
+    "target-sdk-watch.log": {
+      "sha256": "9847a273108135a28885ddaeeb19410a2b3bc4b90e23be973dc94d5cd21e839f",
+      "bytes": 2574,
+      "content": "yarn run v1.22.22\nwarning From Yarn 1.0 onwards, scripts don't require \"--\" for options to be forwarded. In a future version, any explicit \"--\" will be forwarded as-is to the scripts.\n$ yarn workspace solidcash test:watch test/unit/BlockOracleReaderSelection.test.ts test/unit/NestedBlockOracleCoordinates.test.ts test/unit/AssignPhysicalReturnIndices.test.ts --maxWorkers=1 --reporter=verbose\n$ vitest --no-isolate --maxWorkers='60%' --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**' test/unit/BlockOracleReaderSelection.test.ts test/unit/NestedBlockOracleCoordinates.test.ts test/unit/AssignPhysicalReturnIndices.test.ts --maxWorkers=1 --reporter=verbose\nfile:///Code/cashscript/.worktrees/per-call/node_modules/vitest/dist/chunks/cac.DTXWs6Ni.js:2218\n\t\t\tthrow new Error(`Expected a single value for option \"${command}\", received [${received}]`);\n\t\t\t      ^\n\nError: Expected a single value for option \"--maxWorkers <workers>\", received [\"60%\", 1]\n    at transform (file:///Code/cashscript/.worktrees/per-call/node_modules/vitest/dist/chunks/cac.DTXWs6Ni.js:2218:10)\n    at setDotProp (file:///Code/cashscript/.worktrees/per-call/node_modules/vitest/dist/chunks/cac.DTXWs6Ni.js:208:22)\n    at CAC.mri (file:///Code/cashscript/.worktrees/per-call/node_modules/vitest/dist/chunks/cac.DTXWs6Ni.js:592:9)\n    at CAC.parse (file:///Code/cashscript/.worktrees/per-call/node_modules/vitest/dist/chunks/cac.DTXWs6Ni.js:509:27)\n    at file:///Code/cashscript/.worktrees/per-call/node_modules/vitest/dist/cli.js:10:13\n    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:665:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)\n\nNode.js v22.22.0\nerror Command failed with exit code 1.\ninfo Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.\nerror Command failed.\nExit code: 1\nCommand: /root/.nvm/versions/node/v22.22.0/bin/node\nArguments: /root/.nvm/versions/node/v22.22.0/lib/node_modules/yarn/lib/cli.js test:watch test/unit/BlockOracleReaderSelection.test.ts test/unit/NestedBlockOracleCoordinates.test.ts test/unit/AssignPhysicalReturnIndices.test.ts --maxWorkers=1 --reporter=verbose\nDirectory: /Code/cashscript/.worktrees/per-call/packages/solidcash\nOutput:\n\ninfo Visit https://yarnpkg.com/en/docs/cli/workspace for documentation about this command.\nerror Command failed with exit code 1.\ninfo Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.\n"
+    }
+  }
+}

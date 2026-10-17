@@ -285,6 +285,16 @@ export function resolveCallTarget(
   if (row.addressLiteral !== undefined && row.addressLiteral.length > 0) {
     return new Uint8Array(hexToBin(row.addressLiteral));
   }
+  // `this.f()` publishes the target as the caller's own address. The callee master is another entry's lock;
+  // the address the call checks is still `addrV`.
+  if ((row as ExternalCallAbi & { readonly addressIsSelf?: boolean }).addressIsSelf === true) {
+    if (inputs.selfAddress === undefined) {
+      throw new FramedProxyDeployError(
+        `${where} targets address(this), and this frame publishes no address of its own`,
+      );
+    }
+    return inputs.selfAddress;
+  }
   if (row.addressStateVar !== undefined) {
     const bytes = addressBytes(inputs.stateValues[row.addressStateVar] as FunctionArgument | undefined);
     if (bytes !== undefined) return bytes;

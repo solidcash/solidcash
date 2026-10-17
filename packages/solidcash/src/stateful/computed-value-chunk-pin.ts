@@ -2,6 +2,7 @@ import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import { VALUE_CHUNK_INDEX_SIZE, VALUE_CHUNK_SIZE } from '@solidcash/utils';
+import { followsProbeEquality, matchesProbeOpcodeSequence } from './probe-instruction-sequence.js';
 
 const isP2sh32 = (bytecode: Uint8Array | undefined): bytecode is Uint8Array => !!bytecode
   && bytecode.length === 35 && bytecode[0] === 0xaa && bytecode[1] === 0x20 && bytecode[34] === 0x87;
@@ -38,12 +39,13 @@ export function isValidComputedValueChunkCommitmentEncoding(commitment: string):
 /** Recognize the compiler's continuation locking-bytecode pin. `outputBase` additionally authenticates the
  * position within a nominated run; callers which only need to classify the local emitter may omit it. */
 export function computedValueChunkOutputPin(
-  state: Pick<AuthenticationProgramStateCommon, 'controlStack' | 'instructions' | 'ip' | 'stack'>,
+  state: Pick<AuthenticationProgramStateCommon, 'controlStack' | 'instructions' | 'ip' | 'stack'>
+  & Partial<Pick<AuthenticationProgramStateCommon, 'functionTable'>>,
   outputBase?: number,
 ): { outputIndex: number; lockingBytecode: Uint8Array; commitment: Uint8Array } | undefined {
   if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTBYTECODE
-    || state.instructions[state.ip - 1]?.opcode !== Op.OP_SWAP
-    || state.instructions[state.ip + 1]?.opcode !== Op.OP_EQUALVERIFY
+    || !matchesProbeOpcodeSequence(state, -1, [Op.OP_SWAP])
+    || !followsProbeEquality(state)
     || state.controlStack.some((frame) => frame === false)
     || state.stack.length < 4) return undefined;
   const lockingBytecode = state.stack[state.stack.length - 2];

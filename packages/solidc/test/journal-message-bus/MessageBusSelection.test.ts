@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { decodeAuthenticationInstructions, hexToBin } from '@bitauth/libauth';
-import { bytecodeToAsm, messageBusVerifierLockingBytecode } from '@solidcash/utils';
+import {
+  asmToBytecode, bytecodeToAsm, messageBusVerifierCovenantBytecode, messageBusVerifierLockingBytecode,
+} from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../src/compiler.js';
 
 describe('message-bus compilation selection', () => {
@@ -26,8 +28,12 @@ describe('message-bus compilation selection', () => {
     expect(automatic.messageBus).toBeUndefined();
     expect(automatic.compiler.options?.messageBus).toBe(false);
     expect(automatic.bytecode).toBe(direct.bytecode);
-    expect(automatic.bytecode.length).toBeLessThan(optedIn.bytecode.length);
     expect(optedIn.messageBus).toBeDefined();
+    // A bus spend runs its master beside the verifier side-car, while a direct master carries every check
+    // inline (the reaudit's per-entry container checks among them), so lean is measured against both.
+    const bytes = (asm: string): number => asmToBytecode(asm).length;
+    const sidecar = messageBusVerifierCovenantBytecode(optedIn.messageBus!.verifierProgram!).length;
+    expect(bytes(automatic.bytecode)).toBeLessThan(bytes(optedIn.bytecode) + sidecar);
   });
 
   it('keeps a local helper call on the direct route', () => {
@@ -827,9 +833,9 @@ describe('message-bus compilation selection', () => {
     expect(layout?.slots.some((slot) => slot.kind === 'dataNft')).toBe(true);
     expect(layout?.slots.some((slot) => slot.kind === 'entry')).toBe(true);
     const recovery = layout?.slots.filter((slot) => slot.kind === 'ecrecoverSideCar') ?? [];
-    // Reserve A/B pairs for the compiled recovery sites, not 255 speculative row copies.
-    expect(recovery.map((slot) => slot.slotIndex)).toEqual([0, 1, 2, 3]);
-    expect(recovery.length).toBeLessThan(2 * (artifact.messageBus?.maximumRows ?? 0));
+    // Reserve A/M/B triples for the compiled recovery sites, not 255 speculative row copies.
+    expect(recovery.map((slot) => slot.slotIndex)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(recovery.length).toBeLessThan(3 * (artifact.messageBus?.maximumRows ?? 0));
     expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
     expect(new Set(layout?.slots.map((slot) => slot.offset)).size).toBe(layout?.slots.length);
     expect(layout?.blockSize).toBe(Math.max(...layout!.slots.map((slot) => slot.offset)) + 1);
@@ -1238,18 +1244,19 @@ describe('message-bus compilation selection', () => {
   });
 
   it('allocates one route slot per wide event rather than phantom commitment chunks', () => {
+    // Top-level kernel emits stream with no event band; conditional ones keep the per-row windows measured here.
     const artifact = compileString(`contract WideEvents {
       int last;
       event Wide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e);
       event Narrow(int value);
       function emitWide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e) public {
         last = 1;
-        emit Wide(a, b, c, d, e);
+        if (a != b) emit Wide(a, b, c, d, e);
         require(last == 1);
       }
       function emitNarrow(int value) public {
         last = value;
-        emit Narrow(value);
+        if (value > 0) emit Narrow(value);
         require(last == value);
       }
     }`, {

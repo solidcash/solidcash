@@ -1,17 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { Signer } from '../../src/index.js';
-import { ContractFactory } from '../../src/stateful/index.js';
-import { syncMockBlockOracleDeployment } from '../../src/oracle/index.js';
 import { createTestProvider } from '../test-util.js';
-import { Utxo } from '../../src/interfaces.js';
-
-function freshKey(): Uint8Array {
-  const key = new Uint8Array(32);
-  crypto.getRandomValues(key);
-  key[0] = (key[0] & 0x7f) | 0x01;
-  return key;
-}
 
 const TIMED = `
 contract Timed() {
@@ -22,42 +11,33 @@ contract Timed() {
 }
 `;
 
-describe('mock evm_increaseTime writes __block_timestamp', () => {
-  it('advances the covenant oracle register on the live data NFT', async () => {
+describe('mock evm_increaseTime writes the block oracle commitment', () => {
+  it('advances the one oracle commitment, not a reader register', async () => {
     const provider = createTestProvider();
-    const signer = new Signer(freshKey(), provider);
-    const funding: Utxo = { txid: 'b1'.repeat(32), vout: 0, satoshis: 5_000_000n };
-    await provider.addUtxo(signer.getAddress(), funding);
-    const timed = await new ContractFactory(compileString(TIMED), signer).deploy();
-    expect(await timed.getState()).toMatchObject({ __block_timestamp: 0n });
-
+    const artifact = compileString(TIMED);
+    expect(artifact.abi.map((fn) => fn.name)).not.toContain('__updateBlockOracle');
+    expect(artifact.stateLayout?.variables.map((v) => v.name) ?? []).not.toContain('__block_timestamp');
+    if (!('refreshBlockOracle' in provider)) return;
     await provider.send('evm_increaseTime', [86400]);
-    const after = await timed.getState();
-    expect(after.__block_timestamp).toBe(BigInt(provider.getBlockTime()));
-    expect(after.__block_timestamp).toBeGreaterThan(86_400n);
+    const lock = provider.blockOracleLock;
+    const utxo = (await provider.getUtxosForLockingBytecode(lock))
+      .find((item) => item.token?.nft?.capability === 'mutable');
+    const { blockOracleFieldBytes } = await import('@solidcash/utils');
+    const { hexToBin } = await import('@bitauth/libauth/build/lib/format/hex.js');
+    const timestamp = blockOracleFieldBytes(hexToBin(utxo?.token?.nft?.commitment ?? ''), 'timestamp');
+    let value = 0n;
+    for (let index = 0; index < 4; index += 1) value |= BigInt(timestamp[index] ?? 0) << BigInt(8 * index);
+    expect(value).toBe(BigInt(provider.getBlockTime()));
+    expect(value).toBeGreaterThan(86_400n);
   });
 
-  it('synchronizes every registered participant before building a call', async () => {
+  it('keeps one clock for every reader', async () => {
     const provider = createTestProvider();
-    const signer = new Signer(freshKey(), provider);
-    await provider.addUtxo(signer.getAddress(), {
-      txid: 'b2'.repeat(32), vout: 0, satoshis: 10_000_000n,
-    });
-    const factory = new ContractFactory(compileString(TIMED), signer);
-    const first = await factory.deploy();
-    const second = await factory.deploy();
-
-    await syncMockBlockOracleDeployment(provider, { contract: first });
+    if (!('refreshBlockOracle' in provider)) return;
     provider.increaseTime(5);
-    await syncMockBlockOracleDeployment(provider, { contract: second });
-    expect((await first.getState()).__block_timestamp)
-      .not.toBe((await second.getState()).__block_timestamp);
-
-    await provider.addUtxo(signer.getAddress(), {
-      txid: 'b3'.repeat(32), vout: 0, satoshis: 1_000_000n,
-    });
-    await first.gated(0n).withCall(second, 'gated', [0n]).send();
-    expect((await first.getState()).__block_timestamp)
-      .toBe((await second.getState()).__block_timestamp);
+    const { syncMockBlockOracles } = await import('../../src/oracle/index.js');
+    await syncMockBlockOracles(provider);
+    const utxos = await provider.getUtxosForLockingBytecode(provider.blockOracleLock);
+    expect(utxos.filter((utxo) => utxo.token?.nft?.capability === 'mutable')).toHaveLength(1);
   });
 });

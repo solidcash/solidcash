@@ -30,7 +30,12 @@ describe('general vmap bytecode sharing', () => {
     // constructor derivation with OP_EQUALVERIFY against an empty key. Verified by reverting the gate to `> 1`,
     // The trace-stable write path keeps the authenticated output proof in the entry body. Preserve substantial
     // headroom below BCH's 10KB consensus ceiling while still catching accidental framework-scale growth.
-    expect(artifact.bytecode.length / 2).toBeLessThan(2700);
+    // Raised again (4122.5 measured) by the October covenant hardening: every direct function now binds entry
+    // addresses to the master lock and runs the container, foreign-token and mutable-output scans.
+    // 4335 measured after the trailing batch-width binding landed on the direct convention.
+    // 4695 measured after the width-0 recovery A/M/B triples grew the shared front-region co-spend census.
+    // 4711 measured after the direct entry's message-bus-eligibility census widened.
+    expect(artifact.bytecode.length / 2).toBeLessThan(4750);
   });
 
   it('shares a collection-specific entry address across reads and writes', () => {
@@ -46,7 +51,11 @@ describe('general vmap bytecode sharing', () => {
     const shared = compactHelperDefinitions(asm)
       .filter((id) => [...asm.matchAll(new RegExp(`(?:^| )${id} OP_INVOKE(?: |$)`, 'g'))].length >= 2);
     expect(shared.length).toBeGreaterThanOrEqual(1);
-    expect(artifact.bytecode.length / 2).toBeLessThan(3000);
+    // 4415.5 measured after the October covenant hardening (master-lock entry addresses, per-function scans).
+    // 4630.5 measured after the trailing batch-width binding landed on the direct convention.
+    // 4988 measured after the width-0 recovery A/M/B triples grew the shared front-region co-spend census.
+    // 5004 measured after the direct entry's message-bus-eligibility census widened.
+    expect(artifact.bytecode.length / 2).toBeLessThan(5050);
   });
 
   it('shares the authenticated-absence bracket after three reads', () => {
@@ -69,7 +78,11 @@ describe('general vmap bytecode sharing', () => {
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
     expect(compactHelperDefinitions(asm).length).toBeGreaterThanOrEqual(1);
-    expect(artifact.bytecode.length / 2).toBeLessThan(9300);
+    // 9420.5 measured after the width-0 recovery A/M/B triples grew the shared front-region co-spend census.
+    // 9659.5 measured after the outside-layout mutable walk began admitting a written dynamic var's old chunk
+    // (the fix that settles fixed-width struct chunk-array pushes and whole-element overwrites): the mintable
+    // lock build + admission check is per function that writes a dynamic var.
+    expect(artifact.bytecode.length / 2).toBeLessThan(9750);
   });
 
   it('allocates collision-free structural and field-prefix helpers across entry points', () => {
@@ -124,7 +137,10 @@ describe('general vmap bytecode sharing', () => {
     const helperIds = compactHelperDefinitions(asm);
     expect(helperIds.length).toBeGreaterThanOrEqual(1);
     expect(helperIds.some((id) => asm.includes(`${id} OP_INVOKE`))).toBe(true);
-    expect(artifact.bytecode.length / 2).toBeLessThan(2900);
+    // 4346.5 measured after the October covenant hardening: every direct function now runs the container,
+    // foreign-token, unwritten-chunk and mutable-output scans. 4592.5 once those scans list the slots they act
+    // on in one classifying pass per side, and the mutable-output check tries the minted locks first.
+    expect(artifact.bytecode.length / 2).toBeLessThan(4750);
   });
 
   it('nests only compiler helpers and other outlined spans, acyclically, while sharing composite array traversal', () => {

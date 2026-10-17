@@ -40,8 +40,9 @@ describe('kernel inherited event-frame replay', () => {
     expect(recorderArtifact.events).toEqual([
       expect.objectContaining({ name: 'Recorded', signature: 'Recorded(uint256)' }),
     ]);
-    expect(recorderArtifact.messageBus?.handlers.find((handler) => handler.name === 'record')?.emits)
-      .toEqual([expect.objectContaining({ eventSignature: 'Recorded(uint256)' })]);
+    // The top-level emit streams: the handler's runtime stream names the resolved interface-inherited signature.
+    expect(recorderArtifact.messageBus?.handlers.find((handler) => handler.name === 'record')?.runtimeLoopEvents)
+      .toEqual([expect.objectContaining({ eventSignatures: ['Recorded(uint256)'], stream: true })]);
 
     const recorderBase = new Contract(recorderArtifact, [], { provider });
     const recorderSetup = await setupStatefulUtxos(
@@ -110,11 +111,10 @@ describe('kernel inherited event-frame replay', () => {
     const recorderInputIndex = builder.inputs.findIndex((input) => 'contract' in input.unlocker
       && input.unlocker.contract.artifact.contractName === 'Recorder'
       && input.unlocker.abiFunction.name === recorderArtifact.messageBus!.route.name);
-    const localEventOffsets = recorderArtifact.messageBus!.route.blockLayout.slots
-      .filter((slot) => slot.kind === 'event').map((slot) => slot.offset);
-    expect(localEventOffsets.length).toBeGreaterThanOrEqual(values.length);
-    expect(eventOutputIndices).toEqual(localEventOffsets.slice(0, values.length)
-      .map((offset) => recorderInputIndex + offset));
+    // Each row's record settles at the next output of the relocated participant's trailing band, in row order.
+    const { trailingBase, trailingCapacity } = recorderArtifact.messageBus!.route.blockLayout!;
+    expect(trailingCapacity).toBeGreaterThanOrEqual(values.length);
+    expect(eventOutputIndices).toEqual(values.map((_value, index) => recorderInputIndex + trailingBase! + index));
 
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);

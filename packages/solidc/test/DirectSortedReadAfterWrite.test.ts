@@ -259,6 +259,13 @@ const SERVED: readonly Served[] = [
     before: nodeAt([ID, J], num(3n)), after: nodeAt([ID, J], num(11n)), right: num(11n), wrong: num(3n),
   },
   {
+    name: 'an array element two writes left, which the entry cache serves',
+    members: ' uint[8] scores; function f(uint id, uint v, uint e) { this.scores[id] = this.scores[id] + v;'
+      + ' this.scores[id] = this.scores[id] + v; require(this.scores[id] == e); }',
+    collection: 'scores', keys: [ID], args: { id: ID, v: num(4n) },
+    before: nodeAt([ID], num(3n)), after: nodeAt([ID], num(11n)), right: num(11n), wrong: num(3n),
+  },
+  {
     name: 'a struct field write, which the entry cache serves',
     members: `${PAIR} mapping(uint => Pair) pairs; function f(uint id, uint v, uint e) { this.pairs[id].a = v;`
       + ' require(this.pairs[id].a == e); }',
@@ -330,6 +337,12 @@ const REFUSED: readonly { readonly shape: string; readonly members: string; read
     message: readOf('totals[id]', 'with a reassigned key'),
   },
   {
+    shape: 'a read of an array element a reassigned name keys',
+    members: ' uint[8] scores; function f(uint id, uint v, uint e) { id = id + 1; this.scores[id] = v;'
+      + ' this.scores[id] = this.scores[id] + v; require(this.scores[id] == e); }',
+    message: readOf('scores[id]', 'with a reassigned key'),
+  },
+  {
     shape: 'a read between two writes of the entry',
     members: ' function f(uint id, bytes4[] kinds, uint e) { this.logs[id] = kinds;'
       + ' require(this.logs[id].length == e); this.logs[id] = kinds; }',
@@ -353,5 +366,14 @@ describe('a direct read of a mapping entry after a write the body does not keep'
   it('leaves the framed convention to its own refusal', () => {
     expect(() => compileString(`${PRAGMA} contract Refused {${LOGS}${REFUSED[0].members} }`,
       { composition: 'framed' })).toThrow('is not supported on the framed convention');
+  });
+});
+
+describe('the entry cache beside a local named like a collection', () => {
+  it('leaves the local array its own element writes', () => {
+    const artifact = compileString(`${PRAGMA} contract Shadowed { uint[8] scores; function f(int i, int e) {`
+      + ' int[] scores = new int[](4); scores[i] = 1; scores[i] = scores[i] + 1; require(scores[i] == e); }'
+      + ' function g(uint id, uint v) { this.scores[id] = v; require(true); } }', { messageBus: false });
+    expect(artifact.abi.find((entry) => entry.name === 'f')?.entryAccesses ?? []).toEqual([]);
   });
 });

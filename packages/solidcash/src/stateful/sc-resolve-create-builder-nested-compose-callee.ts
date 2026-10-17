@@ -88,6 +88,56 @@ function containsReturningExpression(value: unknown, seen = new Set<object>()): 
   ));
 }
 
+/** Counter names of compiler `loopIndex` sources nested anywhere in a published callsite. */
+function collectLoopCounters(value: unknown, seen = new Set<object>(), out = new Set<string>()): Set<string> {
+  if (!value || typeof value !== 'object' || seen.has(value as object)) return out;
+  seen.add(value as object);
+  const node = value as { kind?: string; source?: { kind?: string; counterName?: string } };
+  if (node.kind === 'source' && node.source?.kind === 'loopIndex' && node.source.counterName) {
+    out.add(node.source.counterName);
+  }
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    if (Array.isArray(child)) {
+      for (const item of child) collectLoopCounters(item, seen, out);
+    } else {
+      collectLoopCounters(child, seen, out);
+    }
+  }
+  return out;
+}
+
+/**
+ * A delegate-compose `loop` callsite is zero-trip when the STATE array its loop iterates is empty at build
+ * time. Two published shapes: the array-element callsite itself carries `loopArrayVar`, and a loop-nested
+ * sibling (no `loopArrayVar`, no `iterationDomain`) shares the loop counter with that array-element sibling.
+ * In both cases no row executes and no callee exists to resolve. Mirrors the direct-path
+ * `zeroTripSharedArrayLoop` filter in `sc-expand-resolve-create-builder-external-calls.ts`.
+ */
+export function isZeroTripStateArrayLoop(
+  call: ExternalCallAbi,
+  published: readonly ExternalCallAbi[],
+  state: Record<string, unknown> | undefined,
+): boolean {
+  if (call.occurrence !== 'loop' || call.iterationDomain !== undefined || !state) return false;
+  if (call.loopArrayVar !== undefined) {
+    const array = state[call.loopArrayVar];
+    return Array.isArray(array) && array.length === 0;
+  }
+  const counters = collectLoopCounters(call);
+  if (counters.size === 0) return false;
+  const arrays = new Set<string>();
+  for (const other of published) {
+    if (!other.loopArrayVar) continue;
+    const shared = collectLoopCounters(other);
+    if ([...counters].some((name) => shared.has(name))) arrays.add(other.loopArrayVar);
+  }
+  if (arrays.size !== 1) return false;
+  const arrayName = [...arrays][0];
+  if (arrayName === undefined) return false;
+  const array = state[arrayName];
+  return Array.isArray(array) && array.length === 0;
+}
+
 /**
  * Resolve one nested-compose callsite's inactive-array skip, target contract,
  * and argument vectors (including legacy JobEvent wire adapt).
@@ -127,6 +177,14 @@ export async function resolveCreateBuilderNestedComposeCallee(
   const inactiveArrayIteration = nestedSources?.some((source) =>
     usesEmptyArrayElement(source, delegateVisibleArgs));
   if (inactiveArrayIteration) return { skip: true };
+
+  // A `loopArrayVar` callsite iterates a STATE array named by the compiler, and a loop-nested sibling shares
+  // its counter with that array-element sibling. When that state array is empty at build time the loop is
+  // zero-trip and reaches no external call, so no callee exists to resolve. This is the MasterChef.add shape:
+  // `add` inlines `massUpdatePools()` over `poolInfo` before `poolInfo.push`, so the published IERC20.balanceOf
+  // loop callsite (and the SushiToken.mint callsites that share its counter) have no row yet. The existing
+  // `usesEmptyArrayElement` guard only inspects function-argument arrays; this handles the state-array domain.
+  if (isZeroTripStateArrayLoop(nested, publishedNestedExternalCalls, onChainState.state)) return { skip: true };
 
   const resolvedAddress = nested.addressSource
     ? host.resolveExternalArgs(

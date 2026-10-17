@@ -54,7 +54,7 @@ import {
   AssemblyStatementNode,
   type ExternalCallExpression,
 } from '../ast/AST.js';
-import { NullaryOperator } from '../ast/Operator.js';
+import { NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import {
   MappingType, ArrayType, StructType, type Type, PrimitiveType, isChunkableValueType,
 } from '@solidcash/utils';
@@ -83,6 +83,22 @@ function reaches(root: Node, test: (node: Node) => boolean): boolean {
     if (Array.isArray(child) && child.some((item) => item instanceof Node && reaches(item, test))) return true;
   }
   return false;
+}
+
+/** The names a function binds: its parameters, named returns, and every local, tuple and iteration variable. */
+function declaredNames(fn: FunctionDefinitionNode): Set<string> {
+  const names = new Set([...fn.parameters.map((parameter) => parameter.name), ...fn.returnNames]);
+  reaches(fn.body, (node) => {
+    if (node instanceof VariableDefinitionNode) names.add(node.name);
+    else if (node instanceof TupleAssignmentNode) {
+      for (const element of node.elements) if (!element.skip && !element.existing && element.name) names.add(element.name);
+    } else if (node instanceof CollectionIterationNode) {
+      if (node.keyName !== undefined) names.add(node.keyName);
+      if (node.valueName !== undefined) names.add(node.valueName);
+    }
+    return false;
+  });
+  return names;
 }
 
 /**
@@ -193,6 +209,10 @@ const PURE_KEY_BUILTINS = new Set([
   'toPaddedBytes', 'intToString', 'stringToInt',
 ]);
 const READ_ONLY_GUARD_BUILTINS = new Set(['checkSig', 'checkMultiSig', 'checkDataSig']);
+/** Unary operators a value guard applies without reading the transaction. */
+const PURE_GUARD_OPERATORS: ReadonlySet<UnaryOperator> = new Set([
+  UnaryOperator.NOT, UnaryOperator.NEGATE, UnaryOperator.INVERT, UnaryOperator.SIZE,
+]);
 
 function literalCanon(k: LiteralNode): string {
   const value = k.value instanceof Uint8Array ? [...k.value].join(',') : String(k.value);
@@ -677,6 +697,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           && !(col.innermostValueType instanceof StructType)) {
           this.scalarMappings.set(col.name, { valueType: col.innermostValueType, depth: col.depth });
         }
+      } else if (col.sorted && !(col.innermostValueType instanceof StructType)) {
+        // An array collection is a `mapping(int => T)` with array syntax on the same vmap backend (DS-5).
+        this.scalarMappings.set(col.name, { valueType: col.innermostValueType, depth: col.depth });
       }
     }
     if (this.arrayMappings.size === 0 && this.scalarMappings.size === 0 && this.structMappings.size === 0) return node;
@@ -743,12 +766,16 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     // The kernel's pre-write key recipes; a framed body plans its keys from its own frame and takes none.
     if (!this.callsCloseSegments) this.publishStraightLineMappingKeyValues(fn);
     const composed = this.composedMappings(fn, constructor);
+    // A collection is no symbol, so a local may take its name, and the bare `x[i]` this pass sees is then the local's.
+    const shadowed = declaredNames(fn);
     const selected = this.collectCacheableEntries(fn.body).filter((e) => !composed.has(e.mapping)
+      && !shadowed.has(e.mapping)
       && !(this.routeSnapshotKeysOnly
       && e.keys.length === 1
       && !e.keys.some((key) => key.kind === 'expression'
         || (key.kind === 'id' && key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)))
-      && !e.inLoop));
+      && !e.inLoop
+      && (constructor || !this.entryReadGuardedChunkableWrite(fn, e))));
     // Under the framed composition, which top-level statements make a call another contract's code runs in. A call
     // of a variable is a call through a pointer, which may lower to one another contract runs.
     const variables = new Set([...this.stateVariableNames, ...fn.parameters.map((parameter) => parameter.name)]);
@@ -1186,6 +1213,51 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       }
       if (preWriteCollections.length > 0) reader.preWriteMappingCollections = preWriteCollections;
     }
+  }
+
+  /**
+   * A chunkable entry an entry point writes once, as the only statement of a top-level single-arm branch whose guard
+   * reads that entry and otherwise only stable arguments and literals: `if (m[k].length > 1) { m[k] = m[k] + x; }`.
+   * Cached before route synthesis, the route reads the entry once, at its authenticated key argument, and the flush
+   * runs on a bit computed from that read alone. A guard over any other read keeps the raw write, which admission
+   * refuses.
+   */
+  private entryReadGuardedChunkableWrite(fn: FunctionDefinitionNode, e: CacheableEntry): boolean {
+    const [key] = e.keys;
+    if (this.callsCloseSegments || !fn.isEntryPoint || e.inLoop || e.mutationCount !== 1
+      || e.fromModifier !== undefined || e.keys.length !== 1 || key?.kind !== 'id'
+      || this.scalarMappings.get(e.mapping)?.depth !== 1 || !isChunkableValueType(e.valueType)) return false;
+    const stable = stableKernelArgumentIndices(fn);
+    const argument = (name: string): boolean => fn.parameters[stable.get(name) ?? -1]?.name === name;
+    const variables = new Set([...this.stateVariableNames, ...declaredNames(fn)]);
+    if (!argument(key.name) || reaches(fn.body, (node) => node instanceof ReturnNode || mayCall(node, variables))) {
+      return false;
+    }
+    const entry = (name: string, keys: readonly Node[]): boolean => name === e.mapping && keys.length === 1
+      && keyNodeMatches(keys[0], key);
+    const write = (node: Node): boolean => (node instanceof ArrayAssignNode && entry(node.name, [node.index]))
+      || (node instanceof MappingAssignNode && entry(node.name, node.keys) && node.arrayIndex === undefined
+        && !node.arrayPush && !node.arrayPop);
+    const [branch, ...others] = (fn.body.statements ?? []).filter((statement) => reaches(statement, write));
+    if (others.length > 0 || !(branch instanceof BranchNode) || branch.elseBlock !== undefined) return false;
+    const arm = branch.ifBlock.statements ?? [];
+    if (arm.length !== 1 || !write(arm[0]!)) return false;
+    let readsEntry = false;
+    const replayable = (node: Node): boolean => {
+      if ((node instanceof MappingAccessNode && entry(node.name, node.keys))
+        || (node instanceof ArrayAccessNode && node.array instanceof IdentifierNode
+          && entry(node.array.name, [node.index]))) {
+        readsEntry = true;
+        return true;
+      }
+      if (node instanceof IdentifierNode) return argument(node.name);
+      if (node instanceof UnaryOpNode) return PURE_GUARD_OPERATORS.has(node.operator) && replayable(node.expression);
+      if (node instanceof FieldAccessNode) return node.name === 'length' && replayable(node.expression);
+      if (node instanceof CastNode) return replayable(node.expression);
+      if (node instanceof BinaryOpNode) return replayable(node.left) && replayable(node.right);
+      return node instanceof LiteralNode;
+    };
+    return replayable(branch.condition) && readsEntry;
   }
 
   /** Recover the exact source-argument condition for a scalar cache's final dirty-bit flush. */
@@ -1804,7 +1876,8 @@ export class CloseDirectEntryCaches extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
-    const scalars = new Set(node.collections.filter((col) => col.type instanceof MappingType && col.sorted
+    // An array collection's entries cache as a mapping's do (CacheMappingEntryInLoop.visitContract).
+    const scalars = new Set(node.collections.filter((col) => col.sorted
       && !(col.innermostValueType instanceof ArrayType) && !(col.innermostValueType instanceof StructType)
       && !isChunkableValueType(col.innermostValueType)).map((col) => col.name));
     if (scalars.size === 0) return node;

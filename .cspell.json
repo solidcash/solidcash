@@ -490,6 +490,9 @@
         "bench/solidity-corpus/current.txt",
         "bench/solidity-corpus/progress.txt",
         "bench/solidity-corpus/err.txt",
+        "bench/solidity-corpus/scorecard.txt",
+        "bench/solidity-corpus/semantic-scorecard.txt",
+        "bench/solidity-corpus/semantic-results.json",
         // Generated release fixtures embed upstream source/debug text; spellcheck their maintained source instead.
         "packages/solidcash/test/fixture/mistswap-artifacts/**",
         // Do not spellcheck vendor code

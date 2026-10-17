@@ -274,13 +274,17 @@ export async function mergeStatefulContract(options: MergeOptions): Promise<Merg
     builder.addInput(fundingUtxo, funder);
   }
 
-  // Output 0: surviving master preserved
+  // Output 0: surviving master preserved, carrying every consumed master's value and fungible amount
+  // (audit MERGE-1: the covenant requires the survivor to hold the summed totals).
+  const consumedSatoshis = consumedMasterUtxos.reduce((sum, u) => sum + u.satoshis, 0n);
+  const consumedFt = consumedMasterUtxos.reduce((sum, u) => sum + (u.token?.amount ?? 0n), 0n);
+  const survivorFt = masterUtxo.token?.amount ?? 0n;
   builder.addOutput({
     to: contract.inner.tokenAddress,
-    amount: masterUtxo.satoshis,
+    amount: masterUtxo.satoshis + consumedSatoshis,
     token: {
       category: categoryId,
-      amount: 0n,
+      amount: survivorFt + consumedFt,
       nft: { capability: 'minting', commitment: masterUtxo.token?.nft?.commitment ?? '' },
     },
   });
@@ -289,9 +293,16 @@ export async function mergeStatefulContract(options: MergeOptions): Promise<Merg
   // Add a placeholder change output before estimating so the fee accounts for it.
   builder.addOutput({ to: changeAddress, amount: 1000n }); // placeholder
   const actualMergeFee = options.fee ?? await computeFeeFromBuilder(builder);
-  const consumedSatoshis = consumedMasterUtxos.reduce((sum, u) => sum + u.satoshis, 0n);
   const totalFunding = fundingUtxos.reduce((sum, u) => sum + u.satoshis, 0n);
-  const changeAmount = consumedSatoshis + totalFunding - actualMergeFee;
+  const changeAmount = totalFunding - actualMergeFee;
+  if (changeAmount < 0n) {
+    builder.outputs.pop(); // remove placeholder
+    // The consumed masters' satoshis are pinned to the survivor, so only the funding inputs can pay the fee.
+    throw new Error(
+      `Insufficient funding for merge: need ${actualMergeFee} sats for fee `
+      + `but only have ${totalFunding} sats from funding UTXOs.`,
+    );
+  }
   if (changeAmount > 0n) {
     builder.outputs[builder.outputs.length - 1] = {
       ...builder.outputs[builder.outputs.length - 1], amount: changeAmount,

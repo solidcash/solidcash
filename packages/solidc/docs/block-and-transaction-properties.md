@@ -2,10 +2,11 @@
 
 Solidity's "Block and Transaction Properties" - the `block.*` and `tx.*` globals - mapped onto the BCH UTXO
 substrate. The transaction-local ones (`tx.gasprice`, `block.prevrandao`) and the gas/blob shims are pure
-introspection or constants; the block-level values that have no VM source are served by a **per-contract,
-master-bound oracle** (the bulk of this document).
+introspection or constants; the block-level values that have no VM source are served by **one shared
+block-info oracle covenant** (sections 3-8), and `blockhash(n)` by **one covenant per master category**
+(section 11).
 
-Status: **IMPLEMENTED (compiler + SDK e2e, green).**
+Status: **IMPLEMENTED (compiler + SDK e2e).**
 - `block.chainid` - baked single-byte network constant.
 - Oracle reads `block.{number,timestamp,difficulty,size,totalFees,basefee,coinbase}`; `block.blobbasefee`
   aliases `block.basefee` (no EIP-4844 blobs on BCH; compiler warns). `block.gaslimit` + `gasleft()` are
@@ -13,47 +14,27 @@ Status: **IMPLEMENTED (compiler + SDK e2e, green).**
   shim (`abs(int(sha256(input[0] prevout txid)))`, no oracle; grindable; compiler warns).
 - `tx.gasprice` - the current transaction's realized fee rate, `1000*(sum in - sum out)/tx_size` sat/KB,
   reconstructed from introspection (no oracle; tx_size estimated since there is no `OP_TXSIZE`). See s12.
-- Owner-update path: an immutable baked owner key (`__blockOracleOwner`) + an injected
-  `__updateBlockOracle(sig, ...fields)` gated by the owner signature and the freshness/anti-over-reporting
-  bound `require(tx.time >= number)`, with `number < 500,000,000` so a time-type nLockTime cannot satisfy it,
-  and the non-rewind bounds `number >= block.number`, `timestamp >= block.timestamp` (no replay of an old window).
+- Owner-update path: a signed spend of the oracle covenant itself (`utils/block-oracle.ts`), never a function
+  of the reader. The owner is the public-key hash at the front of the commitment; a height update and a
+  timestamp update are separate spends, each CLTV-bound and non-rewinding (sections 4-5).
 - Off-chain keeper: `packages/solidcash/src/oracle/blockOracleUpdater.ts` (Fulcrum
   `blockchain.headers.subscribe` + a single BCHN `getblock` verbosity-2 call: coinbase inline, fees =
-  `sum(coinbase outputs) - subsidy(height)`; signed `__updateBlockOracle` when the chain is ahead).
-- `blobhash(i)` -> `bytes32(0)` (no BCH blobs). `blockhash(n)`: **read codegen + hardened `(n->hash)`
-  covenant + keeper minting implemented** (self-pin + self-preserving recreate + CLTV `tx.time >= n+256`
-  wipe; `buildBlockhashOracleCovenantScript` / `blockhashOracleLockingBytecode` / `buildBlockhashCommitment`
-  in utils/state.ts; `BlockOracleUpdater.mintBlockhashPair` / `sweepBlockhashPair`). **Full lifecycle e2e
-  green:** the keeper mints `addr(n)` from the `C_oracle` master, a consumer reads it via `blockhash(n)`,
-  and the keeper sweeps `addr(n-256)` when it ages out (covenant wipe at `n+256`; rejected before). The
-  compiler stamps `artifact.usesBlockhash` when `blockhash()` is referenced, so the keeper auto-maintains
-  the oracle. **Auto-injection is wired:** the compiler tags `abi.blockhashReads` (the param feeding `n`)
-  and `TransactionBuilder.send()` reads the call arg, resolves `addr(n)`, and co-spends the `(n->hash)`
-  UTXO + self-preserving recreate automatically - `blockhash(n)` needs no manual wiring (the
-  `resolveBlockhashCoSpend` helper remains for computed/multiple `n`). Absent reads **error by design**
-  (not EVM's `bytes32(0)`): on BCH the tx-builder controls inputs, so returning `0` when the oracle is not
-  co-spent would let a malicious builder force `blockhash(n) == 0` for an in-window block; erroring keeps a
-  contract from ever seeing a forged `0` (s11.2). **Composition-safe slot (done):** the reader no longer
-  assumes the last input (wrong under cross-contract composition - the last input belongs to whoever the
-  builder appended last). The compiler injects a hidden `__internal__blockhashInputIndex` param and reads
-  `input[that]`; the SDK fills it by locating the `C_oracle` co-spend, so the UTXO may sit at any index. The
-  VM re-verifies category + `commitment.n`, so a wrong index just fails. **Multiple `n` (done):** each
-  reader resolves its own co-spend by `commitment.n`, and `addRequiredBlockhashCoSpends` auto-injects every
-  distinct `n`; coexists with a keccak side-car (the reader uses its index param, the keccak loader the last
-  input). **Stateful readers (done):** a stateful function reads `blockhash(n)` via a `blockhashOracle`
-  block-layout slot - the co-spend rides the slot, the index param is filled deterministically (master input
-  index + slot offset), the auto-derivation probes co-spend it too, and the SDK auto-sets the locktime so
-  the CLTV passes in both the probe and the final tx.
+  `sum(coinbase outputs) - subsidy(height)`). On a new tip it pushes a height update, then a timestamp update
+  at `min(header time, MTP - 1)`.
+- `blobhash(i)` -> `bytes32(0)` (no BCH blobs). `blockhash(n)`: one `(n->hash)` covenant per master category
+  with `n` in the commitment, keeper mint/sweep, co-spent automatically from the call args or the probe trace
+  (section 11).
 
-Implementation notes: each referenced field is desugared (`SynthesizeBlockOracle` pre-semantic transform)
-to a read of an injected register of the contract's own state - `uint32` for the numeric fields, `address`
-for the variable-length `coinbase` (inline, not chunked) - reusing the existing state-var read + data-NFT
-machinery; `basefee` lowers to `Floor(1000 * __block_totalFees / __block_size)`. Using block.* injects the
-owner key + update function and makes the contract stateful, so reads ride the master spend (isolation/
-master-bind) and only the owner can refresh. Registers use the framed pushdata state encoding (not the
-fixed-offset 128-byte layout sketched below) - functionally equivalent, reuses tested code. Under
-`evmCompat`, `block.timestamp` keeps the native `tx.locktime` mapping instead of the oracle.
-Tests: `packages/solidcash/test/e2e/BlockOracle.test.ts` (chainid, reads, owner-update, keeper).
+Implementation notes: `SynthesizeBlockOracle` injects no state. A `block.*` read stays a nullary (`basefee`
+lowers to `Floor(1000 * totalFees / size)`) and marks its function `usesBlockOracle`, which gets a hidden
+`__internal__blockOracleInputIndex` (a stateful function also gets a `blockInfoOracle` block-layout slot).
+Codegen picks that input, checks its locking bytecode against a 35-byte lock sentinel and slices the field out
+of its commitment, so a reader stays stateless unless something else makes it stateful. The artifact publishes
+`usesBlockOracle` + `blockOracleLockSlots`; the deployment writes the real oracle lock over the sentinel (the
+`blockOracleLock` contract option, else the provider's). `block.timestamp` reads the oracle in every mode,
+`evmCompat` included. Tests: `packages/solidcash/test/e2e/BlockOracle.test.ts` (chainid, reads, owner update,
+keeper), `AuditCrypto4KeeperAuthority.test.ts` / `AuditCrypto5OracleRewind.test.ts` (update bounds),
+`packages/solidc/test/BlockOracleCommitment.test.ts` (commitment, covenant paths, lock pin).
 
 This consolidates the design discussion for exposing Solidity-style block and transaction properties
 (`block.*`, `tx.*`) in SolidCash on the BCH UTXO substrate. The transaction-local properties are covered in
@@ -105,74 +86,67 @@ v1 picks **category-trust**: the oracle data lives on-chain in an NFT commitment
 trust is "it came from the oracle", not "someone signed it". The cost is bounded concurrency, accepted
 for v1 and lifted later by split/merge.
 
-## 3. The model: a per-contract, master-bound oracle register
+## 3. The model: one raw oracle covenant
 
-The oracle is **not a shared global UTXO**. It is a register of the *consuming contract's own state*:
+The block-info oracle is raw P2SH32 bytecode (`buildBlockOracleCovenantScript` in `utils/block-oracle.ts`),
+not a stateful contract and not part of any reader's state:
 
-- **Same category as the contract's master** -> the register inherits the contract's self-pin; there is
-  no separate oracle category, address, or trust surface. `block.*` data is part of `this` state.
-- **The read path MUST require the contract's master to be co-spent** -> only the master-holder can
-  spend the register. External parties (no master) cannot include it, so there is no shared-resource
-  competition and no griefing. This is the **isolation** mechanism (same-category alone does not isolate;
-  the register UTXO would otherwise be co-spendable by anyone who satisfies a permissionless read path).
+- **One mutable NFT is the whole record.** Its commitment holds the owner's public-key hash and the block
+  fields (section 7). The category is baked into the covenant, so the lock identifies the oracle token; the
+  owner is not, so one bytecode serves every operator. The genesis must mint exactly one mutable NFT of that
+  category and no minting NFT, because readers pin only the lock.
+- **Reads co-spend it.** A reader spends the oracle on the read path (flag 0), which recreates bytecode,
+  category and commitment unchanged, with at least its value, at the same output index, and slices what it
+  needs. No master, no register, no operands: the SDK places the input and fills
+  `__internal__blockOracleInputIndex`.
+- **Every reader of a deployment shares it.** Reads serialize on the one UTXO (section 9), the price of a
+  value that is on-chain and unique rather than signed and replicable (section 2.1).
 
-### 3.1 Why this is cheap: the piggyback
+### 3.1 Read lowering (0-param)
 
-A state-changing function **already spends the master**. Co-spending a master-bound oracle register in
-that same tx adds **zero new contention** - the master is the only lock and it is already held. So
-`block.*` *inside a state transition* is free, and the global 1/block lock of a shared oracle is gone.
+`block.number` (etc.) lowers to: pick `input[__internal__blockOracleInputIndex]`, `OP_UTXOBYTECODE` equal to
+the pinned oracle lock (the 35-byte sentinel the deployment overwrites), `OP_UTXOTOKENCOMMITMENT`, split out
+the field, `OP_BIN2NUM` (`coinbase` is a length-prefixed slice instead). The SDK co-spends the oracle in
+`TransactionBuilder.addRequiredBlockOracleCoSpends` (stateless readers), at the `blockInfoOracle` block-layout
+slot (`StatefulContract`) and as a recovery input of the master (framed `callFramedEntry`).
 
-Mental model: the oracle register is just a **distinguished data-NFT register** of the contract -
-**owner-writable, logic-read-only**. Normal registers are written by contract logic; this one is written
-by the owner's updater (section 4) and only *read* by `block.*`.
+## 4. Refresh: the owner's signed update
 
-### 3.2 Read lowering (0-param)
+The update path (flag 1, unlocking `<pubkey> <sig> <newCommitment> 1`) requires `hash160(pubkey)` to equal the
+owner hash already in the commitment, the new commitment to keep that same hash, a valid signature, and the
+output to carry the new commitment at the same lock and category, with at least the oracle's value. nLocktime is
+a height or a time, so one update anchors one field to the chain and keeps the other:
 
-`block.number` (etc.) lowers to: master co-spent (already true in a state transition), then
-`OP_UTXOTOKENCOMMITMENT(oracleRegisterInput)` + slice the field + recreate the register read-only
-(byte-identical). No operands. The artifact carries only a **hint** (the register's nftIndex / role tag);
-the SDK auto-includes the register as a co-spent input + read-only output (the `addRequiredSidecars`
-path).
+- **height-type nLockTime:** `number` is below 500,000,000, does not rewind, and `tx.time >= number`;
+  `timestamp` is unchanged.
+- **time-type nLockTime:** `timestamp` does not rewind and `tx.time >= timestamp`, which is final only below
+  the median time past; `number` is unchanged.
 
-> **Caveat - block.* is coupled to a master spend.** Free inside state-changing functions; a *pure-view*
-> use (reads block.*, writes no state) would be forced to spend the master, serializing it with the
-> contract's writes. For contracts that touch block.* only inside transitions this is a non-issue.
-
-## 4. Refresh: owner duty (v1)
-
-The register is category C (the contract's own, mint-once), so freshness is the **deployer/owner's
-implied duty**:
-
-- The register covenant has an **owner-authorized update path** (owner pubkey baked at genesis). The
-  owner runs an off-chain updater that spends the register (owner sig), writes current tip data into the
-  commitment, and recreates it. Mutating an existing register needs **no minting baton**, only the
-  covenant-authorized path.
-- The update path is owner-key-gated and does **not** require the master (the owner refreshes the oracle
-  independently of contract state). The **read** path requires the master (section 3). Both spend the
-  single register UTXO, so for one contract owner-update and reads are naturally sequenced by the owner.
-- The owner is trusted for their own contract's data (lying hurts their own contract). Staleness is the
-  owner's responsibility; it is **not script-enforceable** (section 5).
+The keeper (`BlockOracleUpdater.syncOnce`) pushes a height update when the chain is ahead of `number`, then a
+timestamp update at the last final second, `min(header time, MTP - 1)`, when that is ahead of `timestamp`.
+A coin at the keeper's P2PKH pays each update's fee and takes the change.
+The owner is trusted for the data; staleness is the owner's responsibility and is not script-enforceable
+(section 5). The mock provider mints one oracle owned by `blockOracleOwnerKey`, funds that key's P2PKH, seeds
+the oracle with `setBlockOracleFields`, and writes its own height and time into it when it mines.
 
 ## 5. Hardening (what nLocktime can and cannot do)
 
 `nLocktime` is a one-sided **lower** bound on the including block's height/time. Therefore:
 
-- **Anti-over-reporting (DO emit):** `require(tx.time >= oracleHeight)` (height mode) forces
-  `miningHeight >= nLocktime >= oracleHeight`, so the oracle **cannot claim a height above the real chain
-  tip**. Cheap, meaningful.
-- **Non-rewind (DO emit):** `require(number >= block.number)` and `require(timestamp >= block.timestamp)`
-  stop the owner from moving either register back to replay an old window. Equal values are admitted.
-- **Anti-staleness (NOT possible):** no covenant can prove a register is recent (no upper bound on mining
-  height is readable). Stale data is bounded only by the owner's refresh cadence + the consumer's own
-  incentive to use accurate data.
-- **Adversarial floors MUST stay native.** If a spender *benefits* from a stale value (e.g. sneaking past
-  a deadline with an old `block.number`), the oracle cannot stop them. The compiler SHOULD lower
-  `require(block.number >= K)` / `block.timestamp >= K` to a trustless native `require(tx.time >= K)`,
-  using the oracle register only for non-comparison uses (assignment, arithmetic). This gives 0-param
-  ergonomics *and* keeps deadline checks trustless.
-- **Domain separation / versioning:** prefix the commitment with a 1-byte format version; if an owner
-  datasig is ever stored (audit), sign `H(oracleId || "block" || fields)` so it cannot be replayed in
-  another context.
+- **Anti-over-reporting (enforced):** the CLTV on the anchored field means the oracle cannot claim a height
+  above the real tip, nor a time at or above the median time past.
+- **Non-rewind (enforced):** an update cannot move `number` or `timestamp` back to replay an old window. Equal
+  values are admitted.
+- **Value pin (enforced):** every spend, read or update, recreates the oracle with at least its value, so no
+  spend drains it.
+- **Type confusion (enforced):** `number` must stay below 500,000,000, so a time-type nLockTime cannot stand
+  in for a height, and CLTV refuses an operand of the other locktime type.
+- **Anti-staleness (NOT possible):** no covenant can prove a value is recent (no upper bound on mining
+  height is readable). `block.number` and `block.timestamp` are the owner's last write, and the compiler warns
+  so. A deadline stays open until the owner updates the oracle.
+- **Adversarial floors SHOULD stay native.** If a spender *benefits* from a stale value (e.g. sneaking past
+  a deadline with an old `block.number`), the oracle cannot stop them. A trustless floor is
+  `require(tx.time >= K)`; auto-lowering `block.number/timestamp >= K` to it is still open (section 10).
 
 ## 6. block.* property table
 
@@ -183,13 +157,13 @@ these `uint256` because EVM is 256-bit and wei is 1e-18; on BCH the values are s
 
 | prop | prio | source | type | commitment | value @ 956830 | notes |
 |---|---|---|---|---|---|---|
-| `block.number` | 1 | oracle (+ native floor) | `uint32` | 4 B | 956830 | ~80,000 yrs of headroom; `>= K` lowers to native floor (section 5) |
-| `block.timestamp` | 1 | oracle (+ native floor) | `uint32` | 4 B | 1782384635 | BCH header nTime IS uint32 (to 2106); oracle beats ~1h MTP lag |
+| `block.number` | 1 | oracle | `uint32` | 5 B | 956830 | ~80,000 yrs of headroom; the owner's last height write (section 4) |
+| `block.timestamp` | 1 | oracle | `uint32` | 5 B | 1782384635 | BCH header nTime IS uint32 (to 2106); the owner's last write, below the MTP when written (section 4) |
 | `block.chainid` | 1 (DONE) | **baked constant** | `bytes1` | none | - | one byte `chainId & 0xff`, compared bytewise; no oracle/co-spend |
-| `block.difficulty` | 2 | oracle | `uint32` | 4 B | 0x18026c88 | **raw nBits**; decoded difficulty (453596304365.59) is fractional, so nBits is the honest integer; NOT randomness |
-| `block.coinbase` | 2 | oracle | `address` | 1 + ~25 B | 76a914..88ac | **full locking bytecode** of coinbase output 0 (p2pkh = 25 B here); variable, length-prefixed |
-| `block.size` | 2 | oracle | `uint32` | 4 B | 9075 | block size in bytes; uint32 covers ~4 GB blocks (BCH-native, not a Solidity global) |
-| `block.totalFees` | 2 | oracle | `uint32` | 4 B | 31792 | sum of tx fees in sats; uint32 ceiling 42.9 BCH >> any real block (uint64 if more headroom wanted) |
+| `block.difficulty` | 2 | oracle | `uint32` | 5 B | 0x18026c88 | **raw nBits**; decoded difficulty (453596304365.59) is fractional, so nBits is the honest integer; NOT randomness |
+| `block.coinbase` | 2 | oracle | `address` | 1 + <= 80 B | 76a914..88ac | **full locking bytecode** of coinbase output 0 (p2pkh = 25 B here); variable, length-prefixed |
+| `block.size` | 2 | oracle | `uint32` | 5 B | 9075 | block size in bytes; uint32 covers ~4 GB blocks (BCH-native, not a Solidity global) |
+| `block.totalFees` | 2 | oracle | `uint32` | 5 B | 31792 | sum of tx fees in sats; uint32 ceiling 42.9 BCH >> any real block (uint64 if more headroom wanted) |
 | `block.basefee` | 2 | **derived** | `uint32` | none | 3503 | `Floor(1000 * block.totalFees / block.size)` = sat/KB; computed at read, VM intermediate is unbounded so no overflow |
 | `block.blobbasefee` | 2 | **alias** | `uint32` | none | 3503 | EVM EIP-4844 blob base fee; no BCH analogue. Aliases `block.basefee` (NOT 0, which would zero out / divide-by-zero downstream); the compiler warns it is not a true blob fee |
 
@@ -234,56 +208,45 @@ Notes:
 - `block.size` / `block.totalFees` are **BCH-native extensions** (Solidity has neither); they are encoded
   because `block.basefee` needs them and they are independently useful.
 
-## 7. Commitment layout (128-byte limit, already the SolidCash default)
+## 7. Commitment layout
 
-`commitmentLimit` is 128 (`compiler.ts`), so a register holds the whole payload. Fixed-width sized-int
-fields at fixed offsets, the variable `coinbase` length-prefixed as a tail, optional owner datasig last:
+`utils/block-oracle.ts` (`encodeBlockOracleCommitment`, `blockOracleFieldOffset`):
 
 ```
-version(1) | number(4) | timestamp(4) | [nBits(4) | size(4) | totalFees(4) | coinbaseLen(1) | coinbase(~25)] | [ownerSig(64)]
+ownerPkh(20) | number(5) | timestamp(5) | difficulty(5) | size(5) | totalFees(5) | coinbaseLen(1) | coinbase(<= 80)
 ```
 
-`block.basefee` is derived (not stored); `block.chainid` is baked (not stored). v1 (number + timestamp)
-is 9 bytes; tier-2 fields append behind the version byte without restructuring. Full tier-2 with coinbase
-is ~47 bytes, and even with a 64-byte audit sig the total is ~111 B, under 128.
+Each numeric field is a uint32 as 4 little-endian bytes plus a trailing `0x00`, so `OP_BIN2NUM` reads a
+non-negative script number. `number` and `timestamp` are adjacent, which the covenant's update path relies
+on. `block.basefee` is derived and `block.chainid` is baked, so neither is stored. With a 25-byte p2pkh
+coinbase the commitment is 71 bytes; the 80-byte coinbase cap keeps it within the 128-byte limit.
 
 ## 8. Compiler / SDK integration
 
-- `block.*` is a builtin namespace. Referencing it sets `usesBlockOracle` on the function (mirrors
-  `usedLibraries`), drives the read lowering, and emits an artifact hint (the register role/nftIndex).
-- `block.chainid` lowers to a pushed constant (per `--network`); no register, no co-spend.
-- SDK: when a co-spent contract input uses block.*, auto-include its oracle register as a co-spent input
-  + read-only output (the `addRequiredSidecars` mechanism), and apply the section-5 native floor.
-- Codegen MUST tag the oracle register distinctly (the commitment-preamble nftIndex tag) so a `block.*`
-  read is never confused with a state-register read, and the owner-update path is never confused with a
-  logic write.
+- `SynthesizeBlockOracle` marks a reading function `usesBlockOracle`; SymbolTable adds the hidden
+  `__internal__blockOracleInputIndex` (and the `blockInfoOracle` block-layout slot on a stateful function);
+  codegen emits the read of section 3.1. The artifact carries `usesBlockOracle` on the function and the
+  artifact, and `blockOracleLockSlots`, the offsets of the lock sentinel pushes.
+- `block.chainid` lowers to a pushed constant (per `--network`); no oracle, no co-spend.
+- Deployment: `Contract` writes the oracle lock (the `blockOracleLock` option, else the provider's) over every
+  sentinel slot (`applyBlockOracleLock`); the framed deploy material does the same. Spending a reader that has
+  no lock throws ("no oracle lock was provided").
+- SDK co-spend: section 3.1. The input is spent on the read path and recreated at its own output index; the
+  index argument is the input's position, located by lock.
 
 ## 9. Deferred / future
 
-- **Concurrency fan-out (next major):** lift the single-register 1/block serialization with the
-  **split/merge replicate-policy** - the read-dual of the existing disjoint-partition write policy. Today
-  `ThreadManager.split` partitions data-NFT indices **disjoint** (write concurrency, non-overlap
-  invariant) and divides sats by **sum**. Reads need a third policy: **replicate** a read-only register
-  into every thread (overlap), sound precisely because read-only copies cannot diverge, with merge =
-  `OP_EQUALVERIFY` the copies equal then collapse. The oracle is the all-replicated special case. No
-  change to the `block.*` surface.
-- **Trust-minimized foreign update (docs note, design for forward-compat NOW):** v1's update authority is
-  a single owner key. Structure the register's update authorization as a **pluggable policy** (committed
-  in the register, or an additive covenant branch) so it can grow to
-  `owner-key OR valid-keeper-datasig OR copy-from-shared-canonical-oracle` **without a breaking change**.
-  Goal: an external service (e.g. project-run) can later refresh **any** contract's register
-  permissionlessly, with the *relayer* untrusted and only the *data* required to be authentic -
-  - **relayed keeper datasig:** anyone pushes the update, the covenant verifies a well-known keeper sig
-    over the tip (trust = the signer, relay is permissionless); or
-  - **shared-source copy:** anyone refreshes by co-spending a shared canonical oracle read-only and
-    copying its (category-trusted) data in.
-  Both ride the section-5 anti-over-reporting check. Keeping v1's owner-key path as one policy among these
-  is the only forward-compat requirement.
-- **block.hash / blockhash(n) / blobhash(i):** specced in section 11 (per-pair n->hash oracle), pending
-  implementation. `prevrandao` has no BCH analogue (no randomness beacon); not planned.
-- **Signer decentralization:** if the trust-minimized path adopts datasig, the single key is the seam to
-  a committee / m-of-n later (bake a key-commitment/Merkle root, not a literal key, to keep it
-  non-breaking).
+- **Concurrency fan-out (next major):** lift the single-UTXO serialization with the **split/merge
+  replicate-policy** - the read-dual of the existing disjoint-partition write policy. Reads need a policy that
+  **replicates** a read-only record into every thread (sound because read-only copies cannot diverge), with
+  merge = `OP_EQUALVERIFY` the copies equal then collapse. No change to the `block.*` surface.
+- **Trust-minimized foreign update:** the update authority is one owner key, named by its hash in the
+  commitment, so a new authority policy (a keeper datasig any relayer can push, or a copy from another
+  canonical oracle) is a new covenant beside this one, not a reader change. Both would ride the section-5
+  bounds.
+- **Signer decentralization:** the owner hash is the seam to a committee / m-of-n later (a key commitment
+  instead of a single key's hash).
+- `prevrandao` has no BCH analogue (no randomness beacon); not planned.
 
 ## 10. Decisions
 
@@ -297,17 +260,19 @@ is ~47 bytes, and even with a 64-byte audit sig the total is ~111 B, under 128.
 Still open:
 
 - **Comparison lowering:** auto-lower `block.number/timestamp >= K` to native `tx.time` floors
-  (recommended, section 5) vs strictly everything through the co-spent register.
-- **`block.totalFees` width:** `uint32` (4 B, 42.9 BCH ceiling - minimal viable) vs `uint64` (8 B,
-  bulletproof). Default `uint32`.
+  (recommended, section 5) vs strictly everything through the co-spent oracle (today).
+- **`block.totalFees` width:** `uint32` (42.9 BCH ceiling - minimal viable) vs a wider field, which changes
+  the commitment layout. Default `uint32`.
 
 ## 11. blockhash(n) and blobhash(i)
 
 Status: **blobhash IMPLEMENTED; blockhash IMPLEMENTED (branded oracle + hardened covenant + keeper
-mint/sweep).** `blobhash(i) == bytes32(0)`. `blockhash(n)` rides the master-bound oracle model (section 3):
-its `(n->hash)` register is **branded to the consuming contract's OWN category**, so using `blockhash`
-**forces the contract stateful** (`ContractNode.usesBlockhash` -> `isStateful` + a `stateLayout`; a branded
-oracle needs a master/category to anchor and co-spend). The covenant verifies the co-spent `(n->hash)`
+mint/sweep).** `blobhash(i) == bytes32(0)`. `blockhash(n)` reads **one `(n->hash)` covenant per master
+category** (`buildBlockhashOracleCovenantScript` in `utils/state.ts`): every block of that contract is a
+capability-none NFT of the master's category at the same lock, with `n(4 LE) || hash` in the commitment, so
+every function of the contract co-spends that one lock. Using `blockhash` **forces the contract stateful**
+(`ContractNode.usesBlockhash` -> `isStateful` + a `stateLayout`; the oracle needs a master/category to
+anchor). The reader verifies the co-spent `(n->hash)`
 NFT's category BASE `== the master's` (`emitVerifyCatBaseEqMaster`, via `OP_INPUTINDEX`), NOT a baked
 category, plus `commitment.n == n` + `require(tx.time >= n)`, returning the 32-byte hash. Consequences:
 
@@ -323,7 +288,7 @@ category, plus `commitment.n == n` + `require(tx.time >= n)`, returning the 32-b
   (`blockhashKeeperBatonLockingBytecode(category, keeperPubkey)`, audit CRYPTO-4): a bare baton could stand in
   for the master on the data/entry write and destroy paths, move to any lock, or mint a counterfeit master. A
   covenant spend needs the keeper's signature, co-spends no token input, recreates the baton at output 0 and
-  mints exactly one capability-none `(n->hash)` NFT at `addr(n)` (output 1, `tx.time >= n`).
+  mints exactly one capability-none `(n->hash)` NFT at the category's blockhash lock (output 1, `tx.time >= n`).
 
 The hardened `(n->hash)` covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the
 `artifact.usesBlockhash` marker + `abi.blockhashReads`, and keccak side-car coexistence are in place and
@@ -342,15 +307,16 @@ feature-complete** for stateful readers, including:
   extracts `(inputIndex, n)` at the read's `OP_UTXOTOKENCATEGORY` (stack `[n, idx, idx]`; `idx` in the
   reserved slot range identifies it). Reads resolve strictly in slot order so the probe reaches each computed
   read in turn (`extractBlockhashReadsFromTrace` + `_resolveBlockhashCoSpends` in the SDK). `block.number - K`
-  is just one such expression - its `__block_number` register is co-spent as normal state, so the register and
-  the oracle ride the same tx. `blockhash(block.number)` (K=0, the current block) stays unavailable (no oracle
+  is just one such expression - `block.number` comes from the block-info oracle, which the stateful builder
+  places beside the blockhash slots, so both oracles ride the same tx. `blockhash(block.number)` (K=0, the
+  current block) stays unavailable (no oracle
   pair; EVM returns 0). (Limitation: a function that co-spends other inputs - entries, external-call targets -
   *before* the blockhash read would abort the extraction probe early; blockhash composed with those is future
   work.)
 
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as
-`GlobalFunction`s (the keccak256 path is the template), not nullary register reads.
+`GlobalFunction`s (the keccak256 path is the template), not nullary oracle reads.
 
 ### 11.1 blobhash(uint) -> bytes32: return zero
 
@@ -363,29 +329,26 @@ rejected - it silently changes Solidity semantics.
 ### 11.2 blockhash(uint n) -> bytes32: the per-pair (n -> hash) oracle
 
 The current block's own hash is unavailable on-chain (the block is not yet mined; EVM's
-`blockhash(block.number)` is 0), so there is no current-block register - every real use is historical.
-The hard part is historical `n`, which no single register can hold. Design (category-trust, no datasig):
+`blockhash(block.number)` is 0), so there is no current-block value - every real use is historical.
+The hard part is historical `n`, which no single record can hold. Design (category-trust, no datasig):
 the `(n->hash)` oracle below. A computed `n` (`block.number - K`, arbitrary arithmetic) is resolved at build
 time by the SDK extracting it from the auto-derivation probe trace - the covenant's own on-stack computation,
 single source of truth (s11, "Computed `n` - ANY expression"); the oracle serves the resulting `n`.
 
-**The `(n -> hash)` UTXO.** One per block, under a project-global oracle token category `C_oracle`:
-- **Unique address `addr(n)`** (a deterministic function of `n`) - so the SDK/Fulcrum looks it up by exact
-  scripthash, returning *one* UTXO, no grind-and-filter over a shared address. The contract does **not**
-  recompute `addr(n)`, so the address carries no in-script inline-bytecode-match burden; only the keeper
-  (mint) and SDK (discovery) derive it.
+**The `(n -> hash)` UTXO.** One per block, under the master's category, all at that category's one lock:
+- **One lock per category** (`blockhashOracleLockingBytecode(category)`); `n` is not baked in, so the SDK
+  lists the lock and picks the UTXO whose commitment starts with `n` (`blockhashCommitmentNumber`).
 - **Commitment `(n, hash)`** - this is the contract's on-chain pin: the consumer checks `commitment.n == n`.
-- **Covenant: three paths** - (1) keeper genesis under `C_oracle`; (2) **read = self-preserving recreate**
-  (read-only, self-pins `category == C_oracle`); (3) **wipe** = anyone may consume once
-  `tx.time >= n + 256` (height floor). Bounded 256-deep window (EVM parity), dust recycled on wipe,
-  cleanup permissionless so the set stays bounded even if the keeper stalls.
+- **Covenant: three paths** - (1) the keeper mints through its baton covenant; (2) **read = self-preserving
+  recreate** (self-pins the category, capability none); (3) **wipe** = anyone may consume once
+  `tx.time >= n + 256`, `n` read from the commitment. Bounded 256-deep window (EVM parity), dust recycled on
+  wipe, cleanup permissionless so the set stays bounded even if the keeper stalls.
 
-**The consumer (`blockhash(n)`) is stateless** - an external read of `C_oracle`: co-spend the `(n->hash)`
-UTXO read-only, check `OP_UTXOTOKENCATEGORY(in) == C_oracle` (mint-once = keeper, the trust anchor) +
-`commitment.n == n`, return `hash`. No per-contract register, no merkle proof. Emit
-`require(tx.time >= n)` (no-future bound).
+**The consumer (`blockhash(n)`)** co-spends the `(n->hash)` UTXO read-only, checks that its category base is
+the master's (only the keeper baton of that category mints) and `commitment.n == n`, returns `hash`, and
+emits `require(tx.time >= n)` (no-future bound). No merkle proof.
 
-**Absent reads error, not `bytes32(0)`.** If the SDK finds no live UTXO at `addr(n)` (outside the window
+**Absent reads error, not `bytes32(0)`.** If the SDK finds no live UTXO for `n` at the lock (outside the window
 or unpublished), it errors rather than yielding EVM's `bytes32(0)`. On BCH the tx-builder controls the
 inputs, so a "return `0` when the oracle is not co-spent" rule would let a malicious builder force
 `blockhash(n) == 0` for an **in-window** block by simply omitting the co-spend - a forgeable read EVM does
@@ -393,12 +356,12 @@ not have (there the node supplies the hash). Erroring keeps a contract from ever
 contract that wants the EVM "too old -> 0" branch checks the window itself (`block.number - n` against the
 256 bound) instead of trusting a `0`.
 
-**Why category + commitment, not the address:** unique `addr(n)` is the off-chain *indexer* key;
-`commitment.n` is the on-chain *contract* pin; `C_oracle` (self-pin, mint-once) is the *trust*. They are
-complementary - the unique address costs nothing in-script.
+**Why category + commitment:** `commitment.n` is both the on-chain *contract* pin and the off-chain
+*index* (the SDK filters the lock's UTXOs by it); the master's category (self-pin, baton-minted) is the
+*trust*.
 
-**Keeper (the updater).** On each new tip `n`: mint `addr(n)` carrying `(n, hash)` under `C_oracle`, and
-sweep `addr(n - 256)`. This is `BlockOracleUpdater.maintainBlockhashWindow` (mint via `mintBlockhashPair`,
+**Keeper (the updater).** On each new tip `n`: mint `(n, hash)` at the category's lock, and sweep the record
+of `n - 256`. This is `BlockOracleUpdater.maintainBlockhashWindow` (mint via `mintBlockhashPair`,
 best-effort wipe via `sweepBlockhashPair`), gated on `usesBlockhash(artifact)` and signed by the keeper key.
 Sweeping is a dust-reclaim convenience: the covenant's `tx.time >= n+256` path lets anyone wipe, so the
 window stays bounded even if the keeper stalls.
@@ -412,7 +375,7 @@ warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
 - **Public primitive (recommended):** reads are **permissionless self-serve**; integrity comes from
   self-pin + self-preserve; reads are contention-free because they partition by `n`. No keeper on the read
   path. This is the right model if `blockhash` is a language primitive any contract may call.
-- **Keeper-gated (project-private):** require `C_oracle`'s **master (minting NFT)** co-spent in every read.
+- **Keeper-gated (project-private):** require the keeper's **minting baton** co-spent in every read.
   This excludes alien consumers, but (a) re-creates the single-master **global lock** the per-pair design
   exists to avoid - so it needs **master fan-out** (the deferred split mechanism) to keep throughput - and
   (b) for the gate to actually exclude aliens the master spend must be keeper-signed, putting the keeper on
@@ -435,8 +398,9 @@ warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
 > the base `TransactionBuilder`). That is no longer how it works: `blockhash` now brands its `(n->hash)`
 > oracle to the contract's OWN category, forces the reader stateful, drops the `blockhashOracleCategory`
 > option entirely, and resolves the co-spend through `StatefulContract` at a block-layout slot (see the
-> section 11 status above and section 3). `resolveBlockhashCoSpend` remains only as an internal lookup helper.
-> The historical notes are kept for context.
+> section 11 status above). The per-`n` address `addr(n)` is gone too: every `(n->hash)` NFT of a category sits
+> at that category's one lock. `resolveBlockhashCoSpend` remains only as an internal lookup helper. The
+> historical notes are kept for context.
 
 - Register `blockhash`/`blobhash` as `GlobalFunction`s, signature `(uint) -> bytes32`. `blobhash` -> push
   `bytes32(0)`. `blockhash` -> external read of `C_oracle` (category + `commitment.n` check) + the
@@ -547,9 +511,9 @@ extensions are added on top.
 | `block.coinbase` (address) | **yes** | oracle: coinbase output-0 locking bytecode (`address`) | the full payout locking bytecode |
 | `block.difficulty` (uint) | **yes** | oracle: nBits (uint32) | the **real PoW difficulty** - NOT aliased to `prevrandao` (BCH is PoW; on EVM>=Paris `difficulty` is a deprecated alias for `prevrandao`) |
 | `block.gaslimit` (uint) | **yes** | fixed shim `1000000` (warned) | no gas metering on BCH |
-| `block.number` (uint) | **yes** | oracle register (uint32), owner-updated, freshness-bound | a value, not just a CLTV floor |
+| `block.number` (uint) | **yes** | oracle commitment field (uint32), owner-updated, CLTV-bound | a value, not just a CLTV floor; the owner's last write |
 | `block.prevrandao` (uint) | **yes** | tx-local `abs(int(sha256(input[0] prevout txid)))` (warned) | no beacon/VM randomness; grindable by the builder - not secure (s12-adjacent note in field table) |
-| `block.timestamp` (uint) | **yes** | oracle register (uint32) | under `evmCompat`, maps to native `tx.locktime` instead |
+| `block.timestamp` (uint) | **yes** | oracle commitment field (uint32), owner-updated, CLTV-bound | the owner's last write, below the MTP when written; the same under `evmCompat` |
 | `gasleft() -> uint256` | **yes** | fixed shim `1000000` (warned) | no gas metering |
 | `msg.data` (bytes) | **yes** | the call's argument bytes (calldata) | see docs/call-model.md |
 | `msg.sender` (address) | **yes** | the calling contract's locking bytecode; `tx.origin` for a direct (EOA) call | EVM-parity caller, from the external-call model (`__internal__msgSenderCategory`) |
@@ -571,3 +535,26 @@ are compiler-derived and therefore add no category parameter to the public ABI.
 **Recurring divergences** (all by design): the fee-family values are **sat/KB**, not wei/gas; the gas-family
 values are fixed shims (no metering on BCH); randomness (`prevrandao`) is grindable, not a beacon; `chainid`
 is a single byte; and `difficulty` stays the real PoW difficulty rather than aliasing `prevrandao`.
+
+### SDK oracle configuration and keeper genesis (2026-10-14)
+
+Live Electrum providers accept typed `blockOracleCategory` (32 display-order bytes) and derive the shared
+block-info covenant lock; `NetworkProvider` publishes the optional category and lock, and `ContractOptions`
+publishes an optional per-reader lock override. Reader and updater code need no structural casts.
+
+Direct and framed `StatefulContract.deploy` accept opt-in `blockhashKeeperPublicKey` and
+`blockhashKeeperAmount` (default 10,000 satoshis). Genesis mints one extra empty minting NFT of the consumer's
+category at the keeper baton covenant, after the participant records so existing record coordinates stay fixed.
+The key must be a valid compressed public key and the artifact must publish `usesBlockhash`. The confined
+baton signs every mint and can produce only its one blockhash record, as required by CRYPTO-4.
+
+Local follow-up evidence uses `KernelBlockOracleCallPaths.test.ts`: nested non-bus readers receive the
+root's authenticated shared-oracle input index, a named direct forwarder delegates to an oracle-reading
+implementation, and an all-staticcall composition shares one oracle plus exact neutral pads. Every input
+passes the ordinary VM. Forged oracle records and unequal-value pads fail. Static snapshots exempt only
+canonical token-free neutral pads from lock preservation and still require their complete input value.
+`BlockhashKeeperDeployment.test.ts` proves direct and framed baton genesis; its direct test also mints
+through the keeper, settles the consumer read, and refuses a mutable record in place of the immutable
+blockhash record under the ordinary VM. Framed genesis runs with the existing local composition profile.
+`LiveBlockOracleConfiguration.test.ts` checks typed category configuration and its derived covenant lock.
+These tests provide local evidence only; no BCHN or live-network checks were run for this follow-up.

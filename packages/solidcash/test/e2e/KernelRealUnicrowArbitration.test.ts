@@ -51,9 +51,9 @@ describe.skipIf(contractsRoot === undefined)('real Unicrow kernel arbitration ca
       .find((entry) => entry.name === functionName)?.externalCalls?.map((call) => call.functionName);
     expect(calls('UnicrowArbitrator', 'arbitrate')).toEqual(['getEscrow', 'settle', 'claim']);
     expect(calls('UnicrowClaim', 'claim')).toContain('getArbitratorData');
-    expect(artifacts.UnicrowArbitrator.messageBus?.handlers.find((h) => h.name === 'arbitrate'))
+    expect(artifactOf('UnicrowArbitrator').messageBus?.handlers.find((h) => h.name === 'arbitrate'))
       .toMatchObject({ eligible: true });
-    expect(artifacts.UnicrowClaim.messageBus?.handlers.find((h) => h.name === 'claim'))
+    expect(artifactOf('UnicrowClaim').messageBus?.handlers.find((h) => h.name === 'claim'))
       .toMatchObject({ eligible: true });
   });
 

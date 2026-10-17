@@ -618,14 +618,19 @@ describe('large-contract state-local splitting', () => {
     const baselineSlots = slots(compileString(source, options).stateLayout);
     const bundle = compileStringSplit(source, options);
 
-    // Inheritance/root rewriting can visit these reads in a different order. Synthetic register placement is
-    // canonical, so the physical layout remains identical in the baseline, root, and every delegate facet.
-    expect(baselineSlots).toContain('__block_number');
-    expect(baselineSlots).toContain('__block_timestamp');
-    expect(baselineSlots.indexOf('__block_number')).toBeLessThan(baselineSlots.indexOf('__block_timestamp'));
+    // A block.* read slices the shared oracle covenant through its lock pin and adds no register, so the
+    // physical layout is the source's own in the baseline, root, and every delegate facet.
+    expect(baselineSlots).toContain('own');
+    expect(baselineSlots.filter((name) => name.startsWith('__block_'))).toEqual([]);
     expect(slots(bundle.root.stateLayout)).toEqual(baselineSlots);
     for (const info of bundle.manifest.facets) {
       expect(slots(bundle.facets[info.name].stateLayout), `${info.name} layout`).toEqual(baselineSlots);
+    }
+    // Each shard that runs a read publishes the pin its deployment fills.
+    const readers = [bundle.root, ...Object.values(bundle.facets)].filter((shard) => shard.usesBlockOracle === true);
+    expect(readers.length).toBeGreaterThan(0);
+    for (const shard of readers) {
+      expect(shard.blockOracleLockSlots?.length, `${shard.contractName} pin`).toBeGreaterThan(0);
     }
   });
 
@@ -917,7 +922,7 @@ contract Mixed() {
     expect(setRoute!.target).not.toBe('root');
   });
 
-  it('keeps compiler-generated maintenance entry points on the root', () => {
+  it('synthesizes no oracle maintenance entry point, and the shard running the read pins the oracle', () => {
     const bundle = compileStringSplit(`
       contract OracleUser() {
         uint seen;
@@ -925,7 +930,13 @@ contract Mixed() {
         function reset() public { this.seen = 0; require(true); }
       }
     `, { forceSplit: true });
-    expect(bundle.manifest.routes.find((route) => route.function === '__updateBlockOracle')?.target).toBe('root');
+    // The oracle owner updates the shared covenant, so no shard carries an updater entry of its own.
+    expect(bundle.manifest.routes.map((route) => route.function)).not.toContain('__updateBlockOracle');
+    const target = bundle.manifest.routes.find((route) => route.function === 'record')?.target;
+    expect(target).toBeDefined();
+    const shard = target === 'root' ? bundle.root : bundle.facets[target!]!;
+    expect(shard.usesBlockOracle).toBe(true);
+    expect(shard.blockOracleLockSlots?.length).toBeGreaterThan(0);
   });
 
   it('does not compile the logical constructor into inherited-function facets', () => {

@@ -8,9 +8,10 @@
  * minted from a genesis-eligible UTXO the SDK reserves outside this module.
  */
 
-import { TokenCapability, type Artifact } from '@solidcash/utils';
+import { TokenCapability, bytesEqual, type Artifact, type FunctionSplitBundle } from '@solidcash/utils';
 import { framedValidator } from 'solidc/runtime';
 import { FACET_SATOSHIS } from '../composer/draft.js';
+import { prepareFunctionSplitDeployment } from './entry-pool.js';
 import { deployMaster, type DeployedMaster } from './material.js';
 
 /** How many of each pool a deployment creates. */
@@ -51,13 +52,17 @@ export function resolveMasterPoolSize(override: Partial<MasterPoolSize> = {}): M
 
 /**
  * The satoshis a genesis spends on the pools alone, at the output amount a deployment mints them with: every master
- * and validator UTXO, plus every validator facet the validator program binds. The records, events and chunks a
+ * and validator UTXO, plus every validator facet the validator program binds. A function-split genesis mints one
+ * master pool per entry, so `entryCount` multiplies the master outputs. The records, events and chunks a
  * constructor's frame adds are sized separately; a funding selection adds this floor so the pool's outputs are
  * funded and a larger pool is not quietly truncated.
  */
-export function poolGenesisSatoshis(size: MasterPoolSize, outputAmount = 1200n): bigint {
+export function poolGenesisSatoshis(
+  size: MasterPoolSize, outputAmount = 1200n, entryCount = 1,
+): bigint {
+  const entries = BigInt(entryCount);
   const facets = BigInt(framedValidator.buildValidatorFacets().length);
-  return BigInt(size.masters + size.validators) * outputAmount + facets * FACET_SATOSHIS;
+  return (BigInt(size.masters) * entries + BigInt(size.validators)) * outputAmount + facets * FACET_SATOSHIS;
 }
 
 /** What a deployment needs to derive the pools. */
@@ -83,6 +88,8 @@ export class MasterPoolDeployment {
     private readonly material: DeployedMaster,
     private readonly category: Uint8Array,
     private readonly size: MasterPoolSize,
+    /** One filled master per entry, when this deployment is a `split: 'func'` bundle. */
+    private readonly entries?: readonly DeployedMaster[],
   ) {}
 
   /** Derives the pools from an artifact, a category and the validator program. */
@@ -96,6 +103,52 @@ export class MasterPoolDeployment {
     return new MasterPoolDeployment(material, Uint8Array.from(options.category), options.size);
   }
 
+  /**
+   * The pools of a `split: 'func'` bundle.
+   *
+   * Genesis mints `size.masters` minting NFTs at each entry's filled lock, commitment empty, and one validator
+   * pool at the single `addrV(category)` every shard presents. The locks differ per entry.
+   * `deployFramedStatefulContract` broadcasts that transaction when its options carry this bundle.
+   */
+  public static createFunctionSplit(options: {
+    readonly bundle: FunctionSplitBundle;
+    readonly category: Uint8Array;
+    readonly validatorProgram: Uint8Array;
+    readonly size: MasterPoolSize;
+  }): MasterPoolDeployment {
+    for (const count of [options.size.masters, options.size.validators]) {
+      if (!Number.isInteger(count) || count < 1) {
+        throw new Error(`a pool holds at least one UTXO: got ${count}`);
+      }
+    }
+    if (options.bundle.shards.length === 0) {
+      throw new Error(`split 'func' on '${options.bundle.logicalContractName}' has no entry to fund`);
+    }
+    const prepared = prepareFunctionSplitDeployment(
+      options.bundle, options.category, options.validatorProgram,
+    );
+    const entries = options.bundle.shards.map((shard) => {
+      const artifact = prepared.shardArtifacts.get(shard.selector.toLowerCase()) ?? shard.artifact;
+      return deployMaster(artifact, options.category, options.validatorProgram);
+    });
+    if (options.bundle.internalCuts.length > 0) {
+      for (const cut of options.bundle.internalCuts) {
+        const artifact = prepared.cutArtifacts.get(cut.name);
+        if (artifact === undefined) {
+          throw new Error(`function split did not deploy helper "${cut.name}"`);
+        }
+        entries.push(deployMaster(artifact, options.category, options.validatorProgram));
+      }
+    }
+    const address = entries[0]!.address;
+    for (const entry of entries) {
+      if (!bytesEqual(entry.address, address)) {
+        throw new Error('function split shards do not share one addrV');
+      }
+    }
+    return new MasterPoolDeployment(entries[0]!, Uint8Array.from(options.category), options.size, entries);
+  }
+
   /** The contract's address, `addrV(category)`: the 35-byte locking bytecode it presents. */
   public getAddress(): Uint8Array {
     return this.material.address;
@@ -104,6 +157,16 @@ export class MasterPoolDeployment {
   /** Where the master UTXOs sit: the P2SH32 of the filled master program. */
   public getMasterLockingBytecode(): Uint8Array {
     return this.material.lockingBytecode;
+  }
+
+  /**
+   * The filled lock of each entry, in shard order, then each internal helper when the bundle cut any.
+   *
+   * A monolith deployment has one. A function-split deployment has one per ABI entry, and every entry's
+   * address is {@link getAddress}. Helper locks are extra minting outputs; they are not ABI entries.
+   */
+  public getEntryLocks(): readonly Uint8Array[] {
+    return (this.entries ?? [this.material]).map((entry) => entry.lockingBytecode);
   }
 
   /** The filled master program the master lock commits to. */
@@ -127,14 +190,15 @@ export class MasterPoolDeployment {
    * commitment. The transaction that mints the category and broadcasts these outputs is not built here.
    */
   public getGenesisPools(): readonly GenesisPool[] {
+    const masters = this.entries ?? [this.material];
     return [
-      {
-        lockingBytecode: this.material.lockingBytecode,
+      ...masters.map((material) => ({
+        lockingBytecode: material.lockingBytecode,
         count: this.size.masters,
         category: this.category,
         capability: TokenCapability.MINTING,
         commitment: new Uint8Array(0),
-      },
+      })),
       {
         lockingBytecode: this.material.address,
         count: this.size.validators,

@@ -20,6 +20,11 @@ import { createMessageBusSemanticTestProvider } from './message-bus-semantic-pro
 
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
 
+/** Entry covenants bind the master's lock: read entries at the category-pinned master's address. */
+function pinnedEntryAddress(inner: Contract<any, any>, categoryId: string, collection: string): string {
+  return getEntryNftAddress(inner.withCategory(hexToBin(categoryId)), categoryId, collection);
+}
+
 const SOURCE = `pragma solidcash ^0.13.0;
 contract PendingScalarRows() {
   mapping(int => int) values;
@@ -133,7 +138,7 @@ describe('kernel pending fixed-width scalar rows', () => {
     await expect(call.send()).resolves.toBeDefined();
 
     const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === 'values')!;
-    const entries = await provider.getUtxos(getEntryNftAddress(inner, categoryId, collection.signature));
+    const entries = await provider.getUtxos(pinnedEntryAddress(inner, categoryId, collection.signature));
     for (const [key, value] of [[presentKey, 2n], [insertedKey, 0n]] as const) {
       const slot = binToHex(keyToSlot(bigIntToVmNumber(key)));
       const entry = entries.find((candidate) =>
@@ -148,7 +153,7 @@ describe('kernel pending fixed-width scalar rows', () => {
     // reproduced exactly, so the mapping remains byte-for-byte unchanged.
     await expect(StatefulContract.withCategory(inner, categoryId)
       .batch([{ function: 'clearMany', args: [[absentKey]] }]).send()).resolves.toBeDefined();
-    const afterAbsentDelete = await provider.getUtxos(getEntryNftAddress(inner, categoryId, collection.signature));
+    const afterAbsentDelete = await provider.getUtxos(pinnedEntryAddress(inner, categoryId, collection.signature));
     expect(afterAbsentDelete.map((entry) => entry.token!.nft!.commitment).sort())
       .toEqual(entries.map((entry) => entry.token!.nft!.commitment).sort());
   }, 180_000);
@@ -186,7 +191,7 @@ describe('kernel pending fixed-width scalar rows', () => {
         .toBe(true);
     }
     await expect(call.send()).resolves.toBeDefined();
-    const entryAddress = getEntryNftAddress(inner, categoryId, 'values');
+    const entryAddress = pinnedEntryAddress(inner, categoryId, 'values');
     expect(SortedList.fromUtxos(await provider.getUtxos(entryAddress)).all
       .map((entry) => bytesToSlotValue(entry.slot))).toEqual([0n]);
   }, 180_000);
@@ -223,7 +228,7 @@ describe('kernel pending fixed-width scalar rows', () => {
     await expect(call.send()).resolves.toBeDefined();
 
     const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === 'values')!;
-    const entries = await provider.getUtxos(getEntryNftAddress(inner, categoryId, collection.signature));
+    const entries = await provider.getUtxos(pinnedEntryAddress(inner, categoryId, collection.signature));
     for (const [key, value] of [[predecessorKey, 0n], [insertedKey, 5n]] as const) {
       const slot = binToHex(keyToSlot(bigIntToVmNumber(key)));
       const entry = entries.find((candidate) =>
@@ -329,7 +334,7 @@ describe('kernel pending fixed-width scalar rows', () => {
       .toBe(false);
     routeInput.unlocker = originalUnlocker;
     await expect(call.send()).resolves.toBeDefined();
-    const entryAddress = getEntryNftAddress(
+    const entryAddress = pinnedEntryAddress(
       inner, categoryId, artifact.stateLayout!.collections.find((candidate) => candidate.name === 'values')!.signature,
     );
     const settledEntries = await provider.getUtxos(entryAddress);
@@ -374,7 +379,7 @@ describe('kernel pending fixed-width scalar rows', () => {
     }
 
     const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === 'values')!;
-    const entryLock = addressToLockScript(getEntryNftAddress(inner, categoryId, collection.signature));
+    const entryLock = addressToLockScript(pinnedEntryAddress(inner, categoryId, collection.signature));
     const entryOutputs = transaction.outputs.filter((output) => output.token?.nft?.capability === 'mutable'
       && binToHex(output.lockingBytecode) === binToHex(entryLock));
     expect(entryOutputs).toHaveLength(2);
@@ -536,7 +541,7 @@ describe('kernel pending fixed-width scalar rows', () => {
       ['right', [[1n, 3n]]],
     ] as const) {
       const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === collectionName)!;
-      const settledEntries = await provider.getUtxos(getEntryNftAddress(inner, categoryId, collection.signature));
+      const settledEntries = await provider.getUtxos(pinnedEntryAddress(inner, categoryId, collection.signature));
       for (const [key, value] of expected) {
         const entry = settledEntries.find((utxo) =>
           binToHex(hexToBin(utxo.token!.nft!.commitment).slice(0, 32)) === binToHex(keyToSlot(bigIntToVmNumber(key))));
@@ -579,7 +584,7 @@ describe('kernel pending fixed-width scalar rows', () => {
     await expect(contract.batch([{ function: 'addMany', args: [[0n, 1n, 2n, 3n, 4n, 5n], 1n] }]).send())
       .resolves.toBeDefined();
     const collection = artifact.stateLayout!.collections.find((candidate) => candidate.name === 'values')!;
-    const entries = await provider.getUtxos(getEntryNftAddress(inner, categoryId, collection.signature));
+    const entries = await provider.getUtxos(pinnedEntryAddress(inner, categoryId, collection.signature));
     for (let key = 0n; key < 6n; key += 1n) {
       const entry = entries.find((utxo) =>
         binToHex(hexToBin(utxo.token!.nft!.commitment).slice(0, 32)) === binToHex(keyToSlot(bigIntToVmNumber(key))));

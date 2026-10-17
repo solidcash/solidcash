@@ -50,7 +50,8 @@ export function patchRelocatedDelegateOutputBases(
       + host.blockhashCoSpendUtxos.length + host.keccakComputeCoSpendUtxos.length
       + host.ecrecoverComputeCoSpendUtxos.length + host.iterationEntryInputs.length
       + host.externalOutStateUtxoGroups.reduce(
-        (sum, group) => sum + 1 + group.dataNftUtxos.length + (group.keccakInputs?.length ?? 0), 0,
+        (sum, group) => sum + 1 + group.dataNftUtxos.length + (group.blockhashCoSpendUtxos?.length ?? 0)
+          + (group.keccakInputs?.length ?? 0), 0,
       );
   const patchDelegate = (groupIndex: number, outputBase: number): number => {
     const group = host.lowLevelCallUtxoGroups[groupIndex];

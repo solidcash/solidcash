@@ -544,8 +544,9 @@ export type DeclaredRecordsKeptOptions = DeclaredViewCounts & {
  * `leadingAtLock` the lock beneath the pairs), exit `[...]`. A record is kept when it reads and recreates one index
  * with its view unchanged, or, beside another master of the frame's contract under a validator, when it names a
  * record another frame created at its output alone with its view unchanged: the validator settles the contract then,
- * and holds a created record's first view to nothing. A record naming an exempt pair's input or output index is one
- * the code wrote and verifies itself, and so is a record at or past `leading` (at the lock, with `leadingAtLock`).
+ * and holds a created record's first view to nothing. A record naming an exempt pair's output index, and its input
+ * index or no input, is one the code wrote and verifies itself, and so is a record at or past `leading` (at the lock,
+ * with `leadingAtLock`).
  * Any other record changed in the segment is one no code computed: settlement would chain it to the transaction's
  * outputs and a callee between two segments would read it.
  */
@@ -610,8 +611,10 @@ export function declaredRecordsKeptScript(options: DeclaredRecordsKeptOptions): 
       // Beneath those ten items the pairs sit deepest first; one copy is on top as each is read.
       const depth = 12 + 2 * (options.exempt - pair);
       num(2); op(Opcodes.OP_PICK); num(depth); op(Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL); // the pair's input
+      // or none: a record the frame created names its output alone.
+      num(3); op(Opcodes.OP_PICK); raw(encodeDataPush(INDEX_NONE_BYTES)); op(Opcodes.OP_NUMEQUAL, Opcodes.OP_BOOLOR);
       num(2); op(Opcodes.OP_PICK); num(depth); op(Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL); // the pair's output
-      // Both indices must name the exempt pair. Matching only the input let a trailing delete
+      // The output must name the exempt pair. Matching only the input let a trailing delete
       // `{in: D, out: none}` skip the kept check and leave output D compared with nothing.
       op(Opcodes.OP_BOOLAND, Opcodes.OP_BOOLOR);
     }

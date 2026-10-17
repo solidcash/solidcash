@@ -20,14 +20,20 @@ describe('atomic verifier bytecode specialization', () => {
     const sidecar = messageBusVerifierCovenantBytecode(verifierProgram!).length;
     // The integrated route also carries authenticated logical-caller and local effect-frame support. Those
     // facilities produce the default kernel participant below; the exact pair remains a drift tripwire,
-    // while the bounds retain deliberate headroom below BCH's deployment limit.
+    // while the bounds retain deliberate headroom below BCH's deployment limit. Re-pinned after the October
+    // hardening (feat/parity and the reaudit, whose stateful entries now also sum their satoshi container and
+    // scan for foreign containers): +357 B in both conventions, and the bus tax grew 39 B. Again when those scans
+    // listed the slots they act on in one classifying pass per side: direct +46 B, composed +104 B. Again after the
+    // atomic bus stage 2 (no PUSHDATA4 carrier arm under a 10,000 B blob bound, shared stack helpers): composed -56 B.
+    // composed -25 B after the trailing batch-width binding moved the width witness out of the scalar verifier.
+    // +16 B in both conventions after the direct entry's message-bus-eligibility census widened.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 140,
-      composed: 1381,
-      frameworkTax: 1241,
+      direct: 619,
+      composed: 1876,
+      frameworkTax: 1257,
     });
-    expect(composed).toBeLessThanOrEqual(1400);
-    expect(composed - direct).toBeLessThanOrEqual(1250);
+    expect(composed).toBeLessThanOrEqual(1900);
+    expect(composed - direct).toBeLessThanOrEqual(1360);
     expect(sidecar).toBeLessThanOrEqual(10_000);
   });
 

@@ -174,11 +174,17 @@ The resulting ABI entry carries the `deploy` modifier.
 
 ### `upgrade`
 
-Deploys a new version of the contract code while preserving the category ID and state:
+Deploys a new version of the contract code while preserving the category ID:
 
 ```solidity
-contract TokenV1(pubkey admin) {
-    int counter;
+contract PolicyV1(pubkey admin) {
+    event Approved(int amount);
+
+    function approve(int amount, sig s) public {
+        require(amount <= 1000);
+        require(checkSig(s, admin));
+        emit Approved(amount);
+    }
 
     function migrate(sig s) upgrade {
         require(checkSig(s, admin));
@@ -186,8 +192,10 @@ contract TokenV1(pubkey admin) {
 }
 ```
 
-State layout can be extended in the new version (append new fields). Existing state values are preserved.
-See [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
+A contract that keeps state (state variables, mappings or arrays, satoshi or token containers) cannot declare
+`upgrade`: its records are bound to the master's exact lock and could not follow it to the new bytecode. The new
+version may declare state, which begins at its type defaults. See
+[Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
 
 ### `selfdestruct`
 

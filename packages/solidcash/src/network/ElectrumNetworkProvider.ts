@@ -1,10 +1,11 @@
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { sha256 } from '@solidcash/utils';
+import { blockOracleLockingBytecode, sha256 } from '@solidcash/utils';
 import {
   ElectrumClient,
   type RequestResponse,
   type ElectrumClientEvents,
 } from '@electrum-cash/network';
+import { ElectrumWebSocket } from '@electrum-cash/web-socket';
 import { type Utxo, Network } from '../interfaces.js';
 import type NetworkProvider from './NetworkProvider.js';
 import { addressToLockScript } from '../utils.js';
@@ -12,6 +13,8 @@ import { addressToLockScript } from '../utils.js';
 
 interface OptionsBase {
   manualConnectionManagement?: boolean;
+  /** Shared block-info oracle category (32 bytes, display byte order); derives its covenant lock. */
+  blockOracleCategory?: Uint8Array;
 }
 
 interface CustomHostNameOptions extends OptionsBase {
@@ -32,8 +35,15 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
   private electrum: ElectrumClient<ElectrumClientEvents>;
   private concurrentRequests: number = 0;
   private manualConnectionManagement: boolean;
+  readonly blockOracleCategory?: Uint8Array;
+  readonly blockOracleLock?: Uint8Array;
 
   constructor(public network: Network = Network.MAINNET, options: Options = {}) {
+    if (options.blockOracleCategory !== undefined) {
+      if (options.blockOracleCategory.length !== 32) throw new Error('blockOracleCategory must be exactly 32 bytes');
+      this.blockOracleCategory = options.blockOracleCategory.slice();
+      this.blockOracleLock = blockOracleLockingBytecode(this.blockOracleCategory);
+    }
     this.electrum = this.instantiateElectrumClient(network, options);
     this.manualConnectionManagement = options?.manualConnectionManagement ?? false;
   }
@@ -41,9 +51,10 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
   private instantiateElectrumClient(network: Network, options: Options): ElectrumClient<ElectrumClientEvents> {
     if ('electrum' in options) return options.electrum;
     const server = 'hostname' in options ? options.hostname : this.getServerForNetwork(network);
-    return new ElectrumClient(
-      'SolidCash Application', ELECTRUM_PROTOCOL_VERSION, server, { disableBrowserVisibilityHandling: true },
-    );
+    // 4.4 moved the old disableBrowserVisibilityHandling flag onto the websocket, where the
+    // page-hidden disconnect now defaults on. Keep the provider from dropping the socket when a tab is hidden.
+    const socket = new ElectrumWebSocket(server, { enforceConsistentBrowserBehavior: false });
+    return new ElectrumClient('SolidCash Application', ELECTRUM_PROTOCOL_VERSION, socket);
   }
 
   // Get Electrum server based on network

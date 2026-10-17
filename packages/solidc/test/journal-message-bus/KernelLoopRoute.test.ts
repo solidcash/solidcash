@@ -609,6 +609,8 @@ describe('message-bus kernel loop route', () => {
     expect(legacyGrowth).toBeGreaterThan(400);
   });
 
+  // Three kernel compiles per family (ceilings 2, 4, 8). The slowest, the source-ordered non-associative rows,
+  // measured 69 s alone (about 23 s a compile), past the 60 s default; 150 s leaves about 2x for suite load.
   it.each(ROUTE_SCALING_FAMILIES)(
     'keeps $name proportional to row logic rather than the configured row ceiling',
     ({ source, options }) => {
@@ -639,6 +641,7 @@ describe('message-bus kernel loop route', () => {
       // once outside the SCB1 dispatcher. Assert only that it remains deterministic for each compiled ceiling.
       expect(kernel.map((artifact) => artifact.debug.bytecode.length / 2).every(Number.isSafeInteger)).toBe(true);
     },
+    150_000,
   );
 
   it('dispatches event-emitting handlers from the runtime row loop without a new clone family', () => {

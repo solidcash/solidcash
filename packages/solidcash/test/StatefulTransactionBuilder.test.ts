@@ -207,9 +207,11 @@ describe('StatefulTransactionBuilder', () => {
         keyType: 'bytes32', valueType: 'int',
       }],
     };
-    // Covenant factories require only the public Contract surface used to derive their scripts.
+    // Covenant factories require only the public Contract surface used to derive their scripts. A direct
+    // contract's entry covenant binds its 35-byte master lock.
     const ownerInner = {
       provider, addressType: 'p2sh32', artifact: { stateLayout: ownerLayout },
+      lockingBytecode: `aa20${'5a'.repeat(32)}87`,
     } as never;
     const staleExact = createEntryNftUnlocker(ownerInner, 19, ownerCategory, declaredSignature);
     const staleForeign = createEntryNftUnlocker(ownerInner, 23, ownerCategory, foreignSignature);

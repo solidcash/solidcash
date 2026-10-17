@@ -94,15 +94,17 @@ describe('SBE-10: storage-pointer locals + block.timestamp + stmt-form interface
     expect(a.contractName).toBe('C');
   });
 
-  it('routes block.timestamp via the oracle register, not tx.locktime', () => {
-    // block.timestamp lowers to the injected __block_timestamp oracle register (owner-gated) in every mode - the
-    // native model. (The compat-only tx.locktime mapping was removed.) `evmCompat` is set only so the
-    // `pragma solidity` header parses.
+  it('routes block.timestamp via the shared oracle covenant, not tx.locktime', () => {
+    // block.timestamp slices the raw oracle covenant's commitment in every mode. The oracle rework (2aeaee406)
+    // removed the injected __block_timestamp register. `evmCompat` is set only so the `pragma solidity` header
+    // parses.
     const a = compileString(`pragma solidity ^0.8.26;
       contract C { uint256 private t; function f(uint256 startAt) external { require(startAt >= block.timestamp); t = startAt; } }`,
     { evmCompat: true });
     expect(a.bytecode).not.toContain('OP_TXLOCKTIME');
-    expect(JSON.stringify(a)).toContain('__block_timestamp'); // the oracle register the source-map references
+    expect(a.usesBlockOracle).toBe(true);
+    expect(a.blockOracleLockSlots?.length).toBeGreaterThan(0);
+    expect(a.stateLayout?.variables.map((variable) => variable.name) ?? []).not.toContain('__block_timestamp');
   });
 
   it('routes a statement-form interface call on a constructor-param var (2-arg .transfer is not satoshi send)', () => {

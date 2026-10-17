@@ -535,6 +535,18 @@ describe('bytes element compound write (data[i] |= v / &=)', () => {
     { evmCompat: true });
     expect(s.bytecode).toBe(h.bytecode);
   });
+  it('local bytes compound writes are byte-identical to the in-place splice (b[i] op= v == b[i] = b[i] op v)', () => {
+    // A __yulmem CANDIDATE: a fresh local bytes buffer observed by assembly, so LowerMemoryModel converts it to a
+    // pointer. The compound write must emit the in-place byte splice, not the whole-blob value-copy rebuild.
+    const mk = (body: string): string => compileString(
+      'contract C { function f(uint256 i, bytes1 v) external returns (bytes32 r) {'
+      + ' bytes memory b = new bytes(32); ' + body
+      + ' assembly { r := mload(add(b, 0x20)) } } }',
+      { evmCompat: true }).bytecode;
+    for (const op of ['+', '|', '&']) {
+      expect(mk(`b[i] ${op}= v;`)).toBe(mk(`b[i] = b[i] ${op} v;`));
+    }
+  });
 });
 
 describe('contract-typed arrays resolve to address arrays (contract handle = address)', () => {
@@ -1735,6 +1747,37 @@ describe('nested struct fields in mapping values', () => {
       + ' mapping(uint => S) data; function f(uint k) public {'
       + ' data[k].n.x = 3; data[k].n.y = 4; require(data[k].n.x == 3); } }',
     { evmCompat: true, forceStateful: true }).contractName).toBe('C');
+  });
+});
+
+describe('flattening-forced mapping-value nested struct write (mapping(uint => Post) roles.creator)', () => {
+  // Post carries a mapping field (votes), so the mapping VALUE flattens into per-field collections keyed by the
+  // outer key (`jobs__roles`, ...). `jobs[id].roles.creator = v` must land the leaf inside the rebuilt
+  // `jobs__roles[id]` struct value, not raw at the first-level `roles` position. Mirrors the packed-array
+  // `jobs[i].roles.creator` rebuild (Marketplace jobs[]); the mapping form is the same write through
+  // mappingStructValueVars flattening. VM analog is the MappingStructScalarWrite e2e.
+  const S = 'struct Roles { address creator; address arbitrator; address worker; }'
+    + ' struct Post { uint8 state; Roles roles; uint256 amount; mapping(uint256 => uint256) votes; }';
+  const compileBody = (body: string): string => compileString(
+    `${S} contract C { mapping(uint256 => Post) jobs; function f(uint256 id) public { ${body} require(true); } }`,
+    { evmCompat: true },
+  ).contractName;
+  const bytecodeOf = (body: string): string => compileString(
+    `${S} contract C { mapping(uint256 => Post) jobs; function f(uint256 id) public { ${body} require(true); } }`,
+    { evmCompat: true },
+  ).bytecode;
+  it('writes the nested struct field directly and reads it back through the same chain', () => {
+    expect(compileBody('jobs[id].roles.creator = msg.sender; require(jobs[id].roles.creator == msg.sender);'))
+      .toBe('C');
+  });
+  it('writes the nested struct field through a storage pointer to the mapping value', () => {
+    expect(compileBody('Post storage p = jobs[id]; p.roles.creator = msg.sender;')).toBe('C');
+  });
+  it('desugars the storage-pointer spelling byte-for-byte to the direct spelling', () => {
+    // Both spellings route through the same mappingStructValueVars flattening: the write lands in the
+    // flattened `jobs__roles[id].creator` field, so the direct and storage-pointer forms emit identical code.
+    expect(bytecodeOf('jobs[id].roles.creator = msg.sender;'))
+      .toBe(bytecodeOf('Post storage p = jobs[id]; p.roles.creator = msg.sender;'));
   });
 });
 

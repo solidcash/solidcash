@@ -27,7 +27,9 @@
  */
 
 import type { Artifact, StateValue } from '@solidcash/utils';
-import { encodeFunctionArgument, resolveAddressArguments, type FunctionArgument } from '../../Argument.js';
+import {
+  encodeFunctionArgument, normalizeSolidityBytesArgument, resolveAddressArguments, type FunctionArgument,
+} from '../../Argument.js';
 import type { TransactionDetails, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type Signer from '../../Signer.js';
@@ -96,7 +98,7 @@ export class FramedFunctionCall {
 
   /** Sends the call: composes the root frame, derives it, asks the machine, and broadcasts what it accepted. */
   public async send(): Promise<TransactionDetails> {
-    const result = await this.compose();
+    const result = await this.run(true);
     if (result.broadcast === undefined) {
       // A frame the machine refused is reported the way a refused read is: the entry's own source reason, read from
       // the artifact's publication, rather than the opcode the run stopped on.
@@ -125,7 +127,9 @@ export class FramedFunctionCall {
     const named = artifact.abi.filter((entry) => entry.name === this.functionName);
     const entry = named.find((candidate) => visible(candidate).length === this.args.length) ?? named[0];
     if (entry === undefined) return this.args;
-    const args = await resolveAddressArguments(visible(entry), this.args, artifact.structs);
+    const resolved = await resolveAddressArguments(visible(entry), this.args, artifact.structs);
+    const args = artifact.compiler?.options?.evmCompat === true
+      ? resolved.map((arg, index) => normalizeSolidityBytesArgument(arg, visible(entry)[index]?.type ?? '')) : resolved;
     visible(entry).forEach((input, index) => {
       const argument = args[index];
       if (argument !== undefined) encodeFunctionArgument(argument, input.type, artifact.structs);
@@ -140,6 +144,11 @@ export class FramedFunctionCall {
    * function runs `then`, which sends a writing call. Use `compose()` to preview.
    */
   public async compose(): Promise<FramedCallResult> {
+    return this.run(false);
+  }
+
+  /** Composes the call in its turn. With `publish`, an accepted call is broadcast. */
+  private async run(publish: boolean): Promise<FramedCallResult> {
     const { provider, signer, categoryId, proxyImplementationCategoryId } = this.contract;
     if (signer === undefined) {
       throw new FramedCallError(
@@ -149,13 +158,13 @@ export class FramedFunctionCall {
     // A call through a proxy hop composes at once until the hop's module opts into the queue; any other call waits
     // its turn behind the sends that could touch what it spends.
     if (proxyImplementationCategoryId !== undefined && !proxyHopSendsAreQueued()) {
-      return this.composeNow(provider, signer, false);
+      return this.composeNow(provider, signer, publish);
     }
     const resources = framedSendResources({
       callerLockingBytecode: signer.getLockingBytecode(),
       categoryIds: [categoryId, ...(proxyImplementationCategoryId === undefined ? [] : [proxyImplementationCategoryId])],
     });
-    return framedSendQueue(provider).hold(resources, () => this.composeNow(provider, signer, false));
+    return framedSendQueue(provider).hold(resources, () => this.composeNow(provider, signer, publish));
   }
 
   /**

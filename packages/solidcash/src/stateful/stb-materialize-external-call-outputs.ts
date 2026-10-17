@@ -293,6 +293,18 @@ export function materializeExternalCallOutputs(
       for (let si = dataNftEnd; si < materializationEnd; si++) {
         const input = group.blockInputs[si];
         const slot = group.blockLayout.slots[si];
+        const streamed = group.streamedEventPlan?.outputs.get(si);
+        if (streamed) {
+          const output: Output = {
+            to: streamed.lockingBytecode,
+            amount: BALANCED_SLOT_SATOSHIS,
+            token: { amount: 0n, category: group.categoryId,
+              nft: { capability: 'none', commitment: streamed.commitment } },
+          };
+          output.amount = BigInt(Math.max(Number(output.amount), calculateDust(output)));
+          builder.addOutput(output);
+          continue;
+        }
         const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
         const debugRouteOutputs = debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
           || debugEnv?.SOLIDC_DEBUG_FAILURE_RING === '1';

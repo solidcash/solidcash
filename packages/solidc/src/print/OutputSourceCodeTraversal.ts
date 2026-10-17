@@ -1162,7 +1162,9 @@ export default class OutputSourceCodeTraversal extends AstTraversal {
   }
 
   visitCollectionIteration(node: CollectionIterationNode): Node {
-    if (node.mode === CollectionIterationMode.ENTRIES) {
+    if (node.windowCursor !== undefined) {
+      this.addOutput(`for (${node.valueType} ${node.valueName} of this.${node.collectionName}.window(${node.windowCursor}, ${node.windowBound})) `, true);
+    } else if (node.mode === CollectionIterationMode.ENTRIES) {
       this.addOutput(`for (${node.keyType} ${node.keyName}, ${node.valueType} ${node.valueName} of this.${node.collectionName}.entries) `, true);
     } else if (node.mode === CollectionIterationMode.KEYS) {
       this.addOutput(`for (${node.keyType} ${node.keyName} in this.${node.collectionName}) `, true);

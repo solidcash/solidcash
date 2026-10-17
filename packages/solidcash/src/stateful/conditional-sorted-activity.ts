@@ -30,7 +30,8 @@ export function settlesSortedTargetsByActivity(fn: AbiFunction | undefined): boo
   const runtime = (collection: string): boolean => fn.inputs.some((input) => (
     input.name === `__internal__vmapRuntimeInputCount_${collection}`
     || input.name === `__internal__vmapRuntimeOutputCount_${collection}`));
-  const batches = (fn.sortedBatchInfo ?? []).filter((batch) => batch.slotIndices.some(softDelete));
+  const batches = (fn.sortedBatchInfo ?? []).filter((batch) => batch.slotIndices.some(softDelete)
+    || (batch.slotIndices.length === 1 && settlesAlone(batch.slotIndices[0], batch.slotIndices)));
   return batches.length > 0 && batches.every((batch) => batch.slotIndices.length === 1
     || (!runtime(batch.collection) && batch.slotIndices.every((slot) => (
       softDelete(slot) || settlesAlone(slot, batch.slotIndices)))));
@@ -40,8 +41,10 @@ export function settlesSortedTargetsByActivity(fn: AbiFunction | undefined): boo
 export function activityBatchWriteSlots(fn: AbiFunction | undefined): Set<number> {
   if (fn === undefined || !settlesSortedTargetsByActivity(fn)) return new Set();
   const softDelete = (slot: number): boolean => entryLayout(fn, slot)?.softDelete === true;
-  return new Set((fn.sortedBatchInfo ?? []).filter((batch) => batch.slotIndices.length > 1
-    && batch.slotIndices.some(softDelete)).flatMap((batch) => batch.slotIndices.filter((slot) => !softDelete(slot))));
+  return new Set((fn.sortedBatchInfo ?? []).filter((batch) => (batch.slotIndices.length > 1
+    && batch.slotIndices.some(softDelete)) || (batch.slotIndices.length === 1
+      && entryLayout(fn, batch.slotIndices[0])?.conditional === true))
+    .flatMap((batch) => batch.slotIndices.filter((slot) => !softDelete(slot))));
 }
 
 /**

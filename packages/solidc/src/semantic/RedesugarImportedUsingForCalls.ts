@@ -46,6 +46,9 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
   private wildcardLibs: string[] = [];             // libraries bound via `using L for *`
   private freeFnNames = new Set<string>();
   private interfaceNames = new Set<string>();      // interface + imported-contract names (interface-cast receivers)
+  // Struct definitions known to the current scope, keyed by name. Used to recover the value struct of a
+  // flattened-value mapping (`m[k]` where `m` was flattened to per-field `m__<field>` collections).
+  private structByName = new Map<string, StructType>();
 
   constructor(private readonly perContract = false) { super(); }
 
@@ -102,6 +105,7 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
     const structMap = new Map<string, StructType>();
     for (const sd of fileStructs) structMap.set(sd.name, new StructType(sd.name, sd.fields));
     for (const sd of contractStructs) structMap.set(sd.name, new StructType(sd.name, sd.fields));
+    this.structByName = structMap;
     for (const d of directives) {
       if (!d.libraryName) continue;
       if (d.isWildcard) { this.wildcardLibs.push(d.libraryName); continue; }
@@ -278,11 +282,36 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
       return base instanceof ArrayType ? base.elementType : base instanceof MappingType ? base.valueType : undefined;
     }
     if (expr instanceof MappingAccessNode) {
-      let t: Type | undefined = varTypes.get(expr.name);
+      let t: Type | undefined = varTypes.get(expr.name)
+        ?? this.resolveFlattenedMappingType(expr.name, varTypes);
       for (let i = 0; i < Math.max(expr.keys.length, 1) && t; i += 1) {
         t = t instanceof ArrayType ? t.elementType : t instanceof MappingType ? t.valueType : undefined;
       }
       return t;
+    }
+    return undefined;
+  }
+
+  // `mapping(K => S)` whose value struct S has no single-value representation is flattened by the AstBuilder into
+  // per-field collections `m__<field> : mapping(K => <field type>)` and the root `m` is gone. Recover that mapping
+  // type from the flattened leaves so a method receiver `m[k].method()` still resolves to S. Matches the leaves
+  // (single-level only) against the known struct definitions; returns undefined when they are ambiguous or absent.
+  private resolveFlattenedMappingType(name: string, varTypes: Map<string, Type>): MappingType | undefined {
+    const prefix = `${name}__`;
+    let keyType: Type | undefined;
+    const fields = new Map<string, Type>();
+    for (const [collectionName, collectionType] of varTypes) {
+      if (!collectionName.startsWith(prefix) || !(collectionType instanceof MappingType)) continue;
+      const fieldName = collectionName.slice(prefix.length);
+      if (fieldName.length === 0 || fieldName.includes('__')) continue;
+      keyType = collectionType.keyType;
+      fields.set(fieldName, collectionType.valueType);
+    }
+    if (fields.size === 0 || keyType === undefined) return undefined;
+    for (const struct of this.structByName.values()) {
+      if (struct.fields.length !== fields.size) continue;
+      if (struct.fields.some((field) => field.type.toString() !== fields.get(field.name)?.toString())) continue;
+      return new MappingType(keyType, new StructType(struct.name, struct.fields));
     }
     return undefined;
   }

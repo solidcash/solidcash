@@ -8,6 +8,7 @@ import { Location } from './Location.js';
 import { YulBlockNode } from './YulAST.js';
 import { SymbolTable, Symbol } from './SymbolTable.js';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 export type Ast = SourceFileNode;
 
@@ -28,6 +29,7 @@ export enum FunctionModifier {
   DELEGATE = 'delegate',
   SPLIT = 'split',
   MERGE = 'merge',
+  MIGRATE_RECORDS = 'migrateRecords',
 }
 
 export enum StateVariableVisibility {
@@ -176,10 +178,25 @@ export class ContractNode extends Node implements Named {
   // output-only block slots are therefore one position lower per data NFT than the layout offset says. A plain
   // contract that merely HAS `delegate` functions is not delegate-only and keeps its data-NFT positions.
   isSplitFacet: boolean = false;
+  // A per-entry function shard keeps the logical state declarations and must not regain them as extra
+  // dispatchable getters. The logical artifact owns that surface.
+  suppressSynthesizedGetters: boolean = false;
   // Set by SynthesizeBlockOracle when any function reads blockhash(n). The (n->hash) oracle is branded to the
   // contract's OWN category (master-bound, per docs/block-and-transaction-properties.md s3), so a blockhash
   // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against).
   usesBlockhash: boolean = false;
+  // A function reads block.number/timestamp/.... The data is a separate covenant's commitment, not this
+  // contract's state, and this contract does not grow an update entry.
+  usesBlockOracle: boolean = false;
+  // Set by SymbolTableTraversal once block layouts are known: any entry reserves the satoshi container slot, so an
+  // in-place upgrade must migrate (or drain) that container. Read by the upgrade codegen.
+  keepsSatoshiContainer: boolean = false;
+  // Set by SymbolTableTraversal once block layouts are known: any entry reserves a token container slot (holding a
+  // foreign token category), so an in-place upgrade must migrate those containers. Read by the upgrade codegen.
+  keepsTokenContainer: boolean = false;
+  // Number of token-container slots the contract reserves (the maximum any single entry's block layout holds):
+  // the bounded count an in-place upgrade can migrate in one transaction.
+  tokenContainerCount: number = 0;
   // Set when the contract instantiates a stateful child (`new T()` where T has state): deploying it IS a deploy,
   // so this contract is made stateful to host the (implied) deploy covenant. Read by both the symbol-table pass
   // (block-layout allocation) and artifact generation (so the SDK sees a zero-state stateful contract).
@@ -463,12 +480,17 @@ export type KernelReadCarrierSyntheticParameterRole =
   | 'old-values-witness';
 
 export class FunctionDefinitionNode extends Node implements Named {
+  /** Set only on compiler-synthesized helpers whose source/require maps may be rewritten by helper optimization. */
+  compilerGeneratedHelper?: boolean;
   /** Exact source-level dense slice proof, captured before array/mapping lowering changes the body shape. */
   mappingArrayPagination?: NonNullable<AbiFunction['mappingArrayPagination']>;
   symbolTable?: SymbolTable;
   // Set by semantic analysis after visiting the body. Codegen can skip its more detailed deploy-site survey when
   // this is false; undefined remains the conservative value for compiler-synthesized functions created later.
   declare hasContractInstantiation?: boolean;
+  // Set by EnsureFinalRequireTraversal on a direct entry point with no covenant of its own, whose early-return paths it
+  // verifies. Only there does EarlyReturnTransformation seal an unguarded bare return (SEM-1).
+  declare sealsUnguardedReturns?: boolean;
   opRolls: Map<string, IdentifierNode> = new Map();
   // Direct whole-state storage-pointer aliases erased by AstBuilder (`mapping storage p = m`,
   // `S storage p = s`). Retained as metadata so inline assembly can resolve p.slot/p.offset later.
@@ -493,6 +515,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusPhysicalEntrySlotAlternatives?: number[][];
   /** Route-wide dynamic resources which precede this outlined handler's trailing mapping entries. */
   messageBusRouteDynamicResources?: string[];
+  /** Route-wide read-only chunk runs preserved before streamed effects; an empty list is authoritative. */
+  messageBusRouteReadOnlyDynamicResources?: string[];
   /** Authenticated participant-master offset used by message-bus handler code generation. */
   messageBusOwnerInputOffset?: number;
   /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */
@@ -502,6 +526,8 @@ export class FunctionDefinitionNode extends Node implements Named {
    * item (depth 0) and can be captured without depending on any frame-model position.
    */
   messageBusOwnerIsLastArgument?: boolean;
+  /** Set on compiler-cloned message-bus handlers; identifies the source handler the clone was made from. */
+  messageBusCloneSourceKey?: string;
   /**
    * The message-bus route's declared input names, in push order. A route handler shares the caller's stack, so these
    * values are physically BELOW the handler's argument block; seeding them into the handler's frame model is what
@@ -782,6 +808,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Set by SynthesizeBlockOracle when the function reads blockhash(n); SymbolTable then injects the hidden
   // __internal__blockhashInputIndex param (the co-spend's input index) so the read survives composition.
   usesBlockhash?: boolean;
+  // Set when the body reads the block-info oracle commitment. SymbolTable injects the co-spend index.
+  usesBlockOracle?: boolean;
   // Set by LowerInlineAssembly when this function's body contained an inline `assembly {}` block (before the
   // block was lowered away). PruneUnreachableFreeFunctions uses it to drop DEAD assembly helpers whose EVM
   // primitives may not codegen on BCH, even after the assembly lowered to plain ops (e.g. OZ Math.mulDiv).
@@ -865,6 +893,10 @@ export class FunctionDefinitionNode extends Node implements Named {
 
   messageBusEligible?: boolean;
   messageBusRejectionReason?: string;
+  /** Kernel route: this handler's emits settle as records on its runtime effect stream, not in event windows. */
+  messageBusEventStream?: true;
+  /** A stream emit can pass one commitment, so every record of the stream is chunked (head, then continuations). */
+  messageBusEventStreamChunked?: true;
   /** Stable index of this eligible handler in the route's eligible dispatch set, the ordinal witness names use.
    * Published on the handler so the SDK never re-derives the filtered-list ordering. */
   messageBusWitnessOrdinal?: number;
@@ -1009,8 +1041,12 @@ export class FunctionDefinitionNode extends Node implements Named {
   keccakFixedSlotIndices?: number[];
   keccakLoopReads?: boolean;    // a stateful dynamic keccak loop reads N trailing side-cars (SDK progressively
   // co-spends N = runtime iteration count into the trailing region [blockSize, ..))
-  ecrecoverLoopReads?: boolean; // a dynamic ecrecoverPubKey loop reads one recovery PAIR per iteration from the
-  // forward region [master+1+2k]; the SDK co-spends N pairs (N = the sig-array length)
+  keccakLoopPrecedesTrailingUser?: boolean; // a direct keccak loop runs BEFORE a runtime mapping loop in source
+  // order, so its side-cars occupy the front of the shared trailing band
+  keccakChainReads?: boolean;   // a direct, unbounded preimage routes through the chained START/CONT/FINAL side-cars
+  // in the trailing region; the SDK co-spends one side-car per 136-byte block + the FINAL digest carrier
+  ecrecoverLoopReads?: boolean; // a dynamic ecrecoverPubKey loop reads one recovery TRIPLE per iteration from the
+  // forward region [master+1+3k]; the SDK co-spends N triples (N = the sig-array length)
   ecrecoverCompute?: boolean;   // ecrecoverPubKey uses a co-spent recovery side-car PAIR (A+B) per call; the SDK
   // auto-co-spends them and the contract reads the recovered pubkey from B's output
   ecrecoverArgParams?: ((string | null)[])[]; // per ecrecoverPubKey call (codegen emission order): the [hash,v,r,s]
@@ -1507,6 +1543,12 @@ export class CollectionIterationNode extends StatementNode {
   collectionIterationIndex: number = -1;
   /** Bool local set by a lowered `break`. The iteration loop exits once it is true. */
   breakFlagName?: string;
+  /** Windowed (paginated) iteration: the register state variable holding the cursor (last visited slot). */
+  windowCursor?: string;
+  /** Windowed iteration: the maximum number of entries walked per transaction (the page size). */
+  windowBound?: number;
+  /** Windowed iteration: the resolved cursor state variable (set by semantic analysis). */
+  windowCursorStateVar?: StateVariableNode;
 
   constructor(
     public mode: CollectionIterationMode,
@@ -2078,6 +2120,9 @@ export class UnaryOpNode extends ExpressionNode {
   // destination width (e.g. `d & -d` in FullMath).
   legacyWrappingNegation = false;
 
+  // A compiler-built `.length` that a proof compares with int256 values. It stays bigint under evmCompat.
+  compilerLength = false;
+
   constructor(
     public operator: UnaryOperator,
     public expression: ExpressionNode,
@@ -2388,7 +2433,7 @@ export class DecimalLiteralNode extends LiteralNode<string> {
     const [intPart, fracPart = ''] = abs.split('.');
     if (fracPart.length > decimals) {
       const loc = this.location ? ` at line ${this.location.start.line}` : '';
-      console.log(
+      emitCompilerWarning(
         `Warning: decimal literal '${this.value}'${loc} has ${fracPart.length} fractional digits `
         + `but the target type only supports ${decimals}. Truncating to ${decimals} digits.`,
       );
@@ -2749,7 +2794,7 @@ export interface ExternalStateReadInfo {
   fieldIndex: number;
   fieldsInNft: { type: Type; fieldIndex: number }[];
   externalReadSlotIndex: number;
-  calleeMultiNft: boolean; // callee spans >1 data NFT -> its commitments carry an nftIndex tag to verify
+  calleeMultiNft: boolean; // callee commitments carry an nftIndex tag (multi-record or explicit singleton encoding)
 }
 
 export class ExternalStateAccessNode extends ExpressionNode {
@@ -3024,6 +3069,10 @@ export interface ExternalCallSlot {
   // MD1: the callee function's compile-time selector, baked as a constant OP_EQUALVERIFY for a regular call so a
   // spender cannot substitute a different method of the callee via the (previously trusted) witness param.
   compileTimeSelector?: Uint8Array;
+  /** Interface-proven readonly entry; used only for direct return-frame authentication. */
+  readonlyReturnSelector?: Uint8Array;
+  /** Set only when codegen emits the direct shared-readonly return equality check. */
+  readonlyReturnBindingSelector?: Uint8Array;
   // Same-address varying-method pointer: the RUNTIME selector expression (`cond ? a.selector : b.selector`).
   // The epilogue evaluates it and asserts the co-spent callee's selector == it, instead of the witness param.
   runtimeSelector?: ExpressionNode;
@@ -3100,7 +3149,7 @@ export interface ExternalOutputStateAccessInfo {
   fieldIndex: number;
   fieldsInNft: { type: Type; fieldIndex: number }[];
   externalOutStateSlotIndex: number;
-  calleeMultiNft: boolean; // callee spans >1 data NFT -> its commitments carry an nftIndex tag to verify
+  calleeMultiNft: boolean; // callee commitments carry an nftIndex tag (multi-record or explicit singleton encoding)
   /** The data-NFT field is a uint32 length header; the value is reconstructed from owner-branded chunks. */
   dynamic: boolean;
 }
@@ -3276,6 +3325,8 @@ export interface RuntimeLoopEventInfo {
   iterationBreakCondition?: ExpressionNode;
   /** Function-local execution segment shared by every runtime effect produced at this source position. */
   effectSequence?: number;
+  /** Each occurrence settles as its payload's commitment-sized chunks: the head, then continuation records. */
+  chunked?: true;
 }
 
 export interface RuntimeLoopTransferInfo {
@@ -3307,6 +3358,10 @@ export interface CollectionIterationInfo {
   collectionSignature: string;
   mode: CollectionIterationMode;
   iterationIndex: number;
+  /** Windowed (paginated) iteration: the register state variable holding the cursor. */
+  windowCursor?: string;
+  /** Windowed iteration: the maximum number of entries walked per transaction. */
+  windowBound?: number;
 }
 
 export class EmitStatementNode extends StatementNode {
@@ -3316,6 +3371,8 @@ export class EmitStatementNode extends StatementNode {
   emitIndex: number = 0;
   /** Runtime event site within a lowered counter-keyed mapping loop; excluded from fixed event slots. */
   runtimeLoopEvent?: { loopIndex: number; siteIndex: number };
+  /** The runtime event pushes one record per commitment-sized chunk of its payload (head, then continuations). */
+  runtimeLoopEventChunked?: true;
   /** Source predicate controlling this runtime event, evaluated by the SDK to plan the exact output stream. */
   runtimeLoopEventCondition?: ExpressionNode;
   /** SDK-visible replay recipe when the executable argument itself must retain source state semantics. */

@@ -35,6 +35,8 @@ export interface StagedBroadcasts {
   readonly provider: NetworkProvider;
   /** Relays every held transaction to the wrapped provider in order, then forwards everything. */
   readonly release: () => Promise<readonly string[]>;
+  /** Relays the first `count` held transactions in order; the rest stay held until `release`. */
+  readonly releaseFirst: (count: number) => Promise<readonly string[]>;
 }
 
 function outpointKey(txid: string, vout: number): string {
@@ -124,28 +126,41 @@ export function stageBroadcasts(provider: NetworkProvider): StagedBroadcasts {
     },
   });
 
+  const sendOne = async (entry: HeldTransaction, index: number, sent: readonly string[]): Promise<string> => {
+    const { txid, prepared, viaPrepared } = entry;
+    let returned: string;
+    try {
+      returned = viaPrepared && provider.sendPreparedTransaction !== undefined
+        ? await provider.sendPreparedTransaction(prepared)
+        : await provider.sendRawTransaction(prepared.rawHex);
+    } catch (error) {
+      throw new Error(`the provider refused held transaction ${index + 1} of ${held.length} (${txid}) after `
+        + `broadcasting ${sent.length === 0 ? 'none' : sent.join(', ')}: `
+        + `${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (returned !== txid) {
+      throw new Error(`the provider returned txid ${returned} for held transaction ${txid}, not the txid its bytes `
+        + 'hash to');
+    }
+    return txid;
+  };
+
+  const releaseFirst = async (count: number): Promise<readonly string[]> => {
+    const sent: string[] = [];
+    for (let index = 0; index < count && held.length > 0; index += 1) {
+      sent.push(await sendOne(held.shift()!, index, sent));
+    }
+    return sent;
+  };
+
   const release = async (): Promise<readonly string[]> => {
     const sent: string[] = [];
-    for (const [index, { txid, prepared, viaPrepared }] of held.entries()) {
-      let returned: string;
-      try {
-        returned = viaPrepared && provider.sendPreparedTransaction !== undefined
-          ? await provider.sendPreparedTransaction(prepared)
-          : await provider.sendRawTransaction(prepared.rawHex);
-      } catch (error) {
-        throw new Error(`the provider refused held transaction ${index + 1} of ${held.length} (${txid}) after `
-          + `broadcasting ${sent.length === 0 ? 'none' : sent.join(', ')}: `
-          + `${error instanceof Error ? error.message : String(error)}`);
-      }
-      if (returned !== txid) {
-        throw new Error(`the provider returned txid ${returned} for held transaction ${txid}, not the txid its bytes `
-          + 'hash to');
-      }
-      sent.push(txid);
+    while (held.length > 0) {
+      sent.push(await sendOne(held.shift()!, sent.length, sent));
     }
     released = true;
     return sent;
   };
 
-  return { provider: staged, release };
+  return { provider: staged, release, releaseFirst };
 }

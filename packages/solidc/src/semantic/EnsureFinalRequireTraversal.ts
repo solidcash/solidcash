@@ -49,15 +49,20 @@ import {
   EmptyFunctionError, FinalRequireStatementError, MissingReturnError, ReturnInExternalFunctionError,
   UnauthenticatedSelfdestructError, UnauthorizedLifecycleError,
 } from '../Errors.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 export default class EnsureFinalRequireTraversal extends AstTraversal {
   private isStatefulContract: boolean = false;
+  // State variables, collections or events: code generation pins the master and its value on every entry path.
+  private holdsState = false;
   private neverReturn = new Set<string>();
 
   constructor(
     private enforceFinalRequire: boolean = true,
     private allowUnsafeOperations: boolean = false,
     private lifecycleAuthorization: boolean = true,
+    /** A framed body's bare return ends only its frame, whose tail still runs. */
+    private framed: boolean = false,
   ) {
     super();
   }
@@ -86,6 +91,8 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       || (hasStatefulOperations
         ?? node.functions.some((func) => containsStatefulOperation(func.body?.statements)))
       || node.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT));
+    this.holdsState = node.stateVariables.length > 0 || node.collections.length > 0
+      || node.eventDefinitions.length > 0;
 
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
     if (node.constructorDef) {
@@ -102,7 +109,7 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
 
     if (node.functions.length === 0 && !node.fallbackDef && !node.receiveDef && !node.isAbstract) {
       // State-publishing contract: no spending path. Allowed, but warn that it is unspendable.
-      console.log(
+      emitCompilerWarning(
         `Warning: contract '${node.name}' has no functions; it compiles to an unspendable locking script. `
         + 'Funds sent to it cannot be recovered and the output just bloats the UTXO set. '
         + 'This is only useful for publishing immutable state on-chain.',
@@ -181,6 +188,10 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       && containsStatefulOperation(node.body.statements);
 
     if (!hasStateWrites) {
+      // SEM-1: a bare return ends an unverified spend unless the path still ends under a covenant that settles the
+      // contract's records (`endsUnderCensus`).
+      const returnsEndPath = !endsUnderCensus(node, this.framed, this.holdsState);
+      if (returnsEndPath) node.sealsUnguardedReturns = true;
       // selfdestruct functions skip all covenant codegen, so a missing require() means any caller can trigger
       // the destruction. Keep that a hard error regardless of enforceFinalRequire (the general no-verification
       // path is only a warning by default). The selfdestruct statement itself does not authorize the destruction.
@@ -189,6 +200,7 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       ensureFinalStatementIsRequire(
         node.body.statements,
         this.enforceFinalRequire || (isSelfdestruct && !this.allowUnsafeOperations),
+        returnsEndPath,
         !isSelfdestruct || !this.lifecycleAuthorization,
       );
     }
@@ -229,8 +241,26 @@ export function fallsOffEndCheck(freeFunctions: FunctionDefinitionNode[]): (fn: 
 function warnOrThrowUnverified(node: Node, strict: boolean): void {
   if (strict) throw new FinalRequireStatementError(node);
   const line = node.location?.start?.line;
-  console.log(`Warning: a spending path${line ? ` near line ${line}` : ''} performs no require()/verification `
+  emitCompilerWarning(`Warning: a spending path${line ? ` near line ${line}` : ''} performs no require()/verification `
     + 'and changes no state; it compiles as an unconditionally-spendable path. Add a require() to constrain it.');
+}
+
+const SETTLES_OWN_TOPOLOGY = new Set<FunctionModifier>([
+  FunctionModifier.SELFDESTRUCT, FunctionModifier.UNSAFE, FunctionModifier.SPLIT, FunctionModifier.MERGE,
+  FunctionModifier.UPGRADE, FunctionModifier.DEPLOY,
+]);
+
+// Whether every path of an entry ends under a covenant that settles the contract's records: a framed frame, whose
+// head pins the master and its value, or the collection census code generation runs for a direct entry of a
+// contract holding state that reads an entry. Without the census only C3's count holds, which a co-spent record
+// rewritten in place keeps balanced. Lifecycle entries, delegatecalls and the constructor are checked as ends.
+function endsUnderCensus(node: FunctionDefinitionNode, framed: boolean, holdsState: boolean): boolean {
+  if (node.name === '__construct' || node.modifiers.some((modifier) => SETTLES_OWN_TOPOLOGY.has(modifier))) {
+    return false;
+  }
+  if (framed) return true;
+  return holdsState && (node.entryAccesses?.length ?? 0) > 0
+    && !(node.lowLevelCalls?.some((call) => call.callMode === 'delegatecall') ?? false);
 }
 
 // selfdestruct(addr) value-pins the freed balance to outputs[0] == addr, but addr is whatever the covenant
@@ -256,7 +286,7 @@ function checkUnauthenticatedSelfdestruct(node: FunctionDefinitionNode, allowUns
     if (!allowUnsafe) throw new UnauthenticatedSelfdestructError(sd, node.name);
 
     const line = sd.location?.start?.line;
-    console.log(`Warning: selfdestruct in '${node.name}'${line ? ` at line ${line}` : ''} sends the freed `
+    emitCompilerWarning(`Warning: selfdestruct in '${node.name}'${line ? ` at line ${line}` : ''} sends the freed `
       + 'balance to a caller-supplied address with no signature check; any caller could redirect it to '
       + 'themselves. Authenticate it (e.g. require(checkSig(s, owner))) or take the destination from contract '
       + 'state / a constant (selfdestruct(this.beneficiary)). See packages/solidc/docs/selfdestruct.md.');
@@ -286,13 +316,14 @@ function checkLifecycleAuthorization(node: FunctionDefinitionNode, allowUnsafe: 
   if (!allowUnsafe) throw new UnauthorizedLifecycleError(node, node.name, kind);
 
   const line = node.location?.start?.line;
-  console.log(`Warning: ${kind} in '${node.name}'${line ? ` at line ${line}` : ''} has no trusted-key signature `
+  emitCompilerWarning(`Warning: ${kind} in '${node.name}'${line ? ` at line ${line}` : ''} has no trusted-key signature `
     + 'check; any caller can change the contract\'s lifecycle without authorization. Add require(checkSig(s, '
     + 'owner)) with a key the caller cannot choose.');
 }
 
+// `returnsEndPath`: an early bare return ends the spend here, so SEM-1 checks the path each one ends.
 function ensureFinalStatementIsRequire(
-  statements: StatementNode[] = [], strict = false, selfdestructIsTerminal = true,
+  statements: StatementNode[] = [], strict = false, returnsEndPath = true, selfdestructIsTerminal = true,
 ): void {
   const statementsWithoutLogs = statements.filter((statement) => !(statement instanceof ConsoleStatementNode));
   const finalStatement = statementsWithoutLogs[statementsWithoutLogs.length - 1];
@@ -304,9 +335,9 @@ function ensureFinalStatementIsRequire(
   const recursesIntoFinal = finalStatement instanceof BranchNode || finalStatement instanceof SwitchNode
     || finalStatement instanceof TryCatchNode || finalStatement instanceof UncheckedNode
     || finalStatement instanceof ReturnNode;
-  const unverifiedReturn = firstUnverifiedReturn(
+  const unverifiedReturn = returnsEndPath ? firstUnverifiedReturn(
     recursesIntoFinal ? statementsWithoutLogs.slice(0, -1) : statementsWithoutLogs,
-  );
+  ) : undefined;
   if (unverifiedReturn) {
     warnOrThrowUnverified(unverifiedReturn, strict);
     return;
@@ -314,7 +345,7 @@ function ensureFinalStatementIsRequire(
 
   // A bare return no earlier require/revert gates, the rule EarlyReturnTransformation seals by. It also catches a
   // return after an if/else whose only check sits in a loop that can run zero times.
-  if (bareReturnIsUnguarded(statementsWithoutLogs)) {
+  if (returnsEndPath && bareReturnIsUnguarded(statementsWithoutLogs)) {
     const returning = statementsWithoutLogs.find((statement) => statement instanceof ReturnNode
       || statement instanceof BranchNode) ?? finalStatement;
     warnOrThrowUnverified(returning, strict);
@@ -333,16 +364,16 @@ function ensureFinalStatementIsRequire(
       warnOrThrowUnverified(finalStatement, strict);
       return;
     }
-    ensureFinalStatementIsRequire(finalStatement.ifBlock.statements, strict);
-    ensureFinalStatementIsRequire(finalStatement.elseBlock.statements, strict);
+    ensureFinalStatementIsRequire(finalStatement.ifBlock.statements, strict, returnsEndPath);
+    ensureFinalStatementIsRequire(finalStatement.elseBlock.statements, strict, returnsEndPath);
     return;
   }
 
   // If the final statement is a try/catch, check both the try block and all catch clauses
   if (finalStatement instanceof TryCatchNode) {
-    ensureFinalStatementIsRequire(finalStatement.tryBlock.statements, strict);
+    ensureFinalStatementIsRequire(finalStatement.tryBlock.statements, strict, returnsEndPath);
     for (const clause of finalStatement.catchClauses) {
-      ensureFinalStatementIsRequire(clause.block.statements, strict);
+      ensureFinalStatementIsRequire(clause.block.statements, strict, returnsEndPath);
     }
     return;
   }
@@ -367,7 +398,7 @@ function ensureFinalStatementIsRequire(
 
   // Unchecked blocks are transparent - check their inner statements
   if (finalStatement instanceof UncheckedNode) {
-    ensureFinalStatementIsRequire(finalStatement.block.statements, strict);
+    ensureFinalStatementIsRequire(finalStatement.block.statements, strict, returnsEndPath);
     return;
   }
 
@@ -379,9 +410,9 @@ function ensureFinalStatementIsRequire(
       return;
     }
     for (const c of finalStatement.cases) {
-      ensureFinalStatementIsRequire(c.body.statements, strict);
+      ensureFinalStatementIsRequire(c.body.statements, strict, returnsEndPath);
     }
-    ensureFinalStatementIsRequire(finalStatement.defaultCase.statements, strict);
+    ensureFinalStatementIsRequire(finalStatement.defaultCase.statements, strict, returnsEndPath);
     return;
   }
 

@@ -73,8 +73,9 @@ describe('message-bus heavy work is per function', () => {
     expect(lowerCeiling.debug?.bytecode).toBe(higherCeiling.debug?.bytecode);
     const fastBytes = (lowerCeiling.debug?.bytecode.length ?? Infinity) / 2;
     const ordinaryBytes = (ordinaryCodegen.debug?.bytecode.length ?? Infinity) / 2;
-    expect(fastBytes).toBeLessThan(20_000);
-    expect(ordinaryBytes).toBeLessThan(20_000);
+    // The container hardening (satoshi-container sum, foreign container scan) put the kernel just past 20 kB.
+    expect(fastBytes).toBeLessThan(21_000);
+    expect(ordinaryBytes).toBeLessThan(21_000);
     expect(Math.abs(fastBytes - ordinaryBytes)).toBeLessThan(1_000);
   });
 

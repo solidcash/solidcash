@@ -5,6 +5,9 @@ const P = 'pragma solidcash ^0.13.0;';
 // Direct (non-kernel) compiles exercise the source-level covenant-authorization rules; the kernel lane manages
 // lifecycle authority through its own signature policy and is covered separately.
 const direct = { messageBus: false } as const;
+// An upgradable contract keeps no record (CRYPTO-4 binds each to the master lock an upgrade leaves), so its upgrade
+// cases compile stateful without state.
+const upgradable = { messageBus: false, forceStateful: true } as const;
 
 describe('a terminal loop must verify every iteration', () => {
   it('rejects a require that is only reached on some loop iterations', () => {
@@ -26,8 +29,8 @@ describe('a terminal loop must verify every iteration', () => {
 
 describe('upgrade and deploy entries require authorization', () => {
   it('rejects an unauthenticated upgrade entry', () => {
-    const source = `${P} contract C() { int v; function migrate() upgrade { this.v = this.v + 1; } }`;
-    expect(() => compileString(source, direct)).toThrow(/upgrade|trusted-key|authorization/i);
+    const source = `${P} contract C() { function migrate() upgrade { require(true); } }`;
+    expect(() => compileString(source, upgradable)).toThrow(/upgrade|trusted-key|authorization/i);
   });
 
   it('rejects an unauthenticated deploy entry', () => {
@@ -47,41 +50,41 @@ describe('upgrade and deploy entries require authorization', () => {
   });
 
   it('accepts an authenticated upgrade entry', () => {
-    const source = `${P} contract C(pubkey admin) { int v;`
-      + ' function migrate(sig s) upgrade { require(checkSig(s, admin)); this.v = this.v + 1; } }';
-    expect(() => compileString(source, direct)).not.toThrow();
+    const source = `${P} contract C(pubkey admin) {`
+      + ' function migrate(sig s) upgrade { require(checkSig(s, admin)); } }';
+    expect(() => compileString(source, upgradable)).not.toThrow();
   });
 
   it('accepts an either-key upgrade entry whose OR credit both trusted keys', () => {
     // `A || B` may be satisfied by either signature, so it authorizes when BOTH disjuncts are trusted-key checks.
-    const source = `${P} contract C(pubkey first, pubkey second) { int v;`
+    const source = `${P} contract C(pubkey first, pubkey second) {`
       + ' function migrate(sig s1, sig s2) upgrade { require(checkSig(s1, first) || checkSig(s2, second)); } }';
-    expect(() => compileString(source, direct)).not.toThrow();
+    expect(() => compileString(source, upgradable)).not.toThrow();
   });
 
   it('still rejects an OR whose other disjunct is not a trusted-key check', () => {
-    const source = `${P} contract C(pubkey admin) { int v;`
+    const source = `${P} contract C(pubkey admin) {`
       + ' function migrate(pubkey pk, sig s1, sig s2) upgrade { require(checkSig(s1, admin) || checkSig(s2, pk)); } }';
-    expect(() => compileString(source, direct)).toThrow(/upgrade|trusted-key|authorization/i);
+    expect(() => compileString(source, upgradable)).toThrow(/upgrade|trusted-key|authorization/i);
   });
 
   it('still rejects an OR whose other disjunct is not a signature check at all', () => {
-    const source = `${P} contract C(pubkey admin) { int v;`
+    const source = `${P} contract C(pubkey admin) {`
       + ' function migrate(sig s1, bool gate) upgrade { require(checkSig(s1, admin) || gate); } }';
-    expect(() => compileString(source, direct)).toThrow(/upgrade|trusted-key|authorization/i);
+    expect(() => compileString(source, upgradable)).toThrow(/upgrade|trusted-key|authorization/i);
   });
 
   it('accepts an authenticated upgrade entry when the guard follows an ordinary statement', () => {
     // The unconditional trusted-key require still runs on every path even when it is not the first statement.
-    const source = `${P} contract C(pubkey admin) { int v;`
-      + ' function migrate(sig s) upgrade { this.v = this.v + 1; require(checkSig(s, admin)); } }';
-    expect(() => compileString(source, direct)).not.toThrow();
+    const source = `${P} contract C(pubkey admin) {`
+      + ' function migrate(sig s, int floor) upgrade { require(floor >= 0); require(checkSig(s, admin)); } }';
+    expect(() => compileString(source, upgradable)).not.toThrow();
   });
 
   it('still rejects a conditional trusted-key guard nested in a branch', () => {
-    const source = `${P} contract C(pubkey admin) { int v;`
+    const source = `${P} contract C(pubkey admin) {`
       + ' function migrate(sig s, bool gate) upgrade { if (gate) { require(checkSig(s, admin)); } } }';
-    expect(() => compileString(source, direct)).toThrow(/upgrade|trusted-key|authorization/i);
+    expect(() => compileString(source, upgradable)).toThrow(/upgrade|trusted-key|authorization/i);
   });
 });
 

@@ -15,8 +15,11 @@ import {
   childStateLayoutDigest,
   computeEventNameHash,
   dynamicLenKey,
+  encodeEventParameter,
   encodePushdataValue,
+  EVENT_CHUNK_BYTES,
   parsePushdataCommitment,
+  splitEventPayload,
   scriptToAsm,
   splitValueIntoChunks,
   validateChildDeploymentGenesisState,
@@ -26,7 +29,7 @@ import {
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
 import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
-import type { Unlocker, Utxo } from '../interfaces.js';
+import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type { StateValueType } from '../types/state-inference.js';
 import {
   addressToLockScript, randomUtxo, scriptToLockingBytecode,
@@ -53,10 +56,12 @@ import {
   keyToSlotMulti,
   SortedList,
 } from './SortedList.js';
+import { loadCreateBuilderIterationInputs } from './sc-load-create-builder-iteration-inputs.js';
 import {
   artifactAddressForm, artifactUsesSolidityAbi, sortAddressPair, sortedAddressPairPacked,
 } from './solidityAbi.js';
 import { encodeExternalReturnValues } from './external-return-encoding.js';
+import { eventContinuationLockingBytecode } from './event-chunks.js';
 import type {
   DeployFromOptions, DeployFromResult,
 } from './stateful-lifecycle-types.js';
@@ -750,6 +755,133 @@ export async function deployFromStatefulContract<T extends Artifact>(
     }
   }
 
+  // Collection iteration over an enumerable mapping: co-spend the HEAD + entry chain read-only at
+  // input[masterInputIndex + blockSize + i] (the compiler's fixed input coordinate). Loading also appends the
+  // run-size witness (`__internal__collectionIterCount_N`) that the emitted iteration loop bounds itself by,
+  // which the hidden-argument fill below would otherwise refuse.
+  const iterationLoaded = await loadCreateBuilderIterationInputs(
+    {
+      categoryId: factory.categoryId,
+      inner: factory.inner,
+      rawIterationKeysBlob: undefined,
+      iterationKeys: undefined,
+      rawWindowUtxos: undefined,
+    },
+    {
+      abiFunction: deployAbi,
+      entryAbiFunction: deployAbi,
+      stateLayout: factoryLayout,
+      overrides: {},
+      finalArgs,
+    },
+  );
+  const iterationEntryInputs = iterationLoaded.iterationEntryInputs;
+  finalArgs = iterationLoaded.finalArgs;
+
+  // A runtime-loop vmap write (`for (i < ks.length) this.m[ks[i]] = v`) with a non-chunkable int value co-spends
+  // the bracketing predecessor once and mints the re-pointed predecessor + sorted NEW nodes as trailing entry
+  // outputs (range-splice). Only the admitted simple shape is resolved here; anything else fails closed below.
+  const upsertLoopInputs: Array<{ utxo: Utxo; unlocker: Unlocker }> = [];
+  const upsertLoopOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
+  for (const info of deployAbi.sortedUpsertLoopInfo ?? []) {
+    if (info.op !== 'set'
+      || (info.fixedKeyParams?.length ?? 0) > 0
+      || (info.fixedKeySources?.length ?? 0) > 0
+      || info.condition || info.iterationCondition || info.iterationBreakCondition
+      || info.valueArrayParam || info.valueTraceWitnessParam || info.prefixCountWitnessParam
+      || (info.varyingKeyExpressions?.length ?? 0) > 0
+      || (info.valueScalarParam === undefined && info.valueConst === undefined)) {
+      throw new Error(
+        `deployFrom cannot resolve the runtime-loop mapping write in '${deployFunctionName}'. `
+        + 'Only a plain `for (i < n) m[k[i]] = v` insert with a single int key and a scalar int value is '
+        + 'supported on the deploy path; recompile the loop without predicates, fixed keys, or chunkable values.',
+      );
+    }
+    const collection = factoryLayout.collections?.find((c) => c.name === info.collection);
+    if (!collection) throw new Error(`Unknown collection: ${info.collection}`);
+    const entryAddr = getEntryNftAddress(factory.inner, factory.categoryId, collection.signature);
+    const entryUtxos = (await provider.getUtxos(entryAddr)).filter((u) => (
+      u.token?.category === factory.categoryId && u.token?.nft?.capability === 'mutable'
+      && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0
+    ));
+    const list = SortedList.fromUtxos(entryUtxos);
+    const ksIndex = deployAbi.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+    const rawKeys = finalArgs[ksIndex] as unknown[];
+    if (!Array.isArray(rawKeys)) {
+      throw new Error(
+        `vmap runtime loop in '${deployFunctionName}' is missing its key array '${info.varyingArrayParam}'.`,
+      );
+    }
+    const encKey = (k: unknown): Uint8Array => {
+      if (typeof k === 'bigint') return bigIntToVmNumber(k);
+      throw new Error(`vmap runtime loop key in '${deployFunctionName}' must be an int, got ${typeof k}.`);
+    };
+    const slots = rawKeys.map((k) => keyToSlotMulti([encKey(k)], collection));
+    const order = slots.map((_, i) => i).sort((a, b) => (
+      bytesToSlotValue(slots[a]) < bytesToSlotValue(slots[b]) ? -1 : 1
+    ));
+    finalArgs[ksIndex] = order.map((i) => rawKeys[i]) as unknown as FunctionArgument;
+    const sortedSlots = order.map((i) => slots[i]);
+    for (let i = 1; i < sortedSlots.length; i += 1) {
+      if (bytesToSlotValue(sortedSlots[i]) === bytesToSlotValue(sortedSlots[i - 1])) {
+        throw new Error(`vmap runtime loop in '${deployFunctionName}' writes a duplicate key.`);
+      }
+    }
+    const valueTail = info.valueScalarParam !== undefined
+      ? bigIntToVmNumber(finalArgs[deployAbi.inputs.findIndex((p) => p.name === info.valueScalarParam)] as bigint)
+      : bigIntToVmNumber(BigInt(info.valueConst as string));
+    const predecessor = list.predecessorOf(sortedSlots[0]);
+    const predSlot = bytesToSlotValue(predecessor.slot);
+    const predNext = bytesToSlotValue(predecessor.nextKey);
+    for (const slot of sortedSlots) {
+      const slotValue = bytesToSlotValue(slot);
+      if (!(predSlot < slotValue && (predNext === 0n || slotValue < predNext))) {
+        throw new Error(
+          `vmap runtime loop in '${deployFunctionName}' spans multiple gaps; `
+          + 'the deploy path supports one range splice.',
+        );
+      }
+    }
+    const commitments: string[] = [
+      binToHex(encodeEntryCommitment(predecessor.slot, sortedSlots[0], predecessor.value)),
+    ];
+    for (let j = 0; j < sortedSlots.length; j += 1) {
+      const next = j < sortedSlots.length - 1 ? sortedSlots[j + 1] : predecessor.nextKey;
+      commitments.push(binToHex(encodeEntryCommitment(sortedSlots[j], next, valueTail)));
+    }
+    upsertLoopInputs.push({
+      utxo: predecessor.utxo,
+      unlocker: createEntryNftUnlocker(factory.inner, 0, factory.categoryId, info.collection),
+    });
+    for (const commitment of commitments) {
+      upsertLoopOutputs.push({
+        to: entryAddr,
+        amount: dataNftAmount,
+        token: {
+          category: factory.categoryId, amount: 0n,
+          nft: { capability: 'mutable' as const, commitment },
+        },
+      });
+    }
+  }
+
+  // Fill any remaining hidden deploy inputs with their canonical plain-path sentinels. A dynamic chunk write
+  // (allPairs.push) appends chunks as NEW outputs and co-spends no existing chunk inputs, so the negative
+  // sentinel makes the covenant reconstruct its output base (the same value the standalone-call path uses).
+  while (finalArgs.length < deployAbi.inputs.length) {
+    const input = deployAbi.inputs[finalArgs.length];
+    if (input.name === '__internal__dynamicChunkInputBase'
+      || input.name === '__internal__dynamicChunkOutputBase'
+      || input.name === '__internal__valueChunkOutputBase'
+      || input.name === '__internal__activeVerifierIndex') {
+      finalArgs = [...finalArgs, -1n];
+    } else {
+      throw new Error(
+        `deployFrom cannot resolve hidden deploy argument '${input.name}'. Recompile or extend the deploy path.`,
+      );
+    }
+  }
+
   // Placeholder entry NFT outputs for the VM probe (commitments derived from the trace).
   const entryPlaceholderOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
   for (const info of entryInfos) {
@@ -829,6 +961,35 @@ export async function deployFromStatefulContract<T extends Artifact>(
         unlocker: placeholderFunder,
       });
     }
+  }
+
+  // A deployDataNft slot is output-only, so any trailing run (collection iteration or a runtime-loop mapping
+  // write) that follows the fixed block must be preceded by one funder pad; otherwise its first input sits one
+  // slot early and breaks the compiled input coordinate.
+  const iterationEntryOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
+  for (const input of iterationEntryInputs) {
+    iterationEntryOutputs.push({
+      to: input.unlocker.generateLockingBytecode(),
+      amount: input.satoshis,
+      token: {
+        category: factory.categoryId, amount: 0n,
+        nft: { capability: 'mutable' as const, commitment: input.token?.nft?.commitment ?? '' },
+      },
+    });
+  }
+  let deployTrailingInputs: Array<{ utxo: Utxo; unlocker: Unlocker }> = [];
+  const deployTrailingOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [
+    ...iterationEntryOutputs, ...upsertLoopOutputs,
+  ];
+  if (iterationEntryInputs.length > 0 || upsertLoopInputs.length > 0) {
+    deployTrailingInputs = [
+      { utxo: await takeFunder(), unlocker: placeholderFunder },
+      ...iterationEntryInputs.map((input) => {
+        const { unlocker, ...utxo } = input;
+        return { utxo, unlocker };
+      }),
+      ...upsertLoopInputs,
+    ];
   }
 
   // Create unlockers for factory's master UTXO and data NFTs. The master is a covenant input like the data NFTs, so
@@ -1040,7 +1201,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
       : isAnonymous
         ? getAnonymousEventNftAddress(factory.inner, factory.categoryId)
         : getEventNftAddress(factory.inner, factory.categoryId, emitInfo.eventSignature);
-    let eventCommitment = '00';
+    let eventPayload = '00';
     // createPair PairCreated(token0, token1, pair, allPairs.length) - all args known off-chain.
     if (
       eventDef
@@ -1052,23 +1213,47 @@ export async function deployFromStatefulContract<T extends Artifact>(
       const eventArgs: unknown[] = [
         sortedTokenLbcs[0], sortedTokenLbcs[1], pairAddressValue, nextAllPairsLength,
       ];
-      const parts = eventDef.parameters.map((p, i) => encodePushdataValue(
-        eventArgs[i] as StateValue, p.type, factoryLayout.structs,
+      // Encode exactly as the wide-event covenant does: evm-notation numbers keep their natural width, so a
+      // uint256 arg is 32 bytes (not the variable-length VM number encodePushdataValue would produce).
+      const parts = eventDef.parameters.map((p, i) => encodeEventParameter(
+        eventArgs[i] as StateValue, p, factoryLayout.structs,
       ));
       const total = parts.reduce((n, p) => n + p.length, 0);
-      const commitmentBytes = new Uint8Array(total);
+      const payload = new Uint8Array(total);
       let off = 0;
-      for (const part of parts) { commitmentBytes.set(part, off); off += part.length; }
-      eventCommitment = binToHex(commitmentBytes);
+      for (const part of parts) { payload.set(part, off); off += part.length; }
+      eventPayload = binToHex(payload);
     }
+    const chunks = splitEventPayload(
+      hexToBin(eventPayload), factoryLayout.commitmentLimit ?? EVENT_CHUNK_BYTES,
+    );
     eventPlaceholderOutputs.push({
       to: eventNftAddress,
       amount: dataNftAmount,
       token: {
         category: factory.categoryId, amount: 0n,
-        nft: { capability: 'none', commitment: eventCommitment },
+        nft: { capability: 'none', commitment: binToHex(chunks[0]) },
       },
     });
+    // A wide emit's continuation chunks occupy the eventChunk slots immediately after its event slot. A chunk the
+    // payload does not reach stays a neutral no-token output so the return event and child genesis keep their
+    // fixed block-layout offsets (the covenant verifies an absent own-category token at that slot).
+    const eventChunkSlots = (deployAbi.blockLayout?.slots ?? []).filter(
+      (slot) => slot.kind === 'eventChunk' && slot.slotIndex === emitInfo.emitIndex,
+    ).sort((a, b) => (a.chunk ?? 0) - (b.chunk ?? 0));
+    for (let chunk = 1; chunk <= eventChunkSlots.length; chunk++) {
+      const data = chunks[chunk];
+      eventPlaceholderOutputs.push(data === undefined
+        ? { to: new Uint8Array([0x51]), amount: 1000n }
+        : {
+          to: eventContinuationLockingBytecode(factory.categoryId, emitInfo.eventSignature, isAnonymous),
+          amount: dataNftAmount,
+          token: {
+            category: factory.categoryId, amount: 0n,
+            nft: { capability: 'none', commitment: binToHex(data) },
+          },
+        });
+    }
   }
 
   // Dynamic-storage writes trail the fixed block after vmap batch P' (covenant: blockSize +
@@ -1118,9 +1303,10 @@ export async function deployFromStatefulContract<T extends Artifact>(
     deployFunctionName, finalArgs, requiredNftIndices,
     [...entryPlaceholderOutputs, ...containerOutputs, ...tokenContainerOutputs,
       ...eventPlaceholderOutputs, ...returnEventPlaceholders, ...childProbeOutputs,
-      ...dynamicWriteChunkOutputs],
+      ...deployTrailingOutputs, ...dynamicWriteChunkOutputs],
     [...entryExtraInputs, ...containerInputs, ...tokenContainerInputs,
-      ...fundingUtxos.map((fu) => ({ utxo: fu, unlocker: funder }))],
+      ...fundingUtxos.map((fu) => ({ utxo: fu, unlocker: funder })),
+      ...deployTrailingInputs],
     entryInfos.length,
     childLayout!.dataNftCount,
     deployTarget.hasFoldedChildCall === true,
@@ -1134,6 +1320,16 @@ export async function deployFromStatefulContract<T extends Artifact>(
     eventPlaceholderOutputs.length,
   );
   const keccakCoSpends = derivedKeccakCoSpends ?? [];
+  // A direct unbounded keccak256 chained read on the deploy function routes its preimage through the trailing
+  // START/CONT/FINAL side-cars. Resolve them here so the finalized transaction co-spends them at
+  // trailingBase + i; the derivation probe above already used the same side-cars to derive the digest state.
+  let deployKeccakChain: { sideCars: UnlockableUtxo[]; recreates: Output[] } | undefined;
+  if (deployAbi.keccakChainReads) {
+    const chainResolution = await (factory as any)._resolveKeccakComputeCoSpends(deployAbi, finalArgs, {
+      masterUtxo, stateInputUnlocker, dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
+    });
+    deployKeccakChain = chainResolution.chain;
+  }
 
   // Deploy-then-call fold: the covenant may verify a post-call child genesis (a same-tx
   // `child.foo(args)` folded into the deploy). Prefer the trace-derived commitment; fall back to the
@@ -1227,6 +1423,27 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // deploy output groups need N balancing inputs). Each is at vout 0 so its txid sources the child's category.
   for (const fu of fundingUtxos) {
     builder.addInput(fu, funder);
+  }
+
+  // Trailing run after the funding input: one funder pad at the deployDataNft output-only slot, then the
+  // collection-iteration HEAD + entries and/or the runtime-loop predecessor at input[blockSize+...],
+  // matching the compiled trailing input coordinates.
+  for (const { utxo, unlocker } of deployTrailingInputs) {
+    builder.addInput(utxo, unlocker);
+  }
+
+  // Chained keccak256 side-cars ride the trailing region after every fixed slot. Pad any fixed gap (the
+  // deployDataNft slot is output-only) so the START side-car lands at trailingBase, then append the chain.
+  let chainPadSats = 0n;
+  if (deployKeccakChain) {
+    const trailingBase = deployAbi.blockLayout?.trailingBase
+      ?? deployAbi.blockLayout?.blockSize ?? builder.inputs.length;
+    while (builder.inputs.length < trailingBase) {
+      const pad = await takeFunder();
+      chainPadSats += pad.satoshis;
+      builder.addInput(pad, placeholderFunder);
+    }
+    builder.addInputs(deployKeccakChain.sideCars);
   }
 
   // === Factory outputs (first) ===
@@ -1385,11 +1602,27 @@ export async function deployFromStatefulContract<T extends Artifact>(
     }
   }
 
+  // Collection-iteration entries are recreated 1:1 and runtime-loop P'/NEW nodes are minted at their compiled
+  // trailing coordinates, before any dynamic-chunk outputs, so the outside-layout census sees them where spent.
+  for (const output of deployTrailingOutputs) builder.addOutput(output);
+
   for (const output of dynamicWriteChunkOutputs) builder.addOutput(output);
+
+  // Chained keccak256 side-car recreations carry the running state and the FINAL digest at the trailing
+  // outputs. Pad any fixed gap with a neutral dust output so the START recreation lands at trailingBase.
+  if (deployKeccakChain) {
+    const trailingBase = deployAbi.blockLayout?.trailingBase
+      ?? deployAbi.blockLayout?.blockSize ?? builder.outputs.length;
+    while (builder.outputs.length < trailingBase) {
+      builder.addOutput({ to: new Uint8Array([0x51]), amount: 1000n });
+    }
+    for (const recreate of deployKeccakChain.recreates) builder.addOutput(recreate);
+  }
 
   // Change output. New entries cost dust from the funding UTXOs; existing entries are
   // satoshi-neutral (input funds output). N children cost N * (master + data NFTs); the N funding inputs' total
-  // satoshis cover them (any value >= that cost).
+  // satoshis cover them (any value >= that cost). The iteration chain is satoshi-neutral, but its funder pad has
+  // no matching output, so the pad's satoshis join the change.
   const newEntryCount = BigInt(trailingEntrySpecs.length);
   const totalChildCost = BigInt(childCount) * (masterAmount
     + (dataNftAmount * BigInt(childLayout!.dataNftCount + childGenesisEntries.length)));
@@ -1398,10 +1631,11 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const eventCost = dataNftAmount * BigInt(eventPlaceholderOutputs.length);
   const returnEventCost = returnEventPlaceholders.length > 0 ? 800n : 0n;
   const totalFundingSats = fundingUtxos.reduce((sum, fu) => sum + fu.satoshis, 0n);
+  const trailingPadSats = deployTrailingInputs[0]?.utxo.satoshis ?? 0n;
   // tokenTransferCost = dust for each tcTransfer output (the token container's own satoshis fund only its
   // recreated remainder; each transfer output's dust comes from the funding inputs).
-  const changeAmount = totalFundingSats - totalChildCost - totalEntryCost - totalDynamicChunkCost
-    - eventCost - returnEventCost
+  const changeAmount = totalFundingSats + trailingPadSats + chainPadSats - totalChildCost - totalEntryCost
+    - totalDynamicChunkCost - eventCost - returnEventCost
     - tokenTransferCost - fee;
   if (changeAmount > 0n) {
     if (!changeAddress) {

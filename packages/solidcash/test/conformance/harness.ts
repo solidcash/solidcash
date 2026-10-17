@@ -65,6 +65,31 @@ export async function assertBothAccept(c: ConformanceCase): Promise<void> {
   if (!pass) throw new Error(`Conformance${tag}: EVM accepted but the BCH covenant rejected`);
 }
 
+// The shared-subset dialect shim: ONE source string compiled by BOTH solc and solidc. The shared subset is a
+// Solidity-spelled `contract C { ... }` whose body is a self-contained `require(...)` covenant; solidc accepts
+// `pragma solidity` and the Solidity contract/visibility spellings (the grammar's tolerated pragma + the
+// `contractCase` path), and the require-covenant is what makes the BCH spend checkable. No per-dialect template is
+// generated - the exact bytes go to both compilers, so a parse divergence would fail here rather than hide.
+export async function assertSharedSourceAccepts(
+  source: string, fnName: string, args: readonly unknown[],
+): Promise<void> {
+  await evalEvm(compileEvm(source), fnName, args);
+  const pass = await evalBchCheck(compileBch(source, true), fnName, args);
+  if (!pass) throw new Error('Shared-source conformance: EVM accepted but the BCH covenant rejected');
+}
+
+// Build a shared-source case from a require-covenant body. The generated source is byte-identical on both sides.
+export function sharedSourceCase(o: {
+  params: string; body: string; args: readonly unknown[]; label?: string;
+}): { source: string; fnName: string; args: readonly unknown[]; label: string } {
+  return {
+    source: `${SPDX}contract C {\n  function f(${o.params}) public pure {\n    ${o.body}\n  }\n}\n`,
+    fnName: 'f',
+    args: o.args,
+    label: o.label ?? o.body,
+  };
+}
+
 // abi.encode/encodePacked/encodeWithSelector conformance against a baked ethers constant. Two independent layers:
 // (1) solc's OWN abi output must equal the ethers constant (validates the constant against the real compiler),
 // (2) the BCH covenant checks its abi output against that same baked constant. So the expected bytes are a fixed,

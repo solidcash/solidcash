@@ -51,17 +51,18 @@ describe('atomic route ineligibility matrix', () => {
     });
   });
 
+  // An upgradable contract keeps no record: CRYPTO-4 binds each to the master lock an upgrade leaves.
   it.each([
-    ['upgrade', 'function denied() upgrade { require(true); }'],
-    ['selfdestruct', 'function denied() selfdestruct { require(true); }'],
-    ['split', 'function denied(int n) split(n) { require(n >= 1); }'],
-    ['merge', 'function denied(int n) merge(n) { require(n >= 1); }'],
-    ['unsafe tier 0', 'function denied() unsafe { require(true); }'],
-    ['unsafe tier 1', 'function denied() unsafe(1) { require(true); }'],
-    ['unsafe tier 2', 'function denied() unsafe(2) { require(true); }'],
-  ])('rejects %s with the exact matrix diagnostic', (_label, denied) => {
+    ['upgrade', 'function denied() upgrade { require(true); }', ''],
+    ['selfdestruct', 'function denied() selfdestruct { require(true); }', 'int value;'],
+    ['split', 'function denied(int n) split(n) { require(n >= 1); }', 'int value;'],
+    ['merge', 'function denied(int n) merge(n) { require(n >= 1); }', 'int value;'],
+    ['unsafe tier 0', 'function denied() unsafe { require(true); }', 'int value;'],
+    ['unsafe tier 1', 'function denied() unsafe(1) { require(true); }', 'int value;'],
+    ['unsafe tier 2', 'function denied() unsafe(2) { require(true); }', 'int value;'],
+  ])('rejects %s with the exact matrix diagnostic', (_label, denied, state) => {
     const artifact = compileString(`contract C() {
-      int value;
+      ${state}
       ${denied}
       function control() public { require(true); }
     }`, {

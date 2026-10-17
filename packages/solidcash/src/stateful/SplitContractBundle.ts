@@ -12,6 +12,7 @@ import {
 import {
   ContractFactory, type DeployedContract, type DeployContractOptions, selectGenesisFundingUtxo,
 } from './ContractFactory.js';
+import { stripTrailingEthersOverrides } from './sc-build-namespaces.js';
 import {
   type ConnectedStatefulContract, type ContractRunner, StatefulContract, StatefulFunctionCall,
 } from './StatefulContract.js';
@@ -37,7 +38,7 @@ export class SplitContract {
   ) {
     this.call = new Proxy({}, {
       get: (_target, prop) => typeof prop === 'string'
-        ? (...args: FunctionArgument[]) => this.getFunction(prop)(...args)
+        ? (...args: FunctionArgument[]) => this.getFunction(prop)(...stripTrailingEthersOverrides(args))
         : undefined,
     }) as Record<string, (...args: FunctionArgument[]) => StatefulFunctionCall>;
     // ethers/typechain parity: expose ABI functions directly as well as through `.call`.
@@ -45,7 +46,7 @@ export class SplitContract {
       if (route.function in this) continue;
       Object.defineProperty(this, route.function, {
         enumerable: true,
-        value: (...args: FunctionArgument[]) => this.getFunction(route.function)(...args),
+        value: (...args: FunctionArgument[]) => this.getFunction(route.function)(...stripTrailingEthersOverrides(args)),
       });
     }
     for (const stateItem of [

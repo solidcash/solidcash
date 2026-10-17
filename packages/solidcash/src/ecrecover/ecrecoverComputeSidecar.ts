@@ -24,9 +24,10 @@ const numByte = (n: number): Uint8Array => Uint8Array.from([n]);
 export function buildEcrecoverComputeSidecars(
   wit: EcrecoverWitness, chunkA: number, salt: Uint8Array, sidecarA: Utxo, sidecarB: Utxo,
   padPrefix?: Uint8Array,
+  bRole: 'B' | 'B2' = 'B',
 ): { unlockerA: Unlocker; recreateA: Output; unlockerB: Unlocker; recreateB: Output; compressedQ: Uint8Array } {
-  const redeemA = buildEcrecoverComputeRedeem(salt, 'A'), redeemB = buildEcrecoverComputeRedeem(salt, 'B');
-  const lockA = ecrecoverComputeLockingBytecode(salt, 'A'), lockB = ecrecoverComputeLockingBytecode(salt, 'B');
+  const redeemA = buildEcrecoverComputeRedeem(salt, 'A'), redeemB = buildEcrecoverComputeRedeem(salt, bRole);
+  const lockA = ecrecoverComputeLockingBytecode(salt, 'A'), lockB = ecrecoverComputeLockingBytecode(salt, bRole);
   const to33 = (v: bigint): Uint8Array => {
     const b = new Uint8Array(33);
     let x = v;
@@ -81,6 +82,86 @@ export function buildEcrecoverComputeSidecars(
 }
 
 /**
+ * Build the THREE recovery side-cars (A -> M -> B) for a width-0 signature whose GLV ladder cannot fit a 2-input
+ * split. A still verifies sig+mask+table and ladders to checkpoint C1 (committing H_A); the middle covenant M is a
+ * PURE ladder C1->C2 committing H_M; B3 verifies H_M, ladders C2->Q and commits the recovered pubkey. The shared
+ * blob carries BOTH split points (chunkA, chunkM). The A covenant is unchanged from the 2-way pair (its parser
+ * drops the extra chunkM byte), so the same branded A UTXO serves both modes.
+ */
+export function buildEcrecoverComputeSidecars3(
+  wit: EcrecoverWitness, chunkA: number, chunkM: number, salt: Uint8Array,
+  sidecarA: Utxo, sidecarM: Utxo, sidecarB: Utxo,
+): {
+    unlockerA: Unlocker; recreateA: Output;
+    unlockerM: Unlocker; recreateM: Output;
+    unlockerB: Unlocker; recreateB: Output; compressedQ: Uint8Array;
+  } {
+  const redeemA = buildEcrecoverComputeRedeem(salt, 'A');
+  const redeemM = buildEcrecoverComputeRedeem(salt, 'M');
+  const redeemB = buildEcrecoverComputeRedeem(salt, 'B3');
+  const lockA = ecrecoverComputeLockingBytecode(salt, 'A');
+  const lockM = ecrecoverComputeLockingBytecode(salt, 'M');
+  const lockB = ecrecoverComputeLockingBytecode(salt, 'B3');
+  const to33 = (v: bigint): Uint8Array => {
+    const b = new Uint8Array(33);
+    let x = v;
+    for (let i = 0; x > 0n; i++, x >>= 8n) b[i] = Number(x & 0xffn);
+    return b;
+  };
+  const C1 = wit.checkpoints[chunkA];
+  const C2 = wit.checkpoints[chunkM];
+  // The shared hash-bound blob = masks || table || start || chunkA || chunkM.
+  const shared = Uint8Array.from([
+    ...wit.masks, ...wit.table, ...numByte(wit.start), ...numByte(chunkA), ...numByte(chunkM),
+  ]);
+  const aBlob = Uint8Array.from([
+    ...to33(wit.rinv), ...to33(wit.Ry), ...to33(wit.phiRx),
+    ...to33(wit.t1a), ...to33(wit.t2a), ...to33(wit.t1b), ...to33(wit.t2b), ...wit.invb,
+  ]);
+  const padTo = (witBytes: number): Uint8Array => new Uint8Array(Math.max(0, 9950 - witBytes));
+  const padA = padTo(wit.argBlob.length + shared.length + aBlob.length + redeemA.length);
+  const padM = padTo(wit.argBlob.length + shared.length + C1.length + redeemM.length);
+  const padB = padTo(wit.argBlob.length + shared.length + C2.length + wit.zinv.length + redeemB.length);
+  const unlockA: Unlocker = {
+    generateUnlockingBytecode: () => Uint8Array.from([
+      ...pushDataBytes(padA), ...pushDataBytes(wit.argBlob), ...pushDataBytes(shared),
+      ...pushDataBytes(aBlob), ...pushDataBytes(redeemA),
+    ]),
+    generateLockingBytecode: () => lockA,
+  };
+  const unlockM: Unlocker = {
+    generateUnlockingBytecode: () => Uint8Array.from([
+      ...pushDataBytes(padM), ...pushDataBytes(wit.argBlob), ...pushDataBytes(shared),
+      ...pushDataBytes(C1), ...pushDataBytes(redeemM),
+    ]),
+    generateLockingBytecode: () => lockM,
+  };
+  const unlockB: Unlocker = {
+    generateUnlockingBytecode: () => Uint8Array.from([
+      ...pushDataBytes(padB), ...pushDataBytes(wit.argBlob), ...pushDataBytes(shared),
+      ...pushDataBytes(C2), ...pushDataBytes(wit.zinv), ...pushDataBytes(redeemB),
+    ]),
+    generateLockingBytecode: () => lockB,
+  };
+  const nft = (lock: Uint8Array, commitment: Uint8Array, u: Utxo): Output => ({
+    to: lock, amount: u.satoshis,
+    token: {
+      category: u.token!.category, amount: u.token?.amount ?? 0n,
+      nft: { capability: 'mutable', commitment: binToHex(commitment) },
+    },
+  });
+  const HA = hash256(Uint8Array.from([...wit.argBlob, ...shared, ...C1]));
+  const HM = hash256(Uint8Array.from([...wit.argBlob, ...shared, ...C2]));
+  return {
+    unlockerA: unlockA, recreateA: nft(lockA, HA, sidecarA),
+    unlockerM: unlockM, recreateM: nft(lockM, HM, sidecarM),
+    unlockerB: unlockB,
+    recreateB: nft(lockB, ecrecoverComputeResultCommitment(wit.compressedQ), sidecarB),
+    compressedQ: wit.compressedQ,
+  };
+}
+
+/**
  * Build structurally valid probe placeholders for a recovery pair whose runtime (hash,v,r,s) arguments are not
  * known until the complete routed transaction executes. The owning covenant reads A's first two pushes and stops
  * at the argument bind, so the expensive recovery witness is intentionally absent. These placeholders must never
@@ -88,11 +169,12 @@ export function buildEcrecoverComputeSidecars(
  */
 export function buildEcrecoverComputePlaceholders(
   salt: Uint8Array, sidecarA: Utxo, sidecarB: Utxo,
+  bRole: 'B' | 'B2' = 'B',
 ): { unlockerA: Unlocker; recreateA: Output; unlockerB: Unlocker; recreateB: Output } {
   const lockA = ecrecoverComputeLockingBytecode(salt, 'A');
-  const lockB = ecrecoverComputeLockingBytecode(salt, 'B');
+  const lockB = ecrecoverComputeLockingBytecode(salt, bRole);
   const redeemA = buildEcrecoverComputeRedeem(salt, 'A');
-  const redeemB = buildEcrecoverComputeRedeem(salt, 'B');
+  const redeemB = buildEcrecoverComputeRedeem(salt, bRole);
   const placeholderArgs = new Uint8Array(97);
   const unlocker = (lock: Uint8Array, redeem: Uint8Array, tailPushes: number): Unlocker => ({
     generateUnlockingBytecode: () => Uint8Array.from([
@@ -223,6 +305,76 @@ export function probeEcrecoverSplit(wit: EcrecoverWitness, _salt: Uint8Array, sc
     throw new Error('ecrecover: no ladder split fits both side-cars\' op-budget for this signature (a rare '
       + 'high-Hamming-weight scalar makes the GLV ladder too long for a 2-covenant split). Re-sign to obtain a '
       + 'different signature, which will decompose differently.');
+  }
+  return best;
+}
+
+/**
+ * Deterministic 3-way split (chunkA, chunkM) via the same real-VM op-cost probe, used only when the 2-way probe
+ * throws (width-0). A ladders [0..chunkA], M ladders [chunkA..chunkM], B ladders [chunkM..L]. The window is wide
+ * (each input runs ~L/3 steps), so a coarse grid around the thirds seed finds the min-peak split with few evals.
+ */
+export function probeEcrecoverSplit3(
+  wit: EcrecoverWitness, _salt: Uint8Array, scA: Utxo, scM: Utxo, scB: Utxo,
+): { chunkA: number; chunkM: number } {
+  const vm = (probeVm ??= createVirtualMachineBch2026());
+  const salt = SHARED_LIBRARY_SALT;
+  const toTok = (t?: Utxo['token']): unknown => (t
+    ? { category: hexToBin(t.category), amount: t.amount ?? 0n,
+      nft: t.nft ? { capability: t.nft.capability, commitment: hexToBin(t.nft.commitment) } : undefined }
+    : undefined);
+  const laOut = (o: Output): unknown => ({ lockingBytecode: o.to, valueSatoshis: o.amount, token: toTok(o.token) });
+  const cost = (cA: number, cM: number): { a: number; m: number; b: number; ok: boolean } => {
+    const built = buildEcrecoverComputeSidecars3(wit, cA, cM, salt, scA, scM, scB);
+    const inputs = [scA, scM, scB].map((u, k) => ({
+      outpointIndex: u.vout, outpointTransactionHash: hexToBin(u.txid), sequenceNumber: 0xffffffff,
+      unlockingBytecode: [built.unlockerA, built.unlockerM, built.unlockerB][k]
+        .generateUnlockingBytecode({} as never),
+    }));
+    const sourceOutputs = [scA, scM, scB].map((u, k) => ({
+      lockingBytecode: [built.unlockerA, built.unlockerM, built.unlockerB][k].generateLockingBytecode(),
+      valueSatoshis: u.satoshis, token: toTok(u.token),
+    }));
+    const transaction = {
+      version: 2, locktime: 0, inputs,
+      outputs: [laOut(built.recreateA), laOut(built.recreateM), laOut(built.recreateB)],
+    };
+    const evalAt = (k: number): number => {
+      const r = vm.evaluate({ inputIndex: k, sourceOutputs, transaction } as never) as {
+        error?: string; metrics: { operationCost: number };
+      };
+      return r.error ? Infinity : r.metrics.operationCost;
+    };
+    const a = evalAt(0), m = evalAt(1), b = evalAt(2);
+    return { a, m, b, ok: Number.isFinite(a) && Number.isFinite(m) && Number.isFinite(b) };
+  };
+  const L = Math.max(1, wit.masks.length - wit.start - 1); // total ladder doubling steps
+  const seedA = Math.max(1, Math.round(L * 0.30));
+  const seedM = Math.max(seedA + 1, Math.round(L * 0.62));
+  let best: { chunkA: number; chunkM: number } | undefined;
+  let bestPeak = Infinity;
+  const consider = (cA: number, cM: number): void => {
+    if (cA < 1 || cM <= cA || cM > L) return;
+    const c = cost(cA, cM);
+    if (c.ok) {
+      const peak = Math.max(c.a, c.m, c.b);
+      if (peak < bestPeak) { bestPeak = peak; best = { chunkA: cA, chunkM: cM }; }
+    }
+  };
+  // Coarse grid (step 3, radius 21) covers the wide window; then a step-1 refinement around the best found.
+  const RADIUS = 21, STEP = 3;
+  for (let da = -RADIUS; da <= RADIUS; da += STEP) {
+    for (let dm = -RADIUS; dm <= RADIUS; dm += STEP) consider(seedA + da, seedM + dm);
+  }
+  if (best) {
+    const { chunkA, chunkM } = best;
+    for (let da = -STEP; da <= STEP; da++) {
+      for (let dm = -STEP; dm <= STEP; dm++) consider(chunkA + da, chunkM + dm);
+    }
+  }
+  if (!best) {
+    throw new Error('ecrecover: no 3-covenant ladder split fits the op-budget for this signature (A/M/B). '
+      + 'Re-sign to obtain a different decomposition.');
   }
   return best;
 }

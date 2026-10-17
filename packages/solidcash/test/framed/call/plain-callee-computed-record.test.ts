@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeDataPush, utf8ToBin } from '@bitauth/libauth';
+import { binToHex, encodeDataPush, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import {
-  INDEX_NONE, VALUE_INLINE_LIMIT, concatBytes, encodeWitnessBlock, hash160, splitFirstPush, type WitnessBlock,
+  INDEX_NONE, VALUE_INLINE_LIMIT, blockOracleFieldBytes, concatBytes, encodeWitnessBlock, hash160, splitFirstPush,
+  type WitnessBlock,
 } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
@@ -16,22 +17,25 @@ import {
  * (`callFramedEntry`).
  *
  * A desk, deployed without a proxy, files notes in a book, deployed on its own. The book keeps each note in a record
- * holding its owner, the time it was filed and the note itself: a struct holding a string, whose value chunks. The
- * time is the frame's own clock, and a later touch rewrites it behind a ternary, so the artifact states neither value
- * and the plan lays each write with its run of chunk records unstated. The book's own chunk pin then stops on the
- * count its body computed, with the value and its digest beside it: the call reads the value there and plans the
- * write again from it, as the hop plans its callee's (`planCalleeWrites`). A filing and a touch settle and are read
- * back through the views, and a plan whose book frame declares a chunk record of the value otherwise is refused by
- * the book's own frame.
+ * holding its owner, a stamp its body computes and the note itself: a struct holding a string, whose value chunks. A
+ * later touch rewrites the stamp behind a ternary, which the artifact does not state, so the plan lays that write
+ * with its run of chunk records unstated. The book's own chunk pin then stops on the count its body computed, with
+ * the value and its digest beside it: the call reads the value there and plans the write again from it, as the hop
+ * plans its callee's (`planCalleeWrites`). A filing and a touch settle and are read back through the views, and a
+ * plan whose book frame declares a chunk record of the value otherwise is refused by the book's own frame.
+ *
+ * A book that stamps with the clock reads the block oracle, which a framed body finds by its lock, so the planner
+ * co-spends it beside the callee's master. The root and every later callee reuse that one authenticated input.
  */
 
-const SOURCE = [
+/** The book and desk, the book's filing stamping each record with `stamp`. */
+const source = (stamp: string): string => [
   'pragma solidity ^0.8.20;',
   'struct Rec { address owner; uint64 at; string note; }',
   'contract Book {',
   '  mapping(uint256 => Rec) internal recs;',
   '  function open(uint256 id, string calldata note) external returns (uint256) {',
-  '    recs[id] = Rec(msg.sender, uint64(block.timestamp), note);',
+  `    recs[id] = Rec(msg.sender, ${stamp}, note);`,
   '    return id;',
   '  }',
   '  function touch(uint256 id) external {',
@@ -54,7 +58,11 @@ const SOURCE = [
   '}',
 ].join('\n');
 
-const artifacts = compileFramed(SOURCE);
+const artifacts = compileFramed(source('uint64(id + 1)'));
+const clockArtifacts = compileFramed(source('uint64(block.timestamp)'));
+const sharedClockArtifacts = compileFramed(source('uint64(block.timestamp)').replace(
+  '    last = book.open(id, note);', '    require(block.timestamp > 0); last = book.open(id, note);',
+));
 
 /** Notes long enough that the record holding one crosses what its node holds inline. */
 const NOTE = 'abcdefghijklmnopqrstuvwxyz'.repeat(4);
@@ -136,7 +144,7 @@ function withBlock(result: FramedCallResult, master: string, block: WitnessBlock
 }
 
 describe('a plain root whose callee writes a record its own body computes part of', () => {
-  it('files a note stamped with the frame\'s clock, then touches the stamp behind a ternary, each read back', async () => {
+  it('files a note stamped by the book\'s own body, then touches the stamp behind a ternary, each read back', async () => {
     const c = await chain();
     expect(utf8ToBin(NOTE).length).toBeGreaterThan(VALUE_INLINE_LIMIT);
     const filed = await enter(c, 'file', [ID, NOTE], ['Book.open()', 'Desk.file()']);
@@ -144,12 +152,10 @@ describe('a plain root whose callee writes a record its own body computes part o
     expect(await view(c, c.desk, 'lastId', [])).toBe(ID);
     expect(await view(c, c.book, 'noteOf', [ID])).toBe(NOTE);
     expect(namesContract(await view(c, c.book, 'ownerOf', [ID]), c.desk.address)).toBe(true);
-    const stamped = await view(c, c.book, 'atOf', [ID]);
-    expect(typeof stamped).toBe('bigint');
+    expect(await view(c, c.book, 'atOf', [ID])).toBe(ID + 1n);
 
     await enter(c, 'retouch', [ID], ['Book.touch()', 'Desk.retouch()']);
-    const before = stamped as bigint;
-    expect(await view(c, c.book, 'atOf', [ID])).toBe(before > 0n ? before + 1n : 1n);
+    expect(await view(c, c.book, 'atOf', [ID])).toBe(ID + 2n);
     expect(await view(c, c.book, 'noteOf', [ID])).toBe(NOTE);
     expect(namesContract(await view(c, c.book, 'ownerOf', [ID]), c.desk.address)).toBe(true);
   }, 600_000);
@@ -172,5 +178,32 @@ describe('a plain root whose callee writes a record its own body computes part o
     declared[last] = declared[last]! ^ 0x01;
     chunk!.viewOut = declared;
     expect(refusedOn(settled, withBlock(settled, book!.master, block))).toContain(book!.master);
+  }, 600_000);
+
+  it.each([false, true])('co-spends the callee clock once when the root also reads it: %s', async (rootReads) => {
+    const world = await newWorld(rootReads ? 0x64 : 0x63);
+    const selected = rootReads ? sharedClockArtifacts : clockArtifacts;
+    const book = await deployPlain(world, selected.Book!);
+    const desk = await deployPlain(world, selected.Desk!, [book.address]);
+    const result = await enter({ world, book, desk }, 'file', [ID, NOTE], ['Book.open()', 'Desk.file()']);
+    const lock = world.network.blockOracleLock!;
+    const oracleIndices = result.sourceOutputs.flatMap((output, index) =>
+      (binToHex(output.lockingBytecode) === binToHex(lock) ? [index] : []));
+    expect(oracleIndices).toHaveLength(1);
+    const oracleIndex = oracleIndices[0]!;
+    const oracle = result.sourceOutputs[oracleIndex]!;
+    const timestamp = blockOracleFieldBytes(oracle.token!.nft!.commitment, 'timestamp');
+    let expected = 0n;
+    for (let index = timestamp.length - 1; index >= 0; index -= 1) expected = (expected << 8n) | BigInt(timestamp[index]!);
+    expect(await view({ world, book, desk }, book, 'atOf', [ID])).toBe(expected);
+    const frame = result.completed.find((candidate) => candidate.functionName === 'Book.open()')!;
+    const index = result.draft.layout.participants.find((placed) => placed.id === frame.master)!.index;
+    // A mutable NFT at another lock cannot replace the oracle this callee's emitted bytecode pins.
+    const forgedSources = [...result.sourceOutputs];
+    forgedSources[oracleIndex] = { ...oracle, lockingBytecode: hexToBin('aa20' + '77'.repeat(32) + '87') };
+    const vm = compositionMachine();
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: index, sourceOutputs: forgedSources, transaction: result.transaction,
+    }))).not.toBe(true);
   }, 600_000);
 });

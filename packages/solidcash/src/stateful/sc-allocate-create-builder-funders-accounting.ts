@@ -110,7 +110,7 @@ export async function allocateCreateBuilderFunders(
   // "build then fund" approach (measure covenant tx size -> create fee input).
   if (effectiveBlockLayout && builder.funderUtxos.length === 0) {
     const outputOnlyKinds = new Set([
-      'transfer', 'tcTransfer', 'event', 'returnEvent', 'lowLevelCall', 'deploy', 'deployDataNft',
+      'transfer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent', 'lowLevelCall', 'deploy', 'deployDataNft',
     ]);
     timing?.('funder-accounting-start');
     const entryInfos = builder.getEntryNftInfos();

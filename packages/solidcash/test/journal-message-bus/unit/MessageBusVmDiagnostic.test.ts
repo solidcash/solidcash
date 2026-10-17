@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { describe, expect, it } from 'vitest';
-import { decodeAuthenticationInstructions, hexToBin } from '@bitauth/libauth';
+import { binToHex, decodeAuthenticationInstructions, hexToBin } from '@bitauth/libauth';
+import { BLOCK_ORACLE_LOCK_SENTINEL, applyBlockOracleLock, findBlockOracleLockSlots, type Artifact } from '@solidcash/utils';
+import { bindBlockOracleLock } from '../../../src/oracle/block-oracle-lock.js';
 import * as messageBus from '../../../src/message-bus/index.js';
 import { artifactTestRequires } from '../../fixture/debugging/debugging_contracts.js';
 
@@ -165,6 +167,30 @@ describe('message-bus batch VM refusal attribution', () => {
     );
     expect(error.message).toContain('invoked guard failed');
     expect(error).toMatchObject({ requireStatement, inputIndex: 0 });
+  });
+
+  it('attributes a require using the exact body with its bound oracle lock', () => {
+    const published = Uint8Array.from([0x00, 0x69, BLOCK_ORACLE_LOCK_SENTINEL.length,
+      ...BLOCK_ORACLE_LOCK_SENTINEL, 0x75]);
+    const lock = new Uint8Array(BLOCK_ORACLE_LOCK_SENTINEL.length).fill(0x42);
+    const statement = { ip: 1, line: 12, message: 'amount must be positive' };
+    const artifact = {
+      contractName: 'OracleGuard', functionBodies: {},
+      debug: { invokeDebug: { 3: { bytecode: binToHex(published), requires: [statement] } } },
+    } as unknown as Artifact;
+    bindBlockOracleLock(artifact, lock);
+    const builder = { inputs: [{ unlocker: { contract: { artifact }, abiFunction: { selector: '53434231' } } }] } as never;
+    const valid = transaction([0x53, 0x43, 0x42, 0x31, 1, 0, 1, ...Array(12).fill(0)]);
+    const bound = applyBlockOracleLock(published, lock, findBlockOracleLockSlots(published));
+    const failure = (body: Uint8Array) => ({ instructions: decodeAuthenticationInstructions(body), ip: 2 }) as never;
+    const attributed = messageBus.mapMessageBusVmFailure(builder, valid, 0, raw, failure(bound));
+    expect(attributed).toMatchObject({ requireStatement: statement, inputIndex: 0 });
+    expect(attributed.message).toContain(statement.message);
+    const wrongLock = applyBlockOracleLock(published, lock.map(() => 0x43), findBlockOracleLockSlots(published));
+    for (const changed of [published, wrongLock, Uint8Array.from([0x51, ...bound.slice(1)])]) {
+      expect(messageBus.mapMessageBusVmFailure(builder, valid, 0, raw, failure(changed)))
+        .not.toHaveProperty('requireStatement');
+    }
   });
 
   it('maps a VM-priced resource refusal without discarding its raw reason', () => {

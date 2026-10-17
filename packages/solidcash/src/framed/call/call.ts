@@ -79,6 +79,7 @@ import {
   type Artifact,
   type ExternalResultEncoding,
   type FixedBchTransferAbi,
+  type FunctionSplitBundle,
   type RecordEntry,
   type StateValue,
   type StructDefinitionInfo,
@@ -95,6 +96,9 @@ import { requireFramedFunderSighash } from '../sighash.js';
 import { traceBroadcast } from '../../tx-trace.js';
 import {
   deployMaster,
+  masterForEntry,
+  prepareFunctionSplitDeployment,
+  requireFunctionSplitShard,
   eventCloseOf,
   eventLockingBytecode,
   eventSentinel,
@@ -126,6 +130,7 @@ import {
   type LoopRecordMint, type LoopRecordSpan,
 } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
+import { bindProviderBlockOracle, blockOracleClock, entryReadsBlockOracle, framedBlockOracle } from './block-oracle.js';
 import { sendRecipient, type RecipientContext } from './send-recipient.js';
 import {
   FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
@@ -137,7 +142,6 @@ import {
   type CalleeValues, type PlannedCallees,
 } from './callees.js';
 import { bumpFramedCounter } from '../composer/counters.js';
-import { deploymentStateValues } from '../proxy/external-calls.js';
 import { FramedReadError, decodeReturnValues } from '../read/index.js';
 import {
   FramedComposerError,
@@ -204,6 +208,15 @@ export interface FramedCallOptions {
   readonly value?: bigint;
   /** The contracts the entry's value sends may pay, each found by the address its category derives. */
   readonly externals?: Readonly<Record<string, FramedExternal>>;
+  /**
+   * The per-entry bundle `artifact` is the logical contract of.
+   *
+   * The call spends the shard `functionName` names, at that shard's filled lock. A monolithic artifact leaves
+   * this unset and spends its single master.
+   */
+  readonly split?: FunctionSplitBundle;
+  /** Which overload `functionName` is, when the bundle has more than one shard of that name. */
+  readonly selector?: string;
 }
 
 /** A deployed contract a call may pay: its framed artifact and its category, as hex. */
@@ -532,6 +545,8 @@ interface EntryMappingRequest {
   readonly deployment: FramedDeploymentSet;
   /** The frame's state, `address(this)` and nodes' values, which its keys and guarded writes are decided from. */
   readonly facts: WriteActivationFacts;
+  /** The timestamp from the same authenticated oracle input the frame co-spends. */
+  readonly blockClock?: Readonly<Record<string, bigint>>;
   /** The lock the chunks a write leaves past its value's width are paid to: the user's, whose coin enters. */
   readonly releasedLock: Uint8Array;
   /**
@@ -610,6 +625,7 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
       declaredReadSlots: reads.nodes.map((node) => node.slotIndex),
       nodeIdOf: (collection, slot) => writtenNodeId(slot, several ? collection : undefined),
       activationFacts: facts,
+      ...(request.blockClock === undefined ? {} : { blockClock: request.blockClock }),
       ...valueReader,
       ...(request.writtenCommitments === undefined ? {} : { writtenCommitments: request.writtenCommitments }),
     });
@@ -744,7 +760,20 @@ const NO_EARLIER_RESULTS: EarlierResults = { reached: new Map(), returns: new Ma
 async function callInShape(
   options: FramedCallOptions, shape: SendShape, prior: EarlierResults = NO_EARLIER_RESULTS,
 ): Promise<FramedCallResult> {
-  const { provider, artifact, categoryId, functionName } = options;
+  const { provider, categoryId, functionName } = options;
+  let splitShard;
+  try {
+    splitShard = options.split === undefined
+      ? undefined
+      : requireFunctionSplitShard(options.split, functionName, options.selector);
+  } catch (error) {
+    throw new FramedCallError((error as Error).message);
+  }
+  // A v2 call executes the entry's own shard. A monolith keeps the artifact the caller passed.
+  // A shard that names a helper lock is replaced, once the validator program is known, by the clone whose
+  // sentinel already holds that lock.
+  let artifact = splitShard?.artifact ?? options.artifact;
+  const providerOracleLock = bindProviderBlockOracle(provider, artifact);
   const stateLayout = artifact.stateLayout;
   if (stateLayout === undefined) {
     throw new FramedCallError(`artifact "${artifact.contractName}" is not a stateful contract`);
@@ -786,24 +815,46 @@ async function callInShape(
     .filter((candidate) => !candidate.name.startsWith('__') || candidate.name === RECEIVE_ENTRY).length
     + (artifact.abi.some((candidate) => candidate.name === '__construct') ? 1 : 0);
   const hasFallback = artifact.abi.some((candidate) => candidate.name === FALLBACK_ENTRY);
-  if (dispatchedBodies <= 1 && !hasFallback) {
+  // A function shard is one body. Its root frame carries the arguments and not a selector: the selector salt
+  // lives on the callee arms. A monolith with one body still has no path here.
+  if (splitShard === undefined && dispatchedBodies <= 1 && !hasFallback) {
     throw new FramedCallError(
       `contract "${artifact.contractName}" has ${dispatchedBodies} dispatched body(ies), so a user's frame to it `
       + 'carries no selector, which this call path does not plan yet',
     );
   }
-  const published = publishedEntryOf(artifact, functionName);
-
   const { framedValidator } = await import('solidc/runtime');
   const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
   const machine = options.vm ?? createVirtualMachineBch2026ForProvider(provider);
   const category = new Uint8Array(hexToBin(categoryId));
+  if (splitShard !== undefined && options.split !== undefined
+    && (artifact.composition?.internalHelperLocks?.length ?? 0) > 0) {
+    const prepared = prepareFunctionSplitDeployment(options.split, category, validatorProgram);
+    const patched = prepared.shardArtifacts.get(splitShard.selector.toLowerCase());
+    if (patched === undefined) {
+      throw new FramedCallError(`function "${functionName}" is not in the prepared split`);
+    }
+    artifact = patched;
+    bindProviderBlockOracle(provider, artifact);
+  }
+  const published = publishedEntryOf(artifact, functionName);
   const deployed = deployMaster(artifact, category, validatorProgram);
   const structs = structDefinitionsOf(artifact);
 
   // The deployment's live pools and records, classified by category and ordered by data-NFT index.
   const deployment = await readFramedDeployment(provider, categoryId, stateLayout);
-  const master = deployment.masters[0];
+  let master = deployment.masters[0];
+  if (splitShard !== undefined) {
+    try {
+      master = masterForEntry({
+        masters: deployment.masters,
+        filledLock: deployed.lockingBytecode,
+        functionName,
+      });
+    } catch (error) {
+      throw new FramedCallError((error as Error).message);
+    }
+  }
   if (master === undefined) {
     throw new FramedCallError(`category ${categoryId} holds no master, which a root frame runs on`);
   }
@@ -844,10 +895,19 @@ async function callInShape(
   // A run whose element the artifact does not state, such as one an entry rewrites an element of in place, is sized
   // from the length the records state for its value: the live records until the body's close states the ones it
   // writes, as the hop sizes a frame's own run (`planHopDynamicRun`).
-  const activationFacts = deploymentActivationFacts(artifact, categoryId, deployment, deployed.address);
+  const BLOCK_ORACLE_INPUT = `${MASTER_ID}:block-oracle`;
+  const fetchedBlockOracle = entryReadsBlockOracle(artifact, functionName)
+    ? await framedBlockOracle(provider, providerOracleLock, functionName, (reason) => new FramedCallError(reason))
+    : undefined;
+  const blockClock = fetchedBlockOracle === undefined ? undefined : blockOracleClock(fetchedBlockOracle);
+  const deploymentFacts = deploymentActivationFacts(artifact, categoryId, deployment, deployed.address);
+  const activationFacts = {
+    ...deploymentFacts, stateValues: { ...deploymentFacts.stateValues, ...blockClock },
+  };
   const mappingRecords = entryMapping({
     artifact, functionName, args, senderLockingBytecode: options.callerLockingBytecode, categoryId, deployment,
     facts: activationFacts, releasedLock: options.callerLockingBytecode,
+    ...(blockClock === undefined ? {} : { blockClock }),
     writtenCommitments: prior.writtenRecords ?? records.map((record) => record.commitment),
   });
   const mappingIds = mappingRecords?.participantIds ?? [];
@@ -859,9 +919,14 @@ async function callInShape(
       return await planEntryCallees({
         provider, artifact, functionName, args, externals: options.externals ?? {}, validatorProgram, categoryId,
         deployment, selfAddress: deployed.address, senderAddress: options.callerLockingBytecode,
+        ...(blockClock === undefined ? {} : { blockClock }),
         ...(prior.reached.size === 0 ? {} : { reachedResults: prior.reached }),
         ...(returns.size === 0 ? {} : { externalReturns: returns }),
         ...(prior.writeValues.size === 0 ? {} : { calleeWriteValues: prior.writeValues }),
+        ...(options.split === undefined ? {} : { split: options.split }),
+        ...(splitShard === undefined ? {} : {
+          takenMasters: new Map([[categoryId, new Set([`${master.txid}:${master.vout}`])]]),
+        }),
       });
     } catch (error) {
       if (error instanceof FramedCalleeError) throw new FramedCallError(error.message);
@@ -871,14 +936,18 @@ async function callInShape(
   const calleePlan = await planCallees(prior.returns);
 
   // The fallback is reached by the call data of a value send, which no entry's selector names.
-  const argumentPushes = entry.name === FALLBACK_ENTRY
+  const selectorPushes = entry.name === FALLBACK_ENTRY
     ? [valueSendCallData(artifact)]
     : entryArgumentPushes(entry, args, structs, functionName);
+  // A sole-entry root does not push the selector. Callee frames still do: their arms equal-verify the salt.
+  const argumentPushes = splitShard !== undefined && entry.name !== FALLBACK_ENTRY
+    ? selectorPushes.slice(1)
+    : selectorPushes;
   // The events, sends and hashes a loop of the entry repeats, as many as the loop turns over the call's own facts.
   let loopTurns: EntryLoopTurns;
   try {
     loopTurns = entryLoopTurns({
-      artifact, functionName, args, stateValues: deploymentStateValues(stateLayout, categoryId, deployment),
+      artifact, functionName, args, stateValues: activationFacts.stateValues,
       selfAddress: deployed.address, senderAddress: options.callerLockingBytecode,
     });
   } catch (error) {
@@ -886,12 +955,16 @@ async function callInShape(
     throw error;
   }
   // The compute side-cars the entry's keccak256 and recovery calls read, one per call after the master.
+  // Every body finds the oracle by its pinned lock. A callee may already place the same live outpoint.
+  const blockOracle = fetchedBlockOracle !== undefined && [...calleePlan?.utxos.values() ?? []].some(
+    (utxo) => utxo.txid === fetchedBlockOracle.utxo.txid && utxo.vout === fetchedBlockOracle.utxo.vout,
+  ) ? undefined : fetchedBlockOracle;
   const sideCars = await entrySideCars({
     provider,
     master: MASTER_ID,
     abiFunction: artifact.abi.find((candidate) => candidate.name === functionName)!,
     argumentPushes,
-    leadingPushes: 1,
+    leadingPushes: argumentPushes === selectorPushes ? 1 : 0,
     ...(loopTurns.hashes === undefined ? {} : { hashes: loopTurns.hashes }),
   });
 
@@ -1109,22 +1182,34 @@ async function callInShape(
     return { ...block, masters: [...block.masters, receiveMasterId(index)], state };
   });
   const sharedPlan = calleePlan === undefined ? undefined : { ...calleePlan, blocks: calleeBlocks };
-  const besideCallees = {
-    masters: new Map(payeeBlocks.filter((_block, index) => payees[index]!.shared.length > 0)
-      .map((block) => [block, 1] as const)),
-    startViews,
-  };
+  const besideMasters = new Map<string, number>(payeeBlocks.filter((_block, index) => payees[index]!.shared.length > 0)
+    .map((block) => [block, 1]));
+  // The root master is another master of a same-category callee's block. The callee's fact counts it.
+  const selfBlock = (calleePlan?.callees ?? []).find((callee) => callee.categoryId === categoryId)?.block;
+  if (selfBlock !== undefined) besideMasters.set(selfBlock, (besideMasters.get(selfBlock) ?? 0) + 1);
+  const besideCallees = { masters: besideMasters, startViews };
 
   // One block for the contract: its master and its side-cars, its validator, and every record it reads and writes;
   // then one block for each contract it calls, holding the masters its frames run on and the records they read, and
   // one for each other contract it pays, holding the master that runs its `receive()` and its records.
+  // A same-category callee is another master of this contract. Its records are the root's, so it joins the
+  // root's block. A second block of the same name is the same deployment placed twice.
+  const ownCalleeBlocks = calleeBlocks.filter((block) => block.contract === artifact.contractName);
+  const otherCalleeBlocks = calleeBlocks.filter((block) => block.contract !== artifact.contractName);
   const blocks: ContractBlock[] = [{
     contract: artifact.contractName,
-    masters: [MASTER_ID],
+    masters: [MASTER_ID, ...ownCalleeBlocks.flatMap((block) => block.masters)],
     validator: { id: VALIDATOR_ID, settles: [] },
-    state: [...recordIds, ...mappingIds],
-    ...(sideCars.ids.length === 0 ? {} : { recovery: { [MASTER_ID]: sideCars.ids } }),
-  }, ...calleeBlocks, ...payees.flatMap((payee, index) => (payee.shared.length > 0 ? [] : [{
+    state: [...new Set([
+      ...recordIds, ...mappingIds, ...ownCalleeBlocks.flatMap((block) => block.state),
+    ])],
+    recovery: {
+      ...Object.assign({}, ...ownCalleeBlocks.map((block) => block.recovery ?? {})),
+      ...(sideCars.ids.length === 0 && blockOracle === undefined ? {} : {
+        [MASTER_ID]: [...sideCars.ids, ...(blockOracle === undefined ? [] : [BLOCK_ORACLE_INPUT])],
+      }),
+    },
+  }, ...otherCalleeBlocks, ...payees.flatMap((payee, index) => (payee.shared.length > 0 ? [] : [{
     contract: payeeBlocks[index]!,
     masters: [receiveMasterId(index)],
     state: [
@@ -1417,6 +1502,28 @@ async function callInShape(
     const segment = (_unused: unknown, position: number): DraftRecordEntry[] => [
       ...declared.map((record, at): DraftRecordEntry => {
         const index = recordIndex(record.id);
+        const nftIndex = frameDataRecordIndices(artifact, entry.name)[at];
+        const writes = (published?.writeSegments ?? [])
+          .filter((write) => write.record === nftIndex && write.turns === undefined);
+        // A segment after the record's own write only holds it. Both sides carry the view the chain left, the
+        // same way a callee's later segment does: leaving the end unstated would ask the body to compute it
+        // again from the value it wrote before the call.
+        if (writes.length > 0 && (published?.writeSegments ?? [])
+          .filter((write) => write.record === nftIndex).every((write) => write.turns === undefined)) {
+          const atSegment = (segmentIndex: number | 'last'): number => (
+            segmentIndex === 'last' ? segmentCount - 1 : segmentIndex);
+          const positions = writes.map((write) => atSegment(write.segment));
+          const first = Math.min(...positions);
+          if (position < first) {
+            return { in: index, out: index, viewIn: record.commitment, viewOut: record.commitment };
+          }
+          if (positions.includes(position)) {
+            return position === first
+              ? { in: index, out: index, viewIn: record.commitment }
+              : { in: index, out: index, viewIn: 'carried' };
+          }
+          return { in: index, out: index, viewIn: 'carried', viewOut: 'carried' };
+        }
         if (keptUntilLast[at] === true && position < segmentCount - 1) {
           return { in: index, out: index, viewIn: record.commitment, viewOut: record.commitment };
         }
@@ -1433,6 +1540,9 @@ async function callInShape(
       maximumCommitmentBytes, beside: besideCallees,
       callValues: new Map([...typedCallValues].map(([position, amount]) => [typedCalls[position]!.callee, amount])),
       releasedLock: options.callerLockingBytecode,
+      // A same-category callee shares this master. Counting the root makes the record it writes chain into the
+      // segment after the call.
+      ...(selfBlock === undefined ? {} : { rootBlock: selfBlock }),
     });
     // The calls its body makes, each value call into a contract where the body sends.
     const valueCalls = payees.map((payee, index): DraftCall => ({
@@ -1493,7 +1603,9 @@ async function callInShape(
         callerIsUser: true,
         originEqualsCaller: true,
         makesExternalCall: payees.length > 0 || calleePlan !== undefined,
-        mastersOfContract: 1,
+        // A same-category callee is another master of this contract. The fact counts the root plus those.
+        mastersOfContract: 1 + (calleePlan?.callees ?? [])
+          .filter((callee) => callee.categoryId === categoryId).length,
       },
       frame: { kind: FrameKind.ROOT, sender: options.callerLockingBytecode, self: deployed.address, value },
       enteredBy: CALLER_ID,
@@ -1508,10 +1620,11 @@ async function callInShape(
       sends: sendIndices,
       argumentPushes,
       redeemScript: deployed.script,
+      // A root carries call data when it has a selector to dispatch, or arguments a sole entry still reads.
       // The long mapping values its writes read, which its block lists.
       ...(laid?.values === undefined ? {} : { values: laid.values }),
-      // A root that carries call data is one a dispatcher selects an entry of.
-      dispatches: true,
+      // A root that carries call data is one a dispatcher selects an entry of, or a sole entry's arguments.
+      dispatches: argumentPushes.length > 0,
     };
     // Each contract it pays runs its `receive()` or its fallback in a message-call frame carrying the value, on its
     // own records.
@@ -1572,6 +1685,7 @@ async function callInShape(
     }
     if (laid !== undefined) Object.assign(inputs, laid.inputs);
     Object.assign(inputs, sideCars.inputs);
+    if (blockOracle !== undefined) inputs[BLOCK_ORACLE_INPUT] = blockOracle.input;
     Object.assign(inputs, callees?.inputs ?? {});
     payees.forEach((payee, index) => {
       inputs[receiveMasterId(index)] = {
@@ -1615,9 +1729,26 @@ async function callInShape(
     // keeps the view it declares.
     const ownCreated = [masterDraft, ...payeeDrafts].flatMap((frame) => frame.segments.flat())
       .filter((declaration) => declaration.in === INDEX_NONE);
+    // A data record the root writes in a segment the artifact names is a chain transition. The walk carries
+    // that segment's unstated end into a frame of the same contract below the call.
+    const nftIndices = frameDataRecordIndices(artifact, entry.name);
+    const rootWriteTransitions = callees?.chain === undefined ? [] : masterDraft.segments.flatMap(
+      (declarations, segmentIndex) => declarations.filter((declaration) => {
+        if (declaration.viewOut !== undefined || declaration.viewIn === 'carried') return false;
+        if (declaration.in === INDEX_NONE || !callees.chain!.nodes.has(declaration.in)) return false;
+        const at = declared.findIndex((record) => recordIndex(record.id) === declaration.in);
+        if (at < 0) return false;
+        const nftIndex = nftIndices[at];
+        return (published?.writeSegments ?? []).some((write) => write.turns === undefined
+          && write.record === nftIndex
+          && (write.segment === segmentIndex
+            || (write.segment === 'last' && segmentIndex === masterDraft.segments.length - 1)));
+      }),
+    );
     const chain = callees?.chain === undefined ? undefined : chainSharedNodeViews(
       [masterDraft, ...callees.masters, ...payeeDrafts], MASTER_ID, callees.chain.nodes,
-      new Set([...callees.chain.writes, ...ownCreated]), new Map(), false, callees.chain.relinks,
+      new Set([...callees.chain.writes, ...ownCreated, ...rootWriteTransitions]),
+      new Map(), false, callees.chain.relinks,
     );
     if (chain !== undefined) withChainEnds(layout.participants, chain.ends, inputs);
     const calleeCreated = chain === undefined
@@ -1658,7 +1789,8 @@ async function callInShape(
       ],
       validator: {
         id: VALIDATOR_ID,
-        covers: [...new Set([...(calleePlan?.contracts ?? []), ...payeeBlocks])],
+        covers: [...new Set([...(calleePlan?.contracts ?? []), ...payeeBlocks])]
+          .filter((name) => name !== artifact.contractName),
         settles: callees?.settles ?? [],
         redeemScript: validatorRedeem,
       },
@@ -2277,6 +2409,7 @@ async function callInShape(
     ...declared.map((record) => [record.id, record.utxo] as const),
     ...(mappingRecords?.spentUtxos ?? []),
     ...Object.entries(sideCars.utxos),
+    ...(blockOracle === undefined ? [] : [[BLOCK_ORACLE_INPUT, blockOracle.utxo] as const]),
     ...(calleePlan?.utxos ?? []),
     ...payees.flatMap((payee, index) => [
       [receiveMasterId(index), payee.master] as const,

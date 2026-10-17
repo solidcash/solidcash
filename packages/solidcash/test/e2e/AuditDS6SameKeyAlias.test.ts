@@ -20,7 +20,8 @@ import { getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
  * route's handler clone keep their flush at the end. A read of the delete's key after the write, in the delete's
  * arm or before its branch, sees the written value where the keys meet: a call whose require the written value fails
  * is refused though the old value passes it. So does a read between the write and an unconditional delete, and one
- * through an internal getter; a read of the key in an invoked function is refused at compile.
+ * through an internal getter; a read of the key in an invoked function is refused at compile. Unresolved indirect
+ * calls there fail closed unless the function type proves the target is pure.
  */
 
 const WRITE_FIRST_SOURCE = `contract SameKeyWriteFirst {
@@ -828,6 +829,36 @@ describe('a read of the key in a called function after a write before a delete o
       + '\'get\' after the write of `m[j]` is not supported on the direct convention');
   });
 
+  it('refuses unresolved function-pointer getter effects after a pending alias write', () => {
+    const getter = 'function get(int k) external view returns (int) { return m[k]; }';
+    const local = helperReadSource(getter, 'read(k) < 100').replace('m[j] = v;',
+      'function(int) external view returns (int) read = this.get; m[j] = v;');
+    const expression = helperReadSource(getter, 'readers[0](k) < 100').replace('m[j] = v;',
+      'function(int) external view returns (int)[] readers = [this.get]; m[j] = v;');
+    const nested = helperReadSource(`${getter}
+      function invoke(int k) external view returns (int) {
+        function(int) external view returns (int) read = this.get; return read(k);
+      }`, 'this.invoke(k) < 100');
+    // The unresolved target can read either the just-written key or a different key. Both refuse before codegen
+    // can publish a route that reads the spent node instead of the pending value.
+    for (const source of [local, expression, nested]) {
+      expect(() => compileString(source, { forceStateful: true }))
+        .toThrow('an indirect call with unresolved state-read effects after the write of `m[j]` '
+          + 'is not supported on the direct convention');
+    }
+  });
+
+  it('preserves pure function-pointer calls after a pending alias write', async () => {
+    const source = helperReadSource('function limit(int k) external pure returns (int) { return k + 100; }',
+      'read(k) > 100').replace('m[j] = v;',
+      'function(int) external pure returns (int) read = this.limit; m[j] = v;');
+    const { sc } = await deploy(source, 'setThenDrop');
+    await sc.getFunction('setThenDrop')(7n, 7n, 300n, 1n).send();
+    await expect(sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    await sc.getFunction('setThenDrop')(20n, 7n, 350n, 1n).send();
+    await expect(sc.getFunction('check')(20n, 350n).send()).resolves.toBeDefined();
+  }, 300_000);
+
   it('sees the written value through an internal getter, which is reduced in place', async () => {
     // Even at a short-circuit operand the getter becomes its return expression, a read in the delete's arm.
     const source = helperReadSource('function get(int k) internal view returns (int) { return m[k]; }',
@@ -835,6 +866,13 @@ describe('a read of the key in a called function after a write before a delete o
     const accepted = await deploy(source, 'setThenDrop');
     await accepted.sc.getFunction('setThenDrop')(7n, 7n, 50n, 1n).send();
     await expect(accepted.sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    await accepted.sc.getFunction('set')(7n, 70n).send();
+    await accepted.sc.getFunction('setThenDrop')(20n, 7n, 300n, 1n).send();
+    await expect(accepted.sc.getFunction('check')(20n, 300n).send()).resolves.toBeDefined();
+    await expect(accepted.sc.getFunction('check')(7n, 0n).send()).resolves.toBeDefined();
+    // A different key reads its own value, so the written 50 cannot satisfy a read of key 20's 300.
+    await expect(accepted.sc.getFunction('setThenDrop')(7n, 20n, 50n, 1n).send()).rejects.toThrow();
+    await expect(accepted.sc.getFunction('check')(20n, 300n).send()).resolves.toBeDefined();
     const refused = await deploy(source, 'setThenDrop');
     await expect(refused.sc.getFunction('setThenDrop')(7n, 7n, 300n, 1n).send()).rejects.toThrow();
     await expect(refused.sc.getFunction('check')(7n, 70n).send()).resolves.toBeDefined();

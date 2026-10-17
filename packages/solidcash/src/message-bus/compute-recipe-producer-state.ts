@@ -43,8 +43,10 @@ export async function deriveDirectCollectionLengthResult(input: {
   if (!selectedCollection) {
     throw new Error('messageBus: selected runtime callee does not publish the collection-length layout');
   }
-  const entries = await getEntriesImpl({ inner: selected.inner, categoryId: input.owner.categoryId },
-    collection.signature);
+  // A forwarding proxy's records bind the proxy master's lock. Only the layout is the executor's.
+  const inner = input.executor === undefined ? selected.inner
+    : Object.assign(Object.create(selected.inner), { lockingBytecode: input.owner.inner.lockingBytecode });
+  const entries = await getEntriesImpl({ inner, categoryId: input.owner.categoryId }, collection.signature);
   const matched = selectMappingEntryByKeys(
     entries, keys as Array<bigint | boolean | Uint8Array | string>,
     collection.keyType ? [collection.keyType] : undefined, collection,

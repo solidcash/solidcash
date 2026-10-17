@@ -24,7 +24,9 @@ const KERNEL = {
 } as const;
 
 describe('kernel nested caller identity with a co-spent SCID', () => {
-  it('uses the authenticated proxy identity for address(this) and a nested caller beside its SCID anchor', async () => {
+  // Pending the deferred model-B logical-identity migration (user decision 2026-10-14; deferrals.md, "Logical caller
+  // identity for native compiles"): native entries get no SCID anchor witness and a proxy root's identity is physical.
+  it.skip('uses the authenticated proxy identity for address(this) and a nested caller beside its SCID anchor', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x61), provider);
     for (let index = 0; index < 20; index += 1) {

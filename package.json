@@ -32,7 +32,9 @@
     "lerna": "^3.22.1",
     "semver": "^7.7.2",
     "tsx": "^4.20.3",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vite": "^6.4.1",
+    "@vitest/coverage-v8": "^5.0.4"
   },
   "scripts": {
     "test": "lerna run test --ignore solidcash-examples && yarn workspace testing-suite test",
@@ -49,6 +51,7 @@
     "test:security-conformance": "node scripts/release-security-conformance.mjs",
     "test:kernel-beta": "node scripts/kernel-beta-gate.mjs",
     "test:kernel-beta:local": "node scripts/kernel-beta-gate.mjs --tests-only --allow-dirty",
+    "check:source-tree": "node scripts/check-source-tree.mjs",
     "lint": "lerna run lint --ignore solidcash-examples && yarn workspace testing-suite lint",
     "examples": "tsx examples/p2pkh.ts && tsx examples/transfer_with_timeout.ts && tsx examples/hodl_vault.ts",
     "postinstall": "yarn build",

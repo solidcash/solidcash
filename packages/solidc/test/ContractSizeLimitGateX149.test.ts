@@ -199,8 +199,12 @@ describe('X149: the size gate measures the script, not its listing', () => {
     expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toContain(`${scriptBytes} bytes`);
   }, 120_000);
 
-  it('keeps a 255-site event and return kernel redeem script within the P2SH limit', () => {
-    const artifact = compileString(`contract RoutedEvent() {
+  /**
+   * A kernel route streams the emits of a handler whose emits all sit at its top level onto the trailing band, so
+   * an emitting handler no longer implies the 255-site event band. A conditional emit cannot stream: it keeps the
+   * band, which is what the first pin measures; the second pins the streamed form of the same contract.
+   */
+  const routedEvent = (emit: string): string => `contract RoutedEvent() {
       event Appended(uint256 key);
       mapping(uint256 => bigint[]) items;
       function itemsLength(uint256 key) public returns (uint256) {
@@ -208,14 +212,12 @@ describe('X149: the size gate measures the script, not its listing', () => {
       }
       function append(uint256 key) public {
         this.items[key].push(bigint(4) << 160);
-        emit Appended(key);
+        ${emit}
         require(this.items[key].length > 0);
       }
-    }`, {
-      forceStateful: true, messageBus: true, messageBusGraphContext: true,
-    });
+    }`;
+  const expectRoutedEventFits = (artifact: ReturnType<typeof compileString>): void => {
     const scriptBytes = asmToBytecode(artifact.bytecode).length;
-
     expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
     expect(artifact.messageBus?.maximumRows).toBe(255);
     expect(artifact.messageBus?.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
@@ -224,5 +226,24 @@ describe('X149: the size gate measures the script, not its listing', () => {
     expect(artifact.messageBus?.deployability?.measuredBytecodeBytes).toBe(scriptBytes);
     expect(scriptBytes).toBeLessThanOrEqual(MAX_INPUT_BYTESIZE);
     expect(sizeDiagnostics(artifact)).toHaveLength(0);
+  };
+
+  it('keeps a 255-site event and return kernel redeem script within the P2SH limit', () => {
+    const artifact = compileString(routedEvent('if (key > 0) emit Appended(key);'), {
+      forceStateful: true, messageBus: true, messageBusGraphContext: true,
+    });
+    expectRoutedEventFits(artifact);
+    expect(artifact.messageBus?.route.blockLayout?.slots.filter((slot) => slot.kind === 'event')).toHaveLength(255);
+  }, 120_000);
+
+  it('keeps a streamed event and return kernel redeem script within the P2SH limit, with no event band', () => {
+    const artifact = compileString(routedEvent('emit Appended(key);'), {
+      forceStateful: true, messageBus: true, messageBusGraphContext: true,
+    });
+    expectRoutedEventFits(artifact);
+    expect(artifact.messageBus?.route.blockLayout?.slots.some((slot) => slot.kind === 'event')).toBe(false);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append')).toMatchObject({
+      runtimeLoopEvents: [{ repeatCount: 1, eventSignatures: ['Appended(uint256)'], stream: true }],
+    });
   }, 120_000);
 });

@@ -12,6 +12,8 @@ import {
   attachDecodedAccessors,
   type Artifact,
   encodeChunkableValueTail,
+  EVENT_CHUNK_BYTES,
+  isAuxiliaryBlockSlot,
 } from '@solidcash/utils';
 import { binToHex, binsAreEqual, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
@@ -23,9 +25,11 @@ import { onMockNetworkProviderReset } from '../network/mock-reset.js';
 import { clearCollectionValueRecords } from './ValueChunkPersistence.js';
 import { assertFinalizedTransactionCovenants } from '../message-bus/preflight.js';
 import { parseEventCommitment } from './StateReader.js';
+import { eventContinuationLockingBytecode, joinEventContinuations } from './event-chunks.js';
 import { type Utxo, type UnlockableUtxo, type TransactionDetails, isContractUnlocker, type Unlocker } from '../interfaces.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
+import { sameIndexScidIdentityInputIndices } from './same-index-scid.js';
 
 /** Select a continuation lock without allowing compatibility state to override a live covenant pin. */
 export function selectValueChunkRedeemLock(parts: {
@@ -840,6 +844,8 @@ export class StatefulTransactionBuilder {
   private tokenContainerTransferInsertionCounter = 0;
   private readOnlyDataNftUtxos: UnlockableUtxo[];
   private blockhashCoSpendUtxos: UnlockableUtxo[];
+  private blockInfoCoSpendUtxos: UnlockableUtxo[] = [];
+  private delegateBlockInfoOracle = false;
   private blockhashCoSpendSlotOrdinals?: number[];
   private keccakComputeCoSpendUtxos: UnlockableUtxo[];
   private keccakComputeCommitments: string[];
@@ -880,6 +886,15 @@ export class StatefulTransactionBuilder {
   private insertLoopPredecessorInputs: UnlockableUtxo[];
   private keccakLoopSideCars: UnlockableUtxo[];
   private keccakLoopRecreates: Output[];
+  private get keccakLoopPrecedesTrailingUser(): boolean {
+    return (this.masterUtxo?.unlocker as { abiFunction?: { keccakLoopPrecedesTrailingUser?: boolean } })
+      ?.abiFunction?.keccakLoopPrecedesTrailingUser === true;
+  }
+
+  private get keccakLoopFollowsTrailingUser(): boolean {
+    return !this.keccakLoopPrecedesTrailingUser && this.insertLoopPredecessorInputs.length > 0;
+  }
+
   private blockLayout?: FunctionBlockLayout;
   private messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly valueChunkWriteStagingSession: ValueChunkWriteStagingSession;
@@ -951,7 +966,7 @@ export class StatefulTransactionBuilder {
 
   private runtimeLoopEventOutputs: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment: string;
-    rowIndex: number;
+    rowIndex: number; chunked?: true; continuation?: true;
   }> = [];
 
   private runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[] = [];
@@ -1055,6 +1070,8 @@ export class StatefulTransactionBuilder {
     this.categoryId = options.categoryId;
     this.readOnlyDataNftUtxos = options.readOnlyDataNftUtxos ?? [];
     this.blockhashCoSpendUtxos = options.blockhashCoSpendUtxos ?? [];
+    this.blockInfoCoSpendUtxos = options.blockInfoCoSpendUtxos ?? [];
+    this.delegateBlockInfoOracle = options.delegateBlockInfoOracle ?? false;
     this.blockhashCoSpendSlotOrdinals = options.blockhashCoSpendSlotOrdinals;
     this.keccakComputeCoSpendUtxos = options.keccakComputeCoSpendUtxos ?? [];
     this.keccakComputeCommitments = options.keccakComputeCommitments ?? [];
@@ -1623,6 +1640,7 @@ export class StatefulTransactionBuilder {
   private _refreshedUnlockerSyncHost(): RefreshedUnlockerSyncHost {
     const self = this;
     return {
+      coordinateBase: this.getComposedBlockBase(),
       allInputs: this.allInputs,
       get masterUtxo() { return self.masterUtxo; },
       set masterUtxo(next) { self.masterUtxo = next; },
@@ -1655,6 +1673,8 @@ export class StatefulTransactionBuilder {
       syncRefreshedCarrierMasters: (builder, carriers) => {
         this._syncRefreshedCarrierMasters(builder, carriers);
       },
+      getLoopEntryOutputBase: () => this.getLoopEntryOutputBase(),
+      getCallerTrailingBandEnd: () => this.getCallerTrailingBandEnd(),
     };
   }
 
@@ -1794,13 +1814,14 @@ export class StatefulTransactionBuilder {
       delegateComputeResources: this.delegateComputeResources,
       compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
       blockhashCoSpendUtxos: this.blockhashCoSpendUtxos,
+      blockInfoCoSpendUtxos: this.blockInfoCoSpendUtxos,
+      delegateBlockInfoOracle: this.delegateBlockInfoOracle,
       blockhashCoSpendSlotOrdinals: this.blockhashCoSpendSlotOrdinals,
       keccakComputeCoSpendUtxos: this.keccakComputeCoSpendUtxos,
       keccakComputeCommitments: this.keccakComputeCommitments,
       preserveBlockLayoutWidth: this.preserveBlockLayoutWidth,
       blockLayout: this.blockLayout,
       ecrecoverComputeRecreates: this.ecrecoverComputeRecreates,
-      keccakLoopRecreates: this.keccakLoopRecreates,
       externalOutStateUtxoGroups: this.externalOutStateUtxoGroups,
       externalCallStateUpdates: this.externalCallStateUpdates,
       externalCallStateRawCommitments: this.externalCallStateRawCommitments,
@@ -1821,6 +1842,7 @@ export class StatefulTransactionBuilder {
       externalCallEntryOutputs: this.externalCallEntryOutputs,
       delegateComputeResources: this.delegateComputeResources,
       compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
+      blockInfoCoSpendUtxos: this.delegateBlockInfoOracle ? this.blockInfoCoSpendUtxos : [],
       keccakComputeCoSpendUtxos: this.keccakComputeCoSpendUtxos,
       keccakComputeCommitments: this.keccakComputeCommitments,
       categoryId: this.categoryId,
@@ -1877,6 +1899,7 @@ export class StatefulTransactionBuilder {
   private _finalizeBuildStampHost(): FinalizeBuildStampHost {
     return {
       categoryId: this.categoryId,
+      rootStateContract: isContractUnlocker(this.masterUtxo.unlocker) ? this.masterUtxo.unlocker.contract : undefined,
       composedParticipant: this.composedParticipant,
       allInputs: this.allInputs,
       entryNfts: this.entryNfts,
@@ -1913,6 +1936,8 @@ export class StatefulTransactionBuilder {
       runtimeLoopEventOutputs: this.runtimeLoopEventOutputs,
       runtimeLoopTransferOutputs: this.runtimeLoopTransferOutputs,
       loopEntryCommitments: this.loopEntryCommitments,
+      keccakLoopRecreates: this.keccakLoopRecreates,
+      keccakLoopFollowsTrailingUser: this.keccakLoopFollowsTrailingUser,
       kernelJournalSettlementOutputPlan: this.kernelJournalSettlementOutputPlan,
       kernelJournalEagerOutputPlan: this.kernelJournalEagerOutputPlan,
       loopEntriesBeforeDynamicChunks: this.loopEntriesBeforeDynamicChunks,
@@ -1951,6 +1976,9 @@ export class StatefulTransactionBuilder {
       externalIdentityAnchorUtxos: this.externalIdentityAnchorUtxos,
       logicalIdentityUtxo: this.logicalIdentityUtxo,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
+      runtimeLoopOrComposed: this.getComposedBlockBase() > 0 || this.runtimeLoopTrailingSegments.length > 0
+        || this.runtimeLoopEventOutputs.length > 0 || this.runtimeLoopTransferOutputs.length > 0,
+      masterUnlocker: () => this.masterUtxo.unlocker,
       getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       getValueChunkVars: () => this.getValueChunkVars(),
       valueChunkRawCommitments: this.valueChunkRawCommitments,
@@ -2270,6 +2298,8 @@ export class StatefulTransactionBuilder {
         llcOutputsHost: this._materializeLowLevelCallOutputsHost(),
         trailingIterationHost: this._materializeTrailingIterationEntriesHost(),
         runtimeLoopHost: this._materializeRuntimeLoopTrailingHost(),
+        keccakLoopRecreates: this.keccakLoopRecreates,
+        keccakLoopFollowsTrailingUser: this.keccakLoopFollowsTrailingUser,
       }),
       lateChunkFrameHost: () => ({
         delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
@@ -2822,9 +2852,14 @@ export class StatefulTransactionBuilder {
       get dataNftUtxos() { return self.dataNftUtxos; },
       get readOnlyDataNftUtxos() { return self.readOnlyDataNftUtxos; },
       get blockhashCoSpendUtxos() { return self.blockhashCoSpendUtxos; },
+      get blockInfoCoSpendUtxos() { return self.blockInfoCoSpendUtxos; },
       get blockhashCoSpendSlotOrdinals() { return self.blockhashCoSpendSlotOrdinals; },
       get keccakComputeCoSpendUtxos() { return self.keccakComputeCoSpendUtxos; },
       get keccakLoopSideCars() { return self.keccakLoopSideCars; },
+      get keccakLoopPrecedesTrailingUser() {
+        return (self.masterUtxo?.unlocker as { abiFunction?: { keccakLoopPrecedesTrailingUser?: boolean } })
+          ?.abiFunction?.keccakLoopPrecedesTrailingUser === true;
+      },
       get ecrecoverComputeCoSpendUtxos() { return self.ecrecoverComputeCoSpendUtxos; },
       get lowLevelCallRawInputs() { return self.lowLevelCallRawInputs; },
       get iterationEntryInputs() { return self.iterationEntryInputs; },
@@ -2933,6 +2968,7 @@ export class StatefulTransactionBuilder {
 
   viewTailPackOptions(suffixStart?: number): ViewTailPackOptions {
     return {
+      reservedIndices: sameIndexScidIdentityInputIndices(this.allInputs),
       band: this.getChunkableValueWriteBand(),
       // Input and output counts are independent once return witnesses, computed
       // outputs, and suffix sidecars are materialized. Only enforce a suffix
@@ -3141,8 +3177,11 @@ export class StatefulTransactionBuilder {
       if (master < 0) continue;
       const allowed = allowedByCategory.get(group.categoryId) ?? new Set<number>();
       for (const slot of layout.slots) {
-        if (slot.kind === 'event' || slot.kind === 'returnEvent') allowed.add(master + slot.offset);
+        if (slot.kind === 'event' || slot.kind === 'eventChunk' || slot.kind === 'returnEvent') {
+          allowed.add(master + slot.offset);
+        }
       }
+      for (const offset of group.streamedEventPlan?.outputs.keys() ?? []) allowed.add(master + offset);
       allowedByCategory.set(group.categoryId, allowed);
     }
     for (const claim of lowLevelCallImmutableEventDestinations(
@@ -3831,8 +3870,9 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Seed fixed-size array element writes whose ABI valueSource is a compile-time integer.
-   * Mapping (vmap) writes use native slot||next||value commitments and must not go through setEntry.
+   * Seed an unsorted (legacy) fixed-size array's element writes whose ABI valueSource is a compile-time integer.
+   * Sorted (vmap) writes, mappings and DS-5 arrays alike, use native slot||next||value commitments and must not
+   * go through setEntry.
    */
   seedOptimisticArrayElementWrites(): boolean {
     if (this.entryUpdates.size > 0) return false;
@@ -3845,7 +3885,7 @@ export class StatefulTransactionBuilder {
       const access = accesses[slotIndex];
       if (!access.operations.includes('write') || access.operations.includes('delete')) continue;
       const collection = this.stateLayout.collections?.find((candidate) => candidate.name === access.collection);
-      if (collection === undefined || collection.kind !== 'array') continue;
+      if (collection === undefined || collection.kind !== 'array' || collection.sorted) continue;
       const valueType = collection.valueType ?? collection.elementType ?? 'int';
       const entryDelta = access.valueSource?.match(/^binop:([+-])\(entry,lit:(-?[0-9]+)\)$/);
       let value: bigint | undefined;
@@ -5623,8 +5663,22 @@ export class StatefulTransactionBuilder {
     }, 0);
     const externalReturnOutputCount = this.tailReturnEventOutputs()
       .filter((returnEvent) => returnEvent.categoryId !== this.categoryId).length;
+    // Old dynamic-storage chunks and the sorted-batch loop-alignment funder are co-spent BEFORE the nested
+    // callee blocks (buildInputs places them between the owner block and the participants). They shift every
+    // participant one coordinate right, so the trailing band must count them; otherwise the caller's loop-entry
+    // base lands on the last participant output (MasterChef.deposit: poolInfo old chunk + userInfo alignment
+    // funder push the LP block from offset 7 to 9, and userInfo HEAD then collides with the LP balances P').
+    // Without external participants these resources sit directly at the ordinary trailing base, so they must
+    // not be double-counted.
+    const preCalleeDynamicChunkCount = externalCallOutputCount > 0 ? this.dynamicChunkInputs.length : 0;
+    const loopAlignmentFunderCount = externalCallOutputCount > 0 && this.loopEntriesBeforeDynamicChunks
+      ? Math.max(0, this._trailingLoopEntryOutputCount() - this.insertLoopPredecessorInputs.length)
+      : 0;
+    // Identity anchors are recreated AFTER the local dynamic-chunk run (repairNestedCalleeOutputs), so they do
+    // not contribute to the coordinate where the trailing band begins.
     const trailingBase = base + externalCallOutputCount + externalReturnOutputCount
-      + lowLevelCallOutputCount + this.iterationEntryInputs.length;
+      + lowLevelCallOutputCount + this.iterationEntryInputs.length
+      + preCalleeDynamicChunkCount + loopAlignmentFunderCount;
     if (this.delegateEntriesAfterLowLevel) {
       // Delegate-only loop entries are appended after the caller's reserved trailing block. They must not move
       // the caller's dynamic-chunk base into that delegate suffix; only local loop entries precede local chunks.
@@ -5635,6 +5689,7 @@ export class StatefulTransactionBuilder {
     // mapping-value continuations. Do not add nested jobEvents width here — that band is
     // shifted past this base in getChunkableValueWriteBand instead.
     return trailingBase
+      + (!this.keccakLoopFollowsTrailingUser ? this.keccakLoopRecreates.length : 0)
       + (this.loopEntriesBeforeDynamicChunks ? this._trailingLoopEntryOutputCount() : 0)
       + this.runtimeLoopEventOutputs.length
       + this.runtimeLoopTransferOutputs.length;
@@ -5762,9 +5817,68 @@ export class StatefulTransactionBuilder {
 
   getRuntimeLoopEventOutputs(): ReadonlyArray<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment: string;
-    rowIndex: number;
+    rowIndex: number; chunked?: true; continuation?: true;
   }> {
     return this.runtimeLoopEventOutputs;
+  }
+
+  /**
+   * Replace the planned records of the chunked row whose stream starts at output `base` with the ordered records
+   * its effect verifier read there (`extractRuntimeEffectStreamRuns`). A record at a head lock the row planned
+   * starts an event; any other continues the event before it. Returns whether the plan changed.
+   */
+  applyRuntimeLoopEventStream(
+    base: number, records: readonly { commitment: string; lockingBytecode: Uint8Array }[],
+  ): boolean {
+    const outputs = this.runtimeLoopEventOutputs;
+    let first = -1;
+    try {
+      first = outputs.findIndex((_output, index) => this.getRuntimeLoopEventOutputIndex(index) === base);
+    } catch {
+      return false;
+    }
+    if (first < 0 || records.length === 0) return false;
+    const { rowIndex } = outputs[first];
+    let end = first;
+    while (end < outputs.length && outputs[end].rowIndex === rowIndex) end += 1;
+    const planned = outputs.slice(first, end);
+    if (!planned.every((output) => output.chunked)) return false;
+    const heads = new Map(planned.filter((output) => !output.continuation)
+      .map((output) => [binToHex(output.lockingBytecode), output]));
+    const learned: typeof outputs = [];
+    for (const record of records) {
+      const head = heads.get(binToHex(record.lockingBytecode));
+      const previous = learned.at(-1);
+      if (head !== undefined) {
+        learned.push({
+          eventSignature: head.eventSignature, lockingBytecode: head.lockingBytecode,
+          ...(head.categoryId !== undefined && { categoryId: head.categoryId }),
+          commitment: record.commitment, rowIndex, chunked: true,
+        });
+      } else if (previous !== undefined) {
+        learned.push({
+          eventSignature: previous.eventSignature, lockingBytecode: Uint8Array.from(record.lockingBytecode),
+          ...(previous.categoryId !== undefined && { categoryId: previous.categoryId }),
+          commitment: record.commitment, rowIndex, chunked: true, continuation: true,
+        });
+      } else {
+        return false;
+      }
+    }
+    if (learned.length === planned.length && learned.every((output, index) =>
+      output.commitment === planned[index].commitment
+      && binToHex(output.lockingBytecode) === binToHex(planned[index].lockingBytecode))) return false;
+    const segments = this.runtimeLoopTrailingSegments;
+    const own = segments.find((segment) => segment.kind === 'events'
+      && segment.offset === first && segment.count === planned.length);
+    if (segments.length > 0 && own === undefined) return false;
+    const delta = learned.length - planned.length;
+    for (const segment of segments) {
+      if (segment !== own && segment.kind === 'events' && segment.offset >= end) segment.offset += delta;
+    }
+    if (own !== undefined) own.count = learned.length;
+    outputs.splice(first, planned.length, ...learned);
+    return true;
   }
 
   setRuntimeLoopEventRawCommitment(index: number, commitment: string): this {
@@ -5892,6 +6006,22 @@ export class StatefulTransactionBuilder {
   /** Number of mapping-entry outputs owned by this builder's balanced trailing frame. */
   getTrailingLoopEntryOutputCount(): number {
     return this._trailingLoopEntryOutputCount();
+  }
+
+  /**
+   * First output index past this frame's own trailing band (loop entries, dynamic/value chunks, identity
+   * anchors, runtime effects). A nested callee's trailing predecessor must resolve at or after this
+   * coordinate: the caller materializes its own trailing resources first, so a callee whose PredOut names a
+   * coordinate inside that band reads the caller's entry instead of its own.
+   */
+  getCallerTrailingBandEnd(): number {
+    let end = this.getChunkOutputBase();
+    end += this._dynamicChunkOutputCount();
+    end += this._valueChunkOutputCount();
+    end += this.externalIdentityAnchorUtxos.length + (this.logicalIdentityUtxo ? 1 : 0);
+    end += this.runtimeLoopEventOutputs.length + this.runtimeLoopTransferOutputs.length;
+    end += this.keccakLoopRecreates.length;
+    return end;
   }
 
   /**
@@ -6023,6 +6153,16 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /** The raw event payload learned so far for an emit index, if any. */
+  getEventRawCommitment(emitIndex: number): string | undefined {
+    return this.eventRawCommitments.get(emitIndex);
+  }
+
+  /** Payload bytes one event NFT commitment carries for this contract (its commitment limit). */
+  getEventChunkBytes(): number {
+    return this.stateLayout.commitmentLimit ?? EVENT_CHUNK_BYTES;
+  }
+
   /**
    * Add an event placeholder for probe transactions (empty commitment).
    */
@@ -6042,10 +6182,10 @@ export class StatefulTransactionBuilder {
    * Get the master input index for an external outState group.
    */
   getExternalOutStateMasterInputIndex(groupIdx: number): number {
-    let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
-      + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
+    let base = 1 + this.dataNftUtxos.length + this.frontRegionAuxiliaryWidth();
     for (let i = 0; i < groupIdx; i++) {
       base += 1 + this.externalOutStateUtxoGroups[i].dataNftUtxos.length
+        + (this.externalOutStateUtxoGroups[i].blockhashCoSpendUtxos?.length ?? 0)
         + (this.externalOutStateUtxoGroups[i].keccakInputs?.length ?? 0);
     }
     return base;
@@ -6055,10 +6195,10 @@ export class StatefulTransactionBuilder {
    * Get the output index where outState group's master NFT output starts.
    */
   getExternalOutStateOutputBase(groupIdx: number): number {
-    let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
-      + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
+    let base = 1 + this.requiredNftIndices.length + this.frontRegionAuxiliaryWidth();
     for (let i = 0; i < groupIdx; i++) {
       base += 1 + this.externalOutStateUtxoGroups[i].dataNftUtxos.length
+        + (this.externalOutStateUtxoGroups[i].blockhashCoSpendUtxos?.length ?? 0)
         + (this.externalOutStateUtxoGroups[i].keccakInputs?.length ?? 0);
     }
     return base;
@@ -6104,11 +6244,11 @@ export class StatefulTransactionBuilder {
     const found = master && this.allInputs.findIndex((input) => input.txid === master.txid
       && input.vout === master.vout);
     if (found !== undefined && found >= 0) return found;
-    let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
-      + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
+    let base = 1 + this.dataNftUtxos.length + this.frontRegionAuxiliaryWidth();
     // Skip outState inputs
     for (const g of this.externalOutStateUtxoGroups) {
-      base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
+      base += 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
+        + (g.keccakInputs?.length ?? 0);
     }
     // A chunk run co-spent BEFORE the callees (see iterationChunksPrecedeCallees) shifts them by its count.
     if (this.iterationChunksPrecedeCallees()) base += this.iterationEntryInputs.length;
@@ -6159,11 +6299,11 @@ export class StatefulTransactionBuilder {
       const aligned = this.getExternalCallMasterInputIndex(groupIdx);
       if (aligned >= 0) return aligned;
     }
-    let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
-      + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
+    let base = 1 + this.requiredNftIndices.length + this.frontRegionAuxiliaryWidth();
     // Skip outState outputs
     for (const g of this.externalOutStateUtxoGroups) {
-      base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
+      base += 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
+        + (g.keccakInputs?.length ?? 0);
     }
     // The read array's chunk preservation outputs precede the callee outputs only when its inputs precede the
     // callees (see build()), shifting them by the chunk count.
@@ -6221,6 +6361,11 @@ export class StatefulTransactionBuilder {
   ownerMasterLock(): Uint8Array | undefined {
     const lock = this.masterUtxo?.lockingBytecode;
     return lock?.length === 35 ? lock : undefined;
+  }
+
+  /** The top-level contract's token category: the physical state owner a direct delegatecall writes into. */
+  get rootCategoryId(): string {
+    return this.categoryId;
   }
 
   /** Resolve an exact collection lock, retaining schema inference only for descriptor-free legacy plans. */
@@ -6291,11 +6436,11 @@ export class StatefulTransactionBuilder {
       }
       return positionedBase;
     }
-    let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
-      + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
+    let base = 1 + this.dataNftUtxos.length + this.frontRegionAuxiliaryWidth();
     // Skip outState inputs
     for (const g of this.externalOutStateUtxoGroups) {
-      base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
+      base += 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
+        + (g.keccakInputs?.length ?? 0);
     }
     // Skip external call inputs (use full block size when available)
     for (const g of this.externalCallUtxoGroups) {
@@ -6305,7 +6450,7 @@ export class StatefulTransactionBuilder {
     // Skip the main block's output-only funder inputs (event/transfer): they sit inside the proxy block,
     // before the low-level call inputs. A delegatecall'd impl that emits events reserves such slots here.
     for (const s of this.blockLayout?.slots ?? []) {
-      if (s.kind === 'event' || s.kind === 'transfer' || s.kind === 'tcTransfer'
+      if (s.kind === 'event' || s.kind === 'eventChunk' || s.kind === 'transfer' || s.kind === 'tcTransfer'
         || (s.kind === 'entry' && !this.delegateEntriesAfterLowLevel)) base += 1;
     }
     // Skip preceding low-level call groups
@@ -6542,12 +6687,10 @@ export class StatefulTransactionBuilder {
 
     const masterOutputCount = 1;
     const dataNftOutputCount = this.requiredNftIndices.length;
-    const readOnlyOutputCount = this.readOnlyDataNftUtxos.length;
-    const blockhashOutputCount = this.blockhashCoSpendUtxos.length;
-    const keccakOutputCount = this.keccakComputeCoSpendUtxos.length;
-    const ecrecoverOutputCount = this.ecrecoverComputeCoSpendUtxos.length;
+    const frontAuxiliaryOutputCount = this.frontRegionAuxiliaryWidth();
     const outStateOutputCount = this.externalOutStateUtxoGroups.reduce(
-      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0), 0,
+      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
+        + (g.keccakInputs?.length ?? 0), 0,
     );
     const externalCallOutputCount = this.externalCallUtxoGroups.reduce(
       (sum, g) => (g.blockInputs ? sum + g.blockInputs.length : sum + 1 + g.dataNftUtxos.length), 0,
@@ -6573,9 +6716,8 @@ export class StatefulTransactionBuilder {
     // the witness-side formula in StatefulContract (returnEventOutputBase counts iterationEntryInputs).
     const chunkBeforeCalleeCount = this.iterationChunksPrecedeCallees() ? this.iterationEntryInputs.length : 0;
     // Low-level call outputs are now AFTER entries/SC/TCs/transfers/events (matching block layout)
-    return masterOutputCount + dataNftOutputCount + readOnlyOutputCount + blockhashOutputCount + keccakOutputCount
-      + ecrecoverOutputCount + outStateOutputCount + externalCallOutputCount + chunkBeforeCalleeCount
-      + leadingDelegateOutputCount;
+    return masterOutputCount + dataNftOutputCount + frontAuxiliaryOutputCount + outStateOutputCount
+      + externalCallOutputCount + chunkBeforeCalleeCount + leadingDelegateOutputCount;
   }
 
   /**
@@ -6619,6 +6761,24 @@ export class StatefulTransactionBuilder {
     if (entryOffsets.length === 0) return false;
     const maxEntry = Math.max(...entryOffsets);
     return this.blockLayout.slots.some((s) => s.offset > maxEntry);
+  }
+
+  /**
+   * Number of front-region auxiliary co-spend slots the owner block reserves, in the compiler's canonical band
+   * order. Derived from the block layout when available so a future band reorder is reflected automatically;
+   * manual builders without a layout use the dense active co-spend counts. Delegate `lowLevelCall` is excluded
+   * because the legacy assembly keeps it outside this band, and a delegated block-info oracle is excluded
+   * because its recreate rides the implementation band instead of the owner band.
+   */
+  private frontRegionAuxiliaryWidth(): number {
+    if (this.blockLayout) {
+      return this.blockLayout.slots.filter((slot) => slot.kind !== 'lowLevelCall'
+        && (slot.kind !== 'blockInfoOracle' || !this.delegateBlockInfoOracle)
+        && isAuxiliaryBlockSlot(slot)).length;
+    }
+    return this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
+      + (this.delegateBlockInfoOracle ? 0 : this.blockInfoCoSpendUtxos.length)
+      + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
   }
 
   /**
@@ -6693,11 +6853,10 @@ export class StatefulTransactionBuilder {
    */
   getReturnEventOutputBase(): number {
     if (this.delegateEntriesAfterLowLevel) {
-      let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length
-        + this.blockhashCoSpendUtxos.length + this.keccakComputeCoSpendUtxos.length
-        + this.ecrecoverComputeCoSpendUtxos.length;
+      let base = 1 + this.requiredNftIndices.length + this.frontRegionAuxiliaryWidth();
       for (const g of this.externalOutStateUtxoGroups) {
-        base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
+        base += 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
+          + (g.keccakInputs?.length ?? 0);
       }
       base += this.iterationEntryInputs.length;
       for (const g of this.externalCallUtxoGroups) {
@@ -6814,12 +6973,10 @@ export class StatefulTransactionBuilder {
 
     const masterInputCount = 1;
     const dataNftInputCount = this.dataNftUtxos.length;
-    const readOnlyInputCount = this.readOnlyDataNftUtxos.length;
-    const blockhashInputCount = this.blockhashCoSpendUtxos.length;
-    const keccakInputCount = this.keccakComputeCoSpendUtxos.length;
-    const ecrecoverInputCount = this.ecrecoverComputeCoSpendUtxos.length;
+    const frontAuxiliaryInputCount = this.frontRegionAuxiliaryWidth();
     const outStateInputCount = this.externalOutStateUtxoGroups.reduce(
-      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0), 0,
+      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.blockhashCoSpendUtxos?.length ?? 0)
+        + (g.keccakInputs?.length ?? 0), 0,
     );
     const externalCallInputCount = this.externalCallUtxoGroups.reduce(
       (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length)
@@ -6831,9 +6988,9 @@ export class StatefulTransactionBuilder {
     const entryInputCount = this.entryNfts.filter((e) => e.exists && e.utxo).length;
     const iterationEntryInputCount = this.iterationEntryInputs.length;
     const tokenContainerInputCount = this.tokenContainers.filter((d) => d.exists && d.utxo).length;
-    return masterInputCount + dataNftInputCount + readOnlyInputCount + blockhashInputCount + keccakInputCount
-      + ecrecoverInputCount + outStateInputCount + externalCallInputCount + lowLevelCallInputCount
-      + entryInputCount + iterationEntryInputCount + tokenContainerInputCount;
+    return masterInputCount + dataNftInputCount + frontAuxiliaryInputCount + outStateInputCount
+      + externalCallInputCount + lowLevelCallInputCount + entryInputCount + iterationEntryInputCount
+      + tokenContainerInputCount;
   }
 
   /**
@@ -7041,7 +7198,7 @@ export class StatefulTransactionBuilder {
     const sigByLbc = new Map<string, string>();
     for (const [sig, lbc] of this.eventNftLockingBytecodes) sigByLbc.set(binToHex(lbc), sig);
     for (const event of this.runtimeLoopEventOutputs) {
-      sigByLbc.set(binToHex(event.lockingBytecode), event.eventSignature);
+      if (!event.continuation) sigByLbc.set(binToHex(event.lockingBytecode), event.eventSignature);
     }
     const structCandidates: Array<Artifact['structs'] | undefined> = [
       this.stateLayout.structs,
@@ -7062,14 +7219,24 @@ export class StatefulTransactionBuilder {
       return undefined;
     };
     const events: ReceiptEvent[] = [];
-    for (const out of outputs) {
-      const commitment = out.token?.nft?.commitment;
-      if (commitment === undefined) continue;
+    const commitmentOf = (out: LibauthOutput | undefined): string | undefined => {
+      const commitment = out?.token?.nft?.commitment;
+      if (commitment === undefined) return undefined;
+      return typeof commitment === 'string' ? commitment : binToHex(commitment);
+    };
+    for (const [index, out] of outputs.entries()) {
+      const head = commitmentOf(out);
+      if (head === undefined) continue;
       const sig = sigByLbc.get(binToHex(out.lockingBytecode));
       if (sig === undefined) continue;
       const eventDef = this.eventDefinitions.find((e) => e.signature === sig);
       if (!eventDef) continue;
-      const commitmentHex = typeof commitment === 'string' ? commitment : binToHex(commitment);
+      // A wide event continues in the outputs right after it, at its continuation covenant.
+      const continuation = binToHex(eventContinuationLockingBytecode(this.categoryId, sig, eventDef.anonymous === true));
+      const commitmentHex = joinEventContinuations(head, (offset) => {
+        const next = outputs[index + offset];
+        return next !== undefined && binToHex(next.lockingBytecode) === continuation ? commitmentOf(next) : undefined;
+      });
       const named = parseNamed(commitmentHex, eventDef);
       if (!named) continue;
       events.push({

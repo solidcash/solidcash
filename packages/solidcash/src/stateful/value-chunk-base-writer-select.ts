@@ -305,6 +305,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   requiredNftIndices?: number[];  // if absent, use all indices
   readOnlyDataNftUtxos?: UnlockableUtxo[];  // read-only data NFTs from other contracts
   blockhashCoSpendUtxos?: UnlockableUtxo[];  // (n->hash) oracle co-spends for blockhash(n) readers
+  blockInfoCoSpendUtxos?: UnlockableUtxo[];  // the block-info oracle commitment a reader slices
+  delegateBlockInfoOracle?: boolean;  // that reader is the delegated implementation, so its recreate rides its band
   /** Optional physical ordinal within the function's blockhashOracle slots for each co-spend. Graph message-bus batch
    * routes reserve a fixed row band, so active reads are sparse and the inactive slots must remain funders. */
   blockhashCoSpendSlotOrdinals?: number[];
@@ -352,6 +354,9 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment?: string;
     /** Zero-based selected route row which produced this occurrence; -1 for a direct non-route call. */
     rowIndex: number;
+    /** Record of a chunked site: its head, or (`continuation`) a later chunk under the continuation covenant. */
+    chunked?: true;
+    continuation?: true;
   }>;
   /** Plain-BCH outputs produced by lowered runtime counter loops. Recipient and amount begin as probe
    * placeholders and are replaced from the covenant trace before the transaction is returned. */
@@ -433,7 +438,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
 
 /** Absolute event coordinates owned by materialized external-call blocks. */
 export function externalCallEventDestinations(
-  groups: ReadonlyArray<Pick<ExternalCallUtxoGroup, 'sharedGroupIndex' | 'blockLayout' | 'compilerRoute'>>,
+  groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
+  'sharedGroupIndex' | 'blockLayout' | 'compilerRoute' | 'streamedEventPlan'>>,
   outputBaseForGroup: (groupIndex: number) => number,
 ): number[] {
   const destinations: number[] = [];
@@ -445,8 +451,9 @@ export function externalCallEventDestinations(
     if (base < 0) continue;
     const layout = group.blockLayout ?? group.compilerRoute?.abiFunction.blockLayout;
     for (const slot of layout?.slots ?? []) {
-      if (slot.kind === 'event') destinations.push(base + slot.offset);
+      if (slot.kind === 'event' || slot.kind === 'eventChunk') destinations.push(base + slot.offset);
     }
+    for (const offset of group.streamedEventPlan?.outputs.keys() ?? []) destinations.push(base + offset);
   }
   return destinations;
 }
@@ -511,7 +518,7 @@ export function lowLevelCallImmutableEventDestinations(
     const categoryId = lowLevelCallStateOwnerCategory(groupIndex, group, proxyGroups);
     const layout = group.blockLayout ?? group.compilerRoute?.abiFunction.blockLayout;
     for (const slot of layout?.slots ?? []) {
-      if (slot.kind === 'event' || slot.kind === 'returnEvent') {
+      if (slot.kind === 'event' || slot.kind === 'eventChunk' || slot.kind === 'returnEvent') {
         destinations.push({ categoryId, destination: base + slot.offset });
       }
     }

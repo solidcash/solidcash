@@ -29,6 +29,11 @@ import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { UnsupportedReturnError } from '../Errors.js';
 import { computeBranchOps } from './branchOps.js';
 
+// True while nesting an entry point the final-require check verifies, in a mode where a bare return ends the covenant
+// path. An internal return goes back to its caller, an entry of a contract holding state ends under its state
+// covenant, and a framed body still runs its frame tail, so none of them is sealed.
+let sealingBareReturns = false;
+
 /**
  * Transforms early return statements into nested if-else structures.
  * Bitcoin Script has no GOTO/JUMP, so we rewrite:
@@ -48,7 +53,10 @@ import { computeBranchOps } from './branchOps.js';
 export default class EarlyReturnTransformation extends AstTraversal {
   private returnCounter = 0;
 
-  constructor(private readonly canonicalizeScalarReturns = false) { super(); }
+  /** `sealBareReturns` false: a bare return ends no covenant path here (a framed body, an inlined helper). */
+  constructor(
+    private readonly canonicalizeScalarReturns = false, private readonly sealBareReturns = true,
+  ) { super(); }
 
   visitSourceFile(node: SourceFileNode): Node {
     refuseHaltingCalls(node);
@@ -85,7 +93,13 @@ export default class EarlyReturnTransformation extends AstTraversal {
 
     // Transform the body statements to nest early returns
     if (node.body.statements) {
-      node.body.statements = transformStatements(node.body.statements);
+      const sealing = sealingBareReturns;
+      sealingBareReturns = this.sealBareReturns && node.sealsUnguardedReturns === true;
+      try {
+        node.body.statements = transformStatements(node.body.statements);
+      } finally {
+        sealingBareReturns = sealing;
+      }
       if (this.canonicalizeScalarReturns && node.returnTypes.length === 1) {
         const returns = collectReturns(node.body);
         // A bare `return;` in a scalar named-return function means "return the current named value" and has no
@@ -218,7 +232,7 @@ export function bareReturnIsUnguarded(statements: StatementNode[]): boolean {
 
 /** A bare return that skips the only require must fail closed. A return after a require stays a success. */
 function sealUnguardedBareReturn(statements: StatementNode[], alreadyGated: boolean): StatementNode[] {
-  if (alreadyGated) return statements;
+  if (alreadyGated || !sealingBareReturns) return statements;
   const sealed = [...statements];
   for (let index = sealed.length - 1; index >= 0; index -= 1) {
     const statement = sealed[index];
@@ -612,7 +626,8 @@ function endsEveryPath(statement: StatementNode): boolean {
  * assembly return stays: it halts the whole call, as it does on the EVM, so it is the caller's return.
  */
 export function normalizeVoidInlineReturns(fn: FunctionDefinitionNode, keepYulReturns = false): void {
-  fn.accept(new EarlyReturnTransformation());
+  // The helper's return exits the helper, not the covenant path, so it is never sealed.
+  fn.accept(new EarlyReturnTransformation(false, false));
   const stripReturns = (block: BlockNode): void => {
     const kept: StatementNode[] = [];
     for (const statement of block.statements ?? []) {

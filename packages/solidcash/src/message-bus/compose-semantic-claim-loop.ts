@@ -109,7 +109,7 @@ export interface RunComposeSemanticClaimLoopContext {
   sidecarSlots: readonly { participant: number; offset: number; kind: AtomicSidecarSlotEffect['kind'] }[];
   hasComputedValueChunks: boolean;
   eventSlots: () => readonly {
-    participant: number; offset: number; runtimeRow?: number; eventSignature?: string;
+    participant: number; offset: number; runtimeRow?: number; eventSignature?: string; chunked?: true;
   }[];
   selfdestructByParticipant: ReadonlyMap<number, unknown>;
   descriptorsLength: number;

@@ -32,6 +32,10 @@ const SOURCE = `contract ChainOneNode {
     if (sel > 0) { require(k != 3); delete m[k]; m[j] = v; }
     require(true);
   }
+  function dropTwoThenSet(int k, int l, int j, int v, int sel) external {
+    if (sel > 0) { require(k != 3); require(l != 3); delete m[k]; delete m[l]; m[j] = v; }
+    require(true);
+  }
 }`;
 
 type Provider = ReturnType<typeof createTestProvider>;
@@ -367,5 +371,27 @@ describe('a delete and the write after it that run on one node', () => {
     const { hex, write, drop, spend } = await chainedDelete(deployed, x, y);
     spendAtFunded(spend, deployed.fn, drop, write, twenty);
     await refuseThenSettle(deployed, spend.encode(), hex, [[y, 300n], [x, 0n], [7n, 70n], [20n, 200n]], 4);
+  }, 300_000);
+});
+
+describe('two deletes beside a write', () => {
+  it('settles two absent keys deleted beside a write in their gap', async () => {
+    const deployed = await deploy('dropTwoThenSet', 3);
+    const { sc, fn } = deployed;
+    const softDeletes = fn.sortedBatchInfo![0].slotIndices.filter((slotIndex) => softDeleteOf(fn, slotIndex));
+    expect(softDeletes).toHaveLength(2);
+    const [k, l, j] = await keysIn(deployed, 7n, 3);
+    await sc.getFunction('dropTwoThenSet')(k, l, j, 300n, 1n).send();
+    await expectValues(sc, [[k, 0n], [l, 0n], [j, 300n], [7n, 70n], [20n, 200n]]);
+    expect((await nodes(deployed)).all).toHaveLength(4);
+  }, 300_000);
+
+  it('settles the node\'s own key deleted beside an absent key of its gap and a write', async () => {
+    const deployed = await deploy('dropTwoThenSet', 3);
+    const { sc } = deployed;
+    const [l, j] = await keysIn(deployed, 7n, 2);
+    await sc.getFunction('dropTwoThenSet')(7n, l, j, 300n, 1n).send();
+    await expectValues(sc, [[7n, 0n], [l, 0n], [j, 300n], [20n, 200n]]);
+    expect((await nodes(deployed)).all).toHaveLength(4);
   }, 300_000);
 });

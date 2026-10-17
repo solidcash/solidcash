@@ -69,7 +69,16 @@ describe.skipIf(Boolean(process.env.TESTS_USE_CHIPNET))('MockNetworkProvider', (
       // utxo should be added to bob
       expect(await provider.getUtxos(bobAddress)).toHaveLength(1);
 
-      await expect(provider.sendRawTransaction(tx)).rejects.toThrow('bad-txns-inputs-missingorspent');
+      // Resubmitting the accepted transaction returns its txid, as a node does.
+      await expect(provider.sendRawTransaction(tx)).resolves.toBe(txid);
+
+      // A different transaction spending the same inputs is still refused.
+      const conflicting = new TransactionBuilder({ provider })
+        .addInputs(p2pkhUtxos, p2pkhInstance.unlock.spend(alicePub, sigTemplate))
+        .addInputs(aliceUtxos, sigTemplate.unlockP2PKH())
+        .addOutput({ to: bobAddress, amount: 3000n })
+        .build();
+      await expect(provider.sendRawTransaction(conflicting)).rejects.toThrow('bad-txns-inputs-missingorspent');
     });
   });
 

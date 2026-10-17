@@ -4,7 +4,7 @@
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { parseChunkCommitment, type FunctionBlockLayout } from '@solidcash/utils';
-import type { Output, UnlockableUtxo } from '../interfaces.js';
+import { isContractUnlocker, type Output, type UnlockableUtxo, type Unlocker } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, calculateDust } from '../utils.js';
 import type { DerivedChunkOutputObservation } from './value-chunk-persist.js';
@@ -28,6 +28,10 @@ export interface MaterializeValueAndDynamicChunksHost {
   readonly externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
   readonly logicalIdentityUtxo?: UnlockableUtxo;
   readonly delegateDynamicChunksAtSuffix: boolean;
+  /** Runtime-loop outputs or a composed block base move the run by what the transaction carries. */
+  readonly runtimeLoopOrComposed: boolean;
+  /** The executing input's current unlocker: its witnesses name the coordinates its covenant reads. */
+  masterUnlocker(): Unlocker;
   getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   getValueChunkVars(): Array<{ id: string; lockingBytecode: Uint8Array }>;
   valueChunkRawCommitments: ReadonlyMap<string, readonly string[]>;
@@ -74,10 +78,22 @@ export function appendValueChunks(
   ));
   // Only place a staged run into an unoccupied selected band. A fixed pin can own a different
   // resource: suppress its exact duplicate, not every other staged or trace-derived continuation.
-  const wouldAppendBeforeBand = !!band
+  // A band slot is available while it is an empty alignment pad (OP_TRUE): a delegate's predecessor
+  // outputs can already be materialized past the band, so the run must still land at the reserved
+  // band coordinate the covenant's `__internal__valueChunkOutputBase` names, not the trailing end.
+  const bandSlotsAvailable = (activeBand: { readonly start: number; readonly nNew: number }): boolean => (
+    unpinnedOutputs.every((_output, offset) => {
+      if (offset >= activeBand.nNew) return true;
+      const occupant = builder.outputs[activeBand.start + offset];
+      if (occupant === undefined) return true;
+      const lock = occupant.to instanceof Uint8Array ? occupant.to : undefined;
+      return occupant.token === undefined && lock !== undefined && lock.length === 1 && lock[0] === 0x51;
+    })
+  );
+  const wouldAppendBeforeBand = band !== undefined
     && fixedBandPins.length === 0
     && unpinnedOutputs.length > 0
-    && builder.outputs.length < band.start;
+    && (builder.outputs.length < band.start || bandSlotsAvailable(band));
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1' && host.valueChunkOutputs.length > 0) {
     console.error('append-value-chunks', JSON.stringify({
@@ -124,6 +140,39 @@ export function appendValueChunks(
   }
 }
 
+/**
+ * The output a direct covenant reads its first new dynamic chunk at when a returning call ran: one past the highest
+ * return index that ran, then the co-spent iteration entries and the sorted batch's trailing predecessors (the
+ * compiler's `emitDynamicWriteRunCoordinate`). Undefined when none ran or the covenant locates the run otherwise.
+ */
+export function returningCallChunkRunBase(
+  unlocker: Unlocker, writes: readonly string[], iterationEntryCount: number,
+): number | undefined {
+  if (!isContractUnlocker(unlocker)) return undefined;
+  const { abiFunction: fn, params } = unlocker;
+  if (params.length !== fn.inputs.length || unlocker.contract.artifact.composition !== undefined
+    || fn.name.startsWith('__message_bus') || !writes.every((name) => fn.dynamicWrites?.includes(name))
+    || fn.inputs.some((input) => input.name.startsWith('__internal__vmapCounterPerm_'))) return undefined;
+  const valueOf = (name: string): bigint | undefined => {
+    const value = params[fn.inputs.findIndex((input) => input.name === name)];
+    return typeof value === 'bigint' ? value : undefined;
+  };
+  // Artifacts publishing an output coordinate locate the completed physical run, including during their
+  // first provisional build. Only legacy artifacts without that witness use the return-event anchor.
+  if (fn.inputs.some((input) => input.name === '__internal__dynamicChunkOutputBase')) return undefined;
+  // Witness suffixes count every returning call; loop-nested ones never anchor the run.
+  const anchors = (fn.externalCalls ?? []).filter((call) => call.hasReturnValues)
+    .map((call, ordinal) => ({ call, ordinal }))
+    .filter(({ call }) => call.occurrence !== 'loop' && call.loopArrayVar === undefined);
+  const ran = anchors.reduce((last, { ordinal }) => {
+    const index = valueOf(anchors.length === 1
+      ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${ordinal}`);
+    return index !== undefined && index > last ? index : last;
+  }, -1n);
+  if (ran < 0n) return undefined;
+  return Number(ran) + 1 + iterationEntryCount + Number(valueOf('__internal__vmapBatchTrailingCount') ?? 0n);
+}
+
 /** Append dynamic-storage chunk recreations (suffix-recovered or named vars). */
 export function appendDynamicChunks(
   host: MaterializeValueAndDynamicChunksHost,
@@ -150,6 +199,11 @@ export function appendDynamicChunks(
       return;
     }
   }
+  // Each written var's run follows the runs of the vars declared before it.
+  const runBase = host.delegateDynamicChunksAtSuffix || host.runtimeLoopOrComposed ? undefined
+    : returningCallChunkRunBase(host.masterUnlocker(), host.dynamicChunkVars.map((dv) => dv.name),
+      host.iterationEntryInputs.length);
+  let priorRunChunks = 0;
   for (const dv of host.dynamicChunkVars) {
     const commitments = host.chunkRawCommitments.get(dv.name) ?? [];
     const chunkLock = binToHex(dv.lockingBytecode);
@@ -222,13 +276,14 @@ export function appendDynamicChunks(
         count: commitments.length,
       });
     }
-    // A returning call that ran leaves the old chunk index as an OP_TRUE pad and places the
-    // replacement one output later. A funder parked on that next slot must move; appending the
-    // chunk after the callee makes the covenant read the funder instead.
+    // A returning call that ran puts the run at the coordinate its covenant reads; whatever sits there moves to the
+    // end. Without readable witnesses, an OP_TRUE at the old chunk index puts the replacement one output later.
+    const ranAt = inPlace || runBase === undefined ? undefined : runBase + priorRunChunks;
+    priorRunChunks += commitments.length;
     const baseOutput = base >= 0 ? builder.outputs[base] : undefined;
     const baseLock = baseOutput?.to instanceof Uint8Array ? baseOutput.to : undefined;
     const tombstoneAtBase = baseLock?.length === 1 && baseLock[0] === 0x51;
-    const followsReturnEvent = !inPlace && tombstoneAtBase && commitments.length > 0
+    const followsReturnEvent = ranAt === undefined && !inPlace && tombstoneAtBase && commitments.length > 0
       && commitments.every((_commitment, offset) => {
         const occupant = builder.outputs[base + 1 + offset];
         return occupant !== undefined && occupant.token === undefined;
@@ -245,11 +300,15 @@ export function appendDynamicChunks(
       };
       chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
       if (inPlace) builder.outputs[base + chunkIndex] = chunkOutput;
-      else if (followsReturnEvent) {
-        const outputIndex = base + 1 + chunkIndex;
+      else if (ranAt !== undefined || followsReturnEvent) {
+        const outputIndex = (ranAt ?? base + 1) + chunkIndex;
+        if (outputIndex > builder.outputs.length) host.padOutputsToIndex(builder, outputIndex);
         const displaced = builder.outputs[outputIndex];
-        builder.outputs[outputIndex] = chunkOutput;
-        if (displaced) builder.addOutput(displaced);
+        if (displaced === undefined) builder.addOutput(chunkOutput);
+        else {
+          builder.outputs[outputIndex] = chunkOutput;
+          builder.addOutput(displaced);
+        }
       } else builder.addOutput(chunkOutput);
     }
     if (inPlace) {

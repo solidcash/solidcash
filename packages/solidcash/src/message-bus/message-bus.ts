@@ -9,7 +9,8 @@ import {
   type StructDefinitionInfo, type ExternalCallExpression, type ExternalResultEncoding,
 } from '@solidcash/utils';
 import {
-  encodeFunctionArgument, isSignatureTemplateArgumentForType, type ConstructorArgument, type FunctionArgument,
+  encodeFunctionArgument, isSignatureTemplateArgumentForType, normalizeSolidityBytesArgument,
+  type ConstructorArgument, type FunctionArgument,
   type SignatureTemplateArgument,
 } from '../Argument.js';
 import { tryCashAddressToLockScript } from '../utils.js';
@@ -849,6 +850,17 @@ export function encodeMessageBatch(
     }
   }
 
+  // Batch descriptors can reach the encoder before the ordinary call frame is validated. Apply the same
+  // Solidity byte-argument compatibility at this boundary, before either row or collection-key encoding.
+  // Keep the primitive encoder strict and preserve the caller's descriptor objects.
+  if (artifact.compiler?.options?.evmCompat === true) {
+    invocations = invocations.map((invocation) => {
+      const handler = resolveMessageBusHandler(artifact, invocation.function, invocation.selector);
+      if (!handler || invocation.args === undefined) return invocation;
+      return { ...invocation, args: invocation.args.map((argument, index) =>
+        normalizeSolidityBytesArgument(argument, handler.inputs[index]?.type ?? '')) };
+    });
+  }
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   // A compiler-owned literal mapping key has no row argument to source it from. Recover it from the direct
   // handler's published entry access, which is the same constant the route's key witness is checked against.

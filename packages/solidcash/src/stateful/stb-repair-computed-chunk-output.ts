@@ -4,6 +4,7 @@
  */
 
 import { binsAreEqual, binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
   Op,
@@ -23,12 +24,12 @@ import {
   scriptToLockingBytecode,
 } from '../utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
+import { followsProbeEquality, probeInstructionsSince } from './probe-instruction-sequence.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import {
   canApplyRepairedNftCommitment,
   canMaterializeRepairedValueChunk,
   followsMutableNftOutputGuard,
-  isActiveVmControlBranch,
   isFixedStateRepairSlot,
   isForwardOutputOnlyRepairSlot,
   isOwnedStateRepairCoordinate,
@@ -263,15 +264,12 @@ export function repairComputedChunkOutput(
       Op.OP_OUTPUTTOKENAMOUNT, Op.OP_EQUAL, Op.OP_EQUALVERIFY,
     ]),
     beforeOperation: (unknownState) => {
-      const state = unknownState as {
-        ip: number;
+      const state = unknownState as AuthenticationProgramStateCommon & {
         instructions: Array<{ opcode: number; data?: Uint8Array }>;
-        stack: Uint8Array[];
-        controlStack: boolean[];
       };
       // This observer wraps libauth's conditionallyEvaluate operation, so it is also invoked for instructions
       // in untaken IF branches. Those stack values are not covenant assertions and must never become repairs.
-      if (!isActiveVmControlBranch(state.controlStack)) return;
+      if (state.controlStack.some((frame) => frame === false)) return;
       const opcode = state.instructions[state.ip]?.opcode;
       if ((opcode === Op.OP_OUTPUTBYTECODE || opcode === Op.OP_OUTPUTTOKENCATEGORY
         || opcode === Op.OP_OUTPUTTOKENCOMMITMENT || opcode === Op.OP_OUTPUTTOKENAMOUNT)
@@ -450,13 +448,17 @@ export function repairComputedChunkOutput(
             });
           }
         }
-        const pending = pendingOutputBytecodeIndices.get(state.instructions);
-        pendingOutputBytecodeIndices.delete(state.instructions);
-        const reconstruction = pending === undefined ? []
-          : state.instructions.slice(pending.ip + 1, state.ip);
+        const frames = [{ instructions: state.instructions, ip: state.ip },
+          ...state.controlStack.filter((frame) => typeof frame === 'object' && frame !== null).reverse()];
+        const pendingFrame = frames.find((frame) => pendingOutputBytecodeIndices.has(frame.instructions));
+        const pending = pendingFrame === undefined ? undefined
+          : pendingOutputBytecodeIndices.get(pendingFrame.instructions);
+        if (pendingFrame) pendingOutputBytecodeIndices.delete(pendingFrame.instructions);
+        const reconstruction = pending === undefined || pendingFrame === undefined ? []
+          : probeInstructionsSince(state, { instructions: pendingFrame.instructions, ip: pending.ip }) ?? [];
         const reconstructsP2sh32 = reconstruction.some((instruction) => instruction.opcode === Op.OP_HASH256)
-          && reconstruction.some((instruction) => binToHex(instruction.data ?? new Uint8Array()) === 'aa20')
-          && reconstruction.some((instruction) => binToHex(instruction.data ?? new Uint8Array()) === '87');
+          && reconstruction.some((instruction) => binToHex('data' in instruction ? instruction.data : new Uint8Array()) === 'aa20')
+          && reconstruction.some((instruction) => binToHex('data' in instruction ? instruction.data : new Uint8Array()) === '87');
         const outputIndex = pending?.outputIndex;
         if (reconstructsP2sh32 && outputIndex !== undefined
           && outputIndex >= 0 && outputIndex < builder.outputs.length
@@ -501,8 +503,7 @@ export function repairComputedChunkOutput(
         // Only the `OTC; EQUALVERIFY` pin names an authenticated output
         // commitment. Later `OTC` operations can feed proofs and hashes;
         // treating those as writes corrupts unrelated value entries.
-        const nextOpcode = state.instructions[state.ip + 1]?.opcode;
-        if (nextOpcode !== 0x87 && nextOpcode !== 0x88) return;
+        if (!followsProbeEquality(state)) return;
         const outputIndex = Number(decodeVmScriptNumber(state.stack[state.stack.length - 1]));
         const commitment = state.stack[state.stack.length - 2];
         const output = outputIndex >= 0 && outputIndex < builder.outputs.length
@@ -563,7 +564,7 @@ export function repairComputedChunkOutput(
       const outputIndex = Number(decodeVmScriptNumber(state.stack[state.stack.length - 1]));
       pendingOutputBytecodeIndices.set(state.instructions, { outputIndex, ip: state.ip });
       const expectedLockingBytecode = state.stack[state.stack.length - 2];
-      const nextOpcode = state.instructions[state.ip + 1]?.opcode;
+      const tightEquality = followsProbeEquality(state);
       const forwardOutputOnlySlot = isForwardOutputOnlyRepairSlot({
         inputIndex,
         outputIndex,
@@ -572,7 +573,7 @@ export function repairComputedChunkOutput(
       const layoutOwnedLock = forwardOutputOnlySlot
         && (tokenEventSlots.has(outputIndex) || tokenReturnSlots.has(outputIndex)
           || delegateEventSlots.has(outputIndex));
-      if (nextOpcode === 0x88 && layoutOwnedLock
+      if (tightEquality && layoutOwnedLock
         && outputIndex >= 0 && outputIndex < builder.outputs.length
         && expectedLockingBytecode.length > 0) {
         const current = builder.outputs[outputIndex];
@@ -590,7 +591,7 @@ export function repairComputedChunkOutput(
         }
       }
       if (state.stack.length < 4) return;
-      const chunkShaped = state.instructions.some((instruction, at) => instruction.data?.length === 1
+      const chunkShaped = state.instructions.some((instruction, at) => 'data' in instruction && instruction.data?.length === 1
         && instruction.data[0] === 126 && state.instructions[at + 1]?.opcode === 0x95
         && state.instructions[at + 2]?.data?.length === 1
         && state.instructions[at + 2]?.data?.[0] === 28

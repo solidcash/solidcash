@@ -5,12 +5,13 @@
 
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { AbiFunction } from '@solidcash/utils';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
+  blockOracleReadUnlocking,
   isComputedBlockhashKey,
+  type AbiFunction,
 } from '@solidcash/utils';
-import type { Output, Unlocker, Utxo } from '../interfaces.js';
+import { isContractUnlocker, type Output, type Unlocker, type Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
@@ -20,6 +21,52 @@ import { extractBlockhashReadsFromTrace } from './trace-verified-value-helpers.j
 
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
+const inertUnlocker: Unlocker = {
+  generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
+  generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+};
+
+/** A computed `block.number` is sliced before `blockhash` reads its own input. The probe has to spend the
+ * info oracle at the slot the reader was given, or that slice aborts before n is on the stack. */
+async function placeBlockInfoOracle(
+  host: BlockhashCoSpendHost,
+  builder: {
+    inputs: readonly unknown[];
+    outputs: readonly unknown[];
+    addInput(utxo: Utxo, unlocker: Unlocker): unknown;
+    addOutput(output: Output): unknown;
+  },
+  stateInputUnlocker: Unlocker,
+  masterInputIndex: number,
+): Promise<void> {
+  if (!isContractUnlocker(stateInputUnlocker)) return;
+  const abi = stateInputUnlocker.abiFunction;
+  const info = abi.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle');
+  if (abi.usesBlockOracle !== true || info === undefined) return;
+  const lock = stateInputUnlocker.contract.blockOracleLock;
+  if (lock === undefined) return;
+  const at = masterInputIndex + info.offset;
+  while (builder.inputs.length < at) {
+    const index = builder.inputs.length;
+    builder.addInput(
+      { txid: (0x8100 + index).toString(16).padStart(64, '0'), vout: 0, satoshis: 10000n },
+      inertUnlocker,
+    );
+    builder.addOutput({ to: DUMMY_FUNDER_LOCKING_BYTECODE, amount: 10000n });
+  }
+  if (builder.inputs.length !== at) return;
+  const utxos = await host.inner.provider.getUtxosForLockingBytecode(lock);
+  const oracle = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+  if (oracle?.token?.category === undefined) return;
+  const category = hexToBin(oracle.token.category);
+  builder.addInput(oracle, {
+    generateLockingBytecode: () => lock,
+    generateUnlockingBytecode: () => blockOracleReadUnlocking(category),
+  });
+  // The probe executes the reader, which only inspects this input. The output still has to carry the NFT
+  // or the builder refuses the transaction as an implicit burn before the trace runs.
+  builder.addOutput({ to: lock, amount: oracle.satoshis, token: oracle.token });
+}
 
 export interface BlockhashCoSpendHost {
   readonly categoryId: string;
@@ -58,6 +105,7 @@ export async function extractBlockhashReads(
     to: dataUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
   }));
   for (const cs of priorCoSpends) b.addOutput(cs.recreate);
+  await placeBlockInfoOracle(host, b, stateInputUnlocker, 0);
   const transaction = b.buildLibauthTransaction();
   const sourceOutputs = generateLibauthSourceOutputs(b.inputs);
   const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as AuthenticationProgramStateCommon[];
@@ -77,10 +125,6 @@ export async function extractGraphBlockhashRead(
   const b = new CovenantTransactionBuilder({ provider: host.inner.provider });
   b.locktime = 499999999;
   const dataUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(host.inner as any, 0, host.categoryId));
-  const inertUnlocker: Unlocker = {
-    generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
-    generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
-  };
   while (b.inputs.length < masterInputIndex) {
     const i = b.inputs.length;
     b.addInput({ txid: (0x8000 + i).toString(16).padStart(64, '0'), vout: 0, satoshis: 10000n }, inertUnlocker);
@@ -106,6 +150,7 @@ export async function extractGraphBlockhashRead(
     const p = priorByIndex.get(inputIndex);
     b.addOutput(p?.recreate ?? { to: DUMMY_FUNDER_LOCKING_BYTECODE, amount: 10000n });
   }
+  await placeBlockInfoOracle(host, b, stateInputUnlocker, masterInputIndex);
   const transaction = b.buildLibauthTransaction();
   const trace = vm.debug({
     inputIndex: masterInputIndex, sourceOutputs: generateLibauthSourceOutputs(b.inputs), transaction,
@@ -137,7 +182,7 @@ export async function resolveBlockhashCoSpends(
     }
     if (n === null) throw new Error(`blockhash: could not resolve n for read "${reads[k]}" (slot ${k})`);
     const cs = await resolveBlockhashCoSpend(host.inner.provider, host.categoryId, n);
-    if (!cs) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO at addr(${n})`);
+    if (!cs) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO for block ${n}`);
     ordered.push({ utxo: cs.utxo, unlocker: cs.unlocker, recreate: cs.recreateOutput, locktime: cs.locktime });
   }
   return ordered;

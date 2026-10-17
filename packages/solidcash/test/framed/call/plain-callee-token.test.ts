@@ -181,7 +181,11 @@ describe('an ERC-20-like callee on the plain call path', () => {
     const result = await enter(chain, 'pay', [RECIPIENT, 5000n]);
     expect(result.accepted).toBe(false);
     expect(result.broadcast).toBeUndefined();
-    expect(result.refusal?.refusals.map((refusal) => refusal.master)).toStrictEqual(['callee-master-1']);
+    // The transfer never returns, so the payer's frame decodes the plan's stand-in for its result and the machine
+    // refuses it too, on no reason of its own. The transfer's `require` is the refusal the execution meets first.
+    expect(result.refusal?.refusals.map((refusal) => refusal.master)).toStrictEqual(['master', 'callee-master-1']);
+    expect(result.refusal?.refusals[0]?.reason.message).toBeUndefined();
+    expect(result.refusal?.innermost?.master).toBe('callee-master-1');
     expect(result.verdicts.find((verdict) => verdict.id === 'callee-master-1')?.objection)
       .toMatch(/^frame "callee-master-1" of Token\.transfer\(\) at line 1: balance /);
     expect(await balanceOf(chain, chain.locks.get('Payer')!)).toBe(1000n);

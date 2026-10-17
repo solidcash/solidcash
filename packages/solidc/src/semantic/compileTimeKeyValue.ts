@@ -95,6 +95,18 @@ function runConversion(script: Script, operand: Uint8Array): Uint8Array | undefi
       const item = stack.pop();
       if (at === undefined || item === undefined || at < 0n || at > BigInt(item.length)) return undefined;
       stack.push(item.slice(0, Number(at)), item.slice(Number(at)));
+    } else if (step === Op.OP_DUP) {
+      const item = stack.at(-1);
+      if (item === undefined) return undefined;
+      stack.push(item);
+    } else if (step === Op.OP_ADD || step === Op.OP_MUL || step === Op.OP_LESSTHAN) {
+      // The widening an evmCompat signed conversion runs first: `v + (v < 0) * 2^bits`.
+      const right = popNumber();
+      const left = popNumber();
+      if (left === undefined || right === undefined) return undefined;
+      if (step === Op.OP_ADD) stack.push(encodeInt(left + right));
+      else if (step === Op.OP_MUL) stack.push(encodeInt(left * right));
+      else stack.push(encodeInt(left < right ? 1n : 0n));
     } else if (step === Op.OP_DROP) {
       if (stack.pop() === undefined) return undefined;
     } else if (step === Op.OP_0NOTEQUAL) {

@@ -34,7 +34,7 @@ import {
   AssignNode,
   BoolLiteralNode,
 } from '../ast/AST.js';
-import { ArrayType, PrimitiveType } from '@solidcash/utils';
+import { ArrayType, PrimitiveType, isDynamicStorageType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 
 /**
@@ -73,7 +73,13 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.dynArrays = new Map();
     for (const sv of node.stateVariables) {
-      if (sv.isDynamic && sv.type instanceof ArrayType) this.dynArrays.set(sv.name, sv);
+      // Unbounded bytes/string (isDynamicStorageType) have the same chunk-backed pending-value write model as a
+      // dynamic array: `b = b + x` (the desugared `b.push(x)`) inside a loop emits the write once but runs it N
+      // times. Arrays are marked isDynamic at parse time; bytes/string are not until a later pass, so match on the
+      // type directly for them.
+      if ((sv.isDynamic && sv.type instanceof ArrayType) || isDynamicStorageType(sv.type)) {
+        this.dynArrays.set(sv.name, sv);
+      }
     }
     if (this.dynArrays.size === 0) return node;
 
@@ -220,9 +226,13 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
     }
   }
 
-  // The dynamic-array name written by a write statement, else undefined. A bare `arr[i] = x` parses to an
+  // The dynamic-storage name written by a write statement, else undefined. A bare `arr[i] = x` parses to an
   // ArrayAssignNode (state-or-local resolved by name in semantic), while `arr.push/pop` and `this.arr[i]=`
-  // are the StateArray* nodes - so both shapes are write targets when the name is a dynamic array.
+  // are the StateArray* nodes - so both shapes are write targets when the name is a dynamic array. A whole-value
+  // `StateAssignNode` is how `bytes/string` append (`b = b + x`, desugared from `b.push(x)`) reaches codegen; it is
+  // a loop-write only when it READS the same var (read-modify-write), because the pending-value model emits the
+  // read once but the loop runs it N times. A plain `b = value` does not read `b` and is idempotent per iteration,
+  // so caching it would only perturb the block layout without changing semantics.
   private writeTargetName(stmt: StatementNode): string | undefined {
     if ((stmt instanceof StateArrayPushNode || stmt instanceof StateArrayPopNode
       || stmt instanceof StateArrayAssignNode || stmt instanceof StateArrayDeleteNode
@@ -231,7 +241,27 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
       && this.dynArrays.has(stmt.name)) {
       return stmt.name;
     }
+    if (stmt instanceof StateAssignNode && this.dynArrays.has(stmt.name)
+      && this.readsStateVar(stmt.expression, stmt.name)) {
+      return stmt.name;
+    }
     return undefined;
+  }
+
+  // Whether an expression reads the named state var (a bare StateAccessNode or an indexed MappingAccessNode at
+  // this pre-semantic stage). Used to distinguish the RMW append from a plain whole-value assignment.
+  private readsStateVar(node: Node, name: string): boolean {
+    if ((node instanceof StateAccessNode || node instanceof MappingAccessNode) && node.name === name) return true;
+    let found = false;
+    for (const [key, value] of Object.entries(node)) {
+      if (found) break;
+      if (key === 'location' || key === 'type' || key === 'symbolTable') continue;
+      if (value instanceof Node && this.readsStateVar(value, name)) { found = true; break; }
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node && this.readsStateVar(item, name)) { found = true; break; }
+      }
+    }
+    return found;
   }
 
   // Replace state-array write statements for `name` with the equivalent local array statements for `local`,

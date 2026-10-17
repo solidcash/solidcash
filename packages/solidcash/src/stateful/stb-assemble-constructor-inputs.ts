@@ -55,13 +55,14 @@ export function assembleConstructorInputs(
     ? [...requiredNftIndicesOption]
     : Array.from({ length: host.stateLayout.dataNftCount }, (_, i) => i);
 
-  // Flatten external outState inputs: [B1's master, B1's data NFTs, B1's keccak side-cars, ...] - the keccak
-  // side-cars follow B's data NFTs (B's block-layout order: master < dataNft < keccakSideCar) so B's covenant
-  // reads them at their slot.
+  // Flatten external outState inputs: [B1's master, B1's data NFTs, B1's blockhash oracles, B1's keccak
+  // side-cars, ...] - the blockhash oracles and keccak side-cars follow B's data NFTs in B's block-layout order
+  // (master < dataNft < blockhashOracle < keccakSideCar) so B's covenant reads them at their slot.
   const externalOutStateInputs: UnlockableUtxo[] = [];
   for (const group of host.externalOutStateUtxoGroups) {
     externalOutStateInputs.push(group.masterUtxo as UnlockableUtxo);
     externalOutStateInputs.push(...group.dataNftUtxos);
+    if (group.blockhashCoSpendUtxos) externalOutStateInputs.push(...group.blockhashCoSpendUtxos);
     if (group.keccakInputs) externalOutStateInputs.push(...group.keccakInputs);
   }
 

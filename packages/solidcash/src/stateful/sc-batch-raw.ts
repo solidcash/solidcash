@@ -67,14 +67,19 @@ export function mergePublishedMessageBusHandlerMetadata(
   const published = callable.selector !== undefined
     ? publishedHandlers.find((handler) => handler.selector?.toLowerCase() === callable.selector?.toLowerCase())
     : publishedHandlers.find((handler) => handler.name === callable.name);
+  // A stream handler's route clone settles its emits as runtime records, not in the direct entry's slots.
+  const streamed = published?.runtimeLoopEvents?.some((loop) => loop.stream === true || loop.chunked === true) === true;
   // Keep the artifact ABI object itself when there is no published metadata to add. Carrier-route
   // authentication deliberately checks this identity before trusting runtime row metadata.
   if (published === undefined || (published.dynamicReads === undefined
-    && published.dynamicWrites === undefined)) return callable;
+    && published.dynamicWrites === undefined && !streamed)) return callable;
+  const withoutEmits: AbiFunction = { ...callable };
+  delete withoutEmits.emits;
   return {
-    ...callable,
+    ...(streamed ? withoutEmits : callable),
     ...(published.dynamicReads !== undefined && { dynamicReads: published.dynamicReads }),
     ...(published.dynamicWrites !== undefined && { dynamicWrites: published.dynamicWrites }),
+    ...(streamed && { runtimeLoopEvents: published.runtimeLoopEvents }),
   };
 }
 
@@ -565,6 +570,11 @@ export function batchRaw(
       if (input.name === '__internal__activeVerifierIndex') return -1n;
       if (input.name === '__internal__graphSelfIdentityInput') return -1n;
       if (input.name === '__internal__messageBusOwnerBandInput') return BigInt(blockBase);
+      // The route's own oracle slot. A composition that already spends the oracle repoints it to that input.
+      if (input.name === '__internal__blockOracleInputIndex') {
+        const slot = capability.route.blockLayout?.slots.find((candidate) => candidate.kind === 'blockInfoOracle');
+        return slot === undefined ? -1n : BigInt(blockBase + slot.offset);
+      }
       // The aggregate route returns its concatenated result blob to graph consumers, but an ordinary local
       // `.batch()` does not materialize that route-level value as a return-event NFT. Semantic injection still
       // gives every returning entry point this compiler-owned coordinate, so use the same negative sentinel as
@@ -820,19 +830,25 @@ export function batchRaw(
           ?? capability.route.entryAccesses!.indexOf(selectedAccess);
         const directSlot = directAccess.slotIndex ?? directIndex;
         const selectedBatch = selected?.sortedBatchInfo?.find((batch) => batch.slotIndices.includes(directSlot));
-        if (selectedBatch !== undefined
-          && (operations.includes('write') || operations.includes('delete') || guardedRead)) {
+        const publishedBatch = capability.route.sortedBatchInfo?.find((batch) =>
+          batch.collection === directAccess.collection && batch.slotIndices.includes(selectedSlot));
+        // A callable can lack a direct batch while sharing the compiled route's physical collection family.
+        // Keep every selected route lane when another collection narrows the union: read lanes publish an
+        // unchanged proof node, and writer lanes retain their predecessor/output census.
+        const routeCensus = publishedBatch !== undefined
+          && operations.some((operation) => ['read', 'write', 'delete'].includes(operation));
+        if ((selectedBatch !== undefined
+          && (operations.includes('write') || operations.includes('delete') || guardedRead)) || routeCensus) {
           if (!guardedRead) activeRouteSortedBatchSlots.add(selectedSlot);
-          const publishedBatch = capability.route.sortedBatchInfo?.find((batch) =>
-            batch.collection === selectedBatch.collection);
-          const activeBatch = activeRouteSortedBatches.get(selectedBatch.collection)
+          const collection = selectedBatch?.collection ?? publishedBatch!.collection;
+          const activeBatch = activeRouteSortedBatches.get(collection)
             ?? { slots: new Set<number>(), linear: publishedBatch?.linear === true };
           activeBatch.slots.add(selectedSlot);
           // Runtime narrowing may select a direct handler whose ordinary ABI uses linear rank/row witnesses.
           // The physical kernel route is the authority for its own ABI: do not synthesize witness families the
           // published route did not expose merely because the selected source handler has richer geometry.
           activeBatch.linear ||= publishedBatch?.linear === true;
-          activeRouteSortedBatches.set(selectedBatch.collection, activeBatch);
+          activeRouteSortedBatches.set(collection, activeBatch);
         }
         const prior = activeRouteEntryOperations.get(selectedSlot) ?? [];
         activeRouteEntryOperations.set(

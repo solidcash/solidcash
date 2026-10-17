@@ -27,6 +27,7 @@ import {
   bytesToHex,
   concatBytes,
 } from './primitives.js';
+import { decodeWitnessBlock, encodeWitnessBlock, type WitnessBlock } from './witness-block.js';
 
 /** Magic and version of the transcript, frozen with the validator program. */
 export const TRANSCRIPT_MAGIC = new Uint8Array([0x50, 0x43, 0x37]); // "PC7"
@@ -137,6 +138,118 @@ export function decodeTranscript(payload: Uint8Array): Transcript {
   return { roots, masters, settles };
 }
 
+/**
+ * A covered master the transaction mints as an output, whose witness block the transcript carries inline.
+ *
+ * A master the transaction spends carries its witness block as the first push of its own unlocking bytecode; a
+ * master the transaction creates has no unlocking bytecode, so the genesis-shape transcript embeds its block
+ * instead. This is the wire representation SDKFRAMED-2 names: the proxy's root master is minted in the proxy
+ * genesis, so its frame rides in the transcript rather than in a spent input.
+ */
+export interface MintedMaster {
+  /** The output index of the minted master. */
+  readonly output: number;
+  /** The minted master's witness block, encoded and carried inline. */
+  readonly block: WitnessBlock;
+}
+
+/** The transcript version that carries minted masters inline; later than {@link TRANSCRIPT_VERSION}. */
+export const TRANSCRIPT_VERSION_MINTED = 0x03;
+
+/** A transcript together with the minted masters it covers, as a genesis-shape validator reads it. */
+export interface MintedTranscript {
+  readonly roots: number[];
+  readonly masters: number[];
+  readonly mintedMasters: MintedMaster[];
+  readonly settles: SettledContract[];
+}
+
+/**
+ * Encodes the genesis-shape transcript: version {@link TRANSCRIPT_VERSION_MINTED}, with each minted master listed
+ * between the masters and the settles as `{ output:u8 block:lp16 }[]`, its witness block carried inline.
+ */
+export function encodeMintedTranscript(transcript: MintedTranscript): Uint8Array {
+  if (transcript.roots.length > 0xff) throw new FramedEncodingError('too many roots');
+  if (transcript.masters.length > 0xff) throw new FramedEncodingError('too many masters');
+  if (transcript.mintedMasters.length > 0xff) throw new FramedEncodingError('too many minted masters');
+  if (transcript.settles.length > 0xff) throw new FramedEncodingError('too many settled contracts');
+
+  const writer = new ByteWriter()
+    .pushBytes(TRANSCRIPT_MAGIC)
+    .pushByte(TRANSCRIPT_VERSION_MINTED)
+    .pushByte(transcript.roots.length);
+  for (const root of transcript.roots) writer.pushByte(root);
+  writer.pushByte(transcript.masters.length);
+  for (const master of transcript.masters) writer.pushByte(master);
+  writer.pushByte(transcript.mintedMasters.length);
+  for (const minted of transcript.mintedMasters) {
+    if (minted.output > 0xff) throw new FramedEncodingError('minted master output index out of range');
+    writer.pushByte(minted.output).pushLp16(encodeWitnessBlock(minted.block));
+  }
+  writer.pushByte(transcript.settles.length);
+  for (const settled of transcript.settles) {
+    if (settled.category.length !== CATEGORY_LENGTH) {
+      throw new FramedEncodingError(
+        `settled contract has a ${settled.category.length}-byte category, expected ${CATEGORY_LENGTH}`,
+      );
+    }
+    const created = settled.createdOutputs ?? [];
+    if (settled.stateInputs.length > 0xff) throw new FramedEncodingError('too many state inputs');
+    if (created.length > 0xff) throw new FramedEncodingError('too many created records');
+    writer.pushBytes(settled.category).pushByte(settled.stateInputs.length);
+    for (const input of settled.stateInputs) writer.pushByte(input);
+    writer.pushByte(created.length);
+    for (const output of created) writer.pushByte(output);
+  }
+  return writer.finish();
+}
+
+/**
+ * Decodes the genesis-shape transcript, rejecting a bad magic, a version other than
+ * {@link TRANSCRIPT_VERSION_MINTED}, a malformed inline witness block, a truncated field, and any trailing byte.
+ */
+export function decodeMintedTranscript(payload: Uint8Array): MintedTranscript {
+  const reader = new ByteReader(payload);
+  const magic = reader.readBytes(3);
+  if (!bytesEqual(magic, TRANSCRIPT_MAGIC)) {
+    throw new FramedEncodingError(`not a transcript: magic ${bytesToHex(magic)}`);
+  }
+  const version = reader.readByte();
+  if (version !== TRANSCRIPT_VERSION_MINTED) {
+    throw new FramedEncodingError(`unsupported minted transcript version: ${version}`);
+  }
+
+  const rootCount = reader.readByte();
+  const roots: number[] = [];
+  for (let index = 0; index < rootCount; index += 1) roots.push(reader.readByte());
+
+  const masterCount = reader.readByte();
+  const masters: number[] = [];
+  for (let index = 0; index < masterCount; index += 1) masters.push(reader.readByte());
+
+  const mintedCount = reader.readByte();
+  const mintedMasters: MintedMaster[] = [];
+  for (let index = 0; index < mintedCount; index += 1) {
+    const output = reader.readByte();
+    mintedMasters.push({ output, block: decodeWitnessBlock(reader.readLp16()) });
+  }
+
+  const settleCount = reader.readByte();
+  const settles: SettledContract[] = [];
+  for (let index = 0; index < settleCount; index += 1) {
+    const category = reader.readBytes(CATEGORY_LENGTH);
+    const stateInputCount = reader.readByte();
+    const stateInputs: number[] = [];
+    for (let inner = 0; inner < stateInputCount; inner += 1) stateInputs.push(reader.readByte());
+    const createdCount = reader.readByte();
+    const createdOutputs: number[] = [];
+    for (let inner = 0; inner < createdCount; inner += 1) createdOutputs.push(reader.readByte());
+    settles.push({ category, stateInputs, createdOutputs });
+  }
+  reader.assertEnd();
+  return { roots, masters, mintedMasters, settles };
+}
+
 /** Encodes a transcript as the minimal push that introduces a validator's unlocking bytecode. */
 export function encodeTranscriptPush(transcript: Transcript, minimalPush: (payload: Uint8Array) => Uint8Array): Uint8Array {
   return minimalPush(encodeTranscript(transcript));
@@ -149,4 +262,13 @@ export function buildValidatorUnlockingBytecode(
   minimalPush: (payload: Uint8Array) => Uint8Array,
 ): Uint8Array {
   return concatBytes([minimalPush(encodeTranscript(transcript)), minimalPush(redeemScript)]);
+}
+
+/** Unlocking bytecode for a validator of a genesis-shape (v0x03) transcript, with the minted blocks inline. */
+export function buildMintedValidatorUnlockingBytecode(
+  transcript: MintedTranscript,
+  redeemScript: Uint8Array,
+  minimalPush: (payload: Uint8Array) => Uint8Array,
+): Uint8Array {
+  return concatBytes([minimalPush(encodeMintedTranscript(transcript)), minimalPush(redeemScript)]);
 }

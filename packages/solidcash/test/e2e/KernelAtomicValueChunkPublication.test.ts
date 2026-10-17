@@ -50,6 +50,8 @@ describe('atomic value-chunk publication across nested builder phases', () => {
         }
       }`, KERNEL);
     const base = new Contract(artifact, [], { provider });
+    // Entries and chunks bind the master lock, which is the category-pinned contract's.
+    const pinned = (categoryId: string): Contract => base.withCategory(hexToBin(categoryId));
     const key = 0n;
     const slot = keyToSlot(bigIntToVmNumber(key));
     const prior = [{ payload: new Uint8Array(150).fill(0x21) }];
@@ -59,21 +61,21 @@ describe('atomic value-chunk publication across nested builder phases', () => {
     }, {}, {
       saltContract: true,
       extraOutputs: (categoryId) => [{
-        address: getEntryNftAddress(base, categoryId, 'records'), satoshis: 10_000n,
+        address: getEntryNftAddress(pinned(categoryId), categoryId, 'records'), satoshis: 10_000n,
         token: { amount: 0n, nft: {
           capability: 'mutable', commitment: binToHex(encodeEntryCommitment(
             new Uint8Array(32), slot, new Uint8Array(64),
           )),
         } },
       }, {
-        address: getEntryNftAddress(base, categoryId, 'records'), satoshis: 10_000n,
+        address: getEntryNftAddress(pinned(categoryId), categoryId, 'records'), satoshis: 10_000n,
         token: { amount: 0n, nft: {
           capability: 'mutable', commitment: binToHex(encodeEntryCommitment(
             slot, new Uint8Array(32), encodeChunkableValueTail(previous),
           )),
         } },
       }, ...splitValueIntoValueChunks(previous).map((chunk, index) => ({
-        address: getValueChunkAddress(base, categoryId, 'records', slot, sha256(previous)),
+        address: getValueChunkAddress(pinned(categoryId), categoryId, 'records', slot, sha256(previous)),
         satoshis: 10_000n,
         token: { amount: 0n, nft: {
           capability: 'mutable', commitment: buildValueChunkCommitment(index, chunk),

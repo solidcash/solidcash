@@ -464,8 +464,9 @@ describe('inherited modifier override and declaration namespace collisions', () 
       contract NoticeLeaf is NoticeBase {}
     `, { evmCompat: true, messageBus: true });
     const leaf = artifacts.NoticeLeaf;
-    expect(leaf.messageBus?.handlers.find((handler) => handler.name === 'set')?.emits)
-      .toEqual([expect.objectContaining({ eventSignature: 'Changed(uint256)' })]);
+    // The top-level emit settles on the handler's runtime stream, which names the resolved signature.
+    expect(leaf.messageBus?.handlers.find((handler) => handler.name === 'set')?.runtimeLoopEvents)
+      .toEqual([expect.objectContaining({ eventSignatures: ['Changed(uint256)'], stream: true })]);
     expect(leaf.events).toEqual([
       expect.objectContaining({ name: 'Changed', signature: 'Changed(uint256)' }),
     ]);

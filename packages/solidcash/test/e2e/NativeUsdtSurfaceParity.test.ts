@@ -66,7 +66,7 @@ describe('NativeUsdt / one token, three arrangements', () => {
 
   it('pins the inherited OZ/BchNative adapter delta instead of mistaking it for erased USDT routes', () => {
     expect(inherited.filter((fn) => !monolith.includes(fn))).toEqual([
-      '__updateBlockOracle', 'allowance', 'balanceOf', 'blacklist', 'decimals',
+      'allowance', 'balanceOf', 'blacklist', 'decimals',
       'name', 'symbol', 'totalSupply', 'unblacklist', 'wrap',
     ]);
     expect(monolith.filter((fn) => !inherited.includes(fn))).toEqual([

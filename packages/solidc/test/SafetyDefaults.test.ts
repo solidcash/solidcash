@@ -176,21 +176,21 @@ describe('Caller-controlled destructive authority is rejected by default', () =>
 // path (require(true)) with a warning - a plain default now (was gated behind evmCompat).
 describe('Empty receive/fallback synthesized by default', () => {
   it('compiles an empty receive() natively and warns', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     expect(compileString('contract C() { receive() external payable {} }').contractName).toBe('C');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('receive()'));
     warn.mockRestore();
   });
 
   it('compiles an empty fallback() natively and warns', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     expect(compileString('contract C() { fallback() external {} }').contractName).toBe('C');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('fallback()'));
     warn.mockRestore();
   });
 
   it('synthesizes a no-op body for a regular empty function (default; was compat-gated)', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     expect(compileString('contract C() { function f() {} }').contractName).toBe('C');
     warn.mockRestore();
   });
@@ -212,7 +212,7 @@ describe('Synthesized empty bodies are self-preserving no-ops', () => {
   });
 
   it('empty receive() (native) compiles identically to explicit require(true)', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const empty = compileString('contract C() { int n; receive() external payable {} }');
     const explicit = compileString('contract C() { int n; receive() external payable { require(true); } }');
     warn.mockRestore();

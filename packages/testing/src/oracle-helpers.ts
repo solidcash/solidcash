@@ -1,9 +1,9 @@
 /**
  * Bridge from the harness mock chain to Solidity `block.*` (HARDHAT-PARITY.md WS6). SolidCash contracts read
- * `block.timestamp` / `block.number` from oracle-backed state registers maintained off-chain by a
- * BlockOracleUpdater. `mockBlockOracleRpc(provider)` is an RpcLike whose height/time come from the mock provider,
- * so after `time.increase(...)` / `mine(...)` a `updater.syncOnce()` pushes the advanced block.timestamp/number
- * into the contract - the same way Hardhat's `time.increase` moves `block.timestamp` for ported contracts.
+ * `block.timestamp` / `block.number` from the commitment of one shared block-oracle covenant, which its owner's
+ * BlockOracleUpdater keeps current. The mock chain writes its own clock into that commitment when it mines, so
+ * `time.increase(...)` / `mine(...)` move block.* as Hardhat's do. `mockBlockOracleRpc(provider)` is an RpcLike
+ * whose height/time come from the mock provider, for running that keeper against the mock chain.
  */
 import type { RpcLike } from 'solidcash/oracle';
 
@@ -29,6 +29,8 @@ export function mockBlockOracleRpc(provider: BlockTimeProvider): RpcLike {
           return {
             height,
             time,
+            // The mock stamps the last 11 headers with the tip time, so that is also its median time past.
+            mediantime: time,
             bits: '1d00ffff',
             size: 1000,
             tx: [{ vout: [{ value: 50, scriptPubKey: { hex: coinbaseHex } }] }],

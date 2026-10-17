@@ -533,9 +533,11 @@ describe('conditional deploy with value (if (c==1) new Child{value:5000}())', ()
     // still expects the conditional transfer slot ("1 satoshi transfer expected") and can't derive a not-taken
     // transfer without a manual output. This is the SAME behavior a plain `if (c) recipient.transfer(x)` shows
     // when not taken (see CondTransferRuntime) - a general conditional-transfer limitation, NOT specific to the
-    // {value:} deploy. The FIRED path (make(1) above) is the meaningful case and works end to end.
+    // {value:} deploy. The FIRED path (make(1) above) is the meaningful case and works end to end. The satoshi-
+    // container aggregate now refuses the probe's placeholder transfer first: no executed transfer covers it.
     const factory = await deployFactory('8c01');
-    await expect(factory.call.make(2n).send()).rejects.toThrow(/transfer amounts could not be auto-derived/);
+    await expect(factory.call.make(2n).send())
+      .rejects.toThrow(/transfer amounts could not be auto-derived|Program failed an OP_VERIFY operation/);
   });
 });
 

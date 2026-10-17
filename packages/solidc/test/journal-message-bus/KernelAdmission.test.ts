@@ -784,9 +784,9 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  // An upgradable contract keeps no record: CRYPTO-4 binds each to the master lock an upgrade leaves.
   it('admits append-only in-place upgrades with compiler-authored lifecycle authority', () => {
     const artifact = compileString(`contract C() {
-      int count;
       function migrate() upgrade { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     const upgrade = artifact.messageBus?.handlers.find((handler) =>
@@ -823,8 +823,7 @@ describe('required kernel admission', () => {
 
   it('refuses upgrades on a delegate-owned route until proxy replacement semantics are explicit', () => {
     expect(denied(`contract C() {
-      int count;
-      function update(int next) public delegate { this.count = next; require(true); }
+      function update(int next) public delegate { require(next >= 0); }
       function replace() upgrade { require(true); }
     }`, 'replace')).toMatchObject({
       eligible: false, rejectionReason: 'KERNEL_FOREIGN_DELEGATE',
@@ -1066,10 +1065,9 @@ describe('required kernel admission', () => {
       const artifact = compileString(`contract C() {
         struct Authorization { sig proof; pubkey key; }
         struct Auth { Authorization authorization; int nonce; }
-        int marker;
         ${support}
         function migrate(Auth auth, int next) public upgrade ${customModifier} {
-          ${body} this.marker = next; require(true);
+          ${body} require(next >= 0);
         }
       }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'migrate')).toMatchObject({
@@ -1084,12 +1082,11 @@ describe('required kernel admission', () => {
   it('proves one immutable nested sig[] leaf through its exact CHECKMULTISIG helper body', () => {
     const artifact = compileString(`contract C() {
       struct Auth { sig[] proofs; pubkey[] authorities; int nonce; }
-      int marker;
       function authorize(Auth selected) internal {
         require(checkMultiSig(selected.proofs, selected.authorities));
       }
       function migrate(Auth auth, int next) public upgrade {
-        authorize(auth); this.marker = next; require(true);
+        authorize(auth); require(next >= 0);
       }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
@@ -1638,7 +1635,15 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('admits a synthesized block-oracle updater at the entry-point synthesis boundary', () => {
+  // The raw-covenant oracle rework (2aeaee406) synthesizes no __updateBlockOracle entry and no __block_*
+  // registers. Every surface reads one shared commitment, so there is no oracle owner to assign or refuse.
+  const expectSharedOracle = (artifact: ReturnType<typeof compileString>): void => {
+    expect(artifact.usesBlockOracle).toBe(true);
+    expect(artifact.abi.map((entry) => entry.name)).not.toContain('__updateBlockOracle');
+    expect(artifact.stateLayout?.variables.map((variable) => variable.name) ?? []).not.toContain('__block_number');
+  };
+
+  it('synthesizes no block-oracle updater at the entry-point synthesis boundary', () => {
     const artifact = compileString(`contract C(pubkey owner) {
       mapping(int => int) values;
       function set(int key) public {
@@ -1646,21 +1651,12 @@ describe('required kernel admission', () => {
         require(true);
       }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    const updater = artifact.messageBus?.handlers.find((handler) =>
-      handler.name === '__updateBlockOracle');
-    expect(updater).toMatchObject({ eligible: true });
-    expect(updater?.rejectionReason).toBeUndefined();
-    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
-      name: expect.stringMatching(/^__message_bus_sig_\d+_0_rows$/),
-      type: 'sig[]',
-    }));
-    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers ?? [])
-      .not.toContain('delegate');
-    expect(Object.values(artifact.debug.invokeDebug ?? {}))
-      .toContainEqual(expect.objectContaining({ name: '__updateBlockOracle' }));
+    expectSharedOracle(artifact);
+    expect(artifact.messageBus?.handlers.map((handler) => handler.name) ?? [])
+      .not.toContain('__updateBlockOracle');
   });
 
-  it('inherits delegate execution for a synthesized block-oracle updater', () => {
+  it('adds no block-oracle updater to a Solidity initializer surface', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract C {
         bool initialized;
@@ -1672,79 +1668,45 @@ describe('required kernel admission', () => {
     `, {
       ...KERNEL, evmCompat: true, maximumInputBytes: 1_000_000,
     });
-    const updater = artifact.messageBus?.handlers.find((handler) =>
-      handler.name === '__updateBlockOracle');
-    expect(updater).toMatchObject({
-      eligible: true,
-      usesTransactionSignature: true,
-      transactionSignaturePolicy: { hashType: 'all', parameterIndices: [0] },
-    });
-    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers)
-      .toContain('delegate');
-    const signingBody = Object.values(artifact.debug.invokeDebug ?? {})
-      .find((entry) => entry.name === '__message_bus_handler___updateBlockOracle');
-    expect(signingBody).toBeDefined();
-    expect(updater?.transactionSignaturePolicy?.coveredBytecodes).toEqual([{
-      parameterIndex: 0, leafIndex: 0, bytecode: signingBody!.bytecode,
-    }]);
-    expect(updater?.signatureBytecode).toBeUndefined();
-    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === '__message_bus1')?.writes)
-      .toContain('state:__block_number');
+    expectSharedOracle(artifact);
+    expect(artifact.invocationAnalysis?.functions.flatMap((fn) => fn.writes ?? []) ?? [])
+      .not.toContain('state:__block_number');
   });
 
-  it('does not infer oracle ownership from one delegate member on a mixed execution surface', () => {
-    const artifact = compileString(`contract C() {
+  // These mixed direct/delegate surfaces used to pick, or refuse, one owner for the injected registers.
+  it.each([
+    ['one delegate member on a mixed execution surface', `contract C() {
       int stored;
       function delegated(int next) public delegate { this.stored = next; require(true); }
       function height() public view returns (uint) { return block.number; }
-    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers ?? [])
-      .not.toContain('delegate');
-  });
-
-  it('assigns a mixed contract oracle updater to its only delegate consumer', () => {
-    const artifact = compileString(`contract C() {
+    }`],
+    ['a mixed contract whose only oracle consumer is delegate', `contract C() {
       int stored;
       function delegated() public delegate { this.stored = block.number; require(true); }
       function inspect() public view returns (int) { return this.stored; }
-    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers)
-      .toContain('delegate');
-  });
-
-  it('counts a fallback oracle read as a direct consumer on a mixed surface', () => {
-    const artifact = compileString(`contract C() {
+    }`],
+    ['a fallback oracle read beside a delegate member', `contract C() {
       int stored;
       fallback(bytes input) external {
         this.stored = block.number + input.length;
         require(true);
       }
       function delegated(int next) public delegate { this.stored = next; require(true); }
-    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.abi.find((entry) => entry.name === '__updateBlockOracle')?.modifiers ?? [])
-      .not.toContain('delegate');
-  });
-
-  it('refuses one oracle register reached through both direct and delegate roots via a shared helper', () => {
-    expect(() => compileString(`contract C() {
-      int stored;
+    }`],
+    ['one helper read reached through both direct and delegate roots', `contract C() {
+      uint stored;
       function height() internal view returns (uint) { return block.number; }
       function delegated() public delegate { this.stored = height(); require(true); }
       function direct() public view returns (uint) { return height(); }
-    }`, { ...KERNEL, maximumInputBytes: 1_000_000 })).toThrow(
-      /block-oracle state from both direct and delegate execution surfaces/,
-    );
-  });
-
-  it('treats a constructor oracle read as direct ownership beside a delegate consumer', () => {
-    expect(() => compileString(`contract C() {
+    }`],
+    ['a constructor oracle read beside a delegate consumer', `contract C() {
       uint stored;
       function height() internal view returns (uint) { return block.number; }
       constructor() { this.stored = height(); }
       function delegated() public delegate { this.stored = block.number; require(true); }
-    }`, { ...KERNEL, maximumInputBytes: 1_000_000 })).toThrow(
-      /block-oracle state from both direct and delegate execution surfaces/,
-    );
+    }`],
+  ])('compiles %s against the shared oracle with no owner', (_label, source) => {
+    expectSharedOracle(compileString(source, { ...KERNEL, maximumInputBytes: 1_000_000 }));
   });
 
   it.each([
@@ -3835,10 +3797,10 @@ describe('required kernel admission', () => {
       ?.childDeployments?.[0];
     expect(site).toMatchObject({ dataNftOutputCount: 2, totalOutputCount: 3 });
     expect(site?.childLayoutDigest).toMatch(/^[0-9a-f]{64}$/);
-    const verifier = artifact.messageBus?.verifierProgram?.functions.find(
-      (candidate) => candidate.name === '__message_bus_verify_atomic',
-    );
-    expect(verifier?.bytecode).toContain(site!.childLayoutDigest);
+    // The digest sits in the deployment-registration arm, which the verifier program may outline.
+    expect(artifact.messageBus?.verifierProgram?.functions.some(
+      (candidate) => candidate.bytecode.includes(site!.childLayoutDigest!),
+    )).toBe(true);
   });
 
   it('publishes a Solidity-style constructor-parameter genesis recipe', () => {
@@ -9458,6 +9420,7 @@ describe('required kernel admission', () => {
     }
   });
 
+  // Measured 51 s alone: two full kernel pipelines (admission 26.6 s, binder 24.5 s), each ~18 s of lowering.
   it('keeps resource recurrence sources fenced and exactly replays truncating and local deltas', () => {
     const artifact = compileString(`event Tick(int value);
       contract C() {
@@ -9512,7 +9475,7 @@ describe('required kernel admission', () => {
     }
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'resourceDependent'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-  });
+  }, 120_000);
 
   it('publishes quadratic-counter event prefixes across affine loop domains and source phases', () => {
     const artifact = compileString(`event Phase(int value);

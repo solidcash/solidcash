@@ -19,6 +19,7 @@ describe('kernel participant-local identity and chunked updates', () => {
       const provider = createMessageBusCapstoneTestProvider();
       const note = 'preserved record payload '.repeat(12);
       const banner = 'preserved dynamic state '.repeat(8);
+      // An event is one NFT commitment (<= 128 bytes, never split), so it cannot carry the 300-byte record.
       const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       struct Record { string note; int16[2] consensus; uint claimed; }
       interface IStore { function release(uint key) external; }
@@ -26,7 +27,7 @@ describe('kernel participant-local identity and chunked updates', () => {
       contract Store {
         ${proxied ? 'string public banner;' : ''}
         mapping(uint => Record) records;
-        event Completed(uint key, Record record);
+        event Completed(uint key);
         ${proxied ? 'function initialize() public { this.banner = ""; }' : ''}
         function seed(uint key, Record memory value) public {
           this.records[key] = value;
@@ -40,7 +41,7 @@ describe('kernel participant-local identity and chunked updates', () => {
           current.consensus[1] = absolute(current.consensus[1]);
           this.records[key].consensus = current.consensus;
           ${separateHandlers ? '' : 'this.records[key].claimed = 1;'}
-          emit Completed(key, current);
+          emit Completed(key);
         }
         function claim(uint otherKey) public { this.records[otherKey].claimed = 1; }
         function absolute(int16 value) internal pure returns (int16) { return value < 0 ? -value : value; }

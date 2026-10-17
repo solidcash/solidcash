@@ -41,7 +41,6 @@ describe('kernel all-output policy for direct multisignature arrays', () => {
 
   it('admits a direct multisignature array as upgrade authority', () => {
     const { selected } = handler(`contract C(pubkey first, pubkey second) {
-      int marker;
       function replace(sig[] proofs) public upgrade {
         require(checkMultiSig(proofs, [first, second]));
       }

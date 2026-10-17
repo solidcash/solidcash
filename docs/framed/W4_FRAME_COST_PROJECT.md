@@ -3,6 +3,9 @@
 Opened 2026-10-08 by the user's answer to the title sweep's density question ("Open a compiler per-frame cost
 project"). Ledger row D26.
 
+Status: complete. The third increment below meets all six 64-frame budgets, merged as `33860e146` on 2026-10-13.
+The earlier measurements and candidate approaches remain as the investigation record; D26 is closed.
+
 ## Goal
 
 Bring the emitted kernel runtime-loop settlement inside BCH-2026's operation-cost density budget at the frame
@@ -98,6 +101,62 @@ The second row needs more cost than any single input can ever fund: the maximum 
   the profile shows the required cut is 85-325% of the only pool a reordering can reach. Next increment: the
   structural move (outlining the mutually-exclusive arms so the VM dispatches past them without losing their
   bytes from the control length), which must be built and measured as one change, not incrementally.
+
+- 2026-10-13, second increment (branch `feat/hunt-d26`, base `fc44df38a`): five of the six settle at 64 frames.
+  Profile at base, title 1 per frame (~600 charged instructions): frame loop ~270 (commitment encode 48, record
+  pushdata wrap 50, per-record event lock rebuild 24 + HASH256, count bump 16, loop control and rebinding ~70),
+  settlement ~180 per record (four-kind dispatch 98 of which 53 stepped over, pushdata decode 51, checks 32),
+  census ~130 per output (immutable-NFT pin ~100, two shared output scans ~31). Cuts, all in
+  `GenerateTargetTraversal.ts`, direct convention only (framed bytes untouched):
+  1. An events-only, unchunked stream keeps compact records (the commitment, plus a one-byte lock ordinal when it
+     mixes events); its verifier builds each event lock once and runs the effect verifier's event checks in the
+     same order. Transfer and chunked streams keep the tagged records.
+  2. The immutable-NFT pin steps over `[start, end)`: its own span clause admits every output there.
+  3. A 14..17-deep replace inside a while body uses the ROLL rotation, not the counted alt-stack loops.
+  4. Compact-stream int event arguments use a 47-instruction flat encoder (the generic ladder became 83 once the
+     outliner inlined its push frame), same encoding for every input.
+
+  | title | base cost / budget | now cost / budget |
+  |---|---:|---:|
+  | guarded tail-call stream | 4,032,737 / 3,241,600 | 1,931,872 / 2,906,400 |
+  | pre-only affine parameters | 9,642,515 / 3,580,800 | 3,819,340 / 3,288,800 |
+  | every pre-recursion frame | 3,884,596 / 3,260,800 | 1,794,891 / 2,966,400 |
+  | mixed pre-order and post-descent | 6,595,267 / 3,292,800 | 2,468,363 / 2,983,200 |
+  | affine-counter progression | 7,316,296 / 3,424,800 | 2,784,016 / 3,110,400 |
+  | recursive event domain step (KernelLoopCompose) | 4,116,185 / 3,492,000 | 1,994,457 / 3,227,200 |
+
+  The pre-only title fits 54 frames (3,241,490 / 3,288,800; 57,785 per frame). Its ~577 instructions per frame:
+  argument encoding 168 (3.5 args, the PUSHDATA1/2 arm is stepped over on every call), parameter rebinding at
+  depth 13-15 ~98, the lowered tail recursion's loop control ~51, settlement ~77, count bumps ~36, shared output
+  scans ~47. Next levers: that arm out of line (~52), a do-while lowering with the continue flag on top (~40),
+  shallow loop-carried parameters. The mixed and affine-counter titles now reach their inexact-descend check,
+  which the affine frame guard refuses at derivation (as `424fea1b1` recorded for the non-void title; measured
+  the same for the pre-only title); the three tests assert that.
+
+- 2026-10-13, third increment (branch `feat/hunt-d26b`, base `aa4cd27ab`): all six settle at 64 frames; the
+  pre-only title has 20.5% headroom. Direct convention only (framed bytes and lowering untouched). Cuts:
+  1. `LowerTailRecursion`: an event stream `prefix; if (base) return [r]; recurse(args)` clears the repeat flag in
+     its base arm and advances the frame in the other, so the loop has no break flag and no per-frame reset or
+     re-arm. A parameter whose new value reads only itself and invariants is assigned in place (no temporaries,
+     so its replace is 3 to 4 items shallower).
+  2. Runtime-loop events reserve no epilogue emit registers: two dead items no longer deepen every loop replace.
+  3. The loop int encoder's opcode arm and OP_PUSHDATA1/2 prefix are compiler helpers, defined once and invoked,
+     so a pass steps over one invoke instead of 8 and 14 instructions; the encoding is unchanged.
+  4. The compact stream's record count is bumped in place (`ROT 1ADD ROT ROT` at depth 2, not a copy and replace).
+
+  | title | before cost / budget | now cost / budget |
+  |---|---:|---:|
+  | guarded tail-call stream | 1,931,872 / 2,906,400 | 1,337,172 / 2,829,600 |
+  | pre-only affine parameters | 3,819,340 / 3,288,800 | 2,567,470 / 3,231,200 |
+  | every pre-recursion frame | 1,794,891 / 2,966,400 | 1,219,493 / 2,881,600 |
+  | mixed pre-order and post-descent | 2,468,363 / 2,983,200 | 2,070,559 / 2,984,800 |
+  | affine-counter progression | 2,784,016 / 3,110,400 | 2,382,688 / 3,104,000 |
+  | recursive event domain step (KernelLoopCompose) | 1,994,457 / 3,227,200 | 1,465,248 / 3,160,000 |
+
+  The pre-only title now executes 24,780 instructions at 64 frames (was 36,906): about 388 a frame (was 577).
+  What is left a frame: argument encoding ~118 (the outliner shares the classification and the medium prefix, at
+  two invokes a call), the three parameter replaces at depth 7-9 ~67, settlement ~83 and output scans ~48.
+  Pinned sizes move for direct-convention contracts with runtime-loop events and for affine event recursions.
 
 ## Risks
 

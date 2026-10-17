@@ -1,13 +1,17 @@
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+import { decodeTransaction, encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
-import { hash256, sha256 } from '@solidcash/utils';
+import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import {
+  encodeBlockOracleCommitment, blockOracleLockingBytecode, blockOracleReadUnlocking, hash160, hash256, sha256,
+  type BlockOracleCommitmentFields,
+} from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
 import { type Utxo, Network, VmTarget, type TokenDetails } from '../interfaces.js';
 import type NetworkProvider from './NetworkProvider.js';
 import type { ConsensusLimits, LedgerOutput, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
-import { addressToLockScript, randomUtxo } from '../utils.js';
+import { addressToLockScript, publicKeyToP2PKHLockingBytecode, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
 import { createPreparedBch2026TxVerifier } from './createPreparedTxVerifier.js';
@@ -234,6 +238,14 @@ export const resetConsensusProbeCacheForTests = (): void => consensusProbeVerdic
 
 type LiveUtxoEntry = ReturnType<Indexer['storage']['snapshot']>['utxos'] extends Map<string, infer E> ? E : never;
 
+interface Outpoint { readonly txid: string; readonly vout: number }
+
+/** Where a fresh mock chain mints its block oracle. */
+const MOCK_BLOCK_ORACLE_OUTPOINT: Outpoint = { txid: `${'b0'.repeat(31)}b1`, vout: 0 };
+
+/** The coin a fresh mock chain gives the oracle owner's P2PKH, which pays its keeper's update fees. */
+const MOCK_BLOCK_ORACLE_FEE_COIN: Outpoint = { txid: `${'b0'.repeat(31)}b2`, vout: 0 };
+
 /**
  * Write counters for indexer stores. mem-cash calls its storage by property lookup, so wrapping the writer methods
  * and the `_test` helpers (which edit the internals directly) sees every change to the UTXO set.
@@ -306,6 +318,8 @@ export default class MockNetworkProvider implements NetworkProvider {
     byCategory: ReadonlyMap<string, readonly number[]>;
   };
 
+  /** Txids this provider has already accepted. A resubmit returns the id and does not throw. */
+  private acceptedTransactions = new Set<string>();
   private signerCache = new Map<string, HDSigner>();
   private fundedSignerKeys = new Set<string>();
   private preparedTransaction?: PreparedTransaction;
@@ -376,6 +390,99 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.indexer = createIndexer({ verifier });
     storeGeneration(this.indexer.storage);
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
+    this.installBlockOracle();
+  }
+
+  /** Compressed key the mock oracle's commitment names. Tests sign updates with it, and its P2PKH pays their fees. */
+  readonly blockOracleOwnerKey = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x44 : 0x11));
+  blockOracleLock!: Uint8Array;
+  blockOracleCategory!: Uint8Array;
+  /** The outpoint the mock last wrote the oracle at. */
+  private blockOracleOutpoint: Outpoint = MOCK_BLOCK_ORACLE_OUTPOINT;
+
+  /** Mint the one block-info NFT this provider's readers slice, and fund its owner's update fees. */
+  private installBlockOracle(): void {
+    this.blockOracleCategory = sha256(new TextEncoder().encode('solidcash-block-info-oracle-v1'));
+    this.blockOracleLock = blockOracleLockingBytecode(this.blockOracleCategory);
+    this.writeBlockOracle(MOCK_BLOCK_ORACLE_OUTPOINT, this.tipBlockOracleFields());
+    const owner = publicKeyToP2PKHLockingBytecode(
+      secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array,
+    );
+    this.indexer.addUtxo({
+      ...MOCK_BLOCK_ORACLE_FEE_COIN, satoshis: 100_000_000n, scriptHash: binToHex(sha256(owner)), height: 100,
+      lockingBytecode: owner,
+    });
+  }
+
+  private tipBlockOracleFields(): BlockOracleCommitmentFields {
+    return {
+      number: BigInt(this.blockHeight),
+      timestamp: BigInt(this.getBlockTime()),
+      difficulty: 0n,
+      size: 1000n,
+      totalFees: 0n,
+      coinbase: hexToBin(`76a914${'00'.repeat(20)}88ac`),
+    };
+  }
+
+  /**
+   * Write the provider's current height and time into the live oracle. An oracle an owner's signed update
+   * recreated keeps the owner's fields, as on chain; one only readers recreated is still the mock's.
+   */
+  refreshBlockOracle(): void {
+    const live = this.liveBlockOracle();
+    if (live === undefined || !this.onlyReadSince(live)) return;
+    this.writeBlockOracle(live, this.tipBlockOracleFields());
+  }
+
+  /** Replace the block fields of the live oracle in place. The commitment names the mock owner's key. */
+  setBlockOracleFields(fields: BlockOracleCommitmentFields): void {
+    this.writeBlockOracle(this.liveBlockOracle() ?? this.blockOracleOutpoint, fields);
+  }
+
+  /** The oracle a reader co-spends: the first mutable NFT at the oracle lock. */
+  private liveBlockOracle(): Outpoint | undefined {
+    const entry = this.indexer.getUtxos(binToHex(sha256(this.blockOracleLock)))
+      .find((utxo) => utxo.tokenData?.nft?.capability === 'mutable');
+    return entry === undefined ? undefined : { txid: entry.outpoint.txid, vout: entry.outpoint.vout };
+  }
+
+  /** Whether only read-path spends, which recreate it unchanged, moved the oracle since the mock wrote it. */
+  private onlyReadSince(outpoint: Outpoint): boolean {
+    let read: string | undefined;
+    let at = outpoint;
+    while (at.txid !== this.blockOracleOutpoint.txid || at.vout !== this.blockOracleOutpoint.vout) {
+      read ??= binToHex(blockOracleReadUnlocking(this.blockOracleCategory));
+      const raw = this.indexer.getRawTx(at.txid);
+      const decoded = raw === undefined ? undefined : decodeTransaction(hexToBin(raw));
+      // The read path recreates the oracle at its own input index.
+      const input = typeof decoded === 'object' ? decoded.inputs[at.vout] : undefined;
+      if (input === undefined || binToHex(input.unlockingBytecode) !== read) return false;
+      at = { txid: binToHex(input.outpointTransactionHash), vout: input.outpointIndex };
+    }
+    return true;
+  }
+
+  /** Rewrite the oracle NFT at `outpoint` in place, keeping its value and height. */
+  private writeBlockOracle(outpoint: Outpoint, fields: BlockOracleCommitmentFields): void {
+    const pubkey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
+    const commitment = encodeBlockOracleCommitment(hash160(pubkey), fields);
+    const { txid, vout } = outpoint;
+    const { storage } = this.indexer;
+    const live = storage.getUtxoByOutpoint(`${txid}:${vout}`);
+    storage._test.utxo.remove({ txid, vout });
+    this.indexer.addUtxo({
+      txid, vout, satoshis: live?.satoshis ?? 10_000n,
+      scriptHash: binToHex(sha256(this.blockOracleLock)),
+      height: live?.height ?? 100,
+      lockingBytecode: this.blockOracleLock,
+      tokenData: {
+        category: live?.tokenData?.category ?? binToHex(this.blockOracleCategory),
+        amount: 0n,
+        nft: { capability: 'mutable', commitment: binToHex(commitment) },
+      },
+    });
+    this.blockOracleOutpoint = { txid, vout };
   }
 
   async getUtxos(address: string): Promise<Utxo[]> {
@@ -516,14 +623,19 @@ export default class MockNetworkProvider implements NetworkProvider {
     const snap = this.indexer.snapshot(); // captures headers => tip height + timestamp
     const height = this.blockHeight;
     const fundingNonce = this.fundingNonce;
+    const oracleOutpoint = this.blockOracleOutpoint;
     const signerNonces = new Map(
       [...this.signerCache].map(([key, signer]) => [key, signer._getTransactionNonceState()]),
     );
+    // A transaction accepted after the snapshot is rewound with the chain, so a resubmit of it applies again.
+    const accepted = new Set(this.acceptedTransactions);
     const snapshotId = `0x${(this.snapshotNonce++).toString(16)}`;
     const restore = async (): Promise<void> => {
       this.indexer.restore(snap);
+      this.acceptedTransactions = new Set(accepted);
       this.blockHeight = height;
       this.fundingNonce = fundingNonce;
+      this.blockOracleOutpoint = oracleOutpoint;
       for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);
       // Snapshot restoration can abandon transactions just as completely as reset(). Any process-local cache
       // derived from the prior chain tip is stale after this point and must be rebuilt from the restored UTXO set.
@@ -633,10 +745,14 @@ export default class MockNetworkProvider implements NetworkProvider {
   }
 
   async sendRawTransaction(txHex: string): Promise<string> {
+    // A node returns the txid with no error when sendrawtransaction is given a transaction it already
+    // accepted. Record the id before the oracle await so a second call during that await takes the same path.
+    const txid = binToHex(sha256(sha256(hexToBin(txHex))).reverse());
+    if (this.acceptedTransactions.has(txid)) return txid;
+
     if (!this.options.updateUtxoSet) {
-      const bin = hexToBin(txHex);
-      const txid = binToHex(sha256(sha256(bin)).reverse());
       this.indexer.storage.storeRawTx(txid, txHex);
+      this.acceptedTransactions.add(txid);
       return txid;
     }
 
@@ -661,8 +777,12 @@ export default class MockNetworkProvider implements NetworkProvider {
       stage: 'submit-transaction', ms: Date.now() - submitStartedAt, success: result.success,
     });
     if (!result.success) {
+      // The winning call may have recorded the txid while this one was waiting on the indexer.
+      if (this.acceptedTransactions.has(txid)) return txid;
       throw new Error(result.debugMessage ? `${result.error}: ${result.debugMessage}` : result.error);
     }
+    this.acceptedTransactions.add(txid);
+    this.acceptedTransactions.add(result.txid);
 
     // Mine a block to confirm the transaction immediately. This moves outputs
     // from the mempool to the confirmed UTXO set and clears mempool spend
@@ -740,10 +860,13 @@ export default class MockNetworkProvider implements NetworkProvider {
 
   reset(): void {
     this.indexer.reset();
+    this.acceptedTransactions.clear();
     this.signerCache.clear();
     this.fundedSignerKeys.clear();
     this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
+    // The wipe took the oracle with it, and a fresh chain has one.
+    this.installBlockOracle();
     runMockNetworkProviderResetHooks();
   }
 
@@ -782,39 +905,49 @@ export default class MockNetworkProvider implements NetworkProvider {
    * The hardhat `ethers.getSigners()` analogue: `count` HD signers derived from {@link DEFAULT_MNEMONIC}
    * (m/44'/145'/0'/0/i), each pre-funded with a genesis-valid UTXO on this provider. Destructure the famous
    * way: `const [owner, addr1] = await provider.getSigners();`. Each is an HDSigner - a drop-in ContractFactory
-   * runner. `fundingUtxos > 1` gives every account multiple funding UTXOs (for accounts that deploy repeatedly).
+   * runner. `fundingUtxos > 1` gives every account multiple funding UTXOs. `genesisFundingUtxos` partitions
+   * those equal-value coins across distinct transactions, each with a genesis-eligible vout 0; the total balance
+   * remains `fundingUtxos * satoshis`, and remaining outputs are ordinary fee/block-slot funding.
    */
   async getSigners(
     count = 20,
-    opts: { satoshis?: bigint; mnemonic?: string; fundingUtxos?: number; path?: string } = {},
+    opts: { satoshis?: bigint; mnemonic?: string; fundingUtxos?: number; genesisFundingUtxos?: number; path?: string } = {},
   ): Promise<HDSigner[]> {
     const satoshis = opts.satoshis ?? 1_000_000n;
     const fundingUtxos = opts.fundingUtxos ?? 1;
+    const requestedGenesis = opts.genesisFundingUtxos ?? 1;
+    if (!Number.isSafeInteger(requestedGenesis) || requestedGenesis < 1) {
+      throw new Error('genesisFundingUtxos must be a positive whole number');
+    }
+    const fundingTransactions = Math.max(1, Math.min(fundingUtxos, requestedGenesis));
     const mnemonic = opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC;
     const signers = Array.from({ length: count }, (_, index) => this.getCachedSigner(index, { mnemonic, path: opts.path }));
     for (let index = 0; index < signers.length; index++) {
       const signer = signers[index];
       const key = this.signerKey(mnemonic, opts.path, index);
       if (this.fundedSignerKeys.has(key)) continue;
-      // Model prefunding as a fan-out transaction. Only vout 0 is a CashTokens genesis candidate; sibling
-      // outputs are category-neutral and can safely fill vmap/output-only block slots. The raw transaction
-      // is what genesis selection checks, so the txid has to be the hash of outputs that pay this signer.
+      // Every prefunding transaction contributes one genesis candidate. Partition the requested coin count
+      // rather than adding balance; nonzero outputs remain available while CREATE look-ahead reserves vout 0.
       const lockingBytecode = signer.getLockingBytecode();
-      const raw = encodeTransaction({
-        version: 2,
-        locktime: 0,
-        inputs: [{
-          outpointIndex: 0,
-          outpointTransactionHash: hexToBin(this.nextFundingTxid()),
-          sequenceNumber: 0xffffffff,
-          unlockingBytecode: Uint8Array.of(0x51),
-        }],
-        outputs: Array.from({ length: fundingUtxos }, () => ({ lockingBytecode, valueSatoshis: satoshis })),
-      });
-      const fundingTxid = binToHex(hash256(raw).reverse());
-      this.indexer.storage.storeRawTx(fundingTxid, binToHex(raw));
-      for (let i = 0; i < fundingUtxos; i++) {
-        await this.addUtxo(signer.getAddress(), { txid: fundingTxid, vout: i, satoshis });
+      for (let transactionIndex = 0; transactionIndex < fundingTransactions; transactionIndex++) {
+        const outputCount = Math.floor(fundingUtxos / fundingTransactions)
+          + (transactionIndex < fundingUtxos % fundingTransactions ? 1 : 0);
+        const raw = encodeTransaction({
+          version: 2,
+          locktime: 0,
+          inputs: [{
+            outpointIndex: 0,
+            outpointTransactionHash: hexToBin(this.nextFundingTxid()),
+            sequenceNumber: 0xffffffff,
+            unlockingBytecode: Uint8Array.of(0x51),
+          }],
+          outputs: Array.from({ length: outputCount }, () => ({ lockingBytecode, valueSatoshis: satoshis })),
+        });
+        const fundingTxid = binToHex(hash256(raw).reverse());
+        this.indexer.storage.storeRawTx(fundingTxid, binToHex(raw));
+        for (let i = 0; i < outputCount; i++) {
+          await this.addUtxo(signer.getAddress(), { txid: fundingTxid, vout: i, satoshis });
+        }
       }
       this.fundedSignerKeys.add(key);
     }

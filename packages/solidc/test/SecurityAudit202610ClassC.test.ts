@@ -8,9 +8,10 @@ import {
 } from '@bitauth/libauth';
 
 import {
-  asmToScript, buildDataNftCovenantScript, buildEntryNftCovenantScript, buildEventNftCovenantScript,
-  buildPushdataCommitment, computeCollectionHash, computeEventNameHash, encodeIntegerValue, hash256,
-  scriptToBytecode, type AbiFunction,
+  asmToScript, blockOracleRedeemScript, blockOracleUpdateUnlocking, buildDataNftCovenantScript,
+  buildEntryNftCovenantScript, buildEventNftCovenantScript, buildPushdataCommitment, computeCollectionHash,
+  computeEventNameHash, encodeBlockOracleCommitment, encodeIntegerValue, hash160, scriptToBytecode,
+  type AbiFunction,
 } from '@solidcash/utils';
 import { SighashType } from '../../solidcash/src/interfaces.js';
 import SignatureTemplate from '../../solidcash/src/SignatureTemplate.js';
@@ -56,7 +57,9 @@ function verdict(sourceOutputs: SourceOutputs, transaction: VmTransaction): true
   return vm.verify({ sourceOutputs, transaction });
 }
 
-function redeemUnlock(fn: AbiFunction, redeem: Uint8Array, values: Record<string, Uint8Array>, dispatch: boolean): Uint8Array {
+function redeemUnlock(
+  fn: AbiFunction, redeem: Uint8Array, values: Record<string, Uint8Array>, dispatch: boolean,
+): Uint8Array {
   const args = fn.inputs.map((entry) => {
     const value = values[entry.name];
     if (value === undefined) throw new Error(`no value for ${fn.name}.${entry.name}`);
@@ -330,6 +333,70 @@ describe('October 2026 class C holes', () => {
     expect(spend(true), 'DS-6 plain delete slot').not.toBe(true);
   });
 
+  it('DS-6 a message-bus route cannot skip a branched sorted batch with a bad slot or a short commitment', () => {
+    const artifact = compileString(
+      `${P} contract C { mapping(int => int) m;`
+      + ' function drop(int k, int sel) { if (sel > 0) { require(k != 3); delete m[k]; } require(true); }'
+      + ' function set(int k, int v, int sel) { if (sel > 0) { require(k != 3); this.m[k] = v; } require(true); } }',
+      { messageBus: true, forceStateful: true },
+    );
+    const drop = artifact.abi.find((entry) => entry.name === 'drop');
+    const set = artifact.abi.find((entry) => entry.name === 'set');
+    if (!drop || !set) throw new Error(`missing route arms; ${artifact.abi.map((entry) => entry.name).join(',')}`);
+    const redeem = scriptToBytecode(asmToScript(artifact.bytecode));
+    const contractLock = p2sh32(redeem);
+    const dispatch = artifact.messageBus?.routeInBytecode === true;
+    const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'm')!;
+    const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
+      CATEGORY, computeCollectionHash(collection.signature), contractLock,
+    ));
+    const entryLock = p2sh32(entryRedeem);
+    const zero = new Uint8Array(32);
+    const keptSlot = keyToSlotMulti([num(7n)]);
+    const kept = encodeEntryCommitment(keptSlot, zero, num(1n));
+    const other = encodeEntryCommitment(keyToSlotMulti([num(42n)]), zero, num(9n));
+    const spend = (
+      fn: AbiFunction, slot: Uint8Array, commitment: Uint8Array, outputCommitment: Uint8Array, sel: bigint,
+    ): true | string => {
+      const values: Record<string, Uint8Array> = {};
+      for (const entry of fn.inputs) {
+        if (entry.name === 'k') values[entry.name] = num(7n);
+        else if (entry.name === 'v') values[entry.name] = num(2n);
+        else if (entry.name === 'sel') values[entry.name] = num(sel);
+        else if (/^__internal__vmapBatchSlot_\d+$/.test(entry.name)) values[entry.name] = slot;
+        else if (entry.name.includes('vmapBatchProof')) values[entry.name] = num(1n);
+        else if (entry.name.includes('vmapBatchNext')) values[entry.name] = zero;
+        else if (entry.name.includes('vmapBatchPredOut')) values[entry.name] = num(-1n);
+        else if (entry.name.includes('TrailingCount')) values[entry.name] = num(0n);
+        else if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+        else throw new Error(`unexpected input ${entry.name}`);
+      }
+      const layout = fn.blockLayout?.slots.find((entry) => entry.kind === 'entry');
+      if (!layout || layout.offset !== 1) throw new Error(`entry offset ${layout?.offset}`);
+      return verdict([
+        { lockingBytecode: contractLock, valueSatoshis: VALUE, token: tokenOf('minting', new Uint8Array()) },
+        { lockingBytecode: entryLock, valueSatoshis: VALUE, token: tokenOf('mutable', commitment) },
+      ], {
+        version: 2, locktime: 0,
+        inputs: [
+          input(0, redeemUnlock(fn, redeem, values, dispatch)),
+          input(1, pushesOf([num(0n), num(1n), entryRedeem])),
+        ],
+        outputs: [
+          { lockingBytecode: contractLock, valueSatoshis: VALUE, token: tokenOf('minting', new Uint8Array()) },
+          { lockingBytecode: entryLock, valueSatoshis: VALUE, token: tokenOf('mutable', outputCommitment) },
+        ],
+      });
+    };
+    expect(spend(drop, keptSlot, kept, kept, 0n), 'DS-6 route delete arm kept').toBe(true);
+    expect(spend(drop, keptSlot, kept, encodeEntryCommitment(keptSlot, zero, num(0n)), 1n), 'DS-6 route delete taken')
+      .toBe(true);
+    expect(spend(set, keptSlot, kept, encodeEntryCommitment(keptSlot, zero, num(2n)), 1n), 'DS-6 route write arm')
+      .toBe(true);
+    expect(spend(drop, new Uint8Array(32).fill(0x11), kept, other, 0n), 'DS-6 route mismatched slot').not.toBe(true);
+    expect(spend(drop, keptSlot, Uint8Array.of(1, 2, 3, 4), other, 0n), 'DS-6 route short commitment').not.toBe(true);
+  });
+
   it('DX-4 a standalone callee cannot sit beside its own return carrier, and a carrier-less call can', () => {
     const artifact = compileString(
       `${P} contract Quoter { int q; function quote() public returns (int) { return this.q; } }`,
@@ -401,13 +468,6 @@ describe('October 2026 class C holes', () => {
     };
     const okId = idOf('ok');
     const secretId = idOf('secret');
-    const encoded = (id: bigint): Uint8Array => {
-      const value = Number(id);
-      if (value === 0) return Uint8Array.of(0x00);
-      if (value === -1) return Uint8Array.of(0x4f);
-      if (value >= 1 && value <= 16) return Uint8Array.of(0x50 + value);
-      return num(id);
-    };
     const call = (name: string, valuesFor: (entry: { name: string }) => Uint8Array | undefined): true | string => {
       const fn = artifact.abi.find((entry) => entry.name === name);
       if (!fn) throw new Error(`no ${name}`);
@@ -1345,94 +1405,44 @@ describe('October 2026 class C holes', () => {
     expect(() => compileString(src, { messageBus: false }), 'SEM-2 undefined modifier').toThrow(/onlyOwnr/);
   });
 
-  // Stored height 100 and timestamp 1000. Each call signs the output commitments it writes.
+  // The shared block oracle covenant holds height 100 and timestamp T0, owned by alice. Each call signs a spend
+  // that replaces the commitment.
+  const ORACLE_T0 = 1_700_000_000n;
   const oracleUpdate = (number: bigint, timestamp: bigint, locktime: number): true | string => {
-    const artifact = compileString(
-      `${P} contract C() { function poke() { require(block.number >= 0); require(block.timestamp >= 0); } }`,
-      { messageBus: false, forceStateful: true },
-    );
-    const fn = artifact.abi.find((entry) => entry.name === '__updateBlockOracle');
-    if (!fn || !artifact.stateLayout) {
-      throw new Error(`no oracle update; ${artifact.abi.map((entry) => entry.name).join(',')}`);
-    }
-    const layout = artifact.stateLayout;
-    const nftIndexes = [...new Set(layout.variables.map((variable) => variable.nftIndex))].sort((a, b) => a - b);
-    const written = new Set(layout.variables.filter((variable) => variable.name.startsWith('__block_')).map((v) => v.nftIndex));
-    const before: Record<string, bigint | Uint8Array> = {
-      __block_number: 100n, __block_timestamp: 1000n, __blockOracleOwner: alicePub,
-    };
-    const after: Record<string, bigint | Uint8Array> = { ...before, __block_number: number, __block_timestamp: timestamp };
-    const redeem = scriptToBytecode(asmToScript(artifact.bytecode));
+    const record = (height: bigint, time: bigint): Uint8Array => encodeBlockOracleCommitment(hash160(alicePub), {
+      number: height, timestamp: time, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: Uint8Array.of(0x51),
+    });
+    const redeem = blockOracleRedeemScript(CATEGORY);
     const lock = p2sh32(redeem);
-    const dataRedeem = scriptToBytecode(buildDataNftCovenantScript(CATEGORY, lock));
-    const dataLock = p2sh32(dataRedeem);
-    const slots = [...(fn.blockLayout?.slots ?? [])].sort((a, b) => a.offset - b.offset);
-    if (fn.blockLayout?.blockSize !== slots.length || slots.some((slot) => slot.offset !== slots.indexOf(slot))) {
-      throw new Error(`layout ${JSON.stringify(fn.blockLayout ?? null)}`);
-    }
-    const commitment = (nftIndex: number, values: Record<string, bigint | Uint8Array>): Uint8Array => (
-      hexToBin(buildPushdataCommitment(layout, values, nftIndex))
-    );
-    const sources: SourceOutputs = [];
-    const outputs: VmOutput[] = [];
-    const inputs: VmTransaction['inputs'] = [];
-    for (const slot of slots) {
-      if (slot.kind === 'master') {
-        const coin = { lockingBytecode: lock, valueSatoshis: VALUE, token: tokenOf('minting', new Uint8Array()) };
-        sources.push(coin);
-        outputs.push(coin);
-        inputs.push(input(slot.offset, new Uint8Array(), 0xfffffffe));
-      } else if (slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft') {
-        const nftIndex = slot.nftIndex ?? 0;
-        const changed = written.has(nftIndex);
-        const coin = {
-          lockingBytecode: dataLock,
-          valueSatoshis: VALUE,
-          token: tokenOf('mutable', commitment(nftIndex, changed ? after : before)),
-        };
-        sources.push({
-          ...coin,
-          token: tokenOf('mutable', commitment(nftIndex, before)),
-        });
-        outputs.push(coin);
-        inputs.push(input(slot.offset, pushesOf([num(0n), num(changed ? 1n : 0n), dataRedeem])));
-      } else {
-        throw new Error(`slot ${slot.kind}`);
-      }
-    }
-    if (nftIndexes.length === 0) throw new Error('oracle published no state');
-    const covered = artifact.functionBodies?.[fn.selector ?? '']
-      ? hexToBin(artifact.functionBodies[fn.selector ?? ''])
-      : redeem;
+    const next = record(number, timestamp);
+    const sources: SourceOutputs = [
+      { lockingBytecode: lock, valueSatoshis: VALUE, token: tokenOf('mutable', record(100n, ORACLE_T0)) },
+    ];
+    const inputs: VmTransaction['inputs'] = [input(0, new Uint8Array(), 0xfffffffe)];
+    const outputs: VmOutput[] = [{ lockingBytecode: lock, valueSatoshis: VALUE, token: tokenOf('mutable', next) }];
     const transaction: VmTransaction = { version: 2, locktime, inputs, outputs };
     const signature = new SignatureTemplate(alicePriv).generateSignature(hash256(createSighashPreimage(
-      transaction, sources, 0, covered, SighashType.SIGHASH_ALL | SighashType.SIGHASH_UTXOS,
+      transaction, sources, 0, redeem, SighashType.SIGHASH_ALL | SighashType.SIGHASH_UTXOS,
     )));
-    const values: Record<string, Uint8Array> = {};
-    for (const entry of fn.inputs) {
-      if (entry.name === '__blockOracleSig') values[entry.name] = signature;
-      else if (entry.name === '__set_number') values[entry.name] = num(number);
-      else if (entry.name === '__set_timestamp') values[entry.name] = num(timestamp);
-      else if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
-      else throw new Error(`unexpected input ${entry.name}`);
-    }
-    inputs[0] = input(0, redeemUnlock(fn, redeem, values, fn.selector !== undefined), 0xfffffffe);
+    inputs[0] = input(0, blockOracleUpdateUnlocking(CATEGORY, alicePub, signature, next), 0xfffffffe);
     return verdict(sources, transaction);
   };
 
   it('CRYPTO-5 an owner can advance the height and the timestamp', () => {
-    expect(oracleUpdate(150n, 1001n, 150), 'CRYPTO-5 honest height').toBe(true);
+    // A height-type nLockTime anchors the number and keeps the timestamp; a time-type one the reverse.
+    expect(oracleUpdate(150n, ORACLE_T0, 150), 'CRYPTO-5 honest height').toBe(true);
+    expect(oracleUpdate(100n, ORACLE_T0 + 1n, Number(ORACLE_T0 + 1n)), 'CRYPTO-5 honest timestamp').toBe(true);
   });
 
   it('CRYPTO-5 a time-type block.number is rejected', () => {
-    expect(oracleUpdate(1_700_000_000n, 1001n, 1_700_000_000), 'CRYPTO-5 time-type height').not.toBe(true);
+    expect(oracleUpdate(1_700_000_000n, ORACLE_T0, 1_700_000_000), 'CRYPTO-5 time-type height').not.toBe(true);
   });
 
   it('CRYPTO-5 a block.number below the stored height is rejected', () => {
-    expect(oracleUpdate(50n, 1001n, 50), 'CRYPTO-5 rewound height').not.toBe(true);
+    expect(oracleUpdate(50n, ORACLE_T0, 50), 'CRYPTO-5 rewound height').not.toBe(true);
   });
 
   it('CRYPTO-5 a block.timestamp below the stored time is rejected', () => {
-    expect(oracleUpdate(150n, 500n, 150), 'CRYPTO-5 rewound timestamp').not.toBe(true);
+    expect(oracleUpdate(100n, ORACLE_T0 - 1n, Number(ORACLE_T0 - 1n)), 'CRYPTO-5 rewound timestamp').not.toBe(true);
   });
 });

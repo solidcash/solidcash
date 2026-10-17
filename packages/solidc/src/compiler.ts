@@ -14,7 +14,8 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
-  type AbiFunctionReference, type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType,
+  type AbiFunctionReference, type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode,
+  findBlockOracleLockSlots, BytesType,
   type CompilerOptions,
   FixedType, IntType,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSelectorHex,
@@ -38,7 +39,8 @@ import {
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual,
   scriptToBytecode, bytecodeToScript, asmToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
-  type AbiFunction, type ChildDeploymentSiteAbi, type SplitArtifactBundle, type SplitStateFootprint, StructType, TupleType,
+  type AbiFunction, type ChildDeploymentSiteAbi, type FunctionSplitBundle, type SplitArtifactBundle,
+  type SplitStateFootprint, StructType, TupleType,
   type Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType, isFixedWidthType,
   isChunkableValueType,
@@ -46,7 +48,7 @@ import {
   hasUniqueKernelJournalDispositionCommitment, kernelJournalDispositionManifestDigest,
   type KernelJournalDispositionsAbi,
   MessageBusVerifierCapacityError, messageBusVerifierLockingBytecode,
-  childStateLayoutDigest, abiTypeString, implicitlyCastableSignature,
+  childStateLayoutDigest, abiTypeString, implicitlyCastableSignature, dynamicChunkSignature,
 } from '@solidcash/utils';
 import {
   generateArtifact, generateDeclarationArtifact, occurrenceInfoOf, resultArrayOutputOf,
@@ -95,14 +97,15 @@ import {
   type KernelAdmissionReason,
 } from './admission-decision.js';
 import { normalizeKernelAdmissionReason } from './kernel-admission-catalog.js';
-import { deduplicateMessageBusVerifierStackSuffix } from './messageBusVerifierDedup.js';
+import { deduplicateMessageBusVerifierStackSuffix, outlineMessageBusVerifierArms } from './messageBusVerifierDedup.js';
+import { emitCompilerWarning, withSuppressedWarnings, withWarningListener, type WarningListener } from './warnings.js';
 
 /** Survives binder rebuild: span-based analysis from the admission ladder. */
 let pendingSpanAdmissionAnalysis: AdmissionDecisionSet | undefined;
 import {
   type Ast, AssignNode, AssignmentExpressionNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode,
   ContractReferenceNode,
-  EmitStatementNode,
+  EmitStatementNode, type EventDefinitionNode,
   ExpressionNode, FieldAccessNode, LiteralNode,
   FunctionCallNode, FunctionDefinitionNode, IndirectCallNode, InterfaceFunctionNode, InterfaceNode,
   ExternalCallMode, ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode,
@@ -140,6 +143,7 @@ import SymbolTableTraversal, {
 } from './semantic/SymbolTableTraversal.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
 import { publishStoredValueSources } from './semantic/stored-value-source.js';
+import { getEventChunkCount, stateNftPackingLimit } from './semantic/maxEncodedSize.js';
 import EnsureFinalRequireTraversal, {
   rejectFreeFunctionMissingReturns,
 } from './semantic/EnsureFinalRequireTraversal.js';
@@ -242,7 +246,7 @@ import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.
 import {
   kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
 } from './semantic/KernelEntryActivation.js';
-import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
+import SynthesizeBlockOracle, { markBlockOracleCallers, readsBlockOracle } from './semantic/SynthesizeBlockOracle.js';
 import detectMappingArrayPagination from './semantic/DetectMappingArrayPagination.js';
 import PruneUnreachableFreeFunctions from './semantic/PruneUnreachableFreeFunctions.js';
 import PruneUnreachableMsgDataMethods from './semantic/PruneUnreachableMsgDataMethods.js';
@@ -252,6 +256,7 @@ import CoalesceStructFieldArrayWrites from './semantic/CoalesceStructFieldArrayW
 import OptimizeFixedArrayValues from './semantic/OptimizeFixedArrayValues.js';
 import CoalesceStateArrayStructFieldWrites from './semantic/CoalesceStateArrayStructFieldWrites.js';
 import CoalesceMappingEntryFieldWrites from './semantic/CoalesceMappingEntryFieldWrites.js';
+import ReuseEntryLocalForWriteback from './semantic/ReuseEntryLocalForWriteback.js';
 import RedesugarImportedUdvtWrap from './semantic/RedesugarImportedUdvtWrap.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
 import expandModifiers, { validateModifierDefinitions } from './semantic/ModifierExpansionTransformation.js';
@@ -268,6 +273,7 @@ import { validateStorageLayoutSpecifiers } from './semantic/ValidateStorageLayou
 import { ImportResolver } from './ImportResolver.js';
 import { createMapResolver } from './createMapResolver.js';
 import { assertNoAmbiguousOverrides } from './semantic/AmbiguousOverrides.js';
+import { compileFunctionSplit } from './split/function-split.js';
 import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
@@ -614,6 +620,10 @@ type InternalCompilerOptions = CompilerOptions & {
   __coldDelegateRebuild?: boolean;
   __cheapAdmissionCodegen?: boolean;
   __parsedAst?: Ast;
+  /** Set on a per-entry shard whose storage-shaping passes already ran on the whole contract. */
+  __functionSplitPrepared?: boolean;
+  /** Frame kinds the shard's master head admits. Absent keeps the historical four. */
+  __functionSplitFrameKinds?: readonly number[];
   /** Shared box so the shallow-copied admission options and the binder see the same pre-lowering snapshot. */
   __pristineAstBox?: { ast?: Ast };
   /**
@@ -835,6 +845,7 @@ interface OptionalLoweringFeatures {
   needsBreakContinue: boolean;
   needsEarlyReturn: boolean;
   needsVMapCounter: boolean;
+  needsRuntimeLoopTransferCounter: boolean;
   needsAlphaRename: boolean;
   statefulnessSurveyComplete: boolean;
   hasContractInstantiation: boolean;
@@ -900,9 +911,32 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let needsBreakContinue = false;
   let needsEarlyReturn = false;
   let needsVMapCounter = false;
+  let needsRuntimeLoopTransferCounter = false;
   let needsAlphaRename = false;
   const definedFunctionNames = new Set<string>();
   const calledFunctionNames = new Set<string>();
+  const loopContainsRuntimeTransfer = (loop: WhileNode | DoWhileNode): boolean => {
+    const seen = new Set<Node>();
+    const walk = (candidate: Node): boolean => {
+      if (seen.has(candidate)) return false;
+      seen.add(candidate);
+      if (candidate instanceof TransferStatementNode || candidate instanceof TokenContainerMethodStatementNode) {
+        return true;
+      }
+      for (const key in candidate) {
+        if (key === 'location' || key === 'type' || key === 'name' || key === 'functionId'
+          || key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+          || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
+          || key === 'collection') continue;
+        const value = (candidate as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) { if (walk(value)) return true; } else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node && walk(item)) return true;
+        }
+      }
+      return false;
+    };
+    return walk(loop.block);
+  };
   while (pending.length > 0) {
     const node = pending.pop()!;
     if (seenNodes.has(node)) continue;
@@ -959,7 +993,12 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     // otherwise escapes the survey and reaches type validation before it can become a blob.
     if (node instanceof StructDefinitionNode
       && node.fields.some((field) => typeContainsFunction(field.type))) hasFunctionPointers = true;
-    if (node instanceof WhileNode || node instanceof DoWhileNode) needsLoop = true;
+    if (node instanceof WhileNode || node instanceof DoWhileNode) {
+      needsLoop = true;
+      // A runtime-loop transfer (a counter loop whose body mints transfer outputs) needs the counter-loop
+      // lowering even when the contract has no sorted collection, so its N outputs are derived, not one.
+      if (loopContainsRuntimeTransfer(node)) needsRuntimeLoopTransferCounter = true;
+    }
     if (node instanceof BreakNode || node instanceof ContinueNode) needsBreakContinue = true;
     if (node instanceof BranchNode || node instanceof UncheckedNode || node instanceof SwitchNode
       || node instanceof TryCatchNode
@@ -1053,6 +1092,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     needsBreakContinue,
     needsEarlyReturn,
     needsVMapCounter,
+    needsRuntimeLoopTransferCounter,
     needsAlphaRename,
     statefulnessSurveyComplete: true,
     hasContractInstantiation,
@@ -1186,6 +1226,12 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
 
 export interface CompileOptions extends CompilerOptions {
   errorListener?: SolidCashErrorListener;
+  /**
+   * Receives each compiler warning instead of the default `console.log` print. `suppressWarnings` still
+   * discards warnings, including for a listener set on the same compile. Compose with `defaultWarningListener`
+   * to print and collect.
+   */
+  warningListener?: WarningListener;
   /** Select a named top-level contract instead of the source file's last concrete contract. */
   primaryContractName?: string;
   /**
@@ -1267,14 +1313,23 @@ export interface CompileStringOptions extends CompileOptions {
   files?: Record<string, string>;
 }
 
-/** Turn the `files` shorthand into the import resolver it stands for. */
+/**
+ * Turn the `files` shorthand into the import resolver it stands for. Other options keep their descriptors, as in
+ * withoutUpgradesFrom: a rest copy would read every accessor before the pass-token sanitation boundary.
+ */
 function withFilesResolver<T extends CompileStringOptions>(options: T): Omit<T, 'files'> {
-  const { files, ...remaining } = options;
+  if (!Object.prototype.hasOwnProperty.call(options, 'files')) return options as Omit<T, 'files'>;
+  const { files } = options;
+  const descriptors: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(options);
+  delete descriptors.files;
+  const remaining = Object.defineProperties({}, descriptors) as Omit<T, 'files'>;
   if (files === undefined) return remaining;
   if (remaining.importResolver !== undefined) {
     throw new Error('Pass either files or importResolver to the compiler, not both');
   }
-  return { ...remaining, importResolver: createMapResolver(files) };
+  return Object.defineProperty(remaining, 'importResolver', {
+    value: createMapResolver(files), enumerable: true, writable: true, configurable: true,
+  });
 }
 
 export interface SplitCompileOptions extends CompileOptions {
@@ -1306,39 +1361,25 @@ Artifact, readonly KernelJournalDispositionHandlerScope[]
 >();
 const diagnosticConsoleLog = console.log;
 const diagnosticConsoleWarn = console.warn;
-let warningSuppressionDepth = 0;
-let warningSuppressionLog: typeof console.log | undefined;
-let warningSuppressionWarn: typeof console.warn | undefined;
 
-/** Keep warning suppression scoped to one synchronous compiler entry point, including its nested variant passes. */
+/**
+ * Keep warning suppression scoped to one synchronous compiler entry point, including its nested variant passes.
+ * A caller-supplied `warningListener` is installed around this, so a suppressed inner compile hides warnings
+ * from that listener and restores it on the way out.
+ */
 function withCompilerWarnings<T>(suppress: boolean | undefined, compile: () => T): T {
   if (!suppress) return compile();
-  if (warningSuppressionDepth === 0) {
-    warningSuppressionLog = console.log;
-    warningSuppressionWarn = console.warn;
-    console.log = (...args: unknown[]): void => {
-      if (typeof args[0] !== 'string' || !args[0].startsWith('Warning:')) {
-        warningSuppressionLog!(...args);
-      }
-    };
-    console.warn = (...args: unknown[]): void => {
-      if (typeof args[0] !== 'string' || !args[0].startsWith('Warning:')) {
-        warningSuppressionWarn!(...args);
-      }
-    };
-  }
-  warningSuppressionDepth += 1;
-  try {
-    return compile();
-  } finally {
-    warningSuppressionDepth -= 1;
-    if (warningSuppressionDepth === 0) {
-      console.log = warningSuppressionLog!;
-      console.warn = warningSuppressionWarn!;
-      warningSuppressionLog = undefined;
-      warningSuppressionWarn = undefined;
-    }
-  }
+  return withSuppressedWarnings(compile);
+}
+
+/** Install `warningListener` for one public compile. Suppression still wins when both are set. */
+function runWithWarningListener<T>(
+  options: { suppressWarnings?: boolean, warningListener?: WarningListener }, compile: () => T,
+): T {
+  const listener = options.warningListener;
+  const invoke = (): T => withCompilerWarnings(options.suppressWarnings, compile);
+  if (listener === undefined || options.suppressWarnings) return invoke();
+  return withWarningListener(listener, invoke);
 }
 
 function compileCacheLimit(): number {
@@ -1366,6 +1407,7 @@ function recordArtifactCacheHit(detail: Record<string, unknown>): void {
 
 function artifactCacheEnabled(
   options: CompilerOptions, errorListener: SolidCashErrorListener | undefined, suppressWarnings: boolean,
+  warningListener?: WarningListener,
 ): boolean {
   const internal = options as InternalCompilerOptions;
   // Attempt auditing is meaningful only for a fresh pipeline. A cached artifact has no attempts to observe and
@@ -1380,6 +1422,8 @@ function artifactCacheEnabled(
   const want = solidcEnvFlagEnabled('SOLIDC_COMPILE_CACHE') || options.__artifactCache === true;
   return want
     && !errorListener
+    // A cached artifact is returned without re-running the passes, so a listener would never observe it.
+    && !warningListener
     && (options.__artifactCache === true || !options.importResolver)
     && !solidcEnvFlagEnabled('SOLIDCASH_NO_OUTLINE')
     && (suppressWarnings
@@ -1968,6 +2012,7 @@ function externalHandlerKey(fn: FunctionDefinitionNode): string {
 function markDynamicChunkInputBaseFunctions(
   ast: Ast,
   inheritedKeys: ReadonlySet<string> = new Set(),
+  writeKeys: Set<string> = new Set(),
 ): Set<string> {
   const keys = new Set(inheritedKeys);
   const dynamicStateNames = new Set(ast.contract.stateVariables
@@ -1989,6 +2034,17 @@ function markDynamicChunkInputBaseFunctions(
       messageBusCloneSourceKey?: string;
     }).messageBusCloneSourceKey;
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
+    const writesDynamicState = footprint.writes.some((resource) => {
+      // Element/field mutations are collection resources before semantic lowering; whole-value writes use
+      // state resources. Both refer to the same declared dynamic continuation family.
+      const name = resource.startsWith('state:') ? resource.slice('state:'.length)
+        : resource.startsWith('collection:') ? resource.split(':')[1] : undefined;
+      return name !== undefined && dynamicStateNames.has(name);
+    });
+    if (writesDynamicState || writeKeys.has(sourceKey)
+      || (cloneSourceKey !== undefined && writeKeys.has(cloneSourceKey))) {
+      writeKeys.add(sourceKey);
+    }
     const directlyRequiresBase = [...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('state:') && dynamicStateNames.has(resource.slice('state:'.length)));
     if (directlyRequiresBase || keys.has(sourceKey)
@@ -2532,7 +2588,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     if (fresh.length === 0) {
       if (artifact === undefined) throw failure;
       for (const [name, reason] of refusals) {
-        if (!inherited?.has(name)) console.log(`Warning: function '${name}' is refused: ${reason}`);
+        if (!inherited?.has(name)) emitCompilerWarning(`Warning: function '${name}' is refused: ${reason}`);
       }
       return artifact;
     }
@@ -2548,7 +2604,7 @@ function compileStringUncheckedAttempt(code: string, compilerOptions: CompileOpt
     (compilerOptions as InternalCompilerOptions).__kernelReadCarrierAuthorizationBox,
   );
   const {
-    errorListener, primaryContractName, suppressWarnings = false, ...artifactCompilerOptions
+    errorListener, warningListener, primaryContractName, suppressWarnings = false, ...artifactCompilerOptions
   } = compilerOptions;
   const internalOptions = artifactCompilerOptions as InternalCompilerOptions;
   if (((internalOptions.messageBusKernel ?? DEFAULT_COMPILER_OPTIONS.messageBusKernel) === true
@@ -2566,7 +2622,7 @@ function compileStringUncheckedAttempt(code: string, compilerOptions: CompileOpt
   // A caller-supplied tree can be a projected split facet rather than the artifact described by `code`.
   // Never return an ordinary source-cache hit in place of that physical AST.
   const cacheable = parsedAst === undefined
-    && artifactCacheEnabled(artifactCompilerOptions, errorListener, suppressWarnings);
+    && artifactCacheEnabled(artifactCompilerOptions, errorListener, suppressWarnings, warningListener);
   let cacheKey = '';
   if (cacheable) {
     // Keep cached artifacts tied to their published shape. Compiler versions can remain unchanged throughout
@@ -3063,14 +3119,20 @@ function withoutUpgradesFrom(options: CompileOptions): CompileOptions {
 }
 
 export function compileString(code: string, options: CompileStringOptions = {}): Artifact {
+  if (options.split !== undefined && options.split !== 'off') {
+    throw new Error(
+      "compileString does not accept split 'size' or 'func'; use compileStringSplit. split is 'off', 'size', or 'func'",
+    );
+  }
   const compilerOptions: CompileOptions = withFilesResolver(options);
+  if (compilerOptions.split === 'off') delete compilerOptions.split;
   // SOLIDC env registry: when SOLIDC_STRICT_UNKNOWN_ENV=1 (CI), refuse unknown SOLIDC_* before any compile work.
   enforceSolidcEnvPolicy();
   clearDefineFrameValidations();
   pendingSpanAdmissionAnalysis = undefined;
   const { upgradesFrom } = compilerOptions;
   const artifactOptions = withoutUpgradesFrom(compilerOptions);
-  return withCompilerWarnings(compilerOptions.suppressWarnings, () => {
+  return runWithWarningListener(compilerOptions, () => {
     try {
       const artifact = compileStringUnchecked(code, artifactOptions);
       requireUpgradeLayouts({ [artifact.contractName]: artifact }, upgradesFrom);
@@ -3211,7 +3273,7 @@ function attachDelegateVariant(
       console.warn = warn;
     }
     if (variantFailure !== undefined && reportVariantFailure) {
-      console.log(
+      emitCompilerWarning(
         `Warning: could not build the delegate (proxy-implementation) variant of '${artifact.contractName}': `
         + `${variantFailure}. The contract itself compiled; it just cannot be used behind a proxy.`,
       );
@@ -3566,18 +3628,22 @@ function compileDetachedMessageBusVerifierUncached(
   // by verifyFunctionId, while diagnostics and existing tooling expect the canonical verifier name.
   const verify = program.functions.find((fn) => fn.id === program.verifyFunctionId);
   if (verify?.name === MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM) verify.name = '__message_bus_verify_atomic';
-  const compactProgram = deduplicateMessageBusVerifierStackSuffix(program);
+  const dedupedProgram = deduplicateMessageBusVerifierStackSuffix(program);
+  let compactProgram = outlineMessageBusVerifierArms(dedupedProgram);
   try {
     // Definition bytecode is embedded in the verifier covenant, not merely in this detached mini-contract.
     // Favor lower operation density when it fits; preserve the proven compact lowering for larger shapes.
     messageBusVerifierLockingBytecode(compactProgram, compilerOptions.maximumInputBytes);
   } catch (error) {
-    if (unrollDeepReplace && error instanceof MessageBusVerifierCapacityError) {
+    if (!(error instanceof MessageBusVerifierCapacityError)) throw error;
+    if (unrollDeepReplace) {
       return compileDetachedMessageBusVerifierUncached(
         source, compilerOptions, lifecycle, envelopeTransport, false,
       );
     }
-    throw error;
+    // Each outlined arm costs a few covenant bytes; a shape still over the limit keeps its arms inline.
+    compactProgram = dedupedProgram;
+    messageBusVerifierLockingBytecode(compactProgram, compilerOptions.maximumInputBytes);
   }
   profileLog('singlePass:verifier', started, { functions: compactProgram.functions.length });
   return compactProgram;
@@ -3693,6 +3759,132 @@ function noteKernelLayoutGate(fn: { name: string }, gate: string, detail?: Recor
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ADMISSION_REASONS !== '1') return;
   console.error('message-bus-layout-gate', JSON.stringify({ handler: fn.name, gate, ...detail }));
+}
+
+/** Event definitions visible to `ast`. */
+function visibleEventDefinitions(ast: Ast): EventDefinitionNode[] {
+  return [
+    ...ast.contract.eventDefinitions, ...ast.eventDefinitions,
+    ...ast.interfaceDefinitions.flatMap((definition) => definition.eventDefinitions),
+    ...ast.importedContracts.flatMap((contract) => contract.eventDefinitions),
+  ];
+}
+
+/** Names of the events visible to `ast` whose payload can exceed one NFT commitment of `chunkBytes`. */
+function wideEventNames(ast: Ast, chunkBytes: number): Set<string> {
+  return new Set(visibleEventDefinitions(ast)
+    .filter((event) => getEventChunkCount(event.parameters, chunkBytes) > 1)
+    .map((event) => event.name));
+}
+
+/** True when `type`'s encoded size has no static bound: a dynamic array or an unbounded bytes/string. */
+function holdsUnboundedValue(type: Type, seen = new Set<object>()): boolean {
+  if (type instanceof ArrayType) return type.bound === undefined || holdsUnboundedValue(type.elementType, seen);
+  if (type instanceof BytesType) return type.bound === undefined;
+  if (type === PrimitiveType.STRING) return true;
+  if (!(type instanceof StructType) || seen.has(type)) return false;
+  seen.add(type);
+  return type.fields.some((field) => holdsUnboundedValue(field.type, seen));
+}
+
+/** Names of the events visible to `ast` whose payload can grow past any one commitment (`getEventChunkCount`
+ * counts such a parameter as 9 bytes): a dynamic array or an unbounded string/bytes parameter. */
+function unboundedEventNames(ast: Ast): Set<string> {
+  return new Set(visibleEventDefinitions(ast)
+    .filter((event) => event.parameters.some((parameter) => holdsUnboundedValue(parameter.type)))
+    .map((event) => event.name));
+}
+
+/** Emits `body` reaches through nested blocks alone, in source order, and whether a return precedes the last. */
+function topLevelEmits(body: BlockNode): { emits: EmitStatementNode[]; returnBeforeLast: boolean } {
+  const emits: EmitStatementNode[] = [];
+  let returned = false;
+  let returnBeforeLast = false;
+  const visit = (statements: readonly Node[]): void => {
+    for (const statement of statements) {
+      if (statement instanceof EmitStatementNode) {
+        emits.push(statement);
+        if (returned) returnBeforeLast = true;
+      } else if (statement instanceof BlockNode) {
+        visit(statement.statements ?? []);
+      } else if (containsReturn(statement)) {
+        returned = true;
+      }
+    }
+  };
+  visit(body.statements ?? []);
+  return { emits, returnBeforeLast };
+}
+
+function containsReturn(statement: Node): boolean {
+  let found = false;
+  walkInvocationAst(statement, (node) => { if (node instanceof ReturnNode) found = true; });
+  return found;
+}
+
+/**
+ * Whether a kernel route can settle every emit of `fn` on its runtime effect stream: each one sits in `fn`'s own
+ * body outside branches, loops and try blocks with no return before the last, no helper emits, and no counter loop
+ * already orders a stream of its own. Each emit then always pushes its records, so a builder plans one per site.
+ */
+function streamsEveryEmit(fn: FunctionDefinitionNode, byName: Map<string, FunctionDefinitionNode[]>): boolean {
+  if (!fn.body || (fn.runtimeLoopEvents?.length ?? 0) > 0 || (fn.runtimeLoopTransfers?.length ?? 0) > 0) {
+    return false;
+  }
+  const helperEmits = [...collectNamedFunctionClosure(fn, byName)].some((name) => name !== fn.name
+    && (byName.get(name) ?? []).some((helper) => {
+      let found = false;
+      walkInvocationAst(helper.body, (node) => { if (node instanceof EmitStatementNode) found = true; });
+      return found;
+    }));
+  if (helperEmits) return false;
+  const { emits, returnBeforeLast } = topLevelEmits(fn.body);
+  let total = 0;
+  walkInvocationAst(fn.body, (node) => { if (node instanceof EmitStatementNode) total += 1; });
+  return emits.length > 0 && emits.length === total && !returnBeforeLast;
+}
+
+/** Signatures of an admitted stream handler's emits in source order; undefined for any other handler. */
+function streamedEventSignatures(fn: FunctionDefinitionNode): string[] | undefined {
+  if (fn.messageBusEventStream !== true || fn.messageBusEligible !== true || !fn.body) return undefined;
+  const signatures: string[] = [];
+  walkInvocationAst(fn.body, (node) => {
+    if (node instanceof EmitStatementNode) signatures.push(node.eventDefinition?.signature ?? node.eventName);
+  });
+  return signatures;
+}
+
+/**
+ * Kernel stream clone: its top-level emits become the records of one exact-count runtime event segment, one compact
+ * record per emit, or the chunked records of each payload when one can pass a commitment.
+ */
+function streamHandlerEmits(handler: FunctionDefinitionNode, cheap: boolean, chunked: boolean): void {
+  // The records share the route's trailing band; reserve the default wide band beside any other stream.
+  handler.runtimeCounterLoopOutputCapacity = Math.max(handler.runtimeCounterLoopOutputCapacity ?? 0, 64);
+  if (cheap || !handler.body) return;
+  topLevelEmits(handler.body).emits.forEach((emit, siteIndex) => {
+    emit.runtimeLoopEvent = { loopIndex: 0, siteIndex };
+    if (chunked) emit.runtimeLoopEventChunked = true;
+  });
+  handler.runtimeLoopEvents = [{ loopIndex: 0, repeatCount: 1, ...(chunked && { chunked: true as const }) }];
+}
+
+/** True when `body` holds an emit of an event named in `names`. */
+function emitsNamedEvent(body: unknown, names: ReadonlySet<string>): boolean {
+  let found = false;
+  walkInvocationAst(body, (node) => {
+    if (node instanceof EmitStatementNode && names.has(node.eventName)) found = true;
+  });
+  return found;
+}
+
+/** True when `fn` or a helper it reaches emits an event named in `wide` (by name, so any overload counts). */
+function emitsWideEvent(
+  fn: FunctionDefinitionNode, byName: Map<string, FunctionDefinitionNode[]>, wide: ReadonlySet<string>,
+): boolean {
+  if (wide.size === 0) return false;
+  return [...collectNamedFunctionClosure(fn, byName)].some((name) =>
+    (name === fn.name ? [fn] : byName.get(name) ?? []).some((candidate) => emitsNamedEvent(candidate.body, wide)));
 }
 
 /** Map admission reasons onto the shared frozen KERNEL_* catalog. */
@@ -3868,7 +4060,7 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
  * Publish typed child-genesis geometry independently of kernel admission. The resolved deployment node and
  * compiled child body are the authority; no contract, function, or application name participates.
  */
-function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: number): Array<{
+function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: number, tagSingletonDataNfts = false): Array<{
   state: ContractNode['stateVariables'][number]; nftIndex: number; fieldIndex: number;
 }> {
   const result: Array<{
@@ -3896,7 +4088,8 @@ function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: num
       nftIndex += 1;
       fieldIndex = 0;
     } else {
-      if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+      if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex, tagSingletonDataNfts)
+        && currentNftUsed > 0) {
         nftIndex += 1;
         fieldIndex = 0;
         currentNftUsed = 0;
@@ -3910,8 +4103,8 @@ function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: num
   return result;
 }
 
-function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number): number {
-  const variables = packedStateLayoutVariables(contract, commitmentLimit);
+function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number, tagSingletonDataNfts = false): number {
+  const variables = packedStateLayoutVariables(contract, commitmentLimit, tagSingletonDataNfts);
   return variables.length === 0 ? 0 : Math.max(...variables.map((variable) => variable.nftIndex)) + 1;
 }
 
@@ -4010,6 +4203,7 @@ function childDeploymentSites(
   compiledBytecodes: ReadonlyMap<string, Uint8Array>,
   commitmentLimit: number,
   helperFunctions: readonly FunctionDefinitionNode[] = [],
+  tagSingletonDataNfts = false,
 ): ChildDeploymentSiteAbi[] {
   const sites: ChildDeploymentSiteAbi[] = [];
   // Every site this function can report requires an InstantiationNode in the body, and
@@ -4060,7 +4254,7 @@ function childDeploymentSites(
     if (value instanceof InstantiationNode && value.isStatefulDeploy && value.referencedContract) {
       const analyzed = recipeAnalysis.get(value);
       const child = value.referencedContract;
-      const dataNftOutputCount = packedStateDataNftCount(child, commitmentLimit);
+      const dataNftOutputCount = packedStateDataNftCount(child, commitmentLimit, tagSingletonDataNfts);
       const creationBytecode = compiledBytecodes.get(child.name);
       if (!creationBytecode) throw new Error(`Missing compiled child body for deployment topology '${child.name}'`);
       const genesisState = value.constructorStateFoldComplete === true
@@ -4087,6 +4281,7 @@ function childDeploymentSites(
         })),
         dataNftCount: dataNftOutputCount,
         commitmentLimit,
+        ...(tagSingletonDataNfts && dataNftOutputCount === 1 && { taggedDataNfts: true }),
         structs: childDeploymentStructDefinitions(child.stateVariables),
         collections: childDeploymentCollectionDefinitions(child.collections),
       });
@@ -5652,6 +5847,12 @@ function synthesizeMessageBusRoute(
   const footprintCache = createFootprintAnalysisCache(new Set(
     contract.stateVariables.map((state) => state.name),
   ));
+  const wideEvents = wideEventNames(ast, compilerOptions.commitmentLimit ?? 128);
+  // The kernel streams every emit it can, so its records take the trailing band instead of the route's per-row
+  // event windows; a payload a dynamic array can grow past one commitment is chunked like a wide one.
+  const streamedEvents = compilerOptions.messageBusKernel === true
+    ? new Set(visibleEventDefinitions(ast).map((event) => event.name)) : wideEvents;
+  const chunkedEvents = new Set([...wideEvents, ...unboundedEventNames(ast)]);
   const dynamicState = new Set(contract.stateVariables.filter((state) => state.isDynamic
     || state.isPacked
     || state.type === PrimitiveType.STRING
@@ -7214,6 +7415,8 @@ function synthesizeMessageBusRoute(
   };
   const kernelAllOutputSignatureParameters = new Map<FunctionDefinitionNode, number[]>();
   for (const fn of functions) {
+    fn.messageBusEventStream = undefined;
+    fn.messageBusEventStreamChunked = undefined;
     fn.messageBusUsesTransactionSignature = reachesTransactionSignatureCheck(fn);
     const allOutputProof = compilerOptions.messageBusKernel === true
       && fn.messageBusUsesTransactionSignature === true
@@ -7272,6 +7475,23 @@ function synthesizeMessageBusRoute(
       }
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
+    // A kernel handler whose emits all stream settles them as records on its runtime effect stream, chunked when a
+    // payload can pass one commitment. Any other handler keeps its event windows, and a payload wider than one NFT
+    // commitment continues in outputs no window reserves: refuse that emitter by name rather than publish a route
+    // whose event output the network rejects. A payload only a dynamic array widens keeps its window, refused at
+    // run time past one commitment.
+    if (emitsWideEvent(fn, signatureClosureByName, streamedEvents)) {
+      if (compilerOptions.messageBusKernel === true && streamsEveryEmit(fn, signatureClosureByName)) {
+        fn.messageBusEventStream = true;
+        if (emitsWideEvent(fn, signatureClosureByName, chunkedEvents)) fn.messageBusEventStreamChunked = true;
+        fn.runtimeCounterLoopOutputCapacity = Math.max(fn.runtimeCounterLoopOutputCapacity ?? 0, 64);
+      } else if (emitsWideEvent(fn, signatureClosureByName, wideEvents)) {
+        noteKernelLayoutGate(fn, 'event-wider-than-one-commitment');
+        fn.messageBusEligible = false;
+        fn.messageBusRejectionReason = 'event-wider-than-one-commitment';
+        continue;
+      }
+    }
     if (compilerOptions.messageBusKernel === true
       && footprint.writes.some((resource) => resource.startsWith('state:'))
       && footprint.writes.some((resource) => resource.startsWith('collection:'))
@@ -8793,7 +9013,7 @@ function synthesizeMessageBusRoute(
             const conditional = control !== 'straight';
             const child = statefulChildren.get(value.identifier.name)!;
             const packedChildVariables = packedStateLayoutVariables(
-              child, compilerOptions.commitmentLimit ?? 128,
+              child, compilerOptions.commitmentLimit ?? 128, compilerOptions.tagSingletonDataNfts,
             );
             const packedChildDataNftCount = packedChildVariables.length === 0 ? 0
               : Math.max(...packedChildVariables.map((variable) => variable.nftIndex)) + 1;
@@ -8810,6 +9030,8 @@ function synthesizeMessageBusRoute(
               })),
               dataNftCount: packedChildDataNftCount,
               commitmentLimit: compilerOptions.commitmentLimit ?? 128,
+              ...(compilerOptions.tagSingletonDataNfts === true && packedChildDataNftCount === 1
+                && { taggedDataNfts: true }),
               structs: childDeploymentStructDefinitions(child.stateVariables),
               collections: childDeploymentCollectionDefinitions(child.collections),
             }));
@@ -9901,7 +10123,7 @@ function synthesizeMessageBusRoute(
                 toPaddedBytes(${width}, 2), hex"${descriptorDigest}");`;
       })
         .join('\n              ');
-      return `if (callManifest.slice(rowStart + 10, rowStart + 14) == hex"${selector(fn)}") {
+      return `if (rowHeader.slice(10, 14) == hex"${selector(fn)}") {
               ${pairs}
               activeDeploymentInvocations = activeDeploymentInvocations + ${siteCount};
             }`;
@@ -11079,6 +11301,15 @@ function synthesizeMessageBusRoute(
   // parser builds `FieldAccess(address(this), "value")` instead of a StateAccessNode. Keep this spelling helper
   // route-wide so public getters and fixed-array identity pins round-trip through the same native parser.
   const routeStateReference = (name: string): string => `this.${name === 'value' ? ' value' : name}`;
+  // Audit DYN-1 route lane: the route body carries the union's dynamic write settlement, so its selector branch
+  // must publish whether the authenticated row names a writer. Only a batch that selects no writer may use the
+  // SDK's read-only sentinel (`-(base + 3)`).
+  const handlerWritesDynamicState = (fn: FunctionDefinitionNode): boolean => {
+    const footprint = eligibleFootprint(fn);
+    return [...footprint.writes].some((resource) => resource.startsWith('state:')
+      && dynamicState.has(resource.slice('state:'.length)));
+  };
+  const routeHasDynamicWriter = eligible.some(handlerWritesDynamicState);
   const buildDecodeAndCall = (
     captureResults = false, rowIndex?: number, rowExpression = String(rowIndex ?? 0),
     markDispatch = false,
@@ -11089,6 +11320,8 @@ function synthesizeMessageBusRoute(
         && (fn.returnTypes[index] as FunctionType).isExternal
         && (fn.returnedSelfFunctionTargetSets?.[index]?.length ?? 0) > 0;
       const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
+      const dynamicWriteFlag = routeHasDynamicWriter && handlerWritesDynamicState(fn)
+        ? '__message_bus_dynamic_write_active = 1;' : '';
       const upgradeAuthorization = kernelUpgradeMode && fn.modifiers.includes(FunctionModifier.UPGRADE)
         ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
           __message_bus_upgrade_position = ${rowExpression};` : '';
@@ -11714,8 +11947,13 @@ function synthesizeMessageBusRoute(
       const wrappedDispatch = markDispatch
         ? `require(${MB_DISPATCH_SENTINEL}); ${effectiveDispatch} require(${MB_DISPATCH_SENTINEL});`
         : effectiveDispatch;
-      return `${condition} { ${upgradeAuthorization} ${fixedChunkableWriteAuthorization}
-        ${signatureAuthorization} ${decode} ${keyChecks} ${outStateBoundaryChecks} ${lifecycleAuthorization} ${wrappedDispatch}
+      // The tuple-lane dispatch ends in require(false), so it already refuses a tuple no lane holds.
+      const tuplesDispatched = fixedTupleGroups.length > 0 && lifecycleKind !== 'merge'
+        && !(rowIndex !== undefined && rowIndex > 0 && entryShape);
+      const rowKeyChecks = tuplesDispatched ? `${ordinaryKeyChecks}\n${swappableKeyCheck}` : keyChecks;
+      return `${condition} { ${dynamicWriteFlag} ${upgradeAuthorization} ${fixedChunkableWriteAuthorization}
+        ${signatureAuthorization} ${decode} ${rowKeyChecks} ${outStateBoundaryChecks}
+        ${lifecycleAuthorization} ${wrappedDispatch}
         require(rowArgs == rowArgs); }`;
     }).join(' ');
   const declaredWitnessNames = new Set<string>();
@@ -11830,7 +12068,8 @@ function synthesizeMessageBusRoute(
             GlobalFunction.ECRECOVER_EVM,
           ].includes(node.identifier.name as GlobalFunction)) found = true;
         });
-        return found;
+        // A block.* reader co-spends the oracle in its slot, and only a sidecar row exempts that foreign NFT.
+        return found || readsBlockOracle(candidate);
       })));
   const graphRouteParameters = !graphExecutionContext ? [] : [
     'bigint __internal__graphFixedSize',
@@ -12011,14 +12250,10 @@ function synthesizeMessageBusRoute(
     : useBoundRoute ? MESSAGE_BUS_PLACEHOLDER_LOCK_HEX : '';
   const compactAllowsSelfdestructRetirement = [...kernelLifecycleHandlers.values()].includes('selfdestruct');
   const compactAtomicBinder = `
-        bigint activeMasterOutput = -1;
-        for (bigint masterOutput = 0; masterOutput < tx.outputs.length; masterOutput = masterOutput + 1) {
-          if (tx.outputs[masterOutput].lockingBytecode == ${kernelUpgradeMode
-    ? '__internal__upgradeBytecode' : 'tx.inputs[activeInputIndex].lockingBytecode'}
-            && tx.outputs[masterOutput].tokenCategory == tx.inputs[activeInputIndex].tokenCategory) {
-            activeMasterOutput = masterOutput;
-          }
-        }
+        bytes activeMasterCategory = tx.inputs[activeInputIndex].tokenCategory;
+        bytes activeMasterLock = ${kernelUpgradeMode
+    ? '__internal__upgradeBytecode' : 'tx.inputs[activeInputIndex].lockingBytecode'};
+        bigint activeMasterOutput = __message_bus_find_last_output(activeMasterCategory, activeMasterLock);
         require(tx.inputs[activeInputIndex].tokenCategory.length == 33);
         require(tx.inputs[activeInputIndex].tokenCategory.slice(32, 33) == hex"02");
         ${compactAllowsSelfdestructRetirement ? `
@@ -12066,15 +12301,15 @@ function synthesizeMessageBusRoute(
           sha256(suppliedCallers), toPaddedBytes(suppliedSettlementBoundary, 2),
           sha256(suppliedCompletionPositions), sha256(suppliedSettlementTable)`;
   const atomicManifestV2Expression = compilerOptions.messageBusKernel === true
-    ? 'callManifest.slice(0, 8) == hex"4c33425553320000"' : 'false';
+    ? 'manifestVersion == hex"4c33425553320000"' : 'false';
   const atomicManifestV4Expression = compilerOptions.messageBusKernel === true
-    ? 'callManifest.slice(0, 8) == hex"4c33425553340000"' : 'false';
+    ? 'manifestVersion == hex"4c33425553340000"' : 'false';
   const directParticipantMode = compilerOptions.messageBusDirectParticipant === true
     && compilerOptions.messageBusKernel === true;
   // V5 adds an explicit per-participant authority byte. A direct authority has no detached verifier NFT;
   // its own co-spent covenant validates its state transition, while the routed caller binds delivery.
   const atomicManifestV5Expression = directParticipantMode
-    ? 'callManifest.slice(0, 8) == hex"4c33425553350000"' : 'false';
+    ? 'manifestVersion == hex"4c33425553350000"' : 'false';
   const atomicManifestSignatureFrameExpression = directParticipantMode
     ? `(${atomicManifestV4Expression} || ${atomicManifestV5Expression})` : atomicManifestV4Expression;
   const atomicManifestOutputIdentityExpression = compilerOptions.messageBusKernel === true
@@ -12131,11 +12366,13 @@ function synthesizeMessageBusRoute(
           && proxyRedeemAt + 3 + proxyRedeemLength == proxyUnlock.length);`
     : rootEnvelopeTransport ? `
         bytes unlocking = tx.inputs[0].unlockingBytecode;
-        require(unlocking.length >= 16 && unlocking.slice(0, 6) == hex"04534342314d");
-        bigint messageEnvelopeLength = int(bytes.concat(unlocking.slice(6, 8), hex"00"));
-        require(messageEnvelopeLength >= 8 && 8 + messageEnvelopeLength <= unlocking.length);
+        // Both slices fail closed past the unlocking end.
+        bytes envelopeHeader = unlocking.slice(0, 16);
+        require(envelopeHeader.slice(0, 6) == hex"04534342314d");
+        bigint messageEnvelopeLength = int(bytes.concat(envelopeHeader.slice(6, 8), hex"00"));
+        require(messageEnvelopeLength >= 8);
         bytes callManifest = unlocking.slice(16, 8 + messageEnvelopeLength);
-        require(unlocking.slice(8, 16) == bytes.concat(
+        require(envelopeHeader.slice(8, 16) == bytes.concat(
           hex"4c334331", toPaddedBytes(callManifest.length, 4)
         ));`
       : `
@@ -12263,13 +12500,10 @@ function synthesizeMessageBusRoute(
               && activeMaximumSize == activeBlockSize);
             require(tx.outputs[activeBase].lockingBytecode == tx.inputs[activeBase].lockingBytecode
               && tx.outputs[activeBase].tokenCategory == tx.inputs[activeBase].tokenCategory
-              && tx.outputs[activeBase].nftCommitment == tx.inputs[activeBase].nftCommitment
-              && tx.outputs[activeBase].value == tx.inputs[activeBase].value);
+              && tx.outputs[activeBase].nftCommitment == tx.inputs[activeBase].nftCommitment);
             if (activeLifecycleMode == 1) {
-              require(tx.outputs[activeBase].tokenAmount == tx.inputs[activeBase].tokenAmount);
-            } else {
-              require(activeLifecycleMode == 2
-                && tx.outputs[activeBase].tokenAmount >= tx.inputs[activeBase].tokenAmount);
+              require(tx.outputs[activeBase].value == tx.inputs[activeBase].value
+                && tx.outputs[activeBase].tokenAmount == tx.inputs[activeBase].tokenAmount);
             }
             for (bigint prefixOffset = 1; prefixOffset < activeFixedSize;
               prefixOffset = prefixOffset + 1) {
@@ -12287,6 +12521,8 @@ function synthesizeMessageBusRoute(
               || (activeLifecycleMode == 2
                 && lifecycleMintingInputs == activeLifecycleCount + 1
                 && lifecycleMintingOutputs == 1));
+            bigint mergeConsumedValue = 0;
+            bigint mergeConsumedFt = 0;
             for (bigint lifecycleOffset = 0; lifecycleOffset < activeLifecycleCount;
               lifecycleOffset = lifecycleOffset + 1) {
               bigint lifecycleSlot = activeBase + activeFixedSize + lifecycleOffset;
@@ -12301,25 +12537,213 @@ function synthesizeMessageBusRoute(
                 require(tx.inputs[lifecycleSlot].lockingBytecode == activeParticipantLbc
                   && tx.inputs[lifecycleSlot].tokenCategory == bytes.concat(activeCategory, hex"02")
                   && tx.outputs[lifecycleSlot].tokenCategory.length == 0);
+                mergeConsumedValue = mergeConsumedValue + tx.inputs[lifecycleSlot].value;
+                mergeConsumedFt = mergeConsumedFt + tx.inputs[lifecycleSlot].tokenAmount;
               }
+            }
+            if (activeLifecycleMode == 2) {
+              // Audit MERGE-1: the survivor carries every consumed master's value and fungible amount, so a merge
+              // can neither redirect them to another output nor leave them behind.
+              require(tx.outputs[activeBase].value == tx.inputs[activeBase].value + mergeConsumedValue);
+              require(tx.outputs[activeBase].tokenAmount
+                >= tx.inputs[activeBase].tokenAmount + mergeConsumedFt);
             }
           }
         }
   `;
+  // Keep transaction-wide scans in shallow frames: their per-slot assignments must not rotate the
+  // verifier's large manifest/row frame on every iteration. Both hosts use these same checks.
+  const atomicScanHelpers = `
+      function __message_bus_find_last_output(bytes category, bytes lockingBytecode) internal view returns (bigint) {
+        // A backwards search can stop on its first exact match while retaining the original last-match rule.
+        // Keep the scan frame shallow and skip unrelated categories before inspecting locking bytecode.
+        bigint __message_bus_result = -1;
+        bigint output = tx.outputs.length;
+        if (output > 0) {
+          do {
+            do { output = output - 1; }
+            while (output > 0 && tx.outputs[output].tokenCategory != category);
+            if (tx.outputs[output].tokenCategory == category) {
+              if (tx.outputs[output].lockingBytecode == lockingBytecode) { __message_bus_result = output; }
+            }
+          } while (output > 0 && __message_bus_result < 0);
+        }
+        return __message_bus_result;
+      }
+      function __message_bus_empty_pad(bigint input, bigint output) internal view returns (bool) {
+        // All three terms are nonnegative. Eager evaluation avoids conditional dispatch on every pad;
+        // both coordinates are already within the authenticated participant block.
+        return bytes.concat(tx.inputs[input].tokenCategory, tx.outputs[output].tokenCategory).length
+          + bigint(tx.inputs[input].lockingBytecode != hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}")
+          + bigint(tx.outputs[output].lockingBytecode != hex"51") == 0;
+      }
+      function __message_bus_minting_outputs() internal view returns (bytes) {
+        bytes outputs = hex"";
+        if (tx.outputs.length > 0) {
+          bigint output = 0;
+          do {
+            if (tx.outputs[output].tokenCategory.length == 33) {
+              if (tx.outputs[output].tokenCategory.slice(32, 33) == hex"02") {
+                outputs = bytes.concat(outputs, toPaddedBytes(output, 4));
+              }
+            }
+            output = output + 1;
+          } while (output < tx.outputs.length);
+        }
+        return outputs;
+      }
+      function __message_bus_last_output(
+        bytes outputs, bytes category, bytes lockingBytecode
+      ) internal view returns (bigint) {
+        // Every participant master is minting. Preserve the last exact match across all outputs, including
+        // duplicates outside participant blocks, using the shared census rather than rescanning every pad.
+        bigint __message_bus_result = -1;
+        for (bigint at = 0; at < outputs.length; at = at + 4) {
+          bigint output = int(bytes.concat(outputs.slice(at, at + 4), hex"00"));
+          if (tx.outputs[output].tokenCategory == category) {
+            if (tx.outputs[output].lockingBytecode == lockingBytecode) { __message_bus_result = output; }
+          }
+        }
+        return __message_bus_result;
+      }
+      function __message_bus_physical_counts(
+        bigint activeBase, bigint activeOutputBase, bigint activeBlockSize, bytes activeCategory,
+        bigint activeReturnOutput${kernelDeploymentHandlers.size === 0 ? '' : ', bytes activeDeploymentTargets'}
+        ${sidecarVerificationMode ? ', bytes activeSidecarTargets' : ''}
+      ) internal view returns (bigint, bigint, bigint, bigint, bigint, bigint) {
+        bytes activeMutableCategory = bytes.concat(activeCategory, hex"01");
+        bigint physicalSatoshiContainers = 0;
+        bigint physicalTokenContainers = 0;
+        bigint physicalValueOutputs = 0;
+        bigint physicalTokenOutputs = 0;
+        bigint physicalEventOutputs = 0;
+        bigint physicalResourceEndpoints = 0;
+        // One pass per slot. Token categories are 0, 32 or 33 bytes, and the satoshi, token-container, value and
+        // token-output counts are mutually exclusive: the first two need a non-funder input, the last two a
+        // funder input, each pair split by an empty or present category.
+        bigint end = activeBase + activeBlockSize;
+        bigint outputDelta = activeOutputBase - activeBase;
+        // The participant parser proves activeBlockSize >= fixedSize >= 1 before this helper is called.
+        bigint slot = activeBase;
+        do {
+          // A token-free dummy input paired with OP_TRUE contributes zero to all six physical counts.
+          // Check that neutral shape before creating the classifier frame for this slot.
+          if (!__message_bus_empty_pad(slot, outputDelta + slot)) {
+            bigint outputSlot = outputDelta + slot;
+            bytes inCategory = tx.inputs[slot].tokenCategory;
+            bytes outCategory = tx.outputs[outputSlot].tokenCategory;
+            // Token-free pads cannot be resources, events, deployments or token transfers. Classify their
+            // satoshi/value role without traversing the token-only checks or target lists.
+            if (inCategory.length + outCategory.length == 0) {
+              if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
+                if (tx.outputs[outputSlot].lockingBytecode != hex"51") {
+                  physicalValueOutputs = physicalValueOutputs + 1;
+                }
+              } else if (tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode) {
+                physicalSatoshiContainers = physicalSatoshiContainers + 1;
+              }
+            } else {
+              ${kernelDeploymentHandlers.size === 0 ? '' : `bigint isDeploymentSlot = 0;
+              for (bigint deployment = 0; deployment < activeDeploymentTargets.length;
+                deployment = deployment + 4) {
+                bigint deploymentStart = int(bytes.concat(
+                  activeDeploymentTargets.slice(deployment, deployment + 2), hex"00"
+                ));
+                bigint deploymentCount = int(bytes.concat(
+                  activeDeploymentTargets.slice(deployment + 2, deployment + 4), hex"00"
+                ));
+                if (outputSlot >= deploymentStart && outputSlot < deploymentStart + deploymentCount) {
+                  isDeploymentSlot = 1;
+                }
+              }`}
+              ${sidecarVerificationMode ? `bigint isSidecarSlot = 0;
+              for (bigint sidecar = 0;
+                sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
+                if (slot == int(bytes.concat(
+                  activeSidecarTargets.slice(sidecar, sidecar + 2), hex"00"))) {
+                  isSidecarSlot = 1;
+                }
+              }` : ''}
+              if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
+                if (outCategory.length == 0) {
+                  if (tx.outputs[outputSlot].lockingBytecode != hex"51") {
+                    physicalValueOutputs = physicalValueOutputs + 1;
+                  }
+                } else if (${kernelDeploymentHandlers.size === 0 ? '' : 'isDeploymentSlot == 0 && '}
+                  // Participant-owned state/event NFTs use the participant category and are authenticated as
+                  // resource/event rows. A tcTransfer category is necessarily foreign to that participant in this
+                  // admitted shape; excluding the local category prevents trailing chunk mints from satisfying the
+                  // token-settlement cardinality check.
+                  outCategory.slice(0, 32) != activeCategory) {
+                  physicalTokenOutputs = physicalTokenOutputs + 1;
+                }
+              } else if (inCategory.length == 0) {
+                if (outCategory.length == 0
+                  && tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode) {
+                  physicalSatoshiContainers = physicalSatoshiContainers + 1;
+                }
+              } else if (${sidecarVerificationMode ? 'isSidecarSlot == 0 && ' : ''}inCategory.slice(0, 32) != activeCategory) {
+                physicalTokenContainers = physicalTokenContainers + 1;
+              }
+              // The return coordinate publishes a mutable participant NFT, but it is authenticated separately by
+              // the result-vector commitment below. It is not a state-resource endpoint and must not inflate the
+              // resource cardinality merely because the route returns a value.
+              if (inCategory.length + outCategory.length > 0 && outputSlot != activeReturnOutput) {
+                if (inCategory == activeMutableCategory) {
+                  physicalResourceEndpoints = physicalResourceEndpoints + 1;
+                }
+                if (outCategory == activeMutableCategory) {
+                  physicalResourceEndpoints = physicalResourceEndpoints + 1;
+                }
+                if (outCategory == activeCategory) {
+                  // Event rows always carry their encoded effect. Empty immutable NFTs are reserved frame/resource
+                  // endpoints, not emitted events, even when they use the participant's category. CREATE/proxy
+                  // logical-identity anchors (SCID v1: magic||version) are also not callManifest event rows;
+                  // counting them as physical events breaks event-only (no dataNft) compose when the identity is
+                  // minted onto a previously tokenless pad while kind-2 only records the real emit.
+                  if (inCategory != activeCategory
+                    && tx.outputs[outputSlot].nftCommitment.length > 0
+                    && (tx.outputs[outputSlot].nftCommitment.length < 5
+                      || tx.outputs[outputSlot].nftCommitment.slice(0, 5) != hex"5343494401")
+                    && tx.outputs[outputSlot].tokenAmount == 0) {
+                    physicalEventOutputs = physicalEventOutputs + 1;
+                  }
+                } else if (inCategory == activeCategory
+                  // Delegate execution can relocate an existing immutable participant NFT (for example, its logical
+                  // identity anchor) to another slot in the same authenticated block. Count net creation, not a
+                  // slot-local category transition, so such moves cancel while newly emitted event NFTs remain.
+                  && tx.inputs[slot].nftCommitment.length > 0
+                  && (tx.inputs[slot].nftCommitment.length < 5
+                    || tx.inputs[slot].nftCommitment.slice(0, 5) != hex"5343494401")
+                  && tx.inputs[slot].tokenAmount == 0) {
+                  physicalEventOutputs = physicalEventOutputs - 1;
+                }
+              }
+            }
+          }
+          slot = slot + 1;
+        } while (slot < end);
+        return (physicalSatoshiContainers, physicalTokenContainers, physicalValueOutputs,
+          physicalTokenOutputs, physicalEventOutputs, physicalResourceEndpoints);
+      }
+  `;
   const inlinedAtomicVerifierBody = `
+        bytes manifestVersion = callManifest.slice(0, 8);
         ${compilerOptions.messageBusKernel === true
-    ? `require(callManifest.length >= 15 && (callManifest.slice(0, 8) == hex"4c33425553310000"
-          || callManifest.slice(0, 8) == hex"4c33425553320000"
-          || callManifest.slice(0, 8) == hex"4c33425553340000"${directParticipantMode
-    ? '\n          || callManifest.slice(0, 8) == hex"4c33425553350000"' : ''}));`
-    : 'require(callManifest.length >= 15 && callManifest.slice(0, 8) == hex"4c33425553310000");'}
+    ? `require(callManifest.length >= 15 && (manifestVersion == hex"4c33425553310000"
+          || manifestVersion == hex"4c33425553320000"
+          || manifestVersion == hex"4c33425553340000"${directParticipantMode
+    ? '\n          || manifestVersion == hex"4c33425553350000"' : ''}));`
+    : 'require(callManifest.length >= 15 && manifestVersion == hex"4c33425553310000");'}
         require(${compilerOptions.evmCompat
     ? 'bigint(int(bytes.concat(callManifest.slice(8, 12), hex"00000000"))) == bigint(callManifest.length)'
     : 'int(bytes.concat(callManifest.slice(8, 12), hex"00000000")) == callManifest.length'});
         bigint participantCount = int(bytes.concat(callManifest.slice(12, 13), hex"00"));
         require(participantCount >= 2 && participantCount <= 8);
-        bigint cursor = 13;
-        bigint expectedBase = 0;
+        bool manifestOutputIdentity = ${atomicManifestOutputIdentityExpression};
+        bool manifestSignatureFrames = ${atomicManifestSignatureFrameExpression};
+        bytes mintingOutputs = hex"";
+        if (!manifestOutputIdentity) { mintingOutputs = __message_bus_minting_outputs(); }
         bigint activeMembership = 0;
         bigint activeBase = 65535;
         bigint activeParticipant = 255;
@@ -12339,29 +12763,28 @@ function synthesizeMessageBusRoute(
         bigint directParticipantCount = 0;` : ''}
         bigint replacementIdentityCount = 0;
         ${kernelLifecycleHandlers.size > 0 ? 'bytes activeParticipantLbc;' : ''}
+        // The manifest slices below fail closed past its end, so no separate length checks precede them.
+        bigint expectedBase = 0;
+        bigint cursor = 13;
         for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
-          require(cursor + 45 <= callManifest.length);
           bigint base = expectedBase;
           bigint fixedSize = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
           bigint blockSize = int(bytes.concat(callManifest.slice(cursor + 2, cursor + 4), hex"00"));
           bigint lbcLength = int(bytes.concat(callManifest.slice(cursor + 4, cursor + 6), hex"00"));
-          cursor = cursor + 6;
           require(fixedSize >= 1 && blockSize >= fixedSize && lbcLength > 0);
+          bytes participantLbc = callManifest.slice(cursor + 6, cursor + 6 + lbcLength);
+          cursor = cursor + 6 + lbcLength;
+          expectedBase = expectedBase + blockSize;
+          require(expectedBase < tx.inputs.length);
           participantBases = bytes.concat(participantBases, toPaddedBytes(base, 2));
           participantSizes = bytes.concat(participantSizes, toPaddedBytes(blockSize, 2));
-          expectedBase = expectedBase + blockSize;
-          require(expectedBase < tx.inputs.length && cursor + lbcLength + 38 <= callManifest.length);
-          bytes participantLbc = callManifest.slice(cursor, cursor + lbcLength);
-          cursor = cursor + lbcLength;
           participantLbcs = bytes.concat(participantLbcs, toPaddedBytes(lbcLength, 2), participantLbc);
           bytes participantOutputLbc = participantLbc;
-          if (${atomicManifestOutputIdentityExpression}) {
-            require(cursor + 2 <= callManifest.length);
-            bigint outputLbcLength = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
-            cursor = cursor + 2;
-            require(outputLbcLength > 0 && cursor + outputLbcLength + 38 <= callManifest.length);
-            participantOutputLbc = callManifest.slice(cursor, cursor + outputLbcLength);
-            cursor = cursor + outputLbcLength;
+          if (manifestOutputIdentity) {
+            participantOutputLbc = callManifest.slice(cursor + 2,
+              cursor + 2 + int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00")));
+            require(participantOutputLbc.length > 0);
+            cursor = cursor + 2 + participantOutputLbc.length;
             if (participantOutputLbc != participantLbc) {
               replacementIdentityCount = replacementIdentityCount + 1;
             }
@@ -12371,16 +12794,13 @@ function synthesizeMessageBusRoute(
           bigint trailingUsed = int(bytes.concat(callManifest.slice(cursor + 34, cursor + 36), hex"00"));
           bigint returnOffset = int(bytes.concat(callManifest.slice(cursor + 36, cursor + 38), hex"00"));
           cursor = cursor + 38;
-          if (${atomicManifestSignatureFrameExpression}) {
-            require(cursor + 3 <= callManifest.length);
-            bigint lifecycleMode = int(bytes.concat(callManifest.slice(cursor, cursor + 1), hex"00"));
-            bigint lifecycleCount = int(bytes.concat(callManifest.slice(cursor + 1, cursor + 3), hex"00"));
-            require(lifecycleMode == 0 && lifecycleCount == 0);
+          if (manifestSignatureFrames) {
+            // Lifecycle mode and count are both zero on the wire.
+            require(callManifest.slice(cursor, cursor + 3) == hex"000000");
             cursor = cursor + 3;
           }
           ${directParticipantMode ? `bigint participantAuthority = 0;
           if (${atomicManifestV5Expression}) {
-            require(cursor + 1 <= callManifest.length);
             participantAuthority = int(bytes.concat(callManifest.slice(cursor, cursor + 1), hex"00"));
             require(participantAuthority <= 1);
             cursor = cursor + 1;
@@ -12397,7 +12817,7 @@ function synthesizeMessageBusRoute(
             && tx.inputs[base].tokenCategory.slice(0, 32) == category
             && tx.inputs[base].tokenCategory.slice(32, 33) == hex"02");
           bigint participantOutputBase = -1;
-          if (${atomicManifestOutputIdentityExpression}) {
+          if (manifestOutputIdentity) {
             participantOutputBase = base;
             // Token-free output at the participant base is retirement/reclaim (selfdestruct): preserve sats
             // only. Gating on empty tokenCategory — not a synthesize-time lifecycle map snapshot — so the soft
@@ -12412,13 +12832,8 @@ function synthesizeMessageBusRoute(
                 && tx.outputs[participantOutputBase].value == tx.inputs[base].value);
             }
           } else {
-            for (bigint participantOutput = 0; participantOutput < tx.outputs.length;
-              participantOutput = participantOutput + 1) {
-              if (tx.outputs[participantOutput].lockingBytecode == participantOutputLbc
-                && tx.outputs[participantOutput].tokenCategory == tx.inputs[base].tokenCategory) {
-                participantOutputBase = participantOutput;
-              }
-            }
+            participantOutputBase = __message_bus_last_output(
+              mintingOutputs, tx.inputs[base].tokenCategory, participantOutputLbc);
             if (participantOutputBase < 0 && tx.outputs[base].tokenCategory.length == 0) {
               require(tx.outputs[base].value == tx.inputs[base].value);
               participantOutputBase = base;
@@ -12520,25 +12935,15 @@ function synthesizeMessageBusRoute(
           bindingDigest
         ));`}
         require(tx.outputs.length == tx.inputs.length);
-        require(cursor + 2 <= callManifest.length);
+        // Every slice below fails closed past the manifest end, so no separate length checks precede them.
         bigint rowCount = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
         require(rowCount <= ${ATOMIC_MESSAGE_BUS_MAX_ROWS});
-        cursor = cursor + 2;
-        bigint consumedLocalRows = 0;
-        bigint batchCursor = 7;
         bigint batchVersion = int(bytes.concat(localBatch.slice(4, 5), hex"00"));
         bigint batchModeWidth = batchVersion == 2 ? 1 : 0;
         bigint batchValueWidth = int(bytes.concat(localBatch.slice(5, 6), hex"00")) * 9;
-        bytes rowConsumers = hex"";
-        bytes rowDepths = hex"";
-        bytes localResultVector = hex"";
-        bytes expectedEmissions = hex"";
-        bytes expectedCallers = hex"";
-        bytes expectedCompletionPositions = hex"";
-        bytes participantBoundaries = hex"";
-        for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
-          participantBoundaries = bytes.concat(participantBoundaries, hex"0000");
-          ${sharedEnvelopeTransport ? `// Legacy verifiers each carry an L3C1 first push. The envelope is >=256 bytes
+        ${!sharedEnvelopeTransport ? '' : `for (bigint participant = 0; participant < participantCount;
+          participant = participant + 1) {
+          // Legacy verifiers each carry an L3C1 first push. The envelope is >=256 bytes
           // and below the stack-item limit, so consensus minimal-push rules require PUSHDATA2 (0x4d).
           // Forbid that frame in every verifier slot; no co-spent participant may authenticate a private graph.
           ${directParticipantMode ? `if (int(bytes.concat(participantAuthorities.slice(participant, participant + 1), hex"00")) == 0) {
@@ -12553,57 +12958,79 @@ function synthesizeMessageBusRoute(
               || verifierUnlock.slice(3, 7) != hex"4c334331");
           }` : `bytes verifierUnlock = tx.inputs[expectedBase + participant].unlockingBytecode;
           require(verifierUnlock.slice(0, 1) != hex"4d"
-            || verifierUnlock.slice(3, 7) != hex"4c334331");`}` : ''}
-        }
-        bigint activeSettlementBoundary = 0;
-        bigint invocationRows = 0;
+            || verifierUnlock.slice(3, 7) != hex"4c334331");`}
+        }`}
+        // A replacement costs its stack depth, so the row loop's carried values sit nearest the top in order of
+        // write frequency, and each row's own values are dropped before the counter advances.
         bigint rootSubtreeEnd = 65535;
-        bigint activeResourceEndpoints = 0;
-        bigint activeSatoshiContainerRows = 0;
-        bigint activeTokenContainerRows = 0;
-        bigint activeEventRows = 0;
-        bigint activeValueRows = 0;
-        bigint activeTokenRows = 0;
         bigint activeDeploymentInvocations = 0;
         bigint activeDeploymentRows = 0;
-        bigint activeSidecarRows = 0;
-        bigint activeStaticInvocationRows = 0;
-        bigint transactionSignatureRows = 0;
-        bigint previousResourceTarget = -1;
-        bigint previousEventTarget = -1;
-        bigint previousValueTarget = -1;
-        bigint previousTokenTarget = -1;
-        bigint previousDeploymentTarget = -1;
-        bigint previousSidecarTarget = -1;
-        bytes activeSidecarTargets = hex"";
         bytes activeDeploymentParents = hex"";
         bytes settledDeploymentParents = hex"";
         bytes activeDeploymentTargets = hex"";
-        bigint eventsStarted = 0;
-        bigint effectsStarted = 0;
+        bigint activeSidecarRows = 0;
+        bytes activeSidecarTargets = hex"";
+        bigint transactionSignatureRows = 0;
+        bigint activeStaticInvocationRows = 0;
+        bigint activeSatoshiContainerRows = 0;
+        bigint activeTokenContainerRows = 0;
+        bigint activeValueRows = 0;
+        bigint activeTokenRows = 0;
+        bigint previousDeploymentTarget = -1;
+        bigint previousSidecarTarget = -1;
+        bigint previousValueTarget = -1;
+        bigint previousTokenTarget = -1;
+        ${!graphExecutionContext ? '' : `bigint activeSettlementBoundary = 0;
+        bytes expectedEmissions = hex"";
+        bytes expectedCallers = hex"";
+        bytes expectedCompletionPositions = hex"";
+        // participantCount <= 8: one zero uint16 boundary per participant.
+        bytes participantBoundaries = hex"${'00'.repeat(16)}".slice(0, participantCount * 2);`}
+        bigint activeEventRows = 0;
+        bigint activeResourceEndpoints = 0;
+        bigint previousEventTarget = -1;
+        bigint previousResourceTarget = -1;
+        bigint consumedLocalRows = 0;
+        bytes localResultVector = hex"";
+        bigint batchCursor = 7;
+        // Two bytes per invocation row: its consumer and its depth.
+        bytes rowFrames = hex"";
+        bigint rowCursor = cursor + 2;
         for (bigint row = 0; row < rowCount; row = row + 1) {
-          require(cursor + 29 <= callManifest.length);
-          bigint rowStart = cursor;
-          bigint kind = int(bytes.concat(callManifest.slice(cursor, cursor + 1), hex"00"));
-          bigint __message_bus_row_owner = int(bytes.concat(callManifest.slice(cursor + 1, cursor + 2), hex"00"));
-          bigint consumer = int(bytes.concat(callManifest.slice(cursor + 2, cursor + 3), hex"00"));
+          if (true) {
+          bytes rowHeader = callManifest.slice(rowCursor, rowCursor + 21);
+          rowCursor = rowCursor + 21;
+          bytes rowSubject = callManifest.slice(rowCursor + 2,
+            rowCursor + 2 + int(bytes.concat(callManifest.slice(rowCursor, rowCursor + 2), hex"00")));
+          rowCursor = rowCursor + 2 + rowSubject.length;
+          bytes rowArguments = callManifest.slice(rowCursor + 2,
+            rowCursor + 2 + int(bytes.concat(callManifest.slice(rowCursor, rowCursor + 2), hex"00")));
+          rowCursor = rowCursor + 2 + rowArguments.length;
+          bytes rowResult = callManifest.slice(rowCursor + 2,
+            rowCursor + 2 + int(bytes.concat(callManifest.slice(rowCursor, rowCursor + 2), hex"00")));
+          rowCursor = rowCursor + 2 + rowResult.length;
+          bytes rowEffect = callManifest.slice(rowCursor + 2,
+            rowCursor + 2 + int(bytes.concat(callManifest.slice(rowCursor, rowCursor + 2), hex"00")));
+          rowCursor = rowCursor + 2 + rowEffect.length;
+          bytes rowSignatureFrame = hex"";
+          if (manifestSignatureFrames) {
+            rowSignatureFrame = callManifest.slice(rowCursor + 2,
+              rowCursor + 2 + int(bytes.concat(callManifest.slice(rowCursor, rowCursor + 2), hex"00")));
+            rowCursor = rowCursor + 2 + rowSignatureFrame.length;
+          }
+          bigint kind = int(bytes.concat(rowHeader.slice(0, 1), hex"00"));
+          bigint __message_bus_row_owner = int(bytes.concat(rowHeader.slice(1, 2), hex"00"));
+          bigint consumer = int(bytes.concat(rowHeader.slice(2, 3), hex"00"));
           require(kind <= 6 && __message_bus_row_owner < participantCount && consumer < participantCount);
-          bigint sourceOffset = int(bytes.concat(callManifest.slice(cursor + 6, cursor + 8), hex"00"));
-          bigint targetOffset = int(bytes.concat(callManifest.slice(cursor + 8, cursor + 10), hex"00"));
-          bigint completion = int(bytes.concat(callManifest.slice(cursor + 14, cursor + 16), hex"00"));
-          bigint parent = int(bytes.concat(callManifest.slice(cursor + 16, cursor + 18), hex"00"));
-          bigint depth = int(bytes.concat(callManifest.slice(cursor + 18, cursor + 19), hex"00"));
-          bigint subtreeEnd = int(bytes.concat(callManifest.slice(cursor + 19, cursor + 21), hex"00"));
-          bigint participantBase = int(bytes.concat(
+          bigint sourceOffset = int(bytes.concat(rowHeader.slice(6, 8), hex"00"));
+          bigint targetOffset = int(bytes.concat(rowHeader.slice(8, 10), hex"00"));
+          bigint completion = int(bytes.concat(rowHeader.slice(14, 16), hex"00"));
+          bigint parent = int(bytes.concat(rowHeader.slice(16, 18), hex"00"));
+          bigint depth = int(bytes.concat(rowHeader.slice(18, 19), hex"00"));
+          bigint subtreeEnd = int(bytes.concat(rowHeader.slice(19, 21), hex"00"));
+          bigint targetSlot = int(bytes.concat(
             participantBases.slice(consumer * 2, consumer * 2 + 2), hex"00"
-          ));
-          bigint participantSize = int(bytes.concat(
-            participantSizes.slice(consumer * 2, consumer * 2 + 2), hex"00"
-          ));
-          bigint ownerSize = int(bytes.concat(
-            participantSizes.slice(__message_bus_row_owner * 2, __message_bus_row_owner * 2 + 2), hex"00"
-          ));
-          bigint targetSlot = participantBase + targetOffset;
+          )) + targetOffset;
           bigint sourceSlot = int(bytes.concat(
             participantBases.slice(__message_bus_row_owner * 2, __message_bus_row_owner * 2 + 2), hex"00"
           )) + sourceOffset;
@@ -12613,91 +13040,67 @@ function synthesizeMessageBusRoute(
             // The owner handler's emission transcript below binds that slot's exact locking bytecode, so an
             // in-range non-root offset is both necessary and sufficient; forcing offset zero aliases logical
             // calls back to their state owner.
-            require(effectsStarted == 0 && targetOffset < participantSize
+            // Every earlier row is an invocation row exactly when no effect row has started.
+            require(rowFrames.length == row * 2
+              && targetOffset < int(bytes.concat(participantSizes.slice(consumer * 2, consumer * 2 + 2), hex"00"))
               && (row > 0 || targetOffset == 0));
             if (row == 0) {
               require(parent == 65535 && depth == 0 && sourceOffset == 65535 && __message_bus_row_owner == consumer);
               rootSubtreeEnd = subtreeEnd;
             } else {
-              require(parent < invocationRows && depth <= 7);
-              require(__message_bus_row_owner == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
-              require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")) + 1);
-              require(sourceOffset < ownerSize);
+              require(parent * 2 < rowFrames.length && depth <= 7);
+              require(__message_bus_row_owner == int(bytes.concat(rowFrames.slice(parent * 2, parent * 2 + 1), hex"00")));
+              require(depth == int(bytes.concat(rowFrames.slice(parent * 2 + 1, parent * 2 + 2), hex"00")) + 1);
+              require(sourceOffset < int(bytes.concat(
+                participantSizes.slice(__message_bus_row_owner * 2, __message_bus_row_owner * 2 + 2), hex"00"
+              )));
             }
             require(subtreeEnd >= row && subtreeEnd < rowCount && completion == subtreeEnd + 1);
-            rowConsumers = bytes.concat(rowConsumers, bytes1(consumer));
-            rowDepths = bytes.concat(rowDepths, bytes1(depth));
-            invocationRows = invocationRows + 1;
-            if (consumer == activeParticipant) {
+            rowFrames = bytes.concat(rowFrames, bytes1(consumer), bytes1(depth));
+            ${!kernelDeploymentSelectorRegistration ? '' : `if (consumer == activeParticipant) {
               ${kernelDeploymentSelectorRegistration}
-            }
+            }`}
           } else {
-            require(invocationRows > 0);
-            effectsStarted = 1;
-            require(__message_bus_row_owner == consumer && sourceOffset == targetOffset && targetOffset < participantSize);
-            require(int(bytes.concat(callManifest.slice(cursor + 3, cursor + 5), hex"00"))
-              == targetOffset);
-            require(callManifest.slice(cursor + 10, cursor + 14) == hex"00000000");
+            require(rowFrames.length > 0);
+            require(__message_bus_row_owner == consumer && sourceOffset == targetOffset
+              && targetOffset < int(bytes.concat(participantSizes.slice(consumer * 2, consumer * 2 + 2), hex"00")));
+            require(int(bytes.concat(rowHeader.slice(3, 5), hex"00")) == targetOffset);
+            require(rowHeader.slice(10, 14) == hex"00000000");
             require(completion == targetOffset);
             if (kind == 1) {
-              require(eventsStarted == 0 && targetSlot > previousResourceTarget);
+              // No event row has started while previousEventTarget is still unset.
+              require(previousEventTarget < 0 && targetSlot > previousResourceTarget);
               previousResourceTarget = targetSlot;
-              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 5);
+              require(int(bytes.concat(rowHeader.slice(5, 6), hex"00")) <= 5);
               require(parent == 65535 && depth == 0 && subtreeEnd == completion);
             } else if (kind == 2) {
-              eventsStarted = 1;
               require(targetSlot > previousEventTarget);
               previousEventTarget = targetSlot;
-              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) == 1);
+              require(rowHeader.slice(5, 6) == hex"01");
             } else if (kind == 3) {
               require(targetSlot > previousValueTarget);
               previousValueTarget = targetSlot;
-              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) == 1);
+              require(rowHeader.slice(5, 6) == hex"01");
             } else if (kind == 4) {
               require(targetSlot > previousTokenTarget);
               previousTokenTarget = targetSlot;
-              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 3);
+              require(int(bytes.concat(rowHeader.slice(5, 6), hex"00")) <= 3);
             } else if (kind == 5) {
               require(targetSlot > previousDeploymentTarget);
               previousDeploymentTarget = targetSlot;
-              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 1);
+              require(int(bytes.concat(rowHeader.slice(5, 6), hex"00")) <= 1);
             } else {
               require(targetSlot > previousSidecarTarget);
               previousSidecarTarget = targetSlot;
-              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 2);
+              require(int(bytes.concat(rowHeader.slice(5, 6), hex"00")) <= 2);
               require(parent == 65535 && depth == 0 && subtreeEnd == completion);
             }
             if (kind >= 2 && kind <= 5) {
-              require(parent < invocationRows
-                && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
-              require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
+              require(parent * 2 < rowFrames.length
+                && consumer == int(bytes.concat(rowFrames.slice(parent * 2, parent * 2 + 1), hex"00")));
+              require(depth == int(bytes.concat(rowFrames.slice(parent * 2 + 1, parent * 2 + 2), hex"00")));
               require(subtreeEnd == parent);
             }
-          }
-          cursor = cursor + 21;
-          bytes rowSubject;
-          bytes rowArguments;
-          bytes rowResult;
-          bytes rowEffect;
-          for (bigint field = 0; field < 4; field = field + 1) {
-            require(cursor + 2 <= callManifest.length);
-            bigint fieldLength = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
-            cursor = cursor + 2;
-            require(cursor + fieldLength <= callManifest.length);
-            if (field == 0) { rowSubject = callManifest.slice(cursor, cursor + fieldLength); }
-            if (field == 1) { rowArguments = callManifest.slice(cursor, cursor + fieldLength); }
-            if (field == 2) { rowResult = callManifest.slice(cursor, cursor + fieldLength); }
-            if (field == 3) { rowEffect = callManifest.slice(cursor, cursor + fieldLength); }
-            cursor = cursor + fieldLength;
-          }
-          bytes rowSignatureFrame;
-          if (${atomicManifestSignatureFrameExpression}) {
-            require(cursor + 2 <= callManifest.length);
-            bigint signatureFrameLength = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
-            cursor = cursor + 2;
-            require(cursor + signatureFrameLength <= callManifest.length);
-            rowSignatureFrame = callManifest.slice(cursor, cursor + signatureFrameLength);
-            cursor = cursor + signatureFrameLength;
           }
           ${directParticipantMode ? `bigint rowConsumerAuthority = int(bytes.concat(
             participantAuthorities.slice(consumer, consumer + 1), hex"00"
@@ -12711,7 +13114,7 @@ function synthesizeMessageBusRoute(
             // claim any graph child or effect row: no compiler-authenticated direct emission stream exists.
             require(kind == 0 && row > 0 && targetOffset == 0 && subtreeEnd == row
               && rowResult.length == 0 && rowEffect.length == 0 && rowSignatureFrame.length == 0
-              && callManifest.slice(rowStart + 5, rowStart + 6) == hex"00"
+              && rowHeader.slice(5, 6) == hex"00"
               && rowSubject == tx.inputs[sourceSlot].lockingBytecode
               && directInvocations.slice(consumer, consumer + 1) == hex"00");
             directInvocations = bytes.concat(
@@ -12721,7 +13124,7 @@ function synthesizeMessageBusRoute(
             bytes directUnlock = tx.inputs[targetSlot].unlockingBytecode;
             require(directUnlock.length >= 7
               && directUnlock.slice(0, 5) == bytes.concat(
-                hex"04", callManifest.slice(rowStart + 10, rowStart + 14)
+                hex"04", rowHeader.slice(10, 14)
               ) && rowArguments.length > 0);
             bytes directExpectedArg;
             bigint directExpectedEnd;
@@ -12801,7 +13204,7 @@ function synthesizeMessageBusRoute(
             ${MESSAGE_BUS_SIGNATURE_POLICY_SENTINEL}
           }
           ${resourceVerificationMode ? `if (kind == 1 && __message_bus_row_owner == activeParticipant) {
-            bigint resourceMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
+            bigint resourceMode = int(bytes.concat(rowHeader.slice(5, 6), hex"00"));
             require(rowSubject.length > 0);
             ${fixedStateOnlyResourceMode ? `require(resourceMode == 0);
             require(rowArguments.length == 33);
@@ -12909,7 +13312,7 @@ function synthesizeMessageBusRoute(
             activeValueRows = activeValueRows + 1;
           }` : ''}
           ${tokenContainerMode ? `if (kind == 4 && __message_bus_row_owner == activeParticipant) {
-            bigint tokenMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
+            bigint tokenMode = int(bytes.concat(rowHeader.slice(5, 6), hex"00"));
             require((tokenMode == 0 && rowArguments.length == 32 && rowEffect.length == 8)
               || (tokenMode == 1 && rowArguments.length == 32)
               || (tokenMode > 1 && tokenMode <= 3 && rowArguments.length == 33
@@ -12935,7 +13338,7 @@ function synthesizeMessageBusRoute(
     ? 'require(kind != 5 || __message_bus_row_owner != activeParticipant);'
     : `if (kind == 5 && __message_bus_row_owner == activeParticipant) {
             bigint deploymentMode = int(bytes.concat(
-              callManifest.slice(rowStart + 5, rowStart + 6), hex"00"
+              rowHeader.slice(5, 6), hex"00"
             ));
             require(rowSubject.length == 0 && rowResult.length == 0
               && ((deploymentMode == 0 && rowArguments.length == 66 && rowEffect.length >= 15)
@@ -12990,7 +13393,8 @@ function synthesizeMessageBusRoute(
             activeDeploymentRows = activeDeploymentRows + 1;
             bigint deploymentOutputCount = int(bytes.concat(rowEffect.slice(0, 2), hex"00"));
             require(deploymentOutputCount == expectedDeploymentWidth
-              && deploymentOutputCount >= 1 && targetOffset + deploymentOutputCount <= participantSize);
+              && deploymentOutputCount >= 1 && targetOffset + deploymentOutputCount <= int(bytes.concat(
+                participantSizes.slice(consumer * 2, consumer * 2 + 2), hex"00")));
             activeDeploymentTargets = bytes.concat(
               activeDeploymentTargets, toPaddedBytes(targetSlot, 2), toPaddedBytes(deploymentOutputCount, 2)
             );
@@ -13087,25 +13491,26 @@ function synthesizeMessageBusRoute(
             activeSidecarRows = activeSidecarRows + 1;
             activeSidecarTargets = bytes.concat(activeSidecarTargets, toPaddedBytes(targetSlot, 2));
           }` : ''}
-          bigint priorBoundary = int(bytes.concat(
-            participantBoundaries.slice(consumer * 2, consumer * 2 + 2), hex"00"
-          ));
-          if (kind == 0 && completion > priorBoundary) {
-            participantBoundaries = bytes.concat(
-              participantBoundaries.slice(0, consumer * 2), toPaddedBytes(completion, 2),
-              participantBoundaries.slice(consumer * 2 + 2, participantBoundaries.length)
-            );
-          }
-          if (kind == 0 && row > 0 && __message_bus_row_owner == activeParticipant) {
-            bytes targetLbc = tx.inputs[targetSlot].lockingBytecode;
-            expectedEmissions = bytes.concat(
-              expectedEmissions, toPaddedBytes(targetLbc.length, 2), targetLbc,
-              callManifest.slice(rowStart + 5, rowStart + 6),
-              callManifest.slice(rowStart + 10, rowStart + 14),
-              toPaddedBytes(rowArguments.length, 2), rowArguments,
-              toPaddedBytes(rowResult.length, 2), rowResult
-            );
-          }
+          ${!graphExecutionContext ? '' : `if (kind == 0) {
+            if (completion > int(bytes.concat(
+              participantBoundaries.slice(consumer * 2, consumer * 2 + 2), hex"00"
+            ))) {
+              participantBoundaries = bytes.concat(
+                participantBoundaries.slice(0, consumer * 2), toPaddedBytes(completion, 2),
+                participantBoundaries.slice(consumer * 2 + 2, participantBoundaries.length)
+              );
+            }
+            if (row > 0 && __message_bus_row_owner == activeParticipant) {
+              bytes targetLbc = tx.inputs[targetSlot].lockingBytecode;
+              expectedEmissions = bytes.concat(
+                expectedEmissions, toPaddedBytes(targetLbc.length, 2), targetLbc,
+                rowHeader.slice(5, 6),
+                rowHeader.slice(10, 14),
+                toPaddedBytes(rowArguments.length, 2), rowArguments,
+                toPaddedBytes(rowResult.length, 2), rowResult
+              );
+            }
+          }`}
           if (kind == 0 && consumer == activeParticipant) {
             require(batchCursor + 12 + batchModeWidth + batchValueWidth <= localBatch.length);
             bigint batchArgsLength = int(bytes.concat(
@@ -13113,9 +13518,9 @@ function synthesizeMessageBusRoute(
             ));
             bigint batchArgsStart = batchCursor + 12 + batchModeWidth + batchValueWidth;
             require(batchArgsStart + batchArgsLength <= localBatch.length);
-            require(callManifest.slice(rowStart + 10, rowStart + 14)
+            require(rowHeader.slice(10, 14)
               == localBatch.slice(batchCursor, batchCursor + 4));
-            bigint callManifestMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
+            bigint callManifestMode = int(bytes.concat(rowHeader.slice(5, 6), hex"00"));
             // The manifest binds parent-edge options; the local batch carries only the callee's read-only bit.
             // A value-bearing call remains an ordinary callee invocation. Its exact value flag is bound by the
             // caller's emission equality and its payment by the caller's transfer covenant/effect rows.
@@ -13136,31 +13541,26 @@ function synthesizeMessageBusRoute(
     : 'require(rowSubject.length == 0 || rowSubject == tx.origin);'}
             }
             else { require(rowSubject == tx.inputs[sourceSlot].lockingBytecode); }
-            expectedCallers = bytes.concat(
+            ${!graphExecutionContext ? '' : `expectedCallers = bytes.concat(
               expectedCallers, toPaddedBytes(rowSubject.length, 2), rowSubject
             );
             expectedCompletionPositions = bytes.concat(
               expectedCompletionPositions, toPaddedBytes(completion, 2)
             );
-            if (completion > activeSettlementBoundary) { activeSettlementBoundary = completion; }
+            if (completion > activeSettlementBoundary) { activeSettlementBoundary = completion; }`}
             batchCursor = batchArgsStart + batchArgsLength;
             consumedLocalRows = consumedLocalRows + 1;
           }
+          }
         }
         // With no rows, rootSubtreeEnd retains 65535, so the root-subtree equality also rejects an empty graph.
-        require(rootSubtreeEnd + 1 == invocationRows);
+        require((rootSubtreeEnd + 1) * 2 == rowFrames.length);
         ${directParticipantMode ? `for (bigint participant = 0; participant < participantCount;
           participant = participant + 1) {
           if (participantAuthorities.slice(participant, participant + 1) == hex"01") {
             require(directInvocations.slice(participant, participant + 1) == hex"01");
           }
         }` : ''}
-        bigint physicalResourceEndpoints = 0;
-        bigint physicalSatoshiContainers = 0;
-        bigint physicalTokenContainers = 0;
-        bigint physicalEventOutputs = 0;
-        bigint physicalValueOutputs = 0;
-        bigint physicalTokenOutputs = 0;
         // A delegate route can execute from an authenticated interior slot. Resource cardinality belongs to
         // the participant block, so scan from the canonical base selected from the manifest rather than from
         // the executing slot.
@@ -13169,41 +13569,21 @@ function synthesizeMessageBusRoute(
         // its recipient is that same covenant, shifting the entire physical settlement window.
         // The selected participant already proved participantOutputBase >= 0 before assigning activeOutputBase.
         // Keep 65535 available as a real output index; it is not an absent-output proof at this point.
-        for (bigint slot = activeBase;
-          slot < activeBase + activeBlockSize; slot = slot + 1) {
-          bigint outputSlot = activeOutputBase + slot - activeBase;
-          bigint isSidecarSlot = 0;
-          bigint isDeploymentSlot = 0;
-          for (bigint deployment = 0; deployment < activeDeploymentTargets.length;
-            deployment = deployment + 4) {
-            bigint deploymentStart = int(bytes.concat(
-              activeDeploymentTargets.slice(deployment, deployment + 2), hex"00"
-            ));
-            bigint deploymentCount = int(bytes.concat(
-              activeDeploymentTargets.slice(deployment + 2, deployment + 4), hex"00"
-            ));
-            if (outputSlot >= deploymentStart && outputSlot < deploymentStart + deploymentCount) {
-              isDeploymentSlot = 1;
-            }
-          }
-          ${sidecarVerificationMode ? `for (bigint sidecar = 0;
-            sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
-            if (slot == int(bytes.concat(
-              activeSidecarTargets.slice(sidecar, sidecar + 2), hex"00"))) {
-              isSidecarSlot = 1;
-            }
-          }` : ''}
-          // Every invoked graph handler independently raises its compiler-owned DIRTY bit at each reached
-          // state/resource/effect mutation and verifies that bit for a static row. Retain this whole-block
-          // snapshot as defense in depth when the participant is entirely static. A mixed participant can
-          // legitimately contain mutating sibling rows, so snapshotting its final block merely because one row
-          // is static rejects those authenticated siblings and adds no row-local protection.
-          // A return-event slot may publish the authenticated result vector; all other slots of an all-static
-          // participant remain byte-for-byte and value-for-value preserved.
-          if (${kernelLifecycleHandlers.size > 0 ? 'activeLifecycleMode == 0 && ' : ''}
-            activeStaticInvocationRows > 0 && activeStaticInvocationRows == consumedLocalRows) {
+        // Every invoked graph handler independently raises its compiler-owned DIRTY bit at each reached
+        // state/resource/effect mutation and verifies that bit for a static row. Retain this whole-block
+        // snapshot as defense in depth when the participant is entirely static. A mixed participant can
+        // legitimately contain mutating sibling rows, so snapshotting its final block merely because one row
+        // is static rejects those authenticated siblings and adds no row-local protection.
+        // A return-event slot may publish the authenticated result vector. Exact token-free neutral pads may
+        // keep their canonical OP_TRUE output, including shared-oracle duplicates. All other slots remain
+        // byte-for-byte preserved, and every slot preserves its complete input value.
+        if (${kernelLifecycleHandlers.size > 0 ? 'activeLifecycleMode == 0 && ' : ''}
+          activeStaticInvocationRows > 0 && activeStaticInvocationRows == consumedLocalRows) {
+          for (bigint slot = activeBase;
+            slot < activeBase + activeBlockSize; slot = slot + 1) {
+            bigint outputSlot = activeOutputBase + slot - activeBase;
             require(tx.outputs[outputSlot].value == tx.inputs[slot].value);
-            if (outputSlot != activeReturnOutput) {
+            if (outputSlot != activeReturnOutput && !__message_bus_empty_pad(slot, outputSlot)) {
               require(tx.outputs[outputSlot].lockingBytecode == tx.inputs[slot].lockingBytecode);
               require(tx.outputs[outputSlot].tokenCategory == tx.inputs[slot].tokenCategory);
               require(tx.outputs[outputSlot].tokenAmount == tx.inputs[slot].tokenAmount);
@@ -13213,73 +13593,12 @@ function synthesizeMessageBusRoute(
               }
             }
           }
-          // The return coordinate publishes a mutable participant NFT, but it is authenticated separately by
-          // the result-vector commitment below. It is not a state-resource endpoint and must not inflate the
-          // resource cardinality merely because the route returns a value.
-          if (outputSlot != activeReturnOutput && tx.inputs[slot].tokenCategory.length == 33
-            && tx.inputs[slot].tokenCategory.slice(0, 32) == activeCategory
-            && tx.inputs[slot].tokenCategory.slice(32, 33) == hex"01") {
-            physicalResourceEndpoints = physicalResourceEndpoints + 1;
-          }
-          if (outputSlot != activeReturnOutput && tx.outputs[outputSlot].tokenCategory.length == 33
-            && tx.outputs[outputSlot].tokenCategory.slice(0, 32) == activeCategory
-            && tx.outputs[outputSlot].tokenCategory.slice(32, 33) == hex"01") {
-            physicalResourceEndpoints = physicalResourceEndpoints + 1;
-          }
-          if (tx.inputs[slot].tokenCategory.length == 0
-            && tx.outputs[outputSlot].tokenCategory.length == 0
-            && tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode
-            && tx.inputs[slot].lockingBytecode != hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
-            physicalSatoshiContainers = physicalSatoshiContainers + 1;
-          }
-          if ((tx.inputs[slot].tokenCategory.length == 32 || tx.inputs[slot].tokenCategory.length == 33)
-            && tx.inputs[slot].tokenCategory.slice(0, 32) != activeCategory.slice(0, 32)
-            && isSidecarSlot == 0
-            && tx.inputs[slot].lockingBytecode != hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
-            physicalTokenContainers = physicalTokenContainers + 1;
-          }
-          if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}"
-            && tx.outputs[outputSlot].tokenCategory.length == 0
-            && tx.outputs[outputSlot].lockingBytecode != hex"51") {
-            physicalValueOutputs = physicalValueOutputs + 1;
-          }
-          if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}"
-            && isDeploymentSlot == 0
-            && (tx.outputs[outputSlot].tokenCategory.length == 32
-              || (tx.outputs[outputSlot].tokenCategory.length == 33
-                && tx.outputs[outputSlot].tokenCategory != bytes.concat(activeCategory, hex"02")))
-            // Participant-owned state/event NFTs use the participant category and are authenticated as
-            // resource/event rows. A tcTransfer category is necessarily foreign to that participant in this
-            // admitted shape; excluding the local category prevents trailing chunk mints from satisfying the
-            // token-settlement cardinality check.
-            && tx.outputs[outputSlot].tokenCategory.slice(0, 32) != activeCategory) {
-            physicalTokenOutputs = physicalTokenOutputs + 1;
-          }
-          if (outputSlot != activeReturnOutput && tx.outputs[outputSlot].tokenCategory == activeCategory
-            && tx.inputs[slot].tokenCategory != activeCategory
-            // Event rows always carry their encoded effect. Empty immutable NFTs are reserved frame/resource
-            // endpoints, not emitted events, even when they use the participant's category. CREATE/proxy
-            // logical-identity anchors (SCID v1: magic||version) are also not callManifest event rows; counting
-            // them as physical events breaks event-only (no dataNft) compose when the identity is minted onto a
-            // previously tokenless pad while kind-2 only records the real emit.
-            && tx.outputs[outputSlot].nftCommitment.length > 0
-            && (tx.outputs[outputSlot].nftCommitment.length < 5
-              || tx.outputs[outputSlot].nftCommitment.slice(0, 5) != hex"5343494401")
-            && tx.outputs[outputSlot].tokenAmount == 0) {
-            physicalEventOutputs = physicalEventOutputs + 1;
-          }
-          // Delegate execution can relocate an existing immutable participant NFT (for example, its logical
-          // identity anchor) to another slot in the same authenticated block. Count net creation, not a
-          // slot-local category transition, so such moves cancel while newly emitted event NFTs remain.
-          if (outputSlot != activeReturnOutput && tx.inputs[slot].tokenCategory == activeCategory
-            && tx.outputs[outputSlot].tokenCategory != activeCategory
-            && tx.inputs[slot].nftCommitment.length > 0
-            && (tx.inputs[slot].nftCommitment.length < 5
-              || tx.inputs[slot].nftCommitment.slice(0, 5) != hex"5343494401")
-            && tx.inputs[slot].tokenAmount == 0) {
-            physicalEventOutputs = physicalEventOutputs - 1;
-          }
         }
+        bigint physicalSatoshiContainers, bigint physicalTokenContainers, bigint physicalValueOutputs,
+          bigint physicalTokenOutputs, bigint physicalEventOutputs, bigint physicalResourceEndpoints =
+          __message_bus_physical_counts(activeBase, activeOutputBase, activeBlockSize, activeCategory,
+            activeReturnOutput${kernelDeploymentHandlers.size === 0 ? '' : ', activeDeploymentTargets'}
+            ${sidecarVerificationMode ? ', activeSidecarTargets' : ''});
         require(activeResourceEndpoints == physicalResourceEndpoints);
         require(activeSatoshiContainerRows == physicalSatoshiContainers);
         require(activeTokenContainerRows == physicalTokenContainers);
@@ -13294,7 +13613,7 @@ function synthesizeMessageBusRoute(
         // Selector-derived lifecycle (activeLifecycleMode from the local batch) is independent of V4 KTS row
         // frames. The V4 participant suffix stays neutral (mode=0,count=0); non-zero wire lifecycle remains
         // refused at the V4 cursor above. Detached sig leaves on lifecycle handlers stay KERNEL_TX_SIGNATURE.
-        require(cursor == callManifest.length && consumedLocalRows == expectedLocalRows
+        require(rowCursor == callManifest.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);
         ${!graphExecutionContext ? '' : `
         require(suppliedFixedSize == activeFixedSize && suppliedBlockSize == activeMaximumSize);
@@ -13517,6 +13836,7 @@ function synthesizeMessageBusRoute(
         return (payload, nextAt);
       }` : '';
   const helperSource = `${preamble}    contract __MessageBusHost() {
+      ${atomicScanHelpers}
       ${directPushHelperSource}
       ${graphCallManifestLoader}
       ${atomicCallManifestLoader}
@@ -13614,6 +13934,7 @@ function synthesizeMessageBusRoute(
         ${kernelUpgradeMode ? 'bigint __message_bus_upgrade_count = 0;' : ''}
         ${kernelUpgradeMode ? 'bigint __message_bus_upgrade_position = -1;' : ''}
         ${kernelV2SignatureFence ? 'bigint __message_bus_signature_count = 0;' : ''}
+        ${routeHasDynamicWriter ? 'bigint __message_bus_dynamic_write_active = 0;' : ''}
         ${fixedIterationEntryPins}
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${routeMaximumBlobBytes});
@@ -13639,21 +13960,22 @@ function synthesizeMessageBusRoute(
             // minimal-data rules require this opcode for the 76..255-byte range. Do not reinterpret bytes >= 0x80
             // through Script-number casts: their sign-bit encoding is not the unsigned push length.
             __message_bus_payload_at = __message_bus_push_at + 2;
-          } else if (batchBlob.length <= 65535) {
+          } else ${routeMaximumBlobBytes <= 65535 ? '' : 'if (batchBlob.length <= 65535) '}{
+            // The blob bound above leaves no PUSHDATA4 carrier to check unless it exceeds 65535 bytes.
             require(__message_bus_pushOpcode == 77);
             bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
               __message_bus_push_at + 1, __message_bus_push_at + 3
             ), hex"00"));
             require(__message_bus_pushLength == batchBlob.length);
             __message_bus_payload_at = __message_bus_push_at + 3;
-          } else {
+          }${routeMaximumBlobBytes <= 65535 ? '' : ` else {
             require(__message_bus_pushOpcode == 78);
             bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
               __message_bus_push_at + 1, __message_bus_push_at + 5
             ), hex"00"));
             require(__message_bus_pushLength == batchBlob.length);
             __message_bus_payload_at = __message_bus_push_at + 5;
-          }
+          }`}
           require(__message_bus_unlock.slice(
             __message_bus_payload_at, __message_bus_payload_at + batchBlob.length
           ) == batchBlob);
@@ -13876,10 +14198,14 @@ function synthesizeMessageBusRoute(
       })))).flat();
   }
   route.location = contract.location;
-  for (const helper of helpers) helper.location = contract.location;
+  for (const helper of helpers) {
+    helper.location = contract.location;
+    helper.compilerGeneratedHelper = true;
+  }
   contract.functions.push(...helpers, route);
   if ((useBoundRoute || compilerOptions.messageBusKernel === true) && !offloadedVerifier) {
     const verifierHost = `${preamble}    contract __MessageBusVerifierHost() {
+      ${atomicScanHelpers}
       ${directPushHelperSource}
       function ${MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM}(
         bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
@@ -14449,6 +14775,9 @@ function cloneMessageBusHandler(
   // body (no OP_INVOKE hidden context) while still treating it as a graph emission handler.
   handler.isFallback = false;
   handler.isReceive = false;
+  if (source.messageBusEventStream === true) {
+    streamHandlerEmits(handler, cheap, source.messageBusEventStreamChunked === true);
+  }
   return handler;
 }
 
@@ -14689,7 +15018,10 @@ function compileResolvedAst(
   // X169: the split path already ran this on the COMPLETE function set (`prepareSplitAst`). Re-running it on a
   // shard's filtered set would re-decide a table this pass declined there, and the decision appends state
   // variables - see `assertSplitLayoutsAgree`.
-  if (!fnPtrArraysPreLowered && !ast.contract.isSplitFacet
+  // A per-entry shard already ran this pass on the complete function set (`prepareSplitAst`). Re-running it on
+  // the filtered closure would append different state and break `assertSplitLayoutsAgree`.
+  const functionSplitPrepared = (mergedCompilerOptions as InternalCompilerOptions).__functionSplitPrepared === true;
+  if (!fnPtrArraysPreLowered && !functionSplitPrepared && !ast.contract.isSplitFacet
     && !(rootSourceCoversProgram(ast) && !code.includes('function(') && !code.includes('function ('))) {
     ast = ast.accept(new LowerForeignFunctionPointerArrayElements(messageBusGraphMode)) as Ast;
   }
@@ -14873,7 +15205,7 @@ function compileResolvedAst(
     ast = ast.accept(new DesugarReturnInLoop(!mergedCompilerOptions.messageBusKernel)) as Ast;
   }
   if (earlyEntryFeatures?.needsTailRecursion || mergedCompilerOptions.messageBusKernel === true) {
-    ast = ast.accept(new LowerTailRecursion()) as Ast;
+    ast = ast.accept(new LowerTailRecursion(mergedCompilerOptions.composition !== 'framed')) as Ast;
   }
   if (mergedCompilerOptions.messageBusKernel === true
     && earlyEntryFeatures?.needsNestedBranchReturn) {
@@ -15128,7 +15460,10 @@ function compileResolvedAst(
   }
   // Dynamic-state syntax is still present here. Preserve its physical input-base requirement by stable source
   // identity before collection/dynamic journal lowering value-threads those accesses through ordinary locals.
-  const dynamicChunkInputBaseFunctionKeys = markDynamicChunkInputBaseFunctions(ast);
+  const dynamicChunkWriteFunctionKeys = new Set<string>();
+  const dynamicChunkInputBaseFunctionKeys = markDynamicChunkInputBaseFunctions(
+    ast, new Set(), dynamicChunkWriteFunctionKeys,
+  );
   const stateExternalPointerNames = ast.contract.stateVariables
     .filter((state) => state.type instanceof FunctionType && state.type.isExternal)
     .map((state) => state.name);
@@ -15213,7 +15548,7 @@ function compileResolvedAst(
     needsExternalCallLowering, needsInlineAssembly,
     needsTailRecursion, needsReturnInLoop, needsNamedReturns, needsReturnDesugaring, needsNestedBranchReturn,
     needsPostfixIncDec, needsMappingFieldCoalesce, needsLoop, needsBreakContinue,
-    needsEarlyReturn, needsVMapCounter, needsAlphaRename,
+    needsEarlyReturn, needsVMapCounter, needsRuntimeLoopTransferCounter, needsAlphaRename,
     statefulnessSurveyComplete, hasContractInstantiation, deploysWithValue, emitsEvent,
   } = surveyOptionalLowerings(ast);
   // The survey above answers for the whole unit, which for a multi-artifact compile is every sibling contract as
@@ -15230,7 +15565,9 @@ function compileResolvedAst(
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
   // injected breaks are lowered; internal functions can't raw-return from inside a loop's balanced stack).
-  if (needsTailRecursion) ast = ast.accept(new LowerTailRecursion()) as Ast;
+  if (needsTailRecursion) {
+    ast = ast.accept(new LowerTailRecursion(mergedCompilerOptions.composition !== 'framed')) as Ast;
+  }
   if (needsReturnInLoop) ast = ast.accept(new DesugarReturnInLoop()) as Ast;
 
   // Unroll a FIXED-BOUND for-loop that writes a mapping into N static writes (which the per-slot machinery already
@@ -15240,9 +15577,11 @@ function compileResolvedAst(
 
   // Keep direct compilation's narrow permutation ABI stable. Message-bus compilation still needs the richer
   // analysis to classify legacy-unroll refusals, while kernel execution was already lowered at admission.
-  if (needsVMapCounter && needsLoop && !mergedCompilerOptions.messageBus) {
+  if (needsVMapCounter && needsLoop && !mergedCompilerOptions.messageBus
+    && !needsRuntimeLoopTransferCounter) {
     ast = ast.accept(new LowerLegacyVMapCounterLoops()) as Ast;
-  } else if (needsVMapCounter && needsLoop && mergedCompilerOptions.messageBusKernel !== true) {
+  } else if ((needsVMapCounter || needsRuntimeLoopTransferCounter) && needsLoop
+    && mergedCompilerOptions.messageBusKernel !== true) {
     ast = ast.accept(new LowerVMapCounterLoops(false)) as Ast;
   }
 
@@ -15309,6 +15648,13 @@ function compileResolvedAst(
 
   // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
   if (needsPostfixIncDec) ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
+
+  // Reuse an already-taken entry-read local for the whole-struct write-back of a field-write run (Unicrow
+  // `refund`), before CoalesceMappingEntryFieldWrites would re-read the entry for the same write-back.
+  // `reuseEntryLocalForWriteback: false` is the measurement-only escape hatch the size-regression test uses.
+  if (needsMappingFieldCoalesce && mergedCompilerOptions.reuseEntryLocalForWriteback !== false) {
+    ast = ast.accept(new ReuseEntryLocalForWriteback()) as Ast;
+  }
 
   // Coalesce consecutive whole-field writes to the same vmap mapping entry (`m[k].a=x; m[k].b=y`) into one entry
   // read + one whole-struct write, replacing N sorted-mapping upserts with one.
@@ -15502,17 +15848,27 @@ function compileResolvedAst(
       || fn.modifiers.includes(FunctionModifier.PRIVATE));
   // Public entry points can also be called internally. A state/collection- or call-touching public callee owns
   // direct-route witnesses that do not exist as source-level arguments at its call site; inline that body into
-  // the caller's physical frame before SymbolTableTraversal adds those parameters. Keep its dispatched definition.
+  // the caller's physical frame before SymbolTableTraversal adds those parameters. In the direct convention,
+  // a void `this.f()` has the same inherited execution context and needs that frame too. Returning self-calls
+  // retain their existing invoked-read fence after pending mapping writes. Keep the dispatched definition.
   const publicEntryNames = new Set(ast.contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name));
+  const directVoidSelfCallKeys = new Set(ast.contract.functions
+    .filter((fn) => fn.returnTypes.length === 0 && mergedCompilerOptions.composition !== 'framed')
+    .map((fn) => `${fn.name}/${fn.parameters.length}`));
   let hasInternallyCalledPublicEntry = false;
+  let hasDirectVoidSelfCall = false;
   if (publicEntryNames.size > 0) {
     for (const fn of ast.contract.functions) {
       if (!fn.body) continue;
-      const found = { internalCall: false };
+      const found = { internalCall: false, directVoidSelfCall: false };
       walkInvocationAst(fn.body, (node) => {
-        if (node instanceof FunctionCallNode && publicEntryNames.has(node.identifier.name)
-          && !node.fromThisCall) found.internalCall = true;
+        if (!(node instanceof FunctionCallNode) || !publicEntryNames.has(node.identifier.name)) return;
+        if (!node.fromThisCall) found.internalCall = true;
+        else if (directVoidSelfCallKeys.has(`${node.identifier.name}/${node.parameters.length}`)) {
+          found.directVoidSelfCall = true;
+        }
       });
+      hasDirectVoidSelfCall ||= found.directVoidSelfCall;
       hasInternallyCalledPublicEntry = found.internalCall;
       if (hasInternallyCalledPublicEntry) break;
     }
@@ -15542,7 +15898,7 @@ function compileResolvedAst(
   // whenever an internal helper exists; the traversal's own eligibility checks retain the cheap no-op path.
   // An entry another body calls by name is inlined there too: a mapping write's batch witnesses are the entry's own
   // parameters, which that call does not pass.
-  if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers) && inlinesOwnCalls) {
+  if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers) && (inlinesOwnCalls || hasDirectVoidSelfCall)) {
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.evmCompat ?? false,
       inlineDelegateStateHelpers,
@@ -15614,6 +15970,7 @@ function compileResolvedAst(
   // tell it ran). If-convert it to an unconditional predicated write `m[k] = cond ? default : m[k]`.
   if (needsCollectionJournal) ast = ast.accept(new IfConvertConditionalEntryOp(
     mergedCompilerOptions.messageBusKernel === true,
+    mergedCompilerOptions.messageBus === false && mergedCompilerOptions.composition !== 'framed',
   )) as Ast;
 
   // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
@@ -15647,14 +16004,21 @@ function compileResolvedAst(
   if (ast.freeFunctions.length > 0 || ast.declaredLibraryNames.length > 0) {
     ast = ast.accept(new SynthesizeLibraryDelegateCalls(mergedCompilerOptions.evmCompat === true)) as Ast;
   }
-  // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
+  // Oracle-backed block.* reads stay reads of the shared covenant commitment. No state is injected.
   const blockOracle = new SynthesizeBlockOracle(
     mergedCompilerOptions.evmCompat ?? false,
     oracleDelegateExecutionContext,
   );
-  // Yul context builtins become ordinary block.* reads and gasleft() only after assembly lowering. The initial
-  // source survey cannot see those generated AST nodes, so resurvey only sources which actually had assembly.
-  if (needsBlockOracle || (needsInlineAssembly && surveyOptionalLowerings(ast).needsBlockOracle)) {
+  // A split root's forwarder no longer contains the read, but the prepare pass already marked the function.
+  // Re-run so that mark is cleared. Yul builtins become block.* reads only after assembly lowering, which the
+  // initial survey cannot see, so sources that had assembly are resurveyed.
+  const oracleAlreadyMarked = ast.contract.usesBlockOracle
+    || ast.contract.functions.some((fn) => fn.usesBlockOracle === true)
+    || ast.contract.constructorDef?.usesBlockOracle === true
+    || ast.contract.fallbackDef?.usesBlockOracle === true
+    || ast.contract.receiveDef?.usesBlockOracle === true;
+  if (needsBlockOracle || oracleAlreadyMarked
+    || (needsInlineAssembly && surveyOptionalLowerings(ast).needsBlockOracle)) {
     ast = ast.accept(blockOracle) as Ast;
   }
 
@@ -15735,6 +16099,9 @@ function compileResolvedAst(
     }
   }
 
+  // A caller of a block.* reader carries the oracle index to forward it, including the generated route.
+  if (needsBlockOracle || ast.contract.usesBlockOracle) markBlockOracleCallers(ast.contract, ast.freeFunctions);
+
   // An entry's msg.data reads the unlocking frame, which can include compiler-hidden witnesses in addition
   // to source-visible arguments. The internal-context lowering above replaces helper reads with a synthetic
   // parameter, so survey both remaining reads and that parameter before publishing ABI admission metadata.
@@ -15765,7 +16132,7 @@ function compileResolvedAst(
 
   // Reapply the pre-lowering requirement to the final logical functions and compiler-owned handler clones, while
   // also discovering any dynamic-state dependency synthesized after the first survey.
-  markDynamicChunkInputBaseFunctions(ast, dynamicChunkInputBaseFunctionKeys);
+  markDynamicChunkInputBaseFunctions(ast, dynamicChunkInputBaseFunctionKeys, dynamicChunkWriteFunctionKeys);
 
   // Recovery compute is funded by the physical entrypoint even when the builtin sits behind imported/library
   // helpers (e.g. ECDSA.recover -> two tryRecover overloads -> ecrecover). Symbol resolution happens in the next
@@ -15917,6 +16284,24 @@ function compileResolvedAst(
       ));
     }
   }
+  // Ordinary direct writers can follow several physical callee blocks, including a non-returning callee
+  // after the last returned event. Neither that event nor the old input chunk identifies the output band.
+  // Preserve the source write footprint across journal lowering and publish the materialized coordinate;
+  // the dynamic-write covenant still verifies every chunk's exact lock, category, and commitment there.
+  // Framed entries use their declared record coordinates, and delegates retain their suffix convention.
+  if (mergedCompilerOptions.composition !== 'framed') {
+    for (const fn of ast.contract.functions) {
+      if (!fn.isEntryPoint || fn.messageBusRoute || fn.graphEmissionHandler
+        || fn.modifiers.includes(FunctionModifier.DELEGATE)
+        || !dynamicChunkWriteFunctionKeys.has(externalHandlerKey(fn))
+        || ((fn.externalCalls?.length ?? 0) === 0 && (fn.lowLevelCalls?.length ?? 0) === 0)
+        || fn.parameters.some((parameter) => parameter.name === '__internal__dynamicChunkOutputBase')) continue;
+      const dynamicOutputBase = new ParameterNode(PrimitiveType.BIGINT, '__internal__dynamicChunkOutputBase');
+      dynamicOutputBase.location = fn.location;
+      fn.parameters.push(dynamicOutputBase);
+    }
+  }
+
   // Graph-emission handlers execute as OP_DEFINE subroutines inside the hidden route's physical participant
   // block. Their external edges are callManifest rows, not additional co-spent slots, so their independently
   // inferred function layout is intentionally absent. Dynamic state reads/writes in those handlers must still
@@ -15964,14 +16349,25 @@ function compileResolvedAst(
       functionsByName.set(fn.name, group);
     }
     const routeFootprintCache = createFootprintAnalysisCache(dynamicStateNames);
+    const routeDynamicWrites = new Set<string>();
+    const dynamicResourceName = (resource: string): string | undefined => {
+      const name = resource.startsWith('state:') ? resource.slice('state:'.length)
+        : resource.startsWith('collection:') ? resource.split(':')[1] : undefined;
+      return name !== undefined && dynamicStateNames.has(name) ? name : undefined;
+    };
     const footprintDynamicResources = ast.contract.functions
       .filter((fn) => fn !== messageBusRoute && fn.messageBusEligible)
       .flatMap((fn) => {
         const footprint = analyseFunctionFootprint(fn, functionsByName, routeFootprintCache);
+        // An opaque effect cannot prove that a sibling resource remains read-only. Keep every dynamic resource
+        // under the existing write settlement in that case rather than exempting a cached journal value.
+        if (footprint.unknown) for (const name of dynamicStateNames) routeDynamicWrites.add(name);
+        for (const resource of footprint.writes) {
+          const name = dynamicResourceName(resource);
+          if (name !== undefined) routeDynamicWrites.add(name);
+        }
         return [...footprint.reads, ...footprint.writes]
-          .filter((resource) => resource.startsWith('state:'))
-          .map((resource) => resource.slice('state:'.length))
-          .filter((name) => dynamicStateNames.has(name));
+          .map(dynamicResourceName).filter((name): name is string => name !== undefined);
       });
     // Route dynReads/Writes may still be unpopulated this early; fall back to every dynamic state name when
     // any eligible handler emits chunkable/entry-loop NEWs that must sit after the route-preserved dyn band.
@@ -15987,6 +16383,8 @@ function compileResolvedAst(
       ...footprintDynamicResources,
       ...(needsDynBandForChunkableOrLoop ? [...dynamicStateNames] : []),
     ].filter((name) => dynamicStateNames.has(name)))];
+    const routeReadOnlyDynamicResources = routeDynamicResources.filter((name) => !routeDynamicWrites.has(name));
+    messageBusRoute.messageBusRouteReadOnlyDynamicResources = routeReadOnlyDynamicResources;
     type MessageBusClone = FunctionDefinitionNode & { messageBusCloneSourceKey?: string };
     const graphCloneBySource = new Map<FunctionDefinitionNode, FunctionDefinitionNode>();
     for (const clone of ast.contract.functions.filter((fn) =>
@@ -16054,6 +16452,7 @@ function compileResolvedAst(
       }
       if (routeClone || directlyDispatchedSource) {
         fn.messageBusRouteDynamicResources = routeDynamicResources;
+        fn.messageBusRouteReadOnlyDynamicResources = routeReadOnlyDynamicResources;
       }
       if ((routeClone || directlyDispatchedSource)
         && fixedHandlerEntries.length > 0 && messageBusRoute.entryAccesses?.length) {
@@ -16280,6 +16679,7 @@ function compileResolvedAst(
   ast = ast.accept(new EnsureFinalRequireTraversal(
     mergedCompilerOptions.enforceFinalRequire, mergedCompilerOptions.allowUnsafeOperations,
     !(mergedCompilerOptions.messageBus || mergedCompilerOptions.messageBusKernel),
+    mergedCompilerOptions.composition === 'framed',
   )) as Ast;
   profileLog('resolved:finalRequire', finalRequireStarted, { contract: contractName });
 
@@ -16291,7 +16691,10 @@ function compileResolvedAst(
 
   // Early return transformation (rewrites return statements into nested if-else). A return a later pass placed is
   // nested too, and the transformation refuses one it cannot end a path at.
-  if (needsEarlyReturn || holdsUnconfinedReturn(ast)) ast = ast.accept(new EarlyReturnTransformation()) as Ast;
+  // A framed body's bare return ends the frame, whose tail still runs, so it is not sealed (SEM-1 is direct-only).
+  if (needsEarlyReturn || holdsUnconfinedReturn(ast)) {
+    ast = ast.accept(new EarlyReturnTransformation(false, mergedCompilerOptions.composition !== 'framed')) as Ast;
+  }
 
   // Compile referenced contracts in dependency order
   const referencedStarted = Date.now();
@@ -16396,6 +16799,7 @@ function compileResolvedAst(
   for (const fn of ast.contract.functions) {
     const deployments = childDeploymentSites(
       fn, compiledBytecodes, mergedCompilerOptions.commitmentLimit!, ast.contract.functions,
+      mergedCompilerOptions.tagSingletonDataNfts,
     );
     if (deployments.length > 0) childDeploymentsBySignature.set(deploymentTopologyKey(fn), deployments);
   }
@@ -17414,7 +17818,7 @@ function compileResolvedAst(
           ? [{ selector: binToHex(fn.functionSelector), frame }] : [];
       });
     return policies.map(({ selector, frame }, index) =>
-      `${index === 0 ? 'if' : 'else if'} (callManifest.slice(rowStart + 10, rowStart + 14) == hex"${selector}") { `
+      `${index === 0 ? 'if' : 'else if'} (rowHeader.slice(10, 14) == hex"${selector}") { `
       + `require(rowSignatureFrame == hex"${frame}"); }`).join(' ')
       + `${policies.length > 0 ? ' else' : ''} { require(rowSignatureFrame.length == 0); }`;
   };
@@ -17847,7 +18251,7 @@ function compileResolvedAst(
             });
           // path-effect activation: stamp bool-param BranchNode activations onto event schedule entries.
           const emitActivations = pathEffectBoolParamActivationsForEmits(fn);
-          const events = (sourceAbi?.emits ?? []).map((emit, index) => {
+          const events = (streamedEventSignatures(fn) === undefined ? sourceAbi?.emits ?? [] : []).map((emit, index) => {
             const emitIndex = emit.emitIndex ?? index;
             const activation = emitActivations.get(emitIndex);
             return {
@@ -17897,10 +18301,18 @@ function compileResolvedAst(
         ...(() => {
           const sourceAbi = artifact.abi.find((candidate) =>
             candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined));
+          // A stream handler's emits settle as runtime records in source order, not in event windows.
+          const streamed = streamedEventSignatures(fn);
           return {
-            ...(sourceAbi?.emits?.length ? { emits: sourceAbi.emits } : {}),
-            ...(sourceAbi?.runtimeLoopEvents?.length
-              ? { runtimeLoopEvents: sourceAbi.runtimeLoopEvents } : {}),
+            ...(streamed === undefined && sourceAbi?.emits?.length ? { emits: sourceAbi.emits } : {}),
+            ...(streamed !== undefined
+              ? {
+                runtimeLoopEvents: [{
+                  repeatCount: 1, eventSignatures: streamed, stream: true as const,
+                  ...(fn.messageBusEventStreamChunked && { chunked: true as const }),
+                }],
+              }
+              : sourceAbi?.runtimeLoopEvents?.length ? { runtimeLoopEvents: sourceAbi.runtimeLoopEvents } : {}),
             ...(sourceAbi?.runtimeLoopTransfers?.length
               ? { runtimeLoopTransfers: sourceAbi.runtimeLoopTransfers } : {}),
             ...(sourceAbi?.transfers?.length ? { transfers: sourceAbi.transfers } : {}),
@@ -18157,6 +18569,14 @@ function compileResolvedAst(
   }
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
+  if (ast.contract.usesBlockOracle) {
+    const slots = findBlockOracleLockSlots(asmToBytecode(artifact.bytecode));
+    if (slots.length === 0) {
+      throw new Error(`'${artifact.contractName}' reads the block oracle but did not publish its lock pin`);
+    }
+    artifact.usesBlockOracle = true;
+    artifact.blockOracleLockSlots = slots;
+  }
   const boundVerifierProgram = mergedCompilerOptions.__messageBusVerifierProgram ?? singlePassVerifierProgram;
   if (boundVerifierProgram && artifact.messageBus?.route.inputs.some((input) =>
     input.name === '__internal__activeVerifierIndex')) {
@@ -18442,7 +18862,7 @@ function validateInheritedPrivateFunctionAccess(ast: Ast): void {
 export function compileStringMulti(code: string, options: CompileStringOptions = {}): ArtifactMap {
   const compilerOptions: CompileOptions = withFilesResolver(options);
   const { upgradesFrom } = compilerOptions;
-  return withCompilerWarnings(compilerOptions.suppressWarnings, () => {
+  return runWithWarningListener(compilerOptions, () => {
     const artifacts = compileStringMultiUnchecked(code, withoutUpgradesFrom(compilerOptions));
     requireUpgradeLayouts(artifacts, upgradesFrom);
     return artifacts;
@@ -18455,11 +18875,15 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
   clearKernelReadCarrierBindingToken(
     (compilerOptions as InternalCompilerOptions).__kernelReadCarrierAuthorizationBox,
   );
-  const { errorListener, compileDeclarations, suppressWarnings = false, ...artifactCompilerOptions } = compilerOptions;
+  const {
+    errorListener, warningListener, compileDeclarations, suppressWarnings = false, ...artifactCompilerOptions
+  } = compilerOptions;
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
   const requested = compileDeclarations === undefined ? undefined : new Set(compileDeclarations);
-  const cacheable = artifactCacheEnabled(artifactCompilerOptions, errorListener, suppressWarnings);
+  const cacheable = artifactCacheEnabled(
+    artifactCompilerOptions, errorListener, suppressWarnings, warningListener,
+  );
   const multiCacheKey = cacheable
     ? buildMultiArtifactCacheKey(code, artifactCompilerOptions, compileDeclarations)
     : '';
@@ -18577,28 +19001,144 @@ const LIFECYCLE_MODIFIERS = new Set([
   FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.UNSAFE,
 ]);
 
+/** Drop split-planning keys so a nested `compileString` does not see a mode it refuses. */
+function stripSplitPlanning(options: CompilerOptions): CompilerOptions {
+  const rest = { ...options } as CompilerOptions & {
+    split?: unknown;
+    maxShardBytes?: unknown;
+    forceSplit?: unknown;
+    rootFunctions?: unknown;
+  };
+  delete rest.split;
+  delete rest.maxShardBytes;
+  delete rest.forceSplit;
+  delete rest.rootFunctions;
+  return rest;
+}
+
+function splitModeOf(split: CompilerOptions['split']): 'off' | 'size' | 'func' {
+  const mode = split ?? 'size';
+  if (mode !== 'off' && mode !== 'size' && mode !== 'func') {
+    throw new Error("split must be 'off', 'size', or 'func'");
+  }
+  return mode;
+}
+
+/** Per-entry framed split. The size packer below is not used. */
+function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): FunctionSplitBundle {
+  const { errorListener } = compilerOptions;
+  let probe: Ast | undefined;
+  return compileFunctionSplit({
+    code,
+    options: compilerOptions,
+    host: {
+      prepare(source, options) {
+        probe = prepareSplitAst(source, normalizeCompilerOptions(stripSplitPlanning(options)), errorListener);
+        return probe;
+      },
+      compileMonolith(source, options) {
+        return compileString(source, { ...stripSplitPlanning(options), errorListener });
+      },
+      compileParsed(source, options, ast, frameKinds) {
+        return compileStringUnchecked(source, {
+          ...stripSplitPlanning(options),
+          errorListener,
+          __parsedAst: ast,
+          __functionSplitPrepared: true,
+          __functionSplitFrameKinds: frameKinds,
+        } as InternalCompilerOptions);
+      },
+      cloneAst,
+      byteSize,
+      spendReserve(artifact, budgetWholeSpend) {
+        return budgetWholeSpend ? widestSpendReserve(artifact, artifact.constructorInputs) : 0;
+      },
+      fingerprint(artifact) {
+        return splitStateLayoutFingerprint(artifact.stateLayout);
+      },
+      assertLayouts: assertSplitLayoutsAgree,
+      selectorHex: sourceFunctionSelectorHex,
+      helperCuts(entry) {
+        if (probe === undefined) return [];
+        const byName = new Map<string, FunctionDefinitionNode[]>();
+        for (const fn of probe.contract.functions) {
+          (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
+        }
+        const cache = createFootprintAnalysisCache(new Set(
+          probe.contract.stateVariables.map((state) => state.name),
+        ));
+        const plan: PlannedFunction = {
+          name: entry.name,
+          parameters: entry.parameters.length,
+          closure: collectNamedFunctionClosure(entry, byName),
+          footprint: analyseFunctionFootprint(entry, byName, cache),
+        };
+        const interfaceNames = new Set(probe.interfaceDefinitions.map((iface) => iface.name));
+        return splitHelperCutProfiles(plan, byName, cache, probe.contract, interfaceNames);
+      },
+      cloneLogical(artifact) {
+        return cloneArtifact(artifact);
+      },
+    },
+  });
+}
+
 /**
- * Compile a contract into a statically-linked one-hop root/facet bundle. This API is additive: ordinary compile
- * entry points retain their existing Artifact return type and bytecode. The splitter operates on fresh ASTs for
- * every shard, so the normal mutating compiler pipeline remains isolated per artifact.
+ * Compile a contract into a statically-linked one-hop root/facet bundle, or into a framed per-entry bundle when
+ * `split` is `'func'`. Ordinary compile entry points retain their existing Artifact return type and bytecode.
+ * The splitter operates on fresh ASTs for every shard, so the normal mutating compiler pipeline remains isolated
+ * per artifact. Omitting `split` keeps the size packer (`state-affinity-best-fit-v2`).
  */
 export function compileStringSplit(
+  code: string,
+  options: SplitCompileOptions & CompileStringOptions & { split: 'func' },
+): FunctionSplitBundle;
+export function compileStringSplit(
+  code: string,
+  options: SplitCompileOptions & CompileStringOptions & { split: 'off' },
+): Artifact;
+export function compileStringSplit(
+  code: string,
+  options: SplitCompileOptions & CompileStringOptions & { split?: 'size' },
+): SplitArtifactBundle;
+export function compileStringSplit(
+  code: string,
+  options?: SplitCompileOptions & CompileStringOptions,
+): Artifact | SplitArtifactBundle | FunctionSplitBundle;
+export function compileStringSplit(
   code: string, options: SplitCompileOptions & CompileStringOptions = {},
-): SplitArtifactBundle {
+): Artifact | SplitArtifactBundle | FunctionSplitBundle {
   const compilerOptions: SplitCompileOptions = withFilesResolver(options);
-  return withCompilerWarnings(
-    compilerOptions.suppressWarnings,
+  return runWithWarningListener(
+    compilerOptions,
     () => compileStringSplitUnchecked(code, compilerOptions),
   );
 }
 
 function compileStringSplitUnchecked(
   code: string, compilerOptions: SplitCompileOptions,
-): SplitArtifactBundle {
+): Artifact | SplitArtifactBundle | FunctionSplitBundle {
+  const split = splitModeOf(compilerOptions.split);
+  if (split === 'off') {
+    return compileString(code, stripSplitPlanning(compilerOptions));
+  }
+  if (split === 'func') return runFunctionSplit(code, compilerOptions);
+  if (compilerOptions.composition === 'framed') {
+    throw new SolidcDiagnosticError(
+      'SPLIT_SIZE_REFUSES_FRAMED',
+      "split 'size' refuses composition 'framed'",
+      { split: 'size', composition: 'framed' },
+    );
+  }
   const {
     maxShardBytes = MAX_INPUT_BYTESIZE, forceSplit = false, rootFunctions = [], errorListener,
+    // The outer compile already installed it; it must not ride into the per-shard artifact options.
+    // eslint-disable-next-line @typescript-eslint/naming-convention, @typescript-eslint/no-unused-vars
+    warningListener: _warningListener,
     ...artifactOptions
   } = compilerOptions;
+  // compileString refuses split 'size'; every compile below is an ordinary one.
+  delete artifactOptions.split;
   // Budget the whole SPEND, not just the redeem script - but only against the real consensus cap. An explicit
   // `maxShardBytes` is a tuning knob expressed in redeem-script bytes and is honoured literally; the default is
   // the BCH per-input limit, which covers redeem script + constructor arguments + the call's own arguments +
@@ -18807,10 +19347,11 @@ function compileStringSplitUnchecked(
           const layout = handler?.blockLayout;
           const dataOffsets = (layout?.slots ?? [])
             .filter((slot) => slot.kind === 'dataNft').map((slot) => slot.offset);
-          const delegateEventOffsets = (layout?.slots ?? []).filter((slot) => slot.kind === 'event')
+          const delegateEventOffsets = (layout?.slots ?? [])
+            .filter((slot) => slot.kind === 'event' || slot.kind === 'eventChunk')
             .map((slot) => slot.offset - dataOffsets.filter((offset) => offset < slot.offset).length);
-          const censusedCollectionSignatures = [...new Set((handler?.sortedBatchInfo ?? [])
-            .map((batch) => {
+          const censusedCollectionSignatures = [...new Set([
+            ...(handler?.sortedBatchInfo ?? []).map((batch) => {
               const signature = artifact.stateLayout?.collections?.find(
                 (collection) => collection.name === batch.collection,
               )?.signature;
@@ -18818,7 +19359,17 @@ function compileStringSplitUnchecked(
                 throw new Error(`Missing split-delegate collection signature for '${batch.collection}'`);
               }
               return signature;
-            }))];
+            }),
+            ...(handler?.dynamicWrites ?? []).map((name) => {
+              const variable = artifact.stateLayout?.variables?.find(
+                (candidate) => candidate.name === name && candidate.dynamic === true,
+              );
+              if (variable === undefined) {
+                throw new Error(`Missing split-delegate dynamic-array signature for '${name}'`);
+              }
+              return dynamicChunkSignature(name, variable.type);
+            }),
+          ])];
           trialRoutes.set(plan.name, {
             facet: `${logicalName}__Facet${index}`,
             link,
@@ -18891,12 +19442,14 @@ function compileStringSplitUnchecked(
     const layout = handler?.blockLayout;
     const dataOffsets = (layout?.slots ?? [])
       .filter((slot) => slot.kind === 'dataNft').map((slot) => slot.offset);
-    const delegateEventOffsets = (layout?.slots ?? []).filter((slot) => slot.kind === 'event')
+    const delegateEventOffsets = (layout?.slots ?? [])
+      .filter((slot) => slot.kind === 'event' || slot.kind === 'eventChunk')
       .map((slot) => slot.offset - dataOffsets.filter((offset) => offset < slot.offset).length);
-    // A sorted batch emits both exact collection-address input and output scans in the facet. The root may
-    // leave only these collections out of its global mutable-NFT equality; the facet settles their count.
-    const censusedCollectionSignatures = [...new Set((handler?.sortedBatchInfo ?? [])
-      .map((batch) => {
+    // A sorted batch emits both exact collection-address input and output scans in the facet, and a dynamic-array
+    // write emits its chunk run. The root may leave these families out of its global mutable-NFT equality; the
+    // facet settles their count.
+    const censusedCollectionSignatures = [...new Set([
+      ...(handler?.sortedBatchInfo ?? []).map((batch) => {
         const signature = facet.artifact.stateLayout?.collections?.find(
           (collection) => collection.name === batch.collection,
         )?.signature;
@@ -18904,7 +19457,17 @@ function compileStringSplitUnchecked(
           throw new Error(`Missing split-delegate collection signature for '${batch.collection}'`);
         }
         return signature;
-      }))];
+      }),
+      ...(handler?.dynamicWrites ?? []).map((name) => {
+        const variable = facet.artifact.stateLayout?.variables?.find(
+          (candidate) => candidate.name === name && candidate.dynamic === true,
+        );
+        if (variable === undefined) {
+          throw new Error(`Missing split-delegate dynamic-array signature for '${name}'`);
+        }
+        return dynamicChunkSignature(name, variable.type);
+      }),
+    ])];
     routeByName.set(plan.name, {
       facet: facet.name,
       link: facet.link,
@@ -19294,11 +19857,9 @@ function prepareSplitAst(
   if (!(rootSourceCoversProgram(ast) && !code.includes('assembly'))) {
     ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
   }
-  // Sharding must happen after storage-shaping synthesis. Otherwise a block.* read moved into a facet injects
-  // oracle registers only there, changing delegate offsets and leaving the root unable to materialize that state.
-  // Match the ordinary pipeline's block-oracle synthesis so split roots append the same canonical register
-  // order (__block_number before __block_timestamp) as their unsplit baseline. block.timestamp always lowers
-  // to the __block_timestamp oracle register.
+  // Sharding must happen after storage-shaping synthesis. A block.* read stays a read of the shared
+  // covenant; the pass marks the function and injects no state. Running it on the complete function set
+  // keeps that mark on the same functions the unsplit pipeline marks.
   if (!(rootSourceCoversProgram(ast) && !code.includes('block.') && !code.includes('now'))) {
     ast = ast.accept(new SynthesizeBlockOracle(
       options.evmCompat ?? false,
@@ -19622,6 +20183,7 @@ function compileReferencedContracts(
     }
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp(
       compilerOptions.messageBusKernel === true,
+      compilerOptions.messageBus === false && compilerOptions.composition !== 'framed',
     )) as Ast;
     singleAst = singleAst.accept(new PromoteConstructorExternalReads()) as Ast;
     singleAst = singleAst.accept(new HoistBranchLocalExtcallTargets()) as Ast;
@@ -19664,6 +20226,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new EnsureFinalRequireTraversal(
       compilerOptions.enforceFinalRequire, compilerOptions.allowUnsafeOperations,
       !(compilerOptions.messageBus || compilerOptions.messageBusKernel),
+      compilerOptions.composition === 'framed',
     )) as Ast;
     if (compilerOptions.enforceLocktimeGuard) {
       singleAst = singleAst.accept(new InjectLocktimeGuardTraversal()) as Ast;
@@ -20354,13 +20917,13 @@ function predictExpressionPrefix(
   input: { LA(i: number): number; LT(i: number): { text?: string | undefined } },
 ): number | undefined {
   const first = input.LA(1);
-  const lparen = SolidCashParser.T__56;
-  const lbrack = SolidCashParser.T__81;
+  const lparen = PARSER_LITERAL_TOKENS.leftParen;
+  const lbrack = PARSER_LITERAL_TOKENS.leftBracket;
   if (first === lparen) {
     // `(type(T)).member` is a distinct metatype prefix, not a grouped expression.
-    if (input.LA(2) === SolidCashParser.T__62) return undefined;
-    const rparen = SolidCashParser.T__57;
-    const dot = SolidCashParser.T__6;
+    if (input.LA(2) === PARSER_LITERAL_TOKENS.typeKeyword) return undefined;
+    const rparen = PARSER_LITERAL_TOKENS.rightParen;
+    const dot = PARSER_LITERAL_TOKENS.dot;
     if ((input.LA(2) === SolidCashParser.Identifier && input.LA(3) === rparen && input.LA(4) === lparen)
       || (input.LA(2) === SolidCashParser.Identifier && input.LA(3) === dot
         && input.LA(4) === SolidCashParser.Identifier && input.LA(5) === rparen && input.LA(6) === lparen)) {
@@ -20371,8 +20934,8 @@ function predictExpressionPrefix(
   if (first === SolidCashParser.Identifier) {
     // `uint(x)` is a typeCast alternative, not a call; let ATN keep that split.
     if (input.LT(1).text === 'uint') return undefined;
-    const lbrace = SolidCashParser.T__3;
-    const dot = SolidCashParser.T__6;
+    const lbrace = PARSER_LITERAL_TOKENS.leftBrace;
+    const dot = PARSER_LITERAL_TOKENS.dot;
     const second = input.LA(2);
     // Mirrors the grammar's hasFunctionCallAhead: `x.y(` is the namespaced call only when `y` is an Identifier; a
     // soft keyword there (`bar.leave(..)`) is a member call on the identifier.
@@ -20395,35 +20958,36 @@ function predictExpressionPrefix(
     || first === SolidCashParser.BoundedBytes || first === SolidCashParser.CryptoType
     || first === SolidCashParser.UnsafeCast || first === SolidCashParser.BoundedSignedFixed
     || first === SolidCashParser.BoundedUnsignedFixed
-    || first === SolidCashParser.T__90 || first === SolidCashParser.T__66
-    || first === SolidCashParser.T__88 || first === SolidCashParser.T__89) {
+    || first === PARSER_LITERAL_TOKENS.address || first === PARSER_LITERAL_TOKENS.payable
+    || first === PARSER_LITERAL_TOKENS.fixed || first === PARSER_LITERAL_TOKENS.ufixed) {
     const second = input.LA(2);
     if (second === lparen || second === lbrack) return EXPRESSION_ALT_CAST;
   }
-  if (first === SolidCashParser.T__41) return EXPRESSION_ALT_THIS;
-  if (first === SolidCashParser.T__91) return EXPRESSION_ALT_CONSTRUCTED;
-  if (first === SolidCashParser.T__127 || first === SolidCashParser.T__128) {
+  if (first === PARSER_LITERAL_TOKENS.thisKeyword) return EXPRESSION_ALT_THIS;
+  if (first === PARSER_LITERAL_TOKENS.newKeyword) return EXPRESSION_ALT_CONSTRUCTED;
+  if (first === PARSER_LITERAL_TOKENS.txOutputs || first === PARSER_LITERAL_TOKENS.txInputs) {
     return EXPRESSION_ALT_INTROSPECTION;
   }
-  if (first === SolidCashParser.T__62) return EXPRESSION_ALT_TYPE_INTROSPECTION;
-  if (first === SolidCashParser.T__13 || first === SolidCashParser.T__26 || first === SolidCashParser.T__130) {
+  if (first === PARSER_LITERAL_TOKENS.typeKeyword) return EXPRESSION_ALT_TYPE_INTROSPECTION;
+  if (first === PARSER_LITERAL_TOKENS.minus || first === PARSER_LITERAL_TOKENS.bitwiseNot
+    || first === PARSER_LITERAL_TOKENS.logicalNot) {
     return EXPRESSION_ALT_UNARY;
   }
   if (first === lbrack) return EXPRESSION_ALT_ARRAY_LITERAL;
-  if (first === SolidCashParser.T__118 || first === SolidCashParser.T__119
-    || first === SolidCashParser.T__120 || first === SolidCashParser.T__121) {
+  if (first === PARSER_LITERAL_TOKENS.abiEncode || first === PARSER_LITERAL_TOKENS.abiEncodePacked
+    || first === PARSER_LITERAL_TOKENS.abiEncodeWithSelector || first === PARSER_LITERAL_TOKENS.abiEncodeWithSignature) {
     return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_ENCODE : EXPRESSION_ALT_BARE_ABI;
   }
-  if (first === SolidCashParser.T__122) {
+  if (first === PARSER_LITERAL_TOKENS.abiEncodeCall) {
     return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_ENCODE_CALL : EXPRESSION_ALT_BARE_ABI;
   }
-  if (first === SolidCashParser.T__123 || first === SolidCashParser.T__124) {
+  if (first === PARSER_LITERAL_TOKENS.bytesConcat || first === PARSER_LITERAL_TOKENS.stringConcat) {
     return EXPRESSION_ALT_BYTES_CONCAT;
   }
-  if (first === SolidCashParser.T__125) {
+  if (first === PARSER_LITERAL_TOKENS.abiDecode) {
     return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_DECODE : EXPRESSION_ALT_BARE_ABI;
   }
-  if (first === SolidCashParser.T__126) {
+  if (first === PARSER_LITERAL_TOKENS.abiDecodeAt) {
     return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_DECODE_AT : EXPRESSION_ALT_BARE_ABI;
   }
   return undefined;
@@ -20451,6 +21015,48 @@ function tokenTypeByLiteral(literal: string): number | undefined {
   return undefined;
 }
 
+// Resolve grammar literals once: ANTLR's anonymous T__ indices move when a grammar rule adds a keyword.
+// Named lexer tokens remain stable references; fast paths must bind literal tokens to the active grammar.
+function requiredParserLiteralToken(literal: string): number {
+  const token = tokenTypeByLiteral(literal);
+  if (token === undefined) throw new Error(`Missing parser literal token ${literal}`);
+  return token;
+}
+const PARSER_LITERAL_TOKENS = {
+  semicolon: requiredParserLiteralToken("';'"),
+  leftBrace: requiredParserLiteralToken("'{'"),
+  comma: requiredParserLiteralToken("','"),
+  rightBrace: requiredParserLiteralToken("'}'"),
+  dot: requiredParserLiteralToken("'.'"),
+  minus: requiredParserLiteralToken("'-'"),
+  greaterOrEqual: requiredParserLiteralToken("'>='"),
+  bitwiseNot: requiredParserLiteralToken("'~'"),
+  thisKeyword: requiredParserLiteralToken("'this'"),
+  assign: requiredParserLiteralToken("'='"),
+  leftParen: requiredParserLiteralToken("'('"),
+  rightParen: requiredParserLiteralToken("')'"),
+  typeKeyword: requiredParserLiteralToken("'type'"),
+  payable: requiredParserLiteralToken("'payable'"),
+  leftBracket: requiredParserLiteralToken("'['"),
+  rightBracket: requiredParserLiteralToken("']'"),
+  fixed: requiredParserLiteralToken("'fixed'"),
+  ufixed: requiredParserLiteralToken("'ufixed'"),
+  address: requiredParserLiteralToken("'address'"),
+  newKeyword: requiredParserLiteralToken("'new'"),
+  abiEncode: requiredParserLiteralToken("'abi.encode'"),
+  abiEncodePacked: requiredParserLiteralToken("'abi.encodePacked'"),
+  abiEncodeWithSelector: requiredParserLiteralToken("'abi.encodeWithSelector'"),
+  abiEncodeWithSignature: requiredParserLiteralToken("'abi.encodeWithSignature'"),
+  abiEncodeCall: requiredParserLiteralToken("'abi.encodeCall'"),
+  bytesConcat: requiredParserLiteralToken("'bytes.concat'"),
+  stringConcat: requiredParserLiteralToken("'string.concat'"),
+  abiDecode: requiredParserLiteralToken("'abi.decode'"),
+  abiDecodeAt: requiredParserLiteralToken("'abi.decodeAt'"),
+  txOutputs: requiredParserLiteralToken("'tx.outputs'"),
+  txInputs: requiredParserLiteralToken("'tx.inputs'"),
+  logicalNot: requiredParserLiteralToken("'!'"),
+};
+
 function installExpressionPrefixFastPath(parser: SolidCashParser): void {
   const interp = parser._interp;
   const prefixState = interp.atn.decisionToState[EXPRESSION_PREFIX_DECISION] as { ruleIndex?: number } | undefined;
@@ -20474,15 +21080,15 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
   if (!prefixOk && !postfixOk && !postfixInnerOk && !statementOk
     && !yulBlockOk && !yulStatementOk && !yulExpressionOk) return;
   const orig = interp.adaptivePredict.bind(interp);
-  const rparen = SolidCashParser.T__57;
-  const comma = SolidCashParser.T__4;
-  const semi = SolidCashParser.T__1;
-  const rbrack = SolidCashParser.T__82;
-  const rbrace = SolidCashParser.T__5;
-  const assign = SolidCashParser.T__47;
-  const lbrace = SolidCashParser.T__3;
-  const lbrack = SolidCashParser.T__81;
-  const lparen = SolidCashParser.T__56;
+  const rparen = PARSER_LITERAL_TOKENS.rightParen;
+  const comma = PARSER_LITERAL_TOKENS.comma;
+  const semi = PARSER_LITERAL_TOKENS.semicolon;
+  const rbrack = PARSER_LITERAL_TOKENS.rightBracket;
+  const rbrace = PARSER_LITERAL_TOKENS.rightBrace;
+  const assign = PARSER_LITERAL_TOKENS.assign;
+  const lbrace = PARSER_LITERAL_TOKENS.leftBrace;
+  const lbrack = PARSER_LITERAL_TOKENS.leftBracket;
+  const lparen = PARSER_LITERAL_TOKENS.leftParen;
   const requireTok = tokenTypeByLiteral("'require'");
   const ifTok = tokenTypeByLiteral("'if'");
   const emitTok = tokenTypeByLiteral("'emit'");
@@ -20735,7 +21341,7 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
         if (input.LA(2) !== lparen) return orig(input, decision, ctx);
         // `timeOpStatement` and ordinary `requireStatement` share the `require (` prefix. Preserve the grammar's
         // exact `require ( TxVar >=` distinction in this optimized decision.
-        return input.LA(3) === SolidCashParser.TxVar && input.LA(4) === SolidCashParser.T__22
+        return input.LA(3) === SolidCashParser.TxVar && input.LA(4) === PARSER_LITERAL_TOKENS.greaterOrEqual
           ? STATEMENT_ALT_TIME_OP : STATEMENT_ALT_REQUIRE;
       }
       if (token === ifTok) return STATEMENT_ALT_IF;
@@ -20874,7 +21480,7 @@ export function parseCode(
     const warnUnevaluated = (header: string): void => {
       const name = /\bcontract\s+(\w+)/.exec(header)?.[1];
       if (name !== undefined && !bases.has(name)) {
-        console.log(`Warning: the \`layout at\` base slot of contract ${name} could not be evaluated - its EVM `
+        emitCompilerWarning(`Warning: the \`layout at\` base slot of contract ${name} could not be evaluated - its EVM `
           + 'slot numbers (.slot, sload/sstore) are not offset by it.');
       }
     };

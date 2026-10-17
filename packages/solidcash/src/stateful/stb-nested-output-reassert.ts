@@ -20,6 +20,7 @@ import { stripSurplusEmptyCollectionEntries } from './collection-lock-strip.js';
 import { stateUpdatesTouchNft } from './early-value-chunk-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { packTailReturnPlacements } from './physical-return-layout.js';
+import { sameIndexScidIdentityInputIndices } from './same-index-scid.js';
 import {
   placeInsertNewAt,
   placeSameIndexTwin,
@@ -109,6 +110,8 @@ export function reassertNestedMintingMasters(
         (categoryId) => host.findMintingInputIndex(categoryId),
         host.pendingReturnEventOutputs,
         host.mintingOutputSwap?.categoryId ?? '',
+        -1,
+        { reservedIndices: sameIndexScidIdentityInputIndices(host.allInputs) },
       ).values()],
       Number.POSITIVE_INFINITY,
     )
@@ -302,6 +305,8 @@ export function reassertNestedSameIndexMutables(
         (categoryId) => host.findMintingInputIndex(categoryId),
         host.pendingReturnEventOutputs,
         host.mintingOutputSwap?.categoryId ?? '',
+        -1,
+        { reservedIndices: sameIndexScidIdentityInputIndices(host.allInputs) },
       ).values()],
       Number.POSITIVE_INFINITY,
     )

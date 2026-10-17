@@ -43,6 +43,9 @@ export function seedOptimisticScalarWrites(
   if (!isContractUnlocker(host.masterUtxo.unlocker)) return false;
   const { abiFunction, params } = host.masterUtxo.unlocker;
   if (abiFunction.writesState === false) return false;
+  // A function that delegatecalls never writes its own state (C1/B), so its ABI is no basis for a guess. An
+  // unchecked guess survives derivation: a route that only preserves a field never compares its output.
+  if (abiFunction.lowLevelCalls?.some((call) => call.callMode === 'delegatecall')) return false;
   if (abiFunction.entryAccesses && abiFunction.entryAccesses.length > 0) return false;
   const modifiers = abiFunction.modifiers ?? [];
   if (modifiers.includes('view') || modifiers.includes('pure')) return false;

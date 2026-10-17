@@ -314,6 +314,56 @@ describe('a generated proxy', () => {
       .toThrow(/only one of them leads a commitment with the index it belongs to/);
   });
 
+  it('settles a tagged singleton implementation through its generated proxy and refuses a substituted record tag', async () => {
+    const source = 'pragma solidcash ^0.13.0; contract Impl {'
+      + ' int public version;'
+      + ' function initialize(address expected) {'
+      + '   require(msg.sender == expected); require(this.version == 0); this.version = 7;'
+      + ' } }';
+    const artifacts = compileStringMulti(source, {
+      composition: 'framed', tagSingletonDataNfts: true,
+    });
+    const implementation = artifacts.Impl!;
+    expect(implementation.stateLayout!.dataNftCount).toBe(1);
+    expect(implementation.stateLayout!.taggedDataNfts).toBe(true);
+    const generated = buildProxyArtifact(implementation);
+    expect(generated.stateLayout!.dataNftCount).toBe(2);
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
+    const vm = compositionMachine();
+    const deployment = await deployFramedProxy({
+      provider: network,
+      implementationArtifact: implementation,
+      implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
+      proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
+      initialize: { functionName: 'initialize', args: [deployerLock] },
+      callerLockingBytecode: deployerLock,
+      vm,
+    });
+    const { draft, transaction, sourceOutputs, verdicts } = deployment.initialize;
+    expect(verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    const recordIndex = participant(draft.layout, proxyRecordParticipantId(0)).index;
+    expect(bytesToHex(transaction.outputs[recordIndex]!.token!.nft!.commitment))
+      .toBe(buildPushdataCommitment(implementation.stateLayout!, { version: 7n }, 0));
+    const pointerIndex = participant(draft.layout, proxyRecordParticipantId(1)).index;
+    expect(bytesToHex(transaction.outputs[pointerIndex]!.token!.nft!.commitment))
+      .toBe(buildPushdataCommitment(generated.stateLayout!, { implementation: deployment.implementation.address }, 1));
+
+    // A different leading index cannot be substituted for the singleton's record, even when all field bytes match.
+    const changedSources = structuredClone(sourceOutputs);
+    changedSources[recordIndex]!.token!.nft!.commitment[0] = 0x51;
+    const sourceRefusals = verdicts.filter(({ index }) => vm.stateSuccess(vm.evaluate({
+      inputIndex: index, sourceOutputs: changedSources, transaction,
+    })) !== true);
+    expect(sourceRefusals.map(({ id }) => id)).not.toStrictEqual([]);
+    const changedTransaction = structuredClone(transaction);
+    changedTransaction.outputs[recordIndex]!.token!.nft!.commitment[0] = 0x51;
+    const outputRefusals = verdicts.filter(({ index }) => vm.stateSuccess(vm.evaluate({
+      inputIndex: index, sourceOutputs, transaction: changedTransaction,
+    })) !== true);
+    expect(outputRefusals.map(({ id }) => id)).not.toStrictEqual([]);
+  });
+
   it('refuses a field whose type it cannot name, naming the field', () => {
     const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
     const layout = artifacts.Impl!.stateLayout!;

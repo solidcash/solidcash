@@ -17,7 +17,7 @@ contract C() {
   S s;
   function push(uint256 v, pubkey pk, sig sg) { require(checkSig(sg, pk)); s.xs.push(v); }
   function pop(pubkey pk, sig sg) { require(checkSig(sg, pk)); s.xs.pop(); }
-  function count(int n) { require(s.xs.length == n); }
+  function count(uint n) { require(s.xs.length == n); }
   function elem(int i, uint256 e) { require(s.xs[i] == e); }
 }`;
 

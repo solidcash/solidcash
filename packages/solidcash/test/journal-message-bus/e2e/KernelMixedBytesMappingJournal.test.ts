@@ -67,7 +67,8 @@ describe('kernel independently indexed dynamic scalar and mapping journals', () 
     const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
     call.addInput(fee.utxo, fee.unlocker);
     const builder = await call.build();
-    return { provider, inner, categoryId, contract, call, builder };
+    // Record covenants bind the master's lock: callers derive record addresses from the pinned master.
+    return { provider, inner: contract.inner, categoryId, contract, call, builder };
   };
 
   const evaluate = (setup: Setup): Array<true | string> => {
@@ -246,7 +247,8 @@ describe('kernel dynamic scalar and token-container resources', () => {
       provider, inner, artifact.stateLayout!, { payload: new Uint8Array() }, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    const token = await genesisFtContainer(provider, inner, categoryId, [500n]);
+    // Containers bind the master's lock: fund them for the category-pinned master.
+    const token = await genesisFtContainer(provider, contract.inner, categoryId, [500n]);
     const call = contract.batch([
       { function: 'append', args: [hexToBin(token.category), first] },
       { function: 'append', args: [hexToBin(token.category), second] },
@@ -254,7 +256,7 @@ describe('kernel dynamic scalar and token-container resources', () => {
     const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
     call.addInput(fee.utxo, fee.unlocker);
     const builder = await call.build();
-    return { provider, inner, categoryId, tokenCategory: token.category, contract, call, builder };
+    return { provider, inner: contract.inner, categoryId, tokenCategory: token.category, contract, call, builder };
   };
 
   const evaluate = (
@@ -303,7 +305,7 @@ describe('kernel dynamic scalar and token-container resources', () => {
       provider, inner, artifact.stateLayout!, { payload: new Uint8Array() }, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    const token = await genesisFtContainer(provider, inner, categoryId, [500n]);
+    const token = await genesisFtContainer(provider, contract.inner, categoryId, [500n]);
     const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
     const recipient = fee.unlocker.generateLockingBytecode();
     const call = contract.batch([

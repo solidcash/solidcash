@@ -148,11 +148,17 @@ contract Factory(pubkey admin) {
 ## Upgrading
 
 The `upgrade` modifier allows a function to replace the contract's own bytecode while preserving its category
-id and its state:
+id:
 
 ```solidity
-contract TokenV1(pubkey admin) {
-    int counter;
+contract PolicyV1(pubkey admin) {
+    event Approved(int amount);
+
+    function approve(int amount, sig s) public {
+        require(amount <= 1000);
+        require(checkSig(s, admin));
+        emit Approved(amount);
+    }
 
     function migrate(sig s) upgrade {
         require(checkSig(s, admin));
@@ -160,10 +166,12 @@ contract TokenV1(pubkey admin) {
 }
 ```
 
-The state layout may be **extended** in the new version by appending fields; existing values are preserved.
-The category remains stable while the physical contract address changes. See
-[Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) for the layout, funding, identity, and SDK
-rules.
+Only a contract whose whole state lives in its master NFT can upgrade in place. State variables, mapping and
+array entries, and satoshi or token containers are bound to the master's exact lock and could not follow it to
+the new bytecode, so the compiler refuses `upgrade` in a contract that keeps any of them. Evolve such a contract
+behind a proxy instead. The new version may declare state, which begins at its type defaults. The category remains
+stable while the physical contract address changes. See
+[Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) for the funding, identity, and SDK rules.
 
 :::caution
 Whoever can satisfy the `upgrade` function controls the contract's future code. This is the same trust surface

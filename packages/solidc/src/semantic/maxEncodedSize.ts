@@ -1,6 +1,12 @@
 import {
-  AddressType, ArrayType, BytesType, FixedType, IntType, PrimitiveType, StructType, type Type, ValueType,
+  AddressType, ArrayType, BytesType, EVENT_CHUNK_BYTES, FixedType, IntType, PrimitiveType, StructType, type Type,
+  ValueType, encodeNftIndexTag,
 } from '@solidcash/utils';
+
+/** Reserve the explicit opt-in tag while preserving historical packing when the option is absent. */
+export function stateNftPackingLimit(limit: number, nftIndex: number, tagSingletonDataNfts = false): number {
+  return limit - (tagSingletonDataNfts ? encodeNftIndexTag(nftIndex).length : 0);
+}
 
 /**
  * Widest pushdata encoding of an address: its locking bytecode is stored inline, and the widest form is
@@ -59,4 +65,21 @@ export function getMaxPushdataEncodedSizeForType(
       + type.bound * getMaxPushdataEncodedSizeForType(type.elementType, seen, addressBytes);
   }
   return 9;
+}
+
+/**
+ * NFT commitments one emit of an event needs: its widest encoded payload over `chunkBytes` (the commitment limit).
+ * A zero-parameter event carries one marker byte. Unbounded `string` / `bytes` / dynamic arrays count as the
+ * generic 9 bytes, so for them this is the capacity the layout reserves, not a bound; a wider payload is refused.
+ */
+export function getEventChunkCount(
+  parameters: readonly { type: Type }[], chunkBytes: number = EVENT_CHUNK_BYTES,
+): number {
+  let bytes = parameters.length === 0 ? 1 : 0;
+  try {
+    for (const parameter of parameters) bytes += getMaxPushdataEncodedSizeForType(parameter.type);
+  } catch {
+    return 1;
+  }
+  return Math.max(1, Math.ceil(bytes / chunkBytes));
 }

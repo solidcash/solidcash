@@ -20,7 +20,12 @@ import {
   repeatedTypedLoopRefusal,
 } from './sc-expand-resolve-create-builder-external-calls.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
-import { stageValueChunkWrite, type ValueChunkWriteStagingSession } from './value-chunk-persist.js';
+import {
+  stageValueChunkWrite, valueChunkWriteResourceIdentity, type ValueChunkWriteStagingSession,
+} from './value-chunk-persist.js';
+import {
+  terminalValueChunkProducerClaim, type ValueChunkProducerPathDisposition,
+} from './ValueChunkProducerIdentity.js';
 import { describeValueChunkWrites } from './writer-group-selection.js';
 
 export interface PushCreateBuilderDirectExternalCallGroupHost {
@@ -54,6 +59,7 @@ export interface PushCreateBuilderDirectExternalCallGroupInput {
   bEntryLoopCollection: string | undefined;
   bValueChunkOutputCount: number;
   bDirectChunkValue: Uint8Array | undefined;
+  ordinaryProducerPath?: ValueChunkProducerPathDisposition;
   callInfo: {
     functionName: string;
     args: FunctionArgument[];
@@ -97,6 +103,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     bEntryLoopCollection,
     bValueChunkOutputCount,
     bDirectChunkValue,
+    ordinaryProducerPath,
     callInfo,
     ec,
     externalCategoryId,
@@ -254,6 +261,13 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     requiredDataNftIndices: bRequiredNftIndices,
     functionName: callInfo.functionName,
     functionArgs: callInfo.args,
+    ...(!compilerRoute && ec.readonlyReturnBinding?.version === 1
+      && bAbiFunc?.writesState === false && bAbiFunc.selector !== undefined
+      && ec.readonlyReturnBinding.selector.toLowerCase() === bAbiFunc.selector.toLowerCase()
+      && (bAbiFunc.outputs?.length ?? 0) > 0 && callInfo.args.length === 0
+      && (ec.callMode === undefined || ec.callMode === 'staticcall')
+      && !ec.condition && (ec.occurrence === undefined || ec.occurrence === 'once')
+      && { readonlyReturnSelector: bAbiFunc.selector.toLowerCase() }),
     ...(ec.callsiteId !== undefined && { sourceCallsiteId: ec.callsiteId }),
     externalContract: callInfo.externalContract,
     callerIdentity: publicSelfIdentity,
@@ -351,8 +365,27 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     directGroup.blockInputs = [] as UnlockableUtxo[];
   }
   if (bDirectChunkValue && directGroup.valueChunkWrites.length === 1) {
-    stageValueChunkWrite(
-      directGroup.valueChunkWrites[0], bDirectChunkValue, host.valueChunkWriteStagingSession,
-    );
+    const write = directGroup.valueChunkWrites[0]!;
+    const access = bAbiFunc?.entryAccesses?.[write.entryAccessSlot];
+    const owner = { categoryId: externalCategoryId, lockingBytecode: callInfo.externalContract.inner.lockingBytecode };
+    const claim = !compilerRoute && bAbiFunc && access?.arrayMutation === 'push'
+      && access.storedElementSource?.version === 1 && ordinaryProducerPath?.status === 'complete'
+      ? terminalValueChunkProducerClaim({
+        rows: [{ handler: bAbiFunc, selector: bAbiFunc.selector, producerPath: ordinaryProducerPath }],
+        collectionIdentities: [write.collection, write.collectionSignature],
+        executionLockingBytecode: callInfo.externalContract.inner.lockingBytecode,
+        stateOwnerCategoryId: owner.categoryId,
+        stateOwnerLockingBytecode: owner.lockingBytecode,
+        resourceIdentity: valueChunkWriteResourceIdentity(write),
+      }) : undefined;
+    if (claim) {
+      directGroup.valueChunkStateOwner = owner;
+      directGroup.valueChunkProducerClaims = Object.freeze([claim]);
+      if (!host.valueChunkWriteStagingSession.stageOwned(write, claim, owner, bDirectChunkValue)) {
+        throw new Error('Ordinary value-chunk producer conflicts with an existing staged write.');
+      }
+    } else {
+      stageValueChunkWrite(write, bDirectChunkValue, host.valueChunkWriteStagingSession);
+    }
   }
 }

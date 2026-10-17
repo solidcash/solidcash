@@ -56,6 +56,26 @@ interface MergedTarget {
   elseOp?: EntryOp;
 }
 
+/** A direct single-target batch can settle its skipped write by the compiler's runtime activity flag. */
+class EntryMutationCounts extends AstTraversal {
+  readonly counts = new Map<string, number>();
+
+  visitMappingAssign(node: MappingAssignNode): Node {
+    this.counts.set(node.name, (this.counts.get(node.name) ?? 0) + 1);
+    return super.visitMappingAssign(node);
+  }
+
+  visitMappingDelete(node: MappingDeleteNode): Node {
+    this.counts.set(node.name, (this.counts.get(node.name) ?? 0) + 1);
+    return super.visitMappingDelete(node);
+  }
+
+  visitArrayAssign(node: ArrayAssignNode): Node {
+    this.counts.set(node.name, (this.counts.get(node.name) ?? 0) + 1);
+    return super.visitArrayAssign(node);
+  }
+}
+
 /**
  * If-conversion for a conditional mapping delete or write. A `delete m[k]` or `m[k] = v` inside an if/else branch
  * does not round-trip on the taken/not-taken paths: the covenant places no output constraint on a branch-touched
@@ -88,12 +108,16 @@ interface MergedTarget {
  * creation of an absent entry on the untaken path.
  */
 export default class IfConvertConditionalEntryOp extends AstTraversal {
-  constructor(private readonly preserveKernelArgumentConditionalWrites = false) { super(); }
+  constructor(
+    private readonly preserveKernelArgumentConditionalWrites = false,
+    private readonly preserveDirectSingletonWrites = false,
+  ) { super(); }
 
   // Mappings are CollectionNodes (node.collections), not stateVariables, pre-semantic.
   private mappings: Map<string, CollectionNode> = new Map();
   private stableArgumentIndices: ReadonlyMap<string, number> = new Map();
   private booleanArgumentIndices: ReadonlySet<number> = new Set();
+  private singletonMutations: ReadonlySet<string> = new Set();
 
   // Names the hoisted condition locals uniquely per converted if/else branch.
   private condCounter = 0;
@@ -119,11 +143,18 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const previousIndices = this.stableArgumentIndices;
     const previousBooleanIndices = this.booleanArgumentIndices;
+    const previousSingletons = this.singletonMutations;
+    if (this.preserveDirectSingletonWrites) {
+      const survey = new EntryMutationCounts();
+      survey.visit(node.body);
+      this.singletonMutations = new Set([...survey.counts].filter(([, count]) => count === 1).map(([name]) => name));
+    }
     this.stableArgumentIndices = stableKernelArgumentIndices(node);
     this.booleanArgumentIndices = kernelBooleanArgumentIndices(node);
     const result = super.visitFunctionDefinition(node);
     this.stableArgumentIndices = previousIndices;
     this.booleanArgumentIndices = previousBooleanIndices;
+    this.singletonMutations = previousSingletons;
     return result;
   }
 
@@ -203,6 +234,12 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
       if (!op) return undefined;
       ops.push(op);
     }
+
+    // Predicating a skipped write to an absent sorted key inserts a zero-valued node, which changes enumerable
+    // state. Keep a direct single-target source branch; its activity flag settles the predecessor unchanged.
+    if (this.preserveDirectSingletonWrites && stmts.length === 1
+      && (stmts[0] instanceof MappingAssignNode || stmts[0] instanceof ArrayAssignNode)
+      && this.singletonMutations.has(ops[0].name) && this.mappings.has(ops[0].name)) return undefined;
 
     // The kernel can publish an argument-authenticated activation for this bounded conditional write. Keep the
     // source branch so a false row owns no mapping mutation; if-converting it would insert an enumerable zero

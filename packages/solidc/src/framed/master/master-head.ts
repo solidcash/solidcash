@@ -56,7 +56,7 @@ import {
   type MasterTailShape,
 } from './frame-tail.js';
 import {
-  callValuesScript, containerGrowthScript, containerLockScript, sendRunValuesScript,
+  callValuesScript, containerGrowthScript, containerLockScript, selfContainerLockScript, sendRunValuesScript,
 } from './value.js';
 import { mastersRecreatedInPlaceScript } from './lifecycle.js';
 
@@ -349,6 +349,8 @@ class HeadEmitter {
   private readonly tailShape: MasterTailShape;
   private readonly reservesValidatorHashSlot: boolean;
   private readonly admittedKinds: readonly number[];
+  /** The caller's set, when one was passed. Omitted stays on the historical four-arm head. */
+  private readonly requestedFrameKinds: readonly number[] | undefined;
   private readonly composed: boolean;
   private readonly callDataSelectorUnconsumed: boolean;
   private readonly soleEntrySelector: Uint8Array | undefined;
@@ -367,6 +369,7 @@ class HeadEmitter {
     this.contextCallsOnEveryPath = options.contextCallsOnEveryPath === true;
     this.tailShape = options.tail ?? zeroTailShape(this.callCount);
     this.reservesValidatorHashSlot = options.reservesValidatorHashSlot === true;
+    this.requestedFrameKinds = options.frameKinds;
     this.admittedKinds = options.frameKinds ?? [FRAME_KIND_ROOT];
     this.callDataSelectorUnconsumed = options.callDataSelectorUnconsumed === true;
     this.soleEntrySelector = options.soleEntrySelector;
@@ -653,7 +656,10 @@ class HeadEmitter {
     this.assertSenderIsTheCallersLock();
     this.assertOriginIsTheCallersLock();
     this.assertSelfEqualsReservedAddress();
-    if (!this.handlesValue) this.assertZeroValue();
+    if (!this.handlesValue) {
+      this.assertZeroValue();
+      this.assertContainersDidNotShrink();
+    }
     this.emitSingleMasterCheck();
     this.stack.length = 0;
     this.stack.push('origin', 'sender', 'value', 'self');
@@ -719,23 +725,67 @@ class HeadEmitter {
    * skipped there and the witness claim is left for the body. The address slot is reserved once, inside the arm.
    */
   private assertSelfAddressForCodeConstantKinds(): void {
+    // Historical bytes unless the caller admitted INTERNAL. DELEGATE already skips; INTERNAL presents the
+    // caller's address too, so it skips as well. A set whose every kind skips emits nothing.
+    if (this.requestedFrameKinds?.includes(FRAME_KIND_INTERNAL) !== true) {
+      this.emitBranch(
+        () => {
+          this.frameKindIs(FRAME_KIND_DELEGATE);
+          this.emitOp(Opcodes.OP_NOT);
+          this.pop(1);
+          this.push('bool');
+        },
+        () => this.assertSelfEqualsReservedAddress(),
+        () => {},
+      );
+      return;
+    }
+    const skipsSelf = (kind: number): boolean => kind === FRAME_KIND_DELEGATE || kind === FRAME_KIND_INTERNAL;
+    if (this.admittedKinds.every(skipsSelf)) {
+      // Deployment still fills the reserved address. This master presents its caller's address, so the witness
+      // self is not compared with the slot.
+      this.pushAddressSlot();
+      this.dropName('addrX');
+      return;
+    }
+    if (this.admittedKinds.every((kind) => !skipsSelf(kind))) {
+      this.assertSelfEqualsReservedAddress();
+      return;
+    }
     this.emitBranch(
       () => {
         this.frameKindIs(FRAME_KIND_DELEGATE);
-        this.emitOp(Opcodes.OP_NOT);
-        this.pop(1);
+        this.frameKindIs(FRAME_KIND_INTERNAL);
+        this.emitOp(Opcodes.OP_BOOLOR);
+        this.pop(2);
         this.push('bool');
       },
-      () => this.assertSelfEqualsReservedAddress(),
       () => {},
+      () => this.assertSelfEqualsReservedAddress(),
     );
   }
 
-  /** `tx.origin` for any admitted frame: the lock of the origin reference. */
+  /**
+   * `tx.origin` for any admitted frame: the lock of the origin reference. A genesis frame whose origin is the
+   * `INDEX_NONE` sentinel names no user input, so it leaves the empty lock rather than reading an input at it.
+   */
   private computeOrigin(): void {
     this.pick('originRef');
-    this.bin2num();
-    this.emitPopPush(Opcodes.OP_UTXOBYTECODE, 'origin');
+    this.dup();
+    this.pushData(INDEX_NONE_BYTES);
+    this.equal();
+    this.emitBranch(
+      () => {},
+      () => {
+        this.dropTop();
+        this.emit0();
+        this.replaceTop('origin');
+      },
+      () => {
+        this.bin2num();
+        this.emitPopPush(Opcodes.OP_UTXOBYTECODE, 'origin');
+      },
+    );
   }
 
   /**
@@ -746,28 +796,60 @@ class HeadEmitter {
    * context, which the validator settles.
    */
   private branchOnFrameKind(): void {
-    this.emitBranch(
-      () => {
-        this.pick('kind');
-        this.bin2num();
-        this.emit0();
-        this.numequal();
-      },
-      () => this.assertRootFrame(),
-      () => this.emitBranch(
-        () => this.frameKindIs(FRAME_KIND_CALL),
-        () => this.assertCallFrame(),
+    // Tests pass a narrower set than the four arms and still require the historical sequence. A new arm is
+    // emitted only when INTERNAL is one of the requested kinds; every other request keeps these bytes.
+    if (this.requestedFrameKinds?.includes(FRAME_KIND_INTERNAL) !== true) {
+      this.emitBranch(
+        () => {
+          this.pick('kind');
+          this.bin2num();
+          this.emit0();
+          this.numequal();
+        },
+        () => this.assertRootFrame(),
         () => this.emitBranch(
-          () => this.frameKindIs(FRAME_KIND_STATIC),
-          () => this.assertStaticFrame(),
+          () => this.frameKindIs(FRAME_KIND_CALL),
+          () => this.assertCallFrame(),
           () => this.emitBranch(
-            () => this.frameKindIs(FRAME_KIND_DELEGATE),
-            () => this.assertDelegateFrame(),
-            () => this.emitRefusal(),
+            () => this.frameKindIs(FRAME_KIND_STATIC),
+            () => this.assertStaticFrame(),
+            () => this.emitBranch(
+              () => this.frameKindIs(FRAME_KIND_DELEGATE),
+              () => this.assertDelegateFrame(),
+              () => this.emitRefusal(),
+            ),
           ),
         ),
-      ),
+      );
+      return;
+    }
+    const order = [
+      FRAME_KIND_ROOT, FRAME_KIND_CALL, FRAME_KIND_STATIC, FRAME_KIND_DELEGATE, FRAME_KIND_INTERNAL,
+    ].filter((kind) => this.admittedKinds.includes(kind));
+    this.branchOnAdmittedKinds(order);
+  }
+
+  /** Cascade the admitted kinds. The last else refuses a kind this master did not ask for. */
+  private branchOnAdmittedKinds(kinds: readonly number[]): void {
+    if (kinds.length === 0) {
+      this.emitRefusal();
+      return;
+    }
+    const [kind, ...rest] = kinds;
+    this.emitBranch(
+      () => this.frameKindIs(kind!),
+      () => this.assertAdmittedKind(kind!),
+      () => this.branchOnAdmittedKinds(rest),
     );
+  }
+
+  private assertAdmittedKind(kind: number): void {
+    if (kind === FRAME_KIND_ROOT) this.assertRootFrame();
+    else if (kind === FRAME_KIND_CALL) this.assertCallFrame();
+    else if (kind === FRAME_KIND_STATIC) this.assertStaticFrame();
+    else if (kind === FRAME_KIND_DELEGATE) this.assertDelegateFrame();
+    else if (kind === FRAME_KIND_INTERNAL) this.assertInternalFrame();
+    else this.emitRefusal();
   }
 
   /** Pushes whether the frame kind on the stack is `kind`. */
@@ -824,6 +906,15 @@ class HeadEmitter {
    */
   private assertDelegateFrame(): void {
     this.assertFrameKindValue(FRAME_KIND_DELEGATE);
+    if (this.callDataSelectorUnconsumed) this.dropCallSelector();
+  }
+
+  /**
+   * An internal call: the callee runs its own code on the caller's records, so `address(this)` is the caller's.
+   * The validator binds that frame. The head only admits the kind and, for a sole entry, the selector salt.
+   */
+  private assertInternalFrame(): void {
+    this.assertFrameKindValue(FRAME_KIND_INTERNAL);
     if (this.callDataSelectorUnconsumed) this.dropCallSelector();
   }
 
@@ -884,6 +975,9 @@ class HeadEmitter {
 
   /** N1's second half: the frame is a user's, it makes no call, and it is its category's only master. */
   private assertStandalone(): void {
+    // The no-validator arm of a composed-capable master is a standalone spend. A body that handles no value has no
+    // legitimate reason to let its contract's containers shrink (audit FRAMED-CONT-1).
+    if (!this.handlesValue) this.assertContainersDidNotShrink();
     if (this.callCount > 0) {
       this.emitRefusal();
     }
@@ -1198,6 +1292,17 @@ class HeadEmitter {
     this.pick('self');
     this.pushAddressSlot();
     this.equalVerify();
+  }
+
+  /**
+   * Audit FRAMED-CONT-1: the framed convention builds its containers without a master-lock pin (the lock must
+   * survive an upgrade), so the master is the only place a co-spent container is accounted for. Growth is
+   * outputs-at-the-lock minus inputs-at-it, so `>= 0` is exactly "nothing left the contracts's containers".
+   */
+  private assertContainersDidNotShrink(): void {
+    this.emitBytes(new Uint8Array(selfContainerLockScript()));
+    this.emitBytes(new Uint8Array(containerGrowthScript()));
+    this.emitOp(Opcodes.OP_0, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
   }
 
   private assertZeroValue(): void {

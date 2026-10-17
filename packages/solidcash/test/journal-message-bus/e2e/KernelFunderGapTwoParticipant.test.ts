@@ -31,11 +31,12 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 describe('kernel funder-gap two-participant placement', () => {
   it('funds the emitter event slot across a dense Caller→Emitter compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
+    // A conditional emit keeps its fixed event slot; a top-level one would stream in the trailing band.
     const emitterArtifact = compileString(`pragma solidity ^0.8.0;
       contract Emitter {
         event Ping(uint256 value);
         function ping(uint256 value) public {
-          emit Ping(value);
+          if (value > 0) { emit Ping(value); }
           require(true);
         }
       }`, KERNEL);

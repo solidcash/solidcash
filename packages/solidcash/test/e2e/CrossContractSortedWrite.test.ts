@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { hexToBin, vmNumberToBigInt, bigIntToVmNumber } from '@bitauth/libauth';
+import {
+  hexToBin, vmNumberToBigInt, bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction,
+} from '@bitauth/libauth';
 import {
   Contract,
   SignatureTemplate,
@@ -124,5 +126,56 @@ contract User(bytes bankAddr) {
     const ea = getEntryNftAddress(bank.inner, catBank, 'bal');
     const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(keyToSlot(addressToLockScript(caller.address)));
     expect(e && vmNumberToBigInt(e.value, { requireMinimalEncoding: false })).toBe(42n);
+  });
+
+  it('rejects a wrong predecessor proof co-spent for the callee batch', async () => {
+    const artBank = compileString(BANK, { forceStateful: true });
+    const artCaller = compileString(CALLER, { forceStateful: true });
+    const { contract: bank, categoryId: catBank } = await deploy(artBank, []);
+    // Seed one entry so bal[9]'s INSERT brackets a non-HEAD predecessor or HEAD, depending on slot order; either
+    // way the OTHER entry is a deliberately wrong predecessor for the proof the covenant expects.
+    await fund(bank.address);
+    await bank.setBal(2n, 7n).send();
+    const bankAddr = bank.inner.withCategory(hexToBin(catBank)).lockingBytecode;
+    const { contract: caller } = await deploy(artCaller, [bankAddr]);
+    await fund(caller.address);
+
+    // Capture the fully derived cross-contract INSERT without broadcasting, so the tampered re-send below runs
+    // against still-unspent inputs (rejection is covenant validation, not replay detection).
+    let captured = '';
+    const send = provider.sendRawTransaction.bind(provider);
+    (provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+      captured = hex;
+      throw new Error('capture-only');
+    };
+    await expect(caller.poke(9n, 55n, alicePub, sig).withExternalCall(bank, 'setBal', [9n, 55n]).send())
+      .rejects.toThrow('capture-only');
+    (provider as any).sendRawTransaction = send;
+    expect(captured).not.toBe('');
+
+    // Locate the bank entry the callee batch co-spends, and pick a DIFFERENT entry as the wrong predecessor.
+    const ea = getEntryNftAddress(bank.inner, catBank, 'bal');
+    const entryUtxos = (await provider.getUtxos(ea)).filter((u) => (
+      u.token?.category === catBank && (u.token?.nft?.commitment?.length ?? 0) > 0
+    ));
+    const targetSlot = keyToSlot(bigIntToVmNumber(9n));
+    const correctPred = SortedList.fromUtxos(entryUtxos).predecessorOf(targetSlot);
+    const wrong = entryUtxos.find((u) => !(u.txid === correctPred.utxo.txid && u.vout === correctPred.utxo.vout));
+    expect(wrong).toBeDefined();
+
+    const tx = decodeTransactionUnsafe(hexToBin(captured));
+    const entryInputIndex = tx.inputs.findIndex((input) => entryUtxos.some((utxo) => (
+      utxo.txid === binToHex(input.outpointTransactionHash) && utxo.vout === input.outpointIndex
+    )));
+    expect(entryInputIndex).toBeGreaterThanOrEqual(0);
+
+    const mutated = decodeTransactionUnsafe(hexToBin(captured));
+    mutated.inputs[entryInputIndex].outpointTransactionHash = hexToBin(wrong!.txid);
+    mutated.inputs[entryInputIndex].outpointIndex = wrong!.vout;
+    await expect(send(binToHex(encodeTransaction(mutated))))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed/);
+
+    // The untouched transaction is the one the covenant accepts.
+    await expect(send(captured)).resolves.toBeTypeOf('string');
   });
 });

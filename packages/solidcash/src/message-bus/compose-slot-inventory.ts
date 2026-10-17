@@ -15,10 +15,10 @@ type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 export interface ComposeSlotInventory {
   fixedEventSlots: Array<{ participant: number; offset: number }>;
   runtimeEventSlots: Map<number, Array<{
-    participant: number; offset: number; runtimeRow: number; eventSignature: string;
+    participant: number; offset: number; runtimeRow: number; eventSignature: string; chunked?: true;
   }>>;
   eventSlots: () => Array<{
-    participant: number; offset: number; runtimeRow?: number; eventSignature?: string;
+    participant: number; offset: number; runtimeRow?: number; eventSignature?: string; chunked?: true;
   }>;
   hasRuntimeLoopEvents: boolean;
   resourceSlots: Array<{ participant: number; offset: number; kind: string }>;
@@ -40,10 +40,10 @@ export function inventoryComposeSlots(
       participant: participant.participant, offset: slot.offset,
     })));
   const runtimeEventSlots = new Map<number, Array<{
-    participant: number; offset: number; runtimeRow: number; eventSignature: string;
+    participant: number; offset: number; runtimeRow: number; eventSignature: string; chunked?: true;
   }>>();
   const eventSlots = (): Array<{
-    participant: number; offset: number; runtimeRow?: number; eventSignature?: string;
+    participant: number; offset: number; runtimeRow?: number; eventSignature?: string; chunked?: true;
   }> => [
     ...fixedEventSlots,
     ...[...runtimeEventSlots.values()].flat(),
@@ -81,7 +81,8 @@ export function inventoryComposeSlots(
     })));
   const sidecarSlots = plan.participants.filter((participant) => participant.authority !== 'direct').flatMap((participant) =>
     participant.blockLayout!.slots
-      .filter((slot) => ['blockhashOracle', 'keccakSideCar', 'ecrecoverSideCar'].includes(slot.kind))
+      .filter((slot) => ['blockhashOracle', 'blockInfoOracle', 'keccakSideCar', 'ecrecoverSideCar']
+        .includes(slot.kind))
       .map((slot) => ({
         participant: participant.participant, offset: slot.offset,
         kind: slot.kind as AtomicSidecarSlotEffect['kind'],
@@ -205,7 +206,7 @@ export function pruneComposeSlotInventoryByEffectPlans(
       || plan.activeTransfers.length > 0;
   });
   const runtimeEventSlots = new Map<number, Array<{
-    participant: number; offset: number; runtimeRow: number; eventSignature: string;
+    participant: number; offset: number; runtimeRow: number; eventSignature: string; chunked?: true;
   }>>();
   for (const [key, rows] of inventory.runtimeEventSlots) {
     const kept = rows.filter((slot) => {
@@ -238,7 +239,7 @@ export function pruneComposeSlotInventoryByEffectPlans(
   const remappedValueSlots = remapDense(valueSlots);
   const remappedSidecars = remapDense(sidecarSlots);
   const remappedRuntimeEventSlots = new Map<number, Array<{
-    participant: number; offset: number; runtimeRow: number; eventSignature: string;
+    participant: number; offset: number; runtimeRow: number; eventSignature: string; chunked?: true;
   }>>();
   for (const [key, rows] of runtimeEventSlots) {
     remappedRuntimeEventSlots.set(key, remapDense(rows));

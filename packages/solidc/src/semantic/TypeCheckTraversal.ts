@@ -172,6 +172,7 @@ import {
   AbiEncodeEmptyError,
   UndefinedReferenceError,
   StructFieldExternalCallError,
+  BlockOracleIndexNotForwardedError,
 } from '../Errors.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
@@ -182,6 +183,7 @@ import {
 import { analyzeAssemblyStack, getStackEffect } from '../asmStackEffects.js';
 import { ImportedLocations } from './ImportedLocations.js';
 import { generatedOriginOf } from '../ast/Location.js';
+import { emitCompilerWarning } from '../warnings.js';
 
 /**
  * A sorted-batch operand of a framed master's own frame: the masked slot, the proof index, the successor, the
@@ -1511,7 +1513,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     const guardedMapping = this.negativeGuardMapping(node.expression);
     if (guardedMapping) {
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
-      console.log(
+      emitCompilerWarning(
         `Warning: require()${line} negatively guards on mapping '${guardedMapping}'. A spender can omit the entry `
         + 'NFT so the covenant reads the default (false/0) and the guard passes, bypassing one-time-write / replay '
         + '/ blacklist patterns (SECURITY-AUDIT vmap). Prefer a positive guard, or commit an entry-set accumulator.',
@@ -1697,12 +1699,26 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     const loc = this.diagLine(node.location);
-    console.log(`Warning: inline assembly used${loc}. Raw opcodes bypass type checking; you are responsible for the correctness of the emitted script.`);
+    emitCompilerWarning(`Warning: inline assembly used${loc}. Raw opcodes bypass type checking; you are responsible for the correctness of the emitted script.`);
     return node;
   }
 
   visitCast(node: CastNode): Node {
     node.expression = this.visit(node.expression);
+    // Solidity wraps a negative integer literal cast to an unsigned bounded type in two's complement:
+    // `uint64(-1) == type(uint64).max`, `uint64(-2) == max - 1`, and so on. Fold it to the wrapped constant
+    // here so a runtime comparison like `require(x <= uint64(-1))` compares against the real maximum instead
+    // of emitting the literal -1 followed by an out-of-range uintN bounds check.
+    if (this.evmCompat && node.sourceCast && !node.isUnsafe
+      && node.type instanceof IntType && !node.type.signed
+      && node.expression instanceof IntLiteralNode && node.expression.value < 0n) {
+      const modulus = 1n << BigInt(node.type.bits);
+      const wrapped = ((node.expression.value % modulus) + modulus) % modulus;
+      const literal = new IntLiteralNode(wrapped);
+      literal.type = node.type;
+      literal.location = node.location;
+      return literal;
+    }
     if (this.strictSolidityValidation && node.sourceCast
       && node.type instanceof BytesType && node.type.bound !== undefined) {
       if (node.expression instanceof IntLiteralNode && node.expression.value !== 0n) {
@@ -1711,7 +1727,7 @@ export default class TypeCheckTraversal extends AstTraversal {
           const absVal = node.expression.value < 0n ? -node.expression.value : node.expression.value;
           if (absVal > maxVal) {
             const loc = this.diagLine(node.location);
-            console.log(
+            emitCompilerWarning(
               `Warning: integer literal ${node.expression.value}${loc} exceeds `
               + `bytes${node.type.bound} range (max ${maxVal}).`,
             );
@@ -1797,7 +1813,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.expression.type instanceof AddressType
       && ((node.type instanceof BytesType && node.type.bound === 20) || node.type instanceof IntType)) {
       const loc = this.diagLine(node.location);
-      console.log(`Warning: ${node.type}(address)${loc} narrows a variable-length BCH address (a locking `
+      emitCompilerWarning(`Warning: ${node.type}(address)${loc} narrows a variable-length BCH address (a locking `
         + 'bytecode) to its embedded 20-byte hash; this is lossy and differs from a fixed-width EVM address.');
     }
 
@@ -1808,7 +1824,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       && ((node.expression.type instanceof BytesType && node.expression.type.bound === 20)
         || node.expression.type instanceof IntType)) {
       const loc = this.diagLine(node.location);
-      console.log(`Warning: address(${node.expression.type})${loc} treats a fixed 20-byte value as an address, but `
+      emitCompilerWarning(`Warning: address(${node.expression.type})${loc} treats a fixed 20-byte value as an address, but `
         + 'a BCH address is a variable-length locking bytecode, not a 20-byte hash; this does not yield a valid '
         + 'address (wrap the hash explicitly, e.g. new LockingBytecodeP2PKH(hash)).');
     }
@@ -1819,7 +1835,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (node.type instanceof IntType) {
         if (litValue < node.type.minValue || litValue > node.type.maxValue) {
           const loc = this.diagLine(node.location);
-          console.log(
+          emitCompilerWarning(
             `Warning: integer literal ${litValue}${loc} exceeds `
             + `${node.type.toString()} range (${node.type.minValue} to ${node.type.maxValue}).`,
           );
@@ -1829,7 +1845,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         const absVal = litValue < 0n ? -litValue : litValue;
         if (absVal > maxVal) {
           const loc = this.diagLine(node.location);
-          console.log(
+          emitCompilerWarning(
             `Warning: integer literal ${litValue}${loc} exceeds `
             + `bytes${node.type.bound} range (max ${maxVal}).`,
           );
@@ -1871,7 +1887,7 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     if (this.evmCompat && this.isEvmCreate2AddressHash(node)) {
       const loc = this.diagLine(node.location);
-      console.log(`Warning: EVM CREATE2 address computation${loc} cannot derive a native BCH contract address. `
+      emitCompilerWarning(`Warning: EVM CREATE2 address computation${loc} cannot derive a native BCH contract address. `
         + 'BCH deployments use P2SH32 locking bytecode, and stateful contract addresses also commit to their '
         + 'CashToken category ID. Use the deploying factory\'s registry (for example getPair(token0, token1)) '
         + 'instead of keccak256(abi.encodePacked(hex"ff", ...)).');
@@ -1972,6 +1988,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.parameters.splice(senderParamIndex, 1);
       }
       this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
+      this.requireBlockOracleIndexForwarded(node, node.resolvedFunction);
       const resolvedParamTypes = this.expectedCallSiteTypes(
         node.resolvedFunction, node.parameters.length,
       );
@@ -2001,6 +2018,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.parameters.splice(senderParamIndex, 1);
       }
       this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
+      this.requireBlockOracleIndexForwarded(node, node.resolvedFunction);
       const resolvedParamTypes = this.expectedCallSiteTypes(
         node.resolvedFunction, node.parameters.length,
       );
@@ -2567,6 +2585,15 @@ export default class TypeCheckTraversal extends AstTraversal {
     ), expected[i]));
   }
 
+  // A block.* reader slices the oracle at the index its caller forwards. A call that drops it would hand the
+  // reader a shifted frame, so refuse it here instead of compiling a call that only the lock pin stops.
+  private requireBlockOracleIndexForwarded(node: FunctionCallNode, fn: FunctionDefinitionNode): void {
+    const name = '__internal__blockOracleInputIndex';
+    if (!fn.parameters.some((parameter) => parameter.name === name)) return;
+    if (node.parameters.some((argument) => argument instanceof IdentifierNode && argument.name === name)) return;
+    throw new BlockOracleIndexNotForwardedError(node, fn.name);
+  }
+
   // An internal call to a `public` function that RETURNS a value targets the function's internal-call
   // subroutine, which still carries the injected `__internal__returnOutputIdx` param. The Solidity-source call
   // site can't know about it, so auto-supply -1 (the internal subroutine produces no return event - the value
@@ -2603,7 +2630,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // master sits at a fixed input, so an internal callee reads the caller's own value. Without it, a generated
     // route cannot call a delegate-marked getter (`owner()`) at all.
     const FORWARDABLE = new Set([
-      '__internal__blockhashInputIndex', '__internal__proxyMasterOutputIndex',
+      '__internal__blockhashInputIndex', '__internal__blockOracleInputIndex', '__internal__proxyMasterOutputIndex',
       '__internal__proxyMasterIndex', '__internal__kernelJournalAccessStreams',
       '__internal__kernelJournalRecords', '__internal__dynamicChunkInputBase',
       '__internal__dynamicChunkOutputBase',
@@ -3136,15 +3163,19 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.type = node.expression.type;
         return node;
       }
-      case UnaryOperator.SIZE:
+      case UnaryOperator.SIZE: {
         // evmCompat `.length` is uint256, so `length - 1` on an empty array underflows instead of wrapping.
+        // A compiler-built proof length is compared with int256 proof values and keeps bigint.
+        const lengthType = this.strictSolidityValidation && !node.compilerLength
+          ? new IntType(false, 256) : PrimitiveType.BIGINT;
         if (node.expression.type instanceof ArrayType) {
-          node.type = this.strictSolidityValidation ? new IntType(false, 256) : PrimitiveType.BIGINT;
+          node.type = lengthType;
           return node;
         }
         expectAnyOfTypes(node, node.expression.type, [new BytesType(), PrimitiveType.STRING]);
-        node.type = this.strictSolidityValidation ? new IntType(false, 256) : PrimitiveType.BIGINT;
+        node.type = lengthType;
         return node;
+      }
       case UnaryOperator.REVERSE:
         this.expectNoContractReceiver(node, node.expression.type, 'reverse');
         expectAnyOfTypes(node, node.expression.type, [new BytesType(), PrimitiveType.STRING]);
@@ -3212,6 +3243,18 @@ export default class TypeCheckTraversal extends AstTraversal {
         return node;
       case NullaryOperator.TX_GASPRICE:
         node.type = new IntType(false, 32); // uint (sat/KB fee rate), same nominal type as block.basefee
+        return node;
+      case NullaryOperator.BLOCK_NUMBER:
+      case NullaryOperator.BLOCK_TIMESTAMP:
+      case NullaryOperator.BLOCK_DIFFICULTY:
+      case NullaryOperator.BLOCK_SIZE:
+      case NullaryOperator.BLOCK_TOTAL_FEES:
+      case NullaryOperator.BLOCK_BASEFEE:
+      case NullaryOperator.BLOCK_BLOBBASEFEE:
+        node.type = new IntType(false, 32);
+        return node;
+      case NullaryOperator.BLOCK_COINBASE:
+        node.type = new AddressType(true);
         return node;
       case NullaryOperator.MSG_DATA:
         node.type = new BytesType();

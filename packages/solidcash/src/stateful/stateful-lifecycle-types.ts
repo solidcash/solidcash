@@ -3,7 +3,7 @@
  * (phase-boundary extract from StatefulContract.ts).
  */
 
-import type { Artifact, ExternalCallAbi } from '@solidcash/utils';
+import type { Artifact, ExternalCallAbi, FunctionSplitBundle } from '@solidcash/utils';
 import type { AddressType, Output, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
 import type { FramedGenesisHeadCollection } from '../framed/deploy/genesis.js';
 import type { FunctionArgument, ConstructorArgument } from '../Argument.js';
@@ -12,6 +12,10 @@ import type { StateValueType } from '../types/state-inference.js';
 import type { ConnectedStatefulContract, StatefulContract } from './StatefulContract.js';
 
 export interface DeployOptions {
+  /** Mint a confined blockhash keeper baton at genesis; requires a blockhash-reading artifact. */
+  blockhashKeeperPublicKey?: Uint8Array;
+  /** Initial keeper baton balance, spent on oracle mints and fees; default 10,000 satoshis. */
+  blockhashKeeperAmount?: bigint;
   provider: NetworkProvider;
   fundingUtxo: Utxo;
   funder: Unlocker;
@@ -53,6 +57,13 @@ export interface DeployOptions {
   /** Number of validator UTXOs at the contract's address; framed deployments default to the composing size. */
   validatorCount?: number;
   /**
+   * The `split: 'func'` bundle whose logical artifact is being deployed.
+   *
+   * Genesis mints `threadCount` empty-commitment minting NFTs at each shard's filled lock, and one validator
+   * pool at the shared `addrV`. Absent, genesis mints that many copies of the one master lock.
+   */
+  functionSplit?: FunctionSplitBundle;
+  /**
    * A dead `<salt> OP_DROP` push baked into the script. Beyond CREATE2 addressing this is the DENSITY RESERVE:
    * the BCH-2026 operation-cost budget is `operationCostBudgetPerByte x unlockingBytecodeLength`, and for
    * p2sh32 the redeem script counts toward that length, so each reserve byte buys 800 units of budget while
@@ -90,6 +101,11 @@ export interface UpgradeOptions<T extends Artifact = Artifact> {
   fundingUtxo?: Utxo;                // required when new layout needs additional data NFTs
   funder?: Unlocker;                  // required when new layout needs additional data NFTs
   changeAddress?: string;             // change address for leftover funding satoshis
+  /** Foreign token category IDs of the token containers to migrate (at most one per upgrade). */
+  tokenContainerCategoryIds?: string[];
+  /** The migrateRecords entry to drain mapping/array entries before the upgrade (name + its user args). */
+  migrateRecordsFunctionName?: string;
+  migrateRecordsFunctionArgs?: FunctionArgument[];
 }
 
 export interface UpgradeResult<T extends Artifact = Artifact> {

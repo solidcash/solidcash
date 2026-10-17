@@ -2,6 +2,7 @@ import {
   beforeAll, describe, expect, it,
 } from 'vitest';
 import { compileFile } from 'solidc';
+import { hexToBin } from '@bitauth/libauth';
 import { URL } from 'url';
 import type { Utxo } from '../../src/interfaces.js';
 import {
@@ -15,7 +16,7 @@ import {
   createTestProvider, plainNumerics, setupStatefulUtxos,
 } from '../test-util.js';
 import { getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
-import { alicePub, bobPriv } from '../fixture/vars.js';
+import { bobPriv } from '../fixture/vars.js';
 import type { Artifact } from '@solidcash/utils';
 
 const source = new URL('../fixture/bch_native_quarantine_token.scash', import.meta.url);
@@ -28,11 +29,13 @@ beforeAll(() => {
 describe('BchNativeQuarantine inheritance', () => {
   it('adds pending state and oracle timing only when explicitly inherited', () => {
     const abi = new Set(artifact.abi.map((entry) => entry.name));
-    for (const name of ['wrap', 'withdraw', 'deposit', 'claimDeposit', 'cancelDeposit', '__updateBlockOracle']) {
+    for (const name of ['wrap', 'withdraw', 'deposit', 'claimDeposit', 'cancelDeposit']) {
       expect(abi).toContain(name);
     }
+    expect(abi).not.toContain('__updateBlockOracle');
+    expect(artifact.usesBlockOracle).toBe(true);
     expect(artifact.stateLayout?.collections.map((entry) => entry.name)).toContain('pendingDeposits');
-    expect(artifact.stateLayout?.variables.map((entry) => entry.name)).toContain('__block_number');
+    expect(artifact.stateLayout?.variables.map((entry) => entry.name)).not.toContain('__block_number');
   });
 
   // QuarantineToken's 11,866-byte redeem script is consensus-impossible without splitting. Its structural
@@ -43,12 +46,11 @@ describe('BchNativeQuarantine inheritance', () => {
     const setup = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {
       _totalSupply: 0n,
       backedSupply: 0n,
-      __block_number: 133_700n,
-      __blockOracleOwner: alicePub,
     }, {
       saltContract: true,
       extraOutputs: (category) => [{
-        address: getTokenContainerAddress(inner, category, category),
+        // The container binds the master lock, which is the category-pinned contract's.
+        address: getTokenContainerAddress(inner.withCategory(hexToBin(category)), category, category),
         satoshis: 1_200n,
         token: { amount: 1_000n },
       }],

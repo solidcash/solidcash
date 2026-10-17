@@ -297,7 +297,7 @@ describe('FW-1 and FW-2 against the genuine validator', () => {
     expect(settlement('reset').counterValidator, 'FW-1 zeroed record').toBe(false);
   });
 
-  it('FV-1 a created-form record whose output is still an input index is refused, and the honest chain is not', () => {
+  it('FV-1 a created-form record at a spent record\'s input index is refused, and the honest chain is not', () => {
     expect(settlement('honest').counterValidator, 'FV-1 authorized').toBe(true);
     expect(settlement('reset').counterValidator, 'FV-1 created form at a spent index').not.toBe(true);
   });

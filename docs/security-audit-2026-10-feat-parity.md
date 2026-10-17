@@ -74,6 +74,43 @@ bytes, and inline delegate address builds add 342 B to one marketplace body; a l
 helper would win back about 110 B per site. One body (selector 2928b689) still invokes the shared address helper
 bound to the executing input's lock; whether it runs as a delegate is not checked.
 
+SEM-1 after the merges (2026-10-14, ef3d4dc5b and 58b93f911): the path check and its seal cover every entry except
+two whose returns still end under a covenant that settles the contract's records: a framed body, whose head pins the
+master and its value, and a direct entry of a stateful contract that reads an entry, where the collection census
+runs on every path. A direct stateful entry that reads no entry has only C3's count, which a co-spent record
+rewritten in place keeps balanced, so its unguarded return is sealed. Lifecycle entries, delegatecalls and the
+constructor are always checked. Focused local VM evidence now drives both exempt return paths: the direct mapping
+reader refuses a rewritten mapping node, and the framed reader refuses rewritten mapping and data records while
+accepting unchanged records (`AuditTranscriptStateIntegrity`, `framed/master/audit-exempt-return`).
+
+## Closing validation (2026-10-14)
+
+The closing run at `3dc7e8b54` completed after the atomic-bus stages and trailing-band layout fixes. The package
+runs passed 17,291 tests, with no unexpected failures:
+
+| Scope | Passed | Other outcomes |
+|---|---:|---|
+| utils | 485 | - |
+| solidc | 7,269 | - |
+| SDK non-e2e | 5,831 | 4 expected failures, 167 skipped, 5 todo |
+| SDK e2e | 3,501 | 25 skipped, 3 todo |
+| solidhat | 71 | 1 skipped |
+| testing | 107 | - |
+| testing-suite | 27 | - |
+
+Build, lint, spellcheck, source-tree guard, examples, docs snippets, application and security conformance,
+generated-project smoke and packed-package smoke passed. The reviewed corpus baseline passed at 2,720/2,805
+positive fixtures and 149/2,158 over-accepted negatives, with no status changes against feat/parity. These are
+the existing baseline's allowances, not a claim that all corpus fixtures compile or all invalid programs fail.
+The local package runs did not enable CI coverage instrumentation.
+
+The resumed session also passed `yarn test:application-regtest`: both files, all 9 tests, against BCHN v29.0.0 and
+the repository's pinned Fulcrum v2.1.3 image. The earlier host-port conflict was avoided with a temporary Compose
+project sharing the execution container's network namespace and publishing no host ports. No repository service
+configuration changed. All configured local gates have now passed; CI coverage instrumentation and the hosted
+workflow itself were not run here. Source evidence: the resumed session's `scratchpad/parity/full7-progress.txt`,
+`full7-*.txt`, `ci/f7-*.txt` and `/tmp/codex-resume7d9-application-regtest.log`.
+
 ## Residuals and findings
 
 - SDKFRAMED-2: a framed proxy initializer that calls another contract is refused by default; its `initializeAs: 'hop'`
@@ -85,11 +122,53 @@ bound to the executing input's lock; whether it runs as a delegate is not checke
   (`m[a] = v; if (c) delete m[k];`) is refused at compile, keys differing included, because its write could be lost;
   settling it would need chunk runs staged on the delete's node.
 - DS-6: an external self-call (`this.get(k)`) that reads the mapping between a swap-remove write and its delete is
-  refused at compile (`DirectInvokedStaleReadError`); function-pointer calls there are not covered.
-- Found, not fixed (nearest row DS-1, owned by the per-call worker): a direct conditional sorted write with no delete in
-  its batch, skipped on an absent key, still runs its planned insert, and the honest SDK leaves a duplicate
-  predecessor; the skipped write never binds its slot witness, so a spender can choose that duplicate's `next`.
-- Found, not verified: a body invoked through `this.f()` reads mapping entries at its own layout's input slots, not
-  the caller's.
-- Failing on feat/parity and on feat/per-call alike, so not from this work: KernelLoopCompose "recursive event domain
-  step and 64-frame resource bound", KernelPhysicalCallerWithScidCompose, and KernelRealUnicrowProxyArbitration.
+  refused at compile (`DirectInvokedStaleReadError`). Unresolved indirect calls there, including expression callees
+  and calls inside an invoked helper, fail closed (`DirectIndirectStaleReadError`) unless their function type proves
+  they are pure. Non-pure pointers are refused for both same-key and different-key runtime arguments: target-specific
+  effect resolution remains unsupported. Inlined internal getters observe pending same-key values and the other
+  key's own value. The neutral pointer reproduction compiled before this guard, but even its honest pending-value
+  call failed VM preflight; it did not establish an accepted stale-read exploit.
+- DS-1 follow-up, fixed for a direct singleton conditional scalar write: if-conversion had inserted an enumerable
+  zero-valued node on the skipped absent-key path. The source branch now retains its activity flag; compiler and
+  SDK use the existing activity settlement to keep the predecessor unchanged and remove the planned insert.
+  `AuditTranscriptStateIntegrity` proves no absent-key output, refusal of a changed predecessor successor, and
+  successful taken-path insertion. This does not claim additional multi-target conditional topology support.
+- Invoked-read follow-up: a direct void body invoked through `this.f()` is now inlined into the caller's physical
+  collection frame. `AuditTranscriptStateIntegrity` proves two distinct-key reads settle and a wrong-key call is
+  refused. Returning self-calls retain their existing fence after pending mapping writes (`AuditDS6SameKeyAlias`).
+- Historical failures on both integration parents: KernelLoopCompose "recursive event domain step and 64-frame
+  resource bound" and KernelRealUnicrowProxyArbitration now pass in the closing run. The model-B logical-identity
+  title in KernelPhysicalCallerWithScidCompose is explicitly skipped by the user's decision; see deferrals.md.
+- Evaluated decision D30: do not implement batch-width witness binding. This is not a deferral; the evidence,
+  candidate's cost and SDK impact, and scope for future reevaluation live in [D30](framed/DECISIONS.md).
+- Event-integrity follow-up, fixed locally: split/merge and unsafe tiers 1/2 now run the ordinary own-category
+  immutable-output pin. `AuditLifecycleEventIntegrity` accepts their honest transactions and refuses an extra
+  addressable own-category event NFT. The fork case previously accepted that output. Explicit `unsafe(0)` remains
+  outside covenant policy; this change does not redefine that escape hatch.
+- Event-integrity replay follow-up, fixed locally: the generic exact-input-tuple exception was removed from
+  `emitOwnCategoryImmutableNftOutputPin`. A previously emitted log cannot be published anew merely because its
+  144-block event covenant can now be spent. The same regression verifies every honest external-call input,
+  preserves a genuine SCID-v1 anchor bound to the master lock, evaluates the actual matured log covenant with
+  sequence 144, and refuses recreation of that log at the caller. Structured identity metadata remains exempt.
+  No BCHN run was made for either event follow-up; D30 is unchanged.
+
+## SDK equality observer follow-up (2026-10-14)
+
+The transcript's four remaining observer checks are now aware of outlined equality helpers:
+`computed-dynamic-chunks`, `computed-value-chunks`, `sc-derive-return-blob` and
+`stb-repair-computed-chunk-output`. They share `probe-instruction-sequence`'s exact instruction matcher,
+which follows constant helper identifiers through the executing VM's function table and recorded caller
+continuations. Unknown, malformed, dynamic, recursive or EVAL dispatch fails closed. Continuation lock
+confirmation uses the same matcher; count and reconstruction checks also recognize their preceding DROP/CAT
+across helper boundaries. Output ownership, ordinal, category, capability and descriptor checks stay in their
+existing callers. SIZE-only introspection and untaken branches do not become output expectations.
+
+Local evidence: `OutlinedEqualityObservers.test.ts` has 12 passing cases. It covers nested EQUALVERIFY and
+EQUAL/VERIFY event pins at the exact requested coordinate, outlined value-count checks, split continuation
+pins, commitment and lock repair, and exclusion of inactive/SIZE observations. Its inline and outlined dynamic
+convergence cases evaluate all three transaction inputs with the ordinary VM and refuse a changed chunk.
+The bounded adjacent check adds `ComputedValueChunkOwnership.test.ts` and `HashedReturnProbe.test.ts`:
+29 tests passed across those three files. Changed-source lint and the incremental build passed. No BCHN run,
+full suite or marketplace measurement was performed for this observer change; the historical closing-run
+counts above remain historical. The diagnostic convergence test explicitly uses devOracle and restores its
+prior mode; production recipe restrictions are unchanged. D30 and deferred model-B identity are unaffected.

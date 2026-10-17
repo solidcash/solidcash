@@ -116,6 +116,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V4_ROOT_INPUT_MISSING',
   'V4_ROOT_CALLER_NOT_P2PKH',
   'V4_ROOT_ORIGIN_MISMATCH',
+  'V4_MINTED_ROOT_SENDER',
   'V4_NON_ROOT_CALLER_NOT_A_MASTER',
   'V5_CALLEE_NOT_A_MASTER',
   'V5_CALLER_MISMATCH',
@@ -126,6 +127,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V5_SELF_NOT_TARGET',
   'V5_SELF_NOT_CALLER_SELF',
   'V5_DELEGATE_TARGET_MISMATCH',
+  'V5_INTERNAL_LOCK_MISMATCH',
   'V5_RETVAL_MISMATCH',
   'V5_ARGS_HASH_MISMATCH',
   'V5_MASTER_UNREACHED_BY_A_CALL',
@@ -174,8 +176,10 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
  */
 export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V6', 'V8', 'V9', 'V10', 'V11'];
 
-/** The identifier the depth-first visit is defined under; the program defines no other function. */
+/** The identifier the depth-first visit is defined under. */
 const ORDERED_VISIT_ID = 1;
+/** The identifier the context-category walk is defined under. */
+const CONTEXT_CATEGORY_ID = 2;
 
 /** One check: a run of instructions that takes the stack shape `[M]` and leaves it. */
 type CheckEmitter = (e: Emitter) => void;
@@ -194,9 +198,12 @@ const HEAD_CHECKS: readonly CheckEmitter[] = [
   emitRootCategory,
   emitRootsAreInputs,
   emitMasterIndices,
+  emitMintedMastersIfV3,
   emitSettledStateInputs,
   emitCompleteness,
+  emitMintedMasterCompleteness,
   emitSettlementStateInputs,
+  emitDefineContextCategory,
   emitDefineOrderedVisit,
   emitSettlementCensus,
   emitFrameAddresses,
@@ -205,8 +212,11 @@ const HEAD_CHECKS: readonly CheckEmitter[] = [
 /** The checks each facet runs, in order: the input at `head + k` runs the `k`th group. */
 const FACET_CHECKS: readonly (readonly CheckEmitter[])[] = [
   [
+    emitDefineContextCategory,
     emitRootRules,
+    emitMintedMasterRootRules,
     emitEdgeRules,
+    emitMintedMasterEdgeRules,
     emitExecutionOrder,
     emitReadOnlyFrames,
     emitSettleCategoriesAreDistinct,
@@ -491,9 +501,13 @@ function emitTranscriptHeader(e: Emitter): void {
   const O = Opcodes;
   // `[M]`: long enough for the header, then the wire name and version.
   e.op(O.OP_SIZE).count(4).op(O.OP_GREATERTHANOREQUAL, O.OP_VERIFY);
-  // The wire name is compared on a copy of the transcript's head, which `OP_DROP` leaves on the stack.
-  e.op(O.OP_DUP).count(4).op(O.OP_SPLIT, O.OP_DROP);
-  e.push(TRANSCRIPT_MAGIC).op(O.OP_EQUALVERIFY);
+  // The wire name "PC7", then a version this program understands (0x02 or the minted-master 0x03).
+  e.op(O.OP_DUP).count(3).op(O.OP_SPLIT, O.OP_DROP);
+  e.push(new Uint8Array([0x50, 0x43, 0x37])).op(O.OP_EQUALVERIFY);
+  e.op(O.OP_DUP).count(3).op(O.OP_SPLIT, O.OP_NIP);
+  e.count(1).op(O.OP_SPLIT, O.OP_DROP);
+  e.unsignedByteOnTop();
+  e.count(2).count(4).op(O.OP_WITHIN, O.OP_VERIFY);
   // `[M, rootCount, rest]`: the root count, read unsigned, and everything after it left as bytes. Converting the
   // remainder would re-encode it as a script number and drop a trailing zero, which is where an empty settle list
   // keeps its count.
@@ -501,14 +515,18 @@ function emitTranscriptHeader(e: Emitter): void {
   e.op(O.OP_DUP).count(1).op(O.OP_SPLIT, O.OP_ROT, O.OP_DROP);
   e.op(O.OP_SWAP);
   e.unsignedByteOnTop();
-  e.op(O.OP_DUP, O.OP_0NOTEQUAL, O.OP_VERIFY);
   e.op(O.OP_SWAP);
 }
 
-/** V9. The first root the transcript lists is a master whose own category is this validator's. */
+/**
+ * V9. The first root the transcript lists is a master whose own category is this validator's. A genesis whose only
+ * root is minted lists no input root, so the category check is skipped there: V1's spent-master rule binds the
+ * validator's category instead.
+ */
 function emitRootCategory(e: Emitter): void {
   const O = Opcodes;
-  // `[M, rootCount, rest]`: the first root's index, then the pin of the input it names.
+  // `[M, rootCount, rest]`: with a root, the first root's index and the pin of the input it names.
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
   e.op(O.OP_DUP).count(1).op(O.OP_SPLIT, O.OP_DROP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
@@ -518,6 +536,7 @@ function emitRootCategory(e: Emitter): void {
   e.op(O.OP_SIZE).count(32).op(O.OP_GREATERTHANOREQUAL, O.OP_VERIFY);
   e.count(32).op(O.OP_SPLIT, O.OP_DROP);
   e.op(O.OP_INPUTINDEX, O.OP_UTXOTOKENCATEGORY).count(32).op(O.OP_SPLIT, O.OP_DROP, O.OP_EQUALVERIFY);
+  e.op(O.OP_ENDIF);
 }
 
 /** V2, the roots' indices: every root the transcript lists names a real input. */
@@ -604,6 +623,271 @@ function emitMasterIndices(e: Emitter): void {
   e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
 }
 
+/** Reads the transcript version byte on top of the stack, for a transcript `M` at the given depth. */
+function emitVersionOnTop(e: Emitter, depth: number): void {
+  const O = Opcodes;
+  if (depth === 0) {
+    e.op(O.OP_DUP);
+  } else {
+    e.count(depth).op(O.OP_PICK);
+  }
+  e.count(3).op(O.OP_SPLIT, O.OP_NIP);
+  e.count(1).op(O.OP_SPLIT, O.OP_DROP);
+  e.unsignedByteOnTop();
+}
+
+/** Consumes one minted master: `output:u8 block:lp16`, validating the output index and the block's shape. */
+function consumeOneMintedMaster(e: Emitter): void {
+  const O = Opcodes;
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_OVER, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  e.op(O.OP_SWAP);
+  consumeWitnessBlock(e);
+  e.op(O.OP_NIP);
+}
+
+/** Consumes the minted-master list of a version-0x03 transcript, leaving the settle list. */
+function consumeMintedList(e: Emitter): void {
+  const O = Opcodes;
+  takeCount(e);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  consumeOneMintedMaster(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP);
+}
+
+/**
+ * On a version-0x03 transcript, consumes the minted-master list between the masters and the settles.
+ *
+ * Entry `[.., rest]` with the minted list on top and the transcript `M` at depth `mDepth`; exit the same with the
+ * settle list on top. A version-0x02 transcript has no minted list, so the walk is skipped there.
+ */
+function skipMintedListIfV3(e: Emitter, mDepth: number): void {
+  const O = Opcodes;
+  emitVersionOnTop(e, mDepth);
+  e.count(3).op(O.OP_NUMEQUAL, O.OP_IF);
+  consumeMintedList(e);
+  e.op(O.OP_ENDIF);
+}
+
+/** V2: on a version-0x03 transcript, consumes the minted-master list between the masters and the settles. */
+function emitMintedMastersIfV3(e: Emitter): void {
+  const O = Opcodes;
+  emitVersionOnTop(e, 2);
+  e.count(3).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_NIP);
+  // `[M, suffix]`: park the settle walk's zero below the suffix, then consume the minted list on top.
+  e.op(O.OP_SWAP);
+  e.count(0);
+  e.op(O.OP_ROT);
+  consumeMintedList(e);
+  e.op(O.OP_ENDIF);
+}
+
+/** V3: one minted master is a minting output whose inline block names this validator. */
+function emitOneMintedMasterCompleteness(e: Emitter): void {
+  const O = Opcodes;
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_OVER, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
+  e.op(O.OP_OVER, O.OP_OUTPUTTOKENCATEGORY);
+  e.op(O.OP_SIZE).count(33).op(O.OP_NUMEQUALVERIFY);
+  e.count(32).op(O.OP_SPLIT, O.OP_NIP);
+  e.push(Uint8Array.from([TokenCapability.MINTING])).op(O.OP_EQUALVERIFY);
+  e.op(O.OP_NIP);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  e.op(O.OP_SWAP);
+  e.count(8).op(O.OP_SPLIT, O.OP_NIP);
+  e.count(2).op(O.OP_SPLIT, O.OP_DROP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_INPUTINDEX, O.OP_NUMEQUALVERIFY);
+}
+
+/** V3: every minted master is a minting output whose inline block names this validator. */
+function emitMintedMasterCompleteness(e: Emitter): void {
+  const O = Opcodes;
+  emitVersionOnTop(e, 0);
+  e.count(3).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_DUP);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  emitOneMintedMasterCompleteness(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP);
+  e.op(O.OP_ENDIF);
+}
+
+/**
+ * V4: one minted master is a genesis root: a ROOT frame with no P2PKH caller and no origin, an empty sender, and a
+ * `self` that is the address of its own output's category.
+ *
+ * Entry `[count, rest]`, exit `[count, rest']` with this master consumed. The output index stays until `self` is
+ * compared, because a minted master has no input for {@link emitFrameAddresses} to read. The address is derived
+ * from the mutable pin, the same pin a spent master's V11 check uses: the output token carries the minting
+ * capability, and that byte is replaced before the hash.
+ */
+function emitOneMintedMasterRootRule(e: Emitter): void {
+  const O = Opcodes;
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_OVER, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  e.op(O.OP_SWAP);
+  // `[count, output, rest, block]`. Kind, caller and origin, as before.
+  e.count(3).op(O.OP_SPLIT, O.OP_NIP);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.count(0).op(O.OP_NUMEQUALVERIFY);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUALVERIFY);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUALVERIFY);
+  // `[count, output, rest, afterOrigin]`. Skip the validator reference. The sender must be empty: a delegate
+  // callee copies it as msg.sender, and a genesis root has no caller to authenticate one.
+  e.script(takeFixedWidthField(2));
+  e.op(O.OP_NIP);
+  e.script(takeLengthPrefixedField());
+  e.op(O.OP_SWAP, O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUALVERIFY);
+  e.op(O.OP_DROP);
+  e.script(takeLengthPrefixedField());
+  e.op(O.OP_DROP);
+  // `[count, output, rest, self]`. The output's category, with the mutable capability the address is pinned to.
+  e.count(2).op(O.OP_PICK, O.OP_OUTPUTTOKENCATEGORY);
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP);
+  e.push(Uint8Array.from([TokenCapability.MUTABLE])).op(O.OP_CAT);
+  e.script(addressFromPinScript({ fromAltStack: true }));
+  e.op(O.OP_EQUALVERIFY);
+  e.op(O.OP_NIP);
+}
+
+/** V4: every minted master is a genesis root frame with no P2PKH caller, no origin, and an empty sender. */
+function emitMintedMasterRootRules(e: Emitter): void {
+  const O = Opcodes;
+  emitVersionOnTop(e, 0);
+  e.count(3).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_DUP);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  emitOneMintedMasterRootRule(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP);
+  e.op(O.OP_ENDIF);
+}
+
+/**
+ * V5: the minted masters' calls are checked against their callees, read from the inline blocks.
+ *
+ * A minted master has no input to read its block from, so this walks the block the transcript carries and checks
+ * each call exactly as {@link emitEdgesOfMaster} checks an input master's, with the caller named by
+ * `mintedRef(output)`. The transcript is parked beside the program bytes while the walk runs, so the walk's
+ * fixed-depth picks see the same three-item prefix an input walk does, with the loop's own state riding in the two
+ * filler slots. Entry `[M]`, exit `[M]`.
+ */
+function emitMintedMasterEdgeRules(e: Emitter): void {
+  const O = Opcodes;
+  emitVersionOnTop(e, 0);
+  e.count(3).op(O.OP_NUMEQUAL, O.OP_IF);
+  // The minted list, walked on its own copy.
+  e.op(O.OP_DUP);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  // `[M, mintedCount, mintedRest]`: the masters byte list the edge walk reads, taken from the transcript below.
+  e.count(2).op(O.OP_PICK);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_DROP);
+  // `[M, mintedCount, mintedRest, masters]` -> `[M, mintedRest, mintedCount, masters]`.
+  e.op(O.OP_SWAP, O.OP_ROT, O.OP_ROT);
+  // Park the transcript beside the program bytes, keeping the walk's alternate stack reads intact.
+  e.count(3).op(O.OP_ROLL, O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_TOALTSTACK, O.OP_TOALTSTACK);
+  // `[mintedRest, mintedCount, masters]`.
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  emitOneMintedMasterEdges(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP);
+  // Drop the settle-list remainder and restore the transcript.
+  e.op(O.OP_DROP, O.OP_FROMALTSTACK, O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_TOALTSTACK);
+  e.op(O.OP_ENDIF);
+}
+
+/**
+ * V5: one minted master's calls, read from its inline block and checked against their callees.
+ *
+ * Entry `[mintedRest, mintedCount, masters]`, exit `[mintedRest', mintedCount, masters]` with the minted master
+ * consumed. The caller is named by `mintedRef(output)`; the remaining minted list rides in the walk's transcript
+ * filler slot and the count in its roots filler slot, so the walk's own fixed-depth picks are undisturbed.
+ */
+function emitOneMintedMasterEdges(e: Emitter): void {
+  const O = Opcodes;
+  // Extract the output index and the inline block from the front of the minted list.
+  e.count(2).op(O.OP_ROLL);
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_OVER, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  // `[mintedCount, masters, output, block, rest']`: the caller id is `mintedRef(output)`.
+  e.count(2).op(O.OP_ROLL);
+  e.push(MINTED_REF_BASE);
+  e.op(O.OP_ADD);
+  // `[mintedCount, masters, block, rest', index]` -> `[rest', mintedCount, masters, index, block]`.
+  e.count(2).op(O.OP_ROLL, O.OP_TOALTSTACK);
+  e.op(O.OP_TOALTSTACK);
+  e.op(O.OP_ROT, O.OP_ROT);
+  e.op(O.OP_FROMALTSTACK, O.OP_FROMALTSTACK);
+  // The caller's origin: V4 already bound every minted master to a genesis root, so it is INDEX_NONE.
+  e.push(INDEX_NONE_NUMBER);
+  e.op(O.OP_SWAP);
+  // The caller's sender, self and value, then the calls, exactly as the input walk reads them.
+  e.script(dropPrefix(10));
+  e.script(takeLengthPrefixedField());
+  e.script(takeLengthPrefixedField());
+  e.script(takeFixedWidthField(8));
+  e.script(takeLengthPrefixedField32());
+  e.op(O.OP_NIP);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  emitOneEdge(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP, O.OP_DROP, O.OP_DROP, O.OP_DROP, O.OP_DROP);
+  e.op(O.OP_DROP);
+}
+
 /**
  * V2, the state inputs and created records each settled contract lists.
  *
@@ -681,6 +965,8 @@ function emitRootRules(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_SPLIT);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_DROP);
+  // The minted masters' output indices, one byte each, parked for the non-root caller rule to read.
+  emitMintedOutputsOnAltstack(e);
 
   e.count(0).op(O.OP_BEGIN);
   e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
@@ -701,6 +987,151 @@ function emitRootRules(e: Emitter): void {
   e.op(O.OP_ENDIF, O.OP_1ADD, O.OP_ENDIF);
   e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL, O.OP_UNTIL);
   e.op(O.OP_DROP, O.OP_DROP, O.OP_DROP);
+  e.op(O.OP_FROMALTSTACK, O.OP_DROP);
+}
+
+/**
+ * The minted masters' output indices, one byte each, parked on the alternate stack for the caller rule.
+ *
+ * Entry and exit `[M, roots, masters]`. The alternate stack top is the byte string for version 0x03 and empty for
+ * version 0x02, so a caller that carries the minted bit can be checked against it.
+ */
+function emitMintedOutputsOnAltstack(e: Emitter): void {
+  const O = Opcodes;
+  emitVersionOnTop(e, 2);
+  e.count(3).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.count(2).op(O.OP_PICK);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_0, O.OP_TOALTSTACK);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.op(O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_CAT, O.OP_TOALTSTACK);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_0, O.OP_TOALTSTACK);
+  e.op(O.OP_ENDIF);
+}
+
+/**
+ * Whether the caller on top is a minted master: it carries the minted bit and its output index is a listed one.
+ *
+ * Entry `[caller]`, exit `[0 or 1]`. The minted outputs parked on the alternate stack are peeked, so the walk runs
+ * on the same bytes the root rules built.
+ */
+function emitIsMintedMaster(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  e.push(MINTED_REF_BASE);
+  e.op(O.OP_GREATERTHANOREQUAL, O.OP_IF);
+  e.op(O.OP_DUP);
+  e.push(MINTED_REF_BASE);
+  e.op(O.OP_SUB);
+  e.op(O.OP_FROMALTSTACK, O.OP_DUP, O.OP_TOALTSTACK, O.OP_SWAP);
+  emitCountByte(e);
+  e.op(O.OP_0NOTEQUAL);
+  e.op(O.OP_NIP);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_DROP, O.OP_0);
+  e.op(O.OP_ENDIF);
+}
+
+/**
+ * The minted masters' call callees, one byte each, parked below the program bytes for the called-once rule.
+ *
+ * Entry and exit `[M, roots, masters]`. The alternate stack holds the byte string (empty for version 0x02) below the
+ * program bytes, so the edge walk's `addressFromPinScript` still reads the program and this walk reads the callees.
+ */
+function emitMintedCalleesOnAltstack(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_0, O.OP_TOALTSTACK);
+  emitVersionOnTop(e, 2);
+  e.count(3).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.count(2).op(O.OP_PICK);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_NIP);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  e.op(O.OP_SWAP);
+  emitAppendMintedCallees(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP);
+  e.op(O.OP_ENDIF);
+  // Move the accumulated callees below the program bytes: the walk ran with the accumulator on top, and the edge
+  // walk's `addressFromPinScript` must read the program back.
+  e.op(O.OP_FROMALTSTACK, O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_TOALTSTACK, O.OP_TOALTSTACK);
+}
+
+/**
+ * Peeks the minted callees parked below the program bytes, leaving the alternate stack unchanged.
+ *
+ * Entry `[...]` with the alternate stack `[callees, program]`; exit `[..., callees]` with the same alternate stack.
+ */
+function emitPeekMintedCallees(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_FROMALTSTACK, O.OP_FROMALTSTACK, O.OP_DUP, O.OP_TOALTSTACK, O.OP_SWAP, O.OP_TOALTSTACK);
+}
+
+/**
+ * Drops the minted callees parked below the program bytes, leaving the program on top of the alternate stack.
+ *
+ * Entry `[...]` with the alternate stack `[callees, program]`; exit `[...]` with the alternate stack `[program]`.
+ */
+function emitDropMintedCallees(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_FROMALTSTACK, O.OP_FROMALTSTACK, O.OP_DROP, O.OP_TOALTSTACK);
+}
+
+/**
+ * The callees of one minted master's block, appended as single bytes to the accumulator on the alternate stack.
+ *
+ * Entry `[block]`, exit `[]`. The block's header and call records are walked the way {@link consumeWitnessBlock}
+ * walks them; each call's callee is appended rather than dropped.
+ */
+function emitAppendMintedCallees(e: Emitter): void {
+  const O = Opcodes;
+  e.count(3).op(O.OP_SPLIT, O.OP_SWAP);
+  e.push(new Uint8Array([0x50, 0x57, 0x01])).op(O.OP_EQUALVERIFY);
+  requireKind(e, 0);
+  dropFront(e, 6);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  dropLengthPrefixed(e, 4);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_NIP);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.count(1).op(O.OP_SPLIT, O.OP_DROP);
+  e.op(O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_CAT, O.OP_TOALTSTACK);
+  dropFront(e, 32);
+  dropLengthPrefixed(e, 4);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP);
 }
 
 /**
@@ -740,7 +1171,10 @@ function emitCoveredFrame(e: Emitter): void {
   e.count(1).op(O.OP_PICK);
   e.count(6).op(O.OP_PICK, O.OP_SWAP);
   emitCountByte(e);
-  e.count(1).op(O.OP_NUMEQUALVERIFY);
+  // A non-root master's caller is a covered master: an input master, or a minted master named by its output.
+  e.count(2).op(O.OP_PICK);
+  emitIsMintedMaster(e);
+  e.op(O.OP_BOOLOR, O.OP_VERIFY);
   e.op(O.OP_DROP, O.OP_DROP, O.OP_DROP, O.OP_DROP);
   e.op(O.OP_ENDIF);
 }
@@ -761,6 +1195,9 @@ function emitEdgeRules(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_SPLIT);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_DROP);
+  // Park the minted masters' callees below the program bytes for the called-once rule; the execution-order walk
+  // reads them again, and `emitExecutionOrder` drops them.
+  emitMintedCalleesOnAltstack(e);
 
   e.count(0).op(O.OP_BEGIN);
   e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
@@ -981,10 +1418,9 @@ function emitDelegateEdge(e: Emitter): void {
   e.count(1).op(O.OP_PICK);
   e.count(13).op(O.OP_PICK, O.OP_EQUALVERIFY);
 
-  // The callee's own code is the implementation the call names: the address of the callee master's own category is
-  // the target the call recorded. Only the DELEGATE kind binds a target this way; an INTERNAL frame is a facet of
-  // its caller's contract rather than a proxied hop, and the head does not emit it, so it is left to the rules that
-  // do decide it.
+  // DELEGATE names the callee by the address of the callee master's own category. INTERNAL names the helper
+  // master by the lock the call recorded. That lock comparison is part of this program, so publishing it moves
+  // `addrV`. Self is compared above, before either target check.
   e.count(9).op(O.OP_PICK);
   e.count(FrameKind.DELEGATE).op(O.OP_NUMEQUAL, O.OP_IF);
   e.count(6).op(O.OP_PICK, O.OP_UTXOTOKENCATEGORY);
@@ -992,6 +1428,11 @@ function emitDelegateEdge(e: Emitter): void {
   e.count(32).op(O.OP_SPLIT, O.OP_DROP);
   e.push(Uint8Array.from([TokenCapability.MUTABLE])).op(O.OP_CAT);
   e.script(addressFromPinScript({ fromAltStack: true }));
+  e.count(9).op(O.OP_PICK, O.OP_EQUALVERIFY);
+  e.op(O.OP_ENDIF);
+  e.count(9).op(O.OP_PICK);
+  e.count(FrameKind.INTERNAL).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.count(6).op(O.OP_PICK, O.OP_UTXOBYTECODE);
   e.count(9).op(O.OP_PICK, O.OP_EQUALVERIFY);
   e.op(O.OP_ENDIF);
 }
@@ -1029,7 +1470,12 @@ function emitTimesCalled(e: Emitter): void {
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
   e.op(O.OP_1ADD, O.OP_ENDIF);
   e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL, O.OP_UNTIL);
-  e.op(O.OP_DROP, O.OP_NIP, O.OP_NIP);
+  // `[masters, target, acc, i]`: drop the loop counter, then add the minted masters' calls naming the target.
+  e.op(O.OP_DROP);
+  emitPeekMintedCallees(e);
+  e.op(O.OP_ROT);
+  emitCountByte(e);
+  e.op(O.OP_ADD, O.OP_NIP);
 }
 
 /** Entry `[index, target]`, exit `[count]`: calls of that master whose callee is the target. */
@@ -1078,6 +1524,9 @@ function emitExecutionOrder(e: Emitter): void {
   dropFront(e, 4);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_DROP);
+  // A genesis-shape transcript lists no input roots: its roots are the minted masters, whose callees seed the walk.
+  emitPeekMintedCallees(e);
+  e.op(O.OP_CAT);
   e.op(O.OP_BEGIN);
   e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
@@ -1092,6 +1541,7 @@ function emitExecutionOrder(e: Emitter): void {
   e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
   e.op(O.OP_DROP);
   requireReachedMasters(e);
+  emitDropMintedCallees(e);
 }
 
 /** Entry `[M]`, exit `[M, reached]`. One zero byte per transaction input. */
@@ -1260,6 +1710,14 @@ function emitReadOnlySubtree(e: Emitter): void {
   const O = Opcodes;
   e.op(O.OP_BEGIN);
   e.op(O.OP_DUP);
+  // A minted master is a genesis root, so it is never a read-only frame: it resolves to a root and ends the walk,
+  // because it has no input to read. Its caller reference carries the minted bit, so an input index never enters.
+  e.op(O.OP_DUP);
+  e.push(MINTED_REF_BASE);
+  e.op(O.OP_GREATERTHANOREQUAL, O.OP_IF);
+  e.op(O.OP_2DROP);
+  e.op(O.OP_0, O.OP_1);
+  e.op(O.OP_ELSE);
   emitIndexHead(e);
   e.op(O.OP_DROP);
   e.op(O.OP_ROT, O.OP_DROP);
@@ -1272,6 +1730,7 @@ function emitReadOnlySubtree(e: Emitter): void {
   e.op(O.OP_ELSE);
   e.op(O.OP_NIP);
   e.op(O.OP_0);
+  e.op(O.OP_ENDIF);
   e.op(O.OP_ENDIF);
   e.op(O.OP_UNTIL);
   e.count(FrameKind.STATIC).op(O.OP_NUMEQUAL);
@@ -1367,7 +1826,7 @@ function emitSettlementMembership(e: Emitter): void {
   e.count(FrameKind.INTERNAL).op(O.OP_NUMEQUAL);
   e.op(O.OP_BOOLOR, O.OP_IF);
   e.op(O.OP_DROP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   emitRequireDeclaredCategory(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_DROP, O.OP_ENDIF);
   e.op(O.OP_ENDIF);
@@ -1447,7 +1906,7 @@ function emitNeededCategories(e: Emitter): void {
   e.count(FrameKind.INTERNAL).op(O.OP_NUMEQUAL);
   e.op(O.OP_BOOLOR, O.OP_IF);
   e.op(O.OP_DROP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   emitAppendAccumulated(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_DROP, O.OP_ENDIF);
   e.op(O.OP_ENDIF);
@@ -1472,6 +1931,7 @@ function emitSettlementStateInputs(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  skipMintedListIfV3(e, 1);
   takeCount(e);
   // `[M, settleCount, settles]`.
   e.op(O.OP_BEGIN);
@@ -1528,6 +1988,7 @@ function emitSettlementFungibleAmounts(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  skipMintedListIfV3(e, 1);
   takeCount(e);
   // `[M, settleCount, settles]`.
   e.op(O.OP_BEGIN);
@@ -1616,6 +2077,7 @@ function emitSettlementCensus(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  skipMintedListIfV3(e, 1);
   takeCount(e);
   // `[M, settleCount, settles]`.
   e.op(O.OP_BEGIN);
@@ -1681,7 +2143,7 @@ function emitCollectOwnSends(e: Emitter): void {
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
   emitAppendMasterSends(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
@@ -1733,7 +2195,7 @@ function emitRequireContractValue(e: Emitter): void {
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   e.count(4).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
   emitFrameNet(e);
   e.op(O.OP_ROT, O.OP_ADD, O.OP_SWAP);
@@ -1811,7 +2273,7 @@ function emitCollectOwnEvents(e: Emitter): void {
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
   emitAppendMasterEvents(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
@@ -1879,14 +2341,57 @@ function emitCollectOwnRecordOutputs(e: Emitter): void {
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
   emitAppendMasterRecordOutputs(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
   e.op(O.OP_ENDIF);
   e.op(O.OP_SIZE);
   e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
-  e.op(O.OP_DROP, O.OP_FROMALTSTACK);
+  e.op(O.OP_DROP);
+  emitCollectMintedRecordOutputs(e);
+  e.op(O.OP_FROMALTSTACK);
+}
+
+/** The record outputs the minted masters on the category declare, appended to the accumulator. */
+function emitCollectMintedRecordOutputs(e: Emitter): void {
+  const O = Opcodes;
+  // `[M, settleCount, after, created, X]`. A v0x02 transcript has no minted list, so the walk is skipped.
+  e.count(4).op(O.OP_PICK);
+  e.op(O.OP_DUP, O.OP_3, O.OP_SPLIT, O.OP_NIP);
+  e.op(O.OP_1, O.OP_SPLIT, O.OP_DROP);
+  e.op(O.OP_3, O.OP_NUMEQUAL, O.OP_IF);
+  dropFront(e, 4);
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeUnsignedCount(e, 1);
+  // `[.., X, mintedCount, rest]`, `X` at depth 2.
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_OVER, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
+  e.op(O.OP_1, O.OP_PICK, O.OP_OUTPUTTOKENCATEGORY);
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP);
+  e.count(4).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  e.op(O.OP_SWAP);
+  emitCollectRecordOutputsOfBlock(e);
+  e.op(O.OP_NIP);
+  e.op(O.OP_ELSE);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  e.op(O.OP_NIP, O.OP_NIP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_DROP);
+  e.op(O.OP_ENDIF);
 }
 
 /**
@@ -1901,6 +2406,13 @@ function emitAppendMasterRecordOutputs(e: Emitter): void {
   e.op(O.OP_DUP, O.OP_INPUTBYTECODE);
   emitSoftFirstPayload(e);
   e.op(O.OP_VERIFY);
+  emitCollectRecordOutputsOfBlock(e);
+  e.op(O.OP_DROP);
+}
+
+/** Entry `[.., block]`, exit `[..]`: the raw block's record outputs appended to the accumulator. */
+function emitCollectRecordOutputsOfBlock(e: Emitter): void {
+  const O = Opcodes;
   dropFront(e, 10);
   dropLengthPrefixed(e, 2);
   dropLengthPrefixed(e, 2);
@@ -1910,7 +2422,7 @@ function emitAppendMasterRecordOutputs(e: Emitter): void {
   loopCounted(e, dropCall);
   takeUnsignedCount(e, 2);
   loopCounted(e, emitCollectSegmentRecordOutputs);
-  e.op(O.OP_DROP, O.OP_DROP);
+  e.op(O.OP_DROP);
 }
 
 /** One segment: a counted list of record entries, each one's output collected. */
@@ -2016,7 +2528,7 @@ function emitRequireRecordValues(e: Emitter): void {
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
   emitCheckMasterRecordValues(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
@@ -2160,7 +2672,7 @@ function emitDefineOrderedVisit(e: Emitter): void {
   const v = new Emitter();
   // `[X, m, onX]`.
   v.op(O.OP_DUP);
-  emitContextCategory(v);
+  emitContextCategoryInvoke(v);
   v.count(2).op(O.OP_PICK, O.OP_EQUAL);
   // `[X, m, onX, callCount, calls]`.
   v.op(O.OP_OVER, O.OP_INPUTBYTECODE);
@@ -2243,13 +2755,20 @@ function emitCollectRecordEntry(e: Emitter): void {
   e.script(takeLengthPrefixedField32());
   e.script(takeLengthPrefixedField32());
   // A created-form entry (in == 0xffff) is keyed by its output alone, the same key a kept record at that
-  // input index uses. Refuse one whose output index is still an input: it would start that record's chain
-  // from zeros. Honest creates are appended past the inputs. The record key stays four bytes.
+  // input index uses. Refuse one whose output index is an input holding the contract's token: it would start
+  // that record's chain from zeros. Honest creates sit in the trailing outputs, past every participant, so the
+  // input sharing their index, if any, is a funder's. `X` is ten items down. The record key stays four bytes.
   e.count(4).op(O.OP_PICK);
   e.push(INDEX_NONE_RAW).op(O.OP_EQUAL, O.OP_IF);
   e.count(3).op(O.OP_PICK);
   e.unsignedByteOnTop();
-  e.op(O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL, O.OP_VERIFY);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
+  e.op(O.OP_UTXOTOKENCATEGORY, O.OP_SIZE);
+  e.count(32).op(O.OP_GREATERTHANOREQUAL, O.OP_IF);
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP);
+  e.op(O.OP_ENDIF);
+  e.count(11).op(O.OP_PICK, O.OP_EQUAL, O.OP_NOT, O.OP_VERIFY);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
   e.op(O.OP_ENDIF);
   // `[.., count, in, out, viewIn, viewOut, rest]`. The views are read before the key is appended, because the marker
   // sits between the two keys and needs the end view.
@@ -2491,7 +3010,7 @@ function emitCollectOwnRecordInputs(e: Emitter): void {
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP);
-  emitContextCategory(e);
+  emitContextCategoryInvoke(e);
   e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
   emitAppendMasterRecordInputs(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
@@ -2572,17 +3091,45 @@ function emitRequireMastersRecreated(e: Emitter): void {
     em.op(O.OP_1ADD);
   });
   e.op(O.OP_DROP);
-  // An output that is a master has a master under it: nothing mints one into the transaction.
+  // An output that is a master has a master under it: nothing mints one into the transaction, except a master the
+  // transcript lists as minted, whose genesis mints it as a trailing output rather than recreating an input.
   e.op(O.OP_TXINPUTCOUNT);
   e.count(0);
   loopCounted(e, (em) => {
     emitMasterPinFlag(em, O.OP_OUTPUTTOKENCATEGORY);
     em.op(O.OP_IF);
+    emitIsMintedOutput(em, 6);
+    em.op(O.OP_NOT, O.OP_IF);
     emitRequireMasterPinFlag(em, O.OP_UTXOTOKENCATEGORY);
+    em.op(O.OP_ENDIF);
     em.op(O.OP_ENDIF);
     em.op(O.OP_1ADD);
   });
   e.op(O.OP_DROP, O.OP_FROMALTSTACK, O.OP_DROP);
+}
+
+/** Entry `[.., i]`, exit `[.., i, flag]`: whether the output index `i` is a listed minted master. */
+function emitIsMintedOutput(e: Emitter, mDepth: number): void {
+  const O = Opcodes;
+  e.count(mDepth).op(O.OP_PICK);
+  // The version byte is always a small non-negative number, so it is read without an unsigned fix-up.
+  e.op(O.OP_DUP);
+  e.op(O.OP_3, O.OP_SPLIT, O.OP_NIP);
+  e.op(O.OP_1, O.OP_SPLIT, O.OP_DROP);
+  e.op(O.OP_3, O.OP_NUMEQUAL, O.OP_IF);
+  dropFront(e, 4);
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeUnsignedCount(e, 1);
+  e.op(O.OP_NIP);
+  e.op(O.OP_OVER);
+  emitCountItem(e, 1);
+  e.op(O.OP_0NOTEQUAL);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_DROP, O.OP_0);
+  e.op(O.OP_ENDIF);
 }
 
 /**
@@ -2836,6 +3383,7 @@ function emitDeclaredCategories(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  skipMintedListIfV3(e, 1);
   takeCount(e);
   e.op(O.OP_BEGIN);
   e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
@@ -2876,6 +3424,16 @@ function emitContextCategory(e: Emitter): void {
   e.op(O.OP_BEGIN);
   // `[current, steps]`: the frame under examination is below the step count, so the copy is an `OP_OVER`.
   e.op(O.OP_OVER);
+  // A minted master is a genesis root: it resolves to its own (output-side) category and ends the walk, because it
+  // has no input to read. Its caller reference carries the minted bit, so an input index never enters this arm.
+  e.op(O.OP_DUP);
+  e.push(new Uint8Array([0x00, 0x01]));
+  e.op(O.OP_GREATERTHANOREQUAL, O.OP_IF);
+  e.op(O.OP_NIP);
+  e.push(MINTED_REF_BASE).op(O.OP_SUB, O.OP_OUTPUTTOKENCATEGORY);
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP, O.OP_NIP);
+  e.op(O.OP_1);
+  e.op(O.OP_ELSE);
   emitIndexHead(e);
   e.op(O.OP_DROP);
   e.op(O.OP_OVER);
@@ -2891,6 +3449,7 @@ function emitContextCategory(e: Emitter): void {
   e.op(O.OP_DUP, O.OP_UTXOTOKENCATEGORY);
   e.count(32).op(O.OP_SPLIT, O.OP_DROP, O.OP_NIP);
   e.count(1);
+  e.op(O.OP_ENDIF);
   e.op(O.OP_ENDIF, O.OP_UNTIL);
 }
 
@@ -2899,6 +3458,21 @@ export function contextCategoryScript(): Uint8Array {
   const e = new Emitter();
   emitContextCategory(e);
   return e.done();
+}
+
+/** Defines the context-category walk as a function the validator's checks invoke. */
+function emitDefineContextCategory(e: Emitter): void {
+  const O = Opcodes;
+  const v = new Emitter();
+  emitContextCategory(v);
+  e.push(v.done());
+  e.count(CONTEXT_CATEGORY_ID).op(O.OP_DEFINE);
+}
+
+/** Invokes the context-category walk. Entry `[current, steps]`, exit `[category]`. */
+function emitContextCategoryInvoke(e: Emitter): void {
+  const O = Opcodes;
+  e.count(CONTEXT_CATEGORY_ID).op(O.OP_INVOKE);
 }
 
 /** Entry `[haystack, needle]`, exit `[found]`. `needle` is 32 bytes; `haystack` is a run of them. */
@@ -2950,10 +3524,11 @@ function emitFirstWindow(e: Emitter, stride: number, offset: number, width: numb
 }
 
 /**
- * A covered master whose address comes from its own category presents that category's address.
+ * A spent master whose address comes from its own category presents that category's address.
  *
  * Entry `[M]`, exit `[M]`. Frames that run with their caller's address are not decided here. The address is the
- * P2SH32 lock of this program pinned to the master's own category, which is what the spent token reports.
+ * P2SH32 lock of this program pinned to the master's own category, which is what the spent token reports. A minted
+ * master has no input, so its `self` is checked from the output in {@link emitOneMintedMasterRootRule}.
  */
 function emitFrameAddresses(e: Emitter): void {
   const O = Opcodes;
@@ -3138,6 +3713,9 @@ function emitPrefixedPayload(e: Emitter, width: number): void {
 
 /** `0xffff` as an unsigned script number: the sentinel a missing index carries. */
 const INDEX_NONE_NUMBER = new Uint8Array([0xff, 0xff, 0x00]);
+
+/** `0x8000` as a script number: the high bit a minted reference's discriminator sets. */
+const MINTED_REF_BASE = new Uint8Array([0x00, 0x80, 0x00]);
 
 /** The same sentinel as the two raw bytes a witness block writes an index with. */
 const INDEX_NONE_RAW = new Uint8Array([0xff, 0xff]);

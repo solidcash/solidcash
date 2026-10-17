@@ -22,17 +22,15 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
 
 /**
- * Walls ahead: a proxied root that keeps block-oracle state beside its task array, through the shipped hop.
+ * Walls ahead: a proxied root that reads the block clock beside its task array, through the shipped hop.
  *
- * Reading `block.timestamp` gives a contract two synthesized fields: the `__block_timestamp` register, packed beside
- * the contract's own fields, and the oracle owner's key, which the compiler isolates in a data NFT of its own after
- * every other record. No source entry reads that key, so an entry that appends to the task array publishes a block
- * layout naming only the array's record, and its body addresses the array's chunk run as the records that follow
- * the ones it names. The hop's delegate frame used to declare every record of the implementation's layout, which
- * put the key's record where the body looks for the run; it now declares the records the entry names, as a callee
- * frame does, and each shape below settles (the post's, with the fixture's clock stamp beside a store call; the
- * append alone; an isolated field of the source's own in place of the key; a record the entry does not name ahead
- * of one it does). The direct call path declares the entry's own records the same way.
+ * Reading `block.timestamp` once gave a contract a register beside its own fields and the oracle owner's key in a
+ * data NFT of its own after every other record, and the hop's delegate frame declared that record where an append's
+ * body looks for the array's chunk run. The clock is now a slice of one shared oracle covenant the entry co-spends,
+ * so it adds no field and no record. The frame declares the records the entry names, as a callee frame does, and
+ * each shape below settles (the post's, with the fixture's clock stamp beside a store call; the append alone; an
+ * isolated field of the source's own after the record the entry names; a record the entry does not name ahead of
+ * one it does). The direct call path declares the entry's own records the same way.
  *
  * A second wall, reported beside it and now gone: a proxied store's `view` read whose value the root ignores enters
  * the store's proxy as a STATIC frame whose fallback forwards as a DELEGATE leg, which V10 refused; since PW10 the
@@ -389,19 +387,22 @@ function modelOf(draft: composer.CompositionDraft): FramedTransaction {
   };
 }
 
-describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: block-oracle state beside a task array', () => {
-  it('publishes what the wall stands on: the oracle key alone in the last record, the append naming the first', () => {
+describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: the block clock beside a task array', () => {
+  it('the clock adds no field or record: the layout is the one without it, the append naming the first', () => {
     const desk = compiled(postSource(true)).Desk!;
     const layout = desk.stateLayout!;
-    expect(layout.dataNftCount).toBe(2);
-    expect(layout.variables.map((variable) => `${variable.name}@${variable.nftIndex}`)).toStrictEqual([
-      'implementation@0', 'journal@0', 'tasks@0', '__block_timestamp@0', '__blockOracleOwner@1',
-    ]);
-    expect(layout.variables.at(-1)!.immutable).toBe(true);
-    // The entry names the record it reads and writes, not the key's.
+    const fields = (candidate: typeof layout): string[] => candidate.variables
+      .map((variable) => `${variable.name}@${variable.nftIndex}`);
+    expect(layout.dataNftCount).toBe(1);
+    expect(fields(layout)).toStrictEqual(['implementation@0', 'journal@0', 'tasks@0']);
+    // The entry names the one record it reads and writes, and slices the oracle through its lock pin.
     expect(namedRecords(desk, 'open')).toStrictEqual([0]);
-    // Without the clock there is no key, and the one record is all there is.
-    expect(compiled(postSource(false)).Desk!.stateLayout!.dataNftCount).toBe(1);
+    expect(desk.abi.find((entry) => entry.name === 'open')?.usesBlockOracle).toBe(true);
+    expect(desk.blockOracleLockSlots?.length).toBeGreaterThan(0);
+    // Without the clock the record is the same.
+    const unclocked = compiled(postSource(false)).Desk!.stateLayout!;
+    expect(unclocked.dataNftCount).toBe(1);
+    expect(fields(unclocked)).toStrictEqual(fields(layout));
   });
 
   it('the post\'s writes stamped with the clock beside a store call settle on the record the entry names', async () => {
@@ -412,7 +413,7 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: block-oracle state besi
     const desk = await deployProxied(chain, Desk!, [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], [journal.address]);
     const outcome = await enter(chain, desk, 'open', [TITLE, 100n, true], { IJournal: externalOf(journal) });
     // The delegate frame declares the records its entry's block layout names (`buildHopPlan`,
-    // `frameDataRecordIndices`), so the key's record no longer stands where the body reads the task's chunk.
+    // `frameDataRecordIndices`), and the clock is the co-spent oracle, not a record ahead of the task's chunk.
     expectSettled(outcome);
     expect(settledRecords(outcome)).toStrictEqual(['proxy-record-0']);
   }, 300_000);
@@ -436,7 +437,7 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: block-oracle state besi
     expect(settledRecords(outcome)).toStrictEqual(['proxy-record-0']);
   }, 300_000);
 
-  it('an isolated field of the source\'s own in place of the key settles the append the same way', async () => {
+  it('an isolated field of the source\'s own after the named record settles the append the same way', async () => {
     const chain = await freshChain();
     const desk = await deployProxied(chain, compiled(appendSource('spare')).Desk!,
       [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], []);
@@ -458,8 +459,8 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: block-oracle state besi
     const chain = await freshChain();
     const desk = await deployProxied(chain, compiled(CLOCK_ONLY_SOURCE).Desk!,
       [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], []);
-    // The key's record is declared here too, but nothing the body addresses follows it.
-    expect(desk.artifact.stateLayout!.dataNftCount).toBe(2);
+    // The clock adds no record: the entry names its one record and co-spends the oracle.
+    expect(desk.artifact.stateLayout!.dataNftCount).toBe(1);
     expect(namedRecords(desk.artifact, 'open')).toStrictEqual([0]);
     expectSettled(await enter(chain, desk, 'open', []));
   }, 300_000);

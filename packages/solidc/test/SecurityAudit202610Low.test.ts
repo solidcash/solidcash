@@ -3,10 +3,12 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
-  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin,
+  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, generateSigningSerializationBch, hash256,
+  hexToBin, secp256k1, type Output,
 } from '@bitauth/libauth';
 import {
-  asmToScript, bytecodeToScript, encodeIntegerValue, scriptToAsm, scriptToBytecode, type Artifact,
+  asmToScript, blockOracleLockingBytecode, blockOracleRedeemScript, blockOracleUpdateUnlocking, bytecodeToScript,
+  encodeBlockOracleCommitment, encodeIntegerValue, hash160, scriptToAsm, scriptToBytecode, type Artifact,
 } from '@solidcash/utils';
 import { compileString, compileStringSplit } from '../src/index.js';
 
@@ -54,6 +56,43 @@ function spend(artifact: Artifact, args: Uint8Array[] = [], inputValue = VALUE):
       outputs: [{ lockingBytecode: FUNDER, valueSatoshis: 1_000n }],
     },
   });
+}
+
+const ORACLE_CATEGORY = new Uint8Array(32).fill(0x71);
+const ORACLE_OWNER_KEY = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 0 ? 0x02 : 0x11));
+
+/** An owner-signed spend of the block oracle covenant from one (number, timestamp) to another. */
+function oracleUpdate(locktime: number, from: [bigint, bigint], to: [bigint, bigint]): true | string {
+  const ownerPub = secp256k1.derivePublicKeyCompressed(ORACLE_OWNER_KEY) as Uint8Array;
+  const record = ([number, timestamp]: [bigint, bigint]): Uint8Array => encodeBlockOracleCommitment(
+    hash160(ownerPub), { number, timestamp, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: Uint8Array.of(0x51) },
+  );
+  const lock = blockOracleLockingBytecode(ORACLE_CATEGORY);
+  const token = (commitment: Uint8Array): NonNullable<Output['token']> => ({
+    category: ORACLE_CATEGORY, amount: 0n, nft: { capability: 'mutable', commitment },
+  });
+  const next = record(to);
+  const sourceOutputs: Output[] = [{ lockingBytecode: lock, valueSatoshis: VALUE, token: token(record(from)) }];
+  const transaction = {
+    version: 2,
+    locktime,
+    inputs: [{
+      outpointIndex: 0,
+      outpointTransactionHash: Uint8Array.from({ length: 32 }, () => 0x61),
+      sequenceNumber: 0xfffffffe,
+      unlockingBytecode: new Uint8Array() as Uint8Array,
+    }],
+    outputs: [{ lockingBytecode: lock, valueSatoshis: VALUE, token: token(next) }],
+  };
+  const sighash = Uint8Array.of(0x41);
+  const digest = hash256(generateSigningSerializationBch({ inputIndex: 0, sourceOutputs, transaction }, {
+    coveredBytecode: blockOracleRedeemScript(ORACLE_CATEGORY), signingSerializationType: sighash,
+  }));
+  const signature = secp256k1.signMessageHashSchnorr(ORACLE_OWNER_KEY, digest) as Uint8Array;
+  transaction.inputs[0].unlockingBytecode = blockOracleUpdateUnlocking(
+    ORACLE_CATEGORY, ownerPub, Uint8Array.from([...signature, ...sighash]), next,
+  );
+  return vm.verify({ sourceOutputs, transaction });
 }
 
 describe('October 2026 low holes', () => {
@@ -125,7 +164,7 @@ describe('October 2026 low holes', () => {
   });
 
   it('CRYPTO-6 block.timestamp warns and a timestamp update cannot precede the chain', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       const artifact = compileString(
         `${P} contract C { function f() { require(block.timestamp >= 0); } }`,
@@ -133,10 +172,21 @@ describe('October 2026 low holes', () => {
       );
       const warnings = spy.mock.calls.map((call) => String(call[0])).join('\n');
       expect(warnings).toContain('block.timestamp is the last value the oracle owner wrote');
-      expect(asmOf(artifact)).toContain('OP_CHECKLOCKTIMEVERIFY');
+      // The reader slices the shared oracle covenant, and that covenant bounds the owner's update.
+      expect(artifact.usesBlockOracle).toBe(true);
     } finally {
       spy.mockRestore();
     }
+    const time = 1_700_000_000n;
+    const height = 1000;
+    expect(oracleUpdate(Number(time), [1000n, time - 600n], [1000n, time]), 'CRYPTO-6 time at nLockTime').toBe(true);
+    expect(oracleUpdate(Number(time), [1000n, time - 600n], [1000n, time + 1n]), 'CRYPTO-6 time ahead of nLockTime')
+      .not.toBe(true);
+    expect(oracleUpdate(Number(time), [1000n, time - 600n], [1001n, time]), 'CRYPTO-6 time update moves the number')
+      .not.toBe(true);
+    expect(oracleUpdate(height, [999n, time], [1000n, time]), 'CRYPTO-6 height update').toBe(true);
+    expect(oracleUpdate(height, [999n, time], [1000n, time + 1n]), 'CRYPTO-6 height update moves the timestamp')
+      .not.toBe(true);
   });
 
   it('SEM-7 a same-name internal overload of a split entry stays internal', () => {

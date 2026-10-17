@@ -75,6 +75,31 @@ describe('logical CREATE identity at getAddress()', () => {
       .toThrow('Ambiguous CREATE identity anchors');
   });
 
+  it.each([false, true])('keeps reserved output coordinates when splitting a large SCID funding pad (suffix %s)', (withSuffix) => {
+    const lock = Uint8Array.of(0xaa, 0x20, 0xe6);
+    const funderLock = Uint8Array.of(0x76, 0xa9, 0x14);
+    const category = 'ab'.repeat(32);
+    const commitment = '5343494401dead';
+    const interior = { to: Uint8Array.of(0x6a), amount: 1000n };
+    const entry = { to: Uint8Array.of(0x51), amount: 1200n,
+      token: { category, nft: { capability: 'mutable', commitment: '01' } } };
+    const suffix = { to: Uint8Array.of(0x6a), amount: 1000n };
+    const outputs: Array<{ to?: Uint8Array; amount?: bigint; token?: object }> = [
+      { to: funderLock, amount: 100_000n }, interior, entry, ...(withSuffix ? [suffix] : []),
+    ];
+    const total = outputs.reduce((sum, output) => sum + (output.amount ?? 0n), 0n);
+    const inputs = [{ satoshis: 1200n, unlocker: { generateLockingBytecode: () => lock },
+      token: { category, amount: 0n, nft: { capability: 'none', commitment } } }];
+    expect(reassertScidIdentityOutputs(outputs, inputs, new Set([1, 2]))).toBe(1);
+    expect(outputs[0].to).toBe(lock);
+    expect(outputs[1]).toBe(interior);
+    expect(outputs[2]).toBe(entry);
+    if (withSuffix) expect(outputs.at(-1)).toBe(suffix);
+    expect(outputs[3]).toEqual({ to: funderLock, amount: 98_800n });
+    expect(outputs.reduce((sum, output) => sum + (output.amount ?? 0n), 0n)).toBe(total);
+    expect(reassertScidIdentityOutputs(outputs, inputs, new Set([1, 2]))).toBe(0);
+  });
+
   it('recognizes SCID v1 commitments', () => {
     expect(isScidIdentityCommitment('5343494401abcd')).toBe(true);
     expect(isScidIdentityCommitment('53434944')).toBe(false);
@@ -406,8 +431,10 @@ describe('logical CREATE identity at getAddress()', () => {
     if (!existsSync(path)) return;
     const { signer } = await fundedSigner('b4');
     const artifact = JSON.parse(readFileSync(path, 'utf8'));
+    // The bench compiles FakeToken framed, whose getAddress() is the lock its frames present: the SCID anchor
+    // sits at the CREATE address the deploy derives, which getAddress() is only in the direct convention.
+    const logical = deriveLogicalCreateAddress(signer.getAddress(), await signer.getNonce());
     const token = await new ContractFactory(artifact, signer).deploy('Test', 'TST');
-    const logical = await token.getAddress();
     const user1 = new Signer(freshKey(), signer.provider);
     const user2 = new Signer(freshKey(), signer.provider);
     const marketplace = new Signer(freshKey(), signer.provider);
@@ -438,14 +465,17 @@ describe('logical CREATE identity at getAddress()', () => {
     if (!existsSync(path)) return;
     const { signer } = await fundedSigner('b3');
     const artifact = JSON.parse(readFileSync(path, 'utf8'));
+    // The bench compiles FakeToken framed, whose getAddress() is the lock its frames present: the SCID anchor
+    // sits at the CREATE address the deploy derives, which getAddress() is only in the direct convention.
+    const logical = deriveLogicalCreateAddress(signer.getAddress(), await signer.getNonce());
     const token = await new ContractFactory(artifact, signer).deploy('Test', 'TST');
-    const before = await resolveLogicalIdentity(signer.provider, await token.getAddress());
+    const before = await resolveLogicalIdentity(signer.provider, logical);
     expect(before.categoryId).toBe(token.categoryId);
     const recipient = new Signer(freshKey(), signer.provider);
     await token.transfer(recipient.getAddress(), 10n);
-    const after = await resolveLogicalIdentity(signer.provider, await token.getAddress());
+    const after = await resolveLogicalIdentity(signer.provider, logical);
     expect(after.categoryId).toBe(token.categoryId);
-    expect((await signer.provider.getUtxos(await token.getAddress()))
+    expect((await signer.provider.getUtxos(logical))
       .filter((utxo) => isScidIdentityCommitment(utxo.token?.nft?.commitment))).toHaveLength(1);
   });
 });

@@ -64,7 +64,8 @@ export function setFunderUtxos(
   for (const g of host.externalOutStateUtxoGroups) {
     // Rebuild the same physical band as constructor assembly. Omitting the compute inputs here replaces the
     // callee's keccak slot with a funder while its side-car recreation remains in the matching output slot.
-    externalOutStateInputs.push(g.masterUtxo as UnlockableUtxo, ...g.dataNftUtxos, ...(g.keccakInputs ?? []));
+    externalOutStateInputs.push(g.masterUtxo as UnlockableUtxo, ...g.dataNftUtxos,
+      ...(g.blockhashCoSpendUtxos ?? []), ...(g.keccakInputs ?? []));
   }
   const externalCallInputs: UnlockableUtxo[] = [];
   for (const g of host.externalCallUtxoGroups) {

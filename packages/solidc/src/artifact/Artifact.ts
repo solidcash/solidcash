@@ -35,6 +35,7 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
+import { stateNftPackingLimit } from '../semantic/maxEncodedSize.js';
 import { hasEffectiveCallValue, hasExternalCallValueEffect } from '../semantic/branchOps.js';
 import { externalResultEncoding } from '../semantic/ExternalResultEncoding.js';
 import {
@@ -201,6 +202,75 @@ const reachedSignature65Recovery = (func: FunctionDefinitionNode, sourceSite: st
     && signatureWord('s', 32n, 64n) && signatureV();
 };
 
+type ComputeOperand = ComputeSideCarRecipesAbi['keccak'][number];
+
+/**
+ * A sole recovery whose operands the body computes from its own unwritten visible arguments has no pre-call
+ * predicate. Publish those operands (casts and `.reverse()` over arguments); the A/B covenant still binds the
+ * replayed blob to the value the body computes.
+ */
+const bodyRecoveryRecipe = (
+  func: FunctionDefinitionNode,
+  replayable: (node: ComputeOperand | undefined) => node is ComputeOperand,
+  typed: (node: ComputeOperand) => ComputeOperand,
+): ComputeSideCarRecipesAbi | undefined => {
+  if ((func.keccakPreimageParams?.length ?? 0) !== 0 || func.ecrecoverCallCount !== 1
+    || (func.ecrecoverEvmCallCount ?? 0) !== 0) return undefined;
+  const skipped = new Set(['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+    'referencedContract', 'stateVariable', 'collection']);
+  const recoveries: FunctionCallNode[] = [];
+  const written = new Set<string>();
+  const visited = new Set<Node>();
+  const walk = (node: Node): void => {
+    if (visited.has(node)) return;
+    visited.add(node);
+    if (node instanceof FunctionCallNode && (node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
+      || node.identifier.name === GlobalFunction.ECRECOVER_P2PKH)) recoveries.push(node);
+    if (node instanceof AssignNode) written.add(node.identifier.name);
+    if (node instanceof ArrayAssignNode || node instanceof VariableDefinitionNode) written.add(node.name);
+    if (node instanceof TupleAssignmentNode) {
+      for (const element of node.elements) if (element.name) written.add(element.name);
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (skipped.has(key)) continue;
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+    }
+  };
+  walk(func.body);
+  // Direct-argument recoveries already resolve from `ecrecoverArgParams`.
+  if (recoveries.length !== 1 || recoveries[0].parameters.length !== 4
+    || recoveries[0].parameters.every((parameter) => parameter instanceof IdentifierNode)) return undefined;
+  const visible = func.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  const operand = (expression: ExpressionNode): ComputeOperand | undefined => {
+    if (expression instanceof IdentifierNode) {
+      const paramIndex = visible.findIndex((parameter) => parameter.name === expression.name);
+      return paramIndex < 0 || written.has(expression.name) ? undefined
+        : { kind: 'source', source: { kind: 'forward', paramIndex } };
+    }
+    if (expression instanceof CastNode) {
+      const inner = operand(expression.expression);
+      return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
+    }
+    if (expression instanceof UnaryOpNode && expression.operator === UnaryOperator.REVERSE) {
+      const inner = operand(expression.expression);
+      return inner && { kind: 'unary', operator: UnaryOperator.REVERSE, expression: inner };
+    }
+    return undefined;
+  };
+  const args = recoveries[0].parameters.map(operand);
+  if (args.some((arg) => arg === undefined)) return undefined;
+  const recipeArgs = (args as ComputeOperand[]).map(typed);
+  if (!recipeArgs.every(replayable)) return undefined;
+  return {
+    version: 1,
+    keccak: [],
+    ecrecover: [{
+      kind: 'args4', args: recipeArgs as [ComputeOperand, ComputeOperand, ComputeOperand, ComputeOperand],
+    }],
+  };
+};
+
 /**
  * Publish compute operands only when one source predicate carries the complete, unambiguous call family.
  * `preCallRequires` are compiler-serialized from source `require` statements at their actual program point and
@@ -252,6 +322,7 @@ const computeSideCarRecipesOf = (
     if (node.kind === 'bytesConcat' || node.kind === 'abiEncode') {
       return node.args !== undefined && node.args.every(replayable);
     }
+    if (node.kind === 'unary') return node.operator === UnaryOperator.REVERSE && replayable(node.expression);
     return node.kind === 'call' && node.name === 'keccak256'
       && node.args?.length === 1 && replayable(node.args[0]);
   };
@@ -312,7 +383,7 @@ const computeSideCarRecipesOf = (
       candidates.push({ version: 1, keccak, ecrecover });
     }
   }
-  if (candidates.length === 0) return undefined;
+  if (candidates.length === 0) return bodyRecoveryRecipe(func, replayable, typed);
   const first = JSON.stringify(candidates[0]);
   if (!candidates.every((candidate) => JSON.stringify(candidate) === first)) return undefined;
   return candidates[0];
@@ -3044,12 +3115,23 @@ function buildFunctionAbiMetadata(
     // set from the exact producerResult components which code generation and the SDK evaluate.
     const producerByCallsite = new Map(slots.map((slot) => [slot.slotIndex, slot] as const));
     const result = new Map<string, ExternalResultConsumerAbi>();
+    const canonicalRecipes = new Map<string, WeakMap<ExternalCallExpression, ExternalCallExpression>>();
     const canonicalize = (
       expression: ExternalCallExpression,
       consumerCallsiteId: number,
       lane: number | 'condition' | 'iterationDomain',
       dominanceCallsiteId = consumerCallsiteId,
     ): ExternalCallExpression => {
+      // A reconstructed local can share its earlier values through many fields. Preserve that DAG while
+      // normalizing, without reusing a producer's validation or dependency edges in another consumer lane.
+      const context = `${consumerCallsiteId}:${lane}:${dominanceCallsiteId}`;
+      let recipes = canonicalRecipes.get(context);
+      if (recipes === undefined) {
+        recipes = new WeakMap();
+        canonicalRecipes.set(context, recipes);
+      }
+      const cached = recipes.get(expression);
+      if (cached !== undefined) return cached;
       const rewrite = (child: ExternalCallExpression | undefined): ExternalCallExpression | undefined =>
         child && canonicalize(child, consumerCallsiteId, lane, dominanceCallsiteId);
       const rewriteSource = (source: ExternalCallArgSource | undefined): ExternalCallArgSource | undefined =>
@@ -3079,7 +3161,10 @@ function buildFunctionAbiMetadata(
         ...(expression.args && { args: expression.args.map((child) => rewrite(child)!) }),
         ...(expression.statements && { statements: expression.statements.map(rewriteStatement) }),
       };
-      if (normalized.kind !== 'externalCall' && normalized.kind !== 'producerResult') return normalized;
+      if (normalized.kind !== 'externalCall' && normalized.kind !== 'producerResult') {
+        recipes.set(expression, normalized);
+        return normalized;
+      }
       const producerCallsiteId = normalized.callsiteId;
       const producer = producerCallsiteId === undefined
         ? undefined : producerByCallsite.get(producerCallsiteId);
@@ -3107,13 +3192,15 @@ function buildFunctionAbiMetadata(
         producerSourceCallsiteId,
         resultIndex,
       });
-      return {
+      const producerResult: ExternalCallExpression = {
         kind: 'producerResult',
         callsiteId: producerCallsiteId,
         sourceCallsiteId: producerSourceCallsiteId,
         resultIndex,
         ...(normalized.type && { type: normalized.type }),
       };
+      recipes.set(expression, producerResult);
+      return producerResult;
     };
     const canonicalizeSources = (
       sources: ExternalCallArgSource[] | undefined,
@@ -3447,6 +3534,7 @@ function buildFunctionAbiMetadata(
         ...(eventSites.some((emit) => emit.runtimeLoopEffectOrder !== undefined) && {
           effectOrder: eventSites.map((emit, index) => emit.runtimeLoopEffectOrder ?? index),
         }),
+        ...(loop.chunked && { chunked: true as const }),
       };
     });
   })();
@@ -3480,8 +3568,17 @@ function buildFunctionAbiMetadata(
         transfer.runtimeLoopTransferCondition && conditions[index] === null)) {
         throw new Error(`Runtime transfer condition in '${func.name}' cannot be represented in artifact metadata`);
       }
+      const sourceBound = loop.permutationParam
+        ? func.runtimeCounterLoopBounds?.get(loop.permutationParam) : undefined;
+      const iterationBound = sourceBound && serializeCondition(
+        sourceBound, undefined, new Set(), new Set(),
+      );
+      if (sourceBound && !iterationBound) {
+        throw new Error(`Runtime transfer bound in '${func.name}' cannot be represented in artifact metadata`);
+      }
       return {
         permutationParam: loop.permutationParam,
+        ...(iterationBound && { iterationBound }),
         siteCount: transferSites.length,
         ...(transferSites.some((transfer) => transfer instanceof TokenContainerMethodStatementNode) && {
           siteKinds: transferSites.map((transfer) => transfer instanceof TokenContainerMethodStatementNode
@@ -3817,6 +3914,9 @@ function buildFunctionAbiMetadata(
         }
         return {
           callsiteId: ec.slotIndex,
+          ...(compilerOptions.composition !== 'framed' && ec.readonlyReturnBindingSelector !== undefined && {
+            readonlyReturnBinding: { version: 1 as const, selector: binToHex(ec.readonlyReturnBindingSelector) },
+          }),
           ...(ec.sourceEffectOrdinal !== undefined && { sourceEffectOrdinal: ec.sourceEffectOrdinal }),
           ...(ec.sourceCallNode && {
             sourceLocation: {
@@ -3926,6 +4026,8 @@ function buildFunctionAbiMetadata(
       && { keccakPreimageParams: func.keccakPreimageParams }),
     ...(func.keccakInLoop && { keccakInLoop: true }),
     ...(func.keccakLoopReads && { keccakLoopReads: true }),
+    ...(func.keccakLoopPrecedesTrailingUser && { keccakLoopPrecedesTrailingUser: true }),
+    ...(func.keccakChainReads && { keccakChainReads: true }),
     ...(func.ecrecoverCompute && { ecrecoverCompute: true }),
     ...(computeSideCarRecipes && { computeSideCarRecipes }),
     ...(func.ecrecoverArgParams && func.ecrecoverArgParams.length > 0
@@ -3972,6 +4074,8 @@ function buildFunctionAbiMetadata(
         collection: ci.collection,
         mode: ci.mode,
         iterationIndex: ci.iterationIndex,
+        ...(ci.windowCursor !== undefined && { windowCursor: ci.windowCursor }),
+        ...(ci.windowBound !== undefined && { windowBound: ci.windowBound }),
       })),
     }),
     ...(func.dynamicReads && func.dynamicReads.length > 0 && { dynamicReads: [...func.dynamicReads] }),
@@ -4115,6 +4219,7 @@ function buildFunctionAbiMetadata(
     }),
     ...(func.sortedBatchInfo && func.sortedBatchInfo.length > 0 && { sortedBatchInfo: [...func.sortedBatchInfo] }),
     ...(func.blockhashReads && func.blockhashReads.length > 0 && { blockhashReads: [...func.blockhashReads] }),
+    ...(func.usesBlockOracle && { usesBlockOracle: true }),
     ...(func.messageBusBlockhashReadWidth && func.messageBusBlockhashReads && {
       graphBlockhashOracle: {
         inputBaseParameter: '__internal__blockhashInputIndex' as const,
@@ -4408,6 +4513,8 @@ export function generateArtifact(
         ? Math.max(...contract.stateVariables.map((sv) => sv.nftIndex)) + 1
         : 0,
       commitmentLimit: compilerOptions.commitmentLimit ?? 128,
+      ...(compilerOptions.tagSingletonDataNfts === true && contract.stateVariables.length > 0
+        && contract.stateVariables.every((variable) => variable.nftIndex === 0) && { taggedDataNfts: true as const }),
       ...(contract.constructorDef && {
         constructorInputs: contract.constructorDef.parameters.map((p) => ({
           name: p.name,
@@ -4618,6 +4725,7 @@ export function generateArtifact(
         enforceFinalRequire: compilerOptions.enforceFinalRequire,
         allowUnsafeOperations: compilerOptions.allowUnsafeOperations,
         commitmentLimit: compilerOptions.commitmentLimit,
+        ...(compilerOptions.tagSingletonDataNfts === true && { tagSingletonDataNfts: true }),
         messageBus: compilerOptions.messageBus,
         // Published only when the source chose it: omitting it follows the mode, which `resolveAddressForm`
         // re-derives on the artifact, so an artifact that names no form reads back the one its compile used
@@ -4666,7 +4774,8 @@ function buildExternalInterfaceInfo(
       nftIndex++; fieldIndex = 0; currentNftUsed = 0;
     } else if (isStruct) {
       // Struct must be placed last in its NFT (same rule as SymbolTableTraversal)
-      if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+      if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex,
+        compilerOptions.tagSingletonDataNfts) && currentNftUsed > 0) {
         nftIndex++; fieldIndex = 0; currentNftUsed = 0;
       }
       variables.push({ name: sv.name, type: typeStr, nftIndex, fieldIndex });
@@ -4674,7 +4783,8 @@ function buildExternalInterfaceInfo(
       // Force next var to go to a new NFT since struct must be last
       nftIndex++; fieldIndex = 0; currentNftUsed = 0;
     } else {
-      if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+      if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex,
+        compilerOptions.tagSingletonDataNfts) && currentNftUsed > 0) {
         nftIndex++; fieldIndex = 0; currentNftUsed = 0;
       }
       variables.push({ name: sv.name, type: typeStr, nftIndex, fieldIndex });
@@ -4715,6 +4825,7 @@ function buildExternalInterfaceInfo(
       variables,
       dataNftCount,
       commitmentLimit,
+      ...(compilerOptions.tagSingletonDataNfts === true && dataNftCount === 1 && { taggedDataNfts: true as const }),
       ...(collections && { collections }),
     },
     ...(ifaceFunctions.length > 0 && { abi: ifaceFunctions }),

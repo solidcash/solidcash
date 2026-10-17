@@ -770,25 +770,30 @@ side-car at offset E-j. e2e-verified (positive == the ethers wallet address; neg
 ## Loops (SHIPPED) - the general dynamic model
 
 `for (i<n) ecrecoverPubKey(h[i],..)` works for ANY bound - runtime OR compile-time - via the keccak-style dynamic-loop
-model (no unrolling). A per-iteration counter pushed before `OP_BEGIN` indexes the recovery PAIR forward at
-`[master+1+2*counter]` (A) / `[master+2+2*counter]` (B); the recovery covenants already self-preserve via
-`OP_INPUTINDEX` (input idx == output idx), so the same forward covenant serves every iteration. The counter increments
-each iteration. The codegen records the loop args as `"h[]"` (array-indexed by the loop variable) and the SDK
-(`addStatelessEcrecoverLoopCoSpends`) co-spends N = the sig-array length pairs, spliced forward right after the master.
-Sound: each iteration BINDS its pair's argBlob == `(h[k],v[k],r[k],s[k])`, so a wrong/missing pair fails closed
-(a wrong iteration signature is rejected). e2e-verified with both a fixed bound and a runtime bound (`for (i<n)`, N=3).
+model (no unrolling). A per-iteration counter pushed before `OP_BEGIN` indexes the recovery TRIPLE forward at
+`[master+1+3*counter]` (A) / `[master+2+3*counter]` (M) / `[master+3+3*counter]` (B2/B3); the recovery covenants
+already self-preserve via `OP_INPUTINDEX` (input idx == output idx), so the same forward covenant serves every
+iteration. The counter increments each iteration. The codegen records the loop args as `"h[]"` (array-indexed by the
+loop variable) and the SDK (`addStatelessEcrecoverLoopCoSpends`) co-spends N = the sig-array length triples, spliced
+forward right after the master. A normal (2-way) recovery fills M with an inert balanced funder and reads B2 (A two
+inputs back); a width-0 recovery fills M with the middle covenant and reads B3 (M one input back) - the same 3-way
+fallback the straight-line path uses. Sound: each iteration BINDS its triple's argBlob == `(h[k],v[k],r[k],s[k])`, so
+a wrong/missing triple fails closed (a wrong iteration signature is rejected). e2e-verified with a fixed bound, a
+runtime bound (`for (i<n)`, N=3 and N=4), and a width-0 signature recovered through the in-loop A/M/B3 fallback.
 
 One subtlety the keccak loop does not have: ecrecover CATs its 4 args into a single `argBlob`, so the codegen keeps
 the stack tracker in sync with the VM (`popFromStack` after the CATs and after the arg-bind) so the counter's
 `OP_PICK` depth stays exact across iterations.
 
-**Per-iteration integrity is a cheap `OP_UTXOBYTECODE` compare, not covenant re-hashing.** A loop verifies each pair
-is genuine by `OP_UTXOBYTECODE(idx) == <baked shared P2SH lock>` (35-byte compare), NOT by reading + `hash256`-ing the
-~7.4 KB / ~3.3 KB A/B covenants every iteration. P2SH already binds `hash256(redeem)` to the lock, so this is exactly
-as sound. It also lets the loop skip reading B's unlocking entirely (B is needed only for its integrity + its output
-Q). This cut the per-iteration op-cost from ~381 K to ~133 K, lifting the master's **op-budget cap from ~3 to ~15**
-iterations. Loop side-cars are therefore always shared-salt (`ECRECOVER_COMPUTE_A_SHARED_LOCK` / `_B_SHARED_LOCK`,
-computed constants); branding is not needed for soundness (the argBlob bind + A->B hash chain secures the result).
+**Per-iteration integrity is a cheap `OP_UTXOBYTECODE` compare, not covenant re-hashing.** A loop verifies each
+side-car is genuine by `OP_UTXOBYTECODE(idx) == <baked shared P2SH lock>` (35-byte compare), NOT by reading +
+`hash256`-ing the ~7.4 KB / ~3.3 KB covenants every iteration. P2SH already binds `hash256(redeem)` to the lock, so
+this is exactly as sound. It also lets the loop skip reading B's unlocking entirely (B is needed only for its
+integrity + its output Q). This cut the per-iteration op-cost from ~381 K to ~133 K, lifting the master's
+**op-budget cap from ~3 to ~15** iterations. Loop side-cars are therefore always shared-salt
+(`ECRECOVER_COMPUTE_A_SHARED_LOCK` / `_B2_SHARED_LOCK` / `_B3_SHARED_LOCK` computed constants); the B slot accepts
+either B2 or B3 (the two shapes differ only in which neighbor they read), so one loop handles both the 2-way and the
+width-0 recovery. Branding is not needed for soundness (the argBlob bind + A->M->B hash chain secures the result).
 
 **The binding wall is now the 100 KB standard tx size, not the op-budget.** Each recovery co-spends ~20 KB of side-car
 unlockings (each ~10 KB of op-budget pad, which funds that covenant's own ~8 M-op ladder half - unavoidable), so a
@@ -799,7 +804,8 @@ submission (up to the op-budget cap of ~15). e2e-verified: fixed-bound, runtime-
 
 A stateful contract (with storage) authenticates via `ecrecoverPubKey` too. The recovery pair is BRANDED to the
 contract's token category (the covenant/resolve use the reversed category, matching `OP_UTXOTOKENCATEGORY`'s internal
-byte order), positioned at the `ecrecoverSideCar` block-layout slots (A = slot 2i, B = slot 2i+1), and threaded through
+byte order), positioned at the `ecrecoverSideCar` block-layout slots (A/M/B triples: A = slot 3i, M = slot 3i+1, B = slot 3i+2,
+the M slot an inert funder for a 2-way recovery), and threaded through
 auto-derivation - `StatefulContract._resolveEcrecoverComputeCoSpends` (mirrors `_resolveKeccakComputeCoSpends`: find
 the A/B UTXOs, compute the witness, VM-probe the split, build the pair) feeds both the derivation probe (`runProbe`, so
 the state derives while the master reads the pair) and the final tx, where `StatefulTransactionBuilder` places the A/B

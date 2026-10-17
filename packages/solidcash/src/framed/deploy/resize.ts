@@ -12,12 +12,13 @@ import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transactio
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { framedLifecycle, framedValidator } from 'solidc/runtime';
-import type { Artifact } from '@solidcash/utils';
+import type { Artifact, FunctionSplitBundle } from '@solidcash/utils';
 import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type SignatureTemplate from '../../SignatureTemplate.js';
 import { createSighashPreimage } from '../../utils.js';
 import { requireFramedFunderSighash } from '../sighash.js';
+import { mastersForEntry, requireFunctionSplitShardBySelector } from './entry-pool.js';
 import { deployMaster } from './material.js';
 import { readFramedDeployment } from './records.js';
 
@@ -47,6 +48,15 @@ export interface FramedResizeOptions {
   /** The masters a merge retires, the pool's last `count` by default. */
   readonly retire?: readonly Utxo[];
   readonly validatorProgram?: Uint8Array;
+  /**
+   * The entry whose pool a function-split resize mints or burns.
+   *
+   * With {@link split}, minted and burned outputs use that entry's filled lock. Another entry's masters are
+   * left in place.
+   */
+  readonly selector?: string;
+  /** The `split: 'func'` bundle `selector` names an entry of. */
+  readonly split?: FunctionSplitBundle;
 }
 
 const MINTING = (categoryId: string): NonNullable<Utxo['token']> => ({
@@ -130,11 +140,32 @@ export async function resizeFramedPool(
     );
   }
   const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
-  const deployed = deployMaster(artifact, hexToBin(categoryId), validatorProgram);
+  let deployed = deployMaster(artifact, hexToBin(categoryId), validatorProgram);
   const { masters } = await readFramedDeployment(provider, categoryId, artifact.stateLayout);
+  let pool = masters;
+  if (options.selector !== undefined || options.split !== undefined) {
+    if (options.selector === undefined || options.split === undefined) {
+      throw new FramedResizeError('a function split or merge names the entry selector and the split bundle');
+    }
+    let shard;
+    try {
+      shard = requireFunctionSplitShardBySelector(options.split, options.selector);
+    } catch (error) {
+      throw new FramedResizeError((error as Error).message);
+    }
+    deployed = deployMaster(shard.artifact, hexToBin(categoryId), validatorProgram);
+    try {
+      pool = mastersForEntry(masters, deployed.lockingBytecode, shard.function);
+    } catch (error) {
+      throw new FramedResizeError((error as Error).message);
+    }
+    if (pool.length === 0) {
+      throw new FramedResizeError(`function "${shard.function}" has no master in its pool`);
+    }
+  }
   const outpoint = (utxo: Utxo): string => `${utxo.txid}:${utxo.vout}`;
-  const retired = kind === 'merge' ? (options.retire ?? masters.slice(-count)) : [];
-  const keeper = masters.find((master) => !retired.some((utxo) => outpoint(utxo) === outpoint(master)));
+  const retired = kind === 'merge' ? (options.retire ?? pool.slice(-count)) : [];
+  const keeper = pool.find((master) => !retired.some((utxo) => outpoint(utxo) === outpoint(master)));
   if (keeper === undefined) {
     throw new FramedResizeError(`category ${categoryId} holds no master to keep beside the ${kind}`);
   }

@@ -15,13 +15,14 @@ import type { ContractUnlocker, Output, UnlockableUtxo, Unlocker, Utxo } from '.
 import { isContractUnlocker } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { withCompilerRouteMessageEnvelope, withProxyForwardMessageEnvelope } from '../Contract.js';
-import { addressToLockScript } from '../utils.js';
+import { addressToLockScript, calculateDust } from '../utils.js';
 import {
   decodeAuthenticatedProducerResultVector, StatefulContract, StatefulFunctionCall,
 } from '../stateful/StatefulContract.js';
 import { reassertRoutedReadOnlyDynamicChunkTwins } from '../stateful/mutable-output-reassert.js';
 import { resolveMaterializedDynamicWriteOutputBase } from '../stateful/stb-reconcile-dynamic-chunk-output-witnesses.js';
 import { resolvePhysicalPredOutWitnesses } from './compose-predout-witness.js';
+import { shareBlockOracleInput } from './compose-block-oracle.js';
 import {
   chunksFromValue, persistValueChunkLock, valueChunkIndexFromCommitment, valueChunkWriteResourceIdentity,
   type ValueChunkWriteDescriptor,
@@ -29,7 +30,7 @@ import {
 import { isValidComputedValueChunkCommitmentEncoding } from '../stateful/computed-value-chunk-pin.js';
 import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import type { ResolvedLogicalIdentity } from '../stateful/logical-identity.js';
+import { isScidIdentityCommitment, type ResolvedLogicalIdentity } from '../stateful/logical-identity.js';
 import {
   createDestroyDataNftUnlocker, createMessageBusVerifierUnlocker,
   getDynamicChunkAddress, getMessageBusEnvelopeTransport,
@@ -147,7 +148,7 @@ export interface AssembleAtomicCompositionContext {
   categories: readonly string[];
   logicalIdentities: Map<number, ResolvedLogicalIdentity>;
   runtimeEventSlots: Map<number, Array<{
-    participant: number; offset: number; runtimeRow: number; eventSignature: string;
+    participant: number; offset: number; runtimeRow: number; eventSignature: string; chunked?: true;
   }>>;
   sidecarSlots: readonly {
     participant: number; offset: number; kind: AtomicSidecarSlotEffect['kind'];
@@ -187,16 +188,18 @@ export interface AssembleAtomicCompositionContext {
   predOutClaimsSlot: { current?: AssemblePredOutClaimsByParticipant };
 }
 
+export interface UnpairedBlockInput {
+  satoshis: bigint;
+  token?: Output['token'];
+  unlocker: { generateLockingBytecode(): Uint8Array };
+}
+
 /**
  * SDKCORE-1. An unpaired block slot is alignment padding. Only the balanced dummy funder is recreated
  * at OP_TRUE, which the later trim drops. Any other input is recreated at its own lock, value, and token.
  * Paying that input's full value to OP_TRUE would let anyone sweep it.
  */
-export function outputForUnpairedBlockInput(input: {
-  satoshis: bigint;
-  token?: Output['token'];
-  unlocker: { generateLockingBytecode(): Uint8Array };
-}): Output {
+export function outputForUnpairedBlockInput(input: UnpairedBlockInput): Output {
   const lock = input.unlocker.generateLockingBytecode();
   if (input.token === undefined && binToHex(lock) === BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX) {
     return { to: Uint8Array.of(0x51), amount: input.satoshis };
@@ -212,6 +215,47 @@ export function outputForUnpairedBlockInput(input: {
       },
     }),
   };
+}
+
+/** Index of an output that already recreates `input`'s SCID identity anchor: same lock and token. */
+function recreatedIdentityAnchorIndex(input: UnpairedBlockInput, outputs: readonly Output[]): number | undefined {
+  const token = input.token;
+  const nft = token?.nft;
+  if (token === undefined || nft?.capability !== 'none' || !isScidIdentityCommitment(nft.commitment)) {
+    return undefined;
+  }
+  const lock = binToHex(input.unlocker.generateLockingBytecode());
+  const index = outputs.findIndex((output) => output.token?.nft?.capability === 'none'
+    && output.token.category.toLowerCase() === token.category.toLowerCase()
+    && output.token.nft.commitment.toLowerCase() === nft.commitment.toLowerCase()
+    && output.token.amount === token.amount
+    && binToHex(typeof output.to === 'string' ? addressToLockScript(output.to) : output.to) === lock);
+  return index < 0 ? undefined : index;
+}
+
+/**
+ * Pad the next unpaired block input. An SCID identity anchor the local build already recreated at an earlier slot
+ * is not minted again: it moves to its own slot and that slot takes its input's pad, or, if that input holds a
+ * token, it stays and its own slot keeps only the value.
+ */
+export function padUnpairedBlockInput(local: {
+  readonly inputs: readonly UnpairedBlockInput[];
+  outputs: Output[];
+  addOutput(output: Output): unknown;
+}): void {
+  const input = local.inputs[local.outputs.length];
+  const replica = recreatedIdentityAnchorIndex(input, local.outputs);
+  if (replica === undefined) {
+    local.addOutput(outputForUnpairedBlockInput(input));
+    return;
+  }
+  const displaced = local.inputs[replica];
+  if (displaced.token === undefined) {
+    local.outputs[replica] = outputForUnpairedBlockInput(displaced);
+    local.addOutput(outputForUnpairedBlockInput(input));
+  } else {
+    local.addOutput({ to: input.unlocker.generateLockingBytecode(), amount: input.satoshis });
+  }
 }
 
 /**
@@ -309,6 +353,8 @@ export async function assembleAtomicComposition(
     participant: number; variable: string; resolved: number; total: number;
   }> = [];
   const aggregateOutpoints = new Map<string, { participant: number; localIndex: number }>();
+  // Block-oracle lock -> the one aggregate input every reader slices (see compose-block-oracle.ts).
+  const keptBlockOracleInputs = new Map<string, number>();
   const registerAggregateInput = (
     input: Pick<Utxo, 'txid' | 'vout'>, participant: number, localIndex: number, role: string,
   ): void => {
@@ -375,6 +421,7 @@ export async function assembleAtomicComposition(
   };
   const recordPhysicalDynamicOutputWitness = (
     input: UnlockableUtxo | undefined,
+    recordOwner: ContractUnlocker['contract'],
     outputs: readonly Output[],
     categoryId: string,
     physicalOutputBase: number,
@@ -392,7 +439,8 @@ export async function assembleAtomicComposition(
     const localOutputBase = resolveMaterializedDynamicWriteOutputBase({
       route,
       stateLayout: routeLayout,
-      contract: unlocker.contract,
+      // A chunk lock binds the record master's lock: a delegate's proxy, not the executing implementation.
+      contract: recordOwner,
       categoryId,
       outputs,
       // The compiler owns the dynamic writer's trailing band. Restrict provisional commitment
@@ -458,14 +506,19 @@ export async function assembleAtomicComposition(
       }
       actualSizes.push(blockSize);
       recordPhysicalDynamicOutputWitness(
-        local.inputs[0], local.outputs, categories[participant.participant], aggregate.outputs.length,
-        participant.blockLayout?.trailingBase,
+        local.inputs[0], contract.inner, local.outputs, categories[participant.participant],
+        aggregate.outputs.length, participant.blockLayout?.trailingBase,
       );
-      for (let localIndex = 0; localIndex < local.inputs.length; localIndex += 1) {
-        registerAggregateInput(local.inputs[localIndex], participant.participant, localIndex, 'direct participant block');
+      const directBlock = await shareBlockOracleInput(
+        provider, local, aggregate.inputs.length, keptBlockOracleInputs,
+      );
+      for (let localIndex = 0; localIndex < directBlock.inputs.length; localIndex += 1) {
+        registerAggregateInput(
+          directBlock.inputs[localIndex], participant.participant, localIndex, 'direct participant block',
+        );
       }
-      aggregate.addInputs(local.inputs);
-      aggregate.addOutputs(local.outputs as Output[]);
+      aggregate.addInputs(directBlock.inputs);
+      aggregate.addOutputs(directBlock.outputs);
       continue;
     }
     const returnBlob = participantReturnBlob(participant.participant, results);
@@ -1068,6 +1121,9 @@ export async function assembleAtomicComposition(
         throw new Error(`messageBus: merge participant ${participant.participant} lacks its survivor`);
       }
       let mergedTokenAmount = masterOutput.token.amount;
+      // Audit MERGE-1: the survivor carries every consumed master's satoshis; the consumed tail slots stay as
+      // tokenless placeholders so output indexes keep matching input indexes for the route's lifecycle checks.
+      let mergedValue = masterOutput.amount;
       for (const consumed of merge.consumedMasters) {
         if (consumed.token?.category.toLowerCase() !== categories[participant.participant].toLowerCase()
             || consumed.token.nft?.capability !== 'minting') {
@@ -1076,11 +1132,19 @@ export async function assembleAtomicComposition(
           );
         }
         mergedTokenAmount += consumed.token.amount ?? 0n;
+        mergedValue += consumed.satoshis;
         local.addInput(consumed, routeUnlocker);
-        local.addOutput({ to: options.changeAddress, amount: consumed.satoshis });
+        // Audit MERGE-1: the consumed tail keeps a tokenless output slot at its input index, but its value is
+        // pinned to the survivor. A zero-sat output is below the relay dust floor, and BCHN relays at most one
+        // OP_RETURN output, so the slot is a dust-paying output funded from the fee tail's change.
+        local.addOutput({
+          to: options.changeAddress,
+          amount: BigInt(calculateDust({ to: options.changeAddress, amount: 0n })),
+        });
       }
       local.outputs[0] = {
         ...masterOutput,
+        amount: mergedValue,
         token: { ...masterOutput.token, amount: mergedTokenAmount },
       };
     }
@@ -1168,22 +1232,81 @@ export async function assembleAtomicComposition(
         };
       }
     }
+    // Embedded delegates can move selected read-only chunks into the state owner's trailing band after the
+    // nested builder placed outputs. The union ABI may supply write-mode unlockers for these inputs, so use
+    // selected handler effects (not the unlocker flag) to identify which unchanged twins must be restored.
+    const selectedHandlers = participant.invocations.map((index) => {
+      const selected = findMessageBusHandlerForInvocation(participant.artifact, plan.invocations[index]);
+      return selected === undefined ? undefined : participant.artifact.abi.find((handler) =>
+        handler.selector?.toLowerCase() === selected.selector.toLowerCase());
+    });
+    const selectedDynamicWrites = new Set(selectedHandlers.flatMap((handler) => handler?.dynamicWrites ?? []));
+    if (selectedHandlers.every((handler) => handler !== undefined) && selectedDynamicWrites.size === 0) {
+      // A union route can own writers which this authenticated batch never selects. Preserve its readable
+      // dynamic inputs while disabling the route-wide write settlement, including in a delegated executor.
+      for (const input of local.inputs) {
+        if (!isContractUnlocker(input.unlocker)
+          || input.unlocker.abiFunction.name !== participant.artifact.messageBus?.route.name) continue;
+        const baseIndex = input.unlocker.abiFunction.inputs.findIndex((parameter) =>
+          parameter.name === '__internal__dynamicChunkInputBase');
+        const value = baseIndex < 0 ? undefined : input.unlocker.params[baseIndex];
+        if (typeof value !== 'bigint' || value < 0n) continue;
+        input.unlocker.params[baseIndex] = -(value + 3n);
+        input.unlocker.syncEncodedArgsFromParams?.([baseIndex]);
+      }
+    }
+    const selectedReadOnlyDynamicLocks = (participant.artifact.stateLayout?.variables ?? []).flatMap((variable) => {
+      if (!variable.dynamic || selectedDynamicWrites.has(variable.name)) return [];
+      return [addressToLockScript(getDynamicChunkAddress(
+        contract.inner, categories[participant.participant], variable.name, variable.type,
+      ))];
+    });
     // Runtime event occurrences occupy compiler-owned trailing slots, so they cannot appear as fixed
     // `blockLayout.kind === event` coordinates. Preserve the exact row, schema, and physical offset published
     // by the participant builder; later graph passes turn only these observed occurrences into kind-2 rows.
     // This is resource geometry, independent of contract/function/event names.
-    const runtimeEvents = (local as TransactionBuilder & {
+    const builtRuntimeEvents = (local as TransactionBuilder & {
       __messageBusRuntimeLoopEvents?: readonly {
-        eventSignature: string; rowIndex: number; offset: number;
+        eventSignature: string; rowIndex: number; offset: number; chunked?: true;
       }[];
     }).__messageBusRuntimeLoopEvents ?? [];
+    // The read-only twins restored below lead the band and the stream follows them, as its verifier counts:
+    // publish each record where that restoration leaves it, and feed claims back at the built coordinate.
+    const settledOutputs = [...local.outputs];
+    reassertRoutedReadOnlyDynamicChunkTwins(settledOutputs, local.inputs, selectedReadOnlyDynamicLocks);
+    const runtimeEvents = builtRuntimeEvents.map((event) => {
+      const offset = settledOutputs.indexOf(local.outputs[event.offset]!);
+      return offset < 0 ? event : { ...event, offset };
+    });
+    const builtEventOffsets = new Map(runtimeEvents.map((event, index) => [
+      event.offset, builtRuntimeEvents[index]!.offset,
+    ]));
     runtimeEventSlots.set(participant.participant,
       runtimeEvents.map((event) => ({
         participant: participant.participant,
         offset: event.offset,
         runtimeRow: event.rowIndex,
         eventSignature: event.eventSignature,
+        ...(event.chunked && { chunked: true as const }),
       })));
+    // A compact stream record's commitment is a fixed-point claim as well. The route stops at the first record it
+    // cannot match, so each pass discovers one more: feed the authenticated ones back into the records planned at
+    // their offsets under the same lock, or every pass restarts at the stream's first record. A chunked stream's
+    // records are learned whole by its builder.
+    const runtimeEventOffsets = new Set(runtimeEvents.filter((event) => !event.chunked).map((event) => event.offset));
+    for (const row of graph.callManifest.rows) {
+      if (row.kind !== 2 || row.owner !== participant.participant || row.mode !== 1
+        || !runtimeEventOffsets.has(row.targetOffset)) continue;
+      const builtOffset = builtEventOffsets.get(row.targetOffset)!;
+      const planned = local.outputs[builtOffset];
+      const plannedLock = planned === undefined ? undefined
+        : typeof planned.to === 'string' ? addressToLockScript(planned.to) : planned.to;
+      if (planned?.token?.nft?.capability !== 'none' || plannedLock === undefined
+        || binToHex(plannedLock) !== row.subjectHex.toLowerCase()) continue;
+      local.outputs[builtOffset] = {
+        ...planned, token: { ...planned.token, nft: { ...planned.token.nft, commitment: row.effectHex } },
+      };
+    }
     // Event effects are fixed-point claims just like return values and mutable resources. Once a prior pass
     // has authenticated an event commitment, feed it back into the exact compiler-published participant slot;
     // otherwise every assembly pass recreates the empty probe placeholder and convergence can never advance
@@ -1546,8 +1669,7 @@ export async function assembleAtomicComposition(
       }
     }
     while (local.outputs.length < blockSize && local.outputs.length < local.inputs.length) {
-      const input = local.inputs[local.outputs.length];
-      local.addOutput(outputForUnpairedBlockInput(input));
+      padUnpairedBlockInput(local);
     }
     if (local.inputs.length !== blockSize || local.outputs.length !== blockSize) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -1594,6 +1716,9 @@ export async function assembleAtomicComposition(
           + `slots, expected balanced block size ${blockSize}`,
       );
     }
+    // Settle unchanged chunk twins before deriving physical output claims. Restoring them only before
+    // publication can displace a predecessor after its layout-resolver claim has already been frozen.
+    reassertRoutedReadOnlyDynamicChunkTwins(local.outputs, local.inputs, selectedReadOnlyDynamicLocks);
     // `fixedSuffix` prevents compaction of the participant, but it does not erase the compiler-published
     // trailing band. Computed chunk claims are validated against that band before `minimumActualSize` is forced
     // back to the full block below; using blockSize here turns the valid range into an empty interval.
@@ -2269,29 +2394,12 @@ export async function assembleAtomicComposition(
         proxyInput.unlocker, rootMessageEnvelope!, maximumInputBytes, executorOffset,
       );
     }
-    // Embedded delegates can move selected read-only chunks into the state owner's trailing band after the
-    // nested builder placed outputs. The union ABI may supply write-mode unlockers for these inputs, so use
-    // selected handler effects (not the unlocker flag) to identify which unchanged twins must be restored.
-    const selectedHandlers = participant.invocations.map((index) => {
-      const selected = findMessageBusHandlerForInvocation(participant.artifact, plan.invocations[index]);
-      return selected === undefined ? undefined : participant.artifact.abi.find((handler) =>
-        handler.selector?.toLowerCase() === selected.selector.toLowerCase());
-    });
-    const selectedDynamicWrites = new Set(selectedHandlers.flatMap((handler) => handler?.dynamicWrites ?? []));
-    const selectedReadOnlyDynamicLocks = [...new Set(selectedHandlers.flatMap((handler) =>
-      handler?.dynamicReads ?? []))].flatMap((name) => {
-      if (selectedDynamicWrites.has(name)) return [];
-      const variable = participant.artifact.stateLayout?.variables.find((candidate) =>
-        candidate.name === name && candidate.dynamic);
-      return variable === undefined ? [] : [addressToLockScript(getDynamicChunkAddress(
-        contract.inner, categories[participant.participant], variable.name, variable.type,
-      ))];
-    });
+    // Restore the selected read-only twins at their input coordinates, as the stream slots above assumed.
     reassertRoutedReadOnlyDynamicChunkTwins(local.outputs, local.inputs, selectedReadOnlyDynamicLocks);
     const routeInputOffset = participant.executionKind === 1 ? participant.executorOffset : 0;
     const routeInput = routeInputOffset === null ? undefined : local.inputs[routeInputOffset];
     recordPhysicalDynamicOutputWitness(
-      routeInput, local.outputs, categories[participant.participant], aggregate.outputs.length,
+      routeInput, contract.inner, local.outputs, categories[participant.participant], aggregate.outputs.length,
       participant.blockLayout?.trailingBase, selectedDynamicWrites,
     );
     if (participant.executionKind === 1 && routeInputOffset !== null) {
@@ -2300,12 +2408,13 @@ export async function assembleAtomicComposition(
         categories[participant.participant], aggregate.outputs.length,
       );
     }
-    for (let localIndex = 0; localIndex < local.inputs.length; localIndex++) {
-      const input = local.inputs[localIndex];
+    const block = await shareBlockOracleInput(provider, local, aggregate.inputs.length, keptBlockOracleInputs);
+    for (let localIndex = 0; localIndex < block.inputs.length; localIndex++) {
+      const input = block.inputs[localIndex];
       registerAggregateInput(input, participant.participant, localIndex, 'participant block');
     }
-    aggregate.addInputs(local.inputs);
-    aggregate.addOutputs(local.outputs as Output[]);
+    aggregate.addInputs(block.inputs);
+    aggregate.addOutputs(block.outputs);
   }
 
   // Resolve all collected claims together, then validate every write before applying any.

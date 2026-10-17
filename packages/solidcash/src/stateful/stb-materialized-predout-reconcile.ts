@@ -26,6 +26,21 @@ const asHex = (value: string | Uint8Array | undefined): string | undefined => (
 );
 
 /**
+ * Resolve a participant's predecessor coordinate against the caller's trailing band. Only a coordinate that is
+ * at or past the band start collides (a callee earlier in the composed layout keeps its own natural base); a
+ * colliding coordinate is pushed to the end of the caller's complete trailing band (loop entries, chunks,
+ * identity anchors, and runtime effects all precede a nested callee's own trailing predecessors).
+ */
+function pastCallerTrailingBand(
+  natural: number,
+  host: Pick<MaterializedPredOutReconcileHost, 'getLoopEntryOutputBase' | 'getCallerTrailingBandEnd'>,
+): number {
+  const base = host.getLoopEntryOutputBase();
+  if (base < 0 || natural < base) return natural;
+  return Math.max(natural, host.getCallerTrailingBandEnd());
+}
+
+/**
  * Rebind active INSERT PredOut witnesses only when an output proves both the authenticated collection lock and
  * the exact P' content (`pred.slot || target.slot || pred.value`). Proof coordinates can be frame-absolute or
  * participant-relative, so both interpretations are considered and an ambiguous result is rejected.
@@ -73,6 +88,15 @@ export interface MaterializedPredOutReconcileHost {
     builder: TransactionBuilder,
     carriers: ReadonlySet<ExternalCallUtxoGroup>,
   ): void;
+  /**
+   * The executing frame's own trailing loop-entry base (its sorted-batch predecessors and runtime mapping
+   * entries). A nested callee whose natural PredOut is at or past this coordinate must resolve AFTER the
+   * caller's whole trailing band, or it reads the caller's entry instead of its own
+   * (MasterChef.deposit userInfo HEAD vs ERC20 balances P').
+   */
+  getLoopEntryOutputBase(): number;
+  /** First output index past the executing frame's complete trailing band. */
+  getCallerTrailingBandEnd(): number;
 }
 
 /** Rebase absolute predecessor-output witnesses from each participant's final physical master coordinate. */
@@ -101,7 +125,11 @@ export function reconcileMaterializedPredOutWitnesses(
       carrier.refreshInternalArgs(contentUpdates, { shiftPredOut: false });
       changedCarriers.add(carrier);
     }
-    const nextBase = materializedPredOutBase(carrier, masterIndex);
+    const naturalBase = materializedPredOutBase(carrier, masterIndex);
+    // A nested callee's trailing band must resolve after the caller's own sorted-batch predecessors
+    // (the caller materializes those first). Keeping the natural base points the callee's PredOut at the
+    // caller's entry, so the callee's lock comparison fails (MasterChef.deposit userInfo HEAD vs balances P').
+    const nextBase = pastCallerTrailingBand(naturalBase, host);
     if (carrier.relocatedPredOutBase === nextBase) continue;
     carrier.relocatedPredOutBase = nextBase;
     carrier.refreshInternalArgs({}, { shiftPredOut: false });
@@ -129,16 +157,32 @@ export function reassertMaterializedBatchPredecessorOutputs(
     const masterIndex = host.allInputs.findIndex((input) => (
       input.txid.toLowerCase() === master.txid.toLowerCase() && input.vout === master.vout
     ));
+    if (masterIndex < 0) continue;
+    // The caller's own sorted-batch predecessors occupy the trailing band immediately before this callee's
+    // band. Shift the callee's declared predecessor slot past that region so its P' does not collide with the
+    // caller's P' (both otherwise resolve to the same output, e.g. MasterChef userInfo HEAD vs balances P').
+    const shiftPastCallerTrailing = (outputBlockSlot: number): number => (
+      Number.isInteger(outputBlockSlot) && outputBlockSlot >= 0
+        ? pastCallerTrailingBand(masterIndex + outputBlockSlot, host) - masterIndex
+        : outputBlockSlot
+    );
     // Direct participant INSERTs place NEW at the fixed entry slot and P' at the declared trailing slot.
     // A delegate's compiler uses its co-spent fixed slot for P' and the trailing slot for NEW, so its planned
     // insertion must remain trace-derived and must not use this direct-participant reassertion.
     const plannedPredecessors = (directParticipant && carrier.delegateCallGroupIndex === undefined
       ? carrier.plannedEntryInserts ?? [] : [])
       .flatMap((planned) => {
-        const input = carrier.blockInputs?.[planned.blockSlot];
+        // Cold keys sharing one proof input back the later entry slot with a funder. P' recreates the proof
+        // input's entry, as the materializer places it, and never sits at a lock no entry of this category holds.
+        const proofOffset = planned.slotIndex === undefined ? undefined
+          : (carrier.internalArgs?.[`__internal__vmapBatchProof_${planned.slotIndex}`]
+            ?? carrier.compilerRoute?.internalArgs?.[`__internal__vmapBatchProof_${planned.slotIndex}`]);
+        const input = typeof proofOffset === 'bigint' && proofOffset >= 0n
+          ? carrier.blockInputs?.[Number(proofOffset)] : carrier.blockInputs?.[planned.blockSlot];
         if (!input?.unlocker || planned.outputBlockSlot < 0 || planned.commitment === undefined) return [];
+        if (input.token?.category !== carrier.categoryId || input.token.nft?.capability !== 'mutable') return [];
         return [{
-          outputBlockSlot: planned.outputBlockSlot,
+          outputBlockSlot: shiftPastCallerTrailing(planned.outputBlockSlot),
           lockingBytecode: input.unlocker.generateLockingBytecode(),
           commitment: planned.commitment,
         }];
@@ -150,21 +194,25 @@ export function reassertMaterializedBatchPredecessorOutputs(
       && masterOut.token?.nft?.capability === 'minting';
     if (!masterIsMinting) continue;
     if ((carrier.batchPredecessorOutputs?.length ?? 0) > 0) {
+      const shiftedBatchPredecessors = carrier.batchPredecessorOutputs!.map((predecessor) => ({
+        ...predecessor,
+        outputBlockSlot: shiftPastCallerTrailing(predecessor.outputBlockSlot),
+      }));
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_TOKEN_INSERT === '1') {
         console.error('materialized-pred-reassert', {
           fn: carrier.logicalFunctionName ?? carrier.functionName,
           categoryId: carrier.categoryId.slice(0, 16),
           masterIndex,
-          slots: carrier.batchPredecessorOutputs!.map((p) => p.outputBlockSlot),
-          dests: carrier.batchPredecessorOutputs!.map((p) => masterIndex + p.outputBlockSlot),
+          slots: shiftedBatchPredecessors.map((p) => p.outputBlockSlot),
+          dests: shiftedBatchPredecessors.map((p) => masterIndex + p.outputBlockSlot),
         });
       }
       changed += reassertBatchPredecessorOutputsAtDeclaredSlots(
         builder.outputs,
         masterIndex,
         carrier.categoryId,
-        carrier.batchPredecessorOutputs!,
+        shiftedBatchPredecessors,
       );
     }
     if (plannedPredecessors.length > 0) {

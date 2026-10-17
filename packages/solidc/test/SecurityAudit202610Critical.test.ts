@@ -8,7 +8,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin,
+  binToHex, createVirtualMachineBch2026, decodeTransactionUnsafe, encodeDataPush, encodeLockingBytecodeP2sh32,
+  encodeTransaction, hash256, hexToBin,
 } from '@bitauth/libauth';
 import {
   asmToScript, buildDataNftCovenantScript, buildEntryNftCovenantScript,
@@ -17,18 +18,24 @@ import {
   encodeIntegerValue, scriptToBytecode, SHARED_LIBRARY_SALT, type AbiFunction, type Artifact,
 } from '@solidcash/utils';
 import { ethers } from 'ethers';
-import { encodeEntryCommitment, keyToSlotMulti } from '../../solidcash/src/stateful/SortedList.js';
+import { encodeEntryCommitment, keyToSlot, keyToSlotMulti } from '../../solidcash/src/stateful/SortedList.js';
 import { buildKeccakComputeSidecar } from '../../solidcash/src/keccak/keccakComputeSidecar.js';
 import { buildEcrecoverComputeSidecars, probeEcrecoverSplit }
   from '../../solidcash/src/ecrecover/ecrecoverComputeSidecar.js';
 import { computeEcrecoverWitness } from '../../solidcash/src/ecrecover/ecrecoverRecovery.js';
 import { compileString } from '../src/index.js';
 import { Contract } from '../../solidcash/src/Contract.js';
+import { SighashType } from '../../solidcash/src/interfaces.js';
+import SignatureTemplate from '../../solidcash/src/SignatureTemplate.js';
 import { StatefulContract } from '../../solidcash/src/stateful/index.js';
 import * as messageBus from '../../solidcash/src/message-bus/index.js';
 import { generateLibauthSourceOutputs } from '../../solidcash/src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../solidcash/src/network/createVirtualMachine.js';
-import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../solidcash/test/test-util.js';
+import { createBareP2pkhFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos }
+  from '../../solidcash/test/test-util.js';
+import { getTokenContainerAddress } from '../../solidcash/src/stateful/covenant-helpers.js';
+import { alicePriv, alicePub, alicePkh } from '../../solidcash/test/fixture/vars.js';
+import p2pkhArtifact from '../../solidcash/test/fixture/p2pkh.artifact.js';
 import { createMessageBusCapstoneTestProvider }
   from '../../solidcash/test/journal-message-bus/e2e/message-bus-semantic-profile.js';
 import type { TransactionBuilder } from '../../solidcash/src/TransactionBuilder.js';
@@ -56,8 +63,10 @@ function p2sh32(redeem: Uint8Array): Uint8Array {
   return encodeLockingBytecodeP2sh32(hash256(redeem));
 }
 
-function tokenOf(capability: 'minting' | 'mutable' | 'none', commitment: Uint8Array, category = CATEGORY): VmOutput['token'] {
-  return { category, amount: 0n, nft: { capability, commitment } };
+function tokenOf(
+  capability: 'minting' | 'mutable' | 'none', nftCommitment: Uint8Array, category = CATEGORY,
+): VmOutput['token'] {
+  return { category, amount: 0n, nft: { capability, commitment: nftCommitment } };
 }
 
 function outpoint(index: number): Uint8Array {
@@ -359,6 +368,23 @@ describe('October 2026 critical holes', () => {
     expect(verdict(drained.sourceOutputs, drained.transaction), 'DX-1 transfer drain').not.toBe(true);
   });
 
+  it('DX-1 a full transfer spends the zero placeholder, and a nonzero redirect fails', () => {
+    const artifact = compileBus(
+      'int n; function payAll(bytes to) { this.transfer(to, 50000); this.n = this.n + 1; require(true); }',
+    );
+    const recipient = Uint8Array.of(0x76, 0xa9, 0x14, 0x22, 0x88, 0xac);
+    const fn = fnOf(artifact, 'payAll');
+    const container = fn.blockLayout?.slots.find((slot) => slot.kind === 'satoshiContainer');
+    const transfer = fn.blockLayout?.slots.find((slot) => slot.kind === 'transfer');
+    if (container?.offset !== 2 || transfer?.offset !== 3) {
+      throw new Error(`payAll slots ${JSON.stringify(fn.blockLayout?.slots ?? null)}`);
+    }
+    const placeholder = fullSatoshiSpend(artifact, recipient, true);
+    expect(verdict(placeholder.sourceOutputs, placeholder.transaction), 'DX-1 full placeholder').toBe(true);
+    const redirect = fullSatoshiSpend(artifact, recipient, false);
+    expect(verdict(redirect.sourceOutputs, redirect.transaction), 'DX-1 nonzero redirect').not.toBe(true);
+  });
+
   it('DX-2 a public call cannot drain a token container, and the same call without it succeeds', () => {
     const artifact = compileBus('int n; function touch() { this.n = this.n + 1; require(true); }');
     const honest = scalarSpend(artifact, 'touch', { n: 1n }, { n: 2n });
@@ -374,6 +400,24 @@ describe('October 2026 critical holes', () => {
     expect(verdict(kept.sourceOutputs, kept.transaction), 'DX-2 nft container kept').toBe(true);
     const nftDrained = withNftTokenDrain(artifact, honest, true);
     expect(verdict(nftDrained.sourceOutputs, nftDrained.transaction), 'DX-2 nft container drain').not.toBe(true);
+  });
+
+  it('DX-2 a full token movement spends the zero placeholder, and a nonzero redirect fails', () => {
+    const artifact = compileBus(
+      'int n; function sendAll(bytes32 cat, bytes to) { this.tokens[cat].transfer(to, 1000);'
+      + ' this.n = this.n + 1; require(true); }',
+    );
+    const recipient = Uint8Array.of(0x76, 0xa9, 0x14, 0x22, 0x88, 0xac);
+    const fn = fnOf(artifact, 'sendAll');
+    const container = fn.blockLayout?.slots.find((slot) => slot.kind === 'tokenContainer');
+    const moved = fn.blockLayout?.slots.find((slot) => slot.kind === 'tcTransfer');
+    if (container?.offset !== 2 || moved?.offset !== 3) {
+      throw new Error(`sendAll slots ${JSON.stringify(fn.blockLayout?.slots ?? null)}`);
+    }
+    const placeholder = fullTokenSpend(artifact, recipient, true);
+    expect(verdict(placeholder.sourceOutputs, placeholder.transaction), 'DX-2 full placeholder').toBe(true);
+    const redirect = fullTokenSpend(artifact, recipient, false);
+    expect(verdict(redirect.sourceOutputs, redirect.transaction), 'DX-2 nonzero token redirect').not.toBe(true);
   });
 
   it('DS-2 a forged data record at another lock is not the data record, and the real lock is', () => {
@@ -445,6 +489,85 @@ describe('October 2026 critical holes', () => {
     expect(verdict(minted.sourceOutputs, minted.transaction), 'DS-3 mutable output at a P2PKH').not.toBe(true);
   });
 
+  it('DX-6 a dynamic-chunk call cannot rewrite an unaccessed record, and the chunk write can', () => {
+    const artifact = compileBus(
+      'string name; function setName(string s) { this.name = s; require(true); }',
+    );
+    const honest = scalarSpend(artifact, 'setName', { 'name$len': 0n }, { 'name$len': 0n }, true, { s: EMPTY });
+    expect(verdict(honest.sourceOutputs, honest.transaction), 'DX-6 chunk authorized').toBe(true);
+    const rewritten = withExtraData(artifact, honest, { 'name$len': 0n }, { 'name$len': 4n });
+    expect(verdict(rewritten.sourceOutputs, rewritten.transaction), 'DX-6 chunk forged record').not.toBe(true);
+    const destroyed = withDestroyedChunk(artifact, honest);
+    expect(verdict(destroyed.sourceOutputs, destroyed.transaction), 'DX-6 chunk destroyed').not.toBe(true);
+    const recommitted = withRewrittenChunk(artifact, honest);
+    expect(verdict(recommitted.sourceOutputs, recommitted.transaction), 'DX-6 chunk recommitted').not.toBe(true);
+  });
+
+  it('DX-6 a deploy call cannot rewrite an unaccessed record, and the deploy can', async () => {
+    const src = `${P} contract Child() { int y; function ping() { require(true); } }`
+      + ' contract Factory() { int x; function create() { Child c = new Child(); require(c.length > 0); } }';
+    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true };
+    const factoryArtifact = compileString(src, { ...options, primaryContractName: 'Factory' });
+    const childArtifact = compileString(src, { ...options, primaryContractName: 'Child' });
+    const provider = createTestProvider();
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const parentFunding = { txid: '31'.repeat(32), vout: 0, satoshis: 200_000n };
+    await provider.addUtxo(p2pkh.address, parentFunding);
+    const deployed = await StatefulContract.deploy(factoryArtifact, [], {
+      provider,
+      fundingUtxo: parentFunding,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { x: 1n },
+      changeAddress: p2pkh.address,
+    });
+    const childFunding = { txid: '32'.repeat(32), vout: 0, satoshis: 80_000n };
+    await provider.addUtxo(p2pkh.address, childFunding);
+    // SIGHASH_NONE leaves the outputs unsigned. It still signs every input, so the added NFT would fail the
+    // funder's CHECKSIG. ANYONECANPAY signs only the funder input. The factory covenant is what refuses the NFT.
+    const funder = p2pkh.unlock.spend(alicePub, new SignatureTemplate(
+      alicePriv, SighashType.SIGHASH_NONE | SighashType.SIGHASH_ANYONECANPAY,
+    ));
+    const honestHex = await captureRaw(provider, () => StatefulContract.deployFrom({
+      provider,
+      factory: deployed.contract,
+      deployFunctionName: 'create',
+      deployFunctionArgs: [],
+      childArtifact,
+      childConstructorArgs: [],
+      childInitialState: { y: 0n },
+      fundingUtxo: childFunding,
+      funder,
+      changeAddress: p2pkh.address,
+    }));
+    const category = hexToBin(deployed.categoryId);
+    const masterLock = hexToBin(deployed.contract.inner.lockingBytecode);
+    const rewritten = await appendForgedRecord(provider, honestHex, category, masterLock, '44'.repeat(32), true);
+    const destroyed = await appendForgedRecord(provider, honestHex, category, masterLock, '45'.repeat(32), false);
+    const reject = async (hex: string): Promise<string> => provider.sendRawTransaction(hex)
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    const recommitted = await reject(rewritten);
+    const removed = await reject(destroyed);
+    expect(recommitted, 'DX-6 deploy recommitted').not.toMatch(/signature|CHECKSIG/i);
+    expect(removed, 'DX-6 deploy destroyed').not.toMatch(/signature|CHECKSIG/i);
+    expectScriptRejection(recommitted, 0);
+    expectScriptRejection(removed, 0);
+    await expect(provider.sendRawTransaction(honestHex)).resolves.toBeTypeOf('string');
+  });
+
+  it('DX-6 a token-container call cannot rewrite an unaccessed record, and the token read can', () => {
+    const artifact = compileBus(
+      'int n; function look(bytes32 cat) { require(this.tokens[cat].tokenAmount >= 0); this.n = this.n; require(true); }',
+    );
+    const honest = tokenReadSpend(artifact);
+    expect(verdict(honest.sourceOutputs, honest.transaction), 'DX-6 token authorized').toBe(true);
+    const rewritten = withExtraData(artifact, honest, { n: 1n }, { n: 9n });
+    expect(verdict(rewritten.sourceOutputs, rewritten.transaction), 'DX-6 token forged record').not.toBe(true);
+    const destroyed = withDestroyedChunk(artifact, honest);
+    expect(verdict(destroyed.sourceOutputs, destroyed.transaction), 'DX-6 token destroyed chunk').not.toBe(true);
+    const recommitted = withRewrittenChunk(artifact, honest);
+    expect(verdict(recommitted.sourceOutputs, recommitted.transaction), 'DX-6 token recommitted chunk').not.toBe(true);
+  });
+
   it('DS-5 an unsorted array cannot be claimed twice by omitting its entry, and one real claim succeeds', () => {
     const artifact = compileBus(
       'int[4] claimed; function claim(int i) { require(this.claimed[i] == 0); this.claimed[i] = 1; require(true); }',
@@ -501,8 +624,8 @@ describe('October 2026 critical holes', () => {
     expect((await evaluated(honest)).every((result) => result === true), 'KB-1 authorized').toBe(true);
 
     const hostile = await composition.build();
-    const verifierIndex = hostile.inputs.findIndex((input) =>
-      input.token?.nft?.commitment.startsWith('4c335631'));
+    const verifierIndex = hostile.inputs.findIndex((entry) =>
+      entry.token?.nft?.commitment.startsWith('4c335631'));
     expect(verifierIndex).toBeGreaterThanOrEqual(0);
     const verifierOutput = hostile.outputs[verifierIndex]!;
     const honestCommitment = verifierOutput.token!.nft!.commitment;
@@ -530,6 +653,218 @@ describe('October 2026 critical holes', () => {
     };
     expect((await evaluated(hostile))[0] === true, 'KB-1 cloned verifier output').toBe(false);
   }, 120_000);
+
+  it('DX-6 and DS-3 an iterating entry spend cannot drop or recommit an unaccessed mutable', () => {
+    const artifact = compileString(
+      `${P} contract C { int x; enumerable mapping(int => int) bal;`
+      + ' function total(int expected) { int sum = 0; for (int v of this.bal) { sum = sum + v; }'
+      + ' this.x = sum; require(this.x == expected); } }',
+      { messageBus: false, forceStateful: true },
+    );
+    const honest = iterationSpend(artifact, 'total', { expected: num(30n) }, { x: 0n }, { x: 30n });
+    expect(verdict(honest.sourceOutputs, honest.transaction), 'DX-6 iteration authorized').toBe(true);
+    const destroyed = withAppendedMutable(honest, false);
+    const recommitted = withAppendedMutable(honest, true);
+    expect(verdict(destroyed.sourceOutputs, destroyed.transaction), 'DX-6 iteration destroyed').not.toBe(true);
+    expect(verdict(recommitted.sourceOutputs, recommitted.transaction), 'DS-3 iteration recommitted').not.toBe(true);
+  });
+
+  it('DX-6 and DS-3 an in-loop entry write cannot drop or recommit an unaccessed mutable', async () => {
+    const artifact = compileString(
+      `${P} contract C { mapping(int => bytes) m;`
+      + ' function fill(int[] ks, bytes[] vs) {'
+      + ' for (int i = 0; i < ks.length; i = i + 1) { this.m[ks[i]] = vs[i]; } require(true); } }',
+      { messageBus: false, forceStateful: true },
+    );
+    const provider = createTestProvider();
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const parentFunding = { txid: '31'.repeat(32), vout: 0, satoshis: 400_000n };
+    await provider.addUtxo(p2pkh.address, parentFunding);
+    const deployed = await StatefulContract.deploy(artifact, [], {
+      provider,
+      fundingUtxo: parentFunding,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: {},
+      changeAddress: p2pkh.address,
+    });
+    const callFunding = { txid: '33'.repeat(32), vout: 0, satoshis: 200_000n };
+    await provider.addUtxo(deployed.contract.address, callFunding);
+    const honestHex = await captureRaw(provider, () => deployed.contract.fill(
+      [5n], [Uint8Array.of(0x22)],
+    ).send());
+    const category = hexToBin(deployed.categoryId);
+    const forgedLock = p2sh32(distinct(20, 0x55));
+    const rewritten = await appendForgedMutable(provider, honestHex, category, forgedLock, '44'.repeat(32), true);
+    const destroyed = await appendForgedMutable(provider, honestHex, category, forgedLock, '45'.repeat(32), false);
+    const reject = async (hex: string): Promise<string> => provider.sendRawTransaction(hex)
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    const recommitted = await reject(rewritten);
+    const removed = await reject(destroyed);
+    expect(recommitted, 'DX-6 in-loop recommitted').not.toMatch(/signature|CHECKSIG/i);
+    expect(removed, 'DX-6 in-loop destroyed').not.toMatch(/signature|CHECKSIG/i);
+    expectScriptRejection(recommitted, 0);
+    expectScriptRejection(removed, 0);
+    await expect(provider.sendRawTransaction(honestHex)).resolves.toBeTypeOf('string');
+  }, 120_000);
+
+  it('DX-6 and DS-3 a token-container iterating spend cannot drop or recommit an unaccessed mutable', () => {
+    const artifact = compileString(
+      `${P} contract C { int n; enumerable mapping(int => int) bal;`
+      + ' function look(bytes32 cat, int expected) { require(this.tokens[cat].tokenAmount >= 0);'
+      + ' int sum = 0; for (int v of this.bal) { sum = sum + v; } this.n = sum; require(this.n == expected); } }',
+      { messageBus: false, forceStateful: true },
+    );
+    const honest = tokenIterationSpend(artifact, 'look', { cat: FOREIGN, expected: num(30n) }, { n: 0n }, { n: 30n });
+    expect(verdict(honest.sourceOutputs, honest.transaction), 'DX-6 token iteration authorized').toBe(true);
+    const destroyed = withAppendedMutable(honest, false);
+    const recommitted = withAppendedMutable(honest, true);
+    expect(verdict(destroyed.sourceOutputs, destroyed.transaction), 'DX-6 token iteration destroyed').not.toBe(true);
+    expect(verdict(recommitted.sourceOutputs, recommitted.transaction), 'DS-3 token iteration recommitted').not.toBe(true);
+  });
+
+  it('DX-6 and DS-3 a dynamic-chunk iterating spend cannot drop or recommit an unaccessed mutable', async () => {
+    await sdkIteratingRefusal(
+      `${P} contract C { string name; enumerable mapping(int => int) bal;`
+      + ' function set(int expected) { int sum = 0; for (int v of this.bal) { sum = sum + v; }'
+      + ' this.name = string.concat(this.name, hex"21"); require(sum == expected); } }',
+      (contract) => (contract.set as unknown as (...args: unknown[]) => { send(): Promise<string> })(
+        0n,
+      ).send(),
+    );
+  }, 120_000);
+
+  it('DX-6 and DS-3 a token-container in-loop spend cannot drop or recommit an unaccessed mutable', async () => {
+    await sdkIteratingRefusal(
+      `${P} contract C { mapping(int => bytes) m;`
+      + ' function fill(int[] ks, bytes[] vs, bytes32 cat) {'
+      + ' for (int i = 0; i < ks.length; i = i + 1) { this.m[ks[i]] = vs[i]; }'
+      + ' require(this.tokens[cat].tokenAmount >= 0); require(true); } }',
+      (contract) => (contract.fill as unknown as (...args: unknown[]) => { send(): Promise<string> })(
+        [5n], [Uint8Array.of(0x22)], FOREIGN,
+      ).send(),
+      (provider, deployed) => fundTokenContainer(provider, deployed, FOREIGN),
+    );
+  }, 120_000);
+
+  it('DX-6 and DS-3 a dynamic-chunk in-loop spend cannot drop or recommit an unaccessed mutable', async () => {
+    await sdkIteratingRefusal(
+      `${P} contract C { mapping(int => bytes) m; string name;`
+      + ' function fill(int[] ks, bytes[] vs) {'
+      + ' for (int i = 0; i < ks.length; i = i + 1) { this.m[ks[i]] = vs[i]; }'
+      + ' this.name = string.concat(this.name, hex"21"); require(true); } }',
+      (contract) => (contract.fill as unknown as (...args: unknown[]) => { send(): Promise<string> })(
+        [5n], [Uint8Array.of(0x22)],
+      ).send(),
+    );
+  }, 120_000);
+
+  it('DX-6 and DS-3 an iterating deploy cannot drop or recommit an unaccessed mutable', async () => {
+    const src = `${P} contract Child() { int y; function ping() { require(true); } }`
+      + ' contract C { int x; enumerable mapping(int => int) bal;'
+      + ' function create(int expected) { int sum = 0; for (int v of this.bal) { sum = sum + v; }'
+      + ' Child child = new Child(); require(sum == expected); require(child.length > 0); } }';
+    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true };
+    const factoryArtifact = compileString(src, { ...options, primaryContractName: 'C' });
+    const childArtifact = compileString(src, { ...options, primaryContractName: 'Child' });
+    const provider = createTestProvider();
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const parentFunding = { txid: '31'.repeat(32), vout: 0, satoshis: 200_000n };
+    await provider.addUtxo(p2pkh.address, parentFunding);
+    const deployed = await StatefulContract.deploy(factoryArtifact, [], {
+      provider,
+      fundingUtxo: parentFunding,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: {},
+      changeAddress: p2pkh.address,
+    });
+    const childFunding = { txid: '32'.repeat(32), vout: 0, satoshis: 80_000n };
+    await provider.addUtxo(p2pkh.address, childFunding);
+    // SIGHASH_NONE | ANYONECANPAY signs only the funder input, so the factory covenant (not the funder's
+    // signature) must refuse an appended own-category mutable.
+    const funder = p2pkh.unlock.spend(alicePub, new SignatureTemplate(
+      alicePriv, SighashType.SIGHASH_NONE | SighashType.SIGHASH_ANYONECANPAY,
+    ));
+    const honestHex = await captureRaw(provider, () => StatefulContract.deployFrom({
+      provider,
+      factory: deployed.contract,
+      deployFunctionName: 'create',
+      deployFunctionArgs: [0n],
+      childArtifact,
+      childConstructorArgs: [],
+      childInitialState: { y: 0n },
+      fundingUtxo: childFunding,
+      funder,
+      changeAddress: p2pkh.address,
+    }));
+    const category = hexToBin(deployed.categoryId);
+    const forgedLock = p2sh32(distinct(20, 0x55));
+    const rewritten = await appendForgedMutable(provider, honestHex, category, forgedLock, '44'.repeat(32), true);
+    const destroyed = await appendForgedMutable(provider, honestHex, category, forgedLock, '45'.repeat(32), false);
+    const reject = async (hex: string): Promise<string> => provider.sendRawTransaction(hex)
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    const recommitted = await reject(rewritten);
+    const removed = await reject(destroyed);
+    expect(recommitted, 'DX-6 iterating deploy recommitted').not.toMatch(/signature|CHECKSIG/i);
+    expect(removed, 'DS-3 iterating deploy destroyed').not.toMatch(/signature|CHECKSIG/i);
+    expectScriptRejection(recommitted, 0);
+    expectScriptRejection(removed, 0);
+    await expect(provider.sendRawTransaction(honestHex)).resolves.toBeTypeOf('string');
+  }, 120_000);
+
+  it('DX-6 and DS-3 an in-loop deploy cannot drop or recommit an unaccessed mutable', async () => {
+    const src = `${P} contract Child() { int y; function ping() { require(true); } }`
+      + ' contract C { mapping(int => int) m;'
+      + ' function create(int[] ks, int v) {'
+      + ' for (int i = 0; i < ks.length; i = i + 1) { this.m[ks[i]] = v; }'
+      + ' Child child = new Child(); require(child.length > 0); require(true); } }';
+    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true };
+    const factoryArtifact = compileString(src, { ...options, primaryContractName: 'C' });
+    const childArtifact = compileString(src, { ...options, primaryContractName: 'Child' });
+    const provider = createTestProvider();
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const parentFunding = { txid: '31'.repeat(32), vout: 0, satoshis: 200_000n };
+    await provider.addUtxo(p2pkh.address, parentFunding);
+    const deployed = await StatefulContract.deploy(factoryArtifact, [], {
+      provider,
+      fundingUtxo: parentFunding,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: {},
+      changeAddress: p2pkh.address,
+    });
+    const childFunding = { txid: '32'.repeat(32), vout: 0, satoshis: 80_000n };
+    await provider.addUtxo(p2pkh.address, childFunding);
+    // SIGHASH_NONE | ANYONECANPAY signs only the funder input, so the factory covenant (not the funder's
+    // signature) must refuse an appended own-category mutable.
+    const funder = p2pkh.unlock.spend(alicePub, new SignatureTemplate(
+      alicePriv, SighashType.SIGHASH_NONE | SighashType.SIGHASH_ANYONECANPAY,
+    ));
+    const honestHex = await captureRaw(provider, () => StatefulContract.deployFrom({
+      provider,
+      factory: deployed.contract,
+      deployFunctionName: 'create',
+      deployFunctionArgs: [[5n], 7n],
+      childArtifact,
+      childConstructorArgs: [],
+      childInitialState: { y: 0n },
+      fundingUtxo: childFunding,
+      funder,
+      changeAddress: p2pkh.address,
+    }));
+    const category = hexToBin(deployed.categoryId);
+    const forgedLock = p2sh32(distinct(20, 0x55));
+    const rewritten = await appendForgedMutable(provider, honestHex, category, forgedLock, '44'.repeat(32), true);
+    const destroyed = await appendForgedMutable(provider, honestHex, category, forgedLock, '45'.repeat(32), false);
+    const reject = async (hex: string): Promise<string> => provider.sendRawTransaction(hex)
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    const recommitted = await reject(rewritten);
+    const removed = await reject(destroyed);
+    expect(recommitted, 'DX-6 in-loop deploy recommitted').not.toMatch(/signature|CHECKSIG/i);
+    expect(removed, 'DS-3 in-loop deploy destroyed').not.toMatch(/signature|CHECKSIG/i);
+    expectScriptRejection(recommitted, 0);
+    expectScriptRejection(removed, 0);
+    await expect(provider.sendRawTransaction(honestHex)).resolves.toBeTypeOf('string');
+  }, 120_000);
+
 });
 
 interface Spend {
@@ -627,6 +962,414 @@ function paySpend(artifact: Artifact, recipient: Uint8Array): Spend {
   return { sourceOutputs, transaction: { ...base.transaction, inputs, outputs } };
 }
 
+/** The container's whole balance moves, and its own output is the SDK's zero placeholder or a paid redirect. */
+function fullSatoshiSpend(artifact: Artifact, recipient: Uint8Array, placeholder: boolean): Spend {
+  const base = scalarSpend(artifact, 'payAll', { n: 1n }, { n: 2n }, true, { to: recipient });
+  const containerRedeem = scriptToBytecode(buildSatoshiContainerCovenantScript(
+    CATEGORY, p2sh32(redeemOf(artifact)),
+  ));
+  const containerLock = p2sh32(containerRedeem);
+  const containerIn = 50_000n;
+  const containerOut = placeholder
+    ? { lockingBytecode: Uint8Array.of(0x6a), valueSatoshis: 0n }
+    : { lockingBytecode: FUNDER_LOCK, valueSatoshis: containerIn };
+  return {
+    sourceOutputs: [
+      base.sourceOutputs[0]!,
+      base.sourceOutputs[1]!,
+      { lockingBytecode: containerLock, valueSatoshis: containerIn },
+      base.sourceOutputs[2]!,
+    ],
+    transaction: {
+      ...base.transaction,
+      inputs: [
+        base.transaction.inputs[0]!,
+        base.transaction.inputs[1]!,
+        input(3, pushesOf([num(0n), num(1n), containerRedeem])),
+        { ...base.transaction.inputs[2]!, outpointTransactionHash: outpoint(4) },
+      ],
+      outputs: [
+        base.transaction.outputs[0]!,
+        base.transaction.outputs[1]!,
+        containerOut,
+        { lockingBytecode: recipient, valueSatoshis: containerIn },
+        base.transaction.outputs[2]!,
+      ],
+    },
+  };
+}
+
+/** Every fungible token moves, and the container output is the zero placeholder or the same amount elsewhere. */
+function fullTokenSpend(artifact: Artifact, recipient: Uint8Array, placeholder: boolean): Spend {
+  const base = scalarSpend(artifact, 'sendAll', { n: 1n }, { n: 2n }, true, { cat: FOREIGN, to: recipient });
+  const containerRedeem = scriptToBytecode(buildTokenContainerCovenantScript(
+    CATEGORY, FOREIGN, p2sh32(redeemOf(artifact)),
+  ));
+  const containerLock = p2sh32(containerRedeem);
+  const held = { category: FOREIGN, amount: 1_000n };
+  const containerOut = placeholder
+    ? { lockingBytecode: Uint8Array.of(0x6a), valueSatoshis: 0n }
+    : { lockingBytecode: FUNDER_LOCK, valueSatoshis: VALUE, token: held };
+  return {
+    sourceOutputs: [
+      base.sourceOutputs[0]!,
+      base.sourceOutputs[1]!,
+      { lockingBytecode: containerLock, valueSatoshis: VALUE, token: held },
+      base.sourceOutputs[2]!,
+    ],
+    transaction: {
+      ...base.transaction,
+      inputs: [
+        base.transaction.inputs[0]!,
+        base.transaction.inputs[1]!,
+        input(3, pushesOf([num(0n), num(1n), containerRedeem])),
+        { ...base.transaction.inputs[2]!, outpointTransactionHash: outpoint(4) },
+      ],
+      outputs: [
+        base.transaction.outputs[0]!,
+        base.transaction.outputs[1]!,
+        containerOut,
+        { lockingBytecode: recipient, valueSatoshis: VALUE, token: held },
+        base.transaction.outputs[2]!,
+      ],
+    },
+  };
+}
+
+function tokenReadSpend(artifact: Artifact): Spend {
+  const base = scalarSpend(artifact, 'look', { n: 1n }, { n: 1n }, true, { cat: FOREIGN });
+  const containerRedeem = scriptToBytecode(buildTokenContainerCovenantScript(
+    CATEGORY, FOREIGN, p2sh32(redeemOf(artifact)),
+  ));
+  const containerLock = p2sh32(containerRedeem);
+  const held = { category: FOREIGN, amount: 1_000n };
+  return {
+    sourceOutputs: [
+      base.sourceOutputs[0]!,
+      base.sourceOutputs[1]!,
+      { lockingBytecode: containerLock, valueSatoshis: VALUE, token: held },
+      base.sourceOutputs[2]!,
+    ],
+    transaction: {
+      ...base.transaction,
+      inputs: [
+        base.transaction.inputs[0]!,
+        base.transaction.inputs[1]!,
+        input(3, pushesOf([num(0n), num(1n), containerRedeem])),
+        { ...base.transaction.inputs[2]!, outpointTransactionHash: outpoint(4) },
+      ],
+      outputs: [
+        base.transaction.outputs[0]!,
+        base.transaction.outputs[1]!,
+        { lockingBytecode: containerLock, valueSatoshis: VALUE, token: held },
+        base.transaction.outputs[2]!,
+      ],
+    },
+  };
+}
+
+async function captureRaw(
+  provider: { sendRawTransaction(hex: string): Promise<string> },
+  run: () => Promise<unknown>,
+): Promise<string> {
+  let captured = '';
+  const send = provider.sendRawTransaction.bind(provider);
+  (provider as { sendRawTransaction(hex: string): Promise<string> }).sendRawTransaction = async (hex: string) => {
+    captured = hex;
+    throw new Error('capture-only');
+  };
+  await expect(run()).rejects.toThrow('capture-only');
+  provider.sendRawTransaction = send;
+  expect(captured).not.toBe('');
+  return captured;
+}
+
+async function appendForgedRecord(
+  provider: { addUtxo(address: string, utxo: {
+    txid: string; vout: number; satoshis: bigint;
+    token?: { category: string; amount: bigint; nft?: { capability: 'mutable'; commitment: string } };
+  }): Promise<unknown> },
+  hex: string, category: Uint8Array, masterLock: Uint8Array, txid: string, recreate: boolean,
+): Promise<string> {
+  const tx = decodeTransactionUnsafe(hexToBin(hex));
+  const recordRedeem = scriptToBytecode(buildDataNftCovenantScript(category, masterLock));
+  const recordLock = p2sh32(recordRedeem);
+  const before = Uint8Array.of(1, 2, 3);
+  await provider.addUtxo(binToHex(recordLock), {
+    txid, vout: 0, satoshis: VALUE,
+    token: { category: binToHex(category), amount: 0n, nft: { capability: 'mutable', commitment: binToHex(before) } },
+  });
+  tx.inputs.push({
+    outpointTransactionHash: hexToBin(txid),
+    outpointIndex: 0,
+    sequenceNumber: 0xffffffff,
+    unlockingBytecode: pushesOf([num(0n), num(1n), recordRedeem]),
+  });
+  // A recreated 0x01 output keeps a count. Dropping the NFT pays its satoshis to another lock.
+  tx.outputs.push(recreate ? {
+    lockingBytecode: recordLock,
+    valueSatoshis: VALUE,
+    token: { category, amount: 0n, nft: { capability: 'mutable', commitment: Uint8Array.of(9, 9, 9) } },
+  } : { lockingBytecode: FUNDER_LOCK, valueSatoshis: VALUE });
+  return binToHex(encodeTransaction(tx));
+}
+
+/** Deploys, calls once on the shipped SDK, and refuses a forged own-category mutable dropped or recommitted. */
+async function sdkIteratingRefusal(
+  source: string,
+  call: (contract: { fill: unknown; set: unknown; look: unknown }) => Promise<unknown>,
+  fund?: (provider: ReturnType<typeof createTestProvider>, deployed: {
+    readonly contract: { readonly address: string; readonly inner: { readonly lockingBytecode: Uint8Array } };
+    readonly categoryId: string;
+  }) => Promise<void>,
+): Promise<void> {
+  const artifact = compileString(source, { messageBus: false, forceStateful: true });
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const parentFunding = { txid: '31'.repeat(32), vout: 0, satoshis: 400_000n };
+  await provider.addUtxo(p2pkh.address, parentFunding);
+  const deployed = await StatefulContract.deploy(artifact, [], {
+    provider,
+    fundingUtxo: parentFunding,
+    funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+    initialState: {},
+    changeAddress: p2pkh.address,
+  });
+  const callFunding = { txid: '33'.repeat(32), vout: 0, satoshis: 200_000n };
+  await provider.addUtxo(deployed.contract.address, callFunding);
+  if (fund !== undefined) await fund(provider, deployed);
+  const honestHex = await captureRaw(provider, () => call(deployed.contract as never));
+  const category = hexToBin(deployed.categoryId);
+  const forgedLock = p2sh32(distinct(20, 0x55));
+  const rewritten = await appendForgedMutable(provider, honestHex, category, forgedLock, '44'.repeat(32), true);
+  const destroyed = await appendForgedMutable(provider, honestHex, category, forgedLock, '45'.repeat(32), false);
+  const reject = async (hex: string): Promise<string> => provider.sendRawTransaction(hex)
+    .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+  const recommitted = await reject(rewritten);
+  const removed = await reject(destroyed);
+  expect(recommitted).not.toMatch(/signature|CHECKSIG/i);
+  expect(removed).not.toMatch(/signature|CHECKSIG/i);
+  expectScriptRejection(recommitted, 0);
+  expectScriptRejection(removed, 0);
+  await expect(provider.sendRawTransaction(honestHex)).resolves.toBeTypeOf('string');
+}
+
+/** Funds a fungible token container so a `this.tokens[cat]` read has its co-spent container. */
+async function fundTokenContainer(
+  provider: ReturnType<typeof createTestProvider>, deployed: {
+    readonly categoryId: string;
+    readonly contract: { readonly inner: { readonly lockingBytecode: Uint8Array } };
+  }, cat: Uint8Array,
+): Promise<void> {
+  const containerAddress = getTokenContainerAddress(
+    deployed.contract.inner as never, deployed.categoryId, binToHex(cat),
+  );
+  await provider.addUtxo(containerAddress, {
+    txid: '55'.repeat(32), vout: 0, satoshis: VALUE,
+    token: { category: binToHex(cat), amount: 1_000n },
+  });
+}
+
+/** Appends an own-category mutable at a foreign lock: recreated with another commitment, or dropped for its sats. */
+async function appendForgedMutable(
+  provider: { addUtxo(address: string, utxo: {
+    txid: string; vout: number; satoshis: bigint;
+    token?: { category: string; amount: bigint; nft?: { capability: 'mutable'; commitment: string } };
+  }): Promise<unknown> },
+  hex: string, category: Uint8Array, lock: Uint8Array, txid: string, recreate: boolean,
+): Promise<string> {
+  const tx = decodeTransactionUnsafe(hexToBin(hex));
+  const before = Uint8Array.of(1, 2, 3);
+  // The appended input funds the extra fee its own bytes and output need, so the refusal is the covenant.
+  const inputValue = VALUE + 20_000n;
+  await provider.addUtxo(binToHex(lock), {
+    txid, vout: 0, satoshis: inputValue,
+    token: { category: binToHex(category), amount: 0n, nft: { capability: 'mutable', commitment: binToHex(before) } },
+  });
+  tx.inputs.push({
+    outpointTransactionHash: hexToBin(txid),
+    outpointIndex: 0,
+    sequenceNumber: 0xffffffff,
+    unlockingBytecode: EMPTY,
+  });
+  // A recreated 0x01 output keeps a count. Dropping the NFT pays its satoshis to another lock.
+  tx.outputs.push(recreate ? {
+    lockingBytecode: lock,
+    valueSatoshis: VALUE,
+    token: { category, amount: 0n, nft: { capability: 'mutable', commitment: Uint8Array.of(9, 9, 9) } },
+  } : { lockingBytecode: FUNDER_LOCK, valueSatoshis: VALUE });
+  return binToHex(encodeTransaction(tx));
+}
+
+/** A for-of spend over a three-entry chain plus a token-container read, writing the data record `n`. */
+function tokenIterationSpend(
+  artifact: Artifact, name: string, args: Record<string, Uint8Array>,
+  before: Record<string, Uint8Array | bigint>, after: Record<string, Uint8Array | bigint>,
+): Spend {
+  const fn = fnOf(artifact, name);
+  const redeem = redeemOf(artifact);
+  const lock = p2sh32(redeem);
+  const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'bal')!;
+  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
+    CATEGORY, computeCollectionHash(collection.signature), lock,
+  ));
+  const entryLock = p2sh32(entryRedeem);
+  const slotA = keyToSlot(num(1n));
+  const slotB = keyToSlot(num(2n));
+  const chain = [
+    encodeEntryCommitment(ZERO32, slotA, EMPTY),
+    encodeEntryCommitment(slotA, slotB, num(10n)),
+    encodeEntryCommitment(slotB, ZERO32, num(20n)),
+  ];
+  const blockSize = fn.blockLayout?.blockSize ?? 1;
+  const data = fn.blockLayout?.slots.find((entry) => entry.kind === 'dataNft');
+  const dataCommitment = data
+    ? hexToBin(buildPushdataCommitment(artifact.stateLayout!, before, data.nftIndex ?? 0))
+    : undefined;
+  const dataAfter = data
+    ? hexToBin(buildPushdataCommitment(artifact.stateLayout!, after, data.nftIndex ?? 0))
+    : undefined;
+  const dataCovenant = data ? scriptToBytecode(buildDataNftCovenantScript(CATEGORY, lock)) : undefined;
+  const dataLock = dataCovenant ? p2sh32(dataCovenant) : undefined;
+  const containerRedeem = scriptToBytecode(buildTokenContainerCovenantScript(CATEGORY, FOREIGN, lock));
+  const containerLock = p2sh32(containerRedeem);
+  const held = { category: FOREIGN, amount: 1_000n };
+  const values: Record<string, Uint8Array> = { ...args };
+  for (const entry of fn.inputs) {
+    if (values[entry.name] !== undefined) continue;
+    if (/^__internal__collectionIterCount_\d+$/.test(entry.name)) values[entry.name] = num(BigInt(chain.length));
+    else if (entry.name.startsWith('__internal__')) values[entry.name] = EMPTY;
+    else throw new Error(`unexpected input ${entry.name}`);
+  }
+  const sources: SourceOutputs = [
+    { lockingBytecode: lock, valueSatoshis: VALUE, token: tokenOf('minting', EMPTY) },
+  ];
+  const outputs: VmOutput[] = [
+    { lockingBytecode: lock, valueSatoshis: VALUE, token: tokenOf('minting', EMPTY) },
+  ];
+  if (data && dataLock && dataCovenant && dataCommitment && dataAfter) {
+    sources.push({ lockingBytecode: dataLock, valueSatoshis: VALUE, token: tokenOf('mutable', dataCommitment) });
+    outputs.push({ lockingBytecode: dataLock, valueSatoshis: VALUE, token: tokenOf('mutable', dataAfter) });
+  }
+  sources.push({ lockingBytecode: containerLock, valueSatoshis: VALUE, token: held });
+  outputs.push({ lockingBytecode: containerLock, valueSatoshis: VALUE, token: held });
+  for (const entryCommitment of chain) {
+    const coin = { lockingBytecode: entryLock, valueSatoshis: VALUE, token: tokenOf('mutable', entryCommitment) };
+    sources.push(coin);
+    outputs.push(coin);
+  }
+  const inputs = [input(0, redeemUnlock(fn, redeem, values, false))];
+  if (data && dataCovenant) inputs.push(input(1, pushesOf([num(0n), num(1n), dataCovenant])));
+  inputs.push(input(2, pushesOf([num(0n), num(1n), containerRedeem])));
+  for (let index = 0; index < chain.length; index += 1) {
+    inputs.push(input(blockSize + index, pushesOf([num(0n), num(0n), entryRedeem])));
+  }
+  if (sources.length !== blockSize + chain.length) {
+    throw new Error(`block ${blockSize} sources ${sources.length} chain ${chain.length}`);
+  }
+  return { sourceOutputs: sources, transaction: { version: 2, locktime: 0, inputs, outputs } };
+}
+
+/** A for-of spend over a three-entry chain that sums to 30, writing the data record `x`. */
+function iterationSpend(
+  artifact: Artifact, name: string, args: Record<string, Uint8Array>,
+  before: Record<string, Uint8Array | bigint>, after: Record<string, Uint8Array | bigint>,
+): Spend {
+  const fn = fnOf(artifact, name);
+  const redeem = redeemOf(artifact);
+  const lock = p2sh32(redeem);
+  const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'bal')!;
+  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
+    CATEGORY, computeCollectionHash(collection.signature), lock,
+  ));
+  const entryLock = p2sh32(entryRedeem);
+  const slotA = keyToSlot(num(1n));
+  const slotB = keyToSlot(num(2n));
+  const chain = [
+    encodeEntryCommitment(ZERO32, slotA, EMPTY),
+    encodeEntryCommitment(slotA, slotB, num(10n)),
+    encodeEntryCommitment(slotB, ZERO32, num(20n)),
+  ];
+  const blockSize = fn.blockLayout?.blockSize ?? 1;
+  const data = fn.blockLayout?.slots.find((entry) => entry.kind === 'dataNft');
+  const dataCommitment = data
+    ? hexToBin(buildPushdataCommitment(artifact.stateLayout!, before, data.nftIndex ?? 0))
+    : undefined;
+  const dataAfter = data
+    ? hexToBin(buildPushdataCommitment(artifact.stateLayout!, after, data.nftIndex ?? 0))
+    : undefined;
+  const dataCovenant = data ? scriptToBytecode(buildDataNftCovenantScript(CATEGORY, lock)) : undefined;
+  const dataLock = dataCovenant ? p2sh32(dataCovenant) : undefined;
+  const values: Record<string, Uint8Array> = { ...args };
+  for (const entry of fn.inputs) {
+    if (values[entry.name] !== undefined) continue;
+    if (/^__internal__collectionIterCount_\d+$/.test(entry.name)) values[entry.name] = num(BigInt(chain.length));
+    else if (entry.name.startsWith('__internal__')) values[entry.name] = EMPTY;
+    else throw new Error(`unexpected input ${entry.name}`);
+  }
+  const sources: SourceOutputs = [
+    { lockingBytecode: lock, valueSatoshis: VALUE, token: tokenOf('minting', EMPTY) },
+  ];
+  const outputs: VmOutput[] = [
+    { lockingBytecode: lock, valueSatoshis: VALUE, token: tokenOf('minting', EMPTY) },
+  ];
+  if (data && dataLock && dataCovenant && dataCommitment && dataAfter) {
+    sources.push({ lockingBytecode: dataLock, valueSatoshis: VALUE, token: tokenOf('mutable', dataCommitment) });
+    outputs.push({ lockingBytecode: dataLock, valueSatoshis: VALUE, token: tokenOf('mutable', dataAfter) });
+  }
+  for (const entryCommitment of chain) {
+    const coin = { lockingBytecode: entryLock, valueSatoshis: VALUE, token: tokenOf('mutable', entryCommitment) };
+    sources.push(coin);
+    outputs.push(coin);
+  }
+  const inputs = [input(0, redeemUnlock(fn, redeem, values, false))];
+  if (data && dataCovenant) inputs.push(input(1, pushesOf([num(0n), num(1n), dataCovenant])));
+  for (let index = 0; index < chain.length; index += 1) {
+    inputs.push(input(blockSize + index, pushesOf([num(0n), num(0n), entryRedeem])));
+  }
+  if (sources.length !== blockSize + chain.length) {
+    throw new Error(`block ${blockSize} sources ${sources.length} chain ${chain.length}`);
+  }
+  return { sourceOutputs: sources, transaction: { version: 2, locktime: 0, inputs, outputs } };
+}
+
+/** Appends one own-category mutable at a foreign lock, recreated with another commitment or dropped. */
+function withAppendedMutable(honest: Spend, recreate: boolean): Spend {
+  const forgedLock = p2sh32(distinct(20, 0x55));
+  const inputs = [
+    ...honest.transaction.inputs,
+    {
+      outpointIndex: 0,
+      outpointTransactionHash: distinct(32, 0x90),
+      sequenceNumber: 0xffffffff,
+      unlockingBytecode: EMPTY,
+    },
+  ];
+  const outputs = [...honest.transaction.outputs, recreate
+    ? { lockingBytecode: forgedLock, valueSatoshis: VALUE, token: tokenOf('mutable', Uint8Array.of(9, 9, 9)) }
+    : { lockingBytecode: FUNDER_LOCK, valueSatoshis: VALUE }];
+  const sourceOutputs = [
+    ...honest.sourceOutputs,
+    { lockingBytecode: forgedLock, valueSatoshis: VALUE, token: tokenOf('mutable', Uint8Array.of(1, 2, 3)) },
+  ];
+  return { sourceOutputs, transaction: { ...honest.transaction, inputs, outputs } };
+}
+
+function withExtraData(
+  artifact: Artifact, honest: Spend,
+  before: Record<string, Uint8Array | bigint>, after: Record<string, Uint8Array | bigint>,
+): Spend {
+  const recordRedeem = dataRedeem(p2sh32(redeemOf(artifact)));
+  const recordLock = p2sh32(recordRedeem);
+  return appendInput(honest, {
+    lockingBytecode: recordLock, valueSatoshis: VALUE,
+    token: tokenOf('mutable', hexToBin(buildPushdataCommitment(artifact.stateLayout!, before, 0))),
+  }, pushesOf([num(0n), num(1n), recordRedeem]), {
+    lockingBytecode: recordLock, valueSatoshis: VALUE,
+    token: tokenOf('mutable', hexToBin(buildPushdataCommitment(artifact.stateLayout!, after, 0))),
+  });
+}
+
 function withSatoshiDrain(artifact: Artifact, honest: Spend): Spend {
   const redeem = scriptToBytecode(buildSatoshiContainerCovenantScript(
     CATEGORY, p2sh32(redeemOf(artifact)),
@@ -711,7 +1454,9 @@ function skippedMappingWrite(artifact: Artifact): Spend {
   const base = mappingUpdate(artifact, -2n, num(9n));
   const fn = fnOf(artifact, 'set');
   const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'm')!;
-  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact))));
+  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
+    CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact)),
+  ));
   const entryLock = p2sh32(entryRedeem);
   const key = num(7n);
   const slot = keyToSlotMulti([key]);
@@ -750,7 +1495,9 @@ function mappingUpdate(artifact: Artifact, predOut: bigint, tail: Uint8Array, na
   const redeem = redeemOf(artifact);
   const lock = p2sh32(redeem);
   const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'm')!;
-  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact))));
+  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
+    CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact)),
+  ));
   const entryLock = p2sh32(entryRedeem);
   const key = num(7n);
   const slot = keyToSlotMulti([key]);
@@ -789,7 +1536,9 @@ function mappingInsert(artifact: Artifact, key: Uint8Array): Spend {
   const redeem = redeemOf(artifact);
   const lock = p2sh32(redeem);
   const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'claimed')!;
-  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact))));
+  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
+    CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact)),
+  ));
   const entryLock = p2sh32(entryRedeem);
   const slot = keyToSlotMulti([key]);
   const values: Record<string, Uint8Array> = {};
@@ -840,7 +1589,9 @@ function withForgedData(artifact: Artifact, honest: Spend): Spend {
 function chunkLock(artifact: Artifact): { lock: Uint8Array; redeem: Uint8Array } {
   const variable = artifact.stateLayout!.variables.find((entry) => entry.name === 'name');
   const signature = computeCollectionSignature(variable?.name ?? 'name', variable?.type ?? 'string');
-  const redeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(signature), p2sh32(redeemOf(artifact))));
+  const redeem = scriptToBytecode(buildEntryNftCovenantScript(
+    CATEGORY, computeCollectionHash(signature), p2sh32(redeemOf(artifact)),
+  ));
   return { lock: p2sh32(redeem), redeem };
 }
 
@@ -907,7 +1658,9 @@ function arrayClaim(artifact: Artifact, omit: boolean): Spend {
   const redeem = redeemOf(artifact);
   const lock = p2sh32(redeem);
   const collection = artifact.stateLayout!.collections!.find((entry) => entry.name === 'claimed')!;
-  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact))));
+  const entryRedeem = scriptToBytecode(buildEntryNftCovenantScript(
+    CATEGORY, computeCollectionHash(collection.signature), p2sh32(redeemOf(artifact)),
+  ));
   const entryLock = p2sh32(entryRedeem);
   const values: Record<string, Uint8Array> = {};
   for (const entry of fn.inputs) values[entry.name] = entry.name === 'i' ? num(1n) : internalDefault(entry.name);

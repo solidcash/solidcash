@@ -1,9 +1,11 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
+  applyBlockOracleLock,
   type AbiFunction,
   type Artifact,
   asmToScript,
+  bytesEqual,
   bytecodeToScript,
   countOpcodes,
   generateContractBytecodeScript,
@@ -30,6 +32,7 @@ import {
   type OpaqueLoopCallContext, type OpaqueLoopContractCall, type OpaqueLoopCoSpend, type ExternalTargetEntry,
 } from './loop-call.js';
 import type { TransactionBuilder } from './TransactionBuilder.js';
+import { bindBlockOracleLock } from './oracle/block-oracle-lock.js';
 import semver from 'semver';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { decodeKernelEntryJournalAccesses } from './stateful/KernelEntryJournal.js';
@@ -89,7 +92,10 @@ export function kernelRouteDensityReserveBytes(accessStreams: FunctionArgument |
 // one-byte reserve (the size the reported overrun suggests) does not. The journal-access reserve above does not
 // apply here because an effect-only route publishes no access streams. Size an envelope per reserved site, like
 // the access reserve, so only a route that reserves an effect band is padded by this much.
-const KERNEL_ROUTE_EFFECT_OPERATION_COST_PER_SITE = 8_000;
+// Each site also brings a pad input and an output that the per-entry hardening scans (satoshi-container sums,
+// foreign-token and mutable-output listings) step through. MEASURED on the same route with those scans: 5.27M
+// input-0 cost, so finishing needs 11,448 per site.
+const KERNEL_ROUTE_EFFECT_OPERATION_COST_PER_SITE = 12_000;
 
 /**
  * Size the discarded density reserve for a kernel row-loop effect route from its reserved effect band. Only a
@@ -140,6 +146,22 @@ export function kernelRouteSignatureDensityReserveBytes(
     Math.ceil((leaves * ConsensusBch2026.signatureCheckCost)
       / ConsensusBch2026.operationCostBudgetPerByte),
   );
+}
+
+// Category, container and master scans visit the whole transaction, including sibling participants' bands.
+// Their cost does not follow this route's own effect count. Reserve a density length of eight bytes per
+// physical input/output slot (6,400 cost units), alongside the existing journal/effect/signature reserves.
+// This is a capacity allowance, not a proof of arbitrary handler cost: finalized-byte VM validation remains
+// authoritative, and the reserve cannot grow the complete unlocking script beyond the consensus byte limit.
+function kernelRouteScanDensityReserveBytes(
+  routeBytesWithoutReserve: number, existingReserve: number, physicalSlots: number, convention: string | undefined,
+): number {
+  if (convention !== 'kernel-row-loop') return existingReserve;
+  const desired = Math.max(existingReserve, physicalSlots * 8 - routeBytesWithoutReserve);
+  // A nonempty large reserve uses PUSHDATA2's three-byte header; conservatively leave that header even when
+  // a shorter reserve would use a smaller push. An already oversized route still fails its normal size gate.
+  const room = Math.max(0, ConsensusBch2026.maximumBytecodeLength - routeBytesWithoutReserve - 3);
+  return Math.min(room, KERNEL_ROUTE_DENSITY_MAX_RESERVE_BYTES, desired);
 }
 
 /** Attach the V5 canonical manifest to the root compiler-route frame, without changing its ABI arguments. */
@@ -319,6 +341,8 @@ export class Contract<
   usesExternalLibraries: boolean;
   salt?: Uint8Array;
   category?: Uint8Array;
+  /** The oracle p2sh32 lock baked over the reader's sentinel, when this contract slices that commitment. */
+  blockOracleLock?: Uint8Array;
 
   encodedConstructorArgs: Uint8Array[];
   private rawConstructorArgs: TResolved['constructorInputs'];
@@ -341,6 +365,11 @@ export class Contract<
       throw new Error('Salt must be 520 bytes or less');
     }
     this.category = this.options.category;
+    const providerLock = this.provider.blockOracleLock;
+    this.blockOracleLock = this.options.blockOracleLock ?? providerLock;
+    if (this.blockOracleLock !== undefined && (artifact.blockOracleLockSlots?.length ?? 0) > 0) {
+      bindBlockOracleLock(artifact, this.blockOracleLock);
+    }
     this.rawConstructorArgs = constructorArgs;
 
     const expectedProperties = ['abi', 'bytecode', 'constructorInputs', 'contractName', 'compiler'];
@@ -478,6 +507,7 @@ export class Contract<
       this.usesExternalLibraries ? 'library-pad' : '',
       this.isStateful && this.category ? binToHex(this.category) : '',
       this.salt === undefined ? 'no-salt' : `salt:${binToHex(this.salt)}`,
+      this.blockOracleLock === undefined ? 'no-oracle' : `oracle:${binToHex(this.blockOracleLock)}`,
     ].join('|');
     let compositions = composedBytecodeScripts.get(artifact.bytecode);
     if (!compositions) {
@@ -486,8 +516,12 @@ export class Contract<
     }
     let contractBytecodeScript = compositions.get(compositionKey);
     if (!contractBytecodeScript) {
+      let readerProgram = scriptToBytecode(parsedArtifactScript(this.artifact));
+      if (this.blockOracleLock !== undefined && this.artifact.blockOracleLockSlots !== undefined) {
+        readerProgram = applyBlockOracleLock(readerProgram, this.blockOracleLock, this.artifact.blockOracleLockSlots);
+      }
       contractBytecodeScript = generateContractBytecodeScript(
-        parsedArtifactScript(this.artifact), this.encodedConstructorArgs,
+        bytecodeToScript(readerProgram), this.encodedConstructorArgs,
       );
       if (this.usesExternalLibraries) {
         contractBytecodeScript = [Op.OP_DROP, ...contractBytecodeScript];
@@ -777,7 +811,10 @@ export class Contract<
       const needsBlockhashIndex = !internalsProvided && abiFunction.inputs.some(
         (input) => input.name === '__internal__blockhashInputIndex',
       );
-      const cacheUnlockingBytecode = !hasSignatures && !needsBlockhashIndex;
+      const needsOracleIndex = !internalsProvided && abiFunction.inputs.some(
+        (input) => input.name === '__internal__blockOracleInputIndex',
+      );
+      const cacheUnlockingBytecode = !hasSignatures && !needsBlockhashIndex && !needsOracleIndex;
       let cachedUnlockingBytecode: Uint8Array | undefined;
       // Redeem push is stable across probe-local ReturnOutputIdx edits; keep it so arg-only
       // rebuilds do not reserialize multi-megabyte redeem scripts every probe.
@@ -827,7 +864,10 @@ export class Contract<
         // Fill the synthesized blockhash co-spend index (locate the C_oracle UTXO among the spent inputs);
         // composition-safe - the reader does not assume the last input. Appended after the visible args.
         // Skipped when the caller already provided the full arg list (stateful orchestrator).
-        const synthArgs = internalsProvided ? [] : this.resolveBlockhashIndexArgs(abiFunction, sourceOutputs, args);
+        const synthArgs = internalsProvided ? [] : [
+          ...this.resolveBlockhashIndexArgs(abiFunction, sourceOutputs, args),
+          ...this.resolveBlockOracleIndexArgs(abiFunction, sourceOutputs),
+        ];
 
         // External-library contracts get a budget pad pushed on top (dropped by the redeem's OP_DROP),
         // sizing the per-input op budget to the keccak computation.
@@ -884,8 +924,8 @@ export class Contract<
       if (!(blob instanceof Uint8Array)) throw new Error('message-bus batch batchBlob must encode as bytes');
       const positionalPush = scriptToBytecode([blob]);
       // Preserve the historical positional frame without carrying the callManifest in the master. The
-      // artifact-specialized verifier inputs carry the canonical callManifest. Kernel journal routes retain a
-      // bounded payload in this already-discarded slot: their record scans can otherwise exceed BCH-2026's
+      // artifact-specialized verifier inputs carry the canonical callManifest. Kernel routes retain a
+      // bounded payload in this already-discarded slot: their transaction scans can otherwise exceed BCH-2026's
       // operation-density budget despite remaining below every absolute operation and script-size limit.
       const kernelJournalRoute = abiFunction.inputs.some(
         (input) => input.name === '__internal__kernelJournalAccessStreams',
@@ -893,28 +933,35 @@ export class Contract<
       const kernelJournalAccessIndex = abiFunction.inputs.findIndex(
         (input) => input.name === '__internal__kernelJournalAccessStreams',
       );
-      const reservedPositionalPush = scriptToBytecode([
-        new Uint8Array(kernelJournalRoute
-          ? kernelRouteDensityReserveBytes(args[kernelJournalAccessIndex])
-          : kernelRouteEffectDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention)
-            + kernelRouteSignatureDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention)),
-      ]);
+      const existingReserve = kernelJournalRoute
+        ? kernelRouteDensityReserveBytes(args[kernelJournalAccessIndex])
+        : kernelRouteEffectDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention)
+          + kernelRouteSignatureDensityReserveBytes(abiFunction, this.artifact.messageBus?.convention);
       let cachedOrdinary: Uint8Array | undefined;
       let cachedCompilerRoute: Uint8Array | undefined;
+      let cachedReserveBytes: number | undefined;
       const generateUnlockingBytecode = (
         options: GenerateUnlockingBytecodeOptions,
       ): Uint8Array => {
         const ordinary = unlocker.generateUnlockingBytecode(options);
+        const reserveBytes = kernelRouteScanDensityReserveBytes(
+          ordinary.length + positionalPush.length, existingReserve,
+          options.transaction.inputs.length + options.transaction.outputs.length,
+          this.artifact.messageBus?.convention,
+        );
         // The base unlocker returns the same byte-array instance when its witnesses are transaction-independent.
         // Reuse the corresponding compiler-route frame too; otherwise every probe recopies the complete P2SH
         // redeem script merely to insert two small positional pushes.
-        if (ordinary === cachedOrdinary && cachedCompilerRoute !== undefined) return cachedCompilerRoute;
+        if (ordinary === cachedOrdinary && reserveBytes === cachedReserveBytes
+          && cachedCompilerRoute !== undefined) return cachedCompilerRoute;
+        const reservedPositionalPush = scriptToBytecode([new Uint8Array(reserveBytes)]);
         // The selector is always the minimal push4 frame (5 bytes). Duplicate
         // the executable blob here as the canonical positional second push;
         // the message-bus batch covenant proves this copy equals its decoded batchBlob arg. Both historical
         // positional items stay below the complete ABI frame, so the route can discard them uniformly before
         // any hidden argument is addressed.
         cachedOrdinary = ordinary;
+        cachedReserveBytes = reserveBytes;
         cachedCompilerRoute = new Uint8Array([
           ...ordinary.slice(0, 5),
           ...positionalPush,
@@ -960,6 +1007,23 @@ export class Contract<
     // and its co-spend is resolved by StatefulContract (via the blockhashOracle block-layout slot). Reaching
     // the base Contract/TransactionBuilder path means the reader was not built through StatefulContract.
     throw new Error('blockhash(n) is only supported in stateful contracts; build the call via StatefulContract.');
+  }
+
+  /** The co-spend index of the block-info oracle, located by the lock this contract was instantiated with. */
+  private resolveBlockOracleIndexArgs(
+    abiFunction: AbiFunction, sourceOutputs: LibauthOutput[],
+  ): Uint8Array[] {
+    const wanted = abiFunction.inputs.some((input) => input.name === '__internal__blockOracleInputIndex');
+    if (!wanted) return [];
+    const lock = this.blockOracleLock;
+    if (lock === undefined) {
+      throw new Error(`${this.name} reads the block oracle, and no oracle lock was provided`);
+    }
+    const index = sourceOutputs.findIndex((output) => bytesEqual(output.lockingBytecode, lock));
+    if (index < 0) {
+      throw new Error(`${this.name} reads the block oracle, and the transaction does not spend it`);
+    }
+    return [bigIntToVmNumber(BigInt(index))];
   }
 
   // Size the budget pad for a call. keccak256 functions need the per-input op budget raised

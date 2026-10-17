@@ -43,18 +43,18 @@ export function applyDeferredEcrecoverArgument(
     }
     return false;
   }
-  const sidecarA = host.ecrecoverComputeCoSpendUtxos[2 * callIndex];
-  const sidecarB = host.ecrecoverComputeCoSpendUtxos[2 * callIndex + 1];
+  const sidecarA = host.ecrecoverComputeCoSpendUtxos[3 * callIndex];
+  const sidecarB = host.ecrecoverComputeCoSpendUtxos[3 * callIndex + 2];
   if (!sidecarA || !sidecarB) return false;
   const witness = computeEcrecoverWitness(
     argBlob.slice(0, 32), argBlob[32], argBlob.slice(33, 65), argBlob.slice(65, 97),
   );
   const chunkA = probeEcrecoverSplit(witness, deferred.salt, sidecarA, sidecarB);
-  const rebuilt = buildEcrecoverComputeSidecars(witness, chunkA, deferred.salt, sidecarA, sidecarB);
-  host.ecrecoverComputeCoSpendUtxos[2 * callIndex] = { ...sidecarA, unlocker: rebuilt.unlockerA };
-  host.ecrecoverComputeCoSpendUtxos[2 * callIndex + 1] = { ...sidecarB, unlocker: rebuilt.unlockerB };
-  host.ecrecoverComputeRecreates[2 * callIndex] = rebuilt.recreateA;
-  host.ecrecoverComputeRecreates[2 * callIndex + 1] = rebuilt.recreateB;
+  const rebuilt = buildEcrecoverComputeSidecars(witness, chunkA, deferred.salt, sidecarA, sidecarB, undefined, 'B2');
+  host.ecrecoverComputeCoSpendUtxos[3 * callIndex] = { ...sidecarA, unlocker: rebuilt.unlockerA };
+  host.ecrecoverComputeCoSpendUtxos[3 * callIndex + 2] = { ...sidecarB, unlocker: rebuilt.unlockerB };
+  host.ecrecoverComputeRecreates[3 * callIndex] = rebuilt.recreateA;
+  host.ecrecoverComputeRecreates[3 * callIndex + 2] = rebuilt.recreateB;
   deferred.argBlobs[callIndex] = Uint8Array.from(argBlob);
   const evmPreimageIndex = deferred.evmKeccakPreimageIndices[callIndex] ?? -1;
   if (evmPreimageIndex >= 0) {
@@ -78,7 +78,7 @@ export function resolveDeferredEcrecoverArgument(
   const unresolvedAIndices = new Map<number, number>();
   for (let callIndex = 0; callIndex < deferred.argBlobs.length; callIndex++) {
     if (deferred.argBlobs[callIndex] !== null) continue;
-    const sidecarA = host.ecrecoverComputeCoSpendUtxos[2 * callIndex];
+    const sidecarA = host.ecrecoverComputeCoSpendUtxos[3 * callIndex];
     if (!sidecarA) continue;
     const inputIndex = host.allInputs.findIndex((input) => (
       input.txid.toLowerCase() === sidecarA.txid.toLowerCase() && input.vout === sidecarA.vout

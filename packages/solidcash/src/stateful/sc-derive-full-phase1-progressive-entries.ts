@@ -183,6 +183,17 @@ export function deriveFullPhase1ProgressiveEntries(
           && outputIndex === bOutputBase + planned.blockSlot
           && planned.commitment?.toLowerCase() === commitment.toLowerCase()
         ))) continue;
+        const blockSlot = routeProbeEntrySlotOffsetForOutput(outputIndex, [
+          { base: bOutputBase, slots: group.blockLayout.slots },
+          { base: delegateImplIndex, slots: delegateImplFn?.blockLayout?.slots },
+        ]);
+        // A preserve observation (expected == the co-spent input's own commitment) is not a write: it is a 1:1
+        // preservation pin the covenant emits beside the write. Once a write has been learned, that stale old
+        // value must not overwrite the new commitment.
+        if (blockSlot !== undefined) {
+          const inputHex = group.blockInputs[blockSlot]?.token?.nft?.commitment;
+          if (typeof inputHex === 'string' && inputHex === commitment) continue;
+        }
         // bEntryMap records what an authenticated probe observed; it does not prove the current builder
         // has materialized those bytes. In particular, the initial trace can reveal a complete NEW node
         // which an earlier relative-slot seed records while physical compaction still leaves P' at that
@@ -190,10 +201,6 @@ export function deriveFullPhase1ProgressiveEntries(
         // whether the next transaction changes. String length is not a completeness test: a canonical
         // zero-valued sorted node is exactly 64 bytes.
         if (previous !== commitment) bEntryMap.set(outputIndex, commitment);
-        const blockSlot = routeProbeEntrySlotOffsetForOutput(outputIndex, [
-          { base: bOutputBase, slots: group.blockLayout.slots },
-          { base: delegateImplIndex, slots: delegateImplFn?.blockLayout?.slots },
-        ]);
         if (blockSlot !== undefined) {
           progressed = stb.setExternalCallEntryOutput(
             group.categoryId, blockSlot, commitment,

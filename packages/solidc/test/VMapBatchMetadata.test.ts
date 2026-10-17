@@ -285,13 +285,17 @@ describe('vmap fixed-write batch metadata', () => {
       .toBe('loopLast:id:n');
   });
 
-  it('records an if-converted mapping write as a ternary valueSource', () => {
+  it('records a direct singleton conditional write as its direct value param', () => {
+    // IfConvertConditionalEntryOp.preserveDirectSingletonWrites keeps a direct single-target source branch
+    // (`if (d) { m[k] = v; }`) as a branch whose activity flag settles the predecessor unchanged, instead of
+    // if-converting it to a ternary (which would mint a phantom zero-valued node for an absent key). The value
+    // source is therefore the direct param, with the condition carried by the branch, not the value.
     const artifact = compileString(`contract C {
       mapping(uint256 => uint256) m;
       function setIf(uint256 k, uint256 v, bool d) external { if (d) { m[k] = v; } require(true); }
     }`, { forceStateful: true });
     expect(artifact.abi.find((fn) => fn.name === 'setIf')?.entryAccesses?.[0]?.valueSource)
-      .toBe('ternary(id:d,id:v,map:m(id:k))');
+      .toBe('id:v');
   });
 
   it('allocates a sorted mapping read nested inside another mapping key', () => {

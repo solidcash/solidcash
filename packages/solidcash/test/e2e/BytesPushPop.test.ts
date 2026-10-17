@@ -18,7 +18,7 @@ contract C() {
   function push(bytes1 b, pubkey pk, sig s) { require(checkSig(s, pk)); data.push(b); }
   function pop(pubkey pk, sig s) { require(checkSig(s, pk)); data.pop(); }
   function check(bytes e) { require(data == e); }
-  function len(int n) { require(data.length == n); }
+  function len(uint n) { require(data.length == n); }
 }`;
 
 describe('bytes .push() / .pop()', () => {

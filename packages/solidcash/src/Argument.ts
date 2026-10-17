@@ -20,7 +20,10 @@ import {
 } from '@solidcash/utils';
 import { TypeError } from './Errors.js';
 import SignatureTemplate from './SignatureTemplate.js';
-import { addressPayloadToLockingBytecode, addressToLockScript } from './utils.js';
+import {
+  addressPayloadToLockingBytecode, addressToLockScript, lockingBytecodeToSolidityAddressPayload,
+  tryCashAddressToLockScript,
+} from './utils.js';
 
 // A struct argument (Solidity's struct = ABI tuple): an object keyed by field name, encoded in declaration
 // order. A struct may also be passed as a positional tuple (the array case below), matching Solidity/ethers.
@@ -30,6 +33,13 @@ export interface StructArgument { [field: string]: FunctionArgument }
 export type ConstructorArgument = bigint | boolean | string | Uint8Array | ConstructorArgument[] | StructArgument;
 export type SignatureTemplateArgument = SignatureTemplate | SignatureTemplateArgument[];
 export type FunctionArgument = ConstructorArgument | SignatureTemplateArgument;
+
+/** Solidity compatibility at call boundaries: a native address in a byte slot names its EVM identity bytes. */
+export function normalizeSolidityBytesArgument(arg: FunctionArgument, type: string): FunctionArgument {
+  if (!/^bytes(?:[1-9]|[12][0-9]|3[0-2])?$/.test(type) || typeof arg !== 'string') return arg;
+  const lock = tryCashAddressToLockScript(arg);
+  return lock ? lockingBytecodeToSolidityAddressPayload(lock) ?? arg : arg;
+}
 
 /** Coerce ethers BigNumber, the testing shim, BN.js, and equivalent numeric objects to bigint. */
 function coerceNumericObject(value: object): bigint | undefined {

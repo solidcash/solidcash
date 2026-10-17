@@ -45,22 +45,27 @@ describe('kernel repeated chunk-backed mapping values', () => {
       ...storeArtifact.stateLayout!, collections: [],
     }, {}, {
       saltContract: true,
+      // Entry and value-chunk covenants bind the master's lock: seed them for the category-pinned master.
       extraOutputs: (categoryId) => [{
-        address: getEntryNftAddress(base, categoryId, 'records'), satoshis: 10_000n,
+        address: getEntryNftAddress(base.withCategory(hexToBin(categoryId)), categoryId, 'records'),
+        satoshis: 10_000n,
         token: { amount: 0n, nft: {
           capability: 'mutable', commitment: binToHex(encodeEntryCommitment(
             new Uint8Array(32), slot, new Uint8Array(64),
           )),
         } },
       }, {
-        address: getEntryNftAddress(base, categoryId, 'records'), satoshis: 10_000n,
+        address: getEntryNftAddress(base.withCategory(hexToBin(categoryId)), categoryId, 'records'),
+        satoshis: 10_000n,
         token: { amount: 0n, nft: {
           capability: 'mutable', commitment: binToHex(encodeEntryCommitment(
             slot, new Uint8Array(32), encodeChunkableValueTail(previous),
           )),
         } },
       }, ...splitValueIntoValueChunks(previous).map((chunk, index) => ({
-        address: getValueChunkAddress(base, categoryId, 'records', slot, sha256(previous)),
+        address: getValueChunkAddress(
+          base.withCategory(hexToBin(categoryId)), categoryId, 'records', slot, sha256(previous),
+        ),
         satoshis: 10_000n,
         token: { amount: 0n, nft: {
           capability: 'mutable', commitment: buildValueChunkCommitment(index, chunk),
@@ -84,7 +89,9 @@ describe('kernel repeated chunk-backed mapping values', () => {
     const expected = encodePushdataValue([
       ...priorRecords, { payload: first }, { payload: second },
     ], 'Record[]', storeArtifact.structs);
-    const lock = getValueChunkLockingBytecode(store.categoryId, 'records', slot, sha256(expected));
+    const lock = getValueChunkLockingBytecode(
+      store.categoryId, 'records', slot, sha256(expected), hexToBin(store.inner.lockingBytecode),
+    );
     const chunks = builder.buildLibauthTransaction().outputs
       .filter((output) => binToHex(output.lockingBytecode) === binToHex(lock))
       .map((output) => binToHex(output.token!.nft!.commitment));

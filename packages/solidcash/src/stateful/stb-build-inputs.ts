@@ -4,6 +4,7 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { isAuxiliaryBlockSlot } from '@solidcash/utils';
 import type { AbiFunction, FunctionBlockLayout } from '@solidcash/utils';
 import type { TransactionBuilderOptions } from '../TransactionBuilder.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
@@ -25,9 +26,11 @@ export interface BuildInputsHost {
   dataNftUtxos: UnlockableUtxo[];
   readOnlyDataNftUtxos: UnlockableUtxo[];
   blockhashCoSpendUtxos: UnlockableUtxo[];
+  blockInfoCoSpendUtxos?: UnlockableUtxo[];
   blockhashCoSpendSlotOrdinals?: number[];
   keccakComputeCoSpendUtxos: UnlockableUtxo[];
   keccakLoopSideCars: UnlockableUtxo[];
+  keccakLoopPrecedesTrailingUser: boolean;
   ecrecoverComputeCoSpendUtxos: UnlockableUtxo[];
   lowLevelCallRawInputs: UnlockableUtxo[];
   iterationEntryInputs: UnlockableUtxo[];
@@ -84,6 +87,59 @@ export function orderPostBlockTrailingAndReadInputs<T>(
   return [...trailing, ...readOnly];
 }
 
+/**
+ * The front-region auxiliary co-spend band, ordered by the compiler's blockLayout slots. One driver walks the
+ * emitted auxiliary slots (between the data NFTs and the effect tail) and pulls each family's next co-spend by
+ * cursor, so the SDK's input order always matches the compiler's band order. `lowLevelCall` delegate inputs are
+ * excluded: direct delegate assembly keeps its own placement (see buildInputs' legacy delegate prefix).
+ */
+export function orderedFrontRegionCoSpends(
+  layout: FunctionBlockLayout | undefined,
+  dataNftCount: number,
+  host: {
+    readOnlyDataNftUtxos: UnlockableUtxo[];
+    blockhashCoSpendUtxos: UnlockableUtxo[];
+    blockInfoCoSpendUtxos?: UnlockableUtxo[];
+    keccakComputeCoSpendUtxos: UnlockableUtxo[];
+    ecrecoverComputeCoSpendUtxos: UnlockableUtxo[];
+  },
+): UnlockableUtxo[] {
+  if (!layout) {
+    // A manual builder has no authoritative block layout; use the compiler's canonical band order directly.
+    return [
+      ...host.readOnlyDataNftUtxos, ...host.blockhashCoSpendUtxos,
+      ...(host.blockInfoCoSpendUtxos ?? []),
+      ...host.keccakComputeCoSpendUtxos, ...host.ecrecoverComputeCoSpendUtxos,
+    ];
+  }
+  const auxSlots = layout.slots
+    .filter((slot) => slot.offset >= 1 + dataNftCount && isAuxiliaryBlockSlot(slot) && slot.kind !== 'lowLevelCall');
+  let readOnlyIdx = 0, bhIdx = 0, kIdx = 0, erIdx = 0;
+  const ordered: UnlockableUtxo[] = [];
+  for (const slot of auxSlots) {
+    switch (slot.kind) {
+      case 'readOnlyDataNft':
+        if (readOnlyIdx < host.readOnlyDataNftUtxos.length) ordered.push(host.readOnlyDataNftUtxos[readOnlyIdx++]);
+        break;
+      case 'blockhashOracle':
+        if (bhIdx < host.blockhashCoSpendUtxos.length) ordered.push(host.blockhashCoSpendUtxos[bhIdx++]);
+        break;
+      case 'blockInfoOracle':
+        if (host.blockInfoCoSpendUtxos?.[0] !== undefined) ordered.push(host.blockInfoCoSpendUtxos[0]);
+        break;
+      case 'keccakSideCar':
+        if (kIdx < host.keccakComputeCoSpendUtxos.length) ordered.push(host.keccakComputeCoSpendUtxos[kIdx++]);
+        break;
+      case 'ecrecoverSideCar':
+        if (erIdx < host.ecrecoverComputeCoSpendUtxos.length) ordered.push(host.ecrecoverComputeCoSpendUtxos[erIdx++]);
+        break;
+      default:
+        break;
+    }
+  }
+  return ordered;
+}
+
 export function buildInputs(
   host: BuildInputsHost,
   entryInputs: UnlockableUtxo[],
@@ -107,8 +163,18 @@ export function buildInputs(
   const identityPlacement = identityAnchorPlacement(
     denseBlockLayout, host.externalIdentityAnchorUtxos, host.logicalIdentityUtxo,
   );
+  // A satoshi/token container occupies a fixed block slot before the trailing band. It must be placed at that
+  // offset even when the transaction has no fee funder yet (the dense path positions block slots and appends
+  // the trailing side-cars after them), otherwise a keccak-loop co-spend parks the container past the side-cars.
+  // A fixed-width frame (compose participant / delegate entry slots) cannot take that shortcut at construction:
+  // the dense path then requires every output-only slot to be padded, but funders are only allocated after the
+  // builder is constructed. Fall back to the legacy order there; `setFunderUtxos` rebuilds the inputs densely
+  // once the funder pool exists.
+  const hasBlockSlotContainers = denseBlockLayout?.slots.some((slot) =>
+    slot.kind === 'satoshiContainer' || slot.kind === 'tokenContainer') ?? false;
   const useDensePlacement = denseBlockLayout !== undefined
-    && (host.funderUtxos.length > 0 || hasExternalGroups || identityPlacement.byOffset.size > 0);
+    && (host.funderUtxos.length > 0 || hasExternalGroups || identityPlacement.byOffset.size > 0
+      || (hasBlockSlotContainers && !host.preserveBlockLayoutWidth));
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_INPUT_ORDER === '1') {
     console.error('input-order-guard', JSON.stringify({
@@ -155,12 +221,24 @@ export function buildInputs(
     // collection-iteration inputs only), while the batch's additional entry nodes exist only on the output side.
     // Balance that output-only expansion after every authenticated input resource; placing these neutral funders
     // before dynamic chunks shifts a valid chunk run away from the compiler-published input coordinate.
-    const trailingInputs = [
-      ...host.iterationEntryInputs,
-      ...host.dynamicChunkInputs,
-      ...trailingInsertPredecessors,
-      ...(host.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
-    ];
+    // A direct keccak loop and a runtime mapping loop share the trailing band. The compiler seeds each family's
+    // counter from the widths accumulated by the families that precede it in source order, so the physical inputs
+    // must follow that same order (keccak side-cars first when the keccak loop precedes the mapping loop).
+    const trailingInputs = host.keccakLoopPrecedesTrailingUser
+      ? [
+        ...host.iterationEntryInputs,
+        ...host.dynamicChunkInputs,
+        ...host.keccakLoopSideCars,
+        ...trailingInsertPredecessors,
+        ...(host.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
+      ]
+      : [
+        ...host.iterationEntryInputs,
+        ...host.dynamicChunkInputs,
+        ...trailingInsertPredecessors,
+        ...host.keccakLoopSideCars,
+        ...(host.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
+      ];
     let trailingIdx = 0;
     let trailingDisposalIdx = 0;
     const trailingDisposalOffsets = new Set(
@@ -186,6 +264,14 @@ export function buildInputs(
         case 'readOnlyDataNft':
           if (readOnlyIdx < host.readOnlyDataNftUtxos.length) {
             positioned[slot.offset] = host.readOnlyDataNftUtxos[readOnlyIdx++];
+          }
+          break;
+        case 'blockInfoOracle':
+          if (host.blockInfoCoSpendUtxos?.[0] !== undefined) {
+            positioned[slot.offset] = host.blockInfoCoSpendUtxos[0];
+          } else {
+            const funder = funderPool.shift();
+            if (funder) positioned[slot.offset] = funder;
           }
           break;
         case 'blockhashOracle':
@@ -276,7 +362,7 @@ export function buildInputs(
           else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
           break;
         }
-        case 'transfer': case 'tcTransfer': case 'event': case 'returnEvent': {
+        case 'transfer': case 'tcTransfer': case 'event': case 'eventChunk': case 'returnEvent': {
           const f = funderPool.shift();
           if (f) positioned[slot.offset] = f;
           break;
@@ -449,12 +535,13 @@ export function buildInputs(
     // Always carve dynamic-array old-chunk inputs out of trailingOverflow (not only whitelist INSERT).
     // Otherwise nested LLC precedes chunks and the dynamic read loop hits a non-chunk at
     // INPUTINDEX+blockSize (capability/chunkIndex EQUALVERIFY 01 vs empty). Iteration-entry
-    // predecessors are included only for an actual insert band, preserving ordinary band order when
-    // there are no old chunks.
+    // entries stay ahead of written old chunks when both resource families are present; their preservation
+    // outputs keep those same indices. Without old chunks, retain the ordinary band order unless inserting.
     const trailingOverflow = trailingInputs.slice(trailingIdx);
     const preInsertResourceBand = trailingOverflow.filter((input) => (
       host.dynamicChunkInputs.includes(input)
-      || (earlyInsertPredecessors.length > 0 && host.iterationEntryInputs.includes(input))
+      || ((earlyInsertPredecessors.length > 0 || host.dynamicChunkInputs.length > 0)
+        && host.iterationEntryInputs.includes(input))
     ));
     const trailingRest = trailingOverflow.filter((input) => !preInsertResourceBand.includes(input));
     // When old chunks are present, pad the fixed block to full width so the first chunk is exactly
@@ -698,7 +785,9 @@ export function buildInputs(
     return assembled;
   }
 
-  // Legacy ordering - funders go at the end (past all covenant inputs).
+  // Legacy ordering - funders go at the end (past all covenant inputs). This path runs when no funder
+  // exists yet (the fee input is appended later), so a co-spend left out here is replaced by that funder.
+  // computeBlockLayout places blockInfoOracle immediately after the blockhash band; the legacy outputs do too.
   // Delegate bytecode requires the implementation master to immediately follow the proxy master/data region.
   // Its nested external callees are ordinary co-spends, but must be ordered after that implementation band.
   if (host.delegateEntriesAfterLowLevel) {
@@ -749,6 +838,7 @@ export function buildInputs(
         ? [] : [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos]),
       ...host.lowLevelCallRawInputs,
       ...host.readOnlyDataNftUtxos, ...host.blockhashCoSpendUtxos,
+      ...(host.blockInfoCoSpendUtxos ?? []),
       ...host.keccakComputeCoSpendUtxos, ...host.keccakLoopSideCars, ...host.ecrecoverComputeCoSpendUtxos,
       ...externalOutStateInputs, ...entryInputs,
     ];
@@ -839,17 +929,23 @@ export function buildInputs(
       ...host.funderUtxos.slice(fixedPaddingCount),
     ];
   }
+  // A direct keccak loop and a runtime mapping loop share the trailing band. The compiler seeds each family's
+  // counter from the widths accumulated by the families that precede it in source order, so the physical inputs
+  // must follow that same order (keccak side-cars first when the keccak loop precedes the mapping loop).
+  const trailingLoopInputs = host.keccakLoopPrecedesTrailingUser
+    ? [...host.keccakLoopSideCars, ...host.insertLoopPredecessorInputs]
+    : [...host.insertLoopPredecessorInputs, ...host.keccakLoopSideCars];
   // When the function also reads a dynamic-storage array (iterationEntryInputs = chunk run),
   // the covenant reads those chunks at blockSize+i, so they must sit immediately after the
   // block with nothing between. Loop external-call callees therefore go AFTER the chunk run
   // (their base is computed as blockSize+chunkCount), not in the pre-entry external-call slot.
   if (host.iterationEntryInputs.length > 0 && externalCallInputs.length > 0) {
     return [
-      host.masterUtxo, ...host.dataNftUtxos, ...host.readOnlyDataNftUtxos, ...host.blockhashCoSpendUtxos,
-      ...host.keccakComputeCoSpendUtxos, ...host.keccakLoopSideCars, ...host.ecrecoverComputeCoSpendUtxos,
+      host.masterUtxo, ...host.dataNftUtxos,
+      ...orderedFrontRegionCoSpends(host.blockLayout, host.dataNftUtxos.length, host),
       ...externalOutStateInputs,
       ...lowLevelCallInputs, ...host.lowLevelCallRawInputs,
-      ...entryInputs, ...host.iterationEntryInputs, ...host.insertLoopPredecessorInputs,
+      ...entryInputs, ...host.iterationEntryInputs, ...trailingLoopInputs,
       ...externalCallInputs,
       ...host.dynamicChunkInputs, ...host.trailingDisposalInputs,
       ...tokenContainerInputs, ...satoshiContainerInputs,
@@ -857,11 +953,11 @@ export function buildInputs(
     ];
   }
   return [
-    host.masterUtxo, ...host.dataNftUtxos, ...host.readOnlyDataNftUtxos, ...host.blockhashCoSpendUtxos,
-    ...host.keccakComputeCoSpendUtxos, ...host.keccakLoopSideCars, ...host.ecrecoverComputeCoSpendUtxos,
+    host.masterUtxo, ...host.dataNftUtxos,
+    ...orderedFrontRegionCoSpends(host.blockLayout, host.dataNftUtxos.length, host),
     ...externalOutStateInputs, ...externalCallInputs,
     ...lowLevelCallInputs, ...host.lowLevelCallRawInputs,
-    ...entryInputs, ...host.iterationEntryInputs, ...host.insertLoopPredecessorInputs,
+    ...entryInputs, ...host.iterationEntryInputs, ...trailingLoopInputs,
     ...host.dynamicChunkInputs, ...host.trailingDisposalInputs,
     ...tokenContainerInputs, ...satoshiContainerInputs,
     ...host.funderUtxos,

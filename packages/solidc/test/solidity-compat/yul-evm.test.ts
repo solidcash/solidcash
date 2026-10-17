@@ -315,10 +315,10 @@ describe('composite sub-slot field access (sload/sstore on a value-field struct 
       + ' function f() public returns (uint r) { assembly { sstore(s.slot, 7) r := sload(s.slot) } require(true); } }'))
       .toBe('C');
   });
-  it('a top-level fixed array OF structs fails closed (SDK cannot derive that state layout)', () => {
-    expect(() => compileString('contract C { struct P { uint64 a; uint64 b; } P[2] ps;'
-      + ' function f() public returns (uint r) { assembly { r := sload(ps.slot) } require(true); } }',
-    { evmCompat: true })).toThrow(/inline assembly/i);
+  it('a top-level fixed array OF structs reads and writes through its materialized leaves', () => {
+    expect(ok('contract C { struct P { uint64 a; uint64 b; } P[2] ps;'
+      + ' function f() public returns (uint r) { assembly { sstore(ps.slot, 7) r := sload(ps.slot) } require(true); } }'))
+      .toBe('C');
   });
   it('reads and writes a packed slot with bool + enum fields', () => {
     expect(ok('contract C { enum E { A, B, C } bool b; E ev; uint240 x;'

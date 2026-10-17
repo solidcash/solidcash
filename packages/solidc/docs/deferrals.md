@@ -1196,12 +1196,26 @@ fail-closed reproduction was at `e16019bfe` (pre-existing, independent of the Ma
 
 RESOLVED for almost everything: bool/enum leaf fields (6448f446) and NESTED ARRAYS-in-struct
 (1cc36ad2, `struct S { uint64[2] arr; ... }` via a field/index step path + full-value ctor/array-
-literal rebuild) now work, VM-proven. The ONLY remaining fail-closed composite case is a TOP-LEVEL
+literal rebuild) now work, VM-proven. The ONLY remaining fail-closed composite case was a TOP-LEVEL
 fixed array OF structs (`P[2] ps`) - excluded because the SDK cannot auto-derive that state-var
 layout even without assembly (verified: a plain `P[2] ps` contract fails state derivation the same
 way). So its slot codegen is sound-by-reduction but would compile to an SDK-underivable covenant;
 revisit when the SDK gains array-of-struct state derivation, then drop the StructType-only gate in
 compositeLeaves. Original analysis (now largely resolved) below.
+
+**RESOLVED 2026-10-16 (top-level fixed array OF structs).** The SDK's array-of-struct state derivation was
+already correct once the struct-array chunk-packed framing landed (both sides encode a fixed-width struct element
+FRAMED, not packed, so `encodePushdataValue`/`decodePushdataValue` round-trip a `P[2]` value through the data-NFT
+commitment); the old "cannot derive" note was stale. The only blocker was the compiler's `compositeLeaves` gate,
+which materialized only a top-level `StructType` and left a top-level fixed array of structs to the value-array
+arithmetic helper (which returns undefined for a struct element). `compositeLeaves` now also materializes a
+top-level fixed array whose element type is itself composite (struct or nested fixed array) - bounded by
+`COMPOSITE_LEAF_CAP`, while a fixed VALUE array still takes the huge-bound-safe arithmetic helper unchanged - so
+`sload(ps.slot)` / `sstore(ps.slot, word)` / `sstore(add(ps.slot, 1), word)` rebuild through the proven
+field/index-step read and the full fixed-array-of-struct value assignment. Verified by the compiler pin
+(`yul-evm.test.ts`: the top-level `P[2] ps` assembly case now compiles) and a stateful SDK round-trip
+(`StructArraySlotState.test.ts` 2/2: `sstore` to slot 0/1 lands the packed uint64 fields in `getState()` and
+`sload` reads them back, proving the covenant is derivable end to end).
 
 **What.** `sload/sstore(v.slot + i)` on a fixed struct's / fixed value array's own slots is DONE: flat struct
 (57649637), fixed value array incl. ragged uint40 packing (33f5f5c3), and NESTED struct-in-struct (34f1f316,

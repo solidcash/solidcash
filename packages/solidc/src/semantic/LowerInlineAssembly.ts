@@ -815,14 +815,20 @@ function materializeLeaves(t: Type, basePath: PathStep[]): { leaves: CompLeaf[];
   return undefined;
 }
 
-// The materialized leaves of a composite STRUCT state var (its fields, incl. nested structs and fixed-array FIELDS,
-// walked recursively). A top-level fixed VALUE array is NOT handled here - compositeArraySlotElems does it
-// arithmetically (huge-bound-safe). A top-level fixed array OF STRUCTS is intentionally excluded: the SDK cannot
-// yet auto-derive that state-var layout at all (independent of assembly), so its slot access stays fail-closed
-// rather than compile to an unusable covenant. Returns the root type + leaves.
+// The materialized leaves of a composite state var whose elements are themselves composite - a struct (incl.
+// nested structs and fixed-array FIELDS) or a top-level fixed array OF structs / nested arrays (walked recursively).
+// A top-level fixed VALUE array is NOT handled here - compositeArraySlotElems does it arithmetically (huge-bound-
+// safe); only composite-element arrays are materialized, and those are small in practice (COMPOSITE_LEAF_CAP).
+// A fixed array of structs is no longer excluded: the SDK derives that state-var layout through the same framed
+// struct-array encoding the compiler stores (both sides isFixedWidthType exclude struct), so its slot access
+// compiles to a derivable covenant. Returns the root type + leaves.
 function compositeLeaves(sv: StateVariableNode): { root: Type; leaves: CompLeaf[] } | undefined {
   const t = sv.type;
-  if (!(t instanceof StructType)) return undefined;
+  if (!(t instanceof StructType) && !(t instanceof ArrayType && t.bound !== undefined
+    && (t.elementType instanceof StructType
+      || (t.elementType instanceof ArrayType && t.elementType.bound !== undefined)))) {
+    return undefined;
+  }
   const walked = materializeLeaves(t, []);
   return walked ? { root: t, leaves: walked.leaves } : undefined;
 }

@@ -107,13 +107,15 @@ is refreshed, the three forbidden `Unicrow` comment names are removed, the X50 p
 byte-length pin are refreshed, and the `MessageBusVerifierSize` pin is refreshed. `scripts/gate.sh full` and
 `release-security-conformance` now exit 0.
 
-What still blocks 0.13.1 is `kernel-beta-gate`'s `sdk-journal` phase: 33 message-bus composition e2e tests fail
-across 17 files. Investigation for this review established that the composition path does honor the block-layout
-v2 band (`_batchRaw` → `_createBuilder` → `buildInputs` → `orderedFrontRegionCoSpends`), so the missing-ordering
-hypothesis does not hold. The failures trace to the recent ecrecover A/M/B3 change (`3e9990084`, ~9 stale tests),
-October covenant-hardening byte-size regressions (`d6821a812`/`f19f0b709`), two stale capacity snapshots, and
-remaining proxy-vmap/keccak/nested-returning VM failures that the hardening authors must reconcile with the
-message-bus assembly. This is real engineering work on the kernel beta, not a pin refresh.
+What still blocks 0.13.1 is `kernel-beta-gate`'s `sdk-journal` phase: 31 message-bus composition e2e tests still
+fail across 16 files (the two `AtomicMessageBusCapacity` snapshot pins were re-pinned in `da657bec4`).
+Investigation for this review established that the composition path does honor the block-layout v2 band
+(`_batchRaw` → `_createBuilder` → `buildInputs` → `orderedFrontRegionCoSpends`), so the missing-ordering
+hypothesis does not hold. The failures trace to the recent ecrecover A/M/B3 change (`3e9990084`), October
+covenant-hardening byte-size regressions (`d6821a812`/`f19f0b709`), and proxy-vmap/keccak/nested-returning VM
+failures. The ecrecover e2e fixtures were updated to the A/B2/M/B3 set, but they still fail at the detached
+message-bus verifier covenant, so the verifier's graph-parameter codegen must be reconciled with the new
+sidecar layout by the kernel-beta authors. This is real engineering work on the kernel beta, not a pin refresh.
 
 Remaining suite hygiene (non-blocking to the gates, but must be triaged): 2 utils byte-length pins, 5 solidc
 bytecode-size pins, and 5 non-journal solidcash failures (2 contract-size overflows, 2 logical-identity, 1
@@ -134,7 +136,7 @@ Recorded below as each gate completes; captured under the goal scratch dir.
 | `release-application-regtest` | **environment-blocked** | exit 1: BchnRpcClient `fetch failed` — no BCHN/Fulcrum docker stack |
 | `release-generated-project-smoke` | pass | exit 0 |
 | `release-security-conformance` | **pass** | exit 0: all 15 scenarios, including the regenerated X50 proxy freshness check |
-| `kernel-beta-gate` | **fail (triaged)** | exit 1 at `sdk-journal`: 33 message-bus composition failures; the name fence and `compiler-journal` phases now pass |
+| `kernel-beta-gate` | **fail (triaged)** | exit 1 at `sdk-journal`: 31 message-bus composition failures remain (2 capacity pins re-pinned); the name fence and `compiler-journal` phases now pass |
 | `yarn test` | **fail (triaged)** | exit 1: bails at `@solidcash/utils` — `2 failed \| 510 passed (512)`; remaining workspaces run individually (see workspace-suite-counts table) |
 
 ### `gate.sh` bytecode-identity triage (resolved)

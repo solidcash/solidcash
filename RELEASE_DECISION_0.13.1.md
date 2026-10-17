@@ -107,9 +107,10 @@ byte-length/identity pins from `745a72ddd` (block-layout v2) or a forbidden-name
 suite additionally surfaces a real runtime `TypeError` and message-bus preflight failures that need triage:
 
 1. `yarn test` is red and lerna bails at the first failure. Run individually, the workspaces total: utils
-   `2 failed`, solidc `6 failed`, solidcash `45 failed`, `@solidcash/testing` `0 failed`, testing-suite
-   `0 failed`. The solidcash 45 include a `TypeError` in the create-builder path, 33 message-bus preflight
-   `OP_VERIFY` failures, and two contracts over the 10000-byte input limit.
+   `2 failed`, solidc `6 failed`, solidcash `38 failed` (after the 7 `PrecomputedValueChunkEntry` fixture
+   failures were fixed in `6920138e4`), `@solidcash/testing` `0 failed`, testing-suite `0 failed`. The
+   solidcash 38 include 33 message-bus preflight `OP_VERIFY` failures, two contracts over the 10000-byte input
+   limit, and two logical-identity and one `PredOut` compose failures.
 2. `kernel-beta-gate` is red: three kernel comment lines carry the forbidden `Unicrow` name. A comment rename
    makes the gate pass.
 3. `release-security-conformance` is red: the shipped `defaultProxyArtifact.ts` is stale, and the X50 test's
@@ -189,21 +190,28 @@ remaining workspaces were then run individually to collect their milestone count
 | `@solidcash/testing` | `yarn workspace @solidcash/testing test` | `25 passed (25)` files; `113 passed (113)` tests |
 | `testing-suite` | `yarn workspace testing-suite test` | `7 passed (7)` files; `27 passed (27)` tests |
 
-### Solidcash SDK suite triage (45 failures)
+The solidcash count is the first measurement. Seven `PrecomputedValueChunkEntry` failures were fixed in
+`6920138e4`, so 38 solidcash failures remain; see the triage below.
 
-All 45 failures are on the reviewed `master` tree (the only committed change in this review is the two Markdown
-documents). They group into:
+### Solidcash SDK suite triage (45 measured; 38 remaining after one fix)
 
+The first measurement recorded 45 failures. One group was fixed in this review; the remaining 38 still need
+triage:
+
+- **`test/unit/PrecomputedValueChunkEntry.test.ts` — 7/7 failures. FIXED.** The direct-delegate chunk-owner
+  derivation added in `44acff17f` reads `builder.rootCategoryId` (which resolves to `builder.categoryId`), but
+  the hand-built unit fixture created the builder with `Object.create(StatefulTransactionBuilder.prototype)`
+  without setting `categoryId`, so the registrar threw
+  `TypeError: Cannot read properties of undefined (reading 'toLowerCase')` at
+  `packages/solidcash/src/stateful/sc-register-create-builder-builder-state.ts:456`. Fixed in `6920138e4` by
+  giving the fixture the same category as the host (matching the real non-delegate path). The focused file now
+  passes 7/7.
 - **33 message-bus/kernel composition failures** across 17 files under `test/journal-message-bus/e2e/`
   (`KernelMultiContinuationResourceCompose` 8, `KernelProxyRouteLayoutWitnessCompose` 4,
   `KernelProxyEcrecoverSidecarCompose` 3, `AtomicMessageBusCompose` 3, `AtomicMessageBusCapacity` 2,
   `KernelProxyForeignEcrecoverCompose` 2, and 11 files with 1 each). The representative error is
   `messageBus: BCH-2026 preflight failed at input N: Program failed an OP_VERIFY operation` from
   `packages/solidcash/src/message-bus/preflight.ts`. These need a real triage, not a pin refresh.
-- **`test/unit/PrecomputedValueChunkEntry.test.ts` — 7/7 failures.** `TypeError: Cannot read properties of
-  undefined (reading 'toLowerCase')` at
-  `packages/solidcash/src/stateful/sc-register-create-builder-builder-state.ts:456`
-  (`builder.rootCategoryId` is `undefined` in the create-builder path).
 - **`test/framed/deploy/constructor-dynamic-mint.test.ts` — 2/2 failures.** `ConstructorDynamicMint` compiles to
   10294/10327 bytes, exceeding the 10000-byte input-script limit by 294/327 bytes (block-layout-v2 growth).
 - **`test/unit/LogicalIdentityPreservation.test.ts` — 2 failures.** Logical `CREATE` identity preservation

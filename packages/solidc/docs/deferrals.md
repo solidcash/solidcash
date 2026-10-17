@@ -283,7 +283,10 @@ RESOLVED 2026-07-19/20 (case b + same-gap chains): a NEW recipient whose predece
 (credited / untouched / HEAD / debited msg.sender); self-transfer + duplicate (incl. scalar) also work - see the
 multiTransfer entry above. The `= <param>` wart is RESOLVED too (`d08584f2`): it now routes to the upsert loop
 (update+insert), keeping same-gap chaining. STILL FAIL-CLOSED (sound, not complete): scalar `-=` duplicate (no
-pending-defer), cross-contract msg.sender, 2D `m[k][i][j]`, function-pointer values.
+pending-defer), cross-contract msg.sender, function-pointer values. **CORRECTED 2026-10-16:** the 2D
+`m[k][i][j]` item in this list is no longer fail-closed — `DesugarNestedArrayWrite` lowers it to a whole-value
+read + local nested write + write-back, pinned by `MappingArray2dWrite.test.ts` (vmap `m[k][i][j] = v` settles) and
+`VMapRemainingBoundaries.test.ts` (compiles).
 
 **One real HOLE found + FIXED (commit `af6e894a`): vmap `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike
@@ -1008,11 +1011,12 @@ so read-after-write `m[k][j]=m[k][j-1]+1` reads the value being built (value-ver
 `SortedArrayCacheInLoop` (loop build+fill, read-after-write prefix, consecutive set02); fail-close boundary in
 `SortedArrayWriteFailClose`. Commits: (this line's change).
 
-STILL fail-closed (sound, not silent): a DIFFERENT-key insert loop `for(i) m[k[i]]=v` (per-iteration sorted-insert
-covenant, framing (a)); a MULTI-DIMENSIONAL array element write `m[k][i][j]` on `mapping(K => T[][])` (clean
-`UnsupportedTypeError` - it used to CRASH when the excess index was type-checked as a phantom key at
-`allKeyTypes[i] == undefined`; guarded in `TypeCheckTraversal.visitMappingAssign` by `node.keys.length > allKeyTypes.length`);
-and function-pointer element values (no vmap path). Note the existing default-model `UnrollFixedBoundEntryLoop`
+STILL fail-closed (sound, not silent): function-pointer element values (no vmap path). **CORRECTED 2026-10-16:** the
+other two items this bullet listed are now RESOLVED — a DIFFERENT-key insert loop `for(i) m[k[i]]=v` routes through
+the per-iteration upsert loop (`SortedArrayValueLoop.test.ts` / `SortedUpsertLoop.test.ts`), and a
+MULTI-DIMENSIONAL array element write `m[k][i][j]` on `mapping(K => T[][])` is lowered by
+`DesugarNestedArrayWrite` to a whole-value read-modify-write-back (`MappingArray2dWrite.test.ts` /
+`VMapRemainingBoundaries.test.ts`). Note the existing default-model `UnrollFixedBoundEntryLoop`
 (whole-entry fixed loops, ArrayAssignNode form) still unrolls - unifying it onto the cache-in-loop model would remove the
 unroll, but it is wired + tested (CorpusGapFixes), a separate change.
 

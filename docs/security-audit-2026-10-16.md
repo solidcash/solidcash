@@ -80,13 +80,17 @@ free witness as an activity flag.
 Verification: traced in source plus a probe compile of the ABI. No VM run was made (the probe test was stopped
 because the command form ran the whole e2e suite).
 
-Route extension (suspected, not finished): `compiler.ts:11638` forwards the route's own
-`__internal__dynamicChunkInputBase` parameter unchanged into every handler clone. The route's dormant-header arm
-(`GenerateTargetTraversal.ts:35299-35318`) only preserves the `A$len` header when the base is below -1. A route row
-that does write a dynamic value would then settle the old header while its chunks go unverified, which is
-self-inconsistent but not obviously exploitable. No reference was found that ties the base to the message-bus
-binding digest (`compiler.ts:12845-12849` hashes the manifest, base, row count, and batch). Whether a forged
-`< -1` on an active writer row can change readable state needs the route's header path traced further.
+Route extension (CONFIRMED 2026-10-17 by a read-only compile probe): the message-bus route's own ABI takes
+`__internal__dynamicChunkInputBase` as an ordinary push. A `compileString(..., { messageBus: true })` of a contract
+with `string name` and `function setName(string n)` yields route inputs
+`batchBlob, __internal__activeVerifierIndex, __internal__dynamicChunkInputBase, __internal__dynamicChunkOutputBase`.
+`compiler.ts:11638` forwards that parameter unchanged into every handler clone's argument vector, and a clone is a
+plain (non-route) function, so its `isCompilerMessageBusRoute` is false and its `A$len` header is written from the
+pending value while `emitDynamicWriteVerification` takes the same `< -1` skip (`GenerateTargetTraversal.ts:40494-40516`).
+The route's dormant-header arm (`35299-35318`) does not even apply to the clone. Nothing ties the witness to the
+binding digest (`compiler.ts:12880-12882` hashes the manifest, base, row count and local batch). So the same exploit
+works through a route row, and the default `auto` build keeps the direct entry as well (the ABI above still lists
+`setName` with the witness). This makes DYN-1 reach every stateful build, not only direct ones.
 
 ### ROUTE-READ-1 (suspected, HIGH if confirmed) A route's sorted-map read returns the default when the spender marks it inactive
 

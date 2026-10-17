@@ -107,15 +107,15 @@ is refreshed, the three forbidden `Unicrow` comment names are removed, the X50 p
 byte-length pin are refreshed, and the `MessageBusVerifierSize` pin is refreshed. `scripts/gate.sh full` and
 `release-security-conformance` now exit 0.
 
-What still blocks 0.13.1 is `kernel-beta-gate`'s `sdk-journal` phase: 31 message-bus composition e2e tests still
-fail across 16 files (the two `AtomicMessageBusCapacity` snapshot pins were re-pinned in `da657bec4`).
-Investigation for this review established that the composition path does honor the block-layout v2 band
-(`_batchRaw` → `_createBuilder` → `buildInputs` → `orderedFrontRegionCoSpends`), so the missing-ordering
-hypothesis does not hold. The failures trace to the recent ecrecover A/M/B3 change (`3e9990084`), October
-covenant-hardening byte-size regressions (`d6821a812`/`f19f0b709`), and proxy-vmap/keccak/nested-returning VM
-failures. The ecrecover e2e fixtures were updated to the A/B2/M/B3 set, but they still fail at the detached
-message-bus verifier covenant, so the verifier's graph-parameter codegen must be reconciled with the new
-sidecar layout by the kernel-beta authors. This is real engineering work on the kernel beta, not a pin refresh.
+What still blocks 0.13.1 is `kernel-beta-gate`'s `sdk-journal` phase: 21 message-bus e2e tests still fail across
+11 files, down from the original 33. This review fixed the verifier side of the ecrecover A/M/B3 regression:
+`__message_bus_physical_counts` was counting the tokenless M funder of a 2-way ecrecover triple as a value
+output, desynchronizing `physicalValueOutputs` from `activeValueRows`; the classifier now excludes a
+self-preserving dummy-funder slot (`5c40fe016`). With that, the ecrecover fixtures were updated to provision
+A/B2/M/B3 and expect three slots, and the two `AtomicMessageBusCapacity` snapshots were re-pinned. The remaining
+21 failures are a separate class of October covenant-hardening regressions: proxy-owned mapping/vmap writes,
+chunkable-collection writes, nested returning graph arguments, a direct keccak sidecar category change, and one
+composed unlocking-script over the byte limit. Those need the hardening authors, not a verifier pin refresh.
 
 Remaining suite hygiene (non-blocking to the gates, but must be triaged): 2 utils byte-length pins, 5 solidc
 bytecode-size pins, and 5 non-journal solidcash failures (2 contract-size overflows, 2 logical-identity, 1
@@ -136,7 +136,7 @@ Recorded below as each gate completes; captured under the goal scratch dir.
 | `release-application-regtest` | **environment-blocked** | exit 1: BchnRpcClient `fetch failed` — no BCHN/Fulcrum docker stack |
 | `release-generated-project-smoke` | pass | exit 0 |
 | `release-security-conformance` | **pass** | exit 0: all 15 scenarios, including the regenerated X50 proxy freshness check |
-| `kernel-beta-gate` | **fail (triaged)** | exit 1 at `sdk-journal`: 31 message-bus composition failures remain (2 capacity pins re-pinned); the name fence and `compiler-journal` phases now pass |
+| `kernel-beta-gate` | **fail (triaged)** | exit 1 at `sdk-journal`: 21 failures remain (11 files); `compiler-journal` now fully green (96 files / 1619 tests); the name fence passes |
 | `yarn test` | **fail (triaged)** | exit 1: bails at `@solidcash/utils` — `2 failed \| 510 passed (512)`; remaining workspaces run individually (see workspace-suite-counts table) |
 
 ### `gate.sh` bytecode-identity triage (resolved)
@@ -212,26 +212,26 @@ The forbidden-name fence is fixed in `aad8767c3`: the three `Unicrow` comment li
 `packages/solidc/src/semantic/ReuseEntryLocalForWriteback.ts` are renamed away, so the source-fingerprint phase
 reports `matched`. The `compiler-journal` phase passes after the `MessageBusVerifierSize` re-pin (`1368112ac`).
 
-The gate now fails only at `sdk-journal` (`yarn workspace solidcash vitest run test/journal-message-bus`): 33
-message-bus composition e2e failures across 17 files. Root-cause analysis during this review found that the
-evaluator's original hypothesis does not hold: the composition path already routes through
-`orderedFrontRegionCoSpends`. Kernel participants build via `_batchRaw` → `_createBuilder` →
-`StatefulTransactionBuilder.build()` → `buildInputs`, which iterates the emitted block-layout auxiliary band,
-so block-layout v2's input ordering is applied there. The failures trace instead to more recent, unreconciled
-compiler/SDK changes:
+The gate now fails only at `sdk-journal` (`yarn workspace solidcash vitest run test/journal-message-bus`): 21
+failures across 11 files, down from 33. The `compiler-journal` phase is fully green (96 files / 1619 tests).
+Progress and remaining work:
 
-- **ecrecover A/M/B3 (`3e9990084`)**: the compiler now reserves three `ecrecoverSideCar` slots per call
-  (A/M/B) and the resolver provisions A/B2/M/B3, but ~9 message-bus e2e tests still expect two slots and
-  manually provision role `B`. The composed verifier then fails preflight at its shared input.
-- **Byte-size regressions from the October covenant hardening (`d6821a812`/`f19f0b709`)**: some composed
-  unlocking scripts now exceed the BCH-2026 per-input byte limit (e.g. 10,113 bytes) and two fixtures exceed
-  the 10,000-byte deploy limit.
-- **Stale capacity snapshots**: `AtomicMessageBusCapacity` operation-cost pins drifted.
-- **Remaining VM covenant failures** in proxy vmap RMW and keccak/nested-returning composition still need the
-  covenant-hardening authors to reconcile with the message-bus assembly.
+- **ecrecover A/M/B3 — FIXED.** The detached verifier's `__message_bus_physical_counts` classified the
+  tokenless M funder of a 2-way ecrecover A/M/B triple as a value output, desynchronizing the verifier
+  covenant. Fixed in `5c40fe016` (exclude a self-preserving dummy-funder slot from the value-output count), and
+  the ecrecover fixtures now provision A/B2/M/B3 and expect three slots.
+- **`AtomicMessageBusCapacity` — FIXED** (re-pinned in `63257b553`).
+- **Remaining 21 failures** are a separate October covenant-hardening class: proxy-owned mapping/vmap writes
+  (`KernelProxyOwnedVmapRmwCompose`, `KernelSelfToProxyVmapRmwCompose`, `KernelProxyToProxyVmapRmwCompose`,
+  `KernelProxySortedInsertPredOutCompose`, `KernelProxyRouteLayoutWitnessCompose`,
+  `KernelProxyKeccakSidecarCompose`), chunkable-collection writes (`KernelMultiContinuationResourceCompose`),
+  nested returning graph arguments (`KernelNestedReturningGraphArgCompose`,
+  `KernelNestedReturningStructAddressCompose`), a direct keccak sidecar category change
+  (`KernelComputeSidecarNonEmpty`), and a composed unlocking script over the byte limit
+  (`AtomicMessageBusCompose` pooled mapping return). These need the hardening authors.
 
 This is the release-blocking item: the kernel-beta proof inventory and the recent security work have not been
-reconciled.
+fully reconciled.
 
 ### `release-security-conformance` triage (resolved)
 

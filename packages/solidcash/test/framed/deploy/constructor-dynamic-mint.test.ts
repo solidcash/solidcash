@@ -6,6 +6,8 @@ import { buildValidatorProgram } from '../../../../solidc/src/framed/validator/i
 import { compositionMachine, compositionProvider } from '../../../../solidc/test/framed/machine.js';
 import { deriveFramedGenesis } from '../../../src/framed/deploy/genesis.js';
 import { decodeEntryCommitment } from '../../../src/stateful/SortedList.js';
+import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { MOCK_CONSENSUS_LIMITS, MockNetworkProvider } from '../../../src/network/mock/index.js';
 
 const SOURCE = `pragma solidity ^0.8.20;
   contract ConstructorDynamicMint {
@@ -37,6 +39,21 @@ describe('framed constructor dynamic values beside minted mapping state', () => 
       validatorProgram: buildValidatorProgram(), provider: compositionProvider(),
       constructorArgs: ['Alpha', 'ALP'], senderLockingBytecode: SENDER });
     expect(genesis.master.script.length).toBeLessThanOrEqual(10_000);
+    // The real chain funds an input at 800 operation-cost units per byte of its unlocking bytecode. A
+    // zero-call master carries no density padding, so prove its constructor body still pays for itself under the
+    // chain's own byte cap rather than only under the relaxed composition profile.
+    const masterInput = genesis.program!.sourceOutputs
+      .findIndex((output) => output.token?.nft?.capability === 'minting');
+    expect(masterInput).toBeGreaterThanOrEqual(0);
+    const consensusVm = createVirtualMachineBch2026ForProvider(new MockNetworkProvider({
+      consensusLimits: { ...MOCK_CONSENSUS_LIMITS, maximumInputBytes: 10_000 },
+    }));
+    const consensus = consensusVm.evaluate({ inputIndex: masterInput, ...genesis.program! }) as {
+      readonly metrics?: { readonly operationCost?: number; readonly maximumOperationCost?: number };
+    };
+    expect(consensus.metrics?.operationCost, 'constructor operation cost')
+      .toBeLessThanOrEqual(consensus.metrics?.maximumOperationCost ?? 0);
+    expect(consensusVm.stateSuccess(consensus)).toBe(true);
     expect(compositionMachine().stateSuccess(compositionMachine().evaluate(genesis.program!))).toBe(true);
     expect(parsePushdataCommitment(genesis.commitments[0], artifact.stateLayout!, 0))
       .toMatchObject({ total: 100n, 'label$len': 5n, 'ticker$len': 3n });

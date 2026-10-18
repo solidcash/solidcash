@@ -16970,6 +16970,7 @@ function compileResolvedAst(
     // the published slots and the fingerprint are all built from the padded script.
     optimisationResult.script = padFramedMasterScript(
       alignCensusAddressOffset(optimisationResult.script, reservesValidatorHash),
+      (mergedCompilerOptions as InternalCompilerOptions).__framedCallCount ?? 0,
     );
   }
 

@@ -129,12 +129,17 @@ export function alignCensusAddressOffset(script: Script, declaresTemplateHash: b
  * the program ends: it lengthens the bytecode the budget is measured over, costs about a byte's worth of budget to
  * execute, and leaves the stack as it found it, so it changes nothing except the room an input has. Each chunk
  * stays under the push size limit, so a path that reaches the block pays for it rather than failing on it.
+ *
+ * A master that makes no external call never walks a call-record segment, so its budget is paid by its own body's
+ * bytecode. Skipping the padding there keeps large standalone constructors inside the 10,000-byte consensus ceiling
+ * instead of spending a third of that room on budget they do not use.
  */
 export const FRAMED_MASTER_PADDING_BYTES = 1024;
 const PADDING_CHUNK_BYTES = 512;
 
-/** Appends the padding block to a finished master script. */
-export function padFramedMasterScript(script: Script): Script {
+/** Appends the padding block to a finished master script that can make at least one external call. */
+export function padFramedMasterScript(script: Script, callCount = 0): Script {
+  if (callCount <= 0) return script;
   const padding: Script = [];
   for (let written = 0; written < FRAMED_MASTER_PADDING_BYTES; written += PADDING_CHUNK_BYTES) {
     padding.push(new Uint8Array(PADDING_CHUNK_BYTES), Op.OP_DROP);

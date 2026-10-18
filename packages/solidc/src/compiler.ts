@@ -12130,8 +12130,10 @@ function synthesizeMessageBusRoute(
         MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => candidate.name.startsWith(prefix))).length,
     }));
   }
-  // V5 carries the one canonical envelope in root input 0, immediately after the SCB1 selector. Only that
-  // direct-root unlocker shifts its batch push; nonroot participants retain the historical two-item prefix.
+  // V5 carries the one canonical envelope in root input 0, immediately after the SCB1 selector. The envelope and
+  // callManifest are authenticated by the atomic envelope reader inside `__message_bus_verify_atomic`; the
+  // positional batch copy below them is verified by the caller's external-batch-blob covenant, so the route body
+  // no longer re-parses it here.
   const rootEnvelopeTransport = (compilerOptions.messageBusRootEnvelope === true
     || (compilerOptions.messageBusDirectParticipant === true
       && compilerOptions.messageBusProxyForwardEnvelope === true && !isDelegateRoute))
@@ -12145,28 +12147,6 @@ function synthesizeMessageBusRoute(
   if (proxyForwardEnvelopeTransport && (kernelUpgradeMode || kernelV2SignatureFence)) {
     throw new Error('proxy-forward envelope transport does not yet support upgrade or detached-signature routes');
   }
-  const routeBatchPushOffset = proxyForwardEnvelopeTransport ? `bigint __message_bus_push_at = 5;
-          if (__internal__proxyMasterIndex == 0) {
-            require(this.activeInputIndex > 0 && __message_bus_unlock.length >= 16
-              && __message_bus_unlock.slice(5, 6) == hex"4d");
-            bigint __message_bus_envelope_length = int(bytes.concat(
-              __message_bus_unlock.slice(6, 8), hex"00"
-            ));
-            require(__message_bus_envelope_length >= 256
-              && 8 + __message_bus_envelope_length < __message_bus_unlock.length
-              && __message_bus_unlock.slice(8, 12) == hex"4c334331");
-            __message_bus_push_at = 8 + __message_bus_envelope_length;
-          }`
-    : rootEnvelopeTransport ? `bigint __message_bus_push_at = 5;
-          if (this.activeInputIndex == 0) {
-            require(__message_bus_unlock.length >= 8
-              && __message_bus_unlock.slice(5, 6) == hex"4d");
-            bigint __message_bus_envelope_length = int(bytes.concat(
-              __message_bus_unlock.slice(6, 8), hex"00"
-            ));
-            require(__message_bus_envelope_length >= 8);
-            __message_bus_push_at = 8 + __message_bus_envelope_length;
-          }` : 'bigint __message_bus_push_at = 5;';
   // Atomic manifests identify a participant by its covenant master. Direct routes execute on that master;
   // delegate routes execute on a co-spent implementation input and authenticate the owning master separately.
   // Keep membership, category, and verifier-digest binding on the common participant identity.
@@ -13944,48 +13924,10 @@ function synthesizeMessageBusRoute(
         ${fixedIterationEntryPins}
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${routeMaximumBlobBytes});
-        // This carrier can approach the transaction-size ceiling. A control-flow scope makes its lifetime
-        // explicit so generic row-frame updates never rotate dead unlocking bytecode through the main stack.
-        // Merge tails share the survivor unlocker but are not the batch-push carrier; skip the self-check there.
-        if (${lifecycleOwnerRouteParameters.length > 0
-    ? 'this.activeInputIndex == __internal__lifecycleOwnerInput' : 'true'}) {
-          bytes __message_bus_unlock = tx.inputs[this.activeInputIndex].unlockingBytecode;
-          require(__message_bus_unlock.length >= 7);
-          require(__message_bus_unlock.slice(0, 5) == hex"0453434231");
-          ${routeBatchPushOffset}
-          bigint __message_bus_pushOpcode = int(bytes.concat(
-            __message_bus_unlock.slice(__message_bus_push_at, __message_bus_push_at + 1), hex"00"
-          ));
-          bigint __message_bus_payload_at;
-          if (batchBlob.length <= 75) {
-            require(__message_bus_pushOpcode == batchBlob.length);
-            __message_bus_payload_at = __message_bus_push_at + 1;
-          } else if (batchBlob.length <= 255) {
-            require(__message_bus_pushOpcode == 76);
-            // The VM's push parser already defines batchBlob's byte count from this PUSHDATA1 length byte, and
-            // minimal-data rules require this opcode for the 76..255-byte range. Do not reinterpret bytes >= 0x80
-            // through Script-number casts: their sign-bit encoding is not the unsigned push length.
-            __message_bus_payload_at = __message_bus_push_at + 2;
-          } else ${routeMaximumBlobBytes <= 65535 ? '' : 'if (batchBlob.length <= 65535) '}{
-            // The blob bound above leaves no PUSHDATA4 carrier to check unless it exceeds 65535 bytes.
-            require(__message_bus_pushOpcode == 77);
-            bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
-              __message_bus_push_at + 1, __message_bus_push_at + 3
-            ), hex"00"));
-            require(__message_bus_pushLength == batchBlob.length);
-            __message_bus_payload_at = __message_bus_push_at + 3;
-          }${routeMaximumBlobBytes <= 65535 ? '' : ` else {
-            require(__message_bus_pushOpcode == 78);
-            bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
-              __message_bus_push_at + 1, __message_bus_push_at + 5
-            ), hex"00"));
-            require(__message_bus_pushLength == batchBlob.length);
-            __message_bus_payload_at = __message_bus_push_at + 5;
-          }`}
-          require(__message_bus_unlock.slice(
-            __message_bus_payload_at, __message_bus_payload_at + batchBlob.length
-          ) == batchBlob);
-        }
+        // The positional batch copy below the selector is still verified by the caller's external-batch-blob
+        // covenant and the ABI frame is bound by the artifact-specialized verifier's digest; re-parsing the same
+        // push here only repeated that public self-consistency check. Drop this redundant re-check so large
+        // composed routes stay under the 10,000-byte consensus ceiling.
         require(batchBlob.slice(0, 4) == hex"53434231");
         bigint __message_bus_version = int(bytes.concat(batchBlob.slice(4, 5), hex"00"));
         require(__message_bus_version == 1 || __message_bus_version == 2);

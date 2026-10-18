@@ -114,14 +114,14 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private readonly blockOracleOwnerKey = Uint8Array.from(
     { length: 32 }, (_byte, index) => (index === 31 ? 0x44 : 0x11),
   );
+
   private blockOracleOwnerAddress = '';
   private blockOracleInstalled = false;
   private blockOracleRefreshing = false;
   /** Serializes wallet funding and contract broadcasts: concurrent sends otherwise race one wallet coin. */
   private sendQueue: Promise<void> = Promise.resolve();
-  /** Reentrant lock around UTXO selection + wallet funding; nested addUtxo calls run under the outer lock. */
+  /** Strict FIFO around UTXO selection + wallet funding; see `withFundingLock`. */
   private fundingQueue: Promise<void> = Promise.resolve();
-  private fundingDepth = 0;
   /** Wallet coins selected as funding inputs; hidden from caller-coin reads until their tx is mined. */
   private reservedFunding = new Set<string>();
 
@@ -143,6 +143,10 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private lastMinedTimestamp = 0;
   /** Nonzero while `increaseTime` holds the clock across its median window and oracle update. */
   private holdMockTime = 0;
+  /** True while an oracle update is broadcast for the caller's pending block, so that send does not mine. */
+  private deferredOracleMine = false;
+  /** True when an oracle update is in the mempool; the next mined block confirms it. */
+  private pendingOracleUpdate = false;
 
   // X74. Category bookkeeping. A CashTokens category exists only where a transaction spent its own genesis
   // outpoint, so the provider cannot conjure one on request; what it CAN do is keep the category's minting NFT
@@ -223,7 +227,10 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       const key = `${utxo.txid}:${utxo.vout}`;
       if (!merged.has(key)) merged.set(key, utxo);
     }
-    return [...merged.values()];
+    // A fixture restore disconnects a block, and BCHN's wallet can keep listing outputs of transactions from
+    // that branch even after the rescan/abandon pass. Never serve an outpoint the node's UTXO view lacks: a
+    // caller that funds or anchors a transaction with one can only fail with "Missing inputs".
+    return this.liveOnly([...merged.values()]);
   }
 
   async getUtxosByTokenCategory(categoryId: string): Promise<Utxo[]> {
@@ -303,19 +310,29 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   }
 
   async sendRawTransaction(txHex: string): Promise<string> {
-    return this.serializeSend(async () => {
+    const txid = await this.serializeSend(async () => {
       await this.ensureReady();
-      const txid = await this.rpc.request<SendRawTransaction>('sendrawtransaction', txHex);
-      this.trackBroadcastOutputs(txHex, txid);
-      await this.mine(1);
-      return txid;
+      const sent = await this.rpc.request<SendRawTransaction>('sendrawtransaction', txHex);
+      this.trackBroadcastOutputs(txHex, sent);
+      // An oracle update is published for inclusion in the block the caller is about to mine; mining here would
+      // confirm it alone and add a block beyond the caller's `mine(count)`.
+      if (!this.deferredOracleMine) await this.mineBlocks(1, false);
+      return sent;
     });
+    await this.publishOracleIfDue();
+    return txid;
   }
 
   private async serializeSend<T>(operation: () => Promise<T>): Promise<T> {
     const run = this.sendQueue.then(operation, operation);
     this.sendQueue = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  /** Let every in-flight funding selection and broadcast settle before reading or rewinding the chain. */
+  private async quiesceSends(): Promise<void> {
+    await this.fundingQueue;
+    await this.sendQueue;
   }
 
   // ---------------------------------------------------------------------------
@@ -332,33 +349,25 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private static readonly DUMMY_FUNDER_LBC = 'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
 
   async addUtxo(address: string, utxo: Utxo): Promise<Utxo> {
+    // Initialization can itself seed UTXOs (the block oracle), so it has to finish before this operation queues:
+    // nesting it inside the queue would make that seeding wait on its own caller.
+    await this.ensureReady();
     return this.withFundingLock(() => this.addUtxoUnlocked(address, utxo));
   }
 
+  /**
+   * Serialize funding operations FIFO. Independent callers must never overlap: two selections that both pass
+   * `gettxout` before either reserves the coin select the same outpoint, and the second genesis then spends a
+   * dead anchor. Reentrancy is avoided structurally - `ensureReady` runs before this lock and the only internal
+   * retry calls `addUtxoUnlocked` directly - so no caller can already hold the queue while reaching it.
+   */
   private async withFundingLock<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.fundingDepth > 0) return operation();
-    const run = this.fundingQueue.then(async () => {
-      this.fundingDepth += 1;
-      try {
-        return await operation();
-      } finally {
-        this.fundingDepth -= 1;
-      }
-    }, async () => {
-      this.fundingDepth += 1;
-      try {
-        return await operation();
-      } finally {
-        this.fundingDepth -= 1;
-      }
-    });
+    const run = this.fundingQueue.then(operation, operation);
     this.fundingQueue = run.then(() => undefined, () => undefined);
     return run;
   }
 
   private async addUtxoUnlocked(address: string, utxo: Utxo): Promise<Utxo> {
-    await this.ensureReady();
-
     // Fast path: serve pre-created fee funders for the STB dummy pattern
     if (address === RegtestNetworkProvider.DUMMY_FUNDER_LBC && !utxo.token) {
       // Serve the size the CALLER asked for. Serving one fixed size instead handed a 100,000-satoshi coin to a
@@ -424,45 +433,45 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     try {
       fundingInput = await this.pickLiveFundingInput(!!utxo.token);
     } catch (e) {
-      if (utxo.token) { await this.createVout0Utxo(); return this.addUtxo(address, utxo); }
+      if (utxo.token) { await this.createVout0Utxo(); return this.addUtxoUnlocked(address, utxo); }
       throw e;
     }
     let txid: string;
     try {
-    if (utxo.token) {
-      // No such category exists on this chain, so there is nothing to mint into and nothing being displaced:
-      // this is a genesis. Its real category is reported back on the returned UTXO, and both it and the
-      // requested label are recorded so every later request for the same label lands in this same category.
-      const category = fundingInput.txid;
-      const unsignedTx = this.buildLibauthTx(fundingInput, [{
-        lockingBytecode: lbc,
-        valueSatoshis: satoshis,
-        token: {
-          category: hexToBin(category),
-          amount: utxo.token.amount,
-          nft: utxo.token.nft ? {
-            capability: utxo.token.nft.capability,
-            commitment: hexToBin(utxo.token.nft.commitment),
-          } : undefined,
-        },
-      }, this.retainedMintingOutput(category)]);
-      txid = await this.fundSignSend(unsignedTx);
-      await this.mine(1);
-      this.recordCategory(category, txid, 1, requested);
-    } else {
-      const unsignedTx = this.buildLibauthTx(fundingInput, [{
-        lockingBytecode: lbc, valueSatoshis: satoshis,
-      }]);
-      txid = await this.fundSignSend(unsignedTx);
-      await this.mine(1);
-    }
+      if (utxo.token) {
+        // No such category exists on this chain, so there is nothing to mint into and nothing being displaced:
+        // this is a genesis. Its real category is reported back on the returned UTXO, and both it and the
+        // requested label are recorded so every later request for the same label lands in this same category.
+        const category = fundingInput.txid;
+        const unsignedTx = this.buildLibauthTx(fundingInput, [{
+          lockingBytecode: lbc,
+          valueSatoshis: satoshis,
+          token: {
+            category: hexToBin(category),
+            amount: utxo.token.amount,
+            nft: utxo.token.nft ? {
+              capability: utxo.token.nft.capability,
+              commitment: hexToBin(utxo.token.nft.commitment),
+            } : undefined,
+          },
+        }, this.retainedMintingOutput(category)]);
+        txid = await this.fundSignSend(unsignedTx);
+        await this.mine(1);
+        this.recordCategory(category, txid, 1, requested);
+      } else {
+        const unsignedTx = this.buildLibauthTx(fundingInput, [{
+          lockingBytecode: lbc, valueSatoshis: satoshis,
+        }]);
+        txid = await this.fundSignSend(unsignedTx);
+        await this.mine(1);
+      }
 
-    const result = await this.decodeOutputAt(txid, 0);
-    utxo.txid = result.txid;
-    utxo.vout = result.vout;
-    utxo.satoshis = result.satoshis;
-    if (result.token) utxo.token = result.token;
-    return result;
+      const result = await this.decodeOutputAt(txid, 0);
+      utxo.txid = result.txid;
+      utxo.vout = result.vout;
+      utxo.satoshis = result.satoshis;
+      if (result.token) utxo.token = result.token;
+      return result;
     } finally {
       this.releaseFunding(fundingInput);
     }
@@ -599,13 +608,13 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   async addTokenUtxosDynamic(
     outputsFactory: (categoryId: string) => TokenGenesisOutput[],
   ): Promise<{ categoryId: string; utxos: Utxo[] }> {
+    await this.ensureReady();
     return this.withFundingLock(() => this.addTokenUtxosDynamicUnlocked(outputsFactory));
   }
 
   private async addTokenUtxosDynamicUnlocked(
     outputsFactory: (categoryId: string) => TokenGenesisOutput[],
   ): Promise<{ categoryId: string; utxos: Utxo[] }> {
-    await this.ensureReady();
     await this.rpc.request<GenerateToAddress>('generatetoaddress', 1, this.miningAddress);
 
     // The genesis input must be VALIDATED LIVE, not merely listed. `listunspent` on this shared wallet reports
@@ -649,7 +658,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       const txid = await this.fundSignSend(unsignedTx);
       await this.mine(1);
       this.recordCategory(categoryId, txid, retainedVout);
-      return this.collectCreatedUtxos(txid, categoryId, outputs, retainedVout);
+      return await this.collectCreatedUtxos(txid, categoryId, outputs, retainedVout);
     } finally {
       this.releaseFunding(genesisInput);
     }
@@ -717,6 +726,15 @@ export default class RegtestNetworkProvider implements NetworkProvider {
    * CLTV-anchors the new timestamp.
    */
   async refreshBlockOracle(): Promise<void> {
+    await this.refreshBlockOracleUpdate(false);
+  }
+
+  /** Publish the next update without confirming it; the block the caller mines next includes it. */
+  private async publishBlockOracleUpdate(): Promise<void> {
+    await this.refreshBlockOracleUpdate(true);
+  }
+
+  private async refreshBlockOracleUpdate(deferred: boolean): Promise<void> {
     const lock = this.blockOracleLock;
     const category = this.blockOracleCategory;
     if (lock === undefined || category === undefined || this.blockOracleRefreshing) return;
@@ -737,6 +755,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     );
     const funding = await this.pickOracleFeeCoin();
     this.blockOracleRefreshing = true;
+    this.deferredOracleMine = deferred;
     try {
       const [{ TransactionBuilder }, signatureModule, { blockOracleUpdateUnlocker }] = await Promise.all([
         import('../TransactionBuilder.js'),
@@ -761,7 +780,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
         .addOutput({ to: this.blockOracleOwnerAddress, amount: funding.satoshis - 1000n })
         .setLocktime(Number(desired.timestamp))
         .send();
+      if (deferred) this.pendingOracleUpdate = true;
     } finally {
+      this.deferredOracleMine = false;
       this.blockOracleRefreshing = false;
     }
   }
@@ -790,6 +811,10 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // ---------------------------------------------------------------------------
 
   async mine(count: number = 1): Promise<void> {
+    await this.mineBlocks(count, true);
+  }
+
+  private async mineBlocks(count: number, publishOracle: boolean): Promise<void> {
     await this.ensureReady();
     if (this.pendingBlockTimestamp !== undefined) {
       await this.setMockTime(this.pendingBlockTimestamp);
@@ -809,10 +834,24 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       this.lastMinedTimestamp = timestamp;
     }
     await this.rpc.request<GenerateToAddress>('generatetoaddress', count, this.miningAddress);
+    // The generated block includes whichever oracle update was in the mempool.
+    this.pendingOracleUpdate = false;
     // BCHN admits an nLocktime only below median-time-past, and the SDK stamps one second behind
     // `getBlockTime()`. Track the node's MTP rather than the newest header's wall-clock time.
     this.tipTime = await this.readTipTime();
     this.fundingCandidates = undefined;
+    // Every mined block moves the block oracle one second forward (the mock chain rewrites it in place when a
+    // block is mined). Publish the update now, unmined, so a `block.timestamp` reader built from this point
+    // co-spends the newer oracle UTXO and the caller's next block confirms both. Sends that run inside the
+    // broadcast queue skip this and publish after their queue entry settles, since publishing is a send itself.
+    if (publishOracle) await this.publishOracleIfDue();
+  }
+
+  /** Publish the next oracle update into the mempool when nothing prevents it. */
+  private async publishOracleIfDue(): Promise<void> {
+    if (this.blockOracleCategory === undefined || this.holdMockTime !== 0
+      || this.blockOracleRefreshing || this.deferredOracleMine) return;
+    await this.publishBlockOracleUpdate();
   }
 
   /**
@@ -865,6 +904,11 @@ export default class RegtestNetworkProvider implements NetworkProvider {
 
   async takeSnapshot(): Promise<SnapshotRestorer> {
     await this.ensureReady();
+    await this.quiesceSends();
+    // A snapshot must not leave the oracle update in the mempool: the rewind clears the mempool, and the
+    // restored chain would then have a confirmed oracle outpoint this provider no longer tracks (the wallet
+    // cannot rediscover a watch-only output it did not see mined). Confirm it first.
+    if (this.pendingOracleUpdate) await this.mineBlocks(1, false);
     const height = await this.readRpc.request<GetBlockCount>('getblockcount');
     const hash = await this.readRpc.request<GetBlockHash>('getblockhash', height);
     const snapshotId = `regtest-${this.snapshotNonce++}`;
@@ -931,6 +975,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
    * transactions to the mempool, so `clearmempool` drops them before the next test starts.
    */
   private async restoreSnapshot(state: RegtestSnapshotState): Promise<void> {
+    // A restore must not interleave with a broadcast that is still mining: that send would land above the
+    // rewind and leave wallet entries the restored chain cannot explain.
+    await this.quiesceSends();
     const height = await this.readRpc.request<GetBlockCount>('getblockcount');
     if (height < state.height) {
       throw new Error(
@@ -977,6 +1024,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.pendingBlockTimestamp = state.pendingBlockTimestamp;
     this.mockTime = state.mockTime;
     this.tipTime = state.tipTime;
+    this.pendingOracleUpdate = false;
     await this.setMockTime(state.mockTime);
   }
 
@@ -1090,77 +1138,79 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   }
 
   private async fundSignSend(unsignedHex: string): Promise<string> {
-    return this.serializeSend(async () => {
-    const tx = decodeTransactionUnsafe(hexToBin(unsignedHex));
-    const sats = (value: number): bigint => BigInt(Math.round(value * 1e8));
-    const inputValue = async (txid: string, vout: number): Promise<bigint> => {
-      const out = await this.readRpc.request<GetTxOut>('gettxout', txid, vout, true) as
-        GetTxOut['response'] | null;
-      if (out === null) throw new Error(`funding input ${txid}:${vout} is not live`);
-      return sats(out.value);
-    };
+    const txid = await this.serializeSend(async () => {
+      const tx = decodeTransactionUnsafe(hexToBin(unsignedHex));
+      const sats = (value: number): bigint => BigInt(Math.round(value * 1e8));
+      const inputValue = async (inputTxid: string, vout: number): Promise<bigint> => {
+        const out = await this.readRpc.request<GetTxOut>('gettxout', inputTxid, vout, true) as
+          GetTxOut['response'] | null;
+        if (out === null) throw new Error(`funding input ${inputTxid}:${vout} is not live`);
+        return sats(out.value);
+      };
 
-    let valueIn = 0n;
-    const retainedKeys = new Set([...this.retainedMinting.values()]
-      .map((utxo) => `${utxo.txid}:${utxo.vout}`));
-    const tokenCategories = new Set(tx.outputs
-      .filter((output) => output.token !== undefined)
-      .map((output) => binToHex(output.token!.category)));
-    const liveInputs: typeof tx.inputs = [];
-    for (const input of tx.inputs) {
-      const txid = binToHex(input.outpointTransactionHash);
-      const key = `${txid}:${input.outpointIndex}`;
+      let valueIn = 0n;
+      const retainedKeys = new Set([...this.retainedMinting.values()]
+        .map((utxo) => `${utxo.txid}:${utxo.vout}`));
+      const tokenCategories = new Set(tx.outputs
+        .filter((output) => output.token !== undefined)
+        .map((output) => binToHex(output.token!.category)));
+      const liveInputs: typeof tx.inputs = [];
+      for (const input of tx.inputs) {
+        const inputTxid = binToHex(input.outpointTransactionHash);
+        const key = `${inputTxid}:${input.outpointIndex}`;
+        try {
+          valueIn += await inputValue(inputTxid, input.outpointIndex);
+          liveInputs.push(input);
+        } catch (error) {
+          // A dead tokenless funding input can be replaced below. A genesis/category anchor or the retained
+          // minting NFT cannot: its outpoint is part of the transaction's consensus meaning.
+          if (retainedKeys.has(key) || tokenCategories.has(inputTxid)) throw error;
+        }
+      }
+      tx.inputs = liveInputs;
+      const valueOut = tx.outputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
+      const fee = 1_000n;
+      const added: ListUnspentItem[] = [];
+      let needed = valueOut + fee - valueIn;
       try {
-        valueIn += await inputValue(txid, input.outpointIndex);
-        liveInputs.push(input);
-      } catch (error) {
-        // A dead tokenless funding input can be replaced below. A genesis/category anchor or the retained
-        // minting NFT cannot: its outpoint is part of the transaction's consensus meaning.
-        if (retainedKeys.has(key) || tokenCategories.has(txid)) throw error;
+        while (needed > 0n) {
+          const funding = await this.pickLiveFundingInput(false);
+          const value = await inputValue(funding.txid, funding.vout);
+          tx.inputs.push({
+            outpointTransactionHash: hexToBin(funding.txid),
+            outpointIndex: funding.vout,
+            sequenceNumber: 0xfffffffe,
+            unlockingBytecode: new Uint8Array(),
+          });
+          added.push(funding);
+          valueIn += value;
+          needed -= value;
+        }
+        const change = valueIn - valueOut - fee;
+        if (change > 546n) {
+          tx.outputs.push({
+            lockingBytecode: this.toLockingBytecode(this.miningAddress),
+            valueSatoshis: change,
+          });
+        }
+        const signed = await this.rpc.request<SignRawTransactionWithWallet>(
+          'signrawtransactionwithwallet', binToHex(encodeTransaction(tx)),
+        );
+        if (!signed.complete) {
+          throw new Error(`Failed to sign: ${signed.errors?.map((e) => e.error).join(', ')}`);
+        }
+        const sent = await this.rpc.request<SendRawTransaction>('sendrawtransaction', signed.hex);
+        this.trackBroadcastOutputs(signed.hex, sent);
+        // Confirm before returning: callers mine as well, but a second funding selection must never see a
+        // just-spent coin while it is still unconfirmed.
+        await this.mineBlocks(1, false);
+        return sent;
+      } finally {
+        for (const funding of added) this.releaseFunding(funding);
       }
-    }
-    tx.inputs = liveInputs;
-    const valueOut = tx.outputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
-    const fee = 1_000n;
-    const added: ListUnspentItem[] = [];
-    let needed = valueOut + fee - valueIn;
-    try {
-      while (needed > 0n) {
-        const funding = await this.pickLiveFundingInput(false);
-        const value = await inputValue(funding.txid, funding.vout);
-        tx.inputs.push({
-          outpointTransactionHash: hexToBin(funding.txid),
-          outpointIndex: funding.vout,
-          sequenceNumber: 0xfffffffe,
-          unlockingBytecode: new Uint8Array(),
-        });
-        added.push(funding);
-        valueIn += value;
-        needed -= value;
-      }
-      const change = valueIn - valueOut - fee;
-      if (change > 546n) {
-        tx.outputs.push({
-          lockingBytecode: this.toLockingBytecode(this.miningAddress),
-          valueSatoshis: change,
-        });
-      }
-      const signed = await this.rpc.request<SignRawTransactionWithWallet>(
-        'signrawtransactionwithwallet', binToHex(encodeTransaction(tx)),
-      );
-      if (!signed.complete) {
-        throw new Error(`Failed to sign: ${signed.errors?.map((e) => e.error).join(', ')}`);
-      }
-      const txid = await this.rpc.request<SendRawTransaction>('sendrawtransaction', signed.hex);
-      this.trackBroadcastOutputs(signed.hex, txid);
-      // Confirm before returning: callers mine as well, but a second funding selection must never see a
-      // just-spent coin while it is still unconfirmed.
-      await this.mine(1);
-      return txid;
-    } finally {
-      for (const funding of added) this.releaseFunding(funding);
-    }
     });
+    await this.publishOracleIfDue();
+    return txid;
   }
 
   // The requested output is always built first and `fundSignSend` appends change AFTER every output it was

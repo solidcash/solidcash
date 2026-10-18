@@ -205,30 +205,63 @@ TESTS_USE_REGTEST=true BCHN_RELAXED=true \
 
 ## Full marketplace suite
 
-The full suite runs against the patched node. Snapshot restores use monotonic block times so BCHN never
-re-mines a block hash it previously marked invalid, and the regtest provider filters every tracked UTXO with
-`gettxout` before serving it so a restored fixture cannot spend a dead coin.
+The full suite runs against the patched node. Latest complete run on a fresh volume:
 
-Latest complete run: **46 passed, 20 failed (66 total)**. The failures start in the `take job` group, whose
-tests call `deployMarketplaceWithUsersAndJob` several times inside one test. Each call restores the same fixture
-snapshot in the middle of a test; a later funding input can be spent by an earlier in-test restore, producing
-`funding input ... is not live` or `Missing inputs`. Every test after that group inherits the inconsistent
-chain/wallet state and fails in a cascade.
+```sh
+BCHN_RPC_PORT=18448 docker compose -f docker-compose.marketplace.yml up -d
+SOLIDCASH_MARKETPLACE_NETWORK=regtest \
+  REGTEST_RPC_URL=http://127.0.0.1:18448 \
+  SOLIDCASH_MARKETPLACE_WORKER_HEAP_MB=6144 \
+  npx vitest run --config vitest.marketplace.config.ts --reporter=verbose
+```
 
-The focused flow, the time-travel case, and every test before `take job` pass. Two isolation strategies were
-tried and reverted:
+| Run | Result |
+| --- | --- |
+| Full run on the fixed harness | **66 passed, 0 failed (66 total)**, 2366 s |
+| Verification rerun after a lint-only reformat | 65 passed, 1 failed (66 total), 2769 s |
 
-- Per-test reset to a base chain snapshot (with fixture caches cleared): 7 passed, 59 failed. Cached deployment
-  handles no longer matched the reset chain.
-- Re-executing fixtures on regtest instead of restoring their snapshots: 43 passed, 7 failed. Tests that reuse
-  a fixture's contracts across multiple in-test job setups lost their token approvals
-  (`ERC20InsufficientAllowance`).
+The single failure in the rerun is `job posting > post two jobs`: the second `publishJobPost` stops in a
+framed entry guard. The same case fails at the pre-fix HEAD on a fresh node, so it is a framing/regtest
+edge unrelated to fixture isolation, and it passes in the fixed full run.
 
-Remaining work needs a snapshot that restores the wallet's coin set together with the chain, or fixture-aware
-recreation that preserves approvals and category identity across in-test restores.
+Fixture isolation now holds for repeated in-test `deployMarketplaceWithUsersAndJob` calls. Three defects
+caused the earlier cascade:
+
+1. The funding lock was "reentrant" through a depth counter, so two independent `addUtxo` calls overlapping
+   in time both ran concurrently. Both selected the same vout-0 coin before either reserved it; the second
+   genesis then spent a dead anchor (`funding input ...:0 is not live`). The lock is now a strict FIFO.
+   `ensureReady()` runs before the queue and the internal retry calls `addUtxoUnlocked` directly, so no
+   caller can already hold the queue while reaching it.
+2. `getUtxos` returned `listunspent` entries unfiltered. After a fixture rewind, BCHN's wallet can keep
+   listing outputs from the disconnected branch; the SDK funded a transaction with them and the node
+   answered `Missing inputs`. `getUtxos` now confirms every served outpoint with `gettxout` (mempool
+   included), as the token and funding paths already did.
+3. `takeSnapshot` and `restoreSnapshot` did not wait for in-flight sends, so a mine could land above a
+   rewind. Both now quiesce the funding and broadcast queues first.
+
+`loadFixture` continues to restore snapshots instead of re-executing fixtures. Cached contract handles and
+token approvals therefore survive repeated `deployMarketplaceWithUsersAndJob` calls, and the failures from
+the re-execution experiment do not occur.
+
+### Block oracle heartbeat
+
+The mock provider rewrites its block oracle in place whenever a block is mined, so `block.timestamp`
+advances per block. A real covenant oracle can only move by spending its UTXO, so the regtest provider
+publishes the next update into the mempool at the end of every mined block, and the next block confirms it.
+A caller that reads `block.timestamp` between blocks co-spends the pending oracle UTXO; the node confirms
+the update and the call in one block. `mine(n)` still advances the height by exactly `n`, and
+`block.timestamp` advances like the mock chain. This is what makes the strict
+`block.timestamp > challengePeriodStart` check in `UnicrowDispute.challenge()` pass.
+
+`takeSnapshot` confirms a pending oracle update before capturing. A rewind clears the mempool, and the
+wallet cannot rediscover a watch-only oracle output it never saw mined, so leaving an update pending would
+make the restored chain report `block oracle UTXO is not available`.
 
 ## Remaining constraints
 
+- `job posting > post two jobs` is intermittently refused at the framed entry guard on a freshly reserved
+  node. It reproduces at the pre-fix HEAD, passes in the fixed full-suite run, and is independent of the
+  snapshot and oracle work above.
 - `ScriptBigInt` keeps its 10,000-byte numeric limit even when `-maxstackitemsize` is larger. Byte strings can
   be larger; numeric operations on items above 10,000 bytes still fail. The marketplace contracts use byte
   strings for their state records.

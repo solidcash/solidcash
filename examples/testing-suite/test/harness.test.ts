@@ -155,8 +155,8 @@ describe('harness: Wallet.createRandom (ad-hoc funded signer)', () => {
   it('returns a fresh funded signer with connect()', async () => {
     const w = ethers.Wallet.createRandom();
     expect(w.getAddress()).to.be.properAddress;
-    // Funded on the mock network so an unauthorized covenant call can be built.
-    const utxos = await provider.getUtxos(w.getAddress());
+    // Funded lazily through the signer's own read, so an unauthorized covenant call can be built.
+    const utxos = await w.getUtxos();
     expect(utxos.reduce((s, u) => s + u.satoshis, 0n)).to.be.gt(0n);
     // .connect(provider) rebinds preserving identity (ethers Signer.connect).
     const bound = w.connect(provider);

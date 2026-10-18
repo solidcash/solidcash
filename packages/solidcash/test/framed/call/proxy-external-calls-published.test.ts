@@ -39,8 +39,13 @@ function loadArtifact(name: string): Artifact {
 // The marketplace fixture directory is shared with the direct-composition lane, which compiles the same
 // contracts without `composition: 'framed'`. Only a framed compile publishes the placeholder descriptor this
 // planner's `deployMaster` fills, so skip the shipped-facts cases when the directory holds direct artifacts.
-const hasFramedArtifacts = existsSync(ARTIFACTS_DIR)
-  && loadArtifact('MarketplaceV1.json').composition?.convention === 'framed';
+const hasFramedArtifacts = existsSync(ARTIFACTS_DIR) && ((): boolean => {
+  try {
+    return loadArtifact('MarketplaceV1.json').composition?.convention === 'framed';
+  } catch {
+    return false;
+  }
+})();
 
 /** The interface name a callee artifact is reached through: the Solidity `I` prefix on its own name. */
 function calleeInterface(artifact: Artifact): string {

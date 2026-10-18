@@ -54,8 +54,13 @@ function loadArtifact(name: string): Artifact {
 // The marketplace fixture directory is shared with the direct-composition lane, which compiles the same
 // contracts without `composition: 'framed'`. Only a framed compile publishes the placeholder descriptor this
 // planner's `deployMaster` fills, so skip the shipped-facts cases when the directory holds direct artifacts.
-const hasArtifacts = existsSync(ARTIFACTS_DIR)
-  && loadArtifact('MarketplaceDataV1.json').composition?.convention === 'framed';
+const hasArtifacts = existsSync(ARTIFACTS_DIR) && ((): boolean => {
+  try {
+    return loadArtifact('MarketplaceDataV1.json').composition?.convention === 'framed';
+  } catch {
+    return false;
+  }
+})();
 
 /**
  * A live deployment of `artifact`'s category: masters, one record per data NFT, and the empty head a genesis mints

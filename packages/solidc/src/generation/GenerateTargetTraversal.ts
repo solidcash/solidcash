@@ -52269,6 +52269,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitPreserveOutsideLayoutOwnMutable(node: FunctionDefinitionNode, loc: SingleLocationData): void {
     if (this.framedMaster || this.readsRecordsFromFrame) return;
+    // A proxy delegate executes against the proxy's record block, not its own. Its consumed OLD value chunks are
+    // authentically admitted by the delegate's own record-conservation checks, and the proxy's `__forward`
+    // covenant pins the proxy block; the 1:1 outside-layout walk here cannot name those chunks' output coordinate
+    // (it changes with the rewrite), so it refuses a legitimate chunked value write instead of preserving it.
+    if (this.usesProxyStateBlockBase()) return;
     const blockSize = node.blockLayout?.blockSize;
     if (blockSize === undefined || blockSize <= 0) return;
     // The walk must admit a record at a mintable lock only when such a record can sit outside the block: a loop

@@ -323,9 +323,9 @@
       "workspace": "solidc",
       "file": "test/journal-message-bus/KernelLifecycleTopology.test.ts",
       "tests": [
-        "fails closed for split lifecycle geometry until it has an authenticated row protocol",
-        "fails closed for merge lifecycle geometry until it has an authenticated row protocol",
-        "does not invent bounded spans for other lifecycle modes"
+        "admits the exact split topology and publishes participant-local input and output spans",
+        "publishes participant-local merge input and output spans",
+        "admits resource-free modifier-only selfdestruct retirement topology"
       ]
     },
     {
@@ -333,7 +333,7 @@
       "workspace": "solidcash",
       "file": "test/journal-message-bus/AtomicMessageBusGraph.test.ts",
       "tests": [
-        "fails closed for a resource-free lifecycle row until the advertised protocol can compose it",
+        "plans a resource-free split row once the verifier advertises selector-derived lifecycle authority",
         "cannot plan compiler-fenced lifecycle rows carrying detached signature leaves"
       ]
     },
@@ -343,7 +343,7 @@
       "file": "test/journal-message-bus/e2e/KernelUpgradeCompose.test.ts",
       "tests": [
         "authenticates one final upgrade row and preserves the master NFT geometry",
-        "appends canonical new fields after the post-row old state and rejects suffix tampering"
+        "admits a participant that keeps records, and refuses a replacement that adds state"
       ]
     },
     {

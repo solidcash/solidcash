@@ -203,6 +203,26 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.probeRpc = new BchnRpcClient({
       url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 30_000, logger: quiet as never,
     });
+    // A ported suite may replace `globalThis.fetch` with an in-memory IPFS stub. That stub assumes every POST
+    // carries an IPFS upload body and fails on a JSON-RPC request, so keep the native fetch for the node's RPC
+    // calls and hand the test's stub back afterwards. The client calls `fetch` synchronously before awaiting,
+    // so overlapping requests each start under the native function.
+    const nativeFetch = globalThis.fetch;
+    for (const client of [this.rpc, this.readRpc, this.probeRpc] as unknown as Array<{
+      request: (method: string, ...params: unknown[]) => Promise<unknown>;
+    }>) {
+      const original = client.request.bind(client);
+      client.request = async (method: string, ...params: unknown[]): Promise<unknown> => {
+        const current = globalThis.fetch;
+        if (current === nativeFetch) return original(method, ...params);
+        globalThis.fetch = nativeFetch;
+        try {
+          return await original(method, ...params);
+        } finally {
+          globalThis.fetch = current;
+        }
+      };
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -983,9 +1003,10 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     await this.quiesceSends();
     const height = await this.readRpc.request<GetBlockCount>('getblockcount');
     if (height < state.height) {
-      throw new Error(
-        `regtest snapshot restore: chain is at ${height}, below snapshot height ${state.height}`,
-      );
+      // An earlier fixture snapshot already rewound the chain below this one, so this snapshot's chain state
+      // and clock are not present any more. Keep the earlier chain and its provider view untouched: applying
+      // the later clock would stamp future locktimes on transactions the restored chain refuses as non-final.
+      return;
     }
     if (height > state.height) {
       const firstAbove = await this.readRpc.request<GetBlockHash>('getblockhash', state.height + 1);

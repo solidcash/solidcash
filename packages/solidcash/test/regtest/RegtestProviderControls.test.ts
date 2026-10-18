@@ -24,6 +24,26 @@ describeRegtest('RegtestNetworkProvider controls', () => {
     await snapshot.restore();
     expect(await provider.getBlockHeight()).toBe(startHeight);
 
+    // A snapshot taken above the current tip has no chain state left to undo. Restoring it after an earlier
+    // snapshot rewound the chain must keep the earlier chain; wallet-only fixtures can be captured after they
+    // fund signers, which happens above the base fixture's height.
+    await provider.mine(2);
+    const laterSnapshot = await provider.takeSnapshot();
+    await snapshot.restore();
+    expect(await provider.getBlockHeight()).toBe(startHeight);
+    await laterSnapshot.restore();
+    expect(await provider.getBlockHeight()).toBe(startHeight);
+
+    // A ported suite can replace global fetch with an in-memory IPFS stub that assumes every POST is an upload.
+    // The node RPC must keep the native fetch, or every call is parsed as an upload body and fails.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (): Promise<Response> => new Response('stub')) as typeof fetch;
+    try {
+      expect(await provider.getBlockHeight()).toBeGreaterThanOrEqual(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
     // The clock is MTP-based. Advancing by a day mines the median window, then the restore rewinds it.
     const clockSnapshot = await provider.takeSnapshot();
     const before = provider.getBlockTime();

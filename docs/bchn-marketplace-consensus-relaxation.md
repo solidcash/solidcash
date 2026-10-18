@@ -126,6 +126,31 @@ Values that match the current mock profile:
 The measured shapes need far less: 400,000 covers the 303,347-byte input with margin, and 1,000,000 covers the
 94,651-byte transaction. Use the smaller values if the goal is to keep the test node closer to production.
 
+## Marketplace matrix against the in-docker node
+
+The remaining cells of `[proxy,noproxy] × [kernel,framed]` were run against the patched BCHN container on
+2026-10-18, each on a fresh node volume with the deterministic clock and the 6,144 MB worker heap.
+
+| Cell | Result | Notes |
+| --- | --- | --- |
+| proxy × framed | **66/66** | Full run on the deterministic clock. |
+| proxy × kernel | **11 passed, 55 failed** | `register user > update user` fails a message-bus preflight; the same case fails on the mock lane, so this is a kernel-composition regression, not BCHN. Later failures cascade with `Missing inputs`. |
+| noproxy × kernel | aborted | Setup works with the fetch guard. The same `update user`/`update arbitrator` preflight failures appear, and `job posting > post job 1` hit the 30-minute test timeout. |
+| noproxy × framed | **64 passed, 1 failed (65 total)** | `job updates > update job many times, get history` refuses `MarketplaceDataV1.publishJobEvent` at the framed guard. The same case passes on the mock lane, so it is regtest-specific and remains under investigation. |
+
+Two harness defects surfaced and are fixed:
+
+- A fixture snapshot can be captured above the base fixture's height when the fixture funds signers on first
+  execution. Restoring the base first then left the chain below the wallet snapshot and threw. A snapshot
+  above the current tip has no chain state left to undo, so the provider keeps the earlier chain and its
+  view untouched. Applying the later clock would stamp future locktimes and fail transactions as non-final.
+- The no-proxy test twin replaces `globalThis.fetch` with an in-memory IPFS stub that assumes every POST is
+  an upload. On regtest every JSON-RPC call went through that stub. The provider now uses the native fetch
+  for its RPC clients and restores the test's stub afterwards.
+
+The kernel cells are red at this worktree source independently of BCHN: the first failure reproduces on the
+mock lane. They are reported as measured and are not a consensus-relaxation blocker.
+
 ## Implemented regtest harness
 
 The regtest lane now has the same surface the mock lane provided:

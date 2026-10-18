@@ -217,12 +217,15 @@ SOLIDCASH_MARKETPLACE_NETWORK=regtest \
 
 | Run | Result |
 | --- | --- |
-| Full run on the fixed harness | **66 passed, 0 failed (66 total)**, 2366 s |
-| Verification rerun after a lint-only reformat | 65 passed, 1 failed (66 total), 2769 s |
+| Full run on the fixed harness | **66 passed, 0 failed (66 total)**, 2247 s |
+| Earlier full run before the deterministic clock | 66 passed, 0 failed (66 total), 2366 s |
+| Verification rerun before the deterministic clock | 65 passed, 1 failed (66 total), 2769 s |
 
-The single failure in the rerun is `job posting > post two jobs`: the second `publishJobPost` stops in a
-framed entry guard. The same case fails at the pre-fix HEAD on a fresh node, so it is a framing/regtest
-edge unrelated to fixture isolation, and it passes in the fixed full run.
+The 65/66 run failed `job posting > post two jobs`: the second `publishJobPost` stopped in a framed entry
+guard. It reproduced at the pre-fix HEAD on a fresh node and depended on the wall-clock epoch the container
+happened to start at. The regtest lane now pins the node's clock to the mock chain's fixed epoch before its
+first block, so mined timestamps no longer derive from wall time. The same case passes in the focused run
+and in the full suite on the deterministic clock.
 
 Fixture isolation now holds for repeated in-test `deployMarketplaceWithUsersAndJob` calls. Three defects
 caused the earlier cascade:
@@ -243,7 +246,12 @@ caused the earlier cascade:
 token approvals therefore survive repeated `deployMarketplaceWithUsersAndJob` calls, and the failures from
 the re-execution experiment do not occur.
 
-### Block oracle heartbeat
+### Block oracle heartbeat and deterministic clock
+
+A fresh regtest volume pins BCHN's mock clock to `1700000000`, the same epoch the mock provider uses, before
+it mines the first block. Every later timestamp is `max(tip median-time-past, last mined) + 1`; wall-clock
+time is no longer an input. This makes the in-docker lane reproducible across runs and keeps `block.timestamp`
+on the same footing as the mock chain.
 
 The mock provider rewrites its block oracle in place whenever a block is mined, so `block.timestamp`
 advances per block. A real covenant oracle can only move by spending its UTXO, so the regtest provider
@@ -259,9 +267,6 @@ make the restored chain report `block oracle UTXO is not available`.
 
 ## Remaining constraints
 
-- `job posting > post two jobs` is intermittently refused at the framed entry guard on a freshly reserved
-  node. It reproduces at the pre-fix HEAD, passes in the fixed full-suite run, and is independent of the
-  snapshot and oracle work above.
 - `ScriptBigInt` keeps its 10,000-byte numeric limit even when `-maxstackitemsize` is larger. Byte strings can
   be larger; numeric operations on items above 10,000 bytes still fail. The marketplace contracts use byte
   strings for their state records.

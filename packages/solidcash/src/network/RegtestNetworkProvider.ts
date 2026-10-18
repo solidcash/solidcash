@@ -165,6 +165,11 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private retainAddress: string = '';
   private retainLockingBytecode: Uint8Array = new Uint8Array();
   private static readonly RETAINED_MINT_SATOSHIS = 2_000n;
+  /**
+   * The timestamp a fresh regtest volume starts from. The mock chain begins at this same epoch, so a suite run
+   * is reproducible instead of depending on the wall clock the container happened to start at.
+   */
+  private static readonly DEFAULT_BLOCK_TIME = 1_700_000_000;
   // Comfortably above the `minimumAmount: 1` BCH filter in `pickLiveFundingInput`.
   private static readonly VOUT0_FUNDING_SATOSHIS = 200_000_000n;
 
@@ -826,9 +831,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       // A fixture restore disconnects a block but BCHN keeps it marked invalid. Re-mining the same template
       // (same time and transactions) would produce the same hash and be rejected, so every ordinary mine moves
       // the mock clock forward by at least one second. `lastMinedTimestamp` deliberately survives snapshots.
-      const timestamp = Math.max(
-        this.tipTime + 1, Math.floor(Date.now() / 1000), this.lastMinedTimestamp + 1,
-      );
+      const timestamp = Math.max(this.tipTime + 1, this.lastMinedTimestamp + 1);
       await this.setMockTime(timestamp);
       this.mockTime = timestamp;
       this.lastMinedTimestamp = timestamp;
@@ -884,7 +887,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
    * median window (11 blocks) at the new time; the SDK's stamp and the node's finality check then agree.
    */
   async increaseTime(seconds: number | bigint): Promise<number> {
-    const base = Math.max(this.tipTime, this.lastMinedTimestamp, Math.floor(Date.now() / 1000));
+    const base = Math.max(this.tipTime, this.lastMinedTimestamp);
     // One extra second lets the oracle publish `MTP - 1` at the requested timestamp; the oracle covenant
     // cannot publish the current MTP because its own nLocktime must stay below MTP.
     const timestamp = Math.max(0, base + Number(seconds) + 1);
@@ -1346,10 +1349,17 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.retainAddress = await this.rpc.request<GetNewAddress>('getnewaddress', 'retained-minting');
     this.retainLockingBytecode = this.toLockingBytecode(this.retainAddress);
     const height = await this.readRpc.request<GetBlockCount>('getblockcount');
+    if (height === 0) {
+      // Pin the node's clock before its first block so every mined timestamp is derived from this epoch.
+      await this.setMockTime(RegtestNetworkProvider.DEFAULT_BLOCK_TIME);
+      this.mockTime = RegtestNetworkProvider.DEFAULT_BLOCK_TIME;
+      this.lastMinedTimestamp = RegtestNetworkProvider.DEFAULT_BLOCK_TIME;
+    }
     if (height < 200) {
       await this.rpc.request<GenerateToAddress>('generatetoaddress', 200 - height, this.miningAddress);
     }
     this.tipTime = await this.readTipTime();
+    if (height === 0) this.lastMinedTimestamp = this.tipTime;
   }
 
   private toLockingBytecode(addressOrHex: string): Uint8Array {

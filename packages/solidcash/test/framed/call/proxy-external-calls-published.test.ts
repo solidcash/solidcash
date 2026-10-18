@@ -29,13 +29,18 @@ const ARTIFACTS_DIR = resolve(
   fileURLToPath(new URL('.', import.meta.url)),
   '../../../../../.marketplace/artifacts/solidcash',
 );
-const hasArtifacts = existsSync(ARTIFACTS_DIR);
 const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 
 /** One shipped artifact, loaded by file name. */
 function loadArtifact(name: string): Artifact {
   return JSON.parse(readFileSync(join(ARTIFACTS_DIR, name), 'utf8')) as Artifact;
 }
+
+// The marketplace fixture directory is shared with the direct-composition lane, which compiles the same
+// contracts without `composition: 'framed'`. Only a framed compile publishes the placeholder descriptor this
+// planner's `deployMaster` fills, so skip the shipped-facts cases when the directory holds direct artifacts.
+const hasFramedArtifacts = existsSync(ARTIFACTS_DIR)
+  && loadArtifact('MarketplaceV1.json').composition?.convention === 'framed';
 
 /** The interface name a callee artifact is reached through: the Solidity `I` prefix on its own name. */
 function calleeInterface(artifact: Artifact): string {
@@ -92,7 +97,7 @@ async function seedDeployment(
   return master;
 }
 
-const describePublished = hasArtifacts ? describe : describe.skip;
+const describePublished = hasFramedArtifacts ? describe : describe.skip;
 
 describePublished('the planner against the shipped published facts', () => {
   const FACADE_CATEGORY = '0a'.repeat(32);
@@ -246,9 +251,9 @@ describePublished('the planner against the shipped published facts', () => {
   });
 });
 
-it.runIf(!hasArtifacts)('skips the shipped published-facts suite: no compiled artifacts directory', () => {
-  // A clear signal rather than a silent pass when the repository's compiled output is not present.
-  expect(hasArtifacts).toBe(false);
+it.runIf(!hasFramedArtifacts)('skips the shipped published-facts suite: no framed compiled artifacts', () => {
+  // A clear signal rather than a silent pass when the repository's compiled output is not framed (or absent).
+  expect(hasFramedArtifacts).toBe(false);
 });
 
 /** Every shipped contract artifact in the compiled output directory. */

@@ -39,7 +39,6 @@ const ARTIFACTS_DIR = resolve(
   fileURLToPath(new URL('.', import.meta.url)),
   '../../../../../.marketplace/artifacts/solidcash',
 );
-const hasArtifacts = existsSync(ARTIFACTS_DIR);
 const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 
 const FACADE_CATEGORY = '0a'.repeat(32);
@@ -51,6 +50,12 @@ const TOKEN_CATEGORY = '0c'.repeat(32);
 function loadArtifact(name: string): Artifact {
   return JSON.parse(readFileSync(join(ARTIFACTS_DIR, name), 'utf8')) as Artifact;
 }
+
+// The marketplace fixture directory is shared with the direct-composition lane, which compiles the same
+// contracts without `composition: 'framed'`. Only a framed compile publishes the placeholder descriptor this
+// planner's `deployMaster` fills, so skip the shipped-facts cases when the directory holds direct artifacts.
+const hasArtifacts = existsSync(ARTIFACTS_DIR)
+  && loadArtifact('MarketplaceDataV1.json').composition?.convention === 'framed';
 
 /**
  * A live deployment of `artifact`'s category: masters, one record per data NFT, and the empty head a genesis mints

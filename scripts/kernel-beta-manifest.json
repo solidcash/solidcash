@@ -391,19 +391,19 @@
         "legacy": {
           "convention": "legacy-unroll",
           "routeBytes": 44837,
-          "fullBytes": 245229,
+          "fullBytes": 242091,
           "routeHash": "a171ef89e9ff87300914a6bc4dbac3c158abdf939116b2acca346ac208cf1df0",
-          "fullHash": "f7a661ba433e5ca355456619cb0469fa35e7717147dc49c327d07d34b4b055d7",
-          "metadataHash": "d11d1f7cec57a868424920aba0eba81d36cf4631e200feee8f13321bb158845e",
+          "fullHash": "cab3b849643b536f0b548a52bb76dd882517a341c7e7f5aad0320a341e09fa0c",
+          "metadataHash": "c5ab39dc24330faeec07b161d52ba66fc3caa9f4491097bd739b57d4abfb9ebe",
           "handlers": { "total": 38, "eligible": 28, "refused": 10 }
         },
         "kernel": {
           "convention": "kernel-row-loop",
           "routeBytes": 14819,
-          "fullBytes": 307595,
+          "fullBytes": 304457,
           "routeHash": "e077d083fe1f5997421cd065e45c1e2e57092b498a4c1a23f78be52b344ecd94",
-          "fullHash": "b8c1583ff40f14b357233b6b2fb83c9bd794414f91cb96a20327e9f4983655d3",
-          "metadataHash": "89b88c3e9b21c65bef0216d64d30827ff4458fd243e97c6c38fc9cfecfafeeae",
+          "fullHash": "6b43e22486fac1aff20b8469c10fe7967273a6f75dd78a0b7c734d5184f3ce31",
+          "metadataHash": "3d64424e42bd64533015b7932b0795356ee233866004e88ea00706b0f1302f8b",
           "handlers": { "total": 38, "eligible": 38, "refused": 0 }
         }
       }

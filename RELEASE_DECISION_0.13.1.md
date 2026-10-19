@@ -3,7 +3,7 @@
 This document triages the six named audit residuals and the five named unconditional skips, then states the
 overall 0.13.1 release recommendation. Gate and suite evidence is recorded at the bottom; the gate commands are
 run exactly as shipped, and no gate pin, test assertion, or compiler/SDK behavior was changed as part of this
-review.
+review (the 2026-10-19 re-verification fixed only the lint and spellcheck failures in notes 2 and 4 below).
 
 ## Audit residuals
 
@@ -100,80 +100,88 @@ The unconditional return-event ordering coverage is regtest-gated; unbounded ret
 
 ## Overall recommendation
 
-**Not release-ready.** The six residuals and five skips are triaged as non-blocking, but the release gates are red:
-`gate.sh` fails its frozen bytecode identity, `kernel-beta-gate` fails with 33 `sdk-journal` test failures plus a
-forbidden-name fence, `release-security-conformance` fails its X50 proxy guardrail, and `yarn test` bails at
-`@solidcash/utils`. Details below. The gate pins and test assertions were deliberately left untouched so the
-verdict reflects the shipped scripts, not a self-chosen baseline.
+**Release-ready on the mocknet gates** (re-verified 2026-10-19 at `11b8f7feb`, plus the lint and spellcheck
+fixes `0d670c83e` and `b5b3265db`). Every gate in the table below passes, the six residuals and five skips above
+stay non-blocking, and the changes that turned the 2026-10-17 failures green are listed under "What closed the
+2026-10-17 failures".
+Before tagging, the release owner still has to accept three things outside the gates:
+
+- `release-application-regtest` was not run at this commit: the re-verification ran on mocknet only, by
+  instruction. It last passed against stock BCHN v29.0.0 at `88cc906ec` (`docs/framed/REGTEST_AT_HEAD.md`).
+- The marketplace proxy x kernel arbitrate title fails its preflight at input 1462 (see "Open outside the gates").
+- `master` carries the readiness commits, and `solidcash_v0.13.1` carries `aa8b1b3aa` (a brace-style change in
+  `CacheDynamicArrayInLoop.ts`) that `master` lacks; merge the two before tagging. `master` lints clean without it.
 
 ## Gate and suite evidence
 
+Re-run on 2026-10-19 at `11b8f7feb` in a fresh worktree, mocknet only (`TESTS_USE_REGTEST` unset), each gate as
+shipped and once. The tree was clean before and after every gate. The 2026-10-17 run this replaces is in this
+file's history.
+
 | Gate | Result | Evidence |
 |---|---|---|
-| `scripts/gate.sh fast` | **fail (triaged)** | exit 1: build ok; bytecode identity changed — `actual {"routeBytes":45047,"fullBytes":244791,"fullHash":"dcd8c1e0e0f12656"}` vs `expected {"routeBytes":40019,"fullBytes":115274,"fullHash":"ed6cfff8760a3ca8"}` |
-| `scripts/gate.sh full` | **fail (triaged)** | exit 1: same identity; utils `2 failed \| 510 passed (512)`; solidc `6 failed \| 7360 passed (7366)` vs documented `189 failed / 4828 passed of 5017` |
-| `release-package-smoke` | pass | exit 0 |
+| `scripts/gate.sh fast` | pass | exit 0: build ok; identity `{"routeBytes":44837,"fullBytes":242091,"fullHash":"cab3b849643b536f"}` matches; timing 13.7 s (see note 1) |
+| `scripts/gate.sh full` | pass | utils 512/512 and solidc 7366/7366 (461 files), the gate's own baseline; identity as in `fast` (see note 1) |
+| `kernel-beta-gate` | pass | exit 0 without `--allow-dirty` (31 min): `diagnosticOnly: false`, head `11b8f7feb`, sourceFingerprints matched, all 39 required kernel proofs passed; `--sources-only` preflight exit 0 |
+| `release-security-conformance` | pass | exit 0 (63 s) |
+| `yarn test` | pass | exit 0 (31 min): utils 512/512; solidc 7366/7366; solidcash 5966 passed, 4 expected fail, 179 skipped, 5 todo; testing 113/113; testing-suite 27/27; solidhat 71 passed, 1 skipped |
+| `yarn lint` | pass after fix | exit 1 at `11b8f7feb`: two errors from `14c740758` (see note 2); exit 0 at `0d670c83e` across all seven packages and testing-suite |
+| `yarn spellcheck` | pass after fix | exit 1 at `11b8f7feb`: about 250 unknown words (see note 4); exit 0 at `b5b3265db` |
+| `check:source-tree` | pass | exit 0 |
+| `release-package-smoke` | pass | exit 0 (310 s) |
 | `release-docs-snippets` | pass | exit 0 |
-| `release-corpus-baseline` | pass | exit 0 |
-| `release-application-conformance` | pass | exit 0 |
-| `release-application-regtest` | **environment-blocked** | exit 1: BchnRpcClient `fetch failed` — no BCHN/Fulcrum docker stack |
-| `release-generated-project-smoke` | pass | exit 0 |
-| `release-security-conformance` | **fail (triaged)** | exit 1: `X50DefaultProxyRegenerated.test.ts` — shipped proxy artifact stale, and its 308-byte forwarder pin is stale (compiler emits 350 bytes) |
-| `kernel-beta-gate` | **fail (triaged)** | exit 1: three forbidden `Unicrow` comment lines; after the name fence, `sdk-journal` reports 33 failures (17 files) |
-| `yarn test` | **fail (triaged)** | exit 1: bails at `@solidcash/utils` — `1 failed \| 26 passed (27)` files, `2 failed \| 510 passed (512)` tests |
+| `release-corpus-baseline` | pass | exit 0 against the retained scorecard (see note 3) |
+| `release-application-conformance` | pass | exit 0 (16 s) |
+| `release-generated-project-smoke` | pass | exit 0 (42 s) |
+| `release-application-regtest` | not run | mocknet-only re-verification; last pass at `88cc906ec` |
 
-### `gate.sh` bytecode-identity triage
+Notes:
 
-`scripts/gate.sh` is the performance-regression gate with a frozen `EXPECTED` identity
-(`routeBytes:40019, fullBytes:115274, fullHash:ed6cfff8760a3ca8`). This branch produces
-(`routeBytes:45047, fullBytes:244791, fullHash:dcd8c1e0e0f12656`), so the gate exits 1. The build and timing
-portions pass; the identity FAIL means the frozen baseline predates the accumulated semantic changes (item-10
-features, block-layout v2, the security fixes) and must be re-pinned by the release owner when those changes are
-accepted. The gate's printed solidc counts (`6 failed | 7360 passed (7366)`) also deviate from its documented
-baseline (`189 failed / 4828 passed of 5017`), so that baseline is stale too.
+1. The identity step compiles `.marketplace/contracts/MarketplaceV1.sol`, an untracked directory of symlinks into
+   the sibling `effectiveacceleration.ai` checkout. A fresh worktree has none, so the step prints nothing and the
+   gate exits 1 with "bytecode changed". With the directory copied from the lane's checkout (no sibling source
+   changed after the pin), `fast` matches the identity; `full` ran its suites in the same worktree.
+2. `@typescript-eslint/no-loop-func` in `packages/solidcash/src/network/RegtestNetworkProvider.ts` (the
+   native-fetch RPC wrapper was built inside its loop) and an unused `hexToBin` import in
+   `packages/solidcash/test/e2e/AuditContainerCommitment.test.ts`. `0d670c83e` hoists the wrapper into one helper,
+   unchanged in behavior, and drops the import; type-check clean, and the two mocknet test files that construct
+   the provider (`RegtestCategoryMintX74`, `VmProviderObserverX57`) pass.
+3. The gate checks the committed `bench/solidity-corpus/scorecard.txt` (2720/2805 positive, 149/2158 negative
+   fixtures accepted) against `release-baseline.json`; it does not recompile the corpus. That scorecard was last
+   regenerated at `a1e98a04a` (2026-10-12) and was reproduced identically by the 2026-10-14 integration run; it was
+   not regenerated at `11b8f7feb`.
+4. Most of the unknown words sat in the machine-written `docs/marketplace-matrix-*.json` evidence, now excluded
+   beside the other generated records; 62 vocabulary terms (BCHN options and RPC names, build libraries) joined
+   the project dictionary, and the remaining fragments got scoped ignores (`b5b3265db`). Lint, spellcheck and the
+   source-tree check are CI steps that were not among the handoff's gates.
 
-### Solidc suite triage (6 failures)
+### What closed the 2026-10-17 failures
 
-The six failing solidc tests are all stale bytecode-size/optimization-shape pins:
+The full list is `git log 34be189e4..11b8f7feb`. The commits that map directly onto a gate:
 
-- `test/VMapBytecodeOptimizations.test.ts` (3):
-  - `general vmap bytecode sharing > keeps depth-sensitive sorted-output authentication inline`
-  - `general vmap bytecode sharing > shares a collection-specific entry address across reads and writes`
-  - `general vmap bytecode sharing > shares repeated composite state traversal by structural type`
-- `test/journal-message-bus/MessageBusVerifierSize.test.ts` (1):
-  - `atomic verifier bytecode specialization > moves the global verifier out of the scalar master and keeps both covenants deployable`
-- `test/framed/master/direct-path-identity.test.ts` (2):
-  - `the direct convention is unchanged > emits the pinned bytecode for a stateful contract with a signature check`
-  - `the direct convention is unchanged > emits the pinned bytecode for a stateful contract that reads msg.sender`
+- `gate.sh` identity and the stale size pins: `c49525874` re-pins the solidc vmap, verifier and direct-identity
+  sizes, the utils covenant lengths (+4 B under block-layout v2) and the X50 forwarder (308 -> 350 B), regenerates
+  `defaultProxyArtifact.ts` and re-pins the gate identity; `5d2a1f242` and `11b8f7feb` re-pin again after later
+  fixes. These accept measured growth; they encode no behavior.
+- `kernel-beta-gate`: `c49525874` renames the three `Unicrow` comments. The `sdk-journal` composition failures
+  are addressed by `e88aec180` (vmap batch trailing width, delegate outside-layout walk boundary), `3b9a27a32` (no
+  redundant positional batch self-check in routes), `4b7602823` (`address(this)` in invoked route handlers) and
+  `8fc4e3e5c` (outside-layout walk for proxy delegates), with the proof titles aligned (`a52da8417`,
+  `2d1cdb082`) and the cold-compile baselines re-pinned (`4d30adee5`).
+- `release-security-conformance`: X50's artifact regenerated and its pin refreshed (`c49525874`).
+- `yarn test`: the utils pins (`c49525874`), the testing-suite signer (`92b74a226`) and the SDK fixture gating
+  (`c049d0c25`, `db04ffbc3`).
 
-These are expectation pins that the accumulated changes moved; they are pin refresh work, not evidence of a
-behavioral miscompile.
+## Open outside the gates
 
-### `yarn test` triage
+### Marketplace proxy x kernel arbitrate: preflight failure at input 1462
 
-`yarn test` is `lerna run test --ignore solidcash-examples && yarn workspace testing-suite test`; lerna bails on
-the first failing package, so it stopped at `@solidcash/utils` before reaching solidc, solidcash, or the
-testing-suite. The two failures are byte-length pins in `packages/utils/test/state.test.ts`:
+Reported by the 2026-10-18 readiness session at `11b8f7feb`; not re-run in this re-verification. The four-cell
+262/262 result in `docs/marketplace-matrix-2026-10-14.md` belongs to the pre-merge snapshot it names. The
+session's diagnosis, kept here because its plan file did not survive, has two layers:
 
-- `buildEntryNftCovenantScript (dual-path) > should use the category-pinned form`: expected 212, got 216.
-- `buildValueChunkCovenantScript (digested domain) > commits to the tagged collection/slot/root tuple in 224 bytes`: expected 224, got 228.
+1. Compiler: the roll consumption decided by `isOpRoll` (`packages/solidc/src/generation/GenerateTargetTraversal.ts`)
+   disagrees with the tracked stack model.
+2. SDK: the return probe falls back to the 96-byte placeholder.
 
-Both covenant scripts grew by 4 bytes under block-layout v2.
-
-### `kernel-beta-gate` triage
-
-The gate fails first on its forbidden-application-name fence: three kernel comment lines added since the census
-commit contain `Unicrow` (`packages/solidc/src/compiler.ts`, `packages/utils/src/artifact.ts`,
-`packages/solidc/src/semantic/ReuseEntryLocalForWriteback.ts`). That is a comment-only leak and needs a rename.
-After the name fence, the gate's `sdk-journal` phase reports 33 message-bus composition e2e failures across 17
-files under `test/journal-message-bus/e2e/` (proxy vmap/keccak composition, chunkable-collection writes, nested
-returning graph arguments, direct keccak sidecar category, and a composed unlocking script over the byte limit).
-The representative error is `messageBus: BCH-2026 preflight failed at input N: Program failed an OP_VERIFY
-operation`. These are real covenant/SDK regressions, not pin refreshes, and need triage by the hardening authors.
-
-### `release-security-conformance` triage
-
-`X50DefaultProxyRegenerated.test.ts` fails on both guardrails for the shipped
-`packages/solidcash/src/stateful/defaultProxyArtifact.ts`: the freshness assertion fails because the shipped
-artifact is stale, and the forwarder byte-length pin is 308 bytes while the current compiler emits 350 bytes. The
-release owner must regenerate `defaultProxyArtifact.ts` and refresh the pin once the 42-byte growth is accepted.
+Whoever picks up the marketplace matrix work should start from both layers.

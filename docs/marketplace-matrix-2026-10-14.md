@@ -53,6 +53,10 @@ to a Solidity bytes argument and two allocated-local-array mapping-key provenanc
 
 ## Current validation status
 
+> **At `11b8f7feb` (2026-10-19):** the proxy x kernel arbitrate title fails its preflight at input 1462
+> (reported by the 2026-10-18 readiness session). Its two-layer diagnosis is in `RELEASE_DECISION_0.13.1.md`,
+> "Open outside the gates". The 262/262 result below belongs to the pre-merge snapshot it names.
+
 All four complete, unfiltered marketplace suites pass on the same final repaired source: **262 passed,
 0 failed, 0 skipped**. Every cell exits 0 with no source/build/artifact/config/test drift or unhandled errors.
 

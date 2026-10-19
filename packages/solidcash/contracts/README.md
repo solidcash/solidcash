@@ -77,7 +77,7 @@ contract MyToken(address initialOwner) is ERC20, BchNative, BlackList {
 more precision than the CashToken reserve can hold. Fungible CashToken amounts cap at the signed 64-bit
 maximum `9223372036854775807`, while an 18-decimal ERC20 ledger routinely needs more base units. Inheriting
 the multiplier compresses the ledger into the reserve: one native CashToken base unit backs `multiplier`
-ledger units, and `wrap`/`withdraw` convert with `native = ledger / multiplier`.
+ledger units, and `wrap`/`unwrap` convert with `native = ledger / multiplier`.
 
 ```solidity
 import { BchNativeMultiplier } from "solidcash/contracts/BchNativeMultiplier.scash";
@@ -100,7 +100,7 @@ positive, and boundary amounts must be an exact multiple of the multiplier so th
 backed; a non-multiple amount refuses at the boundary. This is the precision trade-off in one line: a
 `BchNativeMultiplier(10^12)` token supports a far larger total supply at the cost of only being able to move
 ledger amounts divisible by `10^12` across the boundary. The layer overrides only the immediate
-`wrap`/`withdraw` boundary; the optional quarantined `deposit`/`cancelDeposit` paths in `BchNativeQuarantine`
+`wrap`/`unwrap` boundary; the optional quarantined `deposit`/`cancelDeposit` paths in `BchNativeQuarantine`
 are not scaled by it, so a token composing both layers must scale those paths itself.
 
 `BlackList.scash` is an independent optional behavior: it owns blacklist state and administration, and has no
@@ -110,14 +110,14 @@ deposit or claim by reading the inherited mapping; cancellation remains separate
 deposits can return to bearer form rather than being confiscated.
 
 `wrap(amount)` proves the own-category backing container grows by the claimed amount and credits the ledger
-immediately. `withdraw(to, amount)` debits ledger balance and transfers real fungible CashTokens to any
+immediately. `unwrap(to, amount)` debits ledger balance and transfers real fungible CashTokens to any
 `address` locking bytecode. Tokens that need delayed admission may instead use `deposit(amount)` and
 `claimDeposit`; maturity is calculated exclusively from the compiler-managed `block.number` oracle. No public
 entry point accepts a category, height, timestamp, or unlock time from its caller.
 
 Ordinary ERC20 `transfer` and `transferFrom` move only ledger ownership: the physical reserve stays in the
 container and continues backing the unchanged total supply. Moving CashTokens into or out of bearer custody is
-exactly the wrap/withdraw boundary; also paying bearer tokens during an ERC20 transfer would double-represent
+exactly the wrap/unwrap boundary; also paying bearer tokens during an ERC20 transfer would double-represent
 the same value and permit later double redemption.
 
 If the ERC20 uses sorted mappings, it should expose a direct account-opening path like `openSelf()` in the

@@ -20,7 +20,7 @@ abstract contract BchNative {
     function _nativeCredit(address account, uint256 amount) internal virtual;
     function _nativeDebit(address account, uint256 amount) internal virtual;
     // Event hooks are no-ops in the minimal extension.
-    function _nativeEmitWithdrawal(address _from, int _value) internal virtual { }
+    function _nativeEmitUnwrapped(address _from, int _value) internal virtual { }
     function _nativeEmitWrapped(address _to, int _value) internal virtual { }
     function _nativeCanWrap(address account) internal view virtual returns (bool) { return true; }
     function _nativeCanUnwrap(address account) internal view virtual returns (bool) { return true; }
@@ -40,7 +40,7 @@ abstract contract BchNative {
     }
 
     // Unwrap ledger units into bearer CashTokens.
-    function withdraw(address to, int amount) virtual {
+    function unwrap(address to, int amount) virtual {
         bytes32 category = this.category;
         address sender = msg.sender;
         require(_nativeCanUnwrap(sender));
@@ -49,7 +49,7 @@ abstract contract BchNative {
 
         _nativeDebit(sender, uint256(amount));
         this.tokens[category].transfer(to, amount);
-        _nativeEmitWithdrawal(sender, amount);
+        _nativeEmitUnwrapped(sender, amount);
     }
 
 }

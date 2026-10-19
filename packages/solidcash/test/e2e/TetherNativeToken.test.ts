@@ -136,24 +136,24 @@ describe('Tether USDT verbatim with BchNative', () => {
     expect((await state())._totalSupply).toBe(997_800n);
     expect(await tokensAt(container)).toBe(1_000_300n);
 
-    await as(bob).call.withdraw(bob.getAddress(), 120n).send();
+    await as(bob).call.unwrap(bob.getAddress(), 120n).send();
     expect(await balance(bob)).toBe(680n);
     expect((await state())._totalSupply).toBe(997_680n);
     expect(await tokensAt(container)).toBe(1_000_180n);
     expect(await tokensAt(bob.getAddress())).toBe(120n);
 
     // The owner pays out through the bearer boundary, which writes its balance once.
-    await as(admin).call.withdraw(alice.getAddress(), 1_000n).send();
+    await as(admin).call.unwrap(alice.getAddress(), 1_000n).send();
     expect(await balance(admin)).toBe(4_002n);
     expect(await tokensAt(alice.getAddress())).toBe(1_000n);
     expect(await tokensAt(container)).toBe(999_180n);
 
     // The boundary follows Tether's policy: no unwrap while paused or for a blacklisted holder.
     await as(admin).call.pause().send();
-    await refused(as(bob).call.withdraw(bob.getAddress(), 1n));
+    await refused(as(bob).call.unwrap(bob.getAddress(), 1n));
     await as(admin).call.unpause().send();
     await as(admin).call.addBlackList(key(bob)).send();
-    await refused(as(bob).call.withdraw(bob.getAddress(), 1n));
+    await refused(as(bob).call.unwrap(bob.getAddress(), 1n));
     await as(admin).call.removeBlackList(key(bob)).send();
 
     // Tether's own view functions read the ledger.

@@ -24,7 +24,7 @@ It compiles with `evmCompat` and the Solidity 0.4 source rules (see `solidity-im
 `TetherNativeToken.test.ts` deploys it through Tether's own constructor (the deployer becomes owner and holds the
 supply) and settles on mocknet: transfer (first-touch insert), approve with its race guard, finite and MAX_UINT
 transferFrom, pause, blacklist, destroyBlackFunds, issue/redeem, setParams with the fee credited to the owner,
-transferOwnership, deprecate, Tether's own `balanceOf`/`totalSupply` reads, and wrap/withdraw against a
+transferOwnership, deprecate, Tether's own `balanceOf`/`totalSupply` reads, and wrap/unwrap against a
 CashTokens reserve of the contract's own category, each policy gate refusing in turn.
 
 Three platform gaps had to close first, each general rather than USDT-specific:
@@ -46,7 +46,7 @@ Limits that remain:
 - **Writes aliasing one balance entry.** `transfer`/`transferFrom` also hold the fee credit `balances[owner] +=
   fee`. When the owner sends or receives (or anyone sends to themselves) two writes land on one entry, which one
   call cannot compose yet (see the `SortedList.planBatchUpsert` note), so the SDK refuses it. Run the owner as a
-  separate administrator account, or pay out through `withdraw`, which writes the owner's entry once.
+  separate administrator account, or pay out through `unwrap`, which writes the owner's entry once.
 - **Arithmetic is checked, not 0.4's wrapping.** USDT guards every overflow (SafeMath and explicit `require`s), so
   each overflowing call fails either way.
 - **`onlyPayloadSize`** compares BCH call data (the unlocking pushes, longer than 68 bytes here), so it passes and

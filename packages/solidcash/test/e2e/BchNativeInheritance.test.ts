@@ -99,7 +99,7 @@ describe('BchNative inheritance', () => {
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of [
       'transfer', 'approve', 'allowance', 'transferFrom',
-      'wrap', 'withdraw',
+      'wrap', 'unwrap',
       'blacklist', 'unblacklist', 'openSelf',
     ]) expect(abi).toContain(name);
     expect((artifact.stateLayout?.collections ?? []).map((entry) => entry.name))
@@ -134,12 +134,12 @@ describe('BchNative inheritance', () => {
       await d.fund(d.owner);
       await connected.call.blacklist(addressToLockScript(aliceAddress)).send();
       await d.fund(d.owner);
-      await expect(connected.call.withdraw(d.bob.getAddress(), 5n).send()).rejects.toThrow();
+      await expect(connected.call.unwrap(d.bob.getAddress(), 5n).send()).rejects.toThrow();
 
       await d.fund(d.owner);
       await connected.call.unblacklist(addressToLockScript(aliceAddress)).send();
       await d.fund(d.owner);
-      await connected.call.withdraw(d.bob.getAddress(), 5n).send();
+      await connected.call.unwrap(d.bob.getAddress(), 5n).send();
       expect((plainNumerics(await d.token.getState()).backedSupply)).toBe(0n);
       expect(await d.token.state._balances(ownerAddress)).toBe(0n);
       expect((await d.token.getState())._totalSupply).toBe(0n);

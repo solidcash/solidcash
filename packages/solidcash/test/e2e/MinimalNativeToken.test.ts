@@ -33,7 +33,7 @@ describe('MinimalNativeToken bytecode budget', () => {
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of [
       'transfer', 'approve', 'allowance', 'transferFrom',
-      'wrap', 'withdraw',
+      'wrap', 'unwrap',
     ]) expect(abi).toContain(name);
     for (const name of ['deposit', 'claimDeposit', 'cancelDeposit']) {
       expect(abi).not.toContain(name);
@@ -63,7 +63,7 @@ describe('MinimalNativeToken bytecode budget', () => {
     expect(Object.keys(split.facets)).toHaveLength(0);
   });
 
-  it('mints ledger units on wrap and burns them on withdrawal', async () => {
+  it('mints ledger units on wrap and burns them on unwrap', async () => {
     const artifact = compileFile(source, { messageBus: false });
     const provider = createTestProvider();
     const bob = new Signer(bobPriv, provider);
@@ -97,7 +97,7 @@ describe('MinimalNativeToken bytecode budget', () => {
     await provider.addUtxo(bob.getAddress(), {
       txid: 'e3'.repeat(32), vout: 0, satoshis: 500_000n,
     });
-    await token.connect(bob).call.withdraw(bob.getAddress(), 5n).send();
+    await token.connect(bob).call.unwrap(bob.getAddress(), 5n).send();
     expect(await token.state._balances(bobLedgerAddress)).toBe(0n);
     expect((await token.getState())._totalSupply).toBe(0n);
     const bearerBalance = (await provider.getUtxos(bob.getAddress()))

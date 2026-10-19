@@ -22,7 +22,7 @@ describe('BchNativeMultiplier', () => {
     const artifact = compileFile(source, { messageBus: false });
     const artifactBytes = scriptToBytecode(asmToScript(artifact.bytecode)).length;
     // The scale layer adds the % / / conversion and the immutable read to wrap and
-    // withdraw; it stays well inside the P2SH32 input-script budget.
+    // unwrap; it stays well inside the P2SH32 input-script budget.
     expect(artifactBytes).toBeLessThan(7_500);
     expect(artifact.constructorInputs).toEqual([]);
     // The immutable must be written at construction, so a constructor entry exists
@@ -32,7 +32,7 @@ describe('BchNativeMultiplier', () => {
     expect(construct?.inputs).toEqual([]);
 
     const abi = new Set(artifact.abi.map((entry) => entry.name));
-    for (const name of ['transfer', 'approve', 'allowance', 'transferFrom', 'wrap', 'withdraw']) {
+    for (const name of ['transfer', 'approve', 'allowance', 'transferFrom', 'wrap', 'unwrap']) {
       expect(abi).toContain(name);
     }
     for (const name of ['deposit', 'claimDeposit', 'cancelDeposit']) {
@@ -46,7 +46,7 @@ describe('BchNativeMultiplier', () => {
     expect(deployed.bytecode.length / 2).toBe(artifactBytes);
   });
 
-  it('scales wrap and withdraw: 500 ledger units bridge 5 native CashTokens', async () => {
+  it('scales wrap and unwrap: 500 ledger units bridge 5 native CashTokens', async () => {
     const artifact = compileFile(source, { messageBus: false });
     const provider = createTestProvider();
     const bob = new Signer(bobPriv, provider);
@@ -78,11 +78,11 @@ describe('BchNativeMultiplier', () => {
     expect(await token.state._balances(bobLedgerAddress)).toBe(500n);
     expect((await token.getState())._totalSupply).toBe(500n);
 
-    // withdraw(500) burns the ledger units and returns 5 native base units.
+    // unwrap(500) burns the ledger units and returns 5 native base units.
     await provider.addUtxo(bob.getAddress(), {
       txid: 'e3'.repeat(32), vout: 0, satoshis: 500_000n,
     });
-    await token.connect(bob).call.withdraw(bob.getAddress(), 500n).send();
+    await token.connect(bob).call.unwrap(bob.getAddress(), 500n).send();
     expect(await token.state._balances(bobLedgerAddress)).toBe(0n);
     expect((await token.getState())._totalSupply).toBe(0n);
     const bearerBalance = (await provider.getUtxos(bob.getAddress()))

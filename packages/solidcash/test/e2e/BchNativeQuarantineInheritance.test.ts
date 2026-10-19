@@ -29,7 +29,7 @@ beforeAll(() => {
 describe('BchNativeQuarantine inheritance', () => {
   it('adds pending state and oracle timing only when explicitly inherited', () => {
     const abi = new Set(artifact.abi.map((entry) => entry.name));
-    for (const name of ['wrap', 'withdraw', 'deposit', 'claimDeposit', 'cancelDeposit']) {
+    for (const name of ['wrap', 'unwrap', 'deposit', 'claimDeposit', 'cancelDeposit']) {
       expect(abi).toContain(name);
     }
     expect(abi).not.toContain('__updateBlockOracle');

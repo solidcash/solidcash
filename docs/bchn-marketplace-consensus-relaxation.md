@@ -129,17 +129,23 @@ The measured shapes need far less: 400,000 covers the 303,347-byte input with ma
 
 ## Marketplace matrix against the in-docker node
 
-The remaining cells of `[proxy,noproxy] × [kernel,framed]` were run against the patched BCHN container on
-2026-10-18, each on a fresh node volume with the deterministic clock and the 6,144 MB worker heap.
+The full matrix `[proxy,noproxy] × [kernel,framed]` was rerun in the main checkout on `master` (2026-10-19),
+each cell on a fresh node volume with the deterministic clock and the 6,144 MB worker heap.
 
 | Cell | Result | Notes |
 | --- | --- | --- |
-| proxy × framed | **66/66** | Full run on the deterministic clock. |
-| proxy × kernel | **11 passed, 55 failed** | `register user > update user` fails a message-bus preflight; the same case fails on the mock lane, so this is a kernel-composition regression, not BCHN. Later failures cascade with `Missing inputs`. |
-| noproxy × kernel | aborted | Setup works with the fetch guard. The same `update user`/`update arbitrator` preflight failures appear, and `job posting > post job 1` hit the 30-minute test timeout. |
-| noproxy × framed | **64 passed, 1 failed (65 total)** | `job updates > update job many times, get history` refuses `MarketplaceDataV1.publishJobEvent` at the framed guard. The same case passes on the mock lane, so it is regtest-specific and remains under investigation. |
+| proxy × framed | **66/66** | Complete, unfiltered run. |
+| proxy × kernel | **14 passed, 52 failed (66 total)** | Standard timeout reached `post job 1` after 30 minutes; the counts use `--testTimeout=180000` so the cell completes. `unicrow params` fails first with `Missing inputs` from dead fee-funder outputs, then every `job posting` case stalls. |
+| noproxy × kernel | **17 passed, 48 failed (65 total)** | Same kernel stall, with the same 3-minute timeout override. |
+| noproxy × framed | **64 passed, 1 failed (65 total)** | `job updates > update job many times, get history` refuses `MarketplaceDataV1.publishJobEvent` at the framed guard. It passes on the mock lane, so it is regtest-specific. |
 
-Two harness defects surfaced and are fixed:
+The kernel failures are not BCHN consensus problems. They start in the fee-funder path: two refill
+transactions for different pool sizes spend the same wallet coin, the second is recorded as a wallet
+conflict, and the builder then spends their outputs after the block refused them. The framed cells do not
+take that path. Under the standard 30-minute timeout the kernel cells cannot complete, because each
+`job posting` case waits out the timeout.
+
+Two harness defects found earlier remain fixed:
 
 - A fixture snapshot can be captured above the base fixture's height when the fixture funds signers on first
   execution. Restoring the base first then left the chain below the wallet snapshot and threw. A snapshot
@@ -148,9 +154,6 @@ Two harness defects surfaced and are fixed:
 - The no-proxy test twin replaces `globalThis.fetch` with an in-memory IPFS stub that assumes every POST is
   an upload. On regtest every JSON-RPC call went through that stub. The provider now uses the native fetch
   for its RPC clients and restores the test's stub afterwards.
-
-The kernel cells are red at this worktree source independently of BCHN: the first failure reproduces on the
-mock lane. They are reported as measured and are not a consensus-relaxation blocker.
 
 ## Implemented regtest harness
 

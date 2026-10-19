@@ -23,8 +23,9 @@ describe('BchNativeMultiplier', () => {
     const artifact = compileFile(source, { messageBus: false });
     const artifactBytes = scriptToBytecode(asmToScript(artifact.bytecode)).length;
     // The scale layer adds the % / / conversion and the immutable read to wrap and
-    // unwrap; it stays well inside the P2SH32 input-script budget.
-    expect(artifactBytes).toBeLessThan(7_500);
+    // unwrap; it stays well inside the P2SH32 input-script budget (8_636 after the
+    // 10-14..10-17 hardening).
+    expect(artifactBytes).toBeLessThan(8_700);
     expect(artifact.constructorInputs).toEqual([]);
     // The immutable must be written at construction, so a constructor entry exists
     // even though it takes no runtime arguments (the scale factor is baked in).

@@ -414,6 +414,12 @@ export default class AstBuilder
   // to be contract-typed decides whether a built-in member name (`transfer`, `send`, `split`, ...) is the
   // receiver type's own member or the built-in, so `(new C()).transfer(x)` must see C's `transfer`.
   private contractMemberNames: Map<string, Set<string>> = new Map();
+  // Event names visible in each same-file contract (own, file-level, and bases'); see preSolidity05EventInvocation.
+  private contractEventNames: Map<string, Set<string>> = new Map();
+  // Pre-0.5 `var` inference inputs: same-file direct bases, per-contract state types, current callable's locals.
+  private sameFileBases: Map<string, string[]> = new Map();
+  private contractStateTypes: Map<string, Map<string, Type>> = new Map();
+  private localDeclaredTypes: Map<string, Type> = new Map();
   private typeDefMap: Map<string, ValueType> = new Map();
   private pendingParentInvocations: ParentInvocation[] = [];
   private packedStateArrayNames: Set<string> = new Set();
@@ -616,6 +622,35 @@ export default class AstBuilder
 
   private selectsPreSolidity05(): boolean {
     return /pragma\s+solidity\s+(?:\^|~|=)?\s*0\.[0-4](?:\.|\s|;)/.test(this.sourceCode);
+  }
+
+  private preSolidity05Source?: boolean;
+
+  // Solidity 0.4 source rules: constructor named after its contract, `constant` functions, `var`, events invoked
+  // without `emit`, implicitly abstract contracts, and functions overridable without `virtual`/`override`.
+  private isPreSolidity05Source(): boolean {
+    this.preSolidity05Source ??= this.evmCompat && this.selectsPreSolidity05();
+    return this.preSolidity05Source;
+  }
+
+  // `constant` is the pre-0.5 spelling of `view`.
+  private legacyConstantMutability(ctx: ParserRuleContext): FunctionModifier {
+    if (!this.isPreSolidity05Source()) {
+      throw new ParseError(
+        'The state mutability modifier "constant" was removed in version 0.5.0. Use "view" or "pure" instead.',
+        Location.fromCtx(ctx),
+      );
+    }
+    return FunctionModifier.VIEW;
+  }
+
+  // Solidity 0.4 has no `virtual`/`override`: every non-private function is overridable and may override.
+  private applyPreSolidity05Overriding(fn: FunctionDefinitionNode): void {
+    if (!this.isPreSolidity05Source() || this.parsingLibraryFunction) return;
+    fn.implicitOverride = true;
+    if (!fn.modifiers.includes(FunctionModifier.PRIVATE) && !fn.modifiers.includes(FunctionModifier.VIRTUAL)) {
+      fn.modifiers.push(FunctionModifier.VIRTUAL);
+    }
   }
 
   private explicitDataLocationsRequired?: boolean;
@@ -916,15 +951,22 @@ export default class AstBuilder
     // Collect contract + interface names before visiting library bodies. A library may use a qualified type from
     // an interface or contract declared elsewhere in the same source unit (`returns (I.Direction)` and
     // `I.Direction.Right`), and reachable library helpers must resolve that qualifier just like contract bodies.
+    const fileEventNames = ctx.eventDefinition_list().flatMap((event) => event.anyIdentifier()?.getText() ?? []);
     for (const cc of ctx.contractDefinition_list()) {
       const contractName = cc.anyIdentifier().getText();
       this.contractInterfaceNames.add(contractName);
       this.contractMemberNames.set(contractName, new Set(
-        cc.functionDefinition_list().map((fn) => fn.functionName().getText()),
+        cc.functionDefinition_list().map((fn) => fn.functionName().getText())
+          .filter((fnName) => !(this.isPreSolidity05Source() && fnName === contractName)),
       ));
+      this.contractEventNames.set(contractName, new Set([
+        ...fileEventNames,
+        ...cc.eventDefinition_list().flatMap((event) => event.anyIdentifier()?.getText() ?? []),
+      ]));
       contractBases.set(contractName, cc.inheritanceSpecifier_list()
         .map((specifier) => specifier.Identifier().getText()));
     }
+    this.sameFileBases = contractBases;
     for (const ic of ctx.interfaceDefinition_list()) this.contractInterfaceNames.add(ic.Identifier(0).getText());
     // A base contract's members are inherited members of the derived contract, so a receiver of the derived
     // type resolves them the same way.
@@ -938,6 +980,9 @@ export default class AstBuilder
           seen.add(base);
           for (const member of this.contractMemberNames.get(base) ?? []) {
             this.contractMemberNames.get(contractName)!.add(member);
+          }
+          for (const event of this.contractEventNames.get(base) ?? []) {
+            this.contractEventNames.get(contractName)!.add(event);
           }
           pending = pending.concat(contractBases.get(base) ?? []);
         }
@@ -1647,8 +1692,15 @@ export default class AstBuilder
       }
     }
     this.currentContractName = name;
+    const legacyConstructorCtxs = this.isPreSolidity05Source()
+      ? ctx.functionDefinition_list().filter((f) => f.functionName().getText() === name) : [];
+    if (legacyConstructorCtxs.length > 1
+      || (legacyConstructorCtxs.length === 1 && ctx.constructorDefinition_list().length > 0)) {
+      throw new ParseError('More than one constructor defined', Location.fromCtx(legacyConstructorCtxs.at(-1)!));
+    }
+    const memberFunctionCtxs = ctx.functionDefinition_list().filter((f) => !legacyConstructorCtxs.includes(f));
     this.currentContractFunctionNames = new Set([
-      ...ctx.functionDefinition_list().map((f) => f.functionName().getText()),
+      ...memberFunctionCtxs.map((f) => f.functionName().getText()),
       ...ctx.abstractFunctionDefinition_list().map((f) => f.functionName().getText()),
     ]);
     this.nonTypeNames = new Set([
@@ -1947,6 +1999,8 @@ export default class AstBuilder
         .filter((c) => c.type instanceof MappingType)
         .map((c) => [c.name, c.type as MappingType]),
     );
+    this.contractStateTypes.set(name, new Map<string, Type>([...stateVariables, ...collections]
+      .map((declaration) => [declaration.name, declaration.type])));
     this.stateSimpleTypeKeys.clear();
     this.stateInterfaceReceivers.clear();
     for (const stateVariable of stateVariables) {
@@ -1995,8 +2049,11 @@ export default class AstBuilder
       this.contractParamNames = new Set(parameters.map((p) => p.name));
       constructorDef = this.visitConstructorDefinition(constructorCtx);
     }
+    if (legacyConstructorCtxs.length === 1) {
+      constructorDef = this.visitPreSolidity05Constructor(legacyConstructorCtxs[0]);
+    }
 
-    const concreteFunctions = ctx.functionDefinition_list().map((f) => this.visit(f) as FunctionDefinitionNode);
+    const concreteFunctions = memberFunctionCtxs.map((f) => this.visit(f) as FunctionDefinitionNode);
     const unresolvedStoragePush = this.pendingStorageReturnPushes.entries().next();
     if (!unresolvedStoragePush.done) {
       const [, pending] = unresolvedStoragePush.value;
@@ -2101,7 +2158,8 @@ export default class AstBuilder
     contract.flattenedPublicStructGetters = flattenedPublicStructGetters;
     contract.fallbackDef = fallbackDef;
     contract.receiveDef = receiveDef;
-    contract.isAbstract = ctx.children?.some((c) => c.getText() === 'abstract') === true;
+    contract.isAbstract = ctx.children?.some((c) => c.getText() === 'abstract') === true
+      || (this.isPreSolidity05Source() && abstractFunctions.length > 0);
     contract.implements = implementsList;
     contract.parentInvocations = [...inheritanceInvocations, ...this.pendingParentInvocations];
     this.pendingParentInvocations = [];
@@ -2115,6 +2173,7 @@ export default class AstBuilder
     this.localStructTypes.clear();
     this.localBytesVars.clear();
     this.localSimpleTypeKeys.clear();
+    this.localDeclaredTypes.clear();
     this.localInterfaceReceivers.clear();
     this.localStructArrayTypes.clear();
     this.localArrayVarTypes.clear();
@@ -2161,6 +2220,23 @@ export default class AstBuilder
     functionDefinition.location = Location.fromCtx(ctx);
     this.applyConstructorModifiers(ctx, functionDefinition);
     return functionDefinition;
+  }
+
+  // Solidity 0.4 constructor `function C(params) Base(args) public { ... }`: a modifier invocation naming a base
+  // contract passes that base's constructor arguments.
+  private visitPreSolidity05Constructor(ctx: FunctionDefinitionContext): FunctionDefinitionNode {
+    const node = this.visitFunctionDefinition(ctx);
+    node.name = '__construct';
+    node.implicitOverride = undefined;
+    node.modifiers = node.modifiers.filter((modifier) => modifier === FunctionModifier.PUBLIC
+      || modifier === FunctionModifier.INTERNAL || modifier === FunctionModifier.PAYABLE);
+    const isBase = (invocation: CustomModifierInvocation): boolean =>
+      this.currentContractBaseNames.has(invocation.name);
+    this.pendingParentInvocations = node.customModifiers.filter(isBase).map((invocation) => ({
+      parentName: invocation.name, args: invocation.args, location: invocation.location,
+    }));
+    node.customModifiers = node.customModifiers.filter((invocation) => !isBase(invocation));
+    return node;
   }
 
   private applyConstructorModifiers(ctx: ConstructorDefinitionContext, node: FunctionDefinitionNode): void {
@@ -2247,6 +2323,7 @@ export default class AstBuilder
     this.localStructTypes.clear();
     this.localBytesVars.clear();
     this.localSimpleTypeKeys.clear();
+    this.localDeclaredTypes.clear();
     this.localInterfaceReceivers.clear();
     this.localStructArrayTypes.clear();
     this.localArrayVarTypes.clear();
@@ -2286,6 +2363,7 @@ export default class AstBuilder
     if (modifierContexts && modifierContexts.length > 0) {
       this.parseFunctionModifiers(modifierContexts, functionDefinition);
     }
+    this.applyPreSolidity05Overriding(functionDefinition);
     // Parse custom modifier invocations (split/merge are handled specially)
     const customModCtxs = ctx.customModifierInvocation_list();
     if (customModCtxs && customModCtxs.length > 0) {
@@ -2482,6 +2560,7 @@ export default class AstBuilder
     if (modifierContexts && modifierContexts.length > 0) {
       this.parseFunctionModifiers(modifierContexts, functionDefinition);
     }
+    this.applyPreSolidity05Overriding(functionDefinition);
     if (this.evmCompat
       && !functionDefinition.modifiers.includes(FunctionModifier.VIRTUAL)) {
       throw new ParseError(
@@ -2557,6 +2636,7 @@ export default class AstBuilder
     this.localStructTypes.clear();
     this.localBytesVars.clear();
     this.localSimpleTypeKeys.clear();
+    this.localDeclaredTypes.clear();
     this.localInterfaceReceivers.clear();
     this.localStructArrayTypes.clear();
     this.localArrayVarTypes.clear();
@@ -2655,6 +2735,7 @@ export default class AstBuilder
     this.localStructTypes.clear();
     this.localBytesVars.clear();
     this.localSimpleTypeKeys.clear();
+    this.localDeclaredTypes.clear();
     this.localInterfaceReceivers.clear();
     this.localStructArrayTypes.clear();
     this.localArrayVarTypes.clear();
@@ -2714,6 +2795,10 @@ export default class AstBuilder
       if (overrideCtx) {
         functionDefinition.modifiers.push(FunctionModifier.OVERRIDE);
         functionDefinition.overrideBases = overrideCtx.Identifier_list().map((id) => id.getText());
+        continue;
+      }
+      if (m.getText() === 'constant') {
+        functionDefinition.modifiers.push(this.legacyConstantMutability(m));
         continue;
       }
       functionDefinition.modifiers.push(m.getText() as FunctionModifier);
@@ -2864,7 +2949,69 @@ export default class AstBuilder
     return this.buildArrayPop(name, isThis, [], undefined, ctx);
   }
 
+  // Solidity 0.4 `var x = e;` declares x with the type of e.
+  private visitPreSolidity05VarDefinition(ctx: VariableDefinitionContext): StatementNode {
+    const name = ctx.anyIdentifier().getText();
+    const initCtx = ctx.expression();
+    if (!initCtx || ctx._iop || ctx.DotPush()) {
+      throw new ParseError('Assignment necessary for type detection', Location.fromCtx(ctx));
+    }
+    const expression = this.visit(initCtx) as ExpressionNode;
+    const type = this.preSolidity05VarType(expression);
+    if (!type) {
+      throw new ParseError(`Cannot infer the type of 'var ${name}'; declare it explicitly`, Location.fromCtx(ctx));
+    }
+    const modifiers = ctx.modifier_list().map((modifier) => modifier.getText());
+    return this.finishVariableDefinition(ctx, type, modifiers, name, expression);
+  }
+
+  // The initializer type when it is a literal, cast, or a read of a declared local, parameter or state variable.
+  private preSolidity05VarType(expression: ExpressionNode): Type | undefined {
+    if (expression instanceof IntLiteralNode) {
+      // A literal's mobile type is the smallest integer type holding it.
+      const signed = expression.value < 0n;
+      const magnitude = signed ? -expression.value - 1n : expression.value;
+      let bits = 8;
+      while (bits < 256 && (magnitude >> BigInt(signed ? bits - 1 : bits)) !== 0n) bits += 8;
+      return new IntType(signed, bits);
+    }
+    if (expression instanceof BoolLiteralNode) return PrimitiveType.BOOL;
+    if (expression instanceof StringLiteralNode) return PrimitiveType.STRING;
+    if (expression instanceof CastNode) return expression.type;
+    let depth = 0;
+    let base = expression;
+    while (base instanceof ArrayAccessNode) {
+      base = base.array;
+      depth += 1;
+    }
+    let type: Type | undefined;
+    if (base instanceof IdentifierNode) type = this.localDeclaredTypes.get(base.name) ?? this.visibleStateType(base.name);
+    else if (base instanceof StateAccessNode) type = this.visibleStateType(base.name);
+    for (let level = 0; level < depth && type !== undefined; level += 1) {
+      type = type instanceof MappingType ? type.valueType : type instanceof ArrayType ? type.elementType : undefined;
+    }
+    return type;
+  }
+
+  // A state declaration of the current contract or one of its same-file ancestors.
+  private visibleStateType(name: string): Type | undefined {
+    const pending = [this.currentContractName ?? ''];
+    const seen = new Set<string>();
+    while (pending.length > 0) {
+      const contract = pending.shift()!;
+      if (seen.has(contract)) continue;
+      seen.add(contract);
+      const type = this.contractStateTypes.get(contract)?.get(name);
+      if (type) return type;
+      pending.push(...(this.sameFileBases.get(contract) ?? []));
+    }
+    return undefined;
+  }
+
   visitVariableDefinition(ctx: VariableDefinitionContext): StatementNode {
+    if (this.isPreSolidity05Source() && ctx.typeName()?.getText() === 'var') {
+      return this.visitPreSolidity05VarDefinition(ctx);
+    }
     let type: Type;
     const functionArrayCtx = (ctx as any).functionArrayType?.();
     if (functionArrayCtx) {
@@ -7835,7 +7982,8 @@ export default class AstBuilder
       returnTypes = returnTypeCtx.returnParam_list().map((p) => this.returnParamType(p));
     }
 
-    const modifierTexts = ctx.functionModifier_list().map((modifier) => modifier.getText());
+    const modifierTexts = ctx.functionModifier_list().map((modifier) => (modifier.getText() === 'constant'
+      ? this.legacyConstantMutability(modifier) : modifier.getText()));
     if (this.evmCompat && !modifierTexts.includes('external')) {
       throw new ParseError(
         'Functions in interfaces must be declared external',
@@ -8794,6 +8942,7 @@ export default class AstBuilder
   // Record a receiver's using-for type key (and, for an interface/named-contract receiver, its interface-receiver
   // flag; both follow the name's latest declaration) so `x.method(args)` under `using L for T` resolves.
   private recordUsingForReceiver(name: string, type: Type): void {
+    this.localDeclaredTypes.set(name, type);
     const k = this.usingForTypeKey(type);
     if (!k) return;
     this.localSimpleTypeKeys.set(name, k);
@@ -10003,7 +10152,28 @@ export default class AstBuilder
     return this.buildArrayPush(flatName, false, keyFns, undefined, value, noArg, ctx);
   }
 
+  // Solidity 0.4 invokes an event like a function: `Transfer(a, b, v);` emits it.
+  private preSolidity05EventInvocation(ctx: ExpressionStatementContext): EmitStatementNode | undefined {
+    if (!this.isPreSolidity05Source() || ctx.getChildCount() !== 2) return undefined;
+    const callCtx = ctx.expression(0);
+    if (!(callCtx instanceof FunctionCallExpressionContext) || callCtx.expressionList_list().length > 0) {
+      return undefined;
+    }
+    const fc = callCtx.functionCall();
+    const argsCtx = fc.expressionList();
+    const eventName = fc.getChildCount() === 2 ? fc.Identifier(0)?.getText() : undefined;
+    const contractName = this.currentContractName ?? '';
+    if (!argsCtx || !eventName || this.currentContractFunctionNames.has(eventName)
+      || this.contractMemberNames.get(contractName)?.has(eventName)
+      || !this.contractEventNames.get(contractName)?.has(eventName)) return undefined;
+    const node = new EmitStatementNode(eventName, this.buildCallArguments(argsCtx));
+    node.location = Location.fromCtx(ctx);
+    return node;
+  }
+
   visitExpressionStatement(ctx: ExpressionStatementContext): StatementNode {
+    const legacyEmit = this.preSolidity05EventInvocation(ctx);
+    if (legacyEmit) return legacyEmit;
     const lhsCtx = ctx.expression(0);
     // A discarded tuple expression evaluates each ordinary component. Builtin function references inside it
     // (`(abi.encode, "")`) are values with no runtime representation and contribute no evaluation.

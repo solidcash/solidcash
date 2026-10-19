@@ -990,6 +990,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   definingContract?: string;
   // Base contracts named in an explicit `override(A, B)` specifier (empty for a bare `override`).
   overrideBases: string[] = [];
+  // Declared under a pre-0.5 Solidity pragma: overrides a base function without the (then absent) `override`.
+  implicitOverride?: boolean;
   usesMsgSender?: boolean;
   /** This function or a named internal callee reads msg.data. */
   usesMsgData?: boolean;

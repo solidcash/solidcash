@@ -438,8 +438,9 @@ customModifierInvocation
     : (Identifier '.')? Identifier expressionList?
     ;
 
+// `constant` is the pre-0.5 Solidity spelling of `view`; AstBuilder admits it only under a pre-0.5 pragma.
 functionModifier
-    : 'pure' | 'view' | 'internal' | 'external' | 'public' | 'private' | 'payable' | overrideSpecifier | 'virtual' | unsafeModifier | 'upgrade' | 'selfdestruct' | 'delegate' | 'migrateRecords'
+    : 'pure' | 'view' | 'constant' | 'internal' | 'external' | 'public' | 'private' | 'payable' | overrideSpecifier | 'virtual' | unsafeModifier | 'upgrade' | 'selfdestruct' | 'delegate' | 'migrateRecords'
     ;
 
 overrideSpecifier

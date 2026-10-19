@@ -106,6 +106,27 @@ the former stays flag-gated because it changes the ABI/bytecode, the latter is n
 - **Interface-only / type-only files** (no trailing `contract`/`library`) parse and are importable.
 - **Named-arg call statement** `f({a: x});` (the named-arg call form now works as a statement too).
 
+### Solidity 0.4 sources (a pre-0.5 `pragma solidity`)
+
+A source unit whose `pragma solidity` selects 0.4 (`^0.4.17`, `0.4.24`, ...) follows Solidity 0.4's source rules,
+like the existing pre-0.5 data-location and default-visibility rules. The same constructs stay errors under a 0.5+
+pragma. Surfaced by compiling the verified USDT source as it is (`packages/solidcash/test/fixture/tether/`).
+
+- **Constructor named after its contract** `function C(args) Base(baseArgs) public {}`; a modifier invocation that
+  names a base contract passes that base's constructor arguments.
+- **`constant` functions** mean `view`. Under 0.5+ it is refused with solc's message.
+- **`var x = e;`** takes the type of `e`: a literal's smallest integer type (`var i = 300` is `uint16`), a cast, or
+  a read of a declared local, parameter or (same-file) state variable or mapping. Other initializers are refused by
+  name.
+- **Events invoked like functions** `Transfer(a, b, v);` emit, for events declared in the contract, its same-file
+  bases, or at file level.
+- **No `virtual`/`override`/`abstract`**: every non-private function is overridable and may override; a contract
+  with unimplemented functions is abstract.
+
+Not covered: pre-0.8 wrapping arithmetic (bounded integers stay checked, so an overflow reverts instead of wrapping),
+`throw`, and events invoked without `emit` across source units. Tests: `test/Solidity04SourceRules.test.ts`,
+`packages/solidcash/test/e2e/TetherNativeToken.test.ts`.
+
 ## State-variable access compatibility
 
 Solidity reads/writes state variables by bare name (`x`, `balances[user]`), with locals in an inner scope

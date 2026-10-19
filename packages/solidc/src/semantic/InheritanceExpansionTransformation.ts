@@ -918,7 +918,7 @@ function expandContract(
     if (origins.length < 2) continue;
     const explicitFunction = contract.functions.some((fn) =>
       fn.inheritedFrom === undefined
-      && fn.modifiers.includes(FunctionModifier.OVERRIDE)
+      && (fn.modifiers.includes(FunctionModifier.OVERRIDE) || fn.implicitOverride)
       && functionSignature(fn) === signature);
     const explicitGetter = [...contract.stateVariables, ...contract.collections].some((declaration) => {
       if (declaration.inheritedFrom !== undefined || !declaration.isOverride) return false;
@@ -1318,7 +1318,7 @@ function mergeSpecialFunction(
     }
     throw new DiamondInheritanceError(child, 'Function', label, childOrigin, origin);
   }
-  if (!childFunction.modifiers.includes(FunctionModifier.OVERRIDE)) {
+  if (!childFunction.modifiers.includes(FunctionModifier.OVERRIDE) && !childFunction.implicitOverride) {
     throw new MissingOverrideError(child, label, parent.name);
   }
   if (!isVirtual) {
@@ -1495,7 +1495,7 @@ function mergeFunctions(
       // Child's OWN explicit override resolves conflicts (not inherited overrides). Preserve the
       // overridden parent body under a mangled internal name so super.f()/Base.f() can still call it.
       if (!existingFunc.inheritedFrom
-          && existingFunc.modifiers.includes(FunctionModifier.OVERRIDE)) {
+          && (existingFunc.modifiers.includes(FunctionModifier.OVERRIDE) || existingFunc.implicitOverride)) {
         if (existingFunc.isAbstract && !parentFunc.isAbstract) {
           throw new AbstractOverrideOfImplementedError(
             existingFunc,

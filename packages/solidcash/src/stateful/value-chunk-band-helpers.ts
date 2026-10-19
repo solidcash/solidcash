@@ -5,7 +5,7 @@
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { buildValueChunkCommitment } from '@solidcash/utils';
-import { isEmptyValueChunkCommitment } from './value-chunk-persist.js';
+import { isEmptyValueChunkCommitment, valueChunkIndexFromCommitment } from './value-chunk-persist.js';
 import { relocateChangeAfterOccupancy } from './persist-predecessor-layout.js';
 
 /**
@@ -58,6 +58,45 @@ export function placeValueChunksOnBand(
 export function isP2sh32LockScript(lock: Uint8Array | string | undefined): lock is Uint8Array {
   if (!(lock instanceof Uint8Array) || lock.length !== 35) return false;
   return lock[0] === 0xaa && lock[1] === 0x20 && lock[34] === 0x87;
+}
+
+/**
+ * The prevailing lock of `categoryId`'s value-chunk continuations (indexed, empty or provisional `00`) in
+ * `[start, end)`. Only that owner's continuations vote: another resource's run in the window (a caller's
+ * dynamic-state chunks right after a callee block) must not lend its lock to the owner's band.
+ */
+export function dominantOwnedValueChunkLock(
+  outputs: ReadonlyArray<{
+    to?: Uint8Array | string;
+    token?: { category?: string; nft?: { capability?: string; commitment?: string } };
+  } | undefined>,
+  start: number,
+  end: number,
+  categoryId: string | undefined,
+): Uint8Array | undefined {
+  if (categoryId === undefined) return undefined;
+  const counts = new Map<string, { lock: Uint8Array; n: number }>();
+  for (let index = start; index < end; index++) {
+    const output = outputs[index];
+    const lock = output?.to;
+    const commitment = String(output?.token?.nft?.commitment ?? '');
+    if (!isP2sh32LockScript(lock)
+      || output?.token?.category?.toLowerCase() !== categoryId.toLowerCase()
+      || output.token.nft?.capability !== 'mutable'
+      || (commitment !== '00' && valueChunkIndexFromCommitment(commitment) === undefined
+        && !isEmptyValueChunkCommitment(commitment))) continue;
+    const key = binToHex(lock);
+    counts.set(key, { lock, n: (counts.get(key)?.n ?? 0) + 1 });
+  }
+  let dominant: Uint8Array | undefined;
+  let dominantCount = 0;
+  for (const value of counts.values()) {
+    if (value.n > dominantCount) {
+      dominant = value.lock;
+      dominantCount = value.n;
+    }
+  }
+  return dominant;
 }
 
 /** Select the reconstructed P2SH32 operand opposite an introspected current output locking bytecode. */

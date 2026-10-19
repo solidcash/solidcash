@@ -37,17 +37,17 @@ beforeAll(() => {
 });
 
 describe('BchNative with npm OpenZeppelin ERC20', () => {
-  it('composes with the unmodified OZ 5.0.2 implementation below 9.5 KB', () => {
-    // 9_100 held (9_024) before the October per-entry hardening. Its checks, the return and event pins and the
-    // one-target transitions are shared helpers now (9_417); 9_100 again needs the two-target transition and the
-    // batch write tails shared across entries. 9_500 stays well inside the 10_000-byte P2SH script limit; the
-    // 9_000 shard budget in the facet test below is what decides whether the contract needs a split.
-    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_500);
+  it('composes with the unmodified OZ 5.0.2 implementation', () => {
+    // 9_100 held (9_024) before the October per-entry hardening; shared pins brought it to 9_417. The 10-14..10-17
+    // hardening (per-call merges, minted-root bindings, the direct outside-layout walk) took it to 10_539, past the
+    // 10_000-byte single-input limit, so the unsplit script no longer deploys and the token ships split, as the
+    // facet title below settles. This budget guards further growth.
+    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(10_600);
     expect(artifact.contractName).toBe('OzNativeToken');
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of [
       'name', 'symbol', 'decimals', 'totalSupply', 'balanceOf',
-      'transfer', 'approve', 'allowance', 'transferFrom', 'wrap', 'withdraw',
+      'transfer', 'approve', 'allowance', 'transferFrom', 'wrap', 'unwrap',
     ]) expect(abi).toContain(name);
     expect(artifact.stateLayout?.variables.map((entry) => entry.name))
       .toEqual(['_totalSupply', '_name', '_symbol']);
@@ -135,7 +135,7 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     expect(await token.state._allowances(bobLedger, aliceLedger)).toBe(0n);
 
     await fund(bob);
-    await token.connect(bob).call.withdraw(bob.getAddress(), 2n).send();
+    await token.connect(bob).call.unwrap(bob.getAddress(), 2n).send();
     expect(await token.state._balances(bobLedger)).toBe(0n);
     expect((await token.getState())._totalSupply).toBe(3n);
     const bearerBalance = (await provider.getUtxos(bob.getAddress()))
@@ -144,11 +144,11 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     expect(bearerBalance).toBe(2n);
   });
 
-  it('wraps on the root, withdraws and inserts a transfer balance through split facets within 9 KB shards', async () => {
+  it('wraps on the root, unwraps and inserts a transfer balance through split facets within 9 KB shards', async () => {
     const split = compileFileSplit(source, {
       evmCompat: true, messageBus: false, maxShardBytes: 9_000,
       // The unsplit redeem script is over the 9 KB shard budget, so a shard plan is needed rather than merely
-      // asked for. This title checks that wrap can stay on the root while withdraw and transfer run on facets
+      // asked for. This title checks that wrap can stay on the root while unwrap and transfer run on facets
       // whose scripts also fit.
       forceSplit: true,
       suppressWarnings: true,
@@ -158,11 +158,11 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
       expect(scriptToBytecode(asmToScript(shard.bytecode)).length).toBeLessThan(9_000);
     }
     expect(split.manifest.routes.find((route) => route.function === 'wrap')?.target).toBe('root');
-    const withdrawTarget = split.manifest.routes.find((route) => route.function === 'withdraw')?.target;
-    expect(withdrawTarget).not.toBe('root');
-    const facetWithdraw = split.facets[withdrawTarget!]!.abi.find((entry) => entry.name === 'withdraw');
-    expect(facetWithdraw?.tokenContainerAccesses).toHaveLength(1);
-    expect(facetWithdraw?.tokenContainerTransferSites).toHaveLength(1);
+    const unwrapTarget = split.manifest.routes.find((route) => route.function === 'unwrap')?.target;
+    expect(unwrapTarget).not.toBe('root');
+    const facetUnwrap = split.facets[unwrapTarget!]!.abi.find((entry) => entry.name === 'unwrap');
+    expect(facetUnwrap?.tokenContainerAccesses).toHaveLength(1);
+    expect(facetUnwrap?.tokenContainerTransferSites).toHaveLength(1);
 
     const provider = createTestProvider();
     const bob = new Signer(bobPriv, provider);
@@ -200,16 +200,16 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     await provider.addUtxo(bob.getAddress(), {
       txid: 'b3'.repeat(32), vout: 0, satoshis: 500_000n,
     });
-    await deployed.call.withdraw(bob.getAddress(), 2n).send();
+    await deployed.call.unwrap(bob.getAddress(), 2n).send();
     expect(await deployed.root.state._balances(addressToLockScript(bob.getAddress()))).toBe(3n);
     expect((await deployed.root.getState())._totalSupply).toBe(3n);
-    const reserveAfterWithdraw = await provider.getUtxos(deployed.root.getTokenContainerAddress(category));
-    expect(reserveAfterWithdraw.find((utxo) => utxo.token?.category === category)?.token?.amount)
+    const reserveAfterUnwrap = await provider.getUtxos(deployed.root.getTokenContainerAddress(category));
+    expect(reserveAfterUnwrap.find((utxo) => utxo.token?.category === category)?.token?.amount)
       .toBe(1_003n);
-    const withdrawn = (await provider.getUtxos(bob.getAddress()))
+    const unwrapped = (await provider.getUtxos(bob.getAddress()))
       .filter((utxo) => utxo.token?.category === category)
       .reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n);
-    expect(withdrawn).toBe(2n);
+    expect(unwrapped).toBe(2n);
 
     await provider.addUtxo(bob.getAddress(), {
       txid: 'b4'.repeat(32), vout: 0, satoshis: 500_000n,

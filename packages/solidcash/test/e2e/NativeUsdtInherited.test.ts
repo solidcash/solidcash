@@ -64,7 +64,7 @@ describe('NativeUsdtInherited / composition', () => {
     const abi = new Set(flat.abi.map((f) => f.name));
     for (const fn of [
       'transfer', 'transferFrom', 'approve', 'issue', 'redeem', 'destroyBlackFunds',
-      'blacklist', 'unblacklist', 'pause', 'unpause', 'transferOwnership', 'withdraw',
+      'blacklist', 'unblacklist', 'pause', 'unpause', 'transferOwnership', 'unwrap',
       'deposit', 'claimDeposit', 'cancelDeposit', 'setQuarantineBlocks',
       'name', 'symbol', 'decimals',
     ]) {
@@ -77,7 +77,7 @@ describe('NativeUsdtInherited / composition', () => {
   it('opts into the complete BchNative lifecycle event behavior', () => {
     const events = new Set((flat.events ?? []).map((event) => event.name));
     for (const event of [
-      'Wrapped', 'Withdrawal', 'DepositQuarantined', 'DepositClaimed',
+      'Wrapped', 'Unwrapped', 'DepositQuarantined', 'DepositClaimed',
       'DepositCancelled', 'QuarantineParams',
     ]) expect(events).toContain(event);
   });

@@ -497,6 +497,8 @@
         "packages/solidcash/test/fixture/mistswap-artifacts/**",
         // Machine-written marketplace evidence (logs, embedded scripts, hashes); its prose is the matching .md.
         "docs/marketplace-matrix-*.json",
+        // The Etherscan-verified USDT source is kept byte for byte.
+        "packages/solidcash/test/fixture/tether/TetherToken.sol",
         // Do not spellcheck vendor code
         "**/node_modules/**",
     ],

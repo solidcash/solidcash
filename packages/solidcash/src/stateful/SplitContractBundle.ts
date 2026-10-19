@@ -96,7 +96,6 @@ export class SplitContract {
       const fn = facet.inner.artifact.abi.find((entry) => entry.name === name);
       const visible = fn?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
       const byName = new Map(visible.map((input, index) => [input.name, args[index]]));
-      const runner = facet.runner;
       for (const emitted of fn?.emits ?? []) {
         const event = facet.inner.artifact.events?.find((item) => item.signature === emitted.eventSignature);
         if (!event) continue;
@@ -105,11 +104,11 @@ export class SplitContract {
         // published `emits`; adding a manual one on top emits it twice and the covenant refuses the extra
         // output. `values.every()` is vacuously true on an empty list, which is how this slipped through.
         if (event.parameters.length === 0) continue;
-        const values = event.parameters.map((parameter) => {
-          if (byName.has(parameter.name)) return byName.get(parameter.name)!;
-          if (parameter.type === 'address' && runner instanceof Signer) return addressToLockScript(runner.getAddress());
-          return undefined;
-        });
+        // Only a same-named argument is known to be the emitted value. Guessing the caller for an unmatched address
+        // (`AddedBlackList(_user)` from `addBlackList(_evilUser)`) lays out a wrong payload the facet refuses;
+        // anything unmatched is left to the builder's trace derivation.
+        const values = event.parameters.map((parameter) => (byName.has(parameter.name)
+          ? byName.get(parameter.name)! : undefined));
         if (values.every((value) => value !== undefined)) {
           call.emitEvent(event.signature, ...values as unknown as import('../types/state-inference.js').StateValueType[]);
         }

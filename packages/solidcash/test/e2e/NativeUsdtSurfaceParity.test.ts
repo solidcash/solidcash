@@ -57,7 +57,7 @@ describe('NativeUsdt / one token, three arrangements', () => {
     for (const fn of [
       'approve', 'cancelDeposit', 'claimDeposit', 'deposit', 'destroyBlackFunds',
       'issue', 'pause', 'redeem', 'setQuarantineBlocks', 'transfer', 'transferFrom',
-      'transferOwnership', 'unpause', 'withdraw',
+      'transferOwnership', 'unpause',
     ]) {
       expect(monolith, `${fn} missing from the hand split`).toContain(fn);
       expect(inherited, `${fn} missing from the inherited composition`).toContain(fn);
@@ -67,11 +67,11 @@ describe('NativeUsdt / one token, three arrangements', () => {
   it('pins the inherited OZ/BchNative adapter delta instead of mistaking it for erased USDT routes', () => {
     expect(inherited.filter((fn) => !monolith.includes(fn))).toEqual([
       'allowance', 'balanceOf', 'blacklist', 'decimals',
-      'name', 'symbol', 'totalSupply', 'unblacklist', 'wrap',
+      'name', 'symbol', 'totalSupply', 'unblacklist', 'unwrap', 'wrap',
     ]);
     expect(monolith.filter((fn) => !inherited.includes(fn))).toEqual([
       'addBlackList', 'deprecate', 'freeze', 'openSelf', 'removeBlackList',
-      'setBacking', 'tick', 'unfreeze',
+      'setBacking', 'tick', 'unfreeze', 'withdraw',
     ]);
   });
 

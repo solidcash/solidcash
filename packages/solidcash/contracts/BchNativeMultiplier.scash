@@ -7,7 +7,7 @@ import { BchNative } from "./BchNative.scash";
 // CashTokens cap a fungible amount at the signed 64-bit maximum
 // (9223372036854775807), while an 18-decimal ERC20 ledger can express far more
 // base units. This layer compresses the ledger into the native reserve: one
-// native CashToken base unit backs `multiplier` ledger units, and wrap/withdraw
+// native CashToken base unit backs `multiplier` ledger units, and wrap/unwrap
 // convert with `native = ledger / multiplier`.
 //
 //   contract MyToken() is ERC20, BchNative, BchNativeMultiplier(100) { ... }
@@ -17,7 +17,7 @@ import { BchNative } from "./BchNative.scash";
 // It must be positive, and boundary amounts must be an exact multiple of the
 // multiplier so the reserve stays exactly backed.
 //
-// This layer overrides only the immediate wrap/withdraw boundary. The optional
+// This layer overrides only the immediate wrap/unwrap boundary. The optional
 // quarantined boundary (BchNativeQuarantine's deposit/claim/cancel) is not
 // scaled here; a token composing all three must scale those paths itself.
 abstract contract BchNativeMultiplier is BchNative {
@@ -48,7 +48,7 @@ abstract contract BchNativeMultiplier is BchNative {
         _nativeEmitWrapped(claimant, amount);
     }
 
-    function withdraw(address to, int amount) override {
+    function unwrap(address to, int amount) override {
         bytes32 category = this.category;
         address sender = msg.sender;
         require(_nativeCanUnwrap(sender));
@@ -58,6 +58,6 @@ abstract contract BchNativeMultiplier is BchNative {
 
         _nativeDebit(sender, uint256(amount));
         this.tokens[category].transfer(to, nativeAmount);
-        _nativeEmitWithdrawal(sender, amount);
+        _nativeEmitUnwrapped(sender, amount);
     }
 }

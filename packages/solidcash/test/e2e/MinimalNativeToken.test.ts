@@ -19,21 +19,22 @@ import { alicePriv, bobPriv } from '../fixture/vars.js';
 const source = new URL('../../contracts/examples/MinimalNativeToken.scash', import.meta.url);
 
 describe('MinimalNativeToken bytecode budget', () => {
-  it('keeps full ERC20 allowances and immediate BchNative below 8 KB', () => {
+  it('keeps full ERC20 allowances and immediate BchNative below 8.5 KB', () => {
     const artifact = compileFile(source, { messageBus: false });
     const artifactBytes = scriptToBytecode(asmToScript(artifact.bytecode)).length;
     // Pinned to the build with the per-entry covenant hardening, its checks, return and event pins and one-target
     // transitions shared as one helper each, re-measured at feat/per-call-fix ac92c7446 after the merged slot passes
     // (7503 -> 7500), then with present-entry checks, deep rotations and constant struct defaults shared or folded
-    // (7500 -> 7473); the 8 KB title stays the budget.
-    expect(artifactBytes).toBe(7473);
+    // (7500 -> 7473). The 10-14..10-17 hardening (per-call merges, minted-root bindings, the direct outside-layout
+    // walk) then added 897 B (7473 -> 8370); the 8.5 KB title is the budget.
+    expect(artifactBytes).toBe(8370);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')).toBeUndefined();
 
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of [
       'transfer', 'approve', 'allowance', 'transferFrom',
-      'wrap', 'withdraw',
+      'wrap', 'unwrap',
     ]) expect(abi).toContain(name);
     for (const name of ['deposit', 'claimDeposit', 'cancelDeposit']) {
       expect(abi).not.toContain(name);
@@ -55,7 +56,7 @@ describe('MinimalNativeToken bytecode budget', () => {
       { provider: new MockNetworkProvider() },
     );
     // The deployed locking bytecode tracks the artifact bytecode above.
-    expect(deployed.bytecode.length / 2).toBe(7473);
+    expect(deployed.bytecode.length / 2).toBe(artifactBytes);
 
     expect(artifact.events.map((event) => event.name).sort()).toEqual(['Approval', 'Transfer']);
 
@@ -63,7 +64,7 @@ describe('MinimalNativeToken bytecode budget', () => {
     expect(Object.keys(split.facets)).toHaveLength(0);
   });
 
-  it('mints ledger units on wrap and burns them on withdrawal', async () => {
+  it('mints ledger units on wrap and burns them on unwrap', async () => {
     const artifact = compileFile(source, { messageBus: false });
     const provider = createTestProvider();
     const bob = new Signer(bobPriv, provider);
@@ -97,7 +98,7 @@ describe('MinimalNativeToken bytecode budget', () => {
     await provider.addUtxo(bob.getAddress(), {
       txid: 'e3'.repeat(32), vout: 0, satoshis: 500_000n,
     });
-    await token.connect(bob).call.withdraw(bob.getAddress(), 5n).send();
+    await token.connect(bob).call.unwrap(bob.getAddress(), 5n).send();
     expect(await token.state._balances(bobLedgerAddress)).toBe(0n);
     expect((await token.getState())._totalSupply).toBe(0n);
     const bearerBalance = (await provider.getUtxos(bob.getAddress()))

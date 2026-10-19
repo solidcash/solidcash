@@ -149,9 +149,23 @@ describe('dynamic write after a conditional returning call', () => {
     const firstReturn = tx.outputs.findIndex((output) => ofCategory(first.categoryId)(output)
       && binToHex(output.lockingBytecode) === '51');
     expect([firstMaster, firstReturn]).toEqual([2, 4]);
-    const unlocker = caller.bound.unlock.fire(
-      2n, true, false, 2n, BigInt(firstMaster), -1n, -1n, -1n, BigInt(firstReturn), -1n,
-    );
+    // The second call is stated as not made, and the chunk run follows the first call's return event.
+    const witnesses: Record<string, bigint> = {
+      __internal__externalCallInputBase: 2n,
+      __internal__extcallMasterIdx0: BigInt(firstMaster),
+      __internal__extcallMasterIdx1: -1n,
+      __internal__extcallAnchorIdx0: -1n,
+      __internal__extcallAnchorIdx1: -1n,
+      __internal__externalReturnOutputIdx0: BigInt(firstReturn),
+      __internal__externalReturnOutputIdx1: -1n,
+      __internal__dynamicChunkOutputBase: BigInt(firstReturn + 1),
+    };
+    const fire = caller.bound.artifact.abi.find((entry: { name: string }) => entry.name === 'fire');
+    const internal = fire.inputs.slice(3).map(({ name }: { name: string }) => {
+      if (!(name in witnesses)) throw new Error(`no witness planned for ${name}`);
+      return witnesses[name];
+    });
+    const unlocker = caller.bound.unlock.fire(2n, true, false, ...internal);
     tx.inputs[0].unlockingBytecode = unlocker.generateUnlockingBytecode({
       transaction: tx, sourceOutputs: [], inputIndex: 0,
     });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { hexToBin } from '@bitauth/libauth';
 import { compileFile } from 'solidc';
 import { asmToScript, scriptToBytecode } from '@solidcash/utils';
 import {
@@ -22,8 +23,9 @@ describe('BchNativeMultiplier', () => {
     const artifact = compileFile(source, { messageBus: false });
     const artifactBytes = scriptToBytecode(asmToScript(artifact.bytecode)).length;
     // The scale layer adds the % / / conversion and the immutable read to wrap and
-    // withdraw; it stays well inside the P2SH32 input-script budget.
-    expect(artifactBytes).toBeLessThan(7_500);
+    // unwrap; it stays well inside the P2SH32 input-script budget (8_636 after the
+    // 10-14..10-17 hardening).
+    expect(artifactBytes).toBeLessThan(8_700);
     expect(artifact.constructorInputs).toEqual([]);
     // The immutable must be written at construction, so a constructor entry exists
     // even though it takes no runtime arguments (the scale factor is baked in).
@@ -32,7 +34,7 @@ describe('BchNativeMultiplier', () => {
     expect(construct?.inputs).toEqual([]);
 
     const abi = new Set(artifact.abi.map((entry) => entry.name));
-    for (const name of ['transfer', 'approve', 'allowance', 'transferFrom', 'wrap', 'withdraw']) {
+    for (const name of ['transfer', 'approve', 'allowance', 'transferFrom', 'wrap', 'unwrap']) {
       expect(abi).toContain(name);
     }
     for (const name of ['deposit', 'claimDeposit', 'cancelDeposit']) {
@@ -46,7 +48,7 @@ describe('BchNativeMultiplier', () => {
     expect(deployed.bytecode.length / 2).toBe(artifactBytes);
   });
 
-  it('scales wrap and withdraw: 500 ledger units bridge 5 native CashTokens', async () => {
+  it('scales wrap and unwrap: 500 ledger units bridge 5 native CashTokens', async () => {
     const artifact = compileFile(source, { messageBus: false });
     const provider = createTestProvider();
     const bob = new Signer(bobPriv, provider);
@@ -57,7 +59,10 @@ describe('BchNativeMultiplier', () => {
     }, {
       saltContract: true,
       extraOutputs: (category) => [{
-        address: getTokenContainerAddress(inner, category, category), satoshis: 1_200n, token: { amount: 1_000n },
+        // The container binds the master lock, which is the category-pinned contract's.
+        address: getTokenContainerAddress(inner.withCategory(hexToBin(category)), category, category),
+        satoshis: 1_200n,
+        token: { amount: 1_000n },
       }, {
         address: bob.getAddress(), satoshis: 100_000n, token: { amount: 5n },
       }],
@@ -78,11 +83,11 @@ describe('BchNativeMultiplier', () => {
     expect(await token.state._balances(bobLedgerAddress)).toBe(500n);
     expect((await token.getState())._totalSupply).toBe(500n);
 
-    // withdraw(500) burns the ledger units and returns 5 native base units.
+    // unwrap(500) burns the ledger units and returns 5 native base units.
     await provider.addUtxo(bob.getAddress(), {
       txid: 'e3'.repeat(32), vout: 0, satoshis: 500_000n,
     });
-    await token.connect(bob).call.withdraw(bob.getAddress(), 500n).send();
+    await token.connect(bob).call.unwrap(bob.getAddress(), 500n).send();
     expect(await token.state._balances(bobLedgerAddress)).toBe(0n);
     expect((await token.getState())._totalSupply).toBe(0n);
     const bearerBalance = (await provider.getUtxos(bob.getAddress()))
@@ -102,7 +107,10 @@ describe('BchNativeMultiplier', () => {
     }, {
       saltContract: true,
       extraOutputs: (category) => [{
-        address: getTokenContainerAddress(inner, category, category), satoshis: 1_200n, token: { amount: 1_000n },
+        // The container binds the master lock, which is the category-pinned contract's.
+        address: getTokenContainerAddress(inner.withCategory(hexToBin(category)), category, category),
+        satoshis: 1_200n,
+        token: { amount: 1_000n },
       }, {
         address: bob.getAddress(), satoshis: 100_000n, token: { amount: 5n },
       }],

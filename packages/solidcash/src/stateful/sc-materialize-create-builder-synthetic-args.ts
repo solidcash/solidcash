@@ -159,15 +159,16 @@ export function materializeCreateBuilderSyntheticArgs(
     }
   }
 
-  // A build that co-spends no callee states each skipped conditional returning call (return index -1) as not made,
-  // by a negative master index; a path that makes the call reads its result at -1 and fails. A non-returning call
-  // keeps the sentinel that fails closed.
+  // A build that co-spends no callee states each skipped conditional call as not made, by a negative master index:
+  // a returning one when its return index is -1, a non-returning one always. A path that makes the call fails at
+  // its call site, which requires a non-negative master index.
   if (abiFunction && externalCallGroupCount === 0 && !overrides?.returnProbeOnly) {
     const calls = (abiFunction.externalCalls ?? []) as readonly (ExternalCallAbi & { occurrence?: string })[];
     const returning = calls.filter((call) => call.hasReturnValues);
     const positionOf = (name: string): number => abiFunction!.inputs.findIndex((input) => input.name === name);
     const skipped = calls.map((call) => {
-      if (call.occurrence !== 'conditional' || !call.hasReturnValues || call.loopArrayVar) return false;
+      if (call.occurrence !== 'conditional' || call.loopArrayVar) return false;
+      if (!call.hasReturnValues) return true;
       const ordinal = returning.indexOf(call);
       const position = positionOf(returning.length === 1
         ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${ordinal}`);

@@ -10,6 +10,50 @@ tests under `packages/solidcash/test/e2e/`.
 Sections 3-5 below preserve the development history. Their intermediate size measurements and one-facet
 descriptions are not the current hand-split layout; the current scripts are listed in s1.1.
 
+## 0. The verified source, unchanged, with BchNative (2026-10-19)
+
+The hand port below rewrote USDT. This is the portability proof without a rewrite:
+`packages/solidcash/test/fixture/tether/TetherToken.sol` is the Etherscan-verified source byte for byte (CRLF,
+sha256 `36bf0b57...`, pinned by the test), and `TetherNativeToken.sol` beside it is
+`contract TetherNativeToken is TetherToken, BchNative` plus the four BchNative hooks: ledger credit/debit with a
+mint/burn `Transfer`, and a wrap/unwrap policy that follows Tether's (paused or blacklisted: no; deprecated: no new
+wraps).
+
+It compiles with `evmCompat` and the Solidity 0.4 source rules (see `solidity-import-compat.md`). Unsplit it is
+23,396 B; the default `compileFileSplit` gives a 6,667 B root and four facets of 8,564-9,473 B (about 65 s).
+`TetherNativeToken.test.ts` deploys it through Tether's own constructor (the deployer becomes owner and holds the
+supply) and settles on mocknet: transfer (first-touch insert), approve with its race guard, finite and MAX_UINT
+transferFrom, pause, blacklist, destroyBlackFunds, issue/redeem, setParams with the fee credited to the owner,
+transferOwnership, deprecate, Tether's own `balanceOf`/`totalSupply` reads, and wrap/unwrap against a
+CashTokens reserve of the contract's own category, each policy gate refusing in turn.
+
+Three platform gaps had to close first, each general rather than USDT-specific:
+
+- An untaken non-returning conditional external call (Tether's `if (deprecated)` forwarders) left the call's input
+  base positive, so the epilogue authenticated an unrelated input and every transfer failed. The SDK now states a
+  skipped lone conditional call as not made (-1), on direct and split-facet builds; a reached call still refuses
+  -1 at its call site.
+- A split facet kept a lone mapping write scalar ("the proxy owns its collection topology"), so the root refused a
+  first-touch insert (here `approve`, `addBlackList` and `issue`). A split facet now batches it; the root leaves
+  batch-censused collections to the facet's exact input and output counts, as it already did for multi-write
+  functions.
+- Split-facet event wiring filled any unmatched `address` event parameter with the caller, so
+  `AddedBlackList(_user)` from `addBlackList(_evilUser)` laid out the wrong payload. Only same-named arguments are
+  supplied now; the rest come from trace derivation.
+
+Limits that remain:
+
+- **Writes aliasing one balance entry.** `transfer`/`transferFrom` also hold the fee credit `balances[owner] +=
+  fee`. When the owner sends or receives (or anyone sends to themselves) two writes land on one entry, which one
+  call cannot compose yet (see the `SortedList.planBatchUpsert` note), so the SDK refuses it. Run the owner as a
+  separate administrator account, or pay out through `unwrap`, which writes the owner's entry once.
+- **Arithmetic is checked, not 0.4's wrapping.** USDT guards every overflow (SafeMath and explicit `require`s), so
+  each overflowing call fails either way.
+- **`onlyPayloadSize`** compares BCH call data (the unlocking pushes, longer than 68 bytes here), so it passes and
+  guards nothing; length-prefixed pushes have no short-address attack.
+- **The deprecated forwarding path** compiles but is not exercised: it needs the upgraded contract co-spent.
+- **The reserve premint** is seeded on mocknet; deployment has no genesis fungible-token premint option yet.
+
 Reference: `TetherToken` at `0xdAC17F958D2ee523a2206206994597C13D831ec7`, solc `v0.4.18+commit.9cf6e910`.
 Audited against the **deployed verified source** (fetched via Blockscout), which is byte-identical to
 `github.com/tethercoin/USDT` apart from the Etherscan submission header - so the GitHub copy is a safe

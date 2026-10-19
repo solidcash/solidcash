@@ -21,7 +21,7 @@ import {
   type ValueChunkWriteDescriptor,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
-const categoryId = '71'.repeat(32);
+const categoryId = '71'.repeat(31) + '8e';
 
 const descriptor = (
   collection: string,

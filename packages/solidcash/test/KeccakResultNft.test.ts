@@ -11,7 +11,7 @@ import { MockNetworkProvider } from '../src/network/mock/index.js';
 import { randomUtxo } from '../src/utils.js';
 import { extractKeccakPreimageFromTrace } from '../src/keccak/keccakComputeSidecar.js';
 
-const K = new Uint8Array(32).fill(0xbb); // side-car own NFT category
+const K = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x44 : 0xbb)); // side-car own NFT category
 const evm = (b: Uint8Array): Uint8Array => keccak_256(b);
 const NON_TRUTHY_INPUT_0 = new RegExp('^mandatory-script-verify-flag-failed '
   + '\\(Unable to verify transaction: error in evaluating input index 0: '

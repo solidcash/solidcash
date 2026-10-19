@@ -7,8 +7,8 @@ import type { Output, UnlockableUtxo } from '../../src/interfaces.js';
 import type { ExternalCallUtxoGroup } from '../../src/stateful/external-call-utxo-group.js';
 import { repairNestedCalleeOutputs, type RepairNestedCalleeOutputsHost } from '../../src/stateful/stb-repair-nested-callee-outputs.js';
 
-const category = '11'.repeat(32);
-const otherCategory = '22'.repeat(32);
+const category = '11'.repeat(31) + 'ee';
+const otherCategory = '22'.repeat(31) + 'dd';
 const lock = Uint8Array.of(0x51);
 const provider = {} as NetworkProvider;
 const input = (commitment: string, vout = 0): UnlockableUtxo => ({

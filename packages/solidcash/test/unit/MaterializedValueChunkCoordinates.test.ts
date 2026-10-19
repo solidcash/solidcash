@@ -19,7 +19,7 @@ import {
 } from '../../src/stateful/value-chunk-persist.js';
 import { describeValueChunkWrites } from '../../src/stateful/writer-group-selection.js';
 
-const categoryId = '71'.repeat(32);
+const categoryId = '71'.repeat(31) + '8e';
 const lockingBytecode = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87]);
 
 function fixture(blockBase: number, provisionalLocal: number, selectedLocal = 14): {

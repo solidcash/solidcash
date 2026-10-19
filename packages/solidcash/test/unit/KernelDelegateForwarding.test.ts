@@ -44,8 +44,8 @@ const frame = () => ({
   participantInputIndex: 4,
   participantOutputIndex: 4,
   executorInputIndex: 7,
-  participantInput: { lockingBytecode: 'aa20', stateCategory: '11'.repeat(32) },
-  participantOutput: { lockingBytecode: 'aa20', stateCategory: '11'.repeat(32) },
+  participantInput: { lockingBytecode: 'aa20', stateCategory: '11'.repeat(31) + 'ee' },
+  participantOutput: { lockingBytecode: 'aa20', stateCategory: '11'.repeat(31) + 'ee' },
   executorLockingBytecode: 'bb20',
   forwardedCalldata: bytes('01020304'),
 });
@@ -332,7 +332,7 @@ describe('kernel delegate forwarding binding prerequisite', () => {
       participantOutputIndex: 4,
       executorInputIndex: 7,
       ownerLockingBytecode: 'aa20',
-      stateCategory: '11'.repeat(32),
+      stateCategory: '11'.repeat(31) + 'ee',
       executorLockingBytecode: 'bb20',
       forwardedCalldata: bytes('01020304'),
     });
@@ -356,7 +356,7 @@ describe('kernel delegate forwarding binding prerequisite', () => {
     const wrongOwner = frame();
     wrongOwner.participantOutput.lockingBytecode = 'cc20';
     const wrongCategory = frame();
-    wrongCategory.participantOutput.stateCategory = '22'.repeat(32);
+    wrongCategory.participantOutput.stateCategory = '22'.repeat(31) + 'dd';
     const wrongCoordinate = frame();
     wrongCoordinate.participantOutputIndex = 5;
     for (const hostile of [wrongOwner, wrongCategory]) {
@@ -450,7 +450,7 @@ describe('kernel delegate forwarding binding prerequisite', () => {
       proxyParameters: [payload],
       proxyConstructorArgs: [bytes('bb20')],
       proxyLockingBytecode: 'aa20',
-      stateCategory: '11'.repeat(32),
+      stateCategory: '11'.repeat(31) + 'ee',
       implementation: { artifact: implementationArtifact(), lockingBytecode: 'bb20' },
       requestedFunctionName: 'apply',
       requestedArgs: [bytes('07')],
@@ -462,7 +462,7 @@ describe('kernel delegate forwarding binding prerequisite', () => {
       proxyParameters: [payload],
       proxyConstructorArgs: [bytes('bb20')],
       proxyLockingBytecode: 'aa20',
-      stateCategory: '11'.repeat(32),
+      stateCategory: '11'.repeat(31) + 'ee',
       implementation: { artifact: implementationArtifact(), lockingBytecode: 'bb20' },
       requestedFunctionName: 'apply',
       requestedArgs: [],
@@ -498,7 +498,7 @@ describe('kernel delegate forwarding binding prerequisite', () => {
       proxyParameters: [payload],
       proxyConstructorArgs: [bytes('bb20')],
       proxyLockingBytecode: 'aa20',
-      stateCategory: '11'.repeat(32),
+      stateCategory: '11'.repeat(31) + 'ee',
       implementation: { artifact: implementationArtifact(), lockingBytecode: 'bb20' },
       requestedFunctionName: 'apply',
       requestedArgs: [bytes('07')],
@@ -512,7 +512,7 @@ describe('kernel delegate forwarding binding prerequisite', () => {
       proxyParameters: [payload],
       proxyConstructorArgs: [bytes('bb20')],
       proxyLockingBytecode: 'aa20',
-      stateCategory: '11'.repeat(32),
+      stateCategory: '11'.repeat(31) + 'ee',
       implementation: { artifact: implementationArtifact(), lockingBytecode: 'bb20' },
       requestedFunctionName: 'apply',
       requestedArgs: [bytes('07')],
@@ -536,7 +536,7 @@ describe('kernel delegate forwarding binding prerequisite', () => {
       proxyParameters: [payload],
       proxyConstructorArgs: [bytes('bb20')],
       proxyLockingBytecode: 'aa20',
-      stateCategory: '11'.repeat(32),
+      stateCategory: '11'.repeat(31) + 'ee',
       implementationArtifact: implementationArtifact(),
       implementationLockingBytecode: 'bb20',
       requestedFunctionName: 'apply',
@@ -574,7 +574,7 @@ describe('kernel delegate forwarding binding prerequisite', () => {
       proxyParameters: [payload],
       proxyConstructorArgs: [bytes('bb20')],
       proxyLockingBytecode: 'aa20',
-      stateCategory: '11'.repeat(32),
+      stateCategory: '11'.repeat(31) + 'ee',
       implementation: { artifact, lockingBytecode: 'bb20' },
       requestedFunctionName: 'apply',
       requestedArgs: [values],
@@ -592,7 +592,7 @@ describe('kernel delegate forwarding binding prerequisite', () => {
 
     expect(resolveKernelDelegatePromotion({
       forwarding: metadata(), proxyParameters: [payload], proxyConstructorArgs: [bytes('bb20')],
-      proxyLockingBytecode: 'aa20', stateCategory: '11'.repeat(32),
+      proxyLockingBytecode: 'aa20', stateCategory: '11'.repeat(31) + 'ee',
       implementation: { artifact, lockingBytecode: 'bb20' },
       requestedFunctionName: 'apply', requestedArgs: [[]],
     }).args).toEqual([[]]);

@@ -18,7 +18,7 @@ import {
  * slot would change live script and produce a contract that rejects every spend.
  */
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
+const CATEGORY = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xa5 : 0x5a));
 const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52, 0x53, 0x54]);
 const OTHER_PROGRAM = new Uint8Array([0x51, 0x52, 0x53, 0x55]);
 
@@ -39,7 +39,8 @@ describe('filling deployment-time constants in a master', () => {
   it('writes the category and the derived address into the reserved slots and nothing else', () => {
     const artifact = artifactFixture();
     const address = bytesToHex(validatorAddress(CATEGORY, VALIDATOR_PROGRAM));
-    const expected = `51757620${bytesToHex(CATEGORY)}23${address}8751`;
+    // The master pins the category in internal order, as OP_UTXOTOKENCATEGORY answers with it.
+    const expected = `51757620${bytesToHex(CATEGORY.slice().reverse())}23${address}8751`;
 
     const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 

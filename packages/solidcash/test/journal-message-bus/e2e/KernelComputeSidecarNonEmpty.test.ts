@@ -17,7 +17,7 @@ const KERNEL = {
   suppressWarnings: true,
 } as const;
 
-const KECCAK_SIDECAR_CATEGORY = '77'.repeat(32);
+const KECCAK_SIDECAR_CATEGORY = '77'.repeat(31) + '88';
 const ZEROS_PREIMAGE = '00'.repeat(32);
 const ZEROS_HASH = '290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563';
 

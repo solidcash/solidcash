@@ -44,7 +44,7 @@ const dummySc = (v: number): Parameters<typeof probeEcrecoverSplit>[2] => ({
   vout: v,
   satoshis: 100000n,
   token: {
-    category: 'ee'.repeat(32),
+    category: 'ee'.repeat(31) + '11',
     amount: 0n,
     nft: { capability: 'mutable' as const, commitment: '' },
   },
@@ -140,7 +140,7 @@ describe('kernel ecrecoverEvm + keccak sidecar under composition', () => {
     );
     acc._registerResolvedExternal('IProbe', probe);
 
-    const ecrecoverCategory = 'ed'.repeat(32);
+    const ecrecoverCategory = 'ed'.repeat(31) + '12';
     for (const role of ['A', 'B'] as const) {
       await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(SHARED_LIBRARY_SALT, role)), {
         ...randomUtxo({ satoshis: 100_000n }),
@@ -151,7 +151,7 @@ describe('kernel ecrecoverEvm + keccak sidecar under composition', () => {
       });
     }
     // Message-bus graph execution co-spends the shared-salt keccak lock for ecrecoverEvm's projection.
-    const keccakCategory = '77'.repeat(32);
+    const keccakCategory = '77'.repeat(31) + '88';
     const keccakLock = binToHex(keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, true));
     for (let index = 0; index < 2; index += 1) {
       await provider.addUtxo(keccakLock, {

@@ -5,7 +5,7 @@ import {
   type DerivedValueChunkApplyHost,
 } from '../../src/stateful/stb-derived-value-chunk-apply.js';
 
-const categoryId = 'ab'.repeat(32);
+const categoryId = 'ab'.repeat(31) + '54';
 const lock = Uint8Array.from([0xaa, 0x20, ...Array<number>(32).fill(0x42), 0x87]);
 const resourceIdentity = 'category:collection:slot';
 const commitments = ['000061', '010062'];

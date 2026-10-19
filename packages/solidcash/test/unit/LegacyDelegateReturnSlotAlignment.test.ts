@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { appendEarlyDelegateOutputs } from '../../src/stateful/stb-append-early-delegate-outputs.js';
 import type { Output } from '../../src/interfaces.js';
 
-const ownerCategory = '11'.repeat(32);
-const calleeCategory = '22'.repeat(32);
+const ownerCategory = '11'.repeat(31) + 'ee';
+const calleeCategory = '22'.repeat(31) + 'dd';
 
 function buildEarlyDelegateOutputs(plannedReturnOutputIndex: number): Output[] {
   const outputs: Output[] = [

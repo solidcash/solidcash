@@ -36,7 +36,7 @@ describe('stateful chained keccak256 side-car planning', () => {
     const provider = new MockNetworkProvider();
     (provider as unknown as { addUtxo?: unknown }).addUtxo = undefined;
     const host = {
-      categoryId: 'aa'.repeat(32),
+      categoryId: 'aa'.repeat(31) + '55',
       inner: {
         bytecode: '',
         provider,
@@ -57,11 +57,11 @@ describe('stateful chained keccak256 side-car planning', () => {
     for (const step of planKeccakChain(data)) {
       await provider.addUtxo(binToHex(keccakChainLockingBytecode(salt, step.kind, true)), {
         txid: 'cc'.repeat(32), vout: 0, satoshis: 100_000n,
-        token: { category: 'dd'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+        token: { category: 'dd'.repeat(31) + '22', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
       } as never);
     }
     const host = {
-      categoryId: 'bb'.repeat(32),
+      categoryId: 'bb'.repeat(31) + '44',
       inner: { bytecode: '', provider },
       evalComputedKey: () => undefined,
       extractStatefulKeccakPreimages: async () => {

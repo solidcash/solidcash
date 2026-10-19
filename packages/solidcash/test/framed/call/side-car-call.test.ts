@@ -28,7 +28,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * machine's verdict on every input, and the record the broadcast writes, are the assertions.
  */
 
-const CATEGORY_HEX = '66'.repeat(32);
+const CATEGORY_HEX = '66'.repeat(31) + '99';
 const CALLER_TXID = '77'.repeat(32);
 const PREFIX = new TextEncoder().encode('framed signed digest:');
 const LEFT = new TextEncoder().encode('framed side-car call');
@@ -55,7 +55,7 @@ const SPLITTING_KEY = '0x65b605e09337ea34c9b99b8e943317a7ac778adf254ca5b8a283904
 function splittableSigner(): Signer {
   const probeUtxo = (odd: boolean): never => ({
     txid: (odd ? 'bb' : 'aa').repeat(32), vout: 1, satoshis: 100_000n,
-    token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+    token: { category: 'ee'.repeat(31) + '11', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
   }) as never;
   const signed = `0x${binToHex(DIGEST.slice().reverse())}`;
   for (let attempt = 0; attempt < 200; attempt += 1) {

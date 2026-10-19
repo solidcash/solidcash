@@ -90,7 +90,7 @@ describe('MockNetworkProvider consensus limits', () => {
   it('evaluates token commitment introspection above the legacy 520-byte stack-item limit', async () => {
     const provider = new MockNetworkProvider();
     const parentTxid = 'bb'.repeat(32);
-    const category = 'cc'.repeat(32);
+    const category = 'cc'.repeat(31) + '33';
     const commitment = 'dd'.repeat(1_364);
     const lockingBytecode = Uint8Array.of(0x00, 0xcf, 0x75, 0x51);
     await provider.addUtxo(binToHex(lockingBytecode), {

@@ -39,7 +39,7 @@ async function deployKeccakSidecars(provider: ReturnType<typeof createTestProvid
   for (let i = 0; i < 5; i++) {
     await provider.addUtxo(lock, {
       txid: (0xd0 + i).toString(16).padStart(2, '0').repeat(32), vout: 0, satoshis: 100_000n,
-      token: { category: 'dd'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      token: { category: 'dd'.repeat(31) + '22', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
     });
   }
 }

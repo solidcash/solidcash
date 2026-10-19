@@ -8,9 +8,12 @@ import { extractGraphEventExpectations } from '../../src/stateful/graph-event-ex
 const lockA = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(1), 0x87]);
 const lockB = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(2), 0x87]);
 const payload = Uint8Array.of(1, 7);
+// Non-palindromic, so the internal order OP_OUTPUTTOKENCATEGORY answers with differs from display order.
+const CATEGORY = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xfc : 0x03));
+const CATEGORY_INTERNAL = CATEGORY.slice().reverse();
 const output = (lockingBytecode: Uint8Array, commitment = new Uint8Array()): Output => ({
   lockingBytecode, valueSatoshis: 1000n,
-  token: { category: new Uint8Array(32).fill(3), amount: 0n, nft: { capability: 'none', commitment } },
+  token: { category: CATEGORY, amount: 0n, nft: { capability: 'none', commitment } },
 });
 const provider = { consensusLimits: {
   maximumInputBytes: 100_000, maximumStackItemBytes: 100_000,
@@ -58,7 +61,7 @@ describe.each([false, true])('graph event expectation extraction (complete=%s)',
     const outputs = [output(lockA, payload), output(lockB, payload)];
     const states = trace([
       ...search([0, 1]), Op.OP_DUP, Op.OP_0, Op.OP_GREATERTHANOREQUAL, Op.OP_VERIFY,
-      Op.OP_OUTPUTTOKENCATEGORY, new Uint8Array(32).fill(3), Op.OP_EQUALVERIFY,
+      Op.OP_OUTPUTTOKENCATEGORY, CATEGORY_INTERNAL, Op.OP_EQUALVERIFY,
       Op.OP_2DROP, Op.OP_1,
     ], outputs, complete);
     expect(states.at(-1)?.error).toBeUndefined();

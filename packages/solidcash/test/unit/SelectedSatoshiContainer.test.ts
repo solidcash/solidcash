@@ -107,7 +107,7 @@ describe('selected satoshi-container resources', () => {
     const getUtxos = vi.fn(async () => []);
     const route: MessageBusRuntimeAbiFunction = { ...active, messageBusActiveSatoshiContainer: false };
     await expect(loadCreateBuilderSatoshiContainer({
-      categoryId: '11'.repeat(32), inner: { addressType: 'p2sh32', provider: { getUtxos } },
+      categoryId: '11'.repeat(31) + 'ee', inner: { addressType: 'p2sh32', provider: { getUtxos } },
     }, { abiFunction: route, overrides: undefined })).resolves.toEqual({
       satoshiContainerUtxo: undefined, satoshiContainerLockingBytecode: undefined,
     });
@@ -122,7 +122,7 @@ describe('selected satoshi-container resources', () => {
       addressType: 'p2sh32', provider: { getUtxos }, artifact: {}, lockingBytecode: `aa20${'5a'.repeat(32)}87`,
     };
     await expect(loadCreateBuilderSatoshiContainer({
-      categoryId: '11'.repeat(32), inner,
+      categoryId: '11'.repeat(31) + 'ee', inner,
     }, { abiFunction: route, overrides: undefined })).rejects.toThrow(/Satoshi container UTXO not found/);
     expect(getUtxos).toHaveBeenCalledOnce();
   });

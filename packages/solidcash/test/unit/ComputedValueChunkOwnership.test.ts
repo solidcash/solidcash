@@ -50,7 +50,7 @@ describe('computed value-chunk ownership', () => {
 
   it('retires a malformed provisional output only after the complete final run is authenticated', () => {
     const otherLock = new Uint8Array([0xaa, 0x20, ...new Uint8Array(32).fill(2), 0x87]);
-    const category = '11'.repeat(32);
+    const category = '11'.repeat(31) + 'ee';
     const mutable = (
       lockingBytecode: Uint8Array, commitment: string, categoryId = category,
     ): {

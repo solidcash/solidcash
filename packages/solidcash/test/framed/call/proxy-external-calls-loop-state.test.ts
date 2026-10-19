@@ -41,10 +41,10 @@ const ARTIFACTS_DIR = resolve(
 );
 const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 
-const FACADE_CATEGORY = '0a'.repeat(32);
-const DATA_CATEGORY = '0b'.repeat(32);
-const DATA_PROXY_CATEGORY = '0d'.repeat(32);
-const TOKEN_CATEGORY = '0c'.repeat(32);
+const FACADE_CATEGORY = '0a'.repeat(31) + 'f5';
+const DATA_CATEGORY = '0b'.repeat(31) + 'f4';
+const DATA_PROXY_CATEGORY = '0d'.repeat(31) + 'f2';
+const TOKEN_CATEGORY = '0c'.repeat(31) + 'f3';
 
 /** One shipped artifact, loaded by file name. */
 function loadArtifact(name: string): Artifact {

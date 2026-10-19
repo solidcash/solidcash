@@ -379,7 +379,7 @@ describe('kernel pending-entry journal codec', () => {
     const entry = (txidByte: string, value: bigint, next: bigint): Utxo => ({
       txid: txidByte.repeat(64), vout: 0, satoshis: 1000n,
       token: {
-        category: '11'.repeat(32), amount: 0n,
+        category: '11'.repeat(31) + 'ee', amount: 0n,
         nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(slot(value), slot(next))) },
       },
     });
@@ -419,7 +419,7 @@ describe('kernel pending-entry journal codec', () => {
     const entry = (txidByte: string, value: bigint, next: bigint, tail = 0): Utxo => ({
       txid: txidByte.repeat(64), vout: 0, satoshis: 1000n,
       token: {
-        category: '11'.repeat(32), amount: 0n,
+        category: '11'.repeat(31) + 'ee', amount: 0n,
         nft: {
           capability: 'mutable',
           commitment: binToHex(encodeEntryCommitment(slot(value), slot(next), Uint8Array.of(tail))),
@@ -463,7 +463,7 @@ describe('kernel pending-entry journal codec', () => {
     const entry = (txidByte: string, value: bigint, next: bigint, tail?: number): Utxo => ({
       txid: txidByte.repeat(64), vout: 0, satoshis: 1000n,
       token: {
-        category: '11'.repeat(32), amount: 0n,
+        category: '11'.repeat(31) + 'ee', amount: 0n,
         nft: {
           capability: 'mutable',
           commitment: binToHex(encodeEntryCommitment(
@@ -940,7 +940,7 @@ describe('kernel pending-entry journal codec', () => {
     const entry = (txidByte: string, value: bigint, next: bigint, tail = 0): Utxo => ({
       txid: txidByte.repeat(64), vout: 0, satoshis: 1000n,
       token: {
-        category: '11'.repeat(32), amount: 0n,
+        category: '11'.repeat(31) + 'ee', amount: 0n,
         nft: {
           capability: 'mutable',
           commitment: binToHex(encodeEntryCommitment(slot(value), slot(next), Uint8Array.of(tail))),

@@ -22,7 +22,8 @@ describe('compose depth-first occurrence selection', () => {
       const artifact = compileString(source, KERNEL);
       const base = new Contract(artifact, args, { provider });
       category += 1;
-      const categoryId = new Uint8Array(32).fill(category);
+      // Non-palindromic per generated category, so a display/internal byte-order slip can show.
+      const categoryId = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xff - category : category));
       const contract = StatefulContract.withCategory(base.withCategory(categoryId), binToHex(categoryId));
       return { contract, artifact, functionName, args: [] };
     };

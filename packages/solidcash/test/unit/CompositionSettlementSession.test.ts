@@ -44,7 +44,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
   it('isolates mutations between two independent sessions', () => {
     const a = createCompositionSettlementSession();
     const b = createCompositionSettlementSession();
-    const categoryId = 'aa'.repeat(32);
+    const categoryId = 'aa'.repeat(31) + '55';
     const value = new Uint8Array(80);
     value[0] = 0x4c;
     value[1] = 0xb4;
@@ -66,7 +66,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
 
   it('shared session sees mutations from helpers that inject it', () => {
     const shared = createCompositionSettlementSession();
-    const categoryId = 'bb'.repeat(32);
+    const categoryId = 'bb'.repeat(31) + '44';
     const value = new Uint8Array(64).fill(1);
     legacyStageValueChunkValue(categoryId, value, shared);
     legacyRememberValueChunkValue(categoryId, value, shared);
@@ -101,7 +101,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
   it('clear on one session does not wipe another', () => {
     const a = createCompositionSettlementSession();
     const b = createCompositionSettlementSession();
-    const categoryId = 'cc'.repeat(32);
+    const categoryId = 'cc'.repeat(31) + '33';
     const lock = new Uint8Array(35);
     lock[0] = 0xaa;
     lock[1] = 0x20;
@@ -305,7 +305,7 @@ describe('composition settlement session CompositionSettlementSession', () => {
 
   it('does not fetch legacy predecessors when compatibility fallback is disabled', async () => {
     const session = createCompositionSettlementSession();
-    const categoryId = 'aa'.repeat(32);
+    const categoryId = 'aa'.repeat(31) + '55';
     const slot = keyToSlot(new Uint8Array());
     const root = sha256(new Uint8Array(80));
     session.persistedJobEventsRecipes.set(categoryId, {

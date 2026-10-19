@@ -49,7 +49,7 @@ async function buildAndSend(
   for (let i = 0; keccak && i < Math.max(1, keccak.minInstances ?? 1); i++) {
     await provider.addUtxo(binToHex(keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, false)), {
       ...randomUtxo({ satoshis: 100_000n }),
-      token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      token: { category: 'ee'.repeat(31) + '11', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
     });
   }
   // Generous input + change so the fee headroom scales to large redeem scripts (deeply nested decoders can push a

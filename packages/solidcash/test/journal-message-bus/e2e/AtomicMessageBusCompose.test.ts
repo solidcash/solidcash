@@ -571,7 +571,7 @@ describe('messageBus.compose atomic transaction', () => {
     }).build()).rejects.toThrow(/genesis outpoints must be unique/);
 
     const wrongCategory = await build();
-    wrongCategory.outputs[childDataIndices[0]].token!.category = 'ab'.repeat(32);
+    wrongCategory.outputs[childDataIndices[0]].token!.category = 'ab'.repeat(31) + '54';
     expect(vmRejects(wrongCategory)).toBe(true);
     const wrongCommitment = await build();
     wrongCommitment.outputs[childDataIndices[1]].token!.nft!.commitment = '01';
@@ -2123,7 +2123,7 @@ describe('messageBus.compose atomic transaction', () => {
     }`, { forceStateful: true, messageBus: true });
     const payload = hexToBin('01'.repeat(32));
     const digest = keccak_256(payload);
-    const sidecarCategory = 'ee'.repeat(32);
+    const sidecarCategory = 'ee'.repeat(31) + '11';
     const callerBase = new Contract(callerArtifact, [], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -2272,7 +2272,7 @@ describe('messageBus.compose atomic transaction', () => {
       sinkBase.withCategory(hexToBin(sinkSetup.categoryId)), sinkSetup.categoryId,
     );
     const salt = new Uint8Array(32);
-    const sidecarCategory = 'ed'.repeat(32);
+    const sidecarCategory = 'ed'.repeat(31) + '12';
     for (const role of ['A', 'B2', 'M', 'B3'] as const) {
       await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {
         ...randomUtxo({ satoshis: 100_000n }),
@@ -2367,7 +2367,7 @@ describe('messageBus.compose atomic transaction', () => {
     const sink = StatefulContract.withCategory(
       sinkBase.withCategory(hexToBin(sinkSetup.categoryId)), sinkSetup.categoryId,
     );
-    const sidecarCategory = 'ec'.repeat(32);
+    const sidecarCategory = 'ec'.repeat(31) + '13';
     for (const role of ['A', 'B'] as const) {
       await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(new Uint8Array(32), role)), {
         ...randomUtxo({ satoshis: 100_000n }),

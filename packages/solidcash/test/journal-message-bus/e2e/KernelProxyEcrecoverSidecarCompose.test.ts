@@ -48,7 +48,7 @@ const fundEcrecoverSidecars = async (
   const salts = categoryId === undefined
     ? [new Uint8Array(32)]
     : [new Uint8Array(32), hexToBin(categoryId).reverse()];
-  const sidecarCategory = 'ed'.repeat(32);
+  const sidecarCategory = 'ed'.repeat(31) + '12';
   for (const salt of salts) {
     for (const role of ['A', 'B2', 'M', 'B3'] as const) {
       await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {

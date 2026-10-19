@@ -10,7 +10,7 @@ import {
 
 describe('nested block oracle coordinates', () => {
   it('counts a shared physical dynamic read band once before a later oracle reader', async () => {
-    const categoryId = '11'.repeat(32);
+    const categoryId = '11'.repeat(31) + 'ee';
     const provider = new MockNetworkProvider();
     const lock = Uint8Array.of(0x51);
     const oracleLock = Uint8Array.of(0x52);
@@ -45,7 +45,7 @@ describe('nested block oracle coordinates', () => {
     const reader = group('stamp', [{ name: '__internal__blockOracleInputIndex', type: 'bigint' }]);
     reader.blockLayout = { blockSize: 2, slots: [{ kind: 'master', offset: 0 },
       { kind: 'blockInfoOracle', offset: 1 }] };
-    reader.blockInputs = [plain(), { ...plain(), token: { category: '22'.repeat(32), amount: 0n,
+    reader.blockInputs = [plain(), { ...plain(), token: { category: '22'.repeat(31) + 'dd', amount: 0n,
       nft: { capability: 'mutable', commitment: '00' } }, unlocker: {
       generateLockingBytecode: () => oracleLock, generateUnlockingBytecode: () => new Uint8Array(),
     } }];

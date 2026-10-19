@@ -220,7 +220,7 @@ describe('legacy planning heuristics isolation (item 1)', () => {
   it('does not read the historical collection for a renamed descriptor-free band writer', () => {
     const queriedCollections: string[] = [];
     const group = {
-      categoryId: 'ab'.repeat(32),
+      categoryId: 'ab'.repeat(31) + '54',
       functionName: 'appendNotice',
       dataNftUtxos: [],
       valueChunkOutputCount: 1,
@@ -267,7 +267,7 @@ describe('legacy planning heuristics isolation (item 1)', () => {
 
   it('rejects ambiguous compiler-published band collections before the legacy name fallback', () => {
     const group = {
-      categoryId: 'ab'.repeat(32),
+      categoryId: 'ab'.repeat(31) + '54',
       functionName: 'publishJobEvent',
       dataNftUtxos: [],
       valueChunkOutputCount: 1,

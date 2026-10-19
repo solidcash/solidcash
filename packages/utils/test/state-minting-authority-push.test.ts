@@ -20,7 +20,7 @@ const machine = createVirtualMachine(createInstructionSetBch2026(false, {
   },
   ripemd160, secp256k1, sha1, sha256,
 }));
-const category = new Uint8Array(32).fill(0x72);
+const category = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x8d : 0x72));
 const record = scriptToBytecode(buildDataNftCovenantScript(category));
 const lock = (redeem: Uint8Array): Uint8Array => Uint8Array.from([0xaa, 0x20, ...hash256(redeem), 0x87]);
 

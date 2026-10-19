@@ -8,7 +8,7 @@ import {
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
 const write = (outputBase: number): ValueChunkWriteDescriptor => ({
-  categoryId: '11'.repeat(32),
+  categoryId: '11'.repeat(31) + 'ee',
   collection: 'records',
   collectionSignature: 'records:mapping(bytes32 => Record[])',
   collectionHash: '22'.repeat(20),

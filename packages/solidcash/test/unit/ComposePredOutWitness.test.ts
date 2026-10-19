@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Output, UnlockableUtxo } from '../../src/interfaces.js';
 import { resolvePhysicalPredOutWitnesses } from '../../src/message-bus/compose-predout-witness.js';
 
-const categoryId = '11'.repeat(32);
+const categoryId = '11'.repeat(31) + 'ee';
 const oldCommitment = `${'22'.repeat(32)}${'33'.repeat(32)}${'44'.repeat(64)}`;
 const target = Uint8Array.from({ length: 32 }, () => 0x55);
 const routeInputs = [
@@ -58,7 +58,7 @@ describe('composed executor predecessor output witness', () => {
   it('refuses ambiguous or unauthenticated predecessor outputs', () => {
     expect(() => resolve([recreation(), recreation()])).toThrow(/2 authenticated predecessor outputs/);
     const wrongOwner = recreation();
-    wrongOwner.token!.category = '99'.repeat(32);
+    wrongOwner.token!.category = '99'.repeat(31) + '66';
     expect(() => resolve([wrongOwner])).toThrow(/0 authenticated predecessor outputs/);
   });
 });

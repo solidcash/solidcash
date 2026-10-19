@@ -21,7 +21,7 @@ describe('delegate dynamic chunk count convergence', () => {
       setChunkRawCommitments: (_name: string, next: string[]) => { commitments = next; },
     } as unknown as StatefulTransactionBuilder;
     const result = deriveFullPhase2ApplyDynamicChunks({
-      categoryId: '01'.repeat(32), inner: { provider: createTestProvider() },
+      categoryId: '01'.repeat(31) + 'fe', inner: { provider: createTestProvider() },
     }, stb, {
       probeBuilder2: { outputs: Array.from({ length: 8 }, () => ({})) } as unknown as TransactionBuilder,
       fullTrace2: [], commitmentProgress: 0,
@@ -48,7 +48,7 @@ describe('delegate dynamic chunk count convergence', () => {
       setChunkRawCommitments: (_name: string, next: string[]) => { commitments = next; },
     } as unknown as StatefulTransactionBuilder;
     const result = deriveFullPhase2ApplyDynamicChunks({
-      categoryId: '01'.repeat(32), inner: { provider: createTestProvider() },
+      categoryId: '01'.repeat(31) + 'fe', inner: { provider: createTestProvider() },
     }, stb, {
       probeBuilder2: { outputs: Array.from({ length: 8 }, () => ({})) } as unknown as TransactionBuilder,
       fullTrace2: [], commitmentProgress: 0, derivedAState: {},
@@ -72,7 +72,7 @@ describe('delegate dynamic chunk count convergence', () => {
       setChunkRawCommitments: (_name: string, next: string[]) => { commitments = next; },
     } as unknown as StatefulTransactionBuilder;
     deriveFullPhase2ApplyDynamicChunks({
-      categoryId: '01'.repeat(32), inner: { provider: createTestProvider() },
+      categoryId: '01'.repeat(31) + 'fe', inner: { provider: createTestProvider() },
     }, stb, {
       probeBuilder2: { outputs: Array.from({ length: 8 }, () => ({})) } as unknown as TransactionBuilder,
       fullTrace2: [], commitmentProgress: 0,

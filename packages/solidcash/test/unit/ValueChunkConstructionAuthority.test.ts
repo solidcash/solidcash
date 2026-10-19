@@ -10,7 +10,7 @@ import {
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
 
-const categoryId = '11'.repeat(32);
+const categoryId = '11'.repeat(31) + 'ee';
 const collectionSignature = 'records:mapping(uint256 => Record[])';
 const keySlot = '22'.repeat(32);
 const value = new Uint8Array(96).fill(0x33);

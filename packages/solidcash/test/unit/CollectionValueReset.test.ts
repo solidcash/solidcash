@@ -11,7 +11,7 @@ import {
   isDisposableAlignmentPad,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
-const identity = (categoryId = 'ab'.repeat(32)): CollectionValueIdentity => ({
+const identity = (categoryId = 'ab'.repeat(31) + '54'): CollectionValueIdentity => ({
   categoryId,
   collectionSignature: 'records:mapping(uint256 => bytes)',
   slot: new Uint8Array(32).fill(0x22),

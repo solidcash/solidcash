@@ -30,7 +30,7 @@ describe('layout resolve authority wire (item 2 STB/preflight)', () => {
       internalArgNames: ['__internal__valueChunkOutputBase'],
       internalArgs: {},
       valueChunkWrites: [{
-        categoryId: '11'.repeat(32),
+        categoryId: '11'.repeat(31) + 'ee',
         collection: 'data',
         collectionSignature: 'data:mapping(int => bytes)',
         collectionHash: '22'.repeat(32),
@@ -59,7 +59,7 @@ describe('layout resolve authority wire (item 2 STB/preflight)', () => {
       internalArgNames: ['__internal__valueChunkOutputBase'],
       internalArgs: {},
       valueChunkWrites: [{
-        categoryId: '11'.repeat(32),
+        categoryId: '11'.repeat(31) + 'ee',
         collection: 'data',
         collectionSignature: 'data:mapping(int => bytes)',
         collectionHash: '22'.repeat(32),

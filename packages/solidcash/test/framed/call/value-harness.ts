@@ -13,7 +13,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
 
 /** The deployment and the caller's coin the value cases (`value-call`, `paid-body-call`) drive a call from. */
 
-const CATEGORY_HEX = '35'.repeat(32);
+const CATEGORY_HEX = '35'.repeat(31) + 'ca';
 const CALLER_TXID = '46'.repeat(32);
 
 export interface Deployed {

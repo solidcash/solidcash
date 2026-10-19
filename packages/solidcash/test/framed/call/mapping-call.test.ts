@@ -31,7 +31,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * constructor seeded it rewrites that node in place.
  */
 
-const CATEGORY_HEX = '77'.repeat(32);
+const CATEGORY_HEX = '77'.repeat(31) + '88';
 const CALLER_TXID = '88'.repeat(32);
 const SECOND_CALLER_TXID = '88'.repeat(31) + 'c2';
 

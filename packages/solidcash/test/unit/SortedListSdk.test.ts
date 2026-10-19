@@ -21,7 +21,7 @@ import type { Utxo } from '../../src/interfaces.js';
 // planning; (2) end-to-end - the SDK's plans, fed into the VM-PROVEN covenants, produce transactions the VM
 // accepts (and a plan for a present/absent key is refused). Covenants proven in SortedMapping*.test.ts.
 
-const CATEGORY = '11'.repeat(32);
+const CATEGORY = '11'.repeat(31) + 'ee';
 const masterToken = { category: hexToBin(CATEGORY), amount: 0n, nft: { capability: 'minting' as const, commitment: new Uint8Array([]) } };
 
 class Asm { b: number[] = []; op(...xs: number[]): this { this.b.push(...xs); return this; } pushData(d: Uint8Array): this { this.b.push(d.length, ...d); return this; } bytes(): Uint8Array { return new Uint8Array(this.b); } }
@@ -29,7 +29,7 @@ class Asm { b: number[] = []; op(...xs: number[]): this { this.b.push(...xs); re
 // The VM-proven INSERT covenant (from SortedMappingInsertDelete.test.ts). Stack in: [k32]. input1 = predecessor.
 function insertCovenant(): Uint8Array {
   const a = new Asm();
-  const cat = hexToBin(CATEGORY);
+  const cat = hexToBin(CATEGORY).reverse(); // introspection answers in internal order
   const catBase = (idx: number, opCat: number): void => { a.op(idx, opCat).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP).pushData(cat).op(Op.OP_EQUALVERIFY); };
   catBase(Op.OP_1, Op.OP_UTXOTOKENCATEGORY);
   a.op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT).pushData(new Uint8Array([32])).op(Op.OP_SPLIT);
@@ -48,7 +48,7 @@ function insertCovenant(): Uint8Array {
 // The VM-proven NON-MEMBERSHIP covenant. Stack in: [k32]. input1 = predecessor.
 function nonMembershipCovenant(): Uint8Array {
   const a = new Asm();
-  const cat = hexToBin(CATEGORY);
+  const cat = hexToBin(CATEGORY).reverse(); // introspection answers in internal order
   a.op(Op.OP_1, Op.OP_UTXOTOKENCATEGORY).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP).pushData(cat).op(Op.OP_EQUALVERIFY);
   a.op(Op.OP_BIN2NUM);
   a.op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT).pushData(new Uint8Array([32])).op(Op.OP_SPLIT).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP);
@@ -63,7 +63,7 @@ function nonMembershipCovenant(): Uint8Array {
 // The VM-proven DELETE covenant. input1 = P[Ps|k], input2 = node[k|S], output1 = P'[Ps|S].
 function deleteCovenant(): Uint8Array {
   const a = new Asm();
-  const cat = hexToBin(CATEGORY);
+  const cat = hexToBin(CATEGORY).reverse(); // introspection answers in internal order
   const catBase = (idx: number, opCat: number): void => { a.op(idx, opCat).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP).pushData(cat).op(Op.OP_EQUALVERIFY); };
   catBase(Op.OP_1, Op.OP_UTXOTOKENCATEGORY);
   a.op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT).pushData(new Uint8Array([32])).op(Op.OP_SPLIT);
@@ -80,7 +80,7 @@ function deleteCovenant(): Uint8Array {
 // The VM-proven UPDATE covenant. input1 = entry[k|S|Vold], output1 = entry'[k|S|Vnew] (link preserved).
 function updateCovenant(): Uint8Array {
   const a = new Asm();
-  const cat = hexToBin(CATEGORY);
+  const cat = hexToBin(CATEGORY).reverse(); // introspection answers in internal order
   a.op(Op.OP_1, Op.OP_UTXOTOKENCATEGORY).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP).pushData(cat).op(Op.OP_EQUALVERIFY);
   a.op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT).pushData(new Uint8Array([64])).op(Op.OP_SPLIT, Op.OP_DROP);
   a.op(Op.OP_DUP).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP);

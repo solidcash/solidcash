@@ -14,7 +14,7 @@ import {
   type ValueChunkProducerIdentity,
 } from '../../src/stateful/ValueChunkProducerIdentity.js';
 
-const categoryId = '31'.repeat(32);
+const categoryId = '31'.repeat(31) + 'ce';
 const owner = { categoryId, lockingBytecode: `aa20${'51'.repeat(32)}87` };
 const effectDomainId = '91'.repeat(32);
 const producer = (occurrenceIndex: number): ValueChunkProducerIdentity => ({

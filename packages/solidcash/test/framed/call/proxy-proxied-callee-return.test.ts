@@ -22,9 +22,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * implementation entry's own declared return encoding, which is what the caller decodes.
  */
 
-const DATA_IMPL_CATEGORY = 'a1'.repeat(32);
-const DATA_PROXY_CATEGORY = 'b2'.repeat(32);
-const DIRECT_DATA_CATEGORY = 'e5'.repeat(32);
+const DATA_IMPL_CATEGORY = 'a1'.repeat(31) + '5e';
+const DATA_PROXY_CATEGORY = 'b2'.repeat(31) + '4d';
+const DIRECT_DATA_CATEGORY = 'e5'.repeat(31) + '1a';
 
 // Every callee entry is declared without `view`: a read-only (STATIC) call may not sit above the proxy's DELEGATE
 // leg, which the shipped validator refuses by name (see the suite's report).

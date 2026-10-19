@@ -7,7 +7,7 @@ import {
 import { bindWriterReturnWitness, type InBlockWriterReturnHost } from '../../src/stateful/stb-inblock-writer-returns.js';
 import type { PhysicalReturnGroup } from '../../src/stateful/value-chunk-geometry.js';
 
-const CATEGORY = 'ab'.repeat(32);
+const CATEGORY = 'ab'.repeat(31) + '54';
 
 const TOKEN_ABI = [
   { name: 'balanceOf', writesState: false, outputs: [{ type: 'uint256' }] },

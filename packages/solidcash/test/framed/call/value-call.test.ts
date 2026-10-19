@@ -255,7 +255,7 @@ const deployedPayer = sharedDeployment(payments.Payer!);
 describe('an entry that pays a contract through its receive()', () => {
   it('runs the recipient\'s receive() with the value, paid from the payer\'s containers', async () => {
     const deployed = await deployedPayer();
-    const vaultCategory = await deployBeside(deployed, payments.Vault!, '47'.repeat(32));
+    const vaultCategory = await deployBeside(deployed, payments.Vault!, '47'.repeat(31) + 'b8');
     await sendFramedValue({ ...(await currentCaller(deployed)), value: 20_000n });
 
     const result = await callFramedEntry({
@@ -280,7 +280,7 @@ describe('an entry that pays a contract through its receive()', () => {
   it('is refused by name when the recipient has no receive(), or is not among the externals', async () => {
     const deployed = await deployedPayer();
     // Both are refused from the artifacts and the call's externals, before any recipient deployment is read.
-    const closedCategory = '48'.repeat(32);
+    const closedCategory = '48'.repeat(31) + 'b7';
     await expect(callFramedEntry({
       ...(await currentCaller(deployed)),
       functionName: 'pay',
@@ -366,7 +366,7 @@ describe('a value send to a contract whose fallback() takes it', () => {
 
   it('runs the recipient\'s payable fallback() for an entry that pays it', async () => {
     const deployed = await deploy(fallbacks.Payer!);
-    const tipCategory = await deployBeside(deployed, fallbacks.Tip!, '4a'.repeat(32));
+    const tipCategory = await deployBeside(deployed, fallbacks.Tip!, '4a'.repeat(31) + 'b5');
     await sendFramedValue({ ...(await currentCaller(deployed)), value: 20_000n });
 
     const result = await callFramedEntry({
@@ -432,8 +432,8 @@ let branching: Promise<Branching> | undefined;
 function branchingTill(): Promise<Branching> {
   branching ??= (async (): Promise<Branching> => {
     const deployed = await deploy(branch.Till!);
-    const vaultCategory = await deployBeside(deployed, branch.Vault!, '4c'.repeat(32));
-    const jarCategory = await deployBeside(deployed, branch.Jar!, '4d'.repeat(32));
+    const vaultCategory = await deployBeside(deployed, branch.Vault!, '4c'.repeat(31) + 'b3');
+    const jarCategory = await deployBeside(deployed, branch.Jar!, '4d'.repeat(31) + 'b2');
     // Each call is paid from the caller's largest coin, the last call's change, so one coin carries every case's fees.
     await deployed.provider.addUtxo(binToHex(deployed.callerLock), {
       txid: '46'.repeat(31) + 'c1', vout: 0, satoshis: 500_000n,

@@ -24,7 +24,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * the call path and through the handle. A bare `require` naming the entry and the failing line is `call.test.ts`'s.
  */
 
-const CATEGORY_HEX = '77'.repeat(32);
+const CATEGORY_HEX = '77'.repeat(31) + '88';
 const CALLER_TXID = '78'.repeat(32);
 const PHRASE = 'test test test test test test test test test test test junk';
 

@@ -24,7 +24,7 @@ describe('transported value entry recipe on BCH-2026', () => {
     })!;
     const commitment = hexToBin(commitmentHex);
     const lockingBytecode = pushdata(commitment);
-    const category = hexToBin('44'.repeat(32));
+    const category = hexToBin('44'.repeat(31) + 'bb');
     const transaction = {
       version: 2,
       inputs: [{

@@ -17,7 +17,9 @@ const create = (evmCompat = true): StatefulContract => {
     function fixedIdentity(bytes20 value) public { require(true); }
     function digest(bytes32 value) public { require(true); }
   }`, { evmCompat, forceStateful: true });
-  return StatefulContract.withCategory(new Contract(artifact, [], { provider: createTestProvider() }), 'aa'.repeat(32));
+  return StatefulContract.withCategory(
+    new Contract(artifact, [], { provider: createTestProvider() }), 'aa'.repeat(31) + '55',
+  );
 };
 
 describe('native addresses used as Solidity byte arguments', () => {

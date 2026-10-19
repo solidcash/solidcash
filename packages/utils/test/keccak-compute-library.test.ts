@@ -17,8 +17,9 @@ import type { Artifact } from '../src/artifact.js';
 import { hash256 } from '../src/hash.js';
 
 const vm = createVirtualMachineBch2026();
-const C = new Uint8Array(32).fill(0xcc); // contract (branded) category
-const K = new Uint8Array(32).fill(0xbb); // side-car own NFT category
+const C = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x33 : 0xcc)); // contract (branded) category
+const C_INTERNAL = C.slice().reverse(); // the covenant compares the raw UTXO category, which is internal order
+const K = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x44 : 0xbb)); // side-car own NFT category
 
 // Minimal data push (direct / PUSHDATA1 / PUSHDATA2).
 function push(data: Uint8Array): Uint8Array {
@@ -33,8 +34,8 @@ const tok = (category: Uint8Array, capability: 'none' | 'mutable' | 'minting', c
 // Evaluate the side-car (input 1) in a 2-input tx: input0 carries category C (the branded contract),
 // input1 is the computing side-car; output1 recreates it with commitment `commitR`.
 function evalSidecar(preimage: Uint8Array, commitR: Uint8Array, in0Category: Uint8Array | null = C): string | undefined {
-  const redeem = buildKeccakComputeRedeem(C);
-  const lock = keccakComputeLockingBytecode(C);
+  const redeem = buildKeccakComputeRedeem(C_INTERNAL);
+  const lock = keccakComputeLockingBytecode(C_INTERNAL);
   const pad = new Uint8Array(KECCAK256_COMPUTE_PAD_LENGTH);
   // The covenant accepts one to three preimages; push the batch width after
   // the preimages (OP_1 is the minimal VM-number encoding of a single item).
@@ -95,9 +96,9 @@ describe('keccak compute-and-commit side-car (utils)', () => {
   });
 
   it('redeem = OP_PUSHBYTES_32 || salt || COVENANT; salt-independent covenant', () => {
-    const redeem = buildKeccakComputeRedeem(C);
+    const redeem = buildKeccakComputeRedeem(C_INTERNAL);
     expect(redeem[0]).toBe(0x20);
-    expect(binToHex(redeem.slice(1, 33))).toBe(binToHex(C));
+    expect(binToHex(redeem.slice(1, 33))).toBe(binToHex(C_INTERNAL));
     expect(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH).toBe(33);
     // the covenant portion is identical regardless of salt (branded vs shared)
     const shared = buildKeccakComputeRedeem(new Uint8Array(32));
@@ -105,7 +106,7 @@ describe('keccak compute-and-commit side-car (utils)', () => {
   });
 
   it('locking bytecode is P2SH32', () => {
-    const lock = keccakComputeLockingBytecode(C);
+    const lock = keccakComputeLockingBytecode(C_INTERNAL);
     expect(lock[0]).toBe(0xaa);
     expect(lock[1]).toBe(0x20);
     expect(lock[34]).toBe(0x87);

@@ -716,7 +716,7 @@ describe('blockhash(n) auto-injection (StatefulContract)', () => {
 // The complex-arg probe positions the blockhash oracle (+ its self-preserving recreation + the freshness
 // locktime) so it can reach the keccak call and read each preimage off the trace at the shifted base.
 describe('keccak256 + blockhash front-region (stateful)', () => {
-  const KC = 'ee'.repeat(32); // side-car own NFT category
+  const KC = 'ee'.repeat(31) + '11'; // side-car own NFT category
   const SRC = 'contract B(){ int c;'
     + ' function f(int bn, bytes32 bh, bytes p, bytes32 e){'
     + ' require(blockhash(bn) == bh); require(keccak256(keccak256(p)) == e); this.c = this.c + 1; } }';
@@ -845,7 +845,7 @@ describe('blockhash keeper sweep', () => {
     const provider = createTestProvider();
     const { n: height } = await allocHeight(provider, 256); // mine headroom so n+256 <= tip
     const n = BigInt(height);
-    const { cat, addrN, utxo } = await seedOracleNft(provider, n, hexToBin('ab'.repeat(32)), { satoshis: 2000n });
+    const { cat, addrN, utxo } = await seedOracleNft(provider, n, hexToBin('ab'.repeat(31) + '54'), { satoshis: 2000n });
     // A previous failed wipe can leave another valid pair at the same branded address on persistent providers.
     // The keeper intentionally sweeps every pair there; prove this fixture's freshly seeded output is included.
     expect(await provider.getUtxosForLockingBytecode(addrN)).toContainEqual(expect.objectContaining({

@@ -48,7 +48,7 @@ describe('root block oracle band selection', () => {
       number: 12n, timestamp: 1234n, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: new Uint8Array(),
     }));
     const oracle = { txid: 'ab'.repeat(32), vout: 0, satoshis: 1000n,
-      token: { category: 'cd'.repeat(32), amount: 0n,
+      token: { category: 'cd'.repeat(31) + '32', amount: 0n,
         nft: { capability: 'mutable' as const, commitment } } };
     const requestedPins: string[] = [];
     const provider = { getUtxosForLockingBytecode: async (lock: Uint8Array) => {
@@ -58,7 +58,7 @@ describe('root block oracle band selection', () => {
     } };
     const master = { txid: 'ef'.repeat(32), vout: 0, satoshis: 1000n,
       unlocker: { generateLockingBytecode: () => Uint8Array.of(0x51), generateUnlockingBytecode: () => new Uint8Array() } };
-    const child = { inner: { provider, artifact, blockOracleLock: childPin }, categoryId: '12'.repeat(32) };
+    const child = { inner: { provider, artifact, blockOracleLock: childPin }, categoryId: '12'.repeat(31) + 'ed' };
     const reserved = new Set<string>();
     type AssemblyResult = ReturnType<typeof assembleCreateBuilderNestedComposeSlots>;
     const invoke = async (): AssemblyResult => assembleCreateBuilderNestedComposeSlots({
@@ -115,7 +115,7 @@ describe('root block oracle band selection', () => {
 
   it('rejects ambiguous authority carriers and aliased witness disagreement before changing any slot', () => {
     const oracle = { txid: 'ab'.repeat(32), vout: 0, satoshis: 1000n,
-      token: { category: 'cd'.repeat(32), amount: 0n, nft: { capability: 'mutable' as const, commitment: 'ab' } },
+      token: { category: 'cd'.repeat(31) + '32', amount: 0n, nft: { capability: 'mutable' as const, commitment: 'ab' } },
       unlocker: { generateLockingBytecode: () => Uint8Array.of(0x51), generateUnlockingBytecode: () => new Uint8Array() } };
     type Group = Parameters<typeof takeNestedBlockOracleInput>[0][number];
     const owner = { blockInputs: [oracle] } as Group;

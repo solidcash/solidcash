@@ -3,7 +3,7 @@ import type { ExternalCallAbi } from '@solidcash/utils';
 import { allocateCreateBuilderSharedFunders } from '../../src/stateful/sc-allocate-create-builder-shared-funders.js';
 
 const callee = {
-  categoryId: 'ab'.repeat(32),
+  categoryId: 'ab'.repeat(31) + '54',
   inner: { artifact: { abi: [{
     name: 'transferFrom', blockLayout: { slots: [{ kind: 'master' }, { kind: 'returnEvent' }] },
   }] } },

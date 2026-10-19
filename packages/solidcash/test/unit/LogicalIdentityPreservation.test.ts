@@ -62,10 +62,10 @@ const ADDRESS_HOLDER = 'contract AddressHolder {'
 
 describe('logical CREATE identity at getAddress()', () => {
   it('resolves only one immutable SCID from the assembled input category', () => {
-    const category = 'ab'.repeat(32);
+    const category = 'ab'.repeat(31) + '54';
     const scid = { category, amount: 0n, nft: { capability: 'none' as const, commitment: '5343494401abcd' } };
     const inputs: Pick<Utxo, 'token'>[] = [
-      { token: { ...scid, category: 'cd'.repeat(32) } },
+      { token: { ...scid, category: 'cd'.repeat(31) + '32' } },
       { token: { ...scid, nft: { ...scid.nft, capability: 'mutable' } } },
       { token: scid },
     ];
@@ -78,7 +78,7 @@ describe('logical CREATE identity at getAddress()', () => {
   it.each([false, true])('keeps reserved output coordinates when splitting a large SCID funding pad (suffix %s)', (withSuffix) => {
     const lock = Uint8Array.of(0xaa, 0x20, 0xe6);
     const funderLock = Uint8Array.of(0x76, 0xa9, 0x14);
-    const category = 'ab'.repeat(32);
+    const category = 'ab'.repeat(31) + '54';
     const commitment = '5343494401dead';
     const interior = { to: Uint8Array.of(0x6a), amount: 1000n };
     const entry = { to: Uint8Array.of(0x51), amount: 1200n,
@@ -120,13 +120,13 @@ describe('logical CREATE identity at getAddress()', () => {
     const commitment = '5343494401dead';
     const lock = Uint8Array.of(0xaa, 0x20, 0xe6);
     const outputs: Array<{ to?: Uint8Array; amount?: bigint; token?: object }> = [
-      { to: lock, amount: 1200n, token: { category: 'aa'.repeat(32), nft: { capability: 'minting' } } },
+      { to: lock, amount: 1200n, token: { category: 'aa'.repeat(31) + '55', nft: { capability: 'minting' } } },
       { to: Uint8Array.of(0x51), amount: 1000n },
       { to: lock, amount: 1200n },
     ];
     expect(reassertScidIdentityOutputs(outputs, [{
       satoshis: 1200n,
-      token: { category: 'aa'.repeat(32), amount: 0n, nft: { capability: 'none', commitment } },
+      token: { category: 'aa'.repeat(31) + '55', amount: 0n, nft: { capability: 'none', commitment } },
       unlocker: { generateLockingBytecode: () => lock },
     }])).toBe(1);
     expect((outputs[0].token as { nft?: { capability?: string } }).nft?.capability).toBe('minting');
@@ -137,12 +137,15 @@ describe('logical CREATE identity at getAddress()', () => {
     const commitment = '5343494401beef';
     const lock = Uint8Array.of(0xaa, 0x20, 0xee);
     const outputs: Array<{ to?: Uint8Array; amount?: bigint; token?: object }> = [
-      { to: lock, amount: 1200n, token: { category: 'bb'.repeat(32), nft: { capability: 'mutable', commitment: '00' } } },
+      {
+        to: lock, amount: 1200n,
+        token: { category: 'bb'.repeat(31) + '44', nft: { capability: 'mutable', commitment: '00' } },
+      },
       { to: Uint8Array.of(0x76, 0xa9), amount: 1000n },
     ];
     expect(reassertScidIdentityOutputs(outputs, [{
       satoshis: 1200n,
-      token: { category: 'bb'.repeat(32), amount: 0n, nft: { capability: 'none', commitment } },
+      token: { category: 'bb'.repeat(31) + '44', amount: 0n, nft: { capability: 'none', commitment } },
       unlocker: { generateLockingBytecode: () => lock },
     }])).toBe(1);
     expect((outputs[0].token as { nft?: { capability?: string } }).nft?.capability).toBe('mutable');
@@ -159,7 +162,7 @@ describe('logical CREATE identity at getAddress()', () => {
     ];
     expect(reassertScidIdentityOutputs(outputs, [{
       satoshis: 1200n,
-      token: { category: 'cc'.repeat(32), amount: 0n, nft: { capability: 'none', commitment } },
+      token: { category: 'cc'.repeat(31) + '33', amount: 0n, nft: { capability: 'none', commitment } },
       unlocker: { generateLockingBytecode: () => lock },
     }], new Set([0, 1]))).toBe(1);
     expect(outputs[0].token).toBeUndefined();
@@ -169,7 +172,7 @@ describe('logical CREATE identity at getAddress()', () => {
 
   it('does not park or accept a SCID on a consumed mutable resource slot', () => {
     const commitment = '5343494401cafe';
-    const category = 'cc'.repeat(32);
+    const category = 'cc'.repeat(31) + '33';
     const lock = Uint8Array.of(0xaa, 0x20, 0x08);
     const identity = {
       category, amount: 0n,
@@ -212,7 +215,7 @@ describe('logical CREATE identity at getAddress()', () => {
 
   it('relocates an already-restored SCID out of a reserved suffix slot', () => {
     const commitment = '5343494401cafe';
-    const category = 'cc'.repeat(32);
+    const category = 'cc'.repeat(31) + '33';
     const lock = Uint8Array.of(0xaa, 0x20, 0x08);
     const outputs: Array<{ to?: Uint8Array; amount?: bigint; token?: object }> = [
       { to: Uint8Array.of(0x51), amount: 1000n },
@@ -240,7 +243,7 @@ describe('logical CREATE identity at getAddress()', () => {
     ];
     const added = reassertScidIdentityOutputs(outputs, [{
       satoshis: 1200n,
-      token: { category: 'aa'.repeat(32), amount: 0n, nft: { capability: 'none', commitment } },
+      token: { category: 'aa'.repeat(31) + '55', amount: 0n, nft: { capability: 'none', commitment } },
       unlocker: { generateLockingBytecode: () => Uint8Array.of(0xaa, 0x20) },
     }]);
     expect(added).toBe(1);
@@ -248,7 +251,7 @@ describe('logical CREATE identity at getAddress()', () => {
     expect((outputs[0].token as { nft?: { commitment?: string } }).nft?.commitment).toBe(commitment);
     expect(reassertScidIdentityOutputs(outputs, [{
       satoshis: 1200n,
-      token: { category: 'aa'.repeat(32), amount: 0n, nft: { capability: 'none', commitment } },
+      token: { category: 'aa'.repeat(31) + '55', amount: 0n, nft: { capability: 'none', commitment } },
       unlocker: { generateLockingBytecode: () => Uint8Array.of(0xaa, 0x20) },
     }])).toBe(0);
   });
@@ -263,11 +266,11 @@ describe('logical CREATE identity at getAddress()', () => {
     ];
     expect(reassertScidIdentityOutputs(outputs, [{
       satoshis: 1200n,
-      token: { category: 'aa'.repeat(32), amount: 0n, nft: { capability: 'none', commitment: firstCommitment } },
+      token: { category: 'aa'.repeat(31) + '55', amount: 0n, nft: { capability: 'none', commitment: firstCommitment } },
       unlocker: { generateLockingBytecode: () => firstLock },
     }, {
       satoshis: 1200n,
-      token: { category: 'bb'.repeat(32), amount: 0n, nft: { capability: 'none', commitment: secondCommitment } },
+      token: { category: 'bb'.repeat(31) + '44', amount: 0n, nft: { capability: 'none', commitment: secondCommitment } },
       unlocker: { generateLockingBytecode: () => secondLock },
     }])).toBe(2);
     expect(outputs).toHaveLength(2);
@@ -345,8 +348,8 @@ describe('logical CREATE identity at getAddress()', () => {
 
   it('resolves the state-owning proxy registration by category', () => {
     const provider = createTestProvider();
-    const implementationCategory = '11'.repeat(32);
-    const proxyCategory = '22'.repeat(32);
+    const implementationCategory = '11'.repeat(31) + 'ee';
+    const proxyCategory = '22'.repeat(31) + 'dd';
     const implementation = {
       contractName: 'Implementation', address: 'implementation-address',
       lockingBytecode: `aa20${'11'.repeat(32)}87`,

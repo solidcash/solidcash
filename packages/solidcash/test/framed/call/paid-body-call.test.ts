@@ -50,7 +50,7 @@ function payer(): Promise<Deployed> {
 describe('a paid receive() that emits or writes a mapping', () => {
   it('lists the event the paid body emits, learned from its own program', async () => {
     const deployed = await payer();
-    const tippedCategory = await deployBeside(deployed, paidBodies.Tipped!, '4e'.repeat(32));
+    const tippedCategory = await deployBeside(deployed, paidBodies.Tipped!, '4e'.repeat(31) + 'b1');
 
     const result = await callFramedEntry({
       ...(await currentCaller(deployed)),
@@ -69,7 +69,7 @@ describe('a paid receive() that emits or writes a mapping', () => {
 
   it('writes the paid body\'s mapping entry, created on the first payment and updated on the next', async () => {
     const deployed = await payer();
-    const bankCategory = await deployBesideWith(deployed, paidBodies.Bank!, [deployed.callerLock], '4f'.repeat(32));
+    const bankCategory = await deployBesideWith(deployed, paidBodies.Bank!, [deployed.callerLock], '4f'.repeat(31) + 'b0');
     const externals = { Bank: { artifact: paidBodies.Bank!, categoryId: bankCategory } };
     const to = addressOf(paidBodies.Bank!, bankCategory);
 
@@ -145,7 +145,7 @@ describe('a paid receive() that sends', () => {
 
   it('pays out more than it receives from its own containers, and is refused by name when they cannot', async () => {
     const deployed = await payer();
-    const doublerCategory = await deployBesideWith(deployed, sendingBodies.Doubler!, [FIRST_LOCK], '51'.repeat(32));
+    const doublerCategory = await deployBesideWith(deployed, sendingBodies.Doubler!, [FIRST_LOCK], '51'.repeat(31) + 'ae');
     const externals = { Doubler: { artifact: sendingBodies.Doubler!, categoryId: doublerCategory } };
     const to = addressOf(sendingBodies.Doubler!, doublerCategory);
     // Before its deposit it holds nothing, so what it sends beyond what it receives has no container to come from.

@@ -93,8 +93,9 @@ function utxo(categoryHex: string, txid: string, satoshis: bigint, capability: '
 async function chain(provider: MockNetworkProvider): Promise<void> {
   const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
   await provider.addUtxo(bytesToHex(deployed.lockingBytecode),
-    utxo(CATEGORY_HEX, '11'.repeat(32), 20_000n, 'minting', empty));
-  await provider.addUtxo(bytesToHex(deployed.address), utxo(CATEGORY_HEX, '22'.repeat(32), 20_000n, 'mutable', empty));
+    utxo(CATEGORY_HEX, '11'.repeat(31) + 'ee', 20_000n, 'minting', empty));
+  await provider.addUtxo(bytesToHex(deployed.address),
+    utxo(CATEGORY_HEX, '22'.repeat(31) + 'dd', 20_000n, 'mutable', empty));
   for (const [index, node] of BATCH.written.entries()) {
     const txid = (0x33 + index).toString(16).padStart(2, '0').repeat(32);
     await provider.addUtxo(bytesToHex(ENTRY_LOCK), utxo(CATEGORY_HEX, txid, 1_500n, 'mutable', node.after));

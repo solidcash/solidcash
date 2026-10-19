@@ -106,8 +106,8 @@ async function chain(options: {
   const provider = new MockNetworkProvider();
   const deployed = deployMaster(artifact, category, VALIDATOR_PROGRAM);
   await provider.addUtxo(bytesToHex(deployed.lockingBytecode),
-    utxo(categoryHex, '11'.repeat(32), 20_000n, 'minting', empty));
-  await provider.addUtxo(bytesToHex(deployed.address), utxo(categoryHex, '22'.repeat(32), 20_000n, 'mutable', empty));
+    utxo(categoryHex, '11'.repeat(31) + 'ee', 20_000n, 'minting', empty));
+  await provider.addUtxo(bytesToHex(deployed.address), utxo(categoryHex, '22'.repeat(31) + 'dd', 20_000n, 'mutable', empty));
 
   let record: Uint8Array;
   let chunks: readonly Uint8Array[] = [];
@@ -119,7 +119,7 @@ async function chain(options: {
     record = new Uint8Array(Buffer.from(buildPushdataCommitment(artifact.stateLayout!, { items: [...items] }, 0), 'hex'));
   }
   await provider.addUtxo(bytesToHex(stateRecordLockingBytecode(categoryHex)),
-    utxo(categoryHex, '23'.repeat(32), 1_500n, 'mutable', record));
+    utxo(categoryHex, '23'.repeat(31) + 'dc', 1_500n, 'mutable', record));
   const chunkLock = bytesToHex(chunkRecordLockingBytecode(categoryHex, 'items', 'address[]'));
   for (const [index, chunk] of chunks.entries()) {
     const txid = (0x60 + index).toString(16).padStart(2, '0').repeat(32);

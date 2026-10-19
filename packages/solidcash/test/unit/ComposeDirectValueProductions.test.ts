@@ -5,7 +5,7 @@ import { rebuildPreparedInvocation } from '../../src/message-bus/compose-prepare
 import { keyToSlotMulti } from '../../src/stateful/SortedList.js';
 import type { CallDescriptor } from '../../src/message-bus/compose-prepared-invocation.js';
 
-const categoryId = '31'.repeat(32);
+const categoryId = '31'.repeat(31) + 'ce';
 const collection = {
   name: 'records', signature: 'records:mapping(uint256 => bytes)',
   keyType: 'uint256', keyTypes: ['uint256'], valueType: 'bytes', chunkableValue: true,

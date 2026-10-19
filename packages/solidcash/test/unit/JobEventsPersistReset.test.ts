@@ -92,7 +92,7 @@ describe('jobEvents persist vs mock reset', () => {
   });
 
   it('keeps a staged write authoritative over speculative predecessor observations', () => {
-    const categoryId = 'aa'.repeat(32);
+    const categoryId = 'aa'.repeat(31) + '55';
     const longer = new Uint8Array(120).fill(0x11);
     const shorter = new Uint8Array(80).fill(0x22);
 

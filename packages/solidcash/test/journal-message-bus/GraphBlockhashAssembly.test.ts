@@ -9,7 +9,9 @@ const unlocker: Unlocker = {
 
 const utxo = (tag: number, token = false): UnlockableUtxo => ({
   txid: tag.toString(16).padStart(64, '0'), vout: 0, satoshis: 10_000n, unlocker,
-  ...(token && { token: { category: '11'.repeat(32), amount: 0n, nft: { capability: 'mutable' as const, commitment: '' } } }),
+  ...(token && {
+    token: { category: '11'.repeat(31) + 'ee', amount: 0n, nft: { capability: 'mutable' as const, commitment: '' } },
+  }),
 });
 
 describe('message-bus batch graph blockhash physical assembly', () => {
@@ -23,7 +25,7 @@ describe('message-bus batch graph blockhash physical assembly', () => {
       masterUtxo: master,
       dataNftUtxos: [],
       stateLayout: { variables: [], dataNftCount: 0 },
-      categoryId: '11'.repeat(32),
+      categoryId: '11'.repeat(31) + 'ee',
       blockhashCoSpendUtxos: [active0, active3],
       blockhashCoSpendSlotOrdinals: [0, 3],
       funderUtxos: funders,

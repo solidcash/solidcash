@@ -32,7 +32,7 @@ const artifacts = compileStringMulti(SOURCE, { composition: 'framed' });
 const caller = artifacts.Caller!;
 const sink = artifacts.Sink!;
 
-const SINK_CATEGORY = 'b7'.repeat(32);
+const SINK_CATEGORY = 'b7'.repeat(31) + '48';
 
 /** The zero address as the compatibility layer states it: the EVM payload, in each form it can take. */
 const ZERO_PAYLOAD = new Uint8Array(20);

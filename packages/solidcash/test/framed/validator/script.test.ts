@@ -616,7 +616,7 @@ describe('the validator program refuses each rule it enforces', () => {
     const { composition, index } = reference();
     const transcript = composition.transcript;
     const beyondTheEnd = composition.inputs.length + 3;
-    const category = transcript.settles[0]?.category ?? new Uint8Array(32).fill(0x11);
+    const category = transcript.settles[0]?.category ?? Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xee : 0x11));
     const tampered = withTranscript(composition, encodeTranscript({
       ...transcript,
       settles: [{ category, stateInputs: [beyondTheEnd] }],

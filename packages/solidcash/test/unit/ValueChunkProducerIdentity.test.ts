@@ -21,7 +21,7 @@ import {
   type ValueChunkProducerResourceClaim,
 } from '../../src/stateful/index.js';
 
-const categoryId = '31'.repeat(32);
+const categoryId = '31'.repeat(31) + 'ce';
 const effectDomainId = '91'.repeat(32);
 const collectionSignature = 'records:mapping(uint256 => bytes32[])';
 const resourceIdentity = `${categoryId}:${binToHex(computeCollectionHash(collectionSignature))}:${'42'.repeat(32)}`;
@@ -445,7 +445,7 @@ describe('hierarchical value-chunk producer identity', () => {
       ...claim(),
       producer: {
         ...claim().producer,
-        stateOwner: { ...claim().producer.stateOwner, categoryId: '99'.repeat(32) },
+        stateOwner: { ...claim().producer.stateOwner, categoryId: '99'.repeat(31) + '66' },
       },
     }, producer().stateOwner, new Uint8Array(96))).toBe(false);
     expect(() => canonicalValueChunkProducerResourceClaim(null as never)).not.toThrow();

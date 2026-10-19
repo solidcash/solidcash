@@ -65,8 +65,9 @@ const MIXED = compileString(
 );
 
 const evm = (b: Uint8Array): Uint8Array => keccak_256(b);
-const CAT_SL = new Uint8Array(32).fill(0xb1); // stateless side-car's own NFT category
-const CAT_SF = new Uint8Array(32).fill(0xb2); // stateful side-car's own NFT category
+// Non-palindromic, so a display/internal byte-order slip can show.
+const CAT_SL = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x4e : 0xb1));
+const CAT_SF = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x4d : 0xb2));
 
 /** Deploy one compute side-car UTXO at the shared-salt address of the requested covenant kind. */
 async function deploySidecar(

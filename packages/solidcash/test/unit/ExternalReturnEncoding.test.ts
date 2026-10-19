@@ -311,7 +311,7 @@ describe('isConstrainedEvmResultVector', () => {
 
 describe('selectMaterializedTailReturnEvents', () => {
   const group = (overrides: Record<string, unknown> = {}): never => ({
-    categoryId: '11'.repeat(32),
+    categoryId: '11'.repeat(31) + 'ee',
     returnEventInBlock: false,
     blockLayout: { blockSize: 1, slots: [{ kind: 'master', offset: 0 }] },
     ...overrides,
@@ -322,8 +322,8 @@ describe('selectMaterializedTailReturnEvents', () => {
     const events = selectMaterializedTailReturnEvents([
       group({ precomputedReturnCommitment: canonicalZero }),
     ], [
-      { categoryId: '11'.repeat(32), commitment: canonicalZero, identity: 'external-call:0:0' },
-      { categoryId: '11'.repeat(32), commitment: Uint8Array.of(0), identity: 'external-call:0' },
+      { categoryId: '11'.repeat(31) + 'ee', commitment: canonicalZero, identity: 'external-call:0:0' },
+      { categoryId: '11'.repeat(31) + 'ee', commitment: Uint8Array.of(0), identity: 'external-call:0' },
     ]);
     expect(events).toHaveLength(1);
     expect(events[0].identity).toBe('external-call:0:0');
@@ -412,13 +412,13 @@ describe('selectMaterializedTailReturnEvents', () => {
     const exact = Uint8Array.of(1);
     const events = selectMaterializedTailReturnEvents([group()], [
       {
-        categoryId: '11'.repeat(32), commitment: Uint8Array.of(0),
+        categoryId: '11'.repeat(31) + 'ee', commitment: Uint8Array.of(0),
         identity: 'external-call:0:0', provisional: true,
       },
-      { categoryId: '11'.repeat(32), commitment: exact, identity: 'external-call:0' },
+      { categoryId: '11'.repeat(31) + 'ee', commitment: exact, identity: 'external-call:0' },
     ]);
     expect(events).toEqual([
-      { categoryId: '11'.repeat(32), commitment: exact, identity: 'external-call:0' },
+      { categoryId: '11'.repeat(31) + 'ee', commitment: exact, identity: 'external-call:0' },
     ]);
   });
 });

@@ -114,21 +114,21 @@ describe('utils', () => {
     it('should throw for negative token amount', () => {
       expect(() => validateInput({
         txid: 'aa'.repeat(32), vout: 0, satoshis: 100n,
-        token: { category: 'bb'.repeat(32), amount: -1n },
+        token: { category: 'bb'.repeat(31) + '44', amount: -1n },
       })).toThrow('Invalid input token amount');
     });
 
     it('should throw for non-hex NFT commitment', () => {
       expect(() => validateInput({
         txid: 'aa'.repeat(32), vout: 0, satoshis: 100n,
-        token: { category: 'bb'.repeat(32), amount: 0n, nft: { capability: 'none', commitment: 'xyz' } },
+        token: { category: 'bb'.repeat(31) + '44', amount: 0n, nft: { capability: 'none', commitment: 'xyz' } },
       })).toThrow('Invalid input NFT commitment');
     });
 
     it('should accept a valid input with token and NFT', () => {
       const input = {
         txid: 'aa'.repeat(32), vout: 0, satoshis: 100n,
-        token: { category: 'bb'.repeat(32), amount: 10n, nft: { capability: 'mutable', commitment: 'aabb' } },
+        token: { category: 'bb'.repeat(31) + '44', amount: 10n, nft: { capability: 'mutable', commitment: 'aabb' } },
       } as const;
       validateInput(input);
       expect(input.token).toMatchObject({ amount: 10n, nft: { capability: 'mutable', commitment: 'aabb' } });
@@ -145,7 +145,7 @@ describe('utils', () => {
     it('should throw for negative token amount on bytecode output', () => {
       expect(() => validateOutput({
         to: new Uint8Array([0x00]), amount: 1000n,
-        token: { category: 'aa'.repeat(32), amount: -5n },
+        token: { category: 'aa'.repeat(31) + '55', amount: -5n },
       })).toThrow('Tried to add an output with -5 tokens, which is invalid');
     });
 
@@ -209,14 +209,14 @@ describe('utils', () => {
     it('rejects an input token amount above the 64-bit consensus limit', () => {
       expect(() => validateInput({
         txid: 'aa'.repeat(32), vout: 0, satoshis: 100n,
-        token: { category: 'bb'.repeat(32), amount: 0x1_0000_0000_0000_0000n },
+        token: { category: 'bb'.repeat(31) + '44', amount: 0x1_0000_0000_0000_0000n },
       })).toThrow('Invalid input token amount');
     });
 
     it('rejects an output token amount above the 64-bit consensus limit', () => {
       expect(() => validateOutput({
         to: new Uint8Array([0x00]), amount: 1000n,
-        token: { category: 'aa'.repeat(32), amount: 0x1_0000_0000_0000_0000n },
+        token: { category: 'aa'.repeat(31) + '55', amount: 0x1_0000_0000_0000_0000n },
       })).toThrow('Invalid output token amount');
     });
 

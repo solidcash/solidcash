@@ -42,7 +42,7 @@ const fundKeccakSidecars = async (
   provider: ReturnType<typeof createMessageBusCapstoneTestProvider>,
   categoryId: string,
 ): Promise<string> => {
-  const sidecarCategory = '77'.repeat(32);
+  const sidecarCategory = '77'.repeat(31) + '88';
   const locks = [
     binToHex(keccakComputeLockingBytecode(new Uint8Array(32), true)),
     binToHex(keccakComputeLockingBytecode(hexToBin(categoryId).reverse(), true)),

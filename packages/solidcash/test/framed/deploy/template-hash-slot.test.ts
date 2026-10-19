@@ -28,7 +28,7 @@ const {
   readPlaceholders,
 } = compositionPlaceholders;
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
+const CATEGORY = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xa5 : 0x5a));
 const ADDRESS = new Uint8Array([0xaa, 0x20, ...new Uint8Array(32).fill(0x33), 0x87]);
 const TEMPLATE_HASH = new Uint8Array(32).fill(0x9c);
 

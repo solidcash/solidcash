@@ -50,7 +50,7 @@ contract Ledger {
 }`;
 
 const bundle = compileStringSplit(SOURCE, { split: 'func', ...FRAMED });
-const CATEGORY = new Uint8Array(32).fill(0x5a);
+const CATEGORY = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xa5 : 0x5a));
 const CATEGORY_ID = bytesToHex(CATEGORY);
 const VALIDATOR = framedValidator.buildValidatorProgram();
 const CALLER = new Uint8Array(25).fill(0x02);
@@ -238,7 +238,9 @@ describe('function-split pools', () => {
       provider: providerOf([], sent),
       implementationArtifact: bundle.logical,
       proxyCategoryId: CATEGORY_ID,
-      implementationCategoryId: bytesToHex(new Uint8Array(32).fill(0x6b)),
+      implementationCategoryId: bytesToHex(
+        Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x94 : 0x6b)),
+      ),
       functionName: 'missing',
       callerUtxo: { txid: 'cc'.repeat(32), vout: 0, satoshis: 50_000n },
       callerLockingBytecode: CALLER,

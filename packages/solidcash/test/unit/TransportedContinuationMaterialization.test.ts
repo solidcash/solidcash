@@ -9,7 +9,7 @@ import {
 } from '../../src/message-bus/materialize-transported-continuations.js';
 import { minimumActualSizeForComputedValueChunkClaims } from '../../src/message-bus/compose-recipes.js';
 
-const categoryId = '71'.repeat(32);
+const categoryId = '71'.repeat(31) + '8e';
 const transportedResourceIdentity = `${categoryId}:${'12'.repeat(20)}:${'34'.repeat(32)}`;
 const lock = (byte: number): Uint8Array => Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(byte), 0x87]);
 const chunks: TransportedContinuationOutput[] = [0, 1].map((index) => ({
@@ -132,7 +132,7 @@ describe('transported continuation materialization', () => {
     };
     expect(select(builder)).toEqual([7, 8]);
     const valid = structuredClone(builder.outputs[8]);
-    builder.outputs[8].token!.category = '82'.repeat(32);
+    builder.outputs[8].token!.category = '82'.repeat(31) + '7d';
     expect(select(builder)).toEqual([6, 7]);
     builder.outputs[8] = structuredClone(valid);
     builder.outputs[8].token!.nft!.capability = 'none';
@@ -186,7 +186,7 @@ describe('transported continuation materialization', () => {
     const planned = [{ offset: 108, resourceIdentity: transported,
       resourcePart: 'chunk:1', categoryId, commitment: '00', lockingBytecode: lock(0x42) }];
     expect(select(planned)).toEqual([7, 8]);
-    builder.inputs[8].token!.category = '82'.repeat(32);
+    builder.inputs[8].token!.category = '82'.repeat(31) + '7d';
     expect(select(planned)).toEqual([6, 7]);
     builder.inputs[8].token!.category = categoryId;
     materializeTransportedContinuations(builder, [2, 3, 4, 5, 6, 7, 8], [
@@ -337,7 +337,7 @@ describe('transported continuation materialization', () => {
           token: { category: categoryId, amount: 0n,
             nft: { capability: 'mutable', commitment: chunk.commitment } } };
       }
-      builder.inputs[6].token = { category: fault === 'wrong category' ? '82'.repeat(32) : categoryId,
+      builder.inputs[6].token = { category: fault === 'wrong category' ? '82'.repeat(31) + '7d' : categoryId,
         amount: 0n, nft: { capability: 'mutable', commitment: fault === 'wrong category'
           ? '0000aaaa' : 'not-a-chunk' } };
       const claims = chunks.map((chunk, index) => ({
@@ -415,7 +415,7 @@ describe('transported continuation materialization', () => {
     'preserves an output differing by %s', (difference) => {
       const builder = fixture();
       const output = builder.outputs[2];
-      if (difference === 'category') output.token!.category = '82'.repeat(32);
+      if (difference === 'category') output.token!.category = '82'.repeat(31) + '7d';
       if (difference === 'lock') output.to = lock(0x53);
       if (difference === 'commitment') output.token!.nft!.commitment = '0000040506';
       if (difference === 'capability') output.token!.nft!.capability = 'none';

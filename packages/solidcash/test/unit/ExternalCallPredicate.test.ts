@@ -792,7 +792,7 @@ describe('conditional external-call topology', () => {
 
   it('auto-resolves a state-pinned callee without an interface-name registration', async () => {
     const physicalLock = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x58), 0x87);
-    const callee = { categoryId: 'ab'.repeat(32) };
+    const callee = { categoryId: 'ab'.repeat(31) + '54' };
     const fn = {
       name: 'run', inputs: [], externalCalls: [{
         interfaceName: 'IData', functionName: 'ping', requiredDataNftIndices: [], argSources: [],
@@ -851,7 +851,7 @@ describe('conditional external-call topology', () => {
   });
 
   it('retains earlier callees when a later require proves its unresolved call unreachable', async () => {
-    const callee = { categoryId: 'ab'.repeat(32) };
+    const callee = { categoryId: 'ab'.repeat(31) + '54' };
     const guard: ExternalCallExpression = {
       kind: 'binary', operator: '&&',
       left: { kind: 'binary', operator: '>', left: {
@@ -893,7 +893,7 @@ describe('conditional external-call topology', () => {
   });
 
   it('omits an empty loop without dropping a sibling loop that reaches its callee', async () => {
-    const callee = { categoryId: 'ab'.repeat(32) };
+    const callee = { categoryId: 'ab'.repeat(31) + '54' };
     const loop = (paramIndex: number): ExternalCallAbi => ({
       interfaceName: paramIndex === 0 ? 'IReached' : 'IUnregistered',
       functionName: 'record', requiredDataNftIndices: [], occurrence: 'loop',
@@ -931,7 +931,7 @@ describe('conditional external-call topology', () => {
   });
 
   it('hydrates mapping-backed arguments before resolving a direct callee', async () => {
-    const callee = { categoryId: 'ab'.repeat(32) };
+    const callee = { categoryId: 'ab'.repeat(31) + '54' };
     const fn = {
       name: 'run', inputs: [], externalCalls: [{
         interfaceName: 'IToken', functionName: 'pay', requiredDataNftIndices: [],
@@ -966,7 +966,7 @@ describe('conditional external-call topology', () => {
   });
 
   it('resolves later call arguments from the exact published producer result', async () => {
-    const callee = { categoryId: 'ab'.repeat(32) };
+    const callee = { categoryId: 'ab'.repeat(31) + '54' };
     const producerResult: ExternalCallExpression = {
       kind: 'producerResult', callsiteId: 4, resultIndex: 0, type: 'Escrow',
     };
@@ -1020,7 +1020,7 @@ describe('conditional external-call topology', () => {
   });
 
   it('omits a false mapping-backed call without renumbering a later required callsite', async () => {
-    const callee = { categoryId: 'ab'.repeat(32) };
+    const callee = { categoryId: 'ab'.repeat(31) + '54' };
     const fn = {
       name: 'run', inputs: [], externalCalls: [{
         callsiteId: 4, occurrence: 'conditional', interfaceName: 'IAbsent',
@@ -1108,7 +1108,7 @@ describe('conditional external-call topology', () => {
           inner: { artifact: { abi: [{ name: 'transferFrom', selector: '4b6685e7' }] } },
         },
       }] as any,
-      groupMetas: [{ ecSlot: calls[1], callerCategoryId: 'ab'.repeat(32), parentGroupIndex: -1 }] as any,
+      groupMetas: [{ ecSlot: calls[1], callerCategoryId: 'ab'.repeat(31) + '54', parentGroupIndex: -1 }] as any,
       directGroupCount: 1, loopIdxRanges: [], groupMasterIndices: [8],
       externalCalls: [calls[1]] as any, returnEventOutputBase: 12,
       returnEventIndexMap: new Map([[0, 12]]), callerStateSnapshot: undefined,
@@ -1143,7 +1143,7 @@ describe('conditional external-call topology', () => {
           inner: { artifact: { abi: [{ name: 'record', selector: '4b6685e7' }] } },
         },
       }] as any,
-      groupMetas: [{ ecSlot: calls[0], callerCategoryId: 'ab'.repeat(32), parentGroupIndex: -1 }] as any,
+      groupMetas: [{ ecSlot: calls[0], callerCategoryId: 'ab'.repeat(31) + '54', parentGroupIndex: -1 }] as any,
       directGroupCount: 1, loopIdxRanges: [], groupMasterIndices: [8],
       externalCalls: [calls[0]] as any, returnEventOutputBase: 0,
       returnEventIndexMap: new Map(), callerStateSnapshot: undefined,

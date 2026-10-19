@@ -27,7 +27,7 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * argument the entry rejects, must come back unaccepted and broadcast nothing.
  */
 
-const CATEGORY_HEX = '33'.repeat(32);
+const CATEGORY_HEX = '33'.repeat(31) + 'cc';
 const CALLER_TXID = '44'.repeat(32);
 
 // Two entries: the master dispatches by selector, so a user's frame leads with the entry's own selector.

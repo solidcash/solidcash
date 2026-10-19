@@ -142,7 +142,7 @@ describe('harness: new ethers.Contract(addr, artifact, runner) bare form', () =>
     const { compileString } = await import('solidc');
     const art = compileString('pragma solidcash >=0.8.0;\ncontract C() { bigint v; function set(bigint x) { this.v = x; } }');
     const [alice] = await ethers.getSigners();
-    const cat = 'ab'.repeat(32); // 64-char category id
+    const cat = 'ab'.repeat(31) + '54'; // 64-char category id
     const c = new ethers.Contract(cat, art, alice);
     expect(c.categoryId).to.equal(cat);
     // ABI functions are dispatchable on the bare name (ethers v6).

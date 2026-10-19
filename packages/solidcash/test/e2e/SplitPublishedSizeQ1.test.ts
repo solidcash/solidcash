@@ -36,7 +36,7 @@ contract Sized {
 describe('Q1: the published split size against the constructed redeem script', () => {
   it('publishes a facet size that the constructed redeem script exceeds', () => {
     const provider = new MockNetworkProvider();
-    const category = new Uint8Array(32).fill(0xab);
+    const category = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x54 : 0xab));
     const brand = StatefulContract.libraryBrand('ab'.repeat(32));
     // A limit low enough to force more than one facet, so the root also carries more than one link push.
     const single = compileStringSplit(SOURCE, { evmCompat: true, forceSplit: true });

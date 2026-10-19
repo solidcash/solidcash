@@ -116,7 +116,10 @@ const toStdCompressed = (q: Uint8Array): string =>
 
 // A dummy side-car pair for probing whether a signature has a valid 2-covenant split.
 const dummySc = (v: number): { txid: string; vout: number; satoshis: bigint; token: { category: string; amount: bigint; nft: { capability: 'mutable'; commitment: string } } } =>
-  ({ txid: (v ? 'bb' : 'aa').repeat(32), vout: v, satoshis: 100000n, token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } } });
+  ({
+    txid: (v ? 'bb' : 'aa').repeat(32), vout: v, satoshis: 100000n,
+    token: { category: 'ee'.repeat(31) + '11', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+  });
 // A small fraction of signatures are "width-0": their GLV ladder is too long for the 2-covenant (A+B) split, so
 // recovery fails closed with "no ladder split fits both side-cars' op-budget for this signature ... Re-sign to obtain
 // a different signature, which will decompose differently". Measured on this tree at 4/300 = 1.33% of random signers

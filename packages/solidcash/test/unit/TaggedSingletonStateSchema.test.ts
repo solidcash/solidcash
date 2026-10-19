@@ -14,7 +14,7 @@ import { appendOnlyStateSuffix } from '../../src/message-bus/compose-participant
 import { StateReader } from '../../src/stateful/StateReader.js';
 import { sameStatePrefixThroughField } from '../../src/stateful/sc-derive-return-value.js';
 
-const CATEGORY = 'ab'.repeat(32);
+const CATEGORY = 'ab'.repeat(31) + '54';
 const legacy: StateLayout = {
   dataNftCount: 1, commitmentLimit: 128,
   variables: [{ name: 'counter', type: 'uint8', nftIndex: 0, fieldIndex: 0 }],

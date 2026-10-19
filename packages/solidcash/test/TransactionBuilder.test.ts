@@ -384,7 +384,11 @@ describe('Transaction Builder', () => {
       expect(() => {
         new TransactionBuilder({ provider })
           .addInput(p2pkhUtxos[0], p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
-          .addOutput({ to: new Uint8Array([0x76, 0xa9]), amount: 1000n, token: { category: 'aa'.repeat(32), amount: -1n } });
+          .addOutput({
+            to: new Uint8Array([0x76, 0xa9]),
+            amount: 1000n,
+            token: { category: 'aa'.repeat(31) + '55', amount: -1n },
+          });
       }).toThrow('Tried to add an output with -1 tokens, which is invalid');
     });
 

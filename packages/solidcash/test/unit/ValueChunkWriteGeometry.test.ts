@@ -6,7 +6,7 @@ import {
 import { valueChunkWriteResourceIdentity, type ValueChunkWriteDescriptor } from '../../src/stateful/value-chunk-persist.js';
 
 const write = (key: string, outputBase: number, outputCount: number): ValueChunkWriteDescriptor => ({
-  categoryId: '11'.repeat(32), collection: 'values', collectionSignature: 'values:bytes[]',
+  categoryId: '11'.repeat(31) + 'ee', collection: 'values', collectionSignature: 'values:bytes[]',
   collectionHash: '22'.repeat(20), keySlot: key.repeat(32), entryAccessSlot: 0,
   routeSlot: 0, operation: 'update', outputBase, outputCount,
 });

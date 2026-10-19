@@ -20,7 +20,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * back through the shipped deployment reader and decoded with the shipped state decoder rather than recomputed here.
  */
 
-const CATEGORY_HEX = '55'.repeat(32);
+const CATEGORY_HEX = '55'.repeat(31) + 'aa';
 const PHRASE = 'test test test test test test test test test test test junk';
 /** A wallet no test funds. */
 const UNFUNDED_PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';

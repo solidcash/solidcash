@@ -15,7 +15,7 @@ describe('stateful ABI argument validation', () => {
       }
     }`, { forceStateful: true });
     const inner = new Contract(artifact, [], { provider: createTestProvider() });
-    return StatefulContract.withCategory(inner, 'aa'.repeat(32));
+    return StatefulContract.withCategory(inner, 'aa'.repeat(31) + '55');
   };
 
   it('rejects an oversized fixed-bytes argument before provider or state processing', async () => {

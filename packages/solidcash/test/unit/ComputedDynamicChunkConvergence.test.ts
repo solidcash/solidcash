@@ -37,7 +37,7 @@ describe('dynamic chunk placeholder admission', () => {
         lockingBytecode: Uint8Array.of(0x51),
         valueSatoshis: 1_000n,
         token: {
-          category: new Uint8Array(32).fill(2),
+          category: Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xfd : 0x02)),
           amount: 0n,
           nft: { capability: 'mutable' as const, commitment: Uint8Array.of(commitment) },
         },

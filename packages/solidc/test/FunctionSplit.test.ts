@@ -439,7 +439,7 @@ contract Ledger {
   });
 
   it('keeps the master capability-only and the validator program stable', () => {
-    const category = new Uint8Array(32).fill(0x11);
+    const category = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xee : 0x11));
     const token = {
       category, capability: TokenCapability.MINTING, hasNft: true, nftCommitment: Uint8Array.of(0xab), amount: 0n,
     };

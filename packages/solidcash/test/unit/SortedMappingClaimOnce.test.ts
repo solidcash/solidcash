@@ -9,7 +9,7 @@ import { Op } from '@solidcash/utils';
 // no valid predecessor and reverts: claim-once, with no default-on-absent branch to omit. This walks a realistic
 // sequence of claims building the list and shows a re-claim (and an omission attempt) rejected.
 
-const CATEGORY = hexToBin('11'.repeat(32));
+const CATEGORY = hexToBin('11'.repeat(31) + 'ee');
 const masterToken = { category: CATEGORY, amount: 0n, nft: { capability: 'minting' as const, commitment: new Uint8Array([]) } };
 
 function slot32(n: number): Uint8Array {
@@ -26,8 +26,10 @@ class Asm { b: number[] = []; op(...xs: number[]): this { this.b.push(...xs); re
 // P'[Ps|k], output2 = NEW[k|S=P.next]. (Same as the proven insert covenant.)
 function claimCovenant(): Uint8Array {
   const a = new Asm();
+  // OP_UTXOTOKENCATEGORY and OP_OUTPUTTOKENCATEGORY answer in internal (reversed) order.
+  const catInternal = CATEGORY.slice().reverse();
   const catBase = (idx: number, opCat: number): void => {
-    a.op(idx, opCat).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP).pushData(CATEGORY).op(Op.OP_EQUALVERIFY);
+    a.op(idx, opCat).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP).pushData(catInternal).op(Op.OP_EQUALVERIFY);
   };
   catBase(Op.OP_1, Op.OP_UTXOTOKENCATEGORY);                 // [k32]
   a.op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT).pushData(new Uint8Array([32])).op(Op.OP_SPLIT); // [k32, Ps32, S32]

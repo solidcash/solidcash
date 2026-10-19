@@ -24,7 +24,7 @@ import { hash256 } from '../src/hash.js';
 
 const vm = createVirtualMachineBch2026();
 const C = new Uint8Array(32);            // shared salt
-const K = new Uint8Array(32).fill(0xbb); // side-car NFT category
+const K = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x44 : 0xbb)); // side-car NFT category
 
 const hexToBin = (h: string): Uint8Array => Uint8Array.from(h.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
 const push = (data: Uint8Array): Uint8Array => {

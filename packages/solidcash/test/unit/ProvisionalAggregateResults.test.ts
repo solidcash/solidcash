@@ -33,7 +33,7 @@ function fixture(
   const artifact = { abi: [], constructorInputs: [], structs } as unknown as Artifact;
   const derive = vi.fn(async (): Promise<FunctionArgument> => { throw unavailable; });
   const producer = {
-    inner: { artifact, lockingBytecode: calleeLockingBytecode }, categoryId: '01'.repeat(32),
+    inner: { artifact, lockingBytecode: calleeLockingBytecode }, categoryId: '01'.repeat(31) + 'fe',
     _deriveReturnValue: derive, _resolveExternalArgs: () => [],
     _resolveCallAbi: () => ({ name: 'compute', inputs: [], outputs: [{ type }] }),
   } as unknown as StatefulContract;

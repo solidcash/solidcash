@@ -25,8 +25,8 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * participant that refused, and the caller's coin stays unspent. A refused initialize broadcasts neither genesis.
  */
 
-const IMPL_CATEGORY = '66'.repeat(32);
-const PROXY_CATEGORY = '67'.repeat(32);
+const IMPL_CATEGORY = '66'.repeat(31) + '99';
+const PROXY_CATEGORY = '67'.repeat(31) + '98';
 const HOP_COIN = { txid: '68'.repeat(32), vout: 0, satoshis: 300_000n };
 
 const SOURCE = 'pragma solidcash ^0.13.0;'

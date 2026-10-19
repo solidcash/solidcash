@@ -9,7 +9,7 @@ import {
   type CollectionValueIdentity,
 } from '../../src/stateful/ValueChunkPersistence.js';
 
-const category = 'ab'.repeat(32);
+const category = 'ab'.repeat(31) + '54';
 const lock = (byte: number): Uint8Array => Uint8Array.from([0xaa, 0x20, ...Array(32).fill(byte), 0x87]);
 const identity = (
   collectionSignature: string,
@@ -94,7 +94,7 @@ describe('observed value chunk runs', () => {
     observeCollectionValueChunks(record, [
       { commitment: '000001', lockingBytecode: sharedLock },
     ]);
-    const otherCategory = 'cd'.repeat(32);
+    const otherCategory = 'cd'.repeat(31) + '32';
     const other = identity('items:mapping(bytes32 => Item[])', 1, otherCategory);
     observeCollectionValueChunks(other, [
       { commitment: '000002', lockingBytecode: sharedLock },

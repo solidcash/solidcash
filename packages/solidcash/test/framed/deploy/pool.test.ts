@@ -14,7 +14,7 @@ import {
  * category and broadcasting the genesis transaction is outside the module.
  */
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
+const CATEGORY = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xa5 : 0x5a));
 const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52, 0x53, 0x54]);
 const SIZE = { masters: 12, validators: 2 } as const;
 

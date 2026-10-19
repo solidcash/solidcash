@@ -128,7 +128,7 @@ describe('split contract SDK', () => {
     const signer = await fundedSigner();
     const compiled = compileStringSplit(SOURCE, { forceSplit: true });
     const sdk = SplitContractBundle.from(compiled, signer);
-    expect(() => sdk.attach({ rootCategory: '01'.repeat(32), facetCategories: {} }))
+    expect(() => sdk.attach({ rootCategory: '01'.repeat(31) + 'fe', facetCategories: {} }))
       .toThrow(/missing or invalid category/i);
   });
 

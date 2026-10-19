@@ -13,7 +13,7 @@ describe('phase-two graph event commitments', () => {
   it.each([false, true])('applies a bounded event search expectation (complete trace: %s)', (complete) => {
     const payload = Uint8Array.of(0, 0x52, 1, 7);
     const lock = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(2), 0x87]);
-    const category = new Uint8Array(32).fill(3);
+    const category = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xfc : 0x03));
     const outputs: Output[] = [
       { lockingBytecode: Uint8Array.of(Op.OP_1), valueSatoshis: 1000n },
       { lockingBytecode: lock, valueSatoshis: 1000n,

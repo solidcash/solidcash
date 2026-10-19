@@ -23,10 +23,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * head is minted only at genesis), and every reach splices its own key in through that one head.
  */
 
-const STORE_IMPL_CATEGORY = '33'.repeat(32);
-const STORE_PROXY_CATEGORY = '44'.repeat(32);
-const OUTER_IMPL_CATEGORY = '55'.repeat(32);
-const OUTER_PROXY_CATEGORY = '66'.repeat(32);
+const STORE_IMPL_CATEGORY = '33'.repeat(31) + 'cc';
+const STORE_PROXY_CATEGORY = '44'.repeat(31) + 'bb';
+const OUTER_IMPL_CATEGORY = '55'.repeat(31) + 'aa';
+const OUTER_PROXY_CATEGORY = '66'.repeat(31) + '99';
 
 /** An element whose declared body pushes the array value past the inline limit, so its run occupies chunk records. */
 const BODY = 'ab'.repeat(120);

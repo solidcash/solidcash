@@ -22,9 +22,9 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * record. The hop is driven only through the shipped deployment, composer, derivation and machine.
  */
 
-const STORE_CATEGORY = '11'.repeat(32);
-const IMPL_CATEGORY = '22'.repeat(32);
-const PROXY_CATEGORY = '33'.repeat(32);
+const STORE_CATEGORY = '11'.repeat(31) + 'ee';
+const IMPL_CATEGORY = '22'.repeat(31) + 'dd';
+const PROXY_CATEGORY = '33'.repeat(31) + 'cc';
 const STORE_ADDRESS = validatorAddress(hexToBin(STORE_CATEGORY), VALIDATOR_PROGRAM);
 const hexOf = (bytes: Uint8Array): string => binToHex(bytes);
 

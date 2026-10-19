@@ -14,7 +14,7 @@ import { FrameKind } from '@solidcash/utils';
  * is meant to prevent, and only decoding the bytes shows it.
  */
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
+const CATEGORY = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xa5 : 0x5a));
 const USER_ID = 'user';
 const USER_INDEX = 0;
 const SENDER = new Uint8Array([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x22), 0x88, 0xac]);

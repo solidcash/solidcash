@@ -55,10 +55,10 @@ const registry = artifacts.Registry!;
 const echo = artifacts.Echo!;
 const sink = artifacts.Sink!;
 
-const CALLER_CATEGORY = 'a1'.repeat(32);
-const REGISTRY_CATEGORY = 'a2'.repeat(32);
-const ECHO_CATEGORY = 'a3'.repeat(32);
-const SINK_CATEGORY = 'a4'.repeat(32);
+const CALLER_CATEGORY = 'a1'.repeat(31) + '5e';
+const REGISTRY_CATEGORY = 'a2'.repeat(31) + '5d';
+const ECHO_CATEGORY = 'a3'.repeat(31) + '5c';
+const SINK_CATEGORY = 'a4'.repeat(31) + '5b';
 
 /** The address a frame presents, which is what a state field or a mapping entry names. */
 function masterAddress(artifact: Artifact, categoryId: string): Uint8Array {

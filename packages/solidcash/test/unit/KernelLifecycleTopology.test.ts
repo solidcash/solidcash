@@ -59,7 +59,7 @@ const mergeTopology = () => ({
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 const owner = 'aa20';
-const category = '11'.repeat(32);
+const category = '11'.repeat(31) + 'ee';
 const point = (overrides: Partial<KernelLifecycleTransactionPoint> = {}): KernelLifecycleTransactionPoint => ({
   lockingBytecode: owner,
   tokenCategory: category,
@@ -234,7 +234,7 @@ describe('kernel lifecycle topology planning prerequisite', () => {
     const wrongOwner = splitFrame();
     wrongOwner.outputs[1]!.lockingBytecode = 'bb20';
     const wrongCategory = splitFrame();
-    wrongCategory.outputs[1]!.tokenCategory = '22'.repeat(32);
+    wrongCategory.outputs[1]!.tokenCategory = '22'.repeat(31) + 'dd';
     const dirtyCreated = splitFrame();
     dirtyCreated.outputs[1]!.nftCommitment = '00';
     const unfundedCreated = splitFrame();

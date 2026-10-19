@@ -25,7 +25,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * spends that record and leaves the first unspent.
  */
 
-const CATEGORY_HEX = '5a'.repeat(32);
+const CATEGORY_HEX = '5a'.repeat(31) + 'a5';
 const CALLER_TXID = '5b'.repeat(32);
 
 const GATE_SOURCE = 'pragma solidcash ^0.13.0;'

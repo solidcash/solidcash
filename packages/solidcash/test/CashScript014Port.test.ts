@@ -88,7 +88,7 @@ describe('TransactionBuilder', () => {
     const output = (bytes: number): Parameters<TransactionBuilder['addOutput']>[0] => ({
       to: aliceTokenAddress,
       amount: 2_000n,
-      token: { category: 'ab'.repeat(32), amount: 0n, nft: { capability: 'none', commitment: 'cd'.repeat(bytes) } },
+      token: { category: 'ab'.repeat(31) + '54', amount: 0n, nft: { capability: 'none', commitment: 'cd'.repeat(bytes) } },
     });
 
     expect(() => new TransactionBuilder({ provider: limited }).addOutput(output(128))).not.toThrow();

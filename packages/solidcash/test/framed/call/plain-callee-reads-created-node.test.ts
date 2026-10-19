@@ -159,7 +159,7 @@ function credited(): Promise<Credited> {
     const ledger = await deployPlain(world, artifacts.Ledger!);
     const reader = await deployPlain(world, artifacts.Reader!, [ledger.address]);
     await enter(world, ledger, 'credit', [USER_LOCK, 1n]);
-    const fresh = addressOfCategory('5a'.repeat(32));
+    const fresh = addressOfCategory('5a'.repeat(31) + 'a5');
     const result = await enter(world, reader, 'creditAndRead', [fresh], [ledger]);
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
     return { world, ledger, reader, fresh, result };

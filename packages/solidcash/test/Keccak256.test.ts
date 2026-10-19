@@ -27,7 +27,7 @@ const NON_TRUTHY_INPUT_0 = new RegExp('^mandatory-script-verify-flag-failed '
 
 // A keccak compute side-car's OWN NFT category (distinct from any contract's category; the branded covenant
 // checks the MASTER input's category, not the side-car's own).
-const KECCAK_SIDECAR_CATEGORY = '77'.repeat(32);
+const KECCAK_SIDECAR_CATEGORY = '77'.repeat(31) + '88';
 
 // keccak256() is backed by a pure-script side-car library co-spent at runtime (see keccak-poc/).
 const SOURCE = `
@@ -274,7 +274,7 @@ contract HashChainStateless() {
 }`;
 
 describe('keccak256 builtin (stateless dynamic loop)', () => {
-  const K = '99'.repeat(32); // side-car own NFT category
+  const K = '99'.repeat(31) + '66'; // side-car own NFT category
   async function deployStatelessLoopSidecars(provider: MockNetworkProvider, count: number): Promise<void> {
     const lock = binToHex(keccakComputeLockingBytecode(KECCAK256_SHARED_SALT, true)); // STATEFUL covenant, salt 0
     for (let i = 0; i < count; i++) {

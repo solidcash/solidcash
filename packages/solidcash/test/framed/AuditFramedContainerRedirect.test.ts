@@ -85,7 +85,7 @@ describe('FRAMED-CONT-1: a standalone framed spend keeps its containers', () => 
 
   it('refuses a foreign token container redirect and keeps the preserved container', async () => {
     const deployed = await deploy(vault);
-    const heldCategory = 'ab'.repeat(32);
+    const heldCategory = 'ab'.repeat(31) + '54';
     const covenant = buildTokenContainerCovenantScript(
       hexToBin(deployed.categoryId), hexToBin(heldCategory),
     );

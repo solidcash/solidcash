@@ -19,7 +19,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 // token it holds. The container is now migrated in the upgrade transaction: spent with its flag=1 master path (the
 // old master is still an input), drained at its input index, and re-minted at the replacement-bound covenant with
 // its foreign category, amount and value.
-const TOKEN_CATEGORY = 'bb'.repeat(32);
+const TOKEN_CATEGORY = 'bb'.repeat(31) + '44';
 
 const VAULT_V1 = `
 pragma solidcash >=0.8.0;

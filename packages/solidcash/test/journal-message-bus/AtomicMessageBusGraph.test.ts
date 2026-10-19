@@ -10,6 +10,9 @@ import * as messageBus from '../../src/message-bus/index.js';
 import { hasTransientConvergenceResultSeed } from '../../src/message-bus/compose-prepared-invocation.js';
 import { valueChunkEffectDomainId } from '../../src/stateful/index.js';
 
+// The wire carries token categories in internal (reversed) order; fixtures name them in display order.
+const internalOrder = (hex: string): string => (hex.match(/../g) ?? []).reverse().join('');
+
 const artifact = (selector: string, inputType = 'int'): Artifact => ({
   contractName: 'Participant',
   abi: [{ name: 'run', selector, inputs: [{ name: 'n', type: inputType }], outputs: [], modifiers: ['public'] }],
@@ -251,20 +254,20 @@ describe('atomic compiled invocation graph', () => {
     const output = {
       amount: 1199n,
       token: {
-        category: 'aa'.repeat(32), amount: 0n,
+        category: 'aa'.repeat(31) + '55', amount: 0n,
         nft: { capability: 'mutable' as const, commitment: '0000' },
       },
     };
     expect(messageBus.canSeedComputedValueChunkClaim(input, output, {
-      tokenCategory: 'aa'.repeat(32), commitment: '0000',
+      tokenCategory: 'aa'.repeat(31) + '55', commitment: '0000',
     })).toBe(false);
     expect(messageBus.canSeedComputedValueChunkClaim(input, { ...output, amount: 1200n }, {
-      tokenCategory: 'aa'.repeat(32), commitment: '0000',
+      tokenCategory: 'aa'.repeat(31) + '55', commitment: '0000',
     })).toBe(true);
   });
 
   it('authorizes a transported continuation slot from a balanced dummy or a predecessor chunk', () => {
-    const category = 'ab'.repeat(32);
+    const category = 'ab'.repeat(31) + '54';
     const dummy = {
       unlocker: {
         generateLockingBytecode: () => Uint8Array.from(Buffer.from(
@@ -1762,18 +1765,19 @@ describe('atomic compiled invocation graph', () => {
     const tokenized = messageBus.finalizeAtomicInvocationGraph(
       tokenPlan, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' }, [], [{
         participant: 1, offset: 1, mode: 4, lockingBytecodeHex: '52',
-        tokenCategoryHex: 'cc'.repeat(32), outputTokenCategoryHex: 'cc'.repeat(32),
+        tokenCategoryHex: 'cc'.repeat(31) + '33', outputTokenCategoryHex: 'cc'.repeat(31) + '33',
         inputCommitmentHex: '', outputCommitmentHex: '', inputValue: 100n, outputValue: 75n,
       }], [], [{
-        participant: 1, offset: 2, lockingBytecodeHex: '53', tokenCategoryHex: 'cc'.repeat(32),
+        participant: 1, offset: 2, lockingBytecodeHex: '53', tokenCategoryHex: 'cc'.repeat(31) + '33',
         amount: 25n, commitmentHex: '', capability: 'ft',
       }],
     );
     expect(tokenized.callManifest.rows.slice(2)).toMatchObject([{
-      kind: 1, mode: 4, sourceOffset: 1, targetOffset: 1, argsHex: 'cc'.repeat(32),
-      resultHex: '6400000000000000', effectHex: `20${'cc'.repeat(32)}4b00000000000000`,
+      kind: 1, mode: 4, sourceOffset: 1, targetOffset: 1, argsHex: 'cc'.repeat(31) + '33',
+      resultHex: '6400000000000000',
+      effectHex: `20${'cc'.repeat(31) + '33'}4b00000000000000`,
     }, {
-      kind: 4, mode: 0, sourceOffset: 2, targetOffset: 2, argsHex: 'cc'.repeat(32),
+      kind: 4, mode: 0, sourceOffset: 2, targetOffset: 2, argsHex: 'cc'.repeat(31) + '33',
       effectHex: '1900000000000000',
     }]);
   });
@@ -1908,7 +1912,7 @@ describe('atomic compiled invocation graph', () => {
         mode: 5,
         lockingBytecodeHex: '51',
         outputLockingBytecodeHex: '52',
-        tokenCategoryHex: `${'cc'.repeat(32)}01`,
+        tokenCategoryHex: `${'cc'.repeat(31) + '33'}01`,
         inputCommitmentHex: 'aa',
         outputCommitmentHex: 'bb',
       }],
@@ -1917,7 +1921,7 @@ describe('atomic compiled invocation graph', () => {
       kind: 1,
       mode: 5,
       subjectHex: '51',
-      argsHex: `${'cc'.repeat(32)}01`,
+      argsHex: `${'cc'.repeat(31) + '33'}01`,
       resultHex: 'aa',
       effectHex: '010052bb',
     });
@@ -1927,7 +1931,7 @@ describe('atomic compiled invocation graph', () => {
         offset: 1,
         mode: 5,
         lockingBytecodeHex: '51',
-        tokenCategoryHex: `${'cc'.repeat(32)}01`,
+        tokenCategoryHex: `${'cc'.repeat(31) + '33'}01`,
         inputCommitmentHex: 'aa',
         outputCommitmentHex: 'bb',
       }],
@@ -1997,7 +2001,7 @@ describe('atomic compiled invocation graph', () => {
         },
       }, base.participants[1]],
     };
-    const category = 'cc'.repeat(32);
+    const category = 'cc'.repeat(31) + '33';
     const effect: messageBus.AtomicDeploymentSlotEffect = {
       participant: 0, invocation: 0, siteIndex: 0, offset: 1,
       genesisTransactionHashHex: category, genesisOutputIndex: 0,
@@ -2021,7 +2025,7 @@ describe('atomic compiled invocation graph', () => {
     expect(finalized.callManifest.rows[2]).toEqual({
       kind: 5, owner: 0, consumer: 0, slot: 1, mode: 0, sourceOffset: 1, targetOffset: 1,
       selectorHex: '00000000', position: 1, parent: 0, depth: 0, subtreeEnd: 0,
-      subjectHex: '', argsHex: `0000${category}${'ab'.repeat(32)}`, resultHex: '',
+      subjectHex: '', argsHex: `0000${internalOrder(category)}${'ab'.repeat(32)}`, resultHex: '',
       effectHex: '0200b004000000000000020100510000b004000000000000010100520100aa',
     });
     expect(messageBus.decodeAtomicMessageBusCallManifest(finalized.bytes).rows[2])
@@ -2087,7 +2091,7 @@ describe('atomic compiled invocation graph', () => {
     expect(() => finalize([{ ...effect, genesisTransactionHashHex: 'cc'.repeat(31) }])).toThrow(/32-byte vout-0/);
     expect(() => finalize([{ ...effect, outputs: effect.outputs.slice(0, 1) }])).toThrow(/requires 2 exact outputs/);
     expect(() => finalize([{ ...effect, outputs: [effect.outputs[0], {
-      ...effect.outputs[1], tokenCategoryHex: 'dd'.repeat(32),
+      ...effect.outputs[1], tokenCategoryHex: 'dd'.repeat(31) + '22',
     }] }])).toThrow(/child-genesis shape/);
     expect(() => finalize([{ ...effect, outputs: [{
       ...effect.outputs[0], capability: 'mutable',
@@ -2239,8 +2243,8 @@ describe('atomic compiled invocation graph', () => {
         },
       }, base.participants[1]],
     };
-    const wideCategory = 'cc'.repeat(32);
-    const narrowCategory = 'dd'.repeat(32);
+    const wideCategory = 'cc'.repeat(31) + '33';
+    const narrowCategory = 'dd'.repeat(31) + '22';
     const changedTopology = {
       ...deploymentArtifact,
       messageBus: {
@@ -2291,8 +2295,8 @@ describe('atomic compiled invocation graph', () => {
     expect(finalized.callManifest.rows.slice(2).map((row) => ({
       kind: row.kind, slot: row.slot, parent: row.parent, argsHex: row.argsHex,
     }))).toEqual([
-      { kind: 5, slot: 1, parent: 0, argsHex: `0000${wideCategory}${'1'.repeat(64)}` },
-      { kind: 5, slot: 4, parent: 0, argsHex: `0100${narrowCategory}${'2'.repeat(64)}` },
+      { kind: 5, slot: 1, parent: 0, argsHex: `0000${internalOrder(wideCategory)}${'1'.repeat(64)}` },
+      { kind: 5, slot: 4, parent: 0, argsHex: `0100${internalOrder(narrowCategory)}${'2'.repeat(64)}` },
     ]);
 
     expect(() => finalize([wide])).toThrow(/exactly cover reached deployment invocations/);

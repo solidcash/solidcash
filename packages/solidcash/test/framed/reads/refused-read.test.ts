@@ -17,7 +17,7 @@ import type { StatefulContract } from '../../../src/stateful/StatefulContract.js
  * rather than inlined, so the reason the compiler publishes for the entry's own selector is what a caller reads.
  */
 
-const CATEGORY_HEX = '99'.repeat(32);
+const CATEGORY_HEX = '99'.repeat(31) + '66';
 const PHRASE = 'test test test test test test test test test test test junk';
 
 const SEED_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x33));

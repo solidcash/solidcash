@@ -58,7 +58,7 @@ function spend(artifact: Artifact, args: Uint8Array[] = [], inputValue = VALUE):
   });
 }
 
-const ORACLE_CATEGORY = new Uint8Array(32).fill(0x71);
+const ORACLE_CATEGORY = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x8e : 0x71));
 const ORACLE_OWNER_KEY = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 0 ? 0x02 : 0x11));
 
 /** An owner-signed spend of the block oracle covenant from one (number, timestamp) to another. */

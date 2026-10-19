@@ -7,7 +7,7 @@ import {
   terminalValueChunkProducerClaim, type ValueChunkProducerMutationRow, type ValueChunkProducerSourceSite,
 } from '../../src/stateful/ValueChunkProducerIdentity.js';
 
-const categoryId = '31'.repeat(32);
+const categoryId = '31'.repeat(31) + 'ce';
 const collectionSignature = 'records:mapping(uint256 => bytes)';
 const collectionHash = binToHex(computeCollectionHash(collectionSignature));
 const stateOwner = { categoryId, lockingBytecode: '51' };

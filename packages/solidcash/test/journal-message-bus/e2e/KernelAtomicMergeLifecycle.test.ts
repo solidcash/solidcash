@@ -123,7 +123,7 @@ describe('kernel atomic merge lifecycle compose', () => {
     expect(ordinary.inputs.length).toBeGreaterThan(0);
     expect(vmAccepts(ordinary)).toBe(true);
 
-    const wrong = { ...inputs[0], token: { ...inputs[0].token!, category: 'cd'.repeat(32) } };
+    const wrong = { ...inputs[0], token: { ...inputs[0].token!, category: 'cd'.repeat(31) + '32' } };
     await expect(messageBus.compose({
       preparedCalls: [
         { contract: coordinator.contract, functionName: 'run', args: [tag, 2n] },

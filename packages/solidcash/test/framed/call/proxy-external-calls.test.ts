@@ -27,13 +27,13 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  */
 
 const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
-const IMPL_CATEGORY = '11'.repeat(32);
-const PROXY_CATEGORY = '22'.repeat(32);
-const ORACLE_CATEGORY = '55'.repeat(32);
-const ESCROW_CATEGORY = '66'.repeat(32);
-const WRITER_CATEGORY = '77'.repeat(32);
-const GUARD_CATEGORY = '88'.repeat(32);
-const LEDGER_CATEGORY = '99'.repeat(32);
+const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
+const ORACLE_CATEGORY = '55'.repeat(31) + 'aa';
+const ESCROW_CATEGORY = '66'.repeat(31) + '99';
+const WRITER_CATEGORY = '77'.repeat(31) + '88';
+const GUARD_CATEGORY = '88'.repeat(31) + '77';
+const LEDGER_CATEGORY = '99'.repeat(31) + '66';
 const ORACLE_ADDRESS = validatorAddress(hexToBin(ORACLE_CATEGORY), VALIDATOR_PROGRAM);
 const ESCROW_ADDRESS = validatorAddress(hexToBin(ESCROW_CATEGORY), VALIDATOR_PROGRAM);
 const WRITER_ADDRESS = validatorAddress(hexToBin(WRITER_CATEGORY), VALIDATOR_PROGRAM);
@@ -127,8 +127,8 @@ const UNFIXED = compileStringMulti('pragma solidcash ^0.13.0;'
 
 // Two entries that call each other, each at an address baked into the other's code, so the planner is asked to
 // place a contract it already placed when it recurses.
-const CYCLE_A_CATEGORY = 'aa'.repeat(32);
-const CYCLE_B_CATEGORY = 'bb'.repeat(32);
+const CYCLE_A_CATEGORY = 'aa'.repeat(31) + '55';
+const CYCLE_B_CATEGORY = 'bb'.repeat(31) + '44';
 const CYCLE_A_ADDRESS = validatorAddress(hexToBin(CYCLE_A_CATEGORY), VALIDATOR_PROGRAM);
 const CYCLE_B_ADDRESS = validatorAddress(hexToBin(CYCLE_B_CATEGORY), VALIDATOR_PROGRAM);
 const CYCLE = compileStringMulti('pragma solidcash ^0.13.0;'

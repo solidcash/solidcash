@@ -17,7 +17,7 @@ function mockBuilder(satoshiDrained = false, tokenDrained = false): StatefulTran
     clearTokenContainerDeposits: vi.fn(),
     isSatoshiContainerDrained: () => satoshiDrained,
     getTokenContainerInfos: () => tokenDrained
-      ? [{ exists: true, utxo: {}, tokenContainerCategoryId: 'ab'.repeat(32) }] : [],
+      ? [{ exists: true, utxo: {}, tokenContainerCategoryId: 'ab'.repeat(31) + '54' }] : [],
     isTokenContainerDrained: () => tokenDrained,
     getDynamicChunkVars: () => [],
     _restoreMessageBusProbeMasterOutpoint: vi.fn(),

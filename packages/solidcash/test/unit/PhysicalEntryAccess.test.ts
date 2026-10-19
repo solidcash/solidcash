@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AbiFunction, EntryAccessAbi } from '@solidcash/utils';
 import { buildEntryNftCovenantScript, computeCollectionHash } from '@solidcash/utils';
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   cachedEntryOutputOwnsLock, physicalEntryAccessForSlot,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
@@ -35,7 +35,7 @@ describe('physical compiler-route entry ownership', () => {
   });
 
   it('constructs the physical route collection lock even when the selected handler uses that ordinal locally', () => {
-    const categoryId = '11'.repeat(32);
+    const categoryId = '11'.repeat(31) + 'ee';
     const physicalSignature = 'physical:mapping(bigint => bigint)';
     const logicalSignature = 'logical:mapping(bigint => bigint)';
     const group = {
@@ -50,7 +50,7 @@ describe('physical compiler-route entry ownership', () => {
     } as never;
     const lock = externalEntryLockingBytecode(group, { kind: 'entry', offset: 1, slotIndex: 0 } as never);
     const expected = scriptToLockingBytecode(
-      buildEntryNftCovenantScript(new Uint8Array(32).fill(0x11), computeCollectionHash(physicalSignature)),
+      buildEntryNftCovenantScript(hexToBin(categoryId), computeCollectionHash(physicalSignature)),
       'p2sh32',
     );
     expect(lock).toEqual(expected);

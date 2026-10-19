@@ -36,7 +36,7 @@ describe('SDKCORE-1 unpaired block pad', () => {
     const wallet = p2pkh(0x22);
     const token = {
       amount: 0n,
-      category: 'ab'.repeat(32),
+      category: 'ab'.repeat(31) + '54',
       nft: { capability: 'mutable' as const, commitment: '00' },
     };
     const kept = outputForUnpairedBlockInput({ satoshis: 800n, token, unlocker: unlocker(wallet) });
@@ -51,7 +51,7 @@ describe('SDKCORE-1 unpaired block pad', () => {
     const anchorLock = hexToBin(`aa20${'33'.repeat(32)}87`);
     const token = {
       amount: 0n,
-      category: 'cd'.repeat(32),
+      category: 'cd'.repeat(31) + '32',
       nft: { capability: 'none' as const, commitment: `5343494401${'00'.repeat(40)}` },
     };
     const anchor = { satoshis: 800n, token, unlocker: unlocker(anchorLock) };
@@ -72,7 +72,7 @@ describe('SDKCORE-1 unpaired block pad', () => {
 
     const tokenInput = {
       satoshis: 900n,
-      token: { amount: 0n, category: 'ab'.repeat(32), nft: { capability: 'mutable' as const, commitment: '00' } },
+      token: { amount: 0n, category: 'ab'.repeat(31) + '54', nft: { capability: 'mutable' as const, commitment: '00' } },
       unlocker: unlocker(p2pkh(0x33)),
     };
     const stayed = pad(tokenInput, [replica()]);

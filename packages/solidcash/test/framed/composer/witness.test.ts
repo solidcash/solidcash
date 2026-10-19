@@ -189,7 +189,10 @@ describe('validator witness assembly', () => {
     const transcript: Transcript = {
       roots: [0],
       masters: [0, 1, 4],
-      settles: [{ category: new Uint8Array(32).fill(0x33), stateInputs: [3], createdOutputs: [] }],
+      settles: [{
+        category: Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xcc : 0x33)),
+        stateInputs: [3], createdOutputs: [],
+      }],
     };
 
     const assembled = assembleValidatorWitness({ transcript, redeemScript });

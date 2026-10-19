@@ -6,7 +6,7 @@ import {
 } from '../../src/stateful/stb-late-value-suffix-rebind.js';
 import type { ValueChunkWriteDescriptor } from '../../src/stateful/value-chunk-persist.js';
 
-const categoryId = '71'.repeat(32);
+const categoryId = '71'.repeat(31) + '8e';
 
 function fixture(): {
   host: LateValueSuffixRebindHost;

@@ -33,7 +33,7 @@ contract C() {
 // P2SH32 of `OP_2DROP OP_1`: any two pushes before the redeem script unlock it.
 const REDEEM = Uint8Array.of(0x6d, 0x51);
 const LOCK = Uint8Array.of(0xaa, 0x20, ...hash256(REDEEM), 0x87);
-const CATEGORY = 'ee'.repeat(32);
+const CATEGORY = 'ee'.repeat(31) + '11';
 
 async function fund(provider: MockNetworkProvider, withNft = false): Promise<Utxo> {
   const token = { category: CATEGORY, amount: 0n, nft: { capability: 'mutable' as const, commitment: '' } };

@@ -212,7 +212,7 @@ describe('canMaterializeRepairedValueChunk', () => {
       currentLockingBytecode: Uint8Array.of(0x51),
       proposedLockingBytecode: chunkLock,
       proposedCommitment: chunk,
-      categoryId: '22'.repeat(32),
+      categoryId: '22'.repeat(31) + 'dd',
     })).toBe(true);
   });
 
@@ -223,7 +223,7 @@ describe('canMaterializeRepairedValueChunk', () => {
       currentLockingBytecode: Uint8Array.of(0x51),
       proposedLockingBytecode: chunkLock,
       proposedCommitment: chunk,
-      categoryId: '22'.repeat(32),
+      categoryId: '22'.repeat(31) + 'dd',
     };
     expect(canMaterializeRepairedValueChunk({ ...base, fixedStateSlot: true })).toBe(false);
     expect(canMaterializeRepairedValueChunk({ ...base, currentHasToken: true })).toBe(false);

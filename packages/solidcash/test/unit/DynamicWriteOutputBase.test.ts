@@ -11,7 +11,7 @@ import {
   resolveMaterializedDynamicWriteOutputBase,
 } from '../../src/stateful/stb-reconcile-dynamic-chunk-output-witnesses.js';
 
-const categoryId = '11'.repeat(32);
+const categoryId = '11'.repeat(31) + 'ee';
 // A direct contract's chunk covenant binds its 35-byte master lock.
 const contract = {
   provider: { network: 'chipnet' },
@@ -138,7 +138,7 @@ describe('non-composed dynamic-output witness of a delegate', () => {
   const outputs = [predecessor, chunk('first'), chunk('second')];
   const builder = { outputs } as unknown as TransactionBuilder;
   const delegate = (published: Array<Record<string, unknown>>): ExternalCallUtxoGroup => ({
-    categoryId: '22'.repeat(32),
+    categoryId: '22'.repeat(31) + 'dd',
     callMode: 'delegatecall',
     stateLayout,
     externalContract: { inner: implementation },

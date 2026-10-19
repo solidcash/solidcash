@@ -12,7 +12,7 @@ import { artifactFixture, programBytesOf, SLOT_SCRIPT_HEX } from './fixture.js';
  * assembled, and the wrong form is refused rather than misread.
  */
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
+const CATEGORY = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xa5 : 0x5a));
 const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52]);
 
 describe('the form a program is published in', () => {

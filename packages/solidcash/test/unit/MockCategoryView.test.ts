@@ -8,7 +8,7 @@ import { aliceAddress } from '../fixture/vars.js';
  * caller mutating what it got back must all leave the next read exactly what a fresh read of the store returns.
  */
 describe('MockNetworkProvider category reads', () => {
-  const category = 'ab'.repeat(32);
+  const category = 'ab'.repeat(31) + '54';
   const withToken = (amount: bigint, commitment?: string): ReturnType<typeof randomUtxo> => randomUtxo({
     token: {
       category, amount, ...(commitment === undefined ? {} : { nft: { capability: 'mutable', commitment } }),

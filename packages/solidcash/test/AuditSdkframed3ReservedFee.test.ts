@@ -40,7 +40,7 @@ describe('SDKFRAMED-3 reserved genesis coins are not call fees', () => {
     try {
       const artifact = { contractName: 'C', abi: [{ name: 'poke', inputs: [{ name: 'go', type: 'bool' }] }] } as Artifact;
       await new FramedFunctionCall({
-        artifact, abiEntry: { writesState: true }, categoryId: '11'.repeat(32), provider, signer,
+        artifact, abiEntry: { writesState: true }, categoryId: '11'.repeat(31) + 'ee', provider, signer,
       }, 'poke', [false]).compose();
       throw new Error('the reserved coin was offered as the call fee');
     } catch (error) {

@@ -55,7 +55,7 @@ describe('kernel self keccak sidecar under composition', () => {
 
     const preimage = hexToBin('01'.repeat(32));
     const expected = keccak_256(preimage);
-    const sidecarCategory = '77'.repeat(32);
+    const sidecarCategory = '77'.repeat(31) + '88';
 
     const probeBase = new Contract(probeArtifact, [], { provider });
     const probeSetup = await setupStatefulUtxos(

@@ -36,7 +36,7 @@ function fixture(overrides: Record<string, unknown> = {}): {
   };
   const entryNfts = [{ ...entry, slotIndex: 1 }, { ...entry, slotIndex: 4, ...overrides }];
   const builder = Object.assign(Object.create(StatefulTransactionBuilder.prototype), {
-    categoryId: '12'.repeat(32),
+    categoryId: '12'.repeat(31) + 'ed',
     entryNfts, entryRawCommitments, pinnedEntrySlots, addValueChunkOutput: vi.fn(),
     loopEntryVars: [], loopEntryCommitments: new Map(),
     requiredLoopEntryCounts: new Map(), pinnedLoopEntries: new Set(),
@@ -44,7 +44,7 @@ function fixture(overrides: Record<string, unknown> = {}): {
   return {
     builder, entryRawCommitments, pinnedEntrySlots,
     register: (placement = {}) => registerCreateBuilderBuilderState({
-      categoryId: '12'.repeat(32),
+      categoryId: '12'.repeat(31) + 'ed',
       // Continuation locks bind the owner's 35-byte master lock.
       inner: { artifact: { stateLayout: { collections: [{
         name: 'records', signature: 'records:mapping(uint256 => bytes)',
@@ -88,7 +88,7 @@ describe('precomputed value-chunk entry commitments', () => {
 
   it('pins mixed-order transported mints at sparse authenticated lanes and keeps unrelated mints outside them', () => {
     const { builder, register } = fixture();
-    const categoryId = '12'.repeat(32);
+    const categoryId = '12'.repeat(31) + 'ed';
     const collection = 'records';
     const collectionSignature = 'records:mapping(uint256 => bytes)';
     const collectionHash = binToHex(computeCollectionHash(collectionSignature));
@@ -149,7 +149,7 @@ describe('precomputed value-chunk entry commitments', () => {
 
   it('keeps unmatched value mints out of a planned trailing predecessor output', () => {
     const { builder, register } = fixture();
-    const categoryId = '12'.repeat(32);
+    const categoryId = '12'.repeat(31) + 'ed';
     const collectionSignature = 'records:mapping(uint256 => bytes)';
     const slotB = new Uint8Array(32).fill(0x32);
     const transportedValue = new Uint8Array(260).fill(0x44);

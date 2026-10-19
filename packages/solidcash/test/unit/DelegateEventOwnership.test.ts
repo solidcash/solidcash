@@ -14,7 +14,7 @@ import {
   type DelegateEventClaim,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
-const category = '11'.repeat(32);
+const category = '11'.repeat(31) + 'ee';
 const eventLock = hexToBin(`aa20${'22'.repeat(32)}87`);
 const otherLock = hexToBin(`aa20${'33'.repeat(32)}87`);
 const commitment = '515e1976a914';
@@ -105,8 +105,8 @@ describe('externalCallEventDestinations', () => {
 
 describe('lowLevelCallImmutableEventDestinations', () => {
   it('uses the implementation coordinate and proxy execution category for delegate events', () => {
-    const implementationCategory = '55'.repeat(32);
-    const proxyCategory = '66'.repeat(32);
+    const implementationCategory = '55'.repeat(31) + 'aa';
+    const proxyCategory = '66'.repeat(31) + '99';
     const groups = [{
       categoryId: implementationCategory,
       callMode: 'delegatecall' as const,
@@ -135,8 +135,8 @@ describe('lowLevelCallImmutableEventDestinations', () => {
   });
 
   it('collapses shared logical delegates to one physical state owner', () => {
-    const implementationCategory = '77'.repeat(32);
-    const proxyCategory = '88'.repeat(32);
+    const implementationCategory = '77'.repeat(31) + '88';
+    const proxyCategory = '88'.repeat(31) + '77';
     const implementation = { categoryId: implementationCategory, callMode: 'delegatecall' as const };
     const proxies = [{
       categoryId: proxyCategory,
@@ -155,12 +155,12 @@ describe('lowLevelCallImmutableEventDestinations', () => {
   });
 
   it('rejects one physical delegate assigned to distinct state owners', () => {
-    const implementation = { categoryId: '99'.repeat(32), callMode: 'delegatecall' as const };
+    const implementation = { categoryId: '99'.repeat(31) + '66', callMode: 'delegatecall' as const };
     const proxies = [{
-      categoryId: 'aa'.repeat(32),
+      categoryId: 'aa'.repeat(31) + '55',
       delegateCallGroupIndex: 0,
     }, {
-      categoryId: 'bb'.repeat(32),
+      categoryId: 'bb'.repeat(31) + '44',
       delegateCallGroupIndex: 0,
     }];
 
@@ -169,10 +169,10 @@ describe('lowLevelCallImmutableEventDestinations', () => {
   });
 
   it('keeps a root delegate on the root state owner despite routed external references', () => {
-    const rootCategory = 'cc'.repeat(32);
-    const implementation = { categoryId: 'dd'.repeat(32), callMode: 'delegatecall' as const };
+    const rootCategory = 'cc'.repeat(31) + '33';
+    const implementation = { categoryId: 'dd'.repeat(31) + '22', callMode: 'delegatecall' as const };
     const routedExternals = [{
-      categoryId: 'ee'.repeat(32),
+      categoryId: 'ee'.repeat(31) + '11',
       delegateCallGroupIndex: 0,
     }];
 
@@ -291,7 +291,7 @@ describe('reassertDeclaredMutableSlotLock', () => {
     const output = {
       to: otherLock,
       token: {
-        category: '44'.repeat(32),
+        category: '44'.repeat(31) + 'bb',
         nft: { capability: 'mutable', commitment },
       },
     };
@@ -336,7 +336,7 @@ describe('clearMutableCollectionOutputsOutsideAuthoritativeRun', () => {
     const outputs = [
       mutable('old'),
       mutable('other-lock', otherLock),
-      mutable('other-category', eventLock, '44'.repeat(32)),
+      mutable('other-category', eventLock, '44'.repeat(31) + 'bb'),
       mutable('new-0'),
     ];
 

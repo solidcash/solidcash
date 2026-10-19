@@ -21,8 +21,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * with the proxy's category derives.
  */
 
-const IMPL_CATEGORY = '11'.repeat(32);
-const PROXY_CATEGORY = '22'.repeat(32);
+const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 
 // A field registered alone in its own data NFT makes the implementation's layout span more than one record, so the
 // proxy keeps its address in one of its own past them.

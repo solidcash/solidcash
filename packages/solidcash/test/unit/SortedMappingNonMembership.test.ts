@@ -8,10 +8,12 @@ import { Op } from '@solidcash/utils';
 // bracket CANNOT be satisfied for a PRESENT key, and a fabricated predecessor fails category authentication - so
 // a spender can no longer omit an existing entry to make the guard read the default. See mapping-soundness-research.md B2.
 
-// The contract's category (palindromic so display/internal byte order is irrelevant to this proof). An attacker
-// cannot mint a UTXO with this category - it is guarded by the master NFT in the real system.
-const CATEGORY = hexToBin('11'.repeat(32));
-const WRONG_CATEGORY = hexToBin('22'.repeat(32));
+// The contract's category. It is non-palindromic, so the covenant must compare the internal order that
+// OP_UTXOTOKENCATEGORY answers with, not the display-order token category on the UTXO. An attacker cannot mint a
+// UTXO with this category - it is guarded by the master NFT in the real system.
+const CATEGORY = hexToBin('11'.repeat(31) + 'ee');
+const CATEGORY_INTERNAL = CATEGORY.slice().reverse();
+const WRONG_CATEGORY = hexToBin('22'.repeat(31) + 'dd');
 
 // 32-byte little-endian slot (OP_BIN2NUM reads little-endian). Test slots are small so the top byte is 0 (a
 // positive, sign-safe script number); production uses H(key) with an unsigned-safe encoding.
@@ -44,7 +46,7 @@ function buildCovenant(): Uint8Array {
   op(Op.OP_1, Op.OP_UTXOTOKENCATEGORY);        // [k, cat33]
   pushData(new Uint8Array([32])); op(Op.OP_SPLIT); // [k, cat32, cap]
   op(Op.OP_DROP);                              // [k, cat32]
-  pushData(CATEGORY); op(Op.OP_EQUALVERIFY);   // [k]   (predecessor is an authenticated entry of this contract)
+  pushData(CATEGORY_INTERNAL); op(Op.OP_EQUALVERIFY); // [k] (predecessor is an authenticated entry)
   op(Op.OP_BIN2NUM);                           // [k#]  (k arrives as a 32-byte slot; compare as an unsigned number)
   op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT);      // [k#, commit]
   pushData(new Uint8Array([32])); op(Op.OP_SPLIT); // [k, slot32, rest]

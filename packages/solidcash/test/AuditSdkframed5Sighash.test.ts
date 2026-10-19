@@ -12,7 +12,7 @@ describe('framed funder sighash', () => {
     await expect(callFramedEntry({
       provider: {} as never,
       artifact: { abi: [], contractName: 'X' } as never,
-      categoryId: 'aa'.repeat(32),
+      categoryId: 'aa'.repeat(31) + '55',
       functionName: 'poke',
       callerUtxo: { txid: 'bb'.repeat(32), vout: 0, satoshis: 1_000n },
       callerLockingBytecode: new Uint8Array(25),
@@ -32,12 +32,12 @@ describe('framed funder sighash', () => {
         stateLayout: { variables: [] },
         composition: { lifecycle: { merge: true } },
       } as never,
-      categoryId: 'aa'.repeat(32),
+      categoryId: 'aa'.repeat(31) + '55',
       count: 1,
       admin: new SignatureTemplate(alicePriv),
       fundingUtxos: [{
         txid: 'bb'.repeat(32), vout: 0, satoshis: 2_000n,
-        token: { amount: 1n, category: 'cc'.repeat(32) },
+        token: { amount: 1n, category: 'cc'.repeat(31) + '33' },
       }],
       funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
       changeAddress: 'bitcoincash:qq',

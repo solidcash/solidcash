@@ -245,7 +245,7 @@ describe('materialized low-level-call block identity', () => {
   const makeGroup = (
     functionName: string, txid: string, vout = 0,
   ): import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup => ({
-    categoryId: 'ab'.repeat(32),
+    categoryId: 'ab'.repeat(31) + '54',
     functionName,
     masterUtxo: { txid, vout },
     blockInputs: [
@@ -341,7 +341,7 @@ describe('materialized low-level-call block identity', () => {
 });
 
 describe('generic persisted value-chunk write identity', () => {
-  const categoryId = 'ab'.repeat(32);
+  const categoryId = 'ab'.repeat(31) + '54';
   const slot = new Uint8Array(32).fill(7);
   const masterLock = Uint8Array.from({ length: 35 }, (_, index) => (
     index === 0 ? 0xaa : index === 1 ? 0x20 : index === 34 ? 0x87 : 0x5a
@@ -546,7 +546,7 @@ describe('generic persisted value-chunk write identity', () => {
     })).toBeUndefined();
     expect(claimedChunkableValueWriteCollection({
       ...executor,
-      valueChunkStateOwner: { ...owner, categoryId: '32'.repeat(32) },
+      valueChunkStateOwner: { ...owner, categoryId: '32'.repeat(31) + 'cd' },
     })).toBeUndefined();
   });
 
@@ -832,13 +832,13 @@ describe('generic persisted value-chunk write identity', () => {
   it('binds missing chunk categories to exact renamed write identity', () => {
     const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
     const exact = selectValueChunkWriteCategory([renamed]);
-    expect(resolveValueChunkWriteCategory(exact, undefined, 'cd'.repeat(32))).toBe(categoryId);
-    expect(resolveValueChunkWriteCategory(exact, 'cd'.repeat(32), categoryId)).toBeUndefined();
+    expect(resolveValueChunkWriteCategory(exact, undefined, 'cd'.repeat(31) + '32')).toBe(categoryId);
+    expect(resolveValueChunkWriteCategory(exact, 'cd'.repeat(31) + '32', categoryId)).toBeUndefined();
     expect(resolveValueChunkWriteCategory({ status: 'ambiguous' }, undefined, categoryId)).toBeUndefined();
     expect(resolveValueChunkWriteCategory({ status: 'ambiguous' }, categoryId, categoryId)).toBeUndefined();
     expect(resolveValueChunkWriteCategory({ status: 'absent' }, undefined, categoryId)).toBe(categoryId);
-    expect(resolveValueChunkWriteCategory({ status: 'absent' }, 'ef'.repeat(32), categoryId))
-      .toBe('ef'.repeat(32));
+    expect(resolveValueChunkWriteCategory({ status: 'absent' }, 'ef'.repeat(31) + '10', categoryId))
+      .toBe('ef'.repeat(31) + '10');
   });
 
   it('selects token-band repair ownership by physical compiler layout, independent of handler name', () => {
@@ -856,7 +856,7 @@ describe('generic persisted value-chunk write identity', () => {
   });
 
   it('fails closed when independent participants both claim token-band repair ownership', () => {
-    const otherCategory = 'cd'.repeat(32);
+    const otherCategory = 'cd'.repeat(31) + '32';
     const participant = (
       id: string, name: string,
     ): import('../../src/stateful/StatefulTransactionBuilder.js').PhysicalReturnGroup => ({
@@ -1145,7 +1145,7 @@ describe('generic persisted value-chunk write identity', () => {
       first.categoryId, first.collection, slot, sha256Sync(firstValue),
     ));
 
-    const secondCategory = 'cd'.repeat(32);
+    const secondCategory = 'cd'.repeat(31) + '32';
     const second = { ...first, categoryId: secondCategory };
     const secondValue = new Uint8Array(100).fill(4);
     legacyRememberValueChunkValue(secondCategory, secondValue);
@@ -1204,7 +1204,7 @@ function group(partial: Partial<PhysicalReturnGroup> & Pick<PhysicalReturnGroup,
 
 describe('assignPhysicalReturnIndices', () => {
   it('reserves return append families before an input-bearing identity coordinate', () => {
-    const category = 'ab'.repeat(32);
+    const category = 'ab'.repeat(31) + '54';
     const inputs = Array.from({ length: 11 }, (_, index) => ({ txid: '11'.repeat(32), vout: index,
       satoshis: 1200n, unlocker: { generateLockingBytecode: () => Uint8Array.of(0x51) } })) as UnlockableUtxo[];
     inputs[3] = { ...inputs[3], token: { category, amount: 0n, nft: { capability: 'minting', commitment: '' } },
@@ -3586,7 +3586,7 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('does not reuse a legacy persisted UPDATE lock without explicit legacy authority', () => {
-    const categoryId = 'e7'.repeat(32);
+    const categoryId = 'e7'.repeat(31) + '18';
     const legacyLock = new Uint8Array(35);
     legacyLock[0] = 0xaa; legacyLock[1] = 0x20; legacyLock[34] = 0x87;
     legacyLock[2] = 0x57;
@@ -3599,7 +3599,7 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('does not seed a kernel persist band from an unowned legacy lock', () => {
-    const categoryId = 'e8'.repeat(32);
+    const categoryId = 'e8'.repeat(31) + '17';
     const legacyLock = new Uint8Array(35);
     legacyLock[0] = 0xaa; legacyLock[1] = 0x20; legacyLock[34] = 0x87;
     legacyRememberValueChunkLock(categoryId, legacyLock);
@@ -4214,7 +4214,7 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('does not detach JobEvent-shaped receipts from an exact generic writer event', () => {
-    const ownerCategory = 'ab'.repeat(32);
+    const ownerCategory = 'ab'.repeat(31) + '54';
     const signature = 'notices:mapping(int => Notice[])';
     const eventSignature = 'NoticeAppended(int,bytes)';
     const eventLock = hexToBin(`aa20${'11'.repeat(32)}87`);

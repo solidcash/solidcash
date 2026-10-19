@@ -6,7 +6,7 @@ import { utf8ToBin, binToHex } from '@bitauth/libauth';
 import { StateReader } from '../src/stateful/StateReader.js';
 import { Utxo } from '../src/interfaces.js';
 
-const categoryId = 'aa'.repeat(32);
+const categoryId = 'aa'.repeat(31) + '55';
 
 // A layout: non-dynamic int `a` + dynamic string `b`, both in data NFT 0.
 const layout: StateLayout = {
@@ -48,7 +48,11 @@ describe('StateReader chunk discovery + assembly', () => {
     const [c0] = splitValueIntoChunks(value);
     const foreign: Utxo = {
       ...chunkUtxo(0, c0, 1),
-      token: { amount: 0n, category: 'cc'.repeat(32), nft: { capability: 'mutable', commitment: buildChunkCommitment(0, c0, 128) } },
+      token: {
+        amount: 0n,
+        category: 'cc'.repeat(31) + '33',
+        nft: { capability: 'mutable', commitment: buildChunkCommitment(0, c0, 128) },
+      },
     };
     expect(reader.findChunkNfts([foreign], categoryId)).toEqual([]);
   });

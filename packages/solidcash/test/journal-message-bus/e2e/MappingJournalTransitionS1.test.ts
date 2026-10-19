@@ -293,7 +293,7 @@ describe('S1 mapping insertion journal transitions', () => {
   it('rejects a new node minted under a foreign token category', async () => {
     const { deployment, hex } = await capturedBracketedInsert();
     await expectTokenValidationRejection(deployment.provider, mutate(hex, (tx) => {
-      tx.outputs[1].token!.category = hexToBin('33'.repeat(32));
+      tx.outputs[1].token!.category = hexToBin('33'.repeat(31) + 'cc');
     }));
     await expectAccepted(deployment.provider, hex);
   });

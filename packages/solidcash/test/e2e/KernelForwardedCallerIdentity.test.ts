@@ -163,7 +163,7 @@ describe('kernel forwarded contract caller identity', () => {
       const foreignOwnerCommitment = anchor.token!.nft!.commitment.slice();
       foreignOwnerCommitment[foreignOwnerCommitment.length - 1] ^= 1;
       for (const token of [
-        { ...anchor.token!, category: new Uint8Array(32).fill(0x31) },
+        { ...anchor.token!, category: Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xce : 0x31)) },
         { ...anchor.token!, nft: { ...anchor.token!.nft!, capability: 'mutable' as const } },
         { ...anchor.token!, nft: { ...anchor.token!.nft!, commitment: malformedCommitment } },
         { ...anchor.token!, nft: { ...anchor.token!.nft!, commitment: foreignOwnerCommitment } },

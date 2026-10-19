@@ -231,7 +231,7 @@ const provider = new MockNetworkProvider();
     },
   }
   const counterArt = {} as CounterArtifactType;
-  const category = 'ab'.repeat(32);
+  const category = 'ab'.repeat(31) + '54';
 
   // new StatefulContract(category, artifact, runner) is typed WITHOUT a cast - bare-name dispatch resolves.
   const sc = new StatefulContract(category, counterArt, provider);

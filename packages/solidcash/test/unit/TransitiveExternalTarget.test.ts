@@ -19,7 +19,7 @@ describe('transitive external target resolution', () => {
     const lock = hexToBin(`76a914${'31'.repeat(20)}88ac`);
     const address = lockingBytecodeToCashAddress({ bytecode: lock, prefix: 'bchtest' });
     if (typeof address === 'string') throw new Error(address);
-    const callee = { categoryId: '01'.repeat(32) } as TransitiveExternalContract;
+    const callee = { categoryId: '01'.repeat(31) + 'fe' } as TransitiveExternalContract;
     registerDeployment(provider, {
       contractName: 'Target', address: address.address, lockingBytecode: binToHex(lock), contract: callee,
     });
@@ -68,7 +68,7 @@ describe('transitive external target resolution', () => {
     const lock = hexToBin(`76a914${'31'.repeat(20)}88ac`);
     const address = lockingBytecodeToCashAddress({ bytecode: lock, prefix: 'bchtest' });
     if (typeof address === 'string') throw new Error(address);
-    const callee = { categoryId: '01'.repeat(32) } as TransitiveExternalContract;
+    const callee = { categoryId: '01'.repeat(31) + 'fe' } as TransitiveExternalContract;
     registerDeployment(provider, {
       contractName: 'Target', address: address.address, lockingBytecode: binToHex(lock), contract: callee,
     });

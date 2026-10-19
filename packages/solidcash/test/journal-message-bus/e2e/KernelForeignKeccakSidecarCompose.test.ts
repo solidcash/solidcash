@@ -53,7 +53,7 @@ describe('kernel foreign keccak sidecar under composition', () => {
 
     const payload = hexToBin('01'.repeat(32));
     const digest = keccak_256(payload);
-    const sidecarCategory = 'ee'.repeat(32);
+    const sidecarCategory = 'ee'.repeat(31) + '11';
 
     const callerBase = new Contract(callerArtifact, [], { provider });
     const callerSetup = await setupStatefulUtxos(

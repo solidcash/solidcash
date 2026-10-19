@@ -46,7 +46,7 @@ describe('stateful return argument materialization', () => {
       { name: '__internal__vmapBatchSlot_0', type: 'bytes32' },
       { name: '__internal__returnOutputIdx', type: 'bigint' },
     ];
-    const category = new Uint8Array(32).fill(1);
+    const category = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xfe : 0x01));
     const slot = new Uint8Array(32).fill(2);
     expect(materializeInternalFunctionArgument(
       [new Uint8Array(20), 5n, category, 0n, slot, 9n],

@@ -39,7 +39,7 @@ const identityScanState = (stack: Uint8Array[]): {
 
 describe('identity-scan value-chunk pin', () => {
   it('authenticates a trace value against its exact compiler-described covenant pin', () => {
-    const categoryId = '31'.repeat(32);
+    const categoryId = '31'.repeat(31) + 'ce';
     const collectionSignature = 'history:mapping(uint256 => Change[])';
     const value = new Uint8Array(180).fill(0x41);
     const decoy = new Uint8Array(180).fill(0x52);
@@ -220,8 +220,8 @@ describe('identity-scan value-chunk pin', () => {
   });
 
   it('places nested identity-scan chunks under a multi-resource category claim', () => {
-    const categoryId = 'ee'.repeat(32);
-    const otherCategory = '14'.repeat(32);
+    const categoryId = 'ee'.repeat(31) + '11';
+    const otherCategory = '14'.repeat(31) + 'eb';
     const writes: ValueChunkWriteDescriptor[] = [
       {
         categoryId: otherCategory,

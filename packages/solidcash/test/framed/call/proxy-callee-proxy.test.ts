@@ -62,11 +62,11 @@ const relayPing = relayArtifacts.Ping!;
 const relayInner = relayArtifacts.Inner!;
 const relayOuter = relayArtifacts.Outer!;
 
-const RELAY_PING_CATEGORY = '5a'.repeat(32);
-const RELAY_INNER_IMPL_CATEGORY = '5b'.repeat(32);
-const RELAY_INNER_PROXY_CATEGORY = '5c'.repeat(32);
-const RELAY_OUTER_IMPL_CATEGORY = '5d'.repeat(32);
-const RELAY_OUTER_PROXY_CATEGORY = '5e'.repeat(32);
+const RELAY_PING_CATEGORY = '5a'.repeat(31) + 'a5';
+const RELAY_INNER_IMPL_CATEGORY = '5b'.repeat(31) + 'a4';
+const RELAY_INNER_PROXY_CATEGORY = '5c'.repeat(31) + 'a3';
+const RELAY_OUTER_IMPL_CATEGORY = '5d'.repeat(31) + 'a2';
+const RELAY_OUTER_PROXY_CATEGORY = '5e'.repeat(31) + 'a1';
 
 /** Deploys the callee's own callee, the proxied callee and the root behind its proxy, and runs both initializes. */
 async function deployRelay(network: MockNetworkProvider): Promise<{

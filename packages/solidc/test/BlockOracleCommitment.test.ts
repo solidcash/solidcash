@@ -8,7 +8,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
 
-const category = new Uint8Array(32).fill(0x71);
+const category = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x8e : 0x71));
 const ownerKey = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 0 ? 0x02 : 0x11));
 const ownerPub = secp256k1.derivePublicKeyCompressed(ownerKey) as Uint8Array;
 const ownerPkh = hash160(ownerPub);
@@ -41,7 +41,7 @@ describe('block oracle commitment', () => {
       lockingBytecode: lock,
       valueSatoshis: 10_000n,
       token: {
-        category: category.slice().reverse(),
+        category,
         amount: 0n,
         nft: { capability: 'mutable' as const, commitment },
       },

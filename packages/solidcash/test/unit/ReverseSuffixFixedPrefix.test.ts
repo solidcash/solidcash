@@ -8,7 +8,7 @@ import {
 
 describe('reverse-suffix chunk layout', () => {
   it('preserves fixed output indices when authoritative suffix commitments are known', () => {
-    const category = 'aa'.repeat(32);
+    const category = 'aa'.repeat(31) + '55';
     const chunkLock = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x11), 0x87);
     const fixedLock = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x22), 0x87);
     const funderLock = Uint8Array.of(0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x33), 0x88, 0xac);

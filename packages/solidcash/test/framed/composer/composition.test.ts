@@ -21,7 +21,7 @@ import {
   selectGroupValidators,
 } from '../../../src/framed/composer/index.js';
 
-const category = new Uint8Array(32).fill(0x33);
+const category = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xcc : 0x33));
 const addrA = new Uint8Array(35).fill(0xaa);
 const userLock = new Uint8Array(25).fill(0x02);
 const redeemScript = new Uint8Array([0x21, 0x01, 0x02, 0x03, 0x87]);

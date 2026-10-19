@@ -16,8 +16,8 @@ import {
  * exactly one fact, so a refusal is attributable to that fact.
  */
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
-const OTHER_CATEGORY = new Uint8Array(32).fill(0x77);
+const CATEGORY = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xa5 : 0x5a));
+const OTHER_CATEGORY = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x88 : 0x77));
 const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52, 0x75, 0x76]);
 /** An arbitrary transcript, since a master skips it and never interprets it. */
 const TRANSCRIPT = new Uint8Array([0x50, 0x43, 0x37, 0x01, 0x00, 0x00, 0x00]);

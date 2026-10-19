@@ -47,7 +47,7 @@ describe('value-chunk output authority', () => {
       amount: 1200n,
       token: {
         amount: 0n,
-        category: 'cc'.repeat(32),
+        category: 'cc'.repeat(31) + '33',
         nft: { capability: 'mutable' as const, commitment: '00' },
       },
     }];
@@ -56,7 +56,7 @@ describe('value-chunk output authority', () => {
   });
 
   it('restores own-category insert-band dust', () => {
-    const category = 'ab'.repeat(32);
+    const category = 'ab'.repeat(31) + '54';
     const inputs = [{
       txid: 'dd'.repeat(32),
       vout: 3,
@@ -81,7 +81,7 @@ describe('value-chunk output authority', () => {
       unlocker: { generateLockingBytecode: () => Uint8Array.of(0x51) },
       token: {
         amount: 0n,
-        category: 'dd'.repeat(32),
+        category: 'dd'.repeat(31) + '22',
         nft: { capability: 'none' as const, commitment: '01'.repeat(32) },
       },
     }] as any;

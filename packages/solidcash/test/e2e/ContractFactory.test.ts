@@ -95,7 +95,7 @@ describe('ContractFactory (ethers/hardhat-style deploy)', () => {
     await (signer.provider as any).addUtxo(predicted, {
       txid: 'd3'.repeat(32), vout: 1, satoshis: 1200n,
       token: {
-        category: 'd4'.repeat(32), amount: 0n,
+        category: 'd4'.repeat(31) + '2b', amount: 0n,
         nft: {
           capability: 'none',
           commitment: buildLogicalIdentityCommitment(signer.getAddress(), 0n, deployed.inner.address),

@@ -11,7 +11,8 @@ import { Op } from '@solidcash/utils';
 // So one covenant answers require(m[k]) AND require(!m[k]) without guard classification, and neither bit can be
 // forged: present needs the k-entry (authenticated), absent needs a real bracketing predecessor.
 
-const CATEGORY = hexToBin('11'.repeat(32));
+const CATEGORY = hexToBin('11'.repeat(31) + 'ee');
+const CATEGORY_INTERNAL = CATEGORY.slice().reverse(); // OP_UTXOTOKENCATEGORY answers in internal order
 const WRONG = hexToBin('22'.repeat(32));
 
 function slot32(n: number): Uint8Array { const b = new Uint8Array(32); let v = n; let i = 0; while (v > 0) { b[i++] = v & 0xff; v = Math.floor(v / 256); } return b; }
@@ -23,7 +24,8 @@ class Asm { b: number[] = []; op(...xs: number[]): this { this.b.push(...xs); re
 // (In real codegen the covenant leaves the bit for the consuming expression; here we pin it.)
 function readCovenant(): Uint8Array {
   const a = new Asm();
-  a.op(Op.OP_1, Op.OP_UTXOTOKENCATEGORY).push(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP).push(CATEGORY).op(Op.OP_EQUALVERIFY); // [Hk32] (entry authentic)
+  a.op(Op.OP_1, Op.OP_UTXOTOKENCATEGORY).push(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP)
+    .push(CATEGORY_INTERNAL).op(Op.OP_EQUALVERIFY); // [Hk32] (entry authentic)
   a.op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT).push(new Uint8Array([32])).op(Op.OP_SPLIT).push(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP); // [Hk32, slot32, nextKey32]
   // membership: slot32 == Hk32 ?
   a.op(Op.OP_OVER);                          // [Hk32, slot32, nextKey32, slot32]  (copy slot32, depth1)

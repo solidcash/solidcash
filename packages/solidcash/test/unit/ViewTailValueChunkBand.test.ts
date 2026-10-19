@@ -16,7 +16,7 @@ describe('view-tail value-chunk band', () => {
     const predecessorLock = Uint8Array.of(0xaa, 0x20, 0x01);
     const paddingLock = Uint8Array.of(0xaa, 0x20, 0x02);
     const predecessorToken = {
-      category: 'ab'.repeat(32), amount: 0n,
+      category: 'ab'.repeat(31) + '54', amount: 0n,
       nft: { capability: 'mutable' as const, commitment: '0000abcd' },
     };
     const inputs = [predecessorLock, predecessorLock, paddingLock].map((lock, index) => ({
@@ -27,7 +27,7 @@ describe('view-tail value-chunk band', () => {
     const outputs = inputs.map(() => ({
       to: Uint8Array.of(0x51), amount: 800n,
       token: {
-        category: 'cd'.repeat(32), amount: 0n,
+        category: 'cd'.repeat(31) + '32', amount: 0n,
         nft: { capability: 'none' as const, commitment: '01' },
       },
     }));

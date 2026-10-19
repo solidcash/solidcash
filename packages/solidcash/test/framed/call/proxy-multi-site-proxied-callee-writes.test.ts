@@ -29,11 +29,11 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * transaction leaves links every key in order.
  */
 
-const PING_CATEGORY = '99'.repeat(32);
-const INNER_IMPL_CATEGORY = '11'.repeat(32);
-const INNER_PROXY_CATEGORY = '22'.repeat(32);
-const OUTER_IMPL_CATEGORY = '33'.repeat(32);
-const OUTER_PROXY_CATEGORY = '44'.repeat(32);
+const PING_CATEGORY = '99'.repeat(31) + '66';
+const INNER_IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const INNER_PROXY_CATEGORY = '22'.repeat(31) + 'dd';
+const OUTER_IMPL_CATEGORY = '33'.repeat(31) + 'cc';
+const OUTER_PROXY_CATEGORY = '44'.repeat(31) + 'bb';
 const PING_ADDRESS = validatorAddress(hexToBin(PING_CATEGORY), VALIDATOR_PROGRAM);
 
 const SOURCE = 'pragma solidcash ^0.13.0;'

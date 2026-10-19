@@ -31,10 +31,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * `uint32(block.timestamp)` beside the event it emits, and reads the appended element back through the reader.
  */
 
-const STORE_IMPL_CATEGORY = '33'.repeat(32);
-const STORE_PROXY_CATEGORY = '44'.repeat(32);
-const OUTER_IMPL_CATEGORY = '55'.repeat(32);
-const OUTER_PROXY_CATEGORY = '66'.repeat(32);
+const STORE_IMPL_CATEGORY = '33'.repeat(31) + 'cc';
+const STORE_PROXY_CATEGORY = '44'.repeat(31) + 'bb';
+const OUTER_IMPL_CATEGORY = '55'.repeat(31) + 'aa';
+const OUTER_PROXY_CATEGORY = '66'.repeat(31) + '99';
 
 /** An element body long enough that the appended value crosses the inline limit and takes chunk records. */
 const BODY = 'ab'.repeat(120);
@@ -190,10 +190,10 @@ function loadArtifact(name: string): Artifact {
 const describeShipped = hasArtifacts && process.env.FRAMED_FULL === '1' ? describe : describe.skip;
 
 describeShipped('the shipped artifact whose append carries the transaction clock', () => {
-  const DATA_IMPL_CATEGORY = '0b'.repeat(32);
-  const DATA_PROXY_CATEGORY = '0d'.repeat(32);
-  const CALLER_IMPL_CATEGORY = '0a'.repeat(32);
-  const CALLER_PROXY_CATEGORY = '0e'.repeat(32);
+  const DATA_IMPL_CATEGORY = '0b'.repeat(31) + 'f4';
+  const DATA_PROXY_CATEGORY = '0d'.repeat(31) + 'f2';
+  const CALLER_IMPL_CATEGORY = '0a'.repeat(31) + 'f5';
+  const CALLER_PROXY_CATEGORY = '0e'.repeat(31) + 'f1';
 
   const CALLER_SOURCE = 'pragma solidity ^0.8.0;'
     + ' struct JobEventData { uint8 type_; bytes address_; bytes data_; uint32 timestamp_; }'

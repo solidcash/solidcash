@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { publishedTransportedValueChunkLock } from '../../src/message-bus/compose-assemble.js';
 import { scriptToLockingBytecode } from '../../src/utils.js';
 
-const categoryId = '11'.repeat(32);
+const categoryId = '11'.repeat(31) + 'ee';
 const masterLock = Uint8Array.from({ length: 35 }, (_, index) => (
   index === 0 ? 0xaa : index === 1 ? 0x20 : index === 34 ? 0x87 : 0x42
 ));

@@ -23,7 +23,7 @@ const stateLayout: StateLayout = {
   commitmentLimit: 128,
 };
 
-const categoryId = 'aa'.repeat(32);
+const categoryId = 'aa'.repeat(31) + '55';
 const dummyLockingBytecode = new Uint8Array([0x76, 0xa9, 0x14, ...new Array(20).fill(0), 0x88, 0xac]);
 
 function makeDummyUnlocker(): UnlockableUtxo['unlocker'] {
@@ -98,7 +98,7 @@ function makeBaseOptions(overrides?: Partial<StatefulTransactionOptions>): State
 
 describe('StatefulTransactionBuilder', () => {
   it('invalidates authenticated external state bytes once for repeated equal overrides', () => {
-    const externalCategory = 'cd'.repeat(32);
+    const externalCategory = 'cd'.repeat(31) + '32';
     const externalLayout: StateLayout = {
       ...stateLayout,
       variables: [{ ...stateLayout.variables[0], type: 'bigint' }],
@@ -146,7 +146,7 @@ describe('StatefulTransactionBuilder', () => {
   });
 
   it('upserts external entry inserts by physical owner, collection lock, and target slot', () => {
-    const externalCategory = 'ce'.repeat(32);
+    const externalCategory = 'ce'.repeat(31) + '31';
     const builder = new StatefulTransactionBuilder(makeBaseOptions({
       externalCallUtxoGroups: [{
         categoryId: externalCategory,
@@ -197,7 +197,7 @@ describe('StatefulTransactionBuilder', () => {
 
   it('rebinds only exact write-entry witnesses to the final category master', () => {
     const provider = createTestProvider();
-    const ownerCategory = 'ac'.repeat(32);
+    const ownerCategory = 'ac'.repeat(31) + '53';
     const declaredSignature = 'records:mapping(bytes32 => int)';
     const foreignSignature = 'otherRecords:mapping(bytes32 => int)';
     const ownerLayout: StateLayout = {
@@ -278,7 +278,7 @@ describe('StatefulTransactionBuilder', () => {
   it('does not synthesize a return without a producer identity over the next participant', () => {
     const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
     const tx = builder.build();
-    const participantCategory = 'cd'.repeat(32);
+    const participantCategory = 'cd'.repeat(31) + '32';
     const participantLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x5a), 0x87]);
     const participantOutput = {
       to: participantLock,
@@ -583,7 +583,7 @@ describe('StatefulTransactionBuilder', () => {
         vout: 0,
         satoshis: 1000n,
         token: {
-          category: 'ee'.repeat(32),
+          category: 'ee'.repeat(31) + '11',
           amount: 0n,
           nft: { capability: 'minting', commitment: '' },
         },
@@ -1115,7 +1115,7 @@ describe('StatefulTransactionBuilder', () => {
     it('does not mistake an indexed dynamic-state run for a delegated value continuation', () => {
       const dynamicLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x22), 0x87]);
       const valueLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x44), 0x87]);
-      const implementationCategory = '55'.repeat(32);
+      const implementationCategory = '55'.repeat(31) + 'aa';
       const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
       const tx = builder.build();
       const provisionalBase = tx.outputs.length;
@@ -1192,7 +1192,7 @@ describe('StatefulTransactionBuilder', () => {
       ]);
       const refreshInternalArgs = vi.fn();
       const carrier = {
-        categoryId: '44'.repeat(32),
+        categoryId: '44'.repeat(31) + 'bb',
         callMode: 'delegatecall' as const,
         stateLayout: {
           collections: [{
@@ -1280,7 +1280,7 @@ describe('StatefulTransactionBuilder', () => {
   });
 
   describe('token container FT underflow guard', () => {
-    const tokenContainerCategoryId = 'ee'.repeat(32);
+    const tokenContainerCategoryId = 'ee'.repeat(31) + '11';
 
     it('should throw when FT transfer amount exceeds token container balance', () => {
       const containerUtxo = makeTokenContainerUtxo(tokenContainerCategoryId, 500n);

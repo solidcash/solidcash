@@ -369,7 +369,8 @@ describe('kernel late transitive sparse loop graph planning', () => {
       }`, { ...KERNEL, messageBusGraphContext: true });
     const missingMasterBase = new Contract(missingMasterArtifact, [], { provider });
     const missingMaster = StatefulContract.withCategory(
-      missingMasterBase.withCategory(new Uint8Array(32).fill(0x7d)), '7d'.repeat(32),
+      missingMasterBase.withCategory(Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x82 : 0x7d))),
+      '7d'.repeat(31) + '82',
     );
     const missingMasterCoordinator = await makeCoordinator(hexToBin(missingMaster.inner.lockingBytecode));
     missingMasterCoordinator._registerResolvedExternal('IReachableSink', missingMaster);

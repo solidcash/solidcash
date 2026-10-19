@@ -28,7 +28,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from './shapes/harness.js';
  */
 
 const STATE = ' address public implementation; uint public initialized;';
-const WRITER_CATEGORY = 'a4'.repeat(32);
+const WRITER_CATEGORY = 'a4'.repeat(31) + '5b';
 const WRITER = validatorAddress(hexToBin(WRITER_CATEGORY), VALIDATOR_PROGRAM);
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IWriter { function bump(); }'

@@ -4,9 +4,9 @@ import * as messageBus from '../../src/message-bus/index.js';
 
 const sample = (): messageBus.AtomicMessageBusCallManifest => ({
   participants: [
-    { lockingBytecode: '51'.repeat(64), stateCategory: '11'.repeat(32), fixedSize: 2, actualSize: 2,
+    { lockingBytecode: '51'.repeat(64), stateCategory: '11'.repeat(31) + 'ee', fixedSize: 2, actualSize: 2,
       maximumSize: 2, trailingUsed: 0, returnOffset: 0xffff },
-    { lockingBytecode: '52'.repeat(64), stateCategory: '22'.repeat(32), fixedSize: 2, actualSize: 3,
+    { lockingBytecode: '52'.repeat(64), stateCategory: '22'.repeat(31) + 'dd', fixedSize: 2, actualSize: 3,
       maximumSize: 7, trailingUsed: 1, returnOffset: 1 },
   ],
   rows: [

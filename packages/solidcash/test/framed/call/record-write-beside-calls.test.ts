@@ -26,10 +26,10 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  */
 
 const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
-const IMPL_CATEGORY = '11'.repeat(32);
-const PROXY_CATEGORY = '22'.repeat(32);
-const ORACLE_CATEGORY = '55'.repeat(32);
-const ESCROW_CATEGORY = '66'.repeat(32);
+const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
+const ORACLE_CATEGORY = '55'.repeat(31) + 'aa';
+const ESCROW_CATEGORY = '66'.repeat(31) + '99';
 const ORACLE_ADDRESS = validatorAddress(hexToBin(ORACLE_CATEGORY), VALIDATOR_PROGRAM);
 const ESCROW_ADDRESS = validatorAddress(hexToBin(ESCROW_CATEGORY), VALIDATOR_PROGRAM);
 const hexOf = (bytes: Uint8Array): string => binToHex(bytes);

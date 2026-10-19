@@ -11,7 +11,7 @@ import {
 } from '@solidcash/utils';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
-const KECCAK_SIDECAR_CATEGORY = 'ee'.repeat(32);
+const KECCAK_SIDECAR_CATEGORY = 'ee'.repeat(31) + '11';
 
 const CALLEE = `
 pragma solidcash >=0.8.0;
@@ -92,10 +92,10 @@ async function seedOracleNft(
   provider: ReturnType<typeof createTestProvider>, n: bigint, hash: Uint8Array, opts: { category?: string } = {},
 ): Promise<void> {
   nonce += 1;
-  const lock = blockhashOracleLockingBytecode(hexToBin(opts.category ?? 'cc'.repeat(32)));
+  const lock = blockhashOracleLockingBytecode(hexToBin(opts.category ?? 'cc'.repeat(31) + '33'));
   await provider.addUtxo(binToHex(lock), {
     txid: nonce.toString(16).padStart(64, '0'), vout: 0, satoshis: 1000n,
-    token: { category: opts.category ?? 'cc'.repeat(32), amount: 0n,
+    token: { category: opts.category ?? 'cc'.repeat(31) + '33', amount: 0n,
       nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(n, hash)) } },
   });
 }

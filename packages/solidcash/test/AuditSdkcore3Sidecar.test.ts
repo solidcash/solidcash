@@ -11,7 +11,7 @@ describe('shared side-car selection', () => {
     const planted: Utxo = { txid: '11'.repeat(32), vout: 0, satoshis: 1_000n };
     const real: Utxo = {
       txid: '22'.repeat(32), vout: 1, satoshis: 1_200n,
-      token: { amount: 0n, category: '33'.repeat(32), nft: { capability: 'mutable', commitment: '' } },
+      token: { amount: 0n, category: '33'.repeat(31) + 'cc', nft: { capability: 'mutable', commitment: '' } },
     };
     const listed = [planted, real];
     const builder = new TransactionBuilder({

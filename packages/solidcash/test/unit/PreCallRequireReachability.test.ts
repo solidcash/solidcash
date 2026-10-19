@@ -36,12 +36,12 @@ describe('delegate pre-call require reachability', () => {
       key: 7n, value: { worker: authenticatedWorker },
     }]);
     const callInfo = { type: 'stateful', functionName: 'refund', args: [7n], contract: {
-      categoryId: '11'.repeat(32), inner: {
+      categoryId: '11'.repeat(31) + 'ee', inner: {
         artifact, stateLayout: { dataNftCount: 0 }, lockingBytecode: '51',
       },
     } };
     const result = await materializeCreateBuilderLowLevelStatefulCall({
-      categoryId: '22'.repeat(32), inner: {}, selfContract: {},
+      categoryId: '22'.repeat(31) + 'dd', inner: {}, selfContract: {},
       getMasterOnlyState: async () => ({ masterUtxo: {} }),
       getFullState: async () => ({ masterUtxo: {}, dataNftUtxos: [] }),
       getEntries,

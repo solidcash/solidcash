@@ -84,7 +84,7 @@ describe('kernel foreign ecrecover sidecar under composition', () => {
     );
 
     const salt = new Uint8Array(32);
-    const sidecarCategory = 'ed'.repeat(32);
+    const sidecarCategory = 'ed'.repeat(31) + '12';
     for (const role of ['A', 'B2', 'M', 'B3'] as const) {
       await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {
         ...randomUtxo({ satoshis: 100_000n }),

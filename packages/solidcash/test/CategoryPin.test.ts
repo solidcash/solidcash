@@ -8,7 +8,8 @@ import { MockNetworkProvider } from '../src/network/mock/index.js';
 describe('Category self-pin (Contract.ts prologue)', () => {
   const provider = new MockNetworkProvider();
   const STATEFUL = 'contract C() { int n; function f(int v) { this.n = this.n + v; } }';
-  const category = new Uint8Array(32).fill(0xab);
+  // Non-palindromic, so a missing reversal cannot pass: display ab..ab54, internal 54ab..ab.
+  const category = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x54 : 0xab));
   // OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY (direct compare; capability baked into the pushed value)
   const PIN_OPS = 'c0ce88';
   // The pushed value is push33 (0x21) || category(internal) || 0x02 (minting capability)
@@ -18,7 +19,7 @@ describe('Category self-pin (Contract.ts prologue)', () => {
     const art = compileString(STATEFUL);
     const withCat = new Contract(art, [], { provider, category });
     // prologue = push33(category||0x02) || pin ops, at the very start of the script
-    expect(withCat.bytecode.startsWith(pushCat('ab'.repeat(32)) + PIN_OPS)).toBe(true);
+    expect(withCat.bytecode.startsWith(pushCat('54' + 'ab'.repeat(31)) + PIN_OPS)).toBe(true);
   });
 
   it('changes the address vs the un-pinned contract (category is part of the address)', () => {
@@ -28,7 +29,7 @@ describe('Category self-pin (Contract.ts prologue)', () => {
     expect(withCat.bytecode).not.toBe(noCat.bytecode);
     expect(withCat.address).not.toBe(noCat.address);
     // the un-pinned contract does not START with the category-pin prologue
-    expect(noCat.bytecode.startsWith(pushCat('ab'.repeat(32)) + PIN_OPS)).toBe(false);
+    expect(noCat.bytecode.startsWith(pushCat('54' + 'ab'.repeat(31)) + PIN_OPS)).toBe(false);
   });
 
   it('reverses the category to internal byte order, with the minting capability byte', () => {
@@ -45,6 +46,6 @@ describe('Category self-pin (Contract.ts prologue)', () => {
     const salt = new Uint8Array(4).fill(0xcd);
     const withBoth = new Contract(art, [], { provider, category, salt });
     // outermost: push4(salt) OP_DROP, then the category-pin prologue
-    expect(withBoth.bytecode.startsWith('04cdcdcdcd75' + pushCat('ab'.repeat(32)) + PIN_OPS)).toBe(true);
+    expect(withBoth.bytecode.startsWith('04cdcdcdcd75' + pushCat('54' + 'ab'.repeat(31)) + PIN_OPS)).toBe(true);
   });
 });

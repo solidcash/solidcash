@@ -13,7 +13,7 @@ import {
   type CollectionValueSpend,
 } from '../../src/stateful/ValueChunkPersistence.js';
 
-const categoryId = '11'.repeat(32);
+const categoryId = '11'.repeat(31) + 'ee';
 const lock = Uint8Array.from({ length: 35 }, (_unused, index) => index);
 const identity = (signature = 'records:mapping(uint256 => bytes)', slotByte = 0x22): CollectionValueIdentity => ({
   categoryId,

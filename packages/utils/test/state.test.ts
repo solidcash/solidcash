@@ -498,7 +498,7 @@ function ifBlock(script: Script, ifIdx: number): { ifPath: Script; elsePath: Scr
 }
 
 describe('buildDataNftCovenantScript (tri-path)', () => {
-  const categoryId = new Uint8Array(32).fill(0xab);
+  const categoryId = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x54 : 0xab));
 
   it('should produce valid script bytecode', () => {
     const script = buildDataNftCovenantScript(categoryId);
@@ -537,11 +537,12 @@ describe('buildDataNftCovenantScript (tri-path)', () => {
     expect(script).toContain(Op.OP_OUTPUTTOKENCOMMITMENT);
   });
 
-  it('should embed the category ID in the script', () => {
+  it('should embed the category ID in the script in internal order', () => {
     const script = buildDataNftCovenantScript(categoryId);
-    // The category ID should appear as a Uint8Array element in the script
+    // OP_UTXOTOKENCATEGORY answers in internal (reversed) order, and that is the order the script bakes.
+    const internal = categoryId.slice().reverse();
     const found = script.some(
-      (el) => el instanceof Uint8Array && el.length === 32 && el.every((b, i) => b === categoryId[i]),
+      (el) => el instanceof Uint8Array && el.length === 32 && el.every((b, i) => b === internal[i]),
     );
     expect(found).toBe(true);
   });
@@ -574,7 +575,7 @@ describe('buildDataNftCovenantScript (tri-path)', () => {
 });
 
 describe('buildEntryNftCovenantScript (dual-path)', () => {
-  const categoryId = new Uint8Array(32).fill(0xab);
+  const categoryId = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x54 : 0xab));
   const collectionHash = new Uint8Array(20).fill(0xcd);
 
   it('should produce valid script bytecode', () => {
@@ -637,7 +638,7 @@ describe('buildEntryNftCovenantScript (dual-path)', () => {
 });
 
 describe('buildValueChunkCovenantScript (digested domain)', () => {
-  const categoryId = new Uint8Array(32).fill(0xab);
+  const categoryId = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x54 : 0xab));
   const collectionHash = new Uint8Array(20).fill(0xcd);
   const slot = new Uint8Array(32).fill(0x11);
   const root = new Uint8Array(32).fill(0x22);
@@ -663,7 +664,7 @@ describe('buildValueChunkCovenantScript (digested domain)', () => {
 });
 
 describe('buildSatoshiContainerCovenantScript', () => {
-  const categoryId = new Uint8Array(32).fill(0xab);
+  const categoryId = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x54 : 0xab));
 
   it('should produce valid script bytecode', () => {
     const script = buildSatoshiContainerCovenantScript(categoryId);
@@ -694,11 +695,12 @@ describe('buildSatoshiContainerCovenantScript', () => {
     expect(mergePath).toContain(Op.OP_UTXOBYTECODE);
   });
 
-  it('should embed category ID as salt after OP_ENDIF', () => {
+  it('should embed category ID as salt after OP_ENDIF in internal order', () => {
     const script = buildSatoshiContainerCovenantScript(categoryId);
     const { after: afterEndif } = ifBlock(script, 0);
+    const internal = categoryId.slice().reverse();
     const found = afterEndif.some(
-      (el) => el instanceof Uint8Array && el.length === 32 && el.every((b, i) => b === categoryId[i]),
+      (el) => el instanceof Uint8Array && el.length === 32 && el.every((b, i) => b === internal[i]),
     );
     expect(found).toBe(true);
   });

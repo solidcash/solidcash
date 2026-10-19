@@ -6,7 +6,7 @@ import { persistValueChunkLock, type ValueChunkWriteDescriptor } from '../../src
 
 const signature = 'records:mapping(uint256 => Record)';
 const write: ValueChunkWriteDescriptor = {
-  categoryId: '11'.repeat(32),
+  categoryId: '11'.repeat(31) + 'ee',
   collection: 'records',
   collectionSignature: signature,
   collectionHash: binToHex(computeCollectionHash(signature)),

@@ -6,7 +6,7 @@ import { encodeEntryCommitment, keyToSlotMulti } from '../../src/stateful/Sorted
 import { getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
 import { deriveDirectCollectionLengthResult } from '../../src/message-bus/compute-recipe-producer-state.js';
 
-const category = 'ab'.repeat(32);
+const category = 'ab'.repeat(31) + '54';
 const collection = {
   name: 'values', signature: 'values:mapping(uint256 => uint8[])', kind: 'mapping' as const,
   keyType: 'uint256', valueType: 'uint8[]', sorted: true, chunkableValue: true,
@@ -39,7 +39,7 @@ describe('direct collection-length compute producer', () => {
         if (address !== ownerEntryAddress) return [];
         return [
           { txid: '11'.repeat(32), vout: 0, satoshis: 1000n,
-            token: { category: 'cd'.repeat(32), nft: { capability: 'mutable', commitment } } },
+            token: { category: 'cd'.repeat(31) + '32', nft: { capability: 'mutable', commitment } } },
           { txid: '22'.repeat(32), vout: 0, satoshis: 1000n,
             token: { category, nft: { capability: 'mutable', commitment } } },
         ];
@@ -55,7 +55,7 @@ describe('direct collection-length compute producer', () => {
       },
     } as unknown as StatefulContract;
     const executor = {
-      categoryId: 'ef'.repeat(32),
+      categoryId: 'ef'.repeat(31) + '10',
       inner: {
         name: 'SelectedImplementation', artifact, provider, addressType: 'p2sh32',
         lockingBytecode: `aa20${'6b'.repeat(32)}87`,

@@ -15,7 +15,7 @@ async function plan(
   overrides: Partial<Parameters<typeof loadCreateBuilderDynamicChunks>[1]> = {},
 ): Promise<string[]> {
   const result = await loadCreateBuilderDynamicChunks({
-    categoryId: '11'.repeat(32),
+    categoryId: '11'.repeat(31) + 'ee',
     inner: { stateLayout: { collections: [] }, artifact: {}, provider: {} },
     evaluateExternalExpression: vi.fn(), hydrateExternalPredicateState: vi.fn(), vmapCounterDomain: vi.fn(),
   }, {

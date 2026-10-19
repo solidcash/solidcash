@@ -105,10 +105,10 @@ async function seedDeployment(
 const describePublished = hasFramedArtifacts ? describe : describe.skip;
 
 describePublished('the planner against the shipped published facts', () => {
-  const FACADE_CATEGORY = '0a'.repeat(32);
-  const CLAIM_CATEGORY = '0c'.repeat(32);
-  const TOKEN_CATEGORY = '0d'.repeat(32);
-  const ARBITRATOR_CATEGORY = '0e'.repeat(32);
+  const FACADE_CATEGORY = '0a'.repeat(31) + 'f5';
+  const CLAIM_CATEGORY = '0c'.repeat(31) + 'f3';
+  const TOKEN_CATEGORY = '0d'.repeat(31) + 'f2';
+  const ARBITRATOR_CATEGORY = '0e'.repeat(31) + 'f1';
 
   it('resolves an entry whose single call targets a state-held address', async () => {
     const network = new MockNetworkProvider();

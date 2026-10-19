@@ -111,7 +111,7 @@ describe('kernel inactive entry category verification', () => {
             expect(binToHex(builder.buildLibauthTransaction(true).inputs[routeInputIndex].unlockingBytecode))
               .not.toBe(originalUnlock);
           }
-          active.token = { ...original, category: 'fa'.repeat(32) };
+          active.token = { ...original, category: 'fa'.repeat(31) + '05' };
           expect(vmAccepts(), `forged category with proof=${proof}`).toBe(false);
           active.token = { ...original, nft: { ...original.nft!, capability: 'none' } };
           expect(vmAccepts(), `forged capability with proof=${proof}`).toBe(false);

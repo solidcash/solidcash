@@ -22,8 +22,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * derivation and machine and then reads the state back through the shipped deployment reader and decoder.
  */
 
-const IMPL_CATEGORY = '11'.repeat(32);
-const PROXY_CATEGORY = '22'.repeat(32);
+const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 
 // The implementation declares the field the fallback forwards to beside the state its entries write: its own write
 // rebuilds the record from its declaration, so the address has to be one of the fields that survives it.

@@ -21,7 +21,7 @@ import type { Utxo } from '../../src/interfaces.js';
 // rejected by the composed covenants. Category is fixed here so the entry address is known; the compiler derives
 // it at runtime from the co-spent master (emitP2sh32FromCovenant).
 
-const CATEGORY = hexToBin('11'.repeat(32)); // palindromic: display == internal
+const CATEGORY = hexToBin('11'.repeat(31) + 'ee'); // non-palindromic: display and internal order differ
 const COLLECTION_HASH = computeCollectionHash(computeCollectionSignature('claimed', 'mapping(int256 => bool)'));
 const ENTRY_REDEEM = scriptToBytecode(buildEntryNftCovenantScript(CATEGORY, COLLECTION_HASH));
 const ENTRY_P2SH = new Uint8Array([Op.OP_HASH256, 32, ...hash256(ENTRY_REDEEM), Op.OP_EQUAL]);
@@ -73,7 +73,13 @@ function push32(d: Uint8Array): Uint8Array { return new Uint8Array([32, ...d]); 
 function pushNum(n: number): Uint8Array { return n === 0 ? new Uint8Array([Op.OP_0]) : (n <= 16 ? new Uint8Array([0x50 + n]) : new Uint8Array([1, n])); }
 
 function entryUtxo(txid: string, commitment: Uint8Array): Utxo {
-  return { txid, vout: 0, satoshis: 1500n, token: { category: '11'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: binToHex(commitment) } } };
+  return {
+    txid, vout: 0, satoshis: 1500n,
+    token: {
+      category: '11'.repeat(31) + 'ee', amount: 0n,
+      nft: { capability: 'mutable', commitment: binToHex(commitment) },
+    },
+  };
 }
 const masterCat = { category: CATEGORY, amount: 0n, nft: { capability: 'minting' as const, commitment: new Uint8Array([]) } };
 const entryTok = (c: Uint8Array): any => ({ category: CATEGORY, amount: 0n, nft: { capability: 'mutable' as const, commitment: c } });
@@ -176,8 +182,17 @@ describe('sorted mapping live provider round-trip (SortedList drives a real send
 
   it('genesis -> claim(30) -> claim(70): entries persist and re-claim is refused', async () => {
     const provider = new MockNetworkProvider();
-    await provider.addUtxo(CONTRACT_HEX, { txid: 'c0'.repeat(32), vout: 0, satoshis: 5000n, token: { category: '11'.repeat(32), amount: 0n, nft: { capability: 'minting', commitment: '' } } });
-    await provider.addUtxo(ENTRY_HEX, { txid: 'e0'.repeat(32), vout: 0, satoshis: 1500n, token: { category: '11'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(s(0), s(0))) } } });
+    await provider.addUtxo(CONTRACT_HEX, {
+      txid: 'c0'.repeat(32), vout: 0, satoshis: 5000n,
+      token: { category: '11'.repeat(31) + 'ee', amount: 0n, nft: { capability: 'minting', commitment: '' } },
+    });
+    await provider.addUtxo(ENTRY_HEX, {
+      txid: 'e0'.repeat(32), vout: 0, satoshis: 1500n,
+      token: {
+        category: '11'.repeat(31) + 'ee', amount: 0n,
+        nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(s(0), s(0))) },
+      },
+    });
     await provider.addUtxo(FUND_HEX, { txid: 'f0'.repeat(32), vout: 0, satoshis: 100000n });
 
     // claim(30): HEAD[0|0] -> HEAD[0|30] + NEW[30|0]

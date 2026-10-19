@@ -23,10 +23,10 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * leaves untaken make four reaches in all, and each reads the same node.
  */
 
-const LEDGER_IMPL_CATEGORY = '11'.repeat(32);
-const LEDGER_PROXY_CATEGORY = '22'.repeat(32);
-const OUTER_IMPL_CATEGORY = '33'.repeat(32);
-const OUTER_PROXY_CATEGORY = '44'.repeat(32);
+const LEDGER_IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const LEDGER_PROXY_CATEGORY = '22'.repeat(31) + 'dd';
+const OUTER_IMPL_CATEGORY = '33'.repeat(31) + 'cc';
+const OUTER_PROXY_CATEGORY = '44'.repeat(31) + 'bb';
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface ILedger { function check(address who, int expected); }'

@@ -21,7 +21,7 @@ const write = (
 ): ValueChunkWriteDescriptor => {
   const collectionSignature = `${collection}:mapping(bytes32 => bytes[])`;
   return {
-    categoryId: '71'.repeat(32),
+    categoryId: '71'.repeat(31) + '8e',
     collection,
     collectionSignature,
     collectionHash: binToHex(computeCollectionHash(collectionSignature)),
@@ -41,7 +41,7 @@ describe('progressive route probe progress', () => {
       masterUtxo: { txid: string; vout: number };
       blockLayout: { slots: { kind: string; offset: number }[] };
     } => ({
-      categoryId: '71'.repeat(32),
+      categoryId: '71'.repeat(31) + '8e',
       masterUtxo: { txid: txid.repeat(64), vout: 0 },
       blockLayout: {
         slots: [

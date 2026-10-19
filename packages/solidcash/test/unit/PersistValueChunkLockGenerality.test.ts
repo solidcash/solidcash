@@ -9,8 +9,8 @@ import {
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
 
-const ownerCategory = '11'.repeat(32);
-const candidateCategory = '22'.repeat(32);
+const ownerCategory = '11'.repeat(31) + 'ee';
+const candidateCategory = '22'.repeat(31) + 'dd';
 const collectionSignature = 'records:mapping(uint256 => Record[])';
 const keySlot = '33'.repeat(32);
 const value = new Uint8Array(96).fill(0x44);

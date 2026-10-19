@@ -423,7 +423,7 @@ describe('late transitive call preparation', () => {
     const resolveArgs = vi.spyOn(first, '_resolveExternalArgs');
     const callerAddress = Uint8Array.of(0x52);
     const fixture = preparation([{
-      ...group(first), callerIdentity: { categoryId: '99'.repeat(32), lockingBytecode: '52' },
+      ...group(first), callerIdentity: { categoryId: '99'.repeat(31) + '66', lockingBytecode: '52' },
     }]);
     await fixture.expand();
     expect(fixture.groups.map((value) => value.categoryId)).toEqual([

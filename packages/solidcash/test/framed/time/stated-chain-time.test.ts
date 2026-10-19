@@ -28,8 +28,8 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * the shipped deployment reader: the state, not a re-derivation, is what the assertion checks.
  */
 
-const IMPL_CATEGORY = '11'.repeat(32);
-const PROXY_CATEGORY = '22'.repeat(32);
+const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
+const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 
 // `evmCompat` is the mode the ported contracts (and the marketplace project) compile under.
 const SOURCE = 'pragma solidcash ^0.13.0;'

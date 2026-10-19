@@ -52,7 +52,7 @@ async function deployKeccakSidecars(provider: ReturnType<typeof createTestProvid
   for (let i = 0; i < 5; i++) {
     await provider.addUtxo(lock, {
       txid: (0xd0 + i).toString(16).padStart(2, '0').repeat(32), vout: 0, satoshis: 100_000n,
-      token: { category: 'dd'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      token: { category: 'dd'.repeat(31) + '22', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
     });
   }
 }
@@ -86,7 +86,7 @@ describe('keccak loop beside a container spend (fail-closed edge a)', () => {
       saltContract: true,
     });
     const sc = StatefulContract.withCategory(contract, categoryId);
-    const tokenCategory = 'bb'.repeat(32);
+    const tokenCategory = 'bb'.repeat(31) + '44';
     const containerUtxo: Utxo = {
       txid: 'ddcd'.repeat(16), vout: 0, satoshis: 1200n,
       token: { category: tokenCategory, amount: 1000n },

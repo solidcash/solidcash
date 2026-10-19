@@ -16,7 +16,7 @@ import { persistValueChunkLock, type ValueChunkWriteDescriptor } from '../../src
 import { generateLibauthSourceOutputs, scriptToLockingBytecode, solidCashOutputToLibauthOutput } from '../../src/utils.js';
 
 const provider = {} as NetworkProvider;
-const category = '11'.repeat(32);
+const category = '11'.repeat(31) + 'ee';
 const expected = Uint8Array.of(0, 0, 0x61);
 const pin = (suffix: Script, inactive = false): Script => [
   scriptToBytecode(suffix), Op.OP_1, Op.OP_DEFINE,

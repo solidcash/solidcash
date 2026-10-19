@@ -25,7 +25,7 @@ const PING_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 const ping = compileStringMulti(PING_SOURCE, { composition: 'framed' }).Ping!;
-const CATEGORY = '5c'.repeat(32);
+const CATEGORY = '5c'.repeat(31) + 'a3';
 const LOCK = 'aa20' + '31'.repeat(32) + '87';
 
 describe('a registration made on a provider', () => {

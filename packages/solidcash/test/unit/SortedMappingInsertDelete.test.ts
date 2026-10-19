@@ -9,7 +9,9 @@ import { Op } from '@solidcash/utils';
 // and k[k|S], emit P'[Ps|S]. The covenant forces every field, so an attacker cannot skip a node, corrupt the
 // predecessor, or insert a present key. Entries authenticated by category == the contract's (master-guarded).
 
-const CATEGORY = hexToBin('11'.repeat(32));
+const CATEGORY = hexToBin('11'.repeat(31) + 'ee');
+// The category introspection opcodes answer in internal (reversed) order; CATEGORY is display order.
+const CATEGORY_INTERNAL = CATEGORY.slice().reverse();
 
 function slot32(n: number): Uint8Array {
   const b = new Uint8Array(32);
@@ -38,7 +40,7 @@ class Asm {
 function insertCovenant(): Uint8Array {
   const a = new Asm();
   const catBase = (opCat: number): void => { // <n> OP_x-CATEGORY <32> SPLIT DROP <C> EQUALVERIFY
-    a.op(opCat).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP).pushData(CATEGORY).op(Op.OP_EQUALVERIFY);
+    a.op(opCat).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP).pushData(CATEGORY_INTERNAL).op(Op.OP_EQUALVERIFY);
   };
   // [k32]
   a.op(Op.OP_1); catBase(Op.OP_UTXOTOKENCATEGORY);           // [k32]  (P authentic)
@@ -76,7 +78,8 @@ function insertCovenant(): Uint8Array {
 function deleteCovenant(): Uint8Array {
   const a = new Asm();
   const catBase = (idx: number, opCat: number): void => {
-    a.op(idx, opCat).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP).pushData(CATEGORY).op(Op.OP_EQUALVERIFY);
+    a.op(idx, opCat).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP)
+      .pushData(CATEGORY_INTERNAL).op(Op.OP_EQUALVERIFY);
   };
   // [k32]
   catBase(Op.OP_1, Op.OP_UTXOTOKENCATEGORY);                 // [k32]  (P authentic)
@@ -214,7 +217,7 @@ describe('sorted linked-list mapping: delete splice soundness', () => {
 function membershipCovenant(): Uint8Array {
   const a = new Asm();
   a.op(Op.OP_1, Op.OP_UTXOTOKENCATEGORY).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP)
-    .pushData(CATEGORY).op(Op.OP_EQUALVERIFY);                 // [k32]  (entry authentic)
+    .pushData(CATEGORY_INTERNAL).op(Op.OP_EQUALVERIFY);        // [k32]  (entry authentic)
   a.op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP); // [k32, slot32]
   a.op(Op.OP_EQUAL);                                          // slot32 == k32 -> present
   return a.bytes();
@@ -226,13 +229,13 @@ function membershipCovenant(): Uint8Array {
 function updateCovenant(): Uint8Array {
   const a = new Asm();
   a.op(Op.OP_1, Op.OP_UTXOTOKENCATEGORY).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP)
-    .pushData(CATEGORY).op(Op.OP_EQUALVERIFY);                 // [k32]
+    .pushData(CATEGORY_INTERNAL).op(Op.OP_EQUALVERIFY);        // [k32]
   a.op(Op.OP_1, Op.OP_UTXOTOKENCOMMITMENT).pushData(new Uint8Array([64])).op(Op.OP_SPLIT, Op.OP_DROP); // [k32, link64] (slot||next)
   a.op(Op.OP_DUP).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP); // [k32, link64, slot32]
   a.op(Op.OP_2, Op.OP_PICK, Op.OP_EQUALVERIFY);               // slot == k  -> [k32, link64]
   // output link (first 64 bytes) == input link
   a.op(Op.OP_1, Op.OP_OUTPUTTOKENCATEGORY).pushData(new Uint8Array([32])).op(Op.OP_SPLIT, Op.OP_DROP)
-    .pushData(CATEGORY).op(Op.OP_EQUALVERIFY);
+    .pushData(CATEGORY_INTERNAL).op(Op.OP_EQUALVERIFY);
   a.op(Op.OP_1, Op.OP_OUTPUTTOKENCOMMITMENT).pushData(new Uint8Array([64])).op(Op.OP_SPLIT, Op.OP_DROP); // out link64
   a.op(Op.OP_EQUALVERIFY);                                    // out link == in link (link preserved)
   a.op(Op.OP_DROP, Op.OP_1);

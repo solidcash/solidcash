@@ -50,7 +50,7 @@ async function fundKeccakSidecars(
     await provider.addUtxo(keccakLock, {
       ...randomUtxo({ satoshis: 100_000n }),
       token: {
-        category: '77'.repeat(32), amount: 0n,
+        category: '77'.repeat(31) + '88', amount: 0n,
         nft: { capability: 'mutable', commitment: '' },
       },
     });

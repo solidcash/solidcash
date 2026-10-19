@@ -22,7 +22,7 @@ const fixture = (): {
   const value = new Uint8Array(219).fill(0x61);
   const collectionSignature = 'records:mapping(uint256 => bytes)';
   const write: ValueChunkWriteDescriptor = {
-    categoryId: '32'.repeat(32), collection: 'records', collectionSignature,
+    categoryId: '32'.repeat(31) + 'cd', collection: 'records', collectionSignature,
     collectionHash: binToHex(computeCollectionHash(collectionSignature)),
     keySlot: '43'.repeat(32), entryAccessSlot: 0, routeSlot: 0,
     operation: 'update', outputBase: 7, outputCount: 2,

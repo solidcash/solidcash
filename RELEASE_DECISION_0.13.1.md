@@ -100,53 +100,59 @@ The unconditional return-event ordering coverage is regtest-gated; unbounded ret
 
 ## Overall recommendation
 
-**Release-ready on the mocknet gates at `14bfff57a`** (2026-10-19). Every gate in the table below passes at that
-commit, all four marketplace matrix cells pass (262/262) on mocknet, and the six residuals and five skips above stay
-non-blocking. One item outside the gates is left for the release owner:
+**Release-ready on the mocknet gates at `c7dc1b535`** (`master`, 2026-10-19). Every gate in the table below exits 0
+at that commit, and the six residuals and five skips above stay non-blocking. `master` carries all the release work:
+the readiness and matrix fixes (merge `168a45b9d`), `feat/tether-bch-native` (merge `e974a00e4`),
+`solidcash_v0.13.1` (merge `30b457b10`, history only) and the D30 record (`c7dc1b535`). Two items outside the gates
+are left for the release owner:
 
 - `release-application-regtest` was not run: verification ran on mocknet only, by instruction. It last passed
   against stock BCHN v29.0.0 at `88cc906ec` (`docs/framed/REGTEST_AT_HEAD.md`).
-
-Cut the release from `master` once it carries these commits (`fix/matrix-kernel-arbitrate`, on top of `master`
-`11b8f7feb`). The one `solidcash_v0.13.1` commit missing from `master`, `aa8b1b3aa` (a brace-style change), is
-patch-equivalent to `d64213ab3` on `master` (`git cherry` reports it applied), so `master` holds all of that
-branch's content; bringing `solidcash_v0.13.1` along needs a merge, not a fast-forward.
+- The marketplace matrix last ran at `14bfff57a`, all four cells green (262/262). `master` has since gained the
+  tether branch's compiler and SDK commits; at `c7dc1b535` the marketplace bytecode identity is unchanged, but the
+  four cells were not re-run.
 
 ## Gate and suite evidence
 
-Final run on 2026-10-19 at `14bfff57a`, mocknet only (`TESTS_USE_REGTEST` unset), at most two heavy jobs at a time,
-tree clean before and after every gate. The earlier run at `11b8f7feb` that found the lint and spellcheck failures is
-in this file's history.
+Final run on 2026-10-19 at `c7dc1b535`, mocknet only (`TESTS_USE_REGTEST` unset), one job at a time, tree clean
+before and after every gate. The runs at `11b8f7feb` and `14bfff57a` are in this file's history.
 
 | Gate | Result | Evidence |
 |---|---|---|
-| `scripts/gate.sh fast` | pass | exit 0: identity `{"routeBytes":44837,"fullBytes":242091,"fullHash":"cab3b849643b536f"}` matches, unchanged by the fixes (see note 1) |
-| `scripts/gate.sh full` | pass | its suites, utils 512/512 and solidc 7366/7366, pass in `yarn test` at the same commit; identity as in `fast` |
-| `kernel-beta-gate` | pass | exit 0 without `--allow-dirty` (36 min), `diagnosticOnly: false`, sourceFingerprints matched |
-| `release-security-conformance` | pass | exit 0 |
-| `yarn test` | pass (see note 2) | utils 512/512; solidc 7366/7366; solidcash 5972 passed and one time-out under load; testing 113/113; testing-suite 27/27; solidhat 71 passed, 1 skipped |
-| `yarn lint` | pass | exit 0, all seven packages and testing-suite (fixed by `0d670c83e`) |
-| `yarn spellcheck` | pass | exit 0, no unknown words (fixed by `b5b3265db`) |
+| `scripts/gate.sh fast` | pass | exit 0: identity `{"routeBytes":44837,"fullBytes":242091,"fullHash":"cab3b849643b536f"}` matches (see note 1) |
+| `scripts/gate.sh full` | pass | exit 0 (650 s): utils 512/512, solidc 7364 passed and 7 skipped (see note 2); identity as in `fast` |
+| `kernel-beta-gate` | pass | exit 0 without `--allow-dirty` (34 min): `diagnosticOnly: false`, head `c7dc1b535`, sourceFingerprints matched, all 39 required kernel proofs passed; `--sources-only` exit 0 (see note 2) |
+| `release-security-conformance` | pass | exit 0 (72 s) |
+| `yarn test` | pass | exit 0 (29 min): utils 512/512; solidc 7364 passed, 7 skipped (see note 2); solidcash 5974 passed, 4 expected failures, 179 skipped, 5 todo; testing 113/113; testing-suite 27/27; solidhat 71 passed, 1 skipped (see note 4) |
+| `yarn lint` | pass | exit 0 (203 s); the `11b8f7feb` failures were fixed by `0d670c83e` |
+| `yarn spellcheck` | pass | exit 0, 2096 files, no unknown words; the `11b8f7feb` failures were fixed by `b5b3265db` |
 | `check:source-tree` | pass | exit 0 |
-| `release-package-smoke` | pass | exit 0 (391 s) |
+| `release-package-smoke` | pass | exit 0 (293 s) |
 | `release-docs-snippets` | pass | exit 0 |
 | `release-corpus-baseline` | pass | exit 0 against the retained scorecard (see note 3) |
 | `release-application-conformance` | pass | exit 0 |
 | `release-generated-project-smoke` | pass | exit 0 |
-| marketplace matrix | pass | proxy x kernel 66/66, proxy x framed 66/66, no-proxy x kernel 65/65, no-proxy x framed 65/65 |
+| marketplace matrix | not re-run | last at `14bfff57a`: proxy x kernel 66/66, proxy x framed 66/66, no-proxy x kernel 65/65, no-proxy x framed 65/65 |
 | `release-application-regtest` | not run | mocknet-only verification; last pass at `88cc906ec` |
 
 Notes:
 
 1. The identity step compiles `.marketplace/contracts/MarketplaceV1.sol`, an untracked directory of symlinks into
    the sibling `effectiveacceleration.ai` checkout. A fresh worktree has none, so the step prints nothing and the
-   gate exits 1 with "bytecode changed"; the runs above provide it from the lane's checkout.
-2. `ExactAdditiveRecurrenceSecurity.test.ts` timed out at 125.5 s against its 120 s limit while two marketplace cells
-   ran beside `yarn test`; alone at the same commit it passes in 98.5 s. Every other file passed in that run.
+   gate exits 1 with "bytecode changed"; the runs above copy it from the main checkout.
+2. The battery ran in a checkout outside `/Code`, where the tests that need the sibling `effectiveacceleration.ai`
+   checkout skip: 7 in solidc (4 files) and the three real-contract kernel files in solidcash. Those files (4 solidc,
+   6 solidcash) then ran once from a checkout under `/Code`, where they find the sibling: solidc 36/36, solidcash 16
+   passed and 3 skipped by their opt-in switches (`SOLIDC_REAL_CORPUS`, `L3_X168_*`). `kernel-beta-gate` ran from
+   that checkout too. `EACC_CONTRACTS_DIR` cannot stand in for the location: the gate reads it as the repository
+   root while the test helpers read it as `contract/contracts`, so the gate's journal steps would compile from the
+   wrong path.
 3. The gate checks the committed `bench/solidity-corpus/scorecard.txt` (2720/2805 positive, 149/2158 negative
    fixtures accepted) against `release-baseline.json`; it does not recompile the corpus. That scorecard was last
    regenerated at `a1e98a04a` (2026-10-12) and was reproduced identically by the 2026-10-14 integration run.
-4. Outside the release gates, the affected SDK e2e files: `KernelDirectChunkedEntryUpdate` and
+4. `ExactAdditiveRecurrenceSecurity.test.ts` runs close to its 120 s limit (98.5 s alone); it timed out once at
+   `14bfff57a` while two marketplace cells ran beside `yarn test`, and passed in this run.
+5. Outside the release gates, the affected SDK e2e files (at `14bfff57a`): `KernelDirectChunkedEntryUpdate` and
    `KernelDirectLogicalCaller` pass (the latter red since `24a61d5d1`); `MasterChefDeposit` fails at its allowance
    step because the test approves the physical `chef.address` while callees now see the logical CREATE lock (it was
    already red at a later step).

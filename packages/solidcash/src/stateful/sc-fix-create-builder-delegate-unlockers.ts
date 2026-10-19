@@ -587,8 +587,13 @@ export async function fixCreateBuilderDelegateUnlockers(
             const physical = externalCallUtxoGroups[nested.sharedGroupIndex ?? firstNested];
             externalCallInputPositions.push({ name: inp.name, categoryId: physical.categoryId });
           }
+          // A lone conditional call with no co-spent callee was not made; its call site refuses a reached -1.
+          const calls = ((bFunc as AbiFunction).externalCalls ?? []) as readonly (
+            ExternalCallAbi & { occurrence?: string }
+          )[];
+          const skippedLone = calls.length === 1 && calls[0].occurrence === 'conditional' && !calls[0].loopArrayVar;
           return BigInt(firstNested === undefined
-            ? masterInputIndex + 1 + group.dataNftUtxos.length
+            ? skippedLone ? -1 : masterInputIndex + 1 + group.dataNftUtxos.length
             : nestedMasterIndices[firstNested]);
         }
         if (/^__internal__extcallMasterIdx\d*$/.test(inp.name)) {

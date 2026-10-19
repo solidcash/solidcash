@@ -4045,8 +4045,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         // A lone delegate write remains scalar because the proxy owns its collection topology. Multiple fixed
         // writes cannot each consume the same predecessor entry, however, so the implementation must authenticate
         // their shared transition as one batch (notably upgradeable initializers with literal-key inserts).
+        // A split facet batches a lone write too: its root leaves batch-censused collections to the facet's exact
+        // input and output counts, which is what lets a first-touch insert settle.
+        const splitFacetLoneWrite = this.currentContract?.isSplitFacet === true && fixedSortedWriteCount === 1;
         const ownsCollectionTopology = (node.modifiers.includes(FunctionModifier.DELEGATE)
-          && fixedSortedWriteCount <= 1)
+          && fixedSortedWriteCount <= 1 && !splitFacetLoneWrite)
           || (node.name.startsWith('__message_bus_') && !node.messageBusRoute);
         if (!ownsCollectionTopology) {
           this.assignComposeAliasPriors(node, ordered, batchByCollection, loopWrittenCollections);

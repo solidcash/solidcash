@@ -28400,11 +28400,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
-  /** Whether this frame can append to the value-chunk lock list: its own witness, or an invoked handler's band. */
-  private valueChunkLockListAddressable(): boolean {
-    return this.isDefineSubTraversal
-      ? this.chunkLockListBandOrdinal() !== undefined
-      : this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0;
+  /**
+   * Whether this function's tail runs the outside-layout walk over its own value-chunk lock list. A compiler-owned
+   * message-bus route skips that walk, its handlers reach the list only through the route band, and there an
+   * appended old-chunk lock would only widen the output slot scan.
+   */
+  private outsideLayoutWalkReadsChunkLockList(): boolean {
+    return !this.isDefineSubTraversal && !this.isCompilerMessageBusRoute()
+      && this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0;
   }
 
   /**
@@ -28979,7 +28982,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // A direct write's node sits at the entry slot's own output either way, so the bracket guards one tail.
         this.emit(Op.OP_NOTIF, loc);
         this.emitSortedPredecessorBracket(loc);
-        if (this.isChunkableValue(collection.innermostValueType) && this.valueChunkLockListAddressable()) {
+        if (this.isChunkableValue(collection.innermostValueType) && this.outsideLayoutWalkReadsChunkLockList()) {
           // An in-place update spends the entry's OLD value chunks beside the block.
           this.emit(Op.OP_ELSE, loc);
           this.emitAdmitUpdatedOldValueChunks(collection.name, 5, loc);

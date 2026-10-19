@@ -25,6 +25,7 @@ import {
 } from './stb-chunkable-write-planning.js';
 import type { ScaledPreserveEmitHost } from './stb-scaled-preserve-emit.js';
 import {
+  dominantOwnedValueChunkLock,
   fillValueChunkBandHoles,
   placeValueChunksOnBand,
   preferChunkCommitment,
@@ -394,21 +395,11 @@ export function ensureLiveValueChunkBand(
   const source = shouldRematerializePersistUpdateForHost(host)
     ? firstUsableValueChunkRun(observed, fromValue)
     : observed;
-  const lockCounts = new Map<string, { lock: Uint8Array; n: number }>();
-  for (let index = band.start; index < band.start + Math.max(band.nNew, 8); index++) {
-    const lock = builder.outputs[index]?.to;
-    if (!(lock instanceof Uint8Array) || lock.length !== 35 || lock[0] !== 0xaa) continue;
-    const key = binToHex(lock);
-    lockCounts.set(key, { lock, n: (lockCounts.get(key)?.n ?? 0) + 1 });
-  }
-  let dominant: Uint8Array | undefined;
-  let dominantCount = 0;
-  for (const value of lockCounts.values()) {
-    if (value.n > dominantCount) {
-      dominant = value.lock;
-      dominantCount = value.n;
-    }
-  }
+  // The holes below take this category, so only its own continuations may vote for their lock.
+  const bandCategory = persistTokenCategory ?? source[0]?.categoryId;
+  const dominant = dominantOwnedValueChunkLock(
+    builder.outputs, band.start, band.start + Math.max(band.nNew, 8), bandCategory,
+  );
   const siblingLock = source[0]?.lockingBytecode
     ?? persistDigestLock
     ?? dominant
@@ -445,7 +436,7 @@ export function ensureLiveValueChunkBand(
   ), reserved, occupancyEnd, suffixStart);
   fillValueChunkBandHoles(builder.outputs, liveBand, {
     lockingBytecode: siblingLock,
-    categoryId: persistTokenCategory ?? source[0]?.categoryId,
+    categoryId: bandCategory,
   }, reserved, suffixStart, occupancyEnd);
   if (permitsLegacyNamedValueChunkFallbackForGroups(host)) {
     stripSurplusValueChunkLocks(builder.outputs, liveBand, siblingLock, host.allInputs);

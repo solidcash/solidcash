@@ -1,3 +1,4 @@
+# cspell:ignore DBUILD DCMAKE DENABLE ldbl
 # Build a BCHN image with the regtest-only consensus-limit options.
 #
 # The build context is a source tree with build artifacts and test/bench directories excluded. Use

@@ -1,3 +1,4 @@
+<!-- cspell:ignore maxp shscriptsigsize -->
 # Marketplace tests against in-docker BCHN: consensus relaxation
 
 ## Summary

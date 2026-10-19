@@ -1,3 +1,4 @@
+// cspell:ignore CHUNKM
 // 3-COVENANT recovery split (A -> middle -> B) for width-0 signatures whose GLV ladder cannot fit a 2-input
 // split. A runs sig+mask+table verification and ladders to checkpoint C1 (commits H_A). The middle covenant M is a
 // PURE ladder from C1 to a second checkpoint C2 (commits H_M). B ladders from C2 to the recovered pubkey (verifies

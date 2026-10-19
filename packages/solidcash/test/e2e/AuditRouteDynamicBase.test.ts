@@ -140,6 +140,7 @@ describe('DYN-1 route lane: a writer row cannot take the read-only base sentinel
       (site.unlocker.params as unknown[])[site.index] = -5n;
       site.unlocker.syncEncodedArgsFromParams?.([site.index]);
     });
+    // cspell:disable-next-line -- forged chunk value
     const forgedHex = forgeChunk(forgedWrite.build(), '666f75727468' /* fourth */, '666f75727458' /* fourtX */);
     const forgedOutcome = await provider.sendRawTransaction(forgedHex)
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);

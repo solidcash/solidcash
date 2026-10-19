@@ -1,3 +1,4 @@
+// cspell:ignore CATM CHUNKM
 // PRODUCTION 3-COVENANT recovery split (A -> middle -> B) for width-0 signatures. Wraps the PROVEN middle.mjs
 // ladder math with the blob-structured unlocking, the A->M and M->B checkpoint-hash chain, and self-preservation.
 // A-unlock = <pad><argBlob><sharedBlob><aBlob><redeem>  (UNCHANGED from gen-ecrecover-sidecar.mjs)

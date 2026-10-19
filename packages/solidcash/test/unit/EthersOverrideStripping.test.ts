@@ -3,6 +3,7 @@ import { stripTrailingEthersOverrides } from '../../src/stateful/sc-build-namesp
 
 describe('stripTrailingEthersOverrides', () => {
   it('drops a trailing {from} transaction override', () => {
+    // cspell:disable-next-line -- placeholder address
     expect(stripTrailingEthersOverrides(['0xspender', { from: 'bchtest:qq...' }])).toEqual(['0xspender']);
   });
 

@@ -104,13 +104,14 @@ The unconditional return-event ordering coverage is regtest-gated; unbounded ret
 fixes `0d670c83e` and `b5b3265db`). Every gate in the table below passes, the six residuals and five skips above
 stay non-blocking, and the changes that turned the 2026-10-17 failures green are listed under "What closed the
 2026-10-17 failures".
-Before tagging, the release owner still has to accept three things outside the gates:
+Before tagging, the release owner still has to accept two things outside the gates, and cut from the right branch:
 
 - `release-application-regtest` was not run at this commit: the re-verification ran on mocknet only, by
   instruction. It last passed against stock BCHN v29.0.0 at `88cc906ec` (`docs/framed/REGTEST_AT_HEAD.md`).
 - The marketplace proxy x kernel arbitrate title fails its preflight at input 1462 (see "Open outside the gates").
-- `master` carries the readiness commits, and `solidcash_v0.13.1` carries `aa8b1b3aa` (a brace-style change in
-  `CacheDynamicArrayInLoop.ts`) that `master` lacks; merge the two before tagging. `master` lints clean without it.
+- Cut the release from `master`. The one `solidcash_v0.13.1` commit missing from `master`, `aa8b1b3aa` (a
+  brace-style change), is patch-equivalent to `d64213ab3` on `master` (`git cherry` reports it applied), so
+  `master` holds all of that branch's content; bringing `solidcash_v0.13.1` along needs a merge, not a fast-forward.
 
 ## Gate and suite evidence
 

@@ -23,6 +23,10 @@ allowances, supply accounting, and Transfer/Approval events while intentionally 
 category from the contract's own state NFT and owns no configuration or delayed-admission state. The token
 supplies balance and policy hooks.
 
+It composes with unmodified third-party ledgers too: `test/fixture/oz_bch_native_token.sol` inherits the npm
+OpenZeppelin ERC20, and `test/fixture/tether/TetherNativeToken.sol` inherits the Etherscan-verified USDT source
+(Solidity 0.4) byte for byte, adding only the hooks.
+
 The minimal base emits no native lifecycle events, preserving only the mandatory OpenZeppelin ERC20 events.
 It does not reference `block.number`, so a simple immediate wrap/unwrap token carries no oracle state or updater.
 For a zero-quarantine token, `wrap(amount)` is the immediate admission path; inheriting quarantine solely with a

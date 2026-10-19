@@ -495,6 +495,8 @@
         "bench/solidity-corpus/semantic-results.json",
         // Generated release fixtures embed upstream source/debug text; spellcheck their maintained source instead.
         "packages/solidcash/test/fixture/mistswap-artifacts/**",
+        // The Etherscan-verified USDT source is kept byte for byte.
+        "packages/solidcash/test/fixture/tether/TetherToken.sol",
         // Do not spellcheck vendor code
         "**/node_modules/**",
     ],

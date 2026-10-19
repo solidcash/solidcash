@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { Contract, SignatureTemplate, TransactionBuilder } from '../../src/index.js';
 import { StatefulContract, getDataNftAddress, getTokenContainerAddress } from '../../src/stateful/index.js';

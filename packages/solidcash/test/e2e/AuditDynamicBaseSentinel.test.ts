@@ -98,6 +98,7 @@ describe('DYN-1: a free dynamic-chunk base cannot disable the chunk verifier', (
     const tx = decodeTransactionUnsafe(hexToBin(hex)) as Tx;
     const patched = patchArgument(tx, inputs, '__internal__dynamicChunkInputBase', -5n);
     expect(patched).toBeGreaterThanOrEqual(1);
+    // cspell:disable-next-line -- forged chunk value
     expect(forgeChunk(tx, 'third', 'thirX')).toBe(1);
 
     const outcome = await outcomeOf(provider, binToHex(encodeTransaction(tx)));

@@ -208,20 +208,21 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     // calls and hand the test's stub back afterwards. The client calls `fetch` synchronously before awaiting,
     // so overlapping requests each start under the native function.
     const nativeFetch = globalThis.fetch;
-    for (const client of [this.rpc, this.readRpc, this.probeRpc] as unknown as Array<{
-      request: (method: string, ...params: unknown[]) => Promise<unknown>;
-    }>) {
-      const original = client.request.bind(client);
-      client.request = async (method: string, ...params: unknown[]): Promise<unknown> => {
-        const current = globalThis.fetch;
-        if (current === nativeFetch) return original(method, ...params);
-        globalThis.fetch = nativeFetch;
-        try {
-          return await original(method, ...params);
-        } finally {
-          globalThis.fetch = current;
-        }
-      };
+    type RpcRequest = (method: string, ...params: unknown[]) => Promise<unknown>;
+    const underNativeFetch = (original: RpcRequest): RpcRequest => async (
+      method: string, ...params: unknown[]
+    ): Promise<unknown> => {
+      const current = globalThis.fetch;
+      if (current === nativeFetch) return original(method, ...params);
+      globalThis.fetch = nativeFetch;
+      try {
+        return await original(method, ...params);
+      } finally {
+        globalThis.fetch = current;
+      }
+    };
+    for (const client of [this.rpc, this.readRpc, this.probeRpc] as unknown as Array<{ request: RpcRequest }>) {
+      client.request = underNativeFetch(client.request.bind(client));
     }
   }
 

@@ -130,7 +130,7 @@ import {
   type GraphEcrecoverCall,
   type MessageBusRuntimeAbiFunction,
 } from './kernel-route-planning.js';
-import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
+import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { blockOracleLockFor, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
 import { selectRootBlockOracleReader, takeNestedBlockOracleInput } from './block-oracle-reader-selection.js';
@@ -6970,13 +6970,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       && !compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction);
     const publicSelfAddress = authenticatesOwnSelf && logicalCreateLock !== undefined
       ? logicalCreateLock : authenticatedSelfAddress;
-    // The identity a CHILD callee observes as `msg.sender` is the caller's PHYSICAL executing lock, not its
-    // logical CREATE identity: `approve(chef.address, ..)` stores an allowance under the physical `chef.address`,
-    // so the callee's `msg.sender`-keyed entry must resolve to that same physical lock (model-B logical
-    // self-identity is the separate `publicSelfAddress` above).
+    // The identity a CHILD callee observes as `msg.sender` (anchor witness and msg.sender-keyed entries). A plain
+    // deployment whose route proves its own SCID is addressed by its logical CREATE lock (`getAddress()`), as the
+    // atomic graph presents the same caller; proxy, framed and native deployments keep the physical executing lock.
+    const childSeesLogicalSelf = this._framedAddress === undefined && this._framedProxyAddress === undefined
+      && (registeredSelf?.contract as { implementation?: unknown } | undefined)?.implementation === undefined
+      && routeAuthenticatesPublicSelf(this.inner.artifact);
     const publicSelfIdentity = Object.freeze({
       categoryId: this.categoryId,
-      lockingBytecode: binToHex(authenticatedSelfAddress),
+      lockingBytecode: binToHex(childSeesLogicalSelf && logicalCreateLock !== undefined
+        ? logicalCreateLock : authenticatedSelfAddress),
     });
     const requiredNftIndices = abiFunction?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);

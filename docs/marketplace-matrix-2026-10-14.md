@@ -53,6 +53,11 @@ to a Solidity bytes argument and two allocated-local-array mapping-key provenanc
 
 ## Current validation status
 
+> **At `14bfff57a` (2026-10-19), mocknet:** all four cells pass again, 262/262 (proxy x kernel 66, proxy x framed 66,
+> no-proxy x kernel 65, no-proxy x framed 65). At `11b8f7feb` proxy x kernel arbitrate failed at input 1462 and
+> no-proxy x kernel failed 20 titles; the four causes and fixes are in `RELEASE_DECISION_0.13.1.md`, "What closed the
+> marketplace matrix failures". The 262/262 result below belongs to the pre-merge snapshot it names.
+
 All four complete, unfiltered marketplace suites pass on the same final repaired source: **262 passed,
 0 failed, 0 skipped**. Every cell exits 0 with no source/build/artifact/config/test drift or unhandled errors.
 

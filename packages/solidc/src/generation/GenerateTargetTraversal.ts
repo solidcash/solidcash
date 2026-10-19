@@ -28401,6 +28401,87 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Whether this function's tail runs the outside-layout walk over its own value-chunk lock list. A compiler-owned
+   * message-bus route skips that walk, its handlers reach the list only through the route band, and there an
+   * appended old-chunk lock would only widen the output slot scan.
+   */
+  private outsideLayoutWalkReadsChunkLockList(): boolean {
+    return !this.isDefineSubTraversal && !this.isCompilerMessageBusRoute()
+      && this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0;
+  }
+
+  /**
+   * `[.., coSlot, coNext, coValue]` with `rawCells` untracked items above the tracked frame -> unchanged. An in-place
+   * UPDATE spends the entry's OLD value chunks at their own lock (slot, old root), not the lock the new value's
+   * chunks take. Append that lock to VALUE_CHUNK_LOCK_LIST so the outside-layout walk admits the spent chunks instead
+   * of preserving them 1:1. An inline old value (<= 60 B) has no chunks.
+   */
+  private emitAdmitUpdatedOldValueChunks(collectionName: string, rawCells: number, loc: SingleLocationData): void {
+    // wasChunked = BIN2NUM(coValue[0:4]) > 60.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(encodeInt(60n), loc); this.emit(Op.OP_GREATERTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.scopeDepth += 1;
+    // [.., coSlot, coNext, coValue, root, slot]: root = coValue[4:36], slot = coSlot.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc); this.emitTakeFirst32(loc);
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc);
+    // Park the raw cells so the tracked frame is addressed from depth 0.
+    for (let cell = 0; cell < rawCells; cell += 1) {
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    }
+    this.pushToStack('(old_root)');
+    this.pushToStack('(old_slot)');
+    this.emitRecordsCategoryBase(loc);
+    this.pushToStack('(old_cat)');
+    this.emitValueChunkP2sh32(
+      computeCollectionHash(valueChunkSignature(collectionName)), '(old_slot)', '(old_root)', loc,
+    );
+    this.stack[0] = '(old_lock)';
+    const chunkBase = VALUE_CHUNK_LOCK_LIST;
+    const bandOrdinal = this.isDefineSubTraversal ? this.chunkLockListBandOrdinal() : undefined;
+    const bottom = bandOrdinal ?? this.stack.length - this.getStackIndex(chunkBase);
+    if (bandOrdinal !== undefined) {
+      this.emit(Op.OP_DEPTH, loc);
+      this.emit(encodeInt(BigInt(bandOrdinal)), loc);
+      this.emit(Op.OP_SUB, loc);
+    } else this.emit(encodeInt(BigInt(this.getStackIndex(chunkBase))), loc);
+    this.emit(Op.OP_PICK, loc);
+    // A list of whole locks takes the old lock appended; the cleared witness is replaced by it.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(35n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(encodeInt(35n), loc);
+    this.emit(Op.OP_MOD, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_BOOLAND, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(old_lock)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emitReplaceAtBottomOrdinal(bottom, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('(old_lock)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emitReplaceAtBottomOrdinal(bottom, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DROP, loc); this.popFromStack(); // lock
+    this.emit(Op.OP_2DROP, loc); this.popFromStack(2); // slot, root
+    for (let cell = 0; cell < rawCells; cell += 1) this.emit(Op.OP_FROMALTSTACK, loc);
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
    * Sorted (vmap) value mapping WRITE `m[k] = v` for `mapping(K => int)` - an UPSERT. Co-spends ONE entry at the
    * entry slot: the exact k-entry if present (SDK planUpdate), else the bracketing predecessor (planInsert). The
    * covenant reads its commitment slot(32)||nextKey(32)||value and branches on slot == H(k):
@@ -28901,6 +28982,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // A direct write's node sits at the entry slot's own output either way, so the bracket guards one tail.
         this.emit(Op.OP_NOTIF, loc);
         this.emitSortedPredecessorBracket(loc);
+        if (this.isChunkableValue(collection.innermostValueType) && this.outsideLayoutWalkReadsChunkLockList()) {
+          // An in-place update spends the entry's OLD value chunks beside the block.
+          this.emit(Op.OP_ELSE, loc);
+          this.emitAdmitUpdatedOldValueChunks(collection.name, 5, loc);
+        }
         this.emit(Op.OP_ENDIF, loc);
         this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
         // A delegate's target follows the co-spent implementation block, which emitEntryOutputIndex resolves.

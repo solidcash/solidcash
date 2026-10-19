@@ -3321,3 +3321,25 @@ co-spend an own-category mutable NFT at a non-mintable P2SH32 lock and re-emit i
 commitment is refused at the master with a mandatory-script-verify-flag failure; the honest tx still settles
 afterward. The message-bus route path authenticates those NFTs through the batch verifier and deliberately skips the
 walk (`!isCompilerMessageBusRoute`), unchanged.
+
+## A single-write sorted update of a chunked value keeps its old chunks under the outside-layout walk (2026-10-19)
+
+**What:** `30ca5ea5e`, narrowed by `14bfff57a`, appends an updated entry's OLD value-chunk lock to the value-chunk lock
+list in the direct sorted-batch update arm, so the outside-layout walk admits the spent old chunks of an in-place update
+of a chunked value. The non-batch single-write update arm (a lone delegate write, a route scalar write, a fixed write to
+a collection that a loop also writes) has the same gap: the walk would preserve those old chunks 1:1 and refuse the
+update.
+
+**Why deferred:** no failing path reaches it. Delegate bodies and compiler message-bus routes skip the walk, so the
+change would only alter proxied-lane bytecode. Found while fixing the no-proxy x kernel `update user` titles.
+
+## The scalar-only return fallback reads a composite return type as one word (2026-10-19)
+
+**What:** `selectEvmScalarReturnCommitment` and `extractEvmScalarReturnCommitment`
+(`packages/solidcash/src/stateful/external-return-encoding.ts`), the raw fallback for an all-static return schema,
+accept scalar types only and read each declared type as one 32-byte word, so that fallback never recovers a static
+composite return such as `uint256[5]`.
+
+**Why deferred:** not on any failing path. The arbitrate titles' `uint256[5]` return is recovered through its canonical
+outer bytes once the participant's stream records are fed back (`a0ae125c1`). Found while diagnosing the proxy x kernel
+arbitrate titles.

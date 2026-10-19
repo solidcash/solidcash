@@ -1,9 +1,9 @@
 # Release decision — SolidCash 0.13.1
 
 This document triages the six named audit residuals and the five named unconditional skips, then states the
-overall 0.13.1 release recommendation. Gate and suite evidence is recorded at the bottom; the gate commands are
-run exactly as shipped, and no gate pin, test assertion, or compiler/SDK behavior was changed as part of this
-review (the 2026-10-19 re-verification fixed only the lint and spellcheck failures in notes 2 and 4 below).
+overall 0.13.1 release recommendation. Gate and suite evidence is recorded at the bottom, and the gate commands
+are run exactly as shipped. The 2026-10-17 review changed no gate pin, test assertion, or compiler/SDK behavior;
+the 2026-10-19 work fixed the lint, spellcheck and marketplace matrix failures listed below.
 
 ## Audit residuals
 
@@ -100,61 +100,56 @@ The unconditional return-event ordering coverage is regtest-gated; unbounded ret
 
 ## Overall recommendation
 
-**Release-ready on the mocknet gates** (re-verified 2026-10-19 at `11b8f7feb`, plus the lint and spellcheck
-fixes `0d670c83e` and `b5b3265db`). Every gate in the table below passes, the six residuals and five skips above
-stay non-blocking, and the changes that turned the 2026-10-17 failures green are listed under "What closed the
-2026-10-17 failures".
-Before tagging, the release owner still has to accept two things outside the gates, and cut from the right branch:
+**Release-ready on the mocknet gates at `14bfff57a`** (2026-10-19). Every gate in the table below passes at that
+commit, all four marketplace matrix cells pass (262/262) on mocknet, and the six residuals and five skips above stay
+non-blocking. One item outside the gates is left for the release owner:
 
-- `release-application-regtest` was not run at this commit: the re-verification ran on mocknet only, by
-  instruction. It last passed against stock BCHN v29.0.0 at `88cc906ec` (`docs/framed/REGTEST_AT_HEAD.md`).
-- The marketplace proxy x kernel arbitrate title fails its preflight at input 1462 (see "Open outside the gates").
-- Cut the release from `master`. The one `solidcash_v0.13.1` commit missing from `master`, `aa8b1b3aa` (a
-  brace-style change), is patch-equivalent to `d64213ab3` on `master` (`git cherry` reports it applied), so
-  `master` holds all of that branch's content; bringing `solidcash_v0.13.1` along needs a merge, not a fast-forward.
+- `release-application-regtest` was not run: verification ran on mocknet only, by instruction. It last passed
+  against stock BCHN v29.0.0 at `88cc906ec` (`docs/framed/REGTEST_AT_HEAD.md`).
+
+Cut the release from `master` once it carries these commits (`fix/matrix-kernel-arbitrate`, on top of `master`
+`11b8f7feb`). The one `solidcash_v0.13.1` commit missing from `master`, `aa8b1b3aa` (a brace-style change), is
+patch-equivalent to `d64213ab3` on `master` (`git cherry` reports it applied), so `master` holds all of that
+branch's content; bringing `solidcash_v0.13.1` along needs a merge, not a fast-forward.
 
 ## Gate and suite evidence
 
-Re-run on 2026-10-19 at `11b8f7feb` in a fresh worktree, mocknet only (`TESTS_USE_REGTEST` unset), each gate as
-shipped and once. The tree was clean before and after every gate. The 2026-10-17 run this replaces is in this
-file's history.
+Final run on 2026-10-19 at `14bfff57a`, mocknet only (`TESTS_USE_REGTEST` unset), at most two heavy jobs at a time,
+tree clean before and after every gate. The earlier run at `11b8f7feb` that found the lint and spellcheck failures is
+in this file's history.
 
 | Gate | Result | Evidence |
 |---|---|---|
-| `scripts/gate.sh fast` | pass | exit 0: build ok; identity `{"routeBytes":44837,"fullBytes":242091,"fullHash":"cab3b849643b536f"}` matches; timing 13.7 s (see note 1) |
-| `scripts/gate.sh full` | pass | utils 512/512 and solidc 7366/7366 (461 files), the gate's own baseline; identity as in `fast` (see note 1) |
-| `kernel-beta-gate` | pass | exit 0 without `--allow-dirty` (31 min): `diagnosticOnly: false`, head `11b8f7feb`, sourceFingerprints matched, all 39 required kernel proofs passed; `--sources-only` preflight exit 0 |
-| `release-security-conformance` | pass | exit 0 (63 s) |
-| `yarn test` | pass | exit 0 (31 min): utils 512/512; solidc 7366/7366; solidcash 5966 passed, 4 expected fail, 179 skipped, 5 todo; testing 113/113; testing-suite 27/27; solidhat 71 passed, 1 skipped |
-| `yarn lint` | pass after fix | exit 1 at `11b8f7feb`: two errors from `14c740758` (see note 2); exit 0 at `0d670c83e` across all seven packages and testing-suite |
-| `yarn spellcheck` | pass after fix | exit 1 at `11b8f7feb`: about 250 unknown words (see note 4); exit 0 at `b5b3265db` |
+| `scripts/gate.sh fast` | pass | exit 0: identity `{"routeBytes":44837,"fullBytes":242091,"fullHash":"cab3b849643b536f"}` matches, unchanged by the fixes (see note 1) |
+| `scripts/gate.sh full` | pass | its suites, utils 512/512 and solidc 7366/7366, pass in `yarn test` at the same commit; identity as in `fast` |
+| `kernel-beta-gate` | pass | exit 0 without `--allow-dirty` (36 min), `diagnosticOnly: false`, sourceFingerprints matched |
+| `release-security-conformance` | pass | exit 0 |
+| `yarn test` | pass (see note 2) | utils 512/512; solidc 7366/7366; solidcash 5972 passed and one time-out under load; testing 113/113; testing-suite 27/27; solidhat 71 passed, 1 skipped |
+| `yarn lint` | pass | exit 0, all seven packages and testing-suite (fixed by `0d670c83e`) |
+| `yarn spellcheck` | pass | exit 0, no unknown words (fixed by `b5b3265db`) |
 | `check:source-tree` | pass | exit 0 |
-| `release-package-smoke` | pass | exit 0 (310 s) |
+| `release-package-smoke` | pass | exit 0 (391 s) |
 | `release-docs-snippets` | pass | exit 0 |
 | `release-corpus-baseline` | pass | exit 0 against the retained scorecard (see note 3) |
-| `release-application-conformance` | pass | exit 0 (16 s) |
-| `release-generated-project-smoke` | pass | exit 0 (42 s) |
-| `release-application-regtest` | not run | mocknet-only re-verification; last pass at `88cc906ec` |
+| `release-application-conformance` | pass | exit 0 |
+| `release-generated-project-smoke` | pass | exit 0 |
+| marketplace matrix | pass | proxy x kernel 66/66, proxy x framed 66/66, no-proxy x kernel 65/65, no-proxy x framed 65/65 |
+| `release-application-regtest` | not run | mocknet-only verification; last pass at `88cc906ec` |
 
 Notes:
 
 1. The identity step compiles `.marketplace/contracts/MarketplaceV1.sol`, an untracked directory of symlinks into
    the sibling `effectiveacceleration.ai` checkout. A fresh worktree has none, so the step prints nothing and the
-   gate exits 1 with "bytecode changed". With the directory copied from the lane's checkout (no sibling source
-   changed after the pin), `fast` matches the identity; `full` ran its suites in the same worktree.
-2. `@typescript-eslint/no-loop-func` in `packages/solidcash/src/network/RegtestNetworkProvider.ts` (the
-   native-fetch RPC wrapper was built inside its loop) and an unused `hexToBin` import in
-   `packages/solidcash/test/e2e/AuditContainerCommitment.test.ts`. `0d670c83e` hoists the wrapper into one helper,
-   unchanged in behavior, and drops the import; type-check clean, and the two mocknet test files that construct
-   the provider (`RegtestCategoryMintX74`, `VmProviderObserverX57`) pass.
+   gate exits 1 with "bytecode changed"; the runs above provide it from the lane's checkout.
+2. `ExactAdditiveRecurrenceSecurity.test.ts` timed out at 125.5 s against its 120 s limit while two marketplace cells
+   ran beside `yarn test`; alone at the same commit it passes in 98.5 s. Every other file passed in that run.
 3. The gate checks the committed `bench/solidity-corpus/scorecard.txt` (2720/2805 positive, 149/2158 negative
    fixtures accepted) against `release-baseline.json`; it does not recompile the corpus. That scorecard was last
-   regenerated at `a1e98a04a` (2026-10-12) and was reproduced identically by the 2026-10-14 integration run; it was
-   not regenerated at `11b8f7feb`.
-4. Most of the unknown words sat in the machine-written `docs/marketplace-matrix-*.json` evidence, now excluded
-   beside the other generated records; 62 vocabulary terms (BCHN options and RPC names, build libraries) joined
-   the project dictionary, and the remaining fragments got scoped ignores (`b5b3265db`). Lint, spellcheck and the
-   source-tree check are CI steps that were not among the handoff's gates.
+   regenerated at `a1e98a04a` (2026-10-12) and was reproduced identically by the 2026-10-14 integration run.
+4. Outside the release gates, the affected SDK e2e files: `KernelDirectChunkedEntryUpdate` and
+   `KernelDirectLogicalCaller` pass (the latter red since `24a61d5d1`); `MasterChefDeposit` fails at its allowance
+   step because the test approves the physical `chef.address` while callees now see the logical CREATE lock (it was
+   already red at a later step).
 
 ### What closed the 2026-10-17 failures
 
@@ -173,16 +168,30 @@ The full list is `git log 34be189e4..11b8f7feb`. The commits that map directly o
 - `yarn test`: the utils pins (`c49525874`), the testing-suite signer (`92b74a226`) and the SDK fixture gating
   (`c049d0c25`, `db04ffbc3`).
 
-## Open outside the gates
+### What closed the marketplace matrix failures (2026-10-19)
 
-### Marketplace proxy x kernel arbitrate: preflight failure at input 1462
+The 2026-10-18 handoff named one open matrix item, proxy x kernel arbitrate at input 1462. Running all four cells at
+`11b8f7feb` also found no-proxy x kernel failing 20 titles; its last green record was the 2026-10-14/15 pre-merge
+snapshot. Four causes, each fixed with a pinning test:
 
-Reported by the 2026-10-18 readiness session at `11b8f7feb`; not re-run in this re-verification. The four-cell
-262/262 result in `docs/marketplace-matrix-2026-10-14.md` belongs to the pre-merge snapshot it names. The
-session's diagnosis, kept here because its plan file did not survive, has two layers:
+- **Arbitrate (proxy x kernel).** The handoff's two-layer diagnosis (`isOpRoll` against the tracked stack model; the
+  return probe's placeholder) did not hold: the route computed its result correctly. Compose never fed claimed
+  chunked stream records back into the assembled transaction, so the `Arbitrated` record stayed empty, every return
+  probe stopped there, and admit refused the placeholder return. `a0ae125c1` feeds an unlearned chunked record its
+  claim (`RuntimeEventClaimFeedBack.test.ts`).
+- **Caller identity (no-proxy x kernel, 10 titles).** `24a61d5d1` (2026-10-16) made callees on the non-graph builder
+  path see a caller's physical lock as `msg.sender`, while `getAddress()`, `address(this)` and the graph path use the
+  logical CREATE lock: `onlyMarketplace` refused the marketplace, and token balances credited under one identity were
+  debited under the other. `5f0d8e67b` presents the logical lock there again for a deployment whose route proves its
+  own SCID; proxy, framed and native deployments keep the physical lock.
+- **Value-chunk band lock (no-proxy x kernel, 8 titles).** The band picked its lock by a vote over every P2SH32 output
+  in its window, so a caller's chunk run lent its lock and the reconcile refused the owner category. `9ba7fb6a5` lets
+  only the band's own category vote (`ValueChunkBandOwnedLock.test.ts`).
+- **Old value chunks of an in-place update (no-proxy x kernel, 2 titles).** The outside-layout walk (`cd0baa165`,
+  2026-10-15) refused the spent old chunks of a chunked entry updated in a direct sorted-batch arm. `30ca5ea5e` admits
+  the old chunk lock, and `14bfff57a` narrows that to entries that run the walk: inside a message-bus route the extra
+  code only cost bytes and pushed the pooled atomic-bus callee's route input to 10,110 B, past the 10,000 B limit
+  (`KernelDirectChunkedEntryUpdate.test.ts`).
 
-1. Compiler: the roll consumption decided by `isOpRoll` (`packages/solidc/src/generation/GenerateTargetTraversal.ts`)
-   disagrees with the tracked stack model.
-2. SDK: the return probe falls back to the 96-byte placeholder.
-
-Whoever picks up the marketplace matrix work should start from both layers.
+Two residuals, neither on a failing path, are in `packages/solidc/docs/deferrals.md`: the single-write update arm
+shares the old-chunk gap, and the scalar-only return fallback reads a composite return type as one word.

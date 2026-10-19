@@ -36,7 +36,7 @@ import {
   getDynamicChunkAddress, getMessageBusEnvelopeTransport,
   getMessageBusVerifierLockingBytecodeForArtifact,
 } from '../stateful/covenant-helpers.js';
-import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope } from './atomic.js';
+import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope, type AtomicRow } from './atomic.js';
 import { peekBuilderBuildId } from '../stateful/StatefulContract.js';
 import type { ExecutionContextLifecycle } from './execution-context.js';
 import {
@@ -275,6 +275,37 @@ export function publishedTransportedValueChunkLock(
   return persistValueChunkLock(
     production.stateOwner.categoryId, production.value, production.write, masterLock,
   );
+}
+
+/**
+ * Feed authenticated kind-2 stream-record claims back into the runtime event records the participant builder
+ * planned at the same offset under the same lock. The route stops at the first record it cannot match, so
+ * without this every pass restarts at the stream's first record and no later check (a return output included)
+ * is ever probed. A compact record always takes its claim. A chunked record keeps what its builder learned; an
+ * unlearned (empty) one takes the claim, as an isolated builder probe cannot reach a final-transaction stream.
+ */
+export function feedBackRuntimeEventClaims(
+  outputs: Output[],
+  runtimeEvents: readonly { offset: number; chunked?: true }[],
+  builtEventOffsets: ReadonlyMap<number, number>,
+  rows: readonly Pick<AtomicRow, 'kind' | 'owner' | 'mode' | 'targetOffset' | 'subjectHex' | 'effectHex'>[],
+  participant: number,
+): void {
+  const offsets = new Set(runtimeEvents.map((event) => event.offset));
+  const chunkedOffsets = new Set(runtimeEvents.filter((event) => event.chunked).map((event) => event.offset));
+  for (const row of rows) {
+    if (row.kind !== 2 || row.owner !== participant || row.mode !== 1 || !offsets.has(row.targetOffset)) continue;
+    const builtOffset = builtEventOffsets.get(row.targetOffset);
+    const planned = builtOffset === undefined ? undefined : outputs[builtOffset];
+    const plannedLock = planned === undefined ? undefined
+      : typeof planned.to === 'string' ? addressToLockScript(planned.to) : planned.to;
+    if (builtOffset === undefined || planned?.token?.nft?.capability !== 'none' || plannedLock === undefined
+      || binToHex(plannedLock) !== row.subjectHex.toLowerCase()) continue;
+    if (chunkedOffsets.has(row.targetOffset) && planned.token.nft.commitment !== '') continue;
+    outputs[builtOffset] = {
+      ...planned, token: { ...planned.token, nft: { ...planned.token.nft, commitment: row.effectHex } },
+    };
+  }
 }
 
 export async function assembleAtomicComposition(
@@ -1289,24 +1320,9 @@ export async function assembleAtomicComposition(
         eventSignature: event.eventSignature,
         ...(event.chunked && { chunked: true as const }),
       })));
-    // A compact stream record's commitment is a fixed-point claim as well. The route stops at the first record it
-    // cannot match, so each pass discovers one more: feed the authenticated ones back into the records planned at
-    // their offsets under the same lock, or every pass restarts at the stream's first record. A chunked stream's
-    // records are learned whole by its builder.
-    const runtimeEventOffsets = new Set(runtimeEvents.filter((event) => !event.chunked).map((event) => event.offset));
-    for (const row of graph.callManifest.rows) {
-      if (row.kind !== 2 || row.owner !== participant.participant || row.mode !== 1
-        || !runtimeEventOffsets.has(row.targetOffset)) continue;
-      const builtOffset = builtEventOffsets.get(row.targetOffset)!;
-      const planned = local.outputs[builtOffset];
-      const plannedLock = planned === undefined ? undefined
-        : typeof planned.to === 'string' ? addressToLockScript(planned.to) : planned.to;
-      if (planned?.token?.nft?.capability !== 'none' || plannedLock === undefined
-        || binToHex(plannedLock) !== row.subjectHex.toLowerCase()) continue;
-      local.outputs[builtOffset] = {
-        ...planned, token: { ...planned.token, nft: { ...planned.token.nft, commitment: row.effectHex } },
-      };
-    }
+    feedBackRuntimeEventClaims(
+      local.outputs, runtimeEvents, builtEventOffsets, graph.callManifest.rows, participant.participant,
+    );
     // Event effects are fixed-point claims just like return values and mutable resources. Once a prior pass
     // has authenticated an event commitment, feed it back into the exact compiler-published participant slot;
     // otherwise every assembly pass recreates the empty probe placeholder and convergence can never advance

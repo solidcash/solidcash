@@ -10221,6 +10221,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
         if (!this.functionHasDelegatecall && hasTokenContainerAccess) {
           this.emitTokenContainerPreservation(node);
+          this.emitDirectMintBound(node);
         }
       }
       // A direct function that delegatecalls verifies its own reads and calls too: nothing the delegate runs binds
@@ -55392,6 +55393,54 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * For each accessed token container slot with flag=1, verify the container output preserves
    * locking bytecode and adjusts token amounts for transfers.
    */
+  /**
+   * A named container holding a minting NFT mints its category in any transaction that spends it, so the call bounds
+   * those mints (security NAMED-MINT-1): every output outside the container's lock that carries its category carries
+   * no fungible amount, so it is an NFT, and there are exactly as many as the NFT sends the call made from the slot.
+   * A fungible amount could hide an NFT with an empty commitment, and an NFT passed through such a transaction cannot be
+   * told from a minted one, so neither rides beside the mint.
+   */
+  private emitDirectMintBound(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+    const runtimeNftCountsName = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_NFT_TRANSFER_COUNTS;
+    for (let slot = 0; slot < this.tokenContainerSlots.length; slot += 1) {
+      const nftSends = this.pendingTokenContainerTransfers
+        .filter((transfer) => transfer.tokenContainerSlotIndex === slot && transfer.method === 'transferNft');
+      // [category] -> [prefix, minting] for a container holding an NFT with a capability.
+      this.emitBlockSlotIndex('tokenContainer', slot, loc);
+      this.emit([Op.OP_UTXOTOKENCATEGORY, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(33n), Op.OP_NUMEQUAL,
+        Op.OP_IF, encodeInt(32n), Op.OP_SPLIT, Op.OP_2, Op.OP_EQUAL, Op.OP_IF], loc);
+      // [prefix, lock, outside, o]
+      this.emitBlockSlotIndex('tokenContainer', slot, loc, 1);
+      this.emit([Op.OP_UTXOBYTECODE, Op.OP_0, Op.OP_TXOUTPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
+        Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(32n), Op.OP_GREATERTHANOREQUAL,
+        Op.OP_IF, encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP, encodeInt(4n), Op.OP_PICK, Op.OP_EQUAL,
+        Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
+        Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTBYTECODE, Op.OP_3, Op.OP_PICK, Op.OP_EQUAL, Op.OP_NOT, Op.OP_ELSE, Op.OP_0,
+        Op.OP_ENDIF,
+        Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_NOT, Op.OP_VERIFY, Op.OP_SWAP, Op.OP_1ADD, Op.OP_SWAP,
+        Op.OP_ENDIF,
+        Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
+      ], loc);
+      // [prefix, lock, outside, made]: the NFT sends the call made from the slot.
+      const unconditional = nftSends.filter((transfer) =>
+        !this.conditionalTokenContainerTransferIndices.has(transfer.transferIndex)).length;
+      this.emit(encodeInt(BigInt(unconditional)), loc);
+      for (const transfer of nftSends) {
+        if (!this.conditionalTokenContainerTransferIndices.has(transfer.transferIndex)) continue;
+        this.emit(encodeInt(BigInt(this.getStackIndex(transfer.argStackNames[0]!) + 4)), loc);
+        this.emit([Op.OP_PICK, Op.OP_SIZE, Op.OP_NIP, Op.OP_0NOTEQUAL, Op.OP_ADD], loc);
+      }
+      if (this.stack.includes(runtimeNftCountsName)) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(runtimeNftCountsName) + 4)), loc);
+        this.emit([Op.OP_PICK, encodeInt(1n << BigInt(64 + 16 * slot)), Op.OP_DIV, encodeInt(1n << 16n), Op.OP_MOD,
+          Op.OP_ADD], loc);
+      }
+      this.emit([Op.OP_NUMEQUALVERIFY, Op.OP_2DROP, Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF, Op.OP_ELSE, Op.OP_DROP,
+        Op.OP_ENDIF], loc);
+    }
+  }
+
   private emitTokenContainerPreservation(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     const isSelfdestruct = node.modifiers.includes(FunctionModifier.SELFDESTRUCT);

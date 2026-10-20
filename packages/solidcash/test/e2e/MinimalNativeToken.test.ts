@@ -31,9 +31,10 @@ describe('MinimalNativeToken bytecode budget', () => {
     // (7503 -> 7500), then with present-entry checks, deep rotations and constant struct defaults shared or folded
     // (7500 -> 7473). The 10-14..10-17 hardening (per-call merges, minted-root bindings, the direct outside-layout
     // walk) then added 897 B (7473 -> 8370), and BchNative's own bearer category (its immutable and the constructor
-    // that sets it) 201 B (8370 -> 8571). The container covenant it derives lost its merge path (8571 -> 8524), and
-    // its keep of an unnamed container refuses a minting NFT (8524 -> 8544); the 8.5 KB title is the budget.
-    expect(artifactBytes).toBe(8544);
+    // that sets it) 201 B (8370 -> 8571). The container covenant it derives lost its merge path (8571 -> 8524), its
+    // keep of an unnamed container refuses a minting NFT (8524 -> 8544), and each named slot bounds the mints of a
+    // minting container (8544 -> 8640); the 8.5 KB title is the budget.
+    expect(artifactBytes).toBe(8640);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs.map((input) => input.name))
       .toEqual(['nativeCategory_']);

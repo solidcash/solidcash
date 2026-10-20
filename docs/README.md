@@ -31,7 +31,8 @@ This directory holds internal design, release, security and workstream records. 
 
 Closed handoffs, round logs, workstream snapshots and superseded plans are on the orphan branch `archive/docs` at
 their original paths. `INDEX.md` on that branch lists every archived file with its kind, active dates, last commit,
-and where its open items moved.
+and where its open items moved. The branch also restores 45 internal paths that were deleted before the archive
+existed, so older citations resolve there.
 
 ```sh
 git show archive/docs:INDEX.md

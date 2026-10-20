@@ -210,11 +210,12 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 30_000, logger: quiet as never,
     });
     // A ported suite may replace `globalThis.fetch` with an in-memory IPFS stub. That stub assumes every POST
-    // carries an IPFS upload body and fails on a JSON-RPC request, so keep the native fetch for the node's RPC
-    // calls and hand the test's stub back afterwards. The client reads `fetch` synchronously at each attempt, so
-    // every attempt (a read's retry included) starts under the native function here; the client's own retry ran
-    // later, after an overlapping request had restored the stub. A restore never undoes a change made meanwhile.
-    // Requests are capped in flight: one `gettxout` per UTXO of a large category overflowed BCHN's RPC work queue.
+    // carries an IPFS upload body and fails on a JSON-RPC request, so the node's RPC calls use the native fetch.
+    // The client looks `fetch` up synchronously when an attempt starts, so the native function is in place only
+    // for that call and the stub is back before anything else runs: held for the whole request, a suite's IPFS
+    // read during a node request reached the real network. Each attempt (a read's retry included) swaps here;
+    // the client's own retry ran after the stub was back. Requests are capped in flight: one `gettxout` per UTXO
+    // of a large category overflowed BCHN's RPC work queue.
     const nativeFetch = globalThis.fetch;
     type RpcRequest = (method: string, ...params: unknown[]) => Promise<unknown>;
     let inFlight = 0;
@@ -231,14 +232,14 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       if (next) next();
       else inFlight -= 1;
     };
-    const underNativeFetch = async (original: RpcRequest, method: string, params: unknown[]): Promise<unknown> => {
+    const underNativeFetch = (original: RpcRequest, method: string, params: unknown[]): Promise<unknown> => {
       const current = globalThis.fetch;
       if (current === nativeFetch) return original(method, ...params);
       globalThis.fetch = nativeFetch;
       try {
-        return await original(method, ...params);
+        return original(method, ...params);
       } finally {
-        if (globalThis.fetch === nativeFetch) globalThis.fetch = current;
+        globalThis.fetch = current;
       }
     };
     const pause = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });

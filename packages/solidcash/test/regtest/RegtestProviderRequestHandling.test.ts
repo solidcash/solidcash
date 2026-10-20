@@ -72,18 +72,20 @@ describeRegtest('RegtestNetworkProvider request handling', () => {
     }
   });
 
-  it('leaves a fetch the suite replaced while a request ran', async () => {
-    const replacement = (async (): Promise<Response> => new Response('replacement')) as typeof fetch;
+  it("keeps the suite's fetch in place for other code while a node request runs", async () => {
     const hook: { run?: () => Response | undefined } = {};
     const { provider, restore } = await hookedProvider(hook);
     try {
       globalThis.fetch = stub;
+      let seenDuringRequest: typeof fetch | undefined;
       hook.run = (): undefined => {
-        globalThis.fetch = replacement;
+        // Runs inside the request's own fetch call; other code gets to run only once that call returns.
+        queueMicrotask(() => { seenDuringRequest = globalThis.fetch; });
         return undefined;
       };
       expect(await provider.getBlockHeight()).toBeGreaterThan(0);
-      expect(globalThis.fetch).toBe(replacement);
+      expect(seenDuringRequest).toBe(stub);
+      expect(globalThis.fetch).toBe(stub);
     } finally {
       restore();
     }

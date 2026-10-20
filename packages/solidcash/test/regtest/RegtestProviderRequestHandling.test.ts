@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { binToHex } from '@bitauth/libauth';
 import { BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX } from '@solidcash/utils';
 import RegtestNetworkProvider from '../../src/network/RegtestNetworkProvider.js';
 import { onMockNetworkProviderReset } from '../../src/network/mock-reset.js';
 import type { Utxo } from '../../src/interfaces.js';
+import { randomUtxo } from '../../src/utils.js';
 
 // Needs the patched image (clearmempool, setmocktime), like RegtestProviderControls.
 const describeRegtest = process.env.TESTS_USE_REGTEST === 'true' && process.env.BCHN_RELAXED === 'true'
@@ -108,6 +110,24 @@ describeRegtest('RegtestNetworkProvider request handling', () => {
     expect(first.txid).not.toBe(seed);
     expect(`${again.txid}:${again.vout}`).toBe(`${first.txid}:${first.vout}`);
     expect(`${other.txid}:${other.vout}`).not.toBe(`${first.txid}:${first.vout}`);
+  });
+
+  it('funds without moving the block oracle', async () => {
+    const provider = new RegtestNetworkProvider(options);
+    await provider.getBlockHeight();
+    const oracle = async (): Promise<string> => {
+      const category = provider.blockOracleCategory;
+      if (category === undefined) throw new Error('the provider installed no block oracle');
+      const utxos = await provider.getUtxosByTokenCategory(binToHex(category));
+      const live = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+      if (live === undefined) throw new Error('no live block oracle UTXO');
+      return `${live.txid}:${live.vout}`;
+    };
+    const before = await oracle();
+    await provider.addUtxo(`76a914${'11'.repeat(20)}88ac`, randomUtxo({ satoshis: 10_000n }));
+    expect(await oracle()).toBe(before);
+    await provider.mine(1);
+    expect(await oracle()).not.toBe(before);
   });
 
   it('clears chain-derived SDK caches on a rewind and a reset', async () => {

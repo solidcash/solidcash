@@ -54314,14 +54314,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitBoundTokenContainerCovenant(locationData);
       return;
     }
-    // Token container covenant script (must match buildTokenContainerCovenantScript in state.ts):
-    // OP_IF UTXOTOKENCATEGORY <32> SPLIT OP_2 EQUALVERIFY <masterCat> EQUALVERIFY
-    //   OP_ELSE DUP DUP DUP OUTPUTBYTECODE INPUTINDEX UTXOBYTECODE EQUALVERIFY
-    //     OUTPUTVALUE INPUTINDEX UTXOVALUE GREATERTHANOREQUAL VERIFY
-    //     OUTPUTTOKENAMOUNT INPUTINDEX UTXOTOKENAMOUNT GREATERTHANOREQUAL VERIFY
-    //     OUTPUTTOKENCATEGORY INPUTINDEX UTXOTOKENCATEGORY EQUALVERIFY
-    //     single-input constraint loop
-    //   OP_ENDIF <tcCat> DROP OP_1
+    // Token container covenant script, cut from buildTokenContainerCovenantScript in state.ts:
+    // OP_1 NUMEQUALVERIFY <authority> UTXOTOKENCATEGORY <32> SPLIT OP_2 EQUALVERIFY <masterCat> EQUALVERIFY <keep>
+    //   <tcCat> DROP OP_1
     const { prefix, mid, suffix } = tokenContainerPieces(this.framedMaster);
     const categoryPushPrefix = new Uint8Array([0x20]);
     const tcCatPushPrefix = new Uint8Array([0x20]);

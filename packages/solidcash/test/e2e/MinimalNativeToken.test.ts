@@ -2,13 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { compileFile, compileFileSplit, compileString } from 'solidc';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
-  asmToScript, bytecodeToScript, decodeInt, Op, scriptToBytecode,
+  asmToScript, buildTokenContainerCovenantScript, bytecodeToScript, decodeInt, Op, scriptToBytecode,
 } from '@solidcash/utils';
 import {
   Contract,
   SignatureTemplate,
   Signer,
+  TransactionBuilder,
 } from '../../src/index.js';
+import { directConventionMasterLock, getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
+import { createUnlockingBytecode } from '../../src/utils.js';
 import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
@@ -28,8 +31,9 @@ describe('MinimalNativeToken bytecode budget', () => {
     // (7503 -> 7500), then with present-entry checks, deep rotations and constant struct defaults shared or folded
     // (7500 -> 7473). The 10-14..10-17 hardening (per-call merges, minted-root bindings, the direct outside-layout
     // walk) then added 897 B (7473 -> 8370), and BchNative's own bearer category (its immutable and the constructor
-    // that sets it) 201 B (8370 -> 8571); the 8.5 KB title is the budget.
-    expect(artifactBytes).toBe(8571);
+    // that sets it) 201 B (8370 -> 8571). The container covenant it derives lost its merge path (8571 -> 8524); the
+    // 8.5 KB title is the budget.
+    expect(artifactBytes).toBe(8524);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs.map((input) => input.name))
       .toEqual(['nativeCategory_']);
@@ -65,6 +69,39 @@ describe('MinimalNativeToken bytecode budget', () => {
 
     const split = compileFileSplit(source, { messageBus: false });
     expect(Object.keys(split.facets)).toHaveLength(0);
+  });
+
+  it('refuses a token container spend without its master: the container has no merge path', async () => {
+    const artifact = compileFile(source, { messageBus: false });
+    const provider = createTestProvider();
+    const bob = new Signer(bobPriv, provider);
+    const inner = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {
+      _totalSupply: 0n, _nativeCategory: hexToBin(NATIVE_TEST_CATEGORY),
+    }, { saltContract: true });
+    const master = inner.withCategory(hexToBin(setup.categoryId));
+    const { reserve } = await seedNativeToken(
+      provider as MockNetworkProvider, master, setup.categoryId, { reserve: 1_000n },
+    );
+    const coin = { txid: 'e6'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(bob.getAddress(), coin);
+    const covenant = scriptToBytecode(buildTokenContainerCovenantScript(
+      hexToBin(setup.categoryId), hexToBin(NATIVE_TEST_CATEGORY), directConventionMasterLock(master),
+    ));
+    const containerLock = addressToLockScript(getTokenContainerAddress(master, setup.categoryId, NATIVE_TEST_CATEGORY));
+    // `<merge output 0> <flag 0>`: the reserve kept whole at output 0, which a merge path admitted.
+    const unlocking = createUnlockingBytecode('p2sh32', covenant, [Uint8Array.of(), Uint8Array.of()]);
+    const outcome = await new TransactionBuilder({ provider })
+      .addInput(reserve, {
+        generateLockingBytecode: () => containerLock, generateUnlockingBytecode: () => unlocking,
+      } as never)
+      .addInput(coin, new SignatureTemplate(bobPriv).unlockP2PKH())
+      .addOutput({ to: containerLock, amount: reserve.satoshis, token: reserve.token })
+      .addOutput({ to: bob.getAddress(), amount: 490_000n })
+      .send()
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    expect(outcome).not.toBe('ACCEPTED');
+    expect(outcome).toContain('input index 0');
   });
 
   it('mints ledger units on wrap and burns them on unwrap', async () => {

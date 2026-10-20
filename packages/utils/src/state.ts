@@ -2490,16 +2490,17 @@ function accountedTokenContainerKeep(): Script {
  * Build the token container covenant script for holding foreign tokens on behalf
  * of a stateful master contract.
  *
- * Two spending paths:
- * - flag=1 (master-authorized): verifies minting NFT at masterInputIndex
- * - flag=0 (merge): verifies output preserves locking bytecode
+ * One spending path, taken with the flag exactly 1: the minting NFT at masterInputIndex authorizes the spend, and the
+ * keep the variant names holds the output at this input's index. There is no permissionless merge path: it pinned
+ * neither an NFT's commitment nor its capability, so it let anyone rewrite a mutable NFT's commitment or mint from a
+ * minting NFT the container held, and a framed master owns a container by the `<index> OP_1` its unlocking starts
+ * with (spec 4b).
  *
- * Unlocking script: `<masterInputIndex | mergeOutputIndex> <flag>`
+ * Unlocking script: `<masterInputIndex> <flag = 1>`
  *
  * @param categoryId - 32-byte master contract's token category ID
  * @param tokenContainerCategoryId - 32-byte token container's token category (salt for unique address)
- * @param options.accounted - without a master lock, the accounted framed container (`accountedTokenContainerKeep`),
- *   which has no merge path
+ * @param options.accounted - without a master lock, the accounted framed container (`accountedTokenContainerKeep`)
  */
 export function buildTokenContainerCovenantScript(
   categoryId: Uint8Array,
@@ -2508,83 +2509,13 @@ export function buildTokenContainerCovenantScript(
   options: { readonly accounted?: boolean } = {},
 ): Script {
   const catInternal = categoryId.slice().reverse();
-  if (options.accounted === true && masterLock === undefined) {
-    // The accounted container has only the master path, taken with the flag exactly 1: a master owns the containers
-    // whose unlocking starts `<its index> OP_1` (spec 4b), so a spend that names it any other way is no spend at all.
-    return [
-      Op.OP_1, Op.OP_NUMEQUALVERIFY,
-      ...bindMintingAuthorityLock(),
-      Op.OP_UTXOTOKENCATEGORY, encodeInt(32n), Op.OP_SPLIT, Op.OP_2, Op.OP_EQUALVERIFY, catInternal, Op.OP_EQUALVERIFY,
-      ...accountedTokenContainerKeep(),
-      tokenContainerCategoryId, Op.OP_DROP, Op.OP_1,
-    ];
-  }
   return [
-    // Stack: <masterInputIndex | mergeOutputIndex> <flag>
-    Op.OP_IF,
-    // Master path: the contract's own locking bytecode, not a second minting NFT of this category.
+    Op.OP_1, Op.OP_NUMEQUALVERIFY,
+    // The contract's own locking bytecode, not a second minting NFT of this category.
     ...bindMintingAuthorityLock(masterLock),
-    Op.OP_UTXOTOKENCATEGORY,
-    encodeInt(32n),
-    Op.OP_SPLIT,
-    Op.OP_2,
-    Op.OP_EQUALVERIFY,
-    catInternal,
-    Op.OP_EQUALVERIFY,
-    ...(masterLock !== undefined ? directMasterOutputPin() : framedTokenContainerKeep()),
-    Op.OP_ELSE,
-    // Merge path: output preserves locking bytecode, value, FT amount, and category
-    Op.OP_DUP,
-    Op.OP_DUP,
-    Op.OP_DUP, // need mergeOutputIndex four times: bytecode, value, tokenAmount, tokenCategory
-    Op.OP_OUTPUTBYTECODE,
-    Op.OP_INPUTINDEX,
-    Op.OP_UTXOBYTECODE,
-    Op.OP_EQUALVERIFY, // bytecode preservation
-    // Value preservation: inputValue <= outputValue (outputValue >= inputValue)
-    Op.OP_OUTPUTVALUE,
-    Op.OP_INPUTINDEX,
-    Op.OP_UTXOVALUE,
-    Op.OP_GREATERTHANOREQUAL,
-    Op.OP_VERIFY,
-    // FT amount preservation: inputAmount <= outputAmount (outputAmount >= inputAmount)
-    Op.OP_OUTPUTTOKENAMOUNT,
-    Op.OP_INPUTINDEX,
-    Op.OP_UTXOTOKENAMOUNT,
-    Op.OP_GREATERTHANOREQUAL,
-    Op.OP_VERIFY,
-    // Category preservation: mergeOutput category == input category
-    Op.OP_OUTPUTTOKENCATEGORY, // uses 4th copy of mergeOutputIndex
-    Op.OP_INPUTINDEX,
-    Op.OP_UTXOTOKENCATEGORY,
-    Op.OP_EQUALVERIFY,
-    // Single-input constraint: verify no other input shares this locking bytecode
-    // Prevents double-merge attacks where multiple UTXOs are merged to a single output
-    Op.OP_INPUTINDEX,
-    Op.OP_UTXOBYTECODE, // [myLbc]
-    Op.OP_TXINPUTCOUNT,
-    Op.OP_1SUB, // [myLbc, i=last_input_idx]
-    Op.OP_BEGIN,
-    Op.OP_DUP,
-    Op.OP_INPUTINDEX,
-    Op.OP_NUMEQUAL, // [myLbc, i, isMe]
-    Op.OP_NOTIF,
-    Op.OP_DUP,
-    Op.OP_UTXOBYTECODE, // [myLbc, i, otherLbc]
-    Op.OP_2,
-    Op.OP_PICK, // [myLbc, i, otherLbc, myLbc]
-    Op.OP_EQUAL,
-    Op.OP_NOT,
-    Op.OP_VERIFY, // verify otherLbc != myLbc
-    Op.OP_ENDIF,
-    Op.OP_1SUB, // [myLbc, i-1]
-    Op.OP_DUP,
-    encodeInt(0n),
-    Op.OP_LESSTHAN, // [myLbc, i-1, i-1<0]
-    Op.OP_UNTIL, // [myLbc, i-1]
-    Op.OP_DROP,
-    Op.OP_DROP, // cleanup
-    Op.OP_ENDIF,
+    Op.OP_UTXOTOKENCATEGORY, encodeInt(32n), Op.OP_SPLIT, Op.OP_2, Op.OP_EQUALVERIFY, catInternal, Op.OP_EQUALVERIFY,
+    ...(masterLock !== undefined ? directMasterOutputPin()
+      : options.accounted === true ? accountedTokenContainerKeep() : framedTokenContainerKeep()),
     // Salt for unique address per token container category
     tokenContainerCategoryId,
     Op.OP_DROP,

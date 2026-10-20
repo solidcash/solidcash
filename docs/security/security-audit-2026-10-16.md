@@ -636,3 +636,43 @@ tooling code.
   rewritten commitment is refused at the master, and the same spend with the record preserved settles.
   `CollectionReadInputCensus.test.ts` (6 cases) covers records outside the block at counted locks,
   `AuditContainerCommitment.test.ts` covers CONT-1, and the existing chunk/container suites pass.
+
+## Token container pass (2026-10-20)
+
+Found while completing framed token containers (`docs/framed/DECISIONS.md` D37, D38). Each fixed finding has a test
+that the pre-fix code fails, except CONT-FLAG-1, which never left the working day it was introduced in.
+
+- **CONT-FLAG-1** (HIGH; introduced in `ba6296865`, fixed in `916bc9ea2`, unreleased). A framed master owns the
+  containers whose unlocking starts `<its index> OP_1`, but the container's `OP_IF` took the master path for any
+  non-zero flag, so a container spent with flag 2 named a master that did not claim it and no master checked it.
+  The accounted container now takes only the master path with the flag exactly 1. Test: `BchNativeFramed.test.ts`
+  (the flag-2 drain is refused by the container itself; the flag-1 one by the master).
+- **MERGE-PATH-1** (HIGH; direct, kernel and framed). The token container's merge path (flag 0, no master) pinned
+  lock, value, fungible amount and full category, but no NFT commitment: anyone could rewrite a custodied mutable
+  NFT's commitment, or spend a container holding a minting NFT and mint its category in the same transaction. FIXED
+  in `efba0f1ef`: no token container has a merge path. Test: `MinimalNativeToken.test.ts` (a `<0> <0>` spend of the
+  reserve is refused at the container).
+- **CONT-1 residual** (MEDIUM). CONT-1's fix pinned an unnamed container's commitment, but a minting NFT kept in
+  place still mints. FIXED in `306318a0b` (direct keep) and `19eefe1d6` (framed keep): neither keeps an unnamed
+  minting container. Test: `AuditContainerCommitment.test.ts` (an unnamed minting container co-spent to mint is
+  refused at the master).
+- **GROWTH-1** (CRITICAL for a framed BchNative token). A framed read of `tokenAmount` summed every container the
+  transaction spends, and `outState` every output at the lock, so two `wrap` frames of one token (a contract calling
+  `wrap` twice) each credited one deposit. FIXED in `7d0571259`: a frame reads only the containers its master owns,
+  and counts newly created containers only when it is its contract's only master. Test: `FramedTokenCallee.test.ts`
+  (a vault's `depositTwice` with one deposit is refused and its ledger does not move).
+- **GROWTH-2** (HIGH; message bus). A batch runs every row in one input, so two rows of a handler crediting the
+  reserve's growth counted one deposit twice; BchNative's `wrap` became route-eligible in `c919a1686`. FIXED in
+  `d0fc11486`: such a handler, its internal calls included, runs at most once per batch. Test:
+  `KernelStateKeyedTokenContainerCompose.test.ts` (one row settles; two rows against one deposit are refused; the
+  pre-fix route accepted them).
+- **GROWTH-3** (OPEN, unverified). The same transaction-wide read reaches any shape that runs two growth-reading
+  calls of one contract in one transaction outside the two fixed above: a direct contract forked into several masters
+  (`split(n)`), each spent with its own call, and a bus graph in which one contract has more than one participant
+  input. Neither was traced. `BchNative` and `MinimalNativeToken` declare no `split` function, so a direct BchNative
+  token keeps one master. Check whether either shape admits two such calls; if one does, read amounts per master
+  there as the framed convention now does.
+- **NAMED-MINT-1** (OPEN, unverified). A direct call that names a minting container and sends NFTs from it pins its
+  own sends; whether anything bounds further NFTs minted elsewhere in that transaction was not traced. The framed
+  convention bounds them (D38).
+

@@ -686,9 +686,12 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
     capability's byte, the lock, the commitment. The block is contiguous, so another frame's sends cannot share these
     outputs. The witness block is unchanged, so the validator reads nothing new.
   - **Conservation.** The master conserves what it owns: the amounts at its containers' own indices, less what they
-    held, plus its fungible sends, is at least zero. A read of `this.tokens[Y].tokenAmount` sums the inputs at the
-    lock, its `outState` form the outputs, wherever they sit, and `tokenCategory` and `nftCommitment` read the first
-    container the frame owns.
+    held, plus its fungible sends, is at least zero.
+  - **Reads.** A read of `this.tokens[Y].tokenAmount` sums the containers the frame owns, and its `outState` form their
+    outputs in place; the containers the transaction creates at the lock count for `outState` only when the frame is
+    its contract's only master in the transaction. Two frames of one contract therefore never count one deposit
+    twice, as two `wrap` frames reading the transaction's whole growth did. `tokenCategory` and `nftCommitment` read
+    the first container the frame owns.
   - **NFTs.** The VM sees an NFT only through a capability or a commitment; an immutable NFT with an empty commitment
     reads as a fungible token, so no rule here can hold one. An entry that sends no NFT of Y keeps every visible NFT it
     owns in place and owns no minting one. One that sends NFTs keeps its minting containers, releases at most one

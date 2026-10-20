@@ -4984,6 +4984,24 @@ export default class SymbolTableTraversal extends AstTraversal {
           const target = (this.functionDefinitions.get(candidate.identifier.name) ?? [])
             .find((definition) => definition.parameters.length === candidate.parameters.length);
           for (const access of target?.tokenContainerAccesses ?? []) {
+            // A key of the contract's own category or of its state is the same whichever row forwards it, so the
+            // access joins the route as the handler states it, under a key no argument can be named.
+            const fixedKey = access.keySource === 'own' ? '\u0000own'
+              : access.keySource === 'state' ? `\u0000state:${access.keyStateVariable}` : undefined;
+            if (fixedKey !== undefined) {
+              const fixed = [...tokenContainerAccessMap.values()].find((info) => info.keySource === access.keySource
+                && info.keyStateVariable === access.keyStateVariable);
+              if (fixed) {
+                for (const operation of access.operations) {
+                  if (!fixed.operations.includes(operation)) fixed.operations.push(operation);
+                }
+                fixed.transferCount += access.transferCount;
+                fixed.transferNftCount += access.transferNftCount;
+              } else {
+                tokenContainerAccessMap.set(fixedKey, { ...access, operations: [...access.operations], slotIndex: -1 });
+              }
+              continue;
+            }
             const parameterIndex = target!.parameters.findIndex((parameter) => parameter.name === access.keyParam);
             const actual = candidate.parameters[parameterIndex];
             if (!(actual instanceof IdentifierNode)) continue;
@@ -18260,22 +18278,27 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (exact) return exact.name;
       return accessKeyParam;
     };
+    // A key of the contract's own category or of its state is no forwarded witness: the access keeps its key, and
+    // only the parameter-keyed accesses take the forwarded witnesses, in their own order.
+    const fixedKey = (access: TokenContainerAccessInfo): boolean =>
+      access.keySource === 'own' || access.keySource === 'state';
     const findRouteTokenContainer = (
       accessKeyParam: string,
     ): (typeof routeTokenContainers)[number] | undefined => {
       for (let ordinal = 0; ordinal < Math.max(routeTokenContainers.length, forwardedTokenKeys.length); ordinal += 1) {
         const routeKey = routeTokenKeyFor(accessKeyParam, ordinal);
-        const existing = routeTokenContainers.find((candidate) =>
-          candidate.keyParam === routeKey || candidate.keyParam === accessKeyParam);
+        const existing = routeTokenContainers.find((candidate) => !fixedKey(candidate)
+          && (candidate.keyParam === routeKey || candidate.keyParam === accessKeyParam));
         if (existing) return existing;
       }
       return undefined;
     };
     let tokenContainerMerged = false;
-    let routeTokenContainers = [...(route.tokenContainerAccesses ?? [])].map((access, index) => ({
+    let routeParameterKeys = 0;
+    let routeTokenContainers = [...(route.tokenContainerAccesses ?? [])].map((access) => ({
       ...access,
       operations: [...access.operations],
-      keyParam: routeTokenKeyFor(access.keyParam, index),
+      keyParam: fixedKey(access) ? access.keyParam : routeTokenKeyFor(access.keyParam, routeParameterKeys++),
     }));
     if ((route.tokenContainerAccesses ?? []).some((access, index) =>
       access.keyParam !== routeTokenContainers[index]?.keyParam)) {
@@ -18284,6 +18307,29 @@ export default class SymbolTableTraversal extends AstTraversal {
     for (const fn of contract.functions) {
       if (fn === route || !fn.name.startsWith('__message_bus_')) continue;
       for (const access of fn.tokenContainerAccesses ?? []) {
+        if (fixedKey(access)) {
+          const fixed = routeTokenContainers.find((candidate) => candidate.keySource === access.keySource
+            && candidate.keyStateVariable === access.keyStateVariable);
+          if (fixed === undefined) {
+            routeTokenContainers.push({
+              ...access, operations: [...access.operations], slotIndex: routeTokenContainers.length,
+            });
+            tokenContainerMerged = true;
+            continue;
+          }
+          for (const operation of access.operations) {
+            if (!fixed.operations.includes(operation)) {
+              fixed.operations.push(operation);
+              tokenContainerMerged = true;
+            }
+          }
+          if (access.transferCount > fixed.transferCount || access.transferNftCount > fixed.transferNftCount) {
+            fixed.transferCount = Math.max(fixed.transferCount, access.transferCount);
+            fixed.transferNftCount = Math.max(fixed.transferNftCount, access.transferNftCount);
+            tokenContainerMerged = true;
+          }
+          continue;
+        }
         const existing = findRouteTokenContainer(access.keyParam);
         if (existing) {
           let mutated = false;
@@ -18308,7 +18354,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
           if (mutated) tokenContainerMerged = true;
         } else {
-          const routeKey = routeTokenKeyFor(access.keyParam, routeTokenContainers.length);
+          const routeKey = routeTokenKeyFor(
+            access.keyParam, routeTokenContainers.filter((candidate) => !fixedKey(candidate)).length,
+          );
           // Never invent a TC slot keyed by a source spelling absent from the route parameter list —
           // that leaves emitTokenContainerIdentityVerification looking for `category` on a stack that
           // only holds `__message_bus_token_category*`.
@@ -18323,9 +18371,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
     }
-    // Final normalize: drop / remap any keyParam that is not a live route parameter.
+    // Final normalize: drop / remap any parameter keyParam that is not a live route parameter.
+    let normalizedParameterKeys = 0;
     const normalizedTokenContainers = routeTokenContainers
-      .map((access, index) => {
+      .map((access) => {
+        if (fixedKey(access)) return access;
+        const index = normalizedParameterKeys++;
         if (route.parameters.some((parameter) => parameter.name === access.keyParam)) return access;
         const forwarded = forwardedTokenKeys[index];
         if (forwarded === undefined) return undefined;
@@ -18360,10 +18411,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         fn.blockLayout = route.blockLayout;
         // Keep helper TC keyParams aligned with the route's forwarded witnesses so OP_INVOKE bodies
         // and route identity verification resolve the same stack names.
-        if ((fn.tokenContainerAccesses?.length ?? 0) > 0 && (route.tokenContainerAccesses?.length ?? 0) > 0) {
-          fn.tokenContainerAccesses = fn.tokenContainerAccesses!.map((access, index) => {
-            const routeAccess = route.tokenContainerAccesses![
-              Math.min(index, route.tokenContainerAccesses!.length - 1)
+        const routeParameterAccesses = (route.tokenContainerAccesses ?? []).filter((access) => !fixedKey(access));
+        if ((fn.tokenContainerAccesses?.length ?? 0) > 0 && routeParameterAccesses.length > 0) {
+          let helperParameterKeys = 0;
+          fn.tokenContainerAccesses = fn.tokenContainerAccesses!.map((access) => {
+            if (fixedKey(access)) return access;
+            const routeAccess = routeParameterAccesses[
+              Math.min(helperParameterKeys++, routeParameterAccesses.length - 1)
             ];
             if (!routeAccess || access.keyParam === routeAccess.keyParam) return access;
             return { ...access, keyParam: routeAccess.keyParam, operations: [...access.operations] };

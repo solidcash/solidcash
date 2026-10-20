@@ -54629,35 +54629,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ? '__message_bus_token_category'
         : `__message_bus_token_category_${i}`;
       let keyIdx = this.getStackIndex(keyParamName, true);
-      if (keyIdx < 0) {
-        keyIdx = this.getStackIndex(messageBusCatName, true);
-      }
-      if (keyIdx < 0) {
-        const transferCat = this.pendingTokenContainerTransfers
-          .filter((transfer) => transfer.tokenContainerSlotIndex === i)
-          .map((transfer) => transfer.argStackNames[0])
-          .find((name) => name !== undefined && this.getStackIndex(name, true) >= 0);
-        if (transferCat !== undefined) {
-          keyIdx = this.getStackIndex(transferCat);
+      const slot = this.tokenContainerSlots[i];
+      if (keyIdx < 0 && (slot.keySource === 'own' || slot.keySource === 'state')) {
+        // A route carries a handler's key of the contract's own category or of its state as the handler states it;
+        // no forwarded witness holds it.
+        this.emitFixedTokenContainerKey(slot, i, locationData);
+      } else {
+        if (keyIdx < 0) {
+          keyIdx = this.getStackIndex(messageBusCatName, true);
         }
+        if (keyIdx < 0) {
+          const transferCat = this.pendingTokenContainerTransfers
+            .filter((transfer) => transfer.tokenContainerSlotIndex === i)
+            .map((transfer) => transfer.argStackNames[0])
+            .find((name) => name !== undefined && this.getStackIndex(name, true) >= 0);
+          if (transferCat !== undefined) {
+            keyIdx = this.getStackIndex(transferCat);
+          }
+        }
+        if (keyIdx < 0) {
+          // Fall back to the i-th forwarded witness still on the stack when slot ordinals drifted.
+          const forwardedOnStack = this.stack.filter((name) => name === '__message_bus_token_category'
+            || name.startsWith('__message_bus_token_category_'));
+          const byOrdinal = forwardedOnStack[i] ?? forwardedOnStack[0];
+          if (byOrdinal !== undefined) keyIdx = this.getStackIndex(byOrdinal, true);
+        }
+        if (keyIdx < 0) {
+          throw new Error(
+            `token-container key '${keyParamName}' missing on stack while compiling `
+            + `'${this.currentFunction?.name}'; stack=[${this.stack.join(',')}] `
+            + `pendingTc=${JSON.stringify(this.pendingTokenContainerTransfers.map((t) => t.argStackNames))} `
+            + `slots=${JSON.stringify(this.tokenContainerSlots.map((s) => s.keyParam))}`,
+          );
+        }
+        this.emit(encodeInt(BigInt(keyIdx)), locationData);
+        this.emit(Op.OP_PICK, locationData);
       }
-      if (keyIdx < 0) {
-        // Fall back to the i-th forwarded witness still on the stack when slot ordinals drifted.
-        const forwardedOnStack = this.stack.filter((name) => name === '__message_bus_token_category'
-          || name.startsWith('__message_bus_token_category_'));
-        const byOrdinal = forwardedOnStack[i] ?? forwardedOnStack[0];
-        if (byOrdinal !== undefined) keyIdx = this.getStackIndex(byOrdinal, true);
-      }
-      if (keyIdx < 0) {
-        throw new Error(
-          `token-container key '${keyParamName}' missing on stack while compiling `
-          + `'${this.currentFunction?.name}'; stack=[${this.stack.join(',')}] `
-          + `pendingTc=${JSON.stringify(this.pendingTokenContainerTransfers.map((t) => t.argStackNames))} `
-          + `slots=${JSON.stringify(this.tokenContainerSlots.map((s) => s.keyParam))}`,
-        );
-      }
-      this.emit(encodeInt(BigInt(keyIdx)), locationData);
-      this.emit(Op.OP_PICK, locationData);
       // 1 untracked (tcCategoryId)
 
       // Get master's 32-byte categoryId
@@ -54893,6 +54900,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       this.popFromStack();
     }
+  }
+
+  /**
+   * Pushes, untracked and in display order, the key a route checks a container slot against when its handler keys the
+   * container by the contract's own category or by its state: the master's category, or the slot input's own one.
+   * A route reads no state of its own here, so a state-keyed slot is checked to be this contract's container for the
+   * category it holds; the route debits a transfer only from a container of the transfer's category, and keeps every
+   * other container, so a container of another category in the slot pays nothing.
+   */
+  private emitFixedTokenContainerKey(slot: TokenContainerAccessInfo, slotIndex: number, loc: SingleLocationData): void {
+    if (slot.keySource === 'own') this.emitMasterInputIndex(loc);
+    else this.emitBlockSlotIndex('tokenContainer', slotIndex, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.emit(Op.OP_REVERSEBYTES, loc);
   }
 
   /**

@@ -1,4 +1,5 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
+import { aliceAddress } from '../../fixture/vars.js';
 import { compileFile, compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../../src/index.js';
@@ -61,6 +62,43 @@ describe('kernel state-keyed token-container composition', () => {
       'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
     expect(vm.stateSuccess(vm.evaluate({ inputIndex: routeInput, sourceOutputs, transaction: hostile })))
       .not.toBe(true);
+  }, 180_000);
+
+  it('credits one deposit once across two wrap rows of a batch', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract Reserve() {
+      bytes32 immutable bearer;
+      int credited;
+      constructor(bytes32 bearer_) { this.bearer = bearer_; }
+      function wrap(int amount) public {
+        bytes32 category = this.bearer;
+        require(this.outState.tokens[category].tokenAmount >= this.tokens[category].tokenAmount + amount);
+        this.credited = this.credited + amount;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'wrap')).toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {
+      bearer: hexToBin(NATIVE_TEST_CATEGORY), credited: 0n,
+    }, { saltContract: true });
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const { holders } = await seedNativeToken(provider as MockNetworkProvider, contract.inner, categoryId, {
+      reserve: 1_000n, holders: [{ address: aliceAddress, amount: 100n }, { address: aliceAddress, amount: 50n }],
+    });
+    const wrap = async (rows: number, coin: (typeof holders)[number], each: bigint, deposit: bigint):
+    Promise<string> => {
+      const funder = await createBareP2pkhFeeFunder(provider, 100_000n);
+      return contract.batch(Array.from({ length: rows }, () => ({ function: 'wrap', args: [each] })))
+        .addInput(funder.utxo, funder.unlocker).addInput(coin, funder.unlocker)
+        .tokenContainerDeposit(NATIVE_TEST_CATEGORY, deposit).send()
+        .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    };
+    // One row credits its deposit.
+    expect(await wrap(1, holders[0]!, 100n, 100n)).toBe('ACCEPTED');
+    expect((await contract.getState()).credited).toBe(100n);
+    // Two rows reading the reserve's growth would each count one deposit of 50.
+    expect(await wrap(2, holders[1]!, 50n, 50n)).not.toBe('ACCEPTED');
+    expect((await contract.getState()).credited).toBe(100n);
   }, 180_000);
 
   it('routes BchNative wrap and unwrap with the reserve the route carries', () => {

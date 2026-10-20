@@ -9935,6 +9935,25 @@ function synthesizeMessageBusRoute(
   const fixedChunkableWriteHandlers = new Set(eligible.filter((fn) =>
     fn.messageBusFixedChunkableWriteMaxRows === 1
     && fixedChunkableWriteCollectionByHandler.has(fn)));
+  // A handler that reads a token container's output amount credits what reached the containers, which every row of
+  // the batch would see: two such rows would both count one deposit. It runs at most once per batch.
+  const readsTokenContainerGrowth = (fn: FunctionDefinitionNode, seen = new Set<FunctionDefinitionNode>()): boolean => {
+    if (seen.has(fn)) return false;
+    seen.add(fn);
+    let found = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (found) return;
+      if (node instanceof MappingAccessNode && node.isTokenContainerAccess === true
+        && node.isOutStateTokenContainerAccess === true) {
+        found = true;
+      } else if (node instanceof FunctionCallNode) {
+        const target = contract.functions.find((candidate) => candidate.name === node.identifier.name);
+        if (target !== undefined && readsTokenContainerGrowth(target, seen)) found = true;
+      }
+    });
+    return found;
+  };
+  const tokenGrowthReadHandlers = new Set(eligible.filter((fn) => readsTokenContainerGrowth(fn)));
   // Cheap admission deliberately skips the journal-lowering passes and stubs generated handler bodies. A
   // disposition manifest derived from that representation cannot authorize a final body whose admitted call
   // closure reads or writes a collection: lowering can introduce its physical access streams only in the full
@@ -11346,9 +11365,12 @@ function synthesizeMessageBusRoute(
       const upgradeAuthorization = kernelUpgradeMode && fn.modifiers.includes(FunctionModifier.UPGRADE)
         ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
           __message_bus_upgrade_position = ${rowExpression};` : '';
-      const fixedChunkableWriteAuthorization = fixedChunkableWriteHandlers.has(fn)
+      const fixedChunkableWriteAuthorization = (fixedChunkableWriteHandlers.has(fn)
         ? `__message_bus_fixed_chunkable_write_count = __message_bus_fixed_chunkable_write_count + 1;
-          require(__message_bus_fixed_chunkable_write_count <= 1);` : '';
+          require(__message_bus_fixed_chunkable_write_count <= 1);` : '')
+        + (tokenGrowthReadHandlers.has(fn)
+          ? `__message_bus_token_growth_reads = __message_bus_token_growth_reads + 1;
+          require(__message_bus_token_growth_reads <= 1);` : '');
       const parameterSignatureLeaves = signatureLeavesByHandler.get(fn)!;
       const allOutputSignatureParameters = kernelAllOutputSignatureParameters.get(fn) ?? [];
       const signatureAuthorization = allOutputSignatureParameters.length > 0
@@ -12229,8 +12251,9 @@ function synthesizeMessageBusRoute(
         ${parseOneRow('__message_bus_row')}
       }`;
   const resultDeclarations = resultMode ? 'bytes __message_bus_results = hex\"\";' : '';
-  const fixedChunkableWriteDeclaration = fixedChunkableWriteHandlers.size > 0
-    ? 'bigint __message_bus_fixed_chunkable_write_count = 0;' : '';
+  const fixedChunkableWriteDeclaration = (fixedChunkableWriteHandlers.size > 0
+    ? 'bigint __message_bus_fixed_chunkable_write_count = 0;' : '')
+    + (tokenGrowthReadHandlers.size > 0 ? ' bigint __message_bus_token_growth_reads = 0;' : '');
   const returnDeclaration = resultMode
     ? ' returns (bytes)'
     : '';

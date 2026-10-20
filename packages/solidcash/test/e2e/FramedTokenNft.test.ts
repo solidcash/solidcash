@@ -8,7 +8,9 @@ import {
   binToHex, decodeTransactionUnsafe, encodeLockingBytecodeP2pkh, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
-import { compileString } from '../../../solidc/src/compiler.js';
+import { compileString, compileStringMulti } from '../../../solidc/src/compiler.js';
+import { validatorAddress } from '@solidcash/utils';
+import { framedValidator } from 'solidc';
 import { callFramedEntry, type FramedCallResult } from '../../src/framed/call/index.js';
 import { framedTokenContainerLockingBytecode } from '../../src/framed/call/token-containers.js';
 import type { Utxo } from '../../src/interfaces.js';
@@ -154,6 +156,56 @@ describe('NFTs in framed token containers', () => {
       vm.stateSuccess(vm.evaluate({ inputIndex: masterIndex, sourceOutputs: honest.sourceOutputs, transaction }));
     expect(masterAccepts(forge(undefined))).toBe(true);
     expect(masterAccepts(minted)).not.toBe(true);
+  }, 900_000);
+
+  it('mints a ticket from a callee frame', async () => {
+    const source = `${ISSUER}
+interface IIssuer {
+    function issue(address to);
+}
+
+contract Hub() {
+    address immutable issuer;
+
+    constructor(address issuer_) {
+        this.issuer = issuer_;
+    }
+
+    function issueVia(address to) {
+        IIssuer(this.issuer).issue(to);
+    }
+}
+`;
+    const compiled = compileStringMulti(source, { composition: 'framed', suppressWarnings: true });
+    const provider = new MockNetworkProvider();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    await fundShippedFacets(provider);
+    const coin = async (txid: string): Promise<Utxo> => {
+      const utxo = { txid: txid.repeat(32), vout: 0, satoshis: 3_000_000n };
+      await provider.addUtxo(binToHex(aliceLock), utxo);
+      return utxo;
+    };
+    const series = 'ea'.repeat(32);
+    const issuer = await deployStatefulContract(compiled.Issuer!, [], {
+      provider, fundingUtxo: await coin('b1'), funder: alice.unlockP2PKH(), changeAddress: aliceAddress,
+      initArgs: [hexToBin(series)],
+    });
+    const hub = await deployStatefulContract(compiled.Hub!, [], {
+      provider, fundingUtxo: await coin('b2'), funder: alice.unlockP2PKH(), changeAddress: aliceAddress,
+      initArgs: [validatorAddress(hexToBin(issuer.categoryId), framedValidator.buildValidatorProgram())],
+    });
+    const container = framedTokenContainerLockingBytecode(issuer.categoryId, series);
+    await provider.addUtxo(binToHex(container), {
+      txid: 'eb'.repeat(32), vout: 0, satoshis: 1_000n,
+      token: { category: series, amount: 0n, nft: { capability: 'minting', commitment: '0f' } },
+    });
+    settled(await callFramedEntry({
+      provider, artifact: compiled.Hub!, categoryId: hub.categoryId, functionName: 'issueVia', args: [bobLock],
+      callerUtxo: await coin('b3'), callerLockingBytecode: aliceLock, funder: alice.unlockP2PKH(), vm,
+      externals: { Issuer: { artifact: compiled.Issuer!, categoryId: issuer.categoryId } },
+    }));
+    expect(await nftsAt(provider, bobLock, series)).toEqual(['0f:none']);
+    expect(await nftsAt(provider, container, series)).toEqual(['0f:minting']);
   }, 900_000);
 
   it('takes NFTs in as deposits and releases an immutable one and a mutable one', async () => {

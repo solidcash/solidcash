@@ -1267,9 +1267,11 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       }
       tx.inputs = liveInputs;
       const valueOut = tx.outputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
-      const fee = 1_000n;
+      // One satoshi per byte, the stock relay floor, sized from the unsigned encoding plus a P2PKH signature per
+      // input and a change output: a refill of many funders outgrows a flat fee.
+      const feeFor = (): bigint => BigInt(Math.max(1000, encodeTransaction(tx).length + 110 * tx.inputs.length + 34));
       const added: ListUnspentItem[] = [];
-      let needed = valueOut + fee - valueIn;
+      let needed = valueOut + feeFor() - valueIn;
       try {
         while (needed > 0n) {
           const funding = await this.pickLiveFundingInput(false);
@@ -1282,9 +1284,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
           });
           added.push(funding);
           valueIn += value;
-          needed -= value;
+          needed = valueOut + feeFor() - valueIn;
         }
-        const change = valueIn - valueOut - fee;
+        const change = valueIn - valueOut - feeFor();
         if (change > 546n) {
           tx.outputs.push({
             lockingBytecode: this.toLockingBytecode(this.miningAddress),
@@ -1388,13 +1390,15 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.fundingCandidates = undefined;
   }
 
-  // One builder path asks for `neededFee + DUST + deficit`, which differs almost every call, so batching 20 coins
-  // for every distinct value would mint 20 to spend 1 and bloat the wallet - and `pickLiveFundingInput` is
-  // already O(wallet). Batch only values that have been asked for before; mint exactly one the first time.
+  // One builder path asks for `neededFee + DUST + deficit`, which differs almost every call, so batching coins
+  // for every distinct value would mint many to spend 1 and bloat the wallet - and `pickLiveFundingInput` is
+  // already O(wallet). Batch only values that have been asked for before; mint exactly one the first time. A
+  // repeated value (the 5,000-satoshi layout funders) comes in batches of 100: every refill mines, and with 20 a
+  // re-planned kernel composition spent most of its time refilling.
   private async refillFeeFunderPool(satoshis: bigint): Promise<void> {
     const seen = (this.feeFunderSizeRequests.get(satoshis) ?? 0) + 1;
     this.feeFunderSizeRequests.set(satoshis, seen);
-    const POOL_SIZE = seen > 1 ? 20 : 1;
+    const POOL_SIZE = seen > 1 ? 100 : 1;
     const pool = this.feeFunderPool.get(satoshis) ?? [];
     if (pool.length >= POOL_SIZE) return;
     const needed = POOL_SIZE - pool.length;

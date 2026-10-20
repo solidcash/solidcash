@@ -3031,8 +3031,9 @@ What remains is refused by name or is a limit of the VM, each for a reason the r
   count every visible NFT of the category in the transaction, which a second sender would break.
 - A transaction that sends NFTs of a category takes in no visible NFT of it from outside the container lock, so an
   NFT deposit and an NFT send of one category are not composed together.
-- BchNative's `wrap` measures the reserve's growth across every container the transaction spends, so a `wrap` and
-  an `unwrap` of one token in one transaction refuse the `wrap`.
+- BchNative's `wrap` counts the growth of the containers its frame owns, and a new container only when it is its
+  contract's only master in the transaction (security GROWTH-1), so beside an `unwrap` of the same token, whose frame
+  takes every container, the `wrap` refuses.
 - A run whose fungible and NFT sends both sit on branches lists its NFT sends after all its fungible ones, while the
   body makes them in order; the SDK cuts each kind to the sends made, which holds only when the skipped sends are
   each kind's last.

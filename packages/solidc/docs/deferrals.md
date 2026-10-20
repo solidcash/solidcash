@@ -3072,3 +3072,16 @@ identity check (the master category, or the immutable from the route's records),
 forwarded-key normalization.
 
 **Revisit if:** a contract calls a BchNative `wrap` or `unwrap` through the message bus.
+
+## NativeUsdt's master and `UsdtFacet` exceed the 10,000-byte input limit (2026-10-20)
+
+**What:** `NativeUsdt.test.ts` ("every script - master and the facets - fits the 10,000 B per-input limit") fails: the
+master compiles to 10,360 B and `nusdt_facet.scash` to 10,424 B. With the compiler at `a3a883fc5`, before the
+2026-10-20 token container work, they were already 10,245 B and 10,451 B, so the overrun predates that work, which moved
+the master by +115 B (the NAMED-MINT-1 bound +144, dropping the container merge path -47, refusing unnamed minting
+containers +20) and the facet by -27 B.
+
+**Why deferred:** bringing both under the limit means re-splitting the NativeUsdt fixture's facets or shrinking code
+they share, which is outside the token container work.
+
+**Status:** OPEN.

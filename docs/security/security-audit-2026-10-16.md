@@ -679,7 +679,11 @@ tests were not run on the pre-fix commits. CONT-FLAG-1 and CONT-CAT-1 never ship
   bounded what else the transaction minted of that category. FIXED in `3a6c3d143`: every output outside the slot's
   lock that carries the category holds no fungible amount and is one of the NFT sends the call made from the slot.
   Test: `AuditDirectMintBound.test.ts` (a read that keeps the minting container settles; the same transaction with an
-  NFT of the category minted beside it is refused at the master, which the pre-fix code accepts).
+  NFT of the category minted beside it is refused at the master, which the pre-fix code accepts). As first landed the
+  bound ran after container preservation, which consumes the transfer witnesses, so a function with a conditional
+  `transferNft` did not compile; `13b90f8fc` runs it first, and a bus route, whose sends sit in its token-transfer
+  windows, bounds the mints by position instead: every output outside the lock carrying the category sits in a window
+  or in its runtime effect span, with no fungible amount. Test: `GraphTokenSitePackingSecurity.test.ts`.
 - **CONT-CAT-1** (CRITICAL for a framed contract paying tokens; introduced in `ba6296865`, fixed in `80c517ca7`,
   unreleased). A framed master's owned scan summed the amount of every container at the lock whose unlocking names
   it, whatever its category. Anyone can put a token of another category at that lock, so a builder could name such a

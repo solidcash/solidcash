@@ -25,6 +25,7 @@ import type NetworkProvider from './NetworkProvider.js';
 import type { ConsensusLimits, NetworkPolicy } from './NetworkProvider.js';
 import type { SnapshotRestorer } from './MockNetworkProvider.js';
 import { getNetworkPrefix, publicKeyToP2PKHLockingBytecode, randomUtxo } from '../utils.js';
+import { runMockNetworkProviderResetHooks } from './mock-reset.js';
 
 export interface RegtestProviderOptions {
   rpcUrl?: string;
@@ -172,6 +173,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private static readonly DEFAULT_BLOCK_TIME = 1_700_000_000;
   // Comfortably above the `minimumAmount: 1` BCH filter in `pickLiveFundingInput`.
   private static readonly VOUT0_FUNDING_SATOSHIS = 200_000_000n;
+  // Below BCHN's default RPC work queue (16 queued beside 4 worker threads), so a burst never meets HTTP 503.
+  private static readonly MAX_RPC_IN_FLIGHT = 8;
 
   constructor(options: RegtestProviderOptions = {}) {
     const {
@@ -188,10 +191,10 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.rpc = new BchnRpcClient({
       url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 60_000,
     });
-    // Read requests are idempotent and state derivation can issue many of them, so retry a transient dropped
-    // connection. Mutation requests deliberately stay on the non-retrying client above.
+    // Read requests are idempotent and state derivation can issue many of them, so they retry a transient
+    // failure (in the request wrapper below). Mutation requests deliberately stay non-retrying.
     this.readRpc = new BchnRpcClient({
-      url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 60_000, maxRetries: 2, retryDelayMs: 250,
+      url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 60_000,
     });
     // A second client for probes whose FAILURE is the answer. The wrapper logs every failed request through
     // its logger, and `categoryExistsOnChain` misses once per seeded placeholder UTXO, so those misses would
@@ -205,24 +208,58 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     });
     // A ported suite may replace `globalThis.fetch` with an in-memory IPFS stub. That stub assumes every POST
     // carries an IPFS upload body and fails on a JSON-RPC request, so keep the native fetch for the node's RPC
-    // calls and hand the test's stub back afterwards. The client calls `fetch` synchronously before awaiting,
-    // so overlapping requests each start under the native function.
+    // calls and hand the test's stub back afterwards. The client reads `fetch` synchronously at each attempt, so
+    // every attempt (a read's retry included) starts under the native function here; the client's own retry ran
+    // later, after an overlapping request had restored the stub. A restore never undoes a change made meanwhile.
+    // Requests are capped in flight: one `gettxout` per UTXO of a large category overflowed BCHN's RPC work queue.
     const nativeFetch = globalThis.fetch;
     type RpcRequest = (method: string, ...params: unknown[]) => Promise<unknown>;
-    const underNativeFetch = (original: RpcRequest): RpcRequest => async (
-      method: string, ...params: unknown[]
-    ): Promise<unknown> => {
+    let inFlight = 0;
+    const waiting: Array<() => void> = [];
+    const acquire = async (): Promise<void> => {
+      if (inFlight < RegtestNetworkProvider.MAX_RPC_IN_FLIGHT) {
+        inFlight += 1;
+        return;
+      }
+      await new Promise<void>((resolve) => { waiting.push(resolve); });
+    };
+    const release = (): void => {
+      const next = waiting.shift();
+      if (next) next();
+      else inFlight -= 1;
+    };
+    const underNativeFetch = async (original: RpcRequest, method: string, params: unknown[]): Promise<unknown> => {
       const current = globalThis.fetch;
       if (current === nativeFetch) return original(method, ...params);
       globalThis.fetch = nativeFetch;
       try {
         return await original(method, ...params);
       } finally {
-        globalThis.fetch = current;
+        if (globalThis.fetch === nativeFetch) globalThis.fetch = current;
       }
     };
-    for (const client of [this.rpc, this.readRpc, this.probeRpc] as unknown as Array<{ request: RpcRequest }>) {
-      client.request = underNativeFetch(client.request.bind(client));
+    const pause = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
+    const guarded = (original: RpcRequest, retries: number): RpcRequest => async (
+      method: string, ...params: unknown[]
+    ): Promise<unknown> => {
+      await acquire();
+      try {
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            return await underNativeFetch(original, method, params);
+          } catch (error) {
+            if (attempt >= retries) throw error;
+            await pause(250);
+          }
+        }
+      } finally {
+        release();
+      }
+    };
+    const clients: Array<[BchnRpcClient, number]> = [[this.rpc, 0], [this.readRpc, 2], [this.probeRpc, 0]];
+    for (const [client, retries] of clients) {
+      const target = client as unknown as { request: RpcRequest };
+      target.request = guarded(target.request.bind(client), retries);
     }
   }
 
@@ -369,6 +406,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // fixed size would silently over-fund it. See `addUtxo`.
   private feeFunderPool = new Map<bigint, Utxo[]>();
   private feeFunderRefill = new Map<bigint, Promise<void>>();
+  /** The pooled funder each requested outpoint was served, so a repeated request gets the same live coin. */
+  private feeFunderByRequest = new Map<string, Utxo>();
   private feeFunderSizeRequests = new Map<bigint, number>();
   // Cached `listunspent` candidates for `pickLiveFundingInput`; `undefined` forces a re-list.
   private fundingCandidates: ListUnspentItem[] | undefined;
@@ -400,6 +439,18 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       // builder that requested 5,000; where the covenant cannot emit a change output the excess becomes fee, and
       // a co-spend then failed with "fee of 99000 satoshis exceeds the maximum fee cap of 50000".
       const wanted = utxo.satoshis < 546n ? 546n : utxo.satoshis;
+      // A builder names each funder by a seeded outpoint, and a mock provider keeps one UTXO per outpoint, so a
+      // re-planned transaction asks for the same funders again. Serve the same coin while it is live: a fresh
+      // pooled coin per request made every re-plan differ, and the refills that fed them mined blocks.
+      const requested = `${utxo.txid.toLowerCase()}:${utxo.vout}`;
+      const prior = this.feeFunderByRequest.get(requested);
+      if (prior !== undefined && prior.satoshis === wanted && await this.isLiveOutpoint(prior.txid, prior.vout)) {
+        Object.assign(utxo, {
+          txid: prior.txid, vout: prior.vout, satoshis: prior.satoshis,
+          lockingBytecode: prior.lockingBytecode, confirmations: prior.confirmations,
+        });
+        return utxo;
+      }
       if ((this.feeFunderPool.get(wanted)?.length ?? 0) === 0) {
         if (!this.feeFunderRefill.has(wanted)) {
           this.feeFunderRefill.set(wanted, this.refillFeeFunderPool(wanted).finally(() => {
@@ -423,6 +474,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
         pooled = await takeLive();
       }
       if (pooled === undefined) throw new Error(`no live fee funder for ${wanted} satoshis`);
+      this.feeFunderByRequest.set(requested, pooled);
       utxo.txid = pooled.txid;
       utxo.vout = pooled.vout;
       utxo.satoshis = pooled.satoshis;
@@ -813,12 +865,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     }
   }
 
+  /** A failed read throws: reporting it as spent dropped live records from a caller's view of the chain. */
   private async isLiveOutpoint(txid: string, vout: number): Promise<boolean> {
-    try {
-      return await this.readRpc.request<GetTxOut>('gettxout', txid, vout, true) !== null;
-    } catch {
-      return false;
-    }
+    return await this.readRpc.request<GetTxOut>('gettxout', txid, vout, true) !== null;
   }
 
   private async pickOracleFeeCoin(): Promise<Utxo> {
@@ -887,6 +936,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.feeFunderPool.clear();
     this.feeFunderRefill.clear();
     this.feeFunderSizeRequests.clear();
+    this.feeFunderByRequest.clear();
+    runMockNetworkProviderResetHooks();
     this.pendingBlockTimestamp = undefined;
     this.mockTime = 0;
     await this.setMockTime(0);
@@ -1046,6 +1097,10 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.feeFunderPool.clear();
     this.feeFunderRefill.clear();
     this.feeFunderSizeRequests.clear();
+    this.feeFunderByRequest.clear();
+    // SDK caches derived from chain state (signer coin snapshots, genesis reservations, job events) describe
+    // the branch this rewind disconnected; the mock provider clears them on every restore, and so must this.
+    runMockNetworkProviderResetHooks();
     this.pendingBlockTimestamp = state.pendingBlockTimestamp;
     this.mockTime = state.mockTime;
     this.tipTime = state.tipTime;

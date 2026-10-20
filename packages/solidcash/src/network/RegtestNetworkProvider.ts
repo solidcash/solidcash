@@ -115,6 +115,8 @@ interface RegtestSnapshotState {
   importedAddresses: Set<string>;
   tokenUtxos: Map<string, Map<string, Utxo>>;
   broadcastUtxos: Map<string, Utxo>;
+  /** How many transactions this provider had broadcast; a restore abandons the ones after. */
+  broadcastCount: number;
 }
 
 export interface TokenGenesisOutput {
@@ -182,6 +184,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // Every output this process broadcasts, so a validator/facet output mined before its address is imported is
   // still visible through getUtxosForLockingBytecode (the wallet cannot rescan history for imported addresses).
   private broadcastUtxos = new Map<string, Utxo>();
+  /** Every transaction this provider broadcast, in order, back to the latest restore. */
+  private broadcastTxids: string[] = [];
   private retainAddress: string = '';
   private retainLockingBytecode: Uint8Array = new Uint8Array();
   private static readonly RETAINED_MINT_SATOSHIS = 2_000n;
@@ -1017,6 +1021,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       importedAddresses: new Set(this.importedAddresses),
       tokenUtxos: new Map([...this.tokenUtxos].map(([category, bucket]) => [category, new Map(bucket)])),
       broadcastUtxos: new Map(this.broadcastUtxos),
+      broadcastCount: this.broadcastTxids.length,
     };
     return {
       snapshotId,
@@ -1095,14 +1100,23 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     // rescan once more so the wallet's coin set matches the restored UTXO set.
     await this.rpc.request<RescanBlockchain>('rescanblockchain', 0);
     const mempool = new Set(Object.keys(await this.readRpc.request<GetRawMempoolVerbose>('getrawmempool', true)));
+    // Every transaction this provider broadcast after the snapshot sat in a disconnected block or the cleared
+    // mempool. `listtransactions` returns only the newest 1000 wallet entries (several per transaction), so an
+    // older one stayed unabandoned and kept its inputs spent in the wallet. Abandoning them all needs a node whose
+    // `clearmempool` notifies the wallet (bitcoin-cash-node 0be3cfcf3); with a bare clear the wallet kept them
+    // flagged in-mempool and an abandon failed a node assertion. The listing still covers other processes' sends.
+    const stale = new Set(this.broadcastTxids.slice(state.broadcastCount));
     const walletTxs = await this.readRpc.request<ListTransactions>('listtransactions', '*', 1000, 0, true);
-    for (const txid of new Set(walletTxs.map((tx) => tx.txid))) {
-      const entry = walletTxs.find((tx) => tx.txid === txid && tx.confirmations === 0 && !tx.abandoned);
-      if (entry === undefined || mempool.has(txid)) continue;
-      try {
-        await this.rpc.request<AbandonTransaction>('abandontransaction', txid);
-      } catch { /* already conflicted or abandoned */ }
+    for (const tx of walletTxs) {
+      if (tx.confirmations === 0 && !tx.abandoned) stale.add(tx.txid);
     }
+    for (const txid of stale) {
+      if (mempool.has(txid)) continue;
+      try {
+        await this.probeRpc.request<AbandonTransaction>('abandontransaction', txid);
+      } catch { /* confirmed in the restored chain, conflicted, or already abandoned */ }
+    }
+    this.broadcastTxids.length = Math.min(this.broadcastTxids.length, state.broadcastCount);
     await this.rpc.request<RescanBlockchain>('rescanblockchain', 0);
 
     this.retainedMinting = new Map(state.retainedMinting);
@@ -1143,6 +1157,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // ---------------------------------------------------------------------------
 
   private trackBroadcastOutputs(txHex: string, txid: string): void {
+    this.broadcastTxids.push(txid);
     const tx = decodeTransactionUnsafe(hexToBin(txHex));
     for (const input of tx.inputs) {
       const key = `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`;

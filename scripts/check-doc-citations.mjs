@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from 'node:fs';
 const ROOTS = ['docs', 'packages', 'bench', 'examples', 'research', 'scripts'];
 const TEXT_EXTENSIONS = ['.md', '.ts', '.tsx', '.js', '.mjs', '.cjs', '.sh', '.yml', '.yaml'];
 const SKIP_PREFIXES = ['website/', 'packages/solidc/docs/archive/'];
+const SKIP_FILES = new Set(['scripts/archive-docs.sh']);
 const CITATION = new RegExp(
   `(?<![\\w/:-])((?:${ROOTS.join('|')})/[\\w./-]+\\.md)`,
   'g',
@@ -49,6 +50,7 @@ const files = git(['ls-files', '-z']).split('\0').filter(Boolean);
 const problems = [];
 
 for (const file of files) {
+  if (SKIP_FILES.has(file)) continue;
   if (SKIP_PREFIXES.some((prefix) => file.startsWith(prefix))) continue;
   if (!TEXT_EXTENSIONS.some((extension) => file.endsWith(extension))) continue;
   if (!existsSync(file)) continue;

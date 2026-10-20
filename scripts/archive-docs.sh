@@ -8,8 +8,8 @@
 #   scripts/archive-docs.sh [--push] [--copy-only] [--kind TEXT] [--destination TEXT] [--remote NAME] <path>...
 #
 # Examples:
-#   scripts/archive-docs.sh docs/framed/W6_STATUS.md
-#   scripts/archive-docs.sh --push --kind snapshot --destination docs/framed/DECISIONS.md docs/framed/W6_*.md
+#   scripts/archive-docs.sh docs/wip/my-stream/HANDOFF.md
+#   scripts/archive-docs.sh --push --kind snapshot --destination docs/framed/DECISIONS.md docs/wip/my-stream/*.md
 
 set -euo pipefail
 

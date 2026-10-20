@@ -1,7 +1,7 @@
 /**
  * Release gate: every self-contained SolidCash snippet in the public docs must still compile.
  *
- * RELEASE_READINESS asks that "public website examples compile against the exact release packages". The
+ * The release gate requires that public website examples compile against the exact release packages. The
  * `examples` script only covers three hand-written files at the repo root, so the 250-odd fenced blocks under
  * `website/docs` were ungated - they are the first thing a new user copies, and nothing noticed when a language
  * change made one of them stale.

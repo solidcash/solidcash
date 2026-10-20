@@ -85,6 +85,7 @@ import { decodeAuthenticatedProducerResultVector } from '../../stateful/external
 import { evalComputedKey } from '../../stateful/route-expression-key.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
 import { FramedCallRecordError, readEntryNode } from '../call/entry-records.js';
+import { framedTokenAccesses, framedTokenContainerUnlockingBytecode } from '../call/token-containers.js';
 import {
   chunkRecordLockingBytecode,
   deployMaster,
@@ -1692,6 +1693,8 @@ async function composeRead(options: {
   readonly validatorProgram: Uint8Array;
   readonly args: readonly FunctionArgument[];
   readonly functionName: string;
+  /** The live deployments the frames run over, by category, whose records key a container by state. */
+  readonly deployments: ReadonlyMap<string, FramedDeploymentSet>;
 }): Promise<ComposedRead> {
   const {
     provider, machine, frames, root, validatorProgram, functionName,
@@ -1838,10 +1841,43 @@ async function composeRead(options: {
     }
   }
 
-  // A frame that reads its own balance reads the containers its transaction spends, so the read spends every
-  // container of that contract and recreates their value in one, which leaves its balance where it was.
+  // A frame that reads a token container's amount reads the containers its transaction spends, so the read spends
+  // every fungible container of each category it reads, owned by its master and recreated in place as a run of its
+  // own (spec 4b), which leaves the amount where it was.
   const containerInputs: { readonly id: string; readonly index: number }[] = [];
   const containerOutputs: DraftSourceOutput[] = [];
+  const tokenRuns: number[] = [];
+  const tokenRunOutputs: DraftSourceOutput[] = [];
+  const tokenGroups = new Set<string>();
+  for (const frame of frames) {
+    const abi = frame.artifact.abi.find((candidate) => candidate.name === frame.entry.name);
+    if (!(abi?.tokenContainerAccesses ?? []).some((access) => access.operations.includes('read'))) continue;
+    const accesses = await framedTokenAccesses({
+      provider, entry: abi, categoryId: frame.categoryId, args: frame.args,
+      stateLayout: frame.artifact.stateLayout ?? { variables: [], dataNftCount: 0 } as unknown as StateLayout,
+      records: options.deployments.get(frame.categoryId)?.records ?? [],
+    });
+    const masterIndex = participant(layout, frame.master).index;
+    for (const access of accesses) {
+      const group = `${frame.categoryId}\u0000${access.category}`;
+      if (!access.reads || access.containers.length === 0 || tokenGroups.has(group)) continue;
+      tokenGroups.add(group);
+      for (const utxo of access.containers) {
+        const id = `token-container-${containerInputs.length}`;
+        const token = { category: hexToBin(access.category), amount: utxo.token!.amount };
+        inputs[id] = {
+          source: { lockingBytecode: access.lockingBytecode, valueSatoshis: utxo.satoshis, token },
+          unlockingBytecode: framedTokenContainerUnlockingBytecode(frame.categoryId, access.category, masterIndex),
+          consumed: true,
+        };
+        containerInputs.push({ id, index: layout.participantCount + containerInputs.length });
+        tokenRunOutputs.push({ lockingBytecode: access.lockingBytecode, valueSatoshis: utxo.satoshis, token });
+      }
+      tokenRuns.push(access.containers.length);
+    }
+  }
+  // A frame that reads its own balance reads the containers its transaction spends, so the read spends every
+  // container of that contract and recreates their value in one, which leaves its balance where it was.
   const balanceContracts = new Set<string>();
   for (const frame of frames) {
     const readers = (frame.artifact.composition as { balanceReaders?: readonly string[] } | undefined)?.balanceReaders;
@@ -1867,9 +1903,11 @@ async function composeRead(options: {
   const plan: CompositionDraftPlan = {
     blocks,
     userInputs: containerInputs,
+    ...(tokenRuns.length === 0 ? {} : { tokenRuns }),
     masters,
     inputs,
-    ...(containerOutputs.length === 0 ? {} : { trailingOutputs: containerOutputs }),
+    ...(containerOutputs.length + tokenRunOutputs.length === 0 ? {}
+      : { trailingOutputs: [...tokenRunOutputs, ...containerOutputs] }),
     validator: {
       id: VALIDATOR_ID,
       covers: [...new Set(frames.slice(1).map((frame) => frame.contract))],
@@ -1986,7 +2024,7 @@ async function composeInPasses(options: {
   for (;;) {
     const { frames, root, waits } = planReadFrames({ ...options, results });
     await readFrameDeployments(options.provider, frames, deployments);
-    const composed = await composeRead({ ...options, frames, root });
+    const composed = await composeRead({ ...options, frames, root, deployments });
     if (waits.length === 0) return { frames, root, composed };
     const fresh = waitedResults(frames, waits, composed, results);
     if (fresh.size === 0) {

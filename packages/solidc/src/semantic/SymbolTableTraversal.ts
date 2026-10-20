@@ -7738,6 +7738,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (a instanceof Node) this.collectTokenContainerAccesses(a, map);
       }
     }
+    // A return's values, as `return this.tokens[c].tokenAmount;` reads them.
+    if ('expressions' in node && Array.isArray((node as any).expressions)) {
+      for (const e of (node as any).expressions) {
+        if (e instanceof Node) this.collectTokenContainerAccesses(e, map);
+      }
+    }
     if ('value' in node && (node as any).value instanceof Node) {
       this.collectTokenContainerAccesses((node as any).value, map);
     }
@@ -7823,6 +7829,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('args' in node && Array.isArray((node as any).args)) {
       for (const a of (node as any).args) {
         if (a instanceof Node) this.assignTokenContainerSlotIndices(a, map);
+      }
+    }
+    if ('expressions' in node && Array.isArray((node as any).expressions)) {
+      for (const e of (node as any).expressions) {
+        if (e instanceof Node) this.assignTokenContainerSlotIndices(e, map);
       }
     }
     if ('value' in node && (node as any).value instanceof Node) {

@@ -26,7 +26,9 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + ' contract Treasury { bytes32 immutable reserve;'
   + '   constructor(bytes32 reserve_) { reserve = reserve_; }'
   + '   function payOut(address to, int amount) external { bytes32 category = reserve;'
-  + '     require(this.tokens[category].tokenAmount >= amount); this.tokens[category].transfer(to, amount); } }'
+  + '     require(this.tokens[category].tokenAmount >= amount); this.tokens[category].transfer(to, amount); }'
+  + '   function held() external view returns (int) { bytes32 category = reserve;'
+  + '     return this.tokens[category].tokenAmount; } }'
   + ' contract Payer { Treasury public treasury; uint256 public runs;'
   + '   constructor(Treasury treasury_) { treasury = treasury_; }'
   + '   function run(address to, int amount) external { runs = runs + 1; treasury.payOut(to, amount); }'
@@ -66,6 +68,11 @@ describe('a framed callee that pays tokens', () => {
       .filter((utxo) => utxo.token?.category === category)
       .reduce((sum, utxo) => sum + utxo.token!.amount, 0n);
     expect(await tokensAt(container)).toBe(1_000n);
+    // A view reads the reserve the read's own transaction spends.
+    const held = async (): Promise<unknown> => (await readFramedEntry({
+      provider, artifact: treasury, categoryId: treasuryDeployment.categoryId, functionName: 'held', args: [], vm,
+    })).value;
+    expect(await held()).toBe(1_000n);
 
     const call = async (functionName: string, args: unknown[], txid: string): Promise<FramedCallResult> =>
       callFramedEntry({
@@ -96,6 +103,7 @@ describe('a framed callee that pays tokens', () => {
     settled(await call('run', [bobLock, 900n], 'c4'));
     expect(await tokensAt(bobLock)).toBe(1_350n);
     expect(await tokensAt(container)).toBe(150n);
+    expect(await held()).toBe(150n);
     expect(await provider.getUtxosForLockingBytecode(container)).toHaveLength(1);
   }, 900_000);
 

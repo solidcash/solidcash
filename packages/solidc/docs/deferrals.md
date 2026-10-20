@@ -3014,54 +3014,34 @@ head's padding, and a mixed-version composition check.
 **Revisit if:** a factory issues user-facing tokens, or a client starts trusting self-published metadata of
 contract-created categories.
 
-## Framed compositions do not compose token containers (2026-10-20)
+## Framed token containers pay one fungible category from one frame (2026-10-20)
 
-**What:** the framed call engine (`packages/solidcash/src/framed/call/`, `framed/composer/`) composes satoshi
-containers but no CashTokens token container: a framed function that reads or pays through `this.tokens[...]` (a
-BchNative `wrap` or `unwrap`, any `transfer` of a foreign category) compiles, but the SDK cannot build its call. Found
-while moving BchNative to a bearer category of its own, which removed the contract-side reason it could not run framed
-(the census refuses a fungible amount of the settled contract's own category, framed spec S2). A framed BchNative
-genesis now creates and premints that category (`test/e2e/BchNativeFramed.test.ts`).
+**What:** a framed master pays fungible tokens out of a token container as a run after the one container its frame
+spends (`docs/framed/SPEC_FRAMED_TRANSACTION.md`, 4b; DECISIONS D34). Refused by name: an NFT moved out of a
+container (`transferNft`), the single-container reads `tokenCategory` and `nftCommitment`, a call that pays from two
+categories, and, in effect, two frames of one contract that both pay the same category, since each master holds the
+container to its own sends.
 
-**Why deferred:** composing a token container is a framed SDK feature of its own: a container input and its
-recreation in the participant layout, the frame's declaration of the reserve it reads and of the token sends it
-lists, and a conservation rule for the container's fungible amount beside the satoshi value rule (spec 4b).
+**Why deferred:** the run is anchored at the one container a frame spends, which is what lets the master find its
+sends without a witness field; each of these needs a second anchor or a witness-listed send.
 
-**What it'd take:** the container as a participant the layout recreates in place, its amount carried in the witness
-the master reads for `this.tokens[X].tokenAmount` and `this.outState.tokens[X].tokenAmount`, token sends listed like
-value sends, and the validator's value rule extended to the token amount of a contract's containers.
+**What it'd take:** list token sends in the witness block (a shipped-validator change), or anchor a run per spent
+container; for NFTs, a keep rule that tracks the capability and commitment the direct pin follows.
 
-**Revisit if:** a framed token or a framed marketplace needs fungible payments.
+**Revisit if:** a framed contract moves NFTs out of a container or pays two categories in one call.
 
-## Message-bus routes reserve only parameter-keyed token containers (2026-10-20)
+## A message-bus route does not carry an own- or state-keyed token container (2026-10-20)
 
-**What:** a message-bus route pulls the token-container accesses of the handlers it invokes into its own access plan
-(`SymbolTableTraversal`, the `messageBusRoute` merge), re-keyed to the argument the route forwards. It matches an access
-to a handler parameter by name, so an access keyed by the contract's own category (`keySource: 'own'`) or by an
-immutable state variable (`keySource: 'state'`, BchNative's `_nativeCategory` since D33) is not merged, and the route's
-plan omits that container. This predates D33 for own-category keys.
+**What:** a route binds a token container through the key its row forwards, so a handler that keys a container by
+the contract's own category or by an immutable state variable (BchNative's `wrap` and `unwrap`) is not eligible for
+the route and runs on its own entry (DECISIONS D35). A bus-composed call to such a handler is refused.
 
-**Why deferred:** the merge's re-keying is defined for a forwarded argument only; carrying a state key into a route
-means checking how codegen resolves a route-level key that names a variable of the handler, which is outside the
-BchNative change.
+**Why deferred:** carrying such a key needs the route's identity check to read the contract's own category or its state
+on the route stack, and the route merge, the layout sharing and the forwarded-witness plumbing to keep a key that is
+not a parameter; each is a message-bus change of its own.
 
-**What it'd take:** merge own and state accesses into the route unchanged (their key does not depend on the call), and
-confirm the route's container checks resolve the key from state as the handler's do.
+**What it'd take:** merge own and state accesses into the route under a canonical key, read the key in the route's
+identity check (the master category, or the immutable from the route's records), and exempt them from the
+forwarded-key normalization.
 
 **Revisit if:** a contract calls a BchNative `wrap` or `unwrap` through the message bus.
-
-## A wrap-first BchNative token has no SDK path for its bearer supply (2026-10-20)
-
-**What:** `nativeToken` mints the token's category only into the contract's reserve container. A token whose ledger
-starts empty and grows by `wrap` (`MinimalNativeToken`) needs bearer tokens in holders' hands first; with every unit
-in the reserve, nobody can wrap and nobody holds a ledger balance to unwrap. The premint of the contract's own
-category had the same shape before D33. A token over an existing category needs no premint, but its first `wrap`
-deposits into a container that does not exist yet, which no test covers.
-
-**Why deferred:** outside the BchNative category change; the premint the BCMR design specifies (`docs/bcmr/DESIGN.md`,
-6.2) is the ledger-first shape, where the constructor or `issue` credits the ledger.
-
-**What it'd take:** a `nativeToken` amount minted to the deployer beside the reserve, and a test of a first `wrap` into
-an absent container.
-
-**Revisit if:** a wrap-first token is deployed through the SDK.

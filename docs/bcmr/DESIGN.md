@@ -263,8 +263,9 @@ Further points:
   compiler publishes as `keySource: 'state'` and the SDK reads from the state each call loads.
 - The genesis that creates C also creates X, from a second vout-0 coin (`nativeToken.funding`), so the two categories
   share its identity output, and the registry describes both: X carries the token fields, C the contract and its NFT
-  labels. A framed genesis does the same; framed calls through a token container wait for the framed composer to
-  compose token containers (`packages/solidc/docs/deferrals.md`).
+  labels. A framed genesis does the same, and a framed token wraps and unwraps through the container
+  (`docs/framed/SPEC_FRAMED_TRANSACTION.md`, 4b; D34). A message-bus route does not carry the container, so `wrap`
+  and `unwrap` run on their own entries (D35).
 
 ### 6.2 Genesis for a native token
 
@@ -283,6 +284,10 @@ out  2..   masters, data NFTs, mapping heads, ...
 ```
 
 Without `nativeToken.funding` the premint is of C, which only the direct convention admits.
+
+A token whose ledger starts empty and grows by `wrap` needs its supply in holders' hands first: `nativeToken.bearer`
+(`{ amount, to }`) mints that bearer supply to a token-aware address in the same genesis, beside the reserve or instead
+of it. The first `wrap` then creates the container.
 
 - The premint is the ledger supply the constructor credits, divided by the native scale, plus any headroom kept for
   a later `issue`. It is at most 9,223,372,036,854,775,807.
@@ -459,7 +464,9 @@ interface DeployOptions {
   // ...existing fields...
   identity?: IdentityPolicy;           // default: { kind: 'key' } at the deployer's lock
   bcmr?: BcmrPublication;              // omitted: no publication output
-  nativeToken?: { funding?: Utxo; funder?: Unlocker; reserve?: bigint; scale?: bigint };  // token category, premint
+  nativeToken?: {                       // the token's own category, its premint and bearer supply, its native scale
+    funding?: Utxo; funder?: Unlocker; reserve?: bigint; bearer?: { amount: bigint; to: string }; scale?: bigint;
+  };
 }
 
 type IdentityPolicy =
@@ -507,7 +514,7 @@ Tests run on mocknet only, which is the user's standing rule.
 | Contract-created categories | option C in `packages/solidc/docs/deferrals.md` | |
 | Generated NFT labels | `bcmr/nft-parse.ts`, `bcmr/nft-roles.ts` | `test/e2e/BcmrNftParse.test.ts` |
 | Contract-governed metadata | `bcmr/governed.ts`, `contracts/BcmrGoverned.scash` | `test/e2e/BcmrGoverned.test.ts` |
-| BchNative's own bearer category | `contracts/BchNative.scash`; the `state` container key in `packages/solidc/src/semantic/SymbolTableTraversal.ts` and `stateful/sc-load-create-builder-token-containers.ts` | the BchNative e2e files; `test/e2e/BchNativeFramed.test.ts` (framed genesis) |
+| BchNative's own bearer category | `contracts/BchNative.scash`; the `state` container key in `packages/solidc/src/semantic/SymbolTableTraversal.ts` and `stateful/sc-load-create-builder-token-containers.ts` | the BchNative e2e files; `test/e2e/BchNativeFramed.test.ts` (framed genesis, wrap, unwrap, drain) |
 
 Paths are under `packages/solidcash/` unless stated.
 

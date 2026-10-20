@@ -373,7 +373,8 @@ Pass `bcmr` to publish a registry in the genesis itself, at output 1. For a toke
 A `BchNative` token's bearer form is a CashTokens category of its own, which the token takes as its constructor
 argument. `nativeToken.funding` names a token-free coin at vout 0 whose txid becomes that category, so the genesis
 creates it beside the contract's and both share the identity output; `nativeToken.reserve` premints it into the
-contract's token container, and `nativeToken.scale` states a `BchNativeMultiplier` scale. The SDK refuses a contract
+contract's token container, `nativeToken.bearer` (`{ amount, to }`) mints a supply to a token-aware address for a token
+whose ledger starts empty, and `nativeToken.scale` states a `BchNativeMultiplier` scale. The SDK refuses a contract
 constructed with another category:
 
 ```ts

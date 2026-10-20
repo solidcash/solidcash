@@ -24,8 +24,11 @@ category of its own, which the token names at construction (`constructor(bytes32
 BchNative(nativeCategory_)`) and BchNative keeps as an immutable; the reserve container is keyed by it. It is not the
 contract's own category: a framed composition refuses fungible amounts of that category, and a category of its own
 keeps the token's BCMR identity apart from the contract's state NFTs. A deployment creates the category in the
-genesis and premints the reserve with `nativeToken: { funding, reserve }` (see `docs/bcmr/DESIGN.md`, section 6).
-BchNative owns no other configuration or delayed-admission state. The token supplies balance and policy hooks.
+genesis and premints the reserve with `nativeToken: { funding, reserve }`, or mints the supply to holders with
+`nativeToken: { funding, bearer }` for a token whose ledger starts empty (see `docs/bcmr/DESIGN.md`, section 6). Under
+the framed convention the token wraps and unwraps through the same container
+(`docs/framed/SPEC_FRAMED_TRANSACTION.md`, 4b). BchNative owns no other configuration or delayed-admission state. The
+token supplies balance and policy hooks.
 
 It composes with unmodified third-party ledgers too: `test/fixture/oz_bch_native_token.sol` inherits the npm
 OpenZeppelin ERC20, and `test/fixture/tether/TetherNativeToken.sol` inherits the Etherscan-verified USDT source

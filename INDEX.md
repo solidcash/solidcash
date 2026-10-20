@@ -306,3 +306,12 @@ These files were never tracked on `master`; they are restored from the copies na
 | path | source | note |
 | --- | --- | --- |
 | `docs/framed/SOLIDITY_COMPAT_UNGATE_PLAN.md` | `/tmp/grok-goal-4b830698eeec/implementer/removed-SOLIDITY_COMPAT_UNGATE_PLAN.md` | 2026-10-08 ungate plan, removed from `docs/framed/` before the archive existed |
+
+## Trimmed logs (2026-10-20)
+
+Full copies of the two long-running logs before their master versions were trimmed.
+
+| path | source | note |
+| --- | --- | --- |
+| `bench/solidity-corpus/PROGRESS_2026-10-12.md` | `bench/solidity-corpus/PROGRESS.md` at `66f6839ea` | full session log through 2026-10-12 |
+| `packages/solidc/docs/deferrals_2026-10-20.md` | `packages/solidc/docs/deferrals.md` at `66f6839ea` | full deferral log before resolved-entry trim |

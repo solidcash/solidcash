@@ -85,6 +85,25 @@ interface AbandonTransaction {
   response: null;
 }
 
+interface GetAddressesByLabel {
+  method: 'getaddressesbylabel';
+  params: [label: string];
+  response: Record<string, { purpose: string }>;
+}
+
+interface ScanTxOutSet {
+  method: 'scantxoutset';
+  params: [action: 'start', descriptors: string[]];
+  response: { success: boolean; unspents: Array<{ txid: string; vout: number; amount: number }> };
+}
+
+/** A wallet coin that funds one of this provider's own transactions. */
+interface FundingCandidate {
+  txid: string;
+  vout: number;
+  amount: number;
+}
+
 interface RegtestSnapshotState {
   height: number;
   hash: string;
@@ -96,8 +115,6 @@ interface RegtestSnapshotState {
   importedAddresses: Set<string>;
   tokenUtxos: Map<string, Map<string, Utxo>>;
   broadcastUtxos: Map<string, Utxo>;
-  /** How many transactions this provider had broadcast; a restore abandons the ones after. */
-  broadcastCount: number;
 }
 
 export interface TokenGenesisOutput {
@@ -165,8 +182,6 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // Every output this process broadcasts, so a validator/facet output mined before its address is imported is
   // still visible through getUtxosForLockingBytecode (the wallet cannot rescan history for imported addresses).
   private broadcastUtxos = new Map<string, Utxo>();
-  /** Every transaction this provider broadcast, in order, back to the latest restore. */
-  private broadcastTxids: string[] = [];
   private retainAddress: string = '';
   private retainLockingBytecode: Uint8Array = new Uint8Array();
   private static readonly RETAINED_MINT_SATOSHIS = 2_000n;
@@ -414,7 +429,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private feeFunderByRequest = new Map<string, Utxo>();
   private feeFunderSizeRequests = new Map<bigint, number>();
   // Cached `listunspent` candidates for `pickLiveFundingInput`; `undefined` forces a re-list.
-  private fundingCandidates: ListUnspentItem[] | undefined;
+  private fundingCandidates: FundingCandidate[] | undefined;
   private static readonly DUMMY_FUNDER_LBC = 'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
 
   async addUtxo(address: string, utxo: Utxo): Promise<Utxo> {
@@ -511,7 +526,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       );
     }
 
-    let fundingInput: ListUnspentItem;
+    let fundingInput: FundingCandidate;
     try {
       fundingInput = await this.pickLiveFundingInput(!!utxo.token);
     } catch (e) {
@@ -704,7 +719,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     // consecutive runs - `Input not found or already spent` when signing, and `txn-mempool-conflict` when a
     // rapid second genesis reached for the same coin. `pickLiveFundingInput` confirms each candidate with
     // `gettxout` including the mempool, which is the same rule the funding path already follows.
-    let genesisInput: ListUnspentItem;
+    let genesisInput: FundingCandidate;
     try {
       genesisInput = await this.pickLiveFundingInput(true);
     } catch {
@@ -1002,7 +1017,6 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       importedAddresses: new Set(this.importedAddresses),
       tokenUtxos: new Map([...this.tokenUtxos].map(([category, bucket]) => [category, new Map(bucket)])),
       broadcastUtxos: new Map(this.broadcastUtxos),
-      broadcastCount: this.broadcastTxids.length,
     };
     return {
       snapshotId,
@@ -1081,22 +1095,14 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     // rescan once more so the wallet's coin set matches the restored UTXO set.
     await this.rpc.request<RescanBlockchain>('rescanblockchain', 0);
     const mempool = new Set(Object.keys(await this.readRpc.request<GetRawMempoolVerbose>('getrawmempool', true)));
-    // Every transaction this provider broadcast after the snapshot sat in a disconnected block or the cleared
-    // mempool. `listtransactions` returns only the newest 1000 wallet entries (several per transaction), so an
-    // older one stayed unabandoned and kept its inputs spent in the wallet: large coins leaked restore by restore
-    // until funding found none. The listing still covers transactions another process sent.
-    const stale = new Set(this.broadcastTxids.slice(state.broadcastCount));
     const walletTxs = await this.readRpc.request<ListTransactions>('listtransactions', '*', 1000, 0, true);
-    for (const tx of walletTxs) {
-      if (tx.confirmations === 0 && !tx.abandoned) stale.add(tx.txid);
-    }
-    for (const txid of stale) {
-      if (mempool.has(txid)) continue;
+    for (const txid of new Set(walletTxs.map((tx) => tx.txid))) {
+      const entry = walletTxs.find((tx) => tx.txid === txid && tx.confirmations === 0 && !tx.abandoned);
+      if (entry === undefined || mempool.has(txid)) continue;
       try {
-        await this.probeRpc.request<AbandonTransaction>('abandontransaction', txid);
-      } catch { /* confirmed in the restored chain, conflicted, or already abandoned */ }
+        await this.rpc.request<AbandonTransaction>('abandontransaction', txid);
+      } catch { /* already conflicted or abandoned */ }
     }
-    this.broadcastTxids.length = Math.min(this.broadcastTxids.length, state.broadcastCount);
     await this.rpc.request<RescanBlockchain>('rescanblockchain', 0);
 
     this.retainedMinting = new Map(state.retainedMinting);
@@ -1137,7 +1143,6 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // ---------------------------------------------------------------------------
 
   private trackBroadcastOutputs(txHex: string, txid: string): void {
-    this.broadcastTxids.push(txid);
     const tx = decodeTransactionUnsafe(hexToBin(txHex));
     for (const input of tx.inputs) {
       const key = `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`;
@@ -1189,21 +1194,23 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     }));
   }
 
-  // Query only large coins (mature coinbases): the shared wallet can list spent small coins as
-  // spendable, which fundrawtransaction then picks, breaking broadcast with "Missing inputs".
+  // Query only large coins (mature coinbases): the shared wallet can list spent small coins as spendable.
   //
-  // `listunspent` scans the WHOLE wallet, and a long suite grows it without bound: measured at 18 ms on a fresh
-  // chain and 4,690 ms once the wallet reached about 20,000 UTXOs, called at every genesis and every funder
-  // refill. Cache the candidate list instead and re-list only when it runs out. Correctness does not rest on the
-  // cache being fresh: every candidate is still confirmed live with `gettxout` before use, and a stale entry is
-  // simply dropped, which is the same check this function always made.
-  private async pickLiveFundingInput(vout0Only: boolean): Promise<ListUnspentItem> {
+  // Candidates come from the UTXO set rather than the wallet's coin list. The patched node's `clearmempool` does
+  // not tell the wallet, so after a restore the wallet still counts coins as spent by rewound transactions it
+  // cannot always abandon (abandoning one whose wallet descendant looks in-mempool trips a node assertion): its
+  // large coins ran out about 25 titles into a kernel cell. The scan covers the wallet's own funding addresses.
+  // The list is cached and re-scanned only when it runs out; every candidate is still confirmed live with
+  // `gettxout` before use, which also drops immature coinbases and token outputs that `listunspent` left out.
+  private async pickLiveFundingInput(vout0Only: boolean): Promise<FundingCandidate> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (this.fundingCandidates === undefined) {
-        this.fundingCandidates = (await this.readRpc.request<ListUnspent>(
-          'listunspent', 1, 9999999, [], true, { minimumAmount: 1 },
-        ))
-          .filter((u) => u.spendable)
+        const descriptors = (await this.fundingAddresses()).map((address) => `addr(${address})`);
+        const scan = descriptors.length === 0 ? { unspents: [] }
+          : await this.readRpc.request<ScanTxOutSet>('scantxoutset', 'start', descriptors);
+        this.fundingCandidates = scan.unspents
+          .filter((u) => u.amount >= 1)
+          .map((u) => ({ txid: u.txid, vout: u.vout, amount: u.amount }))
           .sort((a, b) => (a.amount < b.amount ? 1 : -1));
       }
       const pool = this.fundingCandidates;
@@ -1215,16 +1222,29 @@ export default class RegtestNetworkProvider implements NetworkProvider {
         const out = await this.readRpc.request<GetTxOut>('gettxout', u.txid, u.vout, true) as
           GetTxOut['response'] | null;
         pool.splice(i, 1);
-        if (out) {
+        if (out && !(out.coinbase && out.confirmations < 100) && out.tokenData === undefined) {
           this.reservedFunding.add(`${u.txid}:${u.vout}`);
           return u;
         }
         i -= 1;
       }
-      // Nothing usable left in the cache. Re-list once; a second miss is a real exhaustion.
+      // Nothing usable left in the cache. Re-scan once; a second miss is a real exhaustion.
       this.fundingCandidates = undefined;
     }
     throw new Error('No live wallet UTXOs available (>=1 BCH). Mine more blocks.');
+  }
+
+  /** The wallet addresses funding coins sit at: every provider's mining address and every vout-0 address. */
+  private async fundingAddresses(): Promise<string[]> {
+    const addresses = new Set<string>(this.miningAddress === '' ? [] : [this.miningAddress]);
+    for (const label of ['mining', 'vout0']) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const byLabel = await this.probeRpc.request<GetAddressesByLabel>('getaddressesbylabel', label);
+        for (const address of Object.keys(byLabel)) addresses.add(address);
+      } catch { /* no address carries the label yet */ }
+    }
+    return [...addresses];
   }
 
   private releaseFunding(item: { txid: string; vout: number }): void {
@@ -1267,7 +1287,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       tx.inputs = liveInputs;
       const valueOut = tx.outputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
       const fee = 1_000n;
-      const added: ListUnspentItem[] = [];
+      const added: FundingCandidate[] = [];
       let needed = valueOut + fee - valueIn;
       try {
         while (needed > 0n) {

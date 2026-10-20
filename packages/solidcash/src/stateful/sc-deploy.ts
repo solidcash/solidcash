@@ -22,6 +22,7 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
 import { identityRecord, leadingOutputs, prepareMetadata } from '../bcmr/deployment.js';
 import { isP2pkhLock, planGenesisIdentity } from '../bcmr/identity.js';
+import { deploymentNftRoles, directNftLocks, framedNftLocks } from '../bcmr/nft-roles.js';
 import { BcmrError } from '../bcmr/publication.js';
 import {
   getAnonymousEventNftAddress,
@@ -91,6 +92,14 @@ export async function deployStatefulContract<T extends Artifact>(
     deploy: options,
     probe: (probeOptions) => deployStatefulContract(artifact, constructorArgs, probeOptions),
     ...(reserveLockingBytecode === undefined ? {} : { reserveLockingBytecode }),
+    nftRoles: async () => {
+      const category = options.fundingUtxo.txid.toLowerCase();
+      return deploymentNftRoles(artifact, framed
+        ? await framedNftLocks(artifact, category, options.provider)
+        : directNftLocks(new Contract(artifact, constructorArgs as any, {
+          provider: options.provider, addressType: options.addressType, category: hexToBin(category), salt: options.salt,
+        }), category));
+    },
   });
 
   // A framed artifact's master reads its frame from the witness block leading its own unlocking bytecode, so the

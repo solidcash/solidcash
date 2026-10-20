@@ -2993,3 +2993,23 @@ composite return such as `uint256[5]`.
 **Why deferred:** not on any failing path. The arbitrate titles' `uint256[5]` return is recovered through its canonical
 outer bytes once the participant's stream records are fed back (`a0ae125c1`). Found while diagnosing the proxy x kernel
 arbitrate titles.
+
+## The BCMR identity of a category a contract creates sits at the creating master (2026-10-20)
+
+**What:** a category created inside a composition (framed `new C()`, the framed proxy's calling genesis, direct
+`deployFrom`, message-bus child deployments) takes the creating transaction's output 0 as its BCMR identity output,
+and the composition layout puts a participant of the creating contract there. Any later spend of that output can
+publish metadata for the child category, and every child created through the same master shares its lineage
+(`docs/bcmr/DESIGN.md`, section 7). Top-level geneses are unaffected: they lead with a dedicated identity output.
+
+**Why deferred:** the SDK cannot place the child's identity output, because the layout fixes output 0. The two fixes
+are protocol changes: a validator census rule refusing any output with the `6a0442434d52` prefix (a new validator
+version, so new framed addresses, and its own rule in each direct master), or reserving output 0 in category-creating
+compositions (breaks in-place recreation from index 0). Chosen as option C of the design under the user's goal to
+implement it fully (DECISIONS D32).
+
+**What it'd take:** option A: the prefix check in `checkCensus` and the head program, a size measurement against the
+head's padding, and a mixed-version composition check.
+
+**Revisit if:** a factory issues user-facing tokens, or a client starts trusting self-published metadata of
+contract-created categories.

@@ -12,7 +12,7 @@
 import type {
   Extensions, NftCategory, Tag, URIs,
 } from '@bitauth/libauth/build/lib/engine/types/bcmr-types.js';
-import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { Artifact } from '@solidcash/utils';
 import type { Output } from '../interfaces.js';
 import { stageBroadcasts } from '../framed/proxy/staged-broadcasts.js';
@@ -25,6 +25,7 @@ import {
   assertTokenSymbol, encodeRegistry, registryTimestamp, selfPublishedRegistry,
   type BcmrSnapshot, type EncodedRegistry,
 } from './registry.js';
+import { nftCategory, type NftParseRole } from './nft-parse.js';
 import {
   hasErc20Metadata, hasTotalSupply, metadataInteger, metadataText, nativeDecimals,
 } from './token.js';
@@ -45,7 +46,8 @@ export interface BcmrPublication {
   readonly token?: {
     readonly symbol?: string;
     readonly decimals?: number;
-    readonly nfts?: NftCategory;
+    /** How the category's NFTs read; `'generated'` labels the contract's own NFTs from its artifact (section 8). */
+    readonly nfts?: NftCategory | 'generated';
   };
   readonly extensions?: Extensions;
   /** The URIs the publication offers; `ipfs://<CIDv1 of the registry>` when omitted. */
@@ -163,7 +165,7 @@ function resolveToken(
   return {
     symbol,
     ...(decimals === undefined ? {} : { decimals }),
-    ...(stated?.nfts === undefined ? {} : { nfts: stated.nfts }),
+    ...(stated?.nfts === undefined || stated.nfts === 'generated' ? {} : { nfts: stated.nfts }),
   };
 }
 
@@ -177,6 +179,8 @@ export async function prepareMetadata(options: {
   readonly deploy: DeployOptions;
   readonly probe: ProbeDeploy;
   readonly reserveLockingBytecode?: Uint8Array;
+  /** The deployment's NFT roles, for a publication that generates its NFT labels. */
+  readonly nftRoles?: () => Promise<readonly NftParseRole[]>;
 }): Promise<PreparedMetadata> {
   const { artifact, deploy } = options;
   const publication = deploy.bcmr;
@@ -208,7 +212,12 @@ export async function prepareMetadata(options: {
   }
   const name = publication.name ?? facts.name;
   if (name === undefined) throw new BcmrError('bcmr.name is required: the contract does not publish name()');
-  const token = resolveToken(publication.token, facts, scale);
+  const resolved = resolveToken(publication.token, facts, scale);
+  let token = resolved;
+  if (publication.token?.nfts === 'generated' && resolved !== undefined) {
+    if (options.nftRoles === undefined) throw new BcmrError('this deployment cannot derive its NFT roles');
+    token = { ...resolved, nfts: nftCategory(await options.nftRoles(), hexToBin(options.category)) };
+  }
 
   const extensions: Record<string, Extensions[string]> = { ...(publication.extensions ?? {}) };
   if (deploy.identity?.kind === 'authguard') {

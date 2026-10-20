@@ -64,6 +64,25 @@ export {
   type PublishedRegistry,
 } from './deployment.js';
 export {
+  NFT_PARSE_BUDGET,
+  nftCategory,
+  nftParseBytecode,
+  nftTypeKeyHex,
+  parseNft,
+  pushedFields,
+  type NftFieldEncoding,
+  type NftParseField,
+  type NftParseResult,
+  type NftParseRole,
+  type NftParseType,
+} from './nft-parse.js';
+export {
+  deploymentNftRoles,
+  directNftLocks,
+  framedNftLocks,
+  type DeploymentNftLocks,
+} from './nft-roles.js';
+export {
   publishMetadata,
   type CurrentIdentity,
   type NextIdentity,

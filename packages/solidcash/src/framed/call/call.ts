@@ -329,6 +329,11 @@ class TokenRunShortfall extends FramedCallError {
   }
 }
 
+/** The identity of the `index`-th coin at the caller's lock that fills an index between token runs. */
+function fillerCoinInputId(index: number): string {
+  return `filler-coin:${index}`;
+}
+
 /** The identity of the `index`-th coin a call's token deposits spend. */
 function tokenDepositInputId(index: number): string {
   return `token-deposit:${index}`;
@@ -1102,6 +1107,19 @@ async function callInShape(
     access.category === deposit.utxo.token!.category)?.contractCategoryId ?? categoryId);
   const depositRuns = tokenDeposits.map((deposit, index) => tokenRuns.findIndex((run) =>
     run.contractCategoryId === depositTargets[index] && run.category === deposit.utxo.token!.category));
+  // The sends of every run but the last sit at indices whose inputs are not containers: the caller's coin and its
+  // deposits fill them first, then more tokenless coins at the caller's lock.
+  const fillersNeeded = tokenRuns.slice(0, -1).reduce((sum, run) => sum + run.sends, 0) - 1 - tokenDeposits.length;
+  const fillerCoins = fillersNeeded <= 0 ? [] : (await provider.getUtxosForLockingBytecode(options.callerLockingBytecode))
+    .filter((utxo) => utxo.token === undefined
+      && !(utxo.txid === options.callerUtxo.txid && utxo.vout === options.callerUtxo.vout))
+    .slice(0, fillersNeeded);
+  if (fillerCoins.length < fillersNeeded) {
+    throw new FramedCallError(
+      `entry "${functionName}" pays from ${tokenRuns.length} token runs, which need ${fillersNeeded} more tokenless `
+      + `coins at the caller's lock between them, and it holds ${fillerCoins.length}`,
+    );
+  }
 
   // The fallback is reached by the call data of a value send, which no entry's selector names.
   const selectorPushes = entry.name === FALLBACK_ENTRY
@@ -1872,6 +1890,10 @@ async function callInShape(
         source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: options.callerUtxo.satoshis },
         unlockingBytecode: callerUnlocking(),
       },
+      ...Object.fromEntries(fillerCoins.map((utxo, index) => [fillerCoinInputId(index), {
+        source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: utxo.satoshis },
+        unlockingBytecode: callerUnlocking(),
+      }])),
     };
     for (const record of declared) {
       // The record's output is not stated: it carries the end of the declaration chain the derivation learns.
@@ -2036,6 +2058,7 @@ async function callInShape(
       sequenceNumber: 0xfffffffe,
       userInputs: [...placeUserInputs([
         CALLER_ID,
+        ...fillerCoins.map((_utxo, index) => fillerCoinInputId(index)),
         ...paying.spent.map((_utxo, position) => containerInputId(position)),
         ...payeeSpent.map((spent) => spent.id),
         ...tokenDeposits.map((_deposit, index) => tokenDepositInputId(index)),
@@ -2632,6 +2655,7 @@ async function callInShape(
   ).spent.map((utxo, position) => ({ id: receiveContainerId(index, position), utxo }))));
   const placedInputs = placeUserInputs([
     CALLER_ID,
+    ...fillerCoins.map((_utxo, index) => fillerCoinInputId(index)),
     ...rootSpent.map((_utxo, position) => containerInputId(position)),
     ...payeeSpentFinal.map((spent) => spent.id),
     ...tokenDeposits.map((_deposit, index) => tokenDepositInputId(index)),
@@ -2732,6 +2756,7 @@ async function callInShape(
     draft,
     liveUtxos,
     callerIndex: placedInputs.get(CALLER_ID)!,
+    fillerCoins: fillerCoins.map((utxo, index) => ({ utxo, index: placedInputs.get(fillerCoinInputId(index))! })),
     containerInputs,
     tokenContainerInputs,
     tokenDepositInputs: tokenDeposits.map((deposit, index) => ({
@@ -2810,6 +2835,8 @@ interface BroadcastCallOptions {
   readonly liveUtxos: ReadonlyMap<string, Utxo>;
   /** The caller's coin's index among the user inputs. */
   readonly callerIndex: number;
+  /** More coins at the caller's lock that fill the indices between token runs, signed as the caller's coin is. */
+  readonly fillerCoins: readonly { readonly index: number; readonly utxo: Utxo }[];
   /** The containers the call's sends are paid from. */
   readonly containerInputs: readonly { readonly index: number; readonly utxo: Utxo }[];
   /** The token containers the token runs spend, each at the index its run starts at. */
@@ -2922,6 +2949,9 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
   // provider both check.
   const userInputs: { readonly index: number; readonly add: () => void }[] = [
     { index: options.callerIndex, add: (): void => { builder.addInput(options.callerUtxo, options.funder); } },
+    ...options.fillerCoins.map(({ index, utxo }) => ({
+      index, add: (): void => { builder.addInput(utxo, options.funder); },
+    })),
     ...[...options.tokenContainerInputs, ...options.containerInputs].map((input) => ({
       index: input.index, add: (): void => addContainer(input),
     })),

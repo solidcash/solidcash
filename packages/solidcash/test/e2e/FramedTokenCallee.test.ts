@@ -99,6 +99,52 @@ describe('a framed callee that pays tokens', () => {
     expect(await provider.getUtxosForLockingBytecode(container)).toHaveLength(1);
   }, 900_000);
 
+  it('pays two categories from one frame, a coin of the caller\'s filling the index between the runs', async () => {
+    const source = 'pragma solidity ^0.8.0;'
+      + ' contract Twin { bytes32 immutable first; bytes32 immutable second;'
+      + '   constructor(bytes32 first_, bytes32 second_) { first = first_; second = second_; }'
+      + '   function payBoth(address to, int x, int y) external { bytes32 a = first; bytes32 b = second;'
+      + '     this.tokens[a].transfer(to, x); this.tokens[a].transfer(to, x); this.tokens[b].transfer(to, y); } }';
+    const twin = compileStringMulti(source, { composition: 'framed', evmCompat: true } as never).Twin!;
+    const provider = new MockNetworkProvider();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const alice = new SignatureTemplate(alicePriv);
+    const aliceLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const bobLock = encodeLockingBytecodeP2pkh(bobPkh);
+    await fundShippedFacets(provider);
+    const coin = async (txid: string, satoshis: bigint): Promise<Utxo> => {
+      const utxo = { txid: txid.repeat(32), vout: 0, satoshis };
+      await provider.addUtxo(binToHex(aliceLock), utxo);
+      return utxo;
+    };
+    const [first, second] = ['a1', 'a2'].map((byte) => byte.repeat(32));
+    const deployment = await deployStatefulContract(twin, [hexToBin(first!), hexToBin(second!)], {
+      provider, fundingUtxo: await coin('b1', 3_000_000n), funder: alice.unlockP2PKH(), changeAddress: aliceAddress,
+    });
+    const tokensAt = async (lock: Uint8Array, category: string): Promise<bigint> =>
+      (await provider.getUtxosForLockingBytecode(lock))
+        .filter((utxo) => utxo.token?.category === category)
+        .reduce((sum, utxo) => sum + utxo.token!.amount, 0n);
+    for (const [index, category] of [first!, second!].entries()) {
+      await provider.addUtxo(binToHex(framedTokenContainerLockingBytecode(deployment.categoryId, category)), {
+        txid: `b${index + 2}`.repeat(32), vout: 0, satoshis: 1_000n, token: { category, amount: 1_000n },
+      });
+    }
+    await coin('b4', 50_000n);
+
+    const paid = await callFramedEntry({
+      provider, artifact: twin, categoryId: deployment.categoryId, functionName: 'payBoth', args: [bobLock, 10n, 20n],
+      callerUtxo: await coin('b5', 300_000n), callerLockingBytecode: aliceLock, funder: alice.unlockP2PKH(), vm,
+    });
+    expect(paid.verdicts.filter((verdict) => !verdict.accepted)).toEqual([]);
+    expect(paid.broadcast).toBeDefined();
+    expect(await tokensAt(bobLock, first!)).toBe(20n);
+    expect(await tokensAt(bobLock, second!)).toBe(20n);
+    for (const category of [first!, second!]) {
+      expect(await tokensAt(framedTokenContainerLockingBytecode(deployment.categoryId, category), category)).toBe(980n);
+    }
+  }, 900_000);
+
   it('wraps into and unwraps from a BchNative token in a vault\'s callee frames', async () => {
     const source = 'pragma solidcash >=0.8.0;'
       + ' import { BchNative } from "./BchNative.scash";'

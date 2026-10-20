@@ -134,7 +134,8 @@ import { bindProviderBlockOracle, blockOracleClock, entryReadsBlockOracle, frame
 import { sendRecipient, type RecipientContext } from './send-recipient.js';
 import {
   framedCalleeTokenAccesses, framedTokenAccesses, framedTokenContainerLockingBytecode,
-  framedTokenContainerUnlockingBytecode, framedTokenSendSentinels, learnTokenSend,
+  framedTokenContainerUnlockingBytecode, framedTokenSendSentinels, learnTokenSend, nftCapabilityName, unlearnedRun,
+  visibleNft, type LearnedNftSend, type LearnedRun,
 } from './token-containers.js';
 import {
   FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
@@ -301,7 +302,12 @@ interface TokenRun {
   readonly category: string;
   readonly lockingBytecode: Uint8Array;
   readonly sends: number;
-  /** The containers the run spends, which lead it: the first is recreated with what the sends leave. */
+  /** The NFT sends the run makes, after its fungible sends. */
+  readonly nftSends: number;
+  /**
+   * The containers the run spends, which lead it: its fungible ones, then those holding NFTs. A fungible remainder is
+   * kept on the first that keeps an NFT, or else on the first fungible one.
+   */
   readonly containers: readonly Utxo[];
   readonly held: bigint;
   /** How many more containers the run can take from the later runs of its contract's category. */
@@ -315,6 +321,15 @@ interface TokenRun {
   /** The run's place among its master's runs. */
   readonly run: number;
   readonly sentinels: ReturnType<typeof framedTokenSendSentinels>;
+}
+
+/** A coin's token as a draft's source output or output states it. */
+function draftToken(token: NonNullable<Utxo['token']>): NonNullable<DraftSourceOutput['token']> {
+  return {
+    category: hexToBin(token.category), amount: token.amount,
+    ...(token.nft === undefined ? {}
+      : { nft: { capability: token.nft.capability, commitment: hexToBin(token.nft.commitment) } }),
+  };
 }
 
 /** The identity of the `position`-th token container the `index`-th token run spends. */
@@ -965,8 +980,10 @@ async function callInShape(
   const tokenDeposits = options.tokenDeposits ?? [];
   for (const deposit of tokenDeposits) {
     const held = deposit.utxo.token;
-    if (held === undefined || held.nft !== undefined || deposit.amount <= 0n || deposit.amount > held.amount) {
-      throw new FramedCallError('a token deposit pays a positive amount of a fungible coin, at most what it holds');
+    if (held === undefined || (held.nft === undefined ? deposit.amount <= 0n : !visibleNft(held))
+      || deposit.amount < 0n || deposit.amount > held.amount) {
+      throw new FramedCallError('a token deposit pays a positive amount of a fungible coin, or an NFT the VM sees (one '
+        + 'with a capability or a commitment) with at most the fungible amount its coin holds');
     }
   }
   // The records the frame declares, and the transaction spends, in the order the entry's own code reads them.
@@ -1058,8 +1075,8 @@ async function callInShape(
   const groupOf = (contractCategoryId: string, tokenCategory: string): string =>
     `${contractCategoryId}\u0000${tokenCategory}`;
   const runsOf = new Map<string, number>();
-  const requests = named.filter(({ access }) => access.sends > 0 || access.reads).map((request) => {
-    const paying = request.access.sends > 0;
+  const requests = named.filter(({ access }) => access.sends + access.nftSends > 0 || access.reads).map((request) => {
+    const paying = request.access.sends + request.access.nftSends > 0;
     const run = paying ? runsOf.get(request.payer) ?? 0 : -1;
     if (paying) runsOf.set(request.payer, run + 1);
     return {
@@ -1071,11 +1088,18 @@ async function callInShape(
   for (const group of new Set(requests.map((request) => request.group))) {
     const members = requests.filter((request) => request.group === group);
     const pool = members[0]!.access.containers;
-    const paying = members.filter((request) => request.access.sends > 0);
+    const paying = members.filter((request) => request.access.sends + request.access.nftSends > 0);
+    // NFTs of a category move in one frame, which spends every container holding one.
+    const moving = paying.filter((request) => request.access.nftSends > 0);
+    if (moving.length > 1) {
+      throw new FramedCallError(`entry "${functionName}" makes ${moving.length} frames send NFTs of category `
+        + `${moving[0]!.access.category} from contract "${moving[0]!.owner}"; one transaction sends them from one frame`);
+    }
     let from = 0;
     paying.forEach((request, at) => {
       const last = at === paying.length - 1;
-      const containers = pool.slice(from, last ? pool.length : from + (shape.tokenContainerCounts?.get(request.key) ?? 1));
+      const fungible = pool.slice(from, last ? pool.length : from + (shape.tokenContainerCounts?.get(request.key) ?? 1));
+      const containers = [...fungible, ...(request.access.nftSends > 0 ? request.access.nftContainers : [])];
       if (containers.length === 0) {
         throw new FramedCallError(pool.length === 0
           ? `entry "${request.entryName}" pays tokens of category ${request.access.category}, and contract `
@@ -1084,7 +1108,7 @@ async function callInShape(
             + `"${request.owner}" in more frames than the ${pool.length} containers it holds of them; each frame pays `
             + 'from containers of its own');
       }
-      from += containers.length;
+      from += fungible.length;
       sized.set(request, { containers, spare: last ? 0 : pool.length - from - (paying.length - at - 1) });
     });
     if (paying.length === 0 && pool.length > 0) sized.set(members[0]!, { containers: pool, spare: 0 });
@@ -1096,20 +1120,29 @@ async function callInShape(
     return [{
       ...access, ...size, held: size.containers.reduce((sum, utxo) => sum + utxo.token!.amount, 0n), key,
       master: payer, contractCategoryId, run,
-      sentinels: framedTokenSendSentinels(owner, entryName, payer, run, access.sends),
+      sentinels: framedTokenSendSentinels(owner, entryName, payer, run, access.sends, access.nftSends),
     }];
   });
-  const rootTokenRuns = tokenRuns.filter((run) => run.master === MASTER_ID && run.sends > 0);
-  const tokenRunLength = tokenRuns.reduce((sum, run) => sum + run.containers.length + run.sends, 0);
+  const rootTokenRuns = tokenRuns.filter((run) => run.master === MASTER_ID && run.sends + run.nftSends > 0);
+  const tokenRunWidth = (run: TokenRun): number => run.containers.length + run.sends + run.nftSends;
+  const tokenRunLength = tokenRuns.reduce((sum, run) => sum + tokenRunWidth(run), 0);
+  /** The category each paying run of a frame pays, by master, at the run's place among them. */
+  const tokenRunCategories = (payer: string): readonly string[] => {
+    const categories: string[] = [];
+    for (const run of tokenRuns) if (run.master === payer && run.run >= 0) categories[run.run] = run.category;
+    return categories;
+  };
   // A deposit pays into the containers of the contract whose frame names its category, the root's first: into the
   // recreation of the first container a run spends there, or else a new container.
   const depositTargets = tokenDeposits.map((deposit) => named.find(({ access }) =>
     access.category === deposit.utxo.token!.category)?.contractCategoryId ?? categoryId);
-  const depositRuns = tokenDeposits.map((deposit, index) => tokenRuns.findIndex((run) =>
-    run.contractCategoryId === depositTargets[index] && run.category === deposit.utxo.token!.category));
+  const depositRuns = tokenDeposits.map((deposit, index) => (deposit.utxo.token!.nft !== undefined ? -1
+    : tokenRuns.findIndex((run) =>
+      run.contractCategoryId === depositTargets[index] && run.category === deposit.utxo.token!.category)));
   // The sends of every run but the last sit at indices whose inputs are not containers: the caller's coin and its
   // deposits fill them first, then more tokenless coins at the caller's lock.
-  const fillersNeeded = tokenRuns.slice(0, -1).reduce((sum, run) => sum + run.sends, 0) - 1 - tokenDeposits.length;
+  const fillersNeeded = tokenRuns.slice(0, -1).reduce((sum, run) => sum + run.sends + run.nftSends, 0)
+    - 1 - tokenDeposits.length;
   const fillerCoins = fillersNeeded <= 0 ? [] : (await provider.getUtxosForLockingBytecode(options.callerLockingBytecode))
     .filter((utxo) => utxo.token === undefined
       && !(utxo.txid === options.callerUtxo.txid && utxo.vout === options.callerUtxo.vout))
@@ -1414,7 +1447,7 @@ async function callInShape(
   // A run's container is the user input at the index its recreation leads the run with: the other user inputs fill
   // the indices between runs and follow the last container.
   const runStarts = tokenRuns.map((_run, at) => layout.participantCount
-    + tokenRuns.slice(0, at).reduce((sum, earlier) => sum + earlier.containers.length + earlier.sends, 0));
+    + tokenRuns.slice(0, at).reduce((sum, earlier) => sum + tokenRunWidth(earlier), 0));
   const placeUserInputs = (others: readonly string[]): ReadonlyMap<string, number> => {
     const placed = new Map<string, number>();
     const queue = [...others];
@@ -1436,12 +1469,33 @@ async function callInShape(
     return placed;
   };
   /** The sends a run has learned: the root's from its own close, a callee's from the callee's. */
-  const runSends = (
-    run: TokenRun, rootSends: readonly (readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[])[],
-    callees: CalleeValues,
-  ): readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[] => (run.sends === 0 ? []
-    : run.master === MASTER_ID ? rootSends[run.run]!
-      : callees.tokenSends?.get(run.master)?.[run.run] ?? Array.from({ length: run.sends }, () => ({})));
+  const runSends = (run: TokenRun, rootSends: readonly LearnedRun[], callees: CalleeValues): LearnedRun => (
+    run.sends + run.nftSends === 0 ? unlearnedRun(0, 0)
+      : run.master === MASTER_ID ? rootSends[run.run]!
+        : callees.tokenSends?.get(run.master)?.[run.run] ?? unlearnedRun(run.sends, run.nftSends));
+  /**
+   * The NFT containers a run's learned NFT sends release, by their place in the run: none while it holds a minting
+   * one, which mints them; else, for each send, an immutable NFT of its commitment, or a mutable one.
+   */
+  const releasedNftContainers = (run: TokenRun, nfts: readonly LearnedNftSend[]): ReadonlySet<number> => {
+    const released = new Set<number>();
+    const held = run.containers.map((container) => container.token!.nft);
+    if (held.some((nft) => nft?.capability === 'minting')) return released;
+    for (const nft of nfts) {
+      if (nft.commitment === undefined || nft.capability === undefined) continue;
+      const free = (at: number): boolean => !released.has(at);
+      const exact = held.findIndex((source, at) => free(at) && source?.capability === 'none' && nft.capability === 0
+        && source.commitment === binToHex(nft.commitment!));
+      const source = exact >= 0 ? exact
+        : held.findIndex((candidate, at) => free(at) && candidate?.capability === 'mutable' && nft.capability! <= 1);
+      if (source < 0) {
+        throw new FramedCallError(`entry "${functionName}" sends an NFT of category ${run.category} that no container `
+          + 'it spends can make');
+      }
+      released.add(source);
+    }
+    return released;
+  };
   // The trailing region is events first, then the created mapping nodes. An entry that emits declares one output
   // per emit, in emit order, at the covenant the body rebuilds; each output's commitment is the payload the body
   // computes, so the frame starts it from a sentinel the body's own comparison fails against and the derivation
@@ -1654,7 +1708,7 @@ async function callInShape(
     + 2 * (payeeEventSentinels.flat().length + payeeCandidates.flat().length + 2 * payeeSendIndices.flat().length)
     + (calleePlan?.learnable ?? 0) * (sharesPayee ? 1 + payees.length : 1)
     + payableCalls.length * (1 + (calleePlan?.learnable ?? 0))
-    + (returnsValue ? 1 : 0) + 2 * rootTokenRuns.reduce((sum, run) => sum + run.sends, 0) + 3;
+    + (returnsValue ? 1 : 0) + rootTokenRuns.reduce((sum, run) => sum + 2 * run.sends + 3 * run.nftSends, 0) + 3;
 
   const buildPlan = (
     learnedViews: readonly (Uint8Array | undefined)[],
@@ -1665,7 +1719,7 @@ async function callInShape(
     learnedPayees: readonly PayeeLearned[],
     learnedCallees: CalleeValues,
     typedCallValues: ReadonlyMap<number, bigint>,
-    learnedTokenSends: readonly (readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[])[],
+    learnedTokenSends: readonly LearnedRun[],
   ): CompositionDraftPlan => {
     const paying = payFromContainers([
       ...learnedSends.map((send) => send.amount), ...learnedCallAmounts, ...typedCallValues.values(),
@@ -1944,7 +1998,7 @@ async function callInShape(
         source: {
           lockingBytecode: run.lockingBytecode,
           valueSatoshis: container.satoshis,
-          token: { category: hexToBin(run.category), amount: container.token!.amount },
+          token: draftToken(container.token!),
         },
         unlockingBytecode: framedTokenContainerUnlockingBytecode(
           run.contractCategoryId, run.category, indexOfParticipant(run.master),
@@ -1958,7 +2012,7 @@ async function callInShape(
         source: {
           lockingBytecode: deposit.unlocker.generateLockingBytecode(),
           valueSatoshis: deposit.utxo.satoshis,
-          token: { category: hexToBin(held.category), amount: held.amount },
+          token: draftToken(held),
         },
         unlockingBytecode: callerUnlocking(),
         consumed: true,
@@ -1967,7 +2021,7 @@ async function callInShape(
     // The run's first container, recreated with what its sends leave, and the others drained (a tokenless output where
     // nothing is left), then its sends, each from its sentinel until the body's pin hands back what it computed.
     const tokenRunOutputs: DraftSourceOutput[] = tokenRuns.flatMap((run, index) => {
-      const sends = runSends(run, learnedTokenSends, learnedCallees);
+      const { sends, nfts } = runSends(run, learnedTokenSends, learnedCallees);
       const paid = sends.every((send) => send.amount !== undefined)
         ? sends.reduce((sum, send) => sum + send.amount!, 0n) : 0n;
       if (paid > run.held) {
@@ -1980,14 +2034,43 @@ async function callInShape(
       const kept = run.held - paid + tokenDeposits.reduce((sum, deposit, at) =>
         sum + (depositRuns[at] === index ? deposit.amount : 0n), 0n);
       const token = (amount: bigint): DraftSourceOutput['token'] => ({ category: hexToBin(run.category), amount });
+      const released = releasedNftContainers(run, nfts);
+      const keepsNft = (container: Utxo, at: number): boolean => container.token!.nft !== undefined && !released.has(at);
+      const holder = run.containers.findIndex(keepsNft) >= 0 ? run.containers.findIndex(keepsNft)
+        : kept > 0n ? run.containers.findIndex((container) => container.token!.nft === undefined) : -1;
+      if (kept > 0n && holder < 0) {
+        throw new FramedCallError(`entry "${functionName}" leaves ${kept} tokens of category ${run.category} with no `
+          + 'container it spends to keep them in');
+      }
       return [
-        ...run.containers.map((container, position) => (position > 0 || kept === 0n
-          ? { lockingBytecode: Uint8Array.of(0x6a), valueSatoshis: 0n }
-          : { lockingBytecode: run.lockingBytecode, valueSatoshis: container.satoshis, token: token(kept) })),
+        ...run.containers.map((container, at): DraftSourceOutput => {
+          const nft = container.token!.nft;
+          if (!keepsNft(container, at) && at !== holder) return { lockingBytecode: Uint8Array.of(0x6a), valueSatoshis: 0n };
+          return {
+            lockingBytecode: run.lockingBytecode,
+            valueSatoshis: container.satoshis,
+            token: {
+              category: hexToBin(run.category), amount: at === holder ? kept : 0n,
+              ...(keepsNft(container, at) ? { nft: { capability: nft!.capability, commitment: hexToBin(nft!.commitment) } }
+                : {}),
+            },
+          };
+        }),
         ...sends.map((send, position) => ({
           lockingBytecode: send.lock ?? run.sentinels.locks[position]!,
           valueSatoshis: TOKEN_OUTPUT_SATOSHIS,
           token: token(send.amount ?? run.sentinels.amounts[position]!),
+        })),
+        ...nfts.map((nft, position) => ({
+          lockingBytecode: nft.lock ?? run.sentinels.nftLocks[position]!,
+          valueSatoshis: TOKEN_OUTPUT_SATOSHIS,
+          token: {
+            category: hexToBin(run.category), amount: 0n,
+            nft: {
+              capability: nftCapabilityName(nft.capability),
+              commitment: nft.commitment ?? run.sentinels.nftCommitments[position]!,
+            },
+          },
         })),
       ];
     });
@@ -2000,7 +2083,7 @@ async function callInShape(
         ...(depositRuns[index]! >= 0 ? [] : [{
           lockingBytecode: framedTokenContainerLockingBytecode(depositTargets[index]!, held.category),
           valueSatoshis: TOKEN_OUTPUT_SATOSHIS,
-          token: token(deposit.amount),
+          token: { ...draftToken(held), amount: deposit.amount },
         }]),
         ...(held.amount === deposit.amount ? [] : [{
           lockingBytecode: options.callerLockingBytecode,
@@ -2063,7 +2146,7 @@ async function callInShape(
         ...payeeSpent.map((spent) => spent.id),
         ...tokenDeposits.map((_deposit, index) => tokenDepositInputId(index)),
       ])].map(([id, index]) => ({ id, index })),
-      ...(tokenRuns.length === 0 ? {} : { tokenRuns: tokenRuns.map((run) => run.containers.length + run.sends) }),
+      ...(tokenRuns.length === 0 ? {} : { tokenRuns: tokenRuns.map(tokenRunWidth) }),
       masters: chain?.masters ?? [masterDraft, ...(callees?.masters ?? []), ...payeeDrafts],
       inputs,
       ...(sideCars.computedWitnesses.length === 0 ? {} : { computedWitnesses: sideCars.computedWitnesses }),
@@ -2114,8 +2197,7 @@ async function callInShape(
   let learnedEvents: readonly (Uint8Array | undefined)[] = eventSentinels.map((stated) =>
     (stated.length === 0 ? stated : undefined));
   let learnedSends: readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[] = sendIndices.map(() => ({}));
-  let learnedTokenSends: readonly (readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[])[] =
-    rootTokenRuns.map((run) => Array.from({ length: run.sends }, () => ({})));
+  let learnedTokenSends: readonly LearnedRun[] = rootTokenRuns.map((run) => unlearnedRun(run.sends, run.nftSends));
   let learnedCallAmounts: readonly (bigint | undefined)[] = payees.map(() => undefined);
   // The value each typed call carries, by its position among the typed calls, once its site's close handed it back.
   let learnedTypedValues: ReadonlyMap<number, bigint> = new Map();
@@ -2227,7 +2309,7 @@ async function callInShape(
       if (deriveThroughFrame([...payeeRequests, root], host, frameMaster, { onCalleeStall: () => undefined })) {
         answered = learnCalleeValue({
           planned: calleePlan, draft: scoped, host, vm: machine, maximumCommitmentBytes, values: calleeValues,
-          firstOnly: true,
+          firstOnly: true, tokenRunCategories,
         });
       }
     } catch {
@@ -2354,6 +2436,7 @@ async function callInShape(
     if (calleePlan !== undefined) {
       const answered = learnCalleeValue({
         planned: calleePlan, draft: candidate, host, vm: machine, maximumCommitmentBytes, values: calleeValues,
+        tokenRunCategories,
       });
       if (answered !== undefined) {
         // A chunking value a callee's close exposed sizes the run of chunk records its write takes, so the call is
@@ -2493,6 +2576,7 @@ async function callInShape(
       const known = learnedTokenSends;
       const tokenLearned = rootTokenRuns.map((run) => learnTokenSend(
         run.sentinels, known[run.run]!, reading.declared, reading.computed,
+        Uint8Array.from(hexToBin(run.category)).reverse(),
       ));
       const tokenRun = tokenLearned.findIndex((sends) => sends !== undefined);
       if (tokenRun >= 0) {

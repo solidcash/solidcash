@@ -90,7 +90,6 @@ import {
   StringLiteralNode,
   SwitchNode,
   TernaryOpNode,
-  TokenContainerMethodStatementNode,
   TryCatchNode,
   TupleAssignmentNode,
   UnaryOpNode,
@@ -1694,26 +1693,6 @@ function isCallSiteNode(node: Node): boolean {
 }
 
 /**
- * Why a body's token-container use is not composed framed. A master pays a container's fungible tokens as a run after
- * the container it spends and keeps the rest (spec 4b); an NFT moved out of a container, and the single-UTXO reads a
- * direct block slot answers, have no framed form yet.
- */
-function unsupportedFramedTokenShape(fn: FunctionDefinitionNode): string | undefined {
-  let reason: string | undefined;
-  walkInvocationAst(fn.body, (node) => {
-    if (reason !== undefined) return;
-    if (node instanceof TokenContainerMethodStatementNode && node.methodName === 'transferNft') {
-      reason = 'an NFT moved out of a token container is not composed framed yet';
-    } else if (node instanceof FieldAccessNode && node.expression instanceof MappingAccessNode
-      && node.expression.isTokenContainerAccess === true
-      && (node.name === 'tokenCategory' || node.name === 'nftCommitment')) {
-      reason = `a token container's '${node.name}' reads one direct block slot, which a framed frame does not have`;
-    }
-  });
-  return reason;
-}
-
-/**
  * Walks the syntax children of a node, telling the visitor whether an enclosing construct can run its body again.
  *
  * The walk mirrors `walkInvocationAst`: a catch block is not an executable path, and resolved references are not
@@ -2679,8 +2658,6 @@ export function assessFramedMasterShape(input: FramedMasterShapeInput): FramedMa
       refuseBody(fn, 'a loop lowered into a counted trailing stream journals its events and sends for the direct '
         + 'convention, which a master does not read');
     }
-    const tokenShape = unsupportedFramedTokenShape(fn);
-    if (tokenShape !== undefined) refuseBody(fn, tokenShape);
     const loopEffects = bodyLoopEffects(fn, input.compilerOptions ?? {});
     if (loopEffects.reason !== undefined) refuseBody(fn, loopEffects.reason);
     if (loopEffects.effects !== undefined) loopEffectsByEntry.set(fn.name, loopEffects.effects);

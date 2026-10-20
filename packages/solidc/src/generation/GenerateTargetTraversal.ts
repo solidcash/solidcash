@@ -54715,9 +54715,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Pushes, tracked as `name`, the prefix a container's unlocking starts with when it names this frame's master: the
+   * master's input index as a minimal push, then the master-path flag `OP_1`. Consensus keeps an unlocking push-only,
+   * minimal and clean, so the prefix is the container's own claim of its authority (spec 4b).
+   */
+  private emitFramedContainerAuthority(name: string, loc: SingleLocationData): void {
+    this.emitMasterInputIndex(loc);
+    this.emit([
+      Op.OP_DUP, Op.OP_16, Op.OP_GREATERTHAN,
+      Op.OP_IF,
+      Op.OP_SIZE, Op.OP_SWAP, Op.OP_CAT,
+      Op.OP_ELSE,
+      Op.OP_DUP,
+      Op.OP_IF,
+      encodeInt(80n), Op.OP_ADD,
+      Op.OP_ELSE,
+      Op.OP_DROP, Uint8Array.of(0),
+      Op.OP_ENDIF,
+      Op.OP_ENDIF,
+      encodeInt(81n), Op.OP_CAT,
+    ], loc);
+    this.pushToStack(name);
+  }
+
+  /**
    * A framed entry's token containers (spec 4b). For each slot's category X at this contract's container lock L, the
-   * k-th send the body makes is the output after the one input at L plus k: it pays `to` exactly `amount` of X and no
-   * NFT. The containers at L keep what the sends do not pay: sum(outputs at L) + sent >= sum(inputs at L).
+   * containers this master owns are the inputs at L whose unlocking names it, at consecutive indices. The k-th send the
+   * body makes is the output after them, at the first one's index plus their count plus k: it pays `to` exactly
+   * `amount` of X and no NFT. The owned containers keep, at their own indices, what the sends do not pay:
+   * sum(out - in) + sent >= 0.
    */
   private emitFramedTokenContainerChecks(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
@@ -54736,6 +54762,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitReplace(this.getStackIndex(name), node);
       this.popFromStack();
     };
+    this.emitFramedContainerAuthority('(tc_auth)', loc);
     for (let slot = 0; slot < this.tokenContainerSlots.length; slot += 1) {
       this.pushFramedTokenContainerKey(slot, '(tc_x)', loc);
       this.emitMasterInputIndex(loc);
@@ -54746,33 +54773,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitTokenContainerLbc(loc);
       this.popFromStack(2);
       this.pushToStack('(tc_lock)');
-      for (const [name, useOutputs] of [['(tc_in)', false], ['(tc_out)', true]] as const) {
-        pick('(tc_lock)');
-        pick('(tc_x)');
-        this.emitTokenContainerAggregateLoop('tokenAmount', useOutputs, loc);
-        this.popFromStack(2);
-        this.pushToStack(name);
-      }
-      this.emit(Op.OP_0, loc);
-      this.pushToStack('(tc_sent)');
+      // [first, count, sum(out - in)] of the inputs at L this master owns, scanned down from the last input. They are
+      // one block, so the sends after it are this master's alone: another frame's sends cannot share its outputs.
+      this.emit([Op.OP_1NEGATE, Op.OP_0, Op.OP_0, Op.OP_TXINPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB, Op.OP_DUP,
+        Op.OP_UTXOBYTECODE, encodeInt(BigInt(this.getStackIndex('(tc_lock)') + 5)), Op.OP_PICK, Op.OP_EQUAL,
+        Op.OP_IF, Op.OP_DUP, Op.OP_INPUTBYTECODE, encodeInt(BigInt(this.getStackIndex('(tc_auth)') + 5)), Op.OP_PICK,
+        Op.OP_SIZE, Op.OP_ROT, Op.OP_SWAP, Op.OP_SPLIT, Op.OP_DROP, Op.OP_EQUAL,
+        Op.OP_IF,
+        Op.OP_2, Op.OP_PICK, Op.OP_IF, Op.OP_3, Op.OP_PICK, Op.OP_OVER, Op.OP_1ADD, Op.OP_NUMEQUALVERIFY, Op.OP_ENDIF,
+        Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_OVER, Op.OP_UTXOTOKENAMOUNT, Op.OP_SUB, Op.OP_ROT, Op.OP_ADD,
+        Op.OP_ROT, Op.OP_1ADD, Op.OP_ROT, Op.OP_3, Op.OP_ROLL, Op.OP_DROP,
+        Op.OP_DUP, Op.OP_2SWAP, Op.OP_SWAP, Op.OP_ROT,
+        Op.OP_ENDIF,
+        Op.OP_ENDIF,
+        Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
+      ], loc);
+      this.pushToStack('(tc_first)');
+      this.pushToStack('(tc_count)');
+      this.pushToStack('(tc_delta)');
       const transfers = this.pendingTokenContainerTransfers
         .filter((transfer) => transfer.tokenContainerSlotIndex === slot && transfer.method === 'transfer')
         .sort((left, right) => left.transferIndex - right.transferIndex);
       if (transfers.length > 0) {
-        // [count, index] of the inputs at L: a send follows the one the frame spends.
-        pick('(tc_lock)');
-        this.emit([
-          Op.OP_0, Op.OP_1NEGATE, Op.OP_TXINPUTCOUNT,
-          Op.OP_BEGIN,
-          Op.OP_1SUB, Op.OP_DUP, Op.OP_UTXOBYTECODE, encodeInt(4n), Op.OP_PICK, Op.OP_EQUAL,
-          Op.OP_IF, Op.OP_NIP, Op.OP_DUP, Op.OP_ROT, Op.OP_1ADD, Op.OP_ROT, Op.OP_ROT, Op.OP_ENDIF,
-          Op.OP_DUP, Op.OP_NOT,
-          Op.OP_UNTIL,
-          Op.OP_DROP, Op.OP_ROT, Op.OP_DROP,
-        ], loc);
-        this.popFromStack();
-        this.pushToStack('(tc_count)');
-        this.pushToStack('(tc_spent)');
         this.emit(Op.OP_0, loc);
         this.pushToStack('(tc_made)');
         for (const transfer of transfers) {
@@ -54786,12 +54808,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           pick(category);
           pick('(tc_x)');
           verify(Op.OP_EQUALVERIFY);
+          // A send is paid from containers this master owns.
           pick('(tc_count)');
-          this.emit(Op.OP_1, loc);
-          this.emit(Op.OP_NUMEQUALVERIFY, loc);
+          this.emit(Op.OP_VERIFY, loc);
           this.popFromStack();
-          pick('(tc_spent)');
-          this.emit(Op.OP_1ADD, loc);
+          pick('(tc_first)');
+          pick('(tc_count)');
+          this.emit(Op.OP_ADD, loc);
+          this.popFromStack();
           pick('(tc_made)');
           this.emit(Op.OP_ADD, loc);
           this.popFromStack(2);
@@ -54814,43 +54838,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_DROP, loc);
           this.popFromStack();
           bump('(tc_made)', () => this.emit(Op.OP_1ADD, loc));
-          bump('(tc_sent)', () => {
+          bump('(tc_delta)', () => {
             pick(amount);
             this.emit(Op.OP_ADD, loc);
             this.popFromStack();
           });
           if (conditional) this.emit(Op.OP_ENDIF, loc);
         }
-        this.emit(Op.OP_2DROP, loc);
         this.emit(Op.OP_DROP, loc);
-        this.popFromStack(3);
+        this.popFromStack();
       }
-      pick('(tc_out)');
-      pick('(tc_sent)');
-      this.emit(Op.OP_ADD, loc);
+      pick('(tc_delta)');
+      this.emit([Op.OP_0, Op.OP_GREATERTHANOREQUAL, Op.OP_VERIFY], loc);
       this.popFromStack();
-      pick('(tc_in)');
-      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
-      this.popFromStack();
-      this.emit(Op.OP_VERIFY, loc);
-      this.popFromStack();
-      this.emit(Op.OP_2DROP, loc);
-      this.emit(Op.OP_2DROP, loc);
-      this.emit(Op.OP_DROP, loc);
+      // The lock derivation consumed the master's category: the key, the lock and the three sums remain.
+      this.emit([Op.OP_2DROP, Op.OP_2DROP, Op.OP_DROP], loc);
       this.popFromStack(5);
     }
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
   }
 
   /**
-   * In every framed entry of a contract that holds token containers: each input holding a category Y other than this
-   * contract's, at this contract's container lock for Y, with Y not one the entry names, keeps at its own index its full
-   * category and at least its fungible amount. Such a contract's containers are the accounted variant, whose covenant
-   * leaves the amount to the master, so a frame that names no container cannot draw one down (audit FRAMED-CONT-1).
+   * In every framed entry of a contract that holds token containers: each input whose unlocking names this master,
+   * holding a category Y other than this contract's, at this contract's container lock for Y, with Y not one the entry
+   * names, keeps at its own index its full category and at least its fungible amount. Such a contract's containers are
+   * the accounted variant, whose covenant leaves the amount to the master that a spend names, so a frame that names no
+   * container cannot draw one down (audit FRAMED-CONT-1).
    */
   private emitFramedForeignTokenKeep(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
     const named = this.tokenContainerSlots.length;
     for (let slot = 0; slot < named; slot += 1) this.pushFramedTokenContainerKey(slot, `(tk_named_${slot})`, loc);
+    this.emitFramedContainerAuthority('(tk_auth)', loc);
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc);
@@ -54875,6 +54895,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(this.getStackIndex(`(tk_named_${slot})`) + 2)), loc);
       this.emit([Op.OP_PICK, Op.OP_REVERSEBYTES, encodeInt(2n), Op.OP_PICK, Op.OP_EQUAL, Op.OP_NOT, Op.OP_BOOLAND], loc);
     }
+    // [.., master, i, y, flag]: and the input's unlocking names this master.
+    this.emit([encodeInt(2n), Op.OP_PICK, Op.OP_INPUTBYTECODE,
+      encodeInt(BigInt(this.getStackIndex('(tk_auth)') + 3)), Op.OP_PICK,
+      Op.OP_SIZE, Op.OP_ROT, Op.OP_SWAP, Op.OP_SPLIT, Op.OP_DROP, Op.OP_EQUAL, Op.OP_BOOLAND], loc);
     this.emit([Op.OP_IF, encodeInt(2n), Op.OP_PICK, Op.OP_OVER, Op.OP_REVERSEBYTES], loc);
     // [.., master, i, y, master, y'] -> the container lock for y'.
     this.emitTokenContainerLbc(loc, 3);
@@ -54894,8 +54918,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       Op.OP_DUP, Op.OP_NOT,
       Op.OP_UNTIL,
       Op.OP_2DROP,
+      Op.OP_DROP,
     ], loc);
-    this.popFromStack(2);
+    this.popFromStack(3);
     for (let slot = 0; slot < named; slot += 1) {
       this.emit(Op.OP_DROP, loc);
       this.popFromStack();

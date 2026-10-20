@@ -301,9 +301,14 @@ interface TokenRun {
   readonly category: string;
   readonly lockingBytecode: Uint8Array;
   readonly sends: number;
-  readonly container: Utxo;
+  /** The containers the run spends, which lead it: the first is recreated with what the sends leave. */
+  readonly containers: readonly Utxo[];
   readonly held: bigint;
-  /** The master whose frame pays, which the container's unlocking names as its authority. */
+  /** How many more containers the run can take from the later runs of its contract's category. */
+  readonly spare: number;
+  /** The run's key among the call's runs, which a shortfall names. */
+  readonly key: string;
+  /** The master whose frame pays, which each container's unlocking names as its authority. */
   readonly master: string;
   /** The category of the contract the container belongs to. */
   readonly contractCategoryId: string;
@@ -312,9 +317,16 @@ interface TokenRun {
   readonly sentinels: ReturnType<typeof framedTokenSendSentinels>;
 }
 
-/** The identity of the token container the `index`-th token run spends. */
-function tokenContainerInputId(index: number): string {
-  return `token-container:${index}`;
+/** The identity of the `position`-th token container the `index`-th token run spends. */
+function tokenContainerInputId(index: number, position: number): string {
+  return `token-container:${index}:${position}`;
+}
+
+/** A token run that sends more than the containers it spends hold, while its contract holds more of them. */
+class TokenRunShortfall extends FramedCallError {
+  public constructor(public readonly run: string, public readonly containers: number) {
+    super(`token run ${run} spends ${containers - 1} containers too few`);
+  }
 }
 
 /** The identity of the `index`-th coin a call's token deposits spend. */
@@ -763,7 +775,19 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
 /** Calls an entry on a deployed framed contract, evaluates it, and broadcasts it when every participant agrees. */
 export async function callFramedEntry(options: FramedCallOptions): Promise<FramedCallResult> {
   requireFramedFunderSighash(options.funder);
-  return callInShape(options, { listedSends: undefined, skippedPayees: new Set(), payeeListedSends: new Map() });
+  // A token run whose sends outgrow its containers spends one more of its contract's, which shifts the run, so the
+  // call is planned again from the start.
+  let tokenContainerCounts: ReadonlyMap<string, number> = new Map();
+  for (;;) {
+    try {
+      return await callInShape(options, {
+        listedSends: undefined, skippedPayees: new Set(), payeeListedSends: new Map(), tokenContainerCounts,
+      });
+    } catch (error) {
+      if (!(error instanceof TokenRunShortfall)) throw error;
+      tokenContainerCounts = new Map([...tokenContainerCounts, [error.run, error.containers]]);
+    }
+  }
 }
 
 /**
@@ -778,6 +802,8 @@ interface SendShape {
   readonly listedSends: number | undefined;
   readonly skippedPayees: ReadonlySet<number>;
   readonly payeeListedSends: ReadonlyMap<number, number>;
+  /** How many containers each token run spends, by its key, where more than one. */
+  readonly tokenContainerCounts?: ReadonlyMap<string, number>;
 }
 
 /**
@@ -931,25 +957,6 @@ async function callInShape(
     stateLayout,
     records: records.map((record) => record.utxo),
   });
-  /** A run the frame `payer` pays from its contract's container for one category: the container it spends. */
-  const tokenRunOf = (
-    access: Awaited<ReturnType<typeof framedTokenAccesses>>[number], owner: string, payer: string, entryName: string,
-    contractCategoryId: string, run: number,
-  ): TokenRun => {
-    const container = access.containers[0];
-    if (container === undefined) {
-      throw new FramedCallError(
-        `entry "${entryName}" pays tokens of category ${access.category}, and contract "${owner}" holds no container `
-        + 'of them',
-      );
-    }
-    return {
-      ...access, container, held: container.token!.amount, master: payer, contractCategoryId, run,
-      sentinels: framedTokenSendSentinels(owner, entryName, payer, run, access.sends),
-    };
-  };
-  const rootTokenRuns = tokenAccesses.filter((access) => access.sends > 0)
-    .map((access, run) => tokenRunOf(access, artifact.contractName, MASTER_ID, entry.name, categoryId, run));
   const tokenDeposits = options.tokenDeposits ?? [];
   for (const deposit of tokenDeposits) {
     const held = deposit.utxo.token;
@@ -1015,9 +1022,14 @@ async function callInShape(
     }
   };
   const calleePlan = await planCallees(prior.returns);
-  // Each callee frame that pays tokens runs one more, after the root's: its contract's container for the category,
-  // recreated with what its sends leave, then its sends, which the callee's own close hands back.
-  const calleeTokenRuns: TokenRun[] = [];
+  // The containers each frame names, the root's first: the frames that pay run one token run per category, after the
+  // root's, each spending containers of its own, recreated with what its sends leave, then its sends.
+  const named: {
+    readonly access: Awaited<ReturnType<typeof framedTokenAccesses>>[number];
+    readonly owner: string; readonly payer: string; readonly entryName: string; readonly contractCategoryId: string;
+  }[] = tokenAccesses.map((access) => ({
+    access, owner: artifact.contractName, payer: MASTER_ID, entryName: entry.name, contractCategoryId: categoryId,
+  }));
   for (const callee of calleePlan?.callees ?? []) {
     let accesses: Awaited<ReturnType<typeof framedCalleeTokenAccesses>>;
     try {
@@ -1028,23 +1040,68 @@ async function callInShape(
     } catch (error) {
       throw new FramedCallError(`entry "${functionName}": ${(error as Error).message}`);
     }
-    accesses.forEach((access, run) => calleeTokenRuns.push(tokenRunOf(
-      access, callee.artifact.contractName, callee.master, callee.entry, callee.categoryId, run,
-    )));
+    named.push(...accesses.map((access) => ({
+      access, owner: callee.artifact.contractName, payer: callee.master, entryName: callee.entry,
+      contractCategoryId: callee.categoryId,
+    })));
   }
-  const tokenRuns: readonly TokenRun[] = [...rootTokenRuns, ...calleeTokenRuns];
-  // A master conserves the one container its frame spends for a category, so two frames that pay one contract's
-  // category in one transaction would each claim that container.
-  tokenRuns.forEach((run, at) => {
-    if (tokenRuns.findIndex((other) => other.contractCategoryId === run.contractCategoryId
-      && other.category === run.category) !== at) {
-      throw new FramedCallError(
-        `entry "${functionName}" makes two frames pay tokens of category ${run.category} from one contract's `
-        + 'containers, which one transaction does not settle yet',
-      );
-    }
+  // A master conserves only the containers whose unlocking names it, so two frames of one contract pay one category
+  // from containers of their own, largest first: each paying run takes one, or as many as its shortfalls grew it to,
+  // and the last takes every one left, so a body's read of the amount, which sums the containers the transaction
+  // spends, sees the whole reserve. Where no frame pays, the first that reads the amount spends them all, recreated in
+  // place. A frame's runs are counted among its paying accesses, as the learner counts them (`calleeTokenRunSends`).
+  const groupOf = (contractCategoryId: string, tokenCategory: string): string =>
+    `${contractCategoryId}\u0000${tokenCategory}`;
+  const runsOf = new Map<string, number>();
+  const requests = named.filter(({ access }) => access.sends > 0 || access.reads).map((request) => {
+    const paying = request.access.sends > 0;
+    const run = paying ? runsOf.get(request.payer) ?? 0 : -1;
+    if (paying) runsOf.set(request.payer, run + 1);
+    return {
+      ...request, run, group: groupOf(request.contractCategoryId, request.access.category),
+      key: paying ? `${request.payer}\u0000${run}` : `${request.payer}\u0000read\u0000${request.access.category}`,
+    };
   });
-  const tokenRunLength = tokenRuns.reduce((sum, run) => sum + 1 + run.sends, 0);
+  const sized = new Map<(typeof requests)[number], { readonly containers: readonly Utxo[]; readonly spare: number }>();
+  for (const group of new Set(requests.map((request) => request.group))) {
+    const members = requests.filter((request) => request.group === group);
+    const pool = members[0]!.access.containers;
+    const paying = members.filter((request) => request.access.sends > 0);
+    let from = 0;
+    paying.forEach((request, at) => {
+      const last = at === paying.length - 1;
+      const containers = pool.slice(from, last ? pool.length : from + (shape.tokenContainerCounts?.get(request.key) ?? 1));
+      if (containers.length === 0) {
+        throw new FramedCallError(pool.length === 0
+          ? `entry "${request.entryName}" pays tokens of category ${request.access.category}, and contract `
+            + `"${request.owner}" holds no container of them`
+          : `entry "${functionName}" pays tokens of category ${request.access.category} from contract `
+            + `"${request.owner}" in more frames than the ${pool.length} containers it holds of them; each frame pays `
+            + 'from containers of its own');
+      }
+      from += containers.length;
+      sized.set(request, { containers, spare: last ? 0 : pool.length - from - (paying.length - at - 1) });
+    });
+    if (paying.length === 0 && pool.length > 0) sized.set(members[0]!, { containers: pool, spare: 0 });
+  }
+  const tokenRuns: readonly TokenRun[] = requests.flatMap((request) => {
+    const size = sized.get(request);
+    if (size === undefined) return [];
+    const { access, owner, payer, entryName, contractCategoryId, run, key } = request;
+    return [{
+      ...access, ...size, held: size.containers.reduce((sum, utxo) => sum + utxo.token!.amount, 0n), key,
+      master: payer, contractCategoryId, run,
+      sentinels: framedTokenSendSentinels(owner, entryName, payer, run, access.sends),
+    }];
+  });
+  const rootTokenRuns = tokenRuns.filter((run) => run.master === MASTER_ID && run.sends > 0);
+  const tokenRunLength = tokenRuns.reduce((sum, run) => sum + run.containers.length + run.sends, 0);
+  // A deposit pays into the containers of the contract whose frame names its category, the root's first: into the
+  // recreation of the first container a run spends there, or else a new container.
+  const depositTargets = tokenDeposits.map((deposit) => named.find(({ access }) =>
+    access.category === deposit.utxo.token!.category)?.contractCategoryId ?? categoryId);
+  const depositRuns = tokenDeposits.map((deposit, index) => tokenRuns.findIndex((run) =>
+    run.contractCategoryId === depositTargets[index] && run.category === deposit.utxo.token!.category));
 
   // The fallback is reached by the call data of a value send, which no entry's selector names.
   const selectorPushes = entry.name === FALLBACK_ENTRY
@@ -1339,7 +1396,7 @@ async function callInShape(
   // A run's container is the user input at the index its recreation leads the run with: the other user inputs fill
   // the indices between runs and follow the last container.
   const runStarts = tokenRuns.map((_run, at) => layout.participantCount
-    + tokenRuns.slice(0, at).reduce((sum, earlier) => sum + 1 + earlier.sends, 0));
+    + tokenRuns.slice(0, at).reduce((sum, earlier) => sum + earlier.containers.length + earlier.sends, 0));
   const placeUserInputs = (others: readonly string[]): ReadonlyMap<string, number> => {
     const placed = new Map<string, number>();
     const queue = [...others];
@@ -1355,7 +1412,7 @@ async function callInShape(
         }
         placed.set(filler, at++);
       }
-      placed.set(tokenContainerInputId(run), at++);
+      tokenRuns[run]!.containers.forEach((_utxo, position) => placed.set(tokenContainerInputId(run, position), at++));
     });
     for (const id of queue) placed.set(id, at++);
     return placed;
@@ -1364,8 +1421,9 @@ async function callInShape(
   const runSends = (
     run: TokenRun, rootSends: readonly (readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[])[],
     callees: CalleeValues,
-  ): readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[] => (run.master === MASTER_ID
-    ? rootSends[run.run]! : callees.tokenSends?.get(run.master)?.[run.run] ?? Array.from({ length: run.sends }, () => ({})));
+  ): readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[] => (run.sends === 0 ? []
+    : run.master === MASTER_ID ? rootSends[run.run]!
+      : callees.tokenSends?.get(run.master)?.[run.run] ?? Array.from({ length: run.sends }, () => ({})));
   // The trailing region is events first, then the created mapping nodes. An entry that emits declares one output
   // per emit, in emit order, at the covenant the body rebuilds; each output's commitment is the payload the body
   // computes, so the frame starts it from a sentinel the body's own comparison fails against and the derivation
@@ -1859,19 +1917,19 @@ async function callInShape(
       };
     });
     // A token run's container is recreated by the run, and a deposit's coin by the deposit's outputs.
-    tokenRuns.forEach((run, index) => {
-      inputs[tokenContainerInputId(index)] = {
+    tokenRuns.forEach((run, index) => run.containers.forEach((container, position) => {
+      inputs[tokenContainerInputId(index, position)] = {
         source: {
           lockingBytecode: run.lockingBytecode,
-          valueSatoshis: run.container.satoshis,
-          token: { category: hexToBin(run.category), amount: run.held },
+          valueSatoshis: container.satoshis,
+          token: { category: hexToBin(run.category), amount: container.token!.amount },
         },
         unlockingBytecode: framedTokenContainerUnlockingBytecode(
           run.contractCategoryId, run.category, indexOfParticipant(run.master),
         ),
         consumed: true,
       };
-    });
+    }));
     tokenDeposits.forEach((deposit, index) => {
       const held = deposit.utxo.token!;
       inputs[tokenDepositInputId(index)] = {
@@ -1884,23 +1942,26 @@ async function callInShape(
         consumed: true,
       };
     });
-    // The run's container, recreated with what its sends leave (a tokenless output once they leave nothing), then
-    // its sends, each from its sentinel until the body's pin hands back what it computed.
-    const tokenRunOutputs: DraftSourceOutput[] = tokenRuns.flatMap((run) => {
+    // The run's first container, recreated with what its sends leave, and the others drained (a tokenless output where
+    // nothing is left), then its sends, each from its sentinel until the body's pin hands back what it computed.
+    const tokenRunOutputs: DraftSourceOutput[] = tokenRuns.flatMap((run, index) => {
       const sends = runSends(run, learnedTokenSends, learnedCallees);
       const paid = sends.every((send) => send.amount !== undefined)
         ? sends.reduce((sum, send) => sum + send.amount!, 0n) : 0n;
       if (paid > run.held) {
+        if (run.spare > 0) throw new TokenRunShortfall(run.key, run.containers.length + 1);
         throw new FramedCallError(
-          `entry "${functionName}" sends ${paid} tokens of category ${run.category}, and the container it spends holds `
+          `entry "${functionName}" sends ${paid} tokens of category ${run.category}, and the containers it spends hold `
           + `${run.held}`,
         );
       }
+      const kept = run.held - paid + tokenDeposits.reduce((sum, deposit, at) =>
+        sum + (depositRuns[at] === index ? deposit.amount : 0n), 0n);
       const token = (amount: bigint): DraftSourceOutput['token'] => ({ category: hexToBin(run.category), amount });
       return [
-        paid === run.held
+        ...run.containers.map((container, position) => (position > 0 || kept === 0n
           ? { lockingBytecode: Uint8Array.of(0x6a), valueSatoshis: 0n }
-          : { lockingBytecode: run.lockingBytecode, valueSatoshis: run.container.satoshis, token: token(run.held - paid) },
+          : { lockingBytecode: run.lockingBytecode, valueSatoshis: container.satoshis, token: token(kept) })),
         ...sends.map((send, position) => ({
           lockingBytecode: send.lock ?? run.sentinels.locks[position]!,
           valueSatoshis: TOKEN_OUTPUT_SATOSHIS,
@@ -1908,16 +1969,17 @@ async function callInShape(
         })),
       ];
     });
-    // A deposit pays its amount into a new container for its coin's category and returns the coin's remainder.
-    const depositOutputs: DraftSourceOutput[] = tokenDeposits.flatMap((deposit) => {
+    // A deposit pays its amount into the first container a run spends of its contract's for its coin's category, or
+    // else into a new container, and returns the coin's remainder.
+    const depositOutputs: DraftSourceOutput[] = tokenDeposits.flatMap((deposit, index) => {
       const held = deposit.utxo.token!;
       const token = (amount: bigint): DraftSourceOutput['token'] => ({ category: hexToBin(held.category), amount });
       return [
-        {
-          lockingBytecode: framedTokenContainerLockingBytecode(categoryId, held.category),
+        ...(depositRuns[index]! >= 0 ? [] : [{
+          lockingBytecode: framedTokenContainerLockingBytecode(depositTargets[index]!, held.category),
           valueSatoshis: TOKEN_OUTPUT_SATOSHIS,
           token: token(deposit.amount),
-        },
+        }]),
         ...(held.amount === deposit.amount ? [] : [{
           lockingBytecode: options.callerLockingBytecode,
           valueSatoshis: TOKEN_OUTPUT_SATOSHIS,
@@ -1978,7 +2040,7 @@ async function callInShape(
         ...payeeSpent.map((spent) => spent.id),
         ...tokenDeposits.map((_deposit, index) => tokenDepositInputId(index)),
       ])].map(([id, index]) => ({ id, index })),
-      ...(tokenRuns.length === 0 ? {} : { tokenRuns: tokenRuns.map((run) => 1 + run.sends) }),
+      ...(tokenRuns.length === 0 ? {} : { tokenRuns: tokenRuns.map((run) => run.containers.length + run.sends) }),
       masters: chain?.masters ?? [masterDraft, ...(callees?.masters ?? []), ...payeeDrafts],
       inputs,
       ...(sideCars.computedWitnesses.length === 0 ? {} : { computedWitnesses: sideCars.computedWitnesses }),
@@ -2452,6 +2514,7 @@ async function callInShape(
       const passed = payees.findIndex((payee) => bytesEqual(payee.lock, reading.computed));
       if (passed >= 0 && payees[passed]!.onBranch && payees.some((payee) => bytesEqual(payee.lock, reading.declared))) {
         return callInShape(options, {
+          ...shape,
           listedSends: sendCount,
           skippedPayees: new Set([...shape.skippedPayees, payable.indexOf(payees[passed]!)]),
           payeeListedSends: shape.payeeListedSends,
@@ -2491,6 +2554,7 @@ async function callInShape(
         .every((send) => send.lock === undefined && send.amount === undefined));
     if (listedShort || payeesShort || payeeShort.some(Boolean)) {
       return callInShape(options, {
+        ...shape,
         listedSends: listedShort ? made : sendCount,
         skippedPayees: new Set([
           ...shape.skippedPayees, ...(payeesShort ? unpaid.map((payee) => payable.indexOf(payee)) : []),
@@ -2576,9 +2640,9 @@ async function callInShape(
     ...rootSpent.map((utxo, position) => ({ id: containerInputId(position), utxo })),
     ...payeeSpentFinal,
   ].map((spent) => ({ ...spent, index: placedInputs.get(spent.id)! }));
-  const tokenContainerInputs = tokenRuns.map((run, index) => ({
-    id: tokenContainerInputId(index), utxo: run.container, index: placedInputs.get(tokenContainerInputId(index))!,
-  }));
+  const tokenContainerInputs = tokenRuns.flatMap((run, index) => run.containers.map((utxo, position) => ({
+    id: tokenContainerInputId(index, position), utxo, index: placedInputs.get(tokenContainerInputId(index, position))!,
+  })));
   const rawVerdicts: FramedCallVerdict[] = [
     ...draft.layout.participants, ...tokenContainerInputs, ...containerInputs,
   ].map((placed) => {

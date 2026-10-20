@@ -88,6 +88,8 @@ export interface FramedTokenAccess {
   readonly lockingBytecode: Uint8Array;
   /** The fungible sends the entry's source makes from this container. */
   readonly sends: number;
+  /** True when the entry reads the containers' amount, which sums the containers a transaction spends. */
+  readonly reads: boolean;
   /** The contract's containers for the category: fungible only, largest first. */
   readonly containers: readonly Utxo[];
 }
@@ -119,15 +121,17 @@ export async function framedTokenAccesses(options: {
     const lockingBytecode = framedTokenContainerLockingBytecode(options.categoryId, category);
     const containers = (await options.provider.getUtxosForLockingBytecode(lockingBytecode))
       .filter((utxo) => utxo.token?.category === category && utxo.token.nft === undefined && utxo.token.amount > 0n)
-      .sort((left, right) => (left.token!.amount > right.token!.amount ? -1 : 1));
+      .sort((left, right) => (left.token!.amount === right.token!.amount
+        ? `${left.txid}:${left.vout}`.localeCompare(`${right.txid}:${right.vout}`)
+        : left.token!.amount > right.token!.amount ? -1 : 1));
     const sends = access.transferCount ?? (access.operations.includes('transfer') ? 1 : 0);
-    return { category, lockingBytecode, sends, containers };
+    return { category, lockingBytecode, sends, reads: access.operations.includes('read'), containers };
   }));
 }
 
 /**
- * The containers a callee frame's entry pays from, resolved from the callee's own records: a key of its own category
- * or of its state. A key a call argument names is refused by name.
+ * The containers a callee frame's entry names by a key of its own category or of its state, resolved from the callee's
+ * own records. A key a call argument names is skipped, and refused by name for a container the callee pays from.
  */
 export async function framedCalleeTokenAccesses(options: {
   readonly provider: NetworkProvider;
@@ -137,15 +141,17 @@ export async function framedCalleeTokenAccesses(options: {
   readonly records: readonly { readonly commitment: Uint8Array; readonly satoshis: bigint }[];
 }): Promise<readonly FramedTokenAccess[]> {
   const abi = options.artifact.abi.find((candidate) => candidate.name === options.entry);
-  const paying = (abi?.tokenContainerAccesses ?? []).filter((access) =>
-    (access.transferCount ?? (access.operations.includes('transfer') ? 1 : 0)) > 0
-    || access.operations.includes('transferNft'));
-  if (paying.length === 0) return [];
-  const argumentKeyed = paying.find((access) => access.keySource !== 'state' && access.keySource !== 'own');
+  const fixed = (access: NonNullable<AbiFunction['tokenContainerAccesses']>[number]): boolean =>
+    access.keySource === 'state' || access.keySource === 'own';
+  const argumentKeyed = (abi?.tokenContainerAccesses ?? []).find((access) => !fixed(access)
+    && ((access.transferCount ?? (access.operations.includes('transfer') ? 1 : 0)) > 0
+      || access.operations.includes('transferNft')));
   if (argumentKeyed !== undefined) {
     throw new Error(`the callee "${options.entry}" pays tokens of the category its argument `
       + `'${argumentKeyed.keyParam}' names, which this call path does not plan for a callee yet`);
   }
+  const named = (abi?.tokenContainerAccesses ?? []).filter(fixed);
+  if (named.length === 0) return [];
   const records = options.records.map((record, at) => ({
     txid: `${at}`.padStart(64, '0'), vout: 0, satoshis: record.satoshis,
     token: {
@@ -155,7 +161,7 @@ export async function framedCalleeTokenAccesses(options: {
   }));
   return framedTokenAccesses({
     provider: options.provider,
-    entry: abi === undefined ? undefined : { ...abi, tokenContainerAccesses: paying },
+    entry: abi === undefined ? undefined : { ...abi, tokenContainerAccesses: named },
     categoryId: options.categoryId,
     args: [],
     stateLayout: options.artifact.stateLayout!,

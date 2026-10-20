@@ -337,8 +337,10 @@ export async function deployFramedStatefulContract<T extends Artifact>(
 
   if (keeperBaton !== undefined) addFunded(keeperBaton);
 
-  // The premint: the token's fungible amount at the contract's token container for the token's own category.
+  // The premint: the token's fungible amount at the contract's token container for the token's own category; then the
+  // bearer supply.
   if (prepared.reserveOutput !== undefined) addFunded(prepared.reserveOutput);
+  if (prepared.bearerOutput !== undefined) addFunded(prepared.bearerOutput);
 
   // A placeholder change output so the measured fee includes its serialized size, then the exact change.
   builder.addOutput({ to: options.changeAddress, amount: 1000n });

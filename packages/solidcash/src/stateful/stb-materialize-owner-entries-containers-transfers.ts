@@ -210,7 +210,14 @@ export function materializeOwnerEntriesContainersTransfers(
   // so that input-bearing tokenContainer slots are contiguous and match blockLayout offsets).
   // Skip drained containers (all FTs transferred + NFT transferred if present)
   for (const container of [...host.tokenContainers].sort((a, b) => a.tokenContainerSlotIndex - b.tokenContainerSlotIndex)) {
-    if (!container.exists || !container.utxo) continue;
+    if (!container.exists || !container.utxo) {
+      // A first deposit's container is appended after the block (`addTokenContainerDeposit`); the slot keeps its
+      // position with a tokenless placeholder, as a drained container's does.
+      if (host.pendingTokenContainerDeposits.has(container.tokenContainerCategoryId)) {
+        builder.addOutput({ to: Uint8Array.from([0x6a]), amount: 0n });
+      }
+      continue;
+    }
     if (host.isTokenContainerDrained(container.tokenContainerCategoryId)) {
       // Drained: insert a 0-satoshi OP_RETURN placeholder to maintain block layout
       // output positions. The compiler's covenant verification detects the absence of

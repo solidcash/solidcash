@@ -75,17 +75,18 @@ export async function deployStatefulContract<T extends Artifact>(
   // S2), so a framed contract's token is a category of its own, which `nativeToken.funding` creates.
   const framed = artifact.composition?.convention === 'framed';
   const nativeFunding = options.nativeToken?.funding;
-  if (framed && options.nativeToken?.reserve !== undefined && nativeFunding === undefined) {
+  const mintsToken = options.nativeToken?.reserve !== undefined || options.nativeToken?.bearer !== undefined;
+  if (framed && mintsToken && nativeFunding === undefined) {
     throw new BcmrError(
       `${artifact.contractName} is framed, and a framed composition refuses fungible tokens of the contract's own `
-      + 'category, so its premint needs a category of its own: pass nativeToken.funding '
+      + 'category, so its token needs a category of its own: pass nativeToken.funding '
       + '(docs/framed/SPEC_FRAMED_TRANSACTION.md, S2)',
     );
   }
   const tokenCategory = (nativeFunding?.txid ?? options.fundingUtxo.txid).toLowerCase();
   // A framed handle carries no constructor arguments: the genesis bakes them into its program.
-  const reserve = options.nativeToken?.reserve === undefined ? undefined : {
-    lockingBytecode: addressToLockScript(getTokenContainerAddress(
+  const reserveLockingBytecode = options.nativeToken?.reserve === undefined ? undefined
+    : addressToLockScript(getTokenContainerAddress(
       new Contract(artifact, (framed ? [] : constructorArgs) as any, {
         provider: options.provider,
         addressType: options.addressType,
@@ -94,15 +95,14 @@ export async function deployStatefulContract<T extends Artifact>(
       }),
       options.fundingUtxo.txid.toLowerCase(),
       tokenCategory,
-    )),
-    satoshis: options.dataNftAmount ?? 1200n,
-  };
+    ));
   const prepared = options.metadataProbe === true ? {} : await prepareMetadata({
     artifact,
     category: options.fundingUtxo.txid.toLowerCase(),
     deploy: options,
     probe: (probeOptions) => deployStatefulContract(artifact, constructorArgs, probeOptions),
-    ...(reserve === undefined ? {} : { reserve }),
+    ...(reserveLockingBytecode === undefined ? {} : { reserveLockingBytecode }),
+    tokenSatoshis: options.dataNftAmount ?? 1200n,
     nftRoles: async () => {
       const category = options.fundingUtxo.txid.toLowerCase();
       return deploymentNftRoles(artifact, framed
@@ -253,7 +253,7 @@ export async function deployStatefulContract<T extends Artifact>(
   const keeperBaton = blockhashKeeperGenesisOutput(
     artifact, categoryId, options.blockhashKeeperPublicKey, options.blockhashKeeperAmount,
   );
-  const totalReserve = prepared.reserveOutput?.amount ?? 0n;
+  const totalReserve = (prepared.reserveOutput?.amount ?? 0n) + (prepared.bearerOutput?.amount ?? 0n);
   const totalRequired = (keeperBaton?.amount ?? 0n) + totalMaster + totalDataNft + totalEntryNft
     + totalEventNft + totalDynamicNft
     + totalMessageBusVerifiers + totalIdentity + initialBalance + leadingTotal + totalReserve + estimatedFee;
@@ -525,8 +525,9 @@ export async function deployStatefulContract<T extends Artifact>(
   }
 
   // The premint: the token's fungible amount, which only a genesis can create, held in the contract's token
-  // container for the token's category.
+  // container for the token's category; then the bearer supply.
   if (prepared.reserveOutput !== undefined) addFunded(prepared.reserveOutput);
+  if (prepared.bearerOutput !== undefined) addFunded(prepared.bearerOutput);
 
   // Immutable CREATE identity anchors are category-bearing discovery records. They are intentionally appended
   // after constructor-governed outputs so existing ABI output indices remain stable.

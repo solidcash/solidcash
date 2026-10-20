@@ -68,6 +68,11 @@ export interface NativeTokenOptions {
   readonly funder?: Unlocker;
   /** The fungible amount minted into the contract's token container for the token's category: the premint. */
   readonly reserve?: bigint;
+  /**
+   * Bearer tokens of the token's category minted to `to`, a token-aware address: the supply a token whose ledger
+   * starts empty puts in holders' hands to wrap.
+   */
+  readonly bearer?: { readonly amount: bigint; readonly to: string };
   /** Ledger units one native unit backs (BchNativeMultiplier's multiplier), a power of ten; 1 when omitted. */
   readonly scale?: bigint;
 }
@@ -96,6 +101,8 @@ export interface PreparedMetadata {
   readonly nativeInput?: { readonly utxo: Utxo; readonly unlocker: Unlocker };
   /** The premint: the token's fungible amount at the contract's token container for the token's category. */
   readonly reserveOutput?: Output;
+  /** The bearer supply: the token's fungible amount minted to the address `nativeToken.bearer` names. */
+  readonly bearerOutput?: Output;
 }
 
 /** The extension naming where a ledger token's reserve sits, for explorers that adopt it (DESIGN.md, 6.7). */
@@ -242,8 +249,10 @@ export async function prepareMetadata(options: {
   readonly category: string;
   readonly deploy: DeployOptions;
   readonly probe: ProbeDeploy;
-  /** The contract's token container for the token's category, where the premint goes, and the satoshis it holds. */
-  readonly reserve?: { readonly lockingBytecode: Uint8Array; readonly satoshis: bigint };
+  /** The contract's token container for the token's category, where the premint goes. */
+  readonly reserveLockingBytecode?: Uint8Array;
+  /** The satoshis each token output the genesis mints carries. */
+  readonly tokenSatoshis: bigint;
   /** The deployment's NFT roles, for a publication that generates its NFT labels. */
   readonly nftRoles?: () => Promise<readonly NftParseRole[]>;
 }): Promise<PreparedMetadata> {
@@ -256,8 +265,14 @@ export async function prepareMetadata(options: {
   }
   const scale = nativeToken?.scale ?? 1n;
   const reserve = nativeToken?.reserve;
-  if (reserve !== undefined && (reserve < 1n || reserve > MAXIMUM_FUNGIBLE_AMOUNT)) {
-    throw new BcmrError(`nativeToken.reserve must be from 1 to ${MAXIMUM_FUNGIBLE_AMOUNT}, got ${reserve}`);
+  const bearer = nativeToken?.bearer;
+  for (const [field, amount] of [['reserve', reserve], ['bearer.amount', bearer?.amount]] as const) {
+    if (amount !== undefined && (amount < 1n || amount > MAXIMUM_FUNGIBLE_AMOUNT)) {
+      throw new BcmrError(`nativeToken.${field} must be from 1 to ${MAXIMUM_FUNGIBLE_AMOUNT}, got ${amount}`);
+    }
+  }
+  if ((reserve ?? 0n) + (bearer?.amount ?? 0n) > MAXIMUM_FUNGIBLE_AMOUNT) {
+    throw new BcmrError(`nativeToken.reserve and nativeToken.bearer together exceed ${MAXIMUM_FUNGIBLE_AMOUNT}`);
   }
   const nativeInput = await nativeInputOf(deploy, options.category);
   const tokenCategory = nativeInput === undefined ? options.category : nativeInput.utxo.txid.toLowerCase();
@@ -279,13 +294,17 @@ export async function prepareMetadata(options: {
       + `credits a totalSupply() of ${facts.totalSupply}`,
     );
   }
-  const container = options.reserve;
-  const reserveOutput: Output | undefined = reserve === undefined || container === undefined ? undefined : {
-    to: container.lockingBytecode, amount: container.satoshis, token: { category: tokenCategory, amount: reserve },
+  const reserveLock = options.reserveLockingBytecode;
+  const reserveOutput: Output | undefined = reserve === undefined || reserveLock === undefined ? undefined : {
+    to: reserveLock, amount: options.tokenSatoshis, token: { category: tokenCategory, amount: reserve },
+  };
+  const bearerOutput: Output | undefined = bearer === undefined ? undefined : {
+    to: bearer.to, amount: options.tokenSatoshis, token: { category: tokenCategory, amount: bearer.amount },
   };
   const prepared = {
     ...(nativeInput === undefined ? {} : { nativeInput }),
     ...(reserveOutput === undefined ? {} : { reserveOutput }),
+    ...(bearerOutput === undefined ? {} : { bearerOutput }),
   };
   if (publication === undefined) return prepared;
 
@@ -312,9 +331,9 @@ export async function prepareMetadata(options: {
   if (deploy.identity?.kind === 'authguard') {
     extensions.authNft = deploy.identity.authKeyFunding.txid.toLowerCase();
   }
-  if (reserveOutput !== undefined && container !== undefined) {
+  if (reserveOutput !== undefined && reserveLock !== undefined) {
     extensions[NATIVE_TOKEN_EXTENSION] = {
-      reserveLockingBytecode: binToHex(container.lockingBytecode),
+      reserveLockingBytecode: binToHex(reserveLock),
       scale: scale.toString(),
       ...(hasTotalSupply(artifact) ? { ledgerSupply: 'totalSupply()' } : {}),
     };

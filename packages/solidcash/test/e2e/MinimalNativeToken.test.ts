@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileFile, compileFileSplit, compileString } from 'solidc';
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   asmToScript, bytecodeToScript, decodeInt, Op, scriptToBytecode,
 } from '@solidcash/utils';
@@ -15,7 +15,7 @@ import { addressToLockScript } from '../../src/utils.js';
 import {
   NATIVE_TEST_CATEGORY, createTestProvider, seedNativeToken, setupStatefulUtxos,
 } from '../test-util.js';
-import { alicePriv, bobPriv } from '../fixture/vars.js';
+import { alicePriv, bobPriv, bobTokenAddress } from '../fixture/vars.js';
 
 const source = new URL('../../contracts/examples/MinimalNativeToken.scash', import.meta.url);
 
@@ -103,6 +103,45 @@ describe('MinimalNativeToken bytecode budget', () => {
       .filter((utxo) => utxo.token?.category === NATIVE_TEST_CATEGORY)
       .reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n);
     expect(bearerBalance).toBe(5n);
+  });
+
+  it('deploys a bearer supply of its own category, which a first wrap admits into a new container', async () => {
+    const artifact = compileFile(source, { messageBus: false });
+    const provider = createTestProvider();
+    const bob = new Signer(bobPriv, provider);
+    const fundingUtxo = { txid: 'f1'.repeat(32), vout: 0, satoshis: 3_000_000n };
+    const tokenFunding = { txid: 'f2'.repeat(32), vout: 0, satoshis: 100_000n };
+    await provider.addUtxo(bob.getAddress(), fundingUtxo);
+    await provider.addUtxo(bob.getAddress(), tokenFunding);
+    const category = tokenFunding.txid;
+    const { contract: token, tx } = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: bob.unlockP2PKH(), changeAddress: bob.getAddress(),
+      initArgs: [hexToBin(category)],
+      nativeToken: { funding: tokenFunding, bearer: { amount: 1_000n, to: bobTokenAddress } },
+    });
+    // The genesis mints the whole supply to bob and premints no reserve, so no container exists yet.
+    const vout = tx.outputs.findIndex((output) => output.token !== undefined
+      && binToHex(output.token.category) === category);
+    expect(tx.outputs[vout]!.token!.amount).toBe(1_000n);
+    const bearer = {
+      txid: tx.txid, vout, satoshis: tx.outputs[vout]!.valueSatoshis, token: { category, amount: 1_000n },
+    };
+    await provider.addUtxo(bob.getAddress(), { txid: 'e4'.repeat(32), vout: 0, satoshis: 500_000n });
+    await token.connect(bob).call.wrap(1_000n)
+      .addInput(bearer, new SignatureTemplate(bobPriv).unlockP2PKH())
+      .tokenContainerDeposit(category, 1_000n)
+      .send();
+    const bobLedgerAddress = addressToLockScript(bob.getAddress());
+    expect(await token.state._balances(bobLedgerAddress)).toBe(1_000n);
+
+    await provider.addUtxo(bob.getAddress(), { txid: 'e5'.repeat(32), vout: 0, satoshis: 500_000n });
+    await token.connect(bob).call.unwrap(bob.getAddress(), 400n).send();
+    expect(await token.state._balances(bobLedgerAddress)).toBe(600n);
+    expect((await token.getState())._totalSupply).toBe(600n);
+    const bearerBalance = (await provider.getUtxos(bob.getAddress()))
+      .filter((utxo) => utxo.token?.category === category)
+      .reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n);
+    expect(bearerBalance).toBe(400n);
   });
 
   it('shares integer mapping reads without changing allowance spends', async () => {

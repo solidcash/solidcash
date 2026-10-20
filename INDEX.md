@@ -192,3 +192,109 @@ this branch or on `master`.
 | `website/docs/sdk/debugging.md` | `website/docs/sdk/testing-setup.md` |
 | `website/docs/sdk/transactions-advanced.md` | `website/docs/sdk/transaction-builder.md` |
 | `website/docs/sdk/transactions.md` | `website/docs/sdk/legacy-transaction-builder.md` |
+
+## Previously deleted documents (restored 2026-10-20)
+
+These paths were deleted before this archive existed. Their last content is restored here so an old
+citation resolves without editing the citing document. They are history; the same warning applies.
+
+| path | last active | last content commit | deleted in |
+| --- | --- | --- | --- |
+| `HANDOFF_OPUS.md` | 2026-08-27 | `608e35a20` | `608e35a20` |
+| `SOLIDITY_GAP_ANALYSIS.md` | 2026-02-24 | `dc15dd638` | `dc15dd638` |
+| `docs/framed/DEPRECATIONS.md` | 2026-10-06 | `02de0b9d1` | `02de0b9d1` |
+| `docs/language.md` | 2020-05-25 | `a95cdc1b8` | `a95cdc1b8` |
+| `docs/sdk.md` | 2020-05-25 | `a95cdc1b8` | `a95cdc1b8` |
+| `examples/effectiveacceleration/BYTECODE_OPTIMIZATION_BASELINE.md` | 2026-10-10 | `a07eee905` | `a07eee905` |
+| `examples/effectiveacceleration/PROGRESS.md` | 2026-10-10 | `a07eee905` | `a07eee905` |
+| `examples/webapp/README.md` | 2023-05-26 | `704ed2b38` | `704ed2b38` |
+| `functions-todos.md` | 2026-07-07 | `78c433583` | `78c433583` |
+| `packages/cashc/README.md` | 2026-06-11 | `414833ae3` | `414833ae3` |
+| `packages/cashscript/README.md` | 2026-06-11 | `03d03d4d9` | `03d03d4d9` |
+| `packages/solidc/docs/block-oracle.md` | 2026-06-26 | `85f7b2d12` | `85f7b2d12` |
+| `packages/solidc/docs/compiler-hidden-batch-v1-audit.md` | 2026-08-02 | `51bd28ec4` | `51bd28ec4` |
+| `packages/solidc/docs/compiler-hidden-batch-v1-review-handoff.md` | 2026-08-02 | `51bd28ec4` | `51bd28ec4` |
+| `packages/solidc/docs/compiler-hidden-batch-v1.md` | 2026-08-02 | `51bd28ec4` | `51bd28ec4` |
+| `packages/solidc/docs/invocation-transcript-v1-audit.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/invocation-transcript-v1.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/journal-bus-implementation-status.md` | 2026-08-02 | `51bd28ec4` | `51bd28ec4` |
+| `packages/solidc/docs/journal-message-bus-docs-todo.md` | 2026-08-03 | `a09e789d8` | `a09e789d8` |
+| `packages/solidc/docs/layer3-binding-spike-handoff.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-corpus-fit-f3.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-erc20-continuation-handoff.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-production-api.md` | 2026-08-03 | `a09e789d8` | `a09e789d8` |
+| `packages/solidc/docs/layer3-production-audit.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-production-envelope.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-production-reaudit.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-real-composition.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-regtest-validation.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-required-path-audit.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-required-path-resolution-audit.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-required-path-resolution.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-review-fixes-audit.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-review-package.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-single-transaction-bus-handoff.md` | 2026-08-03 | `a09e789d8` | `a09e789d8` |
+| `packages/solidc/docs/layer3-single-transaction-bus-requirements.md` | 2026-08-03 | `a09e789d8` | `a09e789d8` |
+| `packages/solidc/docs/layer3-spike-audit-findings.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/layer3-spike-audit-handoff.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/message-bus-HANDOFF.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/message-bus-completion-ledger.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/message-bus-external-review-guide.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/message-bus-opus-completion-handoff.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/message-bus-parallel-work-plan.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/message-bus-security-review-l2.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidc/docs/pre-message-bus-work-scope.md` | 2026-08-02 | `b990c4823` | `b990c4823` |
+| `packages/solidhat-cli/README.md` | 2026-07-21 | `914da8a23` | `914da8a23` |
+
+## Previously deleted documents (restored 2026-10-20)
+
+These paths were deleted before this archive existed. Their last content is restored here so an old
+citation resolves without editing the citing document. They are history; the same warning applies.
+
+| path | last active | last content commit | deleted in |
+| --- | --- | --- | --- |
+| `HANDOFF_OPUS.md` | 2026-08-27 | `32b5fa6dd` | `608e35a20` |
+| `SOLIDITY_GAP_ANALYSIS.md` | 2026-02-24 | `5f97ca21e` | `dc15dd638` |
+| `docs/framed/DEPRECATIONS.md` | 2026-10-06 | `3d866ac4e` | `02de0b9d1` |
+| `docs/language.md` | 2020-05-25 | `c943a9d30` | `a95cdc1b8` |
+| `docs/sdk.md` | 2020-05-25 | `c943a9d30` | `a95cdc1b8` |
+| `examples/effectiveacceleration/BYTECODE_OPTIMIZATION_BASELINE.md` | 2026-10-10 | `ddc4394d5` | `a07eee905` |
+| `examples/effectiveacceleration/PROGRESS.md` | 2026-10-10 | `ddc4394d5` | `a07eee905` |
+| `examples/webapp/README.md` | 2023-05-26 | `a0b72cef8` | `704ed2b38` |
+| `functions-todos.md` | 2026-07-07 | `16c55d7c9` | `78c433583` |
+| `packages/cashc/README.md` | 2026-06-11 | `4162a7647` | `414833ae3` |
+| `packages/cashscript/README.md` | 2026-06-11 | `414833ae3` | `03d03d4d9` |
+| `packages/solidc/docs/block-oracle.md` | 2026-06-26 | `617530aea` | `85f7b2d12` |
+| `packages/solidc/docs/compiler-hidden-batch-v1-audit.md` | 2026-08-02 | `f78570e37` | `51bd28ec4` |
+| `packages/solidc/docs/compiler-hidden-batch-v1-review-handoff.md` | 2026-08-02 | `f78570e37` | `51bd28ec4` |
+| `packages/solidc/docs/compiler-hidden-batch-v1.md` | 2026-08-02 | `f78570e37` | `51bd28ec4` |
+| `packages/solidc/docs/invocation-transcript-v1-audit.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/invocation-transcript-v1.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/journal-bus-implementation-status.md` | 2026-08-02 | `f78570e37` | `51bd28ec4` |
+| `packages/solidc/docs/journal-message-bus-docs-todo.md` | 2026-08-03 | `07447e691` | `a09e789d8` |
+| `packages/solidc/docs/layer3-binding-spike-handoff.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-corpus-fit-f3.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-erc20-continuation-handoff.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-production-api.md` | 2026-08-03 | `07447e691` | `a09e789d8` |
+| `packages/solidc/docs/layer3-production-audit.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-production-envelope.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-production-reaudit.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-real-composition.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-regtest-validation.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-required-path-audit.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-required-path-resolution-audit.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-required-path-resolution.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-review-fixes-audit.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-review-package.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-single-transaction-bus-handoff.md` | 2026-08-03 | `07447e691` | `a09e789d8` |
+| `packages/solidc/docs/layer3-single-transaction-bus-requirements.md` | 2026-08-03 | `07447e691` | `a09e789d8` |
+| `packages/solidc/docs/layer3-spike-audit-findings.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/layer3-spike-audit-handoff.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/message-bus-HANDOFF.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/message-bus-completion-ledger.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/message-bus-external-review-guide.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/message-bus-opus-completion-handoff.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/message-bus-parallel-work-plan.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/message-bus-security-review-l2.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidc/docs/pre-message-bus-work-scope.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
+| `packages/solidhat-cli/README.md` | 2026-07-21 | `cc3c41333` | `914da8a23` |

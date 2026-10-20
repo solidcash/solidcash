@@ -13,9 +13,9 @@ import {
 import { StatefulContract } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import {
-  createTestProvider, plainNumerics, setupStatefulUtxos,
+  NATIVE_TEST_CATEGORY, createTestProvider, plainNumerics, seedNativeToken, setupStatefulUtxos,
 } from '../test-util.js';
-import { getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
+import type { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { bobPriv } from '../fixture/vars.js';
 import type { Artifact } from '@solidcash/utils';
 
@@ -46,15 +46,11 @@ describe('BchNativeQuarantine inheritance', () => {
     const setup = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {
       _totalSupply: 0n,
       backedSupply: 0n,
-    }, {
-      saltContract: true,
-      extraOutputs: (category) => [{
-        // The container binds the master lock, which is the category-pinned contract's.
-        address: getTokenContainerAddress(inner.withCategory(hexToBin(category)), category, category),
-        satoshis: 1_200n,
-        token: { amount: 1_000n },
-      }],
-    });
+      _nativeCategory: hexToBin(NATIVE_TEST_CATEGORY),
+    }, { saltContract: true });
+    // The container binds the master lock, which is the category-pinned contract's.
+    await seedNativeToken(provider as MockNetworkProvider, inner.withCategory(hexToBin(setup.categoryId)),
+      setup.categoryId, { reserve: 1_000n });
     const token = StatefulContract.withCategory(inner, setup.categoryId);
     const bob = new Signer(bobPriv, provider);
     await provider.addUtxo(bob.getAddress(), {
@@ -64,7 +60,7 @@ describe('BchNativeQuarantine inheritance', () => {
 
     const coin: Utxo = {
       txid: 'd2'.repeat(32), vout: 0, satoshis: 100_000n,
-      token: { category: setup.categoryId, amount: 5n },
+      token: { category: NATIVE_TEST_CATEGORY, amount: 5n },
     };
     await provider.addUtxo(bob.getAddress(), coin);
     await provider.addUtxo(bob.getAddress(), {
@@ -72,7 +68,7 @@ describe('BchNativeQuarantine inheritance', () => {
     });
     await token.connect(bob).call.deposit(5n)
       .addInput(coin, new SignatureTemplate(bobPriv).unlockP2PKH())
-      .tokenContainerDeposit(setup.categoryId, 5n)
+      .tokenContainerDeposit(NATIVE_TEST_CATEGORY, 5n)
       .send();
 
     const bobAddress = addressToLockScript(bob.getAddress());

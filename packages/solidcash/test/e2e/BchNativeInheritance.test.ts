@@ -14,9 +14,9 @@ import {
 import { StatefulContract } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import {
-  createTestProvider, plainNumerics, setupStatefulUtxos,
+  NATIVE_TEST_CATEGORY, createTestProvider, plainNumerics, seedNativeToken, setupStatefulUtxos,
 } from '../test-util.js';
-import { getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
+import type { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { aliceAddress, alicePriv, bobPriv } from '../fixture/vars.js';
 
 const fx = (name: string): URL => new URL(`../fixture/${name}`, import.meta.url);
@@ -47,16 +47,13 @@ async function deploy(): Promise<Deployed> {
     owner: ownerAddress,
     _totalSupply: 0n,
     backedSupply: 0n,
-  }, {
-    saltContract: true,
-    extraOutputs: (category) => [{
-      // The container binds the master lock, which is the category-pinned contract's.
-      address: getTokenContainerAddress(inner.withCategory(hexToBin(category)), category, category),
-      satoshis: 1_200n,
-      token: { amount: 1_000n },
-    }],
-  });
+    _nativeCategory: hexToBin(NATIVE_TEST_CATEGORY),
+  }, { saltContract: true });
   const category = setup.categoryId;
+  // The container binds the master lock, which is the category-pinned contract's.
+  await seedNativeToken(provider as MockNetworkProvider, inner.withCategory(hexToBin(category)), category, {
+    reserve: 1_000n, nonce: deployment,
+  });
   const token = StatefulContract.withCategory(inner, category);
   const owner = new Signer(alicePriv, provider);
   const bob = new Signer(bobPriv, provider);
@@ -72,10 +69,10 @@ async function deploy(): Promise<Deployed> {
   };
 }
 
-function bearerCoin(d: Deployed): Utxo {
+function bearerCoin(): Utxo {
   return {
     txid: `${(0xd0 + deployment).toString(16)}`.repeat(32), vout: 0, satoshis: 100_000n,
-    token: { category: d.category, amount: 5n },
+    token: { category: NATIVE_TEST_CATEGORY, amount: 5n },
   };
 }
 
@@ -89,7 +86,7 @@ async function wrapForBob(d: Deployed, coin: Utxo): Promise<void> {
   await d.fund(d.bob);
   await d.token.connect(d.bob).call.wrap(5n)
     .addInput(coin, new SignatureTemplate(bobPriv).unlockP2PKH())
-    .tokenContainerDeposit(d.category, 5n)
+    .tokenContainerDeposit(NATIVE_TEST_CATEGORY, 5n)
     .send();
 }
 
@@ -121,12 +118,12 @@ describe('BchNative inheritance', () => {
       const connected = d.token.connect(d.owner);
       await d.fund(d.owner);
       await connected.call.openSelf().send();
-      const coin = bearerCoin(d);
+      const coin = bearerCoin();
       await d.provider.addUtxo(d.owner.getAddress(), coin);
       await d.fund(d.owner);
       await connected.call.wrap(5n)
         .addInput(coin, new SignatureTemplate(alicePriv).unlockP2PKH())
-        .tokenContainerDeposit(d.category, 5n)
+        .tokenContainerDeposit(NATIVE_TEST_CATEGORY, 5n)
         .send();
       const ownerAddress = addressToLockScript(d.owner.getAddress());
       expect(await d.token.state._balances(ownerAddress)).toBe(5n);
@@ -145,7 +142,7 @@ describe('BchNative inheritance', () => {
       expect((await d.token.getState())._totalSupply).toBe(0n);
       const bobBearer = await d.provider.getUtxos(d.bob.getAddress());
       expect(bobBearer
-        .filter((utxo) => utxo.token?.category === d.category)
+        .filter((utxo) => utxo.token?.category === NATIVE_TEST_CATEGORY)
         .reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n)).toBe(5n);
     },
   );
@@ -156,12 +153,12 @@ describe('BchNative inheritance', () => {
       await openBob(d);
       await d.fund(d.owner);
       await d.token.connect(d.owner).call.blacklist(addressToLockScript(d.bob.getAddress())).send();
-      const coin = bearerCoin(d);
+      const coin = bearerCoin();
       await d.provider.addUtxo(d.bob.getAddress(), coin);
       await d.fund(d.bob);
       await expect(d.token.connect(d.bob).call.wrap(5n)
         .addInput(coin, new SignatureTemplate(bobPriv).unlockP2PKH())
-        .tokenContainerDeposit(d.category, 5n)
+        .tokenContainerDeposit(NATIVE_TEST_CATEGORY, 5n)
         .send()).rejects.toThrow();
     },
   );
@@ -170,7 +167,7 @@ describe('BchNative inheritance', () => {
     'wraps bearer CashTokens directly into ERC20 balance through the inherited base', async () => {
       const d = await deploy();
       await openBob(d);
-      await wrapForBob(d, bearerCoin(d));
+      await wrapForBob(d, bearerCoin());
       expect(await d.token.state._balances(addressToLockScript(d.bob.getAddress()))).toBe(5n);
       const state = plainNumerics(await d.token.getState());
       expect(state.backedSupply).toBe(5n);
@@ -187,12 +184,12 @@ describe('BchNative inheritance', () => {
       const owner = d.token.connect(d.owner);
       await d.fund(d.owner);
       await owner.call.openSelf().send();
-      const coin = bearerCoin(d);
+      const coin = bearerCoin();
       await d.provider.addUtxo(d.owner.getAddress(), coin);
       await d.fund(d.owner);
       await owner.call.wrap(5n)
         .addInput(coin, new SignatureTemplate(alicePriv).unlockP2PKH())
-        .tokenContainerDeposit(d.category, 5n)
+        .tokenContainerDeposit(NATIVE_TEST_CATEGORY, 5n)
         .send();
       await openBob(d);
 

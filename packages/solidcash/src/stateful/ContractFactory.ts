@@ -51,7 +51,7 @@ export interface DeployContractOptions {
   identity?: DeployOptions['identity'];
   /** A BCMR registry the genesis publishes; see `DeployOptions.bcmr`. */
   bcmr?: DeployOptions['bcmr'];
-  /** The contract's own fungible token; see `DeployOptions.nativeToken`. */
+  /** The ledger token's bearer category and premint; see `DeployOptions.nativeToken`. */
   nativeToken?: DeployOptions['nativeToken'];
 }
 
@@ -386,8 +386,14 @@ export class ContractFactory<T extends Artifact = Artifact> {
           const pool = resolveMasterPoolSize({ masters: overrides.threadCount, validators: overrides.validatorCount });
           poolSatoshis = poolGenesisSatoshis(pool, 1200n, overrides.functionSplit?.shards.length ?? 1);
         }
+        // A coin the deployment names for another category (the AuthKey's, the token's) is not its genesis coin.
+        const { genesisOutpointKey } = await import('./genesis-reservations.js');
+        const named = [
+          overrides.identity?.kind === 'authguard' ? overrides.identity.authKeyFunding : undefined,
+          overrides.nativeToken?.funding,
+        ].flatMap((coin) => (coin === undefined ? [] : [genesisOutpointKey(coin.txid, coin.vout)]));
         fundingUtxo = await selectGenesisFundingUtxo(
-          signer, deployArtifact, new Set(), 1 + verifierCount, poolSatoshis,
+          signer, deployArtifact, new Set(named), 1 + verifierCount, poolSatoshis,
         );
       }
       funder = funder ?? signer.unlockP2PKH();

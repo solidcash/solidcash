@@ -207,9 +207,10 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       )),
     }),
   });
-  const inputTotal = identity.inputs.reduce((sum, input) => sum + input.utxo.satoshis, options.fundingUtxo.satoshis);
+  const genesisInputs = [...(prepared.nativeInput === undefined ? [] : [prepared.nativeInput]), ...identity.inputs];
+  const inputTotal = genesisInputs.reduce((sum, input) => sum + input.utxo.satoshis, options.fundingUtxo.satoshis);
   builder.addInput(options.fundingUtxo, options.funder);
-  for (const input of identity.inputs) builder.addInput(input.utxo, input.unlocker);
+  for (const input of genesisInputs) builder.addInput(input.utxo, input.unlocker);
   // Every token output carries at least its own dust threshold: a wide record, chunk or event is worth more than the
   // fixed amount, which covers only outputs up to 252 bytes. The change below is taken from the amounts added here.
   const addFunded = (output: Parameters<typeof builder.addOutput>[0]): void => {
@@ -335,6 +336,9 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   }
 
   if (keeperBaton !== undefined) addFunded(keeperBaton);
+
+  // The premint: the token's fungible amount at the contract's token container for the token's own category.
+  if (prepared.reserveOutput !== undefined) addFunded(prepared.reserveOutput);
 
   // A placeholder change output so the measured fee includes its serialized size, then the exact change.
   builder.addOutput({ to: options.changeAddress, amount: 1000n });

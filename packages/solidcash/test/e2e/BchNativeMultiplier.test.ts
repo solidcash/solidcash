@@ -10,8 +10,9 @@ import {
 import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
-import { getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
+import {
+  NATIVE_TEST_CATEGORY, createTestProvider, seedNativeToken, setupStatefulUtxos,
+} from '../test-util.js';
 import { bobPriv } from '../fixture/vars.js';
 
 const source = new URL('../fixture/bch_native_multiplier_token.scash', import.meta.url);
@@ -24,14 +25,13 @@ describe('BchNativeMultiplier', () => {
     const artifactBytes = scriptToBytecode(asmToScript(artifact.bytecode)).length;
     // The scale layer adds the % / / conversion and the immutable read to wrap and
     // unwrap; it stays well inside the P2SH32 input-script budget (8_636 after the
-    // 10-14..10-17 hardening).
-    expect(artifactBytes).toBeLessThan(8_700);
+    // 10-14..10-17 hardening, 8_750 with BchNative's own bearer category).
+    expect(artifactBytes).toBeLessThan(8_800);
     expect(artifact.constructorInputs).toEqual([]);
-    // The immutable must be written at construction, so a constructor entry exists
-    // even though it takes no runtime arguments (the scale factor is baked in).
+    // The immutables are written at construction: the scale factor is baked in, and the
+    // bearer category is the constructor's one argument.
     const construct = artifact.abi.find((entry) => entry.name === '__construct');
-    expect(construct).toBeDefined();
-    expect(construct?.inputs).toEqual([]);
+    expect(construct?.inputs.map((input) => input.name)).toEqual(['nativeCategory_']);
 
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of ['transfer', 'approve', 'allowance', 'transferFrom', 'wrap', 'unwrap']) {
@@ -56,20 +56,16 @@ describe('BchNativeMultiplier', () => {
     const setup = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {
       _totalSupply: 0n,
       _nativeMultiplier: 100n,
-    }, {
-      saltContract: true,
-      extraOutputs: (category) => [{
-        // The container binds the master lock, which is the category-pinned contract's.
-        address: getTokenContainerAddress(inner.withCategory(hexToBin(category)), category, category),
-        satoshis: 1_200n,
-        token: { amount: 1_000n },
-      }, {
-        address: bob.getAddress(), satoshis: 100_000n, token: { amount: 5n },
-      }],
-    });
+      _nativeCategory: hexToBin(NATIVE_TEST_CATEGORY),
+    }, { saltContract: true });
+    // The container binds the master lock, which is the category-pinned contract's.
+    const native = await seedNativeToken(
+      provider as MockNetworkProvider, inner.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+      { reserve: 1_000n, holders: [{ address: bob.getAddress(), amount: 5n }] },
+    );
     const token = StatefulContract.withCategory(inner, setup.categoryId);
     const bobLedgerAddress = addressToLockScript(bob.getAddress());
-    const bearer = setup.extraUtxos![1];
+    const bearer = native.holders[0]!;
 
     // Five native base units, presented against wrap(500), deposit into the
     // reserve container and credit 500 ledger units through the x100 scale.
@@ -78,7 +74,7 @@ describe('BchNativeMultiplier', () => {
     });
     await token.connect(bob).call.wrap(500n)
       .addInput(bearer, new SignatureTemplate(bobPriv).unlockP2PKH())
-      .tokenContainerDeposit(setup.categoryId, 5n)
+      .tokenContainerDeposit(NATIVE_TEST_CATEGORY, 5n)
       .send();
     expect(await token.state._balances(bobLedgerAddress)).toBe(500n);
     expect((await token.getState())._totalSupply).toBe(500n);
@@ -91,7 +87,7 @@ describe('BchNativeMultiplier', () => {
     expect(await token.state._balances(bobLedgerAddress)).toBe(0n);
     expect((await token.getState())._totalSupply).toBe(0n);
     const bearerBalance = (await provider.getUtxos(bob.getAddress()))
-      .filter((utxo) => utxo.token?.category === setup.categoryId)
+      .filter((utxo) => utxo.token?.category === NATIVE_TEST_CATEGORY)
       .reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n);
     expect(bearerBalance).toBe(5n);
   });
@@ -104,19 +100,15 @@ describe('BchNativeMultiplier', () => {
     const setup = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {
       _totalSupply: 0n,
       _nativeMultiplier: 100n,
-    }, {
-      saltContract: true,
-      extraOutputs: (category) => [{
-        // The container binds the master lock, which is the category-pinned contract's.
-        address: getTokenContainerAddress(inner.withCategory(hexToBin(category)), category, category),
-        satoshis: 1_200n,
-        token: { amount: 1_000n },
-      }, {
-        address: bob.getAddress(), satoshis: 100_000n, token: { amount: 5n },
-      }],
-    });
+      _nativeCategory: hexToBin(NATIVE_TEST_CATEGORY),
+    }, { saltContract: true });
+    // The container binds the master lock, which is the category-pinned contract's.
+    const native = await seedNativeToken(
+      provider as MockNetworkProvider, inner.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+      { reserve: 1_000n, holders: [{ address: bob.getAddress(), amount: 5n }] },
+    );
     const token = StatefulContract.withCategory(inner, setup.categoryId);
-    const bearer = setup.extraUtxos![1];
+    const bearer = native.holders[0]!;
 
     // 5 % 100 != 0, so the boundary refuses before any reserve movement.
     await provider.addUtxo(bob.getAddress(), {
@@ -124,7 +116,7 @@ describe('BchNativeMultiplier', () => {
     });
     await expect(token.connect(bob).call.wrap(5n)
       .addInput(bearer, new SignatureTemplate(bobPriv).unlockP2PKH())
-      .tokenContainerDeposit(setup.categoryId, 5n)
+      .tokenContainerDeposit(NATIVE_TEST_CATEGORY, 5n)
       .send()).rejects.toThrow();
   });
 });

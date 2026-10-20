@@ -57,6 +57,8 @@ assertable
 assigne
 ASTJSON
 authbase
+authbases
+authchains
 authguard
 authhead
 autoderivation

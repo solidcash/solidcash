@@ -24,7 +24,7 @@ abstract contract BchNativeQuarantine is BchNative {
     function _nativeQuarantineBlocks() internal view virtual returns (uint32) { return 0; }
 
     function deposit(int amount) {
-        bytes32 category = this.category;
+        bytes32 category = this._nativeCategory;
         require(amount > 0);
 
         address claimant = msg.sender;
@@ -55,7 +55,7 @@ abstract contract BchNativeQuarantine is BchNative {
     }
 
     function cancelDeposit(address to) {
-        bytes32 category = this.category;
+        bytes32 category = this._nativeCategory;
         address claimant = msg.sender;
         require(_nativeCanCancel(claimant));
         int pendingAmount = this.pendingDeposits[claimant].amount;

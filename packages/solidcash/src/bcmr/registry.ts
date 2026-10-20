@@ -105,18 +105,33 @@ export function identitySnapshot(category: string, snapshot: BcmrSnapshot): Iden
   };
 }
 
-/** A registry the identity of `category` publishes about itself, holding one snapshot taking effect at `timestamp`. */
-export function selfPublishedRegistry(category: string, snapshot: BcmrSnapshot, timestamp: string): MetadataRegistry {
+/**
+ * A registry published from the identity of `registryIdentity`, holding one snapshot of each identity, taking effect at
+ * `timestamp`. A genesis that creates several categories publishes one registry for all of them, since they share its
+ * identity output.
+ */
+export function publishedRegistry(
+  registryIdentity: string,
+  identities: readonly { readonly category: string; readonly snapshot: BcmrSnapshot }[],
+  timestamp: string,
+): MetadataRegistry {
   assertTimestamp(timestamp);
-  const tags = snapshot.tags ?? {};
+  const tags = Object.assign({}, ...identities.map(({ snapshot }) => snapshot.tags ?? {})) as Record<string, Tag>;
   return {
     $schema: BCMR_SCHEMA,
     version: { major: 0, minor: 1, patch: 0 },
     latestRevision: timestamp,
-    registryIdentity: category,
-    identities: { [category]: { [timestamp]: identitySnapshot(category, snapshot) } },
-    ...(Object.keys(tags).length === 0 ? {} : { tags: { ...tags } }),
+    registryIdentity,
+    identities: Object.fromEntries(identities.map(({ category, snapshot }) => [
+      category, { [timestamp]: identitySnapshot(category, snapshot) },
+    ])),
+    ...(Object.keys(tags).length === 0 ? {} : { tags }),
   };
+}
+
+/** A registry the identity of `category` publishes about itself, holding one snapshot taking effect at `timestamp`. */
+export function selfPublishedRegistry(category: string, snapshot: BcmrSnapshot, timestamp: string): MetadataRegistry {
+  return publishedRegistry(category, [{ category, snapshot }], timestamp);
 }
 
 /**

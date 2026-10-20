@@ -542,3 +542,33 @@ export function plainNumerics<T>(value: T): T {
   }
   return value;
 }
+
+/** The bearer category BchNative test tokens are constructed with: its own category, not the contract's. */
+export const NATIVE_TEST_CATEGORY = 'a7'.repeat(32);
+
+/**
+ * Seeds a BchNative token's reserve, at the contract's token container for the native category, and bearer coins of
+ * that category. The coins are added directly: a token's genesis seeds only its own category.
+ */
+export async function seedNativeToken(
+  provider: MockNetworkProvider, contract: Contract, categoryId: string,
+  options: { reserve: bigint; holders?: readonly { address: string; amount: bigint }[]; nonce?: number },
+): Promise<{ reserve: Utxo; holders: Utxo[] }> {
+  const nonce = options.nonce ?? 0;
+  const txid = (index: number): string => `${(0xa700 + nonce).toString(16)}${index.toString(16).padStart(2, '0')}`
+    .padEnd(64, 'a');
+  const reserve: Utxo = {
+    txid: txid(0), vout: 0, satoshis: 1_200n, token: { category: NATIVE_TEST_CATEGORY, amount: options.reserve },
+  };
+  await provider.addUtxo(getTokenContainerAddress(contract, categoryId, NATIVE_TEST_CATEGORY), reserve);
+  const holders: Utxo[] = [];
+  for (const [index, holder] of (options.holders ?? []).entries()) {
+    const coin: Utxo = {
+      txid: txid(index + 1), vout: 0, satoshis: 100_000n,
+      token: { category: NATIVE_TEST_CATEGORY, amount: holder.amount },
+    };
+    await provider.addUtxo(holder.address, coin);
+    holders.push(coin);
+  }
+  return { reserve, holders };
+}

@@ -1,0 +1,20 @@
+pragma solidcash >=0.8.0;
+
+import { BchNative } from "../../contracts/BchNative.scash";
+
+// The smallest BchNative token: a ledger of one mapping, small enough for one framed input. Its bearer form is a
+// category of its own, which is what lets a framed composition settle it at all.
+contract FramedNativeToken() is BchNative {
+    mapping(address => uint256) internal held;
+
+    constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) { }
+
+    function _nativeCredit(address account, uint256 amount) internal override {
+        this.held[account] = this.held[account] + amount;
+    }
+
+    function _nativeDebit(address account, uint256 amount) internal override {
+        require(this.held[account] >= amount);
+        this.held[account] = this.held[account] - amount;
+    }
+}

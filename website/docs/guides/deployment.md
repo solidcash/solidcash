@@ -368,18 +368,26 @@ coin selection, or choose another `identity` policy:
 | `{ kind: 'governed' }` | A guard that publishes what the contract authorizes through `BcmrGoverned`. | The contract's own access control. |
 
 Pass `bcmr` to publish a registry in the genesis itself, at output 1. For a token that implements `name()`,
-`symbol()` and `decimals()`, the SDK reads them from the contract and refuses stated values that disagree;
-`nativeToken.reserve` premints the token's own category (direct convention) and `nativeToken.scale` states a
-`BchNativeMultiplier` scale:
+`symbol()` and `decimals()`, the SDK reads them from the contract and refuses stated values that disagree.
+
+A `BchNative` token's bearer form is a CashTokens category of its own, which the token takes as its constructor
+argument. `nativeToken.funding` names a token-free coin at vout 0 whose txid becomes that category, so the genesis
+creates it beside the contract's and both share the identity output; `nativeToken.reserve` premints it into the
+contract's token container, and `nativeToken.scale` states a `BchNativeMultiplier` scale. The SDK refuses a contract
+constructed with another category:
 
 ```ts
-const token = await factory.deploy({
+const tokenCoin = /* a token-free coin of yours at vout 0 */;
+const token = await factory.deploy(hexToBin(tokenCoin.txid), {
   identity: { kind: 'key' },
   bcmr: { description: 'A dollar ledger.', uris: { icon: 'ipfs://...', web: 'https://example.org' } },
-  nativeToken: { reserve: 1_000_000_000n },
+  nativeToken: { funding: tokenCoin, reserve: 1_000_000_000n },
 });
 const { bytes, uris } = token.deploymentRegistry()!; // host these exact bytes at one of the URIs
 ```
+
+The registry then describes two identities: the token's category, with its name, symbol, decimals and reserve, and
+the contract's, which labels the contract's NFTs.
 
 The publication defaults to the registry's IPFS CID, so pin the returned bytes as one raw block. Update later with
 `publishMetadata` (or `applyGovernedMetadata` under `governed`) from `solidcash/bcmr`. Categories a contract creates

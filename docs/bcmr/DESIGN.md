@@ -176,7 +176,8 @@ Other wallets do not know this rule. A dedicated authority key, or opting into `
 
 ### 5.2 Registry content
 
-For an ERC-20-shaped token (category and CID abbreviated):
+For an ERC-20-shaped token whose bearer category X the genesis creates beside the contract's C (section 6; categories
+and CID abbreviated):
 
 ```json
 {
@@ -185,22 +186,31 @@ For an ERC-20-shaped token (category and CID abbreviated):
   "latestRevision": "2026-10-20T12:00:00.000Z",
   "registryIdentity": "<C>",
   "identities": {
-    "<C>": {
+    "<X>": {
       "2026-10-20T12:00:00.000Z": {
         "name": "Example Dollar",
         "description": "A ledger token whose wrapped form is this CashTokens category.",
         "uris": { "icon": "ipfs://bafkrei...", "web": "https://example.org" },
-        "token": { "category": "<C>", "symbol": "DOLLAR", "decimals": 6 }
+        "token": { "category": "<X>", "symbol": "DOLLAR", "decimals": 6 }
+      }
+    },
+    "<C>": {
+      "2026-10-20T12:00:00.000Z": {
+        "name": "Example Dollar contract",
+        "description": "The contract that keeps the Example Dollar ledger; its NFTs hold the ledger's state."
       }
     }
   }
 }
 ```
 
-- `registryIdentity` is the category: the identity publishes its own registry.
+- `registryIdentity` is the contract's category: the identity publishes its own registry. The genesis spends output 0
+  of both authbases, C's and X's, so it lies on both authchains, and its publication, like every later update from the
+  shared identity output, speaks for both. A deployment without a token of its own publishes C's identity alone.
 - One snapshot, keyed by the deployment time in the `YYYY-MM-DDTHH:mm:ss.sssZ` format the schema requires. The time
   is injectable, so tests stay deterministic.
-- `token.category` equals the authbase (R8).
+- `token.category` equals the identity's authbase (R8). C's identity carries a `token` only to label its NFTs
+  (section 8), under the symbol `<SYMBOL>-STATE`.
 - The SDK validates the registry with libauth's `importMetadataRegistry` before it builds the genesis.
 - It hashes the exact bytes it returns and never serializes them again; the hosted file must be those bytes.
 
@@ -244,13 +254,17 @@ Further points:
   (name, symbol, decimals), `BchNative.scash` (wrap and unwrap) and `BchNativeMultiplier.scash` (scaling). Third-party
   ledgers compose with them too: the npm OpenZeppelin ERC20 and the verbatim Tether source
   (`packages/solidcash/contracts/README.md`).
-- Wallets only ever see the unwrapped form: token-only UTXOs of the contract's own category, paid by `unwrap` from
-  `this.tokens[this.category]`. Ledger balances are mapping records at covenant locks.
-- BchNative tokens are direct-convention contracts. The framed census refuses any fungible amount of a settled
-  contract's own category (`docs/framed/SPEC_FRAMED_TRANSACTION.md`, S2; `V7_CENSUS_OWN_FUNGIBLE`), so a framed native
-  token would need a separate token category X held in a `buildTokenContainerCovenantScript(C, X)` container. X would
-  then have its own genesis and identity, separate from the contract's masters, which suits BCMR. This design covers
-  the direct shape that exists.
+- Wallets only ever see the unwrapped form: token-only UTXOs of the token's bearer category X, paid by `unwrap` from
+  the contract's container `this.tokens[X]`. Ledger balances are mapping records at covenant locks.
+- X is a category of its own, not the contract's C (D33). BchNative used C until this design found that the framed
+  census refuses any fungible amount of a settled contract's own category (`docs/framed/SPEC_FRAMED_TRANSACTION.md`,
+  S2; `V7_CENSUS_OWN_FUNGIBLE`), and that tokens of C share C's identity with its state NFTs. BchNative now takes X at
+  construction and keeps it as the immutable `_nativeCategory`; its container key is that variable, which the
+  compiler publishes as `keySource: 'state'` and the SDK reads from the state each call loads.
+- The genesis that creates C also creates X, from a second vout-0 coin (`nativeToken.funding`), so the two categories
+  share its identity output, and the registry describes both: X carries the token fields, C the contract and its NFT
+  labels. A framed genesis does the same; framed calls through a token container wait for the framed composer to
+  compose token containers (`packages/solidc/docs/deferrals.md`).
 
 ### 6.2 Genesis for a native token
 
@@ -259,28 +273,33 @@ Further points:
 the publication land in one transaction:
 
 ```text
-out  0     identity output
+in   0     funding coin (vout 0)                C = its txid
+in   1     token coin (vout 0)                  X = its txid
+out  0     identity output, shared by C and X
 out  1     BCMR publication
 out  2..   masters, data NFTs, mapping heads, ...
-           reserve: token-only output of C at getTokenContainerAddress(contract, C, C), amount = premint
+           reserve: token-only output of X at getTokenContainerAddress(contract, C, X), amount = premint
            change
 ```
+
+Without `nativeToken.funding` the premint is of C, which only the direct convention admits.
 
 - The premint is the ledger supply the constructor credits, divided by the native scale, plus any headroom kept for
   a later `issue`. It is at most 9,223,372,036,854,775,807.
 - The SDK checks that the premint is at least `totalSupply()` divided by the scale, read from the probe genesis
-  (6.4), so every ledger unit the constructor credits is backed.
+  (6.4), so every ledger unit the constructor credits is backed, and that the contract keys its reserve by X: it reads
+  the state variable the artifact publishes as the container key from the probe and refuses another category.
 
 ### 6.3 Field mapping
 
 | BCMR field | Source | Rule |
 | --- | --- | --- |
-| `identities` key, `token.category` | C | R8 |
+| `identities` key, `token.category` | X; C without `nativeToken.funding` | R8; C then has an identity of its own (5.2) |
 | `name` | `name()` | |
 | `token.symbol` | `symbol()` | 6.6 |
 | `token.decimals` | `decimals()` minus log10 of the native scale | 6.5 |
 | `description`, `uris.icon`, `uris.web`, `tags` | deploy options | Nothing on chain to read. |
-| `token.nfts` | generated | Section 8; optional. |
+| `token.nfts` | generated | Section 8; optional; on C's identity when X is separate. |
 | `extensions` | AuthGuard's `authNft`; the ledger description of 6.7 | |
 
 ### 6.4 Where the values come from
@@ -440,7 +459,7 @@ interface DeployOptions {
   // ...existing fields...
   identity?: IdentityPolicy;           // default: { kind: 'key' } at the deployer's lock
   bcmr?: BcmrPublication;              // omitted: no publication output
-  nativeToken?: { reserve?: bigint; scale?: bigint };   // own-category premint (direct convention) and native scale
+  nativeToken?: { funding?: Utxo; funder?: Unlocker; reserve?: bigint; scale?: bigint };  // token category, premint
 }
 
 type IdentityPolicy =
@@ -488,12 +507,14 @@ Tests run on mocknet only, which is the user's standing rule.
 | Contract-created categories | option C in `packages/solidc/docs/deferrals.md` | |
 | Generated NFT labels | `bcmr/nft-parse.ts`, `bcmr/nft-roles.ts` | `test/e2e/BcmrNftParse.test.ts` |
 | Contract-governed metadata | `bcmr/governed.ts`, `contracts/BcmrGoverned.scash` | `test/e2e/BcmrGoverned.test.ts` |
+| BchNative's own bearer category | `contracts/BchNative.scash`; the `state` container key in `packages/solidc/src/semantic/SymbolTableTraversal.ts` and `stateful/sc-load-create-builder-token-containers.ts` | the BchNative e2e files; `test/e2e/BchNativeFramed.test.ts` (framed genesis) |
 
 Paths are under `packages/solidcash/` unless stated.
 
 ## 12. Decisions
 
 - AuthGuard is opt-in and never the default: D31, the user's answer.
+- BchNative's bearer form is a category of its own: D33.
 - The open decisions this design listed were taken as its own recommendations when it was implemented: D32. The
   default identity is `key`; stated ERC-20 fields are checked and refused on mismatch, the symbol case-insensitively;
   the native scale is explicit; contract-created categories take option C; the reserve is named by an extension;

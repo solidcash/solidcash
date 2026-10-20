@@ -7,7 +7,7 @@ import { BchNative } from "../../contracts/BchNative.scash";
 // the token fields it publishes and check its premint against the ledger.
 // cspell:ignore XDOL
 contract BcmrMetadataToken() is ERC20, BchNative {
-    constructor() {
+    constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) {
         this._totalSupply = 5000;
     }
 

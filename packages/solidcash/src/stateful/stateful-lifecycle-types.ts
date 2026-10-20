@@ -89,7 +89,7 @@ export interface DeployOptions {
   identity?: IdentityPolicy;
   /** A BCMR registry the genesis publishes at output 1. */
   bcmr?: BcmrPublication;
-  /** The contract's own fungible token: the premint into its token container and the native scale. */
+  /** The ledger token's bearer form: the category the genesis creates for it, its premint and native scale. */
   nativeToken?: NativeTokenOptions;
   /** Internal: a probe genesis that only answers the contract's views; it publishes nothing and reserves nothing. */
   metadataProbe?: true;

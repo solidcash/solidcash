@@ -3,6 +3,7 @@ import {
 } from 'vitest';
 import { compileFile, compileFileSplit } from 'solidc';
 import { URL } from 'url';
+import { hexToBin } from '@bitauth/libauth';
 import { asmToScript, scriptToBytecode } from '@solidcash/utils';
 import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
 import { Signer } from '../../src/index.js';
@@ -12,7 +13,7 @@ import {
 } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, aliceAddress } from '../fixture/vars.js';
-import { createTestProvider } from '../test-util.js';
+import { NATIVE_TEST_CATEGORY, createTestProvider } from '../test-util.js';
 
 // =============================================================================
 // The same USDT port composed by INHERITANCE and partitioned by the built-in
@@ -102,10 +103,11 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
       expect(size, `${name} is ${size} B, over the ${MAX_INPUT_BYTESIZE} B per-input limit`)
         .toBeLessThanOrEqual(MAX_INPUT_BYTESIZE);
     }
-    // The planner needs four spendable inputs since the per-entry covenant hardening: the root and three facets
-    // total more than three inputs can carry. Exact byte snapshots are deliberately avoided: security checks
-    // change shard sizes, while deployability and route coverage are the invariants.
-    expect(rows.length).toBeLessThan(5);
+    // The planner needs five spendable inputs since BchNative reads its own bearer category from state: the root
+    // and four facets, up from three facets after the per-entry covenant hardening. Exact byte snapshots are
+    // deliberately avoided: security checks change shard sizes, while deployability and route coverage are the
+    // invariants.
+    expect(rows.length).toBeLessThan(6);
     expect(rows.reduce((a, [, s]) => a + s, 0)).toBeGreaterThan(MAX_INPUT_BYTESIZE);
   });
 
@@ -126,7 +128,7 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
       }));
     }
     return SplitContractBundle.from(bundle, signer).deploy(
-      [addressToLockScript(aliceAddress), 'Tether USD', 'USDT', 6n, 10n],
+      [addressToLockScript(aliceAddress), 'Tether USD', 'USDT', 6n, 10n, hexToBin(NATIVE_TEST_CATEGORY)],
       {
         fundingUtxo: funding[0],
         facetOverrides: Object.fromEntries(bundle.manifest.facets.map((f, i) => [

@@ -19,9 +19,13 @@ allowances, supply accounting, and Transfer/Approval events while intentionally 
 
 ## `BchNative`
 
-`BchNative.scash` adds a CashTokens-backed wrap/unwrap boundary to a ledger token. It derives the wrapped
-category from the contract's own state NFT and owns no configuration or delayed-admission state. The token
-supplies balance and policy hooks.
+`BchNative.scash` adds a CashTokens-backed wrap/unwrap boundary to a ledger token. The bearer token is a CashTokens
+category of its own, which the token names at construction (`constructor(bytes32 nativeCategory_)
+BchNative(nativeCategory_)`) and BchNative keeps as an immutable; the reserve container is keyed by it. It is not the
+contract's own category: a framed composition refuses fungible amounts of that category, and a category of its own
+keeps the token's BCMR identity apart from the contract's state NFTs. A deployment creates the category in the
+genesis and premints the reserve with `nativeToken: { funding, reserve }` (see `docs/bcmr/DESIGN.md`, section 6).
+BchNative owns no other configuration or delayed-admission state. The token supplies balance and policy hooks.
 
 It composes with unmodified third-party ledgers too: `test/fixture/oz_bch_native_token.sol` inherits the npm
 OpenZeppelin ERC20, and `test/fixture/tether/TetherNativeToken.sol` inherits the Etherscan-verified USDT source

@@ -3,16 +3,33 @@ pragma solidcash >=0.8.0;
 // CashTokens-backed wrap/unwrap extension for ledger tokens.
 //
 // The sibling ERC20 implementation owns balances and policy. A concrete token
-// implements the hooks below, then composes both bases:
+// implements the hooks below, then composes both bases and names the bearer
+// token's category from its constructor:
 //
-//   contract MyToken(address admin) is ERC20, BchNative { ... }
+//   contract MyToken() is ERC20, BchNative {
+//       constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) { }
+//   }
 //   contract RegulatedToken(address admin) is ERC20, BchNative, BlackList { ... }
 //
 // BchNative owns only the immediate BCH-native reserve boundary, so it can be
 // reused without assuming a particular ERC20 allowance, pause, blacklist, or
 // compliance model. Inherit BchNativeQuarantine separately for delayed
 // admission, pending state, and block-oracle timing.
+//
+// The bearer form is a CashTokens category of its own, which the deployment
+// creates beside the contract's (`nativeToken.funding`). It is not the
+// contract's own category: a framed composition refuses any fungible amount of
+// the contract's own category, and a category of its own keeps the token's BCMR
+// identity and supply apart from the contract's state NFTs (docs/bcmr/DESIGN.md,
+// section 6).
 abstract contract BchNative {
+    // The bearer token's category, in the byte order `this.tokens[...]` takes. A deployment reads it back
+    // through the artifact, which publishes it as the reserve container's key.
+    internal bytes32 immutable _nativeCategory;
+
+    constructor(bytes32 nativeCategory_) {
+        this._nativeCategory = nativeCategory_;
+    }
 
     // Integration hooks supplied by the concrete token. Policy hooks return
     // false to refuse the operation; cancellation is separate so a rejected
@@ -27,7 +44,7 @@ abstract contract BchNative {
 
     // Direct wrap: prove the reserve grew, then credit the sibling ledger.
     function wrap(int amount) virtual {
-        bytes32 category = this.category;
+        bytes32 category = this._nativeCategory;
         require(amount > 0);
         address claimant = msg.sender;
         require(_nativeCanWrap(claimant));
@@ -41,7 +58,7 @@ abstract contract BchNative {
 
     // Unwrap ledger units into bearer CashTokens.
     function unwrap(address to, int amount) virtual {
-        bytes32 category = this.category;
+        bytes32 category = this._nativeCategory;
         address sender = msg.sender;
         require(_nativeCanUnwrap(sender));
         require(amount > 0);

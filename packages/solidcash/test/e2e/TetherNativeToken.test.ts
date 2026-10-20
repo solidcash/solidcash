@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileFile, compileFileSplit } from 'solidc';
 import { asmToScript, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import type { Signer } from '../../src/index.js';
 import type { Utxo } from '../../src/interfaces.js';
 import { SplitContractBundle, type SplitContract } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
-import { createTestProvider, getSigners } from '../test-util.js';
+import { NATIVE_TEST_CATEGORY, createTestProvider, getSigners } from '../test-util.js';
 
 // The verified source of USDT at 0xdAC17F958D2ee523a2206206994597C13D831ec7 (solc v0.4.18), exactly as Etherscan
 // serves it: CRLF line endings, no trailing newline.
@@ -49,7 +49,9 @@ describe('Tether USDT verbatim with BchNative', () => {
 
     const provider = createTestProvider();
     const [treasury, admin, alice, bob, successor] = await getSigners(5, { provider, fundingUtxos: 40 });
-    const usdt = await SplitContractBundle.from(split, treasury).deploy([1_000_000n, 'Tether USD', 'USDT', 6n]);
+    const usdt = await SplitContractBundle.from(split, treasury).deploy([
+      1_000_000n, 'Tether USD', 'USDT', 6n, hexToBin(NATIVE_TEST_CATEGORY),
+    ]);
     const as = (signer: Signer): SplitContract => usdt.connect(signer);
     const key = (signer: Signer): Uint8Array => addressToLockScript(signer.getAddress());
     const balance = (signer: Signer): Promise<bigint> => usdt.root.state.balances(key(signer));
@@ -118,9 +120,9 @@ describe('Tether USDT verbatim with BchNative', () => {
     expect(await balance(alice)).toBe(1_998n);
     expect(await balance(admin)).toBe(5_002n);
 
-    // BchNative: CashTokens of the contract's own category back the ledger. Mocknet seeds the reserve that a
+    // BchNative: CashTokens of the token's own bearer category back the ledger. Mocknet seeds the reserve that a
     // genesis premint would hold.
-    const category = usdt.categoryId;
+    const category = NATIVE_TEST_CATEGORY;
     const container = usdt.root.getTokenContainerAddress(category);
     await provider.addUtxo(container, {
       txid: 'c1'.repeat(32), vout: 0, satoshis: 1_200n, token: { category, amount: 1_000_000n },

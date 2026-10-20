@@ -284,22 +284,34 @@ describe('updating a published identity', () => {
 describe('an ERC-20-shaped token', () => {
   const artifact = compileFile(TOKEN, { messageBus: false });
 
-  it('publishes the fields the contract answers beside its premint', async () => {
+  /** A signer with a deployment coin and a coin whose txid becomes the token's own category. */
+  async function coins(provider: MockNetworkProvider): Promise<{ alice: Signer; funding: Utxo; token: Utxo }> {
+    const alice = await signerWithCoins(provider, 4);
+    const funding = await genesisCoin(alice);
+    return { alice, funding, token: await genesisCoin(alice, [funding]) };
+  }
+
+  it('creates its own token category, publishes what the contract answers, and premints the reserve', async () => {
     const provider = new MockNetworkProvider();
-    const alice = await signerWithCoins(provider);
+    const { alice, funding, token } = await coins(provider);
     const result = await StatefulContract.deploy(artifact, [], {
-      provider, fundingUtxo: await genesisCoin(alice), funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(),
+      provider, fundingUtxo: funding, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(),
+      initArgs: [hexToBin(token.txid)],
       bcmr: { uris: { icon: 'ipfs://bafkreiicon' }, timestamp: TIMESTAMP },
-      nativeToken: { reserve: 1_000_000n },
+      nativeToken: { funding: token, reserve: 1_000_000n },
     });
-    const snapshot = result.registry!.registry.identities![result.categoryId]![TIMESTAMP]!;
+    const identities = result.registry!.registry.identities!;
+    const snapshot = identities[token.txid]![TIMESTAMP]!;
     expect(snapshot.name).toBe('Example Dollar');
-    expect(snapshot.token).toEqual({ category: result.categoryId, symbol: 'XDOL', decimals: 6 });
+    expect(snapshot.token).toEqual({ category: token.txid, symbol: 'XDOL', decimals: 6 });
+    expect(identities[result.categoryId]![TIMESTAMP]!.name).toBe('Example Dollar contract');
+    // The genesis spends the token's coin, so it creates both categories, which share its identity output.
+    expect(result.tx.inputs.map((input) => binToHex(input.outpointTransactionHash))).toContain(token.txid);
     const reserveLock = addressToLockScript(getTokenContainerAddress(result.contract.inner, result.categoryId,
-      result.categoryId));
+      token.txid));
     const reserve = result.tx.outputs.find((output) => binToHex(output.lockingBytecode) === binToHex(reserveLock));
     expect(reserve?.token?.amount).toBe(1_000_000n);
-    expect(binToHex(reserve!.token!.category)).toBe(result.categoryId);
+    expect(binToHex(reserve!.token!.category)).toBe(token.txid);
     expect(snapshot.extensions?.[NATIVE_TOKEN_EXTENSION]).toEqual({
       reserveLockingBytecode: binToHex(reserveLock), scale: '1', ledgerSupply: 'totalSupply()',
     });
@@ -307,25 +319,35 @@ describe('an ERC-20-shaped token', () => {
 
   it('scales the published decimals by the native scale', async () => {
     const provider = new MockNetworkProvider();
-    const alice = await signerWithCoins(provider);
+    const { alice, funding, token } = await coins(provider);
     const result = await StatefulContract.deploy(artifact, [], {
-      provider, fundingUtxo: await genesisCoin(alice), funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(),
-      bcmr: { timestamp: TIMESTAMP }, nativeToken: { reserve: 50n, scale: 100n },
+      provider, fundingUtxo: funding, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(),
+      initArgs: [hexToBin(token.txid)],
+      bcmr: { timestamp: TIMESTAMP }, nativeToken: { funding: token, reserve: 50n, scale: 100n },
     });
-    expect(result.registry!.registry.identities![result.categoryId]![TIMESTAMP]!.token?.decimals).toBe(4);
+    expect(result.registry!.registry.identities![token.txid]![TIMESTAMP]!.token?.decimals).toBe(4);
   });
 
-  it('refuses, before broadcasting, a stated symbol the contract disagrees with or a premint below the ledger', async () => {
+  it('refuses, before broadcasting, a symbol, premint or token category the contract disagrees with', async () => {
     const provider = new MockNetworkProvider();
-    const alice = await signerWithCoins(provider);
-    const fundingUtxo = await genesisCoin(alice);
-    const base = { provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress() };
+    const { alice, funding, token } = await coins(provider);
+    const base = {
+      provider, fundingUtxo: funding, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(),
+      initArgs: [hexToBin(token.txid)],
+    };
     await expect(StatefulContract.deploy(artifact, [], {
-      ...base, bcmr: { token: { symbol: 'OTHER' }, timestamp: TIMESTAMP },
+      ...base, bcmr: { token: { symbol: 'OTHER' }, timestamp: TIMESTAMP }, nativeToken: { funding: token },
     })).rejects.toThrow(/disagrees with the contract's symbol\(\)/);
-    await expect(StatefulContract.deploy(artifact, [], { ...base, nativeToken: { reserve: 4999n } }))
-      .rejects.toThrow(/totalSupply\(\) of 5000/);
-    // Nothing was broadcast: the funding coin is still there.
-    expect((await alice.getUtxos()).some((utxo) => utxo.txid === fundingUtxo.txid && utxo.vout === 0)).toBe(true);
+    await expect(StatefulContract.deploy(artifact, [], {
+      ...base, nativeToken: { funding: token, reserve: 4999n },
+    })).rejects.toThrow(/totalSupply\(\) of 5000/);
+    await expect(StatefulContract.deploy(artifact, [], {
+      ...base, initArgs: [hexToBin('ee'.repeat(32))], nativeToken: { funding: token, reserve: 5000n },
+    })).rejects.toThrow(/keys its reserve by category e{64}/);
+    // Nothing was broadcast: both coins are still there.
+    const live = await alice.getUtxos();
+    for (const coin of [funding, token]) {
+      expect(live.some((utxo) => utxo.txid === coin.txid && utxo.vout === 0)).toBe(true);
+    }
   });
 });

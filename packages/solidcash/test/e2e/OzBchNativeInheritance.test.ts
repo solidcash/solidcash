@@ -17,10 +17,11 @@ import {
   StatefulContract,
 } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
-import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
 import {
-  getDynamicChunkAddress, getEntryNftAddress, getTokenContainerAddress,
-} from '../../src/stateful/covenant-helpers.js';
+  NATIVE_TEST_CATEGORY, createTestProvider, expectScriptRejection, seedNativeToken, setupStatefulUtxos,
+} from '../test-util.js';
+import { getDynamicChunkAddress, getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
+import type { MockNetworkProvider } from '../../src/network/mock/index.js';
 import {
   aliceAddress, alicePriv, bobPriv,
 } from '../fixture/vars.js';
@@ -41,7 +42,8 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     // 9_100 held (9_024) before the October per-entry hardening; shared pins brought it to 9_417. The 10-14..10-17
     // hardening (per-call merges, minted-root bindings, the direct outside-layout walk) took it to 10_539, past the
     // 10_000-byte single-input limit, so the unsplit script no longer deploys and the token ships split, as the
-    // facet title below settles. This budget guards further growth.
+    // facet title below settles. BchNative's own bearer category added 56 B (10_595). This budget guards further
+    // growth.
     expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(10_600);
     expect(artifact.contractName).toBe('OzNativeToken');
     const abi = new Set(artifact.abi.map((entry) => entry.name));
@@ -50,7 +52,7 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
       'transfer', 'approve', 'allowance', 'transferFrom', 'wrap', 'unwrap',
     ]) expect(abi).toContain(name);
     expect(artifact.stateLayout?.variables.map((entry) => entry.name))
-      .toEqual(['_totalSupply', '_name', '_symbol']);
+      .toEqual(['_nativeCategory', '_totalSupply', '_name', '_symbol']);
     expect(artifact.stateLayout?.collections.map((entry) => entry.name))
       .toEqual(['_balances', '_allowances']);
   });
@@ -88,17 +90,13 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
       _totalSupply: 0n,
       _name: '',
       _symbol: '',
-    }, {
-      saltContract: true,
-      extraOutputs: (category) => [{
-        // The container binds the master lock, which is the category-pinned contract's.
-        address: getTokenContainerAddress(inner.withCategory(hexToBin(category)), category, category),
-        satoshis: 1_200n,
-        token: { amount: 1_000n },
-      }, {
-        address: bob.getAddress(), satoshis: 100_000n, token: { amount: 5n },
-      }],
-    });
+      _nativeCategory: hexToBin(NATIVE_TEST_CATEGORY),
+    }, { saltContract: true });
+    // The container binds the master lock, which is the category-pinned contract's.
+    const native = await seedNativeToken(
+      provider as MockNetworkProvider, inner.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+      { reserve: 1_000n, holders: [{ address: bob.getAddress(), amount: 5n }] },
+    );
     const token = StatefulContract.withCategory(inner, setup.categoryId);
     let nonce = 0xf0;
     const fund = async (signer: Signer): Promise<void> => {
@@ -107,11 +105,11 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
         txid: nonce.toString(16).padStart(64, 'f'), vout: 0, satoshis: 500_000n,
       });
     };
-    const bearer = setup.extraUtxos![1] as Utxo;
+    const bearer = native.holders[0] as Utxo;
     await fund(bob);
     await token.connect(bob).call.wrap(5n)
       .addInput(bearer, new SignatureTemplate(bobPriv).unlockP2PKH())
-      .tokenContainerDeposit(setup.categoryId, 5n)
+      .tokenContainerDeposit(NATIVE_TEST_CATEGORY, 5n)
       .send();
 
     const aliceLedger = addressToLockScript(aliceAddress);
@@ -139,7 +137,7 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     expect(await token.state._balances(bobLedger)).toBe(0n);
     expect((await token.getState())._totalSupply).toBe(3n);
     const bearerBalance = (await provider.getUtxos(bob.getAddress()))
-      .filter((utxo) => utxo.token?.category === setup.categoryId)
+      .filter((utxo) => utxo.token?.category === NATIVE_TEST_CATEGORY)
       .reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n);
     expect(bearerBalance).toBe(2n);
   });
@@ -172,7 +170,7 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
         txid: byte.repeat(32), vout: 0, satoshis: 1_000_000n,
       }));
     }
-    const deployed = await SplitContractBundle.from(split, bob).deploy([], {
+    const deployed = await SplitContractBundle.from(split, bob).deploy([hexToBin(NATIVE_TEST_CATEGORY)], {
       fundingUtxo: funding[0],
       facetOverrides: Object.fromEntries(split.manifest.facets.map((facet, index) => [
         facet.name, { fundingUtxo: funding[index + 1] },
@@ -180,22 +178,24 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
       initialState: { _totalSupply: 0n, _name: '', _symbol: '' },
     });
     const category = deployed.categoryId;
-    await provider.addUtxo(deployed.root.getTokenContainerAddress(category), {
+    const reserveAddress = deployed.root.getTokenContainerAddress(NATIVE_TEST_CATEGORY);
+    await provider.addUtxo(reserveAddress, {
       txid: 'b1'.repeat(32), vout: 0, satoshis: 1_200n,
-      token: { category, amount: 1_000n },
+      token: { category: NATIVE_TEST_CATEGORY, amount: 1_000n },
     });
     const bearer = await provider.addUtxo(bob.getAddress(), {
       txid: 'b2'.repeat(32), vout: 0, satoshis: 100_000n,
-      token: { category, amount: 5n },
+      token: { category: NATIVE_TEST_CATEGORY, amount: 5n },
     });
     await deployed.call.wrap(5n)
       .addInput(bearer, new SignatureTemplate(bobPriv).unlockP2PKH())
-      .tokenContainerDeposit(category, 5n)
+      .tokenContainerDeposit(NATIVE_TEST_CATEGORY, 5n)
       .send();
     expect(await deployed.root.state._balances(addressToLockScript(bob.getAddress()))).toBe(5n);
     expect((await deployed.root.getState())._totalSupply).toBe(5n);
-    const reserveAfterWrap = await provider.getUtxos(deployed.root.getTokenContainerAddress(category));
-    expect(reserveAfterWrap.find((utxo) => utxo.token?.category === category)?.token?.amount).toBe(1_005n);
+    const reserveAfterWrap = await provider.getUtxos(reserveAddress);
+    expect(reserveAfterWrap.find((utxo) => utxo.token?.category === NATIVE_TEST_CATEGORY)?.token?.amount)
+      .toBe(1_005n);
 
     await provider.addUtxo(bob.getAddress(), {
       txid: 'b3'.repeat(32), vout: 0, satoshis: 500_000n,
@@ -203,11 +203,11 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     await deployed.call.unwrap(bob.getAddress(), 2n).send();
     expect(await deployed.root.state._balances(addressToLockScript(bob.getAddress()))).toBe(3n);
     expect((await deployed.root.getState())._totalSupply).toBe(3n);
-    const reserveAfterUnwrap = await provider.getUtxos(deployed.root.getTokenContainerAddress(category));
-    expect(reserveAfterUnwrap.find((utxo) => utxo.token?.category === category)?.token?.amount)
+    const reserveAfterUnwrap = await provider.getUtxos(reserveAddress);
+    expect(reserveAfterUnwrap.find((utxo) => utxo.token?.category === NATIVE_TEST_CATEGORY)?.token?.amount)
       .toBe(1_003n);
     const unwrapped = (await provider.getUtxos(bob.getAddress()))
-      .filter((utxo) => utxo.token?.category === category)
+      .filter((utxo) => utxo.token?.category === NATIVE_TEST_CATEGORY)
       .reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n);
     expect(unwrapped).toBe(2n);
 

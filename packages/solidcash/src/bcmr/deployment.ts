@@ -14,7 +14,8 @@ import type {
 } from '@bitauth/libauth/build/lib/engine/types/bcmr-types.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { Artifact } from '@solidcash/utils';
-import type { Output } from '../interfaces.js';
+import type { Output, Unlocker, Utxo } from '../interfaces.js';
+import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
 import { stageBroadcasts } from '../framed/proxy/staged-broadcasts.js';
 import type { DeployOptions } from '../stateful/stateful-lifecycle-types.js';
 import type { GenesisIdentity, IdentityRecord } from './identity.js';
@@ -22,7 +23,7 @@ import {
   BcmrError, dataCarrierBytes, ipfsCidV1Raw, publicationOutput,
 } from './publication.js';
 import {
-  assertTokenSymbol, encodeRegistry, registryTimestamp, selfPublishedRegistry,
+  assertTokenSymbol, encodeRegistry, publishedRegistry, registryTimestamp,
   type BcmrSnapshot, type EncodedRegistry,
 } from './registry.js';
 import { nftCategory, type NftParseRole } from './nft-parse.js';
@@ -56,9 +57,16 @@ export interface BcmrPublication {
   readonly timestamp?: string;
 }
 
-/** The contract's own fungible token, as BchNative holds it (direct convention). */
+/** A ledger token's bearer form, as BchNative holds it in the contract's token container. */
 export interface NativeTokenOptions {
-  /** The fungible amount of the contract's own category minted into its token container: the premint. */
+  /**
+   * A token-free coin at vout 0 whose txid becomes the token's own category, which the genesis creates beside the
+   * contract's. Omitted, the token is the contract's own category, which only the direct convention admits.
+   */
+  readonly funding?: Utxo;
+  /** The funding coin's unlocker; the deployment's funder when omitted. */
+  readonly funder?: Unlocker;
+  /** The fungible amount minted into the contract's token container for the token's category: the premint. */
   readonly reserve?: bigint;
   /** Ledger units one native unit backs (BchNativeMultiplier's multiplier), a power of ten; 1 when omitted. */
   readonly scale?: bigint;
@@ -69,17 +77,25 @@ export interface PublishedRegistry extends EncodedRegistry {
   readonly uris: readonly string[];
 }
 
-/** What a contract answers through IERC20Metadata and EIP-20 `totalSupply()`. */
+/**
+ * What a contract answers through IERC20Metadata and EIP-20 `totalSupply()`, and the bearer category its reserve
+ * container is keyed by when it keeps that category in state.
+ */
 export interface ContractTokenFacts {
   readonly name?: string;
   readonly symbol?: string;
   readonly decimals?: bigint;
   readonly totalSupply?: bigint;
+  readonly nativeCategory?: string;
 }
 
 /** What a genesis needs from its metadata before it is built. */
 export interface PreparedMetadata {
   readonly registry?: PublishedRegistry;
+  /** The token category's genesis coin, which the genesis spends after its funding coin. */
+  readonly nativeInput?: { readonly utxo: Utxo; readonly unlocker: Unlocker };
+  /** The premint: the token's fungible amount at the contract's token container for the token's category. */
+  readonly reserveOutput?: Output;
 }
 
 /** The extension naming where a ledger token's reserve sits, for explorers that adopt it (DESIGN.md, 6.7). */
@@ -90,6 +106,15 @@ const MAXIMUM_FUNGIBLE_AMOUNT = 9_223_372_036_854_775_807n;
 
 /** Deploys a probe genesis through `options.provider`; supplied by the deploy entry point to avoid an import cycle. */
 export type ProbeDeploy = (options: DeployOptions) => Promise<{ readonly contract: unknown }>;
+
+/**
+ * The immutable state variable a contract keys its token container by (BchNative's bearer category), as the
+ * artifact publishes it on the container's key.
+ */
+export function nativeCategoryStateVariable(artifact: Artifact): string | undefined {
+  return artifact.abi.flatMap((entry) => entry.tokenContainerAccesses ?? [])
+    .find((access) => access.keySource === 'state')?.keyStateVariable;
+}
 
 async function readFact(contract: unknown, view: string): Promise<unknown> {
   const read = (contract as unknown as { callStatic?: Record<string, () => Promise<unknown>> }).callStatic?.[view];
@@ -109,7 +134,9 @@ async function probeTokenFacts(
   const { contract } = await probe({
     ...options, provider: staging.provider, bcmr: undefined, metadataProbe: true,
   });
-  const facts: { name?: string; symbol?: string; decimals?: bigint; totalSupply?: bigint } = {};
+  const facts: {
+    name?: string; symbol?: string; decimals?: bigint; totalSupply?: bigint; nativeCategory?: string;
+  } = {};
   if (hasErc20Metadata(artifact)) {
     const name = await readFact(contract, 'name');
     const symbol = await readFact(contract, 'symbol');
@@ -121,6 +148,12 @@ async function probeTokenFacts(
   if (hasTotalSupply(artifact)) {
     const totalSupply = await readFact(contract, 'totalSupply');
     if (totalSupply !== undefined) facts.totalSupply = metadataInteger(totalSupply, 'totalSupply()');
+  }
+  const categoryVariable = nativeCategoryStateVariable(artifact);
+  if (categoryVariable !== undefined) {
+    const state = await (contract as { getState: () => Promise<Record<string, unknown>> }).getState();
+    const category = state[categoryVariable];
+    if (category instanceof Uint8Array) facts.nativeCategory = binToHex(category);
   }
   return facts;
 }
@@ -169,16 +202,48 @@ function resolveToken(
   };
 }
 
-/**
- * Resolves a deployment's registry, and checks its premint against the ledger, before the genesis is built.
- * `reserveLockingBytecode` is the token container the premint goes to, named by the native-token extension.
- */
+/** The token category's genesis coin, refused unless it can create a category of its own. */
+async function nativeInputOf(
+  deploy: DeployOptions, category: string,
+): Promise<PreparedMetadata['nativeInput']> {
+  const funding = deploy.nativeToken?.funding;
+  if (funding === undefined) return undefined;
+  const nativeCategory = funding.txid.toLowerCase();
+  if (funding.vout !== 0) {
+    throw new BcmrError(`nativeToken.funding must be at vout 0 to create a category, got vout ${funding.vout}`);
+  }
+  if (nativeCategory === category) throw new BcmrError('the token category must differ from the contract category');
+  if (deploy.identity?.kind === 'authguard' && deploy.identity.authKeyFunding.txid.toLowerCase() === nativeCategory) {
+    throw new BcmrError('the token category must differ from the AuthKey category');
+  }
+  const unlocker = deploy.nativeToken?.funder ?? deploy.funder;
+  const refusal = await ownCoinRefusal(
+    deploy.provider, funding, unlocker.generateLockingBytecode(), { role: 'token funder', tokenFree: true },
+  );
+  if (refusal !== undefined) throw new BcmrError(refusal);
+  return { utxo: funding, unlocker };
+}
+
+/** The contract's identity beside its token's: the ledger it keeps and the labels of its NFTs. */
+function contractSnapshot(
+  name: string, symbol: string | undefined, nfts: NftCategory | undefined, authNft: Extensions[string] | undefined,
+): BcmrSnapshot {
+  return {
+    name: `${name} contract`,
+    description: `The contract that keeps the ${name} ledger; its NFTs hold the ledger's state.`,
+    ...(symbol === undefined || nfts === undefined ? {} : { token: { symbol: `${symbol}-STATE`, nfts } }),
+    ...(authNft === undefined ? {} : { extensions: { authNft } }),
+  };
+}
+
+/** Resolves a deployment's registry and premint, and checks them against the contract, before the genesis is built. */
 export async function prepareMetadata(options: {
   readonly artifact: Artifact;
   readonly category: string;
   readonly deploy: DeployOptions;
   readonly probe: ProbeDeploy;
-  readonly reserveLockingBytecode?: Uint8Array;
+  /** The contract's token container for the token's category, where the premint goes, and the satoshis it holds. */
+  readonly reserve?: { readonly lockingBytecode: Uint8Array; readonly satoshis: bigint };
   /** The deployment's NFT roles, for a publication that generates its NFT labels. */
   readonly nftRoles?: () => Promise<readonly NftParseRole[]>;
 }): Promise<PreparedMetadata> {
@@ -194,18 +259,35 @@ export async function prepareMetadata(options: {
   if (reserve !== undefined && (reserve < 1n || reserve > MAXIMUM_FUNGIBLE_AMOUNT)) {
     throw new BcmrError(`nativeToken.reserve must be from 1 to ${MAXIMUM_FUNGIBLE_AMOUNT}, got ${reserve}`);
   }
+  const nativeInput = await nativeInputOf(deploy, options.category);
+  const tokenCategory = nativeInput === undefined ? options.category : nativeInput.utxo.txid.toLowerCase();
 
   const needsFacts = (publication !== undefined && hasErc20Metadata(artifact))
-    || (reserve !== undefined && hasTotalSupply(artifact));
+    || (reserve !== undefined && hasTotalSupply(artifact))
+    || (nativeInput !== undefined && nativeCategoryStateVariable(artifact) !== undefined);
   const facts = needsFacts ? await probeTokenFacts(artifact, deploy, options.probe) : {};
 
+  if (nativeInput !== undefined && facts.nativeCategory !== undefined && facts.nativeCategory !== tokenCategory) {
+    throw new BcmrError(
+      `the contract keys its reserve by category ${facts.nativeCategory}, but nativeToken.funding creates `
+      + `${tokenCategory}: construct the contract with the funding coin's txid`,
+    );
+  }
   if (reserve !== undefined && facts.totalSupply !== undefined && reserve * scale < facts.totalSupply) {
     throw new BcmrError(
       `the premint backs ${reserve * scale} ledger units (reserve ${reserve} x scale ${scale}), but the constructor `
       + `credits a totalSupply() of ${facts.totalSupply}`,
     );
   }
-  if (publication === undefined) return {};
+  const container = options.reserve;
+  const reserveOutput: Output | undefined = reserve === undefined || container === undefined ? undefined : {
+    to: container.lockingBytecode, amount: container.satoshis, token: { category: tokenCategory, amount: reserve },
+  };
+  const prepared = {
+    ...(nativeInput === undefined ? {} : { nativeInput }),
+    ...(reserveOutput === undefined ? {} : { reserveOutput }),
+  };
+  if (publication === undefined) return prepared;
 
   if (publication.name !== undefined && facts.name !== undefined && publication.name !== facts.name) {
     throw new BcmrError(`bcmr.name "${publication.name}" disagrees with the contract's name() "${facts.name}"`);
@@ -213,19 +295,26 @@ export async function prepareMetadata(options: {
   const name = publication.name ?? facts.name;
   if (name === undefined) throw new BcmrError('bcmr.name is required: the contract does not publish name()');
   const resolved = resolveToken(publication.token, facts, scale);
-  let token = resolved;
+  // The NFTs are the contract's, of its own category, whichever category the token is.
+  let nfts = resolved?.nfts;
   if (publication.token?.nfts === 'generated' && resolved !== undefined) {
     if (options.nftRoles === undefined) throw new BcmrError('this deployment cannot derive its NFT roles');
-    token = { ...resolved, nfts: nftCategory(await options.nftRoles(), hexToBin(options.category)) };
+    nfts = nftCategory(await options.nftRoles(), hexToBin(options.category));
   }
+  const separate = tokenCategory !== options.category;
+  const token = resolved === undefined ? undefined : {
+    symbol: resolved.symbol,
+    ...(resolved.decimals === undefined ? {} : { decimals: resolved.decimals }),
+    ...(nfts === undefined || separate ? {} : { nfts }),
+  };
 
   const extensions: Record<string, Extensions[string]> = { ...(publication.extensions ?? {}) };
   if (deploy.identity?.kind === 'authguard') {
     extensions.authNft = deploy.identity.authKeyFunding.txid.toLowerCase();
   }
-  if (reserve !== undefined && options.reserveLockingBytecode !== undefined) {
+  if (reserveOutput !== undefined && container !== undefined) {
     extensions[NATIVE_TOKEN_EXTENSION] = {
-      reserveLockingBytecode: binToHex(options.reserveLockingBytecode),
+      reserveLockingBytecode: binToHex(container.lockingBytecode),
       scale: scale.toString(),
       ...(hasTotalSupply(artifact) ? { ledgerSupply: 'totalSupply()' } : {}),
     };
@@ -239,11 +328,18 @@ export async function prepareMetadata(options: {
     ...(token === undefined ? {} : { token }),
     ...(Object.keys(extensions).length === 0 ? {} : { extensions }),
   };
-  const encoded = await encodeRegistry(selfPublishedRegistry(
-    options.category, snapshot, publication.timestamp ?? registryTimestamp(),
+  // A token of its own category is an identity of its own, beside the contract's, which labels the NFTs.
+  const identities = [{ category: tokenCategory, snapshot }];
+  if (separate) {
+    identities.push({
+      category: options.category, snapshot: contractSnapshot(name, token?.symbol, nfts, extensions.authNft),
+    });
+  }
+  const encoded = await encodeRegistry(publishedRegistry(
+    options.category, identities, publication.timestamp ?? registryTimestamp(),
   ));
   const uris = publication.publicationUris ?? [`ipfs://${ipfsCidV1Raw(encoded.bytes)}`];
-  return { registry: { ...encoded, uris } };
+  return { ...prepared, registry: { ...encoded, uris } };
 }
 
 /** The outputs leading a genesis: the identity output, the publication, then the identity's trailing outputs. */

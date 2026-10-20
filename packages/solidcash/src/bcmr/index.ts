@@ -22,6 +22,7 @@ export {
   assertTokenSymbol,
   encodeRegistry,
   identitySnapshot,
+  publishedRegistry,
   registryTimestamp,
   selfPublishedRegistry,
   withSnapshot,
@@ -56,6 +57,7 @@ export {
 } from './token.js';
 export {
   NATIVE_TOKEN_EXTENSION,
+  nativeCategoryStateVariable,
   prepareMetadata,
   type BcmrPublication,
   type ContractTokenFacts,

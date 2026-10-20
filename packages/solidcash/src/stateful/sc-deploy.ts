@@ -72,27 +72,37 @@ export async function deployStatefulContract<T extends Artifact>(
   }
 
   // The census of a framed composition refuses every fungible amount of the contract's own category (framed spec,
-  // S2), so a framed contract could never spend a premint of it.
+  // S2), so a framed contract's token is a category of its own, which `nativeToken.funding` creates.
   const framed = artifact.composition?.convention === 'framed';
-  if (framed && options.nativeToken?.reserve !== undefined) {
+  const nativeFunding = options.nativeToken?.funding;
+  if (framed && options.nativeToken?.reserve !== undefined && nativeFunding === undefined) {
     throw new BcmrError(
       `${artifact.contractName} is framed, and a framed composition refuses fungible tokens of the contract's own `
-      + 'category, so it cannot hold a premint of them (docs/framed/SPEC_FRAMED_TRANSACTION.md, S2)',
+      + 'category, so its premint needs a category of its own: pass nativeToken.funding '
+      + '(docs/framed/SPEC_FRAMED_TRANSACTION.md, S2)',
     );
   }
-  const reserveLockingBytecode = framed || options.nativeToken?.reserve === undefined ? undefined
-    : addressToLockScript(getTokenContainerAddress(new Contract(artifact, constructorArgs as any, {
-      provider: options.provider,
-      addressType: options.addressType,
-      category: hexToBin(options.fundingUtxo.txid),
-      salt: options.salt,
-    }), options.fundingUtxo.txid.toLowerCase(), options.fundingUtxo.txid.toLowerCase()));
+  const tokenCategory = (nativeFunding?.txid ?? options.fundingUtxo.txid).toLowerCase();
+  // A framed handle carries no constructor arguments: the genesis bakes them into its program.
+  const reserve = options.nativeToken?.reserve === undefined ? undefined : {
+    lockingBytecode: addressToLockScript(getTokenContainerAddress(
+      new Contract(artifact, (framed ? [] : constructorArgs) as any, {
+        provider: options.provider,
+        addressType: options.addressType,
+        category: hexToBin(options.fundingUtxo.txid),
+        salt: options.salt,
+      }),
+      options.fundingUtxo.txid.toLowerCase(),
+      tokenCategory,
+    )),
+    satoshis: options.dataNftAmount ?? 1200n,
+  };
   const prepared = options.metadataProbe === true ? {} : await prepareMetadata({
     artifact,
     category: options.fundingUtxo.txid.toLowerCase(),
     deploy: options,
     probe: (probeOptions) => deployStatefulContract(artifact, constructorArgs, probeOptions),
-    ...(reserveLockingBytecode === undefined ? {} : { reserveLockingBytecode }),
+    ...(reserve === undefined ? {} : { reserve }),
     nftRoles: async () => {
       const category = options.fundingUtxo.txid.toLowerCase();
       return deploymentNftRoles(artifact, framed
@@ -227,7 +237,8 @@ export async function deployStatefulContract<T extends Artifact>(
   });
   const leading = leadingOutputs(identity, prepared);
   const leadingTotal = leading.reduce((sum, output) => sum + output.amount, 0n);
-  const inputTotal = identity.inputs.reduce((sum, input) => sum + input.utxo.satoshis, options.fundingUtxo.satoshis);
+  const genesisInputs = [...(prepared.nativeInput === undefined ? [] : [prepared.nativeInput]), ...identity.inputs];
+  const inputTotal = genesisInputs.reduce((sum, input) => sum + input.utxo.satoshis, options.fundingUtxo.satoshis);
 
   const initialBalance = options.initialBalance ?? 0n;
   const totalMaster = masterAmount * BigInt(threadCount);
@@ -242,7 +253,7 @@ export async function deployStatefulContract<T extends Artifact>(
   const keeperBaton = blockhashKeeperGenesisOutput(
     artifact, categoryId, options.blockhashKeeperPublicKey, options.blockhashKeeperAmount,
   );
-  const totalReserve = options.nativeToken?.reserve === undefined ? 0n : dataNftAmount;
+  const totalReserve = prepared.reserveOutput?.amount ?? 0n;
   const totalRequired = (keeperBaton?.amount ?? 0n) + totalMaster + totalDataNft + totalEntryNft
     + totalEventNft + totalDynamicNft
     + totalMessageBusVerifiers + totalIdentity + initialBalance + leadingTotal + totalReserve + estimatedFee;
@@ -312,7 +323,7 @@ export async function deployStatefulContract<T extends Artifact>(
     ...(options.maxFee !== undefined && { maximumFeeSatoshis: options.maxFee }),
   });
   builder.addInput(options.fundingUtxo, options.funder);
-  for (const input of identity.inputs) builder.addInput(input.utxo, input.unlocker);
+  for (const input of genesisInputs) builder.addInput(input.utxo, input.unlocker);
   // A record output carries at least its own dust threshold: the fixed amount covers outputs up to 252 bytes, and a
   // provider with a relaxed commitment limit admits wider ones (a bounded array packed into one field).
   const addFunded = (output: Parameters<typeof builder.addOutput>[0]): void => {
@@ -513,15 +524,9 @@ export async function deployStatefulContract<T extends Artifact>(
     builder.addOutput({ to: satoshiContainerAddress, amount: initialBalance });
   }
 
-  // The premint: fungible tokens of the contract's own category, which only a genesis can create, held in the
-  // contract's token container for that category.
-  if (options.nativeToken?.reserve !== undefined) {
-    addFunded({
-      to: getTokenContainerAddress(contract, categoryId, categoryId),
-      amount: dataNftAmount,
-      token: { category: categoryId, amount: options.nativeToken.reserve },
-    });
-  }
+  // The premint: the token's fungible amount, which only a genesis can create, held in the contract's token
+  // container for the token's category.
+  if (prepared.reserveOutput !== undefined) addFunded(prepared.reserveOutput);
 
   // Immutable CREATE identity anchors are category-bearing discovery records. They are intentionally appended
   // after constructor-governed outputs so existing ABI output indices remain stable.

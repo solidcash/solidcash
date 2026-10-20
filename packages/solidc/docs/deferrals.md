@@ -3013,3 +3013,39 @@ head's padding, and a mixed-version composition check.
 
 **Revisit if:** a factory issues user-facing tokens, or a client starts trusting self-published metadata of
 contract-created categories.
+
+## Framed compositions do not compose token containers (2026-10-20)
+
+**What:** the framed call engine (`packages/solidcash/src/framed/call/`, `framed/composer/`) composes satoshi
+containers but no CashTokens token container: a framed function that reads or pays through `this.tokens[...]` (a
+BchNative `wrap` or `unwrap`, any `transfer` of a foreign category) compiles, but the SDK cannot build its call. Found
+while moving BchNative to a bearer category of its own, which removed the contract-side reason it could not run framed
+(the census refuses a fungible amount of the settled contract's own category, framed spec S2). A framed BchNative
+genesis now creates and premints that category (`test/e2e/BchNativeFramed.test.ts`).
+
+**Why deferred:** composing a token container is a framed SDK feature of its own: a container input and its
+recreation in the participant layout, the frame's declaration of the reserve it reads and of the token sends it
+lists, and a conservation rule for the container's fungible amount beside the satoshi value rule (spec 4b).
+
+**What it'd take:** the container as a participant the layout recreates in place, its amount carried in the witness
+the master reads for `this.tokens[X].tokenAmount` and `this.outState.tokens[X].tokenAmount`, token sends listed like
+value sends, and the validator's value rule extended to the token amount of a contract's containers.
+
+**Revisit if:** a framed token or a framed marketplace needs fungible payments.
+
+## Message-bus routes reserve only parameter-keyed token containers (2026-10-20)
+
+**What:** a message-bus route pulls the token-container accesses of the handlers it invokes into its own access plan
+(`SymbolTableTraversal`, the `messageBusRoute` merge), re-keyed to the argument the route forwards. It matches an access
+to a handler parameter by name, so an access keyed by the contract's own category (`keySource: 'own'`) or by an
+immutable state variable (`keySource: 'state'`, BchNative's `_nativeCategory` since D33) is not merged, and the route's
+plan omits that container. This predates D33 for own-category keys.
+
+**Why deferred:** the merge's re-keying is defined for a forwarded argument only; carrying a state key into a route
+means checking how codegen resolves a route-level key that names a variable of the handler, which is outside the
+BchNative change.
+
+**What it'd take:** merge own and state accesses into the route unchanged (their key does not depend on the call), and
+confirm the route's container checks resolve the key from state as the handler's do.
+
+**Revisit if:** a contract calls a BchNative `wrap` or `unwrap` through the message bus.

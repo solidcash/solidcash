@@ -35,7 +35,7 @@ abstract contract BchNativeMultiplier is BchNative {
     }
 
     function wrap(int amount) override {
-        bytes32 category = this.category;
+        bytes32 category = this._nativeCategory;
         require(amount > 0);
         address claimant = msg.sender;
         require(_nativeCanWrap(claimant));
@@ -49,7 +49,7 @@ abstract contract BchNativeMultiplier is BchNative {
     }
 
     function unwrap(address to, int amount) override {
-        bytes32 category = this.category;
+        bytes32 category = this._nativeCategory;
         address sender = msg.sender;
         require(_nativeCanUnwrap(sender));
         require(amount > 0);

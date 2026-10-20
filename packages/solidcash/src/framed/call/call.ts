@@ -1067,7 +1067,7 @@ async function callInShape(
     try {
       accesses = await framedCalleeTokenAccesses({
         provider, artifact: callee.artifact, entry: callee.entry, categoryId: callee.categoryId,
-        records: callee.records,
+        args: callee.args ?? [], records: callee.records,
       });
     } catch (error) {
       throw new FramedCallError(`entry "${functionName}": ${(error as Error).message}`);

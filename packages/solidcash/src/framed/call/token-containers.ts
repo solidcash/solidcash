@@ -208,28 +208,19 @@ export async function framedTokenAccesses(options: {
 }
 
 /**
- * The containers a callee frame's entry names by a key of its own category or of its state, resolved from the callee's
- * own records. A key a call argument names is skipped, and refused by name for a container the callee pays from.
+ * The containers a callee frame's entry names, resolved as the root's are: a key of its own category, of its state,
+ * read from the callee's own records, or of an argument, read from the arguments its call passes.
  */
 export async function framedCalleeTokenAccesses(options: {
   readonly provider: NetworkProvider;
   readonly artifact: Artifact;
   readonly entry: string;
   readonly categoryId: string;
+  readonly args: readonly FunctionArgument[];
   readonly records: readonly { readonly commitment: Uint8Array; readonly satoshis: bigint }[];
 }): Promise<readonly FramedTokenAccess[]> {
   const abi = options.artifact.abi.find((candidate) => candidate.name === options.entry);
-  const fixed = (access: NonNullable<AbiFunction['tokenContainerAccesses']>[number]): boolean =>
-    access.keySource === 'state' || access.keySource === 'own';
-  const argumentKeyed = (abi?.tokenContainerAccesses ?? []).find((access) => !fixed(access)
-    && ((access.transferCount ?? (access.operations.includes('transfer') ? 1 : 0)) > 0
-      || access.operations.includes('transferNft')));
-  if (argumentKeyed !== undefined) {
-    throw new Error(`the callee "${options.entry}" pays tokens of the category its argument `
-      + `'${argumentKeyed.keyParam}' names, which this call path does not plan for a callee yet`);
-  }
-  const named = (abi?.tokenContainerAccesses ?? []).filter(fixed);
-  if (named.length === 0) return [];
+  if ((abi?.tokenContainerAccesses ?? []).length === 0) return [];
   const records = options.records.map((record, at) => ({
     txid: `${at}`.padStart(64, '0'), vout: 0, satoshis: record.satoshis,
     token: {
@@ -239,9 +230,9 @@ export async function framedCalleeTokenAccesses(options: {
   }));
   return framedTokenAccesses({
     provider: options.provider,
-    entry: abi === undefined ? undefined : { ...abi, tokenContainerAccesses: named },
+    entry: abi,
     categoryId: options.categoryId,
-    args: [],
+    args: options.args,
     stateLayout: options.artifact.stateLayout!,
     records,
   });

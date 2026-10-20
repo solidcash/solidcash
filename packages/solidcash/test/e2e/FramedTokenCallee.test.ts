@@ -107,6 +107,53 @@ describe('a framed callee that pays tokens', () => {
     expect(await provider.getUtxosForLockingBytecode(container)).toHaveLength(1);
   }, 900_000);
 
+  it('pays from a callee container keyed by the category its call passes', async () => {
+    const source = 'pragma solidity ^0.8.0;'
+      + ' contract Vaulted { uint256 public payouts;'
+      + '   function payOutOf(bytes32 category, address to, int amount) external {'
+      + '     payouts = payouts + 1; this.tokens[category].transfer(to, amount); } }'
+      + ' contract Router { Vaulted public vault; constructor(Vaulted vault_) { vault = vault_; }'
+      + '   function route(bytes32 category, address to, int amount) external { vault.payOutOf(category, to, amount); } }';
+    const compiled = compileStringMulti(source, { composition: 'framed', evmCompat: true } as never);
+    const provider = new MockNetworkProvider();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const alice = new SignatureTemplate(alicePriv);
+    const aliceLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const bobLock = encodeLockingBytecodeP2pkh(bobPkh);
+    await fundShippedFacets(provider);
+    const coin = async (txid: string, satoshis: bigint): Promise<Utxo> => {
+      const utxo = { txid: txid.repeat(32), vout: 0, satoshis };
+      await provider.addUtxo(binToHex(aliceLock), utxo);
+      return utxo;
+    };
+    const vaulted = await deployStatefulContract(compiled.Vaulted!, [], {
+      provider, fundingUtxo: await coin('91', 3_000_000n), funder: alice.unlockP2PKH(), changeAddress: aliceAddress,
+    });
+    const router = await deployStatefulContract(compiled.Router!, [
+      validatorAddress(hexToBin(vaulted.categoryId), framedValidator.buildValidatorProgram()),
+    ], {
+      provider, fundingUtxo: await coin('92', 3_000_000n), funder: alice.unlockP2PKH(), changeAddress: aliceAddress,
+    });
+    const category = '93'.repeat(32);
+    const container = framedTokenContainerLockingBytecode(vaulted.categoryId, category);
+    await provider.addUtxo(binToHex(container), {
+      txid: '94'.repeat(32), vout: 0, satoshis: 1_000n, token: { category, amount: 300n },
+    });
+    const routed = await callFramedEntry({
+      provider, artifact: compiled.Router!, categoryId: router.categoryId, functionName: 'route',
+      args: [hexToBin(category), bobLock, 120n], callerUtxo: await coin('95', 300_000n),
+      callerLockingBytecode: aliceLock, funder: alice.unlockP2PKH(), vm,
+      externals: { Vaulted: { artifact: compiled.Vaulted!, categoryId: vaulted.categoryId } },
+    });
+    expect(routed.verdicts.filter((verdict) => !verdict.accepted)).toEqual([]);
+    expect(routed.broadcast).toBeDefined();
+    const tokensAt = async (lock: Uint8Array): Promise<bigint> => (await provider.getUtxosForLockingBytecode(lock))
+      .filter((utxo) => utxo.token?.category === category)
+      .reduce((sum, utxo) => sum + utxo.token!.amount, 0n);
+    expect(await tokensAt(bobLock)).toBe(120n);
+    expect(await tokensAt(container)).toBe(180n);
+  }, 900_000);
+
   it('drops a token send on a branch the body did not take', async () => {
     const source = 'pragma solidity ^0.8.0;'
       + ' contract Till { bytes32 immutable reserve;'

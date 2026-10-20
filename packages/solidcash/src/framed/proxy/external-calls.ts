@@ -232,6 +232,8 @@ export interface HopCallee {
    * body did not take; absent, the entry's own counts.
    */
   readonly tokenRunSends?: readonly { readonly sends: number; readonly nftSends: number }[];
+  /** The arguments the call passes the frame, as the plan resolved them. */
+  readonly args?: readonly FunctionArgument[];
   /** Every participant of this callee, keyed by the id the plan places it under. */
   readonly utxos: ReadonlyMap<string, Utxo>;
   /**
@@ -2386,6 +2388,7 @@ async function placeCalleeMasters(
       ...(writes === undefined ? {} : {
         writeInputs: { args: call.argumentValues, senderAddress: caller.selfAddress, live, categoryId },
       }),
+      args: call.argumentValues,
       calls: [],
       callBases: [],
       enteredBy,
@@ -2594,6 +2597,7 @@ async function placeProxiedCallee(
           args: call.argumentValues, senderAddress: caller.selfAddress, live, categoryId: external.categoryId,
         },
       }),
+      args: call.argumentValues,
       calls: [],
       callBases: [],
       enteredBy: proxyIndex,

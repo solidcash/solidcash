@@ -2602,6 +2602,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private currentContractEmitsEvent: boolean = false;
   // A framed contract that names a token container anywhere keeps, in every entry, the containers the entry does not.
   private currentContractHoldsTokens: boolean = false;
+  // A direct contract that declares `split` can spend several masters in one transaction, so a body reads a token
+  // container's amount as the master it runs on holds it, as a framed one does.
+  private currentContractHasThreads: boolean = false;
   /** Compact-pool id for the int-like pushdata decoder wrapper; allocated on first int decode site. */
   private intDecodeIntSlot: { id: bigint | undefined } = { id: undefined };
   /** Compact-pool id for int-like pushdata encode; allocated on first int encode site. */
@@ -3007,6 +3010,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     t.contractKeepsSatoshiContainer = this.contractKeepsSatoshiContainer;
     t.contractTokenContainerCount = this.contractTokenContainerCount;
     t.currentContractHoldsTokens = this.currentContractHoldsTokens;
+    t.currentContractHasThreads = this.currentContractHasThreads;
     t.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
     t.sharedCheckBody = { masterOrdinal };
   }
@@ -5140,6 +5144,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...node.functions, ...(node.receiveDef ? [node.receiveDef] : []), ...(node.fallbackDef ? [node.fallbackDef] : []),
     ].some((fn) => (fn.tokenContainerAccesses?.length ?? 0) > 0);
     this.currentContractIsSplitFacet = node.isSplitFacet;
+    this.currentContractHasThreads = node.functions.some((fn) => fn.modifiers.includes(FunctionModifier.SPLIT));
     this.contractParameters = node.parameters;
     this.contractFunctionKeys = new Set(node.functions
       .filter((fn) => fn.functionId !== undefined)
@@ -6866,6 +6871,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.contractKeepsSatoshiContainer = this.contractKeepsSatoshiContainer;
       probe.contractTokenContainerCount = this.contractTokenContainerCount;
       probe.currentContractHoldsTokens = this.currentContractHoldsTokens;
+      probe.currentContractHasThreads = this.currentContractHasThreads;
       probe.collectionCount = this.collectionCount;
       probe.collectionDefinitions = this.collectionDefinitions;
       probe.dataNftCount = this.dataNftCount;
@@ -7173,6 +7179,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.contractKeepsSatoshiContainer = this.contractKeepsSatoshiContainer;
     subTraversal.contractTokenContainerCount = this.contractTokenContainerCount;
     subTraversal.currentContractHoldsTokens = this.currentContractHoldsTokens;
+    subTraversal.currentContractHasThreads = this.currentContractHasThreads;
     subTraversal.collectionCount = this.collectionCount;
     subTraversal.collectionDefinitions = this.collectionDefinitions;
     subTraversal.dataNftCount = this.dataNftCount;
@@ -7578,6 +7585,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.contractKeepsSatoshiContainer = this.contractKeepsSatoshiContainer;
       subTraversal.contractTokenContainerCount = this.contractTokenContainerCount;
       subTraversal.currentContractHoldsTokens = this.currentContractHoldsTokens;
+      subTraversal.currentContractHasThreads = this.currentContractHasThreads;
       subTraversal.collectionCount = this.collectionCount;
       subTraversal.collectionDefinitions = this.collectionDefinitions;
       subTraversal.dataNftCount = this.dataNftCount;
@@ -54538,7 +54546,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SWAP, locationData);        // [p2sh32_lbc, tcCat]
 
       // Now call the aggregate loop
-      if (this.framedMaster) {
+      if (this.framedMaster || this.currentContractHasThreads) {
         this.emitFramedTokenContainerAggregate(node.name as 'tokenAmount' | 'nftCount', isOutState, locationData);
       } else {
         this.emitTokenContainerAggregateLoop(
@@ -54588,7 +54596,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * A framed frame's `tokenAmount` or `nftCount` of a category, as this master holds it (spec 4b): over the inputs at
+   * A framed frame's `tokenAmount` or `nftCount` of a category (and a direct one's, in a contract that declares
+   * `split`), as this master holds it (spec 4b): over the inputs at
    * the container lock whose unlocking names it, and for `outState` their outputs in place. The containers a
    * transaction creates at the lock count for `outState` only when this master is its contract's only one in the
    * transaction, so two frames of one contract never both count one deposit. `[lock, key]` -> `[sum]`, untracked.

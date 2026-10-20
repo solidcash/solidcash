@@ -9,7 +9,7 @@ import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
 
 /**
- * ECR-1 (docs/security-audit-2026-10-16.md): a width-0 recovery's B3 reads its running checkpoint from the OUTPUT
+ * ECR-1 (docs/security/security-audit-2026-10-16.md): a width-0 recovery's B3 reads its running checkpoint from the OUTPUT
  * one before it and only checks that output's commitment. Any input could stand in for the middle covenant M, so a
  * spender chose the checkpoint B3 ladders from and thereby the recovered key. The contract now requires the input
  * before B3 to reveal the M covenant, and the input before that to be this call's own A input.

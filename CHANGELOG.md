@@ -2,8 +2,9 @@
 
 ## 0.13.1
 
-Release-candidate notes: see [`RELEASE_NOTES_0.13.1.md`](RELEASE_NOTES_0.13.1.md). Solidity compatibility:
-see [`SOLIDITY_COMPATIBILITY_0.13.1.md`](SOLIDITY_COMPATIBILITY_0.13.1.md).
+Release-candidate notes: see [`docs/release/0.13.1/RELEASE_NOTES_0.13.1.md`](docs/release/0.13.1/RELEASE_NOTES_0.13.1.md).
+Solidity compatibility: see
+[`docs/release/0.13.1/SOLIDITY_COMPATIBILITY_0.13.1.md`](docs/release/0.13.1/SOLIDITY_COMPATIBILITY_0.13.1.md).
 
 ### Supported in this release
 

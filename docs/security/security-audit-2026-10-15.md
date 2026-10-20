@@ -1,7 +1,7 @@
 # Security audit 2026-10-15
 
 Audited code: `d7a2aa8dc` on `feat/per-call` (`test(solidc): drive criterion-1 as one 16-cell materialization x op table`), which is `994934726` plus that test-only commit. This document is the only later change and does not alter the cited sources. The checks below were read at `d7a2aa8dc`.
-Baseline for the rows below: `SECURITY-AUDIT-2026-10.md` and `docs/security-audit-2026-10/` as they stood at `abbb7e0ec`. That file is the 2026-10-11 record and is not rewritten here.
+Baseline for the rows below: `SECURITY-AUDIT-2026-10.md` and `2026-10/` as they stood at `abbb7e0ec`. That file is the 2026-10-11 record and is not rewritten here.
 
 ## Threat model
 

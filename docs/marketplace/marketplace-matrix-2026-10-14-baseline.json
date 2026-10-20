@@ -36,7 +36,7 @@
       "base": "371cb72b1f846bb7379214fe9be36c0c24c6039b",
       "patchSha256": "5b6c3680c290ef063509c2290190f1663324aacc8b166dbf157c867c83c60630",
       "untracked": {
-        "docs/marketplace-stock-inventory-2026-10.md": "2286c2b4904434de3abe92aafbaefce4720be6d1ee6e74dd822ae653c1fe58e8",
+        "docs/marketplace/marketplace-stock-inventory-2026-10.md": "2286c2b4904434de3abe92aafbaefce4720be6d1ee6e74dd822ae653c1fe58e8",
         "packages/solidc/test/framed/master/partial-call-activation.test.ts": "057773d4d85009caa2c486e9b7b8c41222e20f99dfc79fcf05d930fc77c76d6e",
         "packages/solidcash/test/framed/call/proxy-created-node-chunked-read.test.ts": "f26d80346fb24375b295cf961b74bf641c30bb0bfab645e0e7881f34f8562b52",
         "packages/solidcash/test/framed/call/proxy-dynamic-struct-conditional-update.test.ts": "afb53e0e200a0693355499a847c89e01f614a2696272c71595e271e3a56ae935",

@@ -12,7 +12,7 @@ import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 /**
- * MERGE-1 (docs/security-audit-2026-10-16.md): the merge covenant verified the survivors' category, locking
+ * MERGE-1 (docs/security/security-audit-2026-10-16.md): the merge covenant verified the survivors' category, locking
  * bytecode and commitment, and each tail's own fungible amount against the survivor, but never that the survivor
  * received the consumed masters' satoshis or surplus fungible amount. A merge could recreate the survivor at its
  * own value and send the consumed masters' value/FT anywhere (including the caller's change output).

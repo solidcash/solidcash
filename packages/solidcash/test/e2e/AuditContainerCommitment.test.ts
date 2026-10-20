@@ -11,7 +11,7 @@ import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 /**
- * CONT-1 (docs/security-audit-2026-10-16.md): a token container's covenant authorizes any spend beside the
+ * CONT-1 (docs/security/security-audit-2026-10-16.md): a token container's covenant authorizes any spend beside the
  * contract master, and the master's foreign keep pinned only lock, category and amount. A custodied foreign NFT's
  * commitment could therefore be rewritten beside a call that did not name the container. The keep now pins the
  * commitment too.

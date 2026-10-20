@@ -21,7 +21,7 @@ not unrestricted Solidity, EVM, Hardhat, or ethers parity.
 - Six aligned 0.13.1 packages with verified exports, declarations, embedded-source maps, CLIs, and installation
   from release tarballs. The packed consumer repeats the maintained stateful golden path.
 
-See [`examples/testing-suite/MIGRATION.md`](examples/testing-suite/MIGRATION.md) for direct Hardhat, ethers, and
+See [`examples/testing-suite/MIGRATION.md`](../../../examples/testing-suite/MIGRATION.md) for direct Hardhat, ethers, and
 chai mappings.
 
 ## Experimental profiles

@@ -2,7 +2,7 @@
 
 > **Update (2026-10-17).** The stock-node limits below still hold. A patched BCHN now exposes regtest-only
 > overrides for them, and the regtest lane has fixture snapshots and time travel. See
-> [BCHN marketplace consensus relaxation](../bchn-marketplace-consensus-relaxation.md). Build the node with
+> [BCHN marketplace consensus relaxation](../marketplace/bchn-marketplace-consensus-relaxation.md). Build the node with
 > `scripts/build-bchn-relaxed.sh` and use `docker-compose.marketplace.yml`. The measurements below remain the
 > reason the patch exists.
 

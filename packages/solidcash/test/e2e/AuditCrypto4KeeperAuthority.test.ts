@@ -17,7 +17,7 @@ import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '.
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
 /**
- * Audit CRYPTO-4 / CRYPTO-5 (docs/security-audit-2026-10/CRYPTO.md).
+ * Audit CRYPTO-4 / CRYPTO-5 (docs/security/2026-10/CRYPTO.md).
  *
  * CRYPTO-4: a blockhash() consumer's keeper holds a minting NFT of the consumer's own category, and the data and
  * entry covenants accept any minting NFT of that category as the master's authority. A bare baton (an OP_1

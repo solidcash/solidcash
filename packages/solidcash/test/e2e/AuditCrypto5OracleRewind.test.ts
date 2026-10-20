@@ -8,7 +8,7 @@ import { randomUtxo } from '../../src/utils.js';
 import { createFeeFunder, createTestProvider } from '../test-util.js';
 
 /**
- * Audit CRYPTO-5 (docs/security-audit-2026-10/CRYPTO.md): the oracle owner must not rewind block.number or
+ * Audit CRYPTO-5 (docs/security/2026-10/CRYPTO.md): the oracle owner must not rewind block.number or
  * block.timestamp to replay an old window. The block oracle covenant requires each value to be >= the one in
  * its commitment: a height update moves the number, a time-type update moves the timestamp.
  */

@@ -1,8 +1,10 @@
 # October 2026 security audit: fixes on feat/parity
 
-The audit report (`SECURITY-AUDIT-2026-10.md` and `docs/security-audit-2026-10/`) lives on feat/per-call, where a
+The audit report (`SECURITY-AUDIT-2026-10.md` and `2026-10/`) lives on feat/per-call, where a
 separate worker implements its response. This file lists the rows fixed on feat/parity; feat/per-call-merge brought
 them onto feat/per-call on 2026-10-13 (see "Integration into feat/per-call").
+
+The per-call decisions are in [`../framed/DECISIONS.md`](../framed/DECISIONS.md).
 
 | Row | Severity | Fix | Commits | Tests |
 |---|---|---|---|---|
@@ -140,7 +142,7 @@ workflow itself were not run here. Source evidence: the resumed session's `scrat
   resource bound" and KernelRealUnicrowProxyArbitration now pass in the closing run. The model-B logical-identity
   title in KernelPhysicalCallerWithScidCompose is explicitly skipped by the user's decision; see deferrals.md.
 - Evaluated decision D30: do not implement batch-width witness binding. This is not a deferral; the evidence,
-  candidate's cost and SDK impact, and scope for future reevaluation live in [D30](framed/DECISIONS.md).
+  candidate's cost and SDK impact, and scope for future reevaluation live in [D30](../framed/DECISIONS.md).
 - Event-integrity follow-up, fixed locally: split/merge and unsafe tiers 1/2 now run the ordinary own-category
   immutable-output pin. `AuditLifecycleEventIntegrity` accepts their honest transactions and refuses an extra
   addressable own-category event NFT. The fork case previously accepted that output. Explicit `unsafe(0)` remains

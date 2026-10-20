@@ -50,7 +50,8 @@ export type MockNetworkProviderOverrides = Partial<Omit<MockNetworkProviderOptio
  * bounds how DENSE a script may be, and density does not announce itself: a contract that passes at a relaxed
  * budget and fails at the real one looks identical in every artifact the SDK produces. Relaxing it therefore
  * made a green mocknet suite mean nothing about on-chain validity, which is how several over-budget shapes
- * reached a live node before anyone noticed. See RELEASE_READINESS.md and its archived "operation-cost budget"
+ * reached a live node before anyone noticed. See docs/release/0.13.1/RELEASE_READINESS.md and its archived
+ * "operation-cost budget"
  * section (`git show archive/docs:RELEASE_READINESS.md`).
  *
  * A harness that genuinely wants the old behaviour asks for it by name:

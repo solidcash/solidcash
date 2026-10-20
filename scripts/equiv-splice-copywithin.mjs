@@ -5,7 +5,7 @@
  * The outliner's rewrite replaces a span of `spanLength` elements with exactly two elements (`id`, OP_INVOKE),
  * so the tail shifts left by `spanLength - 2`. That looks like a `copyWithin` plus a length trim, which would
  * avoid `splice`'s per-edit tail move. This harness demonstrates the divergence, and is the evidence behind the
- * negative result recorded in PERF_FINDINGS.md section 15.
+ * negative result recorded in docs/design/PERF_FINDINGS.md section 15.
  *
  * Two divergence classes show up:
  *

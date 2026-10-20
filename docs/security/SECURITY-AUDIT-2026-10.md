@@ -33,7 +33,7 @@ after about 21300 moved by about +57 between the two commits.
   miner's help. Off chain, a user must not be led to sign something unintended, lose funds or leak keys, and a network
   provider may be hostile.
 - **Detail:** each domain's write-up (root cause, attack transaction, suggested fix) and each verifier's verdicts are
-  in `docs/security-audit-2026-10/`. Finding ids are prefixed by domain:
+  in `2026-10/`. Finding ids are prefixed by domain:
 
 | Prefix | Domain | Detail file |
 | --- | --- | --- |

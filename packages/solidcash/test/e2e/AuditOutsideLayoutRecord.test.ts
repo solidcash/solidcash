@@ -8,7 +8,7 @@ import {
 } from '../test-util.js';
 
 /**
- * WT-1/WT-2 (docs/security-audit-2026-10-16.md): the direct outside-layout walk must inspect every own-category
+ * WT-1/WT-2 (docs/security/security-audit-2026-10-16.md): the direct outside-layout walk must inspect every own-category
  * mutable input outside `[master, master + blockSize)`, including one placed at an index BELOW the master. The
  * earlier relative walk started at `blockSize`, so a record at input 0 was never inspected when the master sat at
  * input 1, and its commitment could be rewritten beside a call that did not name it.

@@ -1148,6 +1148,13 @@ async function callInShape(
   // recreation of the first container a run spends there, or else a new container.
   const depositTargets = tokenDeposits.map((deposit) => named.find(({ access }) =>
     access.category === deposit.utxo.token!.category)?.contractCategoryId ?? categoryId);
+  // A frame that sends NFTs of a category takes in no visible NFT of it from outside the container lock (spec 4b).
+  const nftDeposit = tokenDeposits.find((deposit) => deposit.utxo.token!.nft !== undefined
+    && tokenRuns.some((run) => run.nftSends > 0 && run.category === deposit.utxo.token!.category));
+  if (nftDeposit !== undefined) {
+    throw new FramedCallError(`entry "${functionName}" sends NFTs of category ${nftDeposit.utxo.token!.category}, and `
+      + 'a frame that sends them takes in no NFT of that category, so the call cannot also deposit one');
+  }
   const depositRuns = tokenDeposits.map((deposit, index) => (deposit.utxo.token!.nft !== undefined ? -1
     : tokenRuns.findIndex((run) =>
       run.contractCategoryId === depositTargets[index] && run.category === deposit.utxo.token!.category)));

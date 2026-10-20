@@ -222,6 +222,13 @@ contract Hub() {
     }));
     expect(await nftsAt(provider, container, collection)).toEqual(['a1:none', 'b2:mutable']);
 
+    // A frame that sends NFTs of the collection takes none in, so the same call cannot also deposit one.
+    const another = await coin('d3', 1_000n, {
+      category: collection, amount: 0n, nft: { capability: 'none', commitment: 'c3' },
+    });
+    await expect(call('release', [bobLock, hexToBin('a1'), 0n], await coin('c7', 300_000n), {
+      tokenDeposits: [{ utxo: another, unlocker: alice.unlockP2PKH(), amount: 0n }],
+    })).rejects.toThrow(/cannot also deposit one/);
     settled(await call('release', [bobLock, hexToBin('a1'), 0n], await coin('c4', 300_000n)));
     expect(await nftsAt(provider, bobLock, collection)).toEqual(['a1:none']);
     expect(await nftsAt(provider, container, collection)).toEqual(['b2:mutable']);

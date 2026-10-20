@@ -52209,6 +52209,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_OVER, loc);
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
+    // Nor does it hold a minting NFT, which kept in place would still mint its category in this transaction.
+    this.emit([
+      Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(33n), Op.OP_NUMEQUAL,
+      Op.OP_IF, encodeInt(32n), Op.OP_SPLIT, Op.OP_NIP, Op.OP_2, Op.OP_EQUAL, Op.OP_NOT, Op.OP_VERIFY,
+      Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF,
+    ], loc);
     if (ownedContainer) this.emit(Op.OP_ENDIF, loc);
   }
 

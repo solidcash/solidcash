@@ -1,9 +1,15 @@
 # Security audit 2026-10-16 (living document)
 
-Status: in progress. Findings are appended as they are found; a later section may refine an earlier one.
+Status: complete for the 2026-10-16/17 pass. The findings are kept in discovery order; the final section,
+"Fix status (implementation pass, 2026-10-17)", is the current answer.
 
-Summary so far: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, needs a VM run), FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
-WT-2 (LOW), KCHAIN-1 (LOW on consensus limits, forged-digest primitive under the mock's limit), WT-1 (LOW).
+Fix status: DYN-1, ECR-1, FRAMED-CONT-1, MERGE-1, CONT-1, WT-1 and WT-2 are fixed with the tests named below.
+MIG-1 and KCHAIN-1 remain advisory: MIG-1 is a documented layout requirement for `migrateRecords`, and KCHAIN-1 is
+low severity on consensus limits with a forged-digest primitive under the mock's commitment limit.
+
+Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
+FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
+WT-2 (LOW), KCHAIN-1 (LOW on consensus limits), WT-1 (LOW).
 Closed after tracing: ROUTE-SKIP-1 and ROUTE-READ-1 (handler clones never batch; LOW hardening note on the
 name-based guard).
 
@@ -21,7 +27,7 @@ MERGE-1 (merge with the consumed masters' satoshis sent to the spender's output)
 - Tree: `feat/per-call` at `74bd5ff06` plus the uncommitted edit to
   `packages/solidc/src/generation/GenerateTargetTraversal.ts` (`emitPreserveOutsideLayoutOwnMutable`) and the
   untracked test `packages/solidcash/test/e2e/StructArrayElementOverwrite.test.ts`.
-- Baseline: `docs/security-reaudit-working-tree.md` (read at `056f4036b`), `docs/security-audit-2026-10-15.md`,
+- Baseline: `archive/docs:docs/security-reaudit-working-tree.md` (read at `056f4036b`), `docs/security-audit-2026-10-15.md`,
   `SECURITY-AUDIT-2026-10.md` and `docs/security-audit-2026-10/`. Ids from those files are not re-reported unless
   the current code changes their status. Open from baseline: DX-6 / DS-3 (iterating entry spend), SDKFRAMED-2
   (opt-in hop race).

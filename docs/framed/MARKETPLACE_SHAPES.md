@@ -10,7 +10,7 @@ validator, machine) and settled with exact post-state, events and balances.
 2026-09-27). The ladder then debugs the marketplace's own code, not composition.
 
 Sources: spec section 22 (call-edge catalog), section 23 (edge cases), Appendix A (calls per entry), Appendix B
-(test mechanics); `EVAL_REMOVE_BATCH_ENTRYPOINT.md` 2.2 (census); the sibling
+(test mechanics); `archive/docs:docs/framed/EVAL_REMOVE_BATCH_ENTRYPOINT.md` 2.2 (census); the sibling
 `effectiveacceleration.ai/contract/contracts`;
 `marketplace.test.ts`.
 

@@ -1,7 +1,9 @@
 # SolidCash 0.13.1 release-candidate notes
 
-Status: draft; the clean-checkout CI-ordering rehearsal passes, while the exact release commit and final BCHN
-matrix are not yet recorded.
+Status: release-candidate notes for `0.13.1`. The mocknet gates are green at `c7dc1b535` (2026-10-19), as recorded
+in [`RELEASE_DECISION_0.13.1.md`](RELEASE_DECISION_0.13.1.md). Two gates were not run: `release-application-regtest`
+(verification was mocknet-only, by instruction) and a marketplace-matrix rerun at that commit (the last matrix run
+was all four cells green at `14bfff57a`). The exact release tag is set by the release owner.
 
 SolidCash 0.13.1 introduces a Solidity-compatible language and workflow layer for Bitcoin Cash contracts. The
 release claim is the documented subset in [`SOLIDITY_COMPATIBILITY_0.13.1.md`](SOLIDITY_COMPATIBILITY_0.13.1.md),

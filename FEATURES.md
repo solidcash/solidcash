@@ -2,6 +2,9 @@
 
 A high-level, Solidity-flavored language for Bitcoin Cash smart contracts. Compiles `.scash` to BCH Script (`solidc`); interact via the `solidcash` SDK. Targets the BCH 2026 VM (loops `OP_BEGIN/OP_UNTIL`, functions `OP_DEFINE/OP_INVOKE`).
 
+Reviewed 2026-10-20 against the 0.13.1 tree. The compatibility claim is `SOLIDITY_COMPATIBILITY_0.13.1.md`; open
+limits are in `packages/solidc/docs/deferrals.md`.
+
 ## Language (compiler)
 
 **Types**
@@ -48,6 +51,21 @@ A high-level, Solidity-flavored language for Bitcoin Cash smart contracts. Compi
 - `tx.version/locktime/time/age/origin/inputs/outputs`, `this.activeBytecode/activeInputIndex/age`,
   `msg.sender/value/data/sig`, and oracle-backed `block.*` properties/`blockhash`
 - Globals: `abi.encode/encodePacked/encodeWithSelector/encodeWithSignature/encodeCall`, `abi.decode`, bytes/string concat, type introspection, `toPaddedBytes`, hashing, `date()`, number/time units
+
+## Compatibility and native assets
+
+- **`evmCompat`** - Solidity-compatible dispatch selectors (keccak256), ABI encoding, storage layout and address
+  form. Native compiles keep sha256 dispatch and the native address form. See
+  `packages/solidc/docs/solidity-import-compat.md`, `packages/solidc/docs/evm-abi-parity.md` and
+  `packages/solidc/docs/evm-storage-parity.md`.
+- **Keccak and ecrecover** - `keccak256` with a shared side-car UTXO and result NFTs, and `ecrecover` covenant
+  support with chain binding. See `packages/solidc/docs/keccak256.md`,
+  `packages/solidc/docs/keccak-result-nft.md` and `packages/solidc/docs/ecrecover.md`.
+- **Native tokens** - BCH-native token contracts (`BchNative`), including ERC-20-shaped and USDT-shaped ports with
+  verified source. See `packages/solidc/docs/native-erc20.md` and
+  `packages/solidc/docs/native-usdt-port.md`.
+- **Solidity import compatibility** - unmodified Solidity sources compile through the import-compat path, including
+  `.sol` imports and the documented lowerable Yul subset.
 
 ## SDK (`solidcash`)
 

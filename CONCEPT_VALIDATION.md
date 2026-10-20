@@ -1,6 +1,8 @@
 # Concept Validation: SolidCash Stateful Contract Model
 
-*Prepared for third-party concept validation. This document describes the design and guarantees of SolidCash's stateful contract system, with enough implementation anchors that a reviewer can verify each claim against the code without reading the full 12k-line `GenerateTargetTraversal.ts`. Each section states a claim, enumerates the invariants that must hold, and points to the compiler and runtime sites that enforce them.*
+*Prepared for third-party concept validation. This document describes the design and guarantees of SolidCash's stateful contract system, with enough implementation anchors that a reviewer can verify each claim against the code without reading the full 55k-line `GenerateTargetTraversal.ts`. Each section states a claim, enumerates the invariants that must hold, and points to the compiler and runtime sites that enforce them.*
+
+*Design snapshot, 2026-08-04. Line numbers and code shapes have moved since; use the named functions and tests as the durable anchors, and check current behavior against `packages/solidc/docs/deferrals.md` and the release decision.*
 
 *Abbreviations: `GTT` = `packages/solidc/src/generation/GenerateTargetTraversal.ts`. All other paths are given in full.*
 

@@ -25,7 +25,7 @@ NFT (capability 0x02, required at 11947) is spent in the same transaction, so co
 number of extra `C||0x01` NFTs. The only covenant that would count them (C3, GTT 9519/9661) is skipped for every
 route with mapping/entry access, and the census (GTT 45990) is off for bus contracts. The inlined verifier was fixed to
 pair by index in 1fc064596 (`activeVerifierOutput = activeVerifier`, compiler.ts:12420); the bound route was not.
-MESSAGE_BUS_ENFORCEMENT_MATRIX.md rows 11 and 17 still claim same-index pairing and a sidecar class balance; the class
+`archive/docs:MESSAGE_BUS_ENFORCEMENT_MATRIX.md` rows 11 and 17 still claim same-index pairing and a sidecar class balance; the class
 balance existed at 3b2fcc82d/4424d82cd and is absent by 39dccf3b6 and at HEAD. Regression of a documented control.
 
 Attack (graph route of a mapping-backed contract V with category C, e.g. a token with

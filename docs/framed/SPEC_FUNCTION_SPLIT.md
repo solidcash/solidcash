@@ -60,7 +60,7 @@ can run any entry, because the selector is dispatched inside the program.
 The validator identifies a master by minting capability, never by lock and never by commitment
 (`packages/solidc/src/framed/validator/model.ts`, `isMasterToken`). The master's own prologue recreates an
 empty commitment (`packages/solidc/src/framed/master/prologue.ts`). A framed compile may still run kernel
-lowering when `messageBus` is left on (`docs/framed/BUS_OFF_PATH.md`). The script that is deployed is the
+lowering when `messageBus` is left on (`archive/docs:docs/framed/BUS_OFF_PATH.md`). The script that is deployed is the
 master program, not the route. The marketplace fixture sets `messageBus: true` on framed compiles; that flag
 changes lowering. It does not make the master a kernel route.
 

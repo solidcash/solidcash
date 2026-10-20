@@ -6,7 +6,7 @@ normative storage and security specification is
 `verified-mappings.md`.
 
 > **Current measurements:** this note predates later helper allocation, whole-script outlining, and routed-handler
-> safety work. See [`vmap-size-survey-2026-08.md`](vmap-size-survey-2026-08.md) for current-HEAD and
+> safety work. See `archive/docs:packages/solidc/docs/vmap-size-survey-2026-08.md` for current-HEAD and
 > `codex/eacc-general-compile-perf` measurements, implemented-versus-open status, and the revised priority order.
 
 This note evaluates how to reduce vmap contract bytecode, runtime covenant work, and transaction size without

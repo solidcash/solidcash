@@ -42,7 +42,7 @@ Measured marketplace shapes:
 | `MarketplaceDataV1` | 118,379 | same |
 | Largest unlocking script on the largest lane | 133,320-135,908 | same |
 | Proxy `__message_bus1` input in a 2026-10-14 trace | 303,347 | `docs/marketplace-matrix-2026-10-14-fix-results.json` |
-| Published 24-input, eight-participant transaction | 94,651 | `RELEASE_READINESS.md` |
+| Published 24-input, eight-participant transaction | 94,651 | `archive/docs:RELEASE_READINESS.md` (2026-08-09) |
 | Default state-record commitments | 4-13 | `docs/marketplace-stock-inventory-2026-10.md` |
 
 The 24-input transaction fits the stock 1 MB transaction limit. The script, stack-item, and per-input limits are

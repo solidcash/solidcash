@@ -45,7 +45,7 @@ One profile for the worker (`--cpu-prof`), 97,050 samples:
 | compile | 95 | 0.1% |
 | other, of which garbage collection is 6942 samples (7.2%) | 12447 | 12.8% |
 
-Compile is absent because the fixture was already compiled. The VM in the profile is stock `node_modules/@bitauth/libauth` (`3.1.0-next.8`) with the SDK overrides (`createVirtualMachine.js` `runPhases` is in the top self-time). `structuredClone` is also in the top self-time. That is the function-table copy the fork removes (`PERF_LIBAUTH.md`); this lane did not load the fork.
+Compile is absent because the fixture was already compiled. The VM in the profile is stock `node_modules/@bitauth/libauth` (`3.1.0-next.8`) with the SDK overrides (`createVirtualMachine.js` `runPhases` is in the top self-time). `structuredClone` is also in the top self-time. That is the function-table copy the fork removes (`archive/docs:docs/framed/PERF_LIBAUTH.md`); this lane did not load the fork.
 
 ## Kernel proxied lane
 

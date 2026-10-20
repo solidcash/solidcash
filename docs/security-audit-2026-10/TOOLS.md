@@ -193,7 +193,7 @@ Method: read-only (grep, sed, git ls-files/grep). No tests, builds, CLIs or netw
 - docker-compose.regtest.yml:9-10, docker/fulcrum.conf:3-4, packages/solidhat/src/init.ts:72: regtest RPC
   user/password defaults.
 - Not found: no xprv/tprv, PEM private keys, GitHub/npm/AWS/Slack/OpenAI/Google tokens, or tracked .env/.npmrc
-  files. HANDOFF_KERNEL_BETA_ROUND_NEXT.md:2332 `token:` is a token-category hex, not a secret. .marketplace/ has no
+  files. `archive/docs:HANDOFF_KERNEL_BETA_ROUND_NEXT.md`:2332 `token:` is a token-category hex, not a secret. .marketplace/ has no
   tracked files.
 - No funded key is wired to a mainnet default. Live electrum/bitcoin-rpc networks refuse the public mock mnemonic
   (packages/testing/src/hre.ts:548-552, applied to both the base connection and `connect()`).

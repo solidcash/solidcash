@@ -1,6 +1,6 @@
 # Per-call composition: transaction specification
 
-Design spec for the framed path of [`PLAN_MARKETPLACE_66.md`](./PLAN_MARKETPLACE_66.md) (its section 4).
+Design spec for the framed path of `archive/docs:docs/framed/PLAN_MARKETPLACE_66.md` (its section 4).
 
 Revision 14, 2026-10-03. Security assessment behind revisions 6-9: [`AUDIT_MSG_SENDER.md`](./AUDIT_MSG_SENDER.md).
 
@@ -983,7 +983,7 @@ safety; it keeps pools per contract.
 - makes only `STATIC` or `DELEGATE` calls, a delegate frame below being held to these same rules (T34).
 
 A `DELEGATE` call changes nothing by itself: its callee runs on the read-only frame's records and sits in the
-subtree, so a read-only frame may reach a read-only entry through a proxy (PW10 in `HANDOFF_PARALLEL.md`). The
+subtree, so a read-only frame may reach a read-only entry through a proxy (PW10 in `archive/docs:docs/framed/HANDOFF_PARALLEL.md`). The
 derivation (`checks.ts` `checkV10`), the program's read-only check and the reference model (since `34bf101b5`) all
 admit it.
 
@@ -1733,7 +1733,7 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
   - **Resuming is a future option.** Continuing each master from a snapshot of its VM state at the stop site costs
     about one run per master, where the rerun costs two per stop site, about 10 sites per master. The evaluation
     estimated that even one run per site could cost more SDK time than today's kernel, and resuming 2-4x less
-    (`EVAL_FRAMED_VS_KERNEL.md` section 5). Resuming needs the compiler to publish where each site's witness is
+    (`archive/docs:docs/framed/EVAL_FRAMED_VS_KERNEL.md` section 5). Resuming needs the compiler to publish where each site's witness is
     consumed, and a VM snapshot cheaper than a run.
   - **Stalls are refused** (review, 2026-09-25; the step cap was removed in revision 11). Every step must fill at
     least one missing witness: a call result or a segment close. A step that fills none stops derivation with

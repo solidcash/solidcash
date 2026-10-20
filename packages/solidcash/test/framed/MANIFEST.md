@@ -521,7 +521,7 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   complete — the ordering half of `V6` and most of `V7`'s settlement rules are carried by record chains rather than
   emitted — and a handful of rules in the derivation's reason list have no counterpart in the program.
 - Every VM acceptance in these directories runs with the standardness flags relaxed; the operation-cost density is a
-  consensus rule and applies there too (see `GATE_REPORT.md`). Measured at `7c76dcef4` on the reference composition's
+  consensus rule and applies there too (see `archive/docs:docs/framed/GATE_REPORT.md`). Measured at `7c76dcef4` on the reference composition's
   shape at the published density: the budget is `800` per byte of the validator input's own unlocking bytecode, which
   is 4,765 bytes there, and the program spends 3,201,534 of the 5,452,000 those bytes buy. Before the program carried
   its padding block the same measurement was 3,142,116 of 3,812,000 — 17% of headroom, and 64 units over on the

@@ -3229,7 +3229,7 @@ nested callee to see its proxy caller by the logical CREATE/SCID lock. Today a n
 witness (`__internal__msgSenderAnchorIdx` is evmCompat-only, SymbolTableTraversal.ts), so `msg.sender` is the proxy's
 physical master lock; the SDK registers a proxy root's `publicSelfIdentity` as its physical lock (StatefulContract.ts,
 upgrades.ts); and `address(this)` in a native delegate is physical (`__internal__graphSelfIdentityInput` is
-evmCompat-only). The title is red on the kernel parent too (W6_BASELINE.md).
+evmCompat-only). The title is red on the kernel parent too (`archive/docs:docs/framed/W6_BASELINE.md`).
 
 **Proposed design (model B: full locks end to end, no identity20 keys):** inject the anchor witness for native compiles
 (one hidden ABI input per native entry that reads `msg.sender`, about 45 B of anchor check per read); make a proxy

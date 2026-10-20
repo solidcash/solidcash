@@ -516,7 +516,8 @@ export const densityReserve = (bytes = 256): Uint8Array => new Uint8Array(bytes)
  * This is a PIN, not an endorsement: the shape is meant to work, and the failure is marginal (the measured
  * overshoots are 16 to 103 operation units against budgets of 500,000 to 1,100,000). When the cost of the
  * underlying lowering comes down, this assertion FAILS - deliberately. Restore the positive assertion at that
- * point rather than loosening this one. Tracked in RELEASE_READINESS.md under the operation-cost budget item.
+ * point rather than loosening this one. Tracked in RELEASE_READINESS.md under the operation-cost budget item,
+ * whose detail is archived at `git show archive/docs:RELEASE_READINESS.md`.
  */
 export async function expectOverOperationCostBudget(action: Promise<unknown>): Promise<void> {
   await expect(action).rejects.toThrow(/exceed the operation cost density limit|Could not derive the return value/);

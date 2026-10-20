@@ -54532,11 +54532,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SWAP, locationData);        // [p2sh32_lbc, tcCat]
 
       // Now call the aggregate loop
-      this.emitTokenContainerAggregateLoop(
-        node.name as 'tokenAmount' | 'nftCount',
-        isOutState,
-        locationData,
-      );
+      if (this.framedMaster) {
+        this.emitFramedTokenContainerAggregate(node.name as 'tokenAmount' | 'nftCount', isOutState, locationData);
+      } else {
+        this.emitTokenContainerAggregateLoop(
+          node.name as 'tokenAmount' | 'nftCount',
+          isOutState,
+          locationData,
+        );
+      }
 
       this.pushToStack('(value)');
       return node;
@@ -54575,6 +54579,73 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.pushToStack('(value)');
     return node;
+  }
+
+  /**
+   * A framed frame's `tokenAmount` or `nftCount` of a category, as this master holds it (spec 4b): over the inputs at
+   * the container lock whose unlocking names it, and for `outState` their outputs in place. The containers a
+   * transaction creates at the lock count for `outState` only when this master is its contract's only one in the
+   * transaction, so two frames of one contract never both count one deposit. `[lock, key]` -> `[sum]`, untracked.
+   */
+  private emitFramedTokenContainerAggregate(
+    field: 'tokenAmount' | 'nftCount', outState: boolean, loc: SingleLocationData,
+  ): void {
+    const category = outState ? Op.OP_OUTPUTTOKENCATEGORY : Op.OP_UTXOTOKENCATEGORY;
+    const amount = outState ? Op.OP_OUTPUTTOKENAMOUNT : Op.OP_UTXOTOKENAMOUNT;
+    // [.., sum, index] -> [.., sum', index]: adds the token at the index, of the key's category, `keyDepth` deep.
+    const add = (categoryOp: Op, amountOp: Op, keyDepth: number): Script => [
+      Op.OP_DUP, categoryOp, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(32n), Op.OP_GREATERTHANOREQUAL,
+      Op.OP_IF,
+      encodeInt(32n), Op.OP_SPLIT,
+      ...(field === 'tokenAmount'
+        ? [Op.OP_DROP, Op.OP_REVERSEBYTES, encodeInt(BigInt(keyDepth)), Op.OP_PICK, Op.OP_EQUAL]
+        : [Op.OP_SIZE, Op.OP_NIP, Op.OP_SWAP, Op.OP_REVERSEBYTES, encodeInt(BigInt(keyDepth + 1)), Op.OP_PICK,
+          Op.OP_EQUAL, Op.OP_BOOLAND]),
+      Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
+      Op.OP_IF,
+      ...(field === 'tokenAmount' ? [Op.OP_DUP, amountOp, Op.OP_ROT, Op.OP_ADD, Op.OP_SWAP]
+        : [Op.OP_SWAP, Op.OP_1ADD, Op.OP_SWAP]),
+      Op.OP_ENDIF,
+    ];
+    // [lock, key] -> [lock, key, auth]
+    this.emitMasterInputIndex(loc, 2);
+    this.emit([
+      Op.OP_DUP, Op.OP_16, Op.OP_GREATERTHAN, Op.OP_IF, Op.OP_SIZE, Op.OP_SWAP, Op.OP_CAT, Op.OP_ELSE,
+      Op.OP_DUP, Op.OP_IF, encodeInt(80n), Op.OP_ADD, Op.OP_ELSE, Op.OP_DROP, Uint8Array.of(0), Op.OP_ENDIF, Op.OP_ENDIF,
+      encodeInt(81n), Op.OP_CAT,
+    ], loc);
+    // [lock, key, auth, sum, i]: the containers this master owns.
+    this.emit([
+      Op.OP_0, Op.OP_TXINPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
+      Op.OP_DUP, Op.OP_UTXOBYTECODE, encodeInt(5n), Op.OP_PICK, Op.OP_EQUAL,
+      Op.OP_IF, Op.OP_DUP, Op.OP_INPUTBYTECODE, Op.OP_3, Op.OP_PICK,
+      Op.OP_SIZE, Op.OP_ROT, Op.OP_SWAP, Op.OP_SPLIT, Op.OP_DROP, Op.OP_EQUAL,
+      Op.OP_IF, ...add(category, amount, 4), Op.OP_ENDIF,
+      Op.OP_ENDIF,
+      Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
+    ], loc);
+    if (outState) {
+      // Alone among its contract's masters, it also counts the containers the transaction creates at the lock.
+      this.emitMasterInputIndex(loc, 4);
+      this.emit([
+        Op.OP_UTXOTOKENCATEGORY, Op.OP_0, Op.OP_TXINPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
+        Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_3, Op.OP_PICK, Op.OP_EQUAL,
+        Op.OP_IF, Op.OP_SWAP, Op.OP_1ADD, Op.OP_SWAP, Op.OP_ENDIF,
+        Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP, Op.OP_NIP, Op.OP_1, Op.OP_NUMEQUAL,
+        Op.OP_IF,
+        Op.OP_TXOUTPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
+        Op.OP_DUP, Op.OP_OUTPUTBYTECODE, encodeInt(5n), Op.OP_PICK, Op.OP_EQUAL,
+        Op.OP_IF,
+        Op.OP_DUP, Op.OP_TXINPUTCOUNT, Op.OP_LESSTHAN,
+        Op.OP_IF, Op.OP_DUP, Op.OP_UTXOBYTECODE, encodeInt(5n), Op.OP_PICK, Op.OP_EQUAL, Op.OP_NOT,
+        Op.OP_ELSE, Op.OP_1, Op.OP_ENDIF,
+        Op.OP_IF, ...add(Op.OP_OUTPUTTOKENCATEGORY, Op.OP_OUTPUTTOKENAMOUNT, 4), Op.OP_ENDIF,
+        Op.OP_ENDIF,
+        Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
+        Op.OP_ENDIF,
+      ], loc);
+    }
+    this.emit([Op.OP_NIP, Op.OP_NIP, Op.OP_NIP], loc);
   }
 
   /**

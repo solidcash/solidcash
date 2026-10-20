@@ -209,6 +209,7 @@ describe('a framed callee that pays tokens', () => {
       + ' contract Vault() { address immutable reserve;'
       + '   constructor(address reserve_) { this.reserve = reserve_; }'
       + '   function deposit(int amount) { IReserve(this.reserve).wrap(amount); }'
+      + '   function depositTwice(int amount) { IReserve(this.reserve).wrap(amount); IReserve(this.reserve).wrap(amount); }'
       + '   function withdraw(address to, int amount) { IReserve(this.reserve).unwrap(to, amount); } }';
     const compiled = compileStringMulti(source, {
       composition: 'framed', suppressWarnings: true,
@@ -271,6 +272,17 @@ describe('a framed callee that pays tokens', () => {
     expect(deposited.verdicts.filter((verdict) => !verdict.accepted)).toEqual([]);
     expect(deposited.broadcast).toBeDefined();
     expect(await tokensAt(container)).toBe(400n);
+    expect(await heldBy(vaultAddress)).toBe(400n);
+
+    // Two wraps in one transaction with one deposit: each frame counts only what reaches the containers it owns, so
+    // the deposit is credited once at most, and the second wrap refuses.
+    const remainder = (await provider.getUtxosForLockingBytecode(aliceLock))
+      .find((utxo) => utxo.token?.category === category)!;
+    expect(remainder.token!.amount).toBe(600n);
+    const doubled = await call('depositTwice', [100n], 'c7', {
+      tokenDeposits: [{ utxo: remainder, unlocker: alice.unlockP2PKH(), amount: 100n }],
+    }).catch((error: Error) => error);
+    expect(doubled instanceof Error || doubled.verdicts.some((verdict) => !verdict.accepted)).toBe(true);
     expect(await heldBy(vaultAddress)).toBe(400n);
 
     const withdrawn = await call('withdraw', [bobLock, 150n], 'c6');

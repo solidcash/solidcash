@@ -3049,3 +3049,19 @@ BchNative change.
 confirm the route's container checks resolve the key from state as the handler's do.
 
 **Revisit if:** a contract calls a BchNative `wrap` or `unwrap` through the message bus.
+
+## A wrap-first BchNative token has no SDK path for its bearer supply (2026-10-20)
+
+**What:** `nativeToken` mints the token's category only into the contract's reserve container. A token whose ledger
+starts empty and grows by `wrap` (`MinimalNativeToken`) needs bearer tokens in holders' hands first; with every unit
+in the reserve, nobody can wrap and nobody holds a ledger balance to unwrap. The premint of the contract's own
+category had the same shape before D33. A token over an existing category needs no premint, but its first `wrap`
+deposits into a container that does not exist yet, which no test covers.
+
+**Why deferred:** outside the BchNative category change; the premint the BCMR design specifies (`docs/bcmr/DESIGN.md`,
+6.2) is the ledger-first shape, where the constructor or `issue` credits the ledger.
+
+**What it'd take:** a `nativeToken` amount minted to the deployer beside the reserve, and a test of a first `wrap` into
+an absent container.
+
+**Revisit if:** a wrap-first token is deployed through the SDK.

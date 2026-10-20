@@ -99,8 +99,8 @@ Concept check: event NFTs are strictly historical markers, not live state. Nothi
 Invariants (`state.ts:1253-1326`):
 
 1. **Master path (flag=1)**: master minting NFT at `masterInputIndex`, expected master category.
-2. **Merge path (flag=0)**: the output at `mergeOutputIndex` preserves locking bytecode (`==`), value (`>=`), FT amount (`>=`), and category (`==`) relative to this input.
-3. **Single-input anti-double-merge**: the covenant loops all inputs at `:1297-1321` and verifies no other input shares this input's locking bytecode. Without this, two merge inputs pointing at the same output would double the merged value at that output.
+2. **Merge path (flag=0)**, removed 2026-10-20 (`efba0f1ef`, `docs/framed/DECISIONS.md` D37): the output at `mergeOutputIndex` preserved locking bytecode (`==`), value (`>=`), FT amount (`>=`), and category (`==`), but no NFT commitment, so it let anyone rewrite a held mutable NFT's commitment or mint from a held minting NFT. The container now takes only the master path, with the flag exactly 1.
+3. **Single-input anti-double-merge**: went with the merge path; the covenant looped all inputs and verified no other input shared this input's locking bytecode.
 4. Salt `tokenContainerCategoryId` gives a unique address per contained category.
 
 #### 1.4.5 Satoshi Container

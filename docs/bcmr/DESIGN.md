@@ -264,8 +264,9 @@ Further points:
 - The genesis that creates C also creates X, from a second vout-0 coin (`nativeToken.funding`), so the two categories
   share its identity output, and the registry describes both: X carries the token fields, C the contract and its NFT
   labels. A framed genesis does the same, and a framed token wraps and unwraps through the container
-  (`docs/framed/SPEC_FRAMED_TRANSACTION.md`, 4b; D34). A message-bus route does not carry the container, so `wrap`
-  and `unwrap` run on their own entries (D35).
+  (`docs/framed/SPEC_FRAMED_TRANSACTION.md`, 4b; D34). A message-bus route carries the container under its state key
+  (D36), and another contract's callee frame wraps into and unwraps from it (`FramedTokenCallee.test.ts`). The full
+  framed ERC-20 is `packages/solidcash/contracts/examples/FramedNativeToken.scash`.
 
 ### 6.2 Genesis for a native token
 

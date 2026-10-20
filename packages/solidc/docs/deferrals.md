@@ -3016,21 +3016,32 @@ contract-created categories.
 
 ## Framed token containers pay one fungible category from one frame (2026-10-20)
 
-**What:** a framed master pays fungible tokens out of a token container as a run after the one container its frame
-spends (`docs/framed/SPEC_FRAMED_TRANSACTION.md`, 4b; DECISIONS D34). Refused by name: an NFT moved out of a
-container (`transferNft`), the single-container reads `tokenCategory` and `nftCommitment`, a call that pays from two
-categories, and, in effect, two frames of one contract that both pay the same category, since each master holds the
-container to its own sends.
+**RESOLVED 2026-10-20.** A container now belongs to the master its unlocking names (`docs/framed/DECISIONS.md` D37),
+so frames of one contract pay one category from containers of their own and a frame spends several; one frame pays
+several categories, and a callee frame pays from its own contract's (`05161d7d1`, `ba6296865`, `e38a89325`). NFTs are
+held, minted and released, and `tokenCategory` and `nftCommitment` read (`19eefe1d6`, D38); a view reads the reserve
+(`ccc325a42`); a send on an untaken branch is dropped (`07ef425bd`). Pinned by `FramedTokenCallee.test.ts`,
+`FramedTokenNft.test.ts`, `BchNativeFramed.test.ts` and `FramedNativeToken.test.ts`.
 
-**Why deferred:** the run is anchored at the one container a frame spends, which is what lets the master find its
-sends without a witness field; each of these needs a second anchor or a witness-listed send.
+What remains is refused by name or is a limit of the VM, each for a reason the rules need:
 
-**What it'd take:** list token sends in the witness block (a shipped-validator change), or anchor a run per spent
-container; for NFTs, a keep rule that tracks the capability and commitment the direct pin follows.
-
-**Revisit if:** a framed contract moves NFTs out of a container or pays two categories in one call.
+- An immutable NFT with an empty commitment reads as a fungible token to the VM, so no master can tell it is there
+  or keep it; a deposit of one is refused.
+- Two frames sending NFTs of one contract's category in one transaction are refused: the release and mint rules
+  count every visible NFT of the category in the transaction, which a second sender would break.
+- A transaction that sends NFTs of a category takes in no visible NFT of it from outside the container lock, so an
+  NFT deposit and an NFT send of one category are not composed together.
+- BchNative's `wrap` measures the reserve's growth across every container the transaction spends, so a `wrap` and
+  an `unwrap` of one token in one transaction refuse the `wrap`.
+- A run whose fungible and NFT sends both sit on branches lists its NFT sends after all its fungible ones, while the
+  body makes them in order; the SDK cuts each kind to the sends made, which holds only when the skipped sends are
+  each kind's last.
 
 ## A message-bus route does not carry an own- or state-keyed token container (2026-10-20)
+
+**RESOLVED 2026-10-20** (`c919a1686`, `docs/framed/DECISIONS.md` D36): a route merges such an access under a fixed key
+and checks a state-keyed slot as this contract's container for the category it holds. Pinned by
+`TokenContainerStateKey.test.ts` and `KernelStateKeyedTokenContainerCompose.test.ts`. The entry as it stood:
 
 **What:** a route binds a token container through the key its row forwards, so a handler that keys a container by
 the contract's own category or by an immutable state variable (BchNative's `wrap` and `unwrap`) is not eligible for

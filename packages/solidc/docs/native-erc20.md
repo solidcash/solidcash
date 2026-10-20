@@ -74,7 +74,8 @@ none of the underlying facts did):
   Model A needs no covenant change.
 - `buildTokenContainerCovenantScript` - `state.ts:1785`. Master path (`state.ts:1793`) = pure auth; merge path
   (`state.ts:1801`) = consolidate-only (`lbc` / `value >=` / `amount >=` / category) + the anti-double-merge
-  single-input loop (`state.ts:1828-1845`).
+  single-input loop (`state.ts:1828-1845`). The merge path was removed 2026-10-20 (`efba0f1ef`,
+  `docs/framed/DECISIONS.md` D37): it pinned no NFT commitment or capability.
 - `emitTokenContainerPreservation` - `GenerateTargetTraversal.ts:24067`; dispatched at `GTT:3902`, alongside
   `emitTokenContainerIdentityVerification` (`GTT:3896`) and `emitTokenContainerTransferCovenantVerification`
   (`GTT:3899`) - all three still gated `!this.functionHasDelegatecall`.
@@ -757,7 +758,10 @@ obligations hold.
 - **Merge path (flag=0, no master)**: pure consolidation. Preserves locking bytecode, value (`>=`), FT amount
   (`>=`), and category, and carries the anti-double-merge single-input loop (state.ts:1660-1685) so N
   container UTXOs cannot be collapsed onto one output to skim the rest. Cannot drain, redirect, or strip
-  category. A permissionless actor can tidy the container's UTXO set and nothing more.
+  category. A permissionless actor can tidy the container's UTXO set and nothing more. **Removed 2026-10-20**
+  (`efba0f1ef`, `docs/framed/DECISIONS.md` D37): it pinned no NFT commitment, so it also let anyone rewrite a
+  held mutable NFT's commitment, or mint from a held minting NFT in the same transaction. A token container now
+  moves only by the master path, taken with the flag exactly 1.
 
 So there is no third path. A container UTXO moves only by (a) co-spending the real master thread, or
 (b) consolidating into itself. There is no signature-only or bearer path - unlike a raw-P2PKH vault, the

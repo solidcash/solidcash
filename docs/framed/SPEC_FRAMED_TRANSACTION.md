@@ -2,11 +2,20 @@
 
 Design spec for the framed path of `archive/docs:docs/framed/PLAN_MARKETPLACE_66.md` (its section 4).
 
-Revision 15, 2026-10-20. Security assessment behind revisions 6-9: [`AUDIT_MSG_SENDER.md`](./AUDIT_MSG_SENDER.md).
+Revision 16, 2026-10-20. Security assessment behind revisions 6-9: [`AUDIT_MSG_SENDER.md`](./AUDIT_MSG_SENDER.md).
 
 ---
 
 ## 0. Changes
+
+### Since revision 15 (2026-10-20)
+
+- **Token containers, completed** (section 4b). A container belongs to the master its unlocking names
+  (`ba6296865`, DECISIONS D37). The container covenant takes only the master path, with the flag exactly 1, and
+  every token container drops the merge path (`916bc9ea2`, `efba0f1ef`). A frame pays several categories and
+  several containers, a callee frame pays from its own contract's containers (`05161d7d1`, `e38a89325`), NFTs are
+  held, minted and released (`19eefe1d6`, D38), a view reads the reserve (`ccc325a42`), and a send on an untaken
+  branch is dropped (`07ef425bd`).
 
 ### Since revision 14 (2026-10-20)
 
@@ -661,24 +670,42 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
   made. A composer cannot tell ahead of the run which branches run, so the SDK plans every send the entry can make
   and drops what the body shows it did not make: the listed sends past the ones it pinned, and a value call it made
   to another contract or not at all.
-- **Token containers.** X holds fungible tokens of another category Y in containers at X's container lock for Y,
-  which the transaction spends only beside a master of X. A contract whose entries name a token container uses the
-  accounted container covenant: the output at the container's own index keeps its lock, full category, commitment
-  and at least its satoshis, or is tokenless once drained, and the fungible amount is the master's to account. Every
-  other framed container keeps the covenant that pins the amount too (audit FRAMED-CONT-1).
-  - A frame pays Y out of one container: the k-th send its body makes is the output at that container's input index
-    plus 1 plus k, pinned to the recipient's lock, exactly Y (no NFT) and the amount. The SDK spends the container as
-    the first user input, so its recreation and its sends lead the trailing region as a run; the witness block is
-    unchanged, so the validator reads nothing new.
-  - The master conserves each container its entry names: the outputs at the container lock plus the frame's sends
-    cover the inputs at it. A read of `this.tokens[Y].tokenAmount` sums the inputs at the lock, and its `outState`
-    form the outputs, wherever they sit, so a deposit is a new container output.
-  - Every entry of such a contract, the ones that name no container included, keeps at their own index every input at
-    X's container lock for a category the entry does not name: the same full category and at least the amount. A frame
-    of X therefore cannot draw a container down on another frame's authority.
-  - Two frames of X that both pay Y in one transaction are each held to their own sends, so they cannot both draw the
-    container down; the SDK composes one paying frame. An NFT moved out of a container, the single-container reads
-    (`tokenCategory`, `nftCommitment`) and a call that pays from two categories are refused by name.
+- **Token containers.** X holds tokens of another category Y in containers at X's container lock for Y. A
+  contract whose entries name a token container uses the accounted container covenant. It has one spending path,
+  taken with the flag exactly 1, so a container's unlocking starts `<a master's input index> OP_1`, the input at that
+  index being a master of X. The output at the container's own index keeps its lock, full category, commitment and at
+  least its satoshis, or is tokenless once drained; the fungible amount is the master's to account. No token
+  container has a merge path any more: it pinned neither an NFT's commitment nor its capability.
+  - **Ownership.** A master owns the containers at the lock whose unlocking names it, and they are one block of
+    consecutive inputs. Consensus keeps an unlocking push-only, minimal and clean, so that prefix is the container's
+    own claim, and each container is checked by exactly the master it names. Two frames of X pay Y from containers of
+    their own.
+  - **Sends.** The k-th send a frame makes is the output at its block's first index plus the block's size plus k, its
+    fungible sends first. A fungible send pays the recipient's lock exactly the amount of Y; an NFT send gives it an
+    NFT of Y with the commitment and capability the body names, pinned in that order: the category with the
+    capability's byte, the lock, the commitment. The block is contiguous, so another frame's sends cannot share these
+    outputs. The witness block is unchanged, so the validator reads nothing new.
+  - **Conservation.** The master conserves what it owns: the amounts at its containers' own indices, less what they
+    held, plus its fungible sends, is at least zero. A read of `this.tokens[Y].tokenAmount` sums the inputs at the
+    lock, its `outState` form the outputs, wherever they sit, and `tokenCategory` and `nftCommitment` read the first
+    container the frame owns.
+  - **NFTs.** The VM sees an NFT only through a capability or a commitment; an immutable NFT with an empty commitment
+    reads as a fungible token, so no rule here can hold one. An entry that sends no NFT of Y keeps every visible NFT it
+    owns in place and owns no minting one. One that sends NFTs keeps its minting containers, releases at most one
+    owned NFT per send and none beside a minting container, takes no visible NFT of Y from outside the lock, and lets
+    no visible NFT of Y leave it but its own sends: a minting container mints the sends, and otherwise each send
+    releases an immutable NFT of its commitment, or a mutable one.
+  - **Other categories.** Every entry of X keeps, at their own indices, the containers it owns of a category it does
+    not name: the same full category and at least the amount, and none of them holds a minting NFT. A frame of X
+    therefore cannot draw a container down on another frame's authority (audit FRAMED-CONT-1).
+  - **Composition.** The SDK lays a token run per paying frame and category after the participants, the root's first:
+    the frame's containers, then its sends. A category's last paying frame spends every container left, so a payment
+    past the largest container consolidates them; an earlier frame that runs short takes one more, and the call is
+    planned again. A frame that only reads the amount spends the containers too, recreated in place, so the read is
+    the whole reserve, as a framed read's view is; a fungible deposit merges into such a run, and otherwise, like an
+    NFT deposit, becomes a new container of the contract whose frame names the category. The caller's coins fill the
+    indices between runs. A send on a branch not taken is dropped as a value send is. Two frames sending NFTs of one
+    contract's category in one transaction are refused by name.
 - **`address(this).balance`** is X's balance as the EVM's stands at that point of the frame: the value of the
   containers the transaction spends at X's container lock (the context contract's, in a `DELEGATE` frame), with
   the frame's `msg.value` credited and the sends the body has made so far taken out.
@@ -1865,7 +1892,7 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
 | HEAD sentinel | Same as its collection | Slot 0 | At genesis | Relinked by inserts | Never |
 | Long mapping value (length-prefixed, value over 60 bytes) | Head in the node's tail: `len4 \|\| sha256(v) \|\| v[0:28]`; chunks at a lock salted with (collection, slot, root) | Chunk: `uint16LE(i) \|\| 126-byte slice` | Every version that is written | Never; a new version gets a new lock | Old versions may be cleaned up later; this is not required |
 | Dynamic `string`, `bytes`, `T[]` state | Entry covenant salted per variable; length `A$len` in a data NFT | `pushdata(i) \|\| pushdata(120-byte slice)` | A write creates every new chunk | Never | A write consumes every old chunk |
-| Satoshi and token containers | `buildSatoshiContainerCovenantScript(C)`, `buildTokenContainerCovenantScript(C, X)` (the accounted variant for a contract that pays tokens, 4b) | None; they hold value | Genesis, a payment `CALL`, or a token deposit | Merged; a token container in place | Drained by listed sends, or by a token run's sends |
+| Satoshi and token containers | `buildSatoshiContainerCovenantScript(C)`, `buildTokenContainerCovenantScript(C, X)` (the accounted variant for a contract that pays tokens, 4b) | None; they hold value | Genesis, a payment `CALL`, or a token deposit | A satoshi container merged; a token container in place, by the master its unlocking names | Drained by listed sends, or by a token run's sends |
 | Event | `buildEventNftCovenantScript(C, sha256(signature)[:20])` | The arguments' pushes | Minted at `emit` (W3) | Never | Anyone may sweep it after 144 blocks |
 
 **Encodings, stated here rather than delegated** (review, 2026-09-25; `packages/solidc/docs/verified-mappings.md`):

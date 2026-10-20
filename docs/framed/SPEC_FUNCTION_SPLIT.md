@@ -1,8 +1,9 @@
 # Function split (`split: off | size | func`)
 
-Status: **postponed until after the beta.** Written 2026-10-12 so the work can resume without re-deriving it.
-No item in this document is in the beta cut. That includes the flag, view and pure facets, salted locks,
-internal-function shards, and every change to the message bus or to framed call composition.
+Status: the per-entry split (`split: 'func'`) landed in `7c4b565e3`, merged onto the per-call line in `6dfbbb013`
+(2026-10-13): each public, external, view or pure function gets its own framed master, and an over-cap helper is cut
+into an INTERNAL shard. Framed token containers hold in every shard (`2d70db6d6`). The text below is the design as
+written on 2026-10-12, when it was postponed until after the beta; check the code before acting on any item of it.
 
 The beta ships the code as it is. Size split stays `compileFileSplit` / `compileStringSplit` and the boolean
 `solidc --split`. A framed contract stays one master program, one lock, and an interchangeable pool with an

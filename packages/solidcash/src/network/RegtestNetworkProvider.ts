@@ -96,8 +96,6 @@ interface RegtestSnapshotState {
   importedAddresses: Set<string>;
   tokenUtxos: Map<string, Map<string, Utxo>>;
   broadcastUtxos: Map<string, Utxo>;
-  /** How many transactions this provider had broadcast; a restore abandons the ones after. */
-  broadcastCount: number;
   lastMinedTimestamp: number;
 }
 
@@ -166,8 +164,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // Every output this process broadcasts, so a validator/facet output mined before its address is imported is
   // still visible through getUtxosForLockingBytecode (the wallet cannot rescan history for imported addresses).
   private broadcastUtxos = new Map<string, Utxo>();
-  /** Every transaction this provider broadcast, in order, back to the latest restore. */
-  private broadcastTxids: string[] = [];
+  /** Every transaction this provider has broadcast; a restore abandons the ones the restored chain lacks. */
+  private broadcastTxids = new Set<string>();
   private retainAddress: string = '';
   private retainLockingBytecode: Uint8Array = new Uint8Array();
   private static readonly RETAINED_MINT_SATOSHIS = 2_000n;
@@ -1004,7 +1002,6 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       importedAddresses: new Set(this.importedAddresses),
       tokenUtxos: new Map([...this.tokenUtxos].map(([category, bucket]) => [category, new Map(bucket)])),
       broadcastUtxos: new Map(this.broadcastUtxos),
-      broadcastCount: this.broadcastTxids.length,
       lastMinedTimestamp: this.lastMinedTimestamp,
     };
     return {
@@ -1084,12 +1081,13 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     // rescan once more so the wallet's coin set matches the restored UTXO set.
     await this.rpc.request<RescanBlockchain>('rescanblockchain', 0);
     const mempool = new Set(Object.keys(await this.readRpc.request<GetRawMempoolVerbose>('getrawmempool', true)));
-    // Every transaction this provider broadcast after the snapshot sat in a disconnected block or the cleared
-    // mempool. `listtransactions` returns only the newest 1000 wallet entries (several per transaction), so an
-    // older one stayed unabandoned and kept its inputs spent in the wallet. Abandoning them all needs a node whose
+    // Abandon every transaction this provider broadcast that the restored chain and mempool lack, not only the
+    // ones since the snapshot: once a later conflicting spend was mined, the wallet replaced an earlier abandon
+    // with that block, and rewinding the block brought the earlier spender back as unconfirmed, so coins leaked
+    // restore by restore. The node refuses the ones confirmed in the restored chain. This needs a node whose
     // `clearmempool` notifies the wallet (bitcoin-cash-node 0be3cfcf3); with a bare clear the wallet kept them
-    // flagged in-mempool and an abandon failed a node assertion. The listing still covers other processes' sends.
-    const stale = new Set(this.broadcastTxids.slice(state.broadcastCount));
+    // flagged in-mempool and an abandon failed a node assertion. The listing covers other processes' sends.
+    const stale = new Set(this.broadcastTxids);
     const walletTxs = await this.readRpc.request<ListTransactions>('listtransactions', '*', 1000, 0, true);
     for (const tx of walletTxs) {
       if (tx.confirmations === 0 && !tx.abandoned) stale.add(tx.txid);
@@ -1100,7 +1098,6 @@ export default class RegtestNetworkProvider implements NetworkProvider {
         await this.probeRpc.request<AbandonTransaction>('abandontransaction', txid);
       } catch { /* confirmed in the restored chain, conflicted, or already abandoned */ }
     }
-    this.broadcastTxids.length = Math.min(this.broadcastTxids.length, state.broadcastCount);
     await this.rpc.request<RescanBlockchain>('rescanblockchain', 0);
 
     this.retainedMinting = new Map(state.retainedMinting);
@@ -1144,7 +1141,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // ---------------------------------------------------------------------------
 
   private trackBroadcastOutputs(txHex: string, txid: string): void {
-    this.broadcastTxids.push(txid);
+    this.broadcastTxids.add(txid);
     const tx = decodeTransactionUnsafe(hexToBin(txHex));
     for (const input of tx.inputs) {
       const key = `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`;

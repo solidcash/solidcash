@@ -1,6 +1,7 @@
 /**
  * A token container keyed by a local bound to an immutable bytes32 state variable: the value is fixed at genesis, so
- * the ABI names the variable and the SDK reads the key from the state a call loads. A mutable variable is refused.
+ * the ABI names the variable and the SDK reads the key from the state a call loads. A mutable variable is refused, and a
+ * message-bus route, which binds a container through a forwarded parameter key, leaves the handler to its own entry.
  */
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/compiler.js';
@@ -32,6 +33,25 @@ describe('token container keyed by state', () => {
       keySource: 'state', keyStateVariable: 'bearer', operations: ['read', 'transfer'],
     })]);
     expect(pay.inputs.map((input) => input.name)).not.toContain('category');
+  });
+
+  it('keeps a state-keyed container off a message-bus route, which binds parameter keys only', () => {
+    const control = `
+pragma solidcash >=0.8.0;
+
+contract Reserve() {
+    int n;
+
+    function pay(bytes32 category, address to, int amount) {
+        this.n = this.n + 1;
+        this.tokens[category].transfer(to, amount);
+    }
+}
+`;
+    const handler = (text: string): unknown => compileString(text, { messageBus: true, suppressWarnings: true })
+      .messageBus?.handlers.find((candidate) => candidate.name === 'pay');
+    expect(handler(source('immutable'))).toMatchObject({ eligible: false });
+    expect(handler(control)).toMatchObject({ eligible: true });
   });
 
   it('refuses a mutable state variable as the key', () => {

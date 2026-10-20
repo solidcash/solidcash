@@ -3888,6 +3888,21 @@ function emitsWideEvent(
 }
 
 /** Map admission reasons onto the shared frozen KERNEL_* catalog. */
+/** True when a body names a token container by a key other than one of its parameters. */
+function tokenContainerKeyedOffParameters(fn: FunctionDefinitionNode): boolean {
+  let offParameters = false;
+  walkInvocationAst(fn.body, (node) => {
+    const key = node instanceof TokenContainerMethodStatementNode
+      ? node.tokenContainerKeyExpression
+      : node instanceof MappingAccessNode && node.name === 'tokens' && node.keys.length === 1 ? node.keys[0] : undefined;
+    if (key === undefined) return;
+    if (!(key instanceof IdentifierNode) || !fn.parameters.some((parameter) => parameter.name === key.name)) {
+      offParameters = true;
+    }
+  });
+  return offParameters;
+}
+
 function kernelAdmissionReason(reason: string): string {
   return normalizeKernelAdmissionReason(reason);
 }
@@ -7833,6 +7848,10 @@ function synthesizeMessageBusRoute(
     }
     fn.usesMsgValue = routeUsesMsgValue;
     let reason: string | undefined;
+    // A route binds a token container through the key its row forwards, so it carries only a container its handler
+    // names by a parameter. One keyed by the contract's own category or by its state, such as BchNative's reserve,
+    // runs on the handler's own entry, which binds that container itself.
+    if (tokenContainerKeyedOffParameters(fn)) reason = 'token-container-key-not-routed';
     if (compilerOptions.messageBusKernel === true && fn.kernelJournalContextUnsafeCall === true) {
       noteKernelLayoutGate(fn, 'journal-context-unsafe-call');
       reason = 'KERNEL_LAYOUT';

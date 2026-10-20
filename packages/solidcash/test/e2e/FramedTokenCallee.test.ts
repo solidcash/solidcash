@@ -107,6 +107,48 @@ describe('a framed callee that pays tokens', () => {
     expect(await provider.getUtxosForLockingBytecode(container)).toHaveLength(1);
   }, 900_000);
 
+  it('drops a token send on a branch the body did not take', async () => {
+    const source = 'pragma solidity ^0.8.0;'
+      + ' contract Till { bytes32 immutable reserve;'
+      + '   constructor(bytes32 reserve_) { reserve = reserve_; }'
+      + '   function payIf(address to, int amount, bool really) external { bytes32 category = reserve;'
+      + '     if (really) { this.tokens[category].transfer(to, amount); } } }';
+    const till = compileStringMulti(source, { composition: 'framed', evmCompat: true } as never).Till!;
+    const provider = new MockNetworkProvider();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const alice = new SignatureTemplate(alicePriv);
+    const aliceLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const bobLock = encodeLockingBytecodeP2pkh(bobPkh);
+    await fundShippedFacets(provider);
+    const coin = async (txid: string, satoshis: bigint): Promise<Utxo> => {
+      const utxo = { txid: txid.repeat(32), vout: 0, satoshis };
+      await provider.addUtxo(binToHex(aliceLock), utxo);
+      return utxo;
+    };
+    const category = 'a5'.repeat(32);
+    const deployment = await deployStatefulContract(till, [hexToBin(category)], {
+      provider, fundingUtxo: await coin('a6', 3_000_000n), funder: alice.unlockP2PKH(), changeAddress: aliceAddress,
+    });
+    const container = framedTokenContainerLockingBytecode(deployment.categoryId, category);
+    await provider.addUtxo(binToHex(container), {
+      txid: 'a7'.repeat(32), vout: 0, satoshis: 1_000n, token: { category, amount: 100n },
+    });
+    const tokensAt = async (lock: Uint8Array): Promise<bigint> => (await provider.getUtxosForLockingBytecode(lock))
+      .filter((utxo) => utxo.token?.category === category)
+      .reduce((sum, utxo) => sum + utxo.token!.amount, 0n);
+    const payIf = async (really: boolean, txid: string): Promise<FramedCallResult> => callFramedEntry({
+      provider, artifact: till, categoryId: deployment.categoryId, functionName: 'payIf', args: [bobLock, 30n, really],
+      callerUtxo: await coin(txid, 300_000n), callerLockingBytecode: aliceLock, funder: alice.unlockP2PKH(), vm,
+    });
+    for (const [really, txid] of [[false, 'a8'], [true, 'a9']] as const) {
+      const result = await payIf(really, txid);
+      expect(result.verdicts.filter((verdict) => !verdict.accepted)).toEqual([]);
+      expect(result.broadcast).toBeDefined();
+    }
+    expect(await tokensAt(bobLock)).toBe(30n);
+    expect(await tokensAt(container)).toBe(70n);
+  }, 900_000);
+
   it('pays two categories from one frame, a coin of the caller\'s filling the index between the runs', async () => {
     const source = 'pragma solidity ^0.8.0;'
       + ' contract Twin { bytes32 immutable first; bytes32 immutable second;'

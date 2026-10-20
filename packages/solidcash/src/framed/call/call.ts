@@ -143,8 +143,8 @@ import {
 import {
   NO_CALLEE_VALUES, FramedCalleeError, calleeFrames, calleeRetvalPlaceholder, calleeSettlementSeed,
   calleeValuesOfSettlement,
-  calleeValuesOwed, calleeWrites, deriveThroughFrame, learnCalleeValue, planEntryCallees, scopedCalleeFrame,
-  type CalleeValues, type PlannedCallees,
+  calleeTokenRunSends, calleeValuesOwed, calleeWrites, deriveThroughFrame, learnCalleeValue, planEntryCallees,
+  scopedCalleeFrame, type CalleeValues, type PlannedCallees,
 } from './callees.js';
 import { bumpFramedCounter } from '../composer/counters.js';
 import { FramedReadError, decodeReturnValues } from '../read/index.js';
@@ -824,6 +824,8 @@ interface SendShape {
   readonly payeeListedSends: ReadonlyMap<number, number>;
   /** How many containers each token run spends, by its key, where more than one. */
   readonly tokenContainerCounts?: ReadonlyMap<string, number>;
+  /** The sends each token run makes, by its key, where its body made fewer than its entry can. */
+  readonly tokenSendCounts?: ReadonlyMap<string, { readonly sends: number; readonly nftSends: number }>;
 }
 
 /**
@@ -1044,6 +1046,14 @@ async function callInShape(
     }
   };
   const calleePlan = await planCallees(prior.returns);
+  // A callee run the shape cut to the sends its body made learns only those.
+  for (const callee of calleePlan?.callees ?? []) {
+    const runs = calleeTokenRunSends(callee).map((counts, run) =>
+      shape.tokenSendCounts?.get(`${callee.master}\u0000${run}`) ?? counts);
+    if (runs.some((counts, run) => shape.tokenSendCounts?.has(`${callee.master}\u0000${run}`))) {
+      (callee as { tokenRunSends?: typeof runs }).tokenRunSends = runs;
+    }
+  }
   // The containers each frame names, the root's first: the frames that pay run one token run per category, after the
   // root's, each spending containers of its own, recreated with what its sends leave, then its sends.
   const named: {
@@ -1079,9 +1089,11 @@ async function callInShape(
     const paying = request.access.sends + request.access.nftSends > 0;
     const run = paying ? runsOf.get(request.payer) ?? 0 : -1;
     if (paying) runsOf.set(request.payer, run + 1);
+    const key = paying ? `${request.payer}\u0000${run}` : `${request.payer}\u0000read\u0000${request.access.category}`;
+    const made = shape.tokenSendCounts?.get(key);
     return {
-      ...request, run, group: groupOf(request.contractCategoryId, request.access.category),
-      key: paying ? `${request.payer}\u0000${run}` : `${request.payer}\u0000read\u0000${request.access.category}`,
+      ...request, access: made === undefined ? request.access : { ...request.access, ...made }, run, key,
+      group: groupOf(request.contractCategoryId, request.access.category),
     };
   });
   const sized = new Map<(typeof requests)[number], { readonly containers: readonly Utxo[]; readonly spare: number }>();
@@ -2671,6 +2683,28 @@ async function callInShape(
           ...payees.flatMap((payee, index) => (payeeShort[index] ? [[payee.transferPosition, payeeMade[index]!] as const]
             : [])),
         ]),
+      }, prior);
+    }
+    // A token run whose frame accepts while the sends past the ones it made still carry their sentinels made those on
+    // branches it did not take, and the plan drops them, as it drops a value send's.
+    const shortRuns = new Map<string, { readonly sends: number; readonly nftSends: number }>();
+    for (const run of tokenRuns) {
+      if (run.sends + run.nftSends === 0) continue;
+      const { sends, nfts } = runSends(run, learnedTokenSends, calleeValues);
+      const madeSends = sends.findIndex((send) => send.lock === undefined || send.amount === undefined);
+      const madeNfts = nfts.findIndex((nft) => nft.lock === undefined || nft.commitment === undefined);
+      if (madeSends < 0 && madeNfts < 0) continue;
+      const unmade = (madeSends < 0 || sends.slice(madeSends).every((send) => send.lock === undefined
+        && send.amount === undefined))
+        && (madeNfts < 0 || nfts.slice(madeNfts).every((nft) => nft.lock === undefined && nft.commitment === undefined));
+      if (!unmade || machine.stateSuccess(machine.evaluate(candidate.programFor(run.master))) !== true) continue;
+      shortRuns.set(run.key, {
+        sends: madeSends < 0 ? run.sends : madeSends, nftSends: madeNfts < 0 ? run.nftSends : madeNfts,
+      });
+    }
+    if (shortRuns.size > 0) {
+      return callInShape(options, {
+        ...shape, tokenSendCounts: new Map([...shape.tokenSendCounts ?? [], ...shortRuns]),
       }, prior);
     }
     // Otherwise it either converged, or refused before writing anything owed.

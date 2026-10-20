@@ -227,6 +227,11 @@ export interface HopCallee {
    * owning their block. Absent means the frame owns the records it lists.
    */
   readonly recordOwner?: number;
+  /**
+   * The fungible and NFT sends each token run of the frame makes, where a call's plan dropped sends on branches the
+   * body did not take; absent, the entry's own counts.
+   */
+  readonly tokenRunSends?: readonly { readonly sends: number; readonly nftSends: number }[];
   /** Every participant of this callee, keyed by the id the plan places it under. */
   readonly utxos: ReadonlyMap<string, Utxo>;
   /**

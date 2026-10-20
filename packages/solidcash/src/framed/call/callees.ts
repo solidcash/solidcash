@@ -156,6 +156,7 @@ export interface CalleeValues {
  * list them.
  */
 export function calleeTokenRunSends(callee: HopCallee): readonly { readonly sends: number; readonly nftSends: number }[] {
+  if (callee.tokenRunSends !== undefined) return callee.tokenRunSends;
   const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
   return (abi?.tokenContainerAccesses ?? [])
     .map((access) => ({

@@ -4,7 +4,7 @@ import { BchNative } from "../../contracts/BchNative.scash";
 
 // The smallest BchNative token: a ledger of one mapping, small enough for one framed input. Its bearer form is a
 // category of its own, which is what lets a framed composition settle it at all.
-contract FramedNativeToken() is BchNative {
+contract FramedReserveProbe() is BchNative {
     mapping(address => uint256) internal held;
     int public pings;
 

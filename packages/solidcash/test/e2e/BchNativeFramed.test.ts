@@ -9,7 +9,7 @@ import {
 } from '@bitauth/libauth';
 import { compileFile } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../solidc/test/framed/machine.js';
+import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { Contract } from '../../src/Contract.js';
 import { callFramedEntry } from '../../src/framed/call/index.js';
 import {
@@ -38,7 +38,8 @@ describe('BchNative, framed', () => {
     provider: MockNetworkProvider; categoryId: string; tokenCategory: string;
     tx: Awaited<ReturnType<typeof deployStatefulContract>>['tx'];
   }> {
-    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    // Real consensus limits: the input size and operation-cost budget a node enforces.
+    const provider = new MockNetworkProvider();
     const fundingUtxo = { txid: 'f1'.repeat(32), vout: 0, satoshis: 3_000_000n };
     const tokenFunding = { txid: 'f2'.repeat(32), vout: 0, satoshis: 100_000n };
     await provider.addUtxo(binToHex(aliceLock), fundingUtxo);
@@ -56,20 +57,21 @@ describe('BchNative, framed', () => {
   async function caller(provider: MockNetworkProvider, categoryId: string): Promise<{
     provider: MockNetworkProvider; artifact: typeof artifact; categoryId: string; callerUtxo: Utxo;
     callerLockingBytecode: Uint8Array; funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
-    vm: ReturnType<typeof compositionMachine>;
+    vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
   }> {
     coin += 1;
     const callerUtxo = { txid: coin.toString(16).padStart(64, 'c'), vout: 0, satoshis: 200_000n };
     await provider.addUtxo(binToHex(aliceLock), callerUtxo);
     return {
       provider, artifact, categoryId, callerUtxo, callerLockingBytecode: aliceLock, funder: alice.unlockP2PKH(),
-      vm: compositionMachine(),
+      vm: createVirtualMachineBch2026ForProvider(provider),
     };
   }
 
   async function heldBy(provider: MockNetworkProvider, categoryId: string, lock: Uint8Array): Promise<unknown> {
     return (await readFramedEntry({
-      provider, artifact, categoryId, functionName: 'heldBy', args: [lock], vm: compositionMachine(),
+      provider, artifact, categoryId, functionName: 'heldBy', args: [lock],
+      vm: createVirtualMachineBch2026ForProvider(provider),
     })).value;
   }
 

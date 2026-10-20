@@ -81,7 +81,7 @@ import { blockOracleSideCarId } from './block-oracle.js';
 import { adjacentRecordOrder, frameDataRecordIndices, namedDataRecordIndices } from './entry-records.js';
 import { publishedLoopEffects } from './loop-turns.js';
 import {
-  framedTokenSendSentinels, learnTokenSend, unlearnedRun, type LearnedRun,
+  framedTokenSendSentinels, learnEmptyNftCommitment, learnTokenSend, unlearnedRun, type LearnedRun,
 } from './token-containers.js';
 
 /** Raised when an entry's callee frames cannot be planned; `call.ts` rethrows it as the call's own error. */
@@ -1105,6 +1105,21 @@ export function learnCalleeValue(options: {
       vm: options.vm, program, maximumCommitmentBytes: options.maximumCommitmentBytes,
     });
     if (!reading.ok) {
+      // An NFT send whose body computes an empty commitment closes on its sentinel above an empty value.
+      if (reading.close !== undefined) {
+        const runs = calleeTokenRunSends(callee);
+        const learnedRuns = values.tokenSends?.get(master) ?? runs.map((run) => unlearnedRun(run.sends, run.nftSends));
+        for (const [run, { sends, nftSends }] of runs.entries()) {
+          const learned = learnEmptyNftCommitment(
+            framedTokenSendSentinels(callee.artifact.contractName, callee.entry, master, run, sends, nftSends),
+            learnedRuns[run]!, reading.close.declared,
+          );
+          if (learned !== undefined) {
+            const next = learnedRuns.map((at, position) => (position === run ? learned : at));
+            return { ...values, tokenSends: new Map([...values.tokenSends ?? [], [master, next] as const]) };
+          }
+        }
+      }
       // A frame the machine accepts has no close left to hand a value back, as the hop settles an accepting callee.
       const stated = acceptedFrameViews(callee, values, options.vm, program);
       if (stated !== undefined) return stated;

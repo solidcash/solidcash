@@ -3,7 +3,8 @@
  * treasury's container for its reserve category and pays the recipient in a token run of its own (spec 4b), the
  * treasury's own close handing back what it pays. Each master owns the containers whose unlocking names it, so two
  * frames of one contract pay one category from containers of their own, and a run spends several containers when one
- * does not cover its sends. A vault's callee frames wrap into and unwrap from a BchNative token.
+ * does not cover its sends, folding the smallest few besides into the one it keeps. A vault's callee frames wrap into
+ * and unwrap from a BchNative token.
  */
 import { readFileSync } from 'node:fs';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
@@ -105,6 +106,18 @@ describe('a framed callee that pays tokens', () => {
     expect(await tokensAt(container)).toBe(150n);
     expect(await held()).toBe(150n);
     expect(await provider.getUtxosForLockingBytecode(container)).toHaveLength(1);
+
+    // A payment also folds the two smallest containers into the one it keeps, so containers do not pile up.
+    for (const [txid, amount] of [['e5', 5n], ['e6', 3n], ['e7', 2n]] as const) {
+      await provider.addUtxo(binToHex(container), {
+        txid: txid.repeat(32), vout: 0, satoshis: 1_000n, token: { category, amount },
+      });
+    }
+    settled(await call('run', [bobLock, 10n], 'c5'));
+    expect(await tokensAt(bobLock)).toBe(1_360n);
+    expect((await provider.getUtxosForLockingBytecode(container)).map((utxo) => utxo.token!.amount)
+      .sort((left, right) => Number(left - right))).toEqual([5n, 145n]);
+    expect(await held()).toBe(150n);
   }, 900_000);
 
   it('pays from a callee container keyed by the category its call passes', async () => {

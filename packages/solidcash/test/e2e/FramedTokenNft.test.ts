@@ -1,8 +1,9 @@
 /**
  * NFTs in framed token containers (spec 4b), on real consensus limits. An issuer mints tickets from the minting NFT
  * its container holds, reading that NFT's commitment, and a forged extra mint is refused by its master. An escrow
- * takes NFTs in as deposits and releases them: an immutable NFT by its commitment, a mutable one as anything it can
- * become.
+ * takes NFTs in as deposits, beside its sends too, and releases them: an immutable NFT by its commitment, one with an
+ * empty commitment included, a mutable one as anything it can become, from one frame or two. Each send is made from a
+ * container its run spends last, and every container a master owns holds the category it is named for.
  */
 import {
   binToHex, decodeTransactionUnsafe, encodeLockingBytecodeP2pkh, encodeTransaction, hexToBin,
@@ -222,22 +223,181 @@ contract Hub() {
     }));
     expect(await nftsAt(provider, container, collection)).toEqual(['a1:none', 'b2:mutable']);
 
-    // A frame that sends NFTs of the collection takes none in, so the same call cannot also deposit one.
+    // The same call that releases one takes another in.
     const another = await coin('d3', 1_000n, {
       category: collection, amount: 0n, nft: { capability: 'none', commitment: 'c3' },
     });
-    await expect(call('release', [bobLock, hexToBin('a1'), 0n], await coin('c7', 300_000n), {
+    settled(await call('release', [bobLock, hexToBin('a1'), 0n], await coin('c4', 300_000n), {
       tokenDeposits: [{ utxo: another, unlocker: alice.unlockP2PKH(), amount: 0n }],
-    })).rejects.toThrow(/cannot also deposit one/);
-    settled(await call('release', [bobLock, hexToBin('a1'), 0n], await coin('c4', 300_000n)));
+    }));
     expect(await nftsAt(provider, bobLock, collection)).toEqual(['a1:none']);
-    expect(await nftsAt(provider, container, collection)).toEqual(['b2:mutable']);
+    expect(await nftsAt(provider, container, collection)).toEqual(['b2:mutable', 'c3:none']);
 
     // A mutable NFT cannot become a minting one.
     await expect(call('release', [carolLock, hexToBin('99'), 2n], await coin('c5', 300_000n)))
-      .rejects.toThrow(/no container it spends can make/);
+      .rejects.toThrow(/no container of its contract can make/);
     settled(await call('release', [carolLock, hexToBin('e5'), 1n], await coin('c6', 300_000n)));
     expect(await nftsAt(provider, carolLock, collection)).toEqual(['e5:mutable']);
+    expect(await nftsAt(provider, container, collection)).toEqual(['c3:none']);
+  }, 900_000);
+
+  it('holds an immutable NFT with an empty commitment and releases it', async () => {
+    const collection = 'f0'.repeat(32);
+    const { provider, container, coin, call } = await deployed(ESCROW, collection);
+    const blank = await coin('d1', 1_000n, { category: collection, amount: 0n, nft: { capability: 'none', commitment: '' } });
+    settled(await call('hold', [], await coin('c1', 300_000n), {
+      tokenDeposits: [{ utxo: blank, unlocker: alice.unlockP2PKH(), amount: 0n }],
+    }));
+    expect(await nftsAt(provider, container, collection)).toEqual([':none']);
+    // Beside a fungible amount the VM sees no such NFT, so a coin holding both is no deposit.
+    const hidden = await coin('d2', 1_000n, { category: collection, amount: 5n, nft: { capability: 'none', commitment: '' } });
+    await expect(call('hold', [], await coin('c2', 300_000n), {
+      tokenDeposits: [{ utxo: hidden, unlocker: alice.unlockP2PKH(), amount: 5n }],
+    })).rejects.toThrow(/goes alone/);
+    settled(await call('release', [bobLock, new Uint8Array(), 0n], await coin('c3', 300_000n)));
+    expect(await nftsAt(provider, bobLock, collection)).toEqual([':none']);
     expect(await nftsAt(provider, container, collection)).toEqual([]);
+  }, 900_000);
+
+  it('releases NFTs of one category from two frames of one contract', async () => {
+    const source = `${ESCROW}
+interface IEscrow {
+    function release(address to, bytes commitment, int capability);
+}
+
+contract Hub() {
+    address immutable escrow;
+
+    constructor(address escrow_) {
+        this.escrow = escrow_;
+    }
+
+    function releaseTwo(address to, bytes first, bytes second) {
+        IEscrow(this.escrow).release(to, first, 0);
+        IEscrow(this.escrow).release(to, second, 0);
+    }
+}
+`;
+    const compiled = compileStringMulti(source, { composition: 'framed', suppressWarnings: true });
+    const provider = new MockNetworkProvider();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    await fundShippedFacets(provider);
+    const coin = async (txid: string): Promise<Utxo> => {
+      const utxo = { txid: txid.repeat(32), vout: 0, satoshis: 3_000_000n };
+      await provider.addUtxo(binToHex(aliceLock), utxo);
+      return utxo;
+    };
+    const collection = 'f3'.repeat(32);
+    const escrow = await deployStatefulContract(compiled.Escrow!, [], {
+      provider, fundingUtxo: await coin('b1'), funder: alice.unlockP2PKH(), changeAddress: aliceAddress,
+      initArgs: [hexToBin(collection)],
+    });
+    const hub = await deployStatefulContract(compiled.Hub!, [], {
+      provider, fundingUtxo: await coin('b2'), funder: alice.unlockP2PKH(), changeAddress: aliceAddress,
+      initArgs: [validatorAddress(hexToBin(escrow.categoryId), framedValidator.buildValidatorProgram())],
+    });
+    const container = framedTokenContainerLockingBytecode(escrow.categoryId, collection);
+    for (const [txid, commitment] of [['e1', 'a1'], ['e2', 'b1']] as const) {
+      await provider.addUtxo(binToHex(container), {
+        txid: txid.repeat(32), vout: 0, satoshis: 1_000n,
+        token: { category: collection, amount: 0n, nft: { capability: 'none', commitment } },
+      });
+    }
+    // The first frame sends the NFT the second container holds, so the call plans each frame's container again.
+    settled(await callFramedEntry({
+      provider, artifact: compiled.Hub!, categoryId: hub.categoryId, functionName: 'releaseTwo',
+      args: [bobLock, hexToBin('b1'), hexToBin('a1')], callerUtxo: await coin('b3'), callerLockingBytecode: aliceLock,
+      funder: alice.unlockP2PKH(), vm, externals: { Escrow: { artifact: compiled.Escrow!, categoryId: escrow.categoryId } },
+    }));
+    expect(await nftsAt(provider, bobLock, collection)).toEqual(['a1:none', 'b1:none']);
+    expect(await nftsAt(provider, container, collection)).toEqual([]);
+  }, 900_000);
+
+  it('makes a send from a mutable NFT, which then cannot also leave to an output no send pins', async () => {
+    const collection = 'f6'.repeat(32);
+    const { provider, container, coin, call } = await deployed(ESCROW, collection);
+    const held = async (txid: string, nft: NonNullable<NonNullable<Utxo['token']>['nft']>): Promise<Utxo> => {
+      const utxo = { txid: txid.repeat(32), vout: 0, satoshis: 1_000n, token: { category: collection, amount: 0n, nft } };
+      await provider.addUtxo(binToHex(container), utxo);
+      return utxo;
+    };
+    const immutable = await held('f7', { capability: 'none', commitment: 'a1' });
+    await held('f8', { capability: 'mutable', commitment: 'b2' });
+    const callerUtxo = await coin('c1', 300_000n);
+    const snapshot = await provider.takeSnapshot();
+    const honest = await call('release', [bobLock, hexToBin('a1'), 0n], callerUtxo);
+    settled(honest);
+    await snapshot.restore();
+    const masterIndex = honest.draft.layout.participants[0]!.index;
+    const decoded = (): ReturnType<typeof decodeTransactionUnsafe> =>
+      decodeTransactionUnsafe(hexToBin(honest.broadcast!.hex)) as ReturnType<typeof decodeTransactionUnsafe>;
+    const backing = decoded().inputs.findIndex((input) => binToHex(input.outpointTransactionHash) === immutable.txid);
+    expect(backing).toBeGreaterThan(masterIndex);
+    // The send made from the mutable NFT in the immutable one's place, and an output after it.
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const masterAccepts = (token: Utxo['token'] | undefined): unknown => {
+      const transaction = decoded();
+      const change = transaction.outputs.pop()!;
+      const nft = (capability: 'none' | 'mutable' | 'minting', commitment: string): { category: Uint8Array;
+        amount: bigint; nft: { capability: typeof capability; commitment: Uint8Array } } => ({
+        category: hexToBin(collection), amount: 0n, nft: { capability, commitment: hexToBin(commitment) },
+      });
+      transaction.outputs.push({
+        lockingBytecode: aliceLock, valueSatoshis: 1_000n,
+        ...(token === undefined ? {} : { token: nft(token.nft!.capability, token.nft!.commitment) }),
+      }, change);
+      const sourceOutputs = honest.sourceOutputs.map((output, index) => (index !== backing ? output
+        : { ...output, token: nft('mutable', 'b2') }));
+      return vm.stateSuccess(vm.evaluate({ inputIndex: masterIndex, sourceOutputs, transaction }));
+    };
+    expect(masterAccepts(undefined)).toBe(true);
+    expect(masterAccepts({ category: collection, amount: 0n, nft: { capability: 'mutable', commitment: 'b2' } }))
+      .not.toBe(true);
+  }, 900_000);
+
+  it('refuses a container of another category in a master\'s run, which it would count as the reserve', async () => {
+    const collection = 'f9'.repeat(32);
+    const { provider, container, coin, call } = await deployed(ESCROW, collection);
+    const held = async (txid: string, token: NonNullable<Utxo['token']>): Promise<Utxo> => {
+      const utxo = { txid: txid.repeat(32), vout: 0, satoshis: 1_000n, token };
+      await provider.addUtxo(binToHex(container), utxo);
+      return utxo;
+    };
+    const large = await held('fa', { category: collection, amount: 100n });
+    const small = await held('fb', { category: collection, amount: 1n });
+    await held('fc', { category: collection, amount: 0n, nft: { capability: 'none', commitment: 'a1' } });
+    const callerUtxo = await coin('c1', 300_000n);
+    const snapshot = await provider.takeSnapshot();
+    const honest = await call('release', [bobLock, hexToBin('a1'), 0n], callerUtxo);
+    settled(honest);
+    await snapshot.restore();
+    const masterIndex = honest.draft.layout.participants[0]!.index;
+    const decoded = (): ReturnType<typeof decodeTransactionUnsafe> =>
+      decodeTransactionUnsafe(hexToBin(honest.broadcast!.hex)) as ReturnType<typeof decodeTransactionUnsafe>;
+    const indexOf = (utxo: Utxo): number => decoded().inputs
+      .findIndex((input) => binToHex(input.outpointTransactionHash) === utxo.txid);
+    const [largeAt, smallAt] = [indexOf(large), indexOf(small)];
+    expect(smallAt).toBe(largeAt + 1);
+    // The small container's tokens of `category`, grown by 50 in place, with 50 fewer of the collection kept and paid
+    // out: of the collection itself that is a deposit and a withdrawal, of another category a draw on the reserve.
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const masterAccepts = (category: string): unknown => {
+      const transaction = decoded();
+      transaction.outputs[largeAt] = {
+        ...transaction.outputs[largeAt]!, token: { category: hexToBin(collection), amount: 50n },
+      };
+      transaction.outputs[smallAt] = {
+        lockingBytecode: container, valueSatoshis: 1_000n, token: { category: hexToBin(category), amount: 51n },
+      };
+      const change = transaction.outputs.pop()!;
+      transaction.outputs.push({
+        lockingBytecode: aliceLock, valueSatoshis: 1_000n, token: { category: hexToBin(collection), amount: 50n },
+      }, change);
+      const sourceOutputs = honest.sourceOutputs.map((output, index) => (index !== smallAt ? output
+        : { ...output, token: { category: hexToBin(category), amount: 1n } }));
+      return vm.stateSuccess(vm.evaluate({ inputIndex: masterIndex, sourceOutputs, transaction }));
+    };
+    expect(masterAccepts(collection)).toBe(true);
+    expect(masterAccepts('fd'.repeat(32))).not.toBe(true);
   }, 900_000);
 });

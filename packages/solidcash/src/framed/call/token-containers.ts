@@ -138,14 +138,38 @@ export function learnTokenSend(
   return undefined;
 }
 
+/**
+ * A run's learned sends with an NFT send's empty commitment learned, when the close's listed operand is that send's
+ * commitment sentinel, or undefined. A close that computed an empty value reads as no close (`closeReading`), so only
+ * the sentinel it names can say what it was about.
+ */
+export function learnEmptyNftCommitment(
+  sentinels: TokenSendSentinels, learned: LearnedRun, declared: Uint8Array,
+): LearnedRun | undefined {
+  const at = sentinels.nftCommitments.findIndex((commitment) => binToHex(commitment) === binToHex(declared));
+  if (at < 0) return undefined;
+  const emptied = (nft: LearnedNftSend, position: number): LearnedNftSend =>
+    (position === at ? { ...nft, commitment: new Uint8Array(0) } : nft);
+  return { ...learned, nfts: learned.nfts.map(emptied) };
+}
+
 /** The capability name an NFT send's learned capability stands for. */
 export function nftCapabilityName(capability: number | undefined): 'none' | 'mutable' | 'minting' {
   return capability === 2 ? 'minting' : capability === 1 ? 'mutable' : 'none';
 }
 
-/** True for a token the VM sees as an NFT: one with a capability, or with a commitment. */
+/**
+ * True for a token the VM sees as an NFT: one with a capability, a commitment, or no fungible amount. An immutable NFT
+ * with an empty commitment beside a fungible amount reads as fungible.
+ */
 export function visibleNft(token: Utxo['token']): boolean {
-  return token?.nft !== undefined && (token.nft.capability !== 'none' || token.nft.commitment.length > 0);
+  return token?.nft !== undefined
+    && (token.nft.capability !== 'none' || token.nft.commitment.length > 0 || token.amount === 0n);
+}
+
+/** True for an immutable NFT with an empty commitment, which stays visible only while it holds no fungible amount. */
+export function blankNft(token: Utxo['token']): boolean {
+  return token?.nft !== undefined && token.nft.capability === 'none' && token.nft.commitment.length === 0;
 }
 
 /** One container access of an entry, resolved for a call: its category, lock and the sends the body makes from it. */

@@ -61,6 +61,8 @@ export type DeclarationReading =
     readonly opcode?: number;
     readonly error?: string;
     readonly length?: number;
+    /** A close whose computed value is empty: only a learner that names its listed operand can read it. */
+    readonly close?: ReadDeclaration;
   };
 
 /** Reads the declaration a machine run closed against, or why its stop cannot be read that way. */
@@ -105,7 +107,7 @@ export function readComputedDeclaration(options: {
 function closeReading(close: ReadDeclaration, maximumCommitmentBytes: number): DeclarationReading {
   const { declared, computed } = close;
   if (computed.length === 0 || computed.length > maximumCommitmentBytes) {
-    return { ok: false, reason: 'implausible-length', length: computed.length };
+    return { ok: false, reason: 'implausible-length', length: computed.length, ...(computed.length === 0 ? { close } : {}) };
   }
   return { ok: true, declared, computed };
 }

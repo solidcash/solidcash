@@ -54660,7 +54660,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
         Op.OP_0NOTEQUAL, Op.OP_IF, Op.OP_0, Op.OP_ELSE,
       ], loc);
-      // [.., sum] -> [.., sum, me, mcat, missing, j]: the other masters of the contract that own no container here.
+      // [.., sum] -> [.., sum, me, category, missing, j]: the other masters of the contract that own no container here.
       this.emitMasterInputIndex(loc, 4);
       this.emit([
         Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_0, Op.OP_TXINPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
@@ -54891,16 +54891,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * A framed entry's token containers (spec 4b). For each slot's category X at this contract's container lock L, the
    * containers this master owns are the inputs at L whose unlocking names it, at consecutive indices. The k-th send the
-   * body makes is the output after them, at the first one's index plus their count plus k, its fungible sends first:
-   * a fungible send pays `to` exactly `amount` of X, an NFT send gives `to` an NFT of X with the commitment and
-   * capability the body names. The owned containers keep, at their own indices, what the fungible sends do not pay:
-   * sum(out - in) + sent >= 0.
+   * body makes is the output after them, at the first one's index plus their count plus k, its NFT sends first: an NFT
+   * send gives `to` an NFT of X with the commitment and capability the body names and no fungible amount, a fungible
+   * send pays `to` exactly `amount` (more than zero) of X and no commitment. The owned containers keep, at their own
+   * indices, what the fungible sends do not pay: sum(out - in) + sent >= 0.
    *
-   * An NFT is visible to the VM when it carries a capability or a commitment; an immutable NFT with an empty commitment
-   * reads as a fungible token, so no rule here can hold one. An entry that sends no NFT of X keeps every visible NFT
-   * it owns in place and owns no minting one. One that sends NFTs keeps its minting containers, releases at most one
-   * owned NFT per send and none beside a minting container, takes no visible NFT of X from outside L, and lets no
-   * visible NFT of X leave L but its sends.
+   * Every container a master owns holds X. The VM sees an NFT through a capability, a commitment, or a token with no
+   * fungible amount; an immutable NFT with an empty commitment beside a fungible amount reads as fungible, so nothing
+   * here can hold one. An entry that sends no NFT of X keeps every NFT it owns in place and owns no minting one, so
+   * only a run that sends NFTs ends on a container of X that released its NFT or holds a minting one, and no NFT of X
+   * leaves L right after it but its NFT sends. One that sends NFTs checks every container of X at L the transaction
+   * spends, whoever owns it: every NFT of X leaving L follows such a run, and the containers release no more NFTs than
+   * those sends. While a minting one is spent they release none and no fungible amount of X leaves L; otherwise the
+   * last containers of its run release one NFT per send, in send order, each one the send can be made from.
    */
   private emitFramedTokenContainerChecks(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
@@ -54920,12 +54923,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
     };
     const depth = (name: string, untracked: number): Uint8Array => encodeInt(BigInt(this.getStackIndex(name) + untracked));
-    // [index] -> [index, visible]: the token at the input or output index carries a capability or a commitment.
-    const visibleNft = (outputs: boolean): Script => [
-      Op.OP_DUP, outputs ? Op.OP_OUTPUTTOKENCATEGORY : Op.OP_UTXOTOKENCATEGORY, Op.OP_SIZE, Op.OP_NIP,
-      encodeInt(32n), Op.OP_GREATERTHAN,
-      Op.OP_OVER, outputs ? Op.OP_OUTPUTTOKENCOMMITMENT : Op.OP_UTXOTOKENCOMMITMENT, Op.OP_SIZE, Op.OP_NIP,
-      Op.OP_BOOLOR,
+    const ops = (outputs: boolean): { category: Op; commitment: Op; amount: Op; bytecode: Op } => (outputs
+      ? {
+        category: Op.OP_OUTPUTTOKENCATEGORY, commitment: Op.OP_OUTPUTTOKENCOMMITMENT, amount: Op.OP_OUTPUTTOKENAMOUNT,
+        bytecode: Op.OP_OUTPUTBYTECODE,
+      }
+      : {
+        category: Op.OP_UTXOTOKENCATEGORY, commitment: Op.OP_UTXOTOKENCOMMITMENT, amount: Op.OP_UTXOTOKENAMOUNT,
+        bytecode: Op.OP_UTXOBYTECODE,
+      });
+    // [index] -> [index, visible]: the token at the index is an NFT the VM sees, of any category.
+    const visibleAny = (outputs: boolean): Script => [
+      Op.OP_DUP, ops(outputs).category, Op.OP_SIZE, Op.OP_NIP, Op.OP_DUP, encodeInt(32n), Op.OP_GREATERTHAN, Op.OP_SWAP,
+      encodeInt(32n), Op.OP_GREATERTHANOREQUAL, Op.OP_2, Op.OP_PICK, ops(outputs).commitment, Op.OP_SIZE, Op.OP_NIP,
+      Op.OP_3, Op.OP_PICK, ops(outputs).amount, Op.OP_NOT, Op.OP_ROT, Op.OP_BOOLAND, Op.OP_BOOLOR, Op.OP_BOOLOR,
+    ];
+    // [index] -> [index, visible]: an NFT of X the VM sees, `untracked` items above the tracked stack, the index too.
+    const visibleX = (outputs: boolean, untracked: number): Script => [
+      Op.OP_DUP, ops(outputs).category, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(32n), Op.OP_GREATERTHANOREQUAL,
+      Op.OP_IF, encodeInt(32n), Op.OP_SPLIT, Op.OP_SIZE, Op.OP_NIP, Op.OP_SWAP, depth('(tc_x)', untracked + 2),
+      Op.OP_PICK, Op.OP_REVERSEBYTES, Op.OP_EQUAL,
+      Op.OP_IF, Op.OP_OVER, ops(outputs).commitment, Op.OP_SIZE, Op.OP_NIP, Op.OP_BOOLOR,
+      Op.OP_OVER, ops(outputs).amount, Op.OP_NOT, Op.OP_BOOLOR,
+      Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
+      Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
+    ];
+    // [index] -> [index, isX]: a token of X, `untracked` items above the tracked stack, the index too.
+    const tokenX = (outputs: boolean, untracked: number): Script => [
+      Op.OP_DUP, ops(outputs).category, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(32n), Op.OP_GREATERTHANOREQUAL,
+      Op.OP_IF, encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP, depth('(tc_x)', untracked + 1), Op.OP_PICK,
+      Op.OP_REVERSEBYTES, Op.OP_EQUAL,
+      Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
     ];
     // [index] -> [index]: a minting token at the input index refuses.
     const notMinting: Script = [
@@ -54955,10 +54983,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         Op.OP_IF, Op.OP_DUP, Op.OP_INPUTBYTECODE, depth('(tc_auth)', 5), Op.OP_PICK,
         Op.OP_SIZE, Op.OP_ROT, Op.OP_SWAP, Op.OP_SPLIT, Op.OP_DROP, Op.OP_EQUAL,
         Op.OP_IF,
+        // An owned container holds X: one of another category at L is no reserve of X.
+        Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP, depth('(tc_x)', 5), Op.OP_PICK,
+        Op.OP_REVERSEBYTES, Op.OP_EQUALVERIFY,
         Op.OP_2, Op.OP_PICK, Op.OP_IF, Op.OP_3, Op.OP_PICK, Op.OP_OVER, Op.OP_1ADD, Op.OP_NUMEQUALVERIFY, Op.OP_ENDIF,
-        // Sending no NFT, it keeps each visible NFT it owns in place, and owns no minting one.
-        ...(nfts.length > 0 ? [] : [...visibleNft(false), Op.OP_IF, ...notMinting,
-          Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_SIZE, Op.OP_NIP, Op.OP_VERIFY, Op.OP_ENDIF]),
+        // Sending no NFT, it keeps each NFT it owns in place, and owns no minting one.
+        ...(nfts.length > 0 ? [] : [...visibleAny(false), Op.OP_IF, ...notMinting, ...visibleAny(true), Op.OP_VERIFY,
+          Op.OP_ENDIF]),
         Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_OVER, Op.OP_UTXOTOKENAMOUNT, Op.OP_SUB, Op.OP_ROT, Op.OP_ADD,
         Op.OP_ROT, Op.OP_1ADD, Op.OP_ROT, Op.OP_3, Op.OP_ROLL, Op.OP_DROP,
         Op.OP_DUP, Op.OP_2SWAP, Op.OP_SWAP, Op.OP_ROT,
@@ -54970,36 +55001,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(tc_count)');
       this.pushToStack('(tc_delta)');
       if (nfts.length > 0) {
-        // [minting, released] over the owned block: a minting container stays in place.
-        this.emit([Op.OP_0, Op.OP_0], loc);
-        this.pushToStack('(tc_minting)');
-        this.pushToStack('(tc_released)');
-        pick('(tc_count)');
-        this.emit(Op.OP_IF, loc);
-        this.popFromStack();
-        pick('(tc_first)');
-        this.popFromStack();
-        this.pushToStack('(tc_at)');
-        this.emit(Op.OP_BEGIN, loc);
-        this.emit([...visibleNft(false), Op.OP_IF,
-          Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_SIZE, Op.OP_NIP, Op.OP_0NOTEQUAL,
-          Op.OP_OVER, Op.OP_UTXOTOKENCATEGORY, encodeInt(32n), Op.OP_SPLIT, Op.OP_NIP, Op.OP_2, Op.OP_EQUAL,
-          Op.OP_IF, Op.OP_VERIFY], loc);
-        bump('(tc_minting)', () => this.emit(Op.OP_1ADD, loc));
-        this.emit([Op.OP_ELSE, Op.OP_NOT, Op.OP_IF], loc);
-        bump('(tc_released)', () => this.emit(Op.OP_1ADD, loc));
-        this.emit([Op.OP_ENDIF, Op.OP_ENDIF, Op.OP_ENDIF], loc);
-        this.emit([Op.OP_1ADD, Op.OP_DUP, depth('(tc_first)', 1), Op.OP_PICK, depth('(tc_count)', 2), Op.OP_PICK,
-          Op.OP_ADD, Op.OP_GREATERTHANOREQUAL, Op.OP_UNTIL, Op.OP_DROP], loc);
-        this.popFromStack();
-        this.emit(Op.OP_ENDIF, loc);
         this.emit(Op.OP_0, loc);
         this.pushToStack('(tc_nft)');
       }
       if (transfers.length > 0) {
         this.emit(Op.OP_0, loc);
         this.pushToStack('(tc_made)');
-        for (const transfer of [...fungible, ...nfts]) {
+        for (const transfer of [...nfts, ...fungible]) {
           const [category, to] = transfer.argStackNames as [string, string];
           const conditional = this.conditionalTokenContainerTransferIndices.has(transfer.transferIndex);
           if (conditional) {
@@ -55049,7 +55057,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           } else {
             const [, , commitment, capability] = transfer.argStackNames as [string, string, string, string];
             // The category first, X with the capability's byte (none for an immutable NFT), then the lock, then the
-            // commitment; the NFT is one the VM sees.
+            // commitment; the NFT carries no fungible amount, so the VM sees it.
             pick(capability);
             this.emit([Op.OP_DUP, Op.OP_IF, Op.OP_1, Op.OP_NUM2BIN, depth('(tc_x)', 0), Op.OP_PICK, Op.OP_REVERSEBYTES,
               Op.OP_SWAP, Op.OP_CAT, Op.OP_ELSE, Op.OP_DROP, depth('(tc_x)', -1), Op.OP_PICK, Op.OP_REVERSEBYTES,
@@ -55065,10 +55073,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             pick('(tc_send)');
             this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
             verify(Op.OP_EQUALVERIFY);
-            pick(capability);
-            pick(commitment);
-            this.emit([Op.OP_SIZE, Op.OP_NIP, Op.OP_BOOLOR, Op.OP_VERIFY], loc);
-            this.popFromStack(2);
+            pick('(tc_send)');
+            this.emit([Op.OP_OUTPUTTOKENAMOUNT, Op.OP_0, Op.OP_NUMEQUALVERIFY], loc);
+            this.popFromStack();
             this.emit(Op.OP_DROP, loc);
             this.popFromStack();
             bump('(tc_nft)', () => this.emit(Op.OP_1ADD, loc));
@@ -55083,42 +55090,182 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit([Op.OP_0, Op.OP_GREATERTHANOREQUAL, Op.OP_VERIFY], loc);
       this.popFromStack();
       if (nfts.length > 0) {
-        pick('(tc_released)');
+        // After the run's NFT sends no NFT of X leaves L: the output there is not one.
+        pick('(tc_count)');
+        this.emit(Op.OP_IF, loc);
+        this.popFromStack();
+        pick('(tc_first)');
+        pick('(tc_count)');
+        this.emit(Op.OP_ADD, loc);
+        this.popFromStack();
         pick('(tc_nft)');
+        this.emit(Op.OP_ADD, loc);
+        this.popFromStack(2);
+        this.emit([Op.OP_DUP, Op.OP_TXOUTPUTCOUNT, Op.OP_LESSTHAN, Op.OP_IF, ...visibleX(true, 1),
+          Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTBYTECODE, depth('(tc_lock)', 2), Op.OP_PICK, Op.OP_EQUALVERIFY, Op.OP_ENDIF,
+          Op.OP_ENDIF, Op.OP_DROP, Op.OP_ENDIF], loc);
+        // [minting, released] over every container of X at L, whoever owns it: an NFT released leaves its index.
+        this.emit([Op.OP_0, Op.OP_0, Op.OP_TXINPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
+          Op.OP_DUP, Op.OP_UTXOBYTECODE, depth('(tc_lock)', 4), Op.OP_PICK, Op.OP_EQUAL,
+          Op.OP_IF, ...tokenX(false, 3), Op.OP_ELSE, Op.OP_0, Op.OP_ENDIF,
+          Op.OP_IF,
+          Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(33n), Op.OP_NUMEQUAL,
+          Op.OP_IF, encodeInt(32n), Op.OP_SPLIT, Op.OP_NIP, Op.OP_2, Op.OP_EQUAL, Op.OP_ELSE, Op.OP_DROP, Op.OP_0,
+          Op.OP_ENDIF,
+          Op.OP_IF, Op.OP_ROT, Op.OP_1ADD, Op.OP_ROT, Op.OP_ROT, Op.OP_ENDIF,
+          ...visibleAny(false), Op.OP_IF, ...visibleAny(true), Op.OP_NOT,
+          Op.OP_IF, Op.OP_SWAP, Op.OP_1ADD, Op.OP_SWAP, Op.OP_ENDIF, Op.OP_ENDIF,
+          Op.OP_ENDIF,
+          Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP], loc);
+        this.pushToStack('(tc_minting)');
+        this.pushToStack('(tc_released)');
+        // [attributed, unattributed]: each NFT of X outside L, and whether the run of NFTs of X outside L it sits in
+        // starts right after a container of X at L that released its NFT or holds a minting one, which ends the run of
+        // a master that pinned these sends.
+        this.emit([Op.OP_0, Op.OP_0, Op.OP_TXOUTPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB, ...visibleX(true, 3),
+          Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTBYTECODE, depth('(tc_lock)', 4), Op.OP_PICK, Op.OP_EQUAL, Op.OP_NOT,
+          Op.OP_IF,
+          Op.OP_DUP, Op.OP_BEGIN, Op.OP_1SUB, Op.OP_DUP, Op.OP_0, Op.OP_LESSTHAN,
+          Op.OP_IF, Op.OP_1,
+          Op.OP_ELSE, ...visibleX(true, 4),
+          Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTBYTECODE, depth('(tc_lock)', 5), Op.OP_PICK, Op.OP_EQUAL,
+          Op.OP_ELSE, Op.OP_1, Op.OP_ENDIF,
+          Op.OP_ENDIF,
+          Op.OP_UNTIL,
+          Op.OP_DUP, Op.OP_0, Op.OP_GREATERTHANOREQUAL, Op.OP_OVER, Op.OP_TXINPUTCOUNT, Op.OP_LESSTHAN, Op.OP_BOOLAND,
+          Op.OP_IF, Op.OP_DUP, Op.OP_UTXOBYTECODE, depth('(tc_lock)', 5), Op.OP_PICK, Op.OP_EQUAL,
+          Op.OP_IF, ...tokenX(false, 4),
+          Op.OP_IF,
+          // [k] -> [minting || (visible && no token left at k)]
+          Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, encodeInt(32n), Op.OP_SPLIT, Op.OP_NIP, Op.OP_2, Op.OP_EQUAL, Op.OP_SWAP,
+          ...visibleAny(false), Op.OP_OVER, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_SIZE, Op.OP_NIP, Op.OP_NOT, Op.OP_BOOLAND,
+          Op.OP_ROT, Op.OP_BOOLOR, Op.OP_NIP,
+          Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
+          Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
+          Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
+          Op.OP_IF, Op.OP_ROT, Op.OP_1ADD, Op.OP_ROT, Op.OP_ROT, Op.OP_ELSE, Op.OP_SWAP, Op.OP_1ADD, Op.OP_SWAP,
+          Op.OP_ENDIF,
+          Op.OP_ENDIF,
+          Op.OP_ENDIF,
+          Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP], loc);
+        this.pushToStack('(tc_attributed)');
+        this.pushToStack('(tc_unattributed)');
+        pick('(tc_released)');
+        pick('(tc_attributed)');
         this.emit([Op.OP_LESSTHANOREQUAL, Op.OP_VERIFY], loc);
         this.popFromStack(2);
-        pick('(tc_minting)');
-        pick('(tc_released)');
-        this.emit([Op.OP_0NOTEQUAL, Op.OP_SWAP, Op.OP_0NOTEQUAL, Op.OP_BOOLAND, Op.OP_NOT, Op.OP_VERIFY], loc);
-        this.popFromStack(2);
-        // [index] -> [index, prefix-matches-X, has-capability] for the token at the input or output index.
-        const ofX = (outputs: boolean, untracked: number): Script => [
-          Op.OP_DUP, outputs ? Op.OP_OUTPUTTOKENCATEGORY : Op.OP_UTXOTOKENCATEGORY, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP,
-          encodeInt(32n), Op.OP_GREATERTHANOREQUAL,
-          Op.OP_IF,
-          encodeInt(32n), Op.OP_SPLIT, Op.OP_SIZE, Op.OP_NIP, Op.OP_SWAP, depth('(tc_x)', untracked + 2), Op.OP_PICK,
+        pick('(tc_unattributed)');
+        this.emit([Op.OP_NOT, Op.OP_VERIFY], loc);
+        this.popFromStack();
+        // A read counts the NFTs with a capability that reach L, so each such NFT of X the transaction adds at L is
+        // matched by one an input outside L holds, a minting one by a minting one: a frame cannot credit an NFT made
+        // from a container it releases or mints from. [new, newMinting, held, heldMinting]
+        const capabilityOfX = (outputs: boolean, untracked: number): Script => [
+          Op.OP_DUP, ops(outputs).category, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(33n), Op.OP_NUMEQUAL,
+          Op.OP_IF, encodeInt(32n), Op.OP_SPLIT, Op.OP_SWAP, depth('(tc_x)', untracked + 2), Op.OP_PICK,
           Op.OP_REVERSEBYTES, Op.OP_EQUAL,
-          Op.OP_IF,
-          Op.OP_OVER, outputs ? Op.OP_OUTPUTTOKENCOMMITMENT : Op.OP_UTXOTOKENCOMMITMENT, Op.OP_SIZE, Op.OP_NIP,
-          Op.OP_BOOLOR,
-          Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
-          Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
         ];
-        // Every visible NFT of X an input holds is at L.
-        this.emit([Op.OP_TXINPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB, ...ofX(false, 1),
-          Op.OP_IF, Op.OP_DUP, Op.OP_UTXOBYTECODE, depth('(tc_lock)', 2), Op.OP_PICK, Op.OP_EQUALVERIFY, Op.OP_ENDIF,
+        const count: Script = [
+          Op.OP_2, Op.OP_EQUAL, Op.OP_ROT, Op.OP_ADD, Op.OP_SWAP, Op.OP_ROT, Op.OP_1ADD, Op.OP_ROT, Op.OP_ROT,
+        ];
+        this.emit([Op.OP_0, Op.OP_0, Op.OP_TXOUTPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
+          Op.OP_DUP, Op.OP_OUTPUTBYTECODE, depth('(tc_lock)', 4), Op.OP_PICK, Op.OP_EQUAL,
+          Op.OP_IF, ...capabilityOfX(true, 3),
+          Op.OP_IF,
+          Op.OP_OVER, Op.OP_TXINPUTCOUNT, Op.OP_LESSTHAN,
+          Op.OP_IF, Op.OP_OVER, Op.OP_UTXOBYTECODE, depth('(tc_lock)', 5), Op.OP_PICK, Op.OP_EQUAL, Op.OP_NOT,
+          Op.OP_ELSE, Op.OP_1, Op.OP_ENDIF,
+          Op.OP_IF, ...count, Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF,
+          Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF,
+          Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF,
+          Op.OP_ENDIF,
+          Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
+          Op.OP_0, Op.OP_0, Op.OP_TXINPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
+          Op.OP_DUP, Op.OP_UTXOBYTECODE, depth('(tc_lock)', 6), Op.OP_PICK, Op.OP_EQUAL, Op.OP_NOT,
+          Op.OP_IF, ...capabilityOfX(false, 5),
+          Op.OP_IF, ...count, Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF,
+          Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF,
+          Op.OP_ENDIF,
+          Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
+          Op.OP_ROT, Op.OP_GREATERTHANOREQUAL, Op.OP_VERIFY, Op.OP_LESSTHANOREQUAL, Op.OP_VERIFY], loc);
+        pick('(tc_minting)');
+        this.emit(Op.OP_IF, loc);
+        this.popFromStack();
+        // Minting: nothing released, and no fungible amount of X leaves L, where it could hide a minted NFT.
+        pick('(tc_released)');
+        this.emit([Op.OP_NOT, Op.OP_VERIFY], loc);
+        this.popFromStack();
+        this.emit([Op.OP_TXOUTPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB, ...tokenX(true, 1),
+          Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTBYTECODE, depth('(tc_lock)', 2), Op.OP_PICK, Op.OP_EQUAL, Op.OP_NOT,
+          Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_NOT, Op.OP_VERIFY, Op.OP_ENDIF, Op.OP_ENDIF,
           Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP], loc);
-        // The visible NFTs of X the outputs hold outside L are this frame's NFT sends.
-        this.emit([Op.OP_0, Op.OP_TXOUTPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB, ...ofX(true, 2),
-          Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTBYTECODE, depth('(tc_lock)', 3), Op.OP_PICK, Op.OP_EQUAL, Op.OP_NOT,
-          Op.OP_IF, Op.OP_SWAP, Op.OP_1ADD, Op.OP_SWAP, Op.OP_ENDIF, Op.OP_ENDIF,
-          Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP, depth('(tc_nft)', 1), Op.OP_PICK, Op.OP_NUMEQUALVERIFY], loc);
-        this.emit([Op.OP_2DROP, Op.OP_DROP], loc);
-        this.popFromStack(3);
+        this.emit(Op.OP_ELSE, loc);
+        // Releasing: the k-th NFT send made is backed by the container at first + count - made + k, which leaves no
+        // token at its index and holds X: a mutable NFT for an immutable or mutable send, or an immutable NFT the VM
+        // sees with the send's commitment for an immutable one.
+        pick('(tc_nft)');
+        pick('(tc_count)');
+        this.emit([Op.OP_LESSTHANOREQUAL, Op.OP_VERIFY], loc);
+        this.popFromStack(2);
+        this.emit(Op.OP_0, loc);
+        this.pushToStack('(tc_k)');
+        for (const transfer of nfts) {
+          const [category, , commitment, capability] = transfer.argStackNames as [string, string, string, string];
+          const conditional = this.conditionalTokenContainerTransferIndices.has(transfer.transferIndex);
+          if (conditional) {
+            pick(category);
+            this.emit(Op.OP_IF, loc);
+            this.popFromStack();
+          }
+          pick('(tc_first)');
+          pick('(tc_count)');
+          this.emit(Op.OP_ADD, loc);
+          this.popFromStack();
+          pick('(tc_nft)');
+          this.emit(Op.OP_SUB, loc);
+          this.popFromStack();
+          pick('(tc_k)');
+          this.emit(Op.OP_ADD, loc);
+          this.popFromStack(2);
+          this.pushToStack('(tc_b)');
+          pick('(tc_b)');
+          this.emit([Op.OP_OUTPUTTOKENCATEGORY, Op.OP_0, Op.OP_EQUALVERIFY], loc);
+          this.popFromStack();
+          pick('(tc_b)');
+          this.emit([Op.OP_UTXOTOKENCATEGORY, encodeInt(32n), Op.OP_SPLIT, Op.OP_SWAP, depth('(tc_x)', 1), Op.OP_PICK,
+            Op.OP_REVERSEBYTES, Op.OP_EQUALVERIFY, Op.OP_1, Op.OP_EQUAL, Op.OP_IF], loc);
+          this.popFromStack();
+          pick(capability);
+          this.emit([Op.OP_1, Op.OP_LESSTHANOREQUAL, Op.OP_VERIFY], loc);
+          this.popFromStack();
+          this.emit(Op.OP_ELSE, loc);
+          pick(capability);
+          this.emit([Op.OP_NOT, Op.OP_VERIFY], loc);
+          this.popFromStack();
+          pick('(tc_b)');
+          this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+          pick(commitment);
+          verify(Op.OP_EQUALVERIFY);
+          pick(commitment);
+          this.emit([Op.OP_SIZE, Op.OP_NIP], loc);
+          pick('(tc_b)');
+          this.emit([Op.OP_UTXOTOKENAMOUNT, Op.OP_NOT, Op.OP_BOOLOR, Op.OP_VERIFY], loc);
+          this.popFromStack(2);
+          this.emit(Op.OP_ENDIF, loc);
+          this.emit(Op.OP_DROP, loc);
+          this.popFromStack();
+          bump('(tc_k)', () => this.emit(Op.OP_1ADD, loc));
+          if (conditional) this.emit(Op.OP_ENDIF, loc);
+        }
+        this.emit(Op.OP_DROP, loc);
+        this.popFromStack();
+        this.emit(Op.OP_ENDIF, loc);
+        this.emit([Op.OP_2DROP, Op.OP_2DROP], loc);
+        this.popFromStack(4);
       }
-      // The lock derivation consumed the master's category: the key, the lock and the three sums remain.
-      this.emit([Op.OP_2DROP, Op.OP_2DROP, Op.OP_DROP], loc);
-      this.popFromStack(5);
+      // The lock derivation consumed the master's category: the key, the lock, the three sums and the NFT count remain.
+      this.emit(nfts.length > 0 ? [Op.OP_2DROP, Op.OP_2DROP, Op.OP_2DROP] : [Op.OP_2DROP, Op.OP_2DROP, Op.OP_DROP], loc);
+      this.popFromStack(nfts.length > 0 ? 6 : 5);
     }
     this.emit(Op.OP_DROP, loc);
     this.popFromStack();
@@ -55176,6 +55323,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       Op.OP_VERIFY,
       Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_OVER, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
       Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_OVER, Op.OP_UTXOTOKENAMOUNT, Op.OP_GREATERTHANOREQUAL, Op.OP_VERIFY,
+      // An NFT with no fungible amount keeps none, so an immutable one with an empty commitment stays one the VM sees.
+      Op.OP_DUP, Op.OP_UTXOTOKENAMOUNT, Op.OP_NOT, Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_NOT, Op.OP_VERIFY,
+      Op.OP_ENDIF,
       Op.OP_ELSE,
       Op.OP_DROP,
       Op.OP_ENDIF,

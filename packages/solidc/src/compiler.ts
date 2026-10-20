@@ -624,6 +624,11 @@ type InternalCompilerOptions = CompilerOptions & {
   __functionSplitPrepared?: boolean;
   /** Frame kinds the shard's master head admits. Absent keeps the historical four. */
   __functionSplitFrameKinds?: readonly number[];
+  /**
+   * Set on a per-entry shard of a contract whose entries name a token container: every shard's master authorizes a
+   * container spend, so each keeps the containers its entry does not name, whichever entries the shard holds.
+   */
+  __framedContractHoldsTokens?: boolean;
   /** Shared box so the shallow-copied admission options and the binder see the same pre-lowering snapshot. */
   __pristineAstBox?: { ast?: Ast };
   /**
@@ -3888,6 +3893,22 @@ function emitsWideEvent(
 }
 
 /** Map admission reasons onto the shared frozen KERNEL_* catalog. */
+/** True when a body names a token container. */
+function namesTokenContainer(body: BlockNode): boolean {
+  let names = false;
+  walkInvocationAst(body, (node) => {
+    if (node instanceof TokenContainerMethodStatementNode
+      || (node instanceof MappingAccessNode && node.name === 'tokens' && node.keys.length === 1)) names = true;
+  });
+  return names;
+}
+
+/** True when any body of the contract names a token container. */
+function contractNamesTokenContainer(contract: ContractNode): boolean {
+  return [...contract.functions, ...(contract.receiveDef ? [contract.receiveDef] : []),
+    ...(contract.fallbackDef ? [contract.fallbackDef] : [])].some((fn) => namesTokenContainer(fn.body));
+}
+
 /** True when a body names a token container by a key other than one of its parameters. */
 function tokenContainerKeyedOffParameters(fn: FunctionDefinitionNode): boolean {
   let offParameters = false;
@@ -19014,6 +19035,8 @@ function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): F
           __parsedAst: ast,
           __functionSplitPrepared: true,
           __functionSplitFrameKinds: frameKinds,
+          ...(probe !== undefined && contractNamesTokenContainer(probe.contract)
+            ? { __framedContractHoldsTokens: true } : {}),
         } as InternalCompilerOptions);
       },
       cloneAst,

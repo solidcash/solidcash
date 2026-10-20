@@ -5134,7 +5134,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       (fn.dynamicWrites?.length ?? 0) > 0
       && (fn.entryAccesses?.length ?? 0) > 0);
     this.currentContractEmitsEvent = node.emitsEvent;
-    this.currentContractHoldsTokens = [
+    // A function-split shard holds some entries only, so the split states it for the whole contract.
+    this.currentContractHoldsTokens = (this.compilerOptions as { __framedContractHoldsTokens?: boolean })
+      .__framedContractHoldsTokens === true || [
       ...node.functions, ...(node.receiveDef ? [node.receiveDef] : []), ...(node.fallbackDef ? [node.fallbackDef] : []),
     ].some((fn) => (fn.tokenContainerAccesses?.length ?? 0) > 0);
     this.currentContractIsSplitFacet = node.isSplitFacet;

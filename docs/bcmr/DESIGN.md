@@ -1,34 +1,35 @@
 # BCMR metadata at deployment: design
 
-Kind: design. Any decision taken on it is recorded in `docs/framed/DECISIONS.md`, and anything deferred in
-`packages/solidc/docs/deferrals.md`; those ledgers win over this file. Written 2026-10-20 against master `769adb889`.
+Kind: design, implemented in `packages/solidcash/src/bcmr/` (section 11 maps the code). Decisions taken on it are
+recorded in `docs/framed/DECISIONS.md` (D31, D32), and anything deferred in `packages/solidc/docs/deferrals.md`; those
+ledgers win over this file. Written 2026-10-20 against master `769adb889`, revised to the implementation the same day.
 
 Sources: CHIP-BCMR at `bitjson/chip-bcmr` commit `0e8417c` (2024-01-31), the CashTokens specification, the AuthGuard
 standard (CHIP-2023-08, v0.1.2) and libauth 3.1.0-next.8 (`build/lib/engine/types/bcmr-types.d.ts`). Code is cited
-by path and symbol, because line numbers drift. The findings about today's code come from reading it; no probe was
-run, per the repository's test rules.
+by path and symbol, because line numbers drift. The findings about the code before this design (section 3) come from
+reading it; no probe was run, per the repository's test rules.
 
 ## 1. Summary
 
 Every stateful deployment mints a CashTokens category. BCMR gives that category an identity, and the identity's
-authority is whoever spends output 0 of the category's genesis. In both compilation conventions that output is a
-master today, which has two consequences:
+authority is whoever spends output 0 of the category's genesis. In both compilation conventions that output was a
+master before this design, which had two consequences:
 
-- A registry published in the genesis stops counting as soon as the first call spends that master.
-- In the framed convention any caller can publish metadata for the category, because the validator does not
-  constrain token-free outputs. Nothing is published today, so the first person to try defines the token's name,
-  symbol and icon.
+- A registry published in the genesis stopped counting as soon as the first call spent that master.
+- In the framed convention any caller could publish metadata for the category, because the validator does not
+  constrain token-free outputs. Nothing was published, so the first person to try defined the token's name, symbol
+  and icon.
 
 The design:
 
 1. Every genesis the SDK builds puts a dedicated identity output at index 0, under an explicit policy. This is the
    layout of every deployment, not an option (section 4).
 2. A deployment can publish its registry in the genesis itself, at output 1 (section 5).
-3. ERC-20-shaped tokens publish name, symbol and decimals checked against the contract before anything is signed,
-   with the premint in the same genesis (section 6).
+3. ERC-20-shaped tokens publish name, symbol and decimals checked against the contract before anything is
+   broadcast, with the premint in the same genesis (section 6).
 4. Categories created by contracts stay exposed until the composition rules change; section 7 lists the options.
-5. Later phases describe the contract's own NFTs for explorers (section 8) and let the contract's access control
-   govern its metadata (section 9).
+5. A deployment can label its own NFTs for explorers (section 8) and let the contract's access control govern its
+   metadata (section 9).
 
 ## 2. The BCMR rules this design depends on
 
@@ -45,13 +46,13 @@ The design:
 | R9 | Relay policy caps the data-carrier bytes of one transaction at 223, as a total over all its `OP_RETURN` outputs. | libauth `maximumDataCarrierBytes` and `verifyStandardFailedExcessiveDataCarrierBytes` | Bounds the publication's URI list. |
 | R10 | AuthGuard is a covenant at output 0 that spends only when input 1 holds an immutable NFT of a configured category (the AuthKey). With `keepGuarded` it must recreate itself at output 0; nothing else is constrained. | AuthGuard README and `AuthGuard.cash` | A standard, tool-supported way to hold the identity (4.2). |
 
-## 3. The genesis today
+## 3. The genesis before this design
 
 The category is the funding coin's txid, and the coin must be at vout 0. The funding transaction is therefore the
 authbase (R8), the genesis is the second transaction of the authchain, and the genesis's output 0 is the identity
 output (R1).
 
-Both genesis builders put the master pool first:
+Both genesis builders put the master pool first (until `c831bf045`):
 
 - framed: `deployFramedStatefulContract` in `packages/solidcash/src/framed/deploy/stateful.ts`, the master-pool loop
   over `entryLocks`;
@@ -62,7 +63,7 @@ Every top-level deployment goes through one of them: `StatefulContract.deploy`, 
 `SplitContractBundle.deploy` (one genesis per facet, then the root), and the framed proxy deploy (its implementation
 genesis, and its proxy genesis unless the proxy's initialization makes calls; see section 7 for that case).
 
-What follows from the layout:
+What followed from the layout:
 
 1. A registry published in the genesis stops counting the first time master #0 is spent, because that transaction
    becomes the authhead (R2). This holds in both conventions, whatever the transaction puts at its output 0.
@@ -78,8 +79,8 @@ What follows from the layout:
 4. Direct: whether a direct master constrains extra token-free outputs is not established here. Point 1 applies
    regardless.
 
-`website/docs/guides/deployment.md` tells deployers to "verify that metadata authority is held at the intended
-address". With this layout they cannot.
+`website/docs/guides/deployment.md` told deployers to "verify that metadata authority is held at the intended
+address", which that layout made impossible.
 
 ## 4. The identity output (every deployment)
 
@@ -109,6 +110,7 @@ out  2..   the existing outputs in their existing order: masters, validators, fa
 | `authguard` | The AuthGuard covenant keyed to an AuthKey category K. The AuthKey, an immutable NFT of K, goes to the issuer. | The holder of the AuthKey. | Needs a second category. | Opt-in only, never the default (DECISIONS D31). For issuers who want the AuthKey model; CashTokens Studio already supports the standard. |
 | `frozen` | An unspendable lock that is not a data carrier: P2SH32 of the one-byte script `OP_RETURN`. | Nobody, ever. | The genesis registry is final, so its URIs must stay reachable (use IPFS). | Tokens whose metadata must never change. |
 | `burned` | `OP_RETURN`. | Nobody. Clients archive the identity (R4). | libauth's `IdentitySnapshot.status` guidance tells clients to consider burning a burned token's remaining tokens. | Categories with no user-facing token. |
+| `governed` | A guard keyed to the contract's category and the lock of its `MetadataUpdated` event (section 9). | Whoever the contract's own access control lets emit `MetadataUpdated`; anyone may then apply it. | Each update waits 144 blocks for its authorization to mature. | Tokens whose metadata follows the contract's governance. |
 
 AuthGuard details:
 
@@ -134,11 +136,10 @@ is not a data-carrier output, so the identity stays active and the genesis stays
 
 ### 4.3 Default
 
-Recommended: `key` at the deployer's lock (`senderLockingBytecode`, otherwise the funder's P2PKH lock) for every
-deployment. AuthGuard is opt-in and never the default (DECISIONS D31).
+The default is `key` at the deployer's lock: `senderLockingBytecode`, otherwise the funder's lock when it is P2PKH,
+otherwise the change address (D32). AuthGuard is opt-in and never the default (D31).
 
-The remaining alternative is `burned` for deployments that publish nothing. It closes the identity forever, which is
-wrong for a token that may want metadata later. This is open decision 1.
+`burned` stays opt-in: it closes the identity forever, which is wrong for a token that may want metadata later.
 
 ### 4.4 Keeping the SDK away from the identity output
 
@@ -153,10 +154,12 @@ The `key` policy leaves a token-free coin at vout 0, and the SDK picks exactly t
   layout is a master: the exposure of section 3 again.
 
 The rule: a vout-0 coin whose transaction is a token genesis, or carries a BCMR output, is an identity output, and the
-SDK never selects it for funding or fees. A transaction is a token genesis when one of its outputs carries a category
-equal to the outpoint txid of one of its vout-0 inputs. `genesisCoinRefusal` already fetches a funding candidate's
-raw transaction, so the check fits there; fee selection needs the same fetch, for vout-0 coins only. Each deployment
-also reserves its identity outpoint for the session with `reserveGenesisOutpoint`.
+SDK never spends it as a coin. A transaction is a token genesis when one of its outputs carries a category equal to
+the outpoint txid of one of its vout-0 inputs (`identityOutputRefusal` in `packages/solidcash/src/bcmr/authchain.ts`).
+`ownCoinRefusal` (`packages/solidcash/src/framed/deploy/own-coin.ts`) proves every coin the SDK signs for from its
+own transaction, so it applies the rule to every genesis funding coin (`genesisCoinRefusal`) and every proven caller
+coin, across sessions. Within a session, each deployment and update also reserves its key-held identity outpoint
+(`reserveGenesisOutpoint`), which the fee selectors (`coinsAvailableForCallerFee`) honour.
 
 Other wallets do not know this rule. A dedicated authority key, or opting into `authguard`, removes the risk.
 
@@ -213,17 +216,22 @@ For an ERC-20-shaped token (category and CID abbreviated):
 
 ### 5.4 Later updates
 
-A `publishMetadata` helper:
+`publishMetadata({ provider, identity, current, registry, publicationUris, next, feeFunding, changeAddress })`:
 
-- spends the current identity output, signed by the key, or with the AuthKey at input 1 under `authguard`;
-- recreates output 0 under the same policy or a new one: key rotation, moving to AuthGuard, freezing or burning;
-- puts the new publication at output 1. The registry gains a new snapshot (a minor version bump, per the schema's
-  versioning rules) rather than editing the old one.
+- spends the current identity output (`current`): a `key` identity with its unlocker, or an `authguard` one with its
+  AuthKey, which it puts at input 1 and returns to its holder;
+- recreates output 0 under the same policy or `next`: key rotation, freezing or burning. Moving into AuthGuard needs
+  the AuthKey category a deployment creates, so it starts at deployment;
+- puts the new publication at output 1. `withSnapshot` adds a snapshot to the registry (a minor version bump, per the
+  schema's versioning rules) rather than editing the old one.
+
+A `governed` identity updates through `applyGovernedMetadata` instead (section 9).
 
 Further points:
 
-- The deployment returns the identity outpoint. A later session passes it in, or finds the authhead by following
-  spends from the genesis, which needs a provider that reports the spender of an outpoint.
+- The deployment returns the identity outpoint (`DeployResult.identity`; `deploymentIdentity()` on a contract from
+  `ContractFactory`). A later session passes it in, or finds the authhead by following spends from the genesis, which
+  needs a provider that reports the spender of an outpoint.
 - Upgrades keep the category (`StatefulContract.upgrade` moves the master to the new lock), so the identity survives
   them.
 - Destroying a contract no longer touches its identity. The authority may publish an `inactive` snapshot.
@@ -246,9 +254,9 @@ Further points:
 
 ### 6.2 Genesis for a native token
 
-Today the reserve is seeded on mocknet only; deployment has no premint option
-(`packages/solidc/docs/native-usdt-port.md`, "Limits that remain"). Fungible amounts can only be created in the
-genesis, so the premint, the identity output and the publication land in one transaction:
+`nativeToken.reserve` premints the token (`packages/solidc/docs/native-usdt-port.md` recorded its absence under
+"Limits that remain"). Fungible amounts can only be created in the genesis, so the premint, the identity output and
+the publication land in one transaction:
 
 ```text
 out  0     identity output
@@ -278,13 +286,15 @@ out  2..   masters, data NFTs, mapping heads, ...
 ### 6.4 Where the values come from
 
 - The deploy options are the source. When the artifact's ABI carries the whole IERC20Metadata interface (`name()`,
-  `symbol()` and `decimals()` as views without parameters), the SDK checks the options against the contract and
-  refuses a mismatch before anything is signed.
+  `symbol()` and `decimals()` as views without parameters), the contract's answers fill the fields the options omit,
+  and the SDK refuses a stated field that disagrees, before anything is broadcast.
 - The values exist only once the constructor has run, while the registry hash goes into the genesis. The SDK
   therefore deploys a probe genesis through a broadcast-holding overlay that is never released (`stageBroadcasts` in
   `packages/solidcash/src/framed/proxy/staged-broadcasts.ts`, the pattern the proxy deploy already uses), reads the
   views with `staticCall`, builds the registry, and then builds the real genesis from the same funding coin. Neither
-  the category nor the state depends on the genesis txid, so the probe's answers hold for the real genesis.
+  the category nor the state depends on the genesis txid, so the probe's answers hold for the real genesis. The
+  probe is signed but never relayed. A view the probe cannot read leaves its field to the options, which must then
+  state it.
 - Return types differ. Names and symbols are `string` (ERC20Metadata, Tether) or `bytes32` (the hand-ported USDT:
   right-padded, so strip trailing zero bytes and decode UTF-8). `decimals()` returns `uint8` or `uint256`.
 - AGENTS.md forbids selecting behaviour by function name. This selects by ABI schema, a standard interface taken as a
@@ -300,14 +310,15 @@ out  2..   masters, data NFTs, mapping heads, ...
 - Without a multiplier, an 18-decimal ledger can be backed for at most about 9.22 whole tokens (the int64 cap over
   10^18). The SDK warns about it.
 - The scale is not visible in the ABI (`_nativeMultiplier` is internal), and reading internal state by its name is
-  the selection AGENTS.md forbids. The options: an explicit `nativeScale` deploy input (recommended), or a public view
-  on `BchNativeMultiplier`, which costs script bytes (OZ ERC20 + BchNative is already over 10,000 B unsplit). This is
-  open decision 3.
+  the selection AGENTS.md forbids, so it is the explicit deploy input `nativeToken.scale` (D32). A public view on
+  `BchNativeMultiplier` was the alternative; it costs script bytes, and OZ ERC20 + BchNative is already over
+  10,000 B unsplit.
 
 ### 6.6 Symbol
 
 - The symbol must match `^[A-Z0-9]+[-A-Z0-9]*$` (R5), so "stETH" fails. The SDK refuses it and asks for an explicit
-  BCMR symbol. It never uppercases silently, because the contract's `symbol()` would then disagree with the registry.
+  BCMR symbol, which it compares with the contract's case-insensitively ("STETH" passes). It never uppercases
+  silently.
 - A base symbol of 4 to 6 characters is recommended.
 - A port that reuses USDT, USDC or DAI hits the reserved list, and wallets will flag or refuse it. Use a distinct
   base symbol.
@@ -318,9 +329,9 @@ out  2..   masters, data NFTs, mapping heads, ...
   container holds tokens only, so explorers count the whole premint as circulating.
 - For a wrap-only token the reserve backs the wrapped ledger balances, which are in circulation, so that reading is
   defensible. For a token with `issue` headroom (Tether-shaped), the headroom also shows as circulating.
-- Options: (a) publish a SolidCash extension in the snapshot that names the reserve lock and the ledger's supply
-  view, for explorers that adopt it; (b) carry the reserve on a mutable-NFT container, which changes a covenant.
-  Recommended: (a) now, (b) deferred. This is open decision 5.
+- The snapshot carries the `solidcash-native-token` extension, `{ reserveLockingBytecode, scale, ledgerSupply }`,
+  which names the reserve lock and the ledger's supply view for explorers that adopt it (D32). Carrying the reserve on
+  a mutable-NFT container, which would change a covenant, was the alternative.
 - BCMR's advice to hold unissued supply at the identity output does not apply (4.2).
 
 ## 7. Categories created by contracts
@@ -351,128 +362,142 @@ Options:
 - **C. Accept it and record it** in `packages/solidc/docs/deferrals.md`: wallets resolving a contract-created category
   may show attacker-published metadata.
 
-Recommended: C now, with A as a separate decision. This is open decision 4.
+Taken: C, recorded in `packages/solidc/docs/deferrals.md`, with A a separate decision (D32).
 
 ## 8. Describing the contract's own NFTs
 
 Every UTXO of a contract carries its category: masters (minting), framed validators, data records, mapping nodes and
 chunks (mutable), events and identity anchors (immutable), and the blockhash keeper baton (minting). Explorers list
-them all as NFTs of the token. BCMR's parsable NFTs can label them.
-
-The generator runs per deployment, because the locks depend on the category:
+them all as NFTs of the token. BCMR's parsable NFTs label them: a publication with `token.nfts: 'generated'` carries a
+collection generated per deployment, because the locks depend on the category (`nftCategory` in
+`packages/solidcash/src/bcmr/nft-parse.ts`, the roles in `nft-roles.ts`).
 
 - **Classify** each NFT by its UTXO's locking bytecode (`OP_0 OP_UTXOBYTECODE` in the parsing transaction) against the
-  locks derived at deploy: the master lock or locks, `addrV(C)`, the record lock, one entry lock per collection, one
-  event lock per event signature, the chunk locks and the keeper lock. Type keys are minimal VM numbers (1, 2, ...),
-  so NFT tickers read `SYMBOL-1`, `SYMBOL-2` and so on.
-- **Fields**: data records and events are minimal pushes in order (`docs/framed/SPEC_FRAMED_TRANSACTION.md`,
-  "Encodings"), so one push-splitting loop (the BCH 2026 loop opcodes) moves each value to the altstack. Mapping nodes
-  split at fixed offsets (`slot(32) || next(32) || tail`). A mapping key is hashed into its slot and cannot be shown.
+  locks derived at deploy: the master lock, `addrV(C)` (framed), the record lock, one entry lock per collection, one
+  chunk lock per dynamic variable and one lock per named event. Anonymous events share one lock, so they are one
+  type. Type keys are minimal VM numbers (1, 2, ...), so NFT tickers read `SYMBOL-1`, `SYMBOL-2` and so on. A lock the
+  category cannot enumerate, such as a long mapping value's chunks, stays unclassified, and clients show it unparsed.
+- **Fields**: data records and native-notation events are runs of minimal pushes (`docs/framed/SPEC_FRAMED_TRANSACTION.md`,
+  "Encodings"), so a push decoder moves each value to the altstack: about a dozen operations per field, covering
+  direct pushes, `OP_PUSHDATA1`, `OP_0`, `OP_1NEGATE` and `OP_1`..`OP_16`. A layout with several records reads the
+  leading index tag first and selects the record's type from it. Structs flatten into their members; an array packs
+  its elements, so a type holding one is classified only, as are mapping nodes, EVM-notation events and events
+  without parameters.
 - **Encodings**: integers become `number` (VM numbers are little-endian sign-magnitude, which is our encoding);
   fixed-point values become `number` with `decimals`; addresses (full locking bytecode) and bytes become `hex`;
-  strings become `utf8`. A dynamic value kept in chunks shows only the length and hash its record holds. Booleans
-  become `number`, because our `false` is an empty push and BCMR's `boolean` requires exactly `0x00`.
+  strings become `utf8`. A dynamic value kept in chunks shows only the length its record holds. Booleans become
+  `number`, because our `false` is an empty push and BCMR's `boolean` requires exactly `0x00`.
+- **Machine**: the parser uses no opcode newer than BCH 2025, so clients on that machine parse it. It leaves the
+  parsing input's own `OP_1` as the one value on the stack.
 - **Budget**: the parsing input's unlocking bytecode is `OP_1`, so the parser gets (41 + 1) x 800 = 33,600
-  operation-cost units (libauth `densityControlBaseLength`, `operationCostBudgetPerByte`). Classifying against tens of
-  35-byte locks fits; fully decoding a large layout may not. The generator measures each parser with libauth and
-  falls back to classifying only.
+  operation-cost units (libauth `densityControlBaseLength`, `operationCostBudgetPerByte`). The generator evaluates each
+  type's path on a sample commitment with libauth's 2025 machine in the standardized parsing transaction, and a type
+  within a tenth of the budget is classified only.
 - Encodings differ between conventions, so the generator reads them from the artifact's `stateLayout`, never from
   names.
 - The benefit is mostly for explorers: users rarely hold these NFTs.
 
-## 9. Contract-governed metadata (later)
+## 9. Contract-governed metadata
 
 The goal: the contract's own access control decides its metadata, as `onlyOwner` guards `contractURI` under EVM's
-ERC-7572.
+ERC-7572. The identity output sits under a guard of our own (`governed` policy, `packages/solidcash/src/bcmr/governed.ts`),
+keyed to the contract's category and the lock of its `MetadataUpdated(bytes32 registryHash, bytes32 identityTxid)`
+event, which `packages/solidcash/contracts/BcmrGoverned.scash` emits from `updateMetadata` behind the concrete
+contract's `_bcmrMayUpdate()`.
 
-Output 0 sits under a guard covenant of our own, which spends only when:
+The guard cannot be spent in the transaction that emits the event: output 0 of every call is the calling contract's
+own, in both conventions. So the update spends the event NFT as an input once it may be spent, 144 blocks after the
+emit, which also announces every change a day ahead. The guard spends only when:
 
-1. output 0 recreates the guard;
-2. output 1 is a publication with hash H;
-3. some output is an event NFT of C at the lock of a standard event,
-   `MetadataUpdated(bytes32 registryHash, bytes32 identityTxid, uint32 identityVout)`, whose pushes carry H and the
-   outpoint of the guard input itself.
+1. the input its unlocking names holds an immutable NFT of C at the event's lock;
+2. that event's arguments are the hash output 1 publishes and the guard's own outpoint txid (an identity output is
+   always output 0, so the txid is the whole outpoint);
+3. output 0 recreates the guard, and output 1 starts with the publication prefix and that hash.
 
 Why this holds:
 
 - Only the contract's code mints event NFTs of C. Compositions refuse unlisted immutable NFTs of a settled category
   (the census), and nothing else holds a minting NFT of C. The function that emits the event, with its `onlyOwner`,
-  timelock or DAO, is therefore the authority.
+  timelock or DAO, is therefore the authority. Anyone may apply a matured authorization, which can only publish what
+  it names.
 - The outpoint binding is required. Anyone can spend an event NFT after 144 blocks and send it back to its event lock
-  in a plain transaction, so without the binding an old authorization would replay.
-- The event lock is `buildEventNftCovenantScript(C, eventNameHash)`, and its commitment is the argument pushes.
+  in a plain transaction, so without the binding an old authorization would replay. The update also burns the
+  authorizing NFT.
+- An event that writes its arguments in EVM notation (`evmCompat`) packs them as two 32-byte words; the guard reads
+  either notation, as the artifact states it.
+- `governedAuthorization` gives the two arguments: the registry's SHA-256 and the identity txid in the byte order
+  `OP_OUTPOINTTXHASH` answers. `applyGovernedMetadata` builds the update: the guard at input 0, the event at input 1
+  under its relative timelock, then the fee coin.
 - Standard AuthGuard does not fit: it requires the AuthKey at input 1, and in a framed composition input 1 is a
   participant.
-- Cost: a new covenant and its audit. The event is recognized by its ABI schema.
 
-## 10. SDK surface (sketch)
+## 10. SDK surface
+
+The module is `packages/solidcash/src/bcmr/`, exported as `solidcash/bcmr`.
 
 ```ts
 interface DeployOptions {
   // ...existing fields...
   identity?: IdentityPolicy;           // default: { kind: 'key' } at the deployer's lock
   bcmr?: BcmrPublication;              // omitted: no publication output
-  tokenReserve?: { amount: bigint };   // own-category premint into the token container (direct convention)
+  nativeToken?: { reserve?: bigint; scale?: bigint };   // own-category premint (direct convention) and native scale
 }
 
 type IdentityPolicy =
-  | { kind: 'key'; lockingBytecode?: Uint8Array }
-  | { kind: 'authguard'; authKeyRecipient: Uint8Array; authKeyFunding?: Utxo }   // opt-in only (D31)
+  | { kind: 'key'; lockingBytecode?: Uint8Array | string }
+  | { kind: 'authguard'; authKeyFunding: Utxo; authKeyFunder?: Unlocker; authKeyRecipient?: Uint8Array | string }
   | { kind: 'frozen' }
-  | { kind: 'burned' };
+  | { kind: 'burned' }
+  | { kind: 'governed' };
 
 interface BcmrPublication {
-  name: string;
+  name?: string;                       // the contract's name() when omitted
   description?: string;
   uris?: Record<string, string>;       // icon, web, ...
-  tags?: string[];
-  token?: { symbol: string; decimals: number; nativeScale?: bigint };
-  nfts?: 'generated';                  // section 8
+  tags?: Record<string, Tag>;
+  token?: { symbol?: string; decimals?: number; nfts?: NftCategory | 'generated' };
+  extensions?: Extensions;
   publicationUris?: string[];          // omitted: ipfs://<CIDv1 of the registry bytes>
   timestamp?: string;
 }
 
 interface DeployResult {
   // ...existing fields...
-  identity: { txid: string; vout: 0; policy: IdentityPolicy['kind'] };
-  registry?: { bytes: Uint8Array; sha256: Uint8Array; uris: string[] };
+  identity?: IdentityRecord;           // { txid, vout: 0, satoshis, policy, lockingBytecode, authKeyCategory? }
+  registry?: PublishedRegistry;        // { registry, json, bytes, sha256, uris }
 }
 
-declare function publishMetadata(options: {
-  provider: NetworkProvider;
-  identity: { txid: string; vout: 0 };
-  authority: Unlocker;
-  registry: MetadataRegistry;
-  publicationUris?: string[];
-  next?: IdentityPolicy;
-}): Promise<{ tx: TransactionDetails; identity: { txid: string; vout: 0 } }>;
+declare function publishMetadata(options: PublishMetadataOptions): Promise<PublishMetadataResult>;
+declare function applyGovernedMetadata(options: ApplyGovernedMetadataOptions): Promise<{
+  tx: TransactionDetails; identity: IdentityRecord; registry: PublishedRegistry;
+}>;
 ```
 
-## 11. Phasing and tests
+`ContractFactory` passes `identity`, `bcmr` and `nativeToken` through, and its deployed contract answers
+`deploymentIdentity()` and `deploymentRegistry()`.
 
-Tests run on mocknet only, which is the user's standing rule. Each phase adds its own test file and runs it once.
+## 11. Implementation map and tests
 
-| Phase | Scope | The test proves |
+Tests run on mocknet only, which is the user's standing rule.
+
+| Part | Code | Tests |
 | --- | --- | --- |
-| P0 | The identity output in both builders; the identity-output rule in funding and fee selection; an audit of tests that read a genesis's `outputs[0]`. | Genesis output 0 is the identity output for `StatefulContract.deploy`, `ContractFactory`, `SplitContractBundle` and the proxy deploy; the SDK refuses to fund a genesis or pay a fee with an identity output. |
-| P1 | The publication output, the registry builder and its validation, the IPFS CID, `publishMetadata`, and the `key`, `frozen` and `burned` policies. | The genesis carries a publication libauth accepts; an update spends and recreates the identity. |
-| P1b | The opt-in `authguard` policy (D31). | The AuthGuard spend works with K different from C; a deployment that does not ask for it gets no AuthKey category. |
-| P2 | ERC-20: the premint option, the probe cross-check, the symbol and decimals rules, the native scale. | Mismatches are refused before signing; the premint covers the ledger supply; m = 10^10 publishes decimals 8. |
-| P3 | Contract-created categories: option C recorded, or option A as decided. | Per the decision. |
-| P4 | The NFT parse generator. | Every role classifies; fields decode within the 33,600-unit budget. |
-| P5 | The contract-governed guard. | A replayed authorization is refused; an outpoint-bound update is accepted. |
+| Identity output in every genesis, the five policies, the identity-output rule | `bcmr/identity.ts`, `bcmr/authchain.ts`, `stateful/sc-deploy.ts`, `framed/deploy/stateful.ts`, `framed/deploy/own-coin.ts` | `test/e2e/BcmrDeployment.test.ts`; `test/framed/deploy/proxy-deployment.test.ts` pins the shifted framed layout |
+| Publication, registry, IPFS CID, `publishMetadata`, opt-in AuthGuard | `bcmr/publication.ts`, `bcmr/registry.ts`, `bcmr/publish.ts` | `BcmrDeployment.test.ts` (AuthGuard evaluated by the VM) |
+| ERC-20 fields, premint, probe check | `bcmr/deployment.ts`, `bcmr/token.ts` | `BcmrDeployment.test.ts` with `test/fixture/bcmr_metadata_token.scash` |
+| Contract-created categories | option C in `packages/solidc/docs/deferrals.md` | |
+| Generated NFT labels | `bcmr/nft-parse.ts`, `bcmr/nft-roles.ts` | `test/e2e/BcmrNftParse.test.ts` |
+| Contract-governed metadata | `bcmr/governed.ts`, `contracts/BcmrGoverned.scash` | `test/e2e/BcmrGoverned.test.ts` |
 
-## 12. Open decisions
+Paths are under `packages/solidcash/` unless stated.
 
-1. The default identity policy: `key` at the deployer's lock (recommended), or `burned` when nothing is published.
-   AuthGuard is not a candidate: it is opt-in (D31).
-2. The ERC-20 source of truth: options checked against IERC20Metadata and refused on mismatch (recommended), or
-   BCMR allowed to differ (an uppercased symbol, for example).
-3. The native scale: an explicit `nativeScale` input (recommended), or a public view on `BchNativeMultiplier`.
-4. Contract-created categories: C now and A later (recommended), A now, or B.
-5. Supply display: a SolidCash extension (recommended), or a mutable-NFT reserve.
-6. Contract-governed metadata (section 9): in scope now, or keep key-held authority (with opt-in AuthGuard).
-7. Internal categories (split facets, a proxy's implementation): the same default as tokens, or `burned`.
+## 12. Decisions
+
+- AuthGuard is opt-in and never the default: D31, the user's answer.
+- The open decisions this design listed were taken as its own recommendations when it was implemented: D32. The
+  default identity is `key`; stated ERC-20 fields are checked and refused on mismatch, the symbol case-insensitively;
+  the native scale is explicit; contract-created categories take option C; the reserve is named by an extension;
+  contract-governed metadata is in; internal categories take the token default.
 
 ## 13. References
 

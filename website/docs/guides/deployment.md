@@ -355,10 +355,35 @@ run it. Test the complete flow on chipnet or regtest before using mainnet author
 
 ## CashToken metadata
 
-Application-state NFTs are a SolidCash covenant protocol; user-facing fungible tokens and collectible NFTs can
-also publish [BCMR][bcmr] metadata. Metadata/authchain outputs are application outputs and are not automatically
-created by `ContractFactory`. If your deployment also launches a public token, plan its registry and authchain
-separately and verify that metadata authority is held at the intended address. See
-[CashTokens](/docs/guides/cashtokens#cashtokens-bcmr-metadata).
+Every genesis the SDK builds leads with the category's [BCMR][bcmr] identity output at output 0: whoever spends it
+publishes the category's metadata. By default it is a dust output at the deployer's lock; keep it out of everyday
+coin selection, or choose another `identity` policy:
+
+| Policy | Output 0 | Who can publish |
+| --- | --- | --- |
+| `{ kind: 'key' }` (default) | A token-free output at the deployer's lock, or the `lockingBytecode` you give. | The holder of that lock. |
+| `{ kind: 'authguard', authKeyFunding }` | The AuthGuard covenant; an AuthKey NFT of a second category goes to you. | The AuthKey holder. |
+| `{ kind: 'frozen' }` | An unspendable lock, so the genesis registry is final. | Nobody. |
+| `{ kind: 'burned' }` | `OP_RETURN`; wallets archive the identity. | Nobody. |
+| `{ kind: 'governed' }` | A guard that publishes what the contract authorizes through `BcmrGoverned`. | The contract's own access control. |
+
+Pass `bcmr` to publish a registry in the genesis itself, at output 1. For a token that implements `name()`,
+`symbol()` and `decimals()`, the SDK reads them from the contract and refuses stated values that disagree;
+`nativeToken.reserve` premints the token's own category (direct convention) and `nativeToken.scale` states a
+`BchNativeMultiplier` scale:
+
+```ts
+const token = await factory.deploy({
+  identity: { kind: 'key' },
+  bcmr: { description: 'A dollar ledger.', uris: { icon: 'ipfs://...', web: 'https://example.org' } },
+  nativeToken: { reserve: 1_000_000_000n },
+});
+const { bytes, uris } = token.deploymentRegistry()!; // host these exact bytes at one of the URIs
+```
+
+The publication defaults to the registry's IPFS CID, so pin the returned bytes as one raw block. Update later with
+`publishMetadata` (or `applyGovernedMetadata` under `governed`) from `solidcash/bcmr`. Categories a contract creates
+(`new C()`, factory deployments) keep their identity output at the creating master, so do not rely on their
+self-published metadata. See [CashTokens](/docs/guides/cashtokens#cashtokens-bcmr-metadata).
 
 [bcmr]: https://cashtokens.org/docs/bcmr/chip/

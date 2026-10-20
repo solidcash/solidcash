@@ -21,6 +21,7 @@ import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
 import { identityRecord, leadingOutputs, prepareMetadata } from '../bcmr/deployment.js';
+import { governedEvent, governedGuardFor } from '../bcmr/governed.js';
 import { isP2pkhLock, planGenesisIdentity } from '../bcmr/identity.js';
 import { deploymentNftRoles, directNftLocks, framedNftLocks } from '../bcmr/nft-roles.js';
 import { BcmrError } from '../bcmr/publication.js';
@@ -218,6 +219,11 @@ export async function deployStatefulContract<T extends Artifact>(
     deployerLock: options.senderLockingBytecode
       ?? (isP2pkhLock(funderLock) ? funderLock : addressToLockScript(options.changeAddress)),
     funder: options.funder,
+    ...(options.identity?.kind !== 'governed' ? {} : {
+      governed: governedGuardFor(artifact, categoryId, addressToLockScript(
+        getEventNftAddress(contract, categoryId, governedEvent(artifact).event.signature),
+      )),
+    }),
   });
   const leading = leadingOutputs(identity, prepared);
   const leadingTotal = leading.reduce((sum, output) => sum + output.amount, 0n);

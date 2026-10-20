@@ -9,7 +9,7 @@
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  buildAnonymousEventNftCovenantScript, buildEventNftCovenantScript, buildPushdataCommitment, computeEventNameHash,
+  buildAnonymousEventNftCovenantScript, buildPushdataCommitment,
   encodeEventParameter, encodeNftIndexTag, getDefaultStateValue, hasDataNftIndexTags, hash256, scriptToBytecode,
   type Artifact, type CollectionInfo, type EventDefinitionAbi, type StateLayout, type StateVariableInfo,
 } from '@solidcash/utils';
@@ -19,6 +19,7 @@ import {
   getAnonymousEventNftAddress, getDataNftAddress, getDynamicChunkAddress, getEntryNftAddress, getEventNftAddress,
 } from '../stateful/covenant-helpers.js';
 import { addressToLockScript } from '../utils.js';
+import { framedEventLockingBytecode } from './governed.js';
 import { pushedFields, type NftParseField, type NftParseRole, type NftParseType } from './nft-parse.js';
 
 /** The locks of a deployment's roles, as its convention derives them. */
@@ -199,8 +200,8 @@ export async function framedNftLocks(
     records: stateRecordLockingBytecode(category),
     entry: (collection) => entryRecordLockingBytecode(category, collection.signature),
     chunk: (variable) => chunkRecordLockingBytecode(category, variable.name, variable.type),
-    event: (event) => encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(event.anonymous === true
-      ? buildAnonymousEventNftCovenantScript(hexToBin(category))
-      : buildEventNftCovenantScript(hexToBin(category), computeEventNameHash(event.signature))))),
+    event: (event) => (event.anonymous === true
+      ? encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(buildAnonymousEventNftCovenantScript(hexToBin(category)))))
+      : framedEventLockingBytecode(category, event)),
   };
 }

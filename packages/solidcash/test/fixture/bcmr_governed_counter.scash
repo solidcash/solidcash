@@ -1,0 +1,17 @@
+pragma solidcash >=0.8.0;
+
+import { BcmrGoverned } from "../../contracts/BcmrGoverned.scash";
+
+// A contract whose BCMR metadata its admin governs.
+contract GovernedCounter(address admin) is BcmrGoverned {
+    int count;
+
+    function bump() {
+        this.count = this.count + 1;
+        require(this.count > 0);
+    }
+
+    function _bcmrMayUpdate() internal view override returns (bool) {
+        return msg.sender == admin;
+    }
+}

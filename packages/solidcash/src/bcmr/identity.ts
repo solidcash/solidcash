@@ -4,8 +4,8 @@
  *
  * Whoever spends an identity output moves that authority, so it is never a master: every call spends a master,
  * which would end a published registry and let any caller publish another. Every genesis the SDK builds therefore
- * leads with an identity output held under one of four policies (docs/bcmr/DESIGN.md, 4.2): `key` (the default),
- * `authguard` (opt-in), `frozen` and `burned`.
+ * leads with an identity output held under one of five policies (docs/bcmr/DESIGN.md, 4.2): `key` (the default),
+ * `authguard` (opt-in), `frozen`, `burned` and `governed` (section 9).
  */
 
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
@@ -17,6 +17,7 @@ import type NetworkProvider from '../network/NetworkProvider.js';
 import { addressToLockScript } from '../utils.js';
 import { satoshisAtLeastDust } from '../framed/composer/dust.js';
 import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
+import { governedGuardLockingBytecode, type GovernedGuard } from './governed.js';
 import { BcmrError } from './publication.js';
 
 /** How a deployment holds its identity output. */
@@ -40,7 +41,12 @@ export type IdentityPolicy =
   /** An unspendable lock that is not a data carrier: the genesis stays the authhead, so its registry is final. */
   | { readonly kind: 'frozen' }
   /** `OP_RETURN`: the identity is burned and clients archive it. For categories with no user-facing token. */
-  | { readonly kind: 'burned' };
+  | { readonly kind: 'burned' }
+  /**
+   * The contract's own access control decides: a guard spends only beside the contract's matured
+   * `MetadataUpdated(bytes32 registryHash, bytes32 identityTxid)` event naming its outpoint (governed.ts).
+   */
+  | { readonly kind: 'governed' };
 
 export type IdentityPolicyKind = IdentityPolicy['kind'];
 
@@ -150,11 +156,18 @@ export async function planGenesisIdentity(options: {
   readonly policy?: IdentityPolicy;
   readonly deployerLock: Uint8Array;
   readonly funder: Unlocker;
+  /** The guard of a `governed` identity, keyed to the contract's MetadataUpdated event lock. */
+  readonly governed?: GovernedGuard;
 }): Promise<GenesisIdentity> {
   const policy = options.policy ?? { kind: 'key' };
   if (policy.kind === 'key') {
     const lock = policy.lockingBytecode === undefined ? options.deployerLock : lockOf(policy.lockingBytecode);
     return { policy: 'key', output: identityOutput('key', lock), inputs: [], trailing: [] };
+  }
+  if (policy.kind === 'governed') {
+    if (options.governed === undefined) throw new BcmrError('a governed identity needs its contract\'s event lock');
+    const to = governedGuardLockingBytecode(options.governed);
+    return { policy: 'governed', output: { to, amount: satoshisAtLeastDust(0n, { to }) }, inputs: [], trailing: [] };
   }
   if (policy.kind === 'frozen' || policy.kind === 'burned') {
     return { policy: policy.kind, output: identityOutput(policy.kind, new Uint8Array(0)), inputs: [], trailing: [] };

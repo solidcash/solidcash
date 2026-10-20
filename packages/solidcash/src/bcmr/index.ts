@@ -83,6 +83,20 @@ export {
   type DeploymentNftLocks,
 } from './nft-roles.js';
 export {
+  EVENT_MATURITY_BLOCKS,
+  METADATA_UPDATED,
+  applyGovernedMetadata,
+  framedEventLockingBytecode,
+  governedAuthorization,
+  governedEvent,
+  governedGuardFor,
+  governedGuardLockingBytecode,
+  governedGuardRedeemScript,
+  governedGuardUnlocker,
+  type ApplyGovernedMetadataOptions,
+  type GovernedGuard,
+} from './governed.js';
+export {
   publishMetadata,
   type CurrentIdentity,
   type NextIdentity,

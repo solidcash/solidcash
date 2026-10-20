@@ -810,6 +810,7 @@ Preinstalling
 Prelowered
 premint
 Preminted
+premints
 preorder
 prepass
 prereq

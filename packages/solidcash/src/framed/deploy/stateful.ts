@@ -35,6 +35,7 @@ import { Contract } from '../../Contract.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { addressToLockScript, getNetworkPrefix } from '../../utils.js';
 import { identityRecord, leadingOutputs, type PreparedMetadata } from '../../bcmr/deployment.js';
+import { framedEventLockingBytecode, governedEvent, governedGuardFor } from '../../bcmr/governed.js';
 import { planGenesisIdentity } from '../../bcmr/identity.js';
 import { genesisOutpointKey, reserveGenesisOutpoint } from '../../stateful/genesis-reservations.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
@@ -200,6 +201,11 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     ...(options.identity === undefined ? {} : { policy: options.identity }),
     deployerLock: senderLockingBytecode ?? addressToLockScript(options.changeAddress),
     funder: options.funder,
+    ...(options.identity?.kind !== 'governed' ? {} : {
+      governed: governedGuardFor(artifact, categoryId, framedEventLockingBytecode(
+        categoryId.toLowerCase(), governedEvent(artifact).event,
+      )),
+    }),
   });
   const inputTotal = identity.inputs.reduce((sum, input) => sum + input.utxo.satoshis, options.fundingUtxo.satoshis);
   builder.addInput(options.fundingUtxo, options.funder);

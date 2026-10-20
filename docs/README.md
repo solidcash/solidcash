@@ -22,6 +22,7 @@ This directory holds internal design, release, security and workstream records. 
 - `docs/security/` — audit reports and `2026-10/` finding detail. Finding ids are cited by tests.
 - `docs/release/0.13.1/` — release decision, notes, readiness pointer and compatibility manifest.
 - `docs/design/` — design map, comparison, concept validation, feature summary and performance findings.
+- `docs/bcmr/DESIGN.md`: BCMR metadata at deployment (identity output, publication, ERC-20 fields), a design.
 - `docs/marketplace/` — matrix records, stock inventory, BCHN relaxation and the lane patch.
 - `bench/solidity-corpus/` — corpus README and scorecard history. `PROGRESS.md` is a log, not a status page.
 - `website/` — public product documentation and the public agent reference. Internal rules belong in the root

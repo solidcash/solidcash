@@ -56,6 +56,9 @@ ASRC
 assertable
 assigne
 ASTJSON
+authbase
+authguard
+authhead
 autoderivation
 autoderive
 autoderives
@@ -63,6 +66,7 @@ autogeneration
 Automine
 AUTORESOLVE
 backrefs
+bafkrei
 bakeable
 bandoffset
 basearg
@@ -83,6 +87,7 @@ bigbody
 bignum
 bignums
 bips
+bitjson
 bitmask
 bitmasks
 bitnot

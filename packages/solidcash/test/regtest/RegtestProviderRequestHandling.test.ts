@@ -19,6 +19,18 @@ const options = {
 
 const stub = (async (): Promise<Response> => new Response('stub')) as typeof fetch;
 
+async function nodeRpc(method: string, params: unknown[]): Promise<unknown> {
+  const response = await fetch(options.rpcUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Basic ${btoa(`${options.rpcUser}:${options.rpcPassword}`)}`,
+    },
+    body: JSON.stringify({ jsonrpc: '1.0', id: 'test', method, params }),
+  });
+  return ((await response.json()) as { result: unknown }).result;
+}
+
 /** A provider built under a hooked fetch, which it adopts as its native one; `hook` runs inside each call. */
 async function hookedProvider(
   hook: { run?: () => Response | undefined },
@@ -128,6 +140,22 @@ describeRegtest('RegtestNetworkProvider request handling', () => {
     expect(await oracle()).toBe(before);
     await provider.mine(1);
     expect(await oracle()).not.toBe(before);
+  });
+
+  it('rewinds the block clock with a restore', async () => {
+    const provider = new RegtestNetworkProvider(options);
+    const tipTime = async (): Promise<number> => {
+      const hash = await provider.getBlockHash(await provider.getBlockHeight());
+      return (await nodeRpc('getblockheader', [hash, true]) as { time: number }).time;
+    };
+    await provider.mine(1);
+    const snapshot = await provider.takeSnapshot();
+    // One mine sets the clock once for all its blocks, so separate mines put it several seconds ahead.
+    for (let block = 0; block < 5; block += 1) await provider.mine(1);
+    const ahead = await tipTime();
+    await snapshot.restore();
+    await provider.mine(1);
+    expect(await tipTime()).toBeLessThan(ahead);
   });
 
   it('clears chain-derived SDK caches on a rewind and a reset', async () => {

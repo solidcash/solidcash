@@ -98,6 +98,7 @@ interface RegtestSnapshotState {
   broadcastUtxos: Map<string, Utxo>;
   /** How many transactions this provider had broadcast; a restore abandons the ones after. */
   broadcastCount: number;
+  lastMinedTimestamp: number;
 }
 
 export interface TokenGenesisOutput {
@@ -142,7 +143,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private tipTime = 0;
   /** Timestamp applied to the next mined block by `evm_setNextBlockTimestamp`. */
   private pendingBlockTimestamp: number | undefined;
-  /** Monotonic time for ordinary mines, never rewound by a snapshot. */
+  /** Time of the newest mined block; a restore rewinds it with the chain, as the mock chain rewinds its clock. */
   private lastMinedTimestamp = 0;
   /** Nonzero while `increaseTime` holds the clock across its median window and oracle update. */
   private holdMockTime = 0;
@@ -902,9 +903,10 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       this.lastMinedTimestamp = this.pendingBlockTimestamp;
       this.pendingBlockTimestamp = undefined;
     } else if (this.holdMockTime === 0) {
-      // A fixture restore disconnects a block but BCHN keeps it marked invalid. Re-mining the same template
-      // (same time and transactions) would produce the same hash and be rejected, so every ordinary mine moves
-      // the mock clock forward by at least one second. `lastMinedTimestamp` deliberately survives snapshots.
+      // Every ordinary mine moves the mock clock forward by at least one second. A fixture restore disconnects
+      // blocks BCHN keeps marked invalid; re-mining one at its old time would repeat its hash, so a restore pays
+      // later blocks to a fresh address instead of keeping the clock ahead of every block ever mined. Kept ahead,
+      // the clock ran 75 hours past the fixture in a kernel cell and jobs with a 120-second window had expired.
       const timestamp = Math.max(this.tipTime + 1, this.lastMinedTimestamp + 1);
       await this.setMockTime(timestamp);
       this.mockTime = timestamp;
@@ -1003,6 +1005,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       tokenUtxos: new Map([...this.tokenUtxos].map(([category, bucket]) => [category, new Map(bucket)])),
       broadcastUtxos: new Map(this.broadcastUtxos),
       broadcastCount: this.broadcastTxids.length,
+      lastMinedTimestamp: this.lastMinedTimestamp,
     };
     return {
       snapshotId,
@@ -1118,6 +1121,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.pendingBlockTimestamp = state.pendingBlockTimestamp;
     this.mockTime = state.mockTime;
     this.tipTime = state.tipTime;
+    this.lastMinedTimestamp = state.lastMinedTimestamp;
+    // A fresh coinbase address keeps every block mined from here different from the disconnected ones.
+    this.miningAddress = await this.rpc.request<GetNewAddress>('getnewaddress', 'mining');
     this.pendingOracleUpdate = false;
     await this.setMockTime(state.mockTime);
   }

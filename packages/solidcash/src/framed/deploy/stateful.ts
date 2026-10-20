@@ -7,8 +7,9 @@
  * unlocking — it reads its frame out of a witness block, which the direct shape does not carry — so the deployment
  * is routed here when the artifact publishes `composition.convention === 'framed'`.
  *
- * The genesis transaction is the same shape the convention's pools expect: a pool of master UTXOs carrying the
- * minting NFT at the master lock, a pool of validator UTXOs at `addrV(category)`, one state record per data NFT
+ * The genesis transaction leads with the category's BCMR identity output (and its publication, when it publishes),
+ * then takes the shape the convention's pools expect: a pool of master UTXOs carrying the minting NFT at the master
+ * lock, a pool of validator UTXOs at `addrV(category)`, one state record per data NFT
  * carrying the commitment the constructor's own frame computed, and one output per event that frame emitted, at the
  * covenant the body rebuilt. Both pools default to the composing size and are overridden per contract through the
  * deployment options.
@@ -32,7 +33,10 @@ import type { TransactionDetails } from '../../interfaces.js';
 import type { ConstructorArgument } from '../../Argument.js';
 import { Contract } from '../../Contract.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
-import { getNetworkPrefix } from '../../utils.js';
+import { addressToLockScript, getNetworkPrefix } from '../../utils.js';
+import { identityRecord, leadingOutputs, type PreparedMetadata } from '../../bcmr/deployment.js';
+import { planGenesisIdentity } from '../../bcmr/identity.js';
+import { genesisOutpointKey, reserveGenesisOutpoint } from '../../stateful/genesis-reservations.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
 import { bindProviderBlockOracle } from '../call/block-oracle.js';
@@ -77,6 +81,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   artifact: T,
   constructorArgs: ConstructorArgument[],
   options: DeployOptions,
+  prepared: PreparedMetadata = {},
 ): Promise<DeployResult<T>> {
   if (artifact.stateLayout === undefined) {
     throw new FramedDeployError(`Contract ${artifact.contractName} is not a stateful contract`);
@@ -188,13 +193,26 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     provider: options.provider,
     ...(options.maxFee === undefined ? {} : { maximumFeeSatoshis: options.maxFee }),
   });
+  // Output 0 is the category's BCMR identity output, never a master: every call spends a master.
+  const identity = await planGenesisIdentity({
+    provider: options.provider,
+    category: categoryId.toLowerCase(),
+    ...(options.identity === undefined ? {} : { policy: options.identity }),
+    deployerLock: senderLockingBytecode ?? addressToLockScript(options.changeAddress),
+    funder: options.funder,
+  });
+  const inputTotal = identity.inputs.reduce((sum, input) => sum + input.utxo.satoshis, options.fundingUtxo.satoshis);
   builder.addInput(options.fundingUtxo, options.funder);
+  for (const input of identity.inputs) builder.addInput(input.utxo, input.unlocker);
   // Every token output carries at least its own dust threshold: a wide record, chunk or event is worth more than the
   // fixed amount, which covers only outputs up to 252 bytes. The change below is taken from the amounts added here.
   const addFunded = (output: Parameters<typeof builder.addOutput>[0]): void => {
     builder.addOutput(output.token === undefined
       ? output : { ...output, amount: satoshisAtLeastDust(output.amount, output) });
   };
+
+  // The identity output, the publication and the identity's own outputs lead the genesis.
+  for (const output of leadingOutputs(identity, prepared)) builder.addOutput(output);
 
   for (const lock of entryLocks) {
     for (let index = 0; index < pool.masters; index += 1) {
@@ -317,7 +335,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   const fee = options.fee ?? (await measuredFee(builder)) + 1000n;
   const nonChangeTotal = builder.outputs.slice(0, -1)
     .reduce((sum, output) => sum + output.amount, 0n);
-  const finalChange = options.fundingUtxo.satoshis - nonChangeTotal - fee;
+  const finalChange = inputTotal - nonChangeTotal - fee;
   if (finalChange < 0n) {
     const pools = entryLocks.length === 1
       ? `the pool of ${pool.masters} master(s) and ${pool.validators} validator(s)`
@@ -325,7 +343,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
         + `and ${pool.validators} validator(s)`;
     throw new FramedDeployError(
       `Insufficient funding for ${pools}: `
-      + `${options.fundingUtxo.satoshis} satoshis provided, but the genesis requires `
+      + `${inputTotal} satoshis provided, but the genesis requires `
       + `${nonChangeTotal + fee} (outputs ${nonChangeTotal}, fee ${fee}).`,
     );
   }
@@ -362,5 +380,15 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     throw new FramedDeployError(`The contract's own address is not encodable: ${ownAddress}`);
   }
   (statefulContract as unknown as { _framedAddress?: string })._framedAddress = ownAddress.address;
-  return { contract: statefulContract, tx, categoryId };
+  // A key-held identity output sits at the deployer's address, so this session's coin selection must not take it.
+  if (identity.policy === 'key' && options.broadcast !== false && options.metadataProbe !== true) {
+    reserveGenesisOutpoint(genesisOutpointKey(tx.txid, 0));
+  }
+  return {
+    contract: statefulContract,
+    tx,
+    categoryId,
+    identity: identityRecord(identity, tx.txid),
+    ...(prepared.registry === undefined ? {} : { registry: prepared.registry }),
+  };
 }

@@ -6,6 +6,8 @@ import Signer from '../Signer.js';
 import type { ConstructorArgument } from '../Argument.js';
 import type { Utxo, TransactionDetails, AddressType } from '../interfaces.js';
 import type { StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions } from './StatefulContract.js';
+import type { PublishedRegistry } from '../bcmr/deployment.js';
+import type { IdentityRecord } from '../bcmr/identity.js';
 import { addressToLockScript, getNetworkPrefix } from '../utils.js';
 
 // Heavy value imports are deferred to method/helper bodies so that loading this
@@ -45,12 +47,22 @@ export interface DeployContractOptions {
   identityAnchors?: DeployOptions['identityAnchors'];
   /** Internal composition: parent-owned logical CREATE identity for the contract deployed by this factory. */
   logicalIdentity?: { deployer: string; nonce: bigint; address: string };
+  /** How the genesis holds its BCMR identity output; see `DeployOptions.identity`. */
+  identity?: DeployOptions['identity'];
+  /** A BCMR registry the genesis publishes; see `DeployOptions.bcmr`. */
+  bcmr?: DeployOptions['bcmr'];
+  /** The contract's own fungible token; see `DeployOptions.nativeToken`. */
+  nativeToken?: DeployOptions['nativeToken'];
 }
 
 /** A deployed contract with ethers-style deployment accessors. */
 export type DeployedContract<T extends Artifact = Artifact> = ConnectedStatefulContract<T> & {
   deploymentTransaction(): TransactionDetails;
   waitForDeployment(): Promise<DeployedContract<T>>;
+  /** The genesis's BCMR identity output. */
+  deploymentIdentity(): IdentityRecord | undefined;
+  /** The registry the genesis published, if it published one. */
+  deploymentRegistry(): PublishedRegistry | undefined;
 };
 
 function looksLikeOverrides(x: unknown): boolean {
@@ -89,8 +101,10 @@ export async function selectGenesisFundingUtxo(
   const dataNfts = BigInt(artifact.delegateOnly ? 0 : (artifact.stateLayout?.dataNftCount ?? 1));
   // X149: `bytecode` is an ASM LISTING, so `.length / 2` is half a CHARACTER count and this overpaid.
   const deployFee = BigInt(Math.max(5000, asmToBytecode(artifact.bytecode).length + 2000));
+  // The genesis leads with its BCMR identity output, a dust output, and may carry its publication.
+  const identityOutput = 1000n;
   const cost = 1200n + 1200n * dataNfts + 1200n * BigInt(identityNftCount) + deployFee + 2400n
-    + additionalSatoshis;
+    + identityOutput + additionalSatoshis;
   return selectGenesisFundingUtxoForCost(signer, cost, excludedOutpoints);
 }
 
@@ -423,6 +437,9 @@ export class ContractFactory<T extends Artifact = Artifact> {
         initialBalance: overrides.initialBalance,
         initArgs: overrideInitArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
         identityAnchors,
+        ...(overrides.identity === undefined ? {} : { identity: overrides.identity }),
+        ...(overrides.bcmr === undefined ? {} : { bcmr: overrides.bcmr }),
+        ...(overrides.nativeToken === undefined ? {} : { nativeToken: overrides.nativeToken }),
       });
       nonceReservation?.commit();
     } catch (error) {
@@ -466,6 +483,8 @@ export class ContractFactory<T extends Artifact = Artifact> {
     }
     // ethers-style deployment accessors (attach to the instance; the dispatch proxy passes them through).
     (contract as { deploymentTransaction: () => TransactionDetails }).deploymentTransaction = () => result.tx;
+    (contract as { deploymentIdentity: () => IdentityRecord | undefined }).deploymentIdentity = () => result.identity;
+    (contract as { deploymentRegistry: () => PublishedRegistry | undefined }).deploymentRegistry = () => result.registry;
     const awaitDeployed = async (): Promise<DeployedContract<T>> => {
       await result.tx.wait?.();
       return contract;

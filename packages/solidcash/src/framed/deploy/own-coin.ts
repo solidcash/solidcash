@@ -15,8 +15,12 @@ import type { TokenDetails, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type { LedgerOutput } from '../../network/NetworkProvider.js';
 import { libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
+import { identityOutputRefusal } from '../../bcmr/authchain.js';
 
-/** The output at `txid:vout` as its transaction (or a simulator's ledger) holds it, or why it cannot be proven. */
+/**
+ * The output at `txid:vout` as its transaction (or a simulator's ledger) holds it, or why it cannot be proven. A BCMR
+ * identity output is refused here, so no role spends one as an ordinary coin.
+ */
 async function provenOutput(provider: NetworkProvider, txid: string, vout: number): Promise<LedgerOutput | string> {
   let raw: string | undefined;
   try {
@@ -31,6 +35,8 @@ async function provenOutput(provider: NetworkProvider, txid: string, vout: numbe
     if (typeof transaction === 'string') return `the transaction served for ${txid} does not decode: ${transaction}`;
     const output = transaction.outputs[vout];
     if (output === undefined) return `transaction ${txid} has no output ${vout}`;
+    const identity = vout === 0 ? identityOutputRefusal(transaction, txid) : undefined;
+    if (identity !== undefined) return identity;
     return {
       lockingBytecode: output.lockingBytecode,
       satoshis: output.valueSatoshis,

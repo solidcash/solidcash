@@ -9,6 +9,8 @@ import type { FramedGenesisHeadCollection } from '../framed/deploy/genesis.js';
 import type { FunctionArgument, ConstructorArgument } from '../Argument.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { StateValueType } from '../types/state-inference.js';
+import type { BcmrPublication, NativeTokenOptions, PublishedRegistry } from '../bcmr/deployment.js';
+import type { IdentityPolicy, IdentityRecord } from '../bcmr/identity.js';
 import type { ConnectedStatefulContract, StatefulContract } from './StatefulContract.js';
 
 export interface DeployOptions {
@@ -80,12 +82,27 @@ export interface DeployOptions {
   broadcast?: boolean;
   /** Outputs minted in the genesis after the records. */
   extraOutputs?: readonly Output[];
+  /**
+   * How the genesis holds its category's BCMR identity output, output 0 (docs/bcmr/DESIGN.md, 4.2). Defaults to a
+   * token-free output at the deployer's lock.
+   */
+  identity?: IdentityPolicy;
+  /** A BCMR registry the genesis publishes at output 1. */
+  bcmr?: BcmrPublication;
+  /** The contract's own fungible token: the premint into its token container and the native scale. */
+  nativeToken?: NativeTokenOptions;
+  /** Internal: a probe genesis that only answers the contract's views; it publishes nothing and reserves nothing. */
+  metadataProbe?: true;
 }
 
 export interface DeployResult<T extends Artifact = Artifact> {
   contract: ConnectedStatefulContract<T>;
   tx: TransactionDetails;
   categoryId: string;
+  /** The genesis's identity output, which holds the category's BCMR authority. */
+  identity?: IdentityRecord;
+  /** The registry the genesis published, with the URIs its publication offers. */
+  registry?: PublishedRegistry;
 }
 
 export interface UpgradeOptions<T extends Artifact = Artifact> {

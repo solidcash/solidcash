@@ -79,6 +79,8 @@ import {
 import type { AbiToFunctionMap } from '../types/type-inference.js';
 import type { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import type { BcmrPublication, NativeTokenOptions, PublishedRegistry } from '../bcmr/deployment.js';
+import type { IdentityPolicy, IdentityRecord } from '../bcmr/identity.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 import { isScidIdentityCommitment, resolveLogicalIdentity, type ResolvedLogicalIdentity } from './logical-identity.js';
 
@@ -939,12 +941,25 @@ export interface DeployOptions {
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
   /** Internal SDK composition: immutable category-bearing logical identity outputs minted by genesis. */
   identityAnchors?: Array<{ to: string | Uint8Array; commitment: string; amount?: bigint }>;
+  /**
+   * How the genesis holds its category's BCMR identity output, output 0 (docs/bcmr/DESIGN.md, 4.2). Defaults to a
+   * token-free output at the deployer's lock.
+   */
+  identity?: IdentityPolicy;
+  /** A BCMR registry the genesis publishes at output 1. */
+  bcmr?: BcmrPublication;
+  /** The contract's own fungible token: the premint into its token container and the native scale. */
+  nativeToken?: NativeTokenOptions;
 }
 
 export interface DeployResult<T extends Artifact = Artifact> {
   contract: ConnectedStatefulContract<T>;
   tx: TransactionDetails;
   categoryId: string;
+  /** The genesis's identity output, which holds the category's BCMR authority. */
+  identity?: IdentityRecord;
+  /** The registry the genesis published, with the URIs its publication offers. */
+  registry?: PublishedRegistry;
 }
 
 export interface UpgradeOptions<T extends Artifact = Artifact> {

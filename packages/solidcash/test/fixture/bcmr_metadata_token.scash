@@ -1,0 +1,28 @@
+pragma solidcash >=0.8.0;
+
+import { ERC20 } from "../../contracts/ERC20.scash";
+import { BchNative } from "../../contracts/BchNative.scash";
+
+// A native ledger token with the IERC20Metadata views and a supply its constructor credits, so a deployment can read
+// the token fields it publishes and check its premint against the ledger.
+// cspell:ignore XDOL
+contract BcmrMetadataToken() is ERC20, BchNative {
+    constructor() {
+        this._totalSupply = 5000;
+    }
+
+    function name() public pure returns (string) { return "Example Dollar"; }
+    function symbol() public pure returns (string) { return "XDOL"; }
+    function decimals() public pure returns (uint8) { return 6; }
+
+    function _nativeCredit(address account, uint256 amount) internal override {
+        this._totalSupply = this._totalSupply + amount;
+        this._balances[account] = this._balances[account] + amount;
+    }
+
+    function _nativeDebit(address account, uint256 amount) internal override {
+        require(this._balances[account] >= amount);
+        this._balances[account] = this._balances[account] - amount;
+        this._totalSupply = this._totalSupply - amount;
+    }
+}

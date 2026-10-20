@@ -1938,7 +1938,10 @@ async function callInShape(
         id: VALIDATOR_ID,
         covers: [...new Set([...(calleePlan?.contracts ?? []), ...payeeBlocks])]
           .filter((name) => name !== artifact.contractName),
-        settles: callees?.settles ?? [],
+        // A same-category callee runs on the root's records, so its contract's settlement lists every state input
+        // the root's block spends, the root frame's own records and nodes among them.
+        settles: (callees?.settles ?? []).map((settled) => (bytesEqual(settled.category, category)
+          ? { ...settled, stateInputs: blocks[0]!.state } : settled)),
         redeemScript: validatorRedeem,
       },
     };

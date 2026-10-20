@@ -42,9 +42,10 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     // 9_100 held (9_024) before the October per-entry hardening; shared pins brought it to 9_417. The 10-14..10-17
     // hardening (per-call merges, minted-root bindings, the direct outside-layout walk) took it to 10_539, past the
     // 10_000-byte single-input limit, so the unsplit script no longer deploys and the token ships split, as the
-    // facet title below settles. BchNative's own bearer category added 56 B (10_595). This budget guards further
-    // growth.
-    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(10_600);
+    // facet title below settles. BchNative's own bearer category added 56 B (10_595); dropping the container merge
+    // path and refusing unnamed minting containers took 27 B off, and the bound on what a named minting container
+    // mints (security NAMED-MINT-1) added 88 B (10_656). This budget guards further growth.
+    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(10_700);
     expect(artifact.contractName).toBe('OzNativeToken');
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of [

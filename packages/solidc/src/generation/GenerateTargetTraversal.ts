@@ -10220,8 +10220,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitGraphFrameTokenSlotBinding(node);
         }
         if (!this.functionHasDelegatecall && hasTokenContainerAccess) {
-          this.emitTokenContainerPreservation(node);
+          // The bound reads the sends' category witnesses, which preservation consumes.
           this.emitDirectMintBound(node);
+          this.emitTokenContainerPreservation(node);
         }
       }
       // A direct function that delegatecalls verifies its own reads and calls too: nothing the delegate runs binds
@@ -55553,6 +55554,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDirectMintBound(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
     const runtimeNftCountsName = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_NFT_TRANSFER_COUNTS;
+    const frame = this.graphTokenSiteActive ? node.graphEffectFrame : undefined;
     for (let slot = 0; slot < this.tokenContainerSlots.length; slot += 1) {
       const nftSends = this.pendingTokenContainerTransfers
         .filter((transfer) => transfer.tokenContainerSlotIndex === slot && transfer.method === 'transferNft');
@@ -55560,6 +55562,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitBlockSlotIndex('tokenContainer', slot, loc);
       this.emit([Op.OP_UTXOTOKENCATEGORY, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(33n), Op.OP_NUMEQUAL,
         Op.OP_IF, encodeInt(32n), Op.OP_SPLIT, Op.OP_2, Op.OP_EQUAL, Op.OP_IF], loc);
+      if (frame !== undefined) {
+        // A route's sends sit in its token-transfer windows, which each reached handler pins and an unreached one
+        // leaves tokenless, so an output outside the lock that carries the category sits in one, with no fungible
+        // amount. [prefix, lock, o]
+        this.emitBlockSlotIndex('tokenContainer', slot, loc, 1);
+        this.emit([Op.OP_UTXOBYTECODE, Op.OP_TXOUTPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
+          Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(32n),
+          Op.OP_GREATERTHANOREQUAL,
+          Op.OP_IF, encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP, Op.OP_3, Op.OP_PICK, Op.OP_EQUAL,
+          Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
+          Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTBYTECODE, Op.OP_2, Op.OP_PICK, Op.OP_EQUAL, Op.OP_NOT, Op.OP_ELSE, Op.OP_0,
+          Op.OP_ENDIF,
+          Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_NOT, Op.OP_VERIFY, Op.OP_DUP], loc);
+        this.emitBlockSlotIndex('tcTransfer', frame.tokenTransferBase, loc, 4);
+        this.emit([Op.OP_2DUP, Op.OP_GREATERTHANOREQUAL, Op.OP_ROT, Op.OP_ROT,
+          encodeInt(BigInt(frame.sites * frame.tokenTransferWidth)), Op.OP_ADD, Op.OP_LESSTHAN, Op.OP_BOOLAND], loc);
+        if (this.stack.includes(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START)
+          && this.stack.includes(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END)) {
+          // Or in the route's runtime effect span, whose outputs its effect verifier authenticates.
+          this.emit(Op.OP_OVER, loc);
+          this.emitPickCompilerRouteFrameValue(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START, loc, 5);
+          this.emitPickCompilerRouteFrameValue(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END, loc, 6);
+          this.emit([Op.OP_WITHIN, Op.OP_BOOLOR], loc);
+        }
+        this.emit([Op.OP_VERIFY, Op.OP_ENDIF,
+          Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
+          Op.OP_2DROP, Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF, Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF], loc);
+        continue;
+      }
       // [prefix, lock, outside, o]
       this.emitBlockSlotIndex('tokenContainer', slot, loc, 1);
       this.emit([Op.OP_UTXOBYTECODE, Op.OP_0, Op.OP_TXOUTPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,

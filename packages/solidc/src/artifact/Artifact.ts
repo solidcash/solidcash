@@ -4011,6 +4011,7 @@ function buildFunctionAbiMetadata(
           && { transferCount: da.transferCount }),
         ...((da.transferNftCount !== 1 || !da.operations.includes('transferNft'))
           && { transferNftCount: da.transferNftCount }),
+        ...(da.readsOutput === true && { readsOutput: true }),
       })),
     }),
     ...(func.usesMsgSender && { usesMsgSender: true }),

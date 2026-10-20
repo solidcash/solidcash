@@ -54631,13 +54631,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
     ], loc);
     if (outState) {
-      // Alone among its contract's masters, it also counts the containers the transaction creates at the lock.
+      // The containers the transaction creates at the lock count for the one master of the contract that owns none
+      // there, when every other master of it owns one: a deposit is then counted by exactly one frame, as growth of
+      // a container it owns or as a new one.
+      const authority: Script = [
+        Op.OP_DUP, Op.OP_16, Op.OP_GREATERTHAN, Op.OP_IF, Op.OP_SIZE, Op.OP_SWAP, Op.OP_CAT, Op.OP_ELSE,
+        Op.OP_DUP, Op.OP_IF, encodeInt(80n), Op.OP_ADD, Op.OP_ELSE, Op.OP_DROP, Uint8Array.of(0), Op.OP_ENDIF,
+        Op.OP_ENDIF, encodeInt(81n), Op.OP_CAT,
+      ];
+      // [lock, key, auth, sum] -> [lock, key, auth, sum, owned]
+      this.emit([
+        Op.OP_0, Op.OP_TXINPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
+        Op.OP_DUP, Op.OP_UTXOBYTECODE, encodeInt(6n), Op.OP_PICK, Op.OP_EQUAL,
+        Op.OP_IF, Op.OP_DUP, Op.OP_INPUTBYTECODE, encodeInt(4n), Op.OP_PICK,
+        Op.OP_SIZE, Op.OP_ROT, Op.OP_SWAP, Op.OP_SPLIT, Op.OP_DROP, Op.OP_EQUAL,
+        Op.OP_IF, Op.OP_SWAP, Op.OP_1ADD, Op.OP_SWAP, Op.OP_ENDIF,
+        Op.OP_ENDIF,
+        Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
+        Op.OP_0NOTEQUAL, Op.OP_IF, Op.OP_0, Op.OP_ELSE,
+      ], loc);
+      // [.., sum] -> [.., sum, me, mcat, missing, j]: the other masters of the contract that own no container here.
       this.emitMasterInputIndex(loc, 4);
       this.emit([
-        Op.OP_UTXOTOKENCATEGORY, Op.OP_0, Op.OP_TXINPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
+        Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_0, Op.OP_TXINPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
         Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_3, Op.OP_PICK, Op.OP_EQUAL,
-        Op.OP_IF, Op.OP_SWAP, Op.OP_1ADD, Op.OP_SWAP, Op.OP_ENDIF,
-        Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP, Op.OP_NIP, Op.OP_1, Op.OP_NUMEQUAL,
+        Op.OP_OVER, encodeInt(5n), Op.OP_PICK, Op.OP_NUMEQUAL, Op.OP_NOT, Op.OP_BOOLAND,
+        Op.OP_IF,
+        Op.OP_DUP, ...authority, Op.OP_0, Op.OP_TXINPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
+        Op.OP_DUP, Op.OP_UTXOBYTECODE, encodeInt(11n), Op.OP_PICK, Op.OP_EQUAL,
+        Op.OP_IF, Op.OP_DUP, Op.OP_INPUTBYTECODE, Op.OP_3, Op.OP_PICK,
+        Op.OP_SIZE, Op.OP_ROT, Op.OP_SWAP, Op.OP_SPLIT, Op.OP_DROP, Op.OP_EQUAL,
+        Op.OP_IF, Op.OP_NIP, Op.OP_1, Op.OP_SWAP, Op.OP_ENDIF,
+        Op.OP_ENDIF,
+        Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP, Op.OP_NIP,
+        Op.OP_NOT, Op.OP_ROT, Op.OP_ADD, Op.OP_SWAP,
+        Op.OP_ENDIF,
+        Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP, Op.OP_NIP, Op.OP_NIP, Op.OP_NOT,
+        Op.OP_ENDIF,
         Op.OP_IF,
         Op.OP_TXOUTPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
         Op.OP_DUP, Op.OP_OUTPUTBYTECODE, encodeInt(5n), Op.OP_PICK, Op.OP_EQUAL,

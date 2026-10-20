@@ -304,6 +304,8 @@ interface TokenRun {
   readonly sends: number;
   /** The NFT sends the run makes, after its fungible sends. */
   readonly nftSends: number;
+  /** True when the run's frame reads the output side of the amount, crediting what reaches its containers. */
+  readonly readsOutput: boolean;
   /**
    * The containers the run spends, which lead it: its fungible ones, then those holding NFTs. A fungible remainder is
    * kept on the first that keeps an NFT, or else on the first fungible one.
@@ -337,10 +339,13 @@ function tokenContainerInputId(index: number, position: number): string {
   return `token-container:${index}:${position}`;
 }
 
-/** A token run that sends more than the containers it spends hold, while its contract holds more of them. */
+/**
+ * A token run that should spend another number of containers: more, when its sends outgrow them while its contract
+ * holds more, or fewer, once its sends are learned and fewer cover them.
+ */
 class TokenRunShortfall extends FramedCallError {
   public constructor(public readonly run: string, public readonly containers: number) {
-    super(`token run ${run} spends ${containers - 1} containers too few`);
+    super(`token run ${run} spends ${containers} containers`);
   }
 }
 
@@ -1097,10 +1102,13 @@ async function callInShape(
     };
   });
   const sized = new Map<(typeof requests)[number], { readonly containers: readonly Utxo[]; readonly spare: number }>();
+  // A deposit pays into the containers of the contract whose frame names its category, the root's first.
+  const depositTargets = tokenDeposits.map((deposit) => named.find(({ access }) =>
+    access.category === deposit.utxo.token!.category)?.contractCategoryId ?? categoryId);
   for (const group of new Set(requests.map((request) => request.group))) {
     const members = requests.filter((request) => request.group === group);
-    const pool = members[0]!.access.containers;
     const paying = members.filter((request) => request.access.sends + request.access.nftSends > 0);
+    const pool = members[0]!.access.containers;
     // NFTs of a category move in one frame, which spends every container holding one.
     const moving = paying.filter((request) => request.access.nftSends > 0);
     if (moving.length > 1) {
@@ -1110,7 +1118,8 @@ async function callInShape(
     let from = 0;
     paying.forEach((request, at) => {
       const last = at === paying.length - 1;
-      const fungible = pool.slice(from, last ? pool.length : from + (shape.tokenContainerCounts?.get(request.key) ?? 1));
+      const counted = shape.tokenContainerCounts?.get(request.key);
+      const fungible = pool.slice(from, last && counted === undefined ? pool.length : from + (counted ?? 1));
       const containers = [...fungible, ...(request.access.nftSends > 0 ? request.access.nftContainers : [])];
       if (containers.length === 0) {
         throw new FramedCallError(pool.length === 0
@@ -1123,7 +1132,9 @@ async function callInShape(
       from += fungible.length;
       sized.set(request, { containers, spare: last ? 0 : pool.length - from - (paying.length - at - 1) });
     });
-    if (paying.length === 0 && pool.length > 0) sized.set(members[0]!, { containers: pool, spare: 0 });
+    if (paying.length === 0 && pool.length > 0) {
+      sized.set(members.find((request) => request.access.readsOutput) ?? members[0]!, { containers: pool, spare: 0 });
+    }
   }
   const tokenRuns: readonly TokenRun[] = requests.flatMap((request) => {
     const size = sized.get(request);
@@ -1144,10 +1155,6 @@ async function callInShape(
     for (const run of tokenRuns) if (run.master === payer && run.run >= 0) categories[run.run] = run.category;
     return categories;
   };
-  // A deposit pays into the containers of the contract whose frame names its category, the root's first: into the
-  // recreation of the first container a run spends there, or else a new container.
-  const depositTargets = tokenDeposits.map((deposit) => named.find(({ access }) =>
-    access.category === deposit.utxo.token!.category)?.contractCategoryId ?? categoryId);
   // A frame that sends NFTs of a category takes in no visible NFT of it from outside the container lock (spec 4b).
   const nftDeposit = tokenDeposits.find((deposit) => deposit.utxo.token!.nft !== undefined
     && tokenRuns.some((run) => run.nftSends > 0 && run.category === deposit.utxo.token!.category));
@@ -1155,9 +1162,11 @@ async function callInShape(
     throw new FramedCallError(`entry "${functionName}" sends NFTs of category ${nftDeposit.utxo.token!.category}, and `
       + 'a frame that sends them takes in no NFT of that category, so the call cannot also deposit one');
   }
+  // A fungible deposit merges into a run of a frame that reads what reaches its containers; otherwise it is a new
+  // container, which the one master of the contract owning none there counts (spec 4b).
   const depositRuns = tokenDeposits.map((deposit, index) => (deposit.utxo.token!.nft !== undefined ? -1
-    : tokenRuns.findIndex((run) =>
-      run.contractCategoryId === depositTargets[index] && run.category === deposit.utxo.token!.category)));
+    : tokenRuns.findIndex((run) => run.readsOutput
+      && run.contractCategoryId === depositTargets[index] && run.category === deposit.utxo.token!.category)));
   // The sends of every run but the last sit at indices whose inputs are not containers: the caller's coin and its
   // deposits fill them first, then more tokenless coins at the caller's lock.
   const fillersNeeded = tokenRuns.slice(0, -1).reduce((sum, run) => sum + run.sends + run.nftSends, 0)
@@ -2049,6 +2058,17 @@ async function callInShape(
           `entry "${functionName}" sends ${paid} tokens of category ${run.category}, and the containers it spends hold `
           + `${run.held}`,
         );
+      }
+      // Once its sends are learned, a run spends only the containers that cover them, which keeps the transaction's
+      // inputs, and every input-walking check's cost, down.
+      const fungible = run.containers.filter((container) => container.token!.nft === undefined);
+      if (run.sends > 0 && sends.every((send) => send.amount !== undefined)
+        && shape.tokenContainerCounts?.has(run.key) !== true && fungible.length > 1) {
+        let covering = 0;
+        for (let held = 0n; covering < fungible.length && held < paid; covering += 1) {
+          held += fungible[covering]!.token!.amount;
+        }
+        if (Math.max(covering, 1) < fungible.length) throw new TokenRunShortfall(run.key, Math.max(covering, 1));
       }
       const kept = run.held - paid + tokenDeposits.reduce((sum, deposit, at) =>
         sum + (depositRuns[at] === index ? deposit.amount : 0n), 0n);

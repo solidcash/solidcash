@@ -319,6 +319,8 @@ export interface TokenContainerAccessAbi {
   operations: readonly string[];
   transferCount?: number;      // number of transfer() calls (>1 for fan-out)
   transferNftCount?: number;   // number of transferNft() calls (>1 for fan-out)
+  /** The body reads the output side of the amount (`this.outState.tokens[c]`): it credits what reached the container. */
+  readsOutput?: boolean;
 }
 
 /** One statically allocated token-container transfer alternative. Branch alternatives may share transferIndex;

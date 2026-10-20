@@ -347,6 +347,7 @@ export interface TokenContainerAccessInfo {
   slotIndex: number;
   transferCount: number;      // number of transfer() calls for this category
   transferNftCount: number;   // number of transferNft() calls for this category
+  readsOutput?: boolean;      // the body reads the output side of the amount (`this.outState.tokens[c]`)
 }
 
 // X29. Owner-local effect frames an message-bus batch route reserves on behalf of an effect-carrying graph emission handler

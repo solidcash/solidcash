@@ -7664,10 +7664,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (keyExpr instanceof IdentifierNode) {
         const slotKey = keyExpr.name;
         const existing = map.get(slotKey);
+        const readsOutput = node.expression.isOutStateTokenContainerAccess === true;
         if (existing) {
           if (!existing.operations.includes('read')) existing.operations.push('read');
+          if (readsOutput) existing.readsOutput = true;
         } else {
-          map.set(slotKey, { keyParam: keyExpr.name, ...this.tokenContainerKeySource(keyExpr), operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
+          map.set(slotKey, { keyParam: keyExpr.name, ...this.tokenContainerKeySource(keyExpr), operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0, ...(readsOutput ? { readsOutput } : {}) });
         }
       }
       return;

@@ -249,6 +249,7 @@ describe('a framed callee that pays tokens', () => {
       + ' contract Reserve() is BchNative { mapping(address => uint256) internal held;'
       + '   constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) { }'
       + '   function heldBy(address account) public view returns (uint256) { return this.held[account]; }'
+
       + '   function _nativeCredit(address account, uint256 amount) internal override {'
       + '     this.held[account] = this.held[account] + amount; }'
       + '   function _nativeDebit(address account, uint256 amount) internal override {'
@@ -257,6 +258,9 @@ describe('a framed callee that pays tokens', () => {
       + '   constructor(address reserve_) { this.reserve = reserve_; }'
       + '   function deposit(int amount) { IReserve(this.reserve).wrap(amount); }'
       + '   function depositTwice(int amount) { IReserve(this.reserve).wrap(amount); IReserve(this.reserve).wrap(amount); }'
+      + '   function depositAndWithdraw(int amount, address to, int out) {'
+      + '     IReserve(this.reserve).wrap(amount); IReserve(this.reserve).unwrap(to, out); }'
+
       + '   function withdraw(address to, int amount) { IReserve(this.reserve).unwrap(to, amount); } }';
     const compiled = compileStringMulti(source, {
       composition: 'framed', suppressWarnings: true,
@@ -338,5 +342,29 @@ describe('a framed callee that pays tokens', () => {
     expect(await tokensAt(bobLock)).toBe(150n);
     expect(await tokensAt(container)).toBe(250n);
     expect(await heldBy(vaultAddress)).toBe(250n);
+
+    // A wrap beside an unwrap of the same token: the unwrap's frame owns the container, and the wrap, the one master
+    // of the token that owns none, counts the deposit's new container.
+    const left = (await provider.getUtxosForLockingBytecode(aliceLock)).find((utxo) => utxo.token?.category === category)!;
+    const both = await call('depositAndWithdraw', [100n, bobLock, 50n], 'c8', {
+      tokenDeposits: [{ utxo: left, unlocker: alice.unlockP2PKH(), amount: 100n }],
+    });
+    expect(both.verdicts.filter((verdict) => !verdict.accepted)).toEqual([]);
+    expect(both.broadcast).toBeDefined();
+    expect(await heldBy(vaultAddress)).toBe(300n);
+    expect(await tokensAt(bobLock)).toBe(200n);
+    expect(await tokensAt(container)).toBe(300n);
+    // With two containers the unwrap spends only the one that covers it, and the wrap counts the new one.
+    expect(await provider.getUtxosForLockingBytecode(container)).toHaveLength(2);
+    const rest = (await provider.getUtxosForLockingBytecode(aliceLock)).find((utxo) => utxo.token?.category === category)!;
+    const again = await call('depositAndWithdraw', [30n, bobLock, 20n], 'c9', {
+      tokenDeposits: [{ utxo: rest, unlocker: alice.unlockP2PKH(), amount: 30n }],
+    });
+    expect(again.verdicts.filter((verdict) => !verdict.accepted)).toEqual([]);
+    expect(again.broadcast).toBeDefined();
+    expect(await heldBy(vaultAddress)).toBe(310n);
+    expect(await tokensAt(bobLock)).toBe(220n);
+    expect(await tokensAt(container)).toBe(310n);
+
   }, 900_000);
 });

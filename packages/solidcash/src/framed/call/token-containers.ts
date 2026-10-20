@@ -159,6 +159,8 @@ export interface FramedTokenAccess {
   readonly nftSends: number;
   /** True when the entry reads the containers' amount, which sums the containers a transaction spends. */
   readonly reads: boolean;
+  /** True when the entry reads the output side of the amount, crediting what reached its containers. */
+  readonly readsOutput: boolean;
   /** The contract's containers for the category: fungible only, largest first. */
   readonly containers: readonly Utxo[];
   /** The contract's containers for the category that hold an NFT the VM sees, in outpoint order. */
@@ -202,7 +204,8 @@ export async function framedTokenAccesses(options: {
     const sends = access.transferCount ?? (access.operations.includes('transfer') ? 1 : 0);
     const nftSends = access.transferNftCount ?? (access.operations.includes('transferNft') ? 1 : 0);
     return {
-      category, lockingBytecode, sends, nftSends, reads: access.operations.includes('read'), containers, nftContainers,
+      category, lockingBytecode, sends, nftSends, reads: access.operations.includes('read'),
+      readsOutput: access.readsOutput === true, containers, nftContainers,
     };
   }));
 }

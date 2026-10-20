@@ -80,6 +80,7 @@ import {
 import { blockOracleSideCarId } from './block-oracle.js';
 import { adjacentRecordOrder, frameDataRecordIndices, namedDataRecordIndices } from './entry-records.js';
 import { publishedLoopEffects } from './loop-turns.js';
+import { framedTokenSendSentinels, learnTokenSend } from './token-containers.js';
 
 /** Raised when an entry's callee frames cannot be planned; `call.ts` rethrows it as the call's own error. */
 export class FramedCalleeError extends Error {
@@ -141,6 +142,25 @@ export interface CalleeValues {
    * (`CalleePlanOptions.calleeWriteValues`).
    */
   readonly writeValues?: ReadonlyMap<string, Uint8Array>;
+  /**
+   * The token sends each frame's runs make, by master and run: each lock and amount its own pin hands back, absent
+   * while the send still carries its sentinel (`framedTokenSendSentinels`).
+   */
+  readonly tokenSends?: ReadonlyMap<string, readonly (readonly LearnedTokenSend[])[]>;
+}
+
+/** A token send's lock and amount as a frame's own pin handed them back. */
+export interface LearnedTokenSend {
+  readonly lock?: Uint8Array;
+  readonly amount?: bigint;
+}
+
+/** The token runs a callee frame's entry pays: how many sends each makes, in the order its accesses list them. */
+export function calleeTokenRunSends(callee: HopCallee): readonly number[] {
+  const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
+  return (abi?.tokenContainerAccesses ?? [])
+    .map((access) => access.transferCount ?? (access.operations.includes('transfer') ? 1 : 0))
+    .filter((sends) => sends > 0);
 }
 
 /** No callee value learned yet. */
@@ -501,7 +521,8 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
   const artifacts = [...new Set(plan.callees.map((callee) => callee.artifact))];
   const eventCount = plan.callees.reduce((total, callee) => total + emitsOf(callee).length, 0);
   const learnable = eventCount + plan.callees.reduce((total, callee) => total + (callee.returns ? 1 : 0)
-    + (callee.entryWrites?.learningCandidates.length ?? 0), 0);
+    + (callee.entryWrites?.learningCandidates.length ?? 0)
+    + 2 * calleeTokenRunSends(callee).reduce((sum, sends) => sum + sends, 0), 0);
   return {
     calls: plan.calls, callBases: plan.callBases, callsiteIds: plan.callsiteIds,
     conditionalProducers: plan.conditionalProducers, callees: plan.callees, utxos: plan.utxos,
@@ -907,10 +928,13 @@ function depthOf(callees: readonly HopCallee[], index: number): number {
 function owesValue(callee: HopCallee, values: CalleeValues): boolean {
   const payloads = values.events.get(callee.master) ?? [];
   const views = values.views.get(callee.master) ?? [];
+  const sends = values.tokenSends?.get(callee.master);
   return (callee.returns && !values.retvals.has(callee.master))
     || emitsOf(callee).some((emit, position) => payloads[position] === undefined
       && !(callee.skippedEmits?.includes(emit.emitIndex) ?? false))
-    || (callee.entryWrites?.learningCandidates ?? []).some((_candidate, position) => views[position] === undefined);
+    || (callee.entryWrites?.learningCandidates ?? []).some((_candidate, position) => views[position] === undefined)
+    || calleeTokenRunSends(callee).some((count, run) => Array.from({ length: count }, (_unused, at) => at)
+      .some((at) => sends?.[run]?.[at]?.lock === undefined || sends[run]![at]!.amount === undefined));
 }
 
 /**
@@ -1115,6 +1139,20 @@ export function learnCalleeValue(options: {
       const value = learnedValueFromClose(options.vm, program);
       if (value !== undefined) {
         return { ...values, writeValues: new Map([...values.writeValues ?? [], [master, value]]) };
+      }
+    }
+    // A token send's pin leaves the listed output's sentinel lock or amount above what the body computed.
+    const runs = calleeTokenRunSends(callee);
+    const learnedRuns = values.tokenSends?.get(master)
+      ?? runs.map((sends) => Array.from({ length: sends }, () => ({})));
+    for (const [run, sends] of runs.entries()) {
+      const learned = learnTokenSend(
+        framedTokenSendSentinels(callee.artifact.contractName, callee.entry, master, run, sends),
+        learnedRuns[run]!, reading.declared, reading.computed,
+      );
+      if (learned !== undefined) {
+        const next = learnedRuns.map((at, position) => (position === run ? learned : at));
+        return { ...values, tokenSends: new Map([...values.tokenSends ?? [], [master, next] as const]) };
       }
     }
   }

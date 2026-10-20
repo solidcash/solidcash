@@ -41,14 +41,14 @@ are unbounded `bytes`/`string` nodes, struct/array defaults, and array soft-dele
 
 **Verdict: resolved (not a gap).**
 
-`deferrals.md:3102` marks this RESOLVED 2026-10-14: the open half was an SDK placement bug, now verified; the
+The deferral entry "A routed update of a proxy's records" in `deferrals.md` marks this RESOLVED 2026-10-14: the open half was an SDK placement bug, now verified; the
 delegate-marking half was already done (`a00dd2f72`).
 
 ### 5. An in-place upgrade of a contract that keeps records (CRYPTO-4)
 
 **Verdict: resolved (not a gap).**
 
-`deferrals.md:3211` marks this RESOLVED 2026-10-16 for all four record kinds (data NFTs, satoshi container, token
+The deferral entry "An in-place upgrade of a contract that keeps records" in `deferrals.md` marks this RESOLVED 2026-10-16 for all four record kinds (data NFTs, satoshi container, token
 containers, and mapping/array entries). No blocking residual.
 
 ### 6. Logical caller identity for native compiles (model B)

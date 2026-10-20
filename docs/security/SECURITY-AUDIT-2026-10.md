@@ -1,6 +1,10 @@
 <!-- cspell:ignore Ownr SDKCORE SDKFRAMED -->
 # SolidCash security audit, October 2026
 
+> **Historical audit record, 2026-10-11.** Current finding status and fixes are in
+> [`security-audit-2026-10-16.md`](./security-audit-2026-10-16.md). The `feat/per-call` tree, line numbers and
+> branch references below are the audit baseline.
+
 Branch `feat/per-call` (`.worktrees/per-call`), audited 2026-10-11. The audit started at `df51215d6`; a parity merge
 moved HEAD to `abbb7e0ec` while it ran, and the auditors checked that the merge touches none of the cited paths. Line
 numbers are at `abbb7e0ec` unless a detail file says otherwise. In `GenerateTargetTraversal.ts` (GTT below), lines

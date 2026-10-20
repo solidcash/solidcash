@@ -1,5 +1,8 @@
 # SolidCash -- AI Agent Reference
 
+> Internal agent guidance for this repository. The public copy used by the website is
+> `website/static/AGENTS.md`; edit internal rules here.
+
 SolidCash is a high-level language for Bitcoin Cash smart contracts with Solidity-compatible syntax. It compiles .scash source files to Bitcoin Script bytecode. The repository is a monorepo: compiler (packages/solidc), SDK (packages/solidcash), shared utils (packages/utils).
 
 ## Build & Test

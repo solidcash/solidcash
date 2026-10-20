@@ -1,5 +1,9 @@
 # Security triage (section 3 item 2)
 
+> **Snapshot, 2026-10-05.** Current finding status and fixes are in
+> [`../security/security-audit-2026-10-16.md`](../security/security-audit-2026-10-16.md). The F1/F10 descriptions
+> below remain the direct-convention explanation; read the audit for whether each finding is fixed or deferred.
+
 Surveyed 2026-10-05 on `feat/framed` at `57dfa942e`. Each finding is fixed or named as a known limitation. No code change is in this triage.
 
 ## msg.sender (`docs/framed/AUDIT_MSG_SENDER.md`, 2026-09-25, measured at `ea7a48e27`)

@@ -2498,7 +2498,8 @@ function accountedTokenContainerKeep(): Script {
  *
  * @param categoryId - 32-byte master contract's token category ID
  * @param tokenContainerCategoryId - 32-byte token container's token category (salt for unique address)
- * @param options.accounted - without a master lock, the accounted framed container (`accountedTokenContainerKeep`)
+ * @param options.accounted - without a master lock, the accounted framed container (`accountedTokenContainerKeep`),
+ *   which has no merge path
  */
 export function buildTokenContainerCovenantScript(
   categoryId: Uint8Array,
@@ -2507,6 +2508,17 @@ export function buildTokenContainerCovenantScript(
   options: { readonly accounted?: boolean } = {},
 ): Script {
   const catInternal = categoryId.slice().reverse();
+  if (options.accounted === true && masterLock === undefined) {
+    // The accounted container has only the master path, taken with the flag exactly 1: a master owns the containers
+    // whose unlocking starts `<its index> OP_1` (spec 4b), so a spend that names it any other way is no spend at all.
+    return [
+      Op.OP_1, Op.OP_NUMEQUALVERIFY,
+      ...bindMintingAuthorityLock(),
+      Op.OP_UTXOTOKENCATEGORY, encodeInt(32n), Op.OP_SPLIT, Op.OP_2, Op.OP_EQUALVERIFY, catInternal, Op.OP_EQUALVERIFY,
+      ...accountedTokenContainerKeep(),
+      tokenContainerCategoryId, Op.OP_DROP, Op.OP_1,
+    ];
+  }
   return [
     // Stack: <masterInputIndex | mergeOutputIndex> <flag>
     Op.OP_IF,
@@ -2519,8 +2531,7 @@ export function buildTokenContainerCovenantScript(
     Op.OP_EQUALVERIFY,
     catInternal,
     Op.OP_EQUALVERIFY,
-    ...(masterLock !== undefined ? directMasterOutputPin()
-      : options.accounted === true ? accountedTokenContainerKeep() : framedTokenContainerKeep()),
+    ...(masterLock !== undefined ? directMasterOutputPin() : framedTokenContainerKeep()),
     Op.OP_ELSE,
     // Merge path: output preserves locking bytecode, value, FT amount, and category
     Op.OP_DUP,

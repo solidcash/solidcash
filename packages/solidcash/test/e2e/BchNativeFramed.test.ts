@@ -162,31 +162,51 @@ describe('BchNative, framed', () => {
 
     // The same transaction co-spends the reserve under the ping master's authority, recreates it in place with 400
     // fewer tokens, and pays those to the caller. The container's own covenant admits it: the amount is the master's.
-    const forged = decodeTransactionUnsafe(hexToBin(hex)) as ReturnType<typeof decodeTransactionUnsafe>;
-    const containerIndex = forged.inputs.length;
-    forged.inputs.push({
-      outpointTransactionHash: hexToBin(reserve!.txid),
-      outpointIndex: reserve!.vout,
-      sequenceNumber: forged.inputs[0]!.sequenceNumber,
-      unlockingBytecode: framedTokenContainerUnlockingBytecode(categoryId, tokenCategory, masterIndex),
-    });
-    const change = forged.outputs.pop()!;
-    change.valueSatoshis -= 10_000n;
-    while (forged.outputs.length < containerIndex) {
-      forged.outputs.push({ lockingBytecode: Uint8Array.of(0x6a), valueSatoshis: 0n });
-    }
-    forged.outputs.push({
-      lockingBytecode: container, valueSatoshis: reserve!.satoshis,
-      token: { category: hexToBin(tokenCategory), amount: 600n },
-    });
-    forged.outputs.push({
-      lockingBytecode: aliceLock, valueSatoshis: 1_000n, token: { category: hexToBin(tokenCategory), amount: 400n },
-    });
-    forged.outputs.push(change);
-    const outcome = await provider.sendRawTransaction(binToHex(encodeTransaction(forged)))
+    const forge = (unlockingBytecode: Uint8Array): { raw: string; containerIndex: number } => {
+      const forged = decodeTransactionUnsafe(hexToBin(hex)) as ReturnType<typeof decodeTransactionUnsafe>;
+      const containerIndex = forged.inputs.length;
+      forged.inputs.push({
+        outpointTransactionHash: hexToBin(reserve!.txid),
+        outpointIndex: reserve!.vout,
+        sequenceNumber: forged.inputs[0]!.sequenceNumber,
+        unlockingBytecode,
+      });
+      const change = forged.outputs.pop()!;
+      change.valueSatoshis -= 10_000n;
+      while (forged.outputs.length < containerIndex) {
+        forged.outputs.push({ lockingBytecode: Uint8Array.of(0x6a), valueSatoshis: 0n });
+      }
+      forged.outputs.push({
+        lockingBytecode: container, valueSatoshis: reserve!.satoshis,
+        token: { category: hexToBin(tokenCategory), amount: 600n },
+      });
+      forged.outputs.push({
+        lockingBytecode: aliceLock, valueSatoshis: 1_000n, token: { category: hexToBin(tokenCategory), amount: 400n },
+      });
+      forged.outputs.push(change);
+      return { raw: binToHex(encodeTransaction(forged)), containerIndex };
+    };
+    const send = (raw: string): Promise<string> => provider.sendRawTransaction(raw)
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    const unlocking = framedTokenContainerUnlockingBytecode(categoryId, tokenCategory, masterIndex);
+    const outcome = await send(forge(unlocking).raw);
     expect(outcome).not.toBe('ACCEPTED');
     expectScriptRejection(outcome, masterIndex);
+    // The same spend with the flag pushed as 2 names no master's own container: the container refuses it itself.
+    expect(unlocking[1]).toBe(0x51);
+    const flagged = forge(Uint8Array.from(unlocking, (byte, at) => (at === 1 ? 0x52 : byte)));
+    expect(await send(flagged.raw)).not.toBe('ACCEPTED');
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const containerAccepts = (raw: string): unknown => vm.stateSuccess(vm.evaluate({
+      inputIndex: flagged.containerIndex,
+      sourceOutputs: [...honest.sourceOutputs, {
+        lockingBytecode: container, valueSatoshis: reserve!.satoshis,
+        token: { category: hexToBin(tokenCategory), amount: 1_000n },
+      }],
+      transaction: decodeTransactionUnsafe(hexToBin(raw)) as ReturnType<typeof decodeTransactionUnsafe>,
+    }));
+    expect(containerAccepts(forge(unlocking).raw)).toBe(true);
+    expect(containerAccepts(flagged.raw)).not.toBe(true);
     // The captured ping without the container settles.
     await expect(provider.sendRawTransaction(hex)).resolves.toBeTypeOf('string');
   }, 600_000);

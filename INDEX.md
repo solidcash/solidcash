@@ -298,3 +298,11 @@ citation resolves without editing the citing document. They are history; the sam
 | `packages/solidc/docs/message-bus-security-review-l2.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
 | `packages/solidc/docs/pre-message-bus-work-scope.md` | 2026-08-02 | `87e45bb82` | `b990c4823` |
 | `packages/solidhat-cli/README.md` | 2026-07-21 | `cc3c41333` | `914da8a23` |
+
+## Recovered untracked documents (2026-10-20)
+
+These files were never tracked on `master`; they are restored from the copies named in the workstream notes.
+
+| path | source | note |
+| --- | --- | --- |
+| `docs/framed/SOLIDITY_COMPAT_UNGATE_PLAN.md` | `/tmp/grok-goal-4b830698eeec/implementer/removed-SOLIDITY_COMPAT_UNGATE_PLAN.md` | 2026-10-08 ungate plan, removed from `docs/framed/` before the archive existed |

@@ -166,6 +166,8 @@ export interface CompositionPlan {
   readonly masters: readonly PlannedMaster[];
   /** The masters the transaction mints, whose blocks ride in the validator transcript (v0x03). */
   readonly mintedMasters?: readonly PlannedMintedMaster[];
+  /** The length of each token run the trailing region leads with (`TrailingOutputCounts.tokenRuns`). */
+  readonly tokenRuns?: readonly number[];
   /**
    * The composition's validators. A composition of one group names its validator directly; a composition of
    * independent groups names one per group, each hosted by the block that names it.
@@ -335,6 +337,7 @@ function resolveOutputRegions(
     ...(plan.mintedMasters?.length === undefined || plan.mintedMasters.length === 0
       ? {}
       : { mintedMasters: plan.mintedMasters.length }),
+    ...(plan.tokenRuns === undefined ? {} : { tokenRuns: plan.tokenRuns }),
     events: declaredEvents.length,
     sends: declaredSends.length,
     sendRuns: plan.masters.map((master) => master.sends.length).filter((run) => run > 0),

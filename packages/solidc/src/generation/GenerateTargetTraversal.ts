@@ -522,11 +522,14 @@ function satoshiContainerPieces(): { prefix: Uint8Array; middle: Uint8Array; suf
   return { prefix: segments[0], middle: segments[1], suffix: segments[2] };
 }
 
-/** prefix / mid / suffix around the master category and the token category of the token-container covenant. */
-function tokenContainerPieces(): { prefix: Uint8Array; mid: Uint8Array; suffix: Uint8Array } {
+/**
+ * prefix / mid / suffix around the master category and the token category of the token-container covenant; a framed
+ * master's containers are the accounted variant, whose amount its own code conserves.
+ */
+function tokenContainerPieces(accounted: boolean): { prefix: Uint8Array; mid: Uint8Array; suffix: Uint8Array } {
   const master = Uint8Array.from({ length: 32 }, (_value, index) => index);
   const token = Uint8Array.from({ length: 32 }, (_value, index) => 0x40 + index);
-  const covenant = scriptToBytecode(buildTokenContainerCovenantScript(master, token));
+  const covenant = scriptToBytecode(buildTokenContainerCovenantScript(master, token, undefined, { accounted }));
   const masterDelim = Uint8Array.from([0x20, ...master.slice().reverse()]);
   const tokenDelim = Uint8Array.from([0x20, ...token]);
   const atMaster = splitOnDelimiter(covenant, masterDelim);
@@ -2597,6 +2600,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // active trace shape and can make a valid chunk region unobservable, so these contracts keep their bodies inline.
   private currentContractRequiresTraceStableBodies: boolean = false;
   private currentContractEmitsEvent: boolean = false;
+  // A framed contract that names a token container anywhere keeps, in every entry, the containers the entry does not.
+  private currentContractHoldsTokens: boolean = false;
   /** Compact-pool id for the int-like pushdata decoder wrapper; allocated on first int decode site. */
   private intDecodeIntSlot: { id: bigint | undefined } = { id: undefined };
   /** Compact-pool id for int-like pushdata encode; allocated on first int encode site. */
@@ -3001,6 +3006,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     t.stateVariables = this.stateVariables;
     t.contractKeepsSatoshiContainer = this.contractKeepsSatoshiContainer;
     t.contractTokenContainerCount = this.contractTokenContainerCount;
+    t.currentContractHoldsTokens = this.currentContractHoldsTokens;
     t.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
     t.sharedCheckBody = { masterOrdinal };
   }
@@ -5128,6 +5134,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       (fn.dynamicWrites?.length ?? 0) > 0
       && (fn.entryAccesses?.length ?? 0) > 0);
     this.currentContractEmitsEvent = node.emitsEvent;
+    this.currentContractHoldsTokens = [
+      ...node.functions, ...(node.receiveDef ? [node.receiveDef] : []), ...(node.fallbackDef ? [node.fallbackDef] : []),
+    ].some((fn) => (fn.tokenContainerAccesses?.length ?? 0) > 0);
     this.currentContractIsSplitFacet = node.isSplitFacet;
     this.contractParameters = node.parameters;
     this.contractFunctionKeys = new Set(node.functions
@@ -6854,6 +6863,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.stateVariables = this.stateVariables;
       probe.contractKeepsSatoshiContainer = this.contractKeepsSatoshiContainer;
       probe.contractTokenContainerCount = this.contractTokenContainerCount;
+      probe.currentContractHoldsTokens = this.currentContractHoldsTokens;
       probe.collectionCount = this.collectionCount;
       probe.collectionDefinitions = this.collectionDefinitions;
       probe.dataNftCount = this.dataNftCount;
@@ -7160,6 +7170,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.stateVariables = this.stateVariables;
     subTraversal.contractKeepsSatoshiContainer = this.contractKeepsSatoshiContainer;
     subTraversal.contractTokenContainerCount = this.contractTokenContainerCount;
+    subTraversal.currentContractHoldsTokens = this.currentContractHoldsTokens;
     subTraversal.collectionCount = this.collectionCount;
     subTraversal.collectionDefinitions = this.collectionDefinitions;
     subTraversal.dataNftCount = this.dataNftCount;
@@ -7564,6 +7575,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.stateVariables = this.stateVariables;
       subTraversal.contractKeepsSatoshiContainer = this.contractKeepsSatoshiContainer;
       subTraversal.contractTokenContainerCount = this.contractTokenContainerCount;
+      subTraversal.currentContractHoldsTokens = this.currentContractHoldsTokens;
       subTraversal.collectionCount = this.collectionCount;
       subTraversal.collectionDefinitions = this.collectionDefinitions;
       subTraversal.dataNftCount = this.dataNftCount;
@@ -10183,18 +10195,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && hasTransfers && !this.graphTransferFlagActive) {
         this.emitTransferCovenantVerification(node);
       }
-      // Token container verification
-      if (!this.functionHasDelegatecall && hasTokenContainerAccess) {
-        this.emitTokenContainerIdentityVerification(node);
-      }
-      if (!this.functionHasDelegatecall && hasTokenContainerTransfers) {
-        this.emitTokenContainerTransferCovenantVerification(node);
-      }
-      if (!this.functionHasDelegatecall && this.graphTokenSiteActive) {
-        this.emitGraphFrameTokenSlotBinding(node);
-      }
-      if (!this.functionHasDelegatecall && hasTokenContainerAccess) {
-        this.emitTokenContainerPreservation(node);
+      // Token container verification. A framed frame has no direct block slots: its master conserves each container
+      // against the sends it pins after the one it spends (spec 4b).
+      if (this.framedMaster) {
+        if (!this.functionHasDelegatecall && hasTokenContainerAccess) this.emitFramedTokenContainerChecks(node);
+      } else {
+        if (!this.functionHasDelegatecall && hasTokenContainerAccess) {
+          this.emitTokenContainerIdentityVerification(node);
+        }
+        if (!this.functionHasDelegatecall && hasTokenContainerTransfers) {
+          this.emitTokenContainerTransferCovenantVerification(node);
+        }
+        if (!this.functionHasDelegatecall && this.graphTokenSiteActive) {
+          this.emitGraphFrameTokenSlotBinding(node);
+        }
+        if (!this.functionHasDelegatecall && hasTokenContainerAccess) {
+          this.emitTokenContainerPreservation(node);
+        }
       }
       // A direct function that delegatecalls verifies its own reads and calls too: nothing the delegate runs binds
       // them. Per-call masters are left as they were.
@@ -10372,6 +10389,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.mintCountPending = false;
       this.emitSlotScans(scansSatoshi, scansForeign ? admitAnchor : undefined, scansMutable, scansMints,
         { location: node.body.location, positionHint: PositionHint.END });
+      if (this.framedMaster && this.currentContractHoldsTokens) this.emitFramedForeignTokenKeep(node);
       // SEC-10/SEC-11: an own-category IMMUTABLE (0x00) NFT output - what an event NFT is - may only sit at an
       // event block-layout offset (or the witnessed return-event index). Without this any spender mints forged
       // logs at any other index. Scoped to contracts that DECLARE an event: the forged output is only readable
@@ -53032,8 +53050,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, locationData);
     }
 
-    // Token container satoshi preservation (only for slots with output flag set)
-    if (hasTokenContainerAccess) {
+    // Token container satoshi preservation (only for slots with output flag set). A framed container's covenant keeps
+    // its satoshis at its own index.
+    if (hasTokenContainerAccess && !this.framedMaster) {
       for (let i = 0; i < this.tokenContainerSlots.length; i++) {
         // Check if TC output has tokens (not drained) via output introspection
         this.emitBlockSlotIndex('tokenContainer', i, locationData);
@@ -54301,7 +54320,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     //     OUTPUTTOKENCATEGORY INPUTINDEX UTXOTOKENCATEGORY EQUALVERIFY
     //     single-input constraint loop
     //   OP_ENDIF <tcCat> DROP OP_1
-    const { prefix, mid, suffix } = tokenContainerPieces();
+    const { prefix, mid, suffix } = tokenContainerPieces(this.framedMaster);
     const categoryPushPrefix = new Uint8Array([0x20]);
     const tcCatPushPrefix = new Uint8Array([0x20]);
 
@@ -54661,6 +54680,216 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // 0 untracked
 
       this.emit(Op.OP_ENDIF, locationData);
+    }
+  }
+
+  /** Picks slot `slot`'s category, in the order its key holds it, tracked as `name`. */
+  private pushFramedTokenContainerKey(slot: number, name: string, loc: SingleLocationData): void {
+    const access = this.tokenContainerSlots[slot]!;
+    let index = this.getStackIndex(access.keyParam, true);
+    if (index < 0) {
+      // After a transfer the key may remain only as an unconditional transfer's parked category.
+      const parked = this.pendingTokenContainerTransfers
+        .filter((transfer) => transfer.tokenContainerSlotIndex === slot
+          && !this.conditionalTokenContainerTransferIndices.has(transfer.transferIndex))
+        .map((transfer) => transfer.argStackNames[0]!)
+        .find((parkedName) => this.getStackIndex(parkedName, true) >= 0);
+      if (parked !== undefined) index = this.getStackIndex(parked);
+    }
+    if (index < 0) {
+      throw new Error(`token-container key '${access.keyParam}' missing on stack while compiling `
+        + `'${this.currentFunction?.name}'`);
+    }
+    this.emit(encodeInt(BigInt(index)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack(name);
+  }
+
+  /**
+   * A framed entry's token containers (spec 4b). For each slot's category X at this contract's container lock L, the
+   * k-th send the body makes is the output after the one input at L plus k: it pays `to` exactly `amount` of X and no
+   * NFT. The containers at L keep what the sends do not pay: sum(outputs at L) + sent >= sum(inputs at L).
+   */
+  private emitFramedTokenContainerChecks(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+    const pick = (name: string): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(value)');
+    };
+    const verify = (op: Op): void => {
+      this.emit(op, loc);
+      this.popFromStack(2);
+    };
+    const bump = (name: string, by: () => void): void => {
+      pick(name);
+      by();
+      this.emitReplace(this.getStackIndex(name), node);
+      this.popFromStack();
+    };
+    for (let slot = 0; slot < this.tokenContainerSlots.length; slot += 1) {
+      this.pushFramedTokenContainerKey(slot, '(tc_x)', loc);
+      this.emitMasterInputIndex(loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emitTakeFirst32(loc);
+      this.pushToStack('(tc_master)');
+      pick('(tc_x)');
+      this.emitTokenContainerLbc(loc);
+      this.popFromStack(2);
+      this.pushToStack('(tc_lock)');
+      for (const [name, useOutputs] of [['(tc_in)', false], ['(tc_out)', true]] as const) {
+        pick('(tc_lock)');
+        pick('(tc_x)');
+        this.emitTokenContainerAggregateLoop('tokenAmount', useOutputs, loc);
+        this.popFromStack(2);
+        this.pushToStack(name);
+      }
+      this.emit(Op.OP_0, loc);
+      this.pushToStack('(tc_sent)');
+      const transfers = this.pendingTokenContainerTransfers
+        .filter((transfer) => transfer.tokenContainerSlotIndex === slot && transfer.method === 'transfer')
+        .sort((left, right) => left.transferIndex - right.transferIndex);
+      if (transfers.length > 0) {
+        // [count, index] of the inputs at L: a send follows the one the frame spends.
+        pick('(tc_lock)');
+        this.emit([
+          Op.OP_0, Op.OP_1NEGATE, Op.OP_TXINPUTCOUNT,
+          Op.OP_BEGIN,
+          Op.OP_1SUB, Op.OP_DUP, Op.OP_UTXOBYTECODE, encodeInt(4n), Op.OP_PICK, Op.OP_EQUAL,
+          Op.OP_IF, Op.OP_NIP, Op.OP_DUP, Op.OP_ROT, Op.OP_1ADD, Op.OP_ROT, Op.OP_ROT, Op.OP_ENDIF,
+          Op.OP_DUP, Op.OP_NOT,
+          Op.OP_UNTIL,
+          Op.OP_DROP, Op.OP_ROT, Op.OP_DROP,
+        ], loc);
+        this.popFromStack();
+        this.pushToStack('(tc_count)');
+        this.pushToStack('(tc_spent)');
+        this.emit(Op.OP_0, loc);
+        this.pushToStack('(tc_made)');
+        for (const transfer of transfers) {
+          const [category, to, amount] = transfer.argStackNames as [string, string, string];
+          const conditional = this.conditionalTokenContainerTransferIndices.has(transfer.transferIndex);
+          if (conditional) {
+            pick(category);
+            this.emit(Op.OP_IF, loc);
+            this.popFromStack();
+          }
+          pick(category);
+          pick('(tc_x)');
+          verify(Op.OP_EQUALVERIFY);
+          pick('(tc_count)');
+          this.emit(Op.OP_1, loc);
+          this.emit(Op.OP_NUMEQUALVERIFY, loc);
+          this.popFromStack();
+          pick('(tc_spent)');
+          this.emit(Op.OP_1ADD, loc);
+          pick('(tc_made)');
+          this.emit(Op.OP_ADD, loc);
+          this.popFromStack(2);
+          this.pushToStack('(tc_send)');
+          // Each pin leaves the listed output's field above the value the body computed, as a value send's does, so
+          // a builder learns the computed value from the failing close.
+          pick(to);
+          pick('(tc_send)');
+          this.emit(Op.OP_OUTPUTBYTECODE, loc);
+          verify(Op.OP_EQUALVERIFY);
+          pick('(tc_x)');
+          this.emit(Op.OP_REVERSEBYTES, loc);
+          pick('(tc_send)');
+          this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+          verify(Op.OP_EQUALVERIFY);
+          pick(amount);
+          pick('(tc_send)');
+          this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+          verify(Op.OP_EQUALVERIFY);
+          this.emit(Op.OP_DROP, loc);
+          this.popFromStack();
+          bump('(tc_made)', () => this.emit(Op.OP_1ADD, loc));
+          bump('(tc_sent)', () => {
+            pick(amount);
+            this.emit(Op.OP_ADD, loc);
+            this.popFromStack();
+          });
+          if (conditional) this.emit(Op.OP_ENDIF, loc);
+        }
+        this.emit(Op.OP_2DROP, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.popFromStack(3);
+      }
+      pick('(tc_out)');
+      pick('(tc_sent)');
+      this.emit(Op.OP_ADD, loc);
+      this.popFromStack();
+      pick('(tc_in)');
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.popFromStack();
+      this.emit(Op.OP_VERIFY, loc);
+      this.popFromStack();
+      this.emit(Op.OP_2DROP, loc);
+      this.emit(Op.OP_2DROP, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.popFromStack(5);
+    }
+  }
+
+  /**
+   * In every framed entry of a contract that holds token containers: each input holding a category Y other than this
+   * contract's, at this contract's container lock for Y, with Y not one the entry names, keeps at its own index its full
+   * category and at least its fungible amount. Such a contract's containers are the accounted variant, whose covenant
+   * leaves the amount to the master, so a frame that names no container cannot draw one down (audit FRAMED-CONT-1).
+   */
+  private emitFramedForeignTokenKeep(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+    const named = this.tokenContainerSlots.length;
+    for (let slot = 0; slot < named; slot += 1) this.pushFramedTokenContainerKey(slot, `(tk_named_${slot})`, loc);
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack('(tk_master)');
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.pushToStack('(tk_index)');
+    this.emit(Op.OP_BEGIN, loc);
+    // [.., master, i]: a candidate holds a token at a 35-byte lock.
+    this.emit([
+      Op.OP_1SUB,
+      Op.OP_DUP, Op.OP_UTXOBYTECODE, Op.OP_SIZE, Op.OP_NIP, encodeInt(35n), Op.OP_NUMEQUAL,
+      Op.OP_OVER, Op.OP_UTXOTOKENCATEGORY, Op.OP_SIZE, Op.OP_NIP, encodeInt(32n), Op.OP_GREATERTHANOREQUAL,
+      Op.OP_BOOLAND,
+      Op.OP_IF,
+      Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY,
+    ], loc);
+    this.emitTakeFirst32(loc);
+    // [.., master, i, y]: another category than the contract's, and not one the entry names.
+    this.emit([Op.OP_DUP, encodeInt(3n), Op.OP_PICK, Op.OP_EQUAL, Op.OP_NOT], loc);
+    for (let slot = 0; slot < named; slot += 1) {
+      // Above the tracked stack: y and the flag.
+      this.emit(encodeInt(BigInt(this.getStackIndex(`(tk_named_${slot})`) + 2)), loc);
+      this.emit([Op.OP_PICK, Op.OP_REVERSEBYTES, encodeInt(2n), Op.OP_PICK, Op.OP_EQUAL, Op.OP_NOT, Op.OP_BOOLAND], loc);
+    }
+    this.emit([Op.OP_IF, encodeInt(2n), Op.OP_PICK, Op.OP_OVER, Op.OP_REVERSEBYTES], loc);
+    // [.., master, i, y, master, y'] -> the container lock for y'.
+    this.emitTokenContainerLbc(loc, 3);
+    this.emit([
+      encodeInt(2n), Op.OP_PICK, Op.OP_UTXOBYTECODE, Op.OP_EQUAL,
+      Op.OP_IF,
+      Op.OP_DROP,
+      Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_OVER, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
+      Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_OVER, Op.OP_UTXOTOKENAMOUNT, Op.OP_GREATERTHANOREQUAL, Op.OP_VERIFY,
+      Op.OP_ELSE,
+      Op.OP_DROP,
+      Op.OP_ENDIF,
+      Op.OP_ELSE,
+      Op.OP_DROP,
+      Op.OP_ENDIF,
+      Op.OP_ENDIF,
+      Op.OP_DUP, Op.OP_NOT,
+      Op.OP_UNTIL,
+      Op.OP_2DROP,
+    ], loc);
+    this.popFromStack(2);
+    for (let slot = 0; slot < named; slot += 1) {
+      this.emit(Op.OP_DROP, loc);
+      this.popFromStack();
     }
   }
 

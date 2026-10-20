@@ -6,8 +6,18 @@ import { BchNative } from "../../contracts/BchNative.scash";
 // category of its own, which is what lets a framed composition settle it at all.
 contract FramedNativeToken() is BchNative {
     mapping(address => uint256) internal held;
+    int public pings;
 
     constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) { }
+
+    // Names no token container: its master still keeps every container of the contract.
+    function ping() {
+        this.pings = this.pings + 1;
+    }
+
+    function heldBy(address account) public view returns (uint256) {
+        return this.held[account];
+    }
 
     function _nativeCredit(address account, uint256 amount) internal override {
         this.held[account] = this.held[account] + amount;

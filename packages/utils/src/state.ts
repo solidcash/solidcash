@@ -2448,9 +2448,9 @@ function directMasterOutputPin(): Script {
 /**
  * `[]` -> `[]`. Framed token container master path.
  *
- * The framed convention builds containers without a master lock and its SDK has no container output layout, so
- * the container covenant itself keeps the custody: the output at this input's index recreates the container's
- * lock, full token category, fungible amount, NFT commitment and satoshi value (audit FRAMED-CONT-1).
+ * The framed convention builds containers without a master lock, so the container covenant itself keeps the custody:
+ * the output at this input's index recreates the container's lock, full token category, fungible amount, NFT
+ * commitment and satoshi value (audit FRAMED-CONT-1).
  */
 function framedTokenContainerKeep(): Script {
   return [
@@ -2460,6 +2460,29 @@ function framedTokenContainerKeep(): Script {
     Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENAMOUNT, Op.OP_EQUALVERIFY,
     Op.OP_DUP, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
     Op.OP_OUTPUTVALUE, Op.OP_INPUTINDEX, Op.OP_UTXOVALUE, Op.OP_GREATERTHANOREQUAL, Op.OP_VERIFY,
+  ];
+}
+
+/**
+ * `[]` -> `[]`. The accounted framed container's master path: the container of a framed contract whose code pays
+ * tokens from it.
+ *
+ * The output at this input's index recreates the container's lock, full token category, NFT commitment and at least
+ * its satoshi value, or, once drained, is tokenless. The fungible amount is the master's to account: every master of
+ * such a contract keeps each container its entry does not name, and conserves the ones it names against the sends it
+ * pins (spec 4b).
+ */
+function accountedTokenContainerKeep(): Script {
+  return [
+    Op.OP_INPUTINDEX,
+    Op.OP_DUP, Op.OP_OUTPUTBYTECODE, Op.OP_INPUTINDEX, Op.OP_UTXOBYTECODE, Op.OP_EQUAL,
+    Op.OP_IF,
+    Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
+    Op.OP_DUP, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
+    Op.OP_OUTPUTVALUE, Op.OP_INPUTINDEX, Op.OP_UTXOVALUE, Op.OP_GREATERTHANOREQUAL, Op.OP_VERIFY,
+    Op.OP_ELSE,
+    Op.OP_OUTPUTTOKENCATEGORY, Op.OP_0, Op.OP_EQUALVERIFY,
+    Op.OP_ENDIF,
   ];
 }
 
@@ -2475,11 +2498,13 @@ function framedTokenContainerKeep(): Script {
  *
  * @param categoryId - 32-byte master contract's token category ID
  * @param tokenContainerCategoryId - 32-byte token container's token category (salt for unique address)
+ * @param options.accounted - without a master lock, the accounted framed container (`accountedTokenContainerKeep`)
  */
 export function buildTokenContainerCovenantScript(
   categoryId: Uint8Array,
   tokenContainerCategoryId: Uint8Array,
   masterLock?: Uint8Array,
+  options: { readonly accounted?: boolean } = {},
 ): Script {
   const catInternal = categoryId.slice().reverse();
   return [
@@ -2494,7 +2519,8 @@ export function buildTokenContainerCovenantScript(
     Op.OP_EQUALVERIFY,
     catInternal,
     Op.OP_EQUALVERIFY,
-    ...(masterLock !== undefined ? directMasterOutputPin() : framedTokenContainerKeep()),
+    ...(masterLock !== undefined ? directMasterOutputPin()
+      : options.accounted === true ? accountedTokenContainerKeep() : framedTokenContainerKeep()),
     Op.OP_ELSE,
     // Merge path: output preserves locking bytecode, value, FT amount, and category
     Op.OP_DUP,

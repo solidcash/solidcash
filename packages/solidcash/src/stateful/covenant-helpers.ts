@@ -459,6 +459,15 @@ export function getEventNftContinuationAddress(
  */
 export const EVENT_NFT_RELATIVE_LOCK_SEQUENCE = 0x00000090;
 
+/**
+ * True for a framed contract whose entries name a token container: its containers are the accounted variant, whose
+ * amount every master of the contract conserves.
+ */
+export function framedAccountsTokens(artifact: Artifact): boolean {
+  return artifact.composition?.convention === 'framed'
+    && artifact.abi.some((entry) => (entry.tokenContainerAccesses?.length ?? 0) > 0);
+}
+
 export function getTokenContainerAddress(
   contract: Contract<any, any>, categoryId: string, tokenContainerCategoryId: string,
 ): string {
@@ -466,6 +475,7 @@ export function getTokenContainerAddress(
   validateCategoryId(tokenContainerCategoryId, 'tokenContainerCategoryId');
   const covenantScript = buildTokenContainerCovenantScript(
     hexToBin(categoryId), hexToBin(tokenContainerCategoryId), directConventionMasterLock(contract),
+    { accounted: framedAccountsTokens(contract.artifact) },
   );
   // Always use P2SH32 for token containers so the in-script derivation
   // (which uses OP_HASH256) produces matching locking bytecodes

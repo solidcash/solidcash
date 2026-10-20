@@ -57,6 +57,11 @@ export interface TrailingOutputCounts {
    * whose witness block the validator's transcript carries inline (v0x03).
    */
   readonly mintedMasters?: number;
+  /**
+   * One run per token container a frame spends to pay tokens from: the container recreated, then its token sends. A
+   * run leads the region after the minted masters, so its container is the user input at the run's first index.
+   */
+  readonly tokenRuns?: readonly number[];
   /** One output per emitted event, in emission order. */
   readonly events: number;
   /** One output per value send to a user. */
@@ -76,6 +81,8 @@ export interface OutputRegions {
   readonly trailingBase: number;
   /** One output per minted master, ahead of every event, in plan order. */
   readonly mintedMasterIndices: readonly number[];
+  /** Every token run's outputs, each container's recreation before its sends. */
+  readonly tokenRunIndices: readonly number[];
   readonly eventIndices: readonly number[];
   /** The container each run of sends follows, one per sending frame. */
   readonly sendContainerIndices: readonly number[];
@@ -189,7 +196,10 @@ export function participant(layout: TransactionLayout, id: string): PlacedPartic
   return placed;
 }
 
-/** Allocates the trailing outputs: events, each frame's container and value sends, created records, then change. */
+/**
+ * Allocates the trailing outputs: minted masters, token runs, events, each frame's container and value sends, created
+ * records, then change.
+ */
 export function allocateOutputRegions(layout: TransactionLayout, counts: TrailingOutputCounts): OutputRegions {
   let cursor = layout.participantCount;
   const allocate = (count: number): readonly number[] => {
@@ -198,6 +208,11 @@ export function allocateOutputRegions(layout: TransactionLayout, counts: Trailin
     return indices;
   };
   const mintedMasterIndices = allocate(counts.mintedMasters ?? 0);
+  const tokenRuns = counts.tokenRuns ?? [];
+  if (tokenRuns.some((run) => !Number.isInteger(run) || run < 1)) {
+    throw new Error(`composer layout: token runs [${tokenRuns.join(', ')}] must each hold their container`);
+  }
+  const tokenRunIndices = allocate(tokenRuns.reduce((sum, run) => sum + run, 0));
   const eventIndices = allocate(counts.events);
   const runs = counts.sendRuns ?? (counts.sends > 0 ? [counts.sends] : []);
   if (runs.reduce((sum, run) => sum + run, 0) !== counts.sends || runs.some((run) => run <= 0)) {
@@ -213,6 +228,7 @@ export function allocateOutputRegions(layout: TransactionLayout, counts: Trailin
   return {
     trailingBase: layout.participantCount,
     mintedMasterIndices,
+    tokenRunIndices,
     eventIndices,
     sendContainerIndices,
     sendIndices,

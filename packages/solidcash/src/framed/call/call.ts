@@ -133,6 +133,9 @@ import { entrySideCars } from './side-cars.js';
 import { bindProviderBlockOracle, blockOracleClock, entryReadsBlockOracle, framedBlockOracle } from './block-oracle.js';
 import { sendRecipient, type RecipientContext } from './send-recipient.js';
 import {
+  framedTokenAccesses, framedTokenContainerLockingBytecode, framedTokenContainerUnlockingBytecode,
+} from './token-containers.js';
+import {
   FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
 } from './loop-turns.js';
 import {
@@ -217,6 +220,18 @@ export interface FramedCallOptions {
   readonly split?: FunctionSplitBundle;
   /** Which overload `functionName` is, when the bundle has more than one shard of that name. */
   readonly selector?: string;
+  /**
+   * Fungible tokens the caller pays into the contract's container for their category, each from a coin of its own:
+   * what an entry such as BchNative's `wrap` reads as the container's growth. A coin's remainder returns to the caller.
+   */
+  readonly tokenDeposits?: readonly FramedTokenDeposit[];
+}
+
+/** Tokens a call pays into a container: the coin they come from, its unlocker, and the amount the container takes. */
+export interface FramedTokenDeposit {
+  readonly utxo: Utxo;
+  readonly unlocker: Unlocker;
+  readonly amount: bigint;
 }
 
 /** A deployed contract a call may pay: its framed artifact and its category, as hex. */
@@ -276,6 +291,22 @@ const CONTAINER_MINIMUM_SATOSHIS = 1_000n;
 
 /** The amount a send output carries until the body's own pin hands back the one it computed. */
 const SEND_AMOUNT_SENTINEL = 1_234_567_891n;
+
+/** The fungible amount a token send carries until the body's own pin hands back the one it computed. */
+const TOKEN_SEND_AMOUNT_SENTINEL = 7_654_321_987_654_321n;
+
+/** The satoshis a token output a call creates carries: a send, a deposit's container, a coin's remainder. */
+const TOKEN_OUTPUT_SATOSHIS = 1_000n;
+
+/** The identity of the token container the `index`-th token run spends. */
+function tokenContainerInputId(index: number): string {
+  return `token-container:${index}`;
+}
+
+/** The identity of the `index`-th coin a call's token deposits spend. */
+function tokenDepositInputId(index: number): string {
+  return `token-deposit:${index}`;
+}
 
 /** The identity of the `index`-th container a call spends. */
 function containerInputId(index: number): string {
@@ -876,6 +907,46 @@ async function callInShape(
     }
     return { id: recordId(nftIndex), commitment: new Uint8Array(hexToBin(commitment)), utxo };
   });
+  // The token containers the entry names. Each it pays tokens from leads the trailing outputs with a run: the one
+  // container the frame spends, recreated with what the sends leave, then the sends (spec 4b).
+  const tokenAccesses = await framedTokenAccesses({
+    provider,
+    entry: artifact.abi.find((candidate) => candidate.name === functionName),
+    categoryId,
+    args,
+    stateLayout,
+    records: records.map((record) => record.utxo),
+  });
+  const tokenRuns = tokenAccesses.filter((access) => access.sends > 0).map((access) => {
+    const container = access.containers[0];
+    if (container === undefined) {
+      throw new FramedCallError(
+        `entry "${functionName}" pays tokens of category ${access.category}, and contract `
+        + `"${artifact.contractName}" holds no container of them`,
+      );
+    }
+    return { ...access, container, held: container.token!.amount };
+  });
+  if (tokenRuns.length > 1) {
+    throw new FramedCallError(
+      `entry "${functionName}" pays tokens from containers of ${tokenRuns.length} categories, and a call spends one`,
+    );
+  }
+  const tokenRunLength = tokenRuns.reduce((sum, run) => sum + 1 + run.sends, 0);
+  // Each token send starts from a sentinel lock and amount the body's own pin fails against.
+  const tokenSendLockSentinels = tokenRuns.map((run, index) => Array.from({ length: run.sends }, (_unused, position) =>
+    encodeLockingBytecodeP2pkh(sha256(new TextEncoder().encode(
+      `framed token send lock\u0000${artifact.contractName}\u0000${entry.name}\u0000${index}\u0000${position}`,
+    )).slice(0, 20))));
+  const tokenSendAmountSentinel = (index: number, position: number): bigint =>
+    TOKEN_SEND_AMOUNT_SENTINEL + BigInt(1_000 * index + position);
+  const tokenDeposits = options.tokenDeposits ?? [];
+  for (const deposit of tokenDeposits) {
+    const held = deposit.utxo.token;
+    if (held === undefined || held.nft !== undefined || deposit.amount <= 0n || deposit.amount > held.amount) {
+      throw new FramedCallError('a token deposit pays a positive amount of a fungible coin, at most what it holds');
+    }
+  }
   // The records the frame declares, and the transaction spends, in the order the entry's own code reads them.
   const declared = frameDataRecordIndices(artifact, entry.name).map((nftIndex) => records[nftIndex]!);
   const recordIds = declared.map((record) => record.id);
@@ -1223,6 +1294,8 @@ async function callInShape(
   const facets = validatorFacetsOf({ id: VALIDATOR_ID, covers: [], settles: [], redeemScript: validatorRedeem });
   const layout = layoutTransaction(blocks, new Map([[VALIDATOR_ID, facets]]));
   const masterIndex = participant(layout, MASTER_ID).index;
+  // The token runs lead the trailing region, so every other trailing output starts past them.
+  const trailingBase = layout.participantCount + tokenRunLength;
   // The trailing region is events first, then the created mapping nodes. An entry that emits declares one output
   // per emit, in emit order, at the covenant the body rebuilds; each output's commitment is the payload the body
   // computes, so the frame starts it from a sentinel the body's own comparison fails against and the derivation
@@ -1246,7 +1319,7 @@ async function callInShape(
   });
   const eventSentinels = emits.map((emit, position) => (skippedEmitIndices.includes(emit.emitIndex)
     ? new Uint8Array(0) : eventSentinel(category, artifact.contractName, position, maximumCommitmentBytes)));
-  const eventIndices = emits.map((_emit, position) => layout.participantCount + position);
+  const eventIndices = emits.map((_emit, position) => trailingBase + position);
   const eventOutputs = (commitments: readonly (Uint8Array | undefined)[]): DraftSourceOutput[] =>
     emits.map((emit, position) => ({
       lockingBytecode: eventLockingBytecode(
@@ -1268,9 +1341,9 @@ async function callInShape(
   // Every frame's events lead the trailing region, in master order: the entry's first, then each callee's and each
   // paid contract's, so the send run follows all of them.
   const calleeEvents = calleePlan?.eventCount ?? 0;
-  const payeeEventBases = payees.map((_payee, index) => layout.participantCount + emits.length + calleeEvents
+  const payeeEventBases = payees.map((_payee, index) => trailingBase + emits.length + calleeEvents
     + payees.slice(0, index).reduce((count, earlier) => count + earlier.emits.length, 0));
-  const markerIndex = layout.participantCount + emits.length + calleeEvents
+  const markerIndex = trailingBase + emits.length + calleeEvents
     + payees.reduce((count, payee) => count + payee.emits.length, 0);
   const sendIndices = Array.from({ length: sendCount }, (_unused, position) => markerIndex + 1 + position);
   const sendLockSentinels = sendIndices.map((_index, position) => encodeLockingBytecodeP2pkh(sha256(
@@ -1435,7 +1508,7 @@ async function callInShape(
     + 2 * (payeeEventSentinels.flat().length + payeeCandidates.flat().length + 2 * payeeSendIndices.flat().length)
     + (calleePlan?.learnable ?? 0) * (sharesPayee ? 1 + payees.length : 1)
     + payableCalls.length * (1 + (calleePlan?.learnable ?? 0))
-    + (returnsValue ? 1 : 0) + 3;
+    + (returnsValue ? 1 : 0) + 2 * tokenRuns.reduce((sum, run) => sum + run.sends, 0) + 3;
 
   const buildPlan = (
     learnedViews: readonly (Uint8Array | undefined)[],
@@ -1446,6 +1519,7 @@ async function callInShape(
     learnedPayees: readonly PayeeLearned[],
     learnedCallees: CalleeValues,
     typedCallValues: ReadonlyMap<number, bigint>,
+    learnedTokenSends: readonly (readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[])[],
   ): CompositionDraftPlan => {
     const paying = payFromContainers([
       ...learnedSends.map((send) => send.amount), ...learnedCallAmounts, ...typedCallValues.values(),
@@ -1535,7 +1609,7 @@ async function callInShape(
     const calleeCreatedBase = createdBase + (laid?.trailingOutputs.length ?? 0);
     const callees = sharedPlan === undefined ? undefined : calleeFrames({
       planned: sharedPlan, layout, rootMaster: MASTER_ID, rootAddress: deployed.address, origin: CALLER_ID,
-      values: learnedCallees, eventBase: layout.participantCount + emits.length,
+      values: learnedCallees, eventBase: trailingBase + emits.length,
       createdBase: calleeCreatedBase, recordAmount: validator.satoshis,
       maximumCommitmentBytes, beside: besideCallees,
       callValues: new Map([...typedCallValues].map(([position, amount]) => [typedCalls[position]!.callee, amount])),
@@ -1714,6 +1788,71 @@ async function callInShape(
         consumed: true,
       };
     });
+    // A token run's container is recreated by the run, and a deposit's coin by the deposit's outputs.
+    tokenRuns.forEach((run, index) => {
+      inputs[tokenContainerInputId(index)] = {
+        source: {
+          lockingBytecode: run.lockingBytecode,
+          valueSatoshis: run.container.satoshis,
+          token: { category: hexToBin(run.category), amount: run.held },
+        },
+        unlockingBytecode: framedTokenContainerUnlockingBytecode(categoryId, run.category, masterIndex),
+        consumed: true,
+      };
+    });
+    tokenDeposits.forEach((deposit, index) => {
+      const held = deposit.utxo.token!;
+      inputs[tokenDepositInputId(index)] = {
+        source: {
+          lockingBytecode: deposit.unlocker.generateLockingBytecode(),
+          valueSatoshis: deposit.utxo.satoshis,
+          token: { category: hexToBin(held.category), amount: held.amount },
+        },
+        unlockingBytecode: callerUnlocking(),
+        consumed: true,
+      };
+    });
+    // The run's container, recreated with what its sends leave (a tokenless output once they leave nothing), then
+    // its sends, each from its sentinel until the body's pin hands back what it computed.
+    const tokenRunOutputs: DraftSourceOutput[] = tokenRuns.flatMap((run, index) => {
+      const sends = learnedTokenSends[index]!;
+      const paid = sends.every((send) => send.amount !== undefined)
+        ? sends.reduce((sum, send) => sum + send.amount!, 0n) : 0n;
+      if (paid > run.held) {
+        throw new FramedCallError(
+          `entry "${functionName}" sends ${paid} tokens of category ${run.category}, and the container it spends holds `
+          + `${run.held}`,
+        );
+      }
+      const token = (amount: bigint): DraftSourceOutput['token'] => ({ category: hexToBin(run.category), amount });
+      return [
+        paid === run.held
+          ? { lockingBytecode: Uint8Array.of(0x6a), valueSatoshis: 0n }
+          : { lockingBytecode: run.lockingBytecode, valueSatoshis: run.container.satoshis, token: token(run.held - paid) },
+        ...sends.map((send, position) => ({
+          lockingBytecode: send.lock ?? tokenSendLockSentinels[index]![position]!,
+          valueSatoshis: TOKEN_OUTPUT_SATOSHIS,
+          token: token(send.amount ?? tokenSendAmountSentinel(index, position)),
+        })),
+      ];
+    });
+    // A deposit pays its amount into a new container for its coin's category and returns the coin's remainder.
+    const depositOutputs: DraftSourceOutput[] = tokenDeposits.flatMap((deposit) => {
+      const held = deposit.utxo.token!;
+      const token = (amount: bigint): DraftSourceOutput['token'] => ({ category: hexToBin(held.category), amount });
+      return [
+        {
+          lockingBytecode: framedTokenContainerLockingBytecode(categoryId, held.category),
+          valueSatoshis: TOKEN_OUTPUT_SATOSHIS,
+          token: token(deposit.amount),
+        },
+        ...(held.amount === deposit.amount ? [] : [{
+          lockingBytecode: options.callerLockingBytecode,
+          valueSatoshis: TOKEN_OUTPUT_SATOSHIS,
+          token: token(held.amount - deposit.amount),
+        }]),
+      ];
+    });
     for (const spent of payeeSpent) {
       const payee = payees[spent.index]!;
       inputs[spent.id] = {
@@ -1762,18 +1901,25 @@ async function callInShape(
       // default is non-final, so the call states the same rather than leaving the composer's final default.
       sequenceNumber: 0xfffffffe,
       userInputs: [
-        { id: CALLER_ID, index: layout.participantCount },
+        ...tokenRuns.map((_run, index) => ({ id: tokenContainerInputId(index), index: layout.participantCount + index })),
+        { id: CALLER_ID, index: layout.participantCount + tokenRuns.length },
         ...paying.spent.map((_utxo, position) => ({
-          id: containerInputId(position), index: layout.participantCount + 1 + position,
+          id: containerInputId(position), index: layout.participantCount + tokenRuns.length + 1 + position,
         })),
         ...payeeSpent.map((spent, position) => ({
-          id: spent.id, index: layout.participantCount + 1 + paying.spent.length + position,
+          id: spent.id, index: layout.participantCount + tokenRuns.length + 1 + paying.spent.length + position,
+        })),
+        ...tokenDeposits.map((_deposit, index) => ({
+          id: tokenDepositInputId(index),
+          index: layout.participantCount + tokenRuns.length + 1 + paying.spent.length + payeeSpent.length + index,
         })),
       ],
+      ...(tokenRuns.length === 0 ? {} : { tokenRuns: tokenRuns.map((run) => 1 + run.sends) }),
       masters: chain?.masters ?? [masterDraft, ...(callees?.masters ?? []), ...payeeDrafts],
       inputs,
       ...(sideCars.computedWitnesses.length === 0 ? {} : { computedWitnesses: sideCars.computedWitnesses }),
       trailingOutputs: [
+        ...tokenRunOutputs,
         ...eventOutputs(learnedEvents), ...(callees?.eventOutputs ?? []),
         ...payeeLaid.flatMap((payeeLaidOut) => payeeLaidOut.eventOutputs),
         ...sendOutputs, ...payeeRuns,
@@ -1786,6 +1932,7 @@ async function callInShape(
           lockingBytecode: satoshiContainerLockingBytecode(payee.categoryId), valueSatoshis: callValue(index),
         }])),
         ...calleeContainers,
+        ...depositOutputs,
       ],
       validator: {
         id: VALIDATOR_ID,
@@ -1815,6 +1962,8 @@ async function callInShape(
   let learnedEvents: readonly (Uint8Array | undefined)[] = eventSentinels.map((stated) =>
     (stated.length === 0 ? stated : undefined));
   let learnedSends: readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[] = sendIndices.map(() => ({}));
+  let learnedTokenSends: readonly (readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[])[] = tokenRuns
+    .map((run) => Array.from({ length: run.sends }, () => ({})));
   let learnedCallAmounts: readonly (bigint | undefined)[] = payees.map(() => undefined);
   // The value each typed call carries, by its position among the typed calls, once its site's close handed it back.
   let learnedTypedValues: ReadonlyMap<number, bigint> = new Map();
@@ -1977,6 +2126,7 @@ async function callInShape(
         planFor: (retvals, views, writeValues, events) => buildPlan(
           learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees,
           { retvals, views, events, ...(writeValues.size === 0 ? {} : { writeValues }) }, learnedTypedValues,
+          learnedTokenSends,
         ),
       });
       return calleeValuesOfSettlement(planned, settlement, maximumCommitmentBytes);
@@ -2017,7 +2167,7 @@ async function callInShape(
     }
     const plan = buildPlan(
       learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees, calleeValues,
-      learnedTypedValues,
+      learnedTypedValues, learnedTokenSends,
     );
     const scopedAnswer = attempt < maximumAttempts - 1 ? scopedCalleeValue(plan) : undefined;
     if (scopedAnswer !== undefined) {
@@ -2121,7 +2271,7 @@ async function callInShape(
     // A void entry that writes no mapping, emits nothing and calls no payable entry leaves nothing to learn: the plan
     // is the one just derived, accepted or refused.
     if (!returnsValue && learningCandidates.length === 0 && emits.length === 0 && sendCount === 0
-      && payees.length === 0 && payableCalls.length === 0) {
+      && payees.length === 0 && payableCalls.length === 0 && tokenRunLength === 0) {
       settled = true;
       break;
     }
@@ -2186,6 +2336,22 @@ async function callInShape(
         learnedSends = learnedSends.map((send, index) =>
           (index === lockPosition ? { ...send, lock: Uint8Array.from(reading.computed) } : send));
         continue;
+      }
+      // A token send's pin compares the listed output's lock, then its fungible amount, with what the body computed.
+      const tokenSend = tokenRuns.flatMap((run, runIndex) => Array.from({ length: run.sends }, (_unused, send) => ({
+        run: runIndex, send,
+      }))).find((at) => bytesEqual(tokenSendLockSentinels[at.run]![at.send]!, reading.declared)
+        || bytesEqual(bigIntToVmNumber(tokenSendAmountSentinel(at.run, at.send)), reading.declared));
+      if (tokenSend !== undefined) {
+        const byLock = bytesEqual(tokenSendLockSentinels[tokenSend.run]![tokenSend.send]!, reading.declared);
+        const computedAmount = vmNumberToBigInt(reading.computed);
+        if (byLock || typeof computedAmount === 'bigint') {
+          learnedTokenSends = learnedTokenSends.map((sends, runIndex) => (runIndex !== tokenSend.run ? sends
+            : sends.map((learned, sendIndex) => (sendIndex !== tokenSend.send ? learned : byLock
+              ? { ...learned, lock: Uint8Array.from(reading.computed) }
+              : { ...learned, amount: computedAmount as bigint }))));
+          continue;
+        }
       }
       // A call's value is compared with the record's eight bytes below the amount the body computed on top.
       const callPosition = callValueSentinels.findIndex((sentinel) => bytesEqual(sentinel, reading.computed));
@@ -2342,8 +2508,13 @@ async function callInShape(
   const containerInputs = [
     ...rootSpent.map((utxo, position) => ({ id: containerInputId(position), utxo })),
     ...payeeSpentFinal,
-  ].map((spent, position) => ({ ...spent, index: draft!.layout.participantCount + 1 + position }));
-  const rawVerdicts: FramedCallVerdict[] = [...draft.layout.participants, ...containerInputs].map((placed) => {
+  ].map((spent, position) => ({ ...spent, index: draft!.layout.participantCount + tokenRuns.length + 1 + position }));
+  const tokenContainerInputs = tokenRuns.map((run, index) => ({
+    id: tokenContainerInputId(index), utxo: run.container, index: draft!.layout.participantCount + index,
+  }));
+  const rawVerdicts: FramedCallVerdict[] = [
+    ...draft.layout.participants, ...tokenContainerInputs, ...containerInputs,
+  ].map((placed) => {
     const state = machine.evaluate({
       inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction,
     });
@@ -2430,6 +2601,10 @@ async function callInShape(
     draft,
     liveUtxos,
     containerInputs,
+    tokenContainerInputs,
+    tokenDepositInputs: tokenDeposits.map((deposit, index) => ({
+      ...deposit, index: draft!.layout.participantCount + tokenRuns.length + 1 + containerInputs.length + index,
+    })),
   });
 
   return {
@@ -2503,6 +2678,10 @@ interface BroadcastCallOptions {
   readonly liveUtxos: ReadonlyMap<string, Utxo>;
   /** The containers the call's sends are paid from, at the indices after the caller's coin. */
   readonly containerInputs: readonly { readonly index: number; readonly utxo: Utxo }[];
+  /** The token container a token run spends, at the index before the caller's coin. */
+  readonly tokenContainerInputs: readonly { readonly index: number; readonly utxo: Utxo }[];
+  /** The coins the call's token deposits spend, after the containers, each signed by its own unlocker. */
+  readonly tokenDepositInputs: readonly { readonly index: number; readonly utxo: Utxo; readonly unlocker: Unlocker }[];
 }
 
 /**
@@ -2596,17 +2775,20 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
     builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode),
       sequence === undefined ? undefined : { sequence });
   }
-  // The caller's own coin funds the call and is the frame's root caller; its signature is a real one over the real
-  // transaction, which the root's `msg.sender` binding and the provider both check.
-  builder.addInput(options.callerUtxo, options.funder);
-  for (const { index, utxo } of options.containerInputs) {
+  const addContainer = ({ index, utxo }: { readonly index: number; readonly utxo: Utxo }): void => {
     const source = program.sourceOutputs[index];
     const unlockingBytecode = derivedInputs[index]?.unlockingBytecode;
     if (source === undefined || unlockingBytecode === undefined) {
       throw new FramedCallError(`the derived call carries no container input at ${index}`);
     }
     builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode));
-  }
+  };
+  options.tokenContainerInputs.forEach(addContainer);
+  // The caller's own coin funds the call and is the frame's root caller; its signature is a real one over the real
+  // transaction, which the root's `msg.sender` binding and the provider both check.
+  builder.addInput(options.callerUtxo, options.funder);
+  options.containerInputs.forEach(addContainer);
+  for (const { utxo, unlocker } of options.tokenDepositInputs) builder.addInput(utxo, unlocker);
 
   // Every participant recreates in place, so anything the composer placed after them is trailing. The caller's
   // recreated output is replaced by its change below, which is the only non-participant the plan has.

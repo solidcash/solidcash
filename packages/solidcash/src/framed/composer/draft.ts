@@ -314,6 +314,8 @@ export interface CompositionDraftPlan {
   readonly mintedMasters?: readonly DraftMintedMaster[];
   readonly userInputs: readonly PlannedUserInput[];
   readonly masters: readonly DraftMaster[];
+  /** The length of each token run the trailing outputs lead with: a container recreated, then its token sends. */
+  readonly tokenRuns?: readonly number[];
   /**
    * The transaction's nLocktime, fixed before any derivation runs.
    *
@@ -428,6 +430,7 @@ function toCompositionPlan(
   return {
     blocks: plan.blocks,
     userInputs: plan.userInputs,
+    ...(plan.tokenRuns === undefined ? {} : { tokenRuns: plan.tokenRuns }),
     masters: plan.masters.map((master): PlannedMaster => ({
       master: master.master,
       contract: master.contract,

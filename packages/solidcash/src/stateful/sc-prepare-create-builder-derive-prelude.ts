@@ -19,6 +19,7 @@ import {
   lastCollidingMutableWriterIndex,
 } from './physical-return-layout.js';
 import { visibleHandlerInputs } from './route-expression-key.js';
+import { tokenContainerKeyValue } from './sc-load-create-builder-token-containers.js';
 import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
@@ -132,8 +133,9 @@ export async function prepareCreateBuilderDerivePrelude(
       );
       const visible = visibleHandlerInputs(planned.handler.inputs);
       const categoryIndex = visible.findIndex((input) => input.name === access.keyParam);
-      const category = access.keySource === 'own'
-        ? host.categoryId : categoryIndex >= 0 ? planned.args[categoryIndex] : undefined;
+      const category = tokenContainerKeyValue(
+        access, host.categoryId, planned.args, categoryIndex, onChainState?.state,
+      ) as FunctionArgument | undefined;
       if (category === undefined) throw new Error(
         `Fixed token-transfer category '${access.keyParam}' is not available in '${planned.handler.name}'.`,
       );
@@ -148,8 +150,9 @@ export async function prepareCreateBuilderDerivePrelude(
   } else if (tokenContainerAccesses) {
     for (const access of tokenContainerAccesses) {
       const catParamIdx = tokenContainerAbiFunction!.inputs.findIndex((inp) => inp.name === access.keyParam);
-      const catValue = access.keySource === 'own'
-        ? host.categoryId : catParamIdx >= 0 ? tokenContainerArgs[catParamIdx] : undefined;
+      const catValue = tokenContainerKeyValue(
+        access, host.categoryId, tokenContainerArgs, catParamIdx, onChainState?.state,
+      );
       const catId = catValue instanceof Uint8Array
         ? binToHex(catValue) : (catValue !== undefined ? String(catValue) : '');
       const ftCount = access.transferCount ?? (access.operations.includes('transfer') ? 1 : 0);

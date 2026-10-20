@@ -340,7 +340,9 @@ export interface EntryAccessInfo {
 
 export interface TokenContainerAccessInfo {
   keyParam: string;           // function parameter name used as category key
-  keySource?: 'param' | 'own'; // own = contract category, derived by covenant introspection
+  // own = contract category, derived by covenant introspection; state = an immutable bytes32 state variable
+  keySource?: 'param' | 'own' | 'state';
+  keyStateVariable?: string;  // the immutable state variable a `state` key reads
   operations: ('read' | 'transfer' | 'transferNft')[];
   slotIndex: number;
   transferCount: number;      // number of transfer() calls for this category

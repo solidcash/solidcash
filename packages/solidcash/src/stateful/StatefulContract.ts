@@ -12364,6 +12364,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         abiFunction: tokenContainerAbiFunction,
         args: tokenContainerArgs,
         overrides,
+        stateValues: onChainState?.state,
         timing,
       },
     );

@@ -7618,6 +7618,27 @@ export default class SymbolTableTraversal extends AstTraversal {
       && !definition.expression.stateVariable;
   }
 
+  /**
+   * The immutable `bytes32` state variable a token-container key reads, when the key is a local bound to one. The
+   * value is fixed at genesis, so the SDK reads it from the state a call already loads, as it reads a parameter.
+   */
+  private stateCategoryKeyVariable(key: IdentifierNode): string | undefined {
+    const definition = key.definition?.definition;
+    const stateVariable = definition instanceof VariableDefinitionNode
+      && definition.expression instanceof StateAccessNode ? definition.expression.stateVariable : undefined;
+    const bytes32 = stateVariable?.type instanceof BytesType && stateVariable.type.bound === 32;
+    return stateVariable?.immutable === true && bytes32 ? stateVariable.name : undefined;
+  }
+
+  /** How a token container's key is resolved: a parameter, the contract's own category, or an immutable. */
+  private tokenContainerKeySource(
+    key: IdentifierNode,
+  ): Pick<TokenContainerAccessInfo, 'keySource' | 'keyStateVariable'> {
+    if (this.isOwnCategoryKey(key)) return { keySource: 'own' };
+    const keyStateVariable = this.stateCategoryKeyVariable(key);
+    return keyStateVariable === undefined ? { keySource: 'param' } : { keySource: 'state', keyStateVariable };
+  }
+
   private collectTokenContainerAccesses(node: Node, map: Map<string, TokenContainerAccessInfo>): void {
     if (node instanceof FieldAccessNode && node.expression instanceof MappingAccessNode
         && node.expression.isTokenContainerAccess) {
@@ -7628,7 +7649,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (existing) {
           if (!existing.operations.includes('read')) existing.operations.push('read');
         } else {
-          map.set(slotKey, { keyParam: keyExpr.name, keySource: this.isOwnCategoryKey(keyExpr) ? 'own' : 'param', operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
+          map.set(slotKey, { keyParam: keyExpr.name, ...this.tokenContainerKeySource(keyExpr), operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
         }
       }
       return;
@@ -7642,7 +7663,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (existing) {
           if (!existing.operations.includes('read')) existing.operations.push('read');
         } else {
-          map.set(slotKey, { keyParam: keyExpr.name, keySource: this.isOwnCategoryKey(keyExpr) ? 'own' : 'param', operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
+          map.set(slotKey, { keyParam: keyExpr.name, ...this.tokenContainerKeySource(keyExpr), operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
         }
       }
       return;
@@ -7661,7 +7682,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           else if (fixedEffect && op === 'transferNft') existing.transferNftCount++;
         } else {
           map.set(slotKey, {
-            keyParam: keyExpr.name, keySource: this.isOwnCategoryKey(keyExpr) ? 'own' : 'param', operations: [op], slotIndex: -1,
+            keyParam: keyExpr.name, ...this.tokenContainerKeySource(keyExpr), operations: [op], slotIndex: -1,
             transferCount: fixedEffect && op === 'transfer' ? 1 : 0,
             transferNftCount: fixedEffect && op === 'transferNft' ? 1 : 0,
           });
@@ -14549,7 +14570,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const key of node.keys) {
         if (!(key instanceof IdentifierNode)
           || (!this.currentFunction.parameters.some((p) => p.name === key.name)
-            && !this.isOwnCategoryKey(key))) {
+            && !this.isOwnCategoryKey(key) && this.stateCategoryKeyVariable(key) === undefined)) {
           throw new TokenContainerKeyMustBeParameterError(node);
         }
       }
@@ -14690,7 +14711,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const keyExpr = node.tokenContainerKeyExpression;
     if (!(keyExpr instanceof IdentifierNode)
       || (!this.currentFunction.parameters.some((p) => p.name === keyExpr.name)
-        && !this.isOwnCategoryKey(keyExpr))) {
+        && !this.isOwnCategoryKey(keyExpr) && this.stateCategoryKeyVariable(keyExpr) === undefined)) {
       throw new TokenContainerKeyMustBeParameterError(node);
     }
 

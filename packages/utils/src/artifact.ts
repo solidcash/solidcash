@@ -313,7 +313,9 @@ export interface RuntimeLoopTransferAbi {
 
 export interface TokenContainerAccessAbi {
   keyParam: string;
-  keySource?: 'param' | 'own';
+  /** `own`: the contract's category; `state`: the immutable `bytes32` state variable `keyStateVariable`. */
+  keySource?: 'param' | 'own' | 'state';
+  keyStateVariable?: string;
   operations: readonly string[];
   transferCount?: number;      // number of transfer() calls (>1 for fan-out)
   transferNftCount?: number;   // number of transferNft() calls (>1 for fan-out)

@@ -4001,6 +4001,7 @@ function buildFunctionAbiMetadata(
       tokenContainerAccesses: func.tokenContainerAccesses.map((da) => ({
         keyParam: da.keyParam,
         ...(da.keySource && da.keySource !== 'param' && { keySource: da.keySource }),
+        ...(da.keyStateVariable && { keyStateVariable: da.keyStateVariable }),
         operations: da.operations,
         // An omitted count is the pre-count-schema spelling for exactly one operation. Runtime-loop effects
         // deliberately remain in `operations` (the container itself is still read/authenticated) while owning

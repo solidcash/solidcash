@@ -1250,7 +1250,8 @@ export class TransferArgumentTypeError extends TypeError {
 
 export class TokenContainerKeyMustBeParameterError extends SolidCashError {
   constructor(node: Node) {
-    super(node, 'Token container key for \'this.tokens\' must be a function parameter (not an expression)');
+    super(node, 'Token container key for \'this.tokens\' must be a function parameter, the contract\'s own category, '
+      + 'or a local bound to an immutable bytes32 state variable (not an expression)');
   }
 }
 

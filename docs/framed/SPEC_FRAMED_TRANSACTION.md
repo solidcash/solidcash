@@ -2,11 +2,19 @@
 
 Design spec for the framed path of `archive/docs:docs/framed/PLAN_MARKETPLACE_66.md` (its section 4).
 
-Revision 16, 2026-10-20. Security assessment behind revisions 6-9: [`AUDIT_MSG_SENDER.md`](./AUDIT_MSG_SENDER.md).
+Revision 17, 2026-10-20. Security assessment behind revisions 6-9: [`AUDIT_MSG_SENDER.md`](./AUDIT_MSG_SENDER.md).
 
 ---
 
 ## 0. Changes
+
+### Since revision 16 (2026-10-20)
+
+- **Token containers: categories, NFT custody, folding** (section 4b, `80c517ca7`). A container a master owns holds
+  the category its slot names (security CONT-CAT-1). An immutable NFT with an empty commitment is held while it carries
+  no fungible amount. A frame's NFT sends come first and are made from the containers its block ends on, so an NFT
+  deposit settles beside NFT sends and two frames of one contract send NFTs of one category (DECISIONS D39). The last
+  paying run folds the two smallest containers left into the one it keeps (D40).
 
 ### Since revision 15 (2026-10-20)
 
@@ -677,14 +685,14 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
   least its satoshis, or is tokenless once drained; the fungible amount is the master's to account. No token
   container has a merge path any more: it pinned neither an NFT's commitment nor its capability.
   - **Ownership.** A master owns the containers at the lock whose unlocking names it, and they are one block of
-    consecutive inputs. Consensus keeps an unlocking push-only, minimal and clean, so that prefix is the container's
-    own claim, and each container is checked by exactly the master it names. Two frames of X pay Y from containers of
-    their own.
+    consecutive inputs, each holding Y: a container of another category at the lock is no reserve of Y (security
+    CONT-CAT-1). Consensus keeps an unlocking push-only, minimal and clean, so that prefix is the container's own claim,
+    and each container is checked by exactly the master it names. Two frames of X pay Y from containers of their own.
   - **Sends.** The k-th send a frame makes is the output at its block's first index plus the block's size plus k, its
-    fungible sends first. A fungible send pays the recipient's lock exactly the amount of Y; an NFT send gives it an
-    NFT of Y with the commitment and capability the body names, pinned in that order: the category with the
-    capability's byte, the lock, the commitment. The block is contiguous, so another frame's sends cannot share these
-    outputs. The witness block is unchanged, so the validator reads nothing new.
+    NFT sends first. A fungible send pays the recipient's lock exactly the amount of Y; an NFT send gives it an NFT of Y
+    with the commitment and capability the body names and no fungible amount, pinned in that order: the category with
+    the capability's byte, the lock, the commitment, the amount. The block is contiguous, so another frame's sends
+    cannot share these outputs. The witness block is unchanged, so the validator reads nothing new.
   - **Conservation.** The master conserves what it owns: the amounts at its containers' own indices, less what they
     held, plus its fungible sends, is at least zero.
   - **Reads.** A read of `this.tokens[Y].tokenAmount` sums the containers the frame owns, and its `outState` form their
@@ -692,23 +700,33 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
     its contract's only master in the transaction. Two frames of one contract therefore never count one deposit
     twice, as two `wrap` frames reading the transaction's whole growth did. `tokenCategory` and `nftCommitment` read
     the first container the frame owns.
-  - **NFTs.** The VM sees an NFT only through a capability or a commitment; an immutable NFT with an empty commitment
-    reads as a fungible token, so no rule here can hold one. An entry that sends no NFT of Y keeps every visible NFT it
-    owns in place and owns no minting one. One that sends NFTs keeps its minting containers, releases at most one
-    owned NFT per send and none beside a minting container, takes no visible NFT of Y from outside the lock, and lets
-    no visible NFT of Y leave it but its own sends: a minting container mints the sends, and otherwise each send
-    releases an immutable NFT of its commitment, or a mutable one.
+  - **NFTs.** The VM sees an NFT through a capability, a commitment, or a token with no fungible amount; an immutable
+    NFT with an empty commitment beside a fungible amount reads as fungible, so no rule here can hold that one. An
+    entry that sends no NFT of Y keeps every NFT it owns in place and owns no minting one, so only a frame that sends
+    NFTs ends its block on a container of Y that released its NFT or holds a minting one, and it lets no NFT of Y leave
+    the lock right after its NFT sends. A frame that sends NFTs checks every container of Y at the lock, whoever owns
+    it: every NFT of Y leaving the lock follows such a block, within that frame's sends; the containers release no more
+    NFTs than those sends; and each NFT with a capability the transaction adds at the lock, which a read counts, is
+    matched by one an input outside it holds, a minting one by a minting one. While a minting container is spent it
+    mints the sends: nothing is released, and no fungible amount of Y leaves the lock, where it could hide a minted NFT.
+    Otherwise the last containers of each sending frame's block release one NFT per send, in send order: an immutable
+    NFT of the send's commitment, or a mutable one. A builder that makes a send from an NFT of its own therefore cannot
+    keep the released one, which no send pins.
   - **Other categories.** Every entry of X keeps, at their own indices, the containers it owns of a category it does
     not name: the same full category and at least the amount, and none of them holds a minting NFT. A frame of X
     therefore cannot draw a container down on another frame's authority (audit FRAMED-CONT-1).
   - **Composition.** The SDK lays a token run per paying frame and category after the participants, the root's first:
-    the frame's containers, then its sends. A category's last paying frame spends every container left, so a payment
-    past the largest container consolidates them; an earlier frame that runs short takes one more, and the call is
-    planned again. A frame that only reads the amount spends the containers too, recreated in place, so the read is
-    the whole reserve, as a framed read's view is; a fungible deposit merges into such a run, and otherwise, like an
-    NFT deposit, becomes a new container of the contract whose frame names the category. The caller's coins fill the
-    indices between runs. A send on a branch not taken is dropped as a value send is. Two frames sending NFTs of one
-    contract's category in one transaction are refused by name.
+    the frame's containers, then its sends. A run keeps what it holds on one container and drains the rest into it. A
+    category's last paying frame spends every container left; once its sends are learned, it spends those that cover
+    them and folds the two smallest left into the one it keeps, unless that pushes the transaction past a VM density
+    limit, when it spends only the covering ones. An earlier frame that runs short takes one more, and the call is
+    planned again. A frame that only reads the amount spends the containers too, so the read is the whole reserve, as a
+    framed read's view is; a fungible deposit merges into such a run, and otherwise, like an NFT deposit, becomes a new
+    container of the contract whose frame names the category. A frame sending NFTs spends, last in its run, the
+    containers its sends are made from, chosen once they are learned, and the call is planned again when that changes
+    them; a contract holding a minting NFT of the category mints instead, from a minting container each such frame
+    spends. The caller's coins fill the indices between runs. A send on a branch not taken is dropped as a value send
+    is.
 - **`address(this).balance`** is X's balance as the EVM's stands at that point of the frame: the value of the
   containers the transaction spends at X's container lock (the context contract's, in a `DELEGATE` frame), with
   the frame's `msg.value` credited and the sends the body has made so far taken out.

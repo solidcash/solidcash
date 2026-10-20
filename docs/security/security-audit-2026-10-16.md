@@ -639,8 +639,9 @@ tooling code.
 
 ## Token container pass (2026-10-20)
 
-Found while completing framed token containers (`docs/framed/DECISIONS.md` D37, D38). Each fixed finding has a test
-that the pre-fix code fails, except CONT-FLAG-1, which never left the working day it was introduced in.
+Found while completing framed token containers (`docs/framed/DECISIONS.md` D37 to D40). Each fixed finding names the
+test that pins it. Where an entry says the pre-fix code accepts a refused transaction, that is read from the code: the
+tests were not run on the pre-fix commits. CONT-FLAG-1 and CONT-CAT-1 never shipped in a release.
 
 - **CONT-FLAG-1** (HIGH; introduced in `ba6296865`, fixed in `916bc9ea2`, unreleased). A framed master owns the
   containers whose unlocking starts `<its index> OP_1`, but the container's `OP_IF` took the master path for any
@@ -666,13 +667,31 @@ that the pre-fix code fails, except CONT-FLAG-1, which never left the working da
   `d0fc11486`: such a handler, its internal calls included, runs at most once per batch. Test:
   `KernelStateKeyedTokenContainerCompose.test.ts` (one row settles; two rows against one deposit are refused; the
   pre-fix route accepted them).
-- **GROWTH-3** (OPEN, unverified). The same transaction-wide read reaches any shape that runs two growth-reading
-  calls of one contract in one transaction outside the two fixed above: a direct contract forked into several masters
-  (`split(n)`), each spent with its own call, and a bus graph in which one contract has more than one participant
-  input. Neither was traced. `BchNative` and `MinimalNativeToken` declare no `split` function, so a direct BchNative
-  token keeps one master. Check whether either shape admits two such calls; if one does, read amounts per master
-  there as the framed convention now does.
-- **NAMED-MINT-1** (OPEN, unverified). A direct call that names a minting container and sends NFTs from it pins its
-  own sends; whether anything bounds further NFTs minted elsewhere in that transaction was not traced. The framed
-  convention bounds them (D38).
+- **GROWTH-3** (HIGH for a direct contract that declares `split`). The same transaction-wide read reached a direct
+  contract forked into several masters, each spent with its own call. FIXED in `564d82fe4`: a contract that declares
+  `split` reads amounts per master, as the framed convention does; one without `split` keeps one master and its
+  bytecode is unchanged. Test: `ThreadedTokenReserve.test.ts` (a thread wraps into a new container, wraps again into
+  it, and unwraps). The bus graph shape was traced and cannot arise: the bus interns one participant input per
+  locking bytecode and batches that contract's rows in it (`compose-plan-graph.ts`), a growth-reading handler runs at
+  most once per batch (GROWTH-2), and a second master of one contract exists only through `split`, which now reads
+  per master.
+- **NAMED-MINT-1** (HIGH; direct). A direct call that names a container holding a minting NFT spends it, and nothing
+  bounded what else the transaction minted of that category. FIXED in `3a6c3d143`: every output outside the slot's
+  lock that carries the category holds no fungible amount and is one of the NFT sends the call made from the slot.
+  Test: `AuditDirectMintBound.test.ts` (a read that keeps the minting container settles; the same transaction with an
+  NFT of the category minted beside it is refused at the master, which the pre-fix code accepts).
+- **CONT-CAT-1** (CRITICAL for a framed contract paying tokens; introduced in `ba6296865`, fixed in `80c517ca7`,
+  unreleased). A framed master's owned scan summed the amount of every container at the lock whose unlocking names
+  it, whatever its category. Anyone can put a token of another category at that lock, so a builder could name such a
+  container in the master's block, grow it in place with tokens of no value, and draw the same amount of the real
+  category out of the master's other containers to an output of its own, conservation holding on the sum. The owned
+  scan now requires every owned container to hold the slot's category. Test: `FramedTokenNft.test.ts` (the same
+  in-place growth settles at the master as a deposit of the category itself and is refused for another category,
+  which the pre-fix code accepts).
+- **NFT custody v2** (design, never shipped). Dropping D38's rule that no outside NFT of the category is an input,
+  so that NFT deposits settle beside NFT sends, lets a builder make a send from an NFT of its own and take the
+  container's mutable NFT, which the count of released NFTs does not see. D39 closes it: each send is made from a
+  named container at the end of its frame's block, and every NFT of the category leaving the lock must be one of the
+  sends. Test: `FramedTokenNft.test.ts` (a mutable NFT makes an immutable send; the same transaction with the mutable
+  NFT also paid to an output no send pins is refused at the master).
 

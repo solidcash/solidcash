@@ -3023,20 +3023,34 @@ held, minted and released, and `tokenCategory` and `nftCommitment` read (`19eefe
 (`ccc325a42`); a send on an untaken branch is dropped (`07ef425bd`). Pinned by `FramedTokenCallee.test.ts`,
 `FramedTokenNft.test.ts`, `BchNativeFramed.test.ts` and `FramedNativeToken.test.ts`.
 
-What remains is refused by name or is a limit of the VM, each for a reason the rules need:
+Since revised (`80c517ca7`, D39, D40): an immutable NFT with an empty commitment and no fungible amount is held and
+released, two frames of one contract send NFTs of one category, an NFT deposit settles beside NFT sends, a wrap
+settles beside an unwrap of the same token (`88e121933`), a callee keys a container by an argument its call passes
+(`ed1b88341`), and a paying run folds the two smallest containers left into the one it keeps.
 
-- An immutable NFT with an empty commitment reads as a fungible token to the VM, so no master can tell it is there
-  or keep it; a deposit of one is refused.
-- Two frames sending NFTs of one contract's category in one transaction are refused: the release and mint rules
-  count every visible NFT of the category in the transaction, which a second sender would break.
-- A transaction that sends NFTs of a category takes in no visible NFT of it from outside the container lock, so an
-  NFT deposit and an NFT send of one category are not composed together.
-- BchNative's `wrap` counts the growth of the containers its frame owns, and a new container only when it is its
-  contract's only master in the transaction (security GROWTH-1), so beside an `unwrap` of the same token, whose frame
-  takes every container, the `wrap` refuses.
-- A run whose fungible and NFT sends both sit on branches lists its NFT sends after all its fungible ones, while the
-  body makes them in order; the SDK cuts each kind to the sends made, which holds only when the skipped sends are
-  each kind's last.
+What remains is a limit of the VM, or of what a master can see, each for the reason given:
+
+- An immutable NFT with an empty commitment beside a fungible amount reads as a fungible token to the VM, so no
+  master can tell it is there; a deposit of such a coin is refused.
+- While a transaction mints a category from a contract's minting container, no fungible amount of the category may
+  leave the container lock, since a minted empty-commitment NFT beside it would be invisible; a call that sends one
+  out, or returns a deposit's remainder, is refused by name.
+- Each frame that mints spends a minting container of its own, since a frame's NFT sends count only after a block
+  that ends on a released or minting container; two frames of one contract mint in one transaction only when it
+  holds two minting containers.
+- Where a contract sends NFTs of a category, every NFT of the category leaving its container lock must be one of its
+  frames' sends, so another contract's NFT sends of that category, or a caller's own NFT of it passing through, do
+  not share the transaction; an NFT send to the contract's own container lock does not leave it, and a transaction
+  that releases NFTs refuses it.
+- A run lists its NFT sends before its fungible ones, while the body makes them in its own order; the SDK cuts each
+  kind to the sends made, which holds only when the skipped sends are each kind's last.
+- Folding takes at most two containers per paying run and none when that pushes the transaction past a density
+  limit, so a contract that takes many small deposits beside frames that do not read them can still accumulate
+  containers until a payment or a read spends them.
+- Every token frame walks the transaction's inputs and outputs, so a composition of several token frames can exceed
+  the real operation-cost density limit: the BchNative vault's `wrap` beside an `unwrap` does when the `unwrap` folds a
+  second container, and such a call is planned again without folding. A composition past the limit without folding
+  is refused by the VM.
 
 ## A message-bus route does not carry an own- or state-keyed token container (2026-10-20)
 

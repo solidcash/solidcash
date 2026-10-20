@@ -3040,8 +3040,9 @@ What remains is a limit of the VM, or of what a master can see, each for the rea
   holds two minting containers.
 - Where a contract sends NFTs of a category, every NFT of the category leaving its container lock must be one of its
   frames' sends, so another contract's NFT sends of that category, or a caller's own NFT of it passing through, do
-  not share the transaction; an NFT send to the contract's own container lock does not leave it, and a transaction
-  that releases NFTs refuses it.
+  not share the transaction. An NFT send to the contract's own container lock does not leave it: a transaction that
+  releases NFTs refuses it, and one that mints refuses such a send of an NFT with a capability, which reads as a
+  deposit no input outside the lock backs.
 - A run lists its NFT sends before its fungible ones, while the body makes them in its own order; the SDK cuts each
   kind to the sends made, which holds only when the skipped sends are each kind's last.
 - Folding takes at most two containers per paying run and none when that pushes the transaction past a density

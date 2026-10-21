@@ -291,7 +291,8 @@ export function directConventionMasterLock(contract: Contract<any, any>): Uint8A
 
 /** A direct contract's bound container covenants carry the destroy arm when its master can retire. */
 export function directContainerOptions(contract: Contract<any, any>): { masterRetires: boolean } {
-  return { masterRetires: containerMasterRetires(contract.artifact.abi) };
+  // An artifact without an ABI states no selfdestruct entry, so its containers take the plain pin.
+  return { masterRetires: containerMasterRetires(contract.artifact?.abi ?? []) };
 }
 
 export function getDataNftAddress(contract: Contract<any, any>, categoryId: string): string {

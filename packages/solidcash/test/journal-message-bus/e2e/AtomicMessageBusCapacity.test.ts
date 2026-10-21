@@ -87,29 +87,31 @@ interface CapacityReading {
 // shrank by the same ~38-39 B of verifier-observed operation cost, and the transaction by 260 B in each convention.
 // Again after the token container covenant lost its merge path and the keep of an unnamed container refused a
 // minting NFT: each participant's bytecode is 27 B smaller, so the transaction is 54 B smaller in each convention.
+// Again when the forged-log pin skipped outputs of other categories (2286a2d7c): participant 1 is 1 B (kernel) and
+// 3 B (legacy) larger and about 35,000 units cheaper.
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 23_957, callManifestBytes: 294,
+    transactionBytes: 23_958, callManifestBytes: 294,
     worstOperationCost: 27_321, worstMaximumOperationCost: 112_800,
     worstRatio: 0.24220744680851064,
     inputOperationCosts: [
-      413_441, 414_879, 695, 957_029, 817_401, 27_321,
+      413_441, 379_816, 695, 957_029, 817_401, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_356_000, 1_802_400, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_356_000, 1_803_200, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_433, callManifestBytes: 294,
+    transactionBytes: 24_436, callManifestBytes: 294,
     worstOperationCost: 2_373_867, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.32813598916288844,
     inputOperationCosts: [
-      406_467, 436_807, 695, 2_373_867, 1_863_554, 27_321,
+      406_467, 401_546, 695, 2_373_867, 1_863_554, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_288_000, 2_251_200, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_288_000, 2_253_600, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });

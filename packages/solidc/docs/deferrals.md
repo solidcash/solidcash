@@ -3157,3 +3157,21 @@ a test calling such a contract.
 
 **Revisit if:** a framed contract with a single function and no constructor is deployed.
 
+## The SDK's failing-output-pin heuristic assumes one operand order (2026-10-21)
+
+**What:** `extractFailingP2sh32OutputPin` (`packages/solidcash/src/stateful/route-value-chunk-helpers.ts`) reads a
+failed `OP_OUTPUTBYTECODE ... OP_EQUALVERIFY` as `[expected, actual]`, actual on top. The compiler's fixed entry lock
+check picks the expected lock on top instead, so for that shape the heuristic records the output's actual lock as the
+expected one; under a non-kernel convention `deriveRouteValueChunks` then installs it as a `valueChunk` output, and
+`setDerivedChunkOutput` (`stb-set-derived-chunk-output.ts`) refuses the correct `entryPin` over a `valueChunk`. It
+made the SushiBar callee insert settle on the wrong output until `b3ee79060` gave that slot its entry lock up front.
+
+**Why deferred:** both are shared value-chunk heuristics many routes go through; the reported failure is fixed at its
+source, and no other test shows the shape.
+
+**What it'd take:** take the expected operand from the check's own shape (or try both orders against the P2SH32 test),
+and let an `entryPin` derived from the covenant replace a `valueChunk` placeholder for the same output, with a test
+whose fixed entry lock mismatch goes through the value-chunk derivation.
+
+**Revisit if:** a derivation settles an entry output on a lock its covenant refuses.
+

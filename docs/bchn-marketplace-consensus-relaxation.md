@@ -138,8 +138,8 @@ standard 30-minute test timeout.
 | --- | --- | --- |
 | proxy x framed | **66/66** | |
 | noproxy x framed | **65/65** | |
-| proxy x kernel | **64/66** | `post job with invalid amount`, `post job with invalid title` (open, below). The cell outran a 2.5-hour cap; its last eight titles ran again at the same commit, and `integration test` passed with `8316a9cb5`. |
-| noproxy x kernel | **64/65** | `post thread message > sanity checks` (open, below). |
+| proxy x kernel | **64/66** | `post job with invalid amount`, `post job with invalid title` (below); both pass at `7f049cc10`, run alone. The cell outran a 2.5-hour cap; its last eight titles ran again at the same commit, and `integration test` passed with `8316a9cb5`. |
+| noproxy x kernel | **64/65** | `post thread message > sanity checks` (below); it passes at `711e4d1b9`, run alone. |
 
 The 2026-10-19 run had the kernel cells at 14/66 and 17/65 with a 3-minute timeout override, stalling at
 `post job 1`. None of the causes was a BCHN consensus problem; each was a place where the regtest provider or
@@ -173,11 +173,22 @@ overlapping request had put the suite's IPFS stub back, and a failed liveness re
 are now capped in flight, every attempt runs under the native fetch, held only for the call itself (held for the
 whole request, a suite's IPFS read in `integration test` reached the real network), and a failed read throws.
 
-Open: three kernel titles plan insert-band pads in `buildInputs` (`stb-build-inputs.ts`) that only a mock
-provider can create. `asTokenPad` re-registers an existing funder outpoint with fabricated token data, and
-`mintSyntheticPadFunder` returns its pad before the unawaited `addUtxo` has the real outpoint. A live node can do
-neither, so a planned input is not the coin the network has (`Input #N is locked by ... which does not match the
-provided unlocker`). A provider without `addUtxo` builds the same mismatched inputs, so this is not regtest-only.
+The three kernel titles left red expect a revert. Their full state derivation rebinds each participant record to
+its master's input index (`rebindDeriveFullExternalResourceMaster`), and it rebuilt the record's covenant instead
+of keeping it. A mock provider states no locking bytecode on UTXOs it finds by lock, so only the live node
+refused the result (`Input #N is locked by ..., which does not match the provided unlocker`), and each call
+failed construction before its revert reason:
+
+- Proxy cell: a delegated participant's records were rebound at the executing implementation's lock. CRYPTO-4
+  binds them to the proxy master's, and `7d90dd4db` had moved the sibling reconcile but not this rebind.
+- No-proxy cell: a read that shares its callee's master with a later writer carries the writer's block, and the
+  read's own access renamed the writer's record (`users` for a `jobEvents` entry).
+
+A record now keeps its own collection and moves only its master index (`711e4d1b9`). The same calls exposed the
+legacy delegate insert band's fabricated pads: an OP_TRUE outpoint the builder made up and a contract-category
+NFT tag, each registered by an unawaited `addUtxo`. On BCHN that funded throwaway coins and raised unhandled
+rejections (`cannot mint into category`, 54 in one run). The funder allocation now reserves token-free
+dummy-funder coins (P2SH32(OP_TRUE), never `tx.origin`) before the input build takes them (`7f049cc10`).
 
 ## Implemented regtest harness
 

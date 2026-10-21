@@ -3124,3 +3124,19 @@ commit to bisect from yet.
 
 **Revisit if:** a release gate takes in the SDK e2e suite, or work touches one of these files.
 
+## A destroy split into batches pins a direct container in an intermediate batch (2026-10-21)
+
+**What:** a direct container's master path pins the output at its own index (`directMasterOutputPin` in
+`packages/utils/src/state.ts`) whenever an output carries the master's minting NFT, and skips the pin only on the
+destroy path, where no master is recreated (`3fc5969bd`). A destroy of more than 200 inputs is sent in batches; an
+intermediate batch recreates the master, so a container placed there is pinned, and the batch has no output at its
+index, so it fails.
+
+**Why deferred:** the fix is in the SDK's batch planner (keep containers in the final batch, or give an intermediate
+batch an output at each container's index); no test destroys that many inputs.
+
+**What it'd take:** have `destroyStatefulContract` place every container input in the last batch, with a test that
+destroys a contract holding a container and more than 200 other inputs.
+
+**Revisit if:** a contract with a satoshi or token container is destroyed with that many inputs.
+

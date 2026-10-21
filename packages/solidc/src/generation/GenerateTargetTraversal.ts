@@ -2618,6 +2618,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // verified-map transition with dynamic-storage chunks. Moving those spans behind another OP_INVOKE changes the
   // active trace shape and can make a valid chunk region unobservable, so these contracts keep their bodies inline.
   private currentContractRequiresTraceStableBodies: boolean = false;
+  // The only statefulness mark of a contract whose emitted events are declared outside it (file level, library):
+  // its eventDefinitions are empty. Every traversal handed eventDefinitions must be handed this too.
   private currentContractEmitsEvent: boolean = false;
   // A framed contract that names a token container anywhere keeps, in every entry, the containers the entry does not.
   private currentContractHoldsTokens: boolean = false;
@@ -6895,6 +6897,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.collectionDefinitions = this.collectionDefinitions;
       probe.dataNftCount = this.dataNftCount;
       probe.eventDefinitions = this.eventDefinitions;
+      probe.currentContractEmitsEvent = this.currentContractEmitsEvent;
       probe.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
       probe.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
       probe.userFunctionDefs = this.userFunctionDefs;
@@ -7203,6 +7206,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.collectionDefinitions = this.collectionDefinitions;
     subTraversal.dataNftCount = this.dataNftCount;
     subTraversal.eventDefinitions = this.eventDefinitions;
+    subTraversal.currentContractEmitsEvent = this.currentContractEmitsEvent;
     // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
     // output-only offsets in that body disagree with the ones in the main script.
     subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
@@ -7609,6 +7613,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.collectionDefinitions = this.collectionDefinitions;
       subTraversal.dataNftCount = this.dataNftCount;
       subTraversal.eventDefinitions = this.eventDefinitions;
+      subTraversal.currentContractEmitsEvent = this.currentContractEmitsEvent;
       // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
       // output-only offsets in that body disagree with the ones in the main script.
       subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;

@@ -6201,6 +6201,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     const isStatefulContract = contract.stateVariables.length > 0
       || contract.collections.length > 0
       || contract.eventDefinitions.length > 0
+      // An emitted event declared outside the contract (file level, library), as in visitContract.
+      || contract.emitsEvent
       || contract.functions.some((func) => func.impliedSelfdestruct)
       || contract.deploysWithValue
       || contract.usesBlockhash

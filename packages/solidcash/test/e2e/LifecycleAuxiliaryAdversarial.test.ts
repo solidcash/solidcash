@@ -264,13 +264,16 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
       (provider as any).sendRawTransaction = send;
     }
     expect(captured).not.toBe('');
-    // With no signer to draw on, the deployment minted its leading coin after the snapshot: restore it too.
+    // The leading coin (D47): with no plain coin of the funder's to draw on, the deployment minted it after the
+    // snapshot, so the restore brings it back.
     const leadingInput = decodeTransactionUnsafe(hexToBin(captured)).inputs[0]!;
+    const leadingCoin = { txid: binToHex(leadingInput.outpointTransactionHash), vout: leadingInput.outpointIndex };
     const restore = async (): Promise<void> => {
       await beforeDeploy.restore();
-      await provider.addUtxo(p2pkh.address, {
-        txid: binToHex(leadingInput.outpointTransactionHash), vout: leadingInput.outpointIndex, satoshis: 10_000n,
-      });
+      const live = await provider.getUtxos(p2pkh.address);
+      if (!live.some((utxo) => utxo.txid === leadingCoin.txid && utxo.vout === leadingCoin.vout)) {
+        await provider.addUtxo(p2pkh.address, { ...leadingCoin, satoshis: 10_000n });
+      }
     };
 
     const rejectMutation = async (

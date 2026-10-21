@@ -2,6 +2,7 @@
  * phase-boundary extract: SC lifecycle extract — static deployFrom (factory deploy + child genesis).
  */
 
+import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
@@ -31,11 +32,11 @@ import {
   identityRecord, isP2pkhLock, planGenesisIdentity, resolveIdentity,
 } from '../bcmr/identity.js';
 import { Contract } from '../Contract.js';
-import { ownCoinRefusal, signerFundingCoins } from '../framed/deploy/own-coin.js';
+import { ownCoinRefusal, signerFundingCoins, withoutIdentityOutputs } from '../framed/deploy/own-coin.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type { StateValueType } from '../types/state-inference.js';
 import {
-  addressToLockScript, randomUtxo, scriptToLockingBytecode,
+  addressToLockScript, getNetworkPrefix, randomUtxo, scriptToLockingBytecode,
 } from '../utils.js';
 import {
   createDataNftUnlocker,
@@ -1303,8 +1304,24 @@ export async function deployFromStatefulContract<T extends Artifact>(
     const blob = encodePushdataValue(earlyAllPairs, 'address[]', factoryLayout.structs);
     deployProbeState[dynamicLenKey('allPairs')] = BigInt(blob.length);
   }
-  // The leading slot (D47): a token-free coin of the funder's at input 0 pays for the first child's authhead.
-  const leadingPad = childIdentity === undefined ? undefined : await takeFunder();
+  // The leading slot (D47): a token-free coin of the funder's at input 0 pays for the first child's authhead. A live
+  // provider lists one at the funder's own lock; the signer's pool and a minted mock coin serve otherwise.
+  const leadingPad = childIdentity === undefined ? undefined : await (async (): Promise<Utxo> => {
+    if (funderPool.length === 0) {
+      const funderAddress = lockingBytecodeToCashAddress({
+        bytecode: funderLock, prefix: getNetworkPrefix(provider.network), tokenSupport: false,
+      });
+      const listed = typeof funderAddress === 'string' ? [] : await provider.getUtxos(funderAddress.address);
+      const plain = await withoutIdentityOutputs(provider, listed.filter((utxo) => utxo.token === undefined
+        && utxo.satoshis >= 1000n && !fundingKeys.has(`${utxo.txid}:${utxo.vout}`)));
+      const coin = plain.sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))[0];
+      if (coin !== undefined) {
+        fundingKeys.add(`${coin.txid}:${coin.vout}`);
+        return coin;
+      }
+    }
+    return takeFunder();
+  })();
   const leading = childIdentity === undefined || leadingPad === undefined
     ? undefined : { utxo: leadingPad, unlocker: placeholderFunder, output: childIdentity.output };
 

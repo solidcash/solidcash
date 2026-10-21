@@ -118,7 +118,10 @@ export interface UpgradeOptions<T extends Artifact = Artifact> {
   fundingUtxo?: Utxo;                // required when new layout needs additional data NFTs
   funder?: Unlocker;                  // required when new layout needs additional data NFTs
   changeAddress?: string;             // change address for leftover funding satoshis
-  /** Foreign token category IDs of the token containers to migrate (at most one per upgrade). */
+  /**
+   * The categories whose token containers migrate: every coin at each one's container lock moves. A container keyed
+   * by a state variable (BchNative's reserve) is added from the contract's state.
+   */
   tokenContainerCategoryIds?: string[];
   /** The migrateRecords entry to drain mapping/array entries before the upgrade (name + its user args). */
   migrateRecordsFunctionName?: string;

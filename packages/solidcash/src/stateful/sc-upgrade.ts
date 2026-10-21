@@ -315,34 +315,37 @@ export async function upgradeStatefulContract<T extends Artifact>(
     builder.addInput(satoshiContainerUtxo, createSatoshiContainerUnlocker(oldContract.inner, 0, categoryId));
   }
 
-  // CRYPTO-4 token-container migration: the old containers are spent with their flag=1 master path, drained at
-  // their input indices, and re-minted at the replacement-bound covenant carrying each foreign category, amount and
-  // value. The compiler reserves one slot per token-container access site, so the caller must name exactly that
-  // many foreign categories (a contract with fewer live containers must still drain that many).
-  const tokenContainerCount = oldContract.inner.artifact.abi
-    .flatMap((fn) => fn.blockLayout?.slots ?? [])
-    .filter((slot) => slot.kind === 'tokenContainer').length;
-  const tokenContainerCategoryIds = options.tokenContainerCategoryIds ?? [];
-  const tokenContainerUtxos: Utxo[] = [];
-  if (tokenContainerCount > 0) {
-    if (tokenContainerCategoryIds.length !== tokenContainerCount) {
+  // CRYPTO-4 token-container migration: every coin at each category's container lock is spent with its flag=1
+  // master path, drained at its input index, and re-minted at the replacement-bound covenant carrying its category,
+  // amount and value. A reserve can be spread over several coins at one lock, and the compiled upgrade migrates the
+  // whole run of token inputs that starts here, so the band holds all of them and the funding input ends it. A
+  // container keyed by a state variable (BchNative's) is named by the contract's state; one keyed by an argument
+  // only the caller can name.
+  const tokenAccesses = oldAbi.flatMap((fn) => fn.tokenContainerAccesses ?? []);
+  const keepsTokenContainers = oldAbi.some((fn) => fn.blockLayout?.slots.some((slot) => slot.kind === 'tokenContainer'));
+  const tokenContainerUtxos: Array<{ utxo: Utxo; tokenContainerCategoryId: string }> = [];
+  if (keepsTokenContainers) {
+    const named = (options.tokenContainerCategoryIds ?? []).map((id) => id.toLowerCase());
+    if (named.length === 0 && tokenAccesses.some((access) => access.keySource !== 'state' && access.keySource !== 'own')) {
       throw new Error(
-        `Upgrade migrates ${tokenContainerCount} token container(s), but ${tokenContainerCategoryIds.length} `
-        + 'tokenContainerCategoryIds were provided. Pass one foreign token category per reserved slot.',
+        `Upgrade migrates the token containers of '${oldContract.name}', which an argument keys: pass `
+        + 'tokenContainerCategoryIds, the categories whose containers move.',
       );
     }
-    for (const tcCatId of tokenContainerCategoryIds) {
+    const stateValues = tokenAccesses.some((access) => access.keySource === 'state')
+      ? await oldContract.getState() as Record<string, unknown> : {};
+    const keyed = tokenAccesses.flatMap((access) => {
+      if (access.keySource === 'own') return [categoryId];
+      const value = access.keySource === 'state' && access.keyStateVariable !== undefined
+        ? stateValues[access.keyStateVariable] : undefined;
+      return value instanceof Uint8Array ? [binToHex(value)] : [];
+    });
+    for (const tcCatId of [...new Set([...named, ...keyed])]) {
       const tcAddress = getTokenContainerAddress(oldContract.inner, categoryId, tcCatId);
-      const containerUtxos = await provider.getUtxos(tcAddress);
-      const containerUtxo = containerUtxos.find((utxo) => utxo.token !== undefined);
-      if (!containerUtxo) {
-        throw new Error(
-          `Upgrade migrates the token container, but none exists at ${tcAddress} `
-          + `for foreign category ${tcCatId}.`,
-        );
+      for (const utxo of (await provider.getUtxos(tcAddress)).filter((coin) => coin.token?.category === tcCatId)) {
+        tokenContainerUtxos.push({ utxo, tokenContainerCategoryId: tcCatId });
+        builder.addInput(utxo, createTokenContainerUnlocker(oldContract.inner, 0, categoryId, tcCatId));
       }
-      tokenContainerUtxos.push(containerUtxo);
-      builder.addInput(containerUtxo, createTokenContainerUnlocker(oldContract.inner, 0, categoryId, tcCatId));
     }
   }
 
@@ -460,13 +463,12 @@ export async function upgradeStatefulContract<T extends Artifact>(
     });
   }
 
-  // Re-mint each token container at the replacement-bound covenant, carrying its foreign token and value.
-  for (let i = 0; i < tokenContainerUtxos.length; i++) {
-    const containerUtxo = tokenContainerUtxos[i];
+  // Re-mint each token container coin at the replacement-bound covenant, carrying its foreign token and value.
+  for (const { utxo, tokenContainerCategoryId } of tokenContainerUtxos) {
     builder.addOutput({
-      to: getTokenContainerAddress(newContract, categoryId, tokenContainerCategoryIds[i]),
-      amount: containerUtxo.satoshis,
-      token: containerUtxo.token,
+      to: getTokenContainerAddress(newContract, categoryId, tokenContainerCategoryId),
+      amount: utxo.satoshis,
+      token: utxo.token,
     });
   }
 

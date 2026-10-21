@@ -134,6 +134,57 @@ describe('StatefulContract.upgrade() token-container migration (CRYPTO-4)', () =
     await result.contract.call.pay(hexToBin(TOKEN_CATEGORY), alicePkh, 250n).send();
   });
 
+  it('re-mints every coin a reserve is spread over, so none is left at the old lock', async () => {
+    const { contract, categoryId } = await deploy('f1cd', vaultV1);
+    const oldAddress = getTokenContainerAddress(contract.inner, categoryId, TOKEN_CATEGORY);
+    // A second coin at the container lock: tokens paid there outside a call, which a later call may merge into.
+    for (const [label, amount] of [['f2cd', 1_000n], ['f3cd', 7n]] as const) {
+      await provider.addUtxo(oldAddress, {
+        txid: label.repeat(16), vout: 0, satoshis: 2_000n, token: { category: TOKEN_CATEGORY, amount },
+      });
+    }
+
+    const result = await StatefulContract.upgrade({
+      provider,
+      oldContract: contract,
+      upgradeFunctionName: 'migrate',
+      upgradeFunctionArgs: [new SignatureTemplate(alicePriv)],
+      newArtifact: vaultV2,
+      newConstructorArgs: [alicePub],
+      tokenContainerCategoryIds: [TOKEN_CATEGORY],
+      ...(await upgradeFunding('f4cd')),
+    });
+
+    // out[0]=master, out[1..2]=drains, out[3..4]=re-mints, out[5]=change.
+    const outputs = getTxOutputs(result.tx);
+    for (const drain of outputs.slice(1, 3)) {
+      expect(drain.amount).toBe(0n);
+      expect(drain.token).toBeUndefined();
+    }
+    const newLock = binToHex(addressToLockScript(
+      getTokenContainerAddress(result.contract.inner, categoryId, TOKEN_CATEGORY),
+    ));
+    const reMints = result.tx.outputs.slice(3, 5);
+    expect(reMints.map((output) => binToHex(output.lockingBytecode))).toEqual([newLock, newLock]);
+    expect(reMints.reduce((sum, output) => sum + output.token!.amount, 0n)).toBe(1_007n);
+    expect(await provider.getUtxos(oldAddress)).toEqual([]);
+  });
+
+  it('upgrades before any container coin exists', async () => {
+    const { contract } = await deploy('f5cd', vaultV1);
+    const result = await StatefulContract.upgrade({
+      provider,
+      oldContract: contract,
+      upgradeFunctionName: 'migrate',
+      upgradeFunctionArgs: [new SignatureTemplate(alicePriv)],
+      newArtifact: vaultV2,
+      newConstructorArgs: [alicePub],
+      tokenContainerCategoryIds: [TOKEN_CATEGORY],
+      ...(await upgradeFunding('f6cd')),
+    });
+    expect(getTxOutputs(result.tx).some((output) => output.token?.category === TOKEN_CATEGORY)).toBe(false);
+  });
+
   it('refuses a token-container re-mint at the old covenant', async () => {
     const { contract, categoryId } = await deploy('e1cd', vaultV1);
     await fundContainer(contract, categoryId);
@@ -266,5 +317,87 @@ describe('StatefulContract.upgrade() multi-token-container migration (CRYPTO-4)'
     // The replacement can still pay from each migrated container.
     await result.contract.call.payA(hexToBin(TOKEN_A), alicePkh, 250n).send();
     await result.contract.call.payB(hexToBin(TOKEN_B), alicePkh, 250n).send();
+  });
+});
+
+// BchNative's shape: two access sites, wrap and unwrap, read one container keyed by an immutable state variable.
+const RESERVE = 'dd'.repeat(32);
+const reserveSource = (name: string, upgrade: string): string => `
+pragma solidcash >=0.8.0;
+
+contract ${name}(pubkey admin) {
+    bytes32 immutable reserveCategory;
+    int credited;
+
+    constructor(bytes32 category_) { this.reserveCategory = category_; }
+
+    function deposit(int amount) {
+        bytes32 category = this.reserveCategory;
+        require(this.outState.tokens[category].tokenAmount == this.tokens[category].tokenAmount + amount);
+        this.credited = this.credited + amount;
+    }
+
+    function pay(bytes20 recipient, int amount) {
+        bytes32 category = this.reserveCategory;
+        require(amount > 0);
+        this.tokens[category].transfer(recipient, amount);
+    }
+${upgrade}}
+`;
+
+describe('StatefulContract.upgrade() of a state-keyed reserve (CRYPTO-4)', () => {
+  const provider = createTestProvider();
+  const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const v1 = compileString(reserveSource('ReserveV1', `
+    function migrate(sig s) upgrade {
+        require(checkSig(s, admin));
+        require(this.credited >= 0);
+    }
+`), { forceStateful: true });
+  const v2 = compileString(reserveSource('ReserveV2', ''), { forceStateful: true });
+
+  it('names the reserve from state and re-mints each of its coins with the records', async () => {
+    const fundingUtxo: Utxo = { txid: 'c1cd'.repeat(16), vout: 0, satoshis: 100_000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
+    const { contract, categoryId } = await StatefulContract.deploy(v1, [alicePub], {
+      provider,
+      fundingUtxo,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: p2pkh.address,
+      initArgs: [hexToBin(RESERVE)],
+    });
+    const oldAddress = getTokenContainerAddress(contract.inner, categoryId, RESERVE);
+    for (const [label, amount] of [['c2cd', 600n], ['c3cd', 40n]] as const) {
+      await provider.addUtxo(oldAddress, {
+        txid: label.repeat(16), vout: 0, satoshis: 2_000n, token: { category: RESERVE, amount },
+      });
+    }
+
+    const upgradeFunding: Utxo = { txid: 'c4cd'.repeat(16), vout: 0, satoshis: 100_000n };
+    await provider.addUtxo('51', upgradeFunding);
+    const result = await StatefulContract.upgrade({
+      provider,
+      oldContract: contract,
+      upgradeFunctionName: 'migrate',
+      upgradeFunctionArgs: [new SignatureTemplate(alicePriv)],
+      newArtifact: v2,
+      newConstructorArgs: [alicePub],
+      fundingUtxo: upgradeFunding,
+      funder: {
+        generateLockingBytecode: (): Uint8Array => hexToBin('51'),
+        generateUnlockingBytecode: (): Uint8Array => new Uint8Array(),
+      },
+      changeAddress: p2pkh.address,
+    });
+
+    const newAddress = getTokenContainerAddress(result.contract.inner, categoryId, RESERVE);
+    expect(await provider.getUtxos(oldAddress)).toEqual([]);
+    const moved = await provider.getUtxos(newAddress);
+    expect(moved.reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n)).toBe(640n);
+    expect(moved).toHaveLength(2);
+    expect(binToHex((await result.contract.getState()).reserveCategory as Uint8Array)).toBe(RESERVE);
+
+    // The replacement pays from a migrated coin.
+    await result.contract.call.pay(alicePkh, 25n).send();
   });
 });

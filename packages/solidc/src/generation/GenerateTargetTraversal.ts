@@ -679,6 +679,8 @@ const SCAN_IN_SUM = '(__scan_in_sum)';
 const SCAN_OUT_SUM = '(__scan_out_sum)';
 const SCAN_IN_MINTS = '(__scan_in_mints)';
 const SCAN_OUT_MINTS = '(__scan_out_mints)';
+// The number of token container coins a direct upgrade's migration band holds (emitUpgradeTokenBandCount).
+const UPGRADE_TOKEN_BAND = '(__upgrade_token_band)';
 /** A route row's lifecycle mode; minting uniqueness holds in mode 0 only. */
 const LIFECYCLE_MODE = '__message_bus_active_lifecycle_mode';
 /** A route's mint bound operands (emitRouteMintBoundItems), bottom first. */
@@ -1746,7 +1748,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private contractTokenContainerCount = 0;
   /** The first input index of the token containers an upgrade migrates, or -1 when none. */
   private upgradeTokenContainerInputBase = -1;
-  private upgradeTokenContainerInputCount = 0;
+  // Set while an upgrade entry keeps its migration band's coin count on the stack (UPGRADE_TOKEN_BAND).
+  private upgradeTokenBandActive = false;
   private nativeLegacyMathFunctions = new Set<FunctionDefinitionNode>();
   private compactHelperIds = {
     next: -12n,
@@ -10087,7 +10090,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The token-container migration range is set only while emitting an upgrade entry; every other entry must not
     // inherit it into its own foreign-token keep scan.
     this.upgradeTokenContainerInputBase = -1;
-    this.upgradeTokenContainerInputCount = 0;
+    this.upgradeTokenBandActive = false;
     const isUpgrade = node.messageBusUpgradeRoute === true
       || node.modifiers.includes(FunctionModifier.UPGRADE);
     // A direct upgrade may mint the data NFTs a longer layout needs. A message-bus upgrade appends inside the
@@ -10354,6 +10357,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
+          if (upgradeMintsDataNfts) this.emitUpgradeTokenBandCount(node);
           this.emitOwnCategoryMutableNftConservation(node, upgradeMintsDataNfts);
           if (upgradeMintsDataNfts) {
             this.emitUpgradeDataNftMigrationCheck(node);
@@ -10390,6 +10394,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
+          if (upgradeMintsDataNfts) this.emitUpgradeTokenBandCount(node);
           this.emitOwnCategoryMutableNftConservation(node, upgradeMintsDataNfts);
           if (upgradeMintsDataNfts) {
             this.emitUpgradeDataNftMigrationCheck(node);
@@ -10481,6 +10486,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitValuePreservation(node, hasTokenContainerAccess);
       } else if (!this.functionHasDelegatecall && isStatefulContract && !isSelfdestruct) {
         this.emitValuePreservation(node, false);
+      }
+      if (this.upgradeTokenBandActive) {
+        const depth = this.getStackIndex(UPGRADE_TOKEN_BAND);
+        this.emit(encodeInt(BigInt(depth)), { location: node.body.location, positionHint: PositionHint.END });
+        this.emit(Op.OP_ROLL, { location: node.body.location, positionHint: PositionHint.END });
+        this.emit(Op.OP_DROP, { location: node.body.location, positionHint: PositionHint.END });
+        this.removeFromStack(depth);
+        this.upgradeTokenBandActive = false;
       }
       // Deferred transfer cleanup: must come after emitValuePreservation
       // so conditional transfer LBC values are still available for activity checks
@@ -49992,6 +50005,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // canonical data-NFT covenant of this category bound to the replacement's lock. Count that run back into the
       // balance; the count above still refuses a mutable output beyond the run or at another locking bytecode.
       this.emit(encodeInt(BigInt(1 + 2 * this.dataNftCount + this.upgradeContainerOutputShift(node))), loc);
+      this.emitAddUpgradeTokenBand(1, 2, loc);
       this.pushToStack('(upgrade_new_data_j)');
       this.emit(Op.OP_BEGIN, loc);
       this.emit(Op.OP_DUP, loc);
@@ -50067,31 +50081,82 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && node.messageBusUpgradeRoute !== true;
   }
 
-  /** A direct upgrade migrates the contract's token containers (one per reserved slot) at the replacement lock. */
+  /** A direct upgrade of a contract that keeps token containers migrates every container coin it spends. */
   private directUpgradeMigratesTokenContainer(node: FunctionDefinitionNode): boolean {
-    return this.directUpgradeMigratesTokenContainerCount(node) > 0;
-  }
-
-  /** The bounded number of token containers a direct upgrade migrates (the contract's reserved slot count). */
-  private directUpgradeMigratesTokenContainerCount(node: FunctionDefinitionNode): number {
-    if (!node.modifiers.includes(FunctionModifier.UPGRADE)) return 0;
-    if (node.messageBusEligible === true || node.messageBusUpgradeRoute === true) return 0;
-    return this.contractTokenContainerCount;
+    if (!node.modifiers.includes(FunctionModifier.UPGRADE)) return false;
+    if (node.messageBusEligible === true || node.messageBusUpgradeRoute === true) return false;
+    return this.contractTokenContainerCount > 0;
   }
 
   /**
-   * The number of fixed output indices the container migration inserts ahead of the added-data-NFT run: each
-   * container contributes one zero-value drain pad (at its input index) and one re-mint.
+   * The fixed output indices the satoshi container's migration inserts ahead of the added-data-NFT run: a zero-value
+   * drain pad at its input index and a re-mint. The token band adds two per coin at run time.
    */
   private upgradeContainerOutputShift(node: FunctionDefinitionNode): number {
-    return (this.directUpgradeMigratesSatoshiContainer(node) ? 2 : 0)
-      + 2 * this.directUpgradeMigratesTokenContainerCount(node);
+    return this.directUpgradeMigratesSatoshiContainer(node) ? 2 : 0;
   }
 
-  /** The data-NFT re-mint band starts one output later per container drain pad that occupies a slot before it. */
+  /**
+   * The data-NFT re-mint band starts one output later per container drain pad before it: the satoshi container's
+   * here, and one per token band coin at run time.
+   */
   private upgradeContainerReMintShift(node: FunctionDefinitionNode): number {
-    return (this.directUpgradeMigratesSatoshiContainer(node) ? 1 : 0)
-      + this.directUpgradeMigratesTokenContainerCount(node);
+    return this.directUpgradeMigratesSatoshiContainer(node) ? 1 : 0;
+  }
+
+  /**
+   * `[.., x]` -> `[.., x + times * count]` with the upgrade's token band count, where `untracked` items sit above the
+   * tracked stack (x included). Nothing outside an upgrade that migrates token containers.
+   */
+  private emitAddUpgradeTokenBand(untracked: number, times: 1 | 2, loc: SingleLocationData): void {
+    if (!this.upgradeTokenBandActive) return;
+    this.emit(encodeInt(BigInt(this.getStackIndex(UPGRADE_TOKEN_BAND) + untracked)), loc);
+    this.emit(Op.OP_PICK, loc);
+    if (times === 2) {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_ADD, loc);
+    }
+    this.emit(Op.OP_ADD, loc);
+  }
+
+  /**
+   * CRYPTO-4 token-container migration band. A reserve can be spread over several coins at one container lock, so a
+   * direct upgrade migrates every coin it spends from `1 + dataNftCount` on (after the satoshi container): the band
+   * runs to the first input without a token, and emitUpgradeTokenContainerMigrationCheck checks each coin in it as
+   * one of this contract's containers. Leaves the tracked count, which the drain and re-mint indices after the band
+   * add, for the entry's remaining checks.
+   */
+  private emitUpgradeTokenBandCount(node: FunctionDefinitionNode): void {
+    if (!this.directUpgradeMigratesTokenContainer(node)) return;
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+    const base = 1 + this.dataNftCount + (this.directUpgradeMigratesSatoshiContainer(node) ? 1 : 0);
+    this.emit(encodeInt(BigInt(base)), loc); // [i]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_ENDIF, loc); // [i, category size]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc); // [end]
+    this.emit(encodeInt(BigInt(base)), loc);
+    this.emit(Op.OP_SUB, loc); // [count]
+    this.pushToStack(UPGRADE_TOKEN_BAND);
+    // The foreign-token keep scan exempts the band: the migration moves each coin to a different lock.
+    this.upgradeTokenContainerInputBase = base;
+    this.upgradeTokenBandActive = true;
   }
 
   /**
@@ -50125,6 +50190,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const outIdx = 1 + n + reMintShift + i;
       // Each re-minted output must be at the replacement-bound data-NFT covenant.
       this.emit(encodeInt(BigInt(outIdx)), loc);
+      this.emitAddUpgradeTokenBand(1, 1, loc);
       this.emit(Op.OP_OUTPUTBYTECODE, loc);        // [cov, outBytecode]
       this.emit(encodeInt(BigInt(this.getStackIndex('(upgrade_migration_covenant)') + 1)), loc);
       this.emit(Op.OP_PICK, loc);                  // [cov, outBytecode, cov]
@@ -50146,8 +50212,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const containerIdx = 1 + this.dataNftCount;
     // Co-migrated token containers drain after the satoshi container, shifting the data-NFT re-mint band and this
-    // re-mint by the token-container count.
-    const reMintIdx = 2 + 2 * this.dataNftCount + this.directUpgradeMigratesTokenContainerCount(node);
+    // re-mint by the band's coin count.
+    const reMintIdx = 2 + 2 * this.dataNftCount;
 
     // Phase 1: input[containerIdx] is the old container covenant; output[containerIdx] is the zero-value drain.
     this.emitMasterInputIndex(loc);
@@ -50184,6 +50250,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitBoundSatoshiContainerCovenant(loc); // [newCovenant]
     this.stack[0] = '(sc_new_covenant)';
     this.emit(encodeInt(BigInt(reMintIdx)), loc);
+    this.emitAddUpgradeTokenBand(1, 1, loc);
     this.emit(Op.OP_OUTPUTBYTECODE, loc); // [cov, outBytecode]
     this.emit(encodeInt(BigInt(this.getStackIndex('(sc_new_covenant)') + 1)), loc);
     this.emit(Op.OP_PICK, loc);            // [cov, outBytecode, cov]
@@ -50191,6 +50258,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(containerIdx)), loc);
     this.emit(Op.OP_UTXOVALUE, loc);       // [cov, inValue]
     this.emit(encodeInt(BigInt(reMintIdx)), loc);
+    this.emitAddUpgradeTokenBand(2, 1, loc);
     this.emit(Op.OP_OUTPUTVALUE, loc);     // [cov, inValue, outValue]
     this.emit(Op.OP_EQUALVERIFY, loc);     // [cov]
     this.emit(Op.OP_DROP, loc);
@@ -50198,116 +50266,136 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * CRYPTO-4 token-container migration (bounded to one foreign category the SDK supplies). The old container
-   * (bound to the old master lock) is spent with its flag=1 master path, drained at its input index, and re-minted
-   * at the replacement-bound covenant carrying its foreign category, amount and value. The foreign category is read
-   * from the container input's own UTXO category, so the check is category-agnostic; only the population bound is
-   * fixed. The layout puts the container input at `1 + dataNftCount` (after the satoshi container when present),
-   * the zero-value/zero-token drain at the same output index, and the re-mint after the satoshi re-mint.
+   * CRYPTO-4 token-container migration of every coin in the band emitUpgradeTokenBandCount counted. Each coin is
+   * spent with its flag=1 master path, so it must sit at this contract's container lock for the category it holds
+   * (read from the coin, so the check is category-agnostic), be drained at its input index, and be re-minted at the
+   * replacement-bound covenant carrying its category, amount and value. Coin `base + j` re-mints at
+   * `1 + 2*dataNftCount + 2*satoshi + count + j`, after the satoshi container's re-mint: `dataNftCount + satoshi +
+   * count` past its input index.
    */
   private emitUpgradeTokenContainerMigrationCheck(node: FunctionDefinitionNode): void {
-    if (!this.directUpgradeMigratesTokenContainer(node)) return;
+    if (!this.upgradeTokenBandActive) return;
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const satoshi = this.directUpgradeMigratesSatoshiContainer(node) ? 1 : 0;
-    const tokenCount = this.directUpgradeMigratesTokenContainerCount(node);
     const base = 1 + this.dataNftCount + satoshi;
-    // The foreign-token keep scan must exempt these containers: the migration moves each to a different lock.
-    this.upgradeTokenContainerInputBase = base;
-    this.upgradeTokenContainerInputCount = tokenCount;
+    const coin = '(tc_band_coin)';
+    const pickCoin = (untracked: number): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(coin) + untracked)), loc);
+      this.emit(Op.OP_PICK, loc);
+    };
+    // [.., i, reMint] with `untracked` items above the tracked stack before the push.
+    const pickReMint = (untracked: number): void => {
+      pickCoin(untracked);
+      this.emitAddUpgradeTokenBand(untracked + 1, 1, loc);
+      this.emit(encodeInt(BigInt(this.dataNftCount + satoshi)), loc);
+      this.emit(Op.OP_ADD, loc);
+    };
+    this.emit(encodeInt(BigInt(this.getStackIndex(UPGRADE_TOKEN_BAND))), loc);
+    this.emit(Op.OP_PICK, loc); // [count]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(BigInt(base)), loc);
+    this.emit(Op.OP_ADD, loc); // [base + count], one past the last coin
+    this.pushToStack(coin);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc); // [i]
 
-    for (let i = 0; i < tokenCount; i += 1) {
-      const containerIdx = base + i;
-      const reMintIdx = 2 + 2 * this.dataNftCount + 2 * satoshi + tokenCount - 1 + i;
+    // Phase 1: input[i] is the old container covenant; output[i] is a zero drain.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // C ++ 0x02
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc); // C (internal order, as the covenant embeds it)
+    this.pushToStack('(tc_migration_cat)');
+    pickCoin(0);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // foreign category (internal), 32 or 33 bytes
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc); // drop the capability byte (or empty tail)
+    this.emit(Op.OP_REVERSEBYTES, loc); // display order, as the covenant salt embeds it
+    this.emitTokenContainerLbc(loc, 1); // [oldCovenant]
+    this.popFromStack(); // (tc_migration_cat) consumed
+    this.pushToStack('(tc_old_covenant)');
+    pickCoin(0);
+    this.emit(Op.OP_UTXOBYTECODE, loc); // [cov, inBytecode]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(tc_old_covenant)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);          // [cov, inBytecode, cov]
+    this.emit(Op.OP_EQUALVERIFY, loc);   // [cov]
+    pickCoin(0);
+    this.emit(Op.OP_OUTPUTVALUE, loc);   // [cov, drainValue]
+    this.emit(encodeInt(0n), loc);       // [cov, drainValue, 0]
+    this.emit(Op.OP_NUMEQUALVERIFY, loc); // [cov]
+    pickCoin(0);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc); // [cov, drainAmount]
+    this.emit(encodeInt(0n), loc);           // [cov, drainAmount, 0]
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);    // [cov]
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (tc_old_covenant)
 
-      // Phase 1: input[containerIdx] is the old container covenant; output[containerIdx] is a zero drain.
-      this.emitMasterInputIndex(loc);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // C ++ 0x02
-      this.emit(encodeInt(32n), loc);
-      this.emit(Op.OP_SPLIT, loc);
-      this.emit(Op.OP_DROP, loc); // C (internal order, as the covenant embeds it)
-      this.pushToStack('(tc_migration_cat)');
-      this.emit(encodeInt(BigInt(containerIdx)), loc);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // foreign category (internal), 32 or 33 bytes
-      this.emit(encodeInt(32n), loc);
-      this.emit(Op.OP_SPLIT, loc);
-      this.emit(Op.OP_DROP, loc); // drop the capability byte (or empty tail)
-      this.emit(Op.OP_REVERSEBYTES, loc); // display order, as the covenant salt embeds it
-      this.emitTokenContainerLbc(loc, 1); // [oldCovenant]
-      this.popFromStack(); // (tc_migration_cat) consumed
-      this.pushToStack('(tc_old_covenant)');
-      this.emit(encodeInt(BigInt(containerIdx)), loc);
-      this.emit(Op.OP_UTXOBYTECODE, loc); // [cov, inBytecode]
-      this.emit(encodeInt(BigInt(this.getStackIndex('(tc_old_covenant)') + 1)), loc);
-      this.emit(Op.OP_PICK, loc);          // [cov, inBytecode, cov]
-      this.emit(Op.OP_EQUALVERIFY, loc);   // [cov]
-      this.emit(encodeInt(BigInt(containerIdx)), loc);
-      this.emit(Op.OP_OUTPUTVALUE, loc);   // [cov, drainValue]
-      this.emit(encodeInt(0n), loc);       // [cov, drainValue, 0]
-      this.emit(Op.OP_NUMEQUALVERIFY, loc); // [cov]
-      this.emit(encodeInt(BigInt(containerIdx)), loc);
-      this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc); // [cov, drainAmount]
-      this.emit(encodeInt(0n), loc);           // [cov, drainAmount, 0]
-      this.emit(Op.OP_NUMEQUALVERIFY, loc);    // [cov]
-      this.emit(Op.OP_DROP, loc);
-      this.popFromStack(); // (tc_old_covenant)
+    // Phase 2: the re-mint output is the replacement-bound covenant and carries the coin's value, foreign category
+    // and fungible amount.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // C ++ 0x02
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc); // C
+    this.pushToStack('(tc_migration_cat)');
+    pickCoin(0);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_REVERSEBYTES, loc); // [C, tcCat] display foreign category
+    // Encode the master and token categories, then bind the replacement lock (the direct token-container
+    // covenant encoding; the lock-parameterised form is a subroutine body, so it is not callable inline).
+    this.emit(hexToBin('20'), loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc); // [C, encToken]
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(hexToBin('20'), loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc); // [encToken, encMaster]
+    this.emit(Op.OP_SWAP, loc); // [encMaster, encToken]
+    this.popFromStack(); // (tc_migration_cat) consumed into encMaster
+    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__upgradeBytecode') + 2)), loc);
+    this.emit(Op.OP_PICK, loc); // [encMaster, encToken, replacementLock]
+    this.emit(hexToBin('23'), loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc); // [encMaster, encToken, encLock]
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_ROT, loc); // [encLock, encMaster, encToken]
+    this.emitBoundTokenContainerCovenant(loc); // [newCovenant]
+    this.pushToStack('(tc_new_covenant)');
+    pickReMint(0);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc); // [cov, outBytecode]
+    this.emit(encodeInt(BigInt(this.getStackIndex('(tc_new_covenant)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);            // [cov, outBytecode, cov]
+    this.emit(Op.OP_EQUALVERIFY, loc);     // [cov]
+    pickCoin(0);
+    this.emit(Op.OP_UTXOVALUE, loc);       // [cov, inValue]
+    pickReMint(1);
+    this.emit(Op.OP_OUTPUTVALUE, loc);     // [cov, inValue, outValue]
+    this.emit(Op.OP_EQUALVERIFY, loc);     // [cov]
+    pickCoin(0);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // [cov, inCategory]
+    pickReMint(1);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // [cov, inCategory, outCategory]
+    this.emit(Op.OP_EQUALVERIFY, loc);         // [cov]
+    pickCoin(0);
+    this.emit(Op.OP_UTXOTOKENAMOUNT, loc); // [cov, inAmount]
+    pickReMint(1);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc); // [cov, inAmount, outAmount]
+    this.emit(Op.OP_EQUALVERIFY, loc);       // [cov]
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (tc_new_covenant)
 
-      // Phase 2: output[reMintIdx] is the replacement-bound covenant and carries the container's value, foreign
-      // category and fungible amount.
-      this.emitMasterInputIndex(loc);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // C ++ 0x02
-      this.emit(encodeInt(32n), loc);
-      this.emit(Op.OP_SPLIT, loc);
-      this.emit(Op.OP_DROP, loc); // C
-      this.pushToStack('(tc_migration_cat)');
-      this.emit(encodeInt(BigInt(containerIdx)), loc);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-      this.emit(encodeInt(32n), loc);
-      this.emit(Op.OP_SPLIT, loc);
-      this.emit(Op.OP_DROP, loc);
-      this.emit(Op.OP_REVERSEBYTES, loc); // [C, tcCat] display foreign category
-      // Encode the master and token categories, then bind the replacement lock (the direct token-container
-      // covenant encoding; the lock-parameterised form is a subroutine body, so it is not callable inline).
-      this.emit(hexToBin('20'), loc);
-      this.emit(Op.OP_SWAP, loc);
-      this.emit(Op.OP_CAT, loc); // [C, encToken]
-      this.emit(Op.OP_SWAP, loc);
-      this.emit(hexToBin('20'), loc);
-      this.emit(Op.OP_SWAP, loc);
-      this.emit(Op.OP_CAT, loc); // [encToken, encMaster]
-      this.emit(Op.OP_SWAP, loc); // [encMaster, encToken]
-      this.popFromStack(); // (tc_migration_cat) consumed into encMaster
-      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__upgradeBytecode') + 2)), loc);
-      this.emit(Op.OP_PICK, loc); // [encMaster, encToken, replacementLock]
-      this.emit(hexToBin('23'), loc);
-      this.emit(Op.OP_SWAP, loc);
-      this.emit(Op.OP_CAT, loc); // [encMaster, encToken, encLock]
-      this.emit(Op.OP_ROT, loc);
-      this.emit(Op.OP_ROT, loc); // [encLock, encMaster, encToken]
-      this.emitBoundTokenContainerCovenant(loc); // [newCovenant]
-      this.pushToStack('(tc_new_covenant)');
-      this.emit(encodeInt(BigInt(reMintIdx)), loc);
-      this.emit(Op.OP_OUTPUTBYTECODE, loc); // [cov, outBytecode]
-      this.emit(encodeInt(BigInt(this.getStackIndex('(tc_new_covenant)') + 1)), loc);
-      this.emit(Op.OP_PICK, loc);            // [cov, outBytecode, cov]
-      this.emit(Op.OP_EQUALVERIFY, loc);     // [cov]
-      this.emit(encodeInt(BigInt(containerIdx)), loc);
-      this.emit(Op.OP_UTXOVALUE, loc);       // [cov, inValue]
-      this.emit(encodeInt(BigInt(reMintIdx)), loc);
-      this.emit(Op.OP_OUTPUTVALUE, loc);     // [cov, inValue, outValue]
-      this.emit(Op.OP_EQUALVERIFY, loc);     // [cov]
-      this.emit(encodeInt(BigInt(containerIdx)), loc);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // [cov, inCategory]
-      this.emit(encodeInt(BigInt(reMintIdx)), loc);
-      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // [cov, inCategory, outCategory]
-      this.emit(Op.OP_EQUALVERIFY, loc);         // [cov]
-      this.emit(encodeInt(BigInt(containerIdx)), loc);
-      this.emit(Op.OP_UTXOTOKENAMOUNT, loc); // [cov, inAmount]
-      this.emit(encodeInt(BigInt(reMintIdx)), loc);
-      this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc); // [cov, inAmount, outAmount]
-      this.emit(Op.OP_EQUALVERIFY, loc);       // [cov]
-      this.emit(Op.OP_DROP, loc);
-      this.popFromStack(); // (tc_new_covenant)
-    }
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(BigInt(base)), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_UNTIL, loc); // [base]
+    this.popFromStack(); // (tc_band_coin)
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DROP, loc);
   }
 
   /**
@@ -51834,9 +51922,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitInputSlotScan(
     sat: boolean, admitAnchor: boolean | undefined, mint: boolean, keep: boolean, loc: SingleLocationData,
   ): void {
-    // The function's own container slots are its own; the shared body has none. An upgrade that migrates a token
-    // container exempts that one input index, which only the per-function traversal knows, so it must emit inline.
-    if ((admitAnchor === undefined || this.tokenContainerSlots.length === 0 || this.upgradeTokenContainerInputBase >= 0)
+    // The function's own container slots are its own; the shared body has none. An upgrade that migrates token
+    // containers exempts its band, whose count only the per-function traversal's stack holds, so it emits inline.
+    if ((admitAnchor === undefined || (this.tokenContainerSlots.length === 0 && !this.upgradeTokenBandActive))
       && this.invokeSharedEntryCheck(
         `inputScans:${sat}:${admitAnchor ?? '-'}:${mint}:${keep}`,
         (t, l) => t.emitInputSlotScanBody(sat, admitAnchor, mint, keep, l), loc,
@@ -52096,15 +52184,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** `[index]` stays, untracked directly above the tracked `category`. The keep rules for one input. */
   private emitForeignInputKeep(category: string, admitAnchor: boolean, loc: SingleLocationData): void {
-    // An in-place upgrade's token-container migration re-mints each container at the replacement lock, so the
-    // same-lock foreign keep must exempt those inputs; the migration check pins them instead.
-    if (this.upgradeTokenContainerInputBase >= 0) {
-      const end = this.upgradeTokenContainerInputBase + this.upgradeTokenContainerInputCount;
+    // An in-place upgrade's token-container migration re-mints each coin of its band at the replacement lock, so the
+    // same-lock foreign keep must exempt the band; the migration check pins it instead.
+    const exemptsBand = this.upgradeTokenBandActive;
+    if (exemptsBand) {
+      const base = BigInt(this.upgradeTokenContainerInputBase);
       this.emit(Op.OP_DUP, loc); // [index, index]
-      this.emit(encodeInt(BigInt(this.upgradeTokenContainerInputBase)), loc);
+      this.emit(encodeInt(base), loc);
       this.emit(Op.OP_GREATERTHANOREQUAL, loc); // [index, index >= base]
-      this.emit(Op.OP_DUP, loc); // [index, ge, index]
-      this.emit(encodeInt(BigInt(end)), loc);
+      this.emit(Op.OP_OVER, loc); // [index, ge, index]
+      this.emit(encodeInt(BigInt(this.getStackIndex(UPGRADE_TOKEN_BAND) + 3)), loc);
+      this.emit(Op.OP_PICK, loc); // [index, ge, index, count]
+      this.emit(encodeInt(base), loc);
+      this.emit(Op.OP_ADD, loc); // [index, ge, index, end]
       this.emit(Op.OP_LESSTHAN, loc); // [index, ge, index < end]
       this.emit(Op.OP_BOOLAND, loc); // [index, inRange]
       this.emit(Op.OP_NOT, loc); // [index, notInRange]
@@ -52165,7 +52257,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
-    if (this.upgradeTokenContainerInputBase >= 0) {
+    if (exemptsBand) {
       this.emit(Op.OP_ENDIF, loc);
     }
   }
@@ -53120,10 +53212,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         else this.emitMasterInputIndex(locationData);
         // A direct upgrade re-mints each data NFT one dataNftCount further along (past the pad band and any
         // container drain), so the output it preserves sits at `compactOffset + dataNftCount + shift`.
-        const offset = side === 'out' && this.directUpgradeMigratesDataNfts(node)
+        const shifted = side === 'out' && this.directUpgradeMigratesDataNfts(node);
+        const offset = shifted
           ? compactOffset + this.dataNftCount + this.upgradeContainerReMintShift(node) : compactOffset;
         this.emit(encodeInt(BigInt(offset)), locationData);
         this.emit(Op.OP_ADD, locationData);
+        if (shifted) this.emitAddUpgradeTokenBand(1, 1, locationData);
       };
       // Exact satoshi preservation: inputValue == outputValue
       emitIndex('in');

@@ -50497,17 +50497,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     else this.emitMasterInputIndex(loc);
     this.pushToStack('(imm_base)');
 
+    // The VM prices every instruction it steps over, taken or not, so a direct walk reaches each output of this
+    // category through a short test, as the slot scans do: a pad costs that test, not the census below. Framed
+    // bytes stay.
+    const skipsToOwnCategory = this.directConvention;
     this.emit(Op.OP_TXOUTPUTCOUNT, loc);
-    this.emit(Op.OP_1SUB, loc);
+    if (!skipsToOwnCategory) this.emit(Op.OP_1SUB, loc);
     this.pushToStack('(imm_j)');
     this.emit(Op.OP_BEGIN, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(0n), loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(encodeBool(true), loc);
-    this.emit(Op.OP_ELSE, loc);
+    if (skipsToOwnCategory) {
+      // [cat, base, n] -> [cat, base, j]: the next output below n whose category is cat, or 0.
+      this.emit([Op.OP_BEGIN, Op.OP_1SUB, Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, encodeInt(3n), Op.OP_PICK,
+        Op.OP_EQUAL, Op.OP_OVER, Op.OP_NOT, Op.OP_BOOLOR, Op.OP_UNTIL], loc);
+    } else {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emit(encodeBool(true), loc);
+      this.emit(Op.OP_ELSE, loc);
+    }
     // The runtime event span clause below admits every j in [start, end) once start >= 0, so no output there can
     // fail this census: step from its top straight below it instead of classifying each output. Framed bytes stay.
     const skipsRuntimeEventSpan = this.directConvention
@@ -50745,10 +50755,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
     if (skipsRuntimeEventSpan) this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_1SUB, loc);
-    this.emit(encodeBool(false), loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_UNTIL, loc);
+    if (skipsToOwnCategory) {
+      // Output 0 was the last.
+      this.emit([Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP], loc);
+    } else {
+      this.emit(Op.OP_1SUB, loc);
+      this.emit(encodeBool(false), loc);
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_UNTIL, loc);
+    }
     this.popFromStack(); // (imm_j)
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (imm_base)

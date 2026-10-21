@@ -12,6 +12,7 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import { Contract } from '../Contract.js';
+import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
 import type { Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
@@ -120,6 +121,15 @@ export async function upgradeStatefulContract<T extends Artifact>(
 
   const categoryId = oldContract.categoryId;
   const addressType = options.addressType ?? oldContract.inner.addressType;
+
+  // The funding coin is proven at the funder's own lock before anything is sent or signed, as a deployment's is, so a
+  // BCMR identity output (docs/bcmr/DESIGN.md 4.4) is refused.
+  if (options.fundingUtxo && options.funder) {
+    const coinRefusal = await ownCoinRefusal(
+      provider, options.fundingUtxo, options.funder.generateLockingBytecode(), { role: 'funder' },
+    );
+    if (coinRefusal !== undefined) throw new Error(coinRefusal);
+  }
 
   // Get on-chain state to find the master UTXO
   let onChainState = await oldContract.getFullState();

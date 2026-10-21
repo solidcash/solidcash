@@ -111,7 +111,7 @@ import {
   stateRecordUnlockingBytecode,
   type FramedDeploymentSet,
 } from '../deploy/index.js';
-import { withoutIdentityOutputs } from '../deploy/own-coin.js';
+import { identityCoinRefusal, withoutIdentityOutputs } from '../deploy/own-coin.js';
 import {
   chainSharedNodeViews, placeOwnWrites, producedCallResults, reachedCallResults, samePlannedSites, settleCallees,
   withChainEnds, withCreatedChainEnds, type PlacedLaidWrite,
@@ -827,6 +827,13 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
 /** Calls an entry on a deployed framed contract, evaluates it, and broadcasts it when every participant agrees. */
 export async function callFramedEntry(options: FramedCallOptions): Promise<FramedCallResult> {
   requireFramedFunderSighash(options.funder);
+  // The caller's coin pays the fee, so a call that may broadcast refuses an identity output or reserved coin there
+  // before it is planned (docs/bcmr/DESIGN.md 4.4). A coin whose transaction is not served, as a simulation's
+  // stand-in, is judged by the reservation alone.
+  if (options.publish !== false) {
+    const refusal = await identityCoinRefusal(options.provider, options.callerUtxo);
+    if (refusal !== undefined) throw new FramedCallError(refusal);
+  }
   // A token run whose sends outgrow its containers spends one more of its contract's, and one whose NFT sends are made
   // from other containers than it spends spends those, which shifts the run, so the call is planned again from the
   // start.

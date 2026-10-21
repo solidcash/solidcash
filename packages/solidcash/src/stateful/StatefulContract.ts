@@ -526,7 +526,7 @@ import { withDelegatecall as withDelegatecallImpl } from './sc-with-delegatecall
 import { autoWireLibraryDelegatecalls as autoWireLibraryDelegatecallsImpl } from './sc-auto-wire-library-delegatecalls.js';
 import { addressMappingKeyCandidates as addressMappingKeyCandidatesImpl } from './sc-address-mapping-key-candidates.js';
 import { deployStatefulContract as deployStatefulContractImpl } from './sc-deploy.js';
-import { signerFundingCoins } from '../framed/deploy/own-coin.js';
+import { ownCoinRefusal, signerFundingCoins } from '../framed/deploy/own-coin.js';
 import { deployFromStatefulContract as deployFromStatefulContractImpl } from './sc-deploy-from.js';
 import { deriveDeployCommitments as deriveDeployCommitmentsImpl } from './sc-derive-deploy-commitments.js';
 import { deriveCommitments as deriveCommitmentsImpl } from './sc-derive-commitments.js';
@@ -3923,11 +3923,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const dataNfts = BigInt(childArt?.stateLayout?.dataNftCount ?? target?.dataNftCount ?? 1);
     const cost = 1200n + 1200n * dataNfts + 5000n + 2400n; // master + data NFTs + fee + entry buffer
     // A reserved coin is one a create address was predicted from, so spending it here would strand that address;
-    // it is skipped, as ContractFactory's selection (and the fan-out below) skips it.
+    // it is skipped, as ContractFactory's selection (and the fan-out below) skips it. So is a coin deployFrom's own
+    // proof refuses, a BCMR identity output among them (docs/bcmr/DESIGN.md 4.4).
     const { genesisOutpointKey, isReservedGenesisOutpoint } = await import('./genesis-reservations.js');
-    const utxo = utxos.find((u) => u.vout === 0 && !u.token && u.satoshis >= cost
+    const candidates = utxos.filter((u) => u.vout === 0 && !u.token && u.satoshis >= cost
       && !isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout)));
-    if (utxo) return utxo;
+    for (const utxo of candidates) {
+      const refusal = await ownCoinRefusal(
+        signer.provider, utxo, signer.getLockingBytecode(), { role: 'funder', tokenFree: true },
+      );
+      if (refusal === undefined) return utxo;
+    }
     try {
       const { selectGenesisFundingUtxo } = await import('./ContractFactory.js');
       return await selectGenesisFundingUtxo(signer, childArt ?? this.inner.artifact, new Set(), 1);

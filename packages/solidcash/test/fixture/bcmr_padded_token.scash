@@ -1,0 +1,34 @@
+pragma solidcash >=0.8.0;
+
+import { ERC20 } from "../../contracts/ERC20.scash";
+import { BchNative } from "../../contracts/BchNative.scash";
+
+// A native ledger token with IERC20Metadata in the hand-ported USDT shape: name() and symbol() return bytes32,
+// right-padded with zero bytes, and decimals() a uint256 of 18. Its symbol, "stETH", is not a BCMR symbol.
+// cspell:ignore stETH
+contract BcmrPaddedToken() is ERC20, BchNative {
+    constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) { }
+
+    // "Staked Ether"
+    function name() public pure returns (bytes32) {
+        return hex"5374616b65642045746865720000000000000000000000000000000000000000";
+    }
+
+    // "stETH"
+    function symbol() public pure returns (bytes32) {
+        return hex"7374455448000000000000000000000000000000000000000000000000000000";
+    }
+
+    function decimals() public pure returns (uint256) { return 18; }
+
+    function _nativeCredit(address account, uint256 amount) internal override {
+        this._totalSupply = this._totalSupply + amount;
+        this._balances[account] = this._balances[account] + amount;
+    }
+
+    function _nativeDebit(address account, uint256 amount) internal override {
+        require(this._balances[account] >= amount);
+        this._balances[account] = this._balances[account] - amount;
+        this._totalSupply = this._totalSupply - amount;
+    }
+}

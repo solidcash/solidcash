@@ -55,12 +55,11 @@ export function metadataInteger(value: unknown, role: string): bigint {
   throw new BcmrError(`${role} must be an integer, got ${String(value)}`);
 }
 
-/** log10(scale), refusing a scale that is not a positive power of ten. */
+/** log10(scale), refusing a scale that is not a power of ten (1, 10, 100, ...). */
 export function scaleDigits(scale: bigint): number {
-  if (scale < 1n) throw new BcmrError(`a native scale must be positive, got ${scale}`);
   let digits = 0;
   let rest = scale;
-  while (rest % 10n === 0n) {
+  while (rest > 1n && rest % 10n === 0n) {
     rest /= 10n;
     digits += 1;
   }

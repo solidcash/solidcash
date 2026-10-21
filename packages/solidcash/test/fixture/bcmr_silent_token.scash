@@ -1,0 +1,31 @@
+pragma solidcash >=0.8.0;
+
+import { BchNative } from "../../contracts/BchNative.scash";
+
+// A native ledger token whose IERC20Metadata and totalSupply() views revert once its constructor has credited a
+// supply, so a deployment's probe reads none of them and the deploy options must state every field.
+// cspell:ignore XSIL
+contract BcmrSilentToken() is BchNative {
+    mapping(address => uint256) internal held;
+    uint256 internal supply;
+
+    constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) {
+        this.supply = 5000;
+    }
+
+    function name() public view returns (string) { require(this.supply == 0); return "Silent Dollar"; }
+    function symbol() public view returns (string) { require(this.supply == 0); return "XSIL"; }
+    function decimals() public view returns (uint8) { require(this.supply == 0); return 2; }
+    function totalSupply() public view returns (uint256) { require(this.supply == 0); return this.supply; }
+
+    function _nativeCredit(address account, uint256 amount) internal override {
+        this.supply = this.supply + amount;
+        this.held[account] = this.held[account] + amount;
+    }
+
+    function _nativeDebit(address account, uint256 amount) internal override {
+        require(this.held[account] >= amount);
+        this.held[account] = this.held[account] - amount;
+        this.supply = this.supply - amount;
+    }
+}

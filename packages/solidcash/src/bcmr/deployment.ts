@@ -28,7 +28,7 @@ import {
 } from './registry.js';
 import { nftCategory, type NftParseRole } from './nft-parse.js';
 import {
-  hasErc20Metadata, hasTotalSupply, metadataInteger, metadataText, nativeDecimals,
+  hasErc20Metadata, hasTotalSupply, metadataInteger, metadataText, nativeDecimals, scaleDigits,
 } from './token.js';
 
 /** What a deployment publishes about its category. */
@@ -42,7 +42,8 @@ export interface BcmrPublication {
   readonly tags?: Readonly<Record<string, Tag>>;
   /**
    * Token fields. An IERC20Metadata contract's values fill the ones omitted and are checked against the ones stated:
-   * the symbol case-insensitively (BCMR symbols are capitals), the decimals after the native scale.
+   * the symbol case-insensitively (BCMR symbols are capitals), the decimals after the native scale. A field whose
+   * view the probe cannot read must be stated.
    */
   readonly token?: {
     readonly symbol?: string;
@@ -165,18 +166,31 @@ async function probeTokenFacts(
   return facts;
 }
 
-/** The token fields of a snapshot: stated ones checked against the contract's, omitted ones taken from it. */
+/**
+ * A field the options must state because the contract does not answer it: it publishes no view for it, or, with
+ * `readsMetadata`, the probe could not read the view (DESIGN.md, 6.4).
+ */
+function requiredField(field: string, view: string, readsMetadata: boolean): BcmrError {
+  return new BcmrError(`${field} is required: ${readsMetadata
+    ? `the probe could not read the contract's ${view}` : `the contract does not publish ${view}`}`);
+}
+
+/**
+ * The token fields of a snapshot: stated ones checked against the contract's, omitted ones taken from it. With
+ * `readsMetadata` (the artifact carries IERC20Metadata) the snapshot always has a token, and a view the probe could
+ * not read must be stated.
+ */
 function resolveToken(
-  stated: BcmrPublication['token'], facts: ContractTokenFacts, scale: bigint,
+  stated: BcmrPublication['token'], facts: ContractTokenFacts, scale: bigint, readsMetadata: boolean,
 ): BcmrSnapshot['token'] | undefined {
-  if (stated === undefined && facts.symbol === undefined) return undefined;
+  if (stated === undefined && !readsMetadata) return undefined;
   const contractSymbol = facts.symbol;
   if (stated?.symbol !== undefined && contractSymbol !== undefined
     && stated.symbol.toUpperCase() !== contractSymbol.toUpperCase()) {
     throw new BcmrError(`bcmr.token.symbol "${stated.symbol}" disagrees with the contract's symbol() "${contractSymbol}"`);
   }
   const symbol = stated?.symbol ?? contractSymbol;
-  if (symbol === undefined) throw new BcmrError('bcmr.token.symbol is required: the contract does not publish symbol()');
+  if (symbol === undefined) throw requiredField('bcmr.token.symbol', 'symbol()', readsMetadata);
   if (stated?.symbol === undefined) {
     try {
       assertTokenSymbol(symbol);
@@ -195,6 +209,7 @@ function resolveToken(
     );
   }
   const decimals = stated?.decimals ?? contractDecimals;
+  if (decimals === undefined && readsMetadata) throw requiredField('bcmr.token.decimals', 'decimals()', true);
   if (decimals === 18 && scale === 1n) {
     // eslint-disable-next-line no-console
     console.warn(
@@ -264,6 +279,8 @@ export async function prepareMetadata(options: {
     throw new BcmrError('a burned identity publishes nothing: choose another identity policy to publish metadata');
   }
   const scale = nativeToken?.scale ?? 1n;
+  // Refused whether or not the contract publishes decimals() (DESIGN.md, 6.5).
+  scaleDigits(scale);
   const reserve = nativeToken?.reserve;
   const bearer = nativeToken?.bearer;
   for (const [field, amount] of [['reserve', reserve], ['bearer.amount', bearer?.amount]] as const) {
@@ -277,8 +294,9 @@ export async function prepareMetadata(options: {
   const nativeInput = await nativeInputOf(deploy, options.category);
   const tokenCategory = nativeInput === undefined ? options.category : nativeInput.utxo.txid.toLowerCase();
 
-  const needsFacts = (publication !== undefined && hasErc20Metadata(artifact))
-    || (reserve !== undefined && hasTotalSupply(artifact))
+  const readsMetadata = hasErc20Metadata(artifact);
+  const checksSupply = reserve !== undefined && hasTotalSupply(artifact);
+  const needsFacts = (publication !== undefined && readsMetadata) || checksSupply
     || (nativeInput !== undefined && nativeCategoryStateVariable(artifact) !== undefined);
   const facts = needsFacts ? await probeTokenFacts(artifact, deploy, options.probe) : {};
 
@@ -286,6 +304,12 @@ export async function prepareMetadata(options: {
     throw new BcmrError(
       `the contract keys its reserve by category ${facts.nativeCategory}, but nativeToken.funding creates `
       + `${tokenCategory}: construct the contract with the funding coin's txid`,
+    );
+  }
+  if (checksSupply && facts.totalSupply === undefined) {
+    throw new BcmrError(
+      'nativeToken.reserve cannot be checked against the ledger: the probe could not read the contract\'s '
+      + 'totalSupply()',
     );
   }
   if (reserve !== undefined && facts.totalSupply !== undefined && reserve * scale < facts.totalSupply) {
@@ -312,8 +336,8 @@ export async function prepareMetadata(options: {
     throw new BcmrError(`bcmr.name "${publication.name}" disagrees with the contract's name() "${facts.name}"`);
   }
   const name = publication.name ?? facts.name;
-  if (name === undefined) throw new BcmrError('bcmr.name is required: the contract does not publish name()');
-  const resolved = resolveToken(publication.token, facts, scale);
+  if (name === undefined) throw requiredField('bcmr.name', 'name()', readsMetadata);
+  const resolved = resolveToken(publication.token, facts, scale, readsMetadata);
   // The NFTs are the contract's, of its own category, whichever category the token is.
   let nfts = resolved?.nfts;
   if (publication.token?.nfts === 'generated' && resolved !== undefined) {

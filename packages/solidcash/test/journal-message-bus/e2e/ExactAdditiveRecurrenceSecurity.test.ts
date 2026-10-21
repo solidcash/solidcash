@@ -11,6 +11,7 @@ import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { createFeeFunder, createTestProvider, expectScriptRejection } from '../../test-util.js';
 
 describe('exact bounded additive recurrence security', () => {
+  // About 85 s alone; the 120 s default left too little room under a full suite's load.
   it('authenticates scalar state, preserves checked source order, rejects tampering, and caps rank at 64', async () => {
     const provider = createTestProvider();
     const signature = new SignatureTemplate(alicePriv);
@@ -92,5 +93,5 @@ describe('exact bounded additive recurrence security', () => {
     await expect(seen(64n, 0n)).resolves.toEqual([992n]);
     await expect(contract.exact(65n, 0n).build())
       .rejects.toThrow(/compiler-published maximum|64/i);
-  });
+  }, 300_000);
 });

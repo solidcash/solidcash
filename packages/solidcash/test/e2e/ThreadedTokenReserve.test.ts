@@ -3,14 +3,17 @@
  * container's amount as the master it runs on holds it (security GROWTH-3), as a framed body does: the containers
  * whose unlocking names that master, and, for the output side, a new container only when no other master of the
  * contract is spent beside it owning none. One thread wraps into a new container, wraps again into it, and unwraps.
+ * With a second thread spent beside it, a thread does not count a new container, which both could count, and still
+ * counts the growth of a container it owns.
  */
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { Contract, SignatureTemplate } from '../../src/index.js';
 import { StatefulContract, getTokenContainerAddress } from '../../src/stateful/index.js';
 import type { Utxo } from '../../src/interfaces.js';
-import { addressToLockScript } from '../../src/utils.js';
+import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
+import { addressToLockScript, generateLibauthSourceOutputs } from '../../src/utils.js';
 import { createTestProvider } from '../test-util.js';
 import { alicePkh, alicePriv, alicePub, bobAddress } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
@@ -85,5 +88,88 @@ describe('a direct contract with threads reads its token containers per master',
     expect(await reserve()).toBe(70n);
     expect((await provider.getUtxosForLockingBytecode(bobLock))
       .filter((utxo) => utxo.token?.category === category).map((utxo) => utxo.token!.amount)).toEqual([30n]);
+  }, 300_000);
+
+  it('counts a new container only while no other thread is spent beside it', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SOURCE);
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const alice = new SignatureTemplate(alicePriv);
+    const funding: Utxo = { txid: 'd1'.repeat(32), vout: 0, satoshis: 300_000n };
+    await provider.addUtxo(p2pkh.address, funding);
+    const { contract, categoryId } = await StatefulContract.deploy(artifact, [alicePub], {
+      provider, fundingUtxo: funding, funder: p2pkh.unlock.spend(alicePub, alice),
+      initialState: { wrapped: 0n }, changeAddress: p2pkh.address,
+    });
+    const splitFunding: Utxo = { txid: 'd2'.repeat(32), vout: 0, satoshis: 50_000n };
+    await provider.addUtxo(p2pkh.address, splitFunding);
+    await StatefulContract.split({
+      provider, contract, splitFunctionName: 'fork', splitFunctionArgs: [1n, alice],
+      funder: p2pkh.unlock.spend(alicePub, alice), fundingUtxos: [splitFunding], changeAddress: p2pkh.address,
+      newMintingAmount: 1_200n,
+    });
+    const masters = async (): Promise<Utxo[]> => (await provider.getUtxos(contract.inner.tokenAddress))
+      .filter((utxo) => utxo.token?.category === categoryId && utxo.token.nft?.capability === 'minting');
+    expect(await masters()).toHaveLength(2);
+
+    const category = 'd3'.repeat(32);
+    const bearer = async (txid: string, amount: bigint): Promise<Utxo> => {
+      const utxo: Utxo = { txid: txid.repeat(32), vout: 0, satoshis: 100_000n, token: { category, amount } };
+      await provider.addUtxo(p2pkh.tokenAddress, utxo);
+      return utxo;
+    };
+    const fee = async (txid: string): Promise<void> => {
+      await provider.addUtxo(p2pkh.address, { txid: txid.repeat(32), vout: 0, satoshis: 200_000n });
+    };
+    const unlocker = p2pkh.unlock.spend(alicePub, alice);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    // The wrap's master on its own transaction, and on the same one with the other thread's master spent and
+    // recreated after every other output.
+    const verdicts = async (amount: bigint, coin: Utxo): Promise<{ alone: unknown; beside: unknown }> => {
+      const builder = await contract.call.wrap(hexToBin(category), amount)
+        .addInput(coin, unlocker).tokenContainerDeposit(category, amount).build();
+      const transaction = builder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      const masterIndex = sourceOutputs.findIndex((output) => output.token?.nft?.capability === 'minting'
+        && binToHex(output.token.category) === categoryId);
+      const other = (await masters()).find((master) => !transaction.inputs.some((input) =>
+        binToHex(input.outpointTransactionHash) === master.txid && input.outpointIndex === master.vout))!;
+      const recreated = {
+        lockingBytecode: addressToLockScript(contract.inner.tokenAddress), valueSatoshis: other.satoshis,
+        token: {
+          category: hexToBin(categoryId), amount: 0n,
+          nft: { capability: 'minting' as const, commitment: hexToBin(other.token!.nft!.commitment) },
+        },
+      };
+      const beside = {
+        ...transaction,
+        inputs: [...transaction.inputs, {
+          outpointTransactionHash: hexToBin(other.txid), outpointIndex: other.vout,
+          sequenceNumber: transaction.inputs[0]!.sequenceNumber, unlockingBytecode: new Uint8Array(),
+        }],
+        outputs: [...transaction.outputs, recreated],
+      };
+      return {
+        alone: vm.stateSuccess(vm.evaluate({ inputIndex: masterIndex, sourceOutputs, transaction })),
+        beside: vm.stateSuccess(vm.evaluate({
+          inputIndex: masterIndex, sourceOutputs: [...sourceOutputs, recreated], transaction: beside,
+        })),
+      };
+    };
+
+    // A deposit that opens a new container: the other thread owns none here, so either could count it.
+    await fee('d4');
+    const first = await bearer('d5', 60n);
+    const opening = await verdicts(60n, first);
+    expect(opening.alone).toBe(true);
+    expect(opening.beside).not.toBe(true);
+    await contract.call.wrap(hexToBin(category), 60n).addInput(first, unlocker).tokenContainerDeposit(category, 60n).send();
+    expect((await contract.getState()).wrapped).toBe(60n);
+
+    // A deposit into the container this thread owns counts with the other thread beside it.
+    await fee('d6');
+    const growing = await verdicts(40n, await bearer('d7', 40n));
+    expect(growing.alone).toBe(true);
+    expect(growing.beside).toBe(true);
   }, 300_000);
 });

@@ -6167,12 +6167,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       seen.add(mod);
     }
 
-    // virtual is a no-op: all inherited functions are implicitly virtual in SolidCash
-    if (mods.includes(FunctionModifier.VIRTUAL)) {
-      const loc = this.diagLine(node.location);
-      emitCompilerWarning(`Warning: 'virtual' function modifier is a no-op in SolidCash${loc}. All inherited functions are implicitly virtual.`);
-    }
-
     // At most one visibility modifier
     const visibilityMods = mods.filter((m) => [
       FunctionModifier.INTERNAL, FunctionModifier.EXTERNAL,

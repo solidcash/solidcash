@@ -4,6 +4,7 @@
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction, Artifact } from '@solidcash/utils';
+import type { UnlockableUtxo } from '../interfaces.js';
 import {
   createDynamicChunkUnlocker,
   createEntryNftUnlocker,
@@ -66,8 +67,8 @@ export function rebindDeriveFullExternalResourceMaster(
   const stateContract = group.externalContract as DeriveFullEntryContract | null;
   const delegateGroup = group.delegateCallGroupIndex === undefined
     ? undefined : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
-  const entryContract = group.delegateCallGroupIndex === undefined
-    ? stateContract : delegateGroup?.externalContract as DeriveFullEntryContract | undefined;
+  // A delegated group's records bind its proxy master's lock, not the implementation's.
+  const entryContract = stateContract;
   const abiFunction: AbiFunction | undefined = delegateGroup?.compilerRoute?.abiFunction
     ?? delegateGroup?.externalContract.inner.artifact.abi?.find(
       (candidate: { name: string }) => candidate.name === delegateGroup.functionName,
@@ -77,6 +78,18 @@ export function rebindDeriveFullExternalResourceMaster(
       (candidate: { name: string }) => candidate.name === group.functionName,
     ) as AbiFunction | undefined;
   if (!entryContract) return false;
+  const ownerCollections = (entryContract.inner.artifact.stateLayout?.collections ?? [])
+    .map((collection) => collection.name);
+  // A record keeps the covenant it carries. A block shared with another call to this callee holds that call's
+  // records, which the slot's own access does not name.
+  const entryUnlockerFor = (input: UnlockableUtxo, collection: string): ReturnType<typeof createEntryNftUnlocker> => {
+    const current = binToHex(input.unlocker.generateLockingBytecode());
+    for (const owned of ownerCollections) {
+      const candidate = createEntryNftUnlocker(entryContract.inner as any, entryMasterIdx, group.categoryId, owned);
+      if (binToHex(candidate.generateLockingBytecode()) === current) return candidate;
+    }
+    return createEntryNftUnlocker(entryContract.inner as any, entryMasterIdx, group.categoryId, collection);
+  };
   let rebound = false;
   for (let slotIndex = 0; slotIndex < group.blockLayout.slots.length; slotIndex++) {
     const slot = group.blockLayout.slots[slotIndex];
@@ -84,9 +97,7 @@ export function rebindDeriveFullExternalResourceMaster(
     if (slot?.kind !== 'entry' || !input?.token?.nft) continue;
     const access = entryAccessAt(abiFunction, slot.slotIndex ?? 0);
     if (!access) continue;
-    input.unlocker = createEntryNftUnlocker(
-      entryContract.inner as any, entryMasterIdx, group.categoryId, access.collection,
-    );
+    input.unlocker = entryUnlockerFor(input, access.collection);
     rebound = true;
   }
   const collections: string[] = [];

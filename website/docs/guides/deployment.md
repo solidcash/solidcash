@@ -355,18 +355,21 @@ run it. Test the complete flow on chipnet or regtest before using mainnet author
 
 ## CashToken metadata
 
-Every genesis the SDK builds leads with the category's [BCMR][bcmr] identity output at output 0: whoever spends it
-publishes the category's metadata. By default it is a dust output at the deployer's lock; keep it out of everyday
-coin selection, or choose another `identity` policy:
+Every genesis the SDK builds leads with the category's [BCMR][bcmr] identity output at output 0: the category's
+**authhead contract**, a small covenant whose address is unique to the category. It holds a mutable NFT of the
+category whose commitment names the identity's owner: the deployer's lock by default, or the `identity.owner` you
+pass (a P2PKH, P2SH20 or P2SH32 lock, as bytecode or an address). The owner is no part of the contract's state, and
+the contract's calls never touch the authhead.
 
-| Policy | Output 0 | Who can publish |
+Only the owner spends it, with exactly one token-free coin of theirs beside it, which pays the fee. A spend does one
+of four things:
+
+| Spend | Output 0 afterwards | Effect |
 | --- | --- | --- |
-| `{ kind: 'key' }` (default) | A token-free output at the deployer's lock, or the `lockingBytecode` you give. | The holder of that lock. |
-| `{ kind: 'authguard', authKeyFunding }` | The AuthGuard covenant; an AuthKey NFT of a second category goes to you. | The AuthKey holder. |
-| `{ kind: 'authguard', authKeyCategory }` | The AuthGuard covenant keyed to an AuthKey category you already hold. | The AuthKey holder. |
-| `{ kind: 'frozen' }` | An unspendable lock, so the genesis registry is final. | Nobody. |
-| `{ kind: 'burned' }` | `OP_RETURN`; wallets archive the identity. | Nobody. |
-| `{ kind: 'governed' }` | A guard that publishes what the contract authorizes through `BcmrGoverned`. | The contract's own access control. |
+| update | the authhead, same owner | publishes a new registry, or carries the current one over |
+| transfer | the authhead, a new owner | hands the identity to the new owner's lock |
+| freeze | an unspendable lock | the current registry is final |
+| burn | `OP_RETURN` | the identity ends |
 
 Pass `bcmr` to publish a registry in the genesis itself, at output 1. For a token that implements `name()`,
 `symbol()` and `decimals()`, the SDK reads them from the contract and refuses stated values that disagree.
@@ -381,7 +384,7 @@ constructed with another category:
 ```ts
 const tokenCoin = /* a token-free coin of yours at vout 0 */;
 const token = await factory.deploy(hexToBin(tokenCoin.txid), {
-  identity: { kind: 'key' },
+  identity: { owner: 'bitcoincash:q...' }, // omit to own it with the deployer's lock
   bcmr: { description: 'A dollar ledger.', uris: { icon: 'ipfs://...', web: 'https://example.org' } },
   nativeToken: { funding: tokenCoin, reserve: 1_000_000_000n },
 });
@@ -391,9 +394,24 @@ const { bytes, uris } = token.deploymentRegistry()!; // host these exact bytes a
 The registry then describes two identities: the token's category, with its name, symbol, decimals and reserve, and
 the contract's, which labels the contract's NFTs.
 
-The publication defaults to the registry's IPFS CID, so pin the returned bytes as one raw block. Update later with
-`publishMetadata` (or `applyGovernedMetadata` under `governed`) from `solidcash/bcmr`. Categories a contract creates
-(`new C()`, factory deployments) keep their identity output at the creating master, so do not rely on their
+The publication defaults to the registry's IPFS CID, so pin the returned bytes as one raw block. Spend the identity
+later with `publishMetadata` from `solidcash/bcmr`, passing the owner's coin and an `action` (`update`, the default,
+`transfer`, `freeze` or `burn`):
+
+```ts
+import { publishMetadata, resolveIdentity, withSnapshot } from 'solidcash/bcmr';
+
+const identity = await resolveIdentity(provider, categoryId); // proven back to the genesis
+const { identity: next } = await publishMetadata({
+  provider, identity: identity!, owner: { utxo: ownerCoin, unlocker: owner.unlockP2PKH() },
+  registry: withSnapshot(registry, categoryId, { name: 'Dollar v2' }, new Date().toISOString()),
+  changeAddress: owner.getAddress(),
+});
+```
+
+`new C()` deploys its child as a genesis of its own, with its own authhead. Categories a contract creates inside a
+call (`deployFrom`, message-bus child deployments, a framed proxy whose initializer makes calls) are moving to the
+same layout; until then their identity output is the creating transaction's output 0, so do not rely on their
 self-published metadata. See [CashTokens](/docs/guides/cashtokens#cashtokens-bcmr-metadata).
 
 [bcmr]: https://cashtokens.org/docs/bcmr/chip/

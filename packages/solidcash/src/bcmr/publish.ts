@@ -15,7 +15,7 @@ import { genesisOutpointKey, reserveGenesisOutpoint } from '../stateful/genesis-
 import { publicationOf } from './authchain.js';
 import type { PublishedRegistry } from './deployment.js';
 import {
-  authGuardLockingBytecode, authGuardUnlocker, identityOutput, lockOf, type IdentityRecord,
+  authGuardLockingBytecode, authGuardUnlocker, authKeyCategoryOf, identityOutput, lockOf, type IdentityRecord,
 } from './identity.js';
 import {
   BcmrError, dataCarrierBytes, ipfsCidV1Raw, publicationOutput,
@@ -38,7 +38,11 @@ export type CurrentIdentity =
 /** How output 0 is held after the update. */
 export type NextIdentity =
   | { readonly kind: 'key'; readonly lockingBytecode: Uint8Array | string }
-  | { readonly kind: 'authguard' }
+  /**
+   * The standard AuthGuard keyed to `authKeyCategory`, an AuthKey category minted beforehand (4.2); the current
+   * guard's when omitted. A move into another guard publishes a registry, and the category must be none it names.
+   */
+  | { readonly kind: 'authguard'; readonly authKeyCategory?: string }
   | { readonly kind: 'frozen' }
   | { readonly kind: 'burned' };
 
@@ -49,8 +53,9 @@ export interface PublishMetadataOptions {
   readonly current: CurrentIdentity;
   /**
    * The registry to publish. An update without one re-publishes the publication of the authhead it spends, so the
-   * identity keeps its registry (R2) and a key-held output 0 stays recognisable as an identity output (4.4); a
-   * key-held update needs one when that authhead publishes nothing.
+   * identity keeps its registry (R2) and a key-held output 0 stays recognisable as an identity output (4.4). An
+   * update that keeps the identity needs one when that publication cannot be read, and a move into another AuthGuard
+   * always does, naming its AuthKey category as `extensions.authNft` (4.2).
    */
   readonly registry?: MetadataRegistry;
   /** The URIs the publication offers; `ipfs://<CIDv1 of the registry>` when omitted. */
@@ -76,10 +81,43 @@ function nextOf(current: CurrentIdentity, identity: Utxo, next: NextIdentity | u
   return { kind: 'key', lockingBytecode: lock };
 }
 
-/** The publication output of the authhead `txid`, or undefined when it has none or its transaction is not served. */
-async function currentPublication(provider: NetworkProvider, txid: string): Promise<Uint8Array | undefined> {
+/** The categories `registry` names: its registry identity and every identity it describes, lowercase. */
+function registryCategories(registry: MetadataRegistry): string[] {
+  const own = typeof registry.registryIdentity === 'string' ? [registry.registryIdentity] : [];
+  return [...own, ...Object.keys(registry.identities ?? {})].map((category) => category.toLowerCase());
+}
+
+/**
+ * The AuthKey category guarding output 0 under `next`. A move into another guard names a category minted beforehand
+ * and publishes a registry; as at deployment (4.2), the category is none of the identity's own, which it names.
+ */
+function guardCategoryOf(
+  current: CurrentIdentity, next: Extract<NextIdentity, { kind: 'authguard' }>, registry: MetadataRegistry | undefined,
+): string {
+  const kept = current.kind === 'authguard' ? current.authKeyCategory.toLowerCase() : undefined;
+  if (next.authKeyCategory === undefined) {
+    if (kept === undefined) {
+      throw new BcmrError('a key identity moves into AuthGuard keyed to an AuthKey category minted beforehand: name it');
+    }
+    return kept;
+  }
+  const category = authKeyCategoryOf({ kind: 'authguard', authKeyCategory: next.authKeyCategory });
+  if (category === kept) return category;
+  if (registry === undefined) {
+    throw new BcmrError('a move into AuthGuard publishes a registry naming the AuthKey category as authNft: pass one');
+  }
+  if (registryCategories(registry).includes(category)) {
+    throw new BcmrError('the AuthKey category must differ from every category the identity\'s registry names');
+  }
+  return category;
+}
+
+/** The publication output of the authhead `txid`, or why there is none to carry over. */
+async function currentPublication(provider: NetworkProvider, txid: string): Promise<Uint8Array | string> {
   const transaction = await servedTransaction(provider, txid.toLowerCase());
-  return typeof transaction === 'object' ? publicationOf(transaction) : undefined;
+  if (transaction === undefined) return 'the provider does not serve its transaction';
+  if (typeof transaction === 'string') return transaction;
+  return publicationOf(transaction) ?? 'its transaction publishes nothing';
 }
 
 /** Spends an identity output to publish a new registry, or to move, freeze or burn the identity. */
@@ -98,11 +136,10 @@ export async function publishMetadata(options: PublishMetadataOptions): Promise<
   if (feeRefusal !== undefined) throw new BcmrError(feeRefusal);
 
   let nextOutput: Output;
+  let guardCategory: string | undefined;
   if (next.kind === 'authguard') {
-    if (current.kind !== 'authguard') {
-      throw new BcmrError('moving an identity into AuthGuard needs an AuthKey category: deploy with the authguard policy');
-    }
-    const to = authGuardLockingBytecode(current.authKeyCategory);
+    guardCategory = guardCategoryOf(current, next, options.registry);
+    const to = authGuardLockingBytecode(guardCategory);
     nextOutput = { to, amount: satoshisAtLeastDust(identity.satoshis, { to }) };
   } else {
     nextOutput = identityOutput(next.kind, next.kind === 'key' ? lockOf(next.lockingBytecode) : new Uint8Array(0));
@@ -112,19 +149,21 @@ export async function publishMetadata(options: PublishMetadataOptions): Promise<
   const published: PublishedRegistry | undefined = encoded === undefined ? undefined : {
     ...encoded, uris: options.publicationUris ?? [`ipfs://${ipfsCidV1Raw(encoded.bytes)}`],
   };
-  // A key-held output 0 of a transaction that neither creates a category nor publishes reads as a plain coin.
+  // Without a registry the authhead's publication carries over. An update keeping the identity that cannot read it
+  // would drop the registry (R2), for good once frozen, and leave a key-held output 0 a plain coin (4.4).
   const carried = published !== undefined || next.kind === 'burned'
     ? undefined : await currentPublication(options.provider, identity.txid);
-  if (published === undefined && carried === undefined && next.kind === 'key') {
-    throw new BcmrError(`identity output ${identity.txid}:0 has no publication to carry over, and a key-held `
-      + 'update without one would leave output 0 an ordinary coin: pass the registry to publish');
+  if (typeof carried === 'string') {
+    throw new BcmrError(`identity output ${identity.txid}:0 has no publication to carry over (${carried}), and an `
+      + 'update that keeps the identity needs one: pass the registry to publish');
   }
 
   const { TransactionBuilder } = await import('../TransactionBuilder.js');
   const builder = new TransactionBuilder({ provider: options.provider });
   if (current.kind === 'authguard') {
-    // AuthGuard reads the AuthKey at input 1 and requires its own recreation at output 0 to keep the guard.
-    builder.addInput(identity, authGuardUnlocker(current.authKeyCategory, next.kind === 'authguard'));
+    // AuthGuard reads the AuthKey at input 1. Kept, it must recreate itself at output 0; any other output 0 releases it.
+    const kept = guardCategory === current.authKeyCategory.toLowerCase();
+    builder.addInput(identity, authGuardUnlocker(current.authKeyCategory, kept));
     builder.addInput(current.authKey, current.authKeyUnlocker);
   } else {
     builder.addInput(identity, current.unlocker);
@@ -166,7 +205,7 @@ export async function publishMetadata(options: PublishMetadataOptions): Promise<
       satoshis: nextOutput.amount,
       policy: next.kind,
       lockingBytecode,
-      ...(current.kind === 'authguard' && next.kind === 'authguard' ? { authKeyCategory: current.authKeyCategory } : {}),
+      ...(guardCategory === undefined ? {} : { authKeyCategory: guardCategory }),
     },
     ...(published === undefined ? {} : { registry: published }),
   };

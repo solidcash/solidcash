@@ -256,13 +256,18 @@ and CID abbreviated):
 
 - spends the current identity output (`current`): a `key` identity with its unlocker, or an `authguard` one with its
   AuthKey, which it puts at input 1 and returns to its holder;
-- recreates output 0 under the same policy or `next`: key rotation, freezing or burning. Moving into AuthGuard needs
-  the AuthKey category a deployment creates, so it starts at deployment;
+- recreates output 0 under the same policy or `next`: key rotation, a move into AuthGuard, freezing or burning. A
+  kept AuthGuard recreates itself at output 0; any other output 0 releases it (R10);
+- moves into AuthGuard with `next: { kind: 'authguard', authKeyCategory: K }`, K an AuthKey category minted
+  beforehand, as a deployment may name one (4.2); a guarded identity moves to another K the same way. The move
+  publishes a registry whose snapshots should name K as `extensions.authNft`, which the standard asks of an identity
+  that adopts AuthGuard after its genesis. K must be none of the categories that registry names, so never C or X;
 - puts the new publication at output 1. `withSnapshot` adds a snapshot to the registry (a minor version bump, per the
   schema's versioning rules) rather than editing the old one;
 - without a registry, re-publishes the spent authhead's publication at output 1 (a burn publishes nothing: its
   output 0 ends the identity, 4.2), so the identity keeps its registry (R2) and a key-held output 0 stays an
-  identity output (4.4). A key-held update of an authhead that publishes nothing is refused: it needs a registry.
+  identity output (4.4). Any other update without a registry is refused when it cannot read that publication,
+  because the provider does not serve the authhead or the authhead publishes nothing: it needs a registry.
 
 A `governed` identity updates through `applyGovernedMetadata` instead (section 9).
 

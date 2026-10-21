@@ -1,9 +1,9 @@
 # BCMR metadata at deployment: design
 
 Kind: design, implemented in `packages/solidcash/src/bcmr/` (section 11 maps the code). Decisions taken on it are
-recorded in `docs/framed/DECISIONS.md` (D32, D33, D46, D47), and anything deferred in
+recorded in `docs/framed/DECISIONS.md` (D32, D33, D46, D47, D48), and anything deferred in
 `packages/solidc/docs/deferrals.md`; those ledgers win over this file. Written 2026-10-20 against master `769adb889`,
-revised to the implementation the same day, and on 2026-10-21 for the authhead contract (D46, D47).
+revised to the implementation the same day, and on 2026-10-21 for the authhead contract (D46 to D48).
 
 Sources: CHIP-BCMR at `bitjson/chip-bcmr` commit `0e8417c` (2024-01-31), the CashTokens specification, the AuthGuard
 standard (CHIP-2023-08, v0.1.2) and libauth 3.1.0-next.8 (`build/lib/engine/types/bcmr-types.d.ts`). Code is cited
@@ -29,8 +29,8 @@ The design:
 2. A deployment can publish its registry in the genesis itself, at output 1 (section 5).
 3. ERC-20-shaped tokens publish name, symbol and decimals checked against the contract before anything is
    broadcast, with the premint in the same genesis (section 6).
-4. A category a contract creates gets its authhead at output 0 of the creating transaction, through a leading slot
-   (section 7).
+4. BCMR for a category a contract creates inside a call is unsupported; framed `new C()` and the framed proxy's
+   calling genesis still lead with their own authhead (section 7).
 5. A deployment can label its own NFTs for explorers (section 8).
 
 ## 2. The BCMR rules this design depends on
@@ -415,43 +415,30 @@ of it. The first `wrap` then creates the container.
 
 ## 7. Categories created by contracts
 
-A category a contract creates takes the creating transaction's output 0 as its identity output (R1): the creating
-transaction spends the reserved genesis coin, so it is the child's second authchain transaction. The layouts used to
-put the creating contract's own participant there: the factory's master in direct `deployFrom`, participant 0's
-master in a message-bus composition, and the first callee's validator in the framed proxy's calling genesis. Every
-call then extended the child's authchain, and anyone able to make a call could publish for it.
+BCMR metadata for a category a contract creates inside a call is **unsupported** (DECISIONS D48). Such a category
+takes the creating transaction's output 0 as its identity output (R1), because that transaction spends the reserved
+genesis coin. The layouts put the creating contract's own participant there: the factory's master in direct
+`deployFrom` (`packages/solidcash/src/stateful/sc-deploy-from.ts`), and participant 0's master in a message-bus child
+deployment (`packages/solidcash/src/message-bus/compose-materialize-deployments.ts`). Every call of that contract
+then extends the child's authchain, and anyone able to make one can publish for it. The SDK publishes nothing for a
+child and resolves no identity for it (`resolveIdentity` finds no authhead), and clients should not trust metadata
+published for a contract-created category.
 
-Options considered: a validator census rule refusing BCMR publications (a new validator version, new framed
-addresses); option C, accepting the exposure (taken first, D32); and B, reserving output 0 for the child. Taken: B in
-a narrow form, a **leading slot** in creating transactions only (D47, the user's answer that the block layout is
-agnostic to the master's starting index). Every other participant shifts by one index; covenants address their blocks
-from their own input index, so they are unaffected.
+A leading slot that puts the child's authhead at output 0 was built for direct `deployFrom` (D47) and then reverted
+(`dc4232e07`). It moved the factory's master to input 1 in every creating call, so contract code reading
+`tx.inputs[i]` at a fixed index saw another input, and it needed its own covenant rules in each convention. The
+user judged that too complicated for what it bought.
 
-| Path | Input 0 | Output 0 | Who checks output 0 |
-| --- | --- | --- | --- |
-| direct `deployFrom` (`packages/solidcash/src/stateful/sc-deploy-from.ts`) | a token-free coin of the funder's that pays for the authhead; the genesis coin stays in its block slot | the first child's authhead | the factory's covenant: lock, category and capability (`buildAuthheadOutputCheck` in `packages/utils/src/authhead.ts`, 72 bytes), and one more mutable NFT of the child in its output count |
-| framed proxy's calling genesis (`packages/solidcash/src/framed/proxy/deploy.ts`) | the proxy's genesis coin, a leading input of the composition (`layoutTransaction`) | the proxy's authhead | the proxy's minted root block declares it a created record, so the validator's census admits exactly it; the validator program is unchanged |
-| message-bus child deployment (`packages/solidcash/src/message-bus/`) | a token-free coin, as in `deployFrom` | the child's authhead | the bus verifier (in progress) |
+Not affected:
 
-Further points:
-
-- The child's owner defaults to the creating contract's identity owner (`resolveIdentity` of its category), else the
-  funder's P2PKH lock, else the change address. `deployFrom` takes `childIdentity: { owner }`. No covenant pins the
-  owner: it lives outside every contract's state, so a caller of a permissionless factory may name its own.
-- Children created in one transaction share its output 0, so the first child's authhead also holds the identities of
-  the others, as C and X share one at deployment (6.2).
-- In a creating call the master sits at input 1. Contract code that reads `tx.inputs[i]` or `tx.outputs[i]` at a fixed
-  index, or `this.activeInputIndex`, sees the leading slot there.
-- The compiler marks a leading deploy target `leadsIdentity`, and the SDK adds the slot only for an artifact that
-  carries it, so artifacts compiled before keep their layout.
-- Shapes that keep the master at input 0, and so keep the old exposure (`packages/solidc/docs/deferrals.md`): a
-  loop's deploys and a later conditional site; a multi-site function with a conditional, which verifies every site
-  against its runtime counter; a function that co-spends keccak or ecrecover compute side-cars, which bind their salt
-  to input 0's category; and the regtest provider's fixture categories (`addUtxo` geneses, the block oracle).
-- Framed `new C()` is not among these paths: the SDK reserves the child's genesis coin ahead
+- Framed `new C()`: the SDK reserves the child's genesis coin ahead
   (`packages/solidcash/src/framed/deploy/create-lookahead.ts`) and deploys the child as a top-level genesis through
-  `ContractFactory`, so it leads with its own authhead.
-- The calling genesis carries the registry publication the proxy's deploy options state, after its settled outputs;
+  `ContractFactory`, so the child leads with its own authhead like any deployment.
+- The framed proxy's calling genesis (`packages/solidcash/src/framed/proxy/deploy.ts`): a proxy whose initializer
+  calls another contract is the deployer's own deployment, minted in one composition with the callee's frames. Its
+  genesis coin leads that composition (`layoutTransaction`'s leading inputs), its output 0 is the proxy's authhead,
+  and the minted proxy root declares that output a created record, so the validator's census admits exactly it; the
+  validator program is unchanged (D47). The genesis also carries the publication the proxy's deploy options state;
   a `nativeToken` premint there is refused.
 
 ## 8. Describing the contract's own NFTs
@@ -559,7 +546,8 @@ Tests run on mocknet only, which is the user's standing rule.
 | The authhead in every genesis, the owner, `resolveIdentity`, the identity-output rule | `bcmr/identity.ts`, `bcmr/authchain.ts`, `stateful/sc-deploy.ts`, `framed/deploy/stateful.ts`, `framed/deploy/own-coin.ts`, `framed/deploy/records.ts` | `test/e2e/BcmrDeployment.test.ts`, `BcmrIdentityOwner.test.ts`, `BcmrGenesisLayout.test.ts`, `BcmrIdentityCoinRule.test.ts`; `test/framed/deploy/proxy-deployment.test.ts` pins the framed layout |
 | Publication, registry, IPFS CID, `publishMetadata` | `bcmr/publication.ts`, `bcmr/registry.ts`, `bcmr/publish.ts` | `BcmrDeployment.test.ts`, `BcmrPublication.test.ts` |
 | ERC-20 fields, premint, probe check | `bcmr/deployment.ts`, `bcmr/token.ts` | `BcmrDeployment.test.ts` with `test/fixture/bcmr_metadata_token.scash` |
-| Contract-created categories: the leading slot | `stateful/sc-deploy-from.ts`, `stateful/sc-derive-commitments.ts`, `framed/proxy/deploy.ts`, `framed/composer/layout.ts`; the compiler's `leadingDeployNode` and `emitAuthheadOutputCheck` in `packages/solidc/src/generation/GenerateTargetTraversal.ts` | `test/e2e/BcmrChildIdentity.test.ts`; `test/framed/deploy/proxy-calling-genesis-identity.test.ts` |
+| The framed proxy's calling genesis leads with its authhead | `framed/proxy/deploy.ts`, `framed/composer/layout.ts` | `test/framed/deploy/proxy-calling-genesis-identity.test.ts` |
+| Contract-created categories | unsupported (D48) | |
 | Generated NFT labels | `bcmr/nft-parse.ts`, `bcmr/nft-roles.ts` | `test/e2e/BcmrNftParse.test.ts` |
 | BchNative's own bearer category | `contracts/BchNative.scash`; the `state` container key in `packages/solidc/src/semantic/SymbolTableTraversal.ts` and `stateful/sc-load-create-builder-token-containers.ts` | the BchNative e2e files; `test/e2e/BchNativeFramed.test.ts` (framed genesis, wrap, unwrap, drain) |
 
@@ -570,7 +558,8 @@ Paths are under `packages/solidcash/` unless stated.
 - The identity output is the authhead contract, owned by a lock outside the contract's state, with the owner's
   update, transfer, freeze and burn: D46, the user's answers. It supersedes D31 (AuthGuard opt-in) and D32's `key`
   default and contract-governed metadata.
-- A category a contract creates gets a leading slot in the creating transaction: D47.
+- BCMR for a category a contract creates inside a call is unsupported: D48, the user's answer. The leading slot
+  (D47) survives only in the framed proxy's calling genesis.
 - BchNative's bearer form is a category of its own: D33.
 - The other open decisions this design listed were taken as its own recommendations when it was implemented (D32):
   stated ERC-20 fields are checked and refused on mismatch, the symbol case-insensitively; the native scale is

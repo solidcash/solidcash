@@ -2996,48 +2996,27 @@ arbitrate titles.
 
 ## The BCMR identity of a category a contract creates sits at the creating master (2026-10-20)
 
-**RESOLVED 2026-10-21 for direct `deployFrom` (`61b445ec5`) and the framed proxy's calling genesis (`f1fc26e87`)**,
-by a leading slot that puts the child's authhead at output 0 (`docs/framed/DECISIONS.md` D47); message-bus child
-deployments are in progress. Framed `new C()` was never affected: the SDK deploys that child as a top-level genesis.
-The shapes that keep the old layout are the next entry.
+**UNSUPPORTED by decision 2026-10-21 (`docs/framed/DECISIONS.md` D48).** A leading slot for direct `deployFrom`
+was built and reverted (`dc4232e07`); child deployments keep this layout, and BCMR for their categories is
+unsupported. Framed `new C()` was never affected (the SDK deploys that child as a top-level genesis), and the framed
+proxy's calling genesis leads with its own authhead (`f1fc26e87`).
 
-**What:** a category created inside a composition (framed `new C()`, the framed proxy's calling genesis, direct
-`deployFrom`, message-bus child deployments) takes the creating transaction's output 0 as its BCMR identity output,
-and the composition layout puts a participant of the creating contract there. Any later spend of that output can
-publish metadata for the child category, and every child created through the same master shares its lineage
-(`docs/bcmr/DESIGN.md`, section 7). Top-level geneses are unaffected: they lead with a dedicated identity output.
+**What:** a category created inside a call (direct `deployFrom`, message-bus child deployments) takes the creating
+transaction's output 0 as its BCMR identity output, and the layout puts a participant of the creating contract there.
+Any later spend of that output can publish metadata for the child category, and every child created through the same
+master shares its lineage (`docs/bcmr/DESIGN.md`, section 7). Top-level geneses lead with their authhead.
 
-**Why deferred:** the SDK cannot place the child's identity output, because the layout fixes output 0. The two fixes
-are protocol changes: a validator census rule refusing any output with the `6a0442434d52` prefix (a new validator
-version, so new framed addresses, and its own rule in each direct master), or reserving output 0 in category-creating
-compositions (breaks in-place recreation from index 0). Chosen as option C of the design under the user's goal to
-implement it fully (DECISIONS D32).
+**Why deferred:** the fix moves the creating contract's master off input 0 in every creating call, which changes what
+contract code reading `tx.inputs[i]` at a fixed index sees, and needs covenant rules of its own in each convention;
+the user judged that too complicated (D48).
 
-**What it'd take:** option A: the prefix check in `checkCensus` and the head program, a size measurement against the
-head's padding, and a mixed-version composition check.
+**What it'd take:** the reverted leading slot (`61b445ec5`, `62e2d7301`): a token-free coin at input 0 for the child's
+authhead at output 0, the factory's covenant checking that output and counting its NFT, and the same in the bus
+verifier; or a census rule refusing BCMR publications in compositions (a new validator version).
 
 **Revisit if:** a factory issues user-facing tokens, or a client starts trusting self-published metadata of
 contract-created categories.
 
-## Creating calls that keep the master at input 0, and so the child's identity there (2026-10-21)
-
-**What:** D47 leads a creating transaction with the child's authhead, but these shapes keep the old layout, so the
-child's identity output stays the creating transaction's output 0 (the factory's master) and every call extends it:
-a loop's deploys, and a conditional site that is not the function's first; a multi-site function with a
-conditional, which verifies every site against its runtime counter; a function that co-spends keccak or ecrecover
-compute side-cars, whose generated scripts bind their salt to input 0's category, the master's; artifacts compiled
-before `leadsIdentity`; and the regtest provider's fixture categories (`addUtxo` geneses and the block oracle).
-
-**Why deferred:** each needs its own covenant work: a counter-gated authhead check for loops and counted sites, and
-regenerated side-car scripts that find the master by index rather than at input 0, which moves every side-car
-address. None is on a ladder title's path, and the regtest fixtures run on regtest only.
-
-**What it'd take:** for loops, check output 0 when the counter is 0 and bump that child's counts; for side-cars,
-regenerate the compute side-cars with a master-index witness; for the fixtures, a token-free output 0 ahead of the
-fixture output, which the regtest suite would have to confirm.
-
-**Revisit if:** a factory that issues user-facing tokens creates them in a loop, or a creating function hashes with
-keccak or recovers keys.
 ## Framed token containers pay one fungible category from one frame (2026-10-20)
 
 **RESOLVED 2026-10-20.** A container now belongs to the master its unlocking names (`docs/framed/DECISIONS.md` D37),
@@ -3209,7 +3188,7 @@ whose fixed entry lock mismatch goes through the value-chunk derivation.
 
 ## The SDK cannot find a BCMR identity's current authhead itself (2026-10-21)
 
-**RESOLVED 2026-10-21 (`f37b6aaee`).** The identity output is now the category's authhead contract, at an address
+**RESOLVED 2026-10-21 (`8002d4f12`).** The identity output is now the category's authhead contract, at an address
 unique to the category (DECISIONS D46), so `resolveIdentity(provider, category)` lists that address and proves the
 candidate by walking its authchain back to the genesis with the transactions the provider serves; no spender query is
 needed. `test/e2e/BcmrAuthhead.test.ts` resolves an identity past a look-alike and after a spend.

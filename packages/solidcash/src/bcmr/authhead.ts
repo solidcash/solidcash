@@ -25,7 +25,7 @@ import { BcmrError } from './publication.js';
 
 const OP_RETURN = 0x6a;
 
-/** The authhead body, shared with the compiler's check of a child's authhead (`@solidcash/utils`). */
+/** The authhead body (`@solidcash/utils`). */
 export { AUTHHEAD_BODY };
 
 /** The lock of a frozen identity: P2SH32 of `OP_RETURN`. Anyone holding the redeem script `6a` can check it. */

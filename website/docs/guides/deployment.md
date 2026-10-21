@@ -409,11 +409,10 @@ const { identity: next } = await publishMetadata({
 });
 ```
 
-`new C()` deploys its child as a genesis of its own, with its own authhead. A category a contract creates inside a
-call gets its authhead at output 0 of the creating transaction: a `deployFrom` and a framed proxy whose initializer
-makes calls lead that transaction with a coin for it, so the factory's master moves to input 1 there. The child's
-owner defaults to the factory's identity owner; `deployFrom` takes `childIdentity: { owner }`. A few shapes keep the
-old layout (a deploy in a loop, a function that hashes with keccak or recovers keys), so do not rely on their
-children's self-published metadata. See [CashTokens](/docs/guides/cashtokens#cashtokens-bcmr-metadata).
+`new C()` deploys its child as a genesis of its own, with its own authhead, and a framed proxy whose initializer calls
+another contract leads its genesis with the proxy's authhead too. BCMR metadata for a category a contract creates
+inside a call (`deployFrom`, message-bus child deployments) is unsupported: that category's identity output is the
+creating transaction's output 0, the factory's own participant, so do not rely on metadata published for it. See
+[CashTokens](/docs/guides/cashtokens#cashtokens-bcmr-metadata).
 
 [bcmr]: https://cashtokens.org/docs/bcmr/chip/

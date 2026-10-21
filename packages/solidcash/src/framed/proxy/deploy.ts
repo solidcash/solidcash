@@ -52,6 +52,8 @@ import {
   encodeFunctionArgument, encodeFunctionArguments, type ConstructorArgument, type FunctionArgument,
 } from '../../Argument.js';
 import { authheadLockingBytecode } from '../../bcmr/authhead.js';
+import type { PublishedRegistry } from '../../bcmr/deployment.js';
+import { publicationOutput } from '../../bcmr/publication.js';
 import {
   identityRecord, isP2pkhLock, planGenesisIdentity, type GenesisIdentity, type IdentityRecord,
 } from '../../bcmr/identity.js';
@@ -226,6 +228,8 @@ export interface FramedProxyHalf {
   readonly tx: DeployResult['tx'];
   /** The genesis's identity output, output 0, which holds the category's BCMR authority. */
   readonly identity?: IdentityRecord;
+  /** The registry the genesis published, with the URIs its publication offers. */
+  readonly registry?: PublishedRegistry;
 }
 
 /** The machine's verdict on one participant of the initialize transaction. */
@@ -1372,6 +1376,13 @@ export async function deployFramedProxy(
   // broadcast spends and recreates at its live value. The genesis's funding coin leads it, so its output 0 is the
   // proxy's authhead and the proxy's authchain starts at its own genesis, not at another contract (D47).
   const callingGenesis = !separateHop && externalPlan.callees.length > 0;
+  // The calling composition mints the proxy and carries no token premint, so one is refused rather than dropped.
+  if (callingGenesis && options.proxyDeploy.nativeToken !== undefined) {
+    throw new FramedProxyDeployError(
+      'a proxy whose initializer calls another contract is minted by that composition, which carries no token '
+        + 'premint: deploy the token without `nativeToken`, or pass `initializeAs: \'hop\'`',
+    );
+  }
   // The genesis's funding coin is its leading input, signed by the proxy's funder rather than a root caller.
   const genesisFunderLock = callingGenesis ? proxyFunderLock : undefined;
   const runningValidator = callingGenesis
@@ -1437,6 +1448,9 @@ export async function deployFramedProxy(
     implementationCategoryId: implementation.categoryId,
     program,
     draft,
+    // A calling genesis is the proxy's genesis, so it carries the publication the probe genesis prepared.
+    ...(callingGenesis && proxy.registry !== undefined
+      ? { publication: publicationOutput(proxy.registry.sha256, proxy.registry.uris) } : {}),
     ...(callingGenesis
       ? { spentUtxos: new Map([
         ...(entryWrites?.spentUtxos ?? []), ...externalPlan.utxos, ...facetSpends, [VALIDATOR_ID, runningValidator!],
@@ -1449,6 +1463,7 @@ export async function deployFramedProxy(
     ? {
       contract: proxy.contract, tx: broadcast, categoryId: proxy.categoryId,
       identity: identityRecord(proxyIdentity, broadcast.txid),
+      ...(proxy.registry === undefined ? {} : { registry: proxy.registry }),
     }
     : initialized ?? proxy;
 
@@ -1486,11 +1501,13 @@ export async function deployFramedProxy(
       contract: implementation.contract, categoryId: implementation.categoryId,
       address: implementationMaster.address, tx: implementation.tx,
       ...(implementation.identity === undefined ? {} : { identity: implementation.identity }),
+      ...(implementation.registry === undefined ? {} : { registry: implementation.registry }),
     },
     proxy: {
       contract: proxyGenesis.contract, categoryId: proxyGenesis.categoryId,
       address: proxyMaster.address, tx: proxyGenesis.tx,
       ...(proxyGenesis.identity === undefined ? {} : { identity: proxyGenesis.identity }),
+      ...(proxyGenesis.registry === undefined ? {} : { registry: proxyGenesis.registry }),
     },
     initialize: {
       transaction: program.transaction, sourceOutputs: program.sourceOutputs,
@@ -4928,6 +4945,8 @@ interface BroadcastHopOptions {
   readonly spentUtxos?: ReadonlyMap<string, Utxo>;
   /** The proxy's containers the implementation's sends are paid from, at the indices after the caller's coin. */
   readonly containerInputs?: readonly { readonly index: number; readonly utxo: Utxo }[];
+  /** A calling genesis's BCMR publication, after every settled output: the validator constrains no token-free one. */
+  readonly publication?: Output;
 }
 
 /** The live UTXO a participant sits on, read back by category so no genesis output index is assumed. */
@@ -5320,6 +5339,7 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   for (const output of program.transaction.outputs.slice(0, settled)) {
     builder.addOutput(libauthOutputToSolidCashOutput(output));
   }
+  if (options.publication !== undefined) builder.addOutput(options.publication);
   builder.addBchChangeOutputIfNeeded({
     to: callerFunding.changeAddress ?? options.callerLockingBytecode, feeRate: 1,
   });

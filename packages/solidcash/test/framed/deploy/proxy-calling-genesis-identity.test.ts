@@ -54,7 +54,10 @@ describe('the calling genesis of a framed proxy', () => {
       provider: network,
       implementationArtifact: artifacts.Calling!,
       implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress: wallet.address },
-      proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress: wallet.address },
+      proxyDeploy: {
+        fundingUtxo: proxyFunding, funder, changeAddress: wallet.address,
+        bcmr: { name: 'Calling', timestamp: '2026-10-21T12:00:00.000Z' },
+      },
       initialize: { functionName: 'initialize' },
       callerLockingBytecode: encodeLockingBytecodeP2pkh(alicePkh),
       externals: { IWriter: { artifact: artifacts.Writer!, categoryId: WRITER_CATEGORY } },
@@ -92,5 +95,11 @@ describe('the calling genesis of a framed proxy', () => {
     expect(binToHex(identity.lockingBytecode)).toBe(binToHex(authheadLockingBytecode(PROXY_CATEGORY)));
     expect(binToHex(identity.owner)).toBe(binToHex(ownerLock));
     expect((await resolveIdentity(network, PROXY_CATEGORY))?.txid).toBe(tx.txid);
+
+    // The genesis carries the registry's publication, after the composition's settled outputs.
+    const registry = deployment.proxy.registry!;
+    const publication = tx.outputs.find((output) => binToHex(output.lockingBytecode).startsWith('6a0442434d52'));
+    expect(binToHex(publication!.lockingBytecode)).toContain(binToHex(registry.sha256));
+    expect(registry.registry.identities![PROXY_CATEGORY]).toBeDefined();
   }, 600_000);
 });

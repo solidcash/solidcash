@@ -2146,6 +2146,15 @@ export function evalComputedKey(
       const idx = inputs.findIndex((i) => i.name === m![1]);
       if (idx >= 0) {
         const bound = args[idx];
+        // A string argument of a bytes-like parameter is pushed as its hex (or address) bytes, not as its text.
+        const type = inputs[idx].type;
+        if (typeof bound === 'string' && type !== undefined && /^(?:bytes\d*|byte|address|pubkey|sig|datasig)$/.test(type)) {
+          try {
+            return encodeFunctionArgument(bound, type);
+          } catch {
+            return bound;
+          }
+        }
         // Route frames hand numeric parameters over as JS numbers (and some label paths as decimal strings), while the
         // expression grammar below is numeric: `binop:+` accepts bigints only. Without this normalization an
         // otherwise evaluable key - a dynamic state array indexed by `index_` - silently stays unresolved, and the

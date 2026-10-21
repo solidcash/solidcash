@@ -794,9 +794,15 @@ describe('delegate inference', () => {
 
     // The protocol-wide immutable-event scan must use that same selected base. A bare OP_INPUTINDEX would reject
     // every honest balanced event even though its per-slot covenant passed. The selector may be outlined or inline.
+    // The walk may open with its category-skip loop (OP_BEGIN) before stepping down.
+    const stepsDown = (index: number): boolean => {
+      let at = index + 1;
+      while (instructions[at]?.opcode === OpcodesBCH.OP_BEGIN) at += 1;
+      return instructions[at]?.opcode === OpcodesBCH.OP_1SUB;
+    };
     const authenticatedImmutableEventScan = instructions.some((instruction, index) => (
       instruction.opcode === OpcodesBCH.OP_TXOUTPUTCOUNT
-      && instructions[index + 1]?.opcode === OpcodesBCH.OP_1SUB
+      && stepsDown(index)
       && ((instructions[index - 1]?.opcode === OpcodesBCH.OP_INVOKE
         && readNumber(instructions[index - 2]) === resourceBaseHelperId)
         || (instructions[index - 9]?.opcode === OpcodesBCH.OP_DUP

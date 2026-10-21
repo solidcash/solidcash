@@ -11,9 +11,9 @@ import { compileString } from '../../../src/compiler.js';
  * frame; once more when the record and container covenants were bound to the contract's own lock; and again when
  * the mutable-output check tried the locks the contract mints before scanning inputs; and again when the slot scans
  * became one classifying pass per side that also counts minting uniqueness; and again when the token container
- * covenant lost its merge path and the keep of an unnamed container refused a minting NFT; and again when the
- * direct container covenants took the master pin's destroy arm. A framed compile may add artifacts, but it may not
- * make these two directs disagree.
+ * covenant lost its merge path and the keep of an unnamed container refused a minting NFT (the master pin's destroy
+ * arm moved them only while every contract carried it). A framed compile may add artifacts, but it may not make
+ * these two directs disagree.
  */
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
@@ -35,9 +35,9 @@ const SENDER_CONTRACT = 'pragma solidcash ^0.13.0;'
 
 const CASES = [
   { name: 'a stateful contract with a signature check', source: STATE_CONTRACT,
-    pinnedSha256: 'd6fd53de5b619e6a0abfe2261e070455c736177f85a3ee64124c27d3c9c9ecab' },
+    pinnedSha256: 'd3bd35b5617ccdc1cfad1f28710b07e15f96146435888cfb4d527fbd704a5487' },
   { name: 'a stateful contract that reads msg.sender', source: SENDER_CONTRACT,
-    pinnedSha256: 'b8872b5116201d6399dc9f73b61b5c728f9e8c4ee405ba4c1121978db142bffe' },
+    pinnedSha256: '4c0b7284fe2a9894bc4c62a69061da100fa122e250050dc89694f27a4848104a' },
 ] as const;
 
 describe('the direct convention is unchanged', () => {

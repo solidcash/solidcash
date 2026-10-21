@@ -75,12 +75,14 @@ describe('generated NFT labels', () => {
     });
     const nfts = result.registry!.registry.identities![result.categoryId]![TIMESTAMP]!.token!.nfts!;
     const types = (nfts.parse as { types: Record<string, { name: string; fields?: string[] }> }).types;
-    expect(Object.values(types).map((type) => type.name)).toEqual(['Contract master', 'State record', 'Moved event']);
-    expect(types[nftTypeKeyHex(2n)]!.fields).toEqual(['total', 'open', 'tag']);
-    expect(types[nftTypeKeyHex(3n)]!.fields).toEqual(['Moved.amount', 'Moved.flag']);
+    expect(Object.values(types).map((type) => type.name))
+      .toEqual(['Identity authority', 'Contract master', 'State record', 'Moved event']);
+    expect(types[nftTypeKeyHex(3n)]!.fields).toEqual(['total', 'open', 'tag']);
+    expect(types[nftTypeKeyHex(4n)]!.fields).toEqual(['Moved.amount', 'Moved.flag']);
 
+    expect(parseOutput(nfts, result.tx.outputs[0]!)).toMatchObject({ typeKey: nftTypeKeyHex(1n), fields: [] });
     const master = result.tx.outputs.find((output) => output.token?.nft?.capability === 'minting')!;
-    expect(parseOutput(nfts, master)).toMatchObject({ typeKey: nftTypeKeyHex(1n), fields: [] });
+    expect(parseOutput(nfts, master)).toMatchObject({ typeKey: nftTypeKeyHex(2n), fields: [] });
 
     const ledger = result.contract.connect(alice!) as unknown as {
       move: (amount: bigint) => { send: () => Promise<{ outputs: Output[] }> };
@@ -89,13 +91,13 @@ describe('generated NFT labels', () => {
     const record = call.outputs.find((output) => output.token?.nft?.capability === 'mutable')!;
     const recordParse = parseOutput(nfts, record);
     if (typeof recordParse === 'string') throw new Error(recordParse);
-    expect(recordParse.typeKey).toBe(nftTypeKeyHex(2n));
+    expect(recordParse.typeKey).toBe(nftTypeKeyHex(3n));
     expect(recordParse.fields.map(binToHex)).toEqual(['05', '01', '00'.repeat(20)]);
 
     const event = call.outputs.find((output) => output.token?.nft?.capability === 'none')!;
     const eventParse = parseOutput(nfts, event);
     if (typeof eventParse === 'string') throw new Error(eventParse);
-    expect(eventParse.typeKey).toBe(nftTypeKeyHex(3n));
+    expect(eventParse.typeKey).toBe(nftTypeKeyHex(4n));
     expect(eventParse.fields.map(binToHex)).toEqual(['05', '01']);
   });
 
@@ -129,11 +131,11 @@ describe('generated NFT labels', () => {
     expect(binToHex(event.token!.nft!.commitment)).toBe(`4c50${text}4f0004deadbeef02cafe`);
     const parsed = parseOutput(nfts, event);
     if (typeof parsed === 'string') throw new Error(parsed);
-    expect(parsed.typeKey).toBe(nftTypeKeyHex(3n));
+    expect(parsed.typeKey).toBe(nftTypeKeyHex(4n));
     expect(parsed.fields.map(binToHex)).toEqual([text, '81', '', 'deadbeef', 'cafe']);
   });
 
-  it('labels a framed contract\'s master, validator and record', async () => {
+  it('labels a framed contract\'s identity, master, validator and record', async () => {
     const artifact = compileStringMulti(FRAMED, { composition: 'framed' }).C!;
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const alice = new Signer(alicePriv, provider);
@@ -147,12 +149,13 @@ describe('generated NFT labels', () => {
     const nfts = result.registry!.registry.identities![result.categoryId]![TIMESTAMP]!.token!.nfts!;
     const byCapability = (capability: string): Output => result.tx.outputs
       .find((output) => output.token?.nft?.capability === capability)! as Output;
-    expect(parseOutput(nfts, byCapability('minting'))).toMatchObject({ typeKey: nftTypeKeyHex(1n) });
+    expect(parseOutput(nfts, byCapability('minting'))).toMatchObject({ typeKey: nftTypeKeyHex(2n) });
     const records = result.tx.outputs.filter((output) => output.token?.nft?.capability === 'mutable') as Output[];
     const parsed = records.map((output) => parseOutput(nfts, output));
     const keys = parsed.map((entry) => (typeof entry === 'string' ? entry : entry.typeKey));
-    expect(keys).toContain(nftTypeKeyHex(2n));
+    expect(keys[0]).toBe(nftTypeKeyHex(1n));
     expect(keys).toContain(nftTypeKeyHex(3n));
+    expect(keys).toContain(nftTypeKeyHex(4n));
   });
 
   it('classifies a type only when its fields would not fit the parse budget', () => {

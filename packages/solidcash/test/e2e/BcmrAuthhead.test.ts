@@ -2,17 +2,21 @@
  * The authhead contract (docs/bcmr/DESIGN.md, 4.2), evaluated by the VM: its owner updates, transfers, freezes and
  * burns an identity, and the covenant refuses every other spend and every other move of its NFT.
  */
-import { binToHex, encodeLockingBytecodeP2sh20, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
+import {
+  binToHex, encodeLockingBytecodeP2sh20, encodeLockingBytecodeP2sh32, lockingBytecodeToCashAddress,
+} from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import {
   BURNED_LOCKING_BYTECODE, FROZEN_LOCKING_BYTECODE, authheadLockingBytecode, authheadOutput, authheadRedeemScript,
   authheadUnlocker, ownerLockRefusal,
 } from '../../src/bcmr/authhead.js';
+import { resolveIdentity } from '../../src/bcmr/identity.js';
 import { publicationOutput } from '../../src/bcmr/publication.js';
 import type { Output, Unlocker, Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import Signer from '../../src/Signer.js';
 import { TransactionBuilder } from '../../src/TransactionBuilder.js';
+import { getNetworkPrefix } from '../../src/utils.js';
 
 interface Identity {
   readonly provider: MockNetworkProvider;
@@ -22,6 +26,8 @@ interface Identity {
   readonly authhead: Utxo;
   /** Alice's fungible tokens of the category. */
   readonly tokens: Utxo;
+  /** A spare mutable NFT of the category at Alice's lock, as any minting path could hand her. */
+  readonly spare: Utxo;
 }
 
 async function plainCoin(signer: Signer, skip: readonly Utxo[] = []): Promise<Utxo> {
@@ -29,7 +35,10 @@ async function plainCoin(signer: Signer, skip: readonly Utxo[] = []): Promise<Ut
     && !skip.some((other) => other.txid === utxo.txid && other.vout === utxo.vout))!;
 }
 
-/** A genesis whose output 0 is the authhead contract owned by Alice; it also mints her 100 fungible tokens. */
+/**
+ * A genesis whose output 0 is the authhead contract owned by Alice; it also mints her 100 fungible tokens, on a coin
+ * large enough to pay for a spend.
+ */
 async function genesis(): Promise<Identity> {
   const provider = new MockNetworkProvider();
   const [first, second] = await provider.getSigners(2, { fundingUtxos: 3, genesisFundingUtxos: 1 });
@@ -38,28 +47,34 @@ async function genesis(): Promise<Identity> {
   const coin = (await alice.getUtxos()).find((utxo) => utxo.vout === 0 && utxo.token === undefined)!;
   const category = coin.txid;
   const identity = authheadOutput(category, alice.getLockingBytecode());
-  const tokens: Output = { to: alice.getLockingBytecode(), amount: 1000n, token: { category, amount: 100n } };
+  const tokens: Output = { to: alice.getLockingBytecode(), amount: 20_000n, token: { category, amount: 100n } };
+  const spare: Output = {
+    to: alice.getLockingBytecode(), amount: 20_000n,
+    token: { category, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+  };
   const tx = await new TransactionBuilder({ provider })
     .addInput(coin, alice.unlockP2PKH())
     .addOutput(identity)
     .addOutput(tokens)
-    .addOutput({ to: alice.getAddress(), amount: coin.satoshis - identity.amount - tokens.amount - 3000n })
+    .addOutput(spare)
+    .addOutput({ to: alice.getAddress(), amount: coin.satoshis - identity.amount - 40_000n - 3000n })
     .send();
   return {
     provider, alice, bob, category,
     authhead: { txid: tx.txid, vout: 0, satoshis: identity.amount, token: identity.token },
     tokens: { txid: tx.txid, vout: 1, satoshis: tokens.amount, token: tokens.token },
+    spare: { txid: tx.txid, vout: 2, satoshis: spare.amount, token: spare.token },
   };
 }
 
 /** Spends the authhead at input 0 beside `owner` at input 1; `outputs` lead, change to `owner`'s lock follows. */
 async function spend(
-  identity: Identity, owner: { utxo: Utxo; unlocker: Unlocker }, outputs: readonly Output[], ownerIndex = 1,
+  identity: Identity, owner: { utxo: Utxo; unlocker: Unlocker }, outputs: readonly Output[],
   allowImplicitNftBurn = false,
 ): Promise<{ txid: string }> {
   const { provider, authhead, category } = identity;
   const builder = new TransactionBuilder({ provider, allowImplicitNftBurn })
-    .addInput(authhead, authheadUnlocker(category, ownerIndex))
+    .addInput(authhead, authheadUnlocker(category))
     .addInput(owner.utxo, owner.unlocker);
   for (const output of outputs) builder.addOutput(output);
   const spent = outputs.reduce((sum, output) => sum + output.amount, 0n);
@@ -109,6 +124,31 @@ describe('the authhead contract', () => {
     await spend(bobs, { utxo: await plainCoin(bob), unlocker: bob.unlockP2PKH() }, [toBob, PUBLICATION]);
   });
 
+  it('resolves by its authchain, passing over a look-alike sent to the contract', async () => {
+    const identity = await genesis();
+    const { provider, alice, category } = identity;
+    expect((await resolveIdentity(provider, category))?.txid).toBe(identity.authhead.txid);
+    // Alice's spare NFT, rewritten to name her, at output 0 of a transaction at the contract's address.
+    const lookAlike = authheadOutput(category, alice.getLockingBytecode());
+    await new TransactionBuilder({ provider })
+      .addInput(identity.spare, alice.unlockP2PKH())
+      .addOutput(lookAlike)
+      .addOutput({ to: alice.getAddress(), amount: identity.spare.satoshis - lookAlike.amount - 3000n })
+      .send();
+    const address = lockingBytecodeToCashAddress({
+      bytecode: authheadLockingBytecode(category), prefix: getNetworkPrefix(provider.network), tokenSupport: true,
+    });
+    const listed = await provider.getUtxos(typeof address === 'string' ? address : address.address);
+    expect(listed.filter((utxo) => utxo.vout === 0 && utxo.token?.nft?.capability === 'mutable')).toHaveLength(2);
+    expect((await resolveIdentity(provider, category))?.txid).toBe(identity.authhead.txid);
+    // The owner's spend moves it, and the resolver follows.
+    const kept = authheadOutput(category, alice.getLockingBytecode(), 'active', identity.authhead.satoshis);
+    const moved = await spend(identity, { utxo: await plainCoin(alice), unlocker: alice.unlockP2PKH() }, [kept]);
+    const resolved = await resolveIdentity(provider, category);
+    expect(resolved).toMatchObject({ txid: moved.txid, status: 'active' });
+    expect(binToHex(resolved!.owner)).toBe(binToHex(alice.getLockingBytecode()));
+  });
+
   it('lets its owner freeze it at P2SH32 of OP_RETURN', async () => {
     const identity = await genesis();
     const { alice, category } = identity;
@@ -125,14 +165,29 @@ describe('the authhead contract', () => {
     await spend(identity, { utxo: await plainCoin(alice), unlocker: alice.unlockP2PKH() }, [burned]);
   });
 
-  it('refuses a spend without the owner, or naming itself as the owner', async () => {
+  it('refuses a spend without the owner, beside a token-carrying owner coin, or with a third input', async () => {
     const identity = await genesis();
     const { alice, bob, category } = identity;
     const kept = authheadOutput(category, alice.getLockingBytecode(), 'active', identity.authhead.satoshis);
     await expect(spend(identity, { utxo: await plainCoin(bob), unlocker: bob.unlockP2PKH() }, [kept]))
       .rejects.toThrow(REFUSED);
-    await expect(spend(identity, { utxo: await plainCoin(alice), unlocker: alice.unlockP2PKH() }, [kept], 0))
-      .rejects.toThrow(REFUSED);
+    // Alice's coin carrying her fungible tokens: at her lock, but not token-free.
+    const tokenCoin = new TransactionBuilder({ provider: identity.provider })
+      .addInput(identity.authhead, authheadUnlocker(category))
+      .addInput(identity.tokens, alice.unlockP2PKH())
+      .addOutput(kept)
+      .addOutput({ to: alice.getLockingBytecode(), amount: identity.tokens.satoshis - 3000n, token: identity.tokens.token });
+    await expect(tokenCoin.send()).rejects.toThrow(REFUSED);
+    // A third input, even a plain coin of the owner's.
+    const owner = await plainCoin(alice);
+    const other = await plainCoin(alice, [owner]);
+    const third = new TransactionBuilder({ provider: identity.provider })
+      .addInput(identity.authhead, authheadUnlocker(category))
+      .addInput(owner, alice.unlockP2PKH())
+      .addInput(other, alice.unlockP2PKH())
+      .addOutput(kept)
+      .addOutput({ to: alice.getAddress(), amount: owner.satoshis + other.satoshis - 3000n });
+    await expect(third.send()).rejects.toThrow(REFUSED);
   });
 
   it('refuses every other move of its NFT, even by the owner', async () => {
@@ -149,14 +204,6 @@ describe('the authhead contract', () => {
     // The NFT made immutable, which the builder alone would count as a burn.
     await expect(spend(identity, owner, [
       { ...kept, token: { ...kept.token!, nft: { capability: 'none', commitment: kept.token!.nft!.commitment } } },
-    ], 1, true)).rejects.toThrow(REFUSED);
-    // Fungible tokens parked beside it: the owner's token coin is the owner's input, a plain coin pays.
-    const parked = new TransactionBuilder({ provider: identity.provider })
-      .addInput(identity.authhead, authheadUnlocker(category, 1))
-      .addInput(identity.tokens, alice.unlockP2PKH())
-      .addInput(owner.utxo, alice.unlockP2PKH())
-      .addOutput({ ...kept, amount: kept.amount + 100n, token: { ...kept.token!, amount: 100n } })
-      .addOutput({ to: alice.getAddress(), amount: identity.tokens.satoshis + owner.utxo.satoshis - 3100n });
-    await expect(parked.send()).rejects.toThrow(REFUSED);
+    ], true)).rejects.toThrow(REFUSED);
   });
 });

@@ -9,7 +9,7 @@
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  buildAnonymousEventNftCovenantScript, buildPushdataCommitment,
+  buildAnonymousEventNftCovenantScript, buildEventNftCovenantScript, buildPushdataCommitment, computeEventNameHash,
   encodeEventParameter, encodeNftIndexTag, getDefaultStateValue, hasDataNftIndexTags, hash256, scriptToBytecode,
   type Artifact, type CollectionInfo, type EventDefinitionAbi, type StateLayout, type StateVariableInfo,
 } from '@solidcash/utils';
@@ -19,11 +19,13 @@ import {
   getAnonymousEventNftAddress, getDataNftAddress, getDynamicChunkAddress, getEntryNftAddress, getEventNftAddress,
 } from '../stateful/covenant-helpers.js';
 import { addressToLockScript } from '../utils.js';
-import { framedEventLockingBytecode } from './governed.js';
+import { authheadLockingBytecode } from './authhead.js';
 import { pushedFields, type NftParseField, type NftParseRole, type NftParseType } from './nft-parse.js';
 
 /** The locks of a deployment's roles, as its convention derives them. */
 export interface DeploymentNftLocks {
+  /** The category's authhead contract, which holds the identity NFT. */
+  readonly authhead: Uint8Array;
   readonly masters: readonly Uint8Array[];
   /** The framed validator pool's lock, `addrV(category)`. */
   readonly validator?: Uint8Array;
@@ -100,7 +102,15 @@ export function deploymentNftRoles(artifact: Artifact, locks: DeploymentNftLocks
     next += 1n;
     return current;
   };
-  const roles: NftParseRole[] = [];
+  const roles: NftParseRole[] = [{
+    lockingBytecode: locks.authhead,
+    capability: 'mutable',
+    type: {
+      key: key(),
+      name: 'Identity authority',
+      description: 'Holds the BCMR identity; its commitment is the lock of the identity\'s owner.',
+    },
+  }];
   const masterType: NftParseType = {
     key: key(),
     name: 'Contract master',
@@ -171,6 +181,7 @@ export function deploymentNftRoles(artifact: Artifact, locks: DeploymentNftLocks
 /** The locks of a direct-convention deployment, from its category-bound contract. */
 export function directNftLocks(contract: Contract<any, any>, category: string): DeploymentNftLocks {
   return {
+    authhead: authheadLockingBytecode(category),
     masters: [addressToLockScript(contract.tokenAddress)],
     records: addressToLockScript(getDataNftAddress(contract, category)),
     entry: (collection) => addressToLockScript(getEntryNftAddress(contract, category, collection.name)),
@@ -179,6 +190,13 @@ export function directNftLocks(contract: Contract<any, any>, category: string): 
       ? getAnonymousEventNftAddress(contract, category)
       : getEventNftAddress(contract, category, event.signature)),
   };
+}
+
+/** The lock of a framed contract's event: P2SH32 of the event covenant. */
+export function framedEventLockingBytecode(category: string, event: EventDefinitionAbi): Uint8Array {
+  return encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(
+    buildEventNftCovenantScript(hexToBin(category), computeEventNameHash(event.signature)),
+  )));
 }
 
 /** The locks of a framed deployment: its master, its validator pool and the covenants its category derives. */
@@ -195,6 +213,7 @@ export async function framedNftLocks(
   bindProviderBlockOracle(provider, artifact);
   const master = deployMaster(artifact, hexToBin(category), framedValidator.buildValidatorProgram());
   return {
+    authhead: authheadLockingBytecode(category),
     masters: [master.lockingBytecode],
     validator: master.address,
     records: stateRecordLockingBytecode(category),

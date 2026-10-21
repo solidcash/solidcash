@@ -202,15 +202,12 @@ describe('a token without IERC20Metadata', () => {
     await expectUnspent(held);
   });
 
-  it('refuses a token category that is the contract category or the AuthKey category', async () => {
+  it('refuses a token category that is the contract category', async () => {
     const provider = new MockNetworkProvider();
     const held = await coins(provider);
     const deploy = deployer(artifact, provider, held);
     await expect(deploy({ nativeToken: { funding: held.funding } }))
       .rejects.toThrow('the token category must differ from the contract category');
-    await expect(deploy({
-      identity: { kind: 'authguard', authKeyFunding: held.token }, nativeToken: { funding: held.token },
-    })).rejects.toThrow('the token category must differ from the AuthKey category');
     await expectUnspent(held);
   });
 });

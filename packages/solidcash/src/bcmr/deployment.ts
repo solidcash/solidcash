@@ -18,7 +18,7 @@ import type { Output, Unlocker, Utxo } from '../interfaces.js';
 import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
 import { stageBroadcasts } from '../framed/proxy/staged-broadcasts.js';
 import type { DeployOptions } from '../stateful/stateful-lifecycle-types.js';
-import { authKeyCategoryOf, type GenesisIdentity, type IdentityRecord } from './identity.js';
+import type { GenesisIdentity } from './identity.js';
 import {
   BcmrError, dataCarrierBytes, ipfsCidV1Raw, publicationOutput,
 } from './publication.js';
@@ -235,9 +235,6 @@ async function nativeInputOf(
     throw new BcmrError(`nativeToken.funding must be at vout 0 to create a category, got vout ${funding.vout}`);
   }
   if (nativeCategory === category) throw new BcmrError('the token category must differ from the contract category');
-  if (deploy.identity?.kind === 'authguard' && authKeyCategoryOf(deploy.identity) === nativeCategory) {
-    throw new BcmrError('the token category must differ from the AuthKey category');
-  }
   const unlocker = deploy.nativeToken?.funder ?? deploy.funder;
   const refusal = await ownCoinRefusal(
     deploy.provider, funding, unlocker.generateLockingBytecode(), { role: 'token funder', tokenFree: true },
@@ -247,14 +244,11 @@ async function nativeInputOf(
 }
 
 /** The contract's identity beside its token's: the ledger it keeps and the labels of its NFTs. */
-function contractSnapshot(
-  name: string, symbol: string | undefined, nfts: NftCategory | undefined, authNft: Extensions[string] | undefined,
-): BcmrSnapshot {
+function contractSnapshot(name: string, symbol: string | undefined, nfts: NftCategory | undefined): BcmrSnapshot {
   return {
     name: `${name} contract`,
     description: `The contract that keeps the ${name} ledger; its NFTs hold the ledger's state.`,
     ...(symbol === undefined || nfts === undefined ? {} : { token: { symbol: `${symbol}-STATE`, nfts } }),
-    ...(authNft === undefined ? {} : { extensions: { authNft } }),
   };
 }
 
@@ -275,9 +269,6 @@ export async function prepareMetadata(options: {
   const publication = deploy.bcmr;
   const nativeToken = deploy.nativeToken;
   if (publication === undefined && nativeToken === undefined) return {};
-  if (publication !== undefined && deploy.identity?.kind === 'burned') {
-    throw new BcmrError('a burned identity publishes nothing: choose another identity policy to publish metadata');
-  }
   const scale = nativeToken?.scale ?? 1n;
   // Refused whether or not the contract publishes decimals() (DESIGN.md, 6.5).
   scaleDigits(scale);
@@ -354,9 +345,6 @@ export async function prepareMetadata(options: {
   };
 
   const extensions: Record<string, Extensions[string]> = { ...(publication.extensions ?? {}) };
-  if (deploy.identity?.kind === 'authguard') {
-    extensions.authNft = authKeyCategoryOf(deploy.identity);
-  }
   if (reserveOutput !== undefined && reserveLock !== undefined) {
     extensions[NATIVE_TOKEN_EXTENSION] = {
       reserveLockingBytecode: binToHex(reserveLock),
@@ -377,7 +365,7 @@ export async function prepareMetadata(options: {
   const identities = [{ category: tokenCategory, snapshot }];
   if (separate) {
     identities.push({
-      category: options.category, snapshot: contractSnapshot(name, token?.symbol, nfts, extensions.authNft),
+      category: options.category, snapshot: contractSnapshot(name, token?.symbol, nfts),
     });
   }
   const encoded = await encodeRegistry(publishedRegistry(
@@ -387,24 +375,10 @@ export async function prepareMetadata(options: {
   return { ...prepared, registry: { ...encoded, uris } };
 }
 
-/** The outputs leading a genesis: the identity output, the publication, then the identity's trailing outputs. */
+/** The outputs leading a genesis: the identity output, then the publication. */
 export function leadingOutputs(identity: GenesisIdentity, prepared: PreparedMetadata): Output[] {
   const publication = prepared.registry === undefined ? [] : [publicationOutput(
     prepared.registry.sha256, prepared.registry.uris, dataCarrierBytes(identity.output.to as Uint8Array),
   )];
-  return [identity.output, ...publication, ...identity.trailing];
-}
-
-/** The record of the identity output a genesis `txid` created under `identity`. */
-export function identityRecord(identity: GenesisIdentity, txid: string): IdentityRecord {
-  const lockingBytecode = identity.output.to;
-  if (!(lockingBytecode instanceof Uint8Array)) throw new BcmrError('an identity output is built from its bytecode');
-  return {
-    txid,
-    vout: 0,
-    satoshis: identity.output.amount,
-    policy: identity.policy,
-    lockingBytecode,
-    ...(identity.authKeyCategory === undefined ? {} : { authKeyCategory: identity.authKeyCategory }),
-  };
+  return [identity.output, ...publication];
 }

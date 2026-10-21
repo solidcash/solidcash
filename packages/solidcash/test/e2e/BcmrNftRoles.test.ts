@@ -102,17 +102,21 @@ describe('generated NFT roles', () => {
       a: new Uint8Array(32).fill(0xaa), d: new Uint8Array(32).fill(0xdd), n: -1n,
     });
     const types = typesOf(nfts);
-    expect(types[nftTypeKeyHex(2n)]).toMatchObject({ name: 'State record 0', fields: ['a', 'b', 'c'] });
-    expect(types[nftTypeKeyHex(3n)]).toMatchObject({ name: 'State record 1', fields: ['d', 'n'] });
+    expect(types[nftTypeKeyHex(1n)]).toMatchObject({ name: 'Identity authority' });
+    expect(types[nftTypeKeyHex(3n)]).toMatchObject({ name: 'State record 0', fields: ['a', 'b', 'c'] });
+    expect(types[nftTypeKeyHex(4n)]).toMatchObject({ name: 'State record 1', fields: ['d', 'n'] });
 
-    // Both records share one lock; the tag (OP_0, OP_1) leading each commitment picks its type.
-    const records = result.tx.outputs
+    // The authhead's NFT is the identity authority; both records share one lock, and the tag (OP_0, OP_1) leading
+    // each commitment picks its type.
+    const [authhead, ...rest] = result.tx.outputs;
+    expect(parseOutput(nfts, authhead!)).toEqual({ typeKey: nftTypeKeyHex(1n), fields: [] });
+    const records = rest
       .filter((output) => output.token?.nft?.capability === 'mutable')
       .map((output) => parseOutput(nfts, output));
     expect(records).toHaveLength(2);
     expect(records).toEqual(expect.arrayContaining([
-      { typeKey: nftTypeKeyHex(2n), fields: ['aa'.repeat(32), '00'.repeat(32), '00'.repeat(32)] },
-      { typeKey: nftTypeKeyHex(3n), fields: ['dd'.repeat(32), '81'] },
+      { typeKey: nftTypeKeyHex(3n), fields: ['aa'.repeat(32), '00'.repeat(32), '00'.repeat(32)] },
+      { typeKey: nftTypeKeyHex(4n), fields: ['dd'.repeat(32), '81'] },
     ]));
   });
 
@@ -120,9 +124,9 @@ describe('generated NFT roles', () => {
     const { alice, result, nfts } = await deployGenerated(compileString(SHELF), {});
     const types = typesOf(nfts);
     const names = ['Contract master', 'State record', 'stock entry', 'note chunk', 'Restocked event', 'Anonymous event'];
-    expect(Object.values(types).map((type) => type.name)).toEqual(names);
+    expect(Object.values(types).map((type) => type.name)).toEqual(['Identity authority', ...names]);
     // The record holds the note's length; its bytes live in chunks.
-    expect(types[nftTypeKeyHex(2n)]!.fields).toEqual(['count', 'note.length']);
+    expect(types[nftTypeKeyHex(3n)]!.fields).toEqual(['count', 'note.length']);
     expect(nfts.fields!['note.length']).toEqual({ name: 'note length', encoding: { type: 'number' } });
 
     const shelf = result.contract.connect(alice) as unknown as {
@@ -134,12 +138,13 @@ describe('generated NFT roles', () => {
       .map((output) => parseOutput(nfts, output));
     const parsedNames = parsed.map((entry) => (typeof entry === 'string' ? entry : types[entry.typeKey]!.name));
     expect(parsedNames).toEqual(expect.arrayContaining(names));
-    expect(parsed).toContainEqual({ typeKey: nftTypeKeyHex(2n), fields: ['01', '03'] });
+    expect(parsed).toContainEqual({ typeKey: nftTypeKeyHex(3n), fields: ['01', '03'] });
   });
 
   it('leaves events in EVM notation and events without parameters classified only', () => {
     const lock = (byte: number): Uint8Array => Uint8Array.of(0xaa, 0x20, ...new Array(32).fill(byte), 0x87);
     const locks: DeploymentNftLocks = {
+      authhead: lock(7),
       masters: [lock(1)],
       records: lock(2),
       entry: () => lock(3),
@@ -162,13 +167,13 @@ describe('generated NFT roles', () => {
     const counted = evmArtifact.events!.find((event) => event.name === 'Counted')!;
     expect(counted.parameters[0]!.notation).toBe('evm');
     const collection = nftCategory(evm, new Uint8Array(32));
-    expect(typesOf(collection)[nftTypeKeyHex(3n)]).toEqual({ name: 'Counted event', description: expect.any(String) });
+    expect(typesOf(collection)[nftTypeKeyHex(4n)]).toEqual({ name: 'Counted event', description: expect.any(String) });
     expect(parseOutput(collection, {
       lockingBytecode: lock(5),
       token: {
         category: new Uint8Array(32),
         nft: { capability: 'none', commitment: encodeEventParameter(7n, counted.parameters[0]!) },
       },
-    })).toEqual({ typeKey: nftTypeKeyHex(3n), fields: [] });
+    })).toEqual({ typeKey: nftTypeKeyHex(4n), fields: [] });
   });
 });

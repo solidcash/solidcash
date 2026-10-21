@@ -45,7 +45,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 
 const ENTRY = 'initialize';
 
-// A framed genesis leads with its BCMR identity output, then mints the resolved pool - masters, then validators -
+// A framed genesis leads with its authhead, then mints the resolved pool - masters, then validators -
 // followed by the facet pool, the contract's own record, and change. These indices read the default pool the
 // deployment funds.
 const POOL = DEFAULT_MASTER_POOL_SIZE;
@@ -108,10 +108,10 @@ describe('a framed proxy deployment', () => {
     expect(deployment.implementation.categoryId).toBe(implCategory);
     expect([...deployment.implementation.address]).toStrictEqual([...master.address]);
     expect(deployment.implementation.tx.inputs.length).toBe(1);
-    // The identity output, the default pool's masters (minting), its validators (mutable, empty), the facet pool,
-    // the initial-state record, then change.
+    // The authhead, the default pool's masters (minting), its validators (mutable, empty), the facet pool, the
+    // initial-state record, then change.
     expect(deployment.implementation.tx.outputs.length).toBe(GENESIS_OUTPUTS);
-    expect(deployment.implementation.tx.outputs[0]!.token).toBeUndefined();
+    expect(deployment.implementation.tx.outputs[0]!.token?.nft?.capability).toBe('mutable');
     const masterOut = deployment.implementation.tx.outputs[FIRST_MASTER]!;
     const validatorOut = deployment.implementation.tx.outputs[FIRST_MASTER + POOL.masters]!;
     const facetOut = deployment.implementation.tx.outputs[RECORD_OUTPUT - 1]!;

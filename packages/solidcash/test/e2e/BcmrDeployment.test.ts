@@ -1,6 +1,7 @@
 /**
- * BCMR metadata at deployment (docs/bcmr/DESIGN.md): every genesis leads with an identity output, may publish a
- * registry at output 1, and an ERC-20-shaped token publishes fields read from the contract beside its premint.
+ * BCMR metadata at deployment (docs/bcmr/DESIGN.md): every genesis leads with the authhead contract, may publish a
+ * registry at output 1, and an ERC-20-shaped token publishes fields read from the contract beside its premint; the
+ * owner then updates, transfers, freezes or burns the identity.
  */
 // cspell:ignore bafkreiexample bafkreihdwdcefgh dqkjv uzcmw ojee xedzdetojuzjevtenxquvyku XMPL bafkreiicon XDOL
 import {
@@ -11,18 +12,15 @@ import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../solidc/src/compiler.js';
 import { COMPOSITION_LIMITS } from '../../../solidc/test/framed/machine.js';
 import {
-  BCMR_PUBLICATION_PREFIX, BcmrError, NATIVE_TOKEN_EXTENSION, authGuardLockingBytecode, authGuardRedeemScript,
-  authGuardUnlocker, encodeRegistry, frozenLockingBytecode, ipfsCidV1Raw, nativeDecimals, publicationBytecode,
-  publicationOutput, publishMetadata, selfPublishedRegistry, withSnapshot, type IdentityRecord,
+  AUTHHEAD_BODY, BCMR_PUBLICATION_PREFIX, BcmrError, FROZEN_LOCKING_BYTECODE, NATIVE_TOKEN_EXTENSION,
+  authheadLockingBytecode, authheadRedeemScript, encodeRegistry, ipfsCidV1Raw, nativeDecimals, publicationBytecode,
+  publicationOutput, publishMetadata, resolveIdentity, selfPublishedRegistry, withSnapshot, type IdentityRecord,
 } from '../../src/bcmr/index.js';
-import { ownCoinRefusal } from '../../src/framed/deploy/own-coin.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import Signer from '../../src/Signer.js';
 import { getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
-import { genesisOutpointKey, isReservedGenesisOutpoint } from '../../src/stateful/genesis-reservations.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { deployStatefulContract } from '../../src/stateful/sc-deploy.js';
-import { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import type { Utxo } from '../../src/interfaces.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { compileString } from '../direct-compile.js';
@@ -58,9 +56,10 @@ async function genesisCoin(signer: Signer, skip: readonly Utxo[] = []): Promise<
   return coin;
 }
 
-async function feeCoin(signer: Signer, identity: IdentityRecord): Promise<Utxo> {
+/** The signer's largest token-free coin, which authorizes an owner's spend and pays for it. */
+async function ownerCoin(signer: Signer): Promise<Utxo> {
   const coins = (await signer.getUtxos())
-    .filter((utxo) => utxo.token === undefined && !(utxo.txid === identity.txid && utxo.vout === 0))
+    .filter((utxo) => utxo.token === undefined)
     .sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1));
   return coins[0]!;
 }
@@ -104,17 +103,32 @@ describe('BCMR publication encoding', () => {
     expect(() => nativeDecimals(2n, 1000n)).toThrow(/0 to 18/);
   });
 
-  it('pins the AuthGuard script: the key push and the 15-byte body, 48 bytes', () => {
+  it('pins the authhead script: the push of C with its capability, then the 46-byte body', () => {
     const category = '01'.repeat(31) + 'ff';
-    const script = authGuardRedeemScript(category);
-    expect(script.length).toBe(48);
-    expect(binToHex(script.slice(1, 33))).toBe(binToHex(hexToBin(category).reverse()));
-    expect(binToHex(script.slice(33))).toBe('51ce8851d0009d6300cdc0c7886851');
+    const script = authheadRedeemScript(category);
+    expect(script.length).toBe(80);
+    expect(binToHex(script.slice(0, 34))).toBe(`21${binToHex(hexToBin(category).reverse())}01`);
+    expect(binToHex(AUTHHEAD_BODY)).toBe(
+      '00d18800d39169c3529d51c09476ce0088c7c0cf8800cd76c0c78778016a879b7c016aaa02aa207c7e01877e879b',
+    );
   });
 });
 
+/** Output 0 of `tx` is the authhead of `category`, holding its mutable NFT for `owner`. */
+function expectAuthhead(
+  output: { lockingBytecode: Uint8Array; token?: { category: Uint8Array; amount: bigint; nft?: { capability: string;
+    commitment: Uint8Array } } } | undefined,
+  category: string, owner: Uint8Array, lockingBytecode = authheadLockingBytecode(category),
+): void {
+  expect(binToHex(output!.lockingBytecode)).toBe(binToHex(lockingBytecode));
+  expect(binToHex(output!.token!.category)).toBe(category);
+  expect(output!.token!.amount).toBe(0n);
+  expect(output!.token!.nft?.capability).toBe('mutable');
+  expect(binToHex(output!.token!.nft!.commitment)).toBe(binToHex(owner));
+}
+
 describe('the genesis identity output', () => {
-  it('leads a direct genesis with a key identity at the deployer lock that the SDK will not spend', async () => {
+  it('leads a direct genesis with the authhead contract, owned by the deployer and found by its category', async () => {
     const provider = new MockNetworkProvider();
     const alice = await signerWithCoins(provider);
     const artifact = compileString(COUNTER, { forceStateful: true });
@@ -124,21 +138,19 @@ describe('the genesis identity output', () => {
     });
 
     const [identity, master] = result.tx.outputs;
-    expect(identity!.token).toBeUndefined();
-    expect(binToHex(identity!.lockingBytecode)).toBe(binToHex(alice.getLockingBytecode()));
+    expectAuthhead(identity, result.categoryId, alice.getLockingBytecode());
     expect(master!.token?.nft?.capability).toBe('minting');
-    expect(result.identity).toMatchObject({ txid: result.tx.txid, vout: 0, policy: 'key' });
-    expect(isReservedGenesisOutpoint(genesisOutpointKey(result.tx.txid, 0))).toBe(true);
+    expect(result.identity).toMatchObject({
+      txid: result.tx.txid, vout: 0, category: result.categoryId, status: 'active',
+    });
+    expect(binToHex(result.identity!.owner)).toBe(binToHex(alice.getLockingBytecode()));
+    const resolved = await resolveIdentity(provider, result.categoryId);
+    expect(resolved).toMatchObject({ txid: result.tx.txid, status: 'active', satoshis: result.identity!.satoshis });
 
-    // Proven from its own transaction, the identity output is refused as a coin for any role.
-    const refusal = await ownCoinRefusal(provider, {
-      txid: result.tx.txid, vout: 0, satoshis: identity!.valueSatoshis,
-    }, alice.getLockingBytecode(), { role: 'funder', tokenFree: true });
-    expect(refusal).toMatch(/BCMR identity output/);
-
-    // Calls still find their fee elsewhere.
+    // Calls never touch it.
     const counter = result.contract.connect(alice) as unknown as { bump: () => { send: () => Promise<unknown> } };
     await counter.bump().send();
+    expect((await resolveIdentity(provider, result.categoryId))?.txid).toBe(result.tx.txid);
   });
 
   it('publishes a registry at output 1, committing to the exact bytes returned', async () => {
@@ -173,26 +185,7 @@ describe('the genesis identity output', () => {
     expect(result.registry!.uris).toEqual([`ipfs://${ipfsCidV1Raw(result.registry!.bytes)}`]);
   });
 
-  it('freezes or burns an identity, and a burned identity publishes nothing', async () => {
-    const provider = new MockNetworkProvider();
-    const alice = await signerWithCoins(provider);
-    const artifact = compileString(COUNTER, { forceStateful: true });
-    const deploy = async (
-      identity: { kind: 'frozen' } | { kind: 'burned' }, bcmr?: { name: string },
-    ): Promise<{ tx: { outputs: { lockingBytecode: Uint8Array; valueSatoshis: bigint }[] } }> => (
-      StatefulContract.deploy(artifact, [], {
-        provider, fundingUtxo: await genesisCoin(alice), funder: alice.unlockP2PKH(),
-        changeAddress: alice.getAddress(), initialState: {}, identity, ...(bcmr === undefined ? {} : { bcmr }),
-      }));
-    const frozen = await deploy({ kind: 'frozen' });
-    expect(binToHex(frozen.tx.outputs[0]!.lockingBytecode)).toBe(binToHex(frozenLockingBytecode()));
-    const burned = await deploy({ kind: 'burned' });
-    expect(binToHex(burned.tx.outputs[0]!.lockingBytecode)).toBe('6a');
-    expect(burned.tx.outputs[0]!.valueSatoshis).toBe(0n);
-    await expect(deploy({ kind: 'burned' }, { name: 'Nope' })).rejects.toThrow(/burned identity publishes nothing/);
-  });
-
-  it('leads a framed genesis with the identity output, ahead of its master pool', async () => {
+  it('leads a framed genesis with the authhead contract, ahead of its master pool', async () => {
     const artifact = compileStringMulti(FRAMED, { composition: 'framed' }).C!;
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const alice = new Signer(alicePriv, provider);
@@ -203,81 +196,106 @@ describe('the genesis identity output', () => {
       provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(),
     });
     const [identity, master] = result.tx.outputs;
-    expect(identity!.token).toBeUndefined();
-    expect(binToHex(identity!.lockingBytecode)).toBe(binToHex(alice.getLockingBytecode()));
+    expectAuthhead(identity, result.categoryId, alice.getLockingBytecode());
     expect(master!.token?.nft?.capability).toBe('minting');
-    expect(result.identity?.policy).toBe('key');
+    expect(result.identity?.status).toBe('active');
   });
 });
 
-describe('updating a published identity', () => {
-  it('spends a key identity: the update recreates it and publishes at output 1', async () => {
-    const provider = new MockNetworkProvider();
-    const alice = await signerWithCoins(provider);
-    const artifact = compileString(COUNTER, { forceStateful: true });
-    const deployed = await StatefulContract.deploy(artifact, [], {
+describe('the owner\'s spends of an identity', () => {
+  async function deployed(provider: MockNetworkProvider, alice: Signer): Promise<{
+    categoryId: string; identity: IdentityRecord; registry: Parameters<typeof withSnapshot>[0];
+    publication: Uint8Array;
+  }> {
+    const result = await StatefulContract.deploy(compileString(COUNTER, { forceStateful: true }), [], {
       provider, fundingUtxo: await genesisCoin(alice), funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(),
       initialState: {}, bcmr: { name: 'Counter', timestamp: TIMESTAMP },
     });
-    const identity = deployed.identity!;
-    const registry = withSnapshot(
-      deployed.registry!.registry, deployed.categoryId, { name: 'Counter v2' }, '2026-10-21T12:00:00.000Z',
-    );
+    return {
+      categoryId: result.categoryId, identity: result.identity!, registry: result.registry!.registry,
+      publication: result.tx.outputs[1]!.lockingBytecode,
+    };
+  }
+
+  it('updates it: output 0 recreates the authhead and output 1 publishes', async () => {
+    const provider = new MockNetworkProvider();
+    const alice = await signerWithCoins(provider);
+    const { categoryId, identity, registry } = await deployed(provider, alice);
     const update = await publishMetadata({
       provider,
-      identity: { txid: identity.txid, vout: 0, satoshis: identity.satoshis },
-      current: { kind: 'key', unlocker: alice.unlockP2PKH() },
-      registry,
-      feeFunding: { utxo: await feeCoin(alice, identity), unlocker: alice.unlockP2PKH() },
+      identity,
+      owner: { utxo: await ownerCoin(alice), unlocker: alice.unlockP2PKH() },
+      registry: withSnapshot(registry, categoryId, { name: 'Counter v2' }, '2026-10-21T12:00:00.000Z'),
       changeAddress: alice.getAddress(),
     });
-    expect(binToHex(update.tx.outputs[0]!.lockingBytecode)).toBe(binToHex(alice.getLockingBytecode()));
+    expectAuthhead(update.tx.outputs[0], categoryId, alice.getLockingBytecode());
     expect(binToHex(pushesOf(update.tx.outputs[1]!.lockingBytecode)[1]!)).toBe(binToHex(update.registry!.sha256));
-    expect(update.identity).toMatchObject({ txid: update.tx.txid, vout: 0, policy: 'key' });
+    expect(update.identity).toMatchObject({ txid: update.tx.txid, vout: 0, status: 'active' });
+    expect((await resolveIdentity(provider, categoryId))?.txid).toBe(update.tx.txid);
   });
 
-  it('guards an identity with AuthGuard (opt-in): only the AuthKey at input 1 moves it', async () => {
+  it('transfers it, carrying the registry over; only the new owner spends it next', async () => {
     const provider = new MockNetworkProvider();
-    const alice = await signerWithCoins(provider, 4);
-    const artifact = compileString(COUNTER, { forceStateful: true });
-    const fundingUtxo = await genesisCoin(alice);
-    const authKeyFunding = await genesisCoin(alice, [fundingUtxo]);
-    const deployed = await StatefulContract.deploy(artifact, [], {
-      provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(), initialState: {},
-      identity: { kind: 'authguard', authKeyFunding },
-      bcmr: { name: 'Guarded', timestamp: TIMESTAMP },
-    });
-    const authKeyCategory = authKeyFunding.txid;
-    expect(binToHex(deployed.tx.outputs[0]!.lockingBytecode)).toBe(binToHex(authGuardLockingBytecode(authKeyCategory)));
-    expect(deployed.identity).toMatchObject({ policy: 'authguard', authKeyCategory });
-    expect(deployed.registry!.registry.identities![deployed.categoryId]![TIMESTAMP]!.extensions)
-      .toEqual({ authNft: authKeyCategory });
-    const authKey = (await alice.getUtxos()).find((utxo) => utxo.token?.category === authKeyCategory)!;
-    expect(authKey.token?.nft?.capability).toBe('none');
-
-    // Without the AuthKey at input 1 the guard refuses the spend.
-    const guard: Utxo = { txid: deployed.tx.txid, vout: 0, satoshis: deployed.identity!.satoshis };
-    const plain = await feeCoin(alice, deployed.identity!);
-    const unguarded = new TransactionBuilder({ provider })
-      .addInput(guard, authGuardUnlocker(authKeyCategory))
-      .addInput(plain, alice.unlockP2PKH())
-      .addOutput({ to: authGuardLockingBytecode(authKeyCategory), amount: guard.satoshis })
-      .addOutput({ to: alice.getAddress(), amount: plain.satoshis - 3000n });
-    await expect(unguarded.send()).rejects.toThrow();
-
-    const update = await publishMetadata({
+    const [first, second] = await provider.getSigners(2, { fundingUtxos: 3, genesisFundingUtxos: 3 });
+    const alice = first as unknown as Signer;
+    const bob = second as unknown as Signer;
+    const {
+      categoryId, identity, registry, publication: genesisPublication,
+    } = await deployed(provider, alice);
+    const transfer = await publishMetadata({
       provider,
-      identity: guard,
-      current: { kind: 'authguard', authKeyCategory, authKey, authKeyUnlocker: alice.unlockP2PKH() },
-      registry: withSnapshot(
-        deployed.registry!.registry, deployed.categoryId, { name: 'Guarded v2' }, '2026-10-21T12:00:00.000Z',
-      ),
-      feeFunding: { utxo: await feeCoin(alice, deployed.identity!), unlocker: alice.unlockP2PKH() },
+      identity,
+      owner: { utxo: await ownerCoin(alice), unlocker: alice.unlockP2PKH() },
+      action: { kind: 'transfer', owner: bob.getAddress() },
       changeAddress: alice.getAddress(),
     });
-    expect(binToHex(update.tx.outputs[0]!.lockingBytecode)).toBe(binToHex(authGuardLockingBytecode(authKeyCategory)));
-    expect(binToHex(update.tx.outputs[2]!.token!.category)).toBe(authKeyCategory);
-    expect(update.identity.policy).toBe('authguard');
+    expectAuthhead(transfer.tx.outputs[0], categoryId, bob.getLockingBytecode());
+    expect(binToHex(transfer.tx.outputs[1]!.lockingBytecode)).toBe(binToHex(genesisPublication));
+    expect(binToHex(transfer.identity.owner)).toBe(binToHex(bob.getLockingBytecode()));
+
+    await expect(publishMetadata({
+      provider, identity: transfer.identity, owner: { utxo: await ownerCoin(alice), unlocker: alice.unlockP2PKH() },
+      registry, changeAddress: alice.getAddress(),
+    })).rejects.toThrow(/not at the identity's owner lock/);
+    const update = await publishMetadata({
+      provider, identity: transfer.identity, owner: { utxo: await ownerCoin(bob), unlocker: bob.unlockP2PKH() },
+      registry: withSnapshot(registry, categoryId, { name: 'Counter by Bob' }, '2026-10-21T12:00:00.000Z'),
+      changeAddress: bob.getAddress(),
+    });
+    expectAuthhead(update.tx.outputs[0], categoryId, bob.getLockingBytecode());
+  });
+
+  it('freezes one identity and burns another; a frozen identity is final, a burn publishes nothing', async () => {
+    const provider = new MockNetworkProvider();
+    const alice = await signerWithCoins(provider, 4);
+    const owner = async (): Promise<{ utxo: Utxo; unlocker: ReturnType<Signer['unlockP2PKH']> }> => (
+      { utxo: await ownerCoin(alice), unlocker: alice.unlockP2PKH() });
+    const first = await deployed(provider, alice);
+    const frozen = await publishMetadata({
+      provider, identity: first.identity, owner: await owner(), action: { kind: 'freeze' },
+      changeAddress: alice.getAddress(),
+    });
+    expectAuthhead(frozen.tx.outputs[0], first.categoryId, alice.getLockingBytecode(), FROZEN_LOCKING_BYTECODE);
+    expect(binToHex(frozen.tx.outputs[1]!.lockingBytecode.slice(0, 6))).toBe(binToHex(BCMR_PUBLICATION_PREFIX));
+    expect(frozen.identity.status).toBe('frozen');
+    expect(await resolveIdentity(provider, first.categoryId)).toBeUndefined();
+    await expect(publishMetadata({
+      provider, identity: frozen.identity, owner: await owner(), changeAddress: alice.getAddress(),
+    })).rejects.toThrow(/is frozen/);
+
+    const second = await deployed(provider, alice);
+    await expect(publishMetadata({
+      provider, identity: second.identity, owner: await owner(), action: { kind: 'burn' },
+      registry: second.registry, changeAddress: alice.getAddress(),
+    })).rejects.toThrow(/burned identity publishes nothing/);
+    const burned = await publishMetadata({
+      provider, identity: second.identity, owner: await owner(), action: { kind: 'burn' },
+      changeAddress: alice.getAddress(),
+    });
+    expectAuthhead(burned.tx.outputs[0], second.categoryId, alice.getLockingBytecode(), hexToBin('6a'));
+    expect(burned.tx.outputs[0]!.valueSatoshis).toBe(0n);
+    expect(burned.tx.outputs).toHaveLength(2);
+    expect(burned.identity.status).toBe('burned');
   });
 });
 

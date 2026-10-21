@@ -3,28 +3,31 @@
  *
  * A fixed P2SH32 script salted by its category C holds a mutable NFT of C whose commitment is the owner's locking
  * bytecode: the address names the category, the commitment names the owner, and neither lives in a contract's state.
- * A spend needs another input at the owner's lock, and output 0 carries the NFT, with no fungible tokens, to one of:
+ * A spend has exactly two inputs, the contract and a token-free coin at the owner's lock, and output 0 carries the
+ * NFT, with no fungible tokens, to one of:
  *
  * - the contract again: an update, or a transfer when the owner writes a new commitment;
  * - P2SH32 of `OP_RETURN`: frozen, the spending transaction stays the authhead for good;
  * - `OP_RETURN`: burned, the identity ends and the NFT is destroyed.
  *
- * The covenant decides every move of the NFT, so the only mutable NFT of C at the contract is the one a genesis mints
- * there; section 4.4 of the design states the census this relies on.
+ * With no other token input, the spend can create no other NFT of C, so the covenant decides every move of the NFT.
+ * A contract path that mints NFTs of C where its caller chooses can still put a look-alike at the contract's address
+ * (docs/bcmr/DESIGN.md, 4.4), so the identity is the one whose authchain leads back to the genesis.
  */
 
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { hash256 } from '@solidcash/utils';
 import type { Output, TokenDetails, Unlocker } from '../interfaces.js';
 import { satoshisAtLeastDust } from '../framed/composer/dust.js';
 import { BcmrError } from './publication.js';
 
 const OP_0 = 0x00;
-const OP_RETURN = 0x6a;
+const OP_1 = 0x51;
+const OP_2 = 0x52;
 const OP_VERIFY = 0x69;
+const OP_RETURN = 0x6a;
 const OP_DUP = 0x76;
 const OP_OVER = 0x78;
 const OP_SWAP = 0x7c;
@@ -32,12 +35,15 @@ const OP_CAT = 0x7e;
 const OP_EQUAL = 0x87;
 const OP_EQUALVERIFY = 0x88;
 const OP_NOT = 0x91;
+const OP_SUB = 0x94;
 const OP_BOOLOR = 0x9b;
-const OP_NUMNOTEQUAL = 0x9e;
+const OP_NUMEQUALVERIFY = 0x9d;
 const OP_HASH256 = 0xaa;
 const OP_INPUTINDEX = 0xc0;
+const OP_TXINPUTCOUNT = 0xc3;
 const OP_UTXOBYTECODE = 0xc7;
 const OP_OUTPUTBYTECODE = 0xcd;
+const OP_UTXOTOKENCATEGORY = 0xce;
 const OP_UTXOTOKENCOMMITMENT = 0xcf;
 const OP_OUTPUTTOKENCATEGORY = 0xd1;
 const OP_OUTPUTTOKENAMOUNT = 0xd3;
@@ -48,15 +54,17 @@ const PUSH_P2SH32_HEAD = [0x02, 0xaa, 0x20];
 const PUSH_P2SH32_TAIL = [0x01, 0x87];
 
 /**
- * The script after its first push, `<C || 0x01>` in the VM's byte order. The unlocking pushes the index of the
- * owner's input. A covenant that creates a category derives the child's lock from this body and the child's category.
+ * The script after its first push, `<C || 0x01>` in the VM's byte order; the unlocking pushes nothing else. A
+ * covenant that creates a category derives the child's lock from this body and the child's category.
  */
 export const AUTHHEAD_BODY = Uint8Array.of(
   // Output 0 holds the mutable NFT of C, and no fungible tokens.
   OP_0, OP_OUTPUTTOKENCATEGORY, OP_EQUALVERIFY,
   OP_0, OP_OUTPUTTOKENAMOUNT, OP_NOT, OP_VERIFY,
-  // The named input is another input, at the lock the NFT's commitment holds.
-  OP_DUP, OP_INPUTINDEX, OP_NUMNOTEQUAL, OP_VERIFY,
+  // Two inputs: the other is a token-free coin at the lock the NFT's commitment holds.
+  OP_TXINPUTCOUNT, OP_2, OP_NUMEQUALVERIFY,
+  OP_1, OP_INPUTINDEX, OP_SUB,
+  OP_DUP, OP_UTXOTOKENCATEGORY, OP_0, OP_EQUALVERIFY,
   OP_UTXOBYTECODE, OP_INPUTINDEX, OP_UTXOTOKENCOMMITMENT, OP_EQUALVERIFY,
   // Output 0 is this contract, OP_RETURN, or P2SH32 of OP_RETURN.
   OP_0, OP_OUTPUTBYTECODE,
@@ -150,16 +158,9 @@ export function authheadOutput(
   return { to, amount: satoshisAtLeastDust(amount, { to, token }), token };
 }
 
-/** Spends the authhead contract of `category`; the owner's coin is the input at `ownerInputIndex`. */
-export function authheadUnlocker(category: string, ownerInputIndex: number): Unlocker {
-  if (!Number.isSafeInteger(ownerInputIndex) || ownerInputIndex < 0) {
-    throw new BcmrError(`the owner's input index is a non-negative integer, got ${ownerInputIndex}`);
-  }
-  const redeemScript = authheadRedeemScript(category);
-  const pushes = [encodeDataPush(bigIntToVmNumber(BigInt(ownerInputIndex))), encodeDataPush(redeemScript)];
-  const unlocking = new Uint8Array(pushes[0]!.length + pushes[1]!.length);
-  unlocking.set(pushes[0]!, 0);
-  unlocking.set(pushes[1]!, pushes[0]!.length);
+/** Spends the authhead contract of `category`, beside the owner's coin as the transaction's other input. */
+export function authheadUnlocker(category: string): Unlocker {
+  const unlocking = encodeDataPush(authheadRedeemScript(category));
   return {
     generateLockingBytecode: () => authheadLockingBytecode(category),
     generateUnlockingBytecode: () => unlocking,

@@ -387,12 +387,10 @@ export class ContractFactory<T extends Artifact = Artifact> {
           const pool = resolveMasterPoolSize({ masters: overrides.threadCount, validators: overrides.validatorCount });
           poolSatoshis = poolGenesisSatoshis(pool, 1200n, overrides.functionSplit?.shards.length ?? 1);
         }
-        // A coin the deployment names for another category (the AuthKey's, the token's) is not its genesis coin.
+        // A coin the deployment names for the token's category is not its genesis coin.
         const { genesisOutpointKey } = await import('./genesis-reservations.js');
-        const named = [
-          overrides.identity?.kind === 'authguard' ? overrides.identity.authKeyFunding : undefined,
-          overrides.nativeToken?.funding,
-        ].flatMap((coin) => (coin === undefined ? [] : [genesisOutpointKey(coin.txid, coin.vout)]));
+        const named = [overrides.nativeToken?.funding]
+          .flatMap((coin) => (coin === undefined ? [] : [genesisOutpointKey(coin.txid, coin.vout)]));
         fundingUtxo = await selectGenesisFundingUtxo(
           signer, deployArtifact, new Set(named), 1 + verifierCount, poolSatoshis,
         );

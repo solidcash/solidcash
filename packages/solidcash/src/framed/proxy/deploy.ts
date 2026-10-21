@@ -51,6 +51,7 @@ import { requireFramedFunderSighash } from '../sighash.js';
 import {
   encodeFunctionArgument, encodeFunctionArguments, type ConstructorArgument, type FunctionArgument,
 } from '../../Argument.js';
+import { authheadLockingBytecode } from '../../bcmr/authhead.js';
 import type { Output, TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { deployStatefulContract } from '../../stateful/sc-deploy.js';
@@ -1594,9 +1595,11 @@ function initializedProxyState(options: {
     `the implementation's ${options.entryLabel} ${what}, which the proxy's genesis cannot mint; pass `
     + '`initializeAs: \'hop\'` to run it as a separate hop, which leaves the proxy uninitialized until it confirms',
   );
+  // The genesis mints its own authhead, so the probe's identity NFT is no part of the state.
+  const authhead = authheadLockingBytecode(bytesToHex(options.category));
   const isState = (output: HopOutput | undefined): boolean => output?.token !== undefined
     && bytesEqual(output.token.category, options.category) && output.token.nft?.capability !== 'minting'
-    && !bytesEqual(output.lockingBytecode, options.validatorLock);
+    && !bytesEqual(output.lockingBytecode, options.validatorLock) && !bytesEqual(output.lockingBytecode, authhead);
   const unspent = options.genesis.filter(isState);
   const left: HopOutput[] = [];
   for (const placed of draft.layout.participants) {

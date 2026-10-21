@@ -80,7 +80,7 @@ import type { AbiToFunctionMap } from '../types/type-inference.js';
 import type { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { BcmrPublication, NativeTokenOptions, PublishedRegistry } from '../bcmr/deployment.js';
-import type { IdentityPolicy, IdentityRecord } from '../bcmr/identity.js';
+import type { IdentityOptions, IdentityRecord } from '../bcmr/identity.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 import { isScidIdentityCommitment, resolveLogicalIdentity, type ResolvedLogicalIdentity } from './logical-identity.js';
 
@@ -944,10 +944,10 @@ export interface DeployOptions {
   /** Internal SDK composition: immutable category-bearing logical identity outputs minted by genesis. */
   identityAnchors?: Array<{ to: string | Uint8Array; commitment: string; amount?: bigint }>;
   /**
-   * How the genesis holds its category's BCMR identity output, output 0 (docs/bcmr/DESIGN.md, 4.2). Defaults to a
-   * token-free output at the deployer's lock.
+   * Who owns the category's BCMR identity, the authhead contract at output 0 (docs/bcmr/DESIGN.md, 4.2); the
+   * deployer's lock when omitted.
    */
-  identity?: IdentityPolicy;
+  identity?: IdentityOptions;
   /** A BCMR registry the genesis publishes at output 1. */
   bcmr?: BcmrPublication;
   /** The ledger token's bearer form: the category the genesis creates for it, its premint and native scale. */

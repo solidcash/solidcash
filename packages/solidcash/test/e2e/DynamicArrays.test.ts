@@ -573,8 +573,9 @@ describe('Dynamic Arrays', () => {
         + ' p[P]=amount-p[B]-p[S]-p[M]-p[A];'
         + ' require(p[B]==10 && p[S]==20 && p[M]==20 && p[P]==40 && p[A]==10); } }');
       // The coalesced shape is 1188 bytes without the audit's runtime range checks and 1250 with them (+62), so
-      // the ceiling moves to keep the headroom this budget was pinned with.
-      expect(artifact.debug.bytecode.length / 2).toBeLessThan(1320);
+      // the ceiling moves to keep the headroom this budget was pinned with. 1405 since d3bbc9b6e's wide decoding
+      // (an OP_PUSHDATA4 arm and an unsigned word decode among the shared helpers, +155).
+      expect(artifact.debug.bytecode.length / 2).toBeLessThan(1480);
 
       const provider = createTestProvider();
       const contract = new Contract(artifact, [], { provider });

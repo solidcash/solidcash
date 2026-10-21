@@ -177,8 +177,7 @@ describe('StatefulContract.deployFrom()', () => {
       // factory's own master + data NFTs (same computation as the create3 pattern below).
       const createChildAbi = factoryArtifact.abi.find((f) => f.name === 'createChild')!;
       const requiredNftCount = createChildAbi.requiredNftIndices?.length ?? factoryArtifact.stateLayout!.dataNftCount;
-      // The creating call leads with a coin at input 0 for the child's authhead (D47), so the master is input 1.
-      const fundingInputIndex = 2 + requiredNftCount;
+      const fundingInputIndex = 1 + requiredNftCount;
 
       const result = await StatefulContract.deployFrom({
         provider,
@@ -201,32 +200,27 @@ describe('StatefulContract.deployFrom()', () => {
       // Verify transaction outputs
       const txOutputs = getTxOutputs(result.tx);
 
-      // Output 0: the child's authhead, holding its identity NFT (D47)
-      expect(txOutputs[0].token?.nft?.capability).toBe('mutable');
-      expect(txOutputs[0].token?.category).toBe(result.childCategoryId);
-      expect(result.identity?.category).toBe(result.childCategoryId);
+      // Output 0: factory master (preserved with same categoryId)
+      expect(txOutputs[0].token?.nft?.capability).toBe('minting');
+      expect(txOutputs[0].token?.category).toBe(factoryCategoryId);
 
-      // Output 1: factory master (preserved with same categoryId)
-      expect(txOutputs[1].token?.nft?.capability).toBe('minting');
+      // Output 1: factory data NFT (childCount updated)
+      expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
       expect(txOutputs[1].token?.category).toBe(factoryCategoryId);
-
-      // Output 2: factory data NFT (childCount updated)
-      expect(txOutputs[2].token?.nft?.capability).toBe('mutable');
-      expect(txOutputs[2].token?.category).toBe(factoryCategoryId);
       const factoryState = parsePushdataCommitment(
-        txOutputs[2].token!.nft!.commitment, factoryArtifact.stateLayout!, 0,
+        txOutputs[1].token!.nft!.commitment, factoryArtifact.stateLayout!, 0,
       );
       expect(factoryState.childCount).toBe(1n);
 
-      // Output 3: child minting NFT (new category from funding UTXO)
-      expect(txOutputs[3].token?.nft?.capability).toBe('minting');
-      expect(txOutputs[3].token?.category).toBe(result.childCategoryId);
+      // Output 2: child minting NFT (new category from funding UTXO)
+      expect(txOutputs[2].token?.nft?.capability).toBe('minting');
+      expect(txOutputs[2].token?.category).toBe(result.childCategoryId);
 
-      // Output 4: child data NFT (counter = 0)
-      expect(txOutputs[4].token?.nft?.capability).toBe('mutable');
-      expect(txOutputs[4].token?.category).toBe(result.childCategoryId);
+      // Output 3: child data NFT (counter = 0)
+      expect(txOutputs[3].token?.nft?.capability).toBe('mutable');
+      expect(txOutputs[3].token?.category).toBe(result.childCategoryId);
       const childState = parsePushdataCommitment(
-        txOutputs[4].token!.nft!.commitment, childArtifact.stateLayout!, 0,
+        txOutputs[3].token!.nft!.commitment, childArtifact.stateLayout!, 0,
       );
       expect(childState.counter).toBe(0n);
 
@@ -247,7 +241,7 @@ describe('StatefulContract.deployFrom()', () => {
       // factory's own master + data NFTs (same computation as the create3 pattern below).
       const createChildAbi = factoryArtifact.abi.find((f) => f.name === 'createChild')!;
       const requiredNftCount = createChildAbi.requiredNftIndices?.length ?? factoryArtifact.stateLayout!.dataNftCount;
-      const fundingInputIndex = 2 + requiredNftCount;
+      const fundingInputIndex = 1 + requiredNftCount;
 
       const result = await StatefulContract.deployFrom({
         provider,
@@ -269,7 +263,7 @@ describe('StatefulContract.deployFrom()', () => {
       // Factory childCount should be 2
       const txOutputs = getTxOutputs(result.tx);
       const factoryState = parsePushdataCommitment(
-        txOutputs[2].token!.nft!.commitment, factoryArtifact.stateLayout!, 0,
+        txOutputs[1].token!.nft!.commitment, factoryArtifact.stateLayout!, 0,
       );
       expect(factoryState.childCount).toBe(2n);
 

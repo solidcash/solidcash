@@ -2,7 +2,6 @@
  * phase-boundary extract: SC lifecycle extract — static deployFrom (factory deploy + child genesis).
  */
 
-import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
@@ -28,15 +27,12 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
-import {
-  identityRecord, isP2pkhLock, planGenesisIdentity, resolveIdentity,
-} from '../bcmr/identity.js';
 import { Contract } from '../Contract.js';
-import { ownCoinRefusal, signerFundingCoins, withoutIdentityOutputs } from '../framed/deploy/own-coin.js';
+import { ownCoinRefusal, signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type { StateValueType } from '../types/state-inference.js';
 import {
-  addressToLockScript, getNetworkPrefix, randomUtxo, scriptToLockingBytecode,
+  addressToLockScript, randomUtxo, scriptToLockingBytecode,
 } from '../utils.js';
 import {
   createDataNftUnlocker,
@@ -240,15 +236,6 @@ export async function deployFromStatefulContract<T extends Artifact>(
 
   // child i's category = fundingUtxos[i].txid. The first child's category doubles as the returned handle's.
   const childCategoryId = fundingUtxos[0].txid;
-  // D47: a leading function puts a token-free coin at input 0 and the first child's authhead at output 0, so its
-  // master and every absolute index below sit one place later.
-  const lead = deployTarget.leadsIdentity === true ? 1 : 0;
-  const childIdentity = lead === 0 ? undefined : planGenesisIdentity({
-    category: childCategoryId,
-    ...(options.childIdentity === undefined ? {} : { identity: options.childIdentity }),
-    deployerLock: (await resolveIdentity(provider, factory.categoryId))?.owner
-      ?? (isP2pkhLock(funderLock) || changeAddress === undefined ? funderLock : addressToLockScript(changeAddress)),
-  });
   const addressType = options.addressType ?? factory.inner.addressType;
   // Large factory redeems make deploy transactions substantially larger than ordinary calls. Size the default
   // conservatively from the authenticated layout; callers can still provide an exact fee explicitly.
@@ -740,7 +727,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
         const firstLinearPred = !batch.linear || firstLinearPredSlot.get(proofSlot) === slotIndex;
         const predOut = info.present || predOrdinal < 0 || !firstLinearPred
           ? -1n
-          : BigInt(lead + batchPredOutputBase + predOrdinal);
+          : BigInt(batchPredOutputBase + predOrdinal);
         finalArgs = [...finalArgs, slot, BigInt(offset), nextKey, predOut,
           ...(batch.linear ? [BigInt(linearRank.get(slotIndex)!)] : [])];
       }
@@ -757,12 +744,12 @@ export async function deployFromStatefulContract<T extends Artifact>(
   if (deployReturns) {
     const retIdxPos = deployAbi.inputs.findIndex((inp) => inp.name === '__internal__returnOutputIdx');
     if (retIdxPos >= 0 && finalArgs.length === retIdxPos) {
-      finalArgs = [...finalArgs, BigInt(lead + returnEventSlot!.offset)];
+      finalArgs = [...finalArgs, BigInt(returnEventSlot!.offset)];
     } else if (retIdxPos >= 0 && finalArgs.length < deployAbi.inputs.length) {
       // Fallback: insert at the ABI position if earlier hidden params left a gap.
       finalArgs = [
         ...finalArgs.slice(0, retIdxPos),
-        BigInt(lead + returnEventSlot!.offset),
+        BigInt(returnEventSlot!.offset),
         ...finalArgs.slice(retIdxPos),
       ];
     }
@@ -864,7 +851,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
     }
     upsertLoopInputs.push({
       utxo: predecessor.utxo,
-      unlocker: createEntryNftUnlocker(factory.inner, lead, factory.categoryId, info.collection),
+      unlocker: createEntryNftUnlocker(factory.inner, 0, factory.categoryId, info.collection),
     });
     for (const commitment of commitments) {
       upsertLoopOutputs.push({
@@ -964,7 +951,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
       seenProofUtxo.set(uid, i);
       entryExtraInputs.push({
         utxo: info.proofUtxo,
-        unlocker: createEntryNftUnlocker(factory.inner, lead, factory.categoryId, info.collection),
+        unlocker: createEntryNftUnlocker(factory.inner, 0, factory.categoryId, info.collection),
       });
     } else {
       entryExtraInputs.push({
@@ -1010,7 +997,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
     ...(factory.inner.unlock as any)[deployFunctionName](...finalArgs), covenantUnlocker: true,
   };
   const dataNftUnlockers = filteredDataNftUtxos.map(
-    () => createDataNftUnlocker(factory.inner, lead, factory.categoryId),
+    () => createDataNftUnlocker(factory.inner, 0, factory.categoryId),
   );
 
   // A LOOP `new C{value:V}()` has NO standalone transfer block-layout slot (the N value transfers are
@@ -1114,7 +1101,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
       );
     }
     containerInputs.push({
-      utxo: satUtxo, unlocker: createSatoshiContainerUnlocker(factory.inner, lead, factory.categoryId),
+      utxo: satUtxo, unlocker: createSatoshiContainerUnlocker(factory.inner, 0, factory.categoryId),
     });
     containerOutputs.push({ to: satAddr, amount: satUtxo.satoshis - totalValue });    // recreate the container
     // Straight-line / conditional: one separate transfer output. Loop: the N transfers are interleaved into
@@ -1172,7 +1159,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
         );
       }
       tokenContainerInputs.push({
-        utxo: tcUtxo, unlocker: createTokenContainerUnlocker(factory.inner, lead, factory.categoryId, tcCat),
+        utxo: tcUtxo, unlocker: createTokenContainerUnlocker(factory.inner, 0, factory.categoryId, tcCat),
       });
       // Recreated container (self-preserved LBC, amount minus the transfers); satoshis preserved from the input.
       remainderOutputs.push({
@@ -1304,27 +1291,6 @@ export async function deployFromStatefulContract<T extends Artifact>(
     const blob = encodePushdataValue(earlyAllPairs, 'address[]', factoryLayout.structs);
     deployProbeState[dynamicLenKey('allPairs')] = BigInt(blob.length);
   }
-  // The leading slot (D47): a token-free coin of the funder's at input 0 pays for the first child's authhead. A live
-  // provider lists one at the funder's own lock; the signer's pool and a minted mock coin serve otherwise.
-  const leadingPad = childIdentity === undefined ? undefined : await (async (): Promise<Utxo> => {
-    if (funderPool.length === 0) {
-      const funderAddress = lockingBytecodeToCashAddress({
-        bytecode: funderLock, prefix: getNetworkPrefix(provider.network), tokenSupport: false,
-      });
-      const listed = typeof funderAddress === 'string' ? [] : await provider.getUtxos(funderAddress.address);
-      const plain = await withoutIdentityOutputs(provider, listed.filter((utxo) => utxo.token === undefined
-        && utxo.satoshis >= 1000n && !fundingKeys.has(`${utxo.txid}:${utxo.vout}`)));
-      const coin = plain.sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))[0];
-      if (coin !== undefined) {
-        fundingKeys.add(`${coin.txid}:${coin.vout}`);
-        return coin;
-      }
-    }
-    return takeFunder();
-  })();
-  const leading = childIdentity === undefined || leadingPad === undefined
-    ? undefined : { utxo: leadingPad, unlocker: placeholderFunder, output: childIdentity.output };
-
   // Derive factory state + entry commitments via VM probe. Inputs: master, data NFTs,
   // existing entries, [satoshi container], funding. Outputs: master, data NFTs, entries,
   // [container, value transfer], return event, child outputs.
@@ -1350,7 +1316,6 @@ export async function deployFromStatefulContract<T extends Artifact>(
       + (hasDeployDataNftSlots ? childExtraOutputs.length : (childExtraOutputs.length > 0 ? 1 : 0)),
     deployProbeState,
     eventPlaceholderOutputs.length,
-    leading,
   );
   const keccakCoSpends = derivedKeccakCoSpends ?? [];
   // A direct unbounded keccak256 chained read on the deploy function routes its preimage through the trailing
@@ -1427,8 +1392,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
     ...(options.maxFee !== undefined && { maximumFeeSatoshis: options.maxFee }),
   });
 
-  if (leading !== undefined) builder.addInput(leading.utxo, leading.unlocker);
-  // The factory master, at input 0 or after the leading slot
+  // Input 0: factory master UTXO
   builder.addInput(masterUtxo, stateInputUnlocker);
 
   // Inputs 1..N: factory data NFTs
@@ -1470,8 +1434,8 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // deployDataNft slot is output-only) so the START side-car lands at trailingBase, then append the chain.
   let chainPadSats = 0n;
   if (deployKeccakChain) {
-    const trailingBase = lead + (deployAbi.blockLayout?.trailingBase
-      ?? deployAbi.blockLayout?.blockSize ?? builder.inputs.length - lead);
+    const trailingBase = deployAbi.blockLayout?.trailingBase
+      ?? deployAbi.blockLayout?.blockSize ?? builder.inputs.length;
     while (builder.inputs.length < trailingBase) {
       const pad = await takeFunder();
       chainPadSats += pad.satoshis;
@@ -1482,8 +1446,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
 
   // === Factory outputs (first) ===
 
-  if (leading !== undefined) builder.addOutput(leading.output);
-  // The factory master, preserved in place
+  // Output 0: factory master UTXO (preserved)
   builder.addOutput({
     to: factory.inner.tokenAddress,
     amount: masterUtxo.satoshis,
@@ -1646,8 +1609,8 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // Chained keccak256 side-car recreations carry the running state and the FINAL digest at the trailing
   // outputs. Pad any fixed gap with a neutral dust output so the START recreation lands at trailingBase.
   if (deployKeccakChain) {
-    const trailingBase = lead + (deployAbi.blockLayout?.trailingBase
-      ?? deployAbi.blockLayout?.blockSize ?? builder.outputs.length - lead);
+    const trailingBase = deployAbi.blockLayout?.trailingBase
+      ?? deployAbi.blockLayout?.blockSize ?? builder.outputs.length;
     while (builder.outputs.length < trailingBase) {
       builder.addOutput({ to: new Uint8Array([0x51]), amount: 1000n });
     }
@@ -1669,9 +1632,8 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const trailingPadSats = deployTrailingInputs[0]?.utxo.satoshis ?? 0n;
   // tokenTransferCost = dust for each tcTransfer output (the token container's own satoshis fund only its
   // recreated remainder; each transfer output's dust comes from the funding inputs).
-  const leadingSats = (leading?.utxo.satoshis ?? 0n) - (leading?.output.amount ?? 0n);
-  const changeAmount = totalFundingSats + trailingPadSats + chainPadSats + leadingSats - totalChildCost
-    - totalEntryCost - totalDynamicChunkCost - eventCost - returnEventCost
+  const changeAmount = totalFundingSats + trailingPadSats + chainPadSats - totalChildCost - totalEntryCost
+    - totalDynamicChunkCost - eventCost - returnEventCost
     - tokenTransferCost - fee;
   if (changeAmount > 0n) {
     if (!changeAddress) {
@@ -1691,8 +1653,5 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const { StatefulContract: SC } = await import('./StatefulContract.js');
   const childStateful = new SC(childContract, childCategoryId) as ConnectedStatefulContract<T>;
 
-  return {
-    factory, child: childStateful, tx, childCategoryId,
-    ...(childIdentity === undefined ? {} : { identity: identityRecord(childIdentity, tx.txid) }),
-  };
+  return { factory, child: childStateful, tx, childCategoryId };
 }

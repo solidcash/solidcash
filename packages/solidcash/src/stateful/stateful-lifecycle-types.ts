@@ -185,11 +185,6 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   changeAddress?: string;
   masterAmount?: bigint;                     // default: 1200n
   dataNftAmount?: bigint;                    // default: 1200n per data NFT
-  /**
-   * Who owns the first child's BCMR identity, the authhead at output 0 of the creating transaction (D47): the
-   * factory's identity owner when it resolves, else the funder's P2PKH lock, else the change address.
-   */
-  childIdentity?: IdentityOptions;
 }
 
 // Options for the `factory.deployFn(...args).deploy({...})` sugar: the provider, factory, deploy-function
@@ -202,8 +197,6 @@ export interface DeployFromResult<T extends Artifact = Artifact> {
   child: ConnectedStatefulContract<T>;       // newly deployed child contract
   tx: TransactionDetails;
   childCategoryId: string;
-  /** The first child's identity output, when the creating function leads with it (D47). */
-  identity?: IdentityRecord;
 }
 
 export interface SplitOptions {

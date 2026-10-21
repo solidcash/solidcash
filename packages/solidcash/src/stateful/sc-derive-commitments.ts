@@ -69,9 +69,6 @@ export async function deriveCommitments(
   trailingEntryOutputOffset?: number,
   probeState?: Record<string, StateValue>,
   eventOutputCount: number = 0,
-  // A creating call's leading slot (DECISIONS D47): a token-free coin at input 0 and the child's authhead at
-  // output 0, ahead of the master, so every absolute index shifts by one.
-  leading?: { readonly utxo: Utxo; readonly unlocker: Unlocker; readonly output: Output },
 ): Promise<{
     state: Record<string, StateValueType> | undefined;
     entryCommitments: string[];
@@ -101,10 +98,9 @@ export async function deriveCommitments(
     }
 
     // Build unlock functions for the probe transaction
-    const lead = leading === undefined ? 0 : 1;
     const stateInputUnlocker = (host.inner.unlock as any)[functionName](...args);
     const dataNftUnlockers = filteredDataNftUtxos.map(
-      () => createDataNftUnlocker(host.inner, lead, host.categoryId),
+      () => createDataNftUnlocker(host.inner, 0, host.categoryId),
     );
 
     // blockhash(n): resolve each reader's (n->hash) co-spend so the probe's VM run can read input[slot]. Param
@@ -176,8 +172,7 @@ export async function deriveCommitments(
           probeBuilder.locktime = Math.max(...bhProbeCoSpends.map((c) => c.locktime)); // require(tx.time >= n)
         }
 
-        if (leading !== undefined) probeBuilder.addInput(leading.utxo, leading.unlocker);
-        // The master, at input 0 or after the leading slot
+        // Input 0: master UTXO
         probeBuilder.addInput(masterUtxo, stateInputUnlocker);
 
         // Inputs 1..N: filtered data NFTs
@@ -206,8 +201,7 @@ export async function deriveCommitments(
         if (keccakChainInputPads.length > 0) probeBuilder.addInputs(keccakChainInputPads);
         if (keccakChainProbeInputs.length > 0) probeBuilder.addInputs(keccakChainProbeInputs);
 
-        if (leading !== undefined) probeBuilder.addOutput(leading.output);
-        // The master, preserved in place
+        // Output 0: master UTXO preserved
         probeBuilder.addOutput({
           to: stateInputUnlocker.generateLockingBytecode(),
           amount: masterUtxo.satoshis,
@@ -255,7 +249,7 @@ export async function deriveCommitments(
         for (const recreate of keccakChainProbeRecreates) probeBuilder.addOutput(recreate);
 
         const { transaction, sourceOutputs } = probeBuilder.buildLibauthProgram();
-        return evaluateProbeTrace(host.inner.provider, { inputIndex: lead, sourceOutputs, transaction });
+        return evaluateProbeTrace(host.inner.provider, { inputIndex: 0, sourceOutputs, transaction });
       };
 
       // Pass 1: derive data NFT state. Placeholder outputs fail the data NFT verify, but
@@ -264,7 +258,7 @@ export async function deriveCommitments(
         ? requiredNftIndices.map((nftIndex) => buildPushdataCommitment(stateLayout, probeState, nftIndex))
         : undefined;
       const fullTrace = runProbe(seededCommitmentHexes);
-      const stateOutputRange = { min: lead + 1, max: lead + 1 + requiredNftIndices.length };
+      const stateOutputRange = { min: 1, max: 1 + requiredNftIndices.length };
       let commitmentHexes = seededCommitmentHexes
         ?? extractCommitmentsFromTrace(fullTrace, requiredNftIndices.length, stateOutputRange);
 
@@ -272,7 +266,7 @@ export async function deriveCommitments(
       // NFT commitments to get past it and reach the entry verifies.
       let entryCommitments: string[] = [];
       if (entryOutputCount > 0) {
-        const entryBase = lead + 1 + requiredNftIndices.length + bhProbeCoSpends.length
+        const entryBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length
           + keccakProbeCoSpends.length + ecrecoverProbeCoSpends.length;
         const entryTrace = commitmentHexes ? runProbe(commitmentHexes) : fullTrace;
         entryCommitments = extractCommitmentsFromTrace(
@@ -288,7 +282,7 @@ export async function deriveCommitments(
         }
       }
       if (trailingEntryOutputCount > 0 && extraOutputs) {
-        const extraBase = lead + 1 + requiredNftIndices.length + bhProbeCoSpends.length
+        const extraBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length
           + keccakProbeCoSpends.length + ecrecoverProbeCoSpends.length;
         const trailingBase = extraBase + (trailingEntryOutputOffset
           ?? (extraOutputs.length - trailingEntryOutputCount));
@@ -352,7 +346,7 @@ export async function deriveCommitments(
       // initial state for a plain deploy at default. A deploy that writes mapping entries aborts at the entry
       // verify before the child verify (folded deploy + entries unsupported for now).
       let childCommitments: string[] = [];
-      const extraBase = lead + 1 + requiredNftIndices.length + bhProbeCoSpends.length
+      const extraBase = 1 + requiredNftIndices.length + bhProbeCoSpends.length
         + keccakProbeCoSpends.length + ecrecoverProbeCoSpends.length;
       if (deriveChildCommitments && childDataNftCount > 0 && commitmentHexes && extraOutputs) {
         // A returning deploy function materializes its return-event output between the entries and the child

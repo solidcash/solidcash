@@ -519,10 +519,10 @@ describe('return-event x deploy', () => {
       // The child (Other) is deployed at the self-pinned genesis address.
       expect((out.child as StatefulContract).categoryId).toBe(tFunding.txid);
 
-      // Output layout: [child authhead(0), factory master(1), returnEvent(2), child master(3), child data NFT(4)].
-      // Decode the return-event NFT commitment and confirm the covenant computed + emitted addTwo(7) == 9. (send()
-      // only proves the SDK and covenant agree on the value; decoding proves the value is actually 9.)
-      const retOut = out.tx.outputs[2];
+      // Output layout: [factory master(0), returnEvent(1), child master(2), child data NFT(3)]. Decode the
+      // return-event NFT commitment and confirm the covenant computed + emitted addTwo(7) == 9. (send() only
+      // proves the SDK and covenant agree on the value; decoding proves the value is actually 9.)
+      const retOut = out.tx.outputs[1];
       // The return event rides the FACTORY category (byte order is provider-dependent: compare both ways).
       const catHex = Buffer.from(retOut.token!.category).toString('hex');
       const catRevHex = Buffer.from(retOut.token!.category).reverse().toString('hex');

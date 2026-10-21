@@ -131,8 +131,7 @@ describe('explicit singleton data-NFT index tags', () => {
     parent.registerArtifacts(artifacts);
     await provider.addUtxo(signer.getAddress(), { txid: 'd2'.repeat(32), vout: 0, satoshis: 100_000_000n });
     const result = await parent.getFunction('check')(7n).deploy();
-    // Output 0 is the child's authhead (D47); its record follows the master.
-    const record = getTxOutputs(result.tx).slice(1).find((output) => output.token?.category === result.childCategoryId
+    const record = getTxOutputs(result.tx).find((output) => output.token?.category === result.childCategoryId
       && output.token.nft?.capability === 'mutable');
     expect(record?.token?.nft?.commitment).toBe(buildPushdataCommitment(artifacts.Child.stateLayout!, { stored: 7n }, 0));
   });

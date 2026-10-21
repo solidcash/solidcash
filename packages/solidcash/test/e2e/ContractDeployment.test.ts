@@ -657,15 +657,13 @@ describe('Stateful Child Deployment (deployFrom)', () => {
 
       const txOutputs = getTxOutputs(result.tx);
 
-      // Output 0: the child's authhead (D47); then the factory's master NFT + data NFT (factory state updated)
-      expect(txOutputs[0].token?.category).toBe(fundingUtxo.txid);
-      expect(txOutputs[0].token?.nft?.capability).toBe('mutable');
-      expect(txOutputs[1].token?.nft?.capability).toBe('minting');
-      expect(txOutputs[2].token?.nft?.capability).toBe('mutable');
+      // Factory outputs: master NFT + data NFT (factory state updated)
+      expect(txOutputs[0].token?.nft?.capability).toBe('minting');
+      expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
 
       // Factory state updated: deployCount -> 1
       const factoryState = parsePushdataCommitment(
-        txOutputs[2].token!.nft!.commitment, factoryArtifact2.stateLayout!, 0,
+        txOutputs[1].token!.nft!.commitment, factoryArtifact2.stateLayout!, 0,
       );
       expect(factoryState.deployCount).toBe(1n);
 
@@ -676,8 +674,8 @@ describe('Stateful Child Deployment (deployFrom)', () => {
       );
       expect(childMasterOutput).toBeDefined();
 
-      // Child data NFT should have mutable capability with default state (output 0 is the authhead's)
-      const childDataOutput = txOutputs.slice(1).find(
+      // Child data NFT should have mutable capability with default state
+      const childDataOutput = txOutputs.find(
         (o) => o.token?.category === fundingUtxo.txid && o.token?.nft?.capability === 'mutable',
       );
       expect(childDataOutput).toBeDefined();

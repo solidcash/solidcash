@@ -237,8 +237,7 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
     await provider.addUtxo(p2pkh.address, childFunding);
     const createAbi = factoryArtifact.abi.find((entry) => entry.name === 'createChild')!;
     const requiredNfts = createAbi.requiredNftIndices?.length ?? factoryArtifact.stateLayout!.dataNftCount;
-    // The creating call leads with a coin at input 0 for the child's authhead (D47), so the master is input 1.
-    const fundingInputIndex = 2 + requiredNfts;
+    const fundingInputIndex = 1 + requiredNfts;
 
     const beforeDeploy = await provider.takeSnapshot();
     let captured = '';
@@ -264,22 +263,12 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
       (provider as any).sendRawTransaction = send;
     }
     expect(captured).not.toBe('');
-    // The leading coin (D47): with no plain coin of the funder's to draw on, the deployment minted it after the
-    // snapshot, so the restore brings it back.
-    const leadingInput = decodeTransactionUnsafe(hexToBin(captured)).inputs[0]!;
-    const leadingCoin = { txid: binToHex(leadingInput.outpointTransactionHash), vout: leadingInput.outpointIndex };
-    const restore = async (): Promise<void> => {
-      await beforeDeploy.restore();
-      const live = await provider.getUtxos(p2pkh.address);
-      if (!live.some((utxo) => utxo.txid === leadingCoin.txid && utxo.vout === leadingCoin.vout)) {
-        await provider.addUtxo(p2pkh.address, { ...leadingCoin, satoshis: 10_000n });
-      }
-    };
+    await beforeDeploy.restore();
 
     const rejectMutation = async (
       mutate: (tx: ReturnType<typeof decodeTransactionUnsafe>) => void,
     ): Promise<void> => {
-      await restore();
+      await beforeDeploy.restore();
       const tx = decodeTransactionUnsafe(hexToBin(captured));
       mutate(tx);
       await send(binToHex(encodeTransaction(tx)));
@@ -289,12 +278,11 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
     // fragile, so require the script-verify refusal itself - which is what these tampers must provoke.
     const covenantFailure = /mandatory-script-verify-flag-failed/;
 
-    // Output 0 is the child's authhead; outputs 1/2 preserve the factory; outputs 3/4 are the child's master and
-    // data NFT; change follows.
-    await expect(rejectMutation((tx) => { tx.outputs.splice(4, 1); })).rejects.toThrow(covenantFailure);
+    // Outputs 0/1 preserve the factory; outputs 2/3 are the child's master and data NFT; change follows.
+    await expect(rejectMutation((tx) => { tx.outputs.splice(3, 1); })).rejects.toThrow(covenantFailure);
     await expect(rejectMutation((tx) => {
-      const childMaster = tx.outputs[3];
-      tx.outputs.splice(5, 0, {
+      const childMaster = tx.outputs[2];
+      tx.outputs.splice(4, 0, {
         ...childMaster,
         lockingBytecode: childMaster.lockingBytecode.slice(),
         token: { ...childMaster.token!, nft: { ...childMaster.token!.nft! } },
@@ -302,15 +290,12 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
       tx.outputs.at(-1)!.valueSatoshis -= childMaster.valueSatoshis + 1_000n;
     })).rejects.toThrow(covenantFailure);
     await expect(rejectMutation((tx) => {
-      [tx.outputs[3], tx.outputs[4]] = [tx.outputs[4], tx.outputs[3]];
+      [tx.outputs[2], tx.outputs[3]] = [tx.outputs[3], tx.outputs[2]];
     })).rejects.toThrow(covenantFailure);
-    await expect(rejectMutation((tx) => { tx.outputs[3].lockingBytecode = OP_TRUE; }))
-      .rejects.toThrow(covenantFailure);
-    // An output 0 that is not the child's authhead.
-    await expect(rejectMutation((tx) => { tx.outputs[0].lockingBytecode = OP_TRUE; }))
+    await expect(rejectMutation((tx) => { tx.outputs[2].lockingBytecode = OP_TRUE; }))
       .rejects.toThrow(covenantFailure);
 
-    await restore();
+    await beforeDeploy.restore();
     await expect(send(captured)).resolves.toBeTypeOf('string');
   });
 

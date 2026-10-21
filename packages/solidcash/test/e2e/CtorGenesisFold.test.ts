@@ -157,8 +157,7 @@ describe('constructor-genesis fold (Solidity-style deploy-then-call, e2e)', () =
       funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
       changeAddress: p2pkh.address,
     });
-    // Output 0 is the child's authhead (D47); the entries follow.
-    const entries = getTxOutputs(result.tx).slice(1).filter((output) => output.token?.category === result.childCategoryId
+    const entries = getTxOutputs(result.tx).filter((output) => output.token?.category === result.childCategoryId
       && output.token.nft?.capability === 'mutable');
     expect(entries).toHaveLength(6);
     expect(entries[0].token?.nft?.commitment).toBe(buildEntryCommitment(0n, 'bigint', 37n, 'int32'));

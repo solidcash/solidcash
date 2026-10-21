@@ -702,8 +702,6 @@ export interface AbiFunction {
   transfers?: readonly FixedBchTransferAbi[];
   deployTargets?: readonly {
     contractName: string; dataNftCount: number; entryNftCount?: number;
-    /** The child's authhead is output 0 of the creating transaction, which leads with a token-free coin (D47). */
-    leadsIdentity?: boolean;
     // Per child constructor argument: the deploy-function parameter name it forwards (direct `new C(param)`),
     // or null for a non-trivial expression. Lets the SDK derive childConstructorArgs from the deploy args.
     constructorArgs?: readonly (string | null)[];

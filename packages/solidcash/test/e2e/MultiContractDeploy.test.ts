@@ -78,8 +78,7 @@ describe('ContractBundle (implicit ArtifactMap context)', () => {
     });
 
     expect(result.tx.txid).toBeDefined();
-    // Output 0 is the child's authhead (D47); its record follows the master.
-    const childData = getTxOutputs(result.tx).slice(1).find(
+    const childData = getTxOutputs(result.tx).find(
       (o) => o.token?.category === fundingUtxo.txid && o.token?.nft?.capability === 'mutable',
     );
     const state = parsePushdataCommitment(

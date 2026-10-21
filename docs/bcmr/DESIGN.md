@@ -92,12 +92,24 @@ in   1..   the token coin (6.2), then the AuthKey coin (4.2), each when the gene
 out  0     identity output, per policy (4.2)
 out  1     BCMR publication, when one is requested (section 5)
 out  next  the AuthKey, when the genesis mints it (`authguard` with `authKeyFunding`, 4.2)
-out  next  the existing outputs in their existing order: masters, validators, facets, records, mapping nodes,
-           chunks, events, containers, identity anchors, keeper baton; change last
+out  next  the contract's outputs, in its builder's order (below); change last
 ```
 
-- Each optional output takes the next index: without a publication the AuthKey is output 1, and the masters start
-  right after the last leading output.
+The two builders emit the contract's outputs in different orders:
+
+- Direct (`packages/solidcash/src/stateful/sc-deploy.ts`): masters, one per thread; records; the mapping nodes the
+  constructor writes, then the head of each sorted collection it does not write; the constructor's transfers;
+  events; the recreated head of each sorted collection the constructor writes; chunks; message-bus verifiers; the
+  satoshi container; the reserve and the bearer supply (6.2); identity anchors; the keeper baton.
+- Framed (`packages/solidcash/src/framed/deploy/stateful.ts`): masters, a pool per entry lock; validators; facets;
+  events; records; mapping nodes; chunks; an initialize hop's outputs; identity anchors; the keeper baton; the
+  reserve and the bearer supply (6.2). A supplied state (a proxy's `mintedState`) takes the place of the events,
+  records, mapping nodes and chunks, and that genesis mints no identity anchors.
+
+Further points:
+
+- Each optional input and output takes the next index: without a token coin the AuthKey coin is input 1, without a
+  publication the AuthKey is output 1, and the masters start right after the last leading output.
 - Nothing on chain evaluates a top-level genesis: its inputs are funding coins, none of them a contract's. The output
   order is an SDK convention, and the probe that derives the genesis state runs on its own synthetic layout.
 - The relative order of the existing outputs is kept. Discovery classifies a category's UTXOs by lock and sorts each
@@ -298,13 +310,20 @@ in   2     AuthKey coin (vout 0)                K = its txid, under `authguard` 
 out  0     identity output, shared by C and X
 out  1     BCMR publication
 out  2     the AuthKey, an immutable NFT of K, when the genesis mints it
-out  next  masters, data NFTs, mapping heads, ...
-           reserve: token-only output of X at getTokenContainerAddress(contract, C, X), amount = premint
-           bearer supply of X, when nativeToken.bearer is set
+out  next  the contract's outputs in its builder's order (4.1), ending
+             direct: ..., satoshi container, reserve, bearer, identity anchors, keeper baton
+             framed: ..., identity anchors, keeper baton, reserve, bearer
            change
+
+reserve    token-only output of X at getTokenContainerAddress(contract, C, X), amount = premint
+bearer     the bearer supply of X, when nativeToken.bearer is set
 ```
 
-Without `nativeToken.funding` the premint is of C, which only the direct convention admits.
+As in 4.1, each optional input and output takes the next index.
+
+Without `nativeToken.funding` the premint is of C (X = C, 6.3), which only the direct convention admits: the framed
+builder refuses a reserve or a bearer supply without it, since a framed composition refuses fungible tokens of the
+contract's own category (`docs/framed/SPEC_FRAMED_TRANSACTION.md`, S2).
 
 A token whose ledger starts empty and grows by `wrap` needs its supply in holders' hands first: `nativeToken.bearer`
 (`{ amount, to }`) mints that bearer supply to a token-aware address in the same genesis, beside the reserve or instead
@@ -314,7 +333,8 @@ of it. The first `wrap` then creates the container.
   a later `issue`. It is at most 9,223,372,036,854,775,807.
 - The SDK checks that the premint is at least `totalSupply()` divided by the scale, read from the probe genesis
   (6.4), so every ledger unit the constructor credits is backed, and that the contract keys its reserve by X: it reads
-  the state variable the artifact publishes as the container key from the probe and refuses another category.
+  the state variable the artifact publishes as the container key from the probe and refuses another category. The
+  key check runs whenever the deployment states `nativeToken`, so with X = C it holds the key to C.
 
 ### 6.3 Field mapping
 

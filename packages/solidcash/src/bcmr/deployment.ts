@@ -296,15 +296,17 @@ export async function prepareMetadata(options: {
 
   const readsMetadata = hasErc20Metadata(artifact);
   const checksSupply = reserve !== undefined && hasTotalSupply(artifact);
-  const needsFacts = (publication !== undefined && readsMetadata) || checksSupply
-    || (nativeInput !== undefined && nativeCategoryStateVariable(artifact) !== undefined);
+  // The contract keys its container by the token's category: X, or C without nativeToken.funding (DESIGN.md, 6.2).
+  const checksKey = nativeToken !== undefined && nativeCategoryStateVariable(artifact) !== undefined;
+  const needsFacts = (publication !== undefined && readsMetadata) || checksSupply || checksKey;
   const facts = needsFacts ? await probeTokenFacts(artifact, deploy, options.probe) : {};
 
-  if (nativeInput !== undefined && facts.nativeCategory !== undefined && facts.nativeCategory !== tokenCategory) {
-    throw new BcmrError(
-      `the contract keys its reserve by category ${facts.nativeCategory}, but nativeToken.funding creates `
-      + `${tokenCategory}: construct the contract with the funding coin's txid`,
-    );
+  if (checksKey && facts.nativeCategory !== undefined && facts.nativeCategory !== tokenCategory) {
+    const token = nativeInput === undefined
+      ? `without nativeToken.funding the token is the contract's own category ${tokenCategory}: construct the `
+        + 'contract with that category, or pass nativeToken.funding'
+      : `nativeToken.funding creates ${tokenCategory}: construct the contract with the funding coin's txid`;
+    throw new BcmrError(`the contract keys its reserve by category ${facts.nativeCategory}, but ${token}`);
   }
   if (checksSupply && facts.totalSupply === undefined) {
     throw new BcmrError(

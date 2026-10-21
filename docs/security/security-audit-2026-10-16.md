@@ -707,3 +707,28 @@ tests were not run on the pre-fix commits. CONT-FLAG-1 and CONT-CAT-1 never ship
   sends. Test: `FramedTokenNft.test.ts` (a mutable NFT makes an immutable send; the same transaction with the mutable
   NFT also paid to an output no send pins is refused at the master).
 
+## Outside-declared events and the container destroy path (2026-10-21)
+
+Found while bringing the SDK e2e suite back to green; mocknet only.
+
+- **EVENT-SCOPE-1** (HIGH; direct, introduced before 2026-10-20). A contract stateful only because it emits an event
+  declared outside it (file level, library, interface) is marked by `currentContractEmitsEvent`, its
+  `eventDefinitions` being empty. The subroutine-use probe and the entry-body and `emitFunctionDefine`
+  sub-traversals were handed `eventDefinitions` but not that mark, so they compiled such a contract as stateless: an
+  OP_DEFINE'd entry body of a multi-entry contract lost its covenant checks. FIXED in `88bb5ab35` (all three copy the
+  mark). Test: `Events.test.ts` (the file-level form compiles byte-identical to the contract-level one, delegate
+  variant included).
+- **EVENT-SCOPE-2** (HIGH; direct and bus). SEC-10/SEC-11's forged-log pin was scoped to contracts that declare an
+  event, so a stateful contract emitting only outside-declared events (the OpenZeppelin `IERC20` pattern) had none,
+  and anyone could add an own-category immutable NFT that reads as its log. FIXED in `d487efe87`: a contract has events
+  when it declares one or emits one, for the pin, the split/merge/unsafe pin and the message-bus decisions. Tests:
+  `EventForgedLogScope.test.ts` (byte-identical to the contract-level form), `FileLevelEventNftForgery.test.ts` (a
+  forged event NFT beside such a call is refused). Residual: a stateful contract whose file declares an event it
+  never emits stays unpinned, though the artifact lists that event.
+- **Container master pin vs destroy** (liveness, not a weakening). `b1ef5d064`'s pin on a direct container's master
+  path read the output at the container's index, which a one-output `selfdestruct(addr)` transaction lacks, so
+  destroying a contract with a container failed. `3fc5969bd` applies the pin whenever an output carries the master's
+  minting NFT and skips it only when no master is recreated, the destroy path the master's covenant governs. Tests:
+  `SelfdestructDestination.test.ts`, `X46CommitmentWriter.test.ts`. A destroy split into batches still pins a
+  container placed in an intermediate batch (deferrals.md).
+

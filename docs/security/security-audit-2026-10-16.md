@@ -686,7 +686,12 @@ tests were not run on the pre-fix commits. CONT-FLAG-1 and CONT-CAT-1 never ship
   bound ran after container preservation, which consumes the transfer witnesses, so a function with a conditional
   `transferNft` did not compile; `13b90f8fc` runs it first, and a bus route, whose sends sit in its token-transfer
   windows, bounds the mints by position instead: every output outside the lock carrying the category sits in a window
-  or in its runtime effect span, with no fungible amount. Test: `GraphTokenSitePackingSecurity.test.ts`.
+  or in its runtime effect span, with no fungible amount. Test: `GraphTokenSitePackingSecurity.test.ts`. That bound
+  walked every output once per container, which put the callee of a 517-input kernel composition ("authenticates NFT
+  capability, commitment, recipient, and mixed-container settlement") at 8.82M of its 6.65M operation budget; the
+  route now runs it in the output pass of its slot scans, whose skip stops at any output with a token (callee 5.88M).
+  The kernel verifier's census does not cover this: it counts no token output paired with a tokenless input other
+  than the dummy funder. No test mints beside a route's named minting container.
 - **CONT-CAT-1** (CRITICAL for a framed contract paying tokens; introduced in `ba6296865`, fixed in `80c517ca7`,
   unreleased). A framed master's owned scan summed the amount of every container at the lock whose unlocking names
   it, whatever its category. Anyone can put a token of another category at that lock, so a builder could name such a

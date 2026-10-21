@@ -3087,3 +3087,20 @@ they share, which is outside the token container work.
 **Status:** RESOLVED 2026-10-21. The size reduction parked as `26f9b3cc3` landed as `650ac4f10` (master 9,908 B), and
 `addBlackList` and `freeze` moved from `UsdtFacet` to `UsdtSupplyFacet` (`200e234f3`, `UsdtFacet` 9,015 B). The
 title passes.
+
+## A string value argument of a bytes-like parameter in two SDK write paths (2026-10-21)
+
+**What:** `evalComputedKey` resolved an `id:` value to the argument a call passed and made a string UTF-8, so a
+`bytes32` value given as a hex string was stored as its 66 bytes of text while the call pushed its 32 bytes
+(`mapping.conformance.test.ts`, "uint256 => bytes32", once `650ac4f10` made that write unconditional and the SDK filled
+the value from the argument). Fixed there: a bytes-like parameter's string is encoded as the call encodes it. The
+upsert-loop builder's `encodeValueTail` and `rawValueBytes` and the chunkable-value paths (P5b) make a string value
+UTF-8 the same way.
+
+**Why deferred:** no test reaches those paths with a hex string for a bytes-like parameter, so a change there would land
+unverified.
+
+**What it'd take:** encode a string by its parameter's ABI type at those sites, as `evalComputedKey` now does, with a
+loop write and a long-value write of a `bytes32` and a `bytes` value given as hex strings.
+
+**Revisit if:** a loop write or a chunked write stores a bytes-like value an SDK caller passed as a hex string.

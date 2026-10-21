@@ -11719,8 +11719,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         const stackAfterIf = [...this.stack];
         staleAfterElse = settleElsePath(staleAfterIf, () => { this.stack = [...stackBeforeIf]; });
-        // Past an arm that can only fail, execution continues on the path that skipped it.
-        this.stack = this.blockEndsInFailure(node.ifBlock) ? [...stackBeforeIf] : stackAfterIf;
+        // Past an arm that can only fail, execution continues on the path that skipped it. A message-bus compile
+        // nests the rest into the other arm instead (EarlyReturnTransformation), so its branch keeps the arm's stack.
+        const keepsRest = this.compilerOptions.messageBus !== true && this.compilerOptions.messageBusKernel !== true;
+        this.stack = keepsRest && this.blockEndsInFailure(node.ifBlock) ? [...stackBeforeIf] : stackAfterIf;
       }
       if (staleAtBranch !== undefined) this.framedFixedFieldsJoin(node, staleAfterIf, staleAfterElse);
       this.framedFieldsAfterBranch(node, fieldsAtBranch, fieldsAfterIf);

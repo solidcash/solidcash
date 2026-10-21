@@ -16685,7 +16685,8 @@ function compileResolvedAst(
   // nested too, and the transformation refuses one it cannot end a path at.
   // A framed body's bare return ends the frame, whose tail still runs, so it is not sealed (SEM-1 is direct-only).
   if (needsEarlyReturn || holdsUnconfinedReturn(ast)) {
-    ast = ast.accept(new EarlyReturnTransformation(false, mergedCompilerOptions.composition !== 'framed')) as Ast;
+    ast = ast.accept(new EarlyReturnTransformation(false, mergedCompilerOptions.composition !== 'framed',
+      !(mergedCompilerOptions.messageBus || mergedCompilerOptions.messageBusKernel))) as Ast;
   }
 
   // Compile referenced contracts in dependency order
@@ -20226,7 +20227,9 @@ function compileReferencedContracts(
     if (compilerOptions.enforceLocktimeGuard) {
       singleAst = singleAst.accept(new InjectLocktimeGuardTraversal()) as Ast;
     }
-    singleAst = singleAst.accept(new EarlyReturnTransformation()) as Ast;
+    singleAst = singleAst.accept(new EarlyReturnTransformation(
+      false, true, !(compilerOptions.messageBus || compilerOptions.messageBusKernel),
+    )) as Ast;
 
     refuseEmittingReturningStateHelpers(singleAst.contract);
 

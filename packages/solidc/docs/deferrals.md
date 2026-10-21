@@ -3186,7 +3186,7 @@ whose fixed entry lock mismatch goes through the value-chunk derivation.
 ## The SDK cannot find a BCMR identity's current authhead itself (2026-10-21)
 
 **RESOLVED 2026-10-21 (`f37b6aaee`).** The identity output is now the category's authhead contract, at an address
-unique to the category (DECISIONS D41), so `resolveIdentity(provider, category)` lists that address and proves the
+unique to the category (DECISIONS D46), so `resolveIdentity(provider, category)` lists that address and proves the
 candidate by walking its authchain back to the genesis with the transactions the provider serves; no spender query is
 needed. `test/e2e/BcmrAuthhead.test.ts` resolves an identity past a look-alike and after a spend.
 

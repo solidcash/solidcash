@@ -739,7 +739,7 @@ Found while bringing the SDK e2e suite back to green; mocknet only.
 
 ## BCMR identity outputs and look-alike NFTs (2026-10-21)
 
-Found while replacing the BCMR identity policies with the authhead contract (`docs/framed/DECISIONS.md` D41); read
+Found while replacing the BCMR identity policies with the authhead contract (`docs/framed/DECISIONS.md` D46); read
 from the code, nothing run beyond the authhead's own tests.
 
 - **AUTHHEAD-1** (LOW, metadata lookups only; mitigated). The authhead's address and its mutable NFT of C are meant to

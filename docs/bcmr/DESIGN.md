@@ -1,9 +1,9 @@
 # BCMR metadata at deployment: design
 
 Kind: design, implemented in `packages/solidcash/src/bcmr/` (section 11 maps the code). Decisions taken on it are
-recorded in `docs/framed/DECISIONS.md` (D32, D33, D41, D42), and anything deferred in
+recorded in `docs/framed/DECISIONS.md` (D32, D33, D46, D47), and anything deferred in
 `packages/solidc/docs/deferrals.md`; those ledgers win over this file. Written 2026-10-20 against master `769adb889`,
-revised to the implementation the same day, and on 2026-10-21 for the authhead contract (D41, D42).
+revised to the implementation the same day, and on 2026-10-21 for the authhead contract (D46, D47).
 
 Sources: CHIP-BCMR at `bitjson/chip-bcmr` commit `0e8417c` (2024-01-31), the CashTokens specification, the AuthGuard
 standard (CHIP-2023-08, v0.1.2) and libauth 3.1.0-next.8 (`build/lib/engine/types/bcmr-types.d.ts`). Code is cited
@@ -29,7 +29,7 @@ The design:
 2. A deployment can publish its registry in the genesis itself, at output 1 (section 5).
 3. ERC-20-shaped tokens publish name, symbol and decimals checked against the contract before anything is
    broadcast, with the premint in the same genesis (section 6).
-4. A category a contract creates is to get its authhead at output 0 of the creating transaction (section 7, D42, in
+4. A category a contract creates is to get its authhead at output 0 of the creating transaction (section 7, D47, in
    progress).
 5. A deployment can label its own NFTs for explorers (section 8).
 
@@ -123,7 +123,7 @@ Further points:
 ### 4.2 The authhead contract
 
 Output 0 of every genesis is the authhead contract of the contract's category C
-(`packages/solidcash/src/bcmr/authhead.ts`, DECISIONS D41):
+(`packages/solidcash/src/bcmr/authhead.ts`, DECISIONS D46):
 
 - Its redeem script is `<C || 0x01>`, C in the VM's byte order, then a fixed 46-byte body. The lock is P2SH32 of
   that script, so the address belongs to C alone and never moves when the compiler changes.
@@ -441,9 +441,9 @@ Options:
 - **C. Accept it and record it** in `packages/solidc/docs/deferrals.md`: wallets resolving a contract-created category
   may show attacker-published metadata.
 
-Taken first: C, recorded in `packages/solidc/docs/deferrals.md` (D32). Then, with the authhead contract (D41), B in
+Taken first: C, recorded in `packages/solidc/docs/deferrals.md` (D32). Then, with the authhead contract (D46), B in
 a narrower form: a leading slot in the creating transaction only, the reserved genesis coin at input 0 and the child's
-authhead at output 0, every participant shifted by one (D42, the user's answer that the block layout is agnostic to
+authhead at output 0, every participant shifted by one (D47, the user's answer that the block layout is agnostic to
 the master's starting index). Its implementation is in progress, so the exposure above still holds until it lands.
 
 Framed `new C()` is not among these paths: the SDK reserves the child's genesis coin ahead
@@ -485,7 +485,7 @@ collection generated per deployment, because the locks depend on the category (`
 
 ## 9. Contract-governed metadata (removed)
 
-The `governed` policy, its guard and `BcmrGoverned.scash` were removed with the other policies (DECISIONS D41): the
+The `governed` policy, its guard and `BcmrGoverned.scash` were removed with the other policies (DECISIONS D46): the
 identity's owner is a lock outside the contract's state. An owner that wants rules of its own can be a P2SH32
 covenant. The authhead admits its coin as long as the coin carries no token, and the covenant's own rules then decide
 when it spends. A contract's master always carries its minting NFT, so a master cannot be the owner.
@@ -564,9 +564,9 @@ Paths are under `packages/solidcash/` unless stated.
 ## 12. Decisions
 
 - The identity output is the authhead contract, owned by a lock outside the contract's state, with the owner's
-  update, transfer, freeze and burn: D41, the user's answers. It supersedes D31 (AuthGuard opt-in) and D32's `key`
+  update, transfer, freeze and burn: D46, the user's answers. It supersedes D31 (AuthGuard opt-in) and D32's `key`
   default and contract-governed metadata.
-- A category a contract creates gets a leading slot in the creating transaction: D42.
+- A category a contract creates gets a leading slot in the creating transaction: D47.
 - BchNative's bearer form is a category of its own: D33.
 - The other open decisions this design listed were taken as its own recommendations when it was implemented (D32):
   stated ERC-20 fields are checked and refused on mismatch, the symbol case-insensitively; the native scale is

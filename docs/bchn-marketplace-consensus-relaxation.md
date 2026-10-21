@@ -188,7 +188,8 @@ A record now keeps its own collection and moves only its master index (`711e4d1b
 legacy delegate insert band's fabricated pads: an OP_TRUE outpoint the builder made up and a contract-category
 NFT tag, each registered by an unawaited `addUtxo`. On BCHN that funded throwaway coins and raised unhandled
 rejections (`cannot mint into category`, 54 in one run). The funder allocation now reserves token-free
-dummy-funder coins (P2SH32(OP_TRUE), never `tx.origin`) before the input build takes them (`7f049cc10`).
+dummy-funder coins (P2SH32(OP_TRUE), never `tx.origin`) before the input build takes them (`7f049cc10`). On
+mocknet at `5f242babf` the kernel cells still pass, proxy 66/66 and no-proxy 65/65.
 
 ## Implemented regtest harness
 

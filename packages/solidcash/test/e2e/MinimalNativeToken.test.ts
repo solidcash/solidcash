@@ -35,7 +35,8 @@ describe('MinimalNativeToken bytecode budget', () => {
     // keep of an unnamed container refuses a minting NFT (8524 -> 8544), and each named slot bounds the mints of a
     // minting container (8544 -> 8632). Laying always-run sorted writes out unconditionally, with the direct
     // outside-layout walk shared, took 1,197 B off (8632 -> 7435); the 8.5 KB title is the budget.
-    expect(artifactBytes).toBe(7435);
+    // The container master pin's selfdestruct arm (no master recreated) added 50 B (7435 -> 7485).
+    expect(artifactBytes).toBe(7485);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs.map((input) => input.name))
       .toEqual(['nativeCategory_']);

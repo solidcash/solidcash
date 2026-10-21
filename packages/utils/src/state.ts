@@ -2399,15 +2399,39 @@ export function isComputedBlockhashKey(key: string): boolean {
 }
 
 /**
- * `[]` -> `[]`. Direct container master path (the covenant built with the contract's 35-byte lock).
+ * `[index]` -> `[category, index]` on the direct container master path, else `[category]`: the category and
+ * capability of the minting NFT at the master input index.
+ */
+function masterCategoryRead(masterLock?: Uint8Array): Script {
+  return masterLock !== undefined ? [Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_TUCK] : [Op.OP_UTXOTOKENCATEGORY];
+}
+
+/**
+ * `[masterCategory, masterIndex]` -> `[]`. Direct container master path (the covenant built with the contract's
+ * 35-byte lock).
  *
- * The output at this input keeps the container lock, or it is a zero-value zero-token placeholder. A kept lock
- * also keeps the token category. The satoshi and fungible amounts are the master's to account: an authorized
- * transfer debits them, and a call that names no transfer leaves them on the lock. The category-only covenant is
- * the framed container; its change is not at this input's index, so this pin is not part of that script.
+ * While an output carries the master's minting NFT, the output at this input keeps the container lock, or it is a
+ * zero-value zero-token placeholder. A kept lock also keeps the token category. The satoshi and fungible amounts are
+ * the master's to account: an authorized transfer debits them, and a call that names no transfer leaves them on the
+ * lock. A transaction that recreates no master is the destroy path (selfdestruct): its covenant accounts for the freed
+ * value, and its one output leaves none at this index, so it is not pinned. The category-only covenant is the framed
+ * container; its change is not at this input's index, so this pin is not part of that script.
  */
 function directMasterOutputPin(): Script {
   return [
+    // [masterCategory, j]: j is the master's index when it is recreated there, else the first output carrying a
+    // master, else the last output. A master that continues is recreated at its own index; only a retiring one walks.
+    Op.OP_2DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUAL,
+    Op.OP_NOTIF,
+    Op.OP_DROP, Op.OP_1NEGATE,
+    Op.OP_BEGIN,
+    Op.OP_1ADD,
+    Op.OP_2DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUAL,
+    Op.OP_OVER, Op.OP_1ADD, Op.OP_TXOUTPUTCOUNT, Op.OP_NUMEQUAL, Op.OP_BOOLOR,
+    Op.OP_UNTIL,
+    Op.OP_ENDIF,
+    Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUAL,
+    Op.OP_IF,
     Op.OP_INPUTINDEX,
     Op.OP_DUP,
     Op.OP_OUTPUTBYTECODE,
@@ -2441,6 +2465,7 @@ function directMasterOutputPin(): Script {
     Op.OP_OUTPUTTOKENAMOUNT,
     encodeInt(0n),
     Op.OP_NUMEQUALVERIFY,
+    Op.OP_ENDIF,
     Op.OP_ENDIF,
   ];
 }
@@ -2513,7 +2538,8 @@ export function buildTokenContainerCovenantScript(
     Op.OP_1, Op.OP_NUMEQUALVERIFY,
     // The contract's own locking bytecode, not a second minting NFT of this category.
     ...bindMintingAuthorityLock(masterLock),
-    Op.OP_UTXOTOKENCATEGORY, encodeInt(32n), Op.OP_SPLIT, Op.OP_2, Op.OP_EQUALVERIFY, catInternal, Op.OP_EQUALVERIFY,
+    ...masterCategoryRead(masterLock),
+    encodeInt(32n), Op.OP_SPLIT, Op.OP_2, Op.OP_EQUALVERIFY, catInternal, Op.OP_EQUALVERIFY,
     ...(masterLock !== undefined ? directMasterOutputPin()
       : options.accounted === true ? accountedTokenContainerKeep() : framedTokenContainerKeep()),
     // Salt for unique address per token container category
@@ -2558,7 +2584,7 @@ export function buildSatoshiContainerCovenantScript(
     Op.OP_IF,
     // === Master path (flag=1): the contract's own locking bytecode, not a keeper baton ===
     ...bindMintingAuthorityLock(masterLock),
-    Op.OP_UTXOTOKENCATEGORY,
+    ...masterCategoryRead(masterLock),
     encodeInt(32n),
     Op.OP_SPLIT,
     Op.OP_2,

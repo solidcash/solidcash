@@ -98,9 +98,15 @@ describe('a transaction signature checked in a helper', () => {
     expect((await contract.getState()).counter).toBe(1n);
   });
 
-  // A `this.f()` self-call stays a call (it is a message call), so its callee's check cannot run in the caller's body.
-  it('refuses a signature check left in an invoked body: a function-pointer target, a self-called entry', () => {
+  // Since 766d02e42 a direct build inlines a void `this.f()` into its caller, so the check runs in the signed entry.
+  it('settles an entry point that checks a signature when another entry self-calls it', async () => {
+    const contract = await deploy(SELF_CALL, [alicePub]);
+    await contract.call.bump(new SignatureTemplate(alicePriv)).send();
+    expect((await contract.getState()).counter).toBe(1n);
+    await expect(contract.call.bump(new SignatureTemplate(bobPriv)).send()).rejects.toThrow();
+  });
+
+  it('refuses a signature check left in an invoked body: a function-pointer target', () => {
     expect(() => compileString(POINTER)).toThrow(/SIGNATURE_CHECK_IN_SUBROUTINE/);
-    expect(() => compileString(SELF_CALL)).toThrow(/SIGNATURE_CHECK_IN_SUBROUTINE/);
   });
 });

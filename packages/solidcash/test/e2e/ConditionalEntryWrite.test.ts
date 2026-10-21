@@ -5,9 +5,10 @@ import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 
 // A conditional mapping WRITE `if(cond){ m[k] = v; }` has the same not-taken-preservation gap a conditional
-// delete does. IfConvertConditionalEntryOp rewrites it to `m[k] = cond ? v : m[k]` (an unconditional predicated
-// write, byte-identical to the hand-written form), so the taken path writes v and the not-taken path preserves
-// the current value. (A bare `m[k] = v` parses to ArrayAssignNode pre-semantic, resolved to a mapping by name.)
+// delete does. IfConvertConditionalEntryOp rewrites it to `m[k] = cond ? v : m[k]`, or keeps a direct contract's
+// lone guarded write for the covenant's runtime activity flag to settle; either way its access publishes that
+// predicated value, so the taken path writes v and the not-taken path preserves the current value. (A bare
+// `m[k] = v` parses to ArrayAssignNode pre-semantic, resolved to a mapping by name.)
 describe('conditional entry write (if-converted)', () => {
   const art = compileString(`
     contract C {

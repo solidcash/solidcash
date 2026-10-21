@@ -1450,6 +1450,9 @@ export class BranchNode extends StatementNode {
   /** Replayable source guard for a compiler-owned dirty-bit flush whose condition is otherwise opaque to the ABI. */
   kernelEntryActivation?: ExternalCallExpression;
 
+  /** IfConvertConditionalEntryOp kept this branch's one direct entry write; its access publishes the guarded value. */
+  keepsGuardedEntryWrite?: boolean;
+
   constructor(
     public condition: ExpressionNode,
     public ifBlock: BlockNode,

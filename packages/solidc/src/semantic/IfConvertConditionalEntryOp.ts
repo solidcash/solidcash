@@ -239,7 +239,10 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
     // state. Keep a direct single-target source branch; its activity flag settles the predecessor unchanged.
     if (this.preserveDirectSingletonWrites && stmts.length === 1
       && (stmts[0] instanceof MappingAssignNode || stmts[0] instanceof ArrayAssignNode)
-      && this.singletonMutations.has(ops[0].name) && this.mappings.has(ops[0].name)) return undefined;
+      && this.singletonMutations.has(ops[0].name) && this.mappings.has(ops[0].name)) {
+      node.keepsGuardedEntryWrite = true;
+      return undefined;
+    }
 
     // The kernel can publish an argument-authenticated activation for this bounded conditional write. Keep the
     // source branch so a false row owns no mapping mutation; if-converting it would insert an enumerable zero

@@ -908,6 +908,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Locals and parameters the body writes after their definition (`collectLocalKeyDefs`): their initializer, or the
   // argument a parameter names, is not the value a later read observes.
   private writtenLocals: Set<string> = new Set();
+  // The guard of each entry write IfConvertConditionalEntryOp kept in its branch (`keepsGuardedEntryWrite`).
+  private keptEntryWriteGuards = new WeakMap<Node, ExpressionNode>();
   // The names each statement of the current function writes, with and without tuple assignments (`followLocal`).
   private writtenNames = new WeakMap<Node, { readonly names: Set<string>; readonly tuples: Set<string> }>();
   private writtenNamesOf?: FunctionDefinitionNode;
@@ -7195,7 +7197,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const cachedGuardValue = node.kernelValueSource?.parameters.every((name) =>
         this.currentFunction?.parameters.some((parameter) => parameter.name === name))
         ? node.kernelValueSource.expression : undefined;
-      const valueSource: string | undefined = arrayElementSource
+      const unguardedValueSource: string | undefined = arrayElementSource
         ?? (!wholeValueWrite || rmw ? undefined
           : this.mappingLoopLastCounter(node)
             ?? this.mappingRmwLiteralDelta(node)
@@ -7209,6 +7211,8 @@ export default class SymbolTableTraversal extends AstTraversal {
                   ? this.canonicalizeExpression(node.expression)
                   : this.isOffChainEvaluableMappingValue(node.expression)
                     ? this.canonicalizeExpression(node.expression) : undefined));
+      const keptGuard = wholeValueWrite && !rmw ? this.keptEntryWriteGuards.get(node) : undefined;
+      const valueSource = keptGuard === undefined ? unguardedValueSource : this.keptGuardValueSource(node, keptGuard);
       if (existing) {
         const alreadyWrote = existing.operations.includes('write');
         if (!existing.operations.includes('write')) existing.operations.push('write');
@@ -7318,6 +7322,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // collected like any other access of the body.
     if ('call' in node && (node as any).call instanceof Node) {
       this.collectEntryAccesses((node as any).call, map);
+    }
+    if (node instanceof BranchNode && node.keepsGuardedEntryWrite && !node.elseBlock
+      && node.ifBlock.statements?.length === 1) {
+      this.keptEntryWriteGuards.set(node.ifBlock.statements[0], node.condition);
     }
     // Generic recursion into child nodes
     if ('statements' in node && Array.isArray((node as any).statements)) {
@@ -12575,6 +12583,17 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /** True when an expression reads a written local (`writtenLocals`), directly or through a local's initializer. */
+  /**
+   * A guarded write kept in its branch publishes its predicated form's value, `ternary(cond,v,map:m(k))`, as before
+   * 766d02e42: the SDK then seeds a skipped write's kept node, not the value the body did not write.
+   */
+  private keptGuardValueSource(node: MappingAssignNode, guard: ExpressionNode): string | undefined {
+    if ([guard, node.expression, ...node.keys].some((part) => this.readsWrittenLocal(part))) return undefined;
+    const keys = node.keys.map((key) => this.canonicalizeExpression(key)).join(',');
+    return `ternary(${this.canonicalizeExpression(guard)},${this.canonicalizeExpression(node.expression)},`
+      + `map:${node.name}(${keys}))`;
+  }
+
   private readsWrittenLocal(expression: Node | undefined): boolean {
     const visited = new WeakSet<Node>();
     const visit = (value: Node): boolean => {

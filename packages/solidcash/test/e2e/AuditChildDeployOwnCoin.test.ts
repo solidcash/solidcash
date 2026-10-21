@@ -89,19 +89,28 @@ async function ledgerCoin(provider: MockNetworkProvider, owner: SignatureTemplat
   return utxo;
 }
 
-/** A vout-0 coin at `owner`'s lock, created by a real transaction the mock serves; `token` mints one onto it. */
+/** A vout-0 coin at `owner`'s lock, created by a real transaction the mock serves; `token` puts one on it. */
 async function realCoin(provider: MockNetworkProvider, owner: SignatureTemplate, token = false): Promise<Utxo> {
   const source = await ledgerCoin(provider, owner);
   const satoshis = source.satoshis - 2_000n;
   const builder = new TransactionBuilder({ provider });
   builder.addInput(source, owner.unlockP2PKH());
-  builder.addOutput({
-    to: owner.unlockP2PKH().generateLockingBytecode(),
-    amount: satoshis,
-    ...(token ? { token: { category: source.txid, amount: 1_000n } } : {}),
-  });
-  const sent = await builder.send();
-  return { txid: sent.txid, vout: 0, satoshis };
+  if (!token) {
+    builder.addOutput({ to: owner.unlockP2PKH().generateLockingBytecode(), amount: satoshis });
+    const sent = await builder.send();
+    return { txid: sent.txid, vout: 0, satoshis };
+  }
+  // A token minted at output 0 makes that coin its category's BCMR identity output, which no genesis may spend, so it
+  // is minted at output 1 and moved to output 0 of a transaction that creates no category.
+  const minted = { category: source.txid, amount: 1_000n };
+  builder.addOutput({ to: owner.unlockP2PKH().generateLockingBytecode(), amount: 1_000n });
+  builder.addOutput({ to: owner.unlockP2PKH().generateLockingBytecode(), amount: satoshis - 1_000n, token: minted });
+  const mint = await builder.send();
+  const move = new TransactionBuilder({ provider });
+  move.addInput({ txid: mint.txid, vout: 1, satoshis: satoshis - 1_000n, token: minted }, owner.unlockP2PKH());
+  move.addOutput({ to: owner.unlockP2PKH().generateLockingBytecode(), amount: satoshis - 3_000n, token: minted });
+  const sent = await move.send();
+  return { txid: sent.txid, vout: 0, satoshis: satoshis - 3_000n };
 }
 
 /** Coins listed as alice's, with alice signing for them, that a child genesis must refuse. */

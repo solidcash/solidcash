@@ -320,17 +320,18 @@ describe('External State Variable', () => {
 
       const txOutputs = getTxOutputs(result.tx);
 
-      // master + 2 data NFTs + change
-      expect(txOutputs[0].token?.nft?.capability).toBe('minting');
-      expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
+      // BCMR identity output + master + 2 data NFTs + change
+      expect(txOutputs[0].token).toBeUndefined();
+      expect(txOutputs[1].token?.nft?.capability).toBe('minting');
       expect(txOutputs[2].token?.nft?.capability).toBe('mutable');
-      expect(txOutputs[3].token).toBeUndefined(); // change
+      expect(txOutputs[3].token?.nft?.capability).toBe('mutable');
+      expect(txOutputs[4].token).toBeUndefined(); // change
 
       const state0 = parsePushdataCommitment(
-        txOutputs[1].token!.nft!.commitment, deployArtifact.stateLayout!, 0,
+        txOutputs[2].token!.nft!.commitment, deployArtifact.stateLayout!, 0,
       );
       const state1 = parsePushdataCommitment(
-        txOutputs[2].token!.nft!.commitment, deployArtifact.stateLayout!, 1,
+        txOutputs[3].token!.nft!.commitment, deployArtifact.stateLayout!, 1,
       );
       expect(state0.counter).toBe(0n);
       expect(state1.externalValue).toBe(100n);

@@ -42,19 +42,28 @@ async function ledgerCoin(provider: MockNetworkProvider, address: string, satosh
   return utxo;
 }
 
-/** A vout-0 coin at `signer`'s own lock, created by a real transaction the mock serves; `token` mints one onto it. */
+/** A vout-0 coin at `signer`'s own lock, created by a real transaction the mock serves; `token` puts one on it. */
 async function realCoin(provider: MockNetworkProvider, signer: Signer, token = false): Promise<Utxo> {
   const source = await ledgerCoin(provider, signer.getAddress());
   const satoshis = source.satoshis - 2_000n;
   const builder = new TransactionBuilder({ provider });
   builder.addInput(source, signer.unlockP2PKH());
-  builder.addOutput({
-    to: signer.getLockingBytecode(),
-    amount: satoshis,
-    ...(token ? { token: { category: source.txid, amount: 1_000n } } : {}),
-  });
-  const sent = await builder.send();
-  return { txid: sent.txid, vout: 0, satoshis };
+  if (!token) {
+    builder.addOutput({ to: signer.getLockingBytecode(), amount: satoshis });
+    const sent = await builder.send();
+    return { txid: sent.txid, vout: 0, satoshis };
+  }
+  // A token minted at output 0 makes that coin its category's BCMR identity output, which no genesis may spend, so it
+  // is minted at output 1 and moved to output 0 of a transaction that creates no category.
+  const minted = { category: source.txid, amount: 1_000n };
+  builder.addOutput({ to: signer.getLockingBytecode(), amount: 1_000n });
+  builder.addOutput({ to: signer.getLockingBytecode(), amount: satoshis - 1_000n, token: minted });
+  const mint = await builder.send();
+  const move = new TransactionBuilder({ provider });
+  move.addInput({ txid: mint.txid, vout: 1, satoshis: satoshis - 1_000n, token: minted }, signer.unlockP2PKH());
+  move.addOutput({ to: signer.getLockingBytecode(), amount: satoshis - 3_000n, token: minted });
+  const sent = await move.send();
+  return { txid: sent.txid, vout: 0, satoshis: satoshis - 3_000n };
 }
 
 interface Listing {

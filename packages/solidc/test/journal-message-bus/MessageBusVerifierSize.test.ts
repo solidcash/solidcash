@@ -31,11 +31,12 @@ describe('atomic verifier bytecode specialization', () => {
     // composed -154 B after the route dropped its redundant positional batch self-check (the caller-side blob
     // covenant and the verifier binding digest still authenticate the frame).
     // direct -7 B, composed -27 B once the token container covenant lost its merge path (efba0f1ef) and the keep
-    // of an unnamed container refused a minting NFT (306318a0b).
+    // of an unnamed container refused a minting NFT (306318a0b). +44 / +46 B once the direct container covenants
+    // took the master pin's destroy arm (3fc5969bd).
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 622,
-      composed: 1700,
-      frameworkTax: 1078,
+      direct: 666,
+      composed: 1746,
+      frameworkTax: 1080,
     });
     expect(composed).toBeLessThanOrEqual(1900);
     expect(composed - direct).toBeLessThanOrEqual(1360);

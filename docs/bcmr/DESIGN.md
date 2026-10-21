@@ -88,18 +88,23 @@ address", which that layout made impossible.
 
 ```text
 in   0     funding coin (vout 0)             category C = its txid = the authbase
+in   1..   the token coin (6.2), then the AuthKey coin (4.2), each when the genesis creates that category
 out  0     identity output, per policy (4.2)
 out  1     BCMR publication, when one is requested (section 5)
-out  2..   the existing outputs in their existing order: masters, validators, facets, records, mapping nodes,
+out  next  the AuthKey, when the genesis mints it (`authguard` with `authKeyFunding`, 4.2)
+out  next  the existing outputs in their existing order: masters, validators, facets, records, mapping nodes,
            chunks, events, containers, identity anchors, keeper baton; change last
 ```
 
-- Nothing on chain evaluates a top-level genesis: its only input is the funder's coin. The output order is an SDK
-  convention, and the probe that derives the genesis state runs on its own synthetic layout.
+- Each optional output takes the next index: without a publication the AuthKey is output 1, and the masters start
+  right after the last leading output.
+- Nothing on chain evaluates a top-level genesis: its inputs are funding coins, none of them a contract's. The output
+  order is an SDK convention, and the probe that derives the genesis state runs on its own synthetic layout.
 - The relative order of the existing outputs is kept. Discovery classifies a category's UTXOs by lock and sorts each
-  class by vout (`packages/solidcash/src/framed/deploy/records.ts`), so shifting every output by one or two places
+  class by vout (`packages/solidcash/src/framed/deploy/records.ts`), so shifting every output by up to three places
   changes nothing there. Tests that read a deployment transaction's `outputs[0]` as the master need an audit.
-- One helper builds the prefix for both builders, so every entry point in section 3 inherits it.
+- One helper (`leadingOutputs` in `packages/solidcash/src/bcmr/deployment.ts`) builds the prefix, from the identity
+  output to the AuthKey, for both builders, so every entry point in section 3 inherits it.
 - There is no flag: this is the layout of every genesis.
 
 ### 4.2 Identity policies
@@ -107,7 +112,7 @@ out  2..   the existing outputs in their existing order: masters, validators, fa
 | Policy | Output 0 | Who can publish | Risk | Fits |
 | --- | --- | --- | --- | --- |
 | `key` | A token-free output at a stated lock: P2PKH, or a P2SH multisig. | The holder of that lock. | A wallet holding the lock may spend the output as an ordinary coin, which hands the identity to whatever that transaction puts at output 0 (4.4). | Default; scripted issuers. |
-| `authguard` | The AuthGuard covenant keyed to an AuthKey category K. The AuthKey, an immutable NFT of K, goes to the issuer. | The holder of the AuthKey. | Needs a second category. | Opt-in only, never the default (DECISIONS D31). For issuers who want the AuthKey model; CashTokens Studio already supports the standard. |
+| `authguard` | The AuthGuard covenant keyed to an AuthKey category K. The AuthKey, an immutable NFT of K, goes to the issuer, or stays with its holder when K exists already. | The holder of the AuthKey. | Needs a second category. | Opt-in only, never the default (DECISIONS D31). For issuers who want the AuthKey model; CashTokens Studio already supports the standard. |
 | `frozen` | An unspendable lock that is not a data carrier: P2SH32 of the one-byte script `OP_RETURN`. | Nobody, ever. | The genesis registry is final, so its URIs must stay reachable (use IPFS). | Tokens whose metadata must never change. |
 | `burned` | `OP_RETURN`. | Nobody. Clients archive the identity (R4). | libauth's `IdentitySnapshot.status` guidance tells clients to consider burning a burned token's remaining tokens. | Categories with no user-facing token. |
 | `governed` | A guard keyed to the contract's category and the lock of its `MetadataUpdated` event (section 9). | Whoever the contract's own access control lets emit `MetadataUpdated`; anyone may then apply it. | Each update waits 144 blocks for its authorization to mature. | Tokens whose metadata follows the contract's governance. |
@@ -118,8 +123,11 @@ AuthGuard details:
   contract's event records, which anyone may spend after 144 blocks (`buildEventNftCovenantScript` in
   `packages/utils/src/state.ts`: a category check, then a 144-block `OP_CHECKSEQUENCEVERIFY`). With K equal to C,
   anyone could obtain an AuthKey.
-- K can be minted in the same genesis from a second vout-0 coin, since one transaction can create one category per
-  token genesis input (CashTokens "Token Categories", figure 1). It can also be minted beforehand.
+- K can be minted in the same genesis from a second vout-0 coin (`authKeyFunding`), since one transaction can create
+  one category per token genesis input (CashTokens "Token Categories", figure 1); the AuthKey then follows the
+  publication (4.1). K can also be minted beforehand and named (`authKeyCategory`): the genesis then spends no coin
+  and mints no AuthKey for it, and the holder keeps the AuthKey. Either way the SDK refuses a K equal to C or to the
+  token's category X (6.2).
 - The guard holds no fungible tokens, unlike the standard's own genesis setup. A ledger token's supply has to stay in
   the contract's reserve (6.2); held at the guard, the issuer could release tokens past the ledger, which breaks the
   supply model in `packages/solidc/docs/native-erc20.md` (the ceiling theorem: tracked supply never falls below
@@ -137,7 +145,9 @@ is not a data-carrier output, so the identity stays active and the genesis stays
 ### 4.3 Default
 
 The default is `key` at the deployer's lock: `senderLockingBytecode`, otherwise the funder's lock when it is P2PKH,
-otherwise the change address (D32). AuthGuard is opt-in and never the default (D31).
+otherwise the change address (D32). Both builders test P2PKH the same way (`isP2pkhLock` in
+`packages/solidcash/src/bcmr/identity.ts`), so a 25-byte lock of another shape falls through to the change address.
+AuthGuard is opt-in and never the default (D31).
 
 `burned` stays opt-in: it closes the identity forever, which is wrong for a token that may want metadata later.
 
@@ -284,10 +294,13 @@ the publication land in one transaction:
 ```text
 in   0     funding coin (vout 0)                C = its txid
 in   1     token coin (vout 0)                  X = its txid
+in   2     AuthKey coin (vout 0)                K = its txid, under `authguard` with `authKeyFunding` (4.2)
 out  0     identity output, shared by C and X
 out  1     BCMR publication
-out  2..   masters, data NFTs, mapping heads, ...
+out  2     the AuthKey, an immutable NFT of K, when the genesis mints it
+out  next  masters, data NFTs, mapping heads, ...
            reserve: token-only output of X at getTokenContainerAddress(contract, C, X), amount = premint
+           bearer supply of X, when nativeToken.bearer is set
            change
 ```
 
@@ -480,6 +493,7 @@ interface DeployOptions {
 type IdentityPolicy =
   | { kind: 'key'; lockingBytecode?: Uint8Array | string }
   | { kind: 'authguard'; authKeyFunding: Utxo; authKeyFunder?: Unlocker; authKeyRecipient?: Uint8Array | string }
+  | { kind: 'authguard'; authKeyCategory: string }   // an AuthKey category minted beforehand
   | { kind: 'frozen' }
   | { kind: 'burned' }
   | { kind: 'governed' };

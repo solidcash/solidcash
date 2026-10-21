@@ -363,6 +363,7 @@ coin selection, or choose another `identity` policy:
 | --- | --- | --- |
 | `{ kind: 'key' }` (default) | A token-free output at the deployer's lock, or the `lockingBytecode` you give. | The holder of that lock. |
 | `{ kind: 'authguard', authKeyFunding }` | The AuthGuard covenant; an AuthKey NFT of a second category goes to you. | The AuthKey holder. |
+| `{ kind: 'authguard', authKeyCategory }` | The AuthGuard covenant keyed to an AuthKey category you already hold. | The AuthKey holder. |
 | `{ kind: 'frozen' }` | An unspendable lock, so the genesis registry is final. | Nobody. |
 | `{ kind: 'burned' }` | `OP_RETURN`; wallets archive the identity. | Nobody. |
 | `{ kind: 'governed' }` | A guard that publishes what the contract authorizes through `BcmrGoverned`. | The contract's own access control. |

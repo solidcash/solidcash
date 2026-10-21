@@ -18,7 +18,7 @@ import type { Output, Unlocker, Utxo } from '../interfaces.js';
 import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
 import { stageBroadcasts } from '../framed/proxy/staged-broadcasts.js';
 import type { DeployOptions } from '../stateful/stateful-lifecycle-types.js';
-import type { GenesisIdentity, IdentityRecord } from './identity.js';
+import { authKeyCategoryOf, type GenesisIdentity, type IdentityRecord } from './identity.js';
 import {
   BcmrError, dataCarrierBytes, ipfsCidV1Raw, publicationOutput,
 } from './publication.js';
@@ -235,7 +235,7 @@ async function nativeInputOf(
     throw new BcmrError(`nativeToken.funding must be at vout 0 to create a category, got vout ${funding.vout}`);
   }
   if (nativeCategory === category) throw new BcmrError('the token category must differ from the contract category');
-  if (deploy.identity?.kind === 'authguard' && deploy.identity.authKeyFunding.txid.toLowerCase() === nativeCategory) {
+  if (deploy.identity?.kind === 'authguard' && authKeyCategoryOf(deploy.identity) === nativeCategory) {
     throw new BcmrError('the token category must differ from the AuthKey category');
   }
   const unlocker = deploy.nativeToken?.funder ?? deploy.funder;
@@ -353,7 +353,7 @@ export async function prepareMetadata(options: {
 
   const extensions: Record<string, Extensions[string]> = { ...(publication.extensions ?? {}) };
   if (deploy.identity?.kind === 'authguard') {
-    extensions.authNft = deploy.identity.authKeyFunding.txid.toLowerCase();
+    extensions.authNft = authKeyCategoryOf(deploy.identity);
   }
   if (reserveOutput !== undefined && reserveLock !== undefined) {
     extensions[NATIVE_TOKEN_EXTENSION] = {

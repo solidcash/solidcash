@@ -36,7 +36,7 @@ import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecy
 import { addressToLockScript, getNetworkPrefix } from '../../utils.js';
 import { identityRecord, leadingOutputs, type PreparedMetadata } from '../../bcmr/deployment.js';
 import { framedEventLockingBytecode, governedEvent, governedGuardFor } from '../../bcmr/governed.js';
-import { planGenesisIdentity } from '../../bcmr/identity.js';
+import { isP2pkhLock, planGenesisIdentity } from '../../bcmr/identity.js';
 import { genesisOutpointKey, reserveGenesisOutpoint } from '../../stateful/genesis-reservations.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
@@ -102,7 +102,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // `balances[msg.sender]` (a token's mint) or `owner = msg.sender` would otherwise seed the placeholder. The lock the
   // deployment states wins - a Signer's own, which its later calls carry - so the coin that funds the genesis does
   // not decide it; a deployment that states none takes the funder's lock when it is a P2PKH lock.
-  const senderLockingBytecode = options.senderLockingBytecode ?? (funderLock.length === 25 ? funderLock : undefined);
+  const senderLockingBytecode = options.senderLockingBytecode ?? (isP2pkhLock(funderLock) ? funderLock : undefined);
   const constructorReadsSender = artifact.abi.some(
     (entry) => entry.name === '__construct' && entry.usesMsgSender === true,
   );

@@ -27,7 +27,7 @@ export type IdentityPolicy =
   /**
    * The AuthGuard covenant (CHIP-2023-08), opt-in: only a transaction whose input 1 holds the AuthKey, an immutable
    * NFT of its own category, spends it. That category is never the contract's: anyone may spend the contract's event
-   * NFTs after 144 blocks, and AuthGuard accepts any immutable NFT of its category.
+   * NFTs after 144 blocks, and AuthGuard accepts any immutable NFT of its category. Here the genesis mints that category.
    */
   | {
     readonly kind: 'authguard';
@@ -37,6 +37,16 @@ export type IdentityPolicy =
     readonly authKeyFunder?: Unlocker;
     /** Where the AuthKey goes; the deployer's lock when omitted. */
     readonly authKeyRecipient?: Uint8Array | string;
+    readonly authKeyCategory?: never;
+  }
+  /** The AuthGuard keyed to an AuthKey category minted beforehand: the genesis mints no AuthKey. */
+  | {
+    readonly kind: 'authguard';
+    /** The existing AuthKey category, whose holder keeps the AuthKey. */
+    readonly authKeyCategory: string;
+    readonly authKeyFunding?: never;
+    readonly authKeyFunder?: never;
+    readonly authKeyRecipient?: never;
   }
   /** An unspendable lock that is not a data carrier: the genesis stays the authhead, so its registry is final. */
   | { readonly kind: 'frozen' }
@@ -78,6 +88,14 @@ function assertCategory(category: string, role: string): void {
 /** A lock stated as locking bytecode or as a CashAddress. */
 export function lockOf(lock: Uint8Array | string): Uint8Array {
   return typeof lock === 'string' ? addressToLockScript(lock) : lock;
+}
+
+/** The AuthKey category an `authguard` policy keys its guard to, lowercase. */
+export function authKeyCategoryOf(policy: Extract<IdentityPolicy, { kind: 'authguard' }>): string {
+  if ((policy.authKeyFunding === undefined) === (policy.authKeyCategory === undefined)) {
+    throw new BcmrError('an authguard identity states exactly one of authKeyFunding and authKeyCategory');
+  }
+  return (policy.authKeyFunding === undefined ? policy.authKeyCategory : policy.authKeyFunding.txid).toLowerCase();
 }
 
 /** True when `lockingBytecode` is a P2PKH lock. */
@@ -142,9 +160,9 @@ export function identityOutput(kind: IdentityPolicyKind, lock: Uint8Array): Outp
 export interface GenesisIdentity {
   readonly policy: IdentityPolicyKind;
   readonly output: Output;
-  /** Inputs after the funding coin: the AuthKey category's genesis coin, under `authguard`. */
+  /** Inputs after the funding coin: the AuthKey category's genesis coin, under `authguard` when it mints the AuthKey. */
   readonly inputs: readonly { readonly utxo: Utxo; readonly unlocker: Unlocker }[];
-  /** Outputs after the publication: the AuthKey, under `authguard`. */
+  /** Outputs after the publication: the AuthKey, under `authguard` when the genesis mints it. */
   readonly trailing: readonly Output[];
   readonly authKeyCategory?: string;
 }
@@ -173,14 +191,18 @@ export async function planGenesisIdentity(options: {
     return { policy: policy.kind, output: identityOutput(policy.kind, new Uint8Array(0)), inputs: [], trailing: [] };
   }
   const funding = policy.authKeyFunding;
-  const authKeyCategory = funding.txid.toLowerCase();
-  assertCategory(authKeyCategory, 'an AuthKey funding txid');
-  if (funding.vout !== 0) {
+  const authKeyCategory = authKeyCategoryOf(policy);
+  assertCategory(authKeyCategory, funding === undefined ? 'authKeyCategory' : 'an AuthKey funding txid');
+  if (funding !== undefined && funding.vout !== 0) {
     throw new BcmrError(`the AuthKey funding coin must be at vout 0 to create a category, got vout ${funding.vout}`);
   }
   if (authKeyCategory === options.category.toLowerCase()) {
     throw new BcmrError('the AuthKey category must differ from the contract category');
   }
+  const guard = authGuardLockingBytecode(authKeyCategory);
+  const output = { to: guard, amount: satoshisAtLeastDust(0n, { to: guard }) };
+  // A category minted beforehand: its holder already has the AuthKey.
+  if (funding === undefined) return { policy: 'authguard', output, inputs: [], trailing: [], authKeyCategory };
   const unlocker = policy.authKeyFunder ?? options.funder;
   const refusal = await ownCoinRefusal(
     options.provider, funding, unlocker.generateLockingBytecode(), { role: 'AuthKey funder', tokenFree: true },
@@ -188,10 +210,9 @@ export async function planGenesisIdentity(options: {
   if (refusal !== undefined) throw new BcmrError(refusal);
   const recipient = policy.authKeyRecipient === undefined ? options.deployerLock : lockOf(policy.authKeyRecipient);
   const token = { category: authKeyCategory, amount: 0n, nft: { capability: 'none' as const, commitment: '' } };
-  const guard = authGuardLockingBytecode(authKeyCategory);
   return {
     policy: 'authguard',
-    output: { to: guard, amount: satoshisAtLeastDust(0n, { to: guard }) },
+    output,
     inputs: [{ utxo: funding, unlocker }],
     trailing: [{ to: recipient, amount: satoshisAtLeastDust(0n, { to: recipient, token }), token }],
     authKeyCategory,

@@ -3104,3 +3104,23 @@ unverified.
 loop write and a long-value write of a `bytes32` and a `bytes` value given as hex strings.
 
 **Revisit if:** a loop write or a chunked write stores a bytes-like value an SDK caller passed as a hex string.
+
+## SDK e2e titles that already failed before the 2026-10-20 BCMR and token container work (2026-10-21)
+
+**What:** the full SDK e2e suite (`vitest.e2e.config.ts`, 1,593 files, mocknet) fails 23 titles in 13 files that fail
+the same way (same titles, same first error) with every package built at `769adb889`, before that work:
+`L4StatefulAdminSiteGate` (8, "min relay fee not met"), `SelfdestructDestination` (2: an input reads an output the
+destroy transaction lacks), `ConstructorKeccakHelper` (2: no side-car reserved; constructor derivation fails),
+`KernelNestedChunkedUpdate` (2), and one each in `AuditLifecycleEventIntegrity`, `ConditionalEntryWrite`,
+`DynamicArrays` (1,405 B against a 1,320 B budget), `MasterChefDeposit` and `SushiBarTransferFrom` (preflight
+OP_VERIFY), `SignatureCheckHelper` (a check left in an invoked body is not refused), `X121StrictPreflightDecision`,
+`X130DebugVmProviderFaithful` and `X46CommitmentWriter` (its documented drain no longer settles). The same run's other
+14 failures came from that work and were fixed (`0d69076df`).
+
+**Why deferred:** they predate that work and lie outside it, and no gate runs the e2e suite, so there is no known-good
+commit to bisect from yet.
+
+**What it'd take:** find a commit where each file passes, bisect, then fix or re-pin file by file.
+
+**Revisit if:** a release gate takes in the SDK e2e suite, or work touches one of these files.
+

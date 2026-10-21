@@ -256,6 +256,7 @@ import {
   StateArrayDeleteNode,
   type KeySourceInfo,
   type YulWordBuiltin,
+  type GraphEffectFrame,
   exactArrayBounds,
   exactArrayLength,
 } from '../ast/AST.js';
@@ -679,6 +680,20 @@ const SCAN_IN_MINTS = '(__scan_in_mints)';
 const SCAN_OUT_MINTS = '(__scan_out_mints)';
 /** A route row's lifecycle mode; minting uniqueness holds in mode 0 only. */
 const LIFECYCLE_MODE = '__message_bus_active_lifecycle_mode';
+/** A route's mint bound operands (emitRouteMintBoundItems), bottom first. */
+const ROUTE_MINT_LO = '(__route_mint_lo)';
+const ROUTE_MINT_HI = '(__route_mint_hi)';
+const ROUTE_MINT_SPAN_START = '(__route_mint_span_start)';
+const ROUTE_MINT_SPAN_END = '(__route_mint_span_end)';
+const routeMintCategory = (slot: number): string => `(__route_mint_category_${slot})`;
+const routeMintLock = (slot: number): string => `(__route_mint_lock_${slot})`;
+/** The container slots and effect span a route's mint bound covers. */
+interface RouteMintBound { slots: number; span: boolean }
+/** The tracked names of a route's mint bound operands, bottom first. */
+function routeMintBoundNames(bound: RouteMintBound): string[] {
+  return [ROUTE_MINT_LO, ROUTE_MINT_HI, ...(bound.span ? [ROUTE_MINT_SPAN_START, ROUTE_MINT_SPAN_END] : []),
+    ...Array.from({ length: bound.slots }, (_, slot) => [routeMintCategory(slot), routeMintLock(slot)]).flat()];
+}
 
 /** What the input pass of the slot scans leaves for the output pass, bottom first. */
 function slotScanResidue(sat: boolean, foreign: boolean, mint: boolean): string[] {
@@ -1683,6 +1698,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private mintCountFoldable = false;
   /** Set by emitMintingNftUniqueness when the slot scans count the minting NFTs instead. */
   private mintCountPending = false;
+  /** Set by emitDirectMintBound on a route: the output pass of the slot scans bounds its mints. */
+  private routeMintBoundFrame: GraphEffectFrame | undefined;
   private structSkipIds = new Map<string, bigint>();
   private structSkipTypes = new Map<string, StructType | ArrayType>();
   private structFieldPrefixIds = new Map<string, bigint>();
@@ -10401,8 +10418,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.mutableOutputCheckPending = false;
       const scansMints = this.mintCountPending;
       this.mintCountPending = false;
+      const mintBound = this.routeMintBoundFrame;
+      this.routeMintBoundFrame = undefined;
       this.emitSlotScans(scansSatoshi, scansForeign ? admitAnchor : undefined, scansMutable, scansMints,
-        { location: node.body.location, positionHint: PositionHint.END });
+        { location: node.body.location, positionHint: PositionHint.END }, mintBound);
       if (this.framedMaster && this.currentContractHoldsTokens) this.emitFramedForeignTokenKeep(node);
       // SEC-10/SEC-11: an own-category IMMUTABLE (0x00) NFT output - what an event NFT is - may only sit at an
       // event block-layout offset (or the witnessed return-event index). Without this any spender mints forged
@@ -51744,12 +51763,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitSlotScans(
     sat: boolean, admitAnchor: boolean | undefined, mutable: boolean, mint: boolean, loc: SingleLocationData,
+    mintBound?: GraphEffectFrame,
   ): void {
     const inputs = sat || admitAnchor !== undefined || mint;
     const outputs = sat || mutable || mint;
     const residue = inputs && outputs ? slotScanResidue(sat, admitAnchor !== undefined, mint) : [];
     if (inputs) this.emitInputSlotScan(sat, admitAnchor, mint, outputs, loc);
-    if (outputs) this.emitOutputSlotScan(sat, mutable, mint, residue, loc);
+    const bound = mintBound === undefined ? undefined : this.emitRouteMintBoundItems(mintBound, loc);
+    if (outputs) this.emitOutputSlotScan(sat, mutable, mint, residue, loc, bound);
+    else if (bound !== undefined) this.emitRouteMintBoundScan(bound, loc);
+    // Without an output pass, the bound's own pass leaves its operands.
+    if (bound !== undefined && !outputs) this.emitKeepScanItems(ROUTE_MINT_LO, [], loc);
     if (!sat) return;
     // A runtime-loop BCH transfer is conserved by emitRuntimeLoopEffectVerification, which verifies the container
     // identity and then `containerInput <= containerOutput + runtimeTransferTotal`. This slot-scan aggregate only
@@ -51890,10 +51914,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * `[n]` -> `[i]`, untracked: the next index below n a scan acts on, or 0. `tokens` tests any token on an input, an
-   * own mutable record on an output; `mint` the master's token category on an output; `sat` the container lock.
+   * own mutable record on an output; `mint` the master's token category on an output; `sat` the container lock;
+   * `anyToken` any token on an output, which covers the other two.
    */
   private emitSkipToScannedSlot(
-    isOutput: boolean, sat: boolean, tokens: boolean, mint: boolean, loc: SingleLocationData,
+    isOutput: boolean, sat: boolean, tokens: boolean, mint: boolean, loc: SingleLocationData, anyToken = false,
   ): void {
     const pickCategory = (name: string, untracked: number): void => {
       this.emit(encodeInt(BigInt(this.getStackIndex(name) + untracked)), loc);
@@ -51902,7 +51927,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_1SUB, loc);
-    if (tokens && mint && isOutput) {
+    if (anyToken && isOutput) {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_NIP, loc);
+    } else if (tokens && mint && isOutput) {
       // [i, category] -> [i, category == ownMutable || category == mintCategory]
       this.emit(Op.OP_DUP, loc);
       this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
@@ -51921,7 +51951,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SIZE, loc);
       this.emit(Op.OP_NIP, loc);
     }
-    const tested = tokens || mint;
+    const tested = anyToken || tokens || mint;
     if (sat) {
       this.emit(tested ? Op.OP_OVER : Op.OP_DUP, loc);
       this.emit(isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE, loc);
@@ -52725,28 +52755,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitOutputSlotScan(
     sat: boolean, mutable: boolean, mint: boolean, residue: readonly string[], loc: SingleLocationData,
+    bound?: RouteMintBound,
   ): void {
     const signatures = mutable
       ? this.collectionDefinitions.map((collection) => this.vmapCollectionSignature(collection.name))
       : undefined;
-    // The value-chunk locks a long write appended are this function's own.
+    // The value-chunk locks a long write appended are this function's own. A route's mint bound operands sit
+    // above the residue.
+    const boundNames = bound === undefined ? [] : routeMintBoundNames(bound);
+    const boundKey = bound === undefined ? '' : `:mintBound:${bound.slots}:${bound.span}`;
     if ((!mutable || this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) < 0)
       && this.invokeSharedEntryCheck(
-        `outputScans:${sat}:${signatures?.join(',') ?? '-'}:${mint}:${residue.join(',')}`,
+        `outputScans:${sat}:${signatures?.join(',') ?? '-'}:${mint}:${residue.join(',')}${boundKey}`,
         (t, l) => {
-          for (const name of residue) t.pushToStack(name);
-          t.emitOutputSlotScanBody(sat, signatures, mint, l);
+          for (const name of [...residue, ...boundNames]) t.pushToStack(name);
+          t.emitOutputSlotScanBody(sat, signatures, mint, l, bound);
         },
         loc,
       )) {
-      this.popFromStack(residue.length);
+      this.popFromStack(residue.length + boundNames.length);
       if (sat) {
         this.pushToStack(SCAN_IN_SUM);
         this.pushToStack(SCAN_OUT_SUM);
       }
       return;
     }
-    this.emitOutputSlotScanBody(sat, signatures, mint, loc);
+    this.emitOutputSlotScanBody(sat, signatures, mint, loc, bound);
   }
 
   /**
@@ -52757,6 +52791,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitOutputSlotScanBody(
     sat: boolean, signatures: readonly (string | undefined)[] | undefined, mint: boolean, loc: SingleLocationData,
+    bound?: RouteMintBound,
   ): void {
     const base = '(__mutable_base)';
     const fromInputs = this.getStackIndex(SCAN_CATEGORY, true) >= 0;
@@ -52788,7 +52823,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(Op.OP_TXOUTPUTCOUNT, loc);
     this.emit(Op.OP_BEGIN, loc);
-    this.emitSkipToScannedSlot(true, sat, signatures !== undefined, mint, loc);
+    // A mint bound stops at every output with a token: its category is any its containers mint.
+    this.emitSkipToScannedSlot(true, sat, signatures !== undefined, mint, loc, bound !== undefined);
     if (sat) this.emitAddScannedValue(true, SCAN_OUT_SUM, loc);
     if (mint) this.emitCountScannedMint(true, SCAN_OUT_MINTS, loc);
     if (signatures !== undefined) {
@@ -52801,6 +52837,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitMutableOutputAllowed(this.getStackIndex(SCAN_MINTABLE_LOCKS) + 1, loc);
       this.emit(Op.OP_ENDIF, loc);
     }
+    if (bound !== undefined) this.emitRouteMintBoundCheck(bound, loc);
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_NOT, loc);
     this.emit(Op.OP_UNTIL, loc);
@@ -52818,7 +52855,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_VERIFY, loc);
       this.popFromStack(2);
     }
-    const bottom = !fromInputs ? base : mint ? SCAN_MINT_CATEGORY : SCAN_CATEGORY;
+    // A mint bound's operands sit above the input pass's residue, and below the base a pass without one builds.
+    const bottom = !fromInputs ? (bound !== undefined ? ROUTE_MINT_LO : base) : mint ? SCAN_MINT_CATEGORY : SCAN_CATEGORY;
     this.emitKeepScanItems(bottom, sat ? [SCAN_IN_SUM, SCAN_OUT_SUM] : [], loc);
   }
 
@@ -55609,6 +55647,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
     const runtimeNftCountsName = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_NFT_TRANSFER_COUNTS;
     const frame = this.graphTokenSiteActive ? node.graphEffectFrame : undefined;
+    if (frame !== undefined) {
+      // A route bounds its mints in the output pass of its slot scans, which walks every output anyway.
+      if (this.tokenContainerSlots.length > 0) this.routeMintBoundFrame = frame;
+      return;
+    }
     for (let slot = 0; slot < this.tokenContainerSlots.length; slot += 1) {
       const nftSends = this.pendingTokenContainerTransfers
         .filter((transfer) => transfer.tokenContainerSlotIndex === slot && transfer.method === 'transferNft');
@@ -55616,35 +55659,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitBlockSlotIndex('tokenContainer', slot, loc);
       this.emit([Op.OP_UTXOTOKENCATEGORY, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(33n), Op.OP_NUMEQUAL,
         Op.OP_IF, encodeInt(32n), Op.OP_SPLIT, Op.OP_2, Op.OP_EQUAL, Op.OP_IF], loc);
-      if (frame !== undefined) {
-        // A route's sends sit in its token-transfer windows, which each reached handler pins and an unreached one
-        // leaves tokenless, so an output outside the lock that carries the category sits in one, with no fungible
-        // amount. [prefix, lock, o]
-        this.emitBlockSlotIndex('tokenContainer', slot, loc, 1);
-        this.emit([Op.OP_UTXOBYTECODE, Op.OP_TXOUTPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
-          Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(32n),
-          Op.OP_GREATERTHANOREQUAL,
-          Op.OP_IF, encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP, Op.OP_3, Op.OP_PICK, Op.OP_EQUAL,
-          Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
-          Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTBYTECODE, Op.OP_2, Op.OP_PICK, Op.OP_EQUAL, Op.OP_NOT, Op.OP_ELSE, Op.OP_0,
-          Op.OP_ENDIF,
-          Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_NOT, Op.OP_VERIFY, Op.OP_DUP], loc);
-        this.emitBlockSlotIndex('tcTransfer', frame.tokenTransferBase, loc, 4);
-        this.emit([Op.OP_2DUP, Op.OP_GREATERTHANOREQUAL, Op.OP_ROT, Op.OP_ROT,
-          encodeInt(BigInt(frame.sites * frame.tokenTransferWidth)), Op.OP_ADD, Op.OP_LESSTHAN, Op.OP_BOOLAND], loc);
-        if (this.stack.includes(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START)
-          && this.stack.includes(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END)) {
-          // Or in the route's runtime effect span, whose outputs its effect verifier authenticates.
-          this.emit(Op.OP_OVER, loc);
-          this.emitPickCompilerRouteFrameValue(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START, loc, 5);
-          this.emitPickCompilerRouteFrameValue(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END, loc, 6);
-          this.emit([Op.OP_WITHIN, Op.OP_BOOLOR], loc);
-        }
-        this.emit([Op.OP_VERIFY, Op.OP_ENDIF,
-          Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
-          Op.OP_2DROP, Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF, Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF], loc);
-        continue;
-      }
       // [prefix, lock, outside, o]
       this.emitBlockSlotIndex('tokenContainer', slot, loc, 1);
       this.emit([Op.OP_UTXOBYTECODE, Op.OP_0, Op.OP_TXOUTPUTCOUNT, Op.OP_BEGIN, Op.OP_1SUB,
@@ -55674,6 +55688,76 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit([Op.OP_NUMEQUALVERIFY, Op.OP_2DROP, Op.OP_ELSE, Op.OP_DROP, Op.OP_ENDIF, Op.OP_ELSE, Op.OP_DROP,
         Op.OP_ENDIF], loc);
     }
+  }
+
+  /**
+   * `[]` -> the tracked operands of a route's mint bound: its token-transfer window, its runtime effect span when it
+   * has one, and per container slot the category the container mints (empty unless it holds a minting NFT) and its
+   * lock. A route's sends sit in its token-transfer windows, which each reached handler pins and an unreached one
+   * leaves tokenless, so an output outside the lock that carries a minted category sits in one, or in the effect
+   * span, whose outputs its effect verifier authenticates, with no fungible amount.
+   */
+  private emitRouteMintBoundItems(frame: GraphEffectFrame, loc: SingleLocationData): RouteMintBound {
+    this.emitBlockSlotIndex('tcTransfer', frame.tokenTransferBase, loc);
+    this.pushToStack(ROUTE_MINT_LO);
+    this.emit([Op.OP_DUP, encodeInt(BigInt(frame.sites * frame.tokenTransferWidth)), Op.OP_ADD], loc);
+    this.pushToStack(ROUTE_MINT_HI);
+    const start = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START;
+    const end = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END;
+    const span = this.stack.includes(start) && this.stack.includes(end);
+    if (span) {
+      this.emitPickCompilerRouteFrameValue(start, loc);
+      this.pushToStack(ROUTE_MINT_SPAN_START);
+      this.emitPickCompilerRouteFrameValue(end, loc);
+      this.pushToStack(ROUTE_MINT_SPAN_END);
+    }
+    for (let slot = 0; slot < this.tokenContainerSlots.length; slot += 1) {
+      this.emitBlockSlotIndex('tokenContainer', slot, loc);
+      this.emit([Op.OP_UTXOTOKENCATEGORY, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(33n), Op.OP_NUMEQUAL,
+        Op.OP_IF, encodeInt(32n), Op.OP_SPLIT, Op.OP_2, Op.OP_EQUAL, Op.OP_NOTIF, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
+        Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF], loc);
+      this.pushToStack(routeMintCategory(slot));
+      this.emitBlockSlotIndex('tokenContainer', slot, loc);
+      this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.pushToStack(routeMintLock(slot));
+    }
+    return { slots: this.tokenContainerSlots.length, span };
+  }
+
+  /** `[.., i]` stays: output i, outside a container's lock with a category it mints, sits where a send may. */
+  private emitRouteMintBoundCheck(bound: RouteMintBound, loc: SingleLocationData): void {
+    const pick = (name: string, untracked: number): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name) + untracked)), loc);
+      this.emit(Op.OP_PICK, loc);
+    };
+    for (let slot = 0; slot < bound.slots; slot += 1) {
+      this.emit([Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_DUP, Op.OP_SIZE, Op.OP_NIP, encodeInt(32n),
+        Op.OP_GREATERTHANOREQUAL, Op.OP_IF, encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP], loc);
+      pick(routeMintCategory(slot), 2);
+      this.emit([Op.OP_EQUAL, Op.OP_ELSE, Op.OP_DROP, Op.OP_0, Op.OP_ENDIF,
+        Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTBYTECODE], loc);
+      pick(routeMintLock(slot), 2);
+      this.emit([Op.OP_EQUAL, Op.OP_NOT, Op.OP_ELSE, Op.OP_0, Op.OP_ENDIF,
+        Op.OP_IF, Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_NOT, Op.OP_VERIFY, Op.OP_DUP], loc);
+      pick(ROUTE_MINT_LO, 2);
+      pick(ROUTE_MINT_HI, 3);
+      this.emit(Op.OP_WITHIN, loc);
+      if (bound.span) {
+        this.emit(Op.OP_OVER, loc);
+        pick(ROUTE_MINT_SPAN_START, 3);
+        pick(ROUTE_MINT_SPAN_END, 4);
+        this.emit([Op.OP_WITHIN, Op.OP_BOOLOR], loc);
+      }
+      this.emit([Op.OP_VERIFY, Op.OP_ENDIF], loc);
+    }
+  }
+
+  /** The mint bound's own pass over the outputs, for a route whose slot scans have no output pass. */
+  private emitRouteMintBoundScan(bound: RouteMintBound, loc: SingleLocationData): void {
+    this.emit([Op.OP_TXOUTPUTCOUNT, Op.OP_BEGIN], loc);
+    this.emitSkipToScannedSlot(true, false, false, false, loc, true);
+    this.emitRouteMintBoundCheck(bound, loc);
+    this.emit([Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP], loc);
   }
 
   private emitTokenContainerPreservation(node: FunctionDefinitionNode): void {

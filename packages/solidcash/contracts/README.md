@@ -14,7 +14,7 @@ allowances mandatory while allowing a minimal token to prune textual metadata st
 
 For the smallest complete composition, see
 [`examples/MinimalNativeToken.scash`](examples/MinimalNativeToken.scash), declared exactly as
-`MinimalNativeToken is ERC20, BchNative`. Its script is 7,435 bytes; it retains transfers, full
+`MinimalNativeToken is ERC20, BchNative`. Its script is 7,395 bytes; it retains transfers, full
 allowances, supply accounting, and Transfer/Approval events while intentionally omitting optional metadata.
 
 ## `BchNative`
@@ -25,7 +25,8 @@ BchNative(nativeCategory_)`) and BchNative keeps as an immutable; the reserve co
 contract's own category: a framed composition refuses fungible amounts of that category, and a category of its own
 keeps the token's BCMR identity apart from the contract's state NFTs. A deployment creates the category in the
 genesis and premints the reserve with `nativeToken: { funding, reserve }`, or mints the supply to holders with
-`nativeToken: { funding, bearer }` for a token whose ledger starts empty (see `docs/bcmr/DESIGN.md`, section 6). Under
+`nativeToken: { funding, bearer }` for a token whose ledger starts empty (see `docs/bcmr/DESIGN.md`, section 6), or
+names a category that already exists with `nativeToken: { category }` and mints nothing (see `BchNativeWrapper`). Under
 the framed convention the token wraps and unwraps through the same container
 (`docs/framed/SPEC_FRAMED_TRANSACTION.md`, 4b). BchNative owns no other configuration or delayed-admission state. The
 token supplies balance and policy hooks.
@@ -106,9 +107,37 @@ commitment and no later transaction can change it, so each deployment fixes its 
 positive, and boundary amounts must be an exact multiple of the multiplier so the reserve stays exactly
 backed; a non-multiple amount refuses at the boundary. This is the precision trade-off in one line: a
 `BchNativeMultiplier(10^12)` token supports a far larger total supply at the cost of only being able to move
-ledger amounts divisible by `10^12` across the boundary. The layer overrides only the immediate
-`wrap`/`unwrap` boundary; the optional quarantined `deposit`/`cancelDeposit` paths in `BchNativeQuarantine`
-are not scaled by it, so a token composing both layers must scale those paths itself.
+ledger amounts divisible by `10^12` across the boundary. The layer overrides only BchNative's `_nativeAmount` hook,
+the native amount `wrap` and `unwrap` move for a ledger amount, and keeps that override final, so it composes with
+`BchNativeWrapper`, whose `wrap` and `unwrap` are final too. The optional quarantined `deposit`/`cancelDeposit` paths
+in `BchNativeQuarantine` are not scaled by it, so a token composing both layers must scale those paths itself.
+
+## `BchNativeWrapper`
+
+`BchNativeWrapper.scash` is an ERC20 over a CashTokens category that already exists, minted by someone else:
+OpenZeppelin's `ERC20Wrapper` for CashTokens. Units enter only by `wrap`, against tokens a holder moves into the
+reserve, and leave only by `unwrap`. A deployment names the category with `nativeToken: { category }`; it creates no
+category and mints nothing, and the SDK checks that the contract keys its reserve by that category and that
+`totalSupply()` starts at 0.
+
+```solidity
+import { BchNativeWrapper } from "solidcash/contracts/BchNativeWrapper.scash";
+import { BchNativeMultiplier } from "solidcash/contracts/BchNativeMultiplier.scash";
+import { ERC20Metadata } from "solidcash/contracts/ERC20Metadata.scash";
+
+contract MyWrapped() is BchNativeWrapper, BchNativeMultiplier(100), ERC20Metadata("Wrapped Example", "WRAPPED") {
+    constructor(bytes32 underlying_) BchNativeWrapper(underlying_) { }
+}
+```
+
+The ledger is ERC20.scash's, private to the wrapper with the functions that write it, and `totalSupply()`,
+`balanceOf()`, `allowance()`, `underlying()`, `wrap` and `unwrap` are final, so `totalSupply()` counts exactly the
+units wrapped and not yet unwrapped. BchNative's credit and debit hooks fail, so a qualified `BchNative.wrap(...)`
+credits nothing. Name, symbol, decimals and the scale are the creator's: `ERC20Metadata`, `BchNativeMultiplier`, or
+views and an override of `_nativeAmount` of their own. `transfer`, `approve` and `transferFrom` stay virtual for
+policy, which reaches the ledger through `super`, and so do BchNative's policy and event hooks. The smallest
+composition is [`examples/MinimalWrappedToken.scash`](examples/MinimalWrappedToken.scash), 7,465 bytes.
+`BchNativeQuarantine` does not compose with it: its claim credits through the failing hook.
 
 `BlackList.scash` is an independent optional behavior: it owns blacklist state and administration, and has no
 dependency on either ERC20 or `BchNative`. The policy hooks deliberately keep all blacklist concerns outside
@@ -116,8 +145,8 @@ dependency on either ERC20 or `BchNative`. The policy hooks deliberately keep al
 deposit or claim by reading the inherited mapping; cancellation remains separately controllable so rejected
 deposits can return to bearer form rather than being confiscated.
 
-`wrap(amount)` proves the own-category backing container grows by the claimed amount and credits the ledger
-immediately. `unwrap(to, amount)` debits ledger balance and transfers real fungible CashTokens to any
+`wrap(amount)` proves the bearer category's reserve container grows by exactly the native amount, as an EVM
+wrapper's `transferFrom` moves exactly what it credits, and credits the ledger immediately. `unwrap(to, amount)` debits ledger balance and transfers real fungible CashTokens to any
 `address` locking bytecode. Tokens that need delayed admission may instead use `deposit(amount)` and
 `claimDeposit`; maturity is calculated exclusively from the compiler-managed `block.number` oracle. No public
 entry point accepts a category, height, timestamp, or unlock time from its caller.

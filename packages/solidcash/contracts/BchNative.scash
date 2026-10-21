@@ -17,7 +17,8 @@ pragma solidcash >=0.8.0;
 // admission, pending state, and block-oracle timing.
 //
 // The bearer form is a CashTokens category of its own, which the deployment
-// creates beside the contract's (`nativeToken.funding`). It is not the
+// creates beside the contract's (`nativeToken.funding`), or an existing one it
+// names (`nativeToken.category`, see BchNativeWrapper). It is not the
 // contract's own category: a framed composition refuses any fungible amount of
 // the contract's own category, and a category of its own keeps the token's BCMR
 // identity and supply apart from the contract's state NFTs (docs/bcmr/DESIGN.md,
@@ -41,16 +42,19 @@ abstract contract BchNative {
     function _nativeEmitWrapped(address _to, int _value) internal virtual { }
     function _nativeCanWrap(address account) internal view virtual returns (bool) { return true; }
     function _nativeCanUnwrap(address account) internal view virtual returns (bool) { return true; }
+    // The native amount that crosses the reserve for a ledger amount; a scaling layer overrides it.
+    function _nativeAmount(int amount) internal view virtual returns (int) { return amount; }
 
-    // Direct wrap: prove the reserve grew, then credit the sibling ledger.
+    // Direct wrap: prove the reserve grew by exactly the native amount, then credit the sibling ledger.
     function wrap(int amount) virtual {
         bytes32 category = this._nativeCategory;
         require(amount > 0);
         address claimant = msg.sender;
         require(_nativeCanWrap(claimant));
+        int nativeAmount = _nativeAmount(amount);
         int reserveBefore = this.tokens[category].tokenAmount;
         int reserveAfter = this.outState.tokens[category].tokenAmount;
-        require(reserveAfter >= reserveBefore + amount);
+        require(reserveAfter == reserveBefore + nativeAmount);
 
         _nativeCredit(claimant, uint256(amount));
         _nativeEmitWrapped(claimant, amount);
@@ -62,11 +66,11 @@ abstract contract BchNative {
         address sender = msg.sender;
         require(_nativeCanUnwrap(sender));
         require(amount > 0);
-        require(this.tokens[category].tokenAmount >= amount);
+        int nativeAmount = _nativeAmount(amount);
+        require(this.tokens[category].tokenAmount >= nativeAmount);
 
         _nativeDebit(sender, uint256(amount));
-        this.tokens[category].transfer(to, amount);
+        this.tokens[category].transfer(to, nativeAmount);
         _nativeEmitUnwrapped(sender, amount);
     }
-
 }

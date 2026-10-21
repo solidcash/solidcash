@@ -1,0 +1,126 @@
+pragma solidcash >=0.8.0;
+
+import { BchNative } from "./BchNative.scash";
+
+// An ERC20 over an existing CashTokens category (OpenZeppelin's ERC20Wrapper
+// for CashTokens). Units enter only by `wrap`, against native tokens moved into
+// the reserve, and leave only by `unwrap`; the deployment mints nothing
+// (`nativeToken.category`).
+//
+//   contract MyWrapped() is BchNativeWrapper {
+//       constructor(bytes32 underlying_) BchNativeWrapper(underlying_) { }
+//   }
+//   contract MyScaled() is BchNativeWrapper, BchNativeMultiplier(100), ERC20Metadata { ... }
+//
+// The ledger is ERC20.scash's, kept private with the functions that write it,
+// and the views, `wrap` and `unwrap` are final, so `totalSupply()` counts
+// exactly the wrapped units. BchNative's credit and debit hooks fail, so a
+// qualified `BchNative.wrap(...)` credits nothing. Name, symbol, decimals and
+// scale are the creator's: inherit ERC20Metadata and BchNativeMultiplier, or
+// write them. `transfer`, `approve`, `transferFrom` and BchNative's policy and
+// event hooks stay virtual.
+abstract contract BchNativeWrapper is BchNative {
+    mapping(address account => uint256) private _balances;
+    mapping(address account => mapping(address spender => uint256)) private _allowances;
+    private uint256 _totalSupply;
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    constructor(bytes32 underlying_) BchNative(underlying_) { }
+
+    // The wrapped category, in the byte order wallets print.
+    function underlying() public view returns (bytes32) { return this._nativeCategory; }
+    function totalSupply() public view returns (uint256) { return this._totalSupply; }
+    function balanceOf(address account) public view returns (uint256) { return this._balances[account]; }
+    function allowance(address tokenOwner, address spender) public view returns (uint256) {
+        return this._allowances[tokenOwner][spender];
+    }
+
+    function transfer(address to, uint256 value) virtual {
+        require(to != address(0));
+        _update(msg.sender, to, value);
+    }
+
+    function approve(address spender, uint256 value) virtual {
+        require(spender != address(0));
+        this._allowances[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+    }
+
+    function transferFrom(address from, address to, uint256 value) virtual {
+        _spendAllowance(from, msg.sender, value);
+        _transfer(from, to, value);
+    }
+
+    function _transfer(address from, address to, uint256 value) private {
+        require(from != address(0));
+        require(to != address(0));
+        _update(from, to, value);
+    }
+
+    function _update(address from, address to, uint256 value) private {
+        if (from == address(0)) {
+            this._totalSupply = this._totalSupply + value;
+        } else {
+            uint256 fromBalance = this._balances[from];
+            require(fromBalance >= value);
+            this._balances[from] = fromBalance - value;
+        }
+
+        if (to == address(0)) {
+            this._totalSupply = this._totalSupply - value;
+        } else {
+            this._balances[to] = this._balances[to] + value;
+        }
+
+        emit Transfer(from, to, value);
+    }
+
+    function _spendAllowance(address tokenOwner, address spender, uint256 value) private {
+        uint256 currentAllowance = this._allowances[tokenOwner][spender];
+        bool infinite = currentAllowance == type(uint256).max;
+        require(infinite || currentAllowance >= value);
+        if (!infinite) currentAllowance = currentAllowance - value;
+        this._allowances[tokenOwner][spender] = currentAllowance;
+    }
+
+    function _nativeCredit(address, uint256) internal override { require(false); }
+    function _nativeDebit(address, uint256) internal override { require(false); }
+
+    // BchNative's wrap and unwrap, final, writing the private ledger where BchNative calls the hooks.
+    function wrap(int amount) override {
+        bytes32 category = this._nativeCategory;
+        require(amount > 0);
+        address claimant = msg.sender;
+        require(_nativeCanWrap(claimant));
+        int nativeAmount = _nativeAmount(amount);
+        int reserveBefore = this.tokens[category].tokenAmount;
+        int reserveAfter = this.outState.tokens[category].tokenAmount;
+        require(reserveAfter == reserveBefore + nativeAmount);
+
+        uint256 value = uint256(amount);
+        this._totalSupply = this._totalSupply + value;
+        this._balances[claimant] = this._balances[claimant] + value;
+        emit Transfer(address(0), claimant, value);
+        _nativeEmitWrapped(claimant, amount);
+    }
+
+    function unwrap(address to, int amount) override {
+        bytes32 category = this._nativeCategory;
+        address sender = msg.sender;
+        require(_nativeCanUnwrap(sender));
+        require(amount > 0);
+        int nativeAmount = _nativeAmount(amount);
+        require(this.tokens[category].tokenAmount >= nativeAmount);
+
+        uint256 value = uint256(amount);
+        uint256 fromBalance = this._balances[sender];
+        require(fromBalance >= value);
+        this._balances[sender] = fromBalance - value;
+        this._totalSupply = this._totalSupply - value;
+        emit Transfer(sender, address(0), value);
+        this.tokens[category].transfer(to, nativeAmount);
+        _nativeEmitUnwrapped(sender, amount);
+    }
+}

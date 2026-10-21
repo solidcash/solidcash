@@ -33,7 +33,7 @@ abstract contract BchNativeQuarantine is BchNative {
 
         int reserveBefore = this.tokens[category].tokenAmount;
         int reserveAfter = this.outState.tokens[category].tokenAmount;
-        require(reserveAfter >= reserveBefore + amount);
+        require(reserveAfter == reserveBefore + amount);
 
         _nativeReserveAdded(amount);
         uint32 unlockAt = block.number + _nativeQuarantineBlocks();

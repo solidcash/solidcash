@@ -3190,3 +3190,21 @@ genesis to the unspent authhead, and a test that publishes twice and resolves th
 
 **Revisit if:** a wallet or tool needs to update metadata without the outpoint from the last update.
 
+## `.address` of a plain CREATE deployment names its physical lock, not the identity its calls present (2026-10-21)
+
+**What:** since `5f0d8e67b` a plain CREATE deployment whose route proves its SCID presents its public identity
+(`getAddress()`) as `msg.sender`, while an ethers-style `contract.address` is its physical lock, where it is called.
+Ported code that passes `.address` as an identity (an owner, an allowance spender) keys it under the physical lock, and
+the deployment's later calls do not match it (`MasterChefDeposit.test.ts` now passes `getAddress()` for those). Storing
+every such `.address` as the public identity (`495f3e537`, reverted in `feee2609f`) broke calls made at the physical
+lock (`KernelForwardedCallerIdentity.test.ts`).
+
+**Why deferred:** one address value serves as both an identity and a call target in Solidity; choosing a single
+representation (or making calls resolve the public identity to the physical lock everywhere) is a design decision
+about the per-call address model (model B, full lock), not a fix.
+
+**What it'd take:** decide which lock an address argument names, then either resolve public identities to physical
+locks wherever a contract is called, or keep the two and document `getAddress()` for identities in the guides.
+
+**Revisit if:** ported Solidity passes `contract.address` where it means the caller identity.
+

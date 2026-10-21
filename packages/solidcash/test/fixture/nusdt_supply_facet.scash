@@ -1,11 +1,13 @@
 pragma solidcash >=0.8.0;
 
-// Update-only supply operations run as a branded delegate against the proxy.
+// Update-only supply and owner-policy operations run as a branded delegate against the proxy.
 // State slot order MUST match nusdt_state.inc and the master exactly.
 library UsdtSupplyFacet {
     event Issue(int amount);
     event Redeem(int amount);
     event DestroyedBlackFunds(address indexed blackListedUser, int balance);
+    event AddedBlackList(address indexed user);
+    event Frozen(address indexed user);
 
     address owner;
     int totalSupply;
@@ -58,5 +60,17 @@ library UsdtSupplyFacet {
         this.totalSupply = this.totalSupply + amount;
         this.backedSupply = this.backedSupply + amount;
         emit Issue(amount);
+    }
+
+    function addBlackList(address evilUser) public {
+        require(msg.sender == this.owner);
+        this.isBlackListed[evilUser] = true;
+        emit AddedBlackList(evilUser);
+    }
+
+    function freeze(address user) public {
+        require(msg.sender == this.owner);
+        this.frozen[user] = true;
+        emit Frozen(user);
     }
 }

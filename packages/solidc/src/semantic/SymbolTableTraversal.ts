@@ -3750,9 +3750,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     // START/CONT/FINAL side-cars in the trailing region (see GenerateTargetTraversal.emitKeccakComputeCall).
     // Only the SINGLE-call shape chains: two straight-line calls or a loop mix keep their fixed slots and the
     // 3-block single-compute budget (fail-closed), so the one FINAL read coordinate stays unambiguous.
+    // A constructor keeps its fixed slot: it runs only in the SDK's off-chain deploy probe, which synthesizes
+    // the side-car at that slot and builds no chain.
     if (bodySurvey.directUnboundedKeccak && !bodySurvey.keccakInLoop
       && bodySurvey.keccakFixedSlotIndices.length === 1
-      && this.isStatefulContract && node.isEntryPoint
+      && this.isStatefulContract && node.isEntryPoint && node.name !== '__construct'
       && this.compilerOptions.composition !== 'framed') {
       node.keccakChainReads = true;
     }

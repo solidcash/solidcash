@@ -14903,13 +14903,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A direct, unbounded bytes/string preimage can exceed the single compute side-car's 3-block budget, so
     // the SDK routes it through the chained START/CONT/FINAL side-cars in the trailing region. The FINAL
     // side-car commits the digest; this read consumes that FINAL slot. Fixed-size, computed, loop, framed, and
-    // outlined-helper preimages keep the single-compute read below (and still fail closed past 3 blocks).
+    // outlined-helper preimages keep the single-compute read below (and still fail closed past 3 blocks), as
+    // does a constructor: the SDK's deploy probe supplies only its fixed slot (see SymbolTableTraversal).
     const preimageUnbounded = node.parameters[0].type === PrimitiveType.STRING
       || (node.parameters[0].type instanceof BytesType && node.parameters[0].type.bound === undefined);
     const ordinaryCallCount = Number(fn.libraryCallCounts?.get(GlobalFunction.KECCAK256) ?? 1n);
     const chainEligible = preimageUnbounded && paramName !== null && !this.keccakLoopActive
       && !this.framedMaster && fn.blockLayout && capturedComputeBase === undefined
-      && !fn.keccakInLoop && ordinaryCallCount === 1;
+      && !fn.keccakInLoop && ordinaryCallCount === 1 && fn.name !== '__construct';
     if (chainEligible) fn.keccakChainReads = true;
     // The chained side-cars start at the trailing base (the fixed block size before reserved trailing slots),
     // not at `blockSize`, which already includes the trailing capacity reserved for them.

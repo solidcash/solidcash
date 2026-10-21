@@ -274,8 +274,9 @@ A `governed` identity updates through `applyGovernedMetadata` instead (section 9
 Further points:
 
 - The deployment returns the identity outpoint (`DeployResult.identity`; `deploymentIdentity()` on a contract from
-  `ContractFactory`). A later session passes it in, or finds the authhead by following spends from the genesis, which
-  needs a provider that reports the spender of an outpoint.
+  `ContractFactory`). A later session passes the current authhead in. Finding it by following spends from the
+  genesis needs a provider that reports the spender of an outpoint, which `NetworkProvider` does not, so the SDK has
+  no authhead resolver (`packages/solidc/docs/deferrals.md`).
 - Upgrades keep the category (`StatefulContract.upgrade` moves the master to the new lock), so the identity survives
   them.
 - Destroying a contract no longer touches its identity. The authority may publish an `inactive` snapshot.

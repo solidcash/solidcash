@@ -3175,3 +3175,18 @@ whose fixed entry lock mismatch goes through the value-chunk derivation.
 
 **Revisit if:** a derivation settles an entry output on a lock its covenant refuses.
 
+## The SDK cannot find a BCMR identity's current authhead itself (2026-10-21)
+
+**What:** `publishMetadata` spends the identity output the caller names (`current`); a deployment returns the first
+one (`DeployResult.identity`, `deploymentIdentity()`). After an update, a later session must know the new authhead.
+DESIGN.md 5.4 describes finding it by following spends from the genesis, but `NetworkProvider` has no query for the
+transaction that spends an outpoint, so `packages/solidcash/src/bcmr/` has no resolver.
+
+**Why deferred:** every provider would need a spender query (Electrum can answer it from the output lock's history;
+the mock and RPC providers would need their own), which is outside the BCMR work.
+
+**What it'd take:** a `getSpendingTransaction(outpoint)` on `NetworkProvider`, a resolver that walks output 0 from the
+genesis to the unspent authhead, and a test that publishes twice and resolves the second authhead.
+
+**Revisit if:** a wallet or tool needs to update metadata without the outpoint from the last update.
+

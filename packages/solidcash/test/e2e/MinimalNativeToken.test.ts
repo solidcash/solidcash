@@ -36,7 +36,8 @@ describe('MinimalNativeToken bytecode budget', () => {
     // minting container (8544 -> 8632). Laying always-run sorted writes out unconditionally, with the direct
     // outside-layout walk shared, took 1,197 B off (8632 -> 7435); the 8.5 KB title is the budget.
     // The container master pin's selfdestruct arm (no master recreated) added 50 B (7435 -> 7485).
-    expect(artifactBytes).toBe(7485);
+    // Only a master that can retire (a selfdestruct entry) carries that arm; this one cannot: 7374 B over 2286a2d7c.
+    expect(artifactBytes).toBe(7374);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs.map((input) => input.name))
       .toEqual(['nativeCategory_']);

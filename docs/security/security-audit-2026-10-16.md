@@ -730,5 +730,9 @@ Found while bringing the SDK e2e suite back to green; mocknet only.
   destroying a contract with a container failed. `3fc5969bd` applies the pin whenever an output carries the master's
   minting NFT and skips it only when no master is recreated, the destroy path the master's covenant governs. Tests:
   `SelfdestructDestination.test.ts`, `X46CommitmentWriter.test.ts`. A destroy split into batches still pins a
-  container placed in an intermediate batch (deferrals.md).
+  container placed in an intermediate batch (deferrals.md). The arm is now emitted only where a master can retire
+  (`containerMasterRetires`: a selfdestruct entry, and no delegate entry or delegatecall, since a delegate binds its
+  proxy's containers without seeing the proxy's entries); every other bound container is the pre-`3fc5969bd`
+  covenant again. A proxy with a selfdestruct entry keeps the plain pin, and the SDK refuses an upgrade whose
+  replacement takes the other container form, because the old covenant re-mints in its own.
 

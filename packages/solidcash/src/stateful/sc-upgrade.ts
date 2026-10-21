@@ -6,6 +6,7 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   buildPushdataCommitment,
+  containerMasterRetires,
   parsePushdataCommitment,
   hasDataNftIndexTags,
   type Artifact,
@@ -101,6 +102,18 @@ export async function upgradeStatefulContract<T extends Artifact>(
         }
       }
     }
+  }
+
+  // The old covenant re-mints each container in its own form, so a replacement whose containers take the other form
+  // (the destroy arm, `containerMasterRetires`) would hold them at a lock its code never derives.
+  const oldAbi = oldContract.inner.artifact.abi;
+  const migratesContainers = oldAbi.some((fn) => fn.blockLayout?.slots
+    .some((slot) => slot.kind === 'satoshiContainer' || slot.kind === 'tokenContainer'));
+  if (migratesContainers && containerMasterRetires(oldAbi) !== containerMasterRetires(newArtifact.abi)) {
+    throw new Error(
+      `Upgrade cannot migrate the containers of '${oldContract.name}' to '${newArtifact.contractName}': exactly one `
+      + 'of them retires its master (a selfdestruct entry), so their container covenants differ.',
+    );
   }
 
   const previousLayout = oldContract.inner.artifact.stateLayout;

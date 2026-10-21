@@ -32,6 +32,7 @@ import {
   buildEntryNftCovenantScript,
   buildSatoshiContainerCovenantScript,
   buildTokenContainerCovenantScript,
+  containerMasterRetires,
   VALUE_CHUNK_DOMAIN_TAG,
   VALUE_HEAD_SIZE,
   VALUE_CHUNK_SIZE,
@@ -54370,11 +54371,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitBoundSatoshiContainerCovenant(locationData);
   }
 
+  /**
+   * The bound container covenants' destroy arm, read off the entries this contract's ABI publishes as the SDK reads
+   * it (`containerMasterRetires`). Every lock this program binds takes the same form: a delegate and its proxy both
+   * keep the plain pin, and the SDK refuses an upgrade whose replacement takes the other form.
+   */
+  private boundContainerOptions(): { masterRetires: boolean } {
+    const contract = this.sourcePrimaryContract;
+    if (contract === undefined) throw new Error('A bound container covenant needs the contract it is compiled for');
+    const entries = [
+      ...contract.functions.filter((fn) => fn.visibility !== 'internal' && fn.visibility !== 'private'),
+      ...(contract.constructorDef ? [contract.constructorDef] : []),
+      ...(contract.fallbackDef ? [contract.fallbackDef] : []),
+    ].map((fn) => ({ modifiers: fn.modifiers.map(String), lowLevelCalls: fn.lowLevelCalls }));
+    // The ABI publishes a receive function as `payable` only.
+    if (contract.receiveDef) entries.push({ modifiers: ['payable'], lowLevelCalls: contract.receiveDef.lowLevelCalls });
+    return { masterRetires: containerMasterRetires(entries) };
+  }
+
   /** `[encLock, encCategory]` -> the satoshi container P2SH32 bound to that lock. */
   private emitBoundSatoshiContainerCovenant(locationData: SingleLocationData): void {
     const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
     const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
-    const covenant = scriptToBytecode(buildSatoshiContainerCovenantScript(categoryPlaceholder, lockPlaceholder));
+    const covenant = scriptToBytecode(buildSatoshiContainerCovenantScript(
+      categoryPlaceholder, lockPlaceholder, this.boundContainerOptions(),
+    ));
     this.emitBoundCovenantP2sh32(covenant, [
       { token: 'category', bytes: Uint8Array.from([0x20, ...categoryPlaceholder.slice().reverse()]) },
       { token: 'lock', bytes: Uint8Array.from([0x23, ...lockPlaceholder]) },
@@ -54402,7 +54423,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const master = Uint8Array.from({ length: 32 }, (_value, index) => index);
     const token = Uint8Array.from({ length: 32 }, (_value, index) => 0x40 + index);
     const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
-    const covenant = scriptToBytecode(buildTokenContainerCovenantScript(master, token, lockPlaceholder));
+    const covenant = scriptToBytecode(buildTokenContainerCovenantScript(
+      master, token, lockPlaceholder, this.boundContainerOptions(),
+    ));
     this.emitBoundCovenantP2sh32(covenant, [
       { token: 'master', bytes: Uint8Array.from([0x20, ...master.slice().reverse()]) },
       { token: 'token', bytes: Uint8Array.from([0x20, ...token]) },

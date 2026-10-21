@@ -37,7 +37,8 @@ describe('general vmap bytecode sharing', () => {
     // 4711 measured after the direct entry's message-bus-eligibility census widened.
     // 4990.5 measured after the October reaudit/hardening set (master-lock binding plus the DS-6 activity
     // settlement and container/foreign-token scans); re-pinned to the verified current emission.
-    expect(artifact.bytecode.length / 2).toBeLessThan(5000);
+    // 5090.5 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
+    expect(artifact.bytecode.length / 2).toBeLessThan(5100);
   });
 
   it('shares a collection-specific entry address across reads and writes', () => {
@@ -58,7 +59,8 @@ describe('general vmap bytecode sharing', () => {
     // 4988 measured after the width-0 recovery A/M/B triples grew the shared front-region co-spend census.
     // 5004 measured after the direct entry's message-bus-eligibility census widened.
     // 5283.5 measured after the October reaudit/hardening set; re-pinned to the verified current emission.
-    expect(artifact.bytecode.length / 2).toBeLessThan(5300);
+    // 5383.5 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
+    expect(artifact.bytecode.length / 2).toBeLessThan(5400);
   });
 
   it('shares the authenticated-absence bracket after three reads', () => {
@@ -86,7 +88,8 @@ describe('general vmap bytecode sharing', () => {
     // (the fix that settles fixed-width struct chunk-array pushes and whole-element overwrites): the mintable
     // lock build + admission check is per function that writes a dynamic var.
     // 10030 measured after the October reaudit/hardening set; re-pinned to the verified current emission.
-    expect(artifact.bytecode.length / 2).toBeLessThan(10050);
+    // 10130 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
+    expect(artifact.bytecode.length / 2).toBeLessThan(10150);
   });
 
   it('allocates collision-free structural and field-prefix helpers across entry points', () => {
@@ -144,7 +147,8 @@ describe('general vmap bytecode sharing', () => {
     // 4346.5 measured after the October covenant hardening: every direct function now runs the container,
     // foreign-token, unwritten-chunk and mutable-output scans. 4592.5 once those scans list the slots they act
     // on in one classifying pass per side, and the mutable-output check tries the minted locks first.
-    expect(artifact.bytecode.length / 2).toBeLessThan(4750);
+    // 4786 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
+    expect(artifact.bytecode.length / 2).toBeLessThan(4800);
   });
 
   it('nests only compiler helpers and other outlined spans, acyclically, while sharing composite array traversal', () => {

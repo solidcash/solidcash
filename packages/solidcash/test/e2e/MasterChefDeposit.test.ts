@@ -27,10 +27,13 @@ describe('MasterChef deposit', () => {
     const chef = await new ContractFactory(masterChefArt, alice).deploy(
       sushi.address, dev.getAddress(), 100n, 100n, 1000n,
     );
-    await sushi.transferOwnership(chef.address).send();
+    // A plain CREATE deployment's calls present its public identity, getAddress(), as msg.sender; `.address` is
+    // the physical lock, still the target to call it at. Ownership and allowances name the caller identity.
+    const chefIdentity = await chef.getAddress();
+    await sushi.transferOwnership(chefIdentity).send();
     await chef.add(100n, lp.address, true).send();
     await lp.transfer(bob.getAddress(), 1000n).send();
-    await lp.connect(bob).approve(chef.address, 1000n).send();
+    await lp.connect(bob).approve(chefIdentity, 1000n).send();
     console.log('approve ok');
     await chef.connect(bob).deposit(0n, 100n).send();
     console.log('deposit ok');

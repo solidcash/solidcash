@@ -248,9 +248,9 @@ and CID abbreviated):
   the AuthKey category a deployment creates, so it starts at deployment;
 - puts the new publication at output 1. `withSnapshot` adds a snapshot to the registry (a minor version bump, per the
   schema's versioning rules) rather than editing the old one;
-- without a registry, re-publishes the spent authhead's publication at output 1, so the identity keeps its registry
-  (R2) and a key-held output 0 stays an identity output (4.4). A key-held update of an authhead that publishes
-  nothing is refused: it needs a registry.
+- without a registry, re-publishes the spent authhead's publication at output 1 (a burn publishes nothing: its
+  output 0 ends the identity, 4.2), so the identity keeps its registry (R2) and a key-held output 0 stays an
+  identity output (4.4). A key-held update of an authhead that publishes nothing is refused: it needs a registry.
 
 A `governed` identity updates through `applyGovernedMetadata` instead (section 9).
 

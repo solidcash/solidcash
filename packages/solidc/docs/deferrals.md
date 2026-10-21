@@ -3081,7 +3081,9 @@ master compiles to 10,360 B and `nusdt_facet.scash` to 10,424 B. With the compil
 the master by +115 B (the NAMED-MINT-1 bound +144, dropping the container merge path -47, refusing unnamed minting
 containers +20) and the facet by -27 B.
 
-**Why deferred:** bringing both under the limit means re-splitting the NativeUsdt fixture's facets or shrinking code
+**Why deferred:** bringing both under the limit meant re-splitting the NativeUsdt fixture's facets or shrinking code
 they share, which is outside the token container work.
 
-**Status:** OPEN.
+**Status:** RESOLVED 2026-10-21. The size reduction parked as `26f9b3cc3` landed as `650ac4f10` (master 9,908 B), and
+`addBlackList` and `freeze` moved from `UsdtFacet` to `UsdtSupplyFacet` (`200e234f3`, `UsdtFacet` 9,015 B). The
+title passes.

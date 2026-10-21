@@ -674,9 +674,10 @@ tests were not run on the pre-fix commits. CONT-FLAG-1 and CONT-CAT-1 never ship
   it, and unwraps). The bus graph shape was traced and cannot arise: the bus interns one participant input per
   locking bytecode and batches that contract's rows in it (`compose-plan-graph.ts`), a growth-reading handler runs at
   most once per batch (GROWTH-2), and a second master of one contract exists only through `split`, which now reads
-  per master. No test spends two threads together: the SDK builds one thread's call per transaction. A hand-built
-  transaction that appended a second thread's master to a `wrap` was refused even where the thread grows a container
-  it owns, and why was not traced, so the refusal a second thread should cause is not yet shown by a test (OPEN).
+  per master. Test of the two-thread case (`8c4fb67a7`, the same file): a thread's `wrap` that opens a new container
+  settles alone and is refused with the other thread spent and recreated beside it, while a `wrap` growing a container
+  the thread owns settles both ways. An earlier attempt at this test placed the second thread's output before the
+  container's recreation, shifting it off its index, which is why it refused both.
 - **NAMED-MINT-1** (HIGH; direct). A direct call that names a container holding a minting NFT spends it, and nothing
   bounded what else the transaction minted of that category. FIXED in `3a6c3d143`: every output outside the slot's
   lock that carries the category holds no fungible amount and is one of the NFT sends the call made from the slot.

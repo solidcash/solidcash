@@ -201,23 +201,59 @@ export function registeredPhysicalLockingBytecode(
   return physical ? hexToBin(physical) : undefined;
 }
 
+/** True when an artifact's route proves its public SCID. */
+function routeProvesPublicSelf(artifact: Artifact | undefined): boolean {
+  return artifact?.messageBus?.route?.inputs
+    .some((input) => input.name === '__internal__graphSelfIdentityInput') === true;
+}
+
+/**
+ * The public CREATE lock of a plain deployment named by its physical cashaddr (an ethers v5 `contract.address`).
+ * Its calls present that SCID as `msg.sender`, so a stored physical lock would never equal it as a caller. Raw
+ * bytecode, and proxy or framed deployments, which present their physical lock, keep the lock they name.
+ */
+function plainDeploymentPublicLock(provider: NetworkProvider, address: string): Uint8Array | undefined {
+  let wanted: string;
+  try {
+    const physical = tryCashAddressToLockScript(address);
+    if (physical === undefined) return undefined;
+    wanted = binToHex(physical);
+  } catch { return undefined; }
+  const current = deploymentsOf(provider);
+  for (let index = current.length - 1; index >= 0; index--) {
+    const deployment = current[index];
+    if (deployment.lockingBytecode?.toLowerCase() !== wanted) continue;
+    const contract = (deployment.contract ?? {}) as {
+      inner?: { artifact?: Artifact }; implementation?: unknown;
+      _framedAddress?: string; _framedProxyAddress?: string;
+    };
+    if (contract.implementation !== undefined || contract._framedAddress !== undefined
+      || contract._framedProxyAddress !== undefined || !routeProvesPublicSelf(contract.inner?.artifact)) {
+      return undefined;
+    }
+    try {
+      const logical = addressToLockScript(deployment.address);
+      return binToHex(logical) === wanted ? undefined : logical;
+    } catch { return undefined; }
+  }
+  return undefined;
+}
+
 /** Address value observed when a registered contract identifies itself or calls another contract. */
 export function registeredValueAddressLockingBytecode(
   provider: NetworkProvider,
   address: string,
 ): Uint8Array | undefined {
   const deployment = findDeploymentByExactAddress(provider, address);
-  if (!deployment) return undefined;
+  if (!deployment) return plainDeploymentPublicLock(provider, address);
   const contract = deployment.contract as {
     inner?: { artifact?: Artifact };
     implementation?: { inner?: { artifact?: Artifact } };
   };
   const artifact = contract.implementation?.inner?.artifact ?? contract.inner?.artifact;
-  const authenticatesPublicSelf = artifact?.messageBus?.route?.inputs
-    .some((input) => input.name === '__internal__graphSelfIdentityInput') === true;
   // New kernel routes prove their public SCID on-chain. Persisting the physical execution address instead
   // would make an otherwise identical CREATE reference depend on whether its deployment was already known.
-  if (authenticatesPublicSelf) return addressToLockScript(deployment.address);
+  if (routeProvesPublicSelf(artifact)) return addressToLockScript(deployment.address);
   return deployment.lockingBytecode ? hexToBin(deployment.lockingBytecode) : undefined;
 }
 

@@ -285,7 +285,7 @@ import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
   analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, createFootprintAnalysisCache,
-  directCallNames,
+  directCallNames, emitsAnyEvent,
   visibleFreeFunctionsForContract,
   walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
@@ -629,6 +629,11 @@ type InternalCompilerOptions = CompilerOptions & {
    * container spend, so each keeps the containers its entry does not name, whichever entries the shard holds.
    */
   __framedContractHoldsTokens?: boolean;
+  /**
+   * Set on a split shard, facet or root whose logical contract emits an event: it holds some bodies only, yet pins
+   * forged logs (SEC-10) as that contract does.
+   */
+  __logicalContractEmitsEvent?: boolean;
   /** Shared box so the shallow-copied admission options and the binder see the same pre-lowering snapshot. */
   __pristineAstBox?: { ast?: Ast };
   /**
@@ -5805,9 +5810,10 @@ function injectChunkableEntryWitnesses(ast: Ast): void {
 function injectMessageBusEventOnlyHold(ast: Ast, compilerOptions: CompilerOptions): void {
   if (!(compilerOptions.messageBus || compilerOptions.messageBusKernel)) return;
   const contract = ast.contract;
-  if (contract.eventDefinitions.length === 0
-    || contract.stateVariables.length > 0
-    || contract.collections.length > 0) return;
+  // An emitted event declared outside the contract (file level, library, interface) counts as a declared one.
+  if (contract.stateVariables.length > 0
+    || contract.collections.length > 0
+    || (contract.eventDefinitions.length === 0 && !emitsAnyEvent(contract))) return;
   const hold = new StateVariableNode(new IntType(false, 256), '__messageBusHold');
   hold.location = contract.location;
   hold.visibility = StateVariableVisibility.PUBLIC;
@@ -5926,9 +5932,11 @@ function synthesizeMessageBusRoute(
   const graphMsgValueHandlers = new Set<FunctionDefinitionNode>();
   const kernelDeploymentHandlers = new Set<FunctionDefinitionNode>();
   const kernelLifecycleHandlers = new Map<FunctionDefinitionNode, 'split' | 'merge' | 'selfdestruct'>();
+  // An emitted event declared outside the contract (file level, library, interface) bears events as a declared one.
+  const bearsEvents = contract.eventDefinitions.length > 0 || emitsAnyEvent(contract);
   const masterOnlyLifecycleContract = contract.stateVariables.length === 0
     && contract.collections.length === 0
-    && contract.eventDefinitions.length === 0
+    && !bearsEvents
     && !contract.usesBlockhash;
   const kernelDeploymentSiteCounts = new Map<FunctionDefinitionNode, number>();
   const kernelDeploymentSiteWidths = new Map<FunctionDefinitionNode, number[]>();
@@ -7642,7 +7650,7 @@ function synthesizeMessageBusRoute(
       || footprint.effects.length > 0
       || footprint.reads.some((resource) => !isFixedScalarStateRead(resource));
     const fixedStateOnlyContract = contract.collections.length === 0
-      && contract.eventDefinitions.length === 0
+      && !bearsEvents
       && !contract.usesBlockhash;
     const hasSelfdestructStatement = fn.impliedSelfdestruct === true || (() => {
       if (kernelLifecycleKind !== 'selfdestruct') return false;
@@ -19042,6 +19050,7 @@ function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): F
           __functionSplitFrameKinds: frameKinds,
           ...(probe !== undefined && contractNamesTokenContainer(probe.contract)
             ? { __framedContractHoldsTokens: true } : {}),
+          ...(probe !== undefined && emitsAnyEvent(probe.contract) ? { __logicalContractEmitsEvent: true } : {}),
         } as InternalCompilerOptions);
       },
       cloneAst,
@@ -19151,6 +19160,7 @@ function compileStringSplitUnchecked(
   // each candidate compilation; reparsing imports and re-expanding inheritance/modifiers for
   // every packing probe made split compilation scale with (candidate count * front-end cost).
   const probe = prepareSplitAst(code, merged, errorListener);
+  if (emitsAnyEvent(probe.contract)) merged.__logicalContractEmitsEvent = true;
   const logicalName = probe.contract.name;
   const functions = probe.contract.functions;
   const byName = new Map<string, FunctionDefinitionNode[]>();

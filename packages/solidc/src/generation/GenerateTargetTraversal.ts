@@ -323,7 +323,7 @@ import {
   evmStaticResultBytes, evmResultMayNeedPreimage, externalResultEncoding,
   isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
 } from '../semantic/ExternalResultEncoding.js';
-import { analyseContractInvocations, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
+import { analyseContractInvocations, emitsAnyEvent, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 import {
@@ -2621,6 +2621,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // The only statefulness mark of a contract whose emitted events are declared outside it (file level, library):
   // its eventDefinitions are empty. Every traversal handed eventDefinitions must be handed this too.
   private currentContractEmitsEvent: boolean = false;
+  // SEC-10: the contract declares an event or emits one declared in any scope, so its logs are readable and forged
+  // ones are refused. A stateful contract's emitsEvent is never set. Handed wherever currentContractEmitsEvent is.
+  private currentContractHasEvents: boolean = false;
   // A framed contract that names a token container anywhere keeps, in every entry, the containers the entry does not.
   private currentContractHoldsTokens: boolean = false;
   // A direct contract that declares `split` can spend several masters in one transaction, so a body reads a token
@@ -5159,6 +5162,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       (fn.dynamicWrites?.length ?? 0) > 0
       && (fn.entryAccesses?.length ?? 0) > 0);
     this.currentContractEmitsEvent = node.emitsEvent;
+    // A split shard, facet or root holds some bodies only, so the split states it for the logical contract.
+    this.currentContractHasEvents = (this.compilerOptions as { __logicalContractEmitsEvent?: boolean })
+      .__logicalContractEmitsEvent === true
+      || node.eventDefinitions.length > 0 || node.emitsEvent || emitsAnyEvent(node);
     // A function-split shard holds some entries only, so the split states it for the whole contract.
     this.currentContractHoldsTokens = (this.compilerOptions as { __framedContractHoldsTokens?: boolean })
       .__framedContractHoldsTokens === true || [
@@ -6898,6 +6905,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.dataNftCount = this.dataNftCount;
       probe.eventDefinitions = this.eventDefinitions;
       probe.currentContractEmitsEvent = this.currentContractEmitsEvent;
+      probe.currentContractHasEvents = this.currentContractHasEvents;
       probe.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
       probe.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
       probe.userFunctionDefs = this.userFunctionDefs;
@@ -7207,6 +7215,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.dataNftCount = this.dataNftCount;
     subTraversal.eventDefinitions = this.eventDefinitions;
     subTraversal.currentContractEmitsEvent = this.currentContractEmitsEvent;
+    subTraversal.currentContractHasEvents = this.currentContractHasEvents;
     // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
     // output-only offsets in that body disagree with the ones in the main script.
     subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
@@ -7614,6 +7623,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.dataNftCount = this.dataNftCount;
       subTraversal.eventDefinitions = this.eventDefinitions;
       subTraversal.currentContractEmitsEvent = this.currentContractEmitsEvent;
+      subTraversal.currentContractHasEvents = this.currentContractHasEvents;
       // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
       // output-only offsets in that body disagree with the ones in the main script.
       subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
@@ -10430,15 +10440,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.framedMaster && this.currentContractHoldsTokens) this.emitFramedForeignTokenKeep(node);
       // SEC-10/SEC-11: an own-category IMMUTABLE (0x00) NFT output - what an event NFT is - may only sit at an
       // event block-layout offset (or the witnessed return-event index). Without this any spender mints forged
-      // logs at any other index. Scoped to contracts that DECLARE an event: the forged output is only readable
-      // as a log at getEventNftAddress(contract, category, signature), which needs a declared signature, and a
-      // hand-written covenant with no events may legitimately place own-category immutable NFTs of its own.
+      // logs at any other index. Scoped to contracts that declare an event or emit one declared in any scope (file
+      // level, library, interface): the forged output is only readable as a log at getEventNftAddress(contract,
+      // category, signature), which needs such a signature, and a hand-written covenant with no events may
+      // legitimately place own-category immutable NFTs of its own.
       // SEC-13: `selfdestruct` and `delegate` were excluded and admitted the SAME forgery. A selfdestruct spends
       // the master minting NFT, so it can mint own-category immutable NFTs at will and no later honest emit can
       // ever contradict them; a delegate function's own event NFT carries the PROXY's category, so an appended
       // one is read back beside the genuine log. Delegate functions are pinned regardless of `declaresEvents`:
       // the readable signature may be declared by the proxy, which the implementation cannot see.
-      const declaresEvents = this.eventDefinitions.length > 0 || this.currentContractEmitsEvent
+      const declaresEvents = this.currentContractHasEvents
         || ((node.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent')
           && !this.isForwardingFallbackBody(node));
       const proxyCanAdmitDelegateEvent = this.functionHasDelegatecall
@@ -10480,8 +10491,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Lifecycle topology and tiered unsafe state policies still protect this category's addressable event logs.
     // They do not authorize a source emit here, so an unrelated immutable event output must be refused just as
     // on an ordinary spend. unsafe(0) deliberately has no covenant policy and remains the explicit escape hatch.
-    if ((isSplit || isMerge || (unsafeTier !== null && unsafeTier >= 1))
-      && (this.eventDefinitions.length > 0 || this.currentContractEmitsEvent)) {
+    if ((isSplit || isMerge || (unsafeTier !== null && unsafeTier >= 1)) && this.currentContractHasEvents) {
       this.emitOwnCategoryImmutableNftOutputPin(node);
     }
 

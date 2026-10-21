@@ -45,9 +45,10 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     // facet title below settles. BchNative's own bearer category added 56 B (10_595); dropping the container merge
     // path and refusing unnamed minting containers took 27 B off, and the bound on what a named minting container
     // mints (security NAMED-MINT-1) added 88 B (10_656). Laying always-run sorted writes out unconditionally, with
-    // the direct outside-layout walk shared, took it to 9_258, under the single-input limit again. This budget guards
-    // further growth.
-    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_300);
+    // the direct outside-layout walk shared, took it to 9_258, under the single-input limit again. The containers'
+    // destroy arm added 50 B (9_308), and the forged-log pin, which an event declared in IERC20 now gets as a
+    // contract-level one does (SEC-10), 70 B (9_378). This budget guards further growth.
+    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_450);
     expect(artifact.contractName).toBe('OzNativeToken');
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of [

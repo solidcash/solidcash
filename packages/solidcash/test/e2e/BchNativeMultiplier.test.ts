@@ -26,9 +26,10 @@ describe('BchNativeMultiplier', () => {
     // The scale layer adds the % / / conversion and the immutable read to wrap and
     // unwrap; it stays well inside the P2SH32 input-script budget (8_636 after the
     // 10-14..10-17 hardening, 8_750 with BchNative's own bearer category, 8_811 with
-    // the bound on what a named minting container mints, security NAMED-MINT-1, and
-    // 7_568 with always-run sorted writes laid out unconditionally).
-    expect(artifactBytes).toBeLessThan(7_600);
+    // the bound on what a named minting container mints, security NAMED-MINT-1,
+    // 7_568 with always-run sorted writes laid out unconditionally, and 7_618 with
+    // the containers' destroy arm).
+    expect(artifactBytes).toBeLessThan(7_700);
     expect(artifact.constructorInputs).toEqual([]);
     // The immutables are written at construction: the scale factor is baked in, and the
     // bearer category is the constructor's one argument.

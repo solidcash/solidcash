@@ -29,8 +29,8 @@ The design:
 2. A deployment can publish its registry in the genesis itself, at output 1 (section 5).
 3. ERC-20-shaped tokens publish name, symbol and decimals checked against the contract before anything is
    broadcast, with the premint in the same genesis (section 6).
-4. A category a contract creates is to get its authhead at output 0 of the creating transaction (section 7, D47, in
-   progress).
+4. A category a contract creates gets its authhead at output 0 of the creating transaction, through a leading slot
+   (section 7).
 5. A deployment can label its own NFTs for explorers (section 8).
 
 ## 2. The BCMR rules this design depends on
@@ -415,40 +415,44 @@ of it. The first `wrap` then creates the container.
 
 ## 7. Categories created by contracts
 
-The paths: framed `new C()` (`packages/solidcash/src/framed/deploy/create-lookahead.ts`,
-`packages/solidc/docs/contract-creation.md`), the framed proxy's calling genesis, direct `deployFrom`
-(`packages/solidcash/src/stateful/sc-deploy-from.ts`) and message-bus child deployments
-(`packages/solidcash/src/message-bus/compose-materialize-deployments.ts`).
+A category a contract creates takes the creating transaction's output 0 as its identity output (R1): the creating
+transaction spends the reserved genesis coin, so it is the child's second authchain transaction. The layouts used to
+put the creating contract's own participant there: the factory's master in direct `deployFrom`, participant 0's
+master in a message-bus composition, and the first callee's validator in the framed proxy's calling genesis. Every
+call then extended the child's authchain, and anyone able to make a call could publish for it.
 
-- The child's category is the txid of a reserved genesis-eligible coin. The transaction that spends that coin creates
-  the child, so it is the child's second authchain transaction, and its output 0 is the child's identity output.
-- That output belongs to the creating contract: the first participant in the framed layout, and the factory's own
-  outputs come ahead of the child's in direct `deployFrom`. Section 3's exposure applies, and the identities of every
-  child created through that master merge into its lineage.
-- The SDK cannot fix this in the genesis, because the composition layout fixes output 0.
+Options considered: a validator census rule refusing BCMR publications (a new validator version, new framed
+addresses); option C, accepting the exposure (taken first, D32); and B, reserving output 0 for the child. Taken: B in
+a narrow form, a **leading slot** in creating transactions only (D47, the user's answer that the block layout is
+agnostic to the master's starting index). Every other participant shifts by one index; covenants address their blocks
+from their own input index, so they are unaffected.
 
-Options:
+| Path | Input 0 | Output 0 | Who checks output 0 |
+| --- | --- | --- | --- |
+| direct `deployFrom` (`packages/solidcash/src/stateful/sc-deploy-from.ts`) | a token-free coin of the funder's that pays for the authhead; the genesis coin stays in its block slot | the first child's authhead | the factory's covenant: lock, category and capability (`buildAuthheadOutputCheck` in `packages/utils/src/authhead.ts`, 72 bytes), and one more mutable NFT of the child in its output count |
+| framed proxy's calling genesis (`packages/solidcash/src/framed/proxy/deploy.ts`) | the proxy's genesis coin, a leading input of the composition (`layoutTransaction`) | the proxy's authhead | the proxy's minted root block declares it a created record, so the validator's census admits exactly it; the validator program is unchanged |
+| message-bus child deployment (`packages/solidcash/src/message-bus/`) | a token-free coin, as in `deployFrom` | the child's authhead | the bus verifier (in progress) |
 
-- **A. A census rule (framed).** The validator head refuses any output whose locking bytecode starts with
-  `6a0442434d52`, so an identity held by a master can never publish through a composition. Costs: it is a new
-  validator version, and every framed address derives from the validator program (`addrV`), so new deployments get
-  new addresses. Masters pin their validator, so compositions that mix versions need checking. It adds roughly 20
-  bytes to a head of about 8.2 KB (the spec's last measurement). The direct convention would need its own rule in
-  each master covenant, which is not designed here. One exit remains: the direct `selfdestruct` covenant pins its
-  destination at output 0, so destroying the master that holds an identity hands the identity to the destination.
-- **B. Reserve output 0 for the child's identity** in compositions that create a category. This breaks in-place
-  recreation from index 0, which the whole framed layout relies on.
-- **C. Accept it and record it** in `packages/solidc/docs/deferrals.md`: wallets resolving a contract-created category
-  may show attacker-published metadata.
+Further points:
 
-Taken first: C, recorded in `packages/solidc/docs/deferrals.md` (D32). Then, with the authhead contract (D46), B in
-a narrower form: a leading slot in the creating transaction only, the reserved genesis coin at input 0 and the child's
-authhead at output 0, every participant shifted by one (D47, the user's answer that the block layout is agnostic to
-the master's starting index). Its implementation is in progress, so the exposure above still holds until it lands.
-
-Framed `new C()` is not among these paths: the SDK reserves the child's genesis coin ahead
-(`packages/solidcash/src/framed/deploy/create-lookahead.ts`) and deploys the child as a top-level genesis through
-`ContractFactory`, so it already leads with its own authhead.
+- The child's owner defaults to the creating contract's identity owner (`resolveIdentity` of its category), else the
+  funder's P2PKH lock, else the change address. `deployFrom` takes `childIdentity: { owner }`. No covenant pins the
+  owner: it lives outside every contract's state, so a caller of a permissionless factory may name its own.
+- Children created in one transaction share its output 0, so the first child's authhead also holds the identities of
+  the others, as C and X share one at deployment (6.2).
+- In a creating call the master sits at input 1. Contract code that reads `tx.inputs[i]` or `tx.outputs[i]` at a fixed
+  index, or `this.activeInputIndex`, sees the leading slot there.
+- The compiler marks a leading deploy target `leadsIdentity`, and the SDK adds the slot only for an artifact that
+  carries it, so artifacts compiled before keep their layout.
+- Shapes that keep the master at input 0, and so keep the old exposure (`packages/solidc/docs/deferrals.md`): a
+  loop's deploys and a later conditional site; a multi-site function with a conditional, which verifies every site
+  against its runtime counter; a function that co-spends keccak or ecrecover compute side-cars, which bind their salt
+  to input 0's category; and the regtest provider's fixture categories (`addUtxo` geneses, the block oracle).
+- Framed `new C()` is not among these paths: the SDK reserves the child's genesis coin ahead
+  (`packages/solidcash/src/framed/deploy/create-lookahead.ts`) and deploys the child as a top-level genesis through
+  `ContractFactory`, so it leads with its own authhead.
+- The calling genesis carries the registry publication the proxy's deploy options state, after its settled outputs;
+  a `nativeToken` premint there is refused.
 
 ## 8. Describing the contract's own NFTs
 
@@ -555,7 +559,7 @@ Tests run on mocknet only, which is the user's standing rule.
 | The authhead in every genesis, the owner, `resolveIdentity`, the identity-output rule | `bcmr/identity.ts`, `bcmr/authchain.ts`, `stateful/sc-deploy.ts`, `framed/deploy/stateful.ts`, `framed/deploy/own-coin.ts`, `framed/deploy/records.ts` | `test/e2e/BcmrDeployment.test.ts`, `BcmrIdentityOwner.test.ts`, `BcmrGenesisLayout.test.ts`, `BcmrIdentityCoinRule.test.ts`; `test/framed/deploy/proxy-deployment.test.ts` pins the framed layout |
 | Publication, registry, IPFS CID, `publishMetadata` | `bcmr/publication.ts`, `bcmr/registry.ts`, `bcmr/publish.ts` | `BcmrDeployment.test.ts`, `BcmrPublication.test.ts` |
 | ERC-20 fields, premint, probe check | `bcmr/deployment.ts`, `bcmr/token.ts` | `BcmrDeployment.test.ts` with `test/fixture/bcmr_metadata_token.scash` |
-| Contract-created categories | option C in `packages/solidc/docs/deferrals.md` | |
+| Contract-created categories: the leading slot | `stateful/sc-deploy-from.ts`, `stateful/sc-derive-commitments.ts`, `framed/proxy/deploy.ts`, `framed/composer/layout.ts`; the compiler's `leadingDeployNode` and `emitAuthheadOutputCheck` in `packages/solidc/src/generation/GenerateTargetTraversal.ts` | `test/e2e/BcmrChildIdentity.test.ts`; `test/framed/deploy/proxy-calling-genesis-identity.test.ts` |
 | Generated NFT labels | `bcmr/nft-parse.ts`, `bcmr/nft-roles.ts` | `test/e2e/BcmrNftParse.test.ts` |
 | BchNative's own bearer category | `contracts/BchNative.scash`; the `state` container key in `packages/solidc/src/semantic/SymbolTableTraversal.ts` and `stateful/sc-load-create-builder-token-containers.ts` | the BchNative e2e files; `test/e2e/BchNativeFramed.test.ts` (framed genesis, wrap, unwrap, drain) |
 

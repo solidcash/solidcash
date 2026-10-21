@@ -2996,6 +2996,11 @@ arbitrate titles.
 
 ## The BCMR identity of a category a contract creates sits at the creating master (2026-10-20)
 
+**RESOLVED 2026-10-21 for direct `deployFrom` (`61b445ec5`) and the framed proxy's calling genesis (`f1fc26e87`)**,
+by a leading slot that puts the child's authhead at output 0 (`docs/framed/DECISIONS.md` D47); message-bus child
+deployments are in progress. Framed `new C()` was never affected: the SDK deploys that child as a top-level genesis.
+The shapes that keep the old layout are the next entry.
+
 **What:** a category created inside a composition (framed `new C()`, the framed proxy's calling genesis, direct
 `deployFrom`, message-bus child deployments) takes the creating transaction's output 0 as its BCMR identity output,
 and the composition layout puts a participant of the creating contract there. Any later spend of that output can
@@ -3014,6 +3019,25 @@ head's padding, and a mixed-version composition check.
 **Revisit if:** a factory issues user-facing tokens, or a client starts trusting self-published metadata of
 contract-created categories.
 
+## Creating calls that keep the master at input 0, and so the child's identity there (2026-10-21)
+
+**What:** D47 leads a creating transaction with the child's authhead, but these shapes keep the old layout, so the
+child's identity output stays the creating transaction's output 0 (the factory's master) and every call extends it:
+a loop's deploys, and a conditional site that is not the function's first; a multi-site function with a
+conditional, which verifies every site against its runtime counter; a function that co-spends keccak or ecrecover
+compute side-cars, whose generated scripts bind their salt to input 0's category, the master's; artifacts compiled
+before `leadsIdentity`; and the regtest provider's fixture categories (`addUtxo` geneses and the block oracle).
+
+**Why deferred:** each needs its own covenant work: a counter-gated authhead check for loops and counted sites, and
+regenerated side-car scripts that find the master by index rather than at input 0, which moves every side-car
+address. None is on a ladder title's path, and the regtest fixtures run on regtest only.
+
+**What it'd take:** for loops, check output 0 when the counter is 0 and bump that child's counts; for side-cars,
+regenerate the compute side-cars with a master-index witness; for the fixtures, a token-free output 0 ahead of the
+fixture output, which the regtest suite would have to confirm.
+
+**Revisit if:** a factory that issues user-facing tokens creates them in a loop, or a creating function hashes with
+keccak or recovers keys.
 ## Framed token containers pay one fungible category from one frame (2026-10-20)
 
 **RESOLVED 2026-10-20.** A container now belongs to the master its unlocking names (`docs/framed/DECISIONS.md` D37),

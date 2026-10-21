@@ -3871,6 +3871,7 @@ function buildFunctionAbiMetadata(
       deployTargets: func.deployTargets.map((dt) => ({
         contractName: dt.contractName,
         dataNftCount: dt.dataNftCount,
+        ...(dt.leadsIdentity === true && { leadsIdentity: true }),
         ...(dt.entryNftCount !== undefined && { entryNftCount: dt.entryNftCount }),
         ...(dt.constructorArgs && { constructorArgs: dt.constructorArgs }),
         ...(dt.salt && { salt: dt.salt }),

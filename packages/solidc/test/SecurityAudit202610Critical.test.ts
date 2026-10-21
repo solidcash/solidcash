@@ -549,8 +549,9 @@ describe('October 2026 critical holes', () => {
     const removed = await reject(destroyed);
     expect(recommitted, 'DX-6 deploy recommitted').not.toMatch(/signature|CHECKSIG/i);
     expect(removed, 'DX-6 deploy destroyed').not.toMatch(/signature|CHECKSIG/i);
-    expectScriptRejection(recommitted, 0);
-    expectScriptRejection(removed, 0);
+    // The creating call leads with its child's authhead (D47), so the master is input 1.
+    expectScriptRejection(recommitted, 1);
+    expectScriptRejection(removed, 1);
     await expect(provider.sendRawTransaction(honestHex)).resolves.toBeTypeOf('string');
   });
 
@@ -806,8 +807,9 @@ describe('October 2026 critical holes', () => {
     const removed = await reject(destroyed);
     expect(recommitted, 'DX-6 iterating deploy recommitted').not.toMatch(/signature|CHECKSIG/i);
     expect(removed, 'DS-3 iterating deploy destroyed').not.toMatch(/signature|CHECKSIG/i);
-    expectScriptRejection(recommitted, 0);
-    expectScriptRejection(removed, 0);
+    // The creating call leads with its child's authhead (D47), so the master is input 1.
+    expectScriptRejection(recommitted, 1);
+    expectScriptRejection(removed, 1);
     await expect(provider.sendRawTransaction(honestHex)).resolves.toBeTypeOf('string');
   }, 120_000);
 
@@ -860,8 +862,9 @@ describe('October 2026 critical holes', () => {
     const removed = await reject(destroyed);
     expect(recommitted, 'DX-6 in-loop deploy recommitted').not.toMatch(/signature|CHECKSIG/i);
     expect(removed, 'DS-3 in-loop deploy destroyed').not.toMatch(/signature|CHECKSIG/i);
-    expectScriptRejection(recommitted, 0);
-    expectScriptRejection(removed, 0);
+    // The creating call leads with its child's authhead (D47), so the master is input 1.
+    expectScriptRejection(recommitted, 1);
+    expectScriptRejection(removed, 1);
     await expect(provider.sendRawTransaction(honestHex)).resolves.toBeTypeOf('string');
   }, 120_000);
 

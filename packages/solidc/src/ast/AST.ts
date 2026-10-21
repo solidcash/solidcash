@@ -575,6 +575,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   transferInfos?: TransferInfo[];
   deployTargets?: {
     contractName: string; dataNftCount: number; entryNftCount?: number;
+    // The child's authhead is output 0 of the creating transaction (DECISIONS D47).
+    leadsIdentity?: boolean;
     // Per child constructor argument: the deploy-function parameter name it forwards (a direct `new C(param)`
     // reference), or null if it is a non-trivial expression. Lets the SDK derive childConstructorArgs from the
     // deploy-function args instead of requiring them again.

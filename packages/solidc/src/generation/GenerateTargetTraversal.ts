@@ -111,6 +111,7 @@ import {
   resolveAddressForm,
   INVALID_FUNCTION_POINTER_ID,
   implicitlyCastable,
+  buildAuthheadOutputCheck,
   type AbiFunction,
   type AddressForm,
 } from '@solidcash/utils';
@@ -989,10 +990,12 @@ function surveyFunctionDeploys(
     count: number;
     hasConditional: boolean;
     hasLoopValue: boolean;
-    sites: Array<{ node: InstantiationNode; conditional: boolean; spanOffset: number; spanWidth: number }>;
+    sites: Array<{
+      node: InstantiationNode; conditional: boolean; inLoop: boolean; spanOffset: number; spanWidth: number;
+    }>;
   } {
   const sites: Array<{
-    node: InstantiationNode; conditional: boolean; spanOffset: number; spanWidth: number;
+    node: InstantiationNode; conditional: boolean; inLoop: boolean; spanOffset: number; spanWidth: number;
   }> = [];
   let spanOffset = 0;
   let count = 0;
@@ -1011,7 +1014,7 @@ function surveyFunctionDeploys(
       if (inCond) hasConditional = true;
       if (inLoop && hasEffectiveCallValue(n.callOptions?.value)) hasLoopValue = true;
       const spanWidth = 1 + n.deployedDataNftCount + n.deployedEntryNftCount;
-      sites.push({ node: n, conditional: inCond, spanOffset, spanWidth });
+      sites.push({ node: n, conditional: inCond, inLoop, spanOffset, spanWidth });
       spanOffset += spanWidth;
     }
     // for-loops desugar to while before codegen, so ForNode never appears here.
@@ -2512,8 +2515,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private graphRawPayloadEncodeDepth = 0;
 
   private functionDeploySites: Array<{
-    node: InstantiationNode; conditional: boolean; spanOffset: number; spanWidth: number;
+    node: InstantiationNode; conditional: boolean; inLoop: boolean; spanOffset: number; spanWidth: number;
   }> = [];
+
+  /** The deploy site whose child's authhead is output 0 of the creating transaction (DECISIONS D47). */
+  private leadingDeployNode: InstantiationNode | undefined = undefined;
 
   // A loop `new C{value:V}()` interleaves its transfer per child; the satoshi container that sources them is
   // conserved (input <= output + counter*V) after the loop's OP_UNTIL. V must be loop-invariant (typically a
@@ -8848,6 +8854,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.transferInfos = deploySurvey.hasLoopValue ? [] : node.transferInfos ?? [];
     this.functionDeploySiteCount = deploySurvey.count;
     this.functionDeploySites = deploySurvey.sites;
+    // D47: the first site leads when it always fires, or when it is the only site and runs at most once. A graph
+    // handler's and a framed master's transactions are laid out by their own conventions, a multi-site function
+    // with a conditional verifies every site against its runtime counter, and the keccak and ecrecover compute
+    // side-cars bind their salt to input 0's category, the master's. Those keep the master at input 0.
+    const firstDeploySite = deploySurvey.sites[0];
+    const countedSites = deploySurvey.count > 1 && deploySurvey.hasConditional;
+    const sideCarsReadInputZero = node.keccakCompute === true || node.ecrecoverCompute === true;
+    this.leadingDeployNode = firstDeploySite !== undefined && node.graphEmissionHandler !== true && !this.framedMaster
+      && !countedSites && !sideCarsReadInputZero
+      && (!firstDeploySite.conditional || (deploySurvey.sites.length === 1 && !firstDeploySite.inLoop))
+      ? firstDeploySite.node : undefined;
     this.graphConditionalDeployReachActive = this.isDefineSubTraversal
       && node.graphEmissionHandler === true && deploySurvey.hasConditional;
     // Multi-site inline deploy: 2+ deploy sites with at least one conditional (a not-fired conditional shifts
@@ -21572,6 +21589,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.currentFunction.deployTargets.push({
         contractName: node.referencedContract!.name,
         dataNftCount: node.deployedDataNftCount,
+        ...(node === this.leadingDeployNode && { leadsIdentity: true }),
         ...(node.deployedEntryNftCount > 0 && { entryNftCount: node.deployedEntryNftCount }),
         constructorArgs,
         ...(salt && { salt }),
@@ -44732,13 +44750,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.loopValueTransferNode = node.callOptions!.value;
     }
 
+    // D47: a leading site's child has its authhead at output 0, one more mutable NFT of its category.
+    const leads = !useCounter && node === this.leadingDeployNode;
+    if (leads) this.emitAuthheadOutputCheck(categoryName, locationData);
+    const authheadCount = leads ? 1 : 0;
+
     // Positional checks prove the required genesis outputs, but without cardinality an attacker can use the
     // genesis minting input to append another child master or mutable state NFT of the same category. Count both
     // capabilities across the whole transaction so this child's genesis set is exact.
     this.emitDeployCapabilityOutputCount(categoryName, 0x02, 1, locationData);
-    this.emitDeployCapabilityOutputCount(categoryName, 0x01, dataNftCount + entryNftCount, locationData);
+    this.emitDeployCapabilityOutputCount(
+      categoryName, 0x01, dataNftCount + entryNftCount + authheadCount, locationData,
+    );
     // Capability counts miss immutable NFTs and pure fungible outputs, both of which are a 32-byte category.
-    this.emitDeployChildCategoryBound(categoryName, 1 + dataNftCount + entryNftCount, locationData);
+    this.emitDeployChildCategoryBound(categoryName, 1 + dataNftCount + entryNftCount + authheadCount, locationData);
 
     // Loop deploy: increment the runtime deploy counter (deploys-fired-so-far) in place, so the next iteration's
     // genesis lands at the next slot. Mirrors the in-place stack-var update in visitDeleteLocal.
@@ -45073,16 +45098,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.popFromStack(2);
       }
 
+      // D47: the leading child's authhead is output 0, one more mutable NFT of its category.
+      const leads = deployNode === this.leadingDeployNode;
+      if (leads) this.emitAuthheadOutputCheck(categoryStackName, locationData);
+
       // The fixed-slot checks above authenticate every required output but do not reject extra genesis NFTs.
       // Enforce exact capability counts for this child category across all transaction outputs.
       const graphCategory = this.currentFunction.graphEmissionHandler ? categoryStackName : undefined;
       const fixedIndex = this.currentFunction.graphEmissionHandler ? undefined : deployIndex;
+      const authheadCount = leads ? 1 : 0;
       this.emitDeployCapabilityOutputCount(graphCategory, 0x02, 1, locationData, fixedIndex);
       this.emitDeployCapabilityOutputCount(
-        graphCategory, 0x01, dataNftCount + genesisEntries.length, locationData, fixedIndex,
+        graphCategory, 0x01, dataNftCount + genesisEntries.length + authheadCount, locationData, fixedIndex,
       );
       this.emitDeployChildCategoryBound(
-        graphCategory, 1 + dataNftCount + genesisEntries.length, locationData, fixedIndex,
+        graphCategory, 1 + dataNftCount + genesisEntries.length + authheadCount, locationData, fixedIndex,
       );
     }
 
@@ -45100,6 +45130,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
       this.removeFromStack(lbIdx);
     }
+  }
+
+  /**
+   * D47: output 0 is the authhead contract of the child category named `categoryStackName`, holding its mutable NFT
+   * (docs/bcmr/DESIGN.md, section 7). The NFT's commitment, the identity's owner, is the builder's to choose.
+   */
+  private emitAuthheadOutputCheck(categoryStackName: string, locationData: SingleLocationData): void {
+    this.emit(encodeInt(BigInt(this.getStackIndex(categoryStackName))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(buildAuthheadOutputCheck(), locationData);
   }
 
   /** Require exactly `expected` outputs with childCategory||capability. */

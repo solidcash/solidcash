@@ -5627,6 +5627,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     trailingEntryOutputOffset?: number,
     probeState?: Record<string, StateValue>,
     eventOutputCount: number = 0,
+    leading?: { readonly utxo: Utxo; readonly unlocker: Unlocker; readonly output: Output },
   ): Promise<{
       state: Record<string, StateValueType> | undefined;
       entryCommitments: string[];
@@ -5648,7 +5649,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       functionName, args, requiredNftIndices, extraOutputs, extraInputs,
       entryOutputCount, childDataNftCount, deriveChildCommitments, returnEventOutputCount,
       containerOutputCount, trailingEntryOutputCount, trailingEntryOutputOffset, probeState,
-      eventOutputCount,
+      eventOutputCount, leading,
     );
   }
 

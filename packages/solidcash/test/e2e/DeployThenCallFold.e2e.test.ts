@@ -92,8 +92,8 @@ describe('deploy-then-call fold (deployFrom e2e)', () => {
     );
     expect(factoryState.deployCount).toBe(1n);
 
-    // Child data NFT carries the POST-configure state, not the default.
-    const childDataOutput = txOutputs.find(
+    // Child data NFT carries the POST-configure state, not the default. Output 0 is the child's authhead (D47).
+    const childDataOutput = txOutputs.slice(1).find(
       (o) => o.token?.category === result.childCategoryId && o.token?.nft?.capability === 'mutable',
     );
     expect(childDataOutput).toBeDefined();
@@ -182,7 +182,7 @@ describe('deploy-then-call fold with a computed callee (deployFrom e2e)', () => 
     });
 
     // send() ran the covenant, which evaluated supply*2 and amount/2+1 on-chain.
-    const childDataOutput = getTxOutputs(result.tx).find(
+    const childDataOutput = getTxOutputs(result.tx).slice(1).find(
       (o) => o.token?.category === result.childCategoryId && o.token?.nft?.capability === 'mutable',
     );
     const childState = parsePushdataCommitment(
@@ -272,7 +272,7 @@ describe('deploy-then-call fold with locals + state reads (deployFrom e2e)', () 
       changeAddress: p2pkh.address,
     });
 
-    const childDataOutput = getTxOutputs(result.tx).find(
+    const childDataOutput = getTxOutputs(result.tx).slice(1).find(
       (o) => o.token?.category === result.childCategoryId && o.token?.nft?.capability === 'mutable',
     );
     const st = parsePushdataCommitment(
@@ -349,9 +349,9 @@ describe('multi-data-NFT child deploy (nftIndex tag parity)', () => {
     expect(childArtifact.stateLayout!.dataNftCount).toBe(2);
   });
 
-  // Find the child's two data NFT outputs in tx order (master, then NFT 0, then NFT 1).
+  // Find the child's two data NFT outputs in tx order (master, then NFT 0, then NFT 1), after its authhead at 0.
   const childDataNfts = (txOutputs: ReturnType<typeof getTxOutputs>, categoryId: string): string[] =>
-    txOutputs
+    txOutputs.slice(1)
       .filter((o) => o.token?.category === categoryId && o.token?.nft?.capability === 'mutable')
       .map((o) => o.token!.nft!.commitment);
 

@@ -1,7 +1,7 @@
 # BchNativeWrapper: an ERC-20 over an existing CashTokens category (design)
 
-Kind: design, implemented over master `c2ede0be8` (`667a07d70`, `f15afb05b`, `e72f00338`, `7b5e6bbdf`) and merged
-into master. Written 2026-10-21 against master `063f32514` and revised three times the same
+Kind: design, implemented on `feat/bch-native-wrapper` over master `c2ede0be8` (`667a07d70`, `f15afb05b`,
+`e72f00338`, `7b5e6bbdf`), which fast-forwards master; not merged yet. Written 2026-10-21 against master `063f32514` and revised three times the same
 day with the user's answers (sections 11 and 12). The decisions are D41 to D45 in `docs/framed/DECISIONS.md`, which
 wins over this file.
 
@@ -308,7 +308,7 @@ The sum of `balanceOf` equals `totalSupply()` by construction; only a hand-built
 Paths are under `packages/solidcash/` unless stated. Each test file ran once on mocknet: the new file 6/6,
 `MinimalNativeToken` and `BchNativeMultiplier` 8/8, X93 5/5, and `TokenContainerUpgradeMigration` 5/6: its sixth case,
 the reserve over two coins, built and broadcast its upgrade, then failed on an assertion that read an address string as
-bytes. With the assertion fixed, that title passed when run alone before the merge (6/6). The new file covers:
+bytes. With the assertion fixed, that title passed when run alone (6/6). The new file covers:
 
 1. The size budget and ABI of `MinimalWrappedToken`.
 2. The seal: a derived contract that writes the ledger, overrides `totalSupply()`, `wrap` or the multiplier's scale does

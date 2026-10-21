@@ -130,16 +130,23 @@ The measured shapes need far less: 400,000 covers the 303,347-byte input with ma
 
 ## Marketplace matrix against the in-docker node
 
-The full matrix `[proxy,noproxy] x [kernel,framed]` was rerun on branch `fix/bchn-matrix` (2026-10-20), each cell
-on a fresh node volume of the rebuilt image, with the deterministic clock, the 6,144 MB worker heap and the
-standard 30-minute test timeout.
+The full matrix `[proxy,noproxy] x [kernel,framed]` is green on BCHN at `8c8cb7645` (2026-10-21), 262/262. Every
+cell ran on the rebuilt image with the deterministic clock and the standard 30-minute test timeout, in five title
+chunks by describe group, each chunk in its own vitest process on a fresh node volume with a 3,072 MB worker
+heap. One process per cell at the 6,144 MB heap reached title 41 (`take job > sanity checks`) twice and was then
+stopped by the host's memory guard while another session's suites shared the box; the chunks peaked at 3.3 GB.
+The four previously failing titles had first passed alone at the same commit.
 
 | Cell | Result | Notes |
 | --- | --- | --- |
-| proxy x framed | **66/66** | |
-| noproxy x framed | **65/65** | |
-| proxy x kernel | **64/66** | `post job with invalid amount`, `post job with invalid title` (below); both pass at `7f049cc10`, run alone. The cell outran a 2.5-hour cap; its last eight titles ran again at the same commit, and `integration test` passed with `8316a9cb5`. |
-| noproxy x kernel | **64/65** | `post thread message > sanity checks` (below); it passes at `711e4d1b9`, run alone. |
+| proxy x kernel | **66/66** | chunks 30, 10, 9, 9, 8 |
+| noproxy x kernel | **65/65** | chunks 29, 10, 9, 9, 8 |
+| proxy x framed | **66/66** | chunks 30, 10, 9, 9, 8 |
+| noproxy x framed | **65/65** | chunks 29, 10, 9, 9, 8 |
+
+The run of 2026-10-20 at `c8b4c48e8` had proxy x framed 66/66, noproxy x framed 65/65, proxy x kernel 64/66
+(`post job with invalid amount`, `post job with invalid title`) and noproxy x kernel 64/65
+(`post thread message > sanity checks`); the fixes for those three are described below.
 
 The 2026-10-19 run had the kernel cells at 14/66 and 17/65 with a 3-minute timeout override, stalling at
 `post job 1`. None of the causes was a BCHN consensus problem; each was a place where the regtest provider or

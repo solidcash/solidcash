@@ -3124,6 +3124,14 @@ commit to bisect from yet.
 
 **Revisit if:** a release gate takes in the SDK e2e suite, or work touches one of these files.
 
+**Status:** RESOLVED 2026-10-21. Each was bisected (`git bisect run` on shadow worktrees) and fixed or re-pinned:
+`L4StatefulAdminSiteGate` (`063f32514`, declared fees), `SelfdestructDestination` and `X46CommitmentWriter`
+(`3fc5969bd`, then `3ca6b0a42`), `ConstructorKeccakHelper` (`1e8bcb838`), `KernelNestedChunkedUpdate` (`a60df8329`),
+`AuditLifecycleEventIntegrity` (`5e1ac21b2`), `ConditionalEntryWrite` and `SignatureCheckHelper` (`0b8d48662`),
+`DynamicArrays` (`bf1ad481f`), `MasterChefDeposit` (`feee2609f`), `SushiBarTransferFrom` (`b3ee79060`), and
+`X121StrictPreflightDecision` / `X130DebugVmProviderFaithful` (`bb2ecdab5`). The full SDK e2e suite then passed:
+1,569 files, 9,702 tests, none failed.
+
 ## A destroy split into batches pins a direct container in an intermediate batch (2026-10-21)
 
 **What:** a direct container's master path pins the output at its own index (`directMasterOutputPin` in

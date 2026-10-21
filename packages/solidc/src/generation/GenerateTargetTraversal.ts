@@ -665,6 +665,8 @@ const MESSAGE_BUS_DYNAMIC_WRITE_ACTIVE = '__message_bus_dynamic_write_active';
 const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 /** The value-chunk lock list the mutable-output check admits: the chunk-base witness, or a route-owned item. */
 const VALUE_CHUNK_LOCK_LIST = '__internal__valueChunkOutputBase';
+/** The block size a shared outside-layout walk takes as its argument. */
+const OUTSIDE_LAYOUT_BLOCK_SIZE = '(__outside_layout_block_size)';
 /** Tracked items of the slot scans (emitSlotScans). */
 const SCAN_CATEGORY = '(__scan_category)';
 const SCAN_MINT_CATEGORY = '(__scan_mint_category)';
@@ -11717,7 +11719,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         const stackAfterIf = [...this.stack];
         staleAfterElse = settleElsePath(staleAfterIf, () => { this.stack = [...stackBeforeIf]; });
-        this.stack = stackAfterIf;
+        // Past an arm that can only fail, execution continues on the path that skipped it.
+        this.stack = this.blockEndsInFailure(node.ifBlock) ? [...stackBeforeIf] : stackAfterIf;
       }
       if (staleAtBranch !== undefined) this.framedFixedFieldsJoin(node, staleAfterIf, staleAfterElse);
       this.framedFieldsAfterBranch(node, fieldsAtBranch, fieldsAfterIf);
@@ -52425,13 +52428,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // instead of preserved 1:1. The hidden value-chunk lock-list witness is present whenever the function has
       // such a write.
       || this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0;
+    // A direct walk that admits no record lock reads only the transaction and the block size, so the entries share
+    // one helper that takes the size as its argument. A walk with no helper keeps the size inline.
+    if (!routeParticipantWalk && !admitMintableLocks) {
+      const id = this.sharedEntryCheckId('outsideLayoutWalk', (t, l) => {
+        t.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
+        t.emitSizedOutsideLayoutWalk(l);
+      });
+      if (id !== undefined && this.subroutineDefined.get(id)) {
+        this.emit(encodeInt(BigInt(blockSize)), loc);
+        this.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
+        this.invokeSubroutineIfDefined(id, loc);
+        this.popFromStack();
+        return;
+      }
+    }
     const category = '(__outside_own_mutable)';
-    this.emitMasterInputIndex(loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emitTakeFirst32(loc);
-    this.pushToStack(category);
-    this.emit(new Uint8Array([0x01]), loc);
-    this.emit(Op.OP_CAT, loc);
+    this.emitOutsideLayoutCategory(category, loc);
     // The locks a legitimate record sits at (data, entry, and chunk locks). The 32-byte category base is rebuilt
     // from the pin, then every data, entry, and chunk lock is concatenated and kept on the alternate stack for the
     // walk, so a written chunk/loop record is admitted instead of preserved (output == input).
@@ -52453,39 +52466,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NIP, loc);
       this.emit(Op.OP_TOALTSTACK, loc);
     }
-    const emitInspect = (): void => {
-      this.emit(Op.OP_DUP, loc);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-      this.emit(encodeInt(BigInt(this.getStackIndex(category) + 2)), loc);
-      this.emit(Op.OP_PICK, loc);
-      this.emit(Op.OP_EQUAL, loc);
-      this.emit(Op.OP_IF, loc);
-      // [category, i]. Skip a record at a mintable lock (a consumed/rewritten chunk, a written entry, or a data
-      // record the function already closed); refuse every other own-category mutable by preserving it 1:1.
-      if (admitMintableLocks) {
-        this.emit(Op.OP_DUP, loc);
-        this.emit(Op.OP_UTXOBYTECODE, loc);
-        this.emitInputLockAdmitted(loc);
-        this.emit(Op.OP_NOTIF, loc);
-      }
-      this.emit(Op.OP_DUP, loc);
-      this.emit(Op.OP_OUTPUTBYTECODE, loc);
-      this.emit(Op.OP_OVER, loc);
-      this.emit(Op.OP_UTXOBYTECODE, loc);
-      this.emit(Op.OP_EQUALVERIFY, loc);
-      this.emit(Op.OP_DUP, loc);
-      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
-      this.emit(Op.OP_OVER, loc);
-      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-      this.emit(Op.OP_EQUALVERIFY, loc);
-      this.emit(Op.OP_DUP, loc);
-      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
-      this.emit(Op.OP_OVER, loc);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-      this.emit(Op.OP_EQUALVERIFY, loc);
-      if (admitMintableLocks) this.emit(Op.OP_ENDIF, loc);
-      this.emit(Op.OP_ENDIF, loc);
-    };
+    const emitInspect = (): void => this.emitOutsideLayoutInspect(category, admitMintableLocks, loc);
     if (routeParticipantWalk) {
       // A route participant's block is settled by the route verifier, and the transaction carries the verifier and
       // sibling participant blocks below it. Keep the established walk there: only inputs past this participant's
@@ -52517,45 +52498,116 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       this.emit(Op.OP_DROP, loc);
     } else {
-      this.emit(Op.OP_TXINPUTCOUNT, loc);
-      this.emit(Op.OP_BEGIN, loc);
-      this.emit(Op.OP_1SUB, loc);
-      // [category, i]. Exit at i < 0 (the old relative exit test stopped at `i < blockSize`, which skipped every
-      // input below a master that is not input 0). The block is [master, master + blockSize); everything else is
-      // inspected, including records placed before the master.
-      this.emit(Op.OP_DUP, loc);
-      this.emit(encodeInt(0n), loc);
-      this.emit(Op.OP_LESSTHAN, loc);
-      this.emit(Op.OP_IF, loc);
-      this.emit(Op.OP_DROP, loc);
-      this.emit(encodeBool(true), loc);
-      this.emit(Op.OP_ELSE, loc);
-      this.emit(Op.OP_DUP, loc);
-      this.emitMasterInputIndex(loc);
-      this.emit(Op.OP_LESSTHAN, loc);
-      this.emit(Op.OP_IF, loc);
-      emitInspect();
-      this.emit(encodeBool(false), loc);
-      this.emit(Op.OP_ELSE, loc);
-      this.emit(Op.OP_DUP, loc);
-      this.emitMasterInputIndex(loc);
-      this.emit(encodeInt(BigInt(blockSize)), loc);
-      this.emit(Op.OP_ADD, loc);
-      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
-      this.emit(Op.OP_IF, loc);
-      emitInspect();
-      this.emit(Op.OP_ENDIF, loc);
-      this.emit(encodeBool(false), loc);
-      this.emit(Op.OP_ENDIF, loc);
-      this.emit(Op.OP_ENDIF, loc);
-      this.emit(Op.OP_UNTIL, loc);
-      this.emit(Op.OP_DROP, loc);
+      this.emitDirectOutsideLayoutLoop(category, admitMintableLocks, () => {
+        this.emit(encodeInt(BigInt(blockSize)), loc);
+      }, loc);
     }
     if (admitMintableLocks) {
       this.emit(Op.OP_FROMALTSTACK, loc);
       this.emit(Op.OP_DROP, loc);
     }
     this.popFromStack(1);
+  }
+
+  /** `[]` -> `[category]`: the master's 32-byte category with the mutable capability, tracked as `category`. */
+  private emitOutsideLayoutCategory(category: string, loc: SingleLocationData): void {
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack(category);
+    this.emit(new Uint8Array([0x01]), loc);
+    this.emit(Op.OP_CAT, loc);
+  }
+
+  /** `[size]` -> `[]`: a direct walk that admits no record lock, its block size the tracked argument. */
+  private emitSizedOutsideLayoutWalk(loc: SingleLocationData): void {
+    const category = '(__outside_own_mutable)';
+    this.emitOutsideLayoutCategory(category, loc);
+    this.emitDirectOutsideLayoutLoop(category, false, () => {
+      // [size, category, i, i, master]
+      this.emit(encodeInt(BigInt(this.getStackIndex(OUTSIDE_LAYOUT_BLOCK_SIZE) + 3)), loc);
+      this.emit(Op.OP_PICK, loc);
+    }, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(2);
+  }
+
+  /**
+   * `[category]` -> `[]`: every input outside `[master, master + size)` comes back unchanged when it is an own-category
+   * mutable NFT. The exit test is `i < 0` (the old relative one stopped at `i < blockSize`, which skipped every input
+   * below a master that is not input 0), so records placed before the master are inspected too.
+   */
+  private emitDirectOutsideLayoutLoop(
+    category: string, admitMintableLocks: boolean, emitSize: () => void, loc: SingleLocationData,
+  ): void {
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    // [category, i]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emitOutsideLayoutInspect(category, admitMintableLocks, loc);
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emitMasterInputIndex(loc);
+    emitSize();
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emitOutsideLayoutInspect(category, admitMintableLocks, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+  }
+
+  /**
+   * `[category, i]` -> `[category, i]`: input i, when it is an own-category mutable NFT, comes back at output i with
+   * its lock, commitment and category. With `admitMintableLocks` a record at a mintable lock (a consumed or rewritten
+   * chunk, a written entry, or a data record the function already closed) is skipped instead.
+   */
+  private emitOutsideLayoutInspect(category: string, admitMintableLocks: boolean, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(category) + 2)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    if (admitMintableLocks) {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emitInputLockAdmitted(loc);
+      this.emit(Op.OP_NOTIF, loc);
+    }
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    if (admitMintableLocks) this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /** `[lock]` -> `[admitted]` against the mintable-lock list parked on the alternate stack. */

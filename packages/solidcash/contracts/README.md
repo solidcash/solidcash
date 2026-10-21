@@ -14,7 +14,7 @@ allowances mandatory while allowing a minimal token to prune textual metadata st
 
 For the smallest complete composition, see
 [`examples/MinimalNativeToken.scash`](examples/MinimalNativeToken.scash), declared exactly as
-`MinimalNativeToken is ERC20, BchNative`. Its script is 8,370 bytes; it retains transfers, full
+`MinimalNativeToken is ERC20, BchNative`. Its script is 7,435 bytes; it retains transfers, full
 allowances, supply accounting, and Transfer/Approval events while intentionally omitting optional metadata.
 
 ## `BchNative`

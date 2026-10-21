@@ -1,4 +1,4 @@
-import { AddressType } from '@solidcash/utils';
+import { AddressType, ArrayType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
   AssemblyStatementNode,
@@ -16,22 +16,28 @@ import {
   IdentifierNode,
   IntLiteralNode,
   Node,
+  NullaryOpNode,
+  RequireNode,
   StatementNode,
   TupleAssignmentNode,
   UnaryOpNode,
   UncheckedNode,
   VariableDefinitionNode,
 } from '../ast/AST.js';
-import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { blockEndsWithReturn, holdsReturn } from './EarlyReturnTransformation.js';
 
 /**
  * Drops the arm a branch never runs when its condition is constant: a boolean literal, or a local declared once with
  * one and never assigned, which is what an inline site leaves for a helper's parameter (`_refund(jobId, false)`); an
  * equality of two equal literals (an integer, a boolean, the zero address) where an inliner's parameter binding
  * carries one (`_update(address(0), to, v)` decides `from == address(0)`); or a zero-address comparison of an
- * immutable address that an enclosing zero-address guard has already decided. A write in a dead arm would still
- * reach the entry's write analysis. A branch that keeps an arm keeps its node, so later passes see the shape they
- * expect, and a compiler-owned flush whose absent arm must stay physically inactive is left alone.
+ * immutable address that a guard has already decided. A guard is an enclosing zero-address branch, and in a direct
+ * body also a `require` or a branch arm that can only fail, for the statements after it; there `msg.sender`, a
+ * verified nonempty lock, is never `address(0)` either. A write in a dead arm would still reach the entry's write
+ * analysis. In a direct body a decided branch becomes the block of its arm, so its writes read as unconditional,
+ * unless that arm declares an array; elsewhere it keeps its node, so later passes see the shape they expect. A
+ * compiler-owned flush whose absent arm must stay physically inactive is left alone.
  */
 export default class FoldConstantBoolBranches extends AstTraversal {
   /** The constructor of the contract being visited. */
@@ -60,7 +66,7 @@ export default class FoldConstantBoolBranches extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const literals = this.literals === true
       || (this.literals === 'constructor' && node === this.constructorDef);
-    if (node.body) foldBlock(node.body, functionFacts(node, literals));
+    if (node.body) foldBlock(node.body, functionFacts(node, literals, this.literals === true));
     return node;
   }
 }
@@ -69,6 +75,8 @@ export default class FoldConstantBoolBranches extends AstTraversal {
 interface Facts {
   /** The literal-equality and zero-address rules apply. */
   readonly literals: boolean;
+  /** A direct body: guards after their statement, `msg.sender`, and arms in place of decided branches apply. */
+  readonly direct: boolean;
   /** Constant constructions of locals: once-declared literal booleans, and literal inliner bindings. */
   readonly constants: ReadonlyMap<string, string>;
   /** Locals and parameters that never change, each mapped to the immutable binding it copies (or itself). */
@@ -96,7 +104,7 @@ const INCREMENTS = new Set<UnaryOperator>([
   UnaryOperator.PREFIX_INCREMENT, UnaryOperator.PREFIX_DECREMENT,
 ]);
 
-function functionFacts(node: FunctionDefinitionNode, literals: boolean): Facts {
+function functionFacts(node: FunctionDefinitionNode, literals: boolean, direct: boolean): Facts {
   const declared = new Map<string, number>();
   const definitions = new Map<string, ExpressionNode | undefined>();
   const assigned = new Set<string>();
@@ -150,8 +158,21 @@ function functionFacts(node: FunctionDefinitionNode, literals: boolean): Facts {
       }
     }
   }
-  return { literals, constants, immutable, nonZero: new Set() };
+  // A direct entry's msg.sender is a lock its covenant verifies nonempty, so neither it nor a copy is address(0).
+  const nonZero = new Set<string>();
+  if (literals && direct && !hasAssembly) {
+    nonZero.add(MSG_SENDER_KEY);
+    for (const [name, expression] of definitions) {
+      if (immutable.get(name) === name && isMsgSender(expression)) nonZero.add(name);
+    }
+  }
+  return { literals, direct: literals && direct, constants, immutable, nonZero };
 }
+
+const MSG_SENDER_KEY = 'msg.sender';
+
+const isMsgSender = (expression: ExpressionNode | undefined): boolean => expression instanceof NullaryOpNode
+  && expression.operator === NullaryOperator.MSG_SENDER;
 
 /** A literal construction's identity: only exact, total constructions qualify (`address(0)`, not other casts). */
 function constantKey(expression: ExpressionNode, constants: ReadonlyMap<string, string>): string | undefined {
@@ -187,7 +208,8 @@ function zeroComparison(condition: ExpressionNode, facts: Facts): { key: string;
   const isZero = (side: ExpressionNode): boolean => constantKey(side, facts.constants)?.startsWith('address-zero:')
     === true;
   const operand = isZero(condition.right) ? condition.left : isZero(condition.left) ? condition.right : undefined;
-  const key = operand instanceof IdentifierNode ? canonical(operand.name, facts) : undefined;
+  const key = operand instanceof IdentifierNode ? canonical(operand.name, facts)
+    : facts.direct && isMsgSender(operand) ? MSG_SENDER_KEY : undefined;
   return key === undefined ? undefined : { key, equalsZero: condition.operator === BinaryOperator.EQ };
 }
 
@@ -222,17 +244,58 @@ function constantValue(condition: ExpressionNode, facts: Facts): boolean | undef
   return undefined;
 }
 
-/** `facts` with `key` proved nonzero. */
-const withNonZero = (facts: Facts, key: string): Facts => ({ ...facts, nonZero: new Set([...facts.nonZero, key]) });
+/** `facts` with `keys` proved nonzero. */
+const withNonZero = (facts: Facts, ...keys: string[]): Facts => (keys.length === 0 ? facts
+  : { ...facts, nonZero: new Set([...facts.nonZero, ...keys]) });
 
-function foldBlock(block: BlockNode, facts: Facts): void {
+/** The immutable addresses `condition` proves nonzero where it evaluates to `truth`. */
+function nonZeroWhen(condition: ExpressionNode, truth: boolean, facts: Facts): string[] {
+  const zero = zeroComparison(condition, facts);
+  if (zero) return zero.equalsZero === truth ? [] : [zero.key];
+  if (condition instanceof UnaryOpNode && condition.operator === UnaryOperator.NOT) {
+    return nonZeroWhen(condition.expression, !truth, facts);
+  }
+  if (condition instanceof BinaryOpNode && condition.operator === (truth ? BinaryOperator.AND : BinaryOperator.OR)) {
+    return [...nonZeroWhen(condition.left, truth, facts), ...nonZeroWhen(condition.right, truth, facts)];
+  }
+  return [];
+}
+
+/** True when `block` cannot complete: every path through it fails, and none returns. */
+const failsOnly = (block: BlockNode | undefined): boolean => block !== undefined
+  && blockEndsWithReturn(block, true) && !holdsReturn(block);
+
+/** True when `block` declares an array local; such an arm keeps its branch node (a memory-array key reads it there). */
+function declaresArray(block: BlockNode): boolean {
+  let found = false;
+  walk(block, (node) => {
+    if (node instanceof VariableDefinitionNode && node.type instanceof ArrayType) found = true;
+  });
+  return found;
+}
+
+function foldBlock(block: BlockNode, outer: Facts): void {
   const kept: StatementNode[] = [];
+  let facts = outer;
   for (const statement of block.statements ?? []) {
+    // What a guard decides holds for the statements after it, which run only where it passed.
+    let after: string[] = [];
     if (statement instanceof BranchNode) {
       const taken = statement.preserveConditionalEntryWrites === true
         ? undefined : constantValue(statement.condition, facts);
       if (taken === false && statement.elseBlock === undefined) continue;
       const zero = taken === undefined ? zeroComparison(statement.condition, facts) : undefined;
+      if (facts.direct && taken === undefined) {
+        if (failsOnly(statement.ifBlock)) after = nonZeroWhen(statement.condition, false, facts);
+        else if (failsOnly(statement.elseBlock)) after = nonZeroWhen(statement.condition, true, facts);
+      }
+      // A zero-address guard proves its address nonzero in the arm where the comparison says so.
+      const ifFacts = facts.direct && taken === undefined
+        ? withNonZero(facts, ...nonZeroWhen(statement.condition, true, facts))
+        : zero && !zero.equalsZero ? withNonZero(facts, zero.key) : facts;
+      const elseFacts = facts.direct && taken === undefined
+        ? withNonZero(facts, ...nonZeroWhen(statement.condition, false, facts))
+        : zero?.equalsZero ? withNonZero(facts, zero.key) : facts;
       if (taken === false) {
         const negated = new UnaryOpNode(UnaryOperator.NOT, statement.condition);
         negated.location = statement.condition.location;
@@ -242,17 +305,21 @@ function foldBlock(block: BlockNode, facts: Facts): void {
       } else if (taken === true) {
         statement.elseBlock = undefined;
       }
-      // A zero-address guard proves its address nonzero in the arm where the comparison says so.
-      foldBlock(statement.ifBlock, zero && !zero.equalsZero ? withNonZero(facts, zero.key) : facts);
-      if (statement.elseBlock) {
-        foldBlock(statement.elseBlock, zero?.equalsZero ? withNonZero(facts, zero.key) : facts);
+      foldBlock(statement.ifBlock, taken === undefined ? ifFacts : facts);
+      if (statement.elseBlock) foldBlock(statement.elseBlock, elseFacts);
+      if (facts.direct && taken !== undefined && !declaresArray(statement.ifBlock)) {
+        kept.push(statement.ifBlock);
+        continue;
       }
     } else if (statement instanceof BlockNode) {
       foldBlock(statement, facts);
     } else if (statement instanceof UncheckedNode) {
       foldBlock(statement.block, facts);
+    } else if (statement instanceof RequireNode && facts.direct) {
+      after = nonZeroWhen(statement.expression, true, facts);
     }
     kept.push(statement);
+    facts = withNonZero(facts, ...after);
   }
   block.statements = kept;
 }

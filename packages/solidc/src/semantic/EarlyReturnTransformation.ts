@@ -404,7 +404,11 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
 
     // If this is an if/else branch where the if-block ends with return
     if (stmt instanceof BranchNode && remaining.length > 0) {
-      const ifReturns = blockEndsWithReturn(stmt.ifBlock);
+      // An arm that can only fail ends no path the rest runs on, so the rest stays after the branch rather than
+      // moving into the other arm, where its writes and events would read as conditional.
+      const failsOnly = (block: BlockNode | undefined): boolean => block !== undefined
+        && blockEndsWithReturn(block) && !holdsReturn(block);
+      const ifReturns = blockEndsWithReturn(stmt.ifBlock) && !failsOnly(stmt.ifBlock);
 
       if (ifReturns) {
         // Transform: if (cond) { ...return; } remaining...
@@ -441,7 +445,8 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
       }
 
       // If the else-block returns but not the if-block, handle similarly
-      if (stmt.elseBlock && blockEndsWithReturn(stmt.elseBlock) && remaining.length > 0) {
+      if (stmt.elseBlock && blockEndsWithReturn(stmt.elseBlock) && !failsOnly(stmt.elseBlock)
+        && remaining.length > 0) {
         const transformedElseStatements = sealUnguardedBareReturn(stmt.elseBlock.statements
           ? nestEarlyReturns(stmt.elseBlock.statements)
           : [], statementsIncludeRequire(result));

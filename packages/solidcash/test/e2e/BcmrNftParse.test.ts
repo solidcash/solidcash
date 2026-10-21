@@ -2,7 +2,7 @@
  * Labelled NFTs (docs/bcmr/DESIGN.md, section 8): a deployment that publishes `nfts: 'generated'` describes its own
  * NFTs, and a client parsing them with the published bytecode gets each NFT's type and fields.
  */
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../solidc/src/compiler.js';
 import { COMPOSITION_LIMITS } from '../../../solidc/test/framed/machine.js';
@@ -29,6 +29,17 @@ contract Ledger() {
     this.open = true;
     emit Moved(amount, true);
     require(this.total > 0);
+  }
+}`;
+
+const NOTES = `pragma solidcash >=0.8.0;
+contract Notes() {
+  int count;
+  event Noted(string text, int delta, bool flag, bytes4 code, bytes data);
+  function note(string text, int delta, bytes4 code, bytes data) {
+    this.count = this.count + 1;
+    emit Noted(text, delta, false, code, data);
+    require(this.count > 0);
   }
 }`;
 
@@ -88,6 +99,40 @@ describe('generated NFT labels', () => {
     expect(eventParse.fields.map(binToHex)).toEqual(['05', '01']);
   });
 
+  it('decodes OP_PUSHDATA1, OP_1NEGATE and OP_0 pushes, and shows strings as utf8 and bytes as hex', async () => {
+    const provider = new MockNetworkProvider();
+    const [alice] = await provider.getSigners(1, { fundingUtxos: 2, genesisFundingUtxos: 2 });
+    const artifact = compileString(NOTES, { forceStateful: true });
+    const fundingUtxo = (await alice!.getUtxos()).find((utxo) => utxo.vout === 0 && utxo.token === undefined)!;
+    const result = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: alice!.unlockP2PKH(), changeAddress: alice!.getAddress(), initialState: {},
+      bcmr: { name: 'Notes', token: { symbol: 'NOTES', nfts: 'generated' }, timestamp: TIMESTAMP },
+    });
+    const nfts = result.registry!.registry.identities![result.categoryId]![TIMESTAMP]!.token!.nfts!;
+    expect(nfts.fields).toMatchObject({
+      'Noted.text': { encoding: { type: 'utf8' } },
+      'Noted.delta': { encoding: { type: 'number' } },
+      'Noted.flag': { encoding: { type: 'number' } },
+      'Noted.code': { encoding: { type: 'hex' } },
+      'Noted.data': { encoding: { type: 'hex' } },
+    });
+
+    const notes = result.contract.connect(alice!) as unknown as {
+      note: (text: string, delta: bigint, code: Uint8Array, data: Uint8Array) => {
+        send: () => Promise<{ outputs: Output[] }>;
+      };
+    };
+    const text = binToHex(utf8ToBin('x'.repeat(80)));
+    const call = await notes.note('x'.repeat(80), -1n, hexToBin('deadbeef'), hexToBin('cafe')).send();
+    const event = call.outputs.find((output) => output.token?.nft?.capability === 'none')!;
+    // The 80-byte string takes OP_PUSHDATA1, -1 is OP_1NEGATE and false is OP_0.
+    expect(binToHex(event.token!.nft!.commitment)).toBe(`4c50${text}4f0004deadbeef02cafe`);
+    const parsed = parseOutput(nfts, event);
+    if (typeof parsed === 'string') throw new Error(parsed);
+    expect(parsed.typeKey).toBe(nftTypeKeyHex(3n));
+    expect(parsed.fields.map(binToHex)).toEqual([text, '81', '', 'deadbeef', 'cafe']);
+  });
+
   it('labels a framed contract\'s master, validator and record', async () => {
     const artifact = compileStringMulti(FRAMED, { composition: 'framed' }).C!;
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
@@ -133,5 +178,17 @@ describe('generated NFT labels', () => {
     expect(pushedFields('p', 'p', 'Pair', structs)?.map((field) => field.id)).toEqual(['p.x', 'p.y']);
     expect(pushedFields('a', 'a', 'int[3]')).toBeUndefined();
     expect(pushedFields('f', 'f', 'fixed128x18')?.[0]?.encoding).toEqual({ type: 'number', decimals: 18 });
+  });
+
+  it('shows integers and booleans as numbers, strings as utf8, and bytes and addresses as hex', () => {
+    const encoding = (type: string): unknown => pushedFields('v', 'v', type)?.[0]?.encoding;
+    expect(encoding('int')).toEqual({ type: 'number' });
+    expect(encoding('uint8')).toEqual({ type: 'number' });
+    // Our false is an empty push, and BCMR's `boolean` wants exactly 0x00.
+    expect(encoding('bool')).toEqual({ type: 'number' });
+    expect(encoding('string')).toEqual({ type: 'utf8' });
+    expect(encoding('bytes')).toEqual({ type: 'hex' });
+    expect(encoding('bytes4')).toEqual({ type: 'hex' });
+    expect(encoding('address')).toEqual({ type: 'hex' });
   });
 });

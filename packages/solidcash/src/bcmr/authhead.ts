@@ -18,61 +18,15 @@
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-import { hash256 } from '@solidcash/utils';
+import { AUTHHEAD_BODY, hash256 } from '@solidcash/utils';
 import type { Output, TokenDetails, Unlocker } from '../interfaces.js';
 import { satoshisAtLeastDust } from '../framed/composer/dust.js';
 import { BcmrError } from './publication.js';
 
-const OP_0 = 0x00;
-const OP_1 = 0x51;
-const OP_2 = 0x52;
-const OP_VERIFY = 0x69;
 const OP_RETURN = 0x6a;
-const OP_DUP = 0x76;
-const OP_OVER = 0x78;
-const OP_SWAP = 0x7c;
-const OP_CAT = 0x7e;
-const OP_EQUAL = 0x87;
-const OP_EQUALVERIFY = 0x88;
-const OP_NOT = 0x91;
-const OP_SUB = 0x94;
-const OP_BOOLOR = 0x9b;
-const OP_NUMEQUALVERIFY = 0x9d;
-const OP_HASH256 = 0xaa;
-const OP_INPUTINDEX = 0xc0;
-const OP_TXINPUTCOUNT = 0xc3;
-const OP_UTXOBYTECODE = 0xc7;
-const OP_OUTPUTBYTECODE = 0xcd;
-const OP_UTXOTOKENCATEGORY = 0xce;
-const OP_UTXOTOKENCOMMITMENT = 0xcf;
-const OP_OUTPUTTOKENCATEGORY = 0xd1;
-const OP_OUTPUTTOKENAMOUNT = 0xd3;
 
-// Pushes of the byte `6a`, of the P2SH32 head `aa20` and of its tail `87`.
-const PUSH_6A = [0x01, 0x6a];
-const PUSH_P2SH32_HEAD = [0x02, 0xaa, 0x20];
-const PUSH_P2SH32_TAIL = [0x01, 0x87];
-
-/**
- * The script after its first push, `<C || 0x01>` in the VM's byte order; the unlocking pushes nothing else. A
- * covenant that creates a category derives the child's lock from this body and the child's category.
- */
-export const AUTHHEAD_BODY = Uint8Array.of(
-  // Output 0 holds the mutable NFT of C, and no fungible tokens.
-  OP_0, OP_OUTPUTTOKENCATEGORY, OP_EQUALVERIFY,
-  OP_0, OP_OUTPUTTOKENAMOUNT, OP_NOT, OP_VERIFY,
-  // Two inputs: the other is a token-free coin at the lock the NFT's commitment holds.
-  OP_TXINPUTCOUNT, OP_2, OP_NUMEQUALVERIFY,
-  OP_1, OP_INPUTINDEX, OP_SUB,
-  OP_DUP, OP_UTXOTOKENCATEGORY, OP_0, OP_EQUALVERIFY,
-  OP_UTXOBYTECODE, OP_INPUTINDEX, OP_UTXOTOKENCOMMITMENT, OP_EQUALVERIFY,
-  // Output 0 is this contract, OP_RETURN, or P2SH32 of OP_RETURN.
-  OP_0, OP_OUTPUTBYTECODE,
-  OP_DUP, OP_INPUTINDEX, OP_UTXOBYTECODE, OP_EQUAL,
-  OP_OVER, ...PUSH_6A, OP_EQUAL, OP_BOOLOR,
-  OP_SWAP, ...PUSH_6A, OP_HASH256, ...PUSH_P2SH32_HEAD, OP_SWAP, OP_CAT, ...PUSH_P2SH32_TAIL, OP_CAT, OP_EQUAL,
-  OP_BOOLOR,
-);
+/** The authhead body, shared with the compiler's check of a child's authhead (`@solidcash/utils`). */
+export { AUTHHEAD_BODY };
 
 /** The lock of a frozen identity: P2SH32 of `OP_RETURN`. Anyone holding the redeem script `6a` can check it. */
 export const FROZEN_LOCKING_BYTECODE = encodeLockingBytecodeP2sh32(hash256(Uint8Array.of(OP_RETURN)));

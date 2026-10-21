@@ -217,12 +217,13 @@ export function compareGenesisFundingFreshness(a: Utxo, b: Utxo): number {
 export async function fanOutPlainUtxos(
   signer: Signer, needed: number, excludedOutpoints: ReadonlySet<string> = new Set(),
 ): Promise<Utxo[] | undefined> {
-  const { genesisOutpointKey, isReservedGenesisOutpoint } = await import('./genesis-reservations.js');
+  const { genesisOutpointKey } = await import('./genesis-reservations.js');
+  const { signerFundingCoins } = await import('../framed/deploy/own-coin.js');
   const { TransactionBuilder } = await import('../TransactionBuilder.js');
+  // Neither a reserved genesis coin nor a BCMR identity output is split (docs/bcmr/DESIGN.md 4.4).
   const plain = (us: Utxo[]): Utxo[] => us
-    .filter((u) => !u.token && !excludedOutpoints.has(genesisOutpointKey(u.txid, u.vout))
-      && !isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout)));
-  const current = plain(await signer.getUtxos());
+    .filter((u) => !u.token && !excludedOutpoints.has(genesisOutpointKey(u.txid, u.vout)));
+  const current = plain(await signerFundingCoins(signer));
   if (current.length >= needed) return current;
 
   const perOutput = 5000n;
@@ -242,7 +243,7 @@ export async function fanOutPlainUtxos(
   tb.addOutput({ to: signer.getAddress(), amount: largest.satoshis - perOutput * BigInt(missing) - fee });
   await tb.send();
 
-  const after = plain(await signer.getUtxos());
+  const after = plain(await signerFundingCoins(signer));
   return after.length >= needed ? after : undefined;
 }
 

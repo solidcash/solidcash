@@ -10,6 +10,7 @@ import {
   type AbiFunction,
   type FunctionBlockLayout,
 } from '@solidcash/utils';
+import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type Signer from '../Signer.js';
 import { addressToLockScript } from '../utils.js';
@@ -432,7 +433,7 @@ export async function allocateCreateBuilderFunders(
           // Delegate/proxy routes start this snapshot before expanding their large composed transaction.
           // Reuse it here even when there are no `externalCalls` (delegate calls are represented by
           // `lowLevelCalls`), otherwise a second wallet scan runs while the full route is resident.
-          const signerUtxos = earlySignerUtxos ?? await host.signer.getUtxos();
+          const signerUtxos = earlySignerUtxos ?? await signerFundingCoins(host.signer);
           timing?.('funder-fetch-complete');
           // The shared pool contains the still-available snapshot tail. Excluding that tail inverted ownership:
           // a fallback wallet scan could select only the outpoints already shifted into nested participant

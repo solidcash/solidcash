@@ -855,15 +855,15 @@ async function deployFramedProxyThroughFactory<TImpl extends Artifact>(
  * deployer's own P2PKH lock; it also pays the hop's fee, so the largest one is taken rather than a dust output.
  */
 async function framedCallerFunding(signer: Signer): Promise<FramedProxyCallerFunding> {
-  const { coinsAvailableForCallerFee } = await import('./genesis-reservations.js');
+  const { withoutIdentityOutputs } = await import('../framed/deploy/own-coin.js');
   const listed = await signer.getUtxos();
   const tokenless = listed.filter((utxo) => utxo.token === undefined);
-  const spendable = coinsAvailableForCallerFee(listed);
+  const spendable = await withoutIdentityOutputs(signer.provider, tokenless);
   const coin = spendable.sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))[0];
   if (coin === undefined) {
     throw new Error(tokenless.length > 0
-      ? `The deployer's address ${signer.getAddress()} holds only reserved genesis coins, `
-        + 'which cannot pay the initialize hop.'
+      ? `The deployer's address ${signer.getAddress()} holds only reserved genesis coins and BCMR identity `
+        + 'outputs, which cannot pay the initialize hop.'
       : `The deployer's address ${signer.getAddress()} holds no tokenless UTXO to enter the initialize hop with.`);
   }
   return { utxo: coin, funder: signer.unlockP2PKH(), changeAddress: signer.getAddress() };

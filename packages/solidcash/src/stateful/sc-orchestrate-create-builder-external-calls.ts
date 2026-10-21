@@ -12,6 +12,7 @@ import {
   type AbiFunction,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
@@ -302,7 +303,7 @@ export async function orchestrateCreateBuilderExternalCalls(
     if (host.signer) {
       const allocated = await allocateCreateBuilderSharedFundersImpl(
         {
-          getSignerUtxos: () => host.signer!.getUtxos(),
+          getSignerUtxos: () => signerFundingCoins(host.signer!),
           unlockP2PKH: () => host.signer!.unlockP2PKH(),
         },
         externalCalls,

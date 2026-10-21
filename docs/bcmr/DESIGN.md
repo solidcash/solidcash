@@ -159,7 +159,11 @@ the outpoint txid of one of its vout-0 inputs (`identityOutputRefusal` in `packa
 `ownCoinRefusal` (`packages/solidcash/src/framed/deploy/own-coin.ts`) proves every coin the SDK signs for from its
 own transaction, so it applies the rule to every genesis funding coin (`genesisCoinRefusal`) and every proven caller
 coin, across sessions. Within a session, each deployment and update also reserves its key-held identity outpoint
-(`reserveGenesisOutpoint`), which the fee selectors (`coinsAvailableForCallerFee`) honour.
+(`reserveGenesisOutpoint`), which the fee selectors (`coinsAvailableForCallerFee`) honour. The other fee and funding
+pools (a direct call's wallet funders, fee tail and fan-out, the framed caller's filler coins) draw on
+`withoutIdentityOutputs` in `own-coin.ts`, which holds out reserved outpoints and every vout-0 coin whose served
+transaction is a token genesis or carries a BCMR output; a coin whose transaction is not served is judged by the
+reservation alone. A key-held update always carries a BCMR output, so its output 0 stays recognisable (5.4).
 
 Other wallets do not know this rule. A dedicated authority key, or opting into `authguard`, removes the risk.
 
@@ -233,7 +237,10 @@ and CID abbreviated):
 - recreates output 0 under the same policy or `next`: key rotation, freezing or burning. Moving into AuthGuard needs
   the AuthKey category a deployment creates, so it starts at deployment;
 - puts the new publication at output 1. `withSnapshot` adds a snapshot to the registry (a minor version bump, per the
-  schema's versioning rules) rather than editing the old one.
+  schema's versioning rules) rather than editing the old one;
+- without a registry, re-publishes the spent authhead's publication at output 1, so the identity keeps its registry
+  (R2) and a key-held output 0 stays an identity output (4.4). A key-held update of an authhead that publishes
+  nothing is refused: it needs a registry.
 
 A `governed` identity updates through `applyGovernedMetadata` instead (section 9).
 

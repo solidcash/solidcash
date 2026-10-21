@@ -10,8 +10,9 @@ import type { MetadataRegistry } from '@bitauth/libauth/build/lib/engine/types/b
 import type { Output, TransactionDetails, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { satoshisAtLeastDust } from '../framed/composer/dust.js';
-import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
+import { ownCoinRefusal, servedTransaction } from '../framed/deploy/own-coin.js';
 import { genesisOutpointKey, reserveGenesisOutpoint } from '../stateful/genesis-reservations.js';
+import { publicationOf } from './authchain.js';
 import type { PublishedRegistry } from './deployment.js';
 import {
   authGuardLockingBytecode, authGuardUnlocker, identityOutput, lockOf, type IdentityRecord,
@@ -46,7 +47,11 @@ export interface PublishMetadataOptions {
   /** The identity output the update spends: output 0 of the current authhead. */
   readonly identity: Utxo;
   readonly current: CurrentIdentity;
-  /** The registry to publish; an update without one moves or ends the identity without publishing. */
+  /**
+   * The registry to publish. An update without one re-publishes the publication of the authhead it spends, so the
+   * identity keeps its registry (R2) and a key-held output 0 stays recognisable as an identity output (4.4); a
+   * key-held update needs one when that authhead publishes nothing.
+   */
   readonly registry?: MetadataRegistry;
   /** The URIs the publication offers; `ipfs://<CIDv1 of the registry>` when omitted. */
   readonly publicationUris?: readonly string[];
@@ -69,6 +74,12 @@ function nextOf(current: CurrentIdentity, identity: Utxo, next: NextIdentity | u
   const lock = current.unlocker.generateLockingBytecode();
   if (lock.length === 0) throw new BcmrError(`identity output ${identity.txid}:${identity.vout} has no lock to keep`);
   return { kind: 'key', lockingBytecode: lock };
+}
+
+/** The publication output of the authhead `txid`, or undefined when it has none or its transaction is not served. */
+async function currentPublication(provider: NetworkProvider, txid: string): Promise<Uint8Array | undefined> {
+  const transaction = await servedTransaction(provider, txid.toLowerCase());
+  return typeof transaction === 'object' ? publicationOf(transaction) : undefined;
 }
 
 /** Spends an identity output to publish a new registry, or to move, freeze or burn the identity. */
@@ -101,6 +112,13 @@ export async function publishMetadata(options: PublishMetadataOptions): Promise<
   const published: PublishedRegistry | undefined = encoded === undefined ? undefined : {
     ...encoded, uris: options.publicationUris ?? [`ipfs://${ipfsCidV1Raw(encoded.bytes)}`],
   };
+  // A key-held output 0 of a transaction that neither creates a category nor publishes reads as a plain coin.
+  const carried = published !== undefined || next.kind === 'burned'
+    ? undefined : await currentPublication(options.provider, identity.txid);
+  if (published === undefined && carried === undefined && next.kind === 'key') {
+    throw new BcmrError(`identity output ${identity.txid}:0 has no publication to carry over, and a key-held `
+      + 'update without one would leave output 0 an ordinary coin: pass the registry to publish');
+  }
 
   const { TransactionBuilder } = await import('../TransactionBuilder.js');
   const builder = new TransactionBuilder({ provider: options.provider });
@@ -118,6 +136,8 @@ export async function publishMetadata(options: PublishMetadataOptions): Promise<
     builder.addOutput(publicationOutput(
       published.sha256, published.uris, dataCarrierBytes(nextOutput.to as Uint8Array),
     ));
+  } else if (carried !== undefined) {
+    builder.addOutput({ to: carried, amount: 0n });
   }
   if (current.kind === 'authguard') {
     const recipient = current.authKeyRecipient === undefined

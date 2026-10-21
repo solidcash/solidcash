@@ -20,9 +20,14 @@ export function categoriesCreatedBy(transaction: Transaction): string[] {
     .filter((category) => carried.has(category));
 }
 
+/** The locking bytecode of `transaction`'s publication: its first output with the publication prefix (R3). */
+export function publicationOf(transaction: Transaction): Uint8Array | undefined {
+  return transaction.outputs.find((output) => isPublicationBytecode(output.lockingBytecode))?.lockingBytecode;
+}
+
 /** True when `transaction` carries a publication output. */
 export function publishesRegistry(transaction: Transaction): boolean {
-  return transaction.outputs.some((output) => isPublicationBytecode(output.lockingBytecode));
+  return publicationOf(transaction) !== undefined;
 }
 
 /**

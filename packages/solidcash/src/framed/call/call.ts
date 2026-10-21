@@ -111,6 +111,7 @@ import {
   stateRecordUnlockingBytecode,
   type FramedDeploymentSet,
 } from '../deploy/index.js';
+import { withoutIdentityOutputs } from '../deploy/own-coin.js';
 import {
   chainSharedNodeViews, placeOwnWrites, producedCallResults, reachedCallResults, samePlannedSites, settleCallees,
   withChainEnds, withCreatedChainEnds, type PlacedLaidWrite,
@@ -1265,7 +1266,9 @@ async function callInShape(
   // deposits fill them first, then more tokenless coins at the caller's lock.
   const fillersNeeded = tokenRuns.slice(0, -1).reduce((sum, run) => sum + run.sends + run.nftSends, 0)
     - 1 - tokenDeposits.length;
-  const fillerCoins = fillersNeeded <= 0 ? [] : (await provider.getUtxosForLockingBytecode(options.callerLockingBytecode))
+  const fillerCoins = fillersNeeded <= 0 ? [] : (await withoutIdentityOutputs(
+    provider, await provider.getUtxosForLockingBytecode(options.callerLockingBytecode),
+  ))
     .filter((utxo) => utxo.token === undefined
       && !(utxo.txid === options.callerUtxo.txid && utxo.vout === options.callerUtxo.vout))
     .slice(0, fillersNeeded);

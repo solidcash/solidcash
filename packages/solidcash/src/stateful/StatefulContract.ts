@@ -291,7 +291,8 @@ function signerSnapshotMap(signer: Signer): Map<string, Utxo> | undefined {
 async function signerUtxoSnapshot(signer: Signer): Promise<Utxo[]> {
   const cached = signerSnapshotMap(signer);
   if (cached && cached.size > 0) return [...cached.values()];
-  const fetched = await signer.getUtxos();
+  // Calls draw funders and fees from this snapshot, so it holds no identity output (docs/bcmr/DESIGN.md 4.4).
+  const fetched = await signerFundingCoins(signer);
   let providerSnapshots = signerUtxoSnapshots.get(signer.provider as object);
   if (!providerSnapshots) {
     providerSnapshots = new Map();
@@ -525,6 +526,7 @@ import { withDelegatecall as withDelegatecallImpl } from './sc-with-delegatecall
 import { autoWireLibraryDelegatecalls as autoWireLibraryDelegatecallsImpl } from './sc-auto-wire-library-delegatecalls.js';
 import { addressMappingKeyCandidates as addressMappingKeyCandidatesImpl } from './sc-address-mapping-key-candidates.js';
 import { deployStatefulContract as deployStatefulContractImpl } from './sc-deploy.js';
+import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import { deployFromStatefulContract as deployFromStatefulContractImpl } from './sc-deploy-from.js';
 import { deriveDeployCommitments as deriveDeployCommitmentsImpl } from './sc-derive-deploy-commitments.js';
 import { deriveCommitments as deriveCommitmentsImpl } from './sc-derive-commitments.js';

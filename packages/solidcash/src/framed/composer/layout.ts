@@ -6,7 +6,8 @@
  * its validator, then the contract's touched state UTXOs. Every participant recreates at the same index it was
  * spent at, so an input index is also its output index. Funder inputs follow the blocks, and every output that is
  * not a participant — events, value sends, created records, then change — is trailing. Each frame's value sends
- * follow one of its contract's containers, which binds them to the frame.
+ * follow one of its contract's containers, which binds them to the frame. A plan's leading inputs sit ahead of every
+ * block, each with the output at its own index: a genesis's funding coin, whose output 0 is the category's identity.
  */
 
 /** A contract's block, in the order its members are placed. */
@@ -29,12 +30,16 @@ export interface ContractBlock {
   readonly recovery?: Readonly<Record<string, readonly string[]>>;
 }
 
-/** What a participant is: a master of a contract, a validator, a facet of one, a state UTXO, or a recovery input. */
-export type ParticipantKind = 'master' | 'validator' | 'facet' | 'state' | 'recovery';
+/**
+ * What a participant is: a leading input, a master of a contract, a validator, a facet of one, a state UTXO, or a
+ * recovery input.
+ */
+export type ParticipantKind = 'leading' | 'master' | 'validator' | 'facet' | 'state' | 'recovery';
 
 /** One participant's coordinates. A participant recreates at its own index, so input and output index agree. */
 export interface PlacedParticipant {
   readonly id: string;
+  /** The block the participant sits in; empty for a leading input, which sits in none. */
   readonly contract: string;
   readonly kind: ParticipantKind;
   readonly index: number;
@@ -111,10 +116,14 @@ export function placeTrailingOutputs<T>(
   return outputs.map((output, offset) => ({ index: layout.participantCount + offset, output }));
 }
 
-/** Assigns every participant its input and output index, following the block convention. */
+/**
+ * Assigns every participant its input and output index, following the block convention: the `leading` inputs first,
+ * in order, then the blocks.
+ */
 export function layoutTransaction(
   blocks: readonly ContractBlock[],
   facets: ReadonlyMap<string, readonly Uint8Array[]> = new Map(),
+  leading: readonly string[] = [],
 ): TransactionLayout {
   const seenContracts = new Set<string>();
   const seenIds = new Set<string>();
@@ -126,6 +135,7 @@ export function layoutTransaction(
     participants.push({ id, contract, kind, index: participants.length });
   };
 
+  for (const id of leading) place(id, '', 'leading');
   for (const block of blocks) {
     if (seenContracts.has(block.contract)) {
       throw new Error(`composer layout: contract "${block.contract}" has two blocks`);

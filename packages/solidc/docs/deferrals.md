@@ -3140,3 +3140,20 @@ destroys a contract holding a container and more than 200 other inputs.
 
 **Revisit if:** a contract with a satoshi or token container is destroyed with that many inputs.
 
+## A framed contract with one function, no constructor and no fallback cannot be called (2026-10-21)
+
+**What:** `callFramedEntry` (`packages/solidcash/src/framed/call/call.ts`, the "does not plan yet" refusal) refuses
+a framed monolith with a single dispatched body and no fallback: its master is entered without a selector, which a
+user's frame cannot carry yet. A framed contract whose only function is, say, `updateMetadata` (DESIGN.md
+section 9's governed metadata) cannot authorize an update through it; a second function or a constructor avoids it
+(`BcmrGoverned.test.ts`'s framed title adds `bump()`).
+
+**Why deferred:** the composer refuses a user-entered frame carrying call data unless the program dispatches;
+entering a selector-less master needs the frame layout to carry the arguments without a selector, as function
+shards already do.
+
+**What it'd take:** let a monolith with one body take its arguments the way a function shard's root frame does, with
+a test calling such a contract.
+
+**Revisit if:** a framed contract with a single function and no constructor is deployed.
+

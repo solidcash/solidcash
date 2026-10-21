@@ -319,11 +319,10 @@ export async function mergeStatefulContract(options: MergeOptions): Promise<Merg
   const rawTxBin = localHexToBin(rawTx);
   const decoded = decodeTransactionUnsafe(rawTxBin);
 
-  // X163, the finalized-bytes gate at the static `merge` site. Same arithmetic hazard as split, from the other
-  // direction: `changeAmount` is `consumedSatoshis + totalFunding - fee`, and merge's whole purpose is to
-  // reclaim the satoshis the consumed masters were holding. Those are typically 1,200 each - a few hundred
-  // above the dust floor - so a fee that eats most of the reclaim leaves a change output under it. MEASURED
-  // at 100 satoshis against 576, accepted by the mock and refused `64: dust` by a node.
+  // X163, the finalized-bytes gate at the static `merge` site. Same arithmetic hazard as split: the consumed
+  // masters' satoshis go to the survivor (MERGE-1), so `changeAmount` is `totalFunding - fee`, and a fee that
+  // eats most of the funding leaves a change output under the dust floor. MEASURED at 100 satoshis against 576,
+  // accepted by the mock and refused `64: dust` by a node.
   //
   // Merge also runs with `allowImplicitNftBurn: true`, so the builder's own burn check is off and the
   // consumed masters vanish into that change output. Refusing here is refusing before an intentional burn

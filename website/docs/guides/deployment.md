@@ -391,6 +391,20 @@ const { bytes, uris } = token.deploymentRegistry()!; // host these exact bytes a
 The registry then describes two identities: the token's category, with its name, symbol, decimals and reserve, and
 the contract's, which labels the contract's NFTs.
 
+A `BchNativeWrapper` token wraps a category that already exists, so its deployment creates no category and mints
+nothing: `nativeToken.category` names it, as 64 hex characters in the order wallets print. The SDK refuses it beside
+`funding`, `reserve` or `bearer`, and refuses a contract that keys its reserve by another category or whose
+`totalSupply()` does not start at 0. The registry describes the contract's category alone, with the ledger's own name,
+symbol and decimals and an extension naming the wrapped category and the reserve; the wrapped category's identity is
+its issuer's:
+
+```ts
+const token = await factory.deploy(hexToBin(category), {
+  bcmr: { description: 'Wrapped dollars.' },
+  nativeToken: { category },
+});
+```
+
 The publication defaults to the registry's IPFS CID, so pin the returned bytes as one raw block. Update later with
 `publishMetadata` (or `applyGovernedMetadata` under `governed`) from `solidcash/bcmr`. Categories a contract creates
 (`new C()`, factory deployments) keep their identity output at the creating master, so do not rely on their

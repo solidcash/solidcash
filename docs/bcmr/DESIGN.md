@@ -286,9 +286,9 @@ Further points:
 ### 6.1 What wallets see
 
 - The building blocks are in `packages/solidcash/contracts/`: `ERC20.scash` (the ledger), `ERC20Metadata.scash`
-  (name, symbol, decimals), `BchNative.scash` (wrap and unwrap) and `BchNativeMultiplier.scash` (scaling). Third-party
-  ledgers compose with them too: the npm OpenZeppelin ERC20 and the verbatim Tether source
-  (`packages/solidcash/contracts/README.md`).
+  (name, symbol, decimals), `BchNative.scash` (wrap and unwrap), `BchNativeMultiplier.scash` (scaling) and
+  `BchNativeWrapper.scash` (an ERC-20 over a category that already exists, 6.8). Third-party ledgers compose with
+  them too: the npm OpenZeppelin ERC20 and the verbatim Tether source (`packages/solidcash/contracts/README.md`).
 - Wallets only ever see the unwrapped form: token-only UTXOs of the token's bearer category X, paid by `unwrap` from
   the contract's container `this.tokens[X]`. Ledger balances are mapping records at covenant locks.
 - X is a category of its own, not the contract's C (D33). BchNative used C until this design found that the framed
@@ -346,10 +346,10 @@ of it. The first `wrap` then creates the container.
 
 | BCMR field | Source | Rule |
 | --- | --- | --- |
-| `identities` key, `token.category` | X; C without `nativeToken.funding` | R8; C then has an identity of its own (5.2) |
+| `identities` key, `token.category` | X; C without `nativeToken.funding`, or with `nativeToken.category` (6.8) | R8; C then has an identity of its own (5.2) |
 | `name` | `name()` | |
 | `token.symbol` | `symbol()` | 6.6 |
-| `token.decimals` | `decimals()` minus log10 of the native scale | 6.5 |
+| `token.decimals` | `decimals()` minus log10 of the native scale; `decimals()` for a wrapped category | 6.5, 6.8 |
 | `description`, `uris.icon`, `uris.web`, `tags` | deploy options | Nothing on chain to read. |
 | `token.nfts` | generated | Section 8; optional; on C's identity when X is separate. |
 | `extensions` | AuthGuard's `authNft`; the ledger description of 6.7 | |
@@ -404,6 +404,24 @@ of it. The first `wrap` then creates the container.
   which names the reserve lock and the ledger's supply view for explorers that adopt it (D32). Carrying the reserve on
   a mutable-NFT container, which would change a covenant, was the alternative.
 - BCMR's advice to hold unissued supply at the identity output does not apply (4.2).
+
+### 6.8 A wrapped category
+
+- `BchNativeWrapper` wraps a category X its issuer created in a genesis of its own, whose supply circulates outside
+  the contract. `nativeToken.category` names X, as 64 hex characters in the order wallets print. The genesis spends no
+  coin of X and creates no output of it; the first `wrap` creates the reserve container.
+- It is refused beside `funding`, which creates a category, and beside `reserve` or `bearer`, since every fungible amount
+  of X was created in X's genesis; and when X is C or the AuthKey category.
+- The probe checks the container key as 6.2 does, and names a byte-reversed constructor argument; an artifact that keys
+  no container by state is refused; `totalSupply()`, when the ABI carries it, must read 0. Name, symbol, decimals, the
+  scale, and whether X exists are not checked.
+- `identities` holds C alone: X's authchain is its issuer's (R1, R2). The snapshot carries the ledger's name,
+  `token.symbol` and `token.decimals` as the contract answers them. C has no bearer unit, so no native scale applies
+  (6.5) and the 18-decimal warning does not either. `nativeToken.scale`, any positive integer, is the creator's
+  statement, published unchecked.
+- The extension adds `underlying`, X: `{ underlying, reserveLockingBytecode, scale, ledgerSupply }`. `wrap` requires the
+  reserve to grow by exactly the native amount, so the reserve backs at least `totalSupply()`; tokens paid to the
+  reserve lock outside a `wrap` back no units.
 
 ## 7. Categories created by contracts
 

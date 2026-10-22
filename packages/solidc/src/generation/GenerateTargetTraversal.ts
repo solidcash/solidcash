@@ -8939,7 +8939,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // its journal is settled by that wrapper. Treat the transitive journal
     // footprint as state access so the ordinary category and data-NFT covenant
     // epilogue cannot fall through to guarded preservation.
-    // A record only an invoked body reads (a pointer call, a helper left uninlined) is state access too: the guarded
+    // A record only an invoked body reads (a pointer call, a helper not inlined) is state access too: the guarded
     // walk held it in place but never at the data-NFT lock. A constructor runs only in its genesis, and a framed
     // frame settles its records through its own declaration.
     const invokedStateAccess = hasInternalCall && this.dataNftCount > 0 && this.directConvention

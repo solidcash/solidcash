@@ -413,7 +413,7 @@ export async function upgradeStatefulContract<T extends Artifact>(
   if (funding === undefined && (entries.length > 0 || provider.network !== Network.MOCKNET)) {
     throw new Error(
       entries.length > 0
-        ? `Upgrade migrates ${entries.length} mapping/array entr${entries.length === 1 ? 'y' : 'ies'}, one `
+        ? `Upgrade migrates ${entries.length} mapping/array ${entries.length === 1 ? 'entry' : 'entries'}, one `
           + 'transaction each; pass fundingUtxo and funder to pay for them.'
         : `Upgrade needs a fee input on ${provider.network}; pass fundingUtxo and funder.`,
     );
@@ -659,7 +659,7 @@ export async function upgradeStatefulContract<T extends Artifact>(
       .filter((entry) => !migrated.has(outpointOf(entry.utxo)));
     if (left.length > 0) {
       throw new Error(
-        `${left.length} entr${left.length === 1 ? 'y' : 'ies'} reached the old entry covenant during the migration; `
+        `${left.length} ${left.length === 1 ? 'entry' : 'entries'} reached the old entry covenant during the migration; `
         + 'run the upgrade again to migrate them before the master moves.',
       );
     }

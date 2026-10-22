@@ -410,6 +410,7 @@ greenlight
 griefable
 grindable
 halvings
+hashlock
 hasnt't
 Hbind
 hdsigner

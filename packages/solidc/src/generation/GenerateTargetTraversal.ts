@@ -50783,7 +50783,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * self-authorizes on the master's minting NFT - so any spender rewrites it (SECURITY-AUDIT C1).
    *
    * Require every co-spent OWN-category mutable (0x01) NFT to be preserved in place - same index, same
-   * `category ++ commitment` input -> output - UNLESS the delegate edge was reached.
+   * `category ++ commitment` input -> output, and on the direct convention the same lock - UNLESS the delegate
+   * edge was reached.
    *
    * Deliberately a loop over inputs rather than a check at the block-layout data-NFT offsets. Nothing on the
    * delegatecall path pins where a proxy data NFT sits: its own sub-covenant's flag=1 path only demands that a
@@ -50836,6 +50837,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUAL, loc);                 // [cat01, i, comEq, catEq]
     this.emit(Op.OP_BOOLAND, loc);               // [cat01, i, preserved]
+    if (!this.framedMaster) {
+      // An entry or chunk spent on its flag=1 path pins nothing about its output, so the lock is compared here.
+      this.emit(Op.OP_OVER, loc);
+      this.emit(Op.OP_UTXOBYTECODE, loc);        // [cat01, i, preserved, lock_in]
+      this.emit(encodeInt(2n), loc);             // pick i (lock_in=0, preserved=1, i=2)
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);      // [cat01, i, preserved, lock_in, lock_out]
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_BOOLAND, loc);             // [cat01, i, preserved]
+    }
     // ... OR the delegate edge ran. One untracked item ('preserved') sits above the tracked stack.
     this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.DELEGATE_TAKEN) + 1)), loc);
     this.emit(Op.OP_PICK, loc);

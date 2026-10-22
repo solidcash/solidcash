@@ -11,7 +11,7 @@ import {
 import { sha256, type AbiFunction, type EnumDefinitionAbi, type StructDefinitionInfo } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 
-export const CALL_RECORD_DIGEST_BYTES = 32;
+export const CALL_RECORD_DIGEST_BYTES = 31;
 
 /** The widest result a record carries inline, after its digest and form byte, in a 128-byte commitment. */
 export const CALL_RECORD_INLINE_RESULT_BYTES = 128 - CALL_RECORD_DIGEST_BYTES - 1;
@@ -27,9 +27,9 @@ export function callRecordHashesResult(raw: Uint8Array): boolean {
 }
 
 /**
- * The digest of a call: SHA256 of its ordinal as two little-endian bytes, its selector, and each argument as its
- * length in two little-endian bytes and its bytes, a number minimally encoded. A signature authorizes the
- * transaction the record is part of, so it is no argument of the digest.
+ * The digest of a call: the first 31 bytes of the SHA256 of its ordinal as two little-endian bytes, its selector,
+ * and each argument as its length in two little-endian bytes and its bytes, a number minimally encoded. A signature
+ * authorizes the transaction the record is part of, so it is no argument of the digest.
  */
 export function callRecordDigest(
   abiFunction: Pick<AbiFunction, 'inputs' | 'selector'>, params: readonly FunctionArgument[],
@@ -48,7 +48,7 @@ export function callRecordDigest(
       : encoded;
     parts.push(bytes.length & 0xff, (bytes.length >> 8) & 0xff, ...bytes);
   }
-  return sha256(Uint8Array.from(parts));
+  return sha256(Uint8Array.from(parts)).slice(0, CALL_RECORD_DIGEST_BYTES);
 }
 
 /** A record's commitment: the digest, then the result inline or its SHA256. */

@@ -106,8 +106,8 @@ export const evmResultMayNeedPreimage = (types: readonly Type[]): boolean => {
   return staticBytes === undefined || staticBytes > 128;
 };
 
-/** A direct call record's digest: SHA256 of the call's ordinal, selector and arguments. */
-export const CALL_RECORD_DIGEST_BYTES = 32;
+/** A direct call record's digest: the first 31 bytes of the SHA256 of the call's ordinal, selector and arguments. */
+export const CALL_RECORD_DIGEST_BYTES = 31;
 
 /** The widest result a call record carries inline, after its digest and form byte, in a 128-byte commitment. */
 export const CALL_RECORD_INLINE_RESULT_BYTES = 128 - CALL_RECORD_DIGEST_BYTES - 1;

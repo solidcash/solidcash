@@ -25557,16 +25557,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         : `__internal__externalReturnOutputIdx${returnSlotIndex}`;
       // The record names the call it answers: the digest of this call's method and the arguments the source passes,
       // which the callee computes over the call it executed.
-      const recordSelector = node.opaqueReturn ? undefined : physicalSlot.callRecordSelector;
-      if (recordSelector !== undefined) {
-        const declared = physicalSlot.callRecordParameterTypes ?? [];
-        const digested = declared.flatMap((type, index) => (type === PrimitiveType.SIG ? [] : [index]));
-        this.emitCallRecordDigest(recordSelector, 0, digested.map((index) => declared[index]), (position) => {
-          const parameter = node.parameters[digested[position]!]!;
-          this.markArrayArgumentBlobEncoded(parameter);
-          this.visit(parameter);
-        }, locationData);
-      }
+      const verifiesDigest = this.emitCallerCallRecordDigest(node, physicalSlot, locationData);
       const returnOutputIdxIdx = this.getStackIndex(returnParamName);
       this.emit(encodeInt(BigInt(returnOutputIdxIdx)), locationData);
       this.emit(Op.OP_PICK, locationData);
@@ -25585,7 +25576,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Stack: [digest?, record] (record untracked): the call's digest, a form byte, then the result or its SHA256.
       this.emit(encodeInt(BigInt(CALL_RECORD_DIGEST_BYTES)), locationData);
       this.emit(Op.OP_SPLIT, locationData);           // [digest?, recordDigest, rest]
-      if (recordSelector !== undefined) {
+      if (verifiesDigest) {
         this.emit(Op.OP_SWAP, locationData);
         this.emit(Op.OP_ROT, locationData);
         this.emit(Op.OP_EQUALVERIFY, locationData);   // [rest]
@@ -47866,6 +47857,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // commitment by the return types onto the stack (typed values, not opaque bytes) and clean the loop temps
       // BELOW the values. The getReserves half of the Router02 fee-on-transfer swap; the void path below drops it.
       if (slot.hasReturnValues && slot.returnTypes && slot.returnTypes.length > 0) {
+        // This iteration's callee runs this iteration's call, so its record answers this iteration's arguments.
+        const verifiesDigest = this.emitCallerCallRecordDigest(node, slot, loc);
         // Multiple returning slots (e.g. getReserves + balanceOf in one loop) get INDEXED return-output-idx params;
         // a single one keeps the bare name (matches the non-loop returning read).
         const loopReturningCount = this.externalCallSlots.filter((s) => s.hasReturnValues).length;
@@ -47914,8 +47907,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(1200n), loc);
         this.emit(Op.OP_LESSTHANOREQUAL, loc);
         this.emit(Op.OP_VERIFY, loc);         // [..., retidx]
-        // read commitment + TYPED-decode by the return types (mirrors the non-loop returning read)
-        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., blob]
+        // read the record + TYPED-decode its result by the return types (mirrors the non-loop returning read)
+        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., digest?, record]
+        this.emitInlineCallRecordField(verifiesDigest, loc); // [..., blob]
         for (let k = 0; k < slot.returnTypes.length; k++) {
           if (k === slot.returnTypes.length - 1) {
             this.emitPushdataDecodeLastField(slot.returnTypes[k], loc);
@@ -47995,8 +47989,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_LESSTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);         // [..., retidx]
 
-    // read commitment as returnData; success = true (opaque)
-    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., returnData]
+    // read the record's result as returnData; success = true (opaque)
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., record]
+    this.emitInlineCallRecordField(false, loc);   // [..., returnData]
     this.emit(Op.OP_1, loc);                      // [..., returnData, true]
     this.emit(Op.OP_SWAP, loc);                   // [..., true, returnData]
     this.pushToStack('(success)');
@@ -48337,9 +48332,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `[..]` -> `[.., digest]`: a call record's digest, the SHA256 of the call's ordinal as two little-endian bytes, its
-   * selector, and each argument as its length in two little-endian bytes and its bytes, a number minimally encoded.
-   * `emitArgument(i)` leaves argument i on top as one tracked value.
+   * `[..]` -> `[.., digest]`: a call record's digest, the first 31 bytes of the SHA256 of the call's ordinal as two
+   * little-endian bytes, its selector, and each argument as its length in two little-endian bytes and its bytes, a
+   * number minimally encoded. `emitArgument(i)` leaves argument i on top as one tracked value.
    */
   private emitCallRecordDigest(
     selector: Uint8Array, ordinal: number, argumentTypes: readonly (Type | undefined)[],
@@ -48364,8 +48359,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(record_preimage)');
     }
     this.emit(Op.OP_SHA256, loc);
+    this.emit(encodeInt(BigInt(CALL_RECORD_DIGEST_BYTES)), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
     this.popFromStack();
     this.pushToStack('(record_digest)');
+  }
+
+  /**
+   * Leaves the digest of the call `node` makes, as one tracked value, when its slot names the method it calls; the
+   * arguments are visited as copies, so no final use is consumed here.
+   */
+  private emitCallerCallRecordDigest(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
+  ): boolean {
+    const selector = node.opaqueReturn ? undefined : slot.callRecordSelector;
+    if (selector === undefined) return false;
+    const declared = slot.callRecordParameterTypes ?? [];
+    const digested = declared.flatMap((type, index) => (type === PrimitiveType.SIG ? [] : [index]));
+    this.emitCallRecordDigest(selector, 0, digested.map((index) => declared[index]), (position) => {
+      const argument = cloneNode(node.parameters[digested[position]!]!) as ExpressionNode;
+      this.markArrayArgumentBlobEncoded(argument);
+      this.visit(argument);
+    }, loc);
+    return true;
+  }
+
+  /**
+   * `[.., digest?, record]` -> `[.., field]` for a record whose result rides inline: with `verifyDigest` the record
+   * must answer the call whose tracked digest lies beneath it. A hashed result has no preimage here, and fails.
+   */
+  private emitInlineCallRecordField(verifyDigest: boolean, loc: SingleLocationData): void {
+    this.emit(encodeInt(BigInt(CALL_RECORD_DIGEST_BYTES)), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    if (verifyDigest) {
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_ROT, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.popFromStack();
+    } else {
+      this.emit(Op.OP_NIP, loc);
+    }
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
   }
 
   /** The selector a call record of this entry carries: its dispatch selector. */

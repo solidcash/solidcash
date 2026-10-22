@@ -4,7 +4,8 @@ import {
   encodeDataPush, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { compileStringMulti } from 'solidc';
-import { sha256 } from '@solidcash/utils';
+import { encodePushdataValue, sha256 } from '@solidcash/utils';
+import { compileString } from '../direct-compile.js';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { callRecordDigest } from '../../src/stateful/call-record.js';
@@ -12,7 +13,7 @@ import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '.
 
 /**
  * Direct call records (docs/wip/call-records/DESIGN.md): a direct callee's return carrier is the record of the
- * call it answers, `digest || form || result`. The callee digests the call it executed and holds the transaction
+ * call it answers, `digest(31) || form(1) || result`. The callee digests the call it executed and holds the transaction
  * to the records it pinned; the caller digests its own call and reads only its record.
  */
 
@@ -106,15 +107,17 @@ const masterIndex = (tx: Tx, category: string): number => tx.outputs.findIndex((
 const stateOutput = (tx: Tx, category: string): Output => tx.outputs.find((output) => (
   ofCategory(output, category) && output.token?.nft?.capability === 'mutable'))!;
 
-/** Rewrite input `input`'s ABI argument `name` of `fn`: one push per ABI input, after the selector push. */
-function setArgument(tx: Tx, input: number, artifact: any, fn: string, name: string, value: bigint): void {
+/** Rewrite input `input`'s ABI argument `name` of `fn`: one push per ABI input, the first just before the redeem. */
+function setArgument(
+  tx: Tx, input: number, artifact: any, fn: string, name: string, value: bigint | Uint8Array,
+): void {
   const names = artifact.abi.find((entry: any) => entry.name === fn)!.inputs.map((entry: any) => entry.name);
   const position = names.indexOf(name);
   expect(position).toBeGreaterThanOrEqual(0);
   const instructions = decodeAuthenticationInstructions(tx.inputs[input].unlockingBytecode) as Instruction[];
-  expect(instructions).toHaveLength(names.length + 2);
+  expect(instructions.length).toBeGreaterThanOrEqual(names.length + 1);
   instructions[instructions.length - 2 - position] = decodeAuthenticationInstructions(
-    encodeDataPush(bigIntToVmNumber(value)),
+    encodeDataPush(typeof value === 'bigint' ? bigIntToVmNumber(value) : value),
   )[0] as Instruction;
   tx.inputs[input].unlockingBytecode = encodeAuthenticationInstructions(instructions as any);
 }
@@ -144,6 +147,62 @@ async function appendCopy(provider: Provider, tx: Tx, template: Output): Promise
 const sendSync = (d: Deployed, x: bigint): Promise<unknown> => (d.reader as any)
   .sync(d.quoterAddr, x).withExternalCall(d.quoter, 'quote', [x]).send();
 
+// Each iteration co-spends its own callee, computed from the path; `values[i]` is that iteration's argument.
+const LOOP_PUBLISHER = `pragma solidcash >=0.8.0;
+interface IFoo { public bigint received; function tally(uint256 value) returns (int); }
+contract Publisher() {
+  bigint calls;
+  function notify(address[] path, uint256[] values) {
+    for (uint256 i = 0; i < path.length - 1; i = i + 1) {
+      require(IFoo(L.pairFor(path[i], path[i+1])).tally(values[i]) > 0);
+    }
+    this.calls = this.calls + 1;
+  }
+}
+library L {
+  function pairFor(address a, address b) internal pure returns (address) {
+    return address(uint160(uint256(uint160(a)) + uint256(uint160(b))));
+  }
+}`;
+const LOOP_SUBSCRIBER = `pragma solidcash >=0.8.0;
+contract Subscriber() {
+  bigint received;
+  function tally(uint256 value) returns (int) {
+    this.received = this.received + int(value);
+    return this.received;
+  }
+}`;
+const PATH = [hexToBin('aa'.repeat(35)), hexToBin('bb'.repeat(35)), hexToBin('cc'.repeat(35))];
+
+let loopCompiled: { publisher: any; subscriber: any } | undefined;
+
+interface LoopDeployed {
+  provider: Provider; publisher: StatefulContract<any>; pubCat: string; subCats: [string, string];
+}
+
+async function loopDeploy(): Promise<LoopDeployed> {
+  loopCompiled ??= { publisher: compileString(LOOP_PUBLISHER), subscriber: compileString(LOOP_SUBSCRIBER) };
+  const { publisher: pubArt, subscriber: subArt } = loopCompiled;
+  const provider = createTestProvider();
+  const subs: StatefulContract<any>[] = [];
+  const subCats: string[] = [];
+  for (let index = 0; index < 2; index += 1) {
+    const sub = new Contract(subArt, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, sub, subArt.stateLayout!, { received: 0n }, { saltContract: true },
+    );
+    subs.push(StatefulContract.withCategory(sub, categoryId));
+    subCats.push(categoryId);
+  }
+  const pub = new Contract(pubArt, [], { provider });
+  const { categoryId: pubCat } = await setupStatefulUtxos(
+    provider, pub, pubArt.stateLayout!, { calls: 0n }, { saltContract: true },
+  );
+  const publisher = StatefulContract.withCategory(pub, pubCat);
+  publisher.registerExternalArray('IFoo', subs);
+  return { provider, publisher, pubCat, subCats: subCats as [string, string] };
+}
+
 describe('direct call records', () => {
   it('records the result of the call it answers, and the caller reads it', async () => {
     const d = await deploy(5n);
@@ -152,9 +211,9 @@ describe('direct call records', () => {
     expect(carriers(tx, d.quoterCat)).toHaveLength(1);
     const commitment = tx.outputs[record!].token!.nft!.commitment;
     const quote = artifacts().Quoter.abi.find((entry: any) => entry.name === 'quote')!;
-    expect(binToHex(commitment.slice(0, 32))).toBe(binToHex(callRecordDigest(quote, [7n])!));
-    expect(commitment[32]).toBe(1);
-    expect(binToHex(commitment.slice(33))).toBe(binToHex(encodeDataPush(bigIntToVmNumber(12n))));
+    expect(binToHex(commitment.slice(0, 31))).toBe(binToHex(callRecordDigest(quote, [7n])!));
+    expect(commitment[31]).toBe(1);
+    expect(binToHex(commitment.slice(32))).toBe(binToHex(encodeDataPush(bigIntToVmNumber(12n))));
 
     await expect(sendSync(d, 7n)).resolves.toBeDefined();
     expect((await d.reader.getState()).seen).toBe(12n);
@@ -173,7 +232,11 @@ describe('direct call records', () => {
       .commitment.slice();
     stateOutput(tx, d.readerCat).token!.nft!.commitment = stateOutput(forged, other.readerCat).token!.nft!.commitment
       .slice();
+    // The same transaction with the caller's own argument agreeing is valid: only the digest refuses the forgery.
+    const control = decode(encode(tx));
+    setArgument(control, masterInput(control, d.readerCat), artifacts().Reader, 'sync', 'x', 8n);
     expectScriptRejection(await outcomeOf(d.provider, encode(tx)), masterInput(tx, d.readerCat));
+    expect(await outcomeOf(d.provider, encode(control))).toBe('ACCEPTED');
   }, 300_000);
 
   it('refuses a carrier of the callee category beside the record it pinned', async () => {
@@ -199,8 +262,8 @@ describe('direct call records', () => {
       .readWide(d.quoterAddr).withExternalCall(d.quoter, 'wide', []).send()));
     const [record] = carriers(tx, d.quoterCat);
     const commitment = tx.outputs[record!].token!.nft!.commitment;
-    expect(commitment[32]).toBe(2);
-    expect(commitment).toHaveLength(65);
+    expect(commitment[31]).toBe(2);
+    expect(commitment).toHaveLength(64);
 
     await (d.reader as any).readWide(d.quoterAddr).withExternalCall(d.quoter, 'wide', []).send();
     const h = sha256(bigIntToVmNumber(5n));
@@ -225,5 +288,33 @@ describe('direct call records', () => {
     expect(carriers(tx, d.quoterCat)).toHaveLength(1);
     await call();
     expect((await d.reader.getState()).seen).toBe(55n);
+  }, 300_000);
+
+  it('binds each loop iteration to its own call', async () => {
+    const d = await loopDeploy();
+    const notify = (target: LoopDeployed, values: bigint[]): Promise<unknown> => (target.publisher as any)
+      .notify(PATH, values).send();
+    const honest = decode(await capture(d.provider, () => notify(d, [10n, 20n])));
+    const tally = loopCompiled!.subscriber.abi.find((entry: any) => entry.name === 'tally')!;
+    for (const [index, value] of [10n, 20n].entries()) {
+      const [record] = carriers(honest, d.subCats[index]!);
+      expect(binToHex(honest.outputs[record!].token!.nft!.commitment.slice(0, 31)))
+        .toBe(binToHex(callRecordDigest(tally, [value])!));
+    }
+
+    // The second callee runs tally(21), self-consistently, while the caller passed 20.
+    const other = await loopDeploy();
+    const forged = decode(await capture(other.provider, () => notify(other, [10n, 21n])));
+    const tx = decode(encode(honest));
+    setArgument(tx, masterInput(tx, d.subCats[1]), loopCompiled!.subscriber, 'tally', 'value', 21n);
+    tx.outputs[carriers(tx, d.subCats[1])[0]!]!.token!.nft!.commitment = forged.outputs[
+      carriers(forged, other.subCats[1])[0]!]!.token!.nft!.commitment.slice();
+    stateOutput(tx, d.subCats[1]).token!.nft!.commitment = stateOutput(forged, other.subCats[1]).token!.nft!
+      .commitment.slice();
+    const control = decode(encode(tx));
+    setArgument(control, masterInput(control, d.pubCat), loopCompiled!.publisher, 'notify', 'values',
+      encodePushdataValue([10n, 21n], 'uint256[]'));
+    expectScriptRejection(await outcomeOf(d.provider, encode(tx)), masterInput(tx, d.pubCat));
+    expect(await outcomeOf(d.provider, encode(control))).toBe('ACCEPTED');
   }, 300_000);
 });

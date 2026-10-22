@@ -145,6 +145,18 @@ async function deploy(
   return { contract, categoryId, utxos: { master: utxos[0], dataNfts: utxos.slice(1) } };
 }
 
+/** The state held by every data NFT output of `categoryId`; they appear in nftIndex order. */
+function outputState(tx: any, categoryId: string, artifact: Artifact): Record<string, any> {
+  const layout = artifact.stateLayout!;
+  const dataNfts = getTxOutputs(tx).filter(
+    (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === categoryId,
+  );
+  expect(dataNfts).toHaveLength(layout.dataNftCount);
+  return Object.assign({}, ...dataNfts.map((o, nftIndex) => parsePushdataCommitment(
+    o.token!.nft!.commitment, layout, nftIndex,
+  )));
+}
+
 /** Create an ExternalCallUtxoGroup for inclusion in a StatefulTransactionBuilder. */
 function extGroup(
   catId: string, artifact: Artifact, d: Deployed,
@@ -460,6 +472,7 @@ describe('Delegatecall', () => {
   // ========================================================
   // Multi-state delegate transaction
   // ========================================================
+  // Each `bigint` takes a data NFT of its own, so the impl master follows the proxy master and both proxy data NFTs.
   describe('Multi-state delegate transaction', () => {
     const implArtifact = compileDelegateSource(DELEGATE_IMPL_MULTI);
     const proxyArtifact = compileString(DELEGATECALL_PROXY_MULTI, { allowUnsafeOperations: true });
@@ -485,7 +498,7 @@ describe('Delegatecall', () => {
           ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxyCatId),
         })),
         externalCallUtxoGroups: [
-          extGroup(implCatId, implArtifact, impl, 'increment', [0n], 2),
+          extGroup(implCatId, implArtifact, impl, 'increment', [0n], 1 + proxy.utxos.dataNfts.length),
         ],
       })
         .setState('counter', 1n)
@@ -494,17 +507,7 @@ describe('Delegatecall', () => {
 
       expect(tx.txid).toBeDefined();
 
-      const txOutputs = getTxOutputs(tx);
-      const proxyDataNftOutput = txOutputs.find(
-        (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === proxyCatId,
-      );
-      expect(proxyDataNftOutput).toBeDefined();
-
-      const parsedState = parsePushdataCommitment(
-        proxyDataNftOutput!.token!.nft!.commitment,
-        proxyArtifact.stateLayout!,
-        0,
-      );
+      const parsedState = outputState(tx, proxyCatId, proxyArtifact);
       expect(parsedState.counter).toBe(1n);
       expect(parsedState.totalOps).toBe(1n);
     });
@@ -530,7 +533,7 @@ describe('Delegatecall', () => {
           ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxyCatId),
         })),
         externalCallUtxoGroups: [
-          extGroup(implCatId, implArtifact, impl, 'decrement', [0n], 2),
+          extGroup(implCatId, implArtifact, impl, 'decrement', [0n], 1 + proxy.utxos.dataNfts.length),
         ],
       })
         .setState('counter', 9n)
@@ -539,17 +542,7 @@ describe('Delegatecall', () => {
 
       expect(tx.txid).toBeDefined();
 
-      const txOutputs = getTxOutputs(tx);
-      const proxyDataNftOutput = txOutputs.find(
-        (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === proxyCatId,
-      );
-      expect(proxyDataNftOutput).toBeDefined();
-
-      const parsedState = parsePushdataCommitment(
-        proxyDataNftOutput!.token!.nft!.commitment,
-        proxyArtifact.stateLayout!,
-        0,
-      );
+      const parsedState = outputState(tx, proxyCatId, proxyArtifact);
       expect(parsedState.counter).toBe(9n);
       expect(parsedState.totalOps).toBe(6n);
     });
@@ -786,15 +779,7 @@ describe('Delegatecall', () => {
 
       expect(tx.txid).toBeDefined();
 
-      const txOutputs = getTxOutputs(tx);
-      const proxyDataNftOutput = txOutputs.find(
-        (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === proxyCatId,
-      );
-      expect(proxyDataNftOutput).toBeDefined();
-
-      const parsedState = parsePushdataCommitment(
-        proxyDataNftOutput!.token!.nft!.commitment, multiProxyArtifact.stateLayout!, 0,
-      );
+      const parsedState = outputState(tx, proxyCatId, multiProxyArtifact);
       expect(parsedState.counter).toBe(6n);
       expect(parsedState.totalOps).toBe(11n);
     });

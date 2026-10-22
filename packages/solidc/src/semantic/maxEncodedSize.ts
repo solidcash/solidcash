@@ -14,11 +14,22 @@ export function stateNftPackingLimit(limit: number, nftIndex: number, tagSinglet
  */
 const ADDRESS_MAX_ENCODED_BYTES = 36;
 
+/**
+ * Widest pushdata encoding of a value with no static bound (`bigint`, unbounded `bytes`, `string`): the VM caps a
+ * number or stack item at 10,000 bytes, pushed behind a 3-byte PUSHDATA2 prefix. That is wider than any commitment,
+ * so a state layout gives such a field a data NFT of its own, where its growth cannot overflow a packed neighbour.
+ */
+const UNBOUNDED_VALUE_MAX_ENCODED_BYTES = 10_003;
+
+/** The generic handle other estimates (event chunks, bounded-array chunking) reserve for a value with no bound. */
+const UNBOUNDED_VALUE_HANDLE_BYTES = 9;
+
 export function getMaxPushdataEncodedSizeForType(
   type: Type, seen: Set<string> = new Set(), addressBytes: number = ADDRESS_MAX_ENCODED_BYTES,
+  unboundedBytes: number = UNBOUNDED_VALUE_HANDLE_BYTES,
 ): number {
   if (type === PrimitiveType.BOOL) return 1;
-  if (type === PrimitiveType.BIGINT) return 9;
+  if (type === PrimitiveType.BIGINT || type === PrimitiveType.STRING) return unboundedBytes;
   if (type === PrimitiveType.PUBKEY) return 34;
   if (type === PrimitiveType.SIG) return 74;
   if (type === PrimitiveType.DATASIG) return 66;
@@ -35,7 +46,7 @@ export function getMaxPushdataEncodedSizeForType(
     return dataBytes + 3;
   }
   if (type instanceof BytesType) {
-    if (type.bound === undefined) return 9; // Unbounded bytes: use generic pushdata size
+    if (type.bound === undefined) return unboundedBytes;
     const n = type.bound;
     if (n === 0) return 1;
     if (n === 1) return 2;
@@ -48,7 +59,7 @@ export function getMaxPushdataEncodedSizeForType(
   // 128-byte consensus limit at send time (MistSwap SushiMaker deploy: 171 B).
   if (type instanceof AddressType) return addressBytes;
   if (type instanceof ValueType) {
-    return getMaxPushdataEncodedSizeForType(type.underlyingType, seen, addressBytes);
+    return getMaxPushdataEncodedSizeForType(type.underlyingType, seen, addressBytes, unboundedBytes);
   }
   if (type instanceof StructType) {
     // A struct reaches itself only through a dynamic array / mapping (returns a bounded handle below). A direct
@@ -58,13 +69,20 @@ export function getMaxPushdataEncodedSizeForType(
         + 'through a dynamic array or mapping');
     }
     const next = new Set(seen).add(type.name);
-    return type.fields.reduce((sum, f) => sum + getMaxPushdataEncodedSizeForType(f.type, next, addressBytes), 0);
+    return type.fields.reduce(
+      (sum, f) => sum + getMaxPushdataEncodedSizeForType(f.type, next, addressBytes, unboundedBytes), 0,
+    );
   }
   if (type instanceof ArrayType && type.bound !== undefined) {
-    return getMaxPushdataEncodedSizeForType(PrimitiveType.BIGINT, seen)
-      + type.bound * getMaxPushdataEncodedSizeForType(type.elementType, seen, addressBytes);
+    return UNBOUNDED_VALUE_HANDLE_BYTES // the element count
+      + type.bound * getMaxPushdataEncodedSizeForType(type.elementType, seen, addressBytes, unboundedBytes);
   }
   return 9;
+}
+
+/** Bytes a state layout reserves for a field: a value with no static bound counts at its VM cap, so it packs alone. */
+export function getMaxStateFieldBytes(type: Type): number {
+  return getMaxPushdataEncodedSizeForType(type, new Set(), ADDRESS_MAX_ENCODED_BYTES, UNBOUNDED_VALUE_MAX_ENCODED_BYTES);
 }
 
 /**

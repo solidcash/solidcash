@@ -230,7 +230,9 @@ import {
   UpgradeStrandsBoundStateError,
 } from '../Errors.js';
 import { parameterTypeSignature } from './parameterTypeToken.js';
-import { getEventChunkCount, getMaxPushdataEncodedSizeForType, stateNftPackingLimit } from './maxEncodedSize.js';
+import {
+  getEventChunkCount, getMaxPushdataEncodedSizeForType, getMaxStateFieldBytes, stateNftPackingLimit,
+} from './maxEncodedSize.js';
 import {
   type CompilerOptions, PrimitiveType, BytesType, type Type, StructType, EnumType, AddressType, ValueType,
   computeEventSignature, computeEventSelector, computeErrorSignature, computeCollectionSignature,
@@ -1813,11 +1815,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Dynamic-storage vars (string / unbounded bytes, chunk-packed fixed-width arrays) store only a uint32
       // length header (A$len) in the data NFT; the value lives in chunk UTXOs, so reserve the uint32 footprint.
       // string/bytes detected by type; a chunk-packed array arrives with sv.isDynamic set by the AstBuilder.
-      // See docs/dynamic-storage.md, arrays.md.
-      let maxSize = getMaxPushdataEncodedSizeForType(sv.type);
+      // See docs/dynamic-storage.md, arrays.md. A value with no static bound reserves its VM cap, so it packs alone;
+      // the tag check below measures it at its handle, since a small value still fits beside the tag.
+      let maxSize = getMaxStateFieldBytes(sv.type);
+      let recordSize = getMaxPushdataEncodedSizeForType(sv.type);
       if (isDynamicStorageType(sv.type)) sv.isDynamic = true;
       if (sv.isDynamic) {
         maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32)); // A$len: uint32 -> 6 bytes
+        recordSize = maxSize;
       }
 
       if (sv.isolatedNft) {
@@ -1903,10 +1908,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
 
       if (this.compilerOptions.tagSingletonDataNfts === true
-        && maxSize > stateNftPackingLimit(commitmentLimit, sv.nftIndex, true)) {
+        && recordSize > stateNftPackingLimit(commitmentLimit, sv.nftIndex, true)) {
         throw new SolidcDiagnosticError('STATE_RECORD_CAPACITY',
           `state variable '${sv.name}' cannot fit beside its NFT-index tag within ${commitmentLimit} bytes`,
-          { name: sv.name, nftIndex: sv.nftIndex, maximumFieldBytes: maxSize, commitmentLimit });
+          { name: sv.name, nftIndex: sv.nftIndex, maximumFieldBytes: recordSize, commitmentLimit });
       }
 
       const symbol = Symbol.stateVariable(sv);
@@ -15689,7 +15694,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     for (const sv of allVars) {
       // Mirror the main bin-packing: dynamic-storage vars reserve only the uint32 length-header
       // footprint (A$len), so external-read nftIndex computation stays consistent with the real layout.
-      let maxSize = getMaxPushdataEncodedSizeForType(sv.type);
+      let maxSize = getMaxStateFieldBytes(sv.type);
       if (isDynamicStorageType(sv.type)) {
         maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32));
       }
@@ -19034,7 +19039,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         let nftIndex = 0;
         let currentNftUsed = 0;
         for (const state of vars) {
-          let maxSize = getMaxPushdataEncodedSizeForType(state.type);
+          let maxSize = getMaxStateFieldBytes(state.type);
           if (state.isDynamic || isDynamicStorageType(state.type)) {
             maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32));
           }

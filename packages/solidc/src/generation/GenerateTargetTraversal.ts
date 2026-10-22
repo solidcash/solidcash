@@ -703,6 +703,8 @@ interface RouteMintBound { slots: number; span: boolean }
 interface CountedRecordPin { span: number; verifierLock?: Uint8Array; verifierByIndex?: boolean }
 /** A bound route's verifier input index; -1 on a standalone batch. */
 const ACTIVE_VERIFIER_INDEX = '__internal__activeVerifierIndex';
+/** A graph route's physical block size, bound by its verifier to the participant's actual span. */
+const GRAPH_BLOCK_SIZE = '__internal__graphBlockSize';
 /** The tracked names of a route's mint bound operands, bottom first. */
 function routeMintBoundNames(bound: RouteMintBound): string[] {
   return [ROUTE_MINT_LO, ROUTE_MINT_HI, ...(bound.span ? [ROUTE_MINT_SPAN_START, ROUTE_MINT_SPAN_END] : []),
@@ -50122,7 +50124,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitParkedRecordCount(pin: CountedRecordPin, loc: SingleLocationData): boolean {
     const balance = this.sharedEntryCheckId('countedBalance', (t, l) => t.emitOwnCategoryMutableBalance(l));
-    if (!this.invokeParkedRecordPin(pin.span, () => {
+    if (!this.invokeParkedRecordPin(() => this.emit(encodeInt(BigInt(pin.span)), loc), () => {
       if (pin.verifierByIndex === true) this.emitPickTrackedFromBottom(ACTIVE_VERIFIER_INDEX, loc);
       else this.emit(encodeInt(-1n), loc);
     }, loc)) return false;
@@ -52801,7 +52803,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * C3, census-path route. The census leaves a collection an admitted handler names to that handler, which settles
    * only the rows it runs, and counts no value-chunk lock. A standalone batch and a local-caller route run no
    * verifier, and the verifier counts records only inside the participant block. So every own-category mutable input
-   * outside `[master, master + blockSize)` comes back at its own index, except the verifier (routeVerifierSkipsByIndex).
+   * outside `[master, master + size)` comes back at its own index, except the verifier (routeVerifierSkipsByIndex).
+   * A graph route skips its authenticated physical block: `size` is `__internal__graphBlockSize`, which its verifier
+   * binds to the participant's actual span. Any other route skips its compile-time block.
    * The route's records, its trailing band's included, sit inside the block, so no record lock is admitted. With claim
    * flags (a bound non-graph route), so does one inside the block at a slot no row that ran claims, unless the
    * verifier ran (emitRouteBlockClaims). One pass parks each own-category mutable index and a second pins them, as
@@ -52815,9 +52819,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || this.usesProxyStateBlockBase()) return;
     const inBlock = node.messageBusRecordClaims !== undefined;
     const byIndex = this.routeVerifierSkipsByIndex(node);
+    const graphSized = node.parameters.some((parameter) => parameter.name === GRAPH_BLOCK_SIZE);
+    const emitSize = (): void => {
+      if (graphSized) this.emitPickTrackedFromBottom(GRAPH_BLOCK_SIZE, loc);
+      else this.emit(encodeInt(BigInt(blockSize)), loc);
+    };
     // The entries' plain walks and pinned counts take the same helper (contractRoutePinsByIndex).
     if (!inBlock && byIndex && this.invokeParkedRecordPin(
-      blockSize, () => this.emitPickTrackedFromBottom(ACTIVE_VERIFIER_INDEX, loc), loc,
+      emitSize, () => this.emitPickTrackedFromBottom(ACTIVE_VERIFIER_INDEX, loc), loc,
     )) {
       this.emit(Op.OP_DROP, loc);
       return;
@@ -52870,7 +52879,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_MOD, loc);             // [claimed, i, claimedAt]
     } else {
       this.emit(Op.OP_DUP, loc);
-      this.emit(encodeInt(BigInt(blockSize)), loc);
+      emitSize();
       this.emit(Op.OP_ADD, loc);
       this.emit(Op.OP_WITHIN, loc);          // [i, inBlock]
     }
@@ -53207,7 +53216,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitPlainOutsideLayoutWalk(size: number, loc: SingleLocationData): void {
     if (this.contractRoutePinsByIndex()) {
-      if (this.invokeParkedRecordPin(size, () => this.emit(encodeInt(-1n), loc), loc)) {
+      if (this.invokeParkedRecordPin(
+        () => this.emit(encodeInt(BigInt(size)), loc), () => this.emit(encodeInt(-1n), loc), loc,
+      )) {
         this.emit(Op.OP_DROP, loc);
         return;
       }
@@ -53249,17 +53260,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Invoke the parked record pin on `[size, exempt]`, both tracked, leaving its untracked count. False, with nothing
-   * emitted, where the helper is not defined. Counts this site toward it.
+   * Invoke the parked record pin on `[size, exempt]`, each pushed by its emitter and then tracked, leaving its
+   * untracked count. False, with nothing emitted, where the helper is not defined. Counts this site toward it.
    */
-  private invokeParkedRecordPin(size: number, emitExempt: () => void, loc: SingleLocationData): boolean {
+  private invokeParkedRecordPin(emitSize: () => void, emitExempt: () => void, loc: SingleLocationData): boolean {
     const id = this.sharedEntryCheckId('parkedRecordPin', (t, l) => {
       t.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
       t.pushToStack(OUTSIDE_LAYOUT_EXEMPT);
       t.emitParkedRecordPin(l);
     });
     if (id === undefined || !this.subroutineDefined.get(id)) return false;
-    this.emit(encodeInt(BigInt(size)), loc);
+    emitSize();
     this.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
     emitExempt();
     this.pushToStack(OUTSIDE_LAYOUT_EXEMPT);

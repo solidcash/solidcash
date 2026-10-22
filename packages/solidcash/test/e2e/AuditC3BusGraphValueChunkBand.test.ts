@@ -1,16 +1,17 @@
 /**
  * C3 graph band, value chunks (docs/security/SECURITY-AUDIT.md C3).
  *
- * A graph route pins each own-category record only past its compile-time block `[master, master + B)`, and the
- * graph verifier census walks only the physical block `[master, master + s)`. With the contract last and
- * B > s + P, the fee slot sits between them. A long mapping value keeps its continuation in own-category mutable
- * value chunks at their own chunk lock, spent through the entry covenant's write flag beside the master, and the
- * route's collection census counts entry addresses, not chunk locks.
+ * The graph verifier census walks only the physical block `[master, master + s)`. With the contract last and a
+ * compile-time block B > s + P, the fee slot sits past the physical block but inside `[master, master + B)`. A long
+ * mapping value keeps its continuation in own-category mutable value chunks at their own chunk lock, spent through
+ * the entry covenant's write flag beside the master, and the route's collection census counts entry addresses, not
+ * chunk locks.
  *
- * A chunk in the fee slot, rewritten in place or burned, is refused only by the root verifier's `tx.origin` (the first
- * token-free P2PKH input was the fee input). Moved to a P2PKH it is refused by the route's output slot scan as well.
- * The checks admit the root caller's own coin in a balanced pad slot, which keeps `tx.origin`; then nothing refuses
- * the rewrite or the burn (the known-open case below).
+ * The route's record pin skips only its authenticated physical block: the verifier binds `__internal__graphBlockSize`
+ * to s. So a chunk in the fee slot, rewritten in place or burned, is refused by the route's pin, and by the root
+ * verifier's `tx.origin` (the first token-free P2PKH input was the fee input). Moved to a P2PKH it is refused by the
+ * route's output slot scan first. With the root caller's own coin in a balanced pad slot, which keeps `tx.origin`,
+ * the route's pin alone refuses the rewrite and the burn.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -61,6 +62,11 @@ const KEY = 5n;
 const VALUE = new Uint8Array(200).fill(0xab);
 const OTHER_LOCK = Uint8Array.of(0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x66), 0x88, 0xac);
 const TX_ORIGIN_REFUSAL = /OP_UNTIL OP_DROP OP_DUP OP_SIZE OP_NIP OP_0NOTEQUAL OP_VERIFY$/;
+// The route's record pin: an own-category record past its block comes back at its own index, lock and commitment.
+const PIN_REFUSAL = {
+  rewrite: /OP_DUP OP_OUTPUTTOKENCOMMITMENT OP_OVER OP_UTXOTOKENCOMMITMENT OP_EQUALVERIFY$/,
+  burn: /OP_NOTIF OP_DUP OP_OUTPUTBYTECODE OP_OVER OP_UTXOBYTECODE OP_EQUALVERIFY$/,
+} as const;
 
 type LibauthTransaction = ReturnType<TransactionBuilder['buildLibauthTransaction']>;
 type LibauthOutput = LibauthTransaction['outputs'][number];
@@ -288,7 +294,7 @@ const outcomeOf = (provider: Provider, spend: Spend): Promise<string> => provide
   .then(() => 'ACCEPTED').catch((error: Error) => error.message);
 
 describe('C3 graph band: a value chunk in the fee slot of a cheap entry\'s compose', () => {
-  it('settles the honest compose and refuses a value chunk in the fee slot by the root verifier tx.origin', async () => {
+  it('settles the honest compose and refuses a value chunk in the fee slot by the route pin and tx.origin', async () => {
     const s = await scenario();
     const { vm, honest, master, blockSize, physicalSize, verifierInputs, rootVerifier, feeIndex } = s;
     expect(refusedInputs(vm, honest), 'honest compose').toEqual([]);
@@ -297,14 +303,14 @@ describe('C3 graph band: a value chunk in the fee slot of a cheap entry\'s compo
     }));
 
     // [driver block | ledger block | one verifier per participant | fee]: the fee slot is P = 2 past the ledger's
-    // physical block and inside the route pin's skip window [master, master + B).
+    // physical block and inside its compile-time block [master, master + B).
     expect(verifierInputs, 'one verifier per participant').toEqual([master + physicalSize, master + physicalSize + 1]);
     expect(honest.sourceOutputs[feeIndex]!.token, 'the last input is the fee input').toBeUndefined();
     expect(feeIndex).toBe(master + physicalSize + 2);
-    expect(feeIndex, 'the fee slot sits inside the route pin skip window').toBeLessThan(master + blockSize);
+    expect(feeIndex, 'the fee slot sits inside the compile-time block').toBeLessThan(master + blockSize);
     expect(s.pad, 'a balanced pad sits in the ledger block').toBeGreaterThan(master);
 
-    // The chunk's covenant accepts each fate; the route and the ledger verifier count no chunk lock.
+    // The chunk's covenant accepts each fate; the route's census and the ledger verifier count no chunk lock.
     const refused = {} as Record<Fate, ReturnType<typeof refusedInputs>>;
     for (const fate of ['rewrite', 'burn', 'steal'] as const) {
       const spend = chunkInFeeSlot(s, honest, fate);
@@ -313,12 +319,14 @@ describe('C3 graph band: a value chunk in the fee slot of a cheap entry\'s compo
     }
     console.log('value chunk band refusals', JSON.stringify(refused));
 
-    // Rewritten or burned, only the root verifier refuses it, at tx.origin: no token-free P2PKH input is left
-    // (emitTxOrigin). Moved to a P2PKH, the ledger route refuses it too (its output slot scan).
+    // Rewritten or burned, the ledger route refuses it at its record pin, which skips only the physical block, and the
+    // root verifier at tx.origin: no token-free P2PKH input is left (emitTxOrigin). Moved to a P2PKH, the ledger
+    // route refuses it at its output slot scan, before the pin.
     for (const fate of ['rewrite', 'burn'] as const) {
-      expect.soft(refused[fate].map((input) => input.inputIndex), `only the root verifier refuses the ${fate}`)
-        .toEqual([rootVerifier]);
-      expect.soft(refused[fate][0]?.at, `the root verifier's tx.origin refuses the ${fate}`)
+      expect.soft(refused[fate].map((input) => input.inputIndex), `the route and the root verifier refuse the ${fate}`)
+        .toEqual([master, rootVerifier]);
+      expect.soft(refused[fate][0]?.at, `the route's record pin refuses the ${fate}`).toMatch(PIN_REFUSAL[fate]);
+      expect.soft(refused[fate][1]?.at, `the root verifier's tx.origin refuses the ${fate}`)
         .toMatch(TX_ORIGIN_REFUSAL);
     }
     expect.soft(refused.steal.map((input) => input.inputIndex), 'the route and the root verifier refuse the steal')
@@ -331,21 +339,25 @@ describe('C3 graph band: a value chunk in the fee slot of a cheap entry\'s compo
   // The root caller's own coin in a balanced pad slot keeps tx.origin: the verifier's physical census counts a
   // token-free input other than the dummy funder only when its output keeps its lock, and no route check binds the
   // pad slots of a row that names none. The coin pays what the fee input paid, and the chunk takes the fee slot.
-  it.fails('KNOWN OPEN C3 graph band value chunk: a chunk in the fee slot is rewritten or burned beside a '
-    + 'root caller pad', async () => {
+  // The route's record pin, past its authenticated physical block, refuses the rewrite and the burn alone.
+  it('refuses a chunk in the fee slot rewritten or burned beside a root caller pad at the route pin', async () => {
     const s = await scenario();
-    const { vm, honest, feeIndex } = s;
+    const { vm, honest, master, feeIndex } = s;
     const feePaid = honest.sourceOutputs[feeIndex]!.valueSatoshis - honest.transaction.outputs[feeIndex]!.valueSatoshis;
     const attack = async (fate: Fate): Promise<Spend> => signed(
       chunkInFeeSlot(s, await originInPad(s, honest, feePaid + 5_000n), fate), s.funder,
     );
-    const rewrite = await attack('rewrite');
-    const burn = await attack('burn');
-    const refused = { rewrite: refusedInputs(vm, rewrite), burn: refusedInputs(vm, burn) };
-    const outcome = await outcomeOf(s.provider, rewrite);
-    console.log('value chunk band known open', JSON.stringify({ pad: s.pad, refused, outcome }));
-    expect({
-      rewrite: refused.rewrite.length > 0, burn: refused.burn.length > 0, node: outcome !== 'ACCEPTED',
-    }, 'some input refuses each and the node refuses the rewrite').toEqual({ rewrite: true, burn: true, node: true });
+    const spends = { rewrite: await attack('rewrite'), burn: await attack('burn') };
+    const refused = { rewrite: refusedInputs(vm, spends.rewrite), burn: refusedInputs(vm, spends.burn) };
+    const outcome = {
+      rewrite: await outcomeOf(s.provider, spends.rewrite), burn: await outcomeOf(s.provider, spends.burn),
+    };
+    console.log('value chunk band root caller pad', JSON.stringify({ pad: s.pad, refused, outcome }));
+    for (const fate of ['rewrite', 'burn'] as const) {
+      expect(refused[fate].map((input) => input.inputIndex), `only the ledger route refuses the ${fate}`)
+        .toEqual([master]);
+      expect.soft(refused[fate][0]?.at, `the route's record pin refuses the ${fate}`).toMatch(PIN_REFUSAL[fate]);
+      expect(outcome[fate], `the node refuses the ${fate}`).not.toBe('ACCEPTED');
+    }
   }, 300_000);
 });

@@ -5,6 +5,8 @@
   "keywords": ["solidcash", "bitcoin cash", "project initializer"],
   "homepage": "https://solidcash.org",
   "license": "MIT",
+  "publishConfig": { "access": "public" },
+  "engines": { "node": ">=22" },
   "author": "mainnet-pat",
   "type": "module",
   "sideEffects": false,

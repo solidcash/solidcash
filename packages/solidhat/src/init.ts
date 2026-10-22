@@ -4,6 +4,11 @@ import {
 import { basename, dirname, join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 
+// A generated project pins this SolidHat release and the vitest range it is tested with.
+const OWN_MANIFEST = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+  version: string; devDependencies?: Record<string, string>;
+};
+
 export type PackageManager = 'npm' | 'yarn' | 'pnpm';
 export type Template = 'typescript' | 'javascript' | 'empty';
 export interface CompatibilityTarget { hardhat: 2 | 3; ethers: 5 | 6 }
@@ -59,8 +64,8 @@ function mergePackageJson(current: Record<string, any>, typescript: boolean): Re
   };
   for (const [name, command] of Object.entries(desiredScripts)) scripts[name] ??= command;
   const devDependencies = { ...(current.devDependencies ?? {}) };
-  devDependencies['@solidcash/solidhat'] ??= '^0.13.0';
-  devDependencies.vitest ??= '^4.0.15';
+  devDependencies['@solidcash/solidhat'] ??= `^${OWN_MANIFEST.version}`;
+  devDependencies.vitest ??= OWN_MANIFEST.devDependencies?.vitest ?? '^5.0.4';
   if (typescript) {
     devDependencies.typescript ??= '^5.9.2';
   }

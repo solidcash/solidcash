@@ -172,7 +172,7 @@ export async function resolveKeccakComputeCoSpends(
       if (!utxo) {
         throw new Error(`keccak256 preimage too large (${preimage.length} B = ${plan.length} blocks); `
           + `a chained spend needs ${plan.length} funded side-car UTXO(s) at the branded `
-          + `start/cont/final addresses (block ${step}/${plan.length} is ${plan[step].kind}).`);
+          + `chain address (block ${step}/${plan.length} is ${plan[step].kind}).`);
       }
       used.add(`${utxo.txid.toLowerCase()}:${utxo.vout}`);
       chainUtxos.push(utxo);

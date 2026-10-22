@@ -26,6 +26,10 @@ Also the static part of the contract needs to be stored but this is the same acr
 To construct the full contract script you need both the `constructor` arguments and static contract bytecode (either the contract source file or the `Artifact`) to be available.
 :::
 
+A stateful SolidCash contract's script also embeds its CashToken category and any deployment `salt`, so store those
+with the constructor arguments and the exact artifact. See
+[Contract Deployment](/docs/guides/deployment#the-three-identifiers) for the full list of details to keep.
+
 ### Off-chain storage
 
 To store the contract details off-chain, you will need to run a database server which stores the specific constructor arguments for each contract, this will translate into their respective smart contract addresses. This is crucial data for users to spend from BCH locked in such a smart contract. So this approach does introduce a single point of failure.

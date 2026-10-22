@@ -3,7 +3,7 @@ import { compileString } from './direct-compile.js';
 
 // Control flow: loops, break/continue, ternary, assignment-as-expression, ++/--.
 
-// solidity-by-example porting bench. See packages/solidc/docs/solidity-by-example-bench.md.
+// solidity-by-example porting bench. See packages/solidc/docs/solidity-by-example-blockers.md.
 describe('SBE-1: break/continue when the branch is the last loop statement', () => {
   it('compiles a for-loop whose final statement is if(){break} (loop/Loop.sol pattern)', () => {
     const a = compileString(`

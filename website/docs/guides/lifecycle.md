@@ -94,5 +94,69 @@ Many exchanges however use a 6-block confirmation policy for Bitcoin Cash deposi
 
 Chain reorgs don't always include all the same transactions, so some transactions can get un-included from the blockchain with a reorg. In this scenario, if no competing transaction was mined then the un-included transaction will just return to the mempool waiting for inclusion in a next block.
 
+## Stateful Contract Lifecycle
+
+A stateful SolidCash contract is a CashToken category: a minting master NFT plus data NFTs that hold its state.
+Each stage of its life is one or more ordinary transactions, so the mempool, chain and conflict rules above apply
+to them as well.
+
+```solidity
+function create(sig s) public {
+    require(checkSig(s, admin));
+    new Child(admin);               // deploy entry, inferred from `new`
+}
+
+function migrateEntry(sig s) migrateRecords { require(checkSig(s, admin)); }
+function migrate(sig s) upgrade { require(checkSig(s, admin)); }
+
+function destroy(sig s) public {
+    require(checkSig(s, admin));
+    selfdestruct(beneficiary);      // statement form: pins the payout
+}
+
+function fork(int n, sig s) split(n) { require(n >= 1); require(checkSig(s, admin)); }
+function join(int n, sig s) merge(n) { require(n >= 1); require(checkSig(s, admin)); }
+```
+
+- **Deploy.** A genesis transaction spends a plain `vout 0` input, and that transaction ID becomes the category. A
+  stateful contract's function deploys a child with `new`: the compiler infers the deploy entry, so writing the
+  `deploy` modifier is optional. See [Contract Creation & Lifecycle](/docs/language/contract-creation) and
+  [Contract Deployment](/docs/guides/deployment).
+- **Upgrade.** A `migrateRecords` function moves one mapping or array entry per transaction. The `upgrade`
+  transaction then moves the master, re-mints the data NFTs at the new lock and moves the satoshi and token
+  containers. The category stays and the address changes. `StatefulContract.upgrade` sends the whole sequence as
+  one chain of transactions; each step spends the master, so hold other calls until it completes. Values kept in
+  chunk NFTs do not migrate yet, and the SDK refuses an upgrade that would strand one. See
+  [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
+- **Destroy.** `selfdestruct(to)` in a function body pins the payout: exactly one output, paid to `to`, with a fee
+  below 2,000 satoshis, so all of the state must fit in one transaction. The modifier form
+  (`function sweep(sig s) selfdestruct`) burns the state without a recipient pin and can be split over several
+  transactions. Both need a `require`. CashTokens are not moved, so transfer them out first. Run either form with
+  `StatefulContract.selfdestructTo(...)`, an alias of `StatefulContract.destroy(...)`; a plain
+  `sc.call.destroy(...)` is refused. See [Contract Destruction](/docs/language/selfdestruct).
+- **Split and merge.** `split(n)` mints `n` more masters beside the running one, and `merge(n)` burns `n` co-spent
+  masters into it. Threads let unrelated calls avoid spending the same master. See
+  [Contract Concurrency](/docs/guides/concurrency).
+
+`deploy`, `upgrade`, `split` and `merge` entries need an unconditional `require(checkSig(s, key))` with a key the
+caller cannot choose, such as a constructor argument. A direct compile rejects one without it.
+
+```ts
+import { StatefulContract } from 'solidcash/stateful';
+
+await factory.call.create(adminSig); // awaiting deploys the child with the connected signer
+
+await StatefulContract.upgrade({
+  provider, oldContract: sc, upgradeFunctionName: 'migrate', upgradeFunctionArgs: [adminSig],
+  migrateRecordsFunctionArgs: [adminSig], newArtifact, newConstructorArgs: [adminPublicKey],
+  fundingUtxo, funder, changeAddress,
+});
+
+await StatefulContract.selfdestructTo({
+  provider, contract: sc, destroyFunctionName: 'destroy', destroyFunctionArgs: [adminSig],
+  recipient: beneficiaryAddress,
+});
+```
+
 [double-spend-proofs]: https://docs.bitcoincashnode.org/doc/dsproof-implementation-notes/
 [chain-reorganization]: https://learnmeabitcoin.com/technical/blockchain/chain-reorganization/

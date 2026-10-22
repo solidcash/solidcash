@@ -265,9 +265,9 @@ contract NativeUsdt(address initialOwner) {
 
     function issue(int amount) { UsdtSupplyFacet.issue(amount); }
 
-    function addBlackList(address evilUser) { UsdtFacet.addBlackList(evilUser); }
+    function addBlackList(address evilUser) { UsdtSupplyFacet.addBlackList(evilUser); }
 
-    function freeze(address user) { UsdtFacet.freeze(user); }
+    function freeze(address user) { UsdtSupplyFacet.freeze(user); }
 
     function openSelf() {
         address who = msg.sender;

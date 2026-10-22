@@ -1,5 +1,5 @@
 import {
-  PrimitiveType, ArrayType, BytesType, AddressType, BUILTIN_LIBRARIES, parseTypeStrict,
+  PrimitiveType, ArrayType, AddressBytesType, BytesType, AddressType, BUILTIN_LIBRARIES, parseTypeStrict,
 } from '@solidcash/utils';
 import { SymbolTable, Symbol } from './SymbolTable.js';
 
@@ -72,13 +72,13 @@ export const GLOBAL_SYMBOL_TABLE = new SymbolTable();
 
 // Classes
 GLOBAL_SYMBOL_TABLE.set(
-  Symbol.class(Class.LOCKING_BYTECODE_P2SH20, new BytesType(23), [new BytesType(20)]),
+  Symbol.class(Class.LOCKING_BYTECODE_P2SH20, new AddressBytesType(23), [new BytesType(20)]),
 );
 GLOBAL_SYMBOL_TABLE.set(
-  Symbol.class(Class.LOCKING_BYTECODE_P2SH32, new BytesType(35), [new BytesType(32)]),
+  Symbol.class(Class.LOCKING_BYTECODE_P2SH32, new AddressBytesType(35), [new BytesType(32)]),
 );
 GLOBAL_SYMBOL_TABLE.set(
-  Symbol.class(Class.LOCKING_BYTECODE_P2PKH, new BytesType(25), [new BytesType(20)]),
+  Symbol.class(Class.LOCKING_BYTECODE_P2PKH, new AddressBytesType(25), [new BytesType(20)]),
 );
 GLOBAL_SYMBOL_TABLE.set(
   Symbol.class(Class.LOCKING_BYTECODE_NULLDATA, new BytesType(), [new ArrayType(new BytesType())]),
@@ -146,7 +146,7 @@ GLOBAL_SYMBOL_TABLE.set(Symbol.function(
   [new BytesType(32), PrimitiveType.INT, new BytesType(32), new BytesType(32)],
 ));
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(
-  GlobalFunction.ECRECOVER_EVM, new BytesType(20),
+  GlobalFunction.ECRECOVER_EVM, new AddressBytesType(20),
   [new BytesType(32), PrimitiveType.INT, new BytesType(32), new BytesType(32)],
 ));
 GLOBAL_SYMBOL_TABLE.set(Symbol.function(

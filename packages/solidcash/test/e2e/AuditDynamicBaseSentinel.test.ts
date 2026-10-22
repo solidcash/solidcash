@@ -10,7 +10,7 @@ import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
 
 /**
- * DYN-1 (docs/security-audit-2026-10-16.md): a direct (or route-clone) dynamic write used to skip every chunk
+ * DYN-1 (docs/security/security-audit-2026-10-16.md): a direct (or route-clone) dynamic write used to skip every chunk
  * check when the caller-supplied `__internal__dynamicChunkInputBase` was below -1. The write then committed a new
  * A$len header while its chunk NFTs carried arbitrary bytes, and every later read reassembled them as state.
  *

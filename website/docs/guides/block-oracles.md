@@ -74,8 +74,10 @@ stateless unless something else makes it stateful.
 
 The SDK spends the oracle on its read path, which recreates it unchanged, with at least its value, at the same
 output index, and fills the index on every call path: a direct `Contract` with `TransactionBuilder`,
-`StatefulContract` calls, framed entries and framed proxies, delegate calls, and message-bus routes, where one
-oracle input serves every reader of the composed transaction. A call that cannot forward the index is refused at
+`StatefulContract` calls, [framed entries](/docs/guides/framed-composition) and
+[framed proxies](/docs/guides/framed-composition#proxies) (experimental), delegate calls, and
+[message-bus routes](/docs/guides/message-bus) (experimental), where one oracle input serves every reader of the
+composed transaction. A call that cannot forward the index is refused at
 compile time with `BlockOracleIndexNotForwardedError`: read `block.*` in the caller as well, or pass the value in
 as an argument.
 
@@ -136,7 +138,7 @@ await new TransactionBuilder({ provider })
 ```
 
 The lock is part of the reader's bytecode, so the reader's address depends on the oracle it trusts. Contracts,
-factories and framed deployments built on this provider all use it. Spending a reader built without a lock fails
+factories and [framed deployments](/docs/guides/framed-composition#deploy) built on this provider all use it. Spending a reader built without a lock fails
 with "no oracle lock was provided"; a missing oracle UTXO fails with "block oracle UTXO is not available".
 
 ### Owner updates

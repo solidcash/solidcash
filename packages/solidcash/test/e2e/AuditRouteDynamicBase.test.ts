@@ -10,7 +10,7 @@ import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 
 /**
- * DYN-1 route lane (docs/security-audit-2026-10-16.md): the message-bus route body carries the union's dynamic
+ * DYN-1 route lane (docs/security/security-audit-2026-10-16.md): the message-bus route body carries the union's dynamic
  * write settlement, so it runs emitDynamicWriteVerification for every selected row. The route's
  * `__internal__dynamicChunkInputBase` is an ordinary unlocking push; selecting the writer row and passing a base
  * below -1 took the inactive skip and disabled every chunk commitment/count/consumption check.

@@ -1,4 +1,4 @@
-import { ArrayType, BytesType, MappingType, StructType, type Type } from '@solidcash/utils';
+import { ArrayType, BytesType, MappingType, PrimitiveType, StructType, type Type } from '@solidcash/utils';
 import {
   Node,
   SourceFileNode,
@@ -24,10 +24,12 @@ import {
   IdentifierNode,
   StateAccessNode,
   ExpressionNode,
+  LiteralNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
+import { hasSideEffects, stateChangingFunctionNames } from './sideEffects.js';
 
 /**
  * Lowers a write to a NESTED local (memory) array element, e.g. `b[i][j] = v` where `b` is a local/param
@@ -50,8 +52,9 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   private stateStructArrays = new Map<string, StructType>();
   // Mappings whose (innermost) value is an array: name -> { keyCount, valueType }. A `m[k..][i][j]=v` write to a
   // MULTI-dim array value desugars to a whole-value read + local nested write + whole-value write-back.
-  private mappings = new Map<string, { keyCount: number; valueType: ArrayType }>();
-  private mappingStructs = new Map<string, { keyCount: number; valueType: StructType }>();
+  private mappings = new Map<string, { keyCount: number; keyTypes: Type[]; valueType: ArrayType }>();
+  private mappingStructs = new Map<string, { keyCount: number; keyTypes: Type[]; valueType: StructType }>();
+  private stateChanging = new Set<string>();
   // Temp declarations hoisted out of the CURRENT statement's expressions (a 2D array-value READ `m[k][i][j]` becomes
   // `T[][] t = m[k]` hoisted here + an `t[i][j]` local read in place). Flushed before the statement in visitBlock.
   private pendingHoists: StatementNode[] = [];
@@ -62,6 +65,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.stateChanging = stateChangingFunctionNames(node);
     node.importedContracts = this.visitList(node.importedContracts) as ContractNode[];
     node.freeFunctions = this.visitList(node.freeFunctions) as FunctionDefinitionNode[];
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -81,10 +85,13 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     this.mappingStructs = new Map();
     const recordMapping = (name: string, type: Type): void => {
       let vt: Type = type;
-      let keyCount = 0;
-      while (vt instanceof MappingType) { keyCount++; vt = vt.valueType; }
-      if (keyCount > 0 && vt instanceof ArrayType) this.mappings.set(name, { keyCount, valueType: vt });
-      if (keyCount > 0 && vt instanceof StructType) this.mappingStructs.set(name, { keyCount, valueType: vt });
+      const keyTypes: Type[] = [];
+      while (vt instanceof MappingType) { keyTypes.push(vt.keyType); vt = vt.valueType; }
+      const keyCount = keyTypes.length;
+      if (keyCount > 0 && vt instanceof ArrayType) this.mappings.set(name, { keyCount, keyTypes, valueType: vt });
+      if (keyCount > 0 && vt instanceof StructType) {
+        this.mappingStructs.set(name, { keyCount, keyTypes, valueType: vt });
+      }
     };
     for (const col of node.collections) recordMapping(col.name, col.type);
     for (const sv of node.stateVariables) recordMapping(sv.name, sv.type);
@@ -206,15 +213,16 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     if (!isState) return undefined;
 
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
-    const stmts: StatementNode[] = [];
+    const { decls, keys } = this.bindKeys(node.keys, [], node);
+    const stmts: StatementNode[] = [...decls];
     const tmpNames: string[] = [];
     let currentType: Type = this.stateArrays.get(node.name)!;
     let currentRead: ExpressionNode = this.ident(node.name, node);
-    for (let i = 0; i < node.keys.length; i++) {
+    for (let i = 0; i < keys.length; i++) {
       if (!(currentType instanceof ArrayType)) return undefined;
       const elementType: Type = currentType.elementType;
       const tmpName = `__np_tmp_${this.counter++}`;
-      const read = new ArrayAccessNode(currentRead, clone(node.keys[i]));
+      const read = new ArrayAccessNode(currentRead, clone(keys[i]));
       read.location = node.location;
       const decl = new VariableDefinitionNode(elementType, [], tmpName, read);
       decl.location = node.location;
@@ -236,14 +244,14 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     op.location = node.location;
     stmts.push(op);
 
-    for (let i = node.keys.length - 1; i >= 1; i--) {
+    for (let i = keys.length - 1; i >= 1; i--) {
       const back = new ArrayAssignNode(
-        tmpNames[i - 1], clone(node.keys[i]), this.ident(tmpNames[i], node),
+        tmpNames[i - 1], clone(keys[i]), this.ident(tmpNames[i], node),
       );
       back.location = node.location;
       stmts.push(back);
     }
-    const back = new StateArrayAssignNode(node.name, clone(node.keys[0]), this.ident(tmpNames[0], node));
+    const back = new StateArrayAssignNode(node.name, clone(keys[0]), this.ident(tmpNames[0], node));
     back.location = node.location;
     stmts.push(back);
     return stmts;
@@ -257,8 +265,10 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     if (!info || node.keys.length !== info.keyCount) return undefined;
     const target = info.valueType.fields.find((f) => f.name === node.fieldName);
     if (!(target?.type instanceof StructType)) return undefined;
+    const { decls, keys } = this.bindKeys(node.keys, info.keyTypes, node);
+    node.keys = keys;
     const mappingRead = new MappingAccessNode(
-      node.name, node.keys.map((k) => cloneNode(k) as ExpressionNode),
+      node.name, keys.map((k) => cloneNode(k) as ExpressionNode),
     );
     mappingRead.location = node.location;
     const fieldRead = new FieldAccessNode(mappingRead, node.fieldName);
@@ -267,7 +277,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
       fieldRead, target.type, node.trailingMembers, node.expression, node,
     );
     node.trailingMembers = undefined;
-    return [node];
+    return [...decls, node];
   }
 
   // `a[i][j]...[k].field = v` where a is a nested STATE array and the terminal element is a struct. Materialize
@@ -286,16 +296,17 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     }
 
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
-    const stmts: StatementNode[] = [];
+    const { decls, keys } = this.bindKeys(node.keys, [], node);
+    const stmts: StatementNode[] = [...decls];
     const temps: string[] = [];
     let currentType: Type = rootType;
     let currentRead: ExpressionNode = this.ident(node.name, node);
     // The final key selects the struct itself; materialize only its containing array rows.
-    for (let i = 0; i < node.keys.length - 1; i++) {
+    for (let i = 0; i < keys.length - 1; i++) {
       if (!(currentType instanceof ArrayType)) return undefined;
       const elementType: Type = currentType.elementType;
       const tmp = `__nsf_tmp_${this.counter++}`;
-      const read = new ArrayAccessNode(currentRead, clone(node.keys[i]));
+      const read = new ArrayAccessNode(currentRead, clone(keys[i]));
       read.location = node.location;
       const decl = new VariableDefinitionNode(elementType, [], tmp, read);
       decl.location = node.location;
@@ -307,7 +318,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     if (temps.length === 0) return undefined;
     const selected = (): ArrayAccessNode => {
       const read = new ArrayAccessNode(
-        this.ident(temps.at(-1)!, node), clone(node.keys.at(-1)!),
+        this.ident(temps.at(-1)!, node), clone(keys.at(-1)!),
       );
       read.location = node.location;
       return read;
@@ -322,15 +333,15 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
       }),
     );
     ctor.location = node.location;
-    const terminalWrite = new ArrayAssignNode(temps.at(-1)!, clone(node.keys.at(-1)!), ctor);
+    const terminalWrite = new ArrayAssignNode(temps.at(-1)!, clone(keys.at(-1)!), ctor);
     terminalWrite.location = node.location;
     stmts.push(terminalWrite);
     for (let i = temps.length - 1; i >= 1; i--) {
-      const back = new ArrayAssignNode(temps[i - 1], clone(node.keys[i]), this.ident(temps[i], node));
+      const back = new ArrayAssignNode(temps[i - 1], clone(keys[i]), this.ident(temps[i], node));
       back.location = node.location;
       stmts.push(back);
     }
-    const stateBack = new StateArrayAssignNode(node.name, clone(node.keys[0]), this.ident(temps[0], node));
+    const stateBack = new StateArrayAssignNode(node.name, clone(keys[0]), this.ident(temps[0], node));
     stateBack.location = node.location;
     stmts.push(stateBack);
     return stmts;
@@ -351,10 +362,11 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     if (!struct) return undefined;
     const targetField = struct.fields.find((f) => f.name === node.fieldName);
     if (!targetField) return undefined;
+    const { decls, keys } = this.bindKeys(node.keys, [], node);
 
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
     const elemRead = (field: string): ExpressionNode => {
-      const acc = new ArrayAccessNode(this.ident(node.name, node), clone(node.keys[0]));
+      const acc = new ArrayAccessNode(this.ident(node.name, node), clone(keys[0]));
       acc.location = node.location;
       const fa = new FieldAccessNode(acc, field);
       fa.location = node.location;
@@ -363,13 +375,13 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
 
     // `m[i].a[j..] = v`: materialize the aggregate field, perform the indexed local write, then rebuild m[i].
     // The parser flattens every index into MappingFieldAssign.keys, so keys after the first belong to the field.
-    if (node.keys.length > 1) {
+    if (keys.length > 1) {
       if (!(targetField.type instanceof ArrayType)
         && !(targetField.type instanceof BytesType && targetField.type.bound === undefined)) return undefined;
       const tmpName = `__sa_field_${this.counter++}`;
       const decl = new VariableDefinitionNode(targetField.type, [], tmpName, elemRead(node.fieldName));
       decl.location = node.location;
-      const fieldKeys = node.keys.slice(1).map(clone);
+      const fieldKeys = keys.slice(1).map(clone);
       if (fieldKeys.length === 2 && node.trailingMembers?.length === 1
         && targetField.type instanceof ArrayType && targetField.type.elementType instanceof StructType) {
         const elementStruct = targetField.type.elementType;
@@ -407,10 +419,10 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
           );
           rootCtor.location = node.location;
           const back = stateStruct
-            ? new StateArrayAssignNode(node.name, clone(node.keys[0]), rootCtor)
-            : new ArrayAssignNode(node.name, clone(node.keys[0]), rootCtor);
+            ? new StateArrayAssignNode(node.name, clone(keys[0]), rootCtor)
+            : new ArrayAssignNode(node.name, clone(keys[0]), rootCtor);
           back.location = node.location;
-          return [decl, innerDecl, innerWrite, outerWrite, back];
+          return [...decls, decl, innerDecl, innerWrite, outerWrite, back];
         }
       }
       let indexedValue = node.expression;
@@ -438,10 +450,10 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
         );
         ctor.location = node.location;
         const back = stateStruct
-          ? new StateArrayAssignNode(node.name, clone(node.keys[0]), ctor)
-          : new ArrayAssignNode(node.name, clone(node.keys[0]), ctor);
+          ? new StateArrayAssignNode(node.name, clone(keys[0]), ctor)
+          : new ArrayAssignNode(node.name, clone(keys[0]), ctor);
         back.location = node.location;
-        return [decl, ...lowered, back];
+        return [...decls, decl, ...lowered, back];
       }
       const ctor = new FunctionCallNode(
         this.ident(struct.name, node),
@@ -449,10 +461,10 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
       );
       ctor.location = node.location;
       const back = stateStruct
-        ? new StateArrayAssignNode(node.name, clone(node.keys[0]), ctor)
-        : new ArrayAssignNode(node.name, clone(node.keys[0]), ctor);
+        ? new StateArrayAssignNode(node.name, clone(keys[0]), ctor)
+        : new ArrayAssignNode(node.name, clone(keys[0]), ctor);
       back.location = node.location;
-      return [decl, write, back];
+      return [...decls, decl, write, back];
     }
 
     const fieldValue = node.trailingMembers?.length && targetField.type instanceof StructType
@@ -466,10 +478,10 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     );
     ctor.location = node.location;
     const assign = stateStruct
-      ? new StateArrayAssignNode(node.name, clone(node.keys[0]), ctor)
-      : new ArrayAssignNode(node.name, clone(node.keys[0]), ctor);
+      ? new StateArrayAssignNode(node.name, clone(keys[0]), ctor)
+      : new ArrayAssignNode(node.name, clone(keys[0]), ctor);
     assign.location = node.location;
-    return [assign];
+    return [...decls, assign];
   }
 
   private rebuildStructFieldChain(
@@ -518,6 +530,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     if (node.keys.length === 2 && !(innerField.type instanceof ArrayType)
       && !(innerField.type instanceof BytesType && innerField.type.bound === undefined)) return undefined;
 
+    const { decls, keys } = this.bindKeys(node.keys, [], node);
     const at = <T extends Node>(x: T): T => { x.location = node.location; return x; };
     const id = (name: string): IdentifierNode => at(new IdentifierNode(name));
     const field = (base: ExpressionNode, name: string): FieldAccessNode => at(new FieldAccessNode(base, name));
@@ -527,35 +540,35 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     const outerDecl = at(new VariableDefinitionNode(
       outerField.type, [], outerTmp, field(id(node.name), node.fieldName),
     ));
-    const selected = (): ArrayAccessNode => at(new ArrayAccessNode(id(outerTmp), clone(node.keys[0])));
-    if (node.keys.length === 1) {
+    const selected = (): ArrayAccessNode => at(new ArrayAccessNode(id(outerTmp), clone(keys[0])));
+    if (keys.length === 1) {
       const elemCtor = at(new FunctionCallNode(
         id(elementStruct.name),
         elementStruct.fields.map((f) => f.name === innerName ? node.expression : field(selected(), f.name)),
       ));
-      const outerWrite = at(new ArrayAssignNode(outerTmp, clone(node.keys[0]), elemCtor));
+      const outerWrite = at(new ArrayAssignNode(outerTmp, clone(keys[0]), elemCtor));
       const rootCtor = at(new FunctionCallNode(
         id(root.name),
         root.fields.map((f) => f.name === node.fieldName ? id(outerTmp) : field(id(node.name), f.name)),
       ));
       const rootWrite = at(new AssignNode(id(node.name), rootCtor));
       rootWrite.isReferenceDataWrite = true;
-      return [outerDecl, outerWrite, rootWrite];
+      return [...decls, outerDecl, outerWrite, rootWrite];
     }
     const innerDecl = at(new VariableDefinitionNode(innerField.type, [], innerTmp, field(selected(), innerName)));
-    const innerWrite = at(new ArrayAssignNode(innerTmp, clone(node.keys[1]), node.expression));
+    const innerWrite = at(new ArrayAssignNode(innerTmp, clone(keys[1]), node.expression));
     const elemCtor = at(new FunctionCallNode(
       id(elementStruct.name),
       elementStruct.fields.map((f) => f.name === innerName ? id(innerTmp) : field(selected(), f.name)),
     ));
-    const outerWrite = at(new ArrayAssignNode(outerTmp, clone(node.keys[0]), elemCtor));
+    const outerWrite = at(new ArrayAssignNode(outerTmp, clone(keys[0]), elemCtor));
     const rootCtor = at(new FunctionCallNode(
       id(root.name),
       root.fields.map((f) => f.name === node.fieldName ? id(outerTmp) : field(id(node.name), f.name)),
     ));
     const rootWrite = at(new AssignNode(id(node.name), rootCtor));
     rootWrite.isReferenceDataWrite = true;
-    return [outerDecl, innerDecl, innerWrite, outerWrite, rootWrite];
+    return [...decls, outerDecl, innerDecl, innerWrite, outerWrite, rootWrite];
   }
 
   // `delete d[k0]..[kn]` where d is a LOCAL or nested STATE array: parses as a MappingDeleteNode the symbol
@@ -601,8 +614,9 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     if (arrIdxCount < this.mappingArrayValueMinIndices) return undefined;
 
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
-    const mapKeys = node.keys.slice(0, keyCount);
-    const arrIdxs = node.keys.slice(keyCount);
+    const { decls, keys } = this.bindKeys(node.keys, info.keyTypes, node);
+    const mapKeys = keys.slice(0, keyCount);
+    const arrIdxs = keys.slice(keyCount);
     let read: ExpressionNode = this.ident(node.name, node);
     for (const k of mapKeys) {
       const acc = new ArrayAccessNode(read, clone(k));
@@ -622,7 +636,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     if (!localStmts) return undefined;
     const back = new MappingAssignNode(node.name, mapKeys.map(clone), this.ident(tmpName, node));
     back.location = node.location;
-    return [decl, ...localStmts, back];
+    return [...decls, decl, ...localStmts, back];
   }
 
   // `m[k0..k_{kc-1}][i][j..] = v` where m is a mapping (kc keys) whose value is an array: the parser makes
@@ -640,8 +654,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     while (t instanceof ArrayType) { dims++; t = t.elementType; }
     // Earlier semantic normalization may already have separated the first array-value index from the mapping
     // keys. It is still part of this whole-entry read/modify/write, not a second physical mapping key.
-    const arrIdxs = [...node.keys.slice(keyCount), ...(node.arrayIndex ? [node.arrayIndex] : [])];
-    const arrIdxCount = arrIdxs.length;
+    const arrIdxCount = node.keys.length - keyCount + (node.arrayIndex ? 1 : 0);
     if (arrIdxCount < this.mappingArrayValueMinIndices || arrIdxCount > dims) return undefined;
     // A normalized scalar-array element write already has a native sorted-RMW lowering. Keep its arrayIndex
     // attached to the MappingAssign so runtime counter-loop metadata can publish the exact `setAt` mutation.
@@ -651,7 +664,11 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
       && !(valueType.elementType instanceof StructType)) return undefined;
 
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
-    const mapKeys = node.keys.slice(0, keyCount);
+    const { decls, keys } = this.bindKeys(
+      [...node.keys, ...(node.arrayIndex ? [node.arrayIndex] : [])], info.keyTypes, node,
+    );
+    const mapKeys = keys.slice(0, keyCount);
+    const arrIdxs = keys.slice(keyCount);
 
     // 1. Materialize the whole array value: `T[] t = m[k0]..[k_{kc-1}]`.
     let read: ExpressionNode = this.ident(node.name, node);
@@ -678,7 +695,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     const back = new MappingAssignNode(node.name, mapKeys.map((k) => clone(k)), this.ident(tmpName, node));
     back.location = node.location;
 
-    return [decl, ...localStmts, back];
+    return [...decls, decl, ...localStmts, back];
   }
 
   // `b[k0]..[kn] = v` on a local nested array -> read-modify-write statements; undefined if not applicable.
@@ -689,13 +706,13 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     const baseType = this.locals.get(node.name) ?? this.stateArrays.get(node.name);
     if (!(baseType instanceof ArrayType)) return undefined;
 
-    const keys = node.keys;
+    const { decls, keys } = this.bindKeys(node.keys, [], node);
     const m = keys.length;
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
 
     // Read down to the innermost array: tmp0 = base[k0]; tmp1 = tmp0[k1]; ... typing each temp from the
     // declared element types. Bail if the declared type is not nested enough (let the type checker report it).
-    const stmts: StatementNode[] = [];
+    const stmts: StatementNode[] = [...decls];
     const tmpNames: string[] = [];
     let curType: Type = baseType;
     let curRead: ExpressionNode = this.ident(node.name, node);
@@ -737,6 +754,26 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     stmts.push(baseWrite);
 
     return stmts;
+  }
+
+  // A read-modify-write desugar evaluates each key in the read and again in the write-back. When any key has a
+  // side effect, bind every non-literal key to a temp, in order, so each evaluates once. Pure keys are left as they
+  // are. `types` gives the leading mapping-key types; an array index binds as bigint.
+  private bindKeys(
+    keys: ExpressionNode[], types: Type[], at: Node,
+  ): { decls: StatementNode[]; keys: ExpressionNode[] } {
+    const changesState = (name: string): boolean => this.stateChanging.has(name) || this.locals.has(name);
+    if (!keys.some((key) => hasSideEffects(key, changesState))) return { decls: [], keys };
+    const decls: StatementNode[] = [];
+    const bound = keys.map((key, i) => {
+      if (key instanceof LiteralNode) return key;
+      const name = `__nk_tmp_${this.counter++}`;
+      const decl = new VariableDefinitionNode(types[i] ?? PrimitiveType.BIGINT, [], name, key);
+      decl.location = at.location;
+      decls.push(decl);
+      return this.ident(name, at);
+    });
+    return { decls, keys: bound };
   }
 
   private ident(name: string, at: Node): IdentifierNode {

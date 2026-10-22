@@ -167,6 +167,9 @@ describe('file-level event declarations', () => {
       { evmCompat: true, messageBus: false });
     expect(fileLevel.bytecode).toBe(contractLevel.bytecode);
     expect(fileLevel.events?.find((e) => e.name === 'E')?.signature).toBe(contractLevel.events?.find((e) => e.name === 'E')?.signature);
+    // The proxy-implementation variant as well: an emitted file-level event makes the contract stateful.
+    expect(contractLevel.delegateArtifact).toBeDefined();
+    expect(fileLevel.delegateArtifact?.bytecode).toBe(contractLevel.delegateArtifact?.bytecode);
   });
   it('accepts a file-level event with indexed params', () => {
     const a = compileString('event Transfer(address indexed from, uint value);'

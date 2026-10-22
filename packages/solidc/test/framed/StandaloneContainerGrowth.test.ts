@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../src/compiler.js';
 
 /**
- * FRAMED-CONT-1 (docs/security-audit-2026-10-16.md): a framed container is built without a master-lock output
+ * FRAMED-CONT-1 (docs/security/security-audit-2026-10-16.md): a framed container is built without a master-lock output
  * pin (the lock must survive an upgrade), so a *standalone* frame is the only place its co-spent containers are
  * accounted for. The master used to run that accounting only when the body handled value, which let any plain
  * setter be spent beside the satoshi container and drain it. The standalone branch now always requires container

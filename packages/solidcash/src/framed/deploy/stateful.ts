@@ -7,8 +7,9 @@
  * unlocking — it reads its frame out of a witness block, which the direct shape does not carry — so the deployment
  * is routed here when the artifact publishes `composition.convention === 'framed'`.
  *
- * The genesis transaction is the same shape the convention's pools expect: a pool of master UTXOs carrying the
- * minting NFT at the master lock, a pool of validator UTXOs at `addrV(category)`, one state record per data NFT
+ * The genesis transaction leads with the category's BCMR identity output (and its publication, when it publishes),
+ * then takes the shape the convention's pools expect: a pool of master UTXOs carrying the minting NFT at the master
+ * lock, a pool of validator UTXOs at `addrV(category)`, one state record per data NFT
  * carrying the commitment the constructor's own frame computed, and one output per event that frame emitted, at the
  * covenant the body rebuilt. Both pools default to the composing size and are overridden per contract through the
  * deployment options.
@@ -32,7 +33,9 @@ import type { TransactionDetails } from '../../interfaces.js';
 import type { ConstructorArgument } from '../../Argument.js';
 import { Contract } from '../../Contract.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
-import { getNetworkPrefix } from '../../utils.js';
+import { addressToLockScript, getNetworkPrefix } from '../../utils.js';
+import { leadingOutputs, type PreparedMetadata } from '../../bcmr/deployment.js';
+import { identityRecord, isP2pkhLock, planGenesisIdentity } from '../../bcmr/identity.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
 import { bindProviderBlockOracle } from '../call/block-oracle.js';
@@ -77,6 +80,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   artifact: T,
   constructorArgs: ConstructorArgument[],
   options: DeployOptions,
+  prepared: PreparedMetadata = {},
 ): Promise<DeployResult<T>> {
   if (artifact.stateLayout === undefined) {
     throw new FramedDeployError(`Contract ${artifact.contractName} is not a stateful contract`);
@@ -96,7 +100,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // `balances[msg.sender]` (a token's mint) or `owner = msg.sender` would otherwise seed the placeholder. The lock the
   // deployment states wins - a Signer's own, which its later calls carry - so the coin that funds the genesis does
   // not decide it; a deployment that states none takes the funder's lock when it is a P2PKH lock.
-  const senderLockingBytecode = options.senderLockingBytecode ?? (funderLock.length === 25 ? funderLock : undefined);
+  const senderLockingBytecode = options.senderLockingBytecode ?? (isP2pkhLock(funderLock) ? funderLock : undefined);
   const constructorReadsSender = artifact.abi.some(
     (entry) => entry.name === '__construct' && entry.usesMsgSender === true,
   );
@@ -188,13 +192,25 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     provider: options.provider,
     ...(options.maxFee === undefined ? {} : { maximumFeeSatoshis: options.maxFee }),
   });
+  // Output 0 is the category's authhead contract, never a master: every call spends a master.
+  const identity = planGenesisIdentity({
+    category: categoryId,
+    ...(options.identity === undefined ? {} : { identity: options.identity }),
+    deployerLock: senderLockingBytecode ?? addressToLockScript(options.changeAddress),
+  });
+  const genesisInputs = prepared.nativeInput === undefined ? [] : [prepared.nativeInput];
+  const inputTotal = genesisInputs.reduce((sum, input) => sum + input.utxo.satoshis, options.fundingUtxo.satoshis);
   builder.addInput(options.fundingUtxo, options.funder);
+  for (const input of genesisInputs) builder.addInput(input.utxo, input.unlocker);
   // Every token output carries at least its own dust threshold: a wide record, chunk or event is worth more than the
   // fixed amount, which covers only outputs up to 252 bytes. The change below is taken from the amounts added here.
   const addFunded = (output: Parameters<typeof builder.addOutput>[0]): void => {
     builder.addOutput(output.token === undefined
       ? output : { ...output, amount: satoshisAtLeastDust(output.amount, output) });
   };
+
+  // The identity output and the publication lead the genesis.
+  for (const output of leadingOutputs(identity, prepared)) builder.addOutput(output);
 
   for (const lock of entryLocks) {
     for (let index = 0; index < pool.masters; index += 1) {
@@ -312,12 +328,17 @@ export async function deployFramedStatefulContract<T extends Artifact>(
 
   if (keeperBaton !== undefined) addFunded(keeperBaton);
 
+  // The premint: the token's fungible amount at the contract's token container for the token's own category; then the
+  // bearer supply.
+  if (prepared.reserveOutput !== undefined) addFunded(prepared.reserveOutput);
+  if (prepared.bearerOutput !== undefined) addFunded(prepared.bearerOutput);
+
   // A placeholder change output so the measured fee includes its serialized size, then the exact change.
   builder.addOutput({ to: options.changeAddress, amount: 1000n });
   const fee = options.fee ?? (await measuredFee(builder)) + 1000n;
   const nonChangeTotal = builder.outputs.slice(0, -1)
     .reduce((sum, output) => sum + output.amount, 0n);
-  const finalChange = options.fundingUtxo.satoshis - nonChangeTotal - fee;
+  const finalChange = inputTotal - nonChangeTotal - fee;
   if (finalChange < 0n) {
     const pools = entryLocks.length === 1
       ? `the pool of ${pool.masters} master(s) and ${pool.validators} validator(s)`
@@ -325,7 +346,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
         + `and ${pool.validators} validator(s)`;
     throw new FramedDeployError(
       `Insufficient funding for ${pools}: `
-      + `${options.fundingUtxo.satoshis} satoshis provided, but the genesis requires `
+      + `${inputTotal} satoshis provided, but the genesis requires `
       + `${nonChangeTotal + fee} (outputs ${nonChangeTotal}, fee ${fee}).`,
     );
   }
@@ -362,5 +383,11 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     throw new FramedDeployError(`The contract's own address is not encodable: ${ownAddress}`);
   }
   (statefulContract as unknown as { _framedAddress?: string })._framedAddress = ownAddress.address;
-  return { contract: statefulContract, tx, categoryId };
+  return {
+    contract: statefulContract,
+    tx,
+    categoryId,
+    identity: identityRecord(identity, tx.txid),
+    ...(prepared.registry === undefined ? {} : { registry: prepared.registry }),
+  };
 }

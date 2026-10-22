@@ -29,8 +29,9 @@ import {
   type ExternalCallStatement, EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode,
   UnaryOpNode, NullaryOpNode, BranchNode, BoolLiteralNode,
   SwitchNode, TryCatchNode, InstantiationNode, UncheckedNode,
-  type EntryAccessInfo,
+  type EntryAccessInfo, type EventDefinitionNode,
 } from '../ast/AST.js';
+import { emittedEventSignatures } from '../analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
@@ -4001,6 +4002,7 @@ function buildFunctionAbiMetadata(
       tokenContainerAccesses: func.tokenContainerAccesses.map((da) => ({
         keyParam: da.keyParam,
         ...(da.keySource && da.keySource !== 'param' && { keySource: da.keySource }),
+        ...(da.keyStateVariable && { keyStateVariable: da.keyStateVariable }),
         operations: da.operations,
         // An omitted count is the pre-count-schema spelling for exactly one operation. Runtime-loop effects
         // deliberately remain in `operations` (the container itself is still read/authenticated) while owning
@@ -4010,6 +4012,7 @@ function buildFunctionAbiMetadata(
           && { transferCount: da.transferCount }),
         ...((da.transferNftCount !== 1 || !da.operations.includes('transferNft'))
           && { transferNftCount: da.transferNftCount }),
+        ...(da.readsOutput === true && { readsOutput: true }),
       })),
     }),
     ...(func.usesMsgSender && { usesMsgSender: true }),
@@ -4574,7 +4577,6 @@ export function generateArtifact(
     };
   }
 
-  // Build events if contract has event definitions
   // Build events from file-level (library imports), contract-level, emitted sibling-contract event defs, and the
   // definitions retained by each surviving emit site. The last source matters because lowering can inline or erase
   // the emit statement itself (an inherited internal helper such as OpenZeppelin's `_approve`), so the handler's
@@ -4583,8 +4585,19 @@ export function generateArtifact(
   const emittedEventDefs = contract.functions
     .flatMap((func) => func.emitInfos ?? [])
     .flatMap((info) => (info.eventDefinition ? [info.eventDefinition] : []));
+  const ownEventDefs = [...contract.eventDefinitions, ...contract.emittedForeignEvents, ...emittedEventDefs];
+  // Solidity's rule: a file-level, library or imported event is listed only when the contract emits it. SEC-10 pins
+  // forged logs only for a contract with events, so listing one it never emits let a forged own-category immutable NFT
+  // beside any call read as its log. A split shard holds some bodies only and lists what its logical contract emits.
+  const listedSignatures = new Set([
+    ...ownEventDefs.map((ev) => ev.signature),
+    ...((compilerOptions as { __logicalContractEvents?: readonly string[] }).__logicalContractEvents ?? []),
+  ]);
+  let emittedSignatures: Set<string> | undefined;
+  const listsFileEvent = (ev: EventDefinitionNode): boolean => listedSignatures.has(ev.signature)
+    || (emittedSignatures ??= emittedEventSignatures(contract)).has(ev.signature);
   const allEventDefs = [
-    ...(ast.eventDefinitions || []), ...contract.eventDefinitions, ...contract.emittedForeignEvents, ...emittedEventDefs,
+    ...(ast.eventDefinitions || []).filter(listsFileEvent), ...ownEventDefs,
   ].filter((ev, i, a) => a.findIndex((e) => e.signature === ev.signature) === i);
   const events = allEventDefs.length > 0
     ? allEventDefs.map((ev) => ({

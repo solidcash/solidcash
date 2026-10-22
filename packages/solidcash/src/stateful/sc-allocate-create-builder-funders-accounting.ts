@@ -10,6 +10,7 @@ import {
   type AbiFunction,
   type FunctionBlockLayout,
 } from '@solidcash/utils';
+import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type Signer from '../Signer.js';
 import { addressToLockScript } from '../utils.js';
@@ -149,13 +150,17 @@ export async function allocateCreateBuilderFunders(
     // A read-only chunk run (`iterationEntryInputs`) only has a published output coordinate on an atomic
     // participant, which is already pinned by `overrides?.omitLocalFeeTail`; a direct compact frame instead
     // omits the slot, so the run must land at the compacted coordinate the direct dynamic-read bytecode and
-    // `getChunkOutputBase` both subtract to.
+    // `getChunkOutputBase` both subtract to. Chained and dynamic-loop keccak side-cars follow the complete block
+    // too: the covenant reads FINAL at blockSize + fullBlocks and loop side-car k at blockSize + k, and each
+    // side-car recreates at its own index.
     const trailingGeometryNeedsReturnSlot = insertLoopPredecessors.length > 0
       || sortedLoopCommitments.size > 0
       || (iterationEntryInputs.length > 0 && overrides?.omitLocalFeeTail === true)
       || dynamicChunkInputs.length > 0
       || trailingDisposalInputs.length > 0
-      || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0;
+      || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
+      || (abiFunction as AbiFunction | undefined)?.keccakChainReads === true
+      || (abiFunction as AbiFunction | undefined)?.keccakLoopReads === true;
     let neededFunders = effectiveBlockLayout.slots.filter(
       (s) => outputOnlyKinds.has(s.kind)
         // An atomic participant is assembled against its published fixed-width block. Even when this
@@ -458,7 +463,7 @@ export async function allocateCreateBuilderFunders(
           // Delegate/proxy routes start this snapshot before expanding their large composed transaction.
           // Reuse it here even when there are no `externalCalls` (delegate calls are represented by
           // `lowLevelCalls`), otherwise a second wallet scan runs while the full route is resident.
-          const signerUtxos = earlySignerUtxos ?? await host.signer.getUtxos();
+          const signerUtxos = earlySignerUtxos ?? await signerFundingCoins(host.signer);
           timing?.('funder-fetch-complete');
           // The shared pool contains the still-available snapshot tail. Excluding that tail inverted ownership:
           // a fallback wallet scan could select only the outpoints already shifted into nested participant

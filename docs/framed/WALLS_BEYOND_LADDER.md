@@ -573,7 +573,7 @@ refusal past the alias, and the group form compiling past it.
 | CREATE (factories), function pointers | `support.ts` 1909, 1912 | M (factories) | known, pinned (`NO_CREATE`) |
 | ecrecover per loop turn (multisig) | `support.ts` 1991 | L | |
 | assembly the lowering leaves in a body | `support.ts` 1943 | L | most OZ Yul is lowered |
-| one node touched by an enclosing and an enclosed frame; a chunked value across reaches; two inserts of one key | `external-calls.ts` 2324, 2338-2378, 2220 | M | known (`NEXT_BRANCH.md`) |
+| one node touched by an enclosing and an enclosed frame; a chunked value across reaches; two inserts of one key | `external-calls.ts` 2324, 2338-2378, 2220 | M | known (`archive/docs:docs/framed/NEXT_BRANCH.md`) |
 | a read that re-enters its own contract | `read/read.ts` 651 | L-M | the read path's twin of 2.8 |
 
 **Several dynamic runs, and a run beside several batches: served** (agent DV1). Met behind the generated proxy:

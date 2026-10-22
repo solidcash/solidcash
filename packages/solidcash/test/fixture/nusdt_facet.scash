@@ -21,9 +21,7 @@ library UsdtFacet {
     event Pause();
     event Unpause();
     event Deprecate(address newAddress);
-    event AddedBlackList(address indexed user);
     event RemovedBlackList(address indexed user);
-    event Frozen(address indexed user);
     event Unfrozen(address indexed user);
     event QuarantineParams(int blocks);
 
@@ -120,17 +118,5 @@ library UsdtFacet {
         this.pendingUnlockAt[claimant] = 0;
         this.balances[claimant] = this.balances[claimant] + pending;
         emit DepositClaimed(claimant, pending);
-    }
-
-    function addBlackList(address evilUser) public {
-        require(msg.sender == this.owner);
-        this.isBlackListed[evilUser] = true;
-        emit AddedBlackList(evilUser);
-    }
-
-    function freeze(address user) public {
-        require(msg.sender == this.owner);
-        this.frozen[user] = true;
-        emit Frozen(user);
     }
 }

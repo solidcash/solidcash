@@ -2,6 +2,7 @@ pragma solidcash >=0.8.0;
 
 import { ERC20 } from "../../contracts/ERC20.scash";
 import { ERC20Metadata } from "../../contracts/ERC20Metadata.scash";
+import { BchNative } from "../../contracts/BchNative.scash";
 import { BchNativeEvents } from "../../contracts/BchNativeEvents.scash";
 import { BchNativeAdmin } from "../../contracts/BchNativeAdmin.scash";
 import { BlackList } from "../../contracts/BlackList.scash";
@@ -52,7 +53,7 @@ contract NativeTetherToken(address initialOwner, string tokenName, string tokenS
     event Redeem(uint256 amount);
     event DestroyedBlackFunds(address indexed account, uint256 balance);
 
-    constructor(uint8 decimals_, uint32 quarantine) {
+    constructor(uint8 decimals_, uint32 quarantine, bytes32 nativeCategory_) BchNative(nativeCategory_) {
         this.owner = initialOwner;
         this.paused = false;
         this.tokenDecimals = decimals_;
@@ -81,7 +82,7 @@ contract NativeTetherToken(address initialOwner, string tokenName, string tokenS
     function issue(uint256 amount) onlyOwner {
         require(amount > 0);
         int nativeAmount = int(amount);
-        bytes32 category = this.category;
+        bytes32 category = this._nativeCategory;
         require(this.tokens[category].tokenAmount >= this.backedSupply + nativeAmount);
         this.backedSupply = this.backedSupply + nativeAmount;
         _mint(this.owner, amount);

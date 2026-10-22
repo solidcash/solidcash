@@ -12,6 +12,7 @@ import {
   type AbiFunction,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
@@ -302,7 +303,7 @@ export async function orchestrateCreateBuilderExternalCalls(
     if (host.signer) {
       const allocated = await allocateCreateBuilderSharedFundersImpl(
         {
-          getSignerUtxos: () => host.signer!.getUtxos(),
+          getSignerUtxos: () => signerFundingCoins(host.signer!),
           unlockP2PKH: () => host.signer!.unlockP2PKH(),
         },
         externalCalls,
@@ -367,6 +368,7 @@ export async function orchestrateCreateBuilderExternalCalls(
         commitment: string; newCommitment: string;
       }> = [];
       const bRelativeOutputInternalArgs = new Set<string>();
+      const bBatchEntryLockingBytecodes = new Map<number, Uint8Array>();
 
       if (bBlockLayout && callInfo) {
         const nestedBlockCtx = {
@@ -376,6 +378,7 @@ export async function orchestrateCreateBuilderExternalCalls(
           bCompilerInternalArgs,
           bPlannedEntryInserts,
           bRelativeOutputInternalArgs,
+          bBatchEntryLockingBytecodes,
           bBlockLayout,
           bHasLoop,
           bSc,
@@ -538,6 +541,12 @@ export async function orchestrateCreateBuilderExternalCalls(
         const materializedGroup = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];
         if (bStreamedEventPlan && materializedGroup.sharedGroupIndex === undefined) {
           materializedGroup.streamedEventPlan = bStreamedEventPlan;
+        }
+        // Keyed by offsets of this exact block, so only the group owning these inputs may carry it.
+        const blockOwner = materializedGroup.sharedGroupIndex === undefined
+          ? materializedGroup : externalCallUtxoGroups[materializedGroup.sharedGroupIndex];
+        if (bBatchEntryLockingBytecodes.size > 0 && blockOwner?.blockInputs === bBlockInputs) {
+          blockOwner.batchEntryLockingBytecodes = bBatchEntryLockingBytecodes;
         }
         if (bDynamicChunkResources.length > 0 && bBlockInputs !== undefined) {
           const first = [...bDynamicChunkResources].sort((left, right) => left.blockSlot - right.blockSlot)[0]!;

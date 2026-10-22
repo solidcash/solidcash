@@ -7,6 +7,8 @@ export default defineConfig({
     artifacts: '.marketplace/artifacts',
     cache: '.marketplace/cache',
   },
+  // The lane's cold runs clear `.marketplace/cache`; only this checkout writes it.
+  trustProjectCache: true,
   // This project composes graph-free ERC-20 leaves into caller-authenticated atomic routes. Explicitly request
   // leaf participant routes; no marketplace source or test changes are required.
   compiler: {

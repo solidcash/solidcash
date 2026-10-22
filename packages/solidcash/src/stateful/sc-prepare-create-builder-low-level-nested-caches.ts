@@ -7,6 +7,7 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction, Artifact, BlockSlotKind } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
@@ -109,7 +110,7 @@ export async function prepareCreateBuilderLowLevelNestedCaches(
   // time while assembling each nested block. Besides being unnecessary indexer mutation, that becomes
   // pathologically expensive for large artifacts under GC pressure. Reuse the already-captured signer snapshot.
   if (!sharedFunderPool && lowLevelCalls && lowLevelCalls.length > 0 && host.signer) {
-    const signerUtxos = earlySignerUtxos ?? await host.signer.getUtxos();
+    const signerUtxos = earlySignerUtxos ?? await signerFundingCoins(host.signer);
     sharedFunderPool = signerUtxos.filter((utxo: Utxo) => !utxo.token).map((utxo: Utxo) => ({
       ...utxo, unlocker: host.signer!.unlockP2PKH(),
     }));

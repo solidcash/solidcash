@@ -47,6 +47,10 @@ bigint huge = 2 ** 300;     // no range check, grows as needed
 
 Ranges are exactly the EVM ranges: `intN` is `[-2^(N-1), 2^(N-1) - 1]` and `uintN` is `[0, 2^N - 1]`.
 
+Natively, transaction introspection fields (`tx.inputs[i].value`, `tx.outputs.length` and the like), `msg.value`
+and `.length` are `bigint`; under `evmCompat`, `msg.value` and `.length` are `uint256`. A `bigint` value assigns
+implicitly to `int` or `uintN` and is range-checked when it lands there.
+
 :::note
 `int256` and `uint256` occupy **33 bytes** on chain, not 32. BCH Script numbers are sign-magnitude, so a full
 256-bit magnitude needs one extra byte for the sign flag. Ranges are unaffected; only the physical width
@@ -140,8 +144,9 @@ Fixed-point shares the same bounds-check and `unchecked` machinery as bounded in
 :::caution
 Solidity **declares** fixed-point types but has never implemented them: any real use is a compile error in
 solc. SolidCash implements them fully, so this is a SolidCash extension and not a cross-compiler parity
-feature. The compiler emits a one-time warning to that effect. Mixed fixed/integer arithmetic with an integer
-literal (`1.5 * 2`) is an "unequal types" error: write `1.5 * 2.0` or cast explicitly.
+feature. The compiler emits a one-time warning to that effect. Natively, mixed fixed/integer arithmetic with an
+integer literal (`1.5 * 2`) is an "unequal types" error: write `1.5 * 2.0` or cast explicitly. Under `evmCompat`,
+an integer literal or integer operand beside a fixed-point value converts to that fixed-point type.
 :::
 
 ## String
@@ -217,17 +222,21 @@ from the regular `bytes` type. All three support `==` and `!=` and implicitly ca
 
 ## Address
 
-`address` is the Solidity-compatible identity type. `address payable` is accepted and behaves identically:
-every BCH address can receive value, so payability is cosmetic.
+`address` is the Solidity-compatible identity type. As in Solidity, `.transfer()` and `.send()` need an
+`address payable`: convert a plain address with `payable(addr)`, while a payable address converts implicitly to a
+plain one. Payability is only a type distinction; every BCH locking bytecode can receive value.
 
 ```solidity
-contract Vault(address owner) {
-    function withdraw(address payable to, int amount) {
-        require(msg.sender == owner);
+contract Vault(pubkey owner) {
+    function withdraw(address payable to, int amount, sig s) {
+        require(checkSig(s, owner));
         to.transfer(amount);
     }
 }
 ```
+
+Authorize with a signature check as above, not with `msg.sender == owner`: `msg.sender` and `tx.origin` derive
+from the inputs the transaction builder chooses, and the compiler warns on every read of either.
 
 :::caution
 A SolidCash `address` is the **full locking bytecode** (the entire scriptPubKey), not a fixed 20-byte hash. A
@@ -236,13 +245,15 @@ arbitrary script. This makes addresses variable-length and directly comparable a
 introspection fields.
 
 `bytes20(addr)` and `uint160(addr)` are supported as **narrowing** casts for Solidity source compatibility:
-they extract the embedded 20-byte hash at offset 3 of the P2PKH form. Both warn, because the conversion is
-lossy and meaningless for a non-P2PKH address. Compare addresses as addresses wherever you can.
+they take the 20-byte hash inside a P2PKH or P2SH20 lock, or the HASH160 of a P2SH32 lock (an empty address gives
+20 zero bytes). Other lock shapes fail the script. Both casts warn, because the conversion is lossy. Compare
+addresses as addresses wherever you can.
 :::
 
 Members: `.balance`, `.transfer(amount)`, `.send(amount)`, `.call(data)`, `.staticcall(data)`,
-`.delegatecall(data)`, `.code`, `.codehash`. `.balance` sums the satoshi container of the matching inputs
-(the contract's own balance is also `this.balance`, and `this.outState.balance` reads the outputs). See
+`.delegatecall(data)`, `.code`, `.codehash`. `addr.balance` sums the value of this transaction's inputs locked to
+`addr`; it is not a chain-wide balance. The contract's own satoshi container is `this.balance` (its inputs) and
+`this.outState.balance` (its outputs). `.delegatecall` beyond the built-in proxy profile is experimental. See
 [Contract Calls](/docs/language/advanced-features#external-contract-interaction).
 
 ## Enums
@@ -273,6 +284,9 @@ type Amount is int;
 Amount a = Amount.wrap(100);
 int raw = Amount.unwrap(a);
 ```
+
+Natively, a plain cast between the value type and its exact underlying type also converts: `Amount(x)` wraps an
+`int` and `int(a)` unwraps. Under `evmCompat`, use `wrap` and `unwrap`, as Solidity requires.
 
 ## Structs
 
@@ -310,8 +324,8 @@ require(checkMultiSig([sig1, sig2], [pk1, pk2, pk3]));
 ```
 
 State arrays additionally support `.push()`, `.pop()`, `.delete(i)` and indexed assignment when their backend is
-dense. `.delete(i)` uses swap-with-last removal, so it does not preserve order. See [Arrays](./arrays.md) for local
-semantics, persistent backends, nested arrays, and the `packed` layout modifier.
+dense. `.delete(i)` uses swap-with-last removal, so it does not preserve order. See [Arrays](/docs/language/arrays)
+for local semantics, persistent backends, nested arrays, and the `packed` layout modifier.
 
 ## Mappings
 
@@ -377,7 +391,7 @@ See [Functions](/docs/language/functions#function-types) for the full reference.
 
 Casting can be implicit or explicit depending on the types involved. `pubkey`, `sig` and `datasig` implicitly
 cast to `bytes`, so they can be used anywhere a `bytes` is expected. Integer literals implicitly convert to any
-integer type.
+integer type; a decimal literal such as `2.0` is a fixed-point value.
 
 ```solidity
 pubkey signerPk = pubkey(0x0000);
@@ -390,32 +404,52 @@ uint64 narrowed = uint64(someInt);
 
 | Type | Implicitly castable to | Explicitly castable to |
 | --- | --- | --- |
-| integer literal | any integer type, `bigint`, `fixed`, enum | as below |
-| `intN` / `uintN` | `bigint`, wider same-signed `intM`/`uintM` | any integer type, `bytesN`, `bool`, `fixed`, enum |
-| `bigint` | `intN` / `uintN` (range-checked on write) | `bytesN`, `bool`, `fixed`, enum |
-| `bool` | | integer types |
-| `string` | | `bytes` |
-| `bytes` | | `sig`, `datasig`, `pubkey`, integer types |
-| `bytesN` | `bytes` | integer types, `address` |
+| integer literal | any integer type, `bigint` | as below |
+| `intN` / `uintN` | `bigint`, a wider type of the same signedness, a strictly wider signed type (from unsigned) | any integer type, `bytesN`, `bool`, `fixed`, enum |
+| `bigint` | `intN` / `uintN` (range-checked on write) | `bytesN`, `bool`, `fixed`, enum, `address` |
+| `bool` | | integer types, `fixed` |
+| `string` | `bytes` | `bytes`, `bytesN` |
+| `bytes` | `string`, `address` | `bytesN`, `string`, `sig`, `datasig`, `pubkey`, `address`, integer types, `fixed` |
+| `bytesN` | `bytes` | `bytesM`, `string`, `address`, integer types |
 | `pubkey` | `bytes` | `bytes` |
 | `sig` | `bytes` | `bytes` |
 | `datasig` | `bytes` | `bytes` |
-| `address` | | `bytes`, `bytes20`, `uint160` (both narrowing, warned) |
+| `address` | `bytes`; `address payable` converts to `address` | `bytes`, `bytes20`, `uint160` (both narrowing, warned), `payable(addr)` |
 | enum | | integer types |
-| user-defined value type | | via `.wrap()` / `.unwrap()` only |
+| user-defined value type | | its exact underlying type, via `.wrap()` / `.unwrap()` (natively also a plain cast) |
 
-Integer-to-bytes casts use `OP_NUM2BIN`; bytes-to-integer casts use `OP_BIN2NUM`. An enum cast is a no-op
-because enums are integer-backed. Integer-to-fixed multiplies or divides by the scale factor `10^N`.
+Natively, integer-to-bytes casts use `OP_NUM2BIN` and bytes-to-integer casts use `OP_BIN2NUM`, so both read and
+write little-endian VM numbers, and an integer cast that loses value or flips the sign fails the script. An enum
+cast is a no-op because enums are integer-backed (an integer-to-enum cast is range-checked). Integer-to-fixed
+multiplies by the scale factor `10^N`; fixed-to-integer divides by it and truncates. Narrowing `bytesN` to a
+shorter `bytesM` keeps the leftmost bytes, and widening right-pads with zero bytes.
 
 :::note
 Mixing signed and unsigned integers implicitly is rejected, exactly as in Solidity: write an explicit cast.
 :::
 
+### Casts under `evmCompat`
+
+Ported Solidity sources compile under the `evmCompat` option, where casts follow the EVM:
+
+- Narrowing an integer truncates instead of failing, and a same-width cast between `intN` and `uintN`
+  reinterprets the two's-complement bits.
+- Conversions between `bytesN` and integers are big-endian, so `bytes32(x)[0]` is the high byte as on the EVM.
+  Natively it is the low byte.
+- `uint160(addr)` reads the 20-byte identity big-endian.
+- `abi.encodePacked(addr)` packs the 20-byte identity instead of the whole locking bytecode. The `addressForm`
+  compiler option (`'hash'` or `'bytecode'`) sets this choice explicitly in either mode.
+- User-defined value types convert only through `wrap` and `unwrap`.
+
+Solidity shapes outside the documented compatibility subset are experimental; see
+[Coming from Solidity](/docs/basics/solidity-parity).
+
 ### Semantic bytes casting
 
-Casting unbounded `bytes` to a bounded `bytesN` is a purely semantic cast. The bytes are not zero-padded and
-no length check is performed, which is why the cast carries the `unsafe_` prefix. This is useful for things
-like `LockingBytecode` constructors that expect a specific length.
+`bytesN(b)` on unbounded `bytes` right-pads with zero bytes or truncates to exactly N bytes, as Solidity 0.8.5 and
+later do. `unsafe_bytesN(b)` is a purely semantic cast instead: the bytes are not padded and no length check is
+performed. This is useful for things like `LockingBytecode` constructors that expect a specific length, when the
+value is known to have it.
 
 ```solidity
 bytes pkh = tx.inputs[0].nftCommitment;      // type bytes, content 20 bytes
@@ -451,7 +485,7 @@ unsafe_bool(intValue);   // type bool, content 25 / 0x19
 | `type(Status).min` / `.max` | integer | First and last enum value |
 | `type(IToken).interfaceId` | `bytes4` | EIP-165-style interface id (sha256-based by default; real keccak256 under `evmCompat`) |
 | `type(MyContract).name` | `string` | Contract name |
-| `type(MyContract).creationCode` | `bytes` | Compiled redeem script of the contract |
+| `type(MyContract).creationCode` | `bytes` | Compiled redeem script of the contract, without constructor arguments |
 | `type(MyContract).runtimeCode` | `bytes` | Alias of `creationCode` (BCH has no creation/runtime split) |
 
 ## Operators

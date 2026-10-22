@@ -623,15 +623,13 @@ describe('Delegatecall', () => {
   // ========================================================
   describe('Implementation standalone operations', () => {
     const implArtifact = compileDelegateSource(DELEGATE_IMPL);
-
-    it('should build authorize (unsafe) transaction on impl', async () => {
+    const authorizeOn = async (artifact: Artifact): Promise<{ txid: string }> => {
       const provider = createTestProvider();
-      const impl = await deploy(provider, implArtifact, [], { counter: 0n });
+      const impl = await deploy(provider, artifact, [], { counter: 0n });
       const implCatId = impl.categoryId;
-
-      const tx = await new StatefulTransactionBuilder({
+      return new StatefulTransactionBuilder({
         provider,
-        stateLayout: implArtifact.stateLayout!,
+        stateLayout: artifact.stateLayout!,
         categoryId: implCatId,
         masterUtxo: {
           ...impl.utxos.master,
@@ -641,8 +639,17 @@ describe('Delegatecall', () => {
           ...nft, unlocker: createDataNftUnlocker(impl.contract, 0, implCatId),
         })),
       }).send();
+    };
 
+    it('should build authorize (unsafe) transaction on the standalone impl', async () => {
+      const tx = await authorizeOn(compileString(DELEGATE_IMPL));
       expect(tx.txid).toBeDefined();
+    });
+
+    // A forwarded selector could reach a non-delegate entry of the delegate build, which runs none of the delegate
+    // census over the co-spent proxy's records, so that build refuses every non-delegate entry.
+    it('refuses authorize (unsafe) on the delegate build', async () => {
+      await expect(authorizeOn(implArtifact)).rejects.toThrow('failed an OP_VERIFY');
     });
   });
 

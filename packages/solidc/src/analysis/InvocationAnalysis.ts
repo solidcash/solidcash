@@ -2,7 +2,7 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { SplitStateFootprint } from '@solidcash/utils';
 import {
   AssignNode, BlockNode, BoolLiteralNode, BranchNode, CollectionIterationNode, ContractNode,
-  DeleteLocalNode, FunctionCallNode,
+  DeleteLocalNode, EmitStatementNode, FunctionCallNode,
   FunctionCallStatementNode,
   FunctionDefinitionNode, IdentifierNode, IndirectCallNode, Node, TupleAssignmentNode,
   TryCatchNode, VariableDefinitionNode, WhileNode,
@@ -99,6 +99,42 @@ export function walkInvocationAst(
       for (const item of child) walkInvocationAst(item, visit, seen, options);
     }
   }
+}
+
+/**
+ * Whether a member of `contract` emits an event, whatever scope declares it (contract, file level, library,
+ * interface). An event declared outside the contract is absent from its eventDefinitions, yet its log is readable at
+ * the same event address. The ABI `emits` metadata, once semantic analysis has set it, answers without a walk.
+ */
+export function emitsAnyEvent(contract: ContractNode): boolean {
+  const members = [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions];
+  if (members.some((fn) => (fn?.emitInfos?.length ?? 0) > 0)) return true;
+  let found = false;
+  const visit = (node: Node): void => { if (node instanceof EmitStatementNode) found = true; };
+  const seen = new Set<object>();
+  return members.some((fn) => {
+    walkInvocationAst(fn?.body, visit, seen);
+    return found;
+  });
+}
+
+/**
+ * Signatures of the events the members of `contract` emit, from the same emit metadata and walk as `emitsAnyEvent`,
+ * so a contract that emits any of them has events.
+ */
+export function emittedEventSignatures(contract: ContractNode): Set<string> {
+  const members = [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions];
+  const signatures = new Set<string>();
+  for (const info of members.flatMap((fn) => fn?.emitInfos ?? [])) {
+    const signature = info.eventDefinition?.signature || info.eventSignature;
+    if (signature) signatures.add(signature);
+  }
+  const visit = (node: Node): void => {
+    if (node instanceof EmitStatementNode && node.eventDefinition) signatures.add(node.eventDefinition.signature);
+  };
+  const seen = new Set<object>();
+  for (const fn of members) walkInvocationAst(fn?.body, visit, seen);
+  return signatures;
 }
 
 /** Walk executable nodes with the names actually in scope at each source position. */

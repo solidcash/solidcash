@@ -6,7 +6,8 @@
  * its validator, then the contract's touched state UTXOs. Every participant recreates at the same index it was
  * spent at, so an input index is also its output index. Funder inputs follow the blocks, and every output that is
  * not a participant — events, value sends, created records, then change — is trailing. Each frame's value sends
- * follow one of its contract's containers, which binds them to the frame.
+ * follow one of its contract's containers, which binds them to the frame. A plan's leading inputs sit ahead of every
+ * block, each with the output at its own index: a genesis's funding coin, whose output 0 is the category's identity.
  */
 
 /** A contract's block, in the order its members are placed. */
@@ -29,12 +30,16 @@ export interface ContractBlock {
   readonly recovery?: Readonly<Record<string, readonly string[]>>;
 }
 
-/** What a participant is: a master of a contract, a validator, a facet of one, a state UTXO, or a recovery input. */
-export type ParticipantKind = 'master' | 'validator' | 'facet' | 'state' | 'recovery';
+/**
+ * What a participant is: a leading input, a master of a contract, a validator, a facet of one, a state UTXO, or a
+ * recovery input.
+ */
+export type ParticipantKind = 'leading' | 'master' | 'validator' | 'facet' | 'state' | 'recovery';
 
 /** One participant's coordinates. A participant recreates at its own index, so input and output index agree. */
 export interface PlacedParticipant {
   readonly id: string;
+  /** The block the participant sits in; empty for a leading input, which sits in none. */
   readonly contract: string;
   readonly kind: ParticipantKind;
   readonly index: number;
@@ -57,6 +62,11 @@ export interface TrailingOutputCounts {
    * whose witness block the validator's transcript carries inline (v0x03).
    */
   readonly mintedMasters?: number;
+  /**
+   * One run per token container a frame spends to pay tokens from: the container recreated, then its token sends. A
+   * run leads the region after the minted masters, so its container is the user input at the run's first index.
+   */
+  readonly tokenRuns?: readonly number[];
   /** One output per emitted event, in emission order. */
   readonly events: number;
   /** One output per value send to a user. */
@@ -76,6 +86,8 @@ export interface OutputRegions {
   readonly trailingBase: number;
   /** One output per minted master, ahead of every event, in plan order. */
   readonly mintedMasterIndices: readonly number[];
+  /** Every token run's outputs, each container's recreation before its sends. */
+  readonly tokenRunIndices: readonly number[];
   readonly eventIndices: readonly number[];
   /** The container each run of sends follows, one per sending frame. */
   readonly sendContainerIndices: readonly number[];
@@ -104,10 +116,14 @@ export function placeTrailingOutputs<T>(
   return outputs.map((output, offset) => ({ index: layout.participantCount + offset, output }));
 }
 
-/** Assigns every participant its input and output index, following the block convention. */
+/**
+ * Assigns every participant its input and output index, following the block convention: the `leading` inputs first,
+ * in order, then the blocks.
+ */
 export function layoutTransaction(
   blocks: readonly ContractBlock[],
   facets: ReadonlyMap<string, readonly Uint8Array[]> = new Map(),
+  leading: readonly string[] = [],
 ): TransactionLayout {
   const seenContracts = new Set<string>();
   const seenIds = new Set<string>();
@@ -119,6 +135,7 @@ export function layoutTransaction(
     participants.push({ id, contract, kind, index: participants.length });
   };
 
+  for (const id of leading) place(id, '', 'leading');
   for (const block of blocks) {
     if (seenContracts.has(block.contract)) {
       throw new Error(`composer layout: contract "${block.contract}" has two blocks`);
@@ -189,7 +206,10 @@ export function participant(layout: TransactionLayout, id: string): PlacedPartic
   return placed;
 }
 
-/** Allocates the trailing outputs: events, each frame's container and value sends, created records, then change. */
+/**
+ * Allocates the trailing outputs: minted masters, token runs, events, each frame's container and value sends, created
+ * records, then change.
+ */
 export function allocateOutputRegions(layout: TransactionLayout, counts: TrailingOutputCounts): OutputRegions {
   let cursor = layout.participantCount;
   const allocate = (count: number): readonly number[] => {
@@ -198,6 +218,11 @@ export function allocateOutputRegions(layout: TransactionLayout, counts: Trailin
     return indices;
   };
   const mintedMasterIndices = allocate(counts.mintedMasters ?? 0);
+  const tokenRuns = counts.tokenRuns ?? [];
+  if (tokenRuns.some((run) => !Number.isInteger(run) || run < 1)) {
+    throw new Error(`composer layout: token runs [${tokenRuns.join(', ')}] must each hold their container`);
+  }
+  const tokenRunIndices = allocate(tokenRuns.reduce((sum, run) => sum + run, 0));
   const eventIndices = allocate(counts.events);
   const runs = counts.sendRuns ?? (counts.sends > 0 ? [counts.sends] : []);
   if (runs.reduce((sum, run) => sum + run, 0) !== counts.sends || runs.some((run) => run <= 0)) {
@@ -213,6 +238,7 @@ export function allocateOutputRegions(layout: TransactionLayout, counts: Trailin
   return {
     trailingBase: layout.participantCount,
     mintedMasterIndices,
+    tokenRunIndices,
     eventIndices,
     sendContainerIndices,
     sendIndices,

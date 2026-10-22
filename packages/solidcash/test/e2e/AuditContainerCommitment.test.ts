@@ -11,7 +11,7 @@ import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 /**
- * CONT-1 (docs/security-audit-2026-10-16.md): a token container's covenant authorizes any spend beside the
+ * CONT-1 (docs/security/security-audit-2026-10-16.md): a token container's covenant authorizes any spend beside the
  * contract master, and the master's foreign keep pinned only lock, category and amount. A custodied foreign NFT's
  * commitment could therefore be rewritten beside a call that did not name the container. The keep now pins the
  * commitment too.
@@ -109,5 +109,62 @@ describe('CONT-1: an unnamed foreign container keeps its NFT commitment', () => 
     // The same spend with the genuine commitment settles, so the pin is not over-tight.
     const honest = build('aa'.repeat(8));
     await expect(provider.sendRawTransaction(honest)).resolves.toMatch(/^[0-9a-f]{64}$/);
+  }, 300_000);
+
+  it('refuses an unnamed minting container co-spent to mint its category', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SOURCE);
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const funding: Utxo = { txid: 'cd'.repeat(32), vout: 0, satoshis: 300_000n };
+    await provider.addUtxo(p2pkh.address, funding);
+    const deployed = await StatefulContract.deploy(artifact, [], {
+      provider,
+      fundingUtxo: funding,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialState: { counter: 0n },
+      changeAddress: p2pkh.address,
+    });
+    const custody = deployed.contract;
+    const container = await genesisNftContainer(provider, custody.inner, deployed.categoryId, [''], 'minting');
+    const containerUtxo = container.utxos[0]!;
+    const containerAddress = getTokenContainerAddress(custody.inner, deployed.categoryId, container.category);
+    const master = (await provider.getUtxos(custody.inner.address))
+      .find((utxo) => utxo.token?.nft?.capability === 'minting');
+    const data = (await provider.getUtxos(getDataNftAddress(custody.inner, deployed.categoryId)))[0];
+    const feeUtxo: Utxo = { txid: 'ef'.repeat(32), vout: 0, satoshis: 200_000n, address: p2pkh.address };
+    await provider.addUtxo(p2pkh.address, feeUtxo);
+
+    // The container stays where it is, minting NFT and all; the transaction mints one more of its category.
+    const masterToken = TOKEN(master!);
+    const dataToken = TOKEN(data!);
+    const builder = new TransactionBuilder({ provider });
+    builder.addInput(master!, custody.inner.unlock.peek());
+    builder.addInput(data!, createDataNftUnlocker(custody.inner, 0, deployed.categoryId));
+    builder.addInput(containerUtxo, createTokenContainerUnlocker(custody.inner, 0, deployed.categoryId, container.category));
+    builder.addInput(feeUtxo, p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)));
+    builder.addOutput({
+      to: custody.inner.tokenAddress, amount: master!.satoshis,
+      token: { category: masterToken.category, amount: masterToken.amount,
+        nft: { capability: 'minting', commitment: masterToken.commitment } },
+    } as any);
+    builder.addOutput({
+      to: getDataNftAddress(custody.inner, deployed.categoryId), amount: data!.satoshis,
+      token: { category: dataToken.category, amount: dataToken.amount,
+        nft: { capability: dataToken.capability as 'mutable', commitment: dataToken.commitment } },
+    } as any);
+    builder.addOutput({
+      to: containerAddress, amount: containerUtxo.satoshis,
+      token: { category: container.category, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+    } as any);
+    builder.addOutput({
+      to: p2pkh.tokenAddress, amount: 1_000n,
+      token: { category: container.category, amount: 0n, nft: { capability: 'none', commitment: 'cc' } },
+    } as any);
+    builder.addOutput({ to: p2pkh.address, amount: feeUtxo.satoshis - 21_000n });
+    const outcome = await provider.sendRawTransaction(builder.build())
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    expect(outcome).not.toBe('ACCEPTED');
+    // The master refuses it: its keep of the container it does not name.
+    expect(outcome).toContain('error in evaluating input index 0');
   }, 300_000);
 });

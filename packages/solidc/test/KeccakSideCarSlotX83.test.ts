@@ -52,6 +52,14 @@ const STRAIGHT_ONLY = [
   '}',
 ].join('\n');
 
+const CONSTRUCTOR_ONLY = [
+  'contract C {',
+  '  bytes32 h;',
+  '  constructor(bytes a) { this.h = keccak256(a); }',
+  '  function get() public view returns (bytes32) { return this.h; }',
+  '}',
+].join('\n');
+
 const LOOP_ONLY = [
   'contract C {',
   '  bytes32 h;',
@@ -82,7 +90,7 @@ interface KeccakAbiEntry {
   keccakInLoop?: boolean;
   keccakChainReads?: boolean;
   keccakPreimageParams?: (string | null)[];
-  blockLayout?: { blockSize: number; slots: { kind: string; slotIndex: number }[] };
+  blockLayout?: { blockSize: number; trailingBase?: number; slots: { kind: string; slotIndex: number }[] };
 }
 
 /** The refusal, or `undefined` if the fixture compiled. */
@@ -96,9 +104,9 @@ function refusalOf(source: string): KeccakSideCarSlotError | undefined {
   }
 }
 
-function entryOf(source: string): KeccakAbiEntry {
+function entryOf(source: string, name = 'f'): KeccakAbiEntry {
   const artifact = compileString(source) as unknown as { abi: KeccakAbiEntry[] };
-  return artifact.abi.find((row) => row.name === 'f')!;
+  return artifact.abi.find((row) => row.name === name)!;
 }
 
 const sideCarSlots = (entry: KeccakAbiEntry): number[] => (entry.blockLayout?.slots ?? [])
@@ -133,12 +141,20 @@ describe('X83: the shapes that compiled before keep their layouts', () => {
   // Each control asserts the LAYOUT as well as the compile: the mix reservation must not touch a function that
   // is all straight-line or all looped.
 
-  it('straightOnly: one unbounded call chains (no fixed slot, trailing region reserved)', () => {
+  it('straightOnly: one unbounded call chains (no fixed slot, no reserved band: its side-cars follow the block)', () => {
     const entry = entryOf(STRAIGHT_ONLY);
     expect(entry.keccakInLoop).toBeFalsy();
     expect(entry.keccakChainReads).toBe(true);
     expect(sideCarSlots(entry)).toEqual([]);
-    expect(entry.blockLayout?.slots.some((slot) => slot.kind === 'trailing')).toBe(true);
+    expect(entry.blockLayout?.slots.some((slot) => slot.kind === 'trailing')).toBe(false);
+    expect(entry.blockLayout?.trailingBase).toBeUndefined();
+    expect(entry.keccakPreimageParams).toEqual(['a']);
+  });
+
+  it('constructor: the same unbounded call keeps fixed slot [0] (the deploy probe builds no chain)', () => {
+    const entry = entryOf(CONSTRUCTOR_ONLY, '__construct');
+    expect(entry.keccakChainReads).toBeFalsy();
+    expect(sideCarSlots(entry)).toEqual([0]);
     expect(entry.keccakPreimageParams).toEqual(['a']);
   });
 

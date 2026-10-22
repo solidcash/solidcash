@@ -5,7 +5,7 @@ import { VersionError } from '../src/index.js';
 import { createMapResolver } from '../src/createMapResolver.js';
 import { compileString } from './direct-compile.js';
 
-// Compiler behaviour ported from CashScript 0.14.0 (see docs/framed/UPSTREAM_0140_PORT.md for the upstream commits).
+// Compiler behaviour ported from CashScript 0.14.0.
 
 const DATE_SOURCE = `contract Test() {
   function test() {

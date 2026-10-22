@@ -4,7 +4,7 @@ import {
   TransferStatementNode, AddressTransferStatementNode, TokenContainerMethodStatementNode,
   AssignNode, VariableDefinitionNode, TupleAssignmentNode, StatementNode, BlockNode, BranchNode,
   TryCatchNode, DoWhileNode, WhileNode, CollectionIterationNode, UncheckedNode, SwitchNode,
-  ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode,
+  ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode, EmitStatementNode,
 } from '../ast/AST.js';
 import { containsStatefulOperation } from './EnsureFinalRequireTraversal.js';
 
@@ -205,9 +205,17 @@ export function isDelegateEligible(
   return true;
 }
 
+// An emitted event declared outside the contract (file level, library) is absent from its eventDefinitions but
+// makes it stateful all the same, as in SymbolTableTraversal's statefulness survey.
+function emitsEvent(contract: ContractNode): boolean {
+  const seen = new Set<Node>();
+  return [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]
+    .some((fn) => walk(fn?.body, seen, (node) => node instanceof EmitStatementNode));
+}
+
 function isStateful(contract: ContractNode, forceStateful: boolean): boolean {
   return contract.stateVariables.length > 0 || contract.collections.length > 0
-    || contract.eventDefinitions.length > 0 || contract.usesBlockhash || forceStateful;
+    || contract.eventDefinitions.length > 0 || contract.usesBlockhash || forceStateful || emitsEvent(contract);
 }
 
 /**

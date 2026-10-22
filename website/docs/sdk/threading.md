@@ -17,7 +17,7 @@ SDK reference.
 import { ContractFactory } from 'solidcash/contract-factory';
 import { ThreadManager } from 'solidcash/stateful';
 
-const contract = await new ContractFactory(artifact, signer).deploy({
+const contract = await new ContractFactory(artifact, signer).deploy(adminPublicKey, {
   initialState: { west: 0n, east: 0n },
   threadCount: 2,
 });
@@ -27,7 +27,8 @@ const threads = await manager.discover();
 ```
 
 `threadCount` defaults to `1`. It creates that many master NFT outputs before the data NFT outputs in genesis.
-Every master has the contract category, minting capability, and an empty commitment.
+Every master has the contract category, minting capability, and an empty commitment. The constructor arguments come
+first, then the options object. The low-level `StatefulContract.deploy()` takes the same `threadCount` option.
 
 The data layout must contain useful independent partitions. `external` state variables are isolated into dedicated
 data NFTs; ordinary fields may share one bin-packed NFT and therefore cannot be assigned to different threads.
@@ -94,6 +95,14 @@ Declare a compiler-verified `split` entry point:
 contract Parallel(pubkey admin) {
     external int west;
     external int east;
+
+    function incrementWest() public {
+        this.west = this.west + 1;
+    }
+
+    function incrementEast() public {
+        this.east = this.east + 1;
+    }
 
     function fork(int additional, sig signature) split(additional) {
         require(additional >= 1);
@@ -194,8 +203,8 @@ selected survivor.
 authorization gate:
 
 ```solidity
-function authorize(pubkey key, sig signature) unsafe {
-    require(checkSig(signature, key));
+function authorize(sig signature) unsafe {
+    require(checkSig(signature, admin));
 }
 ```
 
@@ -204,7 +213,7 @@ const manager = new ThreadManager(contract);
 
 const { threads } = await manager.split({
   functionName: 'authorize',
-  args: [adminPublicKey, signature],
+  args: [signature],
   threadCount: 2,          // total outputs, not additional masters
   partitions: [[0], [1]], // optional; round-robin by default
   fee: 1_000n,
@@ -213,7 +222,7 @@ const { threads } = await manager.split({
 
 const { thread } = await manager.merge(threads, {
   functionName: 'authorize',
-  args: [adminPublicKey, signature],
+  args: [signature],
   fee: 1_000n,
   maxFee: 10_000n,
 });
@@ -222,7 +231,10 @@ const { thread } = await manager.merge(threads, {
 This split consumes one master and divides that master's existing satoshis, minus the fee, across exactly
 `threadCount` replacements. A default 1200-satoshi master is generally too small for several relayable outputs;
 deploy with a deliberately larger `masterAmount` through the low-level deployment API if you plan to use this
-form. Its gate uses `unsafe`, so the gate's authorization is security-critical.
+form. Its gate uses `unsafe`, so the gate's authorization is security-critical: check a signature by a key the
+caller cannot choose (a constructor argument, state or a constant), never a key passed in as an argument.
+`split()` requires exactly one live master, and `merge()` requires at least two threads; both cap the fee at
+10,000 satoshis by default.
 
 ## Reading state and masters
 

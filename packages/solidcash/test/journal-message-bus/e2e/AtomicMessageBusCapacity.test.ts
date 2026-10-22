@@ -85,29 +85,37 @@ interface CapacityReading {
 // the verifier inputs are unchanged. The kernel worst input stays participant 1, the legacy worst a verifier.
 // Re-pinned again after the route dropped its redundant positional batch self-check: both participant inputs
 // shrank by the same ~38-39 B of verifier-observed operation cost, and the transaction by 260 B in each convention.
+// Again after the token container covenant lost its merge path and the keep of an unnamed container refused a
+// minting NFT: each participant's bytecode is 27 B smaller, so the transaction is 54 B smaller in each convention.
+// Again when the forged-log pin skipped outputs of other categories (2286a2d7c): participant 1 is 1 B (kernel) and
+// 3 B (legacy) larger and about 35,000 units cheaper.
+// Again for the C3 record pins (each own-category record held at its own index, the route's past its block): each
+// participant input is 88-95 B larger and 4,400-7,200 units dearer; the verifier inputs are unchanged.
+// Again when the graph verifier bound the participant's actual block size instead of its maximum: the first verifier
+// input is 60 units dearer, and the bytes are unchanged.
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_011, callManifestBytes: 294,
+    transactionBytes: 24_140, callManifestBytes: 294,
     worstOperationCost: 27_321, worstMaximumOperationCost: 112_800,
     worstRatio: 0.24220744680851064,
     inputOperationCosts: [
-      413_985, 410_087, 695, 957_029, 817_401, 27_321,
+      420_606, 384_234, 695, 957_089, 817_401, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_377_600, 1_824_000, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_431_200, 1_873_600, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_487, callManifestBytes: 294,
-    worstOperationCost: 2_373_863, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.3281354362490324,
+    transactionBytes: 24_626, callManifestBytes: 294,
+    worstOperationCost: 2_373_927, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.3281442828707287,
     inputOperationCosts: [
-      407_075, 432_015, 695, 2_373_863, 1_863_554, 27_321,
+      413_200, 408_778, 695, 2_373_927, 1_863_554, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_309_600, 2_272_800, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_364_000, 2_329_600, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });

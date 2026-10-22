@@ -46,6 +46,10 @@ export class BytesType {
   }
 }
 
+// A bounded bytes value that already denotes an address: a hex address literal, a LockingBytecode* result or an
+// EVM ecrecover address. It is plain bytesN everywhere else; only the implicit conversion to address reads it.
+export class AddressBytesType extends BytesType {}
+
 export class IntType {
   constructor(
     public signed: boolean,
@@ -502,8 +506,11 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
     // address -> unbounded bytes: OK (address is lbc bytes at VM level)
     return !expected.bound;
   }
-  // bytes -> address: address literals (`0x...`) and lbc bytes assign to a non-payable address.
-  if (actual instanceof BytesType && expected instanceof AddressType) return !expected.payable;
+  // bytes -> address: a full locking bytecode (unbounded bytes) or an AddressBytesType value assigns to a non-payable
+  // address. Any other bytesN (a hash, a slice, a bytesN variable) needs an explicit `address(..)`.
+  if (actual instanceof BytesType && expected instanceof AddressType) {
+    return !expected.payable && (actual.bound === undefined || actual instanceof AddressBytesType);
+  }
   // Can't implicitly cast to/from address types in other cases
   if (actual instanceof AddressType || expected instanceof AddressType) return false;
 

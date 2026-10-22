@@ -13,10 +13,11 @@ import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { framedLifecycle, framedValidator } from 'solidc/runtime';
 import type { Artifact, FunctionSplitBundle } from '@solidcash/utils';
-import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
+import type { Output, TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
+import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type SignatureTemplate from '../../SignatureTemplate.js';
-import { createSighashPreimage } from '../../utils.js';
+import { createSighashPreimage, generateLibauthSourceOutputs } from '../../utils.js';
 import { requireFramedFunderSighash } from '../sighash.js';
 import { mastersForEntry, requireFunctionSplitShardBySelector } from './entry-pool.js';
 import { deployMaster } from './material.js';
@@ -79,6 +80,38 @@ function lifecycleUnlocker(
       return Uint8Array.from([...args.flatMap((push) => [...push]), ...encodeDataPush(code)]);
     },
   };
+}
+
+/** The NFT an output or coin carries, keyed as the builder's burn check keys it. */
+function nftKey(token: Utxo['token']): string | undefined {
+  if (token?.nft === undefined) return undefined;
+  const category = token.category.toLowerCase();
+  return token.nft.capability === 'none'
+    ? `${category}:none:${token.nft.commitment.toLowerCase()}`
+    : `${category}:${token.nft.capability}`;
+}
+
+/** A merge burns only the `count` retired masters' minting NFTs: every other NFT an input carries is recreated. */
+function requireRetiredBurnOnly(
+  inputs: readonly Utxo[], outputs: readonly Output[], categoryId: string, count: number,
+): void {
+  const lost = new Map<string, number>();
+  for (const { token } of inputs) {
+    const key = nftKey(token);
+    if (key !== undefined) lost.set(key, (lost.get(key) ?? 0) + 1);
+  }
+  for (const { token } of outputs) {
+    const key = nftKey(token);
+    if (key !== undefined) lost.set(key, (lost.get(key) ?? 0) - 1);
+  }
+  const retired = `${categoryId.toLowerCase()}:minting`;
+  for (const [key, net] of lost) {
+    if (net > (key === retired ? count : 0)) {
+      throw new FramedResizeError(
+        `a merge of ${count} would burn ${net} NFT(s) of ${key}; only the retired masters' minting NFTs may go`,
+      );
+    }
+  }
 }
 
 /** `StatefulContract.split` / `merge` options, read for a framed contract: the count and the admin's template. */
@@ -174,7 +207,7 @@ export async function resizeFramedPool(
   }
 
   const { TransactionBuilder } = await import('../../TransactionBuilder.js');
-  // A merge burns the retired masters' minting NFTs, which is the point of it.
+  // A merge burns the retired masters' minting NFTs, which is the point of it; `requireRetiredBurnOnly` bounds it.
   const builder = new TransactionBuilder({ provider, skipAutomaticCoSpends: true, allowImplicitNftBurn: kind === 'merge' });
   const { SPLIT, MERGE, RETIRE } = framedLifecycle.LIFECYCLE_MODE;
   builder.addInput(keeper, lifecycleUnlocker(
@@ -189,9 +222,19 @@ export async function resizeFramedPool(
     builder.addOutput({ to: deployed.lockingBytecode, amount: options.masterAmount ?? 1200n, token: MINTING(categoryId) });
   }
   builder.addBchChangeOutputIfNeeded({ to: options.changeAddress, feeRate: 1 });
+  if (kind === 'merge') requireRetiredBurnOnly(builder.inputs, builder.outputs, categoryId, count);
 
-  // A master's program is wider than the standard per-input ceiling the builder's own send gate applies.
+  // A master's program is wider than the standard per-input ceiling the builder's own send gate applies, so the
+  // provider's BCH-2026 machine judges every input here instead, before anything is broadcast.
   const transaction = builder.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  const vm = createVirtualMachineBch2026ForProvider(provider);
+  transaction.inputs.forEach((_input, inputIndex) => {
+    const verdict = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));
+    if (verdict !== true) {
+      throw new FramedResizeError(`the ${kind} is refused before broadcast at input index ${inputIndex}: ${verdict}`);
+    }
+  });
   const rawBytes = encodeTransaction(transaction);
   const rawHex = binToHex(rawBytes);
   const txid = await provider.sendRawTransaction(rawHex);

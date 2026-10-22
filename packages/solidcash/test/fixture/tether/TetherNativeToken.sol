@@ -7,8 +7,9 @@ import {BchNative} from "../../../contracts/BchNative.scash";
 // Portability proof: TetherToken.sol is the verified Ethereum mainnet source of USDT
 // (0xdAC17F958D2ee523a2206206994597C13D831ec7), byte for byte. Only the BchNative hooks are added.
 contract TetherNativeToken is TetherToken, BchNative {
-    constructor(uint256 _initialSupply, string memory _name, string memory _symbol, uint256 _decimals)
-        TetherToken(_initialSupply, _name, _symbol, _decimals) { }
+    constructor(
+        uint256 _initialSupply, string memory _name, string memory _symbol, uint256 _decimals, bytes32 nativeCategory_
+    ) TetherToken(_initialSupply, _name, _symbol, _decimals) BchNative(nativeCategory_) { }
 
     function _nativeCredit(address account, uint256 amount) internal override {
         balances[account] += amount;

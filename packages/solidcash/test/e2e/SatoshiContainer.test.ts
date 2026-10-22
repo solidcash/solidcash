@@ -94,10 +94,11 @@ describe('Satoshi Container', () => {
 
       // Verify transaction outputs
       const txOutputs = getTxOutputs(result.tx);
-      // Output 0: master minting NFT
-      expect(txOutputs[0].token?.nft?.capability).toBe('minting');
-      // Output 1: data NFT
-      expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
+      // Output 0: the authhead's identity NFT; output 1: master minting NFT
+      expect(txOutputs[0].token?.nft?.capability).toBe('mutable');
+      expect(txOutputs[1].token?.nft?.capability).toBe('minting');
+      // Output 2: data NFT
+      expect(txOutputs[2].token?.nft?.capability).toBe('mutable');
 
       // There should be a satoshi container output (no token, 50000 sats)
       const containerOutput = txOutputs.find(
@@ -187,9 +188,10 @@ describe('Satoshi Container', () => {
       });
 
       const txOutputs = getTxOutputs(result.tx);
-      // Should have master + data NFT + change (no satoshi container)
-      expect(txOutputs[0].token?.nft?.capability).toBe('minting');
-      expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
+      // Should have the authhead + master + data NFT + change (no satoshi container)
+      expect(txOutputs[0].token?.nft?.capability).toBe('mutable');
+      expect(txOutputs[1].token?.nft?.capability).toBe('minting');
+      expect(txOutputs[2].token?.nft?.capability).toBe('mutable');
     });
   });
 

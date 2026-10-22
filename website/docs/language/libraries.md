@@ -8,13 +8,14 @@ which is how expensive primitives like `keccak256` are shared without duplicatin
 
 ## Inline libraries
 
-A library whose callable functions are explicitly `internal` or `private` is a compile-time construct. Those
+A library whose functions are all `internal`, `private` or unmarked is a compile-time construct. Those
 functions are inlined at every call site, exactly like Solidity's internal library functions. An inline-only
 library still has an ABI-only declaration artifact, but its `bytecode` is empty and it cannot be deployed.
 
-Library functions without an explicit visibility are `public`, matching Solidity. A public function which is
-pure with respect to library state remains an inline call when imported; a public function which touches the
-library's declared state takes the deployed delegate-library path described below.
+A library function without an explicit visibility is `internal`. Only a function marked `public` or `external`
+is an entry point of the library's own artifact. Called from an importing contract, a public function which does
+not touch the library's declared state is still inlined; a public function which touches that state takes the
+deployed delegate-library path described below.
 
 ```solidity
 pragma solidcash ^0.13.0;
@@ -84,22 +85,26 @@ contract Calculator() {
 }
 ```
 
-`using L for *` attaches the library to every type, and the `global` keyword makes the attachment visible to
-every file that imports this one:
+`using L for *` attaches the library to every type:
 
 ```solidity
 library Utils {
     function double(int a) internal returns (int) { return a * 2; }
 }
 
-using Utils for * global;
-
 contract Consumer() {
+    using Utils for *;
+
     function run(int x) {
         require(x.double() == x * 2);
     }
 }
 ```
+
+A directive inside a contract applies to that contract; a file-level directive applies to the whole file. The
+`global` keyword (`using L for T global;`) also makes a file-level attachment visible to every file that imports
+this one. Under `evmCompat` the Solidity rules apply: a file-level directive must name its type (`for *` is
+allowed only inside a contract), and `global` is allowed only on a user-defined value type.
 
 ### Selective attachment
 
@@ -127,13 +132,11 @@ The same braced form maps functions onto operators for user-defined value types:
 ```solidity
 type Amount is int;
 
-library AmountLib {
-    function add(Amount a, Amount b) internal returns (Amount) {
-        return Amount.wrap(Amount.unwrap(a) + Amount.unwrap(b));
-    }
+function addAmount(Amount a, Amount b) pure returns (Amount) {
+    return Amount.wrap(Amount.unwrap(a) + Amount.unwrap(b));
 }
 
-using { AmountLib.add as + } for Amount global;
+using { addAmount as + } for Amount global;
 
 contract Ledger() {
     function total(int raw) {
@@ -144,9 +147,20 @@ contract Ledger() {
 }
 ```
 
+Operators bind only on a user-defined value type. Write the binding as above: a file-level
+`using { f as op } for T global;` directive naming a `pure` free function whose parameters are all of type `T`.
+This is the form Solidity requires, and `evmCompat` enforces it: a binding inside a contract, without `global`,
+or to a function that is not `pure` is rejected there. A comparison operator must return `bool`, every other
+operator returns `T`, and only `-` and `~` may be unary.
+
 The overloadable operators are `+ - * / % **`, `== != < <= > >=`, and `& | ^ ~`.
 
 ## Deployed delegate libraries
+
+:::caution Experimental
+Deployed delegate libraries are experimental in 0.13.1 and outside the stable compatibility promise. Prefer an
+inline library unless the code must move to a co-spent input.
+:::
 
 A library with a `public` or `external` function compiles to its own executable artifact. When such a function
 touches state declared by the library, it is automatically marked as a delegate entry point. Calls imported as

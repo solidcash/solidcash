@@ -80,6 +80,8 @@ import type { AbiToFunctionMap } from '../types/type-inference.js';
 import type { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { onMockNetworkProviderReset } from '../network/mock-reset.js';
+import type { BcmrPublication, NativeTokenOptions, PublishedRegistry } from '../bcmr/deployment.js';
+import type { IdentityOptions, IdentityRecord } from '../bcmr/identity.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 import { isScidIdentityCommitment, resolveLogicalIdentity, type ResolvedLogicalIdentity } from './logical-identity.js';
 
@@ -294,7 +296,8 @@ function signerSnapshotMap(signer: Signer): Map<string, Utxo> | undefined {
 async function signerUtxoSnapshot(signer: Signer): Promise<Utxo[]> {
   const cached = signerSnapshotMap(signer);
   if (cached && cached.size > 0) return [...cached.values()];
-  const fetched = await signer.getUtxos();
+  // Calls draw funders and fees from this snapshot, so it holds no identity output (docs/bcmr/DESIGN.md 4.4).
+  const fetched = await signerFundingCoins(signer);
   let providerSnapshots = signerUtxoSnapshots.get(signer.provider as object);
   if (!providerSnapshots) {
     providerSnapshots = new Map();
@@ -446,7 +449,9 @@ import {
 import {
   finishCreateBuilderAtomicPromotion as finishCreateBuilderAtomicPromotionImpl,
 } from './sc-finish-create-builder-atomic-promotion.js';
-import { destroyStatefulContract as destroyStatefulContractImpl } from './sc-destroy.js';
+import {
+  destroyStatefulContract as destroyStatefulContractImpl, refuseOrdinarySelfdestructCall,
+} from './sc-destroy.js';
 import { queryEvents as queryEventsImpl } from './sc-query-events.js';
 import { getEntries as getEntriesImpl } from './sc-get-entries.js';
 import { inferConstructorArgs as inferConstructorArgsImpl } from './sc-infer-constructor-args.js';
@@ -520,6 +525,9 @@ import {
   hydrateExternalPredicateState as hydrateExternalPredicateStateImpl,
 } from './sc-hydrate-external-predicate-state.js';
 import { upgradeStatefulContract as upgradeStatefulContractImpl } from './sc-upgrade.js';
+import type {
+  DestroyOptions, DestroyResult, LeftBehindCoin, UpgradeOptions, UpgradeResult,
+} from './stateful-lifecycle-types.js';
 import {
   splitStatefulContract as splitStatefulContractImpl,
   mergeStatefulContract as mergeStatefulContractImpl,
@@ -528,6 +536,7 @@ import { withDelegatecall as withDelegatecallImpl } from './sc-with-delegatecall
 import { autoWireLibraryDelegatecalls as autoWireLibraryDelegatecallsImpl } from './sc-auto-wire-library-delegatecalls.js';
 import { addressMappingKeyCandidates as addressMappingKeyCandidatesImpl } from './sc-address-mapping-key-candidates.js';
 import { deployStatefulContract as deployStatefulContractImpl } from './sc-deploy.js';
+import { ownCoinRefusal, signerFundingCoins } from '../framed/deploy/own-coin.js';
 import { deployFromStatefulContract as deployFromStatefulContractImpl } from './sc-deploy-from.js';
 import { deriveDeployCommitments as deriveDeployCommitmentsImpl } from './sc-derive-deploy-commitments.js';
 import { deriveCommitments as deriveCommitmentsImpl } from './sc-derive-commitments.js';
@@ -944,52 +953,31 @@ export interface DeployOptions {
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
   /** Internal SDK composition: immutable category-bearing logical identity outputs minted by genesis. */
   identityAnchors?: Array<{ to: string | Uint8Array; commitment: string; amount?: bigint }>;
+  /**
+   * Who owns the category's BCMR identity, the authhead contract at output 0 (docs/bcmr/DESIGN.md, 4.2); the
+   * deployer's lock when omitted.
+   */
+  identity?: IdentityOptions;
+  /** A BCMR registry the genesis publishes at output 1. */
+  bcmr?: BcmrPublication;
+  /** The ledger token's bearer form: the category the genesis creates for it, its premint and native scale. */
+  nativeToken?: NativeTokenOptions;
 }
 
 export interface DeployResult<T extends Artifact = Artifact> {
   contract: ConnectedStatefulContract<T>;
   tx: TransactionDetails;
   categoryId: string;
+  /** The genesis's identity output, which holds the category's BCMR authority. */
+  identity?: IdentityRecord;
+  /** The registry the genesis published, with the URIs its publication offers. */
+  registry?: PublishedRegistry;
 }
 
-export interface UpgradeOptions<T extends Artifact = Artifact> {
-  provider: NetworkProvider;
-  oldContract: ConnectedStatefulContract;
-  upgradeFunctionName: string;        // must have 'upgrade' modifier in ABI
-  upgradeFunctionArgs: FunctionArgument[];
-  newArtifact: T;
-  newConstructorArgs: ConstructorArgument[];
-  addressType?: AddressType;          // default: match old contract's addressType
-  fee?: bigint;                       // default: 1000n
-  maxFee?: bigint;                   // maximum allowed fee (throws if exceeded)
-  fundingUtxo?: Utxo;                // required when new layout needs additional data NFTs
-  funder?: Unlocker;                  // required when new layout needs additional data NFTs
-  changeAddress?: string;             // change address for leftover funding satoshis
-}
-
-export interface UpgradeResult<T extends Artifact = Artifact> {
-  contract: ConnectedStatefulContract<T>;
-  tx: TransactionDetails;
-  categoryId: string;
-}
-
-export interface DestroyOptions {
-  provider: NetworkProvider;
-  contract: ConnectedStatefulContract;
-  destroyFunctionName: string;        // must have 'selfdestruct' modifier in ABI
-  destroyFunctionArgs: FunctionArgument[];
-  recipient: string;                  // address to send remaining funds
-  fee?: bigint;                       // per-transaction fee, default 1000n
-  maxFee?: bigint;                    // maximum allowed fee per tx (throws if exceeded)
-  maxInputsPerTx?: number;            // conservative default ~200
-  /** Token container category IDs to reclaim (satoshi containers are auto-discovered) */
-  tokenContainerCategoryIds?: string[];
-}
-
-export interface DestroyResult {
-  txs: TransactionDetails[];          // 1 or more transactions
-  totalReclaimed: bigint;             // total satoshis sent to recipient
-}
+// The upgrade's and destroy's options and results are the ones sc-upgrade.ts and sc-destroy.ts implement.
+export type {
+  DestroyOptions, DestroyResult, LeftBehindCoin, UpgradeOptions, UpgradeResult,
+};
 
 export interface DeployFromOptions<T extends Artifact = Artifact> {
   provider: NetworkProvider;
@@ -2136,6 +2124,15 @@ export function evalComputedKey(
       const idx = inputs.findIndex((i) => i.name === m![1]);
       if (idx >= 0) {
         const bound = args[idx];
+        // A string argument of a bytes-like parameter is pushed as its hex (or address) bytes, not as its text.
+        const type = inputs[idx].type;
+        if (typeof bound === 'string' && type !== undefined && /^(?:bytes\d*|byte|address|pubkey|sig|datasig)$/.test(type)) {
+          try {
+            return encodeFunctionArgument(bound, type);
+          } catch {
+            return bound;
+          }
+        }
         // Route frames hand numeric parameters over as JS numbers (and some label paths as decimal strings), while the
         // expression grammar below is numeric: `binop:+` accepts bigints only. Without this normalization an
         // otherwise evaluable key - a dynamic state array indexed by `index_` - silently stays unresolved, and the
@@ -3902,11 +3899,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const dataNfts = BigInt(childArt?.stateLayout?.dataNftCount ?? target?.dataNftCount ?? 1);
     const cost = 1200n + 1200n * dataNfts + 5000n + 2400n; // master + data NFTs + fee + entry buffer
     // A reserved coin is one a create address was predicted from, so spending it here would strand that address;
-    // it is skipped, as ContractFactory's selection (and the fan-out below) skips it.
+    // it is skipped, as ContractFactory's selection (and the fan-out below) skips it. So is a coin deployFrom's own
+    // proof refuses, a BCMR identity output among them (docs/bcmr/DESIGN.md 4.4).
     const { genesisOutpointKey, isReservedGenesisOutpoint } = await import('./genesis-reservations.js');
-    const utxo = utxos.find((u) => u.vout === 0 && !u.token && u.satoshis >= cost
+    const candidates = utxos.filter((u) => u.vout === 0 && !u.token && u.satoshis >= cost
       && !isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout)));
-    if (utxo) return utxo;
+    for (const utxo of candidates) {
+      const refusal = await ownCoinRefusal(
+        signer.provider, utxo, signer.getLockingBytecode(), { role: 'funder', tokenFree: true },
+      );
+      if (refusal === undefined) return utxo;
+    }
     try {
       const { selectGenesisFundingUtxo } = await import('./ContractFactory.js');
       return await selectGenesisFundingUtxo(signer, childArt ?? this.inner.artifact, new Set(), 1);
@@ -4087,7 +4090,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       set tokens(v) { self.tokens = v; },
       getState: () => self.getState(),
       getEntries: (name: string) => self.getEntries(name),
-      createBuilder: (...a: any[]) => (self as any)._createBuilder(...a),
+      createBuilder: async (
+        functionName: string, args: any[], overrides?: { abiFunction?: AbiFunction },
+      ): Promise<StatefulTransactionBuilder> => {
+        refuseOrdinarySelfdestructCall(self.inner.artifact, overrides?.abiFunction);
+        return (self as any)._createBuilder(functionName, args, overrides);
+      },
       deriveReturnValue: (...a: any[]) => (self as any)._deriveReturnValue(...a),
       createTokenContainerAccessor: (categoryIdHex: string) => new TokenContainerAccessor(self, categoryIdHex),
       createDeployFunctionCall: (functionName: string, args: FunctionArgument[]) =>
@@ -4465,11 +4473,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   /**
    * Upgrade a stateful contract in place by moving its master (minting) NFT to the replacement's lock.
    *
-   * The category and the master's commitment carry over. Every data NFT, mapping entry and satoshi or token
-   * container is bound to the master's exact lock, so the compiler refuses an `upgrade` function in a contract
-   * that keeps any of them (UpgradeStrandsBoundStateError). Only a contract whose whole state lives in its master
-   * NFT upgrades this way. A replacement that declares state starts it at default values, in data NFTs minted at
-   * its own lock and paid by `fundingUtxo`/`funder`. A contract that keeps state needs a proxy to change code.
+   * The category and the master's commitment carry over. Every record and container is bound to the master's exact
+   * lock, so the upgrade carries them to the replacement's lock: entries one transaction each through the
+   * migrateRecords entry, data NFTs and containers in the upgrade itself. It refuses before broadcasting when a record
+   * would stay behind, including dynamic and long mapping-value chunks, which no migration carries. Surplus container
+   * coins, which anyone can send, are abandoned only when `leaveBehind` names them.
    *
    * Requirements:
    * - The upgrade function must have the 'upgrade' modifier in the old contract's ABI
@@ -4514,13 +4522,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * 2. Spending all data NFTs (using flag=2 destroy path in the covenant)
    * 3. Spending all entry NFTs (using flag=1 write path, which already allows destruction)
    * 4. Spending all expired event NFTs (using CSV timelock - best-effort)
-   * 5. Sending all reclaimed satoshis to the recipient address
+   * 5. Spending the satoshi container and each named token container; other coins there are junk, left and reported
+   * 6. Sending all reclaimed satoshis to the recipient address
    *
    * If the total number of inputs exceeds transaction size limits, batching is used:
    * - Intermediate transactions preserve one master UTXO while destroying batches of NFTs
-   * - The final transaction destroys all remaining masters and NFTs
+   * - The final transaction destroys all remaining masters and NFTs, and spends every container
    *
-   * @returns Array of transaction details and total reclaimed satoshis
+   * @returns Array of transaction details, total reclaimed satoshis, and the junk coins left behind
    */
   static async destroy(options: DestroyOptions): Promise<DestroyResult> {
     return destroyStatefulContractImpl(options);
@@ -12354,6 +12363,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         abiFunction: tokenContainerAbiFunction,
         args: tokenContainerArgs,
         overrides,
+        stateValues: onChainState?.state,
         timing,
       },
     );
@@ -12397,6 +12407,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         outStateInputCount,
         iterationEntryInputs,
         externalCallGroupCount: externalCallUtxoGroups.length,
+        reachedExternalCalls: externalCallsOrchestrated.externalCalls,
       },
     );
     finalArgs = synthesized.finalArgs;
@@ -12633,8 +12644,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       keccakLoopSideCars = loop.sideCars;
       keccakLoopRecreates = loop.recreates;
     } else if (abiFunction?.keccakChainReads && this.categoryId) {
-      // Chained direct preimage: one START/CONT/FINAL side-car per 136-byte block in the trailing region. The
-      // fixed keccakSideCar slot stays funder-padded; the covenant reads the FINAL side-car at blockSize + fullBlocks.
+      // Chained direct preimage: one START/CONT/FINAL side-car per 136-byte block, right after the fixed block
+      // (the layout reserves no band). The covenant reads the FINAL side-car at blockSize + fullBlocks.
       const resolution = await this._resolveKeccakComputeCoSpends(abiFunction, args, {
         masterUtxo: derivationMasterUtxo, stateInputUnlocker,
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
@@ -14991,6 +15002,10 @@ export class StatefulFunctionCall {
   }
 
   private async _applyOverrides(): Promise<StatefulTransactionBuilder> {
+    // A compiler-route call (a message-bus row or a composed participant) is not the ordinary call path.
+    if (this.compilerRoute === undefined && this.parentContract) {
+      refuseOrdinarySelfdestructCall(this.parentContract.inner.artifact, this._selectedAbiFunction());
+    }
     return applyOverridesImpl(this._applyOverridesHost());
   }
 

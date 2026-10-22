@@ -1093,14 +1093,15 @@ export function decodePushdataValue(
 
   if (type === 'bool') {
     const boolByte = data[offset];
-    // Canonical pushdata true is OP_1 (0x51). VM stack "true" is often the raw script number 0x01
-    // (single-byte 1) when extracted from a return-event commitment before re-encoding — accept both.
-    if (boolByte !== 0x00 && boolByte !== 0x51 && boolByte !== 0x01) {
+    // The encoder writes OP_1 (0x51) / OP_0 (0x00). The covenant decoder reads only 0x51 as true, so any other
+    // byte (a raw script-number 0x01 included) is refused rather than read as true.
+    if (boolByte !== 0x00 && boolByte !== 0x51) {
       throw new Error(
-        `Invalid boolean encoding at offset ${offset}: expected 0x00, 0x01, or 0x51, got 0x${boolByte.toString(16).padStart(2, '0')}`,
+        `Invalid boolean encoding at offset ${offset}: expected 0x00 or 0x51, `
+        + `got 0x${boolByte.toString(16).padStart(2, '0')}`,
       );
     }
-    return { value: boolByte === 0x51 || boolByte === 0x01, bytesConsumed: 1 };
+    return { value: boolByte === 0x51, bytesConsumed: 1 };
   }
 
   if (type === 'pubkey') {
@@ -1131,7 +1132,8 @@ export function decodePushdataValue(
       // (e.g., 0x80 is "negative zero" in script numbers but a valid byte value).
       const firstByte = data[offset];
       if (firstByte === 0x00) {
-        // OP_0 -> zero byte
+        // OP_0 -> zero byte. The encoder writes the zero byte as 0x01 0x00, but the compiler writes OP_0 for an empty
+        // bytes1 stack value (bytes1(false)), so this form stays readable.
         return { value: new Uint8Array([0x00]), bytesConsumed: 1 };
       }
       if (firstByte === 0x4f) {
@@ -1142,9 +1144,11 @@ export function decodePushdataValue(
         // OP_1-OP_16 -> byte 0x01-0x10
         return { value: new Uint8Array([firstByte - 0x50]), bytesConsumed: 1 };
       }
-      // Standard pushdata: 0x01 <byte>
+      // Standard pushdata: 0x01 <byte>, canonical only for a byte the encoder does not fold to an opcode.
       if (firstByte === 0x01 && offset + 2 <= data.length) {
-        return { value: new Uint8Array([data[offset + 1]]), bytesConsumed: 2 };
+        const value = new Uint8Array([data[offset + 1]]);
+        requireCanonicalEncoding(data, offset, 2, encodeGenericPushdataValue(value, true), 'decodePushdataValue: bytes1');
+        return { value, bytesConsumed: 2 };
       }
       throw new Error(`decodePushdataValue: invalid bytes1 encoding at offset ${offset}`);
     }
@@ -1222,7 +1226,11 @@ export function decodeEvmNotationEventValue(
     );
   }
   const payload = data.slice(offset, offset + width);
-  if (type === 'bool') return { value: payload[0] !== 0, bytesConsumed: width };
+  if (type === 'bool') {
+    const value = payload[0] !== 0;
+    requireCanonicalEncoding(data, offset, width, encodeEvmNotationEventValue(value, type), 'decodeEvmNotationEventValue');
+    return { value, bytesConsumed: width };
+  }
   if (/^bytes\d+$/.test(type)) return { value: payload, bytesConsumed: width };
   let value = 0n;
   for (const byte of payload) value = (value << 8n) | BigInt(byte);
@@ -1233,10 +1241,11 @@ export function decodeEvmNotationEventValue(
 /**
  * Encoded length of the pushdata operation at `offset`, resolved from its length prefix alone.
  *
- * Mirrors `decodeGenericPushdata`'s acceptance exactly (including the one-byte constant opcodes, which decode
- * to a one-byte value) but never reads or copies the payload. A caller holding candidates that are usually not
- * pushes can therefore reject one for the cost of a byte comparison instead of paying for a slice and, on the
- * ordinary rejection path, an exception with a captured stack trace.
+ * Mirrors `decodeGenericPushdata`'s acceptance for a non-int type exactly (including the one-byte constant opcodes,
+ * which decode to a one-byte value, and refusing a non-minimal OP_PUSHDATA1/2 frame) but never reads or copies the
+ * payload. A caller holding candidates that are usually not pushes can therefore reject one for the cost of a byte
+ * comparison instead of paying for a slice and, on the ordinary rejection path, an exception with a captured stack
+ * trace.
  *
  * Returns `undefined` when the bytes at `offset` are not a push or the declared payload runs past the buffer.
  */
@@ -1249,11 +1258,13 @@ export function peekPushdataEncodedLength(data: Uint8Array, offset = 0): number 
   if (firstByte === 0x4c) {
     if (offset + 2 > data.length) return undefined;
     const length = data[offset + 1];
+    if (length <= 75) return undefined;
     return offset + 2 + length <= data.length ? 2 + length : undefined;
   }
   if (firstByte === 0x4d) {
     if (offset + 3 > data.length) return undefined;
     const length = data[offset + 1] | (data[offset + 2] << 8);
+    if (length <= 0xff) return undefined;
     return offset + 3 + length <= data.length ? 3 + length : undefined;
   }
   // Any other byte is either a direct length (1-75) or not a push at all (OP_PUSHDATA_4 and ordinary opcodes).
@@ -1261,8 +1272,53 @@ export function peekPushdataEncodedLength(data: Uint8Array, offset = 0): number 
   return offset + 1 + firstByte <= data.length ? 1 + firstByte : undefined;
 }
 
+/** Hex of at most the first 40 bytes, for error messages. */
+function hexPreview(bytes: Uint8Array): string {
+  return `0x${binToHex(bytes.slice(0, 40))}${bytes.length > 40 ? '...' : ''}`;
+}
+
 /**
- * Generic pushdata decoder matching the compiler's emitGenericPushdataDecode.
+ * Throw unless the `consumed` bytes at `offset` are exactly `canonical`, the SDK encoder's output for the value read
+ * from them. One value then has one encoding, so a forged or foreign record cannot alias an honest one.
+ */
+function requireCanonicalEncoding(
+  data: Uint8Array, offset: number, consumed: number, canonical: Uint8Array, label: string,
+): void {
+  let same = canonical.length === consumed;
+  for (let i = 0; same && i < consumed; i += 1) same = data[offset + i] === canonical[i];
+  if (!same) {
+    throw new Error(
+      `${label}: non-canonical encoding ${hexPreview(data.slice(offset, offset + consumed))} at offset ${offset}; `
+      + `the encoder writes ${hexPreview(canonical)}`,
+    );
+  }
+}
+
+/**
+ * Read the payload of a direct or OP_PUSHDATA1/2 push (a VM number for an int-like type) and require the encoder's
+ * frame for it: a direct push of 1-16 or -1 for an int-like type, OP_PUSHDATA1 under 76 bytes and OP_PUSHDATA2 under
+ * 256 bytes are refused.
+ */
+function decodeFramedPushdata(
+  data: Uint8Array, offset: number, headerLength: number, length: number, intLike: boolean,
+): { value: bigint | Uint8Array; bytesConsumed: number } {
+  const payload = data.slice(offset + headerLength, offset + headerLength + length);
+  const bytesConsumed = headerLength + length;
+  let value: bigint | Uint8Array = payload;
+  if (intLike) {
+    const numResult = vmNumberToBigInt(payload, { maximumVmNumberByteLength: VM_NUMBER_MAX_BYTE_LENGTH });
+    if (isVmNumberError(numResult)) throw new Error(`Invalid VM number: ${numResult}`);
+    value = numResult;
+  }
+  requireCanonicalEncoding(
+    data, offset, bytesConsumed, encodeGenericPushdataValue(payload, intLike), 'decodeGenericPushdata',
+  );
+  return { value, bytesConsumed };
+}
+
+/**
+ * Generic pushdata decoder matching the compiler's emitGenericPushdataDecode. A push must be the frame the encoder
+ * writes for its payload; a non-int type also reads the MINIMALDATA opcode form of a one-byte payload.
  */
 function decodeGenericPushdata(
   data: Uint8Array,
@@ -1290,6 +1346,7 @@ function decodeGenericPushdata(
     if (intLike) {
       return { value: -1n, bytesConsumed: 1 };
     }
+    // The MINIMALDATA (encodeDataPush) form of 0x81, which unlocking-bytecode argument frames carry.
     return { value: new Uint8Array([0x81]), bytesConsumed: 1 };
   }
 
@@ -1299,7 +1356,7 @@ function decodeGenericPushdata(
     if (intLike) {
       return { value: BigInt(num), bytesConsumed: 1 };
     }
-    // For bytes types, return as 1-byte value
+    // For bytes types, the MINIMALDATA form of a 1-byte value (the state encoder writes the direct push).
     return { value: new Uint8Array([num]), bytesConsumed: 1 };
   }
 
@@ -1314,13 +1371,7 @@ function decodeGenericPushdata(
         `decodeGenericPushdata: unexpected end of data for OP_PUSHDATA1 (need ${2 + len} bytes at offset ${offset})`,
       );
     }
-    const value = data.slice(offset + 2, offset + 2 + len);
-    if (intLike) {
-      const numResult = vmNumberToBigInt(value, { maximumVmNumberByteLength: VM_NUMBER_MAX_BYTE_LENGTH });
-      if (isVmNumberError(numResult)) throw new Error(`Invalid VM number: ${numResult}`);
-      return { value: numResult, bytesConsumed: 2 + len };
-    }
-    return { value, bytesConsumed: 2 + len };
+    return decodeFramedPushdata(data, offset, 2, len, intLike);
   }
 
   // OP_PUSHDATA2 (0x4d)
@@ -1334,13 +1385,7 @@ function decodeGenericPushdata(
         `decodeGenericPushdata: unexpected end of data for OP_PUSHDATA2 (need ${3 + len} bytes at offset ${offset})`,
       );
     }
-    const value = data.slice(offset + 3, offset + 3 + len);
-    if (intLike) {
-      const numResult = vmNumberToBigInt(value, { maximumVmNumberByteLength: VM_NUMBER_MAX_BYTE_LENGTH });
-      if (isVmNumberError(numResult)) throw new Error(`Invalid VM number: ${numResult}`);
-      return { value: numResult, bytesConsumed: 3 + len };
-    }
-    return { value, bytesConsumed: 3 + len };
+    return decodeFramedPushdata(data, offset, 3, len, intLike);
   }
 
   // Standard pushdata: first byte is the length (1-75)
@@ -1355,13 +1400,7 @@ function decodeGenericPushdata(
       `decodeGenericPushdata: unexpected end of data for pushdata (need ${1 + len} bytes at offset ${offset})`,
     );
   }
-  const value = data.slice(offset + 1, offset + 1 + len);
-  if (intLike) {
-    const numResult = vmNumberToBigInt(value, { maximumVmNumberByteLength: VM_NUMBER_MAX_BYTE_LENGTH });
-    if (isVmNumberError(numResult)) throw new Error(`Invalid VM number: ${numResult}`);
-    return { value: numResult, bytesConsumed: 1 + len };
-  }
-  return { value, bytesConsumed: 1 + len };
+  return decodeFramedPushdata(data, offset, 1, len, intLike);
 }
 
 /**
@@ -1766,10 +1805,17 @@ export function packFixedWidthElement(value: PrimitiveStateValue, elementType: s
   throw new Error(`packFixedWidthElement: '${elementType}' is not a supported fixed-width element type`);
 }
 
-/** Decode one fixed-width element from its packed bytes (OP_BIN2NUM for int/fixed). */
+/**
+ * Decode one fixed-width element from its packed bytes (OP_BIN2NUM for int/fixed). The bytes must be exactly what
+ * packFixedWidthElement writes for the value: a bool is 0x00 / 0x01 and an int is never negative zero.
+ */
 export function unpackFixedWidthElement(bytes: Uint8Array, elementType: string): PrimitiveStateValue {
   const t = parseTypeStrict(elementType);
-  if (t === PrimitiveType.BOOL) return bytes.length > 0 && bytes[0] !== 0;
+  if (t === PrimitiveType.BOOL) {
+    const value = bytes.length > 0 && bytes[0] !== 0;
+    requireCanonicalEncoding(bytes, 0, bytes.length, Uint8Array.of(value ? 1 : 0), 'unpackFixedWidthElement: bool');
+    return value;
+  }
   if (t instanceof IntType || t instanceof FixedType) {
     const decoded = decodeIntFixedWidth(bytes);
     // Detect an out-of-range or negative value written into a bounded element commitment.
@@ -1779,6 +1825,9 @@ export function unpackFixedWidthElement(bytes: Uint8Array, elementType: string):
         + `(min: ${t.minValue}, max: ${t.maxValue})`,
       );
     }
+    requireCanonicalEncoding(
+      bytes, 0, bytes.length, encodeIntAsFixedBytes(decoded, bytes.length), `unpackFixedWidthElement: '${elementType}'`,
+    );
     return decoded;
   }
   if ((t instanceof BytesType && t.bound !== undefined) || t === PrimitiveType.PUBKEY) return bytes;
@@ -1836,6 +1885,8 @@ export function decodePackedEventArray(
       data.slice(offset + 1, offset + 1 + b0), { maximumVmNumberByteLength: VM_NUMBER_MAX_BYTE_LENGTH },
     );
     if (isVmNumberError(num)) throw new Error(`decodePackedEventArray: invalid array count: ${num}`);
+    // The int encoder writes the count, folding 1-16 to OP_1..OP_16.
+    requireCanonicalEncoding(data, offset, 1 + b0, encodePushdataValue(num, 'bigint'), 'decodePackedEventArray: count');
     count = Number(num); countBytes = 1 + b0;
   } else {
     throw new Error(`decodePackedEventArray: unexpected array count push 0x${b0.toString(16)} at offset ${offset}`);
@@ -2399,15 +2450,40 @@ export function isComputedBlockhashKey(key: string): boolean {
 }
 
 /**
- * `[]` -> `[]`. Direct container master path (the covenant built with the contract's 35-byte lock).
+ * Whether a direct contract's bound containers carry the destroy arm of `directMasterOutputPin`: only a selfdestruct
+ * entry spends a master without recreating one. A delegate binds its proxy's containers without seeing the proxy's
+ * entries, so a contract with a delegate entry or a delegatecall keeps the plain pin. The compiler reads the entries
+ * the ABI publishes, so it and the SDK derive the same container lock.
+ */
+export function containerMasterRetires(
+  abi: readonly { readonly modifiers?: readonly string[]; readonly lowLevelCalls?: readonly { callMode: string }[] }[],
+): boolean {
+  return abi.some((entry) => entry.modifiers?.includes('selfdestruct') === true)
+    && !abi.some((entry) => entry.modifiers?.includes('delegate') === true
+      || entry.lowLevelCalls?.some((call) => call.callMode === 'delegatecall') === true);
+}
+
+/**
+ * `[index]` -> `[category, index]` on the direct container master path of a master that can retire, else
+ * `[category]`: the category and capability of the minting NFT at the master input index.
+ */
+function masterCategoryRead(retires: boolean): Script {
+  return retires ? [Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_TUCK] : [Op.OP_UTXOTOKENCATEGORY];
+}
+
+/**
+ * `[]` -> `[]`, or `[masterCategory, masterIndex]` -> `[]` for a master that can retire. Direct container master path
+ * (the covenant built with the contract's 35-byte lock).
  *
- * The output at this input keeps the container lock, or it is a zero-value zero-token placeholder. A kept lock
- * also keeps the token category. The satoshi and fungible amounts are the master's to account: an authorized
- * transfer debits them, and a call that names no transfer leaves them on the lock. The category-only covenant is
+ * The output at this input keeps the container lock, or it is a zero-value zero-token placeholder. A kept lock also
+ * keeps the token category. The satoshi and fungible amounts are the master's to account: an authorized transfer
+ * debits them, and a call that names no transfer leaves them on the lock. A master that can retire pins it only while
+ * an output carries its minting NFT: a transaction that recreates no master is the destroy path (selfdestruct), whose
+ * covenant accounts for the freed value and whose one output leaves none at this index. The category-only covenant is
  * the framed container; its change is not at this input's index, so this pin is not part of that script.
  */
-function directMasterOutputPin(): Script {
-  return [
+function directMasterOutputPin(retires: boolean): Script {
+  const pin: Script = [
     Op.OP_INPUTINDEX,
     Op.OP_DUP,
     Op.OP_OUTPUTBYTECODE,
@@ -2443,14 +2519,30 @@ function directMasterOutputPin(): Script {
     Op.OP_NUMEQUALVERIFY,
     Op.OP_ENDIF,
   ];
+  if (!retires) return pin;
+  return [
+    // [masterCategory, j]: j is the master's index when it is recreated there, else the first output carrying a
+    // master, else the last output. A master that continues is recreated at its own index; only a retiring one walks.
+    Op.OP_2DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUAL,
+    Op.OP_NOTIF,
+    Op.OP_DROP, Op.OP_1NEGATE,
+    Op.OP_BEGIN,
+    Op.OP_1ADD,
+    Op.OP_2DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUAL,
+    Op.OP_OVER, Op.OP_1ADD, Op.OP_TXOUTPUTCOUNT, Op.OP_NUMEQUAL, Op.OP_BOOLOR,
+    Op.OP_UNTIL,
+    Op.OP_ENDIF,
+    Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUAL,
+    Op.OP_IF, ...pin, Op.OP_ENDIF,
+  ];
 }
 
 /**
  * `[]` -> `[]`. Framed token container master path.
  *
- * The framed convention builds containers without a master lock and its SDK has no container output layout, so
- * the container covenant itself keeps the custody: the output at this input's index recreates the container's
- * lock, full token category, fungible amount, NFT commitment and satoshi value (audit FRAMED-CONT-1).
+ * The framed convention builds containers without a master lock, so the container covenant itself keeps the custody:
+ * the output at this input's index recreates the container's lock, full token category, fungible amount, NFT
+ * commitment and satoshi value (audit FRAMED-CONT-1).
  */
 function framedTokenContainerKeep(): Script {
   return [
@@ -2464,90 +2556,61 @@ function framedTokenContainerKeep(): Script {
 }
 
 /**
+ * `[]` -> `[]`. The accounted framed container's master path: the container of a framed contract whose code pays
+ * tokens from it.
+ *
+ * The output at this input's index recreates the container's lock, full token category, NFT commitment and at least
+ * its satoshi value, or, once drained, is tokenless. The fungible amount is the master's to account: every master of
+ * such a contract keeps each container its entry does not name, and conserves the ones it names against the sends it
+ * pins (spec 4b).
+ */
+function accountedTokenContainerKeep(): Script {
+  return [
+    Op.OP_INPUTINDEX,
+    Op.OP_DUP, Op.OP_OUTPUTBYTECODE, Op.OP_INPUTINDEX, Op.OP_UTXOBYTECODE, Op.OP_EQUAL,
+    Op.OP_IF,
+    Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
+    Op.OP_DUP, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
+    Op.OP_OUTPUTVALUE, Op.OP_INPUTINDEX, Op.OP_UTXOVALUE, Op.OP_GREATERTHANOREQUAL, Op.OP_VERIFY,
+    Op.OP_ELSE,
+    Op.OP_OUTPUTTOKENCATEGORY, Op.OP_0, Op.OP_EQUALVERIFY,
+    Op.OP_ENDIF,
+  ];
+}
+
+/**
  * Build the token container covenant script for holding foreign tokens on behalf
  * of a stateful master contract.
  *
- * Two spending paths:
- * - flag=1 (master-authorized): verifies minting NFT at masterInputIndex
- * - flag=0 (merge): verifies output preserves locking bytecode
+ * One spending path, taken with the flag exactly 1: the minting NFT at masterInputIndex authorizes the spend, and the
+ * keep the variant names holds the output at this input's index. There is no permissionless merge path: it pinned
+ * neither an NFT's commitment nor its capability, so it let anyone rewrite a mutable NFT's commitment or mint from a
+ * minting NFT the container held, and a framed master owns a container by the `<index> OP_1` its unlocking starts
+ * with (spec 4b).
  *
- * Unlocking script: `<masterInputIndex | mergeOutputIndex> <flag>`
+ * Unlocking script: `<masterInputIndex> <flag = 1>`
  *
  * @param categoryId - 32-byte master contract's token category ID
  * @param tokenContainerCategoryId - 32-byte token container's token category (salt for unique address)
+ * @param options.accounted - without a master lock, the accounted framed container (`accountedTokenContainerKeep`)
+ * @param options.masterRetires - with a master lock, the destroy arm (`containerMasterRetires`)
  */
 export function buildTokenContainerCovenantScript(
   categoryId: Uint8Array,
   tokenContainerCategoryId: Uint8Array,
   masterLock?: Uint8Array,
+  options: { readonly accounted?: boolean; readonly masterRetires?: boolean } = {},
 ): Script {
   const catInternal = categoryId.slice().reverse();
+  const retires = masterLock !== undefined && options.masterRetires === true;
   return [
-    // Stack: <masterInputIndex | mergeOutputIndex> <flag>
-    Op.OP_IF,
-    // Master path: the contract's own locking bytecode, not a second minting NFT of this category.
+    Op.OP_1, Op.OP_NUMEQUALVERIFY,
+    // The contract's own locking bytecode, not a second minting NFT of this category.
     ...bindMintingAuthorityLock(masterLock),
-    Op.OP_UTXOTOKENCATEGORY,
-    encodeInt(32n),
-    Op.OP_SPLIT,
-    Op.OP_2,
-    Op.OP_EQUALVERIFY,
-    catInternal,
-    Op.OP_EQUALVERIFY,
-    ...(masterLock !== undefined ? directMasterOutputPin() : framedTokenContainerKeep()),
-    Op.OP_ELSE,
-    // Merge path: output preserves locking bytecode, value, FT amount, and category
-    Op.OP_DUP,
-    Op.OP_DUP,
-    Op.OP_DUP, // need mergeOutputIndex four times: bytecode, value, tokenAmount, tokenCategory
-    Op.OP_OUTPUTBYTECODE,
-    Op.OP_INPUTINDEX,
-    Op.OP_UTXOBYTECODE,
-    Op.OP_EQUALVERIFY, // bytecode preservation
-    // Value preservation: inputValue <= outputValue (outputValue >= inputValue)
-    Op.OP_OUTPUTVALUE,
-    Op.OP_INPUTINDEX,
-    Op.OP_UTXOVALUE,
-    Op.OP_GREATERTHANOREQUAL,
-    Op.OP_VERIFY,
-    // FT amount preservation: inputAmount <= outputAmount (outputAmount >= inputAmount)
-    Op.OP_OUTPUTTOKENAMOUNT,
-    Op.OP_INPUTINDEX,
-    Op.OP_UTXOTOKENAMOUNT,
-    Op.OP_GREATERTHANOREQUAL,
-    Op.OP_VERIFY,
-    // Category preservation: mergeOutput category == input category
-    Op.OP_OUTPUTTOKENCATEGORY, // uses 4th copy of mergeOutputIndex
-    Op.OP_INPUTINDEX,
-    Op.OP_UTXOTOKENCATEGORY,
-    Op.OP_EQUALVERIFY,
-    // Single-input constraint: verify no other input shares this locking bytecode
-    // Prevents double-merge attacks where multiple UTXOs are merged to a single output
-    Op.OP_INPUTINDEX,
-    Op.OP_UTXOBYTECODE, // [myLbc]
-    Op.OP_TXINPUTCOUNT,
-    Op.OP_1SUB, // [myLbc, i=last_input_idx]
-    Op.OP_BEGIN,
-    Op.OP_DUP,
-    Op.OP_INPUTINDEX,
-    Op.OP_NUMEQUAL, // [myLbc, i, isMe]
-    Op.OP_NOTIF,
-    Op.OP_DUP,
-    Op.OP_UTXOBYTECODE, // [myLbc, i, otherLbc]
-    Op.OP_2,
-    Op.OP_PICK, // [myLbc, i, otherLbc, myLbc]
-    Op.OP_EQUAL,
-    Op.OP_NOT,
-    Op.OP_VERIFY, // verify otherLbc != myLbc
-    Op.OP_ENDIF,
-    Op.OP_1SUB, // [myLbc, i-1]
-    Op.OP_DUP,
-    encodeInt(0n),
-    Op.OP_LESSTHAN, // [myLbc, i-1, i-1<0]
-    Op.OP_UNTIL, // [myLbc, i-1]
-    Op.OP_DROP,
-    Op.OP_DROP, // cleanup
-    Op.OP_ENDIF,
+    ...masterCategoryRead(retires),
+    encodeInt(32n), Op.OP_SPLIT, Op.OP_2, Op.OP_EQUALVERIFY, catInternal, Op.OP_EQUALVERIFY,
+    ...(masterLock !== undefined ? directMasterOutputPin(retires)
+      : options.accounted === true ? accountedTokenContainerKeep() : framedTokenContainerKeep()),
     // Salt for unique address per token container category
     tokenContainerCategoryId,
     Op.OP_DROP,
@@ -2580,24 +2643,26 @@ export function buildTokenContainerCovenantBytecode(
  * - flag=0 (merge path): verifies output preserves locking bytecode (UTXO consolidation)
  *
  * @param categoryId - 32-byte master contract's token category (also used as salt for unique address)
+ * @param options.masterRetires - with a master lock, the destroy arm (`containerMasterRetires`)
  */
 export function buildSatoshiContainerCovenantScript(
-  categoryId: Uint8Array, masterLock?: Uint8Array,
+  categoryId: Uint8Array, masterLock?: Uint8Array, options: { readonly masterRetires?: boolean } = {},
 ): Script {
   const catInternal = categoryId.slice().reverse();
+  const retires = masterLock !== undefined && options.masterRetires === true;
   return [
     // Stack: <masterInputIndex | mergeOutputIndex> <flag>
     Op.OP_IF,
     // === Master path (flag=1): the contract's own locking bytecode, not a keeper baton ===
     ...bindMintingAuthorityLock(masterLock),
-    Op.OP_UTXOTOKENCATEGORY,
+    ...masterCategoryRead(retires),
     encodeInt(32n),
     Op.OP_SPLIT,
     Op.OP_2,
     Op.OP_EQUALVERIFY, // minting capability
     catInternal,
     Op.OP_EQUALVERIFY, // expected category
-    ...(masterLock !== undefined ? directMasterOutputPin() : []),
+    ...(masterLock !== undefined ? directMasterOutputPin(retires) : []),
     Op.OP_ELSE,
     // === Merge path (flag=0): output preserves locking bytecode, value, token category, and FT amount ===
     Op.OP_DUP, // preserve mergeOutputIndex for value check

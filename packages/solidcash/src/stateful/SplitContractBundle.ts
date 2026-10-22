@@ -12,6 +12,11 @@ import {
 import {
   ContractFactory, type DeployedContract, type DeployContractOptions, selectGenesisFundingUtxo,
 } from './ContractFactory.js';
+import type { PublishedRegistry } from '../bcmr/deployment.js';
+import type { IdentityRecord } from '../bcmr/identity.js';
+import { stageBroadcasts } from '../framed/proxy/staged-broadcasts.js';
+import type { StateValueType } from '../types/state-inference.js';
+import { genesisOutpointKey } from './genesis-reservations.js';
 import { stripTrailingEthersOverrides } from './sc-build-namespaces.js';
 import {
   type ConnectedStatefulContract, type ContractRunner, StatefulContract, StatefulFunctionCall,
@@ -29,6 +34,8 @@ export interface SplitDeploymentRecord {
 
 export class SplitContract {
   readonly call: Record<string, (...args: FunctionArgument[]) => StatefulFunctionCall>;
+  /** ethers-v5 `contract.callStatic.fn(...)`: a function's return value, read without sending. */
+  readonly callStatic: Record<string, (...args: FunctionArgument[]) => Promise<StateValueType>>;
 
   constructor(
     readonly bundle: SplitArtifactBundle,
@@ -41,6 +48,11 @@ export class SplitContract {
         ? (...args: FunctionArgument[]) => this.getFunction(prop)(...stripTrailingEthersOverrides(args))
         : undefined,
     }) as Record<string, (...args: FunctionArgument[]) => StatefulFunctionCall>;
+    this.callStatic = new Proxy({}, {
+      get: (_target, prop) => typeof prop === 'string'
+        ? (...args: FunctionArgument[]) => this.getFunction(prop)(...stripTrailingEthersOverrides(args)).staticCall()
+        : undefined,
+    }) as Record<string, (...args: FunctionArgument[]) => Promise<StateValueType>>;
     // ethers/typechain parity: expose ABI functions directly as well as through `.call`.
     for (const route of bundle.manifest.routes) {
       if (route.function in this) continue;
@@ -65,6 +77,8 @@ export class SplitContract {
   get address(): string { return this.root.target; }
   get categoryId(): string { return this.root.categoryId; }
   getAddress(): Promise<string> { return Promise.resolve(this.address); }
+  /** The logical contract's state, which its root holds. */
+  getState(): Promise<Record<string, StateValueType>> { return this.root.getState(); }
 
   async waitForDeployment(): Promise<this> {
     for (const transaction of this.deploymentTransactions as Array<{ wait?: () => Promise<unknown> }>) {
@@ -81,6 +95,16 @@ export class SplitContract {
   deployed(): Promise<this> { return this.waitForDeployment(); }
 
   deploymentTransaction(): unknown { return this.deploymentTransactions.at(-1); }
+
+  /** The root genesis's BCMR identity output. */
+  deploymentIdentity(): IdentityRecord | undefined {
+    return (this.root as { deploymentIdentity?: () => IdentityRecord | undefined }).deploymentIdentity?.();
+  }
+
+  /** The registry the root genesis published, if it published one. */
+  deploymentRegistry(): PublishedRegistry | undefined {
+    return (this.root as { deploymentRegistry?: () => PublishedRegistry | undefined }).deploymentRegistry?.();
+  }
 
   getFunction(name: string): (...args: FunctionArgument[]) => StatefulFunctionCall {
     const route = this.bundle.manifest.routes.find((r) => r.function === name);
@@ -156,11 +180,14 @@ export class SplitContractBundle {
     const rootConstructorCount = this.bundle.root.constructorInputs.length - facetCount;
     const rootConstructorArgs = constructorArgs.slice(0, rootConstructorCount);
     const rootInitArgs = constructorArgs.slice(rootConstructorCount);
+    // A coin the deployment names for the token's category funds none of the bundle's geneses.
+    const named = new Set([options.nativeToken?.funding]
+      .flatMap((coin) => (coin === undefined ? [] : [genesisOutpointKey(coin.txid, coin.vout)])));
     const rootFunding = options.fundingUtxo ?? await selectGenesisFundingUtxo(
-      signer!, this.bundle.root, new Set(), this.bundle.manifest.facets.length + 1,
+      signer!, this.bundle.root, named, this.bundle.manifest.facets.length + 1,
     );
     const rootCategory = rootFunding.txid;
-    const reserved = new Set([`${rootFunding.txid}:${rootFunding.vout}`]);
+    const reserved = new Set([...named, genesisOutpointKey(rootFunding.txid, rootFunding.vout)]);
     const facets: Record<string, DeployedContract> = {};
     const transactions: unknown[] = [];
 
@@ -214,11 +241,16 @@ export class SplitContractBundle {
     const nonceReservation = signer?.reserveTransactionNonce();
     const logicalAddress = nonceReservation
       ? deriveLogicalCreateAddress(signer!.getAddress(), nonceReservation.nonce) : undefined;
+    // A root that publishes metadata or mints a token checks the contract's answers, which its facets give, and
+    // refuses before anything is broadcast: the facets' geneses are held until the root's is built.
+    const staging = options.bcmr === undefined && options.nativeToken === undefined
+      ? undefined : stageBroadcasts(provider);
+    const through = staging === undefined ? {} : { provider: staging.provider };
     try {
       for (const info of this.bundle.manifest.facets) {
         const { artifact, override } = facetPreflight[info.name];
         const facet = await new ContractFactory(artifact, this.runner)
-          .deploy(StatefulContract.libraryBrand(rootCategory), { ...override!, logicalNonce: false });
+          .deploy(StatefulContract.libraryBrand(rootCategory), { ...override!, ...through, logicalNonce: false });
         facets[info.name] = facet;
         transactions.push(facet.deploymentTransaction());
       }
@@ -243,9 +275,14 @@ export class SplitContractBundle {
       }
       const root = await new ContractFactory(this.bundle.root, this.runner)
         .deploy(...rootConstructorArgs, ...facetLinks, ...rootInitArgs, {
-          ...rootOverrides, fundingUtxo: rootFunding, logicalNonce: false,
+          ...rootOverrides, ...through, fundingUtxo: rootFunding, logicalNonce: false,
+          splitFacets: {
+            artifacts: Object.values(this.bundle.facets),
+            route: (probeRoot) => new SplitContract(this.bundle, probeRoot, facets),
+          },
         });
       transactions.push(root.deploymentTransaction());
+      await staging?.release();
       if (logicalAddress) (root as StatefulContract)._logicalAddress = logicalAddress;
       nonceReservation?.commit();
       return new SplitContract(this.bundle, root, facets, transactions);

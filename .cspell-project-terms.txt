@@ -56,6 +56,11 @@ ASRC
 assertable
 assigne
 ASTJSON
+authbase
+authbases
+authchains
+authguard
+authhead
 autoderivation
 autoderive
 autoderives
@@ -63,6 +68,7 @@ autogeneration
 Automine
 AUTORESOLVE
 backrefs
+bafkrei
 bakeable
 bandoffset
 basearg
@@ -83,6 +89,7 @@ bigbody
 bignum
 bignums
 bips
+bitjson
 bitmask
 bitmasks
 bitnot
@@ -403,6 +410,7 @@ greenlight
 griefable
 grindable
 halvings
+hashlock
 hasnt't
 Hbind
 hdsigner
@@ -805,6 +813,7 @@ Preinstalling
 Prelowered
 premint
 Preminted
+premints
 preorder
 prepass
 prereq

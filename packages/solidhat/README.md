@@ -48,7 +48,7 @@ is additive:
 
 - `hardhat.config.*`, Solidity sources, EVM tests, and existing scripts are preserved.
 - Existing EVM artifacts remain in `artifacts`; SolidCash owns only `artifacts/solidcash`.
-- Existing cache data remains in `cache`; SolidCash owns only `cache/solidcash`.
+- Existing cache data in `cache` is untouched; the SolidCash compile cache lives in `~/.cache/solidcash`.
 - A separate `solidcash.config.ts` and `vitest.solidhat.config.ts` are created.
 - Existing `README.md` files are never replaced.
 
@@ -133,7 +133,6 @@ export default defineConfig({
     contracts: 'contracts',
     tests: 'test',
     artifacts: 'artifacts',
-    cache: 'cache',
   },
   compiler: {
     evmCompat: true,
@@ -170,6 +169,10 @@ compiler uses the active input and NFT commitment limits for sharding and state 
 limits for preflight validation. Dust relay policy is disabled on mocknet by default and can be re-enabled above.
 
 `typegen.targets[].sourceDir` can preserve an original Solidity source layout when the compiled fixture sources live elsewhere (for example, lightweight BCH test stubs). It affects generated module paths only; artifacts remain the source of runtime data and types.
+
+`paths.cache` defaults to `~/.cache/solidcash`. Compile trusts its entries as compiled output, so anyone who can
+write the cache can substitute artifacts. A cache inside the project is ignored unless the config also sets
+`trustProjectCache: true`; never set it for a cloned repository.
 
 Compiler options are forwarded to `solidc`. A Hardhat config containing an explicit `solidcash` section remains
 supported, but a standalone SolidCash config is recommended because it avoids changing the EVM toolchain.
@@ -223,7 +226,7 @@ const QualifiedCounter = await ethers.getContractFactory('contracts/Counter.scas
 Fully-qualified names disambiguate contracts which share a name. Generated TypeChain modules retain the source
 tree and export all contracts declared in a source file; stale files are removed by atomic regeneration.
 
-`solidhat clean` removes only `artifacts/solidcash` and `cache/solidcash`.
+`solidhat clean` removes only `artifacts/solidcash` and the compile cache's `solidcash` directory.
 
 ## Vitest integration
 

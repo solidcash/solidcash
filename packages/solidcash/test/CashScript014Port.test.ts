@@ -25,7 +25,7 @@ import { placeholderP2PKHUnlocker } from '../src/walletconnect-utils.js';
 import { aliceAddress, alicePriv, alicePub, aliceTokenAddress, bobAddress } from './fixture/vars.js';
 import { compileString } from './direct-compile.js';
 
-// Behaviour ported from CashScript 0.14.0 (see docs/framed/UPSTREAM_0140_PORT.md for the upstream commits).
+// Behaviour ported from CashScript 0.14.0.
 
 const alice = new SignatureTemplate(alicePriv);
 

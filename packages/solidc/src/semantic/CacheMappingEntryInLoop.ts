@@ -64,6 +64,7 @@ import { createDefaultValueExpression } from '../ast/defaults.js';
 import {
   kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
 } from './KernelEntryActivation.js';
+import { blockEndsWithReturn, holdsReturn } from './EarlyReturnTransformation.js';
 
 const PREFIX = '__vmapcache_';
 /** Compiler-owned immutable locals which preserve a mapping key's value at a source-order boundary. */
@@ -522,6 +523,43 @@ function closeBeforeGuardedDelete(
   return { lastWrite, writeOnly: !reads };
 }
 
+/** True when every path through `node` that completes sets `<dirty> = true`; an arm that can only fail completes none. */
+function setsDirtyOnEveryPath(node: Node, dirty: string): boolean {
+  if (node instanceof AssignNode) {
+    return node.identifier.name === dirty && node.expression instanceof BoolLiteralNode && node.expression.value;
+  }
+  if (node instanceof BlockNode) return (node.statements ?? []).some((statement) => setsDirtyOnEveryPath(statement, dirty));
+  if (node instanceof UncheckedNode) return setsDirtyOnEveryPath(node.block, dirty);
+  if (node instanceof BranchNode) {
+    const settles = (arm: BlockNode | undefined): boolean => arm !== undefined
+      && (setsDirtyOnEveryPath(arm, dirty) || (blockEndsWithReturn(arm, true) && !holdsReturn(arm)));
+    return settles(node.ifBlock) && settles(node.elseBlock);
+  }
+  return false;
+}
+
+/** `statements` without the `<dirty> = true` marks the redirect left in them, once no write-back reads the flag. */
+function withoutDirtyMarks(statements: StatementNode[], dirty: string): StatementNode[] {
+  const isMark = (item: unknown): boolean => item instanceof AssignNode && item.identifier.name === dirty;
+  const strip = (node: Node): void => {
+    const fields = node as unknown as Record<string, unknown>;
+    for (const key of Object.keys(node)) {
+      if (BACK_REFERENCES.has(key)) continue;
+      const value = fields[key];
+      if (Array.isArray(value)) {
+        const kept = value.some(isMark) ? value.filter((item) => !isMark(item)) : value;
+        fields[key] = kept;
+        for (const item of kept) if (item instanceof Node) strip(item);
+      } else if (value instanceof Node) {
+        strip(value);
+      }
+    }
+  };
+  const kept = statements.filter((statement) => !isMark(statement));
+  for (const statement of kept) strip(statement);
+  return kept;
+}
+
 /** The cache a whole-entry write flushes when `dirty` is that cache's dirty flag. */
 function flushedCache(write: Node | undefined, value: Node, dirty: Node): string | undefined {
   return write instanceof MappingAssignNode && write.arrayIndex === undefined && !write.arrayPush && !write.arrayPop
@@ -901,6 +939,16 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       const writes = item.span === undefined || item.span.lastWrite >= 0;
       const body = fn.body.statements ?? [];
       let stmts = body;
+      // A write-back that every path reaching it has marked dirty writes plainly; the flag lives on only while one
+      // write-back still reads it.
+      const settles = this.settlesWriteBack(guardPlan);
+      let gated = false;
+      const flushAt = (marked: boolean, loc: Node['location'], fromModifier?: string): StatementNode => {
+        gated ||= !(settles && marked);
+        return this.makeFlush(e.mapping, e.keys, local, dirty, loc, fromModifier, guardPlan, settles && marked);
+      };
+      const markedBy = (preceding: readonly StatementNode[]): boolean => preceding
+        .some((statement) => setsDirtyOnEveryPath(statement, dirty));
       if (writes) {
         // An anchored cache is declared at its anchor, so only a return reached from there on can find the entry
         // read and dirty. Flushing at an earlier return named the cache before its declaration (KashiPair: an
@@ -915,19 +963,18 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         }
         stmts = [
           ...body.slice(0, anchorAt),
-          ...this.insertFlushesBeforeReturns(body.slice(anchorAt, closeAt + 1), e.mapping, e.keys, local, dirty,
-            guardPlan),
+          ...this.insertFlushesBeforeReturns(body.slice(anchorAt, closeAt + 1), dirty, flushAt),
         ];
         if (closing !== undefined) {
-          const flush = this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier, guardPlan);
+          const flush = flushAt(markedBy(stmts), fn.body.location, e.fromModifier);
           flushedAfter.set(closing, flush);
           stmts = [...stmts, flush, ...body.slice(closeAt + 1)];
         } else if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
-          stmts = [...stmts, this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier,
-            guardPlan)];
+          stmts = [...stmts, flushAt(markedBy(stmts), fn.body.location, e.fromModifier)];
         }
+        if (!gated) stmts = withoutDirtyMarks(stmts, dirty);
       }
-      const declarations = writes ? [cache, dirtyLocal] : [cache];
+      const declarations = writes && gated ? [cache, dirtyLocal] : [cache];
       if (anchor !== undefined) {
         // The entry is read at its first use: a key that is a body local is only declared there, and a call before
         // that use would run between the read and the access it serves. Every later read observes the cache, as the
@@ -943,7 +990,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
           snapshotPrefixLength += 1;
         }
         stmts = [
-          ...stmts.slice(0, snapshotPrefixLength), cache, dirtyLocal, ...stmts.slice(snapshotPrefixLength),
+          ...stmts.slice(0, snapshotPrefixLength), ...declarations, ...stmts.slice(snapshotPrefixLength),
         ];
       }
       fn.body.statements = stmts;
@@ -1780,10 +1827,24 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     return found;
   }
 
+  /**
+   * A write-back may drop its dirty guard where nothing replays or moves it as the guarded flush: not in a framed
+   * body, whose write activation reads the flag; not under the message bus, whose routes clone the body and whose
+   * CloseDirectEntryCaches moves the flush (`composesAliases` holds only without it); not for a guarded kernel
+   * activation.
+   */
+  private settlesWriteBack(
+    guardPlan?: { activation: ExternalCallExpression; valueSource?: { expression: string; parameters: string[] } },
+  ): boolean {
+    return this.composesAliases && !this.callsCloseSegments && !this.routeSnapshotKeysOnly && guardPlan === undefined;
+  }
+
+  /** `if (<dirty>) { m[k] = local; }`, or the plain `m[k] = local` once `settled` says every path set the flag. */
   private makeFlush(
     mapping: string, keys: KeyKind[], local: string, dirty: string, loc: Node['location'], fromModifier?: string,
     guardPlan?: { activation: ExternalCallExpression; valueSource?: { expression: string; parameters: string[] } },
-  ): BranchNode {
+    settled = false,
+  ): StatementNode {
     const rhs = new IdentifierNode(local);
     rhs.location = loc;
     const keyNodes = keys.map((key) => buildKeyNode(key, loc) as ExpressionNode);
@@ -1791,6 +1852,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     flush.fromModifier = fromModifier;
     flush.location = loc;
     flush.kernelValueSource = guardPlan?.valueSource;
+    if (settled) return flush;
     const flushBlock = new BlockNode([flush]);
     flushBlock.location = loc;
     const condition = new IdentifierNode(dirty);
@@ -1806,16 +1868,17 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 
   // Insert a `m[k] = local` flush before every return (recursing into if/switch/try/blocks, NOT loops - in-loop
   // returns were already rewritten to flag+break by DesugarReturnInLoop). Mirrors CacheDynamicArrayInLoop.
+  // `marked` says every path here has already set the dirty flag.
   private insertFlushesBeforeReturns(
-    stmts: StatementNode[], mapping: string, keys: KeyKind[], local: string, dirty: string,
-    guardPlan?: { activation: ExternalCallExpression; valueSource?: { expression: string; parameters: string[] } },
+    stmts: StatementNode[], dirty: string,
+    flushAt: (marked: boolean, loc: Node['location']) => StatementNode, marked = false,
   ): StatementNode[] {
     const rec = (s: StatementNode[]): StatementNode[] =>
-      this.insertFlushesBeforeReturns(s ?? [], mapping, keys, local, dirty, guardPlan);
+      this.insertFlushesBeforeReturns(s ?? [], dirty, flushAt, marked);
     const out: StatementNode[] = [];
     for (const stmt of stmts) {
       if (stmt instanceof ReturnNode) {
-        out.push(this.makeFlush(mapping, keys, local, dirty, stmt.location, undefined, guardPlan));
+        out.push(flushAt(marked, stmt.location));
         out.push(stmt);
         continue;
       }
@@ -1834,6 +1897,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         stmt.statements = rec(stmt.statements ?? []);
       }
       out.push(stmt);
+      marked ||= setsDirtyOnEveryPath(stmt, dirty);
     }
     return out;
   }

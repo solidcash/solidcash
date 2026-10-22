@@ -3,12 +3,13 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { buildTokenContainerCovenantScript, type AbiFunction } from '@solidcash/utils';
+import { buildTokenContainerCovenantScript, type AbiFunction, type TokenContainerAccessAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { Utxo } from '../interfaces.js';
 import { scriptToLockingBytecode } from '../utils.js';
 import {
   createTokenContainerUnlocker,
+  directContainerOptions,
   directConventionMasterLock,
   getTokenContainerAddress,
 } from './covenant-helpers.js';
@@ -28,6 +29,25 @@ export type LoadCreateBuilderTokenContainersResult = {
 };
 
 /**
+ * The category a token-container access names: the contract's own, an argument, or the immutable state variable the
+ * artifact publishes for it, read from the state the call loaded.
+ */
+export function tokenContainerKeyValue(
+  access: TokenContainerAccessAbi, categoryId: string, args: readonly unknown[], keyParamIndex: number,
+  stateValues: Readonly<Record<string, unknown>> | undefined,
+): unknown {
+  if (access.keySource === 'own') return hexToBin(categoryId);
+  if (access.keySource !== 'state') return keyParamIndex >= 0 ? args[keyParamIndex] : undefined;
+  const value = access.keyStateVariable === undefined ? undefined : stateValues?.[access.keyStateVariable];
+  if (value === undefined) {
+    throw new Error(
+      `Token container category '${access.keyStateVariable}' is a state variable the call did not load`,
+    );
+  }
+  return value;
+}
+
+/**
  * Resolve token-container categories from function args, build covenant locks,
  * and fetch on-chain container UTXOs when present.
  */
@@ -37,6 +57,8 @@ export async function loadCreateBuilderTokenContainers(
     abiFunction: AbiFunction | undefined;
     args: readonly FunctionArgument[];
     overrides: { blockBase?: number } | undefined;
+    /** The state the call loaded, for a container keyed by an immutable state variable. */
+    stateValues?: Readonly<Record<string, unknown>>;
     timing?: (label: string) => void;
   },
 ): Promise<LoadCreateBuilderTokenContainersResult> {
@@ -50,19 +72,19 @@ export async function loadCreateBuilderTokenContainers(
     for (let slotIndex = 0; slotIndex < tokenContainerAccesses.length; slotIndex++) {
       const access = tokenContainerAccesses[slotIndex];
       const keyParamIndex = abiFunction!.inputs.findIndex((inp) => inp.name === access.keyParam);
-      if (keyParamIndex < 0 && access.keySource !== 'own') {
+      if (keyParamIndex < 0 && access.keySource !== 'own' && access.keySource !== 'state') {
         throw new Error(
           `Token container key parameter '${access.keyParam}' not found in function inputs`,
         );
       }
-      const tokenContainerCategoryValue = access.keySource === 'own'
-        ? hexToBin(host.categoryId) : args[keyParamIndex];
+      const tokenContainerCategoryValue = tokenContainerKeyValue(access, host.categoryId, args, keyParamIndex,
+        params.stateValues);
       const tokenContainerCategoryId = tokenContainerCategoryValue instanceof Uint8Array
         ? binToHex(tokenContainerCategoryValue) : String(tokenContainerCategoryValue);
 
       const covenantScript = buildTokenContainerCovenantScript(
         hexToBin(host.categoryId), hexToBin(tokenContainerCategoryId),
-        directConventionMasterLock(host.inner as any),
+        directConventionMasterLock(host.inner as any), directContainerOptions(host.inner as any),
       );
       const lockingBytecode = scriptToLockingBytecode(covenantScript, host.inner.addressType);
       tokenContainerLockingBytecodes.set(tokenContainerCategoryId, lockingBytecode);

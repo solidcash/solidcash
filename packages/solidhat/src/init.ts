@@ -4,6 +4,11 @@ import {
 import { basename, dirname, join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 
+// A generated project pins this SolidHat release and the vitest range it is tested with.
+const OWN_MANIFEST = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+  version: string; devDependencies?: Record<string, string>;
+};
+
 export type PackageManager = 'npm' | 'yarn' | 'pnpm';
 export type Template = 'typescript' | 'javascript' | 'empty';
 export interface CompatibilityTarget { hardhat: 2 | 3; ethers: 5 | 6 }
@@ -59,8 +64,8 @@ function mergePackageJson(current: Record<string, any>, typescript: boolean): Re
   };
   for (const [name, command] of Object.entries(desiredScripts)) scripts[name] ??= command;
   const devDependencies = { ...(current.devDependencies ?? {}) };
-  devDependencies['@solidcash/solidhat'] ??= '^0.13.0';
-  devDependencies.vitest ??= '^4.0.15';
+  devDependencies['@solidcash/solidhat'] ??= `^${OWN_MANIFEST.version}`;
+  devDependencies.vitest ??= OWN_MANIFEST.devDependencies?.vitest ?? '^5.0.4';
   if (typescript) {
     devDependencies.typescript ??= '^5.9.2';
   }
@@ -69,7 +74,7 @@ function mergePackageJson(current: Record<string, any>, typescript: boolean): Re
 
 function configTemplate(extension: 'ts' | 'js', target: CompatibilityTarget): string {
   const annotation = extension === 'ts' ? "import { defineConfig } from '@solidcash/solidhat/config';" : "import { defineConfig } from '@solidcash/solidhat/config';";
-  return `${annotation}\n\nexport default defineConfig({\n  paths: {\n    contracts: 'contracts',\n    artifacts: 'artifacts',\n    cache: 'cache',\n    tests: 'test',\n  },\n  compiler: { evmCompat: true },\n  typegen: {\n    targets: [{ target: 'ethers${target.ethers}', layout: 'typechain', outDir: 'typechain-types' }],\n  },\n  mnemonic: process.env.SOLIDCASH_MNEMONIC,\n  accounts: { count: 1, satoshis: 100_000_000n },\n  networks: {\n    mock: { type: 'mock' },\n    regtest: {\n      type: 'regtest',\n      rpc: {\n        url: process.env.REGTEST_RPC_URL ?? 'http://127.0.0.1:18443',\n        user: process.env.REGTEST_RPC_USER ?? 'user',\n        password: process.env.REGTEST_RPC_PASSWORD ?? 'password',\n      },\n    },\n    chipnet: { type: 'electrum', network: 'chipnet', mnemonic: process.env.SOLIDCASH_MNEMONIC_CHIPNET },\n    mainnet: { type: 'electrum', network: 'mainnet', mnemonic: process.env.SOLIDCASH_MNEMONIC_MAINNET },\n  },\n  defaultNetwork: 'mock',\n});\n`;
+  return `${annotation}\n\nexport default defineConfig({\n  paths: {\n    contracts: 'contracts',\n    artifacts: 'artifacts',\n    tests: 'test',\n  },\n  compiler: { evmCompat: true },\n  typegen: {\n    targets: [{ target: 'ethers${target.ethers}', layout: 'typechain', outDir: 'typechain-types' }],\n  },\n  mnemonic: process.env.SOLIDCASH_MNEMONIC,\n  accounts: { count: 1, satoshis: 100_000_000n },\n  networks: {\n    mock: { type: 'mock' },\n    regtest: {\n      type: 'regtest',\n      rpc: {\n        url: process.env.REGTEST_RPC_URL ?? 'http://127.0.0.1:18443',\n        user: process.env.REGTEST_RPC_USER ?? 'user',\n        password: process.env.REGTEST_RPC_PASSWORD ?? 'password',\n      },\n    },\n    chipnet: { type: 'electrum', network: 'chipnet', mnemonic: process.env.SOLIDCASH_MNEMONIC_CHIPNET },\n    mainnet: { type: 'electrum', network: 'mainnet', mnemonic: process.env.SOLIDCASH_MNEMONIC_MAINNET },\n  },\n  defaultNetwork: 'mock',\n});\n`;
 }
 
 function dependencyMajor(pkg: Record<string, any>, name: string): number | undefined {
@@ -109,7 +114,7 @@ function projectReadme(
   const install = manager === 'yarn' ? 'yarn' : `${manager} install`;
   const run = (script: string): string => (manager === 'npm' ? `npm run ${script}` : `${manager} ${script}`);
   const extension = template === 'javascript' ? 'js' : 'ts';
-  return `# ${name}\n\nA SolidCash project powered by [SolidHat](https://www.npmjs.com/package/@solidcash/solidhat).\n\n## Get started\n\n\`\`\`sh\n${install}\n${run('solidhat:compile')}\n${run('solidhat:test')}\n${run('solidhat:deploy')} -- --network regtest\n\`\`\`\n\n${sample}\n\n## Project layout\n\n\`\`\`text\ncontracts/                 SolidCash source files\ntest/                      Vitest contract tests\nscripts/deploy.${extension}          Network-selectable deployment script\nsolidcash.config.${extension}        Compiler, paths, and network settings\nvitest.solidhat.config.${extension}  Hardhat/Ethers compatibility aliases\nartifacts/solidcash/        Generated contract artifacts\ntypechain-types/            Generated Ethers ${target.ethers} contract bindings\ncache/solidcash/            Incremental compilation cache\n\`\`\`\n\nThis project targets Hardhat ${target.hardhat} and Ethers ${target.ethers} compatibility through the tree-shakeable \`@solidcash/solidhat/hardhat${target.hardhat}\` and \`@solidcash/solidhat/ethers${target.ethers}\` entry points.\n\n## Commands\n\n- \`${run('solidhat:compile')}\` compiles the whole dependency graph, reuses unchanged roots, and updates bindings.\n- \`${run('solidhat:typegen')}\` regenerates bindings from existing artifacts.\n- \`${run('solidhat:test')}\` compiles first, then runs tests with \`vitest.solidhat.config.${extension}\`.\n- \`${run('solidhat:deploy')} -- --network regtest\` runs the conventional deployment script against BCHN regtest.\n- \`${run('solidhat:clean')}\` removes generated artifacts, cache data, and configured bindings.\n\nEVM artifacts and Hardhat configuration can coexist with these namespaced outputs.\n`;
+  return `# ${name}\n\nA SolidCash project powered by [SolidHat](https://www.npmjs.com/package/@solidcash/solidhat).\n\n## Get started\n\n\`\`\`sh\n${install}\n${run('solidhat:compile')}\n${run('solidhat:test')}\n${run('solidhat:deploy')} -- --network regtest\n\`\`\`\n\n${sample}\n\n## Project layout\n\n\`\`\`text\ncontracts/                 SolidCash source files\ntest/                      Vitest contract tests\nscripts/deploy.${extension}          Network-selectable deployment script\nsolidcash.config.${extension}        Compiler, paths, and network settings\nvitest.solidhat.config.${extension}  Hardhat/Ethers compatibility aliases\nartifacts/solidcash/        Generated contract artifacts\ntypechain-types/            Generated Ethers ${target.ethers} contract bindings\n\`\`\`\n\nThe incremental compile cache lives in \`~/.cache/solidcash\`, outside the project.\n\nThis project targets Hardhat ${target.hardhat} and Ethers ${target.ethers} compatibility through the tree-shakeable \`@solidcash/solidhat/hardhat${target.hardhat}\` and \`@solidcash/solidhat/ethers${target.ethers}\` entry points.\n\n## Commands\n\n- \`${run('solidhat:compile')}\` compiles the whole dependency graph, reuses unchanged roots, and updates bindings.\n- \`${run('solidhat:typegen')}\` regenerates bindings from existing artifacts.\n- \`${run('solidhat:test')}\` compiles first, then runs tests with \`vitest.solidhat.config.${extension}\`.\n- \`${run('solidhat:deploy')} -- --network regtest\` runs the conventional deployment script against BCHN regtest.\n- \`${run('solidhat:clean')}\` removes generated artifacts, cache data, and configured bindings.\n\nEVM artifacts and Hardhat configuration can coexist with these namespaced outputs.\n`;
 }
 
 function gitignore(current = ''): string {

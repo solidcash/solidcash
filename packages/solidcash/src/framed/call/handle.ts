@@ -39,6 +39,7 @@ import { readFramedEntry, FramedReadError, type FramedReadResult } from '../read
 import { FramedCompositionRefusedError, type CompositionRefusal } from '../composer/index.js';
 import { framedSendQueue, framedSendResources, proxyHopSendsAreQueued } from '../queue/index.js';
 import { coinsAvailableForCallerFee } from '../../stateful/genesis-reservations.js';
+import { ownCoinRefusal } from '../deploy/own-coin.js';
 
 /** The handle a call is made through: the deployed artifact, its category, its provider and its signer. */
 export interface FramedHandleContract {
@@ -284,17 +285,22 @@ export class FramedFunctionCall {
   }
 }
 
-/** The caller's own coin: the largest tokenless UTXO at the signer's address, which pays the call's fee. */
+/**
+ * The caller's own coin, which pays the call's fee: the largest unreserved tokenless UTXO at the signer's address
+ * proven there from its own transaction (`ownCoinRefusal`), which refuses a BCMR identity output.
+ */
 async function callerCoin(provider: NetworkProvider, signer: Signer): Promise<Utxo | undefined> {
   const utxos = await provider.getUtxos(signer.getAddress());
   const tokenless = utxos.filter((utxo) => utxo.token === undefined);
-  const spendable = coinsAvailableForCallerFee(utxos);
-  if (spendable.length === 0 && tokenless.length > 0) {
-    throw new FramedCallError(
-      `the caller's address ${signer.getAddress()} holds only reserved genesis coins, which cannot pay a call`,
-    );
+  const spendable = coinsAvailableForCallerFee(utxos).sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1));
+  let refusal: string | undefined;
+  for (const utxo of spendable) {
+    refusal = await ownCoinRefusal(provider, utxo, signer.getLockingBytecode(), { role: 'caller' });
+    if (refusal === undefined) return utxo;
   }
-  return spendable.sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))[0];
+  if (tokenless.length === 0) return undefined;
+  throw new FramedCallError(`the caller's address ${signer.getAddress()} holds only reserved genesis coins and `
+    + `coins it cannot pay a call with${refusal === undefined ? '' : ` (${refusal})`}`);
 }
 
 /** The coin a simulation composes over in place of a caller's: its outpoint is never spent. */

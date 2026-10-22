@@ -17,7 +17,7 @@ import { expectScriptRejection } from '../test-util.js';
 import { callerOf, currentCaller, deploy } from './call/value-harness.js';
 
 /**
- * FRAMED-CONT-1 (docs/security-audit-2026-10-16.md): a standalone framed spend (no validator input) that handles
+ * FRAMED-CONT-1 (docs/security/security-audit-2026-10-16.md): a standalone framed spend (no validator input) that handles
  * no value used to leave its containers unprotected. The container covenants are built without a master lock for
  * the framed convention, and the master's container accounting only looked at the satoshi lock.
  *

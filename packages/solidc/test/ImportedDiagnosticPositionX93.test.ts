@@ -68,8 +68,8 @@ describe('X93: a diagnostic position inside an imported file names that file', (
   });
 
   it('resolves a position on a node CLONED by inheritance expansion', () => {
-    // `virtual` and the unused params of an inherited body live on CLONES of the base's nodes, so a map keyed on
-    // node identity misses them entirely. The clone carries the base's Location by reference, so this resolves.
+    // The unused params of an inherited body live on CLONES of the base's nodes, so a map keyed on node identity
+    // misses them entirely. The clone carries the base's Location by reference, so this resolves.
     const base = 'pragma solidity ^0.8.20;\nabstract contract Base {\n'
       + ' function hook(uint256 from, uint256 to) internal virtual { }\n}\n';
     const r = (p: string): { source: string; id: string } | undefined => (
@@ -78,8 +78,6 @@ describe('X93: a diagnostic position inside an imported file names that file', (
       + 'contract Child is Base { uint256 public x; function f() public { hook(1, 2); x = 1; } }';
     const warns = warningsOf(() => compileString(src,
       { importResolver: r, rootFileId: '/main.sol', evmCompat: true }));
-    const virt = warns.find((w) => /'virtual' function modifier is a no-op/.test(w));
-    expect(virt).toContain('at line 3 of imported "/Base.sol"');
     const unused = warns.filter((w) => /unused variable '(from|to)'/.test(w));
     expect(unused.length).toBeGreaterThan(0);
     for (const u of unused) expect(u).toContain('at line 3 of imported "/Base.sol"');

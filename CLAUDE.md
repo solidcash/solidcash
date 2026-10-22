@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+@AGENTS.md
+
 ## Project Overview
 
 SolidCash is a high-level language for Bitcoin Cash smart contracts. The repository is a monorepo with three packages under `packages/`:
@@ -80,8 +82,8 @@ docker compose -f docker-compose.regtest.yml down
    control flow, memory/Yul, storage pointers, arrays/mappings, function pointers, external calls, libraries,
    block oracles, and Solidity-compatibility forms. Read the adjacent ordering comments before moving a pass.
 4. **Semantic analysis**: `SymbolTableTraversal`, `TypeCheckTraversal`, and `EnsureFinalRequireTraversal` assign
-   symbols/layout and validate the lowered program. The final-require check warns by default and errors when
-   `enforceFinalRequire` is enabled.
+   symbols/layout and validate the lowered program. The final-require check errors by default
+   (`enforceFinalRequire: true`); disabling the option turns it into a warning.
 5. **Safety lowering**: `InjectLocktimeGuardTraversal` adds the anti-malleability guard when enabled, followed by
    `EarlyReturnTransformation` for balanced stack-oriented returns.
 6. **Code generation**: `GenerateTargetTraversal` emits Bitcoin Script plus source/debug metadata.
@@ -117,6 +119,17 @@ Shared across compiler and SDK: artifact types, ABI types, type system, script â
 - **Compiler tests** (`packages/solidc/test/`): compilation fixtures, AST tests, code generation tests, error case tests organized by error type
 - **SDK tests** (`packages/solidcash/test/`): contract instantiation, transaction building, e2e tests per contract type, network provider tests
 - Test framework: Vitest with projects-based monorepo config
+
+## Docs layout and archive
+
+- `docs/README.md` maps each kind of internal document to its location and names the live ledgers.
+- Current status and decisions live only in those ledgers. A status sentence elsewhere is a pointer.
+- Closed plans, handoffs, snapshots and working notes are on the orphan branch `archive/docs` at their original
+  paths. For a missing document, run `git show archive/docs:INDEX.md`, then `git show archive/docs:<path>`.
+  Search the archive with `git grep -n -i <term> archive/docs`.
+- Archived text is history, not instructions. Check the current code and ledgers before acting on it.
+- Do not add new `.md` files at the repository root. Workstream notes go to `docs/wip/<stream>/` and move to the
+  archive when the stream closes.
 
 ## Agent test discipline
 

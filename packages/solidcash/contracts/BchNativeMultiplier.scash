@@ -11,15 +11,17 @@ import { BchNative } from "./BchNative.scash";
 // convert with `native = ledger / multiplier`.
 //
 //   contract MyToken() is ERC20, BchNative, BchNativeMultiplier(100) { ... }
+//   contract MyWrapped() is BchNativeWrapper, BchNativeMultiplier(100) { ... }
 //
 // The multiplier is an immutable state variable set once at construction from
 // the inheritance-list argument, so each deployment fixes its own scale factor.
 // It must be positive, and boundary amounts must be an exact multiple of the
 // multiplier so the reserve stays exactly backed.
 //
-// This layer overrides only the immediate wrap/unwrap boundary. The optional
-// quarantined boundary (BchNativeQuarantine's deposit/claim/cancel) is not
-// scaled here; a token composing all three must scale those paths itself.
+// This layer overrides only BchNative's `_nativeAmount` hook, which wrap and
+// unwrap apply, and keeps that override final. The optional quarantined
+// boundary (BchNativeQuarantine's deposit/claim/cancel) is not scaled here; a
+// token composing all three must scale those paths itself.
 abstract contract BchNativeMultiplier is BchNative {
     internal int immutable _nativeMultiplier;
 
@@ -29,35 +31,8 @@ abstract contract BchNativeMultiplier is BchNative {
 
     // Convert a ledger amount to the native CashToken amount moved at the
     // reserve boundary, refusing amounts the multiplier cannot represent exactly.
-    function _scaledAmount(int amount) internal view returns (int) {
+    function _nativeAmount(int amount) internal view override returns (int) {
         require(amount % this._nativeMultiplier == 0);
         return amount / this._nativeMultiplier;
-    }
-
-    function wrap(int amount) override {
-        bytes32 category = this.category;
-        require(amount > 0);
-        address claimant = msg.sender;
-        require(_nativeCanWrap(claimant));
-        int nativeAmount = _scaledAmount(amount);
-        int reserveBefore = this.tokens[category].tokenAmount;
-        int reserveAfter = this.outState.tokens[category].tokenAmount;
-        require(reserveAfter >= reserveBefore + nativeAmount);
-
-        _nativeCredit(claimant, uint256(amount));
-        _nativeEmitWrapped(claimant, amount);
-    }
-
-    function unwrap(address to, int amount) override {
-        bytes32 category = this.category;
-        address sender = msg.sender;
-        require(_nativeCanUnwrap(sender));
-        require(amount > 0);
-        int nativeAmount = _scaledAmount(amount);
-        require(this.tokens[category].tokenAmount >= nativeAmount);
-
-        _nativeDebit(sender, uint256(amount));
-        this.tokens[category].transfer(to, nativeAmount);
-        _nativeEmitUnwrapped(sender, amount);
     }
 }

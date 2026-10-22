@@ -151,7 +151,7 @@ So the fixture compile is **not** inside the vitest `Duration`.
 
 | | proxied | noproxy | ratio |
 |---|---:|---:|---:|
-| fixture compile (documented; `LADDER_AT_HEAD.md` / `LADDER_NOPROXY_AT_HEAD.md`) | 127 s | 158 s | 1.24 |
+| fixture compile (documented; `archive/docs:docs/framed/LADDER_AT_HEAD.md` / `archive/docs:docs/framed/LADDER_NOPROXY_AT_HEAD.md`) | 127 s | 158 s | 1.24 |
 | fixture shape | 9 sources -> 19 artifacts | 22 sources -> 26 artifacts | - |
 | vitest `transform` + `setup` + `import` | 3.36 + 5.00 s + 295 ms | 3.55 + 5.07 s + 382 ms | ~1.0 |
 | vitest `tests` | 2502.84 s | 9952.79 s | **3.98** |
@@ -260,7 +260,7 @@ different composition complexity:
   the W4 lever."
 
 **Evidence supporting it.**
-- `docs/framed/PLAIN_PATH_SETTLE_SCOPING.md` states the measured gap directly: **"`take job` takes ~740 s on the plain
+- `archive/docs:docs/framed/PLAIN_PATH_SETTLE_SCOPING.md` states the measured gap directly: **"`take job` takes ~740 s on the plain
   path against ~100 s through the hop. The difference is not the machine; it is how much composition each iteration
   re-derives"**, and names the complexity as **"That is the 7x, and it grows with the square of a composition's frame
   count."**
@@ -276,7 +276,7 @@ different composition complexity:
 **Evidence that would falsify it.**
 - Instrument per-composed-call `buildPlan` / `createComposedDerivationHost` / `deriveComposition` invocation counts:
   if the plain path does *not* call them far more often per logical call than the hop, H1 is wrong.
-- Port only the loop scoping (`PLAIN_PATH_SETTLE_SCOPING.md` shape) without changing codegen and re-time `take job`: if
+- Port only the loop scoping (`archive/docs:docs/framed/PLAIN_PATH_SETTLE_SCOPING.md` shape) without changing codegen and re-time `take job`: if
   it stays ~740 s, H1's stated cause is wrong.
 - Run a title with no external calls (e.g. `admin > set version`): it is already at parity, which is consistent.
 
@@ -335,7 +335,7 @@ folding. The trivial titles are at parity, which bounds the per-title harness ov
    sample counts per title. Under H1 the noproxy VM sample count should be ~6-7x, not ~1x.
 4. **Compare a proxied-only title.** `admin > can not call initializer` exists only in the proxied lane; running the
    same `initialize` through the no-proxy implementation would test whether the path, not the contract, is the cause.
-5. **Port the plain loop (`PLAIN_PATH_SETTLE_SCOPING.md` shape) and re-time `take job`** against the 740 s baseline -
+5. **Port the plain loop (`archive/docs:docs/framed/PLAIN_PATH_SETTLE_SCOPING.md` shape) and re-time `take job`** against the 740 s baseline -
    this is the fix, and its measurement is the confirmation, but it is a code change, not a probe.
 
 Do not re-run the full ladders to answer this question; items 1-3 each fit one title and settle the ranking.

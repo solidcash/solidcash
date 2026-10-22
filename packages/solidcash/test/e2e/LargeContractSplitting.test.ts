@@ -83,7 +83,8 @@ describe('split contract SDK', () => {
       const facetArtifact = compiled.facets[compiled.manifest.facets[index]!.name]!;
       const verifierCommitments = facetArtifact.messageBus?.verifierProgram
         ? [binToHex(messageBusVerifierCommitment(0))] : [];
-      const tokenOutputs = getTxOutputs(tx).filter((output) => output.token);
+      // Output 0 is the facet category's authhead, whose identity NFT is mutable too.
+      const tokenOutputs = getTxOutputs(tx).slice(1).filter((output) => output.token);
       expect(tokenOutputs.filter((output) => output.token?.nft?.capability === 'minting')).toHaveLength(1);
       expect(tokenOutputs.filter((output) => output.token?.nft?.capability === 'mutable')
         .map((output) => output.token!.nft!.commitment)).toEqual(verifierCommitments);

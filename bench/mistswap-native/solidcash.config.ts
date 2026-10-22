@@ -10,6 +10,7 @@ export default defineConfig({
     cache: 'cache',
     tests: '/Code/mistswap/mistswap/test',
   },
+  trustProjectCache: true,
   compiler: {
     evmCompat: true,
     ecrecover: 'p2pkh',

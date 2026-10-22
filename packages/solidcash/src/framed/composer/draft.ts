@@ -310,10 +310,17 @@ export interface DraftMaster {
 /** The whole plan the composer lays out, assembles and hands to the derivation. */
 export interface CompositionDraftPlan {
   readonly blocks: readonly ContractBlock[];
+  /**
+   * The inputs placed ahead of every block, each recreated at its own index: a genesis's funding coin, whose output 0
+   * is the category's identity. Each one's material is an entry of `inputs`, its output stated there.
+   */
+  readonly leading?: readonly string[];
   /** The masters the transaction mints, whose blocks ride in the validator transcript (v0x03). */
   readonly mintedMasters?: readonly DraftMintedMaster[];
   readonly userInputs: readonly PlannedUserInput[];
   readonly masters: readonly DraftMaster[];
+  /** The length of each token run the trailing outputs lead with: a container recreated, then its token sends. */
+  readonly tokenRuns?: readonly number[];
   /**
    * The transaction's nLocktime, fixed before any derivation runs.
    *
@@ -427,7 +434,9 @@ function toCompositionPlan(
   const retvals = retvalsByMaster(plan);
   return {
     blocks: plan.blocks,
+    ...(plan.leading === undefined ? {} : { leading: plan.leading }),
     userInputs: plan.userInputs,
+    ...(plan.tokenRuns === undefined ? {} : { tokenRuns: plan.tokenRuns }),
     masters: plan.masters.map((master): PlannedMaster => ({
       master: master.master,
       contract: master.contract,

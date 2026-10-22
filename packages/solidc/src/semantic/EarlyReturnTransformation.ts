@@ -53,9 +53,14 @@ let sealingBareReturns = false;
 export default class EarlyReturnTransformation extends AstTraversal {
   private returnCounter = 0;
 
-  /** `sealBareReturns` false: a bare return ends no covenant path here (a framed body, an inlined helper). */
+  /**
+   * `sealBareReturns` false: a bare return ends no covenant path here (a framed body, an inlined helper).
+   * `keepRestPastFailingArms` false: the rest after an arm that can only fail moves into the other arm, as it did
+   * before, for a message-bus compile, whose graph emission was not shown to settle a rest kept after such an arm.
+   */
   constructor(
     private readonly canonicalizeScalarReturns = false, private readonly sealBareReturns = true,
+    private readonly keepRestPastFailingArms = true,
   ) { super(); }
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -96,7 +101,7 @@ export default class EarlyReturnTransformation extends AstTraversal {
       const sealing = sealingBareReturns;
       sealingBareReturns = this.sealBareReturns && node.sealsUnguardedReturns === true;
       try {
-        node.body.statements = transformStatements(node.body.statements);
+        node.body.statements = transformStatements(node.body.statements, this.keepRestPastFailingArms);
       } finally {
         sealingBareReturns = sealing;
       }
@@ -363,7 +368,7 @@ function containsReturnInConditionalContainer(node: Node): boolean {
  * If a statement is an `if` with a `return` in the if-branch, wrap
  * remaining statements as the else-branch.
  */
-function transformStatements(statements: StatementNode[]): StatementNode[] {
+function transformStatements(statements: StatementNode[], keepRest: boolean): StatementNode[] {
   // Nothing to nest for an empty body. A SINGLE statement is NOT skippable: it may be a container (an
   // `unchecked { if (c) return a; return b; }` block, a branch, a switch) whose INNER early returns still need
   // nesting - nestEarlyReturns recurses into those. (The old `<= 1` guard skipped a lone `unchecked` block, so an
@@ -371,11 +376,11 @@ function transformStatements(statements: StatementNode[]): StatementNode[] {
   if (statements.length === 0) return statements;
 
   // Process from the end: find early returns and nest them
-  const result = nestEarlyReturns(statements);
+  const result = nestEarlyReturns(statements, keepRest);
   return result;
 }
 
-function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
+function nestEarlyReturns(statements: StatementNode[], keepRest: boolean): StatementNode[] {
   const result: StatementNode[] = [];
 
   for (let i = 0; i < statements.length; i++) {
@@ -404,7 +409,11 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
 
     // If this is an if/else branch where the if-block ends with return
     if (stmt instanceof BranchNode && remaining.length > 0) {
-      const ifReturns = blockEndsWithReturn(stmt.ifBlock);
+      // An arm that can only fail ends no path the rest runs on, so the rest stays after the branch rather than
+      // moving into the other arm, where its writes and events would read as conditional.
+      const failsOnly = (block: BlockNode | undefined): boolean => keepRest && block !== undefined
+        && blockEndsWithReturn(block) && !holdsReturn(block);
+      const ifReturns = blockEndsWithReturn(stmt.ifBlock) && !failsOnly(stmt.ifBlock);
 
       if (ifReturns) {
         // Transform: if (cond) { ...return; } remaining...
@@ -412,7 +421,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
 
         // First recursively transform the if block
         const transformedIfStatements = sealUnguardedBareReturn(stmt.ifBlock.statements
-          ? nestEarlyReturns(stmt.ifBlock.statements)
+          ? nestEarlyReturns(stmt.ifBlock.statements, keepRest)
           : [], statementsIncludeRequire(result));
         const transformedIfBlock = new BlockNode(transformedIfStatements);
         transformedIfBlock.location = stmt.ifBlock.location;
@@ -426,7 +435,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
         elseStatements.push(...remaining);
 
         // Recursively transform the combined else-block
-        const transformedElseStatements = nestEarlyReturns(elseStatements);
+        const transformedElseStatements = nestEarlyReturns(elseStatements, keepRest);
         const elseBlock = new BlockNode(transformedElseStatements);
         elseBlock.location = stmt.elseBlock?.location ?? stmt.location;
         elseBlock.symbolTable = stmt.elseBlock?.symbolTable;
@@ -441,9 +450,10 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
       }
 
       // If the else-block returns but not the if-block, handle similarly
-      if (stmt.elseBlock && blockEndsWithReturn(stmt.elseBlock) && remaining.length > 0) {
+      if (stmt.elseBlock && blockEndsWithReturn(stmt.elseBlock) && !failsOnly(stmt.elseBlock)
+        && remaining.length > 0) {
         const transformedElseStatements = sealUnguardedBareReturn(stmt.elseBlock.statements
-          ? nestEarlyReturns(stmt.elseBlock.statements)
+          ? nestEarlyReturns(stmt.elseBlock.statements, keepRest)
           : [], statementsIncludeRequire(result));
         const transformedElseBlock = new BlockNode(transformedElseStatements);
         transformedElseBlock.location = stmt.elseBlock.location;
@@ -456,7 +466,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
         }
         ifStatements.push(...remaining);
 
-        const transformedIfStatements = nestEarlyReturns(ifStatements);
+        const transformedIfStatements = nestEarlyReturns(ifStatements, keepRest);
         const ifBlock = new BlockNode(transformedIfStatements);
         ifBlock.location = stmt.ifBlock.location;
         ifBlock.symbolTable = stmt.ifBlock.symbolTable;
@@ -472,7 +482,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
     // Recurse into try/catch (only try block matters for returns)
     if (stmt instanceof TryCatchNode) {
       if (stmt.tryBlock.statements) {
-        stmt.tryBlock.statements = nestEarlyReturns(stmt.tryBlock.statements);
+        stmt.tryBlock.statements = nestEarlyReturns(stmt.tryBlock.statements, keepRest);
       }
       result.push(stmt);
       // A container that ends every path ends the list: what follows it is unreachable.
@@ -484,11 +494,11 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
     if (stmt instanceof SwitchNode) {
       for (const c of stmt.cases) {
         if (c.body.statements) {
-          c.body.statements = nestEarlyReturns(c.body.statements);
+          c.body.statements = nestEarlyReturns(c.body.statements, keepRest);
         }
       }
       if (stmt.defaultCase?.statements) {
-        stmt.defaultCase.statements = nestEarlyReturns(stmt.defaultCase.statements);
+        stmt.defaultCase.statements = nestEarlyReturns(stmt.defaultCase.statements, keepRest);
       }
       result.push(stmt);
       if (endsEveryPath(stmt)) break;
@@ -503,7 +513,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
     // check refuses them. A block that ends every path already drops what follows it, so it is left alone.
     if (stmt instanceof BlockNode && holdsReturn(stmt) && remaining.length > 0
       && !endsEveryPath(stmt) && holdsAssemblyReturn(stmt.statements ?? [])) {
-      const nested = nestEarlyReturns([...(stmt.statements ?? []), ...remaining]);
+      const nested = nestEarlyReturns([...(stmt.statements ?? []), ...remaining], keepRest);
       const block = new BlockNode(nested);
       block.location = stmt.location;
       block.symbolTable = stmt.symbolTable;
@@ -514,7 +524,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
     // Recurse into a block holding a return, as a lowering that keeps a write-back beside its return builds one
     // (`{ flush; return; }` in a branch arm, which therefore ends in a return too).
     if (stmt instanceof BlockNode && holdsReturn(stmt)) {
-      stmt.statements = nestEarlyReturns(stmt.statements ?? []);
+      stmt.statements = nestEarlyReturns(stmt.statements ?? [], keepRest);
       result.push(stmt);
       if (endsEveryPath(stmt)) break;
       continue;
@@ -527,7 +537,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
     // arithmetic semantics; only its inner control flow is rewritten.
     if (stmt instanceof UncheckedNode) {
       if (stmt.block.statements) {
-        stmt.block.statements = nestEarlyReturns(stmt.block.statements);
+        stmt.block.statements = nestEarlyReturns(stmt.block.statements, keepRest);
       }
       result.push(stmt);
       if (endsEveryPath(stmt)) break;
@@ -537,7 +547,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
     // Recursively transform branches that don't cause early return
     if (stmt instanceof BranchNode) {
       const transformedIf = stmt.ifBlock.statements
-        ? new BlockNode(nestEarlyReturns(stmt.ifBlock.statements))
+        ? new BlockNode(nestEarlyReturns(stmt.ifBlock.statements, keepRest))
         : stmt.ifBlock;
       transformedIf.location = stmt.ifBlock.location;
       transformedIf.symbolTable = stmt.ifBlock.symbolTable;
@@ -545,7 +555,7 @@ function nestEarlyReturns(statements: StatementNode[]): StatementNode[] {
       let transformedElse: BlockNode | undefined;
       if (stmt.elseBlock) {
         transformedElse = stmt.elseBlock.statements
-          ? new BlockNode(nestEarlyReturns(stmt.elseBlock.statements))
+          ? new BlockNode(nestEarlyReturns(stmt.elseBlock.statements, keepRest))
           : stmt.elseBlock;
         transformedElse.location = stmt.elseBlock.location;
         transformedElse.symbolTable = stmt.elseBlock.symbolTable;

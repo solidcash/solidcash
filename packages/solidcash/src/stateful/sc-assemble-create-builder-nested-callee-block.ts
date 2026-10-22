@@ -74,6 +74,8 @@ export interface AssembleCreateBuilderNestedCalleeBlockCtx {
   bCompilerInternalArgs: Record<string, FunctionArgument>;
   bPlannedEntryInserts: NestedCalleePlannedEntryInsert[];
   bRelativeOutputInternalArgs: Set<string>;
+  /** Collection entry locks for funder-backed sorted-batch lanes, keyed by block offset. */
+  bBatchEntryLockingBytecodes: Map<number, Uint8Array>;
   bStreamedEventPlan?: NestedStreamedEventPlan;
   bBlockLayout: NonNullable<AbiFunction['blockLayout']>;
   bHasLoop: boolean;
@@ -665,11 +667,15 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
             firstSlotByOutpoint.set(outpoint, slot);
             continue;
           }
+          let reusedLane = false;
           for (const [name, value] of Object.entries(ctx.bCompilerInternalArgs)) {
             if (!/^__internal__vmapBatchProof_\d+$/.test(name)) continue;
             if (typeof value !== 'bigint' || value !== BigInt(slot)) continue;
             ctx.bCompilerInternalArgs[name] = BigInt(firstSlot);
+            reusedLane = true;
           }
+          // The funder only balances the lane's input; its output is still a node of this entry's collection.
+          if (reusedLane) ctx.bBatchEntryLockingBytecodes.set(slot, blockInput.unlocker.generateLockingBytecode());
           ctx.bBlockInputs[slot] = await makeFunder();
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
             ?.SOLIDC_DEBUG_RETURN === '1') {

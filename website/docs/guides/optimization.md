@@ -3,7 +3,7 @@ title: Optimizing Contracts
 sidebar_label: Optimization
 ---
 
-SolidCash contracts are transpiled from the high-level SolidCash code to [BCH Script](https://reference.scash/protocol/blockchain/script) by the `solidc` compiler. BCH Script is the low-level language used for the Bitcoin Cash Virtual Machine (BCH VM) to evaluate contracts.
+SolidCash contracts are transpiled from the high-level SolidCash code to [BCH Script](https://reference.cash/protocol/blockchain/script) by the `solidc` compiler. BCH Script is the low-level language used for the Bitcoin Cash Virtual Machine (BCH VM) to evaluate contracts.
 
 Because transaction fees are based on the bytesize of a transaction, it may be useful to optimize the compiled size of your smart contract by tweaking your SolidCash code.
 
@@ -20,7 +20,15 @@ The compiler calculates the size from the contract's bytecode without constructo
 The compiler `bytesize` output is still helpful to compare the effect of changes, given that the contract constructor arguments stay the same.
 
 :::tip
-To get the exact contract bytesize including constructor parameters, initialise the contract with the TypScript SDK and check the value of `contract.bytesize`.
+To get the exact contract bytesize including constructor parameters, initialise the contract with the TypeScript SDK and check the value of `contract.bytesize`.
+:::
+
+:::note
+Size is not the only limit. Each input's operation-cost budget is `(41 + unlocking bytecode length) * 800`, so
+shrinking a loop-heavy script also shrinks its budget. Measure the operation cost with
+[`getVmResourceUsage(true)`](/docs/guides/debugging#resource-usage). The `salt` option of a `Contract` or a
+stateful deployment pads the script to buy budget; see
+[Buying compute budget](/docs/compiler/script-limits#buying-compute-budget).
 :::
 
 ## Optimization Tips
@@ -58,7 +66,7 @@ Also declare variables when re-using certain common introspection items to avoid
 ### 2. Consume stack items
 
 It's best to "consume" values (i.e. their final use in the contract) as soon as possible. This frees up space on the stack.
-Use/consume values as close to their declaration as possible, both for variables and for parameters. This avoids having to do deep stack operations. This [example](https://gitlab.com/GeneralProtocols/anyhedge/contracts/-/blob/development/contracts/v0.11/contract.scash#L61-72) from AnyHedge illustrates consuming values immediately.
+Use/consume values as close to their declaration as possible, both for variables and for parameters. This avoids having to do deep stack operations. This [example](https://gitlab.com/GeneralProtocols/anyhedge/contracts/-/blob/development/contracts/v0.11/contract.cash#L61-72) from AnyHedge illustrates consuming values immediately.
 
 ### 3. Parse efficiently
 When using `.split()` to use both sides of a `bytes` element, declare both parts immediately to save on opcodes parsing the byte array.
@@ -73,9 +81,9 @@ When using `.split()` to use both sides of a `bytes` element, declare both parts
 ```
 ### 4. Avoid if-else
 
-Avoid if-statements when possible. Instead, try to "inline" them. This is because the compiler cannot know which branches will be taken, and therefore cannot optimise those branches as well. This [example](https://gitlab.com/GeneralProtocols/anyhedge/contracts/-/blob/development/contracts/v0.11/contract.scash#L128-130) from AnyHedge illustrates inlining flow control:
+Avoid if-statements when possible. Instead, try to "inline" them. This is because the compiler cannot know which branches will be taken, and therefore cannot optimise those branches as well. This [example](https://gitlab.com/GeneralProtocols/anyhedge/contracts/-/blob/development/contracts/v0.11/contract.cash#L128-130) from AnyHedge illustrates inlining flow control:
 
-```solidity title="AnyHedge SolidCash code"
+```solidity title="Adapted from AnyHedge"
     // do this
     bool onOrAfterMaturity = settlementTimestamp >= maturityTimestamp;
     bool priceOutOfBounds = !within(clampedPrice, lowLiquidationPrice + 1, highLiquidationPrice);
@@ -101,11 +109,15 @@ When a contract has many different functions or has a lot duplicate code shared 
 Modular contract design avoids the added size of having many functions, instead the contract logic is separated out in to different components which we will call 'function contracts'.
 By only adding the function contract you are actually using in the transaction, and not all the other unused functions, you can drastically shrink the size of your contracts used in a transaction.
 
-The concept of having NFT functions was first introduced by the [Jedex demo](https://github.com/bitjson/jedex#demonstrated-concepts) and was first implemented in a SolidCash contract by the [FexCash DEX](https://github.com/fex-cash/fex/blob/main/whitepaper/fex_whitepaper.md). The concept is that by authenticating NFTs, you can make each function a separate contract with the same tokenId. This way, you can offload logic from the main contract. One function NFT contract is attached to the main contract during spending, while the other contract functions exist as unused UTXOs, separate from the transaction.
+The concept of having NFT functions was first introduced by the [Jedex demo](https://github.com/bitjson/jedex#demonstrated-concepts) and was first implemented in a CashScript contract by the [FexCash DEX](https://github.com/fex-cash/fex/blob/main/whitepaper/fex_whitepaper.md). The concept is that by authenticating NFTs, you can make each function a separate contract with the same tokenId. This way, you can offload logic from the main contract. One function NFT contract is attached to the main contract during spending, while the other contract functions exist as unused UTXOs, separate from the transaction.
 
 :::tip
 By using function NFTs you can use a modular contract design where the contract functions are offloaded to different UTXOs, each identifiable by the main contract by using the same tokenId.
 :::
+
+For a stateful contract over the 10,000-byte limit, the compiler can do this split for you: `solidc --split size`
+compiles it into a state-owning root plus delegate facets, and the SDK routes each call through the facet it needs.
+See [Large Contracts & Split Bundles](/docs/compiler/large-contracts).
 
 ### Combining Functions
 
@@ -139,7 +151,10 @@ contract Example(){
 }
 ```
 
-In SolidCash, when defining multiple functions, a `selectorIndex` parameter is added under-the-hood to select which of the contract's functions you want to use, this wraps your functions in big `if-else` cases. However when combining multiple functions in one cases you will have to think about the function conditions and `if-else` branching yourself.
+In SolidCash, when a contract has several externally callable functions, the unlocking bytecode carries a 4-byte
+function selector and the contract dispatches on it to the selected function body. Every function body stays in the
+script, so each spend reveals all of them. When combining multiple functions in one, you will have to think about
+the function conditions and `if-else` branching yourself.
 
 ## Advanced: Hand-optimizing Bytecode
 
@@ -164,6 +179,11 @@ To manually optimize a SolidCash contract's bytecode, you need to overwrite the 
 If you manually overwrite the `bytecode` in the artifact, the auto generated 2-way-mapping generated by the compiler becomes obsolete. You are no longer compiling high-level SolidCash code into BCH script, instead you are writing BCH script by hand.
 This causes the link of the BCH opcodes to your original SolidCash code will be entirely lost for debugging.
 
+Hand-optimize only stateless contracts. A multi-function artifact also keeps each function body under
+`functionBodies`, keyed by selector, and the SDK signs against that body, so keep the two consistent. Do not
+hand-edit a stateful artifact: the SDK builds its covenant transactions from the compiler's metadata for the exact
+compiled script.
+
 
 ```typescript
 interface Artifact {
@@ -178,7 +198,7 @@ If you use hand-optimized `bytecode` in your Contract's artifact, the `debug` in
 :::
 
 :::tip
-You can create an `Artifact` for a fully hand-written contract so it becomes possible to use the contract with the nice features of the SolidCash SDK! An example of this is the [unofficial Cauldron Swap SDK][Cauldron-Swap-SDK], which uses `Artifact bytecode` not produced by `solidc` at all but still uses the SolidCash SDK.
+You can create an `Artifact` for a fully hand-written contract so it becomes possible to use the contract with the nice features of the SolidCash SDK! An example of this approach in CashScript, whose SDK SolidCash's `Contract` class grew from, is the [unofficial Cauldron Swap SDK][Cauldron-Swap-SDK], which uses `Artifact bytecode` not produced by a compiler at all.
 :::
 
 ### Method 2) Custom Unlockers

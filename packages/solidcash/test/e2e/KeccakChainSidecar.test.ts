@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, createVirtualMachineBch2026, hexToBin } from '@bitauth/libauth';
+import type { ResolvedTransactionBch } from '@bitauth/libauth';
 import { keccakChainLockingBytecode } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import type NetworkProvider from '../../src/network/NetworkProvider.js';
@@ -30,7 +31,10 @@ const ARTIFACT = compileString(SOURCE, { forceStateful: true, enforceFinalRequir
 
 type Deployed = {
   getFunction(name: string): (...args: unknown[]) => {
-    build(): Promise<{ inputs: Array<{ unlocker: { generateLockingBytecode(): Uint8Array } }> }>;
+    build(): Promise<{
+      inputs: Array<{ unlocker: { generateLockingBytecode(): Uint8Array } }>;
+      buildLibauthProgram(): ResolvedTransactionBch;
+    }>;
     send(): Promise<unknown>;
   };
   withProvider(runner: NetworkProvider): Deployed;
@@ -62,6 +66,13 @@ describe('stateful chained keccak256 side-cars', () => {
     const chainSideCarInputs = built.inputs.filter((input) =>
       chainLocks.has(binToHex(input.unlocker.generateLockingBytecode())));
     expect(chainSideCarInputs.length).toBeGreaterThan(1);
+    // The master at input 0 within the BCH 2026 density limit; the side-cars follow the block with no funder band.
+    const { transaction, sourceOutputs } = built.buildLibauthProgram();
+    const master = createVirtualMachineBch2026().evaluate({ sourceOutputs, transaction, inputIndex: 0 }) as unknown as
+      { error?: string; metrics: { operationCost: number; maximumOperationCost: number } };
+    console.log(`chained 2000 B master: ${master.metrics.operationCost}/${master.metrics.maximumOperationCost} op, `
+      + `${transaction.inputs.length} inputs`);
+    expect(master.error).toBeUndefined();
     await hasher.getFunction('record')(preimage).send();
     await expect(hasher.getFunction('check')(keccak_256(preimage)).send()).resolves.toBeDefined();
   }, 300_000);

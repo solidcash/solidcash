@@ -5,16 +5,16 @@ interface ICounter {
     function increment();
 }
 
-contract DynamicCaller(bytes32 targetCategory) {
+contract DynamicCaller(address target) {
     int state;
 
     function dynamicCall() {
-        ICounter(targetCategory).increment.call();
+        ICounter(target).increment.call();
         this.state = this.state + 1;
     }
 
     function readOnlyCall() {
-        ICounter(targetCategory).increment.staticcall();
+        ICounter(target).increment.staticcall();
         this.state = this.state + 1;
     }
 }

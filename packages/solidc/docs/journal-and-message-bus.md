@@ -96,6 +96,6 @@ updates cannot be committed.
   clone/unroll path; kernel refusals never fall back to it.
 - `state-journal-protocol.md` defines normative journal semantics.
 - `message-bus-coverage-matrix.md` records stable acceptance and security coverage.
-- `message-bus-external-audit-handoff-opus.md` gives an independent reviewer the threat model, code map, and
+- `archive/docs:packages/solidc/docs/message-bus-external-audit-handoff-opus.md` gives an independent reviewer the threat model, code map, and
   reproducible production gates.
 - `archive/journal-message-bus/` preserves dated implementation, benchmark, and audit evidence.

@@ -76,10 +76,15 @@ contract Example(pubkey owner) {
 `internal` and `private` functions are not unlock paths: they are compiled as reusable subroutines (or inlined
 where that is cheaper).
 
-:::note
-Selectors are derived with sha256 by default, so they differ from an EVM contract's. The `evmCompat` compiler
-option switches selector derivation to real keccak256.
-:::
+A function declared without a visibility keyword is `public`. Calling an `external` function by name from inside
+the contract is a compile error; make it `public` to call it both ways.
+
+### Entry-point selectors
+
+An entry point is chosen by a 4-byte selector computed from its signature, `name(type1,type2,...)`. Natively the
+selector is the first 4 bytes of the signature's sha256 hash, so it differs from an EVM contract's. Under the
+`evmCompat` compiler option it is the first 4 bytes of the keccak256 hash of the canonical Solidity signature, as
+solc computes it. Inside a function, `msg.sig` holds the selector of the running entry point.
 
 ## Mutability
 
@@ -87,7 +92,7 @@ option switches selector derivation to real keccak256.
 | --- | --- |
 | `pure` | Declares no state access |
 | `view` | Declares read-only state access |
-| `payable` | Function can receive BCH; enables `msg.value` |
+| `payable` | Accepted for Solidity compatibility; does not gate value (see below) |
 
 ```solidity
 function compute(int a, int b) internal pure returns (int) {
@@ -99,10 +104,12 @@ receive() external payable { }
 
 Mutability checking is uniform across native and compatibility modes. `pure` functions reject contract-state and
 environment reads, and both `pure` and `view` reject state/transient-state writes, contract creation, low-level
-calls, function pointers, and calls to less-restrictive internal/external functions.
+calls, and calls to less-restrictive functions or function pointers.
 
-`payable` is largely cosmetic: every BCH address can receive value. It is accepted so Solidity sources compile,
-and it enables `msg.value` in the body.
+`payable` is accepted so Solidity sources compile, but it does not decide whether a function can receive value:
+every BCH address can. Any function may read `msg.value` (the net change of the contract's satoshi container),
+except a `view` public or external function and a constructor that is not `payable`. `pure` functions cannot read
+it, and `internal`, `private` and `pure` functions cannot be declared `payable`.
 
 ## Return values
 
@@ -119,13 +126,13 @@ function multiple(int a, int b) internal returns (int, int) {
 
 function named(int a, int b) internal returns (int total, int diff) {
     total = a + b;
-    diff = a - b;
-    return;
+    diff = a - b;   // no return statement needed
 }
 ```
 
-Named returns are initialised to their type's default and returned by a bare `return;`, which is required.
-Multi-return values are consumed by destructuring:
+Named returns start at their type's default value. Falling off the end of the function returns their current
+values, and a bare `return;` does the same at an earlier point. A function with unnamed returns that falls off its
+end returns the type defaults, as in Solidity. Multi-return values are consumed by destructuring:
 
 ```solidity
 contract Consumer() {
@@ -142,6 +149,15 @@ contract Consumer() {
     }
 }
 ```
+
+### Returns from entry points
+
+A `public` or `external` function may also declare return values. Called by name from inside the contract, a
+`public` function returns them like an internal one. Off chain, the SDK reads them without sending a transaction:
+see `staticCall()` in [Transactions and Receipts](/docs/sdk/transactions#stateful-calls). Another contract
+receives a stateful callee's return values through a
+[return-event NFT](/docs/language/cross-contract-calls#return-event-nfts); calls that mutate another contract's
+state are experimental.
 
 ## Calling functions
 
@@ -177,7 +193,18 @@ also disambiguate otherwise similar overloads.
 ### Recursion and loops
 
 Internal functions compile to real subroutines using the BCH 2026 VM's `OP_DEFINE` / `OP_INVOKE`, so they can
-be called from loops and can call each other. The practical limit is the VM's control stack depth.
+be called from loops and can call each other. Recursion works, in contract functions and free functions alike:
+
+```solidity
+function factorial(int n) returns (int) {
+    if (n <= 1) {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+```
+
+The practical limits are the VM's control stack depth and the operation cost budget of the input.
 
 ## Free functions
 
@@ -220,9 +247,10 @@ dispatch as a direct one. Function pointers can be stored in arrays and state ma
 tables.
 
 :::note
-Targets must be `internal`, `private` or `public`. External function types have no ABI representation on BCH,
-so entry-point parameters and returns of function type are rejected. Function-pointer state is also rejected in
-`upgrade` contracts and proxy implementation builds, because positional ids would remap.
+An entry point cannot take or return an `internal` function type, as in solc. It may take an `external` function
+value; the entry code then checks that the received id names one of this contract's own public or external
+functions of that type. Function-pointer state is rejected in `upgrade` contracts and proxy implementation builds,
+because function ids are positional and would remap.
 :::
 
 ## Modifiers
@@ -243,8 +271,8 @@ contract Token(pubkey owner) {
 }
 ```
 
-See [Function Modifiers](/docs/language/modifiers) for the full reference, including the covenant-control
-modifiers `unsafe`, `upgrade`, `selfdestruct`, `split` and `merge`.
+See [Function Modifiers](/docs/language/modifiers) for the full reference, including the lifecycle modifiers
+(inferred `deploy`, `upgrade`, `migrateRecords`, `selfdestruct`, `split`, `merge`) and the `unsafe` tiers.
 
 ## Fallback and receive
 
@@ -267,19 +295,26 @@ contract Flexible(bytes20 admin) {
 - `receive`: at most one per contract; must be `external payable` and take no parameters.
 - Both support `virtual` and `override`.
 
-An empty `receive()` or `fallback()` body synthesises a state-preserving no-op spend path, with a warning.
+An empty `receive()` or `fallback()` body, like any empty function body without return values, is compiled as
+`require(true)` with a warning. For an entry point this is a state-preserving no-op spend path.
 
 ## Constructors
 
-Non-stateful contracts take their immutable parameters on the contract definition itself. Stateful contracts
-can additionally define an explicit `constructor()` body to initialise state at deployment:
+Every contract takes its immutable parameters on the contract definition itself; their values are baked into
+the bytecode. Stateful contracts can additionally define a `constructor` block to initialise state at deployment.
+Its parameters are deployment arguments, not part of the bytecode:
 
 ```solidity
 contract Token(pubkey admin) {
     int totalSupply;
 
-    constructor() {
-        this.totalSupply = 1_000_000;
+    constructor(int initialSupply) {
+        this.totalSupply = initialSupply;
+    }
+
+    function mint(sig s, int amount) {
+        require(checkSig(s, admin));
+        this.totalSupply += amount;
     }
 }
 ```

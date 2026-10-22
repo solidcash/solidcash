@@ -1,5 +1,10 @@
 # Performance: kernel vs framed (W2)
 
+> **Measurement snapshot, 2026-10-05.** These numbers describe the cited worktrees, not the current master. Current
+> lane cost is in [`NOPROXY_LANE_COST.md`](./NOPROXY_LANE_COST.md); current release gates and sizes are in
+> [`../marketplace/bchn-marketplace-consensus-relaxation.md`](../marketplace/bchn-marketplace-consensus-relaxation.md)
+> and [`../release/0.13.1/RELEASE_DECISION_0.13.1.md`](../release/0.13.1/RELEASE_DECISION_0.13.1.md).
+
 Measured 2026-10-05. Three lanes: framed proxied at `12c011dfe`, framed no-proxy at `d326e325b` (measurement worktree, sources retargeted at the no-proxy contracts), and the kernel lane at `d7f3c7ad6`.
 
 ## How this lane was run
@@ -45,7 +50,7 @@ One profile for the worker (`--cpu-prof`), 97,050 samples:
 | compile | 95 | 0.1% |
 | other, of which garbage collection is 6942 samples (7.2%) | 12447 | 12.8% |
 
-Compile is absent because the fixture was already compiled. The VM in the profile is stock `node_modules/@bitauth/libauth` (`3.1.0-next.8`) with the SDK overrides (`createVirtualMachine.js` `runPhases` is in the top self-time). `structuredClone` is also in the top self-time. That is the function-table copy the fork removes (`PERF_LIBAUTH.md`); this lane did not load the fork.
+Compile is absent because the fixture was already compiled. The VM in the profile is stock `node_modules/@bitauth/libauth` (`3.1.0-next.8`) with the SDK overrides (`createVirtualMachine.js` `runPhases` is in the top self-time). `structuredClone` is also in the top self-time. That is the function-table copy the fork removes (`archive/docs:docs/framed/PERF_LIBAUTH.md`); this lane did not load the fork.
 
 ## Kernel proxied lane
 

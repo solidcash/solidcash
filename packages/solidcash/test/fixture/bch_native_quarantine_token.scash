@@ -1,10 +1,13 @@
 pragma solidcash >=0.8.0;
 
 import { ERC20 } from "../../contracts/ERC20.scash";
+import { BchNative } from "../../contracts/BchNative.scash";
 import { BchNativeQuarantine } from "../../contracts/BchNativeQuarantine.scash";
 
 contract QuarantineToken is ERC20, BchNativeQuarantine {
     public int backedSupply;
+
+    constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) { }
 
     function openSelf() {
         address account = msg.sender;

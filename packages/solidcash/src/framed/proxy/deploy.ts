@@ -51,6 +51,12 @@ import { requireFramedFunderSighash } from '../sighash.js';
 import {
   encodeFunctionArgument, encodeFunctionArguments, type ConstructorArgument, type FunctionArgument,
 } from '../../Argument.js';
+import { authheadLockingBytecode } from '../../bcmr/authhead.js';
+import type { PublishedRegistry } from '../../bcmr/deployment.js';
+import { publicationOutput } from '../../bcmr/publication.js';
+import {
+  identityRecord, isP2pkhLock, planGenesisIdentity, type GenesisIdentity, type IdentityRecord,
+} from '../../bcmr/identity.js';
 import type { Output, TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { deployStatefulContract } from '../../stateful/sc-deploy.js';
@@ -58,7 +64,10 @@ import { registerDeployment } from '../../stateful/deployment-registry.js';
 import { decodeEntryCommitment, encodeEntryCommitment, headSentinelCommitment } from '../../stateful/SortedList.js';
 import { providerUnixLocktime } from '../../stateful/soft-state-overlays.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
-import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails, scriptToLockingBytecode } from '../../utils.js';
+import {
+  addressToLockScript, libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails,
+  scriptToLockingBytecode,
+} from '../../utils.js';
 import {
   FramedComposerError, INDEX_NONE_REFERENCE, UNFILLED_CALLEE_REF, createComposedDerivationHost, deriveComposition,
   describeInnermost, facetId, findParticipant, layoutTransaction, participant, reportCompositionRefusal,
@@ -217,6 +226,10 @@ export interface FramedProxyHalf {
   /** `addrV(category)`, the address the contract presents, which `Contract.address` does not report framed. */
   readonly address: Uint8Array;
   readonly tx: DeployResult['tx'];
+  /** The genesis's identity output, output 0, which holds the category's BCMR authority. */
+  readonly identity?: IdentityRecord;
+  /** The registry the genesis published, with the URIs its publication offers. */
+  readonly registry?: PublishedRegistry;
 }
 
 /** The machine's verdict on one participant of the initialize transaction. */
@@ -238,7 +251,7 @@ export interface FramedProxyDeployment {
     readonly draft: CompositionDraft;
     /** The frames the derivation completed, callee before caller. */
     readonly completed: readonly FrameRequest[];
-    /** Every participant's verdict, in input order. */
+    /** Every participant's verdict but a leading funding coin's, which the network judges signed, in input order. */
     readonly verdicts: readonly InitializeVerdict[];
     /**
      * True when every convention input (the masters, the validator and the record) was accepted. A refused hop is
@@ -1250,6 +1263,14 @@ export async function deployFramedProxy(
       + 'lists no send for the implementation\'s frame',
     );
   }
+  // A calling genesis leads with the proxy's authhead, owned as every framed genesis's identity is (stateful.ts).
+  const proxyFunderLock = options.proxyDeploy.funder.generateLockingBytecode();
+  const proxyIdentity = planGenesisIdentity({
+    category: options.proxyDeploy.fundingUtxo.txid,
+    ...(options.proxyDeploy.identity === undefined ? {} : { identity: options.proxyDeploy.identity }),
+    deployerLock: options.proxyDeploy.senderLockingBytecode
+      ?? (isP2pkhLock(proxyFunderLock) ? proxyFunderLock : addressToLockScript(options.proxyDeploy.changeAddress)),
+  });
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
   // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
   // values, the proxy's own address for `address(this)`, and the deployer's lock for `msg.sender`.
@@ -1292,7 +1313,7 @@ export async function deployFramedProxy(
       provider,
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments, recordLockingBytecode,
-      ...(genesis ? { genesis: true } : {}),
+      ...(genesis ? { genesis: true, identity: proxyIdentity } : {}),
       ...(attemptWrites === undefined ? {} : { entryWrites: attemptWrites }),
       entryWriteViews,
       implementationRetval,
@@ -1352,10 +1373,18 @@ export async function deployFramedProxy(
   // A calling initializer is atomic: the genesis-shaped plan mints the proxy master and creates its records in the
   // same transaction that runs the callee frames, so no uninitialized proxy genesis is broadcast (SDKFRAMED-2). The
   // genesis mints the proxy's own validator, so the validator that runs is the first callee's, whose pool the
-  // broadcast spends and recreates at its live value.
+  // broadcast spends and recreates at its live value. The genesis's funding coin leads it, so its output 0 is the
+  // proxy's authhead and the proxy's authchain starts at its own genesis, not at another contract (D47).
   const callingGenesis = !separateHop && externalPlan.callees.length > 0;
-  // The genesis's only user input is its own funding coin, signed by the proxy's funder rather than a root caller.
-  const genesisFunderLock = callingGenesis ? options.proxyDeploy.funder.generateLockingBytecode() : undefined;
+  // The calling composition mints the proxy and carries no token premint, so one is refused rather than dropped.
+  if (callingGenesis && options.proxyDeploy.nativeToken !== undefined) {
+    throw new FramedProxyDeployError(
+      'a proxy whose initializer calls another contract is minted by that composition, which carries no token '
+        + 'premint: deploy the token without `nativeToken`, or pass `initializeAs: \'hop\'`',
+    );
+  }
+  // The genesis's funding coin is its leading input, signed by the proxy's funder rather than a root caller.
+  const genesisFunderLock = callingGenesis ? proxyFunderLock : undefined;
   const runningValidator = callingGenesis
     ? (await readFramedDeployment(
       provider, externalPlan.callees[0]!.categoryId, externalPlan.callees[0]!.artifact.stateLayout!,
@@ -1419,6 +1448,9 @@ export async function deployFramedProxy(
     implementationCategoryId: implementation.categoryId,
     program,
     draft,
+    // A calling genesis is the proxy's genesis, so it carries the publication the probe genesis prepared.
+    ...(callingGenesis && proxy.registry !== undefined
+      ? { publication: publicationOutput(proxy.registry.sha256, proxy.registry.uris) } : {}),
     ...(callingGenesis
       ? { spentUtxos: new Map([
         ...(entryWrites?.spentUtxos ?? []), ...externalPlan.utxos, ...facetSpends, [VALIDATOR_ID, runningValidator!],
@@ -1428,7 +1460,11 @@ export async function deployFramedProxy(
         : { spentUtxos: new Map([...(entryWrites?.spentUtxos ?? []), ...externalPlan.utxos, ...facetSpends]) }),
   });
   const proxyGenesis = callingGenesis
-    ? { contract: proxy.contract, tx: broadcast, categoryId: proxy.categoryId }
+    ? {
+      contract: proxy.contract, tx: broadcast, categoryId: proxy.categoryId,
+      identity: identityRecord(proxyIdentity, broadcast.txid),
+      ...(proxy.registry === undefined ? {} : { registry: proxy.registry }),
+    }
     : initialized ?? proxy;
 
   // 3. Everything is built and accepted: the implementation's genesis and the proxy's (and a separate hop) go out
@@ -1464,10 +1500,14 @@ export async function deployFramedProxy(
     implementation: {
       contract: implementation.contract, categoryId: implementation.categoryId,
       address: implementationMaster.address, tx: implementation.tx,
+      ...(implementation.identity === undefined ? {} : { identity: implementation.identity }),
+      ...(implementation.registry === undefined ? {} : { registry: implementation.registry }),
     },
     proxy: {
       contract: proxyGenesis.contract, categoryId: proxyGenesis.categoryId,
       address: proxyMaster.address, tx: proxyGenesis.tx,
+      ...(proxyGenesis.identity === undefined ? {} : { identity: proxyGenesis.identity }),
+      ...(proxyGenesis.registry === undefined ? {} : { registry: proxyGenesis.registry }),
     },
     initialize: {
       transaction: program.transaction, sourceOutputs: program.sourceOutputs,
@@ -1594,9 +1634,11 @@ function initializedProxyState(options: {
     `the implementation's ${options.entryLabel} ${what}, which the proxy's genesis cannot mint; pass `
     + '`initializeAs: \'hop\'` to run it as a separate hop, which leaves the proxy uninitialized until it confirms',
   );
+  // The genesis mints its own authhead, so the probe's identity NFT is no part of the state.
+  const authhead = authheadLockingBytecode(bytesToHex(options.category));
   const isState = (output: HopOutput | undefined): boolean => output?.token !== undefined
     && bytesEqual(output.token.category, options.category) && output.token.nft?.capability !== 'minting'
-    && !bytesEqual(output.lockingBytecode, options.validatorLock);
+    && !bytesEqual(output.lockingBytecode, options.validatorLock) && !bytesEqual(output.lockingBytecode, authhead);
   const unspent = options.genesis.filter(isState);
   const left: HopOutput[] = [];
   for (const placed of draft.layout.participants) {
@@ -1702,8 +1744,8 @@ interface SettleHopOptions {
    */
   readonly genesisValidatorAmount?: bigint;
   /**
-   * The lock of the genesis's own funding coin, which the genesis shape's only user input sits at. It differs from
-   * the root frame's caller lock because a minted root has no P2PKH caller.
+   * The lock of the genesis's own funding coin, which the genesis shape's leading input sits at. It differs from the
+   * root frame's caller lock because a minted root has no P2PKH caller.
    */
   readonly funderLockingBytecode?: Uint8Array;
   /**
@@ -2706,7 +2748,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     : hopPaying(options.value, learnedSends, proxyArtifact.contractName).spent.map((_utxo, position) => ({
       id: hopContainerId(position), index: draft.layout.participantCount + 1 + position,
     }));
-  const verdicts = [...draft.layout.participants, ...containerInputs].map((placed): InitializeVerdict => {
+  // A leading input is the funder's coin, signed over the real transaction at the broadcast, as a caller's coin is.
+  const conventionInputs = draft.layout.participants.filter((placed) => placed.kind !== 'leading');
+  const verdicts = [...conventionInputs, ...containerInputs].map((placed): InitializeVerdict => {
     const state = vm.evaluate({
       inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
     });
@@ -3354,10 +3398,12 @@ interface HopPlanOptions {
   /** The 25-byte P2PKH lock of the caller whose coin enters the frame. */
   readonly callerLockingBytecode: Uint8Array;
   /**
-   * The lock of the genesis's own funding coin, which is the only user input of the genesis shape. It differs from
+   * The lock of the genesis's own funding coin, which the genesis shape leads with. It differs from
    * `callerLockingBytecode` (the root frame's caller) because a minted root has no P2PKH caller.
    */
   readonly funderLockingBytecode?: Uint8Array;
+  /** The genesis shape's identity: the proxy's authhead, which the funding coin's own index recreates as output 0. */
+  readonly identity?: GenesisIdentity;
   /** One output per event the entry emits, in emit order, with the commitment it carries. */
   readonly eventOutputs: readonly HopEventOutput[];
   /**
@@ -3372,8 +3418,9 @@ interface HopPlanOptions {
   readonly truncated?: boolean;
   /**
    * True for the genesis-shape plan: the proxy master is minted as an output rather than spent, the proxy's records
-   * are created rather than spent, and there is no caller coin. The minted proxy root and every frame it enters
-   * carry an `INDEX_NONE` origin.
+   * are created rather than spent, and there is no caller coin: the funding coin leads the transaction and its index
+   * recreates as the proxy's authhead (`identity`). The minted proxy root and every frame it enters carry an
+   * `INDEX_NONE` origin.
    */
   readonly genesis?: boolean;
 }
@@ -3827,14 +3874,20 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // data records rather than spending them.
   const genesis = options.genesis === true;
   const mintedShift = genesis ? 1 : 0;
-  // The genesis mints the proxy's own validator, so the validator that runs is the first callee's — its pool already
+  // The genesis mints the proxy's own validator, so the validator that runs is the first callee's: its pool already
   // exists on chain. It covers the minted proxy root and every frame below it (V9 relaxes the root category; V1 binds
   // the running validator to its own category's spent master). A calling initializer always has one.
   const validatorCategory = genesis ? callees[0]!.category : options.proxyCategory;
   const validatorLock = genesis ? callees[0]!.deployed.address : proxyMaster.address;
-  // The genesis's only user input is its own funding coin, whose lock is the funder's, not a root caller's.
+  // The genesis's funding coin is its leading input, at the funder's lock rather than a root caller's, and its index
+  // recreates as the proxy's authhead: output 0 of the transaction that creates the category (D47).
   const userInputLock = genesis
     ? (options.funderLockingBytecode ?? options.callerLockingBytecode) : options.callerLockingBytecode;
+  const genesisIdentity = genesis ? options.identity : undefined;
+  if (genesis && genesisIdentity === undefined) {
+    throw new FramedProxyDeployError('the genesis shape leads with the proxy\'s authhead, but the plan names no identity');
+  }
+  const leading = genesisIdentity === undefined ? [] : [USER_ID];
   // A callee's own write as it is planned for this pass: a write whose value only the frame's own close exposed is
   // planned again from the value a settle read there, so the frame declares the whole run its body addresses.
   const calleeWritesOf = (callee: HopCallee): HopEntryWrites | undefined => {
@@ -3968,7 +4021,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // composer places; otherwise the indices the plan states and the ones the assembled transaction uses would differ.
   const validatorRedeem = validatorRedeemScript(validatorCategory, framedValidator.buildValidatorProgram());
   const facets = validatorFacetsOf({ id: VALIDATOR_ID, covers: [], settles: [], redeemScript: validatorRedeem });
-  const layout = layoutTransaction(blocks, new Map([[VALIDATOR_ID, facets]]));
+  const layout = layoutTransaction(blocks, new Map([[VALIDATOR_ID, facets]]), leading);
   const pushes = callPushes(implementationArtifact, options.entry.functionName, options.entry.args ?? []);
   // The events the delegate frame lists sit in the trailing region, which starts past the participants. The
   // assembly allocates them there and refuses a plan that names any other index.
@@ -4054,9 +4107,17 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const implementationRecords = implementationArtifact.stateLayout?.dataNftCount ?? recordIds.length;
   const at = (list: readonly RecordEntry[], nftIndex: number): RecordEntry =>
     (writes[nftIndex] ? list[nftIndex]! : recordKept[nftIndex]!);
+  // The census admits a mutable NFT of the proxy's category only where a frame on it declares a record, so the minted
+  // root declares the authhead at the leading index: created from nothing at the owner's lock, then kept there.
+  const authhead = genesisIdentity === undefined ? undefined
+    : { out: participant(layout, USER_ID).index, owner: genesisIdentity.owner };
+  const authheadCreated: RecordEntry | undefined = authhead === undefined ? undefined
+    : { in: INDEX_NONE, out: authhead.out, viewIn: new Uint8Array(0), viewOut: authhead.owner };
+  const authheadKept: RecordEntry[] = authhead === undefined ? []
+    : [{ in: INDEX_NONE, out: authhead.out, viewIn: authhead.owner, viewOut: authhead.owner }];
   const proxySegments: RecordEntry[][] = [
-    [...recordKept],
-    recordKept.map((_entry, nftIndex) => at(recordAfter, nftIndex)),
+    [...recordKept, ...(authheadCreated === undefined ? [] : [authheadCreated])],
+    [...recordKept.map((_entry, nftIndex) => at(recordAfter, nftIndex)), ...authheadKept],
   ];
   // A call closes the segment the code before it runs in, so a frame that makes `k` calls declares `k + 1`
   // segments. Each write the entry's own source makes lands in one of them — the count of calls before the write,
@@ -4149,6 +4210,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // writes and the callees' have to be in it before either is chained.
   const writeTransitions = new Set<DraftRecordEntry>();
   for (const entry of rootRecordWrites) writeTransitions.add(entry);
+  // The minted root creates the authhead, so the walk keeps the owner's lock it writes there.
+  if (authheadCreated !== undefined) writeTransitions.add(authheadCreated);
   // The records the entry's own body writes follow the state records its frame declares, which is the ordinal the
   // body's group walk reads them at. A created node is a trailing output past the events.
   const createdBase = trailingCursor;
@@ -4655,10 +4718,11 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const containerSpends = paying?.spent ?? [];
   const plan: CompositionDraftPlan = {
     blocks,
-    // The genesis's funder is the proxy's own funding coin, which creates the category; it is still the one user
-    // input, but it is not a root caller (the minted master has none).
+    // The genesis's funder is the proxy's own funding coin, which creates the category: it leads the transaction
+    // rather than entering it after the participants, and it is not a root caller (the minted master has none).
+    ...(leading.length === 0 ? {} : { leading }),
     userInputs: [
-      { id: USER_ID, index: layout.participantCount },
+      ...(leading.length === 0 ? [{ id: USER_ID, index: layout.participantCount }] : []),
       ...containerSpends.map((_utxo, position) => ({
         id: hopContainerId(position), index: layout.participantCount + 1 + position,
       })),
@@ -4709,6 +4773,13 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       [USER_ID]: {
         source: { lockingBytecode: userInputLock, valueSatoshis: options.callerSatoshis },
         unlockingBytecode: callerUnlocking(),
+        // The genesis's funding coin recreates as the proxy's authhead, the record its minted root declares above.
+        ...(genesisIdentity === undefined ? {} : {
+          output: mutableSource(
+            authheadLockingBytecode(genesisIdentity.category), genesisIdentity.output.amount, options.proxyCategory,
+            genesisIdentity.owner,
+          ),
+        }),
       },
       ...Object.fromEntries(callees.flatMap((callee) => {
         const masterEntry = [callee.master, {
@@ -4874,6 +4945,8 @@ interface BroadcastHopOptions {
   readonly spentUtxos?: ReadonlyMap<string, Utxo>;
   /** The proxy's containers the implementation's sends are paid from, at the indices after the caller's coin. */
   readonly containerInputs?: readonly { readonly index: number; readonly utxo: Utxo }[];
+  /** A calling genesis's BCMR publication, after every settled output: the validator constrains no token-free one. */
+  readonly publication?: Output;
 }
 
 /** The live UTXO a participant sits on, read back by category so no genesis output index is assumed. */
@@ -5181,7 +5254,14 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   // The outpoint every participant resolves to, so a hop that cannot broadcast a duplicated outpoint names the two
   // participants that share it instead of only the transaction's input index.
   const resolved = new Map<string, string>();
+  // A genesis's funding coin is the caller's coin and leads the transaction, signed like it over the real one.
+  const leads = draft.layout.participants.some((placed) => placed.kind === 'leading');
   for (const placed of draft.layout.participants) {
+    if (placed.kind === 'leading') {
+      hopTrace(`leading input ${callerFunding.utxo.txid}:${callerFunding.utxo.vout} ${callerFunding.utxo.satoshis}`);
+      builder.addInput(callerFunding.utxo, callerFunding.funder);
+      continue;
+    }
     const source = program.sourceOutputs[placed.index];
     const unlockingBytecode = program.transaction.inputs[placed.index]?.unlockingBytecode;
     if (source === undefined || unlockingBytecode === undefined) {
@@ -5233,13 +5313,15 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   }
   // The deployer's own coin funds the hop and is the frame's root caller; its signature is a real one over the
   // real transaction, which is what the root's `msg.sender` binding and the provider both check. Its sequence is
-  // the caller's own choice, not the composer's.
+  // the caller's own choice, not the composer's. A coin that leads the transaction was added above.
   for (const [index, funder] of program.sourceOutputs.entries()) {
     if (index < draft.layout.participantCount) continue;
     hopTrace(`funder ${index} source ${describeSourceOutput(funder, callerFunding.utxo)}`);
   }
-  hopTrace(`caller input ${callerFunding.utxo.txid}:${callerFunding.utxo.vout} ${callerFunding.utxo.satoshis}`);
-  builder.addInput(callerFunding.utxo, callerFunding.funder);
+  if (!leads) {
+    hopTrace(`caller input ${callerFunding.utxo.txid}:${callerFunding.utxo.vout} ${callerFunding.utxo.satoshis}`);
+    builder.addInput(callerFunding.utxo, callerFunding.funder);
+  }
   // The proxy's containers follow the caller's coin, each with the unlocking the derived hop carries.
   for (const { index, utxo } of options.containerInputs ?? []) {
     const source = program.sourceOutputs[index];
@@ -5257,6 +5339,7 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   for (const output of program.transaction.outputs.slice(0, settled)) {
     builder.addOutput(libauthOutputToSolidCashOutput(output));
   }
+  if (options.publication !== undefined) builder.addOutput(options.publication);
   builder.addBchChangeOutputIfNeeded({
     to: callerFunding.changeAddress ?? options.callerLockingBytecode, feeRate: 1,
   });

@@ -6,6 +6,9 @@ import Signer from '../Signer.js';
 import type { ConstructorArgument } from '../Argument.js';
 import type { Utxo, TransactionDetails, AddressType } from '../interfaces.js';
 import type { StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions } from './StatefulContract.js';
+import type { PublishedRegistry } from '../bcmr/deployment.js';
+import type { IdentityRecord } from '../bcmr/identity.js';
+import type { SplitFacets } from './stateful-lifecycle-types.js';
 import { addressToLockScript, getNetworkPrefix } from '../utils.js';
 
 // Heavy value imports are deferred to method/helper bodies so that loading this
@@ -45,12 +48,29 @@ export interface DeployContractOptions {
   identityAnchors?: DeployOptions['identityAnchors'];
   /** Internal composition: parent-owned logical CREATE identity for the contract deployed by this factory. */
   logicalIdentity?: { deployer: string; nonce: bigint; address: string };
+  /**
+   * Internal composition: the provider the genesis is built and broadcast through, the runner's when omitted. A split
+   * parent passes an overlay that holds its bundle's geneses until the root's is built.
+   */
+  provider?: NetworkProvider;
+  /** Internal composition: a split root's facets; see `DeployOptions.splitFacets`. */
+  splitFacets?: SplitFacets;
+  /** How the genesis holds its BCMR identity output; see `DeployOptions.identity`. */
+  identity?: DeployOptions['identity'];
+  /** A BCMR registry the genesis publishes; see `DeployOptions.bcmr`. */
+  bcmr?: DeployOptions['bcmr'];
+  /** The ledger token's bearer category and premint; see `DeployOptions.nativeToken`. */
+  nativeToken?: DeployOptions['nativeToken'];
 }
 
 /** A deployed contract with ethers-style deployment accessors. */
 export type DeployedContract<T extends Artifact = Artifact> = ConnectedStatefulContract<T> & {
   deploymentTransaction(): TransactionDetails;
   waitForDeployment(): Promise<DeployedContract<T>>;
+  /** The genesis's BCMR identity output. */
+  deploymentIdentity(): IdentityRecord | undefined;
+  /** The registry the genesis published, if it published one. */
+  deploymentRegistry(): PublishedRegistry | undefined;
 };
 
 function looksLikeOverrides(x: unknown): boolean {
@@ -89,8 +109,10 @@ export async function selectGenesisFundingUtxo(
   const dataNfts = BigInt(artifact.delegateOnly ? 0 : (artifact.stateLayout?.dataNftCount ?? 1));
   // X149: `bytecode` is an ASM LISTING, so `.length / 2` is half a CHARACTER count and this overpaid.
   const deployFee = BigInt(Math.max(5000, asmToBytecode(artifact.bytecode).length + 2000));
+  // The genesis leads with its BCMR identity output, a dust output, and may carry its publication.
+  const identityOutput = 1000n;
   const cost = 1200n + 1200n * dataNfts + 1200n * BigInt(identityNftCount) + deployFee + 2400n
-    + additionalSatoshis;
+    + identityOutput + additionalSatoshis;
   return selectGenesisFundingUtxoForCost(signer, cost, excludedOutpoints);
 }
 
@@ -203,12 +225,13 @@ export function compareGenesisFundingFreshness(a: Utxo, b: Utxo): number {
 export async function fanOutPlainUtxos(
   signer: Signer, needed: number, excludedOutpoints: ReadonlySet<string> = new Set(),
 ): Promise<Utxo[] | undefined> {
-  const { genesisOutpointKey, isReservedGenesisOutpoint } = await import('./genesis-reservations.js');
+  const { genesisOutpointKey } = await import('./genesis-reservations.js');
+  const { signerFundingCoins } = await import('../framed/deploy/own-coin.js');
   const { TransactionBuilder } = await import('../TransactionBuilder.js');
+  // Neither a reserved genesis coin nor a BCMR identity output is split (docs/bcmr/DESIGN.md 4.4).
   const plain = (us: Utxo[]): Utxo[] => us
-    .filter((u) => !u.token && !excludedOutpoints.has(genesisOutpointKey(u.txid, u.vout))
-      && !isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout)));
-  const current = plain(await signer.getUtxos());
+    .filter((u) => !u.token && !excludedOutpoints.has(genesisOutpointKey(u.txid, u.vout)));
+  const current = plain(await signerFundingCoins(signer));
   if (current.length >= needed) return current;
 
   const perOutput = 5000n;
@@ -228,7 +251,7 @@ export async function fanOutPlainUtxos(
   tb.addOutput({ to: signer.getAddress(), amount: largest.satoshis - perOutput * BigInt(missing) - fee });
   await tb.send();
 
-  const after = plain(await signer.getUtxos());
+  const after = plain(await signerFundingCoins(signer));
   return after.length >= needed ? after : undefined;
 }
 
@@ -316,7 +339,8 @@ export class ContractFactory<T extends Artifact = Artifact> {
     }
     overrides = { ...this.defaultDeployOptions, ...overrides };
     const signer = this.runner instanceof Signer ? this.runner : undefined;
-    const provider: NetworkProvider = signer ? signer.provider : (this.runner as NetworkProvider);
+    const provider: NetworkProvider = overrides.provider
+      ?? (signer ? signer.provider : (this.runner as NetworkProvider));
     const constructorArgs = await normalizeRegisteredAddressArguments(
       provider,
       this.artifact.constructorInputs,
@@ -372,8 +396,12 @@ export class ContractFactory<T extends Artifact = Artifact> {
           const pool = resolveMasterPoolSize({ masters: overrides.threadCount, validators: overrides.validatorCount });
           poolSatoshis = poolGenesisSatoshis(pool, 1200n, overrides.functionSplit?.shards.length ?? 1);
         }
+        // A coin the deployment names for the token's category is not its genesis coin.
+        const { genesisOutpointKey } = await import('./genesis-reservations.js');
+        const named = [overrides.nativeToken?.funding]
+          .flatMap((coin) => (coin === undefined ? [] : [genesisOutpointKey(coin.txid, coin.vout)]));
         fundingUtxo = await selectGenesisFundingUtxo(
-          signer, deployArtifact, new Set(), 1 + verifierCount, poolSatoshis,
+          signer, deployArtifact, new Set(named), 1 + verifierCount, poolSatoshis,
         );
       }
       funder = funder ?? signer.unlockP2PKH();
@@ -423,6 +451,10 @@ export class ContractFactory<T extends Artifact = Artifact> {
         initialBalance: overrides.initialBalance,
         initArgs: overrideInitArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
         identityAnchors,
+        ...(overrides.identity === undefined ? {} : { identity: overrides.identity }),
+        ...(overrides.bcmr === undefined ? {} : { bcmr: overrides.bcmr }),
+        ...(overrides.nativeToken === undefined ? {} : { nativeToken: overrides.nativeToken }),
+        ...(overrides.splitFacets === undefined ? {} : { splitFacets: overrides.splitFacets }),
       });
       nonceReservation?.commit();
     } catch (error) {
@@ -466,6 +498,8 @@ export class ContractFactory<T extends Artifact = Artifact> {
     }
     // ethers-style deployment accessors (attach to the instance; the dispatch proxy passes them through).
     (contract as { deploymentTransaction: () => TransactionDetails }).deploymentTransaction = () => result.tx;
+    (contract as { deploymentIdentity: () => IdentityRecord | undefined }).deploymentIdentity = () => result.identity;
+    (contract as { deploymentRegistry: () => PublishedRegistry | undefined }).deploymentRegistry = () => result.registry;
     const awaitDeployed = async (): Promise<DeployedContract<T>> => {
       await result.tx.wait?.();
       return contract;

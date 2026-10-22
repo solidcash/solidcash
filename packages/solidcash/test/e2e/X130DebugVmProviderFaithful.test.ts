@@ -34,8 +34,10 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  *
  * - FAIL-OPEN, now CLOSED (row 1). `decrement(3).build()` was ADMITTED at `operationCostBudgetPerByte: 150`
  *   while the decider refuses that shape. It is now refused, quoting 150 x 687 = 103,050.
- * - FAIL-CLOSED, now OPEN (row 2). `decrement(40).build()` is REFUSED at the stock 800 x density on the
- *   relaxed DEFAULT profile, which the decider accepts. NEWLY BUILDABLE, and reported rather than hidden.
+ * - FAIL-CLOSED, now OPEN (row 2). The bare VM applied the stock 800 x density whatever the provider published.
+ *   `decrement(40)` fits that budget since the October covenant hardening (by 210,081 units), so row 2b refuses
+ *   it at a published 400; `SELF_DENSE` depth 30 is refused at the stock 800 (row 5) and builds on a relaxed
+ *   budget. NEWLY BUILDABLE, and reported rather than hidden.
  *
  * NEWLY BUILDABLE IS NOT A NEW WITNESS PATH. Nothing about the covenant scripts, the state derivation or the
  * signatures changed; a build-time gate stopped refusing what the network it is aimed at accepts, and the
@@ -59,6 +61,21 @@ contract C() {
   int x;
   function decrement(int i) {
     this.x = this.x - i;
+    if (i > 1) { decrement(i - 1); }
+    require(i > 0);
+  }
+  function chk(int e) { require(this.x == e); }
+}`;
+
+/**
+ * SELF with nine more subtractions per frame (StatefulRecursion's handler). SELF fits the stock 800 x density at
+ * every depth the 100-entry control stack allows (48 by 31,728 units); this one exceeds it from depth 30.
+ */
+const SELF_DENSE = `pragma solidcash >=0.8.0;
+contract C() {
+  int x;
+  function decrement(int i) {
+    this.x = this.x - i - i - i - i - i - i - i - i - i - i;
     if (i > 1) { decrement(i - 1); }
     require(i > 0);
   }
@@ -270,14 +287,14 @@ describe('X130 - the debug VM decides on the published limits (@mem-cash/validat
   it('5. NOT WIDENED for a provider that publishes no limits: the stock 800 comes straight back', async () => {
     // Every live network (Electrum, regtest, FullStack, Bitcoin RPC) publishes no `consensusLimits`, so this is
     // the behaviour they all get: `createVirtualMachineBch2026ForProvider` early-returns libauth's own factory
-    // and the debug VM is byte-identical to the pre-repair one. Depth 46 is the smallest the stock 800 refuses
-    // (measured: 45 fits by 6,144 units, 46 is 15,963 over; depth 40 fits since the hardening scans list their
-    // slots), and row 2's relaxed profile admits it, so the published limits are the only thing that changed.
+    // and the debug VM is byte-identical to the pre-repair one. On SELF_DENSE, depth 30 is the smallest the stock
+    // 800 refuses (measured: 29 fits by 15,443 units, 30 is 23,571 over, about 39,000 per frame), and row 2's
+    // relaxed profile builds it, so the published limits are the only thing that changed.
     const provider = new MockNetworkProvider();
-    const sc = await recursionContract(provider) as unknown as Recursor;
+    const sc = await recursionContract(provider, SELF_DENSE) as unknown as Recursor;
     (provider as unknown as { consensusLimits: unknown }).consensusLimits = undefined;
     let error: string | undefined;
-    try { await sc.decrement(46n).build(); } catch (e) { error = (e as Error).message; }
+    try { await sc.decrement(30n).build(); } catch (e) { error = (e as Error).message; }
     expect(error, 'a limits-less provider must decide exactly as the bare VM did').toBeDefined();
     assertDensityCeiling(error!, STOCK_BUDGET_PER_BYTE);
   });

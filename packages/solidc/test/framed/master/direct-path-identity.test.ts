@@ -10,8 +10,11 @@ import { compileString } from '../../../src/compiler.js';
  * check stays at the front of the entry the SDK signs, and `msg.sender` is read from the authenticated execution
  * frame; once more when the record and container covenants were bound to the contract's own lock; and again when
  * the mutable-output check tried the locks the contract mints before scanning inputs; and again when the slot scans
- * became one classifying pass per side that also counts minting uniqueness. A framed compile may add artifacts, but
- * it may not make these two directs disagree.
+ * became one classifying pass per side that also counts minting uniqueness; and again when the token container
+ * covenant lost its merge path and the keep of an unnamed container refused a minting NFT (the master pin's destroy
+ * arm moved them only while every contract carried it); and again when the own-category count pinned each record
+ * beside a count-path call at its own index (C3). A framed compile may add artifacts, but it may not make these two
+ * directs disagree.
  */
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
@@ -33,9 +36,9 @@ const SENDER_CONTRACT = 'pragma solidcash ^0.13.0;'
 
 const CASES = [
   { name: 'a stateful contract with a signature check', source: STATE_CONTRACT,
-    pinnedSha256: 'ef7fd532e1de13f25296747e20791b9419d1eb6824898ed7be28635ec25e8eae' },
+    pinnedSha256: '04d196136acf25481b94e9bb7a57f761909e53a350d51fd29dbeb635e17fd8f5' },
   { name: 'a stateful contract that reads msg.sender', source: SENDER_CONTRACT,
-    pinnedSha256: '1359f3e91e81bed6596baea510775772e3b306f75db16e0f8479208172abbae0' },
+    pinnedSha256: 'a6caec9e0458b11ba77eaa393c5144d9a2d6549944c8f1243cc7dd4db82409cb' },
 ] as const;
 
 describe('the direct convention is unchanged', () => {

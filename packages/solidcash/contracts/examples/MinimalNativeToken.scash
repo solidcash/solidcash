@@ -8,6 +8,8 @@ import { BchNative } from "../BchNative.scash";
 contract MinimalNativeToken()
     is ERC20, BchNative
 {
+    constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) { }
+
     function _nativeCredit(address account, uint256 amount) internal override {
         this._totalSupply = this._totalSupply + amount;
         this._balances[account] = this._balances[account] + amount;

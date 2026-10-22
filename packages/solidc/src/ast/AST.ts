@@ -1,4 +1,4 @@
-import { type Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, type FunctionBlockLayout, type LibraryCallArg, type JournalSettlementIdentityAbi, type ConstructedKeyVectorV1Abi, type AffineRecursiveFrameV1Abi } from '@solidcash/utils';
+import { type Type, PrimitiveType, AddressBytesType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, type FunctionBlockLayout, type LibraryCallArg, type JournalSettlementIdentityAbi, type ConstructedKeyVectorV1Abi, type AffineRecursiveFrameV1Abi } from '@solidcash/utils';
 import type { AbiFunction } from '@solidcash/utils';
 import type { ChildDeploymentValueRecipe } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';
@@ -340,11 +340,14 @@ export interface EntryAccessInfo {
 
 export interface TokenContainerAccessInfo {
   keyParam: string;           // function parameter name used as category key
-  keySource?: 'param' | 'own'; // own = contract category, derived by covenant introspection
+  // own = contract category, derived by covenant introspection; state = an immutable bytes32 state variable
+  keySource?: 'param' | 'own' | 'state';
+  keyStateVariable?: string;  // the immutable state variable a `state` key reads
   operations: ('read' | 'transfer' | 'transferNft')[];
   slotIndex: number;
   transferCount: number;      // number of transfer() calls for this category
   transferNftCount: number;   // number of transferNft() calls for this category
+  readsOutput?: boolean;      // the body reads the output side of the amount (`this.outState.tokens[c]`)
 }
 
 // X29. Owner-local effect frames an message-bus batch route reserves on behalf of an effect-carrying graph emission handler
@@ -528,6 +531,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusOwnerIsLastArgument?: boolean;
   /** Set on compiler-cloned message-bus handlers; identifies the source handler the clone was made from. */
   messageBusCloneSourceKey?: string;
+  /**
+   * Set on every compiler-cloned message-bus handler, whatever its name. The route owns the clone's collection
+   * topology, so the clone's sorted records take the scalar path and carry no batch witnesses (ROUTE-SKIP-1).
+   */
+  ownRecordsScalarOnly?: boolean;
   /**
    * The message-bus route's declared input names, in push order. A route handler shares the caller's stack, so these
    * values are physically BELOW the handler's argument block; seeding them into the handler's frame model is what
@@ -882,6 +890,14 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
   messageBusRoute?: boolean;
+  /** Bound route: the participant verifier's lock, the one the route's verifier binder requires. */
+  messageBusVerifierLock?: Uint8Array;
+  /**
+   * Bound non-graph route: the route-local 0/1 flags a selector branch sets for the records its handler may rewrite
+   * inside the participant block (every one, the trailing band, or one collection's entry slots). Empty when no
+   * handler claims any; absent where the C3 record pin keeps the whole block to the census.
+   */
+  messageBusRecordClaims?: ReadonlyArray<{ flag: string; all?: true; trailing?: true; collection?: string }>;
   /** Resolved route dispatch. Stamped at synthesis; published as `artifact.messageBus.convention`. */
   messageBusDispatch?: 'legacy-unroll' | 'kernel-row-loop';
   messageBusMaximumRows?: number;
@@ -1167,6 +1183,19 @@ export abstract class StatementNode extends Node {
   messageBusFixedChunkableWriteGuard?: string;
   /** Base contract that wrote this statement when its constructor is inlined into a derived one (`super` scope). */
   baseConstructorOf?: string;
+  /** A top-level statement of the read-modify-write whose keys carry this `LvalueKeyTag.unit` (BindLvalueKeyEffects). */
+  lvalueKeyUnit?: number;
+  /** A dropped storage-pointer declaration kept in place with its own key builds (BindLvalueKeyEffects). */
+  lvalueKeyAlias?: ExpressionNode[];
+}
+
+/** One build of a read-modify-write's key: the write (`unit`), the key position (`index`) and the key's type. */
+export interface LvalueKeyTag {
+  unit: number;
+  index: number;
+  type: Type;
+  /** A storage-pointer or slot-factory alias declaration's key, re-read by every use and bound at the declaration. */
+  alias?: boolean;
 }
 
 /** A base constructor's own modifiers, expanded with the most-derived (virtual) modifier definitions. */
@@ -1447,6 +1476,9 @@ export class BranchNode extends StatementNode {
   /** Replayable source guard for a compiler-owned dirty-bit flush whose condition is otherwise opaque to the ABI. */
   kernelEntryActivation?: ExternalCallExpression;
 
+  /** IfConvertConditionalEntryOp kept this branch's one direct entry write; its access publishes the guarded value. */
+  keepsGuardedEntryWrite?: boolean;
+
   constructor(
     public condition: ExpressionNode,
     public ifBlock: BlockNode,
@@ -1684,6 +1716,8 @@ export abstract class ExpressionNode extends Node {
   // A runtime-sized local-array key reconstructed from dominating writes. LowerVMapCounterLoops may treat this
   // expression as counter-derived without broadening that rule to arbitrary source array reads.
   messageBusDeterministicArrayKey?: boolean;
+  // One of several builds of a read-modify-write's key that might have a side effect (BindLvalueKeyEffects).
+  lvalueKey?: LvalueKeyTag;
 }
 
 // `(x op= rhs)` used as an expression: performs the assignment to local `x` and yields its new value
@@ -2488,7 +2522,8 @@ export class HexLiteralNode extends LiteralNode<Uint8Array> {
     public value: Uint8Array,
   ) {
     super();
-    this.type = new BytesType(value.byteLength);
+    // A `0x..` literal may stand for an address literal, so it keeps the implicit conversion to address.
+    this.type = new AddressBytesType(value.byteLength);
   }
 
   toString(): string {

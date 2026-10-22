@@ -145,7 +145,11 @@ const closes: Array<{ name: string; program: Program; expected: Record<string, u
   {
     name: 'an empty computed value',
     program: programFor(script(Op.OP_0, Op.OP_SWAP, Op.OP_EQUALVERIFY, Op.OP_1), [placeholder]),
-    expected: { ok: false, reason: 'implausible-length', length: 0 },
+    // The close rides along, so a caller can learn an empty commitment from it.
+    expected: {
+      ok: false, reason: 'implausible-length', length: 0,
+      close: { declared: placeholder, computed: new Uint8Array(0) },
+    },
   },
 ];
 

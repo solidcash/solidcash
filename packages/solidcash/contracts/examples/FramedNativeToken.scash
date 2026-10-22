@@ -1,0 +1,86 @@
+pragma solidcash >=0.8.0;
+
+import { BchNative } from "../BchNative.scash";
+
+// An ERC-20 token with BchNative's wrap and unwrap, for the framed convention. Compile it with `split: 'func'`, which
+// gives every entry its own master program. A frame that writes two balances of one mapping takes more than an
+// input holds, so a transfer debits the sender and credits the recipient in a second frame, a call to `credit`, and
+// `transferFrom` debits the sender and spends the allowance where it credits the recipient, a call to `creditFrom`.
+// Only the contract itself may call `credit` and `creditFrom`.
+contract FramedNativeToken() is BchNative {
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    mapping(address => uint256) internal balances;
+    mapping(address => mapping(address => uint256)) internal allowances;
+    uint256 internal _totalSupply;
+
+    constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) { }
+
+    function name() public pure returns (string) { return "Framed Native Token"; }
+    function symbol() public pure returns (string) { return "FNT"; }
+    function decimals() public pure returns (uint8) { return 8; }
+
+    function totalSupply() public view returns (uint256) {
+        return this._totalSupply;
+    }
+
+    function balanceOf(address account) public view returns (uint256) {
+        return this.balances[account];
+    }
+
+    function allowance(address owner, address spender) public view returns (uint256) {
+        return this.allowances[owner][spender];
+    }
+
+    // The second half of a transfer, which the contract makes to itself.
+    function credit(address to, uint256 value) public {
+        require(msg.sender == address(this));
+        this.balances[to] = this.balances[to] + value;
+    }
+
+    // The second half of `transferFrom`, which the contract makes to itself: the spender's allowance, then the credit.
+    function creditFrom(address from, address spender, address to, uint256 value) public {
+        require(msg.sender == address(this));
+        uint256 allowed = this.allowances[from][spender];
+        require(allowed >= value);
+        this.allowances[from][spender] = allowed - value;
+        this.balances[to] = this.balances[to] + value;
+    }
+
+    function transfer(address to, uint256 value) public returns (bool) {
+        address from = msg.sender;
+        require(this.balances[from] >= value);
+        this.balances[from] = this.balances[from] - value;
+        this.credit(to, value);
+        emit Transfer(from, to, value);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public returns (bool) {
+        this.allowances[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 value) public returns (bool) {
+        require(this.balances[from] >= value);
+        this.balances[from] = this.balances[from] - value;
+        this.creditFrom(from, msg.sender, to, value);
+        emit Transfer(from, to, value);
+        return true;
+    }
+
+    function _nativeCredit(address account, uint256 amount) internal override {
+        this._totalSupply = this._totalSupply + amount;
+        this.balances[account] = this.balances[account] + amount;
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _nativeDebit(address account, uint256 amount) internal override {
+        require(this.balances[account] >= amount);
+        this.balances[account] = this.balances[account] - amount;
+        this._totalSupply = this._totalSupply - amount;
+        emit Transfer(account, address(0), amount);
+    }
+}

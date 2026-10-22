@@ -74,17 +74,21 @@ describe('Threading', () => {
 
       const txOutputs = getTxOutputs(result.tx);
 
-      // Outputs 0 and 1: minting NFTs
-      expect(txOutputs[0].token?.nft?.capability).toBe('minting');
+      // Output 0: the category's authhead, holding its identity NFT
+      expect(txOutputs[0].token?.nft?.capability).toBe('mutable');
       expect(txOutputs[0].token?.category).toBe(result.categoryId);
+
+      // Outputs 1 and 2: minting NFTs
       expect(txOutputs[1].token?.nft?.capability).toBe('minting');
       expect(txOutputs[1].token?.category).toBe(result.categoryId);
-
-      // Outputs 2 and 3: data NFTs (mutable)
-      expect(txOutputs[2].token?.nft?.capability).toBe('mutable');
+      expect(txOutputs[2].token?.nft?.capability).toBe('minting');
       expect(txOutputs[2].token?.category).toBe(result.categoryId);
+
+      // Outputs 3 and 4: data NFTs (mutable)
       expect(txOutputs[3].token?.nft?.capability).toBe('mutable');
       expect(txOutputs[3].token?.category).toBe(result.categoryId);
+      expect(txOutputs[4].token?.nft?.capability).toBe('mutable');
+      expect(txOutputs[4].token?.category).toBe(result.categoryId);
     });
 
     it('should deploy with default threadCount=1 (backward compat)', async () => {
@@ -108,10 +112,11 @@ describe('Threading', () => {
 
       const txOutputs = getTxOutputs(result.tx);
 
-      // Output 0: single minting NFT
-      expect(txOutputs[0].token?.nft?.capability).toBe('minting');
-      // Output 1: first data NFT (mutable)
-      expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
+      // Output 0: the authhead's identity NFT; output 1: single minting NFT
+      expect(txOutputs[0].token?.nft?.capability).toBe('mutable');
+      expect(txOutputs[1].token?.nft?.capability).toBe('minting');
+      // Output 2: first data NFT (mutable)
+      expect(txOutputs[2].token?.nft?.capability).toBe('mutable');
     });
 
     it('should throw on invalid threadCount', async () => {

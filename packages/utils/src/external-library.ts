@@ -4,7 +4,8 @@
 // It is either inlined into the contract redeem or loaded at runtime from a co-spent side-car UTXO.
 // See packages/solidc/docs/external-libraries.md.
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { Op, type Script, scriptToBytecode } from './script.js';
+import { Op, type Script, bytecodeToScript, scriptToBytecode } from './script.js';
+import { decodeInt } from './data.js';
 import { hash256 } from './hash.js';
 import type { AbiInput, AbiOutput, ExternalLibraryAbi } from './artifact.js';
 import {
@@ -75,6 +76,43 @@ export function resolveLibraries(userLibraries?: readonly UserLibraryInput[]): R
     nextId += 1n;
   }
   return resolved;
+}
+
+// Nesting depth of pushed scripts libraryDefinedIds reads; a registrar pushes the bodies it defines one level down.
+const DEFINED_ID_SCAN_DEPTH = 4;
+
+/**
+ * The function ids a library blob OP_DEFINEs when it runs: every pushed number followed by OP_DEFINE, in the blob
+ * and in the scripts it pushes (a body it defines may define more when invoked). A pushed id that is not a minimal
+ * number cannot equal a compiler id. An id computed at run time (the loader's callable id) is not read.
+ */
+export function libraryDefinedIds(blob: Uint8Array): bigint[] {
+  const ids = new Set<bigint>();
+  const pushedNumber = (element: Op | Uint8Array): bigint | undefined => {
+    if (element === Op.OP_1NEGATE) return -1n;
+    if (typeof element === 'number') {
+      return element >= Op.OP_1 && element <= Op.OP_16 ? BigInt(element - Op.OP_1 + 1) : undefined;
+    }
+    try {
+      return decodeInt(element);
+    } catch {
+      return undefined;
+    }
+  };
+  const scan = (bytecode: Uint8Array, depth: number): void => {
+    const script = bytecodeToScript(bytecode);
+    script.forEach((element, index) => {
+      if (element instanceof Uint8Array) {
+        if (depth < DEFINED_ID_SCAN_DEPTH && element.length > 1) scan(element, depth + 1);
+        return;
+      }
+      if (element !== Op.OP_DEFINE || index === 0) return;
+      const id = pushedNumber(script[index - 1]);
+      if (id !== undefined) ids.add(id);
+    });
+  };
+  scan(blob, 0);
+  return [...ids];
 }
 
 // Resolve a library's script blob from its artifact descriptor: user libraries carry the blob inline

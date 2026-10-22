@@ -29,6 +29,8 @@ import {
   createTestProvider, getTxOutputs, createFeeFunder, setupStatefulUtxos,
 } from '../test-util.js';
 import { Utxo, TokenDetails } from '../../src/interfaces.js';
+import { authheadOutput } from '../../src/bcmr/authhead.js';
+import { addressToLockScript } from '../../src/utils.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 // A stateful contract with two state variables of different types:
@@ -957,17 +959,21 @@ describe('StatefulContract.deploy()', () => {
 
     const txOutputs = getTxOutputs(result.tx);
 
-    // Output 0: master UTXO with minting NFT
-    expect(txOutputs[0].token?.nft?.capability).toBe('minting');
+    // Output 0: the category's authhead, holding its identity NFT
+    expect(txOutputs[0].token?.nft?.capability).toBe('mutable');
     expect(txOutputs[0].token?.category).toBe(result.categoryId);
 
-    // Output 1: data NFT with initial state
-    expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
+    // Output 1: master UTXO with minting NFT
+    expect(txOutputs[1].token?.nft?.capability).toBe('minting');
     expect(txOutputs[1].token?.category).toBe(result.categoryId);
+
+    // Output 2: data NFT with initial state
+    expect(txOutputs[2].token?.nft?.capability).toBe('mutable');
+    expect(txOutputs[2].token?.category).toBe(result.categoryId);
 
     // Verify state
     const parsedState = parsePushdataCommitment(
-      txOutputs[1].token!.nft!.commitment, deployArtifact.stateLayout!, 0,
+      txOutputs[2].token!.nft!.commitment, deployArtifact.stateLayout!, 0,
     );
     expect(parsedState.counter).toBe(5n);
     expect(parsedState.label).toEqual(new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
@@ -993,7 +999,7 @@ describe('StatefulContract.deploy()', () => {
 
     const txOutputs = getTxOutputs(result.tx);
     const parsedState = parsePushdataCommitment(
-      txOutputs[1].token!.nft!.commitment, deployArtifact.stateLayout!, 0,
+      txOutputs[2].token!.nft!.commitment, deployArtifact.stateLayout!, 0,
     );
     expect(parsedState.counter).toBe(0n);
     expect(parsedState.label).toEqual(zeroLabel);
@@ -1017,7 +1023,7 @@ describe('StatefulContract.deploy()', () => {
 
     const txOutputs = getTxOutputs(result.tx);
     const parsedState = parsePushdataCommitment(
-      txOutputs[1].token!.nft!.commitment, deployArtifact.stateLayout!, 0,
+      txOutputs[2].token!.nft!.commitment, deployArtifact.stateLayout!, 0,
     );
     expect(parsedState.counter).toBe(10n);
     // label defaults to zero bytes
@@ -1093,10 +1099,12 @@ describe('StatefulContract.deploy()', () => {
     });
 
     const txOutputs = getTxOutputs(result.tx);
-    expect(txOutputs[0].amount).toBe(2000n);
-    expect(txOutputs[1].amount).toBe(1500n);
-    // Change = 100000 - 2000 - 1500 - 500 = 96000
-    expect(txOutputs[2].amount).toBe(96000n);
+    // Output 0 is the authhead, at the dust of its NFT naming the deployer's 35-byte lock.
+    const identity = authheadOutput(result.categoryId, addressToLockScript(deployP2pkh.address));
+    expect(txOutputs[0].amount).toBe(identity.amount);
+    expect(txOutputs[1].amount).toBe(2000n);
+    expect(txOutputs[2].amount).toBe(1500n);
+    expect(txOutputs[3].amount).toBe(100000n - identity.amount - 2000n - 1500n - 500n);
   });
 });
 
@@ -1449,27 +1457,31 @@ describe('Multi-NFT Stateful Contract', () => {
 
       const txOutputs = getTxOutputs(result.tx);
 
-      // Output 0: master UTXO with minting NFT
-      expect(txOutputs[0].token?.nft?.capability).toBe('minting');
+      // Output 0: the category's authhead, holding its identity NFT
+      expect(txOutputs[0].token?.nft?.capability).toBe('mutable');
       expect(txOutputs[0].token?.category).toBe(result.categoryId);
 
-      // Output 1: data NFT 0
-      expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
+      // Output 1: master UTXO with minting NFT
+      expect(txOutputs[1].token?.nft?.capability).toBe('minting');
       expect(txOutputs[1].token?.category).toBe(result.categoryId);
 
-      // Output 2: data NFT 1
+      // Output 2: data NFT 0
       expect(txOutputs[2].token?.nft?.capability).toBe('mutable');
       expect(txOutputs[2].token?.category).toBe(result.categoryId);
 
-      // Output 3: change
-      expect(txOutputs[3].token).toBeUndefined();
+      // Output 3: data NFT 1
+      expect(txOutputs[3].token?.nft?.capability).toBe('mutable');
+      expect(txOutputs[3].token?.category).toBe(result.categoryId);
+
+      // Output 4: change
+      expect(txOutputs[4].token).toBeUndefined();
 
       // Verify state in both commitments
       const parsedState0 = parsePushdataCommitment(
-        txOutputs[1].token!.nft!.commitment, deployArtifact.stateLayout!, 0,
+        txOutputs[2].token!.nft!.commitment, deployArtifact.stateLayout!, 0,
       );
       const parsedState1 = parsePushdataCommitment(
-        txOutputs[2].token!.nft!.commitment, deployArtifact.stateLayout!, 1,
+        txOutputs[3].token!.nft!.commitment, deployArtifact.stateLayout!, 1,
       );
       expect(parsedState0.alpha).toEqual(alpha);
       expect(parsedState1.beta).toEqual(beta);
@@ -1687,15 +1699,15 @@ describe('3-NFT Per-Function Optimization', () => {
       expect(result.categoryId).toBe(fundingUtxo.txid);
       const txOutputs = getTxOutputs(result.tx);
 
-      // Deploy always creates ALL data NFT outputs
-      expect(txOutputs[0].token?.nft?.capability).toBe('minting');
-      expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
+      // Deploy always creates ALL data NFT outputs, after the authhead and the master
+      expect(txOutputs[1].token?.nft?.capability).toBe('minting');
       expect(txOutputs[2].token?.nft?.capability).toBe('mutable');
       expect(txOutputs[3].token?.nft?.capability).toBe('mutable');
+      expect(txOutputs[4].token?.nft?.capability).toBe('mutable');
 
-      const s0 = parsePushdataCommitment(txOutputs[1].token!.nft!.commitment, deployArtifact.stateLayout!, 0);
-      const s1 = parsePushdataCommitment(txOutputs[2].token!.nft!.commitment, deployArtifact.stateLayout!, 1);
-      const s2 = parsePushdataCommitment(txOutputs[3].token!.nft!.commitment, deployArtifact.stateLayout!, 2);
+      const s0 = parsePushdataCommitment(txOutputs[2].token!.nft!.commitment, deployArtifact.stateLayout!, 0);
+      const s1 = parsePushdataCommitment(txOutputs[3].token!.nft!.commitment, deployArtifact.stateLayout!, 1);
+      const s2 = parsePushdataCommitment(txOutputs[4].token!.nft!.commitment, deployArtifact.stateLayout!, 2);
       expect(s0.alpha).toEqual(alpha);
       expect(s1.beta).toEqual(beta);
       expect(s2.gamma).toEqual(gamma);

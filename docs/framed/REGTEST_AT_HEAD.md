@@ -1,8 +1,11 @@
 # Regtest at `88cc906ec`: what a real node proved, and what it cannot
 
+> **Snapshot at `88cc906ec` (2026-10-17).** Current regtest and relaxed-consensus instructions are in
+> [`../marketplace/bchn-marketplace-consensus-relaxation.md`](../marketplace/bchn-marketplace-consensus-relaxation.md).
+
 > **Update (2026-10-17).** The stock-node limits below still hold. A patched BCHN now exposes regtest-only
 > overrides for them, and the regtest lane has fixture snapshots and time travel. See
-> [BCHN marketplace consensus relaxation](../bchn-marketplace-consensus-relaxation.md). Build the node with
+> [BCHN marketplace consensus relaxation](../marketplace/bchn-marketplace-consensus-relaxation.md). Build the node with
 > `scripts/build-bchn-relaxed.sh` and use `docker-compose.marketplace.yml`. The measurements below remain the
 > reason the patch exists.
 

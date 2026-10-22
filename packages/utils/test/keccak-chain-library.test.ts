@@ -2,25 +2,19 @@ import { describe, it, expect } from 'vitest';
 import { binToHex, createVirtualMachineBch2026 } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
-  KECCAK_CHAIN_START_COVENANT,
-  KECCAK_CHAIN_START_COVENANT_HASH,
-  KECCAK_CHAIN_CONT_COVENANT,
-  KECCAK_CHAIN_CONT_COVENANT_HASH,
-  KECCAK_CHAIN_FINAL_COVENANT,
-  KECCAK_CHAIN_FINAL_COVENANT_HASH,
-  KECCAK_CHAIN_START_COVENANT_STATELESS,
-  KECCAK_CHAIN_START_COVENANT_STATELESS_HASH,
-  KECCAK_CHAIN_CONT_COVENANT_STATELESS,
-  KECCAK_CHAIN_CONT_COVENANT_STATELESS_HASH,
-  KECCAK_CHAIN_FINAL_COVENANT_STATELESS,
-  KECCAK_CHAIN_FINAL_COVENANT_STATELESS_HASH,
+  KECCAK_CHAIN_COVENANT,
+  KECCAK_CHAIN_COVENANT_HASH,
+  KECCAK_CHAIN_COVENANT_STATELESS,
+  KECCAK_CHAIN_COVENANT_STATELESS_HASH,
+  KECCAK_CHAIN_MODE,
   buildKeccakChainRedeem,
   keccakChainLockingBytecode,
   splitKeccakChainBlocks,
   planKeccakChain,
   keccakChainCommitments,
+  keccakChainStates,
 } from '../src/keccak-compute-library.js';
-import { hash256 } from '../src/hash.js';
+import { hash256, sha256 } from '../src/hash.js';
 
 const vm = createVirtualMachineBch2026();
 const C = new Uint8Array(32);            // shared salt
@@ -78,8 +72,8 @@ function absorbBlock(state: bigint[], block: Uint8Array): bigint[] {
   }
   return keccakF(next);
 }
-// Commitment byte order = lane24 || ... || lane0, each lane 8 bytes big-endian.
-function commitState(state: bigint[]): Uint8Array {
+// State byte order = lane24 || ... || lane0, each lane 8 bytes big-endian.
+function stateBytes(state: bigint[]): Uint8Array {
   const bytes: number[] = [];
   for (let i = 24; i >= 0; i--) for (let b = 7; b >= 0; b--) bytes.push(Number((state[i] >> BigInt(8 * b)) & 0xffn));
   return Uint8Array.from(bytes);
@@ -91,11 +85,17 @@ function evalChain(length: number, stateful = false): string | undefined {
   const plan = planKeccakChain(preimage);
   const locks = plan.map((s) => keccakChainLockingBytecode(C, s.kind, stateful));
 
+  // Oracle: state S and block chain X = sha256(X || block) after each full block; commitment X || sha256(S).
   let state = new Array<bigint>(25).fill(0n);
+  let link: Uint8Array = new Uint8Array(0);
+  const states: Uint8Array[] = [];
   const intermediates: Uint8Array[] = [];
   for (let off = 0; off < preimage.length - (preimage.length % 136); off += 136) {
-    state = absorbBlock(state, preimage.slice(off, off + 136));
-    intermediates.push(commitState(state));
+    const block = preimage.slice(off, off + 136);
+    state = absorbBlock(state, block);
+    link = sha256(Uint8Array.from([...link, ...block]));
+    states.push(stateBytes(state));
+    intermediates.push(Uint8Array.from([...link, ...sha256(stateBytes(state))]));
   }
   const digest = keccak_256(preimage);
 
@@ -110,13 +110,12 @@ function evalChain(length: number, stateful = false): string | undefined {
   const inputs = plan.map((s, i) => {
     const redeem = buildKeccakChainRedeem(C, s.kind, stateful);
     const pad = new Uint8Array(3200);
-    // FINAL carries the FULL preimage + width 1 (the contract decoder shape); start/cont carry their block.
-    const data = s.kind === 'final'
-      ? Uint8Array.from([...push(pad), ...push(preimage), 0x51, ...push(redeem)])
-      : Uint8Array.from([...push(s.block), ...push(pad), ...push(redeem)]);
+    if (i > 0) pad.set(states[i - 1]);
+    // <pad> <data> <mode> <redeem>: FINAL carries the FULL preimage (the contract decoder shape).
+    const data = s.kind === 'final' ? preimage : s.block;
     return {
-      outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(i + 1),
-      sequenceNumber: 0xffffffff, unlockingBytecode: data,
+      outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(i + 1), sequenceNumber: 0xffffffff,
+      unlockingBytecode: Uint8Array.from([...push(pad), ...push(data), 0x50 + KECCAK_CHAIN_MODE[s.kind], ...push(redeem)]),
     };
   });
   const transaction = { version: 2, locktime: 0, inputs, outputs } as any;
@@ -130,12 +129,8 @@ function evalChain(length: number, stateful = false): string | undefined {
 describe('keccak chained compute side-cars (utils)', () => {
   it('chained covenant hashes match the baked integrity constants', () => {
     for (const [cov, hash] of [
-      [KECCAK_CHAIN_START_COVENANT, KECCAK_CHAIN_START_COVENANT_HASH],
-      [KECCAK_CHAIN_CONT_COVENANT, KECCAK_CHAIN_CONT_COVENANT_HASH],
-      [KECCAK_CHAIN_FINAL_COVENANT, KECCAK_CHAIN_FINAL_COVENANT_HASH],
-      [KECCAK_CHAIN_START_COVENANT_STATELESS, KECCAK_CHAIN_START_COVENANT_STATELESS_HASH],
-      [KECCAK_CHAIN_CONT_COVENANT_STATELESS, KECCAK_CHAIN_CONT_COVENANT_STATELESS_HASH],
-      [KECCAK_CHAIN_FINAL_COVENANT_STATELESS, KECCAK_CHAIN_FINAL_COVENANT_STATELESS_HASH],
+      [KECCAK_CHAIN_COVENANT, KECCAK_CHAIN_COVENANT_HASH],
+      [KECCAK_CHAIN_COVENANT_STATELESS, KECCAK_CHAIN_COVENANT_STATELESS_HASH],
     ] as const) {
       expect(binToHex(hash256(hexToBin(cov)))).toBe(hash);
     }
@@ -174,12 +169,15 @@ describe('keccak chained compute side-cars (utils)', () => {
     expect(evalChain(600, true)).toBeUndefined();
   });
 
-  it('keccakChainCommitments final digest matches noble and has one commitment per side-car', () => {
+  it('keccakChainCommitments: X || sha256(state) per full block, then the noble digest', () => {
     const preimage = new Uint8Array(600);
     for (let i = 0; i < 600; i++) preimage[i] = (i * 13 + 7) & 0xff;
     const commitments = keccakChainCommitments(preimage);
+    const states = keccakChainStates(preimage);
     expect(commitments.length).toBe(5);              // 4 full blocks + final digest
-    expect(commitments.slice(0, 4).every((c) => c.length === 200)).toBe(true);
+    expect(states.length).toBe(4);
+    expect(commitments.slice(0, 4).every((c, i) => c.length === 64
+      && binToHex(c.slice(32)) === binToHex(sha256(states[i])))).toBe(true);
     expect(binToHex(commitments[4])).toBe(binToHex(keccak_256(preimage)));
   });
 });

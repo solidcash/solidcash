@@ -4,11 +4,13 @@
  */
 
 import type { Artifact, ExternalCallAbi, FunctionSplitBundle } from '@solidcash/utils';
-import type { AddressType, Output, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
+import type { AddressType, Output, TokenDetails, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
 import type { FramedGenesisHeadCollection } from '../framed/deploy/genesis.js';
 import type { FunctionArgument, ConstructorArgument } from '../Argument.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { StateValueType } from '../types/state-inference.js';
+import type { BcmrPublication, NativeTokenOptions, PublishedRegistry } from '../bcmr/deployment.js';
+import type { IdentityOptions, IdentityRecord } from '../bcmr/identity.js';
 import type { ConnectedStatefulContract, StatefulContract } from './StatefulContract.js';
 
 export interface DeployOptions {
@@ -80,12 +82,36 @@ export interface DeployOptions {
   broadcast?: boolean;
   /** Outputs minted in the genesis after the records. */
   extraOutputs?: readonly Output[];
+  /**
+   * Who owns the category's BCMR identity, the authhead contract at output 0 (docs/bcmr/DESIGN.md, 4.2); the
+   * deployer's lock when omitted.
+   */
+  identity?: IdentityOptions;
+  /** A BCMR registry the genesis publishes at output 1. */
+  bcmr?: BcmrPublication;
+  /** The ledger token's bearer form: the category the genesis creates for it, its premint and native scale. */
+  nativeToken?: NativeTokenOptions;
+  /** Internal: a probe genesis that only answers the contract's views; it publishes nothing and reserves nothing. */
+  metadataProbe?: true;
+  /** Internal composition: a split root's facets, which answer its probe's views and publish its container key. */
+  splitFacets?: SplitFacets;
+}
+
+/** A split root's facets, as its deployment's metadata checks read them (docs/bcmr/DESIGN.md, 6.4). */
+export interface SplitFacets {
+  readonly artifacts: readonly Artifact[];
+  /** The logical contract over a root deployed from the root's artifact, its views routed to the facets. */
+  readonly route: (root: ConnectedStatefulContract) => unknown;
 }
 
 export interface DeployResult<T extends Artifact = Artifact> {
   contract: ConnectedStatefulContract<T>;
   tx: TransactionDetails;
   categoryId: string;
+  /** The genesis's identity output, which holds the category's BCMR authority. */
+  identity?: IdentityRecord;
+  /** The registry the genesis published, with the URIs its publication offers. */
+  registry?: PublishedRegistry;
 }
 
 export interface UpgradeOptions<T extends Artifact = Artifact> {
@@ -98,20 +124,41 @@ export interface UpgradeOptions<T extends Artifact = Artifact> {
   addressType?: AddressType;          // default: match old contract's addressType
   fee?: bigint;                       // default: 1000n
   maxFee?: bigint;                   // maximum allowed fee (throws if exceeded)
-  fundingUtxo?: Utxo;                // required when new layout needs additional data NFTs
-  funder?: Unlocker;                  // required when new layout needs additional data NFTs
+  /** Pays every step: required for added data NFTs, for entry migrations, and on any network but the mock. */
+  fundingUtxo?: Utxo;
+  funder?: Unlocker;                  // unlocks fundingUtxo and the change each entry migration returns to its lock
   changeAddress?: string;             // change address for leftover funding satoshis
-  /** Foreign token category IDs of the token containers to migrate (at most one per upgrade). */
+  /**
+   * Foreign categories whose containers migrate, every coin at each one's container lock; own- and immutable-keyed
+   * ones (BchNative's reserve) are found without naming them.
+   */
   tokenContainerCategoryIds?: string[];
   /** The migrateRecords entry to drain mapping/array entries before the upgrade (name + its user args). */
   migrateRecordsFunctionName?: string;
   migrateRecordsFunctionArgs?: FunctionArgument[];
+  /**
+   * Container coins (`txid:vout`) to abandon at the old lock, where nothing can spend them again: anyone can send a
+   * coin to a container address, and the covenant migrates exactly one satoshi-container coin.
+   */
+  leaveBehind?: string[];
+}
+
+/**
+ * A coin left at a container lock, with its value: a surplus container an upgrade's `leaveBehind` abandons at the old
+ * lock, or junk at a container address that a destroy does not spend.
+ */
+export interface LeftBehindCoin {
+  outpoint: string;
+  address: string;
+  satoshis: bigint;
+  token?: TokenDetails;
 }
 
 export interface UpgradeResult<T extends Artifact = Artifact> {
   contract: ConnectedStatefulContract<T>;
   tx: TransactionDetails;
   categoryId: string;
+  leftBehind: LeftBehindCoin[];
 }
 
 export interface DestroyOptions {
@@ -130,6 +177,8 @@ export interface DestroyOptions {
 export interface DestroyResult {
   txs: TransactionDetails[];          // 1 or more transactions
   totalReclaimed: bigint;             // total satoshis sent to recipient
+  /** Junk at a container address (not a container of it), left where nothing spends it once the master is gone. */
+  leftBehind: LeftBehindCoin[];
 }
 
 export interface DeployFromOptions<T extends Artifact = Artifact> {

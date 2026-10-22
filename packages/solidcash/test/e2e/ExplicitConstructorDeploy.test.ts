@@ -67,7 +67,8 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
     // Covers the conservative 5,000-sat fee and fixed NFTs, but not phantom reservations for empty chunks.
     const { result } = await deploy(artifact, [], 'e0f1', {}, undefined, 9_000n);
     expect(await result.contract.getState()).toMatchObject({ label: '', symbol: '' });
-    expect(result.tx.outputs.filter((output) => output.token?.nft?.capability === 'mutable'))
+    // Output 0 is the category's authhead, whose identity NFT is mutable too.
+    expect(result.tx.outputs.slice(1).filter((output) => output.token?.nft?.capability === 'mutable'))
       .toHaveLength(artifact.stateLayout!.dataNftCount);
   });
 

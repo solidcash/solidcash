@@ -45,8 +45,8 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * - FAIL-OPEN under a strict profile: it accepts a P2PKH spend (row 1, refused at 150 x density) and a
  *   `decrement(3)` (row 2). Single-byte helper ids, then the October covenant hardening, lengthened the script
  *   until 150 and then 140 x density accept it; 30 refuses it with margin, which is the budget rows 2, 2b, 6 pin.
- * - FAIL-CLOSED under the relaxed default: it refuses `decrement(46)` at the stock 800 x density that
- *   the decider accepts (row 4).
+ * - FAIL-CLOSED under a relaxed budget: it refuses `SELF_DENSE`'s `decrement(30)` at the stock 800 x density
+ *   that the decider accepts (row 4).
  *
  * The fail-open direction is the one that must not stand, so the repair is applied at
  * `_strictRecursiveVmPreflight`. Consequence reported rather than hidden: `decrement(40)` is BUILDABLE on
@@ -89,6 +89,22 @@ contract C() {
   int x;
   function decrement(int i) {
     this.x = this.x - i;
+    if (i > 1) { decrement(i - 1); }
+    require(i > 0);
+  }
+  function chk(int e) { require(this.x == e); }
+}`;
+
+/**
+ * SELF with nine more subtractions per frame (StatefulRecursion's handler). SELF fits the stock 800 x density at
+ * every depth the 100-entry control stack allows (48 by 25,366 units on the send path); this one exceeds it from
+ * depth 30.
+ */
+const SELF_DENSE = `pragma solidcash >=0.8.0;
+contract C() {
+  int x;
+  function decrement(int i) {
+    this.x = this.x - i - i - i - i - i - i - i - i - i - i;
     if (i > 1) { decrement(i - 1); }
     require(i > 0);
   }
@@ -314,18 +330,19 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     // The relaxed DEFAULT profile - what every unconfigured caller gets. A bare VM applies the stock 800 per
     // byte and refuses; the provider publishes 10,000,000 and accepts.
     //
-    // The former depth-24 and depth-40 witnesses now fit the bare VM after codegen changes (40 when the
-    // hardening scans stopped pricing their untaken checks per input and output). Depth 46 still proves the same
-    // divergence on the finalized transaction bytes: the stock 800-per-byte VM refuses, while the provider-
-    // configured VM and the network both accept. If codegen shifts the boundary again, find a new concrete
-    // separating depth rather than dropping either side of this assertion.
+    // The former SELF witnesses at depths 24, 40 and 46 now fit the bare VM after codegen and covenant changes
+    // (46 once the covenants grew; 49 overflows the 100-entry control stack). SELF_DENSE at depth 30 still proves
+    // the same divergence on the finalized transaction bytes (measured: 29 fits by 9,081 units, 30 is 29,933
+    // over): the stock 800-per-byte VM refuses, while the provider-configured VM and the network both accept.
+    // If codegen shifts the boundary again, find a new concrete separating depth rather than dropping either
+    // side of this assertion.
     // Asked for the relaxed budget by way of the DEFAULT profile until the default became the real 800 (see
     // MOCK_CONSENSUS_LIMITS). What this row pins is bare-VM-versus-decider divergence at a PUBLISHED relaxed
     // budget, which is unchanged; it just has to name the budget now instead of inheriting it.
     const provider = costProfile(MOCK_RELAXED_OPERATION_COST, true);
     expect(provider.consensusLimits.operationCostBudgetPerByte).toBe(MOCK_RELAXED_OPERATION_COST);
-    const sc = await recursionContract(provider);
-    const { builder, error } = await sendCapturingPreflightInput(sc, 46n);
+    const sc = await recursionContract(provider, SELF_DENSE);
+    const { builder, error } = await sendCapturingPreflightInput(sc, 30n);
     expect(error, 'the repaired gate should no longer refuse this depth').toBeUndefined();
     expect(builder).toBeDefined();
 
@@ -337,10 +354,10 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     expect(evaluateAll(createVirtualMachineBch2026ForProvider(provider), builder!)).toBeUndefined();
   });
 
-  it('4b. GUARD: a smaller recursion on the same DEFAULT profile settles under both VMs', async () => {
+  it('4b. GUARD: a smaller recursion on the same relaxed profile settles under both VMs', async () => {
     // Differs from row 4 only in depth, so row 4 cannot be passing because this profile refuses everything.
-    const provider = new MockNetworkProvider();
-    const sc = await recursionContract(provider);
+    const provider = costProfile(MOCK_RELAXED_OPERATION_COST, true);
+    const sc = await recursionContract(provider, SELF_DENSE);
     const { builder, error } = await sendCapturingPreflightInput(sc, 3n);
     expect(error).toBeUndefined();
     expect(evaluateAll(createVirtualMachineBch2026(), builder!)).toBeUndefined();

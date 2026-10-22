@@ -7,7 +7,7 @@ import {BchNative} from "../../contracts/BchNative.scash";
 // Compatibility proof: BchNative composes with the unmodified npm OpenZeppelin
 // ERC20 implementation, rather than depending on SolidCash's compact ERC20 port.
 contract OzNativeToken is ERC20, BchNative {
-    constructor() ERC20("", "") { }
+    constructor(bytes32 nativeCategory_) ERC20("", "") BchNative(nativeCategory_) { }
 
     function _nativeCredit(address account, uint256 amount) internal override {
         _mint(account, amount);

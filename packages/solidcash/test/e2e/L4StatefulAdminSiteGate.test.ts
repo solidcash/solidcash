@@ -30,7 +30,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  *
  *   destroy         reclaim      = totalInputSats - fee
  *   split           change       = totalFunding - newMintingAmount * splitCount - fee
- *   merge           change       = consumedSatoshis + totalFunding - fee
+ *   merge           change       = totalFunding - fee
  *   _sendRawBuilder change       = whichever of the two above, via `sc.call`
  *
  * Every one is pure arithmetic whose only floor is ZERO - `changeAmount < 0n` throws, `changeAmount > 0n`
@@ -125,6 +125,9 @@ contract AdminSites(pubkey admin) {
 /** The dust threshold for the 44-byte p2sh32 change output every row below pays to. */
 const CHANGE_DUST = 576n;
 
+/** The declared split fee: the hardened covenant's split measures 2,130 bytes, past the earlier 2,000 at 1 sat/byte. */
+const SPLIT_FEE = 3_000n;
+
 let artifact: Artifact;
 
 interface Deployment {
@@ -174,7 +177,7 @@ const errorOf = async (run: () => Promise<unknown>): Promise<string> => {
 async function staticSplit(
   d: Deployment, change: bigint, priv: Uint8Array = alicePriv, count = 2n,
 ): Promise<{ tx: { hex: string; txid: string } }> {
-  const fee = 2_000n;
+  const fee = SPLIT_FEE;
   const minting = 1_200n;
   const funding = await fund(d, minting * count + fee + change);
   return StatefulContract.split({
@@ -323,7 +326,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
     // It also measures the `.build()` hole exactly: a composer who builds and broadcasts by hand gets no
     // refusal at all. See `L4BuildRefusalScope.test.ts` for the decision that leaves it that way.
     const d = await deploy();
-    const fee = 2_000n;
+    const fee = SPLIT_FEE;
     const funding = await fund(d, 1_200n * 2n + fee + 100n);
     const builder = await d.contract.call
       .fork(2n, new SignatureTemplate(alicePriv))
@@ -342,13 +345,13 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
   /* ---------------------------------------------------------------------------------------------------- */
 
   it('3. merge REFUSES a below-dust change output, quoting the arithmetic', async () => {
+    // The consumed masters' satoshis go to the survivor (MERGE-1), so the change is the funding less the fee.
     const d = await deploy();
     await staticSplit(d, 40_000n);
     const minting = (await d.provider.getUtxos(d.contract.inner.tokenAddress)).filter(
       (u) => u.token?.category === d.contract.categoryId && u.token?.nft?.capability === 'minting',
     );
     const consumed = minting.slice(1);
-    const consumedSats = consumed.reduce((s, u) => s + u.satoshis, 0n);
     const extra = await fund(d, 20_000n);
 
     const message = await errorOf(() => StatefulContract.merge({
@@ -360,7 +363,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
       consumedMasterUtxos: consumed,
       fundingUtxos: [extra],
       changeAddress: d.p2pkh.address,
-      fee: consumedSats + extra.satoshis - 100n,
+      fee: extra.satoshis - 100n,
       maxFee: 200_000n,
     }));
     expect(message).toMatch(/messageBus: finalized transaction refused by 1 byte rule\(s\)/);
@@ -378,7 +381,6 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
       (u) => u.token?.category === d.contract.categoryId && u.token?.nft?.capability === 'minting',
     );
     const consumed = minting.slice(1);
-    const consumedSats = consumed.reduce((s, u) => s + u.satoshis, 0n);
     const extra = await fund(d, 20_000n);
 
     const result = await StatefulContract.merge({
@@ -390,7 +392,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
       consumedMasterUtxos: consumed,
       fundingUtxos: [extra],
       changeAddress: d.p2pkh.address,
-      fee: consumedSats + extra.satoshis - CHANGE_DUST,
+      fee: extra.satoshis - CHANGE_DUST,
       maxFee: 200_000n,
     });
     const outputs = decodeTransactionUnsafe(hexToBin(result.tx.hex as string)).outputs;
@@ -407,7 +409,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
     // `StatefulContract.split`: `_trySplitMergeBuild` builds its own builder and `_sendRawBuilder` broadcasts
     // it, which is why the probe attributed these to `StatefulContract.ts:11133` and not `:10105`.
     const d = await deploy();
-    const fee = 2_000n;
+    const fee = SPLIT_FEE;
     const funding = await fund(d, 1_200n * 2n + fee + 100n);
     const message = await errorOf(() => d.contract.call
       .fork(2n, new SignatureTemplate(alicePriv))
@@ -424,7 +426,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
 
   it('4b. GUARD: 476 more satoshis of funding on the identical `sc.call` split settles', async () => {
     const d = await deploy();
-    const fee = 2_000n;
+    const fee = SPLIT_FEE;
     const funding = await fund(d, 1_200n * 2n + fee + CHANGE_DUST);
     const tx = await d.contract.call
       .fork(2n, new SignatureTemplate(alicePriv))
@@ -552,12 +554,12 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
       sites.push(['split', () => staticSplit(splitDeployment, 100n, bobPriv), /output-dust at output 3/]);
 
       const rawDeployment = await deploy();
-      const rawFunding = await fund(rawDeployment, 1_200n * 2n + 2_000n + 100n);
+      const rawFunding = await fund(rawDeployment, 1_200n * 2n + SPLIT_FEE + 100n);
       sites.push(['_sendRawBuilder', () => rawDeployment.contract.call
         .fork(2n, new SignatureTemplate(bobPriv))
         .withSplitFunding([rawFunding], funder(rawDeployment), rawDeployment.p2pkh.address)
         .withNewMintingAmount(1_200n)
-        .withSplitFee(2_000n)
+        .withSplitFee(SPLIT_FEE)
         .send(), /output-dust at output 3/]);
 
       const destroyDeployment = await deploy();
@@ -583,7 +585,6 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
       )).filter((u) => u.token?.category === mergeDeployment.contract.categoryId
         && u.token?.nft?.capability === 'minting');
       const mergeConsumed = mergeMinting.slice(1);
-      const mergeConsumedSats = mergeConsumed.reduce((s, u) => s + u.satoshis, 0n);
       const mergeExtra = await fund(mergeDeployment, 20_000n);
       sites.push(['merge', () => StatefulContract.merge({
         provider: mergeDeployment.provider,
@@ -594,7 +595,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
         consumedMasterUtxos: mergeConsumed,
         fundingUtxos: [mergeExtra],
         changeAddress: mergeDeployment.p2pkh.address,
-        fee: mergeConsumedSats + mergeExtra.satoshis - 100n,
+        fee: mergeExtra.satoshis - 100n,
         maxFee: 200_000n,
       }), /output-dust at output 1/]);
 

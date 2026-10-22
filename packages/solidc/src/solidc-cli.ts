@@ -54,7 +54,6 @@ function run(): void {
   ensure(splitMode === undefined || splitMode === 'off' || !(opts.asm || opts.hex),
     '--split size and --split func cannot be used with --asm or --hex');
   ensure(!(opts.asm || opts.hex) || !opts.output, 'Flags --asm or --hex cannot be used with --output');
-  ensure(!opts.args || opts.asm || opts.hex, '--args can only be used with --asm or --hex');
 
   const sourceFile = path.resolve(program.args[0]);
   ensure(fs.existsSync(sourceFile) && fs.statSync(sourceFile).isFile(), 'Please provide a valid source file');

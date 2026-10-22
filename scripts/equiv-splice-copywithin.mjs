@@ -1,11 +1,12 @@
 #!/usr/bin/env node
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 /**
  * Show that `splice(start, spanLength, a, b)` and a `copyWithin`-based tail shift are NOT equivalent.
  *
  * The outliner's rewrite replaces a span of `spanLength` elements with exactly two elements (`id`, OP_INVOKE),
  * so the tail shifts left by `spanLength - 2`. That looks like a `copyWithin` plus a length trim, which would
- * avoid `splice`'s per-edit tail move. This harness demonstrates the divergence, and is the evidence behind the
- * negative result recorded in PERF_FINDINGS.md section 15.
+ * avoid `splice`'s per-edit tail move. This harness demonstrates the divergence and is the evidence for the
+ * negative result.
  *
  * Two divergence classes show up:
  *

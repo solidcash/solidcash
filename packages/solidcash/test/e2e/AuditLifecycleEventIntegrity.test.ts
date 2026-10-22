@@ -38,7 +38,9 @@ describe('lifecycle and tiered unsafe event integrity', () => {
       }
       builder.addInput(fee.utxo, fee.unlocker);
       const token = { category: categoryId, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } };
-      builder.addOutput({ to: contract.tokenAddress, amount: masterUtxo.satoshis, token });
+      // A consolidate's survivor also carries the consumed master's satoshis (MERGE-1).
+      const survivorAmount = name === 'consolidate' ? masterUtxo.satoshis * 2n : masterUtxo.satoshis;
+      builder.addOutput({ to: contract.tokenAddress, amount: survivorAmount, token });
       if (name === 'fork') builder.addOutput({ to: contract.tokenAddress, amount: 1200n, token });
       const vm = createVirtualMachineBch2026ForProvider(provider);
       const honest = builder.buildLibauthProgram();

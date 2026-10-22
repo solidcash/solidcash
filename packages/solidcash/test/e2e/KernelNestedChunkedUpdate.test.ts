@@ -107,11 +107,15 @@ describe('kernel participant-local identity and chunked updates', () => {
       ]) {
         const position = original.abiFunction.inputs.findIndex((input) => input.name === witness);
         expect(position).toBeGreaterThanOrEqual(0);
-        const absolute = original.params[position] as bigint;
+        const published = original.params[position] as bigint;
+        // A batch selecting no dynamic writer publishes the chunk base read-only, tagged as -(base + 3).
+        const readOnly = witness === '__internal__dynamicChunkInputBase' && published < -2n;
+        const absolute = readOnly ? -published - 3n : published;
         expect(absolute).toBeGreaterThan(BigInt(storeIndex));
         // A local coordinate must never leak into the final aggregate transaction.
+        const local = absolute - BigInt(storeIndex);
         const forged = [...original.params];
-        forged[position] = absolute - BigInt(storeIndex);
+        forged[position] = readOnly ? -local - 3n : local;
         builder.inputs[executorIndex].unlocker = original.contract.createCompilerRouteUnlocker(
           original.abiFunction, hexToBin(original.abiFunction.selector!),
         )(...forged);

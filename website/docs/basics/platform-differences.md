@@ -8,7 +8,8 @@ cleanly, but a handful of **primitive-level** differences are load-bearing and w
 you assume EVM semantics.
 
 The guiding rule: SolidCash is **BCH-native by design**. When a Solidity primitive has no exact BCH analogue,
-the compiler picks the sound BCH-native behaviour and warns, rather than emulating the EVM byte-for-byte. Your
+the compiler picks the sound BCH-native behaviour, and warns where it can, rather than emulating the EVM
+byte-for-byte. Your
 contract stays internally consistent; it is just not guaranteed to produce the same bytes an Ethereum node
 would.
 
@@ -19,17 +20,17 @@ would.
 | Word / byte order | big-endian | **little-endian** |
 | Integer encoding | 256-bit two's complement | **LE sign-magnitude**; `int`/`uint` are `int256`/`uint256`, `bigint` is arbitrary precision |
 | Overflow | checked reverts, `unchecked` wraps | **same** for `int`/`uint`; `bigint` grows (never wraps) |
-| Structural hash | keccak256 | **sha256** for physical storage slots and the event covenant salt; **real keccak256** for source-visible values and selectors |
+| Structural hash | keccak256 | **sha256** for physical storage slots, the event covenant salt and native selectors; **real keccak256** for source-visible values, and for selectors under `evmCompat` |
 | Storage | account key-value (`SSTORE`) | **NFT-commitment state**; mappings use authenticated vmaps; one spend = one execution |
 | Address | 20-byte | **variable-length locking bytecode**; `payable` is a no-op |
 | Memory | big-endian heap | **little-endian on-stack buffer** |
-| Gas | metered | not metered (bytecode and stack size limits instead) |
+| Gas | metered | not metered (bytecode size, stack size and per-input operation cost limits instead) |
 | Re-entrancy | possible | **structurally impossible** (no synchronous cross-call) |
 
 ## 1. Byte order: little-endian {#byte-order}
 
 EVM words and memory are **big-endian**: the most significant byte sits at the lowest index. BCH Script
-numbers are **little-endian**, so in SolidCash `bytes32(x)` puts the **low byte at index 0**:
+numbers are **little-endian**, so in native SolidCash `bytes32(x)` puts the **low byte at index 0**:
 
 ```solidity
 // bytes32(0x5a)[0:1] == 0x5a     <- low byte first (BCH)
@@ -38,7 +39,9 @@ numbers are **little-endian**, so in SolidCash `bytes32(x)` puts the **low byte 
 
 ### What this affects
 
-- **Number to bytes casts** (`bytes32(uint)`, `uint(bytesN)`): the byte layout is little-endian.
+- **Number to bytes casts** (`bytes32(uint)`, `uint(bytesN)`): the byte layout is little-endian in native mode.
+  Under the `evmCompat` option these casts use the EVM layout instead: big-endian two's complement, so
+  `bytes32(type(uint256).max)` fits and `bytes32(int256(-1))` is all `0xff` bytes, as on Ethereum.
 - **Linear memory** backing Yul `mstore`/`mload`/`mstore8`: words are stored little-endian. `mstore(p, v)`
   then `mload(p)` round-trips `v` exactly, but the byte at address `p` is the **low** byte of the word,
   whereas on the EVM it is the high byte.
@@ -133,9 +136,9 @@ This is the deepest difference, and it explains most of the others.
 - **No re-entrancy and no call stack.** External calls are not synchronous jumps; they are modelled as
   **co-spent inputs and outputs** pinned by the covenant. A contract cannot be re-entered mid-execution,
   because there is no mid-execution to re-enter. Re-entrancy guards ported from Solidity are harmless but
-  unnecessary. When a call graph does not fit that model — an owner invoked twice, or a cycle — the
+  unnecessary. When a call graph does not fit that model (an owner invoked twice, or a cycle), the
   [message bus](/docs/guides/message-bus) folds the invocations into one authenticated atomic transition
-  instead of introducing a call stack.
+  instead of introducing a call stack. Message-bus composition is experimental in 0.13.1.
 - **Memory is on-stack, not a separate heap.** The `memory` keyword is accepted and meaningful for aliasing,
   but there is no separate memory region. See [Data Locations](/docs/language/data-locations).
 - **Addresses are full locking bytecode**, variable length, not a fixed 20- or 32-byte hash. `payable` is a
@@ -150,11 +153,11 @@ This is the deepest difference, and it explains most of the others.
 | Solidity pattern | On SolidCash |
 | --- | --- |
 | Re-entrancy guard (`nonReentrant`) | Unnecessary; compiles, but there is nothing to guard |
-| `msg.sender` for authorization | Works, but prefer `checkSig`; the compiler warns |
+| `msg.sender` for authorization | Works, but it is derived from the transaction's inputs; prefer `checkSig`. The compiler warns on every read |
 | `block.timestamp` deadline | Works via `tx.locktime` / the block oracle |
 | Pull-payment pattern | Still good practice for UTXO contention reasons |
 | Unbounded loop over storage | Bounded by per-input operation cost, not gas |
-| Upgradeable proxy | Supported, via inferred delegate builds |
+| Upgradeable proxy | Supported through the built-in proxy profile (`upgrades.deployProxy`); custom delegate forwarding is experimental |
 
 ## 5. Contention: the UTXO cost that has no EVM analogue {#contention}
 

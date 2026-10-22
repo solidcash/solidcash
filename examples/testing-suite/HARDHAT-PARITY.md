@@ -469,7 +469,7 @@ Foundational seams FIRST (D2/D3), then the helpers that bind to them, then polis
   `@solidcash/testing` with ZERO test edits (pure vitest `resolve.alias` + a `vitest.setup.ts` `initHre()`).
   All 66 tests LOAD + RUN under our harness; they fail uniformly at the contract layer
   (`getContractFactory("Unicrow")` -> no artifact) - the Hardhat/ethers/chai plumbing is proven; remaining =
-  porting ~6 contracts to `.scash`. Details + roadmap: the bench's `PROGRESS.md`, since removed (git history).
+  porting ~6 contracts to `.scash`. Details + roadmap: `bench/solidity-corpus/PROGRESS.md`.
   **Portbacks landed:** `ethers.getContractFactory("Name")`/`getContractAt`/`deployContract` resolve artifacts
   BY NAME from `config.paths.artifacts` (`loadArtifactByName`); config-driven LAZY `ethers`/`network`/`config`/
   `run`/`hre` exports (Proxies over the active HRE singleton, so a setup-file `initHre()` applies);

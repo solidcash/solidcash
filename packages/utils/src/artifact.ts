@@ -113,9 +113,8 @@ export interface CompilerOptions {
   // User-supplied external libraries (script precompiles). Each registers `name(...)` as a callable with
   // the given ABI signature, backed by the hex `code` blob. Merged with the built-in libraries.
   userLibraries?: { name: string; code: string; abi: { inputs: AbiInput[]; outputs: AbiOutput[] } }[];
-  // Phase-2 scaffold (default false): route an unbounded fixed-width `T[]` state var to the dense
-  // chunk-packed backend (uint32 length header + chunk UTXOs) instead of the sparse entry-NFT collection.
-  // Will become the default for fixed-width `T[]` once the codegen/SDK land. See docs/arrays.md.
+  // Default true: route an eligible unbounded `T[]` state var to the dense chunk-packed backend (length header +
+  // chunk UTXOs). False keeps the sparse entry-NFT collection. See packages/solidc/docs/arrays.md.
   chunkedArrays?: boolean;
   // block.chainid network constant, baked as a single byte (chainId & 0xff). Convention:
   // mainnet 0, chipnet 1, testnet4 2, regtest -1 (0xff). User-land; see docs/block-and-transaction-properties.md.
@@ -313,10 +312,14 @@ export interface RuntimeLoopTransferAbi {
 
 export interface TokenContainerAccessAbi {
   keyParam: string;
-  keySource?: 'param' | 'own';
+  /** `own`: the contract's category; `state`: the immutable `bytes32` state variable `keyStateVariable`. */
+  keySource?: 'param' | 'own' | 'state';
+  keyStateVariable?: string;
   operations: readonly string[];
   transferCount?: number;      // number of transfer() calls (>1 for fan-out)
   transferNftCount?: number;   // number of transferNft() calls (>1 for fan-out)
+  /** The body reads the output side of the amount (`this.outState.tokens[c]`): it credits what reached the container. */
+  readsOutput?: boolean;
 }
 
 /** One statically allocated token-container transfer alternative. Branch alternatives may share transferIndex;

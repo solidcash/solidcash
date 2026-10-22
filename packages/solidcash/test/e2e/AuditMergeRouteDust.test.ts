@@ -13,7 +13,7 @@ import {
 } from '../test-util.js';
 
 /**
- * MERGE-1 route layout (docs/security-audit-2026-10-16.md): the consumed-master tail keeps a tokenless output slot
+ * MERGE-1 route layout (docs/security/security-audit-2026-10-16.md): the consumed-master tail keeps a tokenless output slot
  * at the same index as its input, but its satoshis are pinned to the survivor. A zero-sat output is below the relay
  * dust floor and BCHN relays at most one OP_RETURN output, so each slot is a dust-paying output funded from the
  * fee tail's change. The standard-policy provider (`MockNetworkProvider` defaults to `enforceDust: false`) checks

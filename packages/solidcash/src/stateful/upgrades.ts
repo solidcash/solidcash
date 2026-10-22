@@ -797,12 +797,16 @@ async function deployFramedProxyThroughFactory<TImpl extends Artifact>(
   }
 
   const { buildProxyArtifact, deployFramedProxy } = await import('../framed/proxy/index.js');
-  const proxyArtifact = options.proxy ?? buildProxyArtifact(implementationArtifact);
   // A separate hop is entered by the deployer's own coin, so a caller that funds one is selected before the geneses
   // and excluded from them: a genesis must not spend the coin the hop is about to sign. By default the proxy's
   // genesis mints the initialized state itself and is funded for it.
   const separateHop = options.initializeAs === 'hop';
   const callerFunding = separateHop ? options.callerFunding ?? await framedCallerFunding(signer) : undefined;
+  const callerLockingBytecode = callerFunding?.funder.generateLockingBytecode() ?? signer.getLockingBytecode();
+  // A separate hop leaves the proxy uninitialized until it confirms: guard a generated proxy to the hop's caller, as
+  // deployFramedProxy's own build does, so nobody else can initialize it first.
+  const proxyArtifact = options.proxy
+    ?? buildProxyArtifact(implementationArtifact, separateHop ? callerLockingBytecode : undefined);
   const callerOutpoints = callerFunding === undefined ? [] : [`${callerFunding.utxo.txid}:${callerFunding.utxo.vout}`];
   const implementationDeploy = await framedGenesisHalf(
     options.implementationOverrides, implementationArtifact, signer, new Set(callerOutpoints),
@@ -820,7 +824,7 @@ async function deployFramedProxyThroughFactory<TImpl extends Artifact>(
     proxyArtifact,
     proxyDeploy,
     initialize: { functionName: initializer, args: (initialState ?? []) as FunctionArgument[] },
-    callerLockingBytecode: callerFunding?.funder.generateLockingBytecode() ?? signer.getLockingBytecode(),
+    callerLockingBytecode,
     ...(callerFunding === undefined ? {} : { initializeAs: 'hop' as const, callerFunding }),
   });
   // A derivation a participant refused broadcasts nothing, so a proxy whose initialize was refused is refused here
@@ -855,15 +859,15 @@ async function deployFramedProxyThroughFactory<TImpl extends Artifact>(
  * deployer's own P2PKH lock; it also pays the hop's fee, so the largest one is taken rather than a dust output.
  */
 async function framedCallerFunding(signer: Signer): Promise<FramedProxyCallerFunding> {
-  const { coinsAvailableForCallerFee } = await import('./genesis-reservations.js');
+  const { withoutIdentityOutputs } = await import('../framed/deploy/own-coin.js');
   const listed = await signer.getUtxos();
   const tokenless = listed.filter((utxo) => utxo.token === undefined);
-  const spendable = coinsAvailableForCallerFee(listed);
+  const spendable = await withoutIdentityOutputs(signer.provider, tokenless);
   const coin = spendable.sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))[0];
   if (coin === undefined) {
     throw new Error(tokenless.length > 0
-      ? `The deployer's address ${signer.getAddress()} holds only reserved genesis coins, `
-        + 'which cannot pay the initialize hop.'
+      ? `The deployer's address ${signer.getAddress()} holds only reserved genesis coins and BCMR identity `
+        + 'outputs, which cannot pay the initialize hop.'
       : `The deployer's address ${signer.getAddress()} holds no tokenless UTXO to enter the initialize hop with.`);
   }
   return { utxo: coin, funder: signer.unlockP2PKH(), changeAddress: signer.getAddress() };

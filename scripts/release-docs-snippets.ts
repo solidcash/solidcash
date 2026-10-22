@@ -1,7 +1,7 @@
 /**
  * Release gate: every self-contained SolidCash snippet in the public docs must still compile.
  *
- * RELEASE_READINESS asks that "public website examples compile against the exact release packages". The
+ * The release gate requires that public website examples compile against the exact release packages. The
  * `examples` script only covers three hand-written files at the repo root, so the 250-odd fenced blocks under
  * `website/docs` were ungated - they are the first thing a new user copies, and nothing noticed when a language
  * change made one of them stale.
@@ -144,8 +144,12 @@ const probeFile = path.join(probeDir, 'documented-imports.ts');
 // Plain value imports, and deliberately UNREFERENCED. `tsc` reports a missing export (TS2305) whether or not
 // the name is used, while referencing them would force a choice between type and value position - and the
 // documented names are a mix, so either choice errors on half of them for reasons that are not doc rot.
+// Each name gets its own alias: one name documented from two subpaths (`ContractFactory` from both
+// `solidcash/stateful` and `solidcash/contract-factory`) is legitimate, not a duplicate identifier.
+let aliasIndex = 0;
 const lines = [...documentedNames.entries()]
-  .map(([pkg, names]) => `import { ${[...names].sort().join(', ')} } from '${pkg}';`);
+  .map(([pkg, names]) => `import { ${[...names].sort().map((name) => `${name} as __documented${aliasIndex++}`)
+    .join(', ')} } from '${pkg}';`);
 const referenced = [...documentedNames.values()].flatMap((set) => [...set]);
 fs.mkdirSync(probeDir, { recursive: true });
 fs.writeFileSync(probeFile, `${lines.join('\n')}\n`);

@@ -10,6 +10,8 @@ import { BchNativeMultiplier } from "../../contracts/BchNativeMultiplier.scash";
 contract MultiplierToken()
     is ERC20, BchNative, BchNativeMultiplier(100)
 {
+    constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) { }
+
     function _nativeCredit(address account, uint256 amount) internal override {
         this._totalSupply = this._totalSupply + amount;
         this._balances[account] = this._balances[account] + amount;

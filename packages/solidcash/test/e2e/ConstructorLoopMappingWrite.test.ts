@@ -40,7 +40,8 @@ async function deploy(keys: bigint[]): Promise<number> {
     initArgs: [keys, 9n] as never,
     changeAddress: p2pkh.address,
   });
-  return result.tx.outputs.filter((output) => output.token?.nft?.capability === 'mutable').length;
+  // Output 0 is the category's authhead, whose identity NFT is mutable too.
+  return result.tx.outputs.slice(1).filter((output) => output.token?.nft?.capability === 'mutable').length;
 }
 
 describe('a direct constructor whose runtime loop writes a verified mapping', () => {

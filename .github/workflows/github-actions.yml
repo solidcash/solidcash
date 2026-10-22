@@ -44,6 +44,9 @@ jobs:
       - name: Reject source-tree TypeScript outputs
         run: yarn check:source-tree
 
+      - name: Reject citations to missing Markdown docs
+        run: yarn check:doc-citations
+
       - name: Run tests
         # Default yarn test is unit/fast packages (solidcash excludes e2e). Keep mocknet e2e in CI.
         run: yarn test -- -- --coverage --coverage.provider=v8

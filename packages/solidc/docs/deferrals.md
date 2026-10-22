@@ -15,6 +15,20 @@ Related: `bench/solidity-corpus/ATTENTION.md` (autonomous-grind decisions + soun
 
 Format per entry: **what**, **why deferred**, **what it'd take**, **revisit if**.
 
+Resolved entries from 2026-07 and 2026-08 moved to the archived full log:
+`archive/docs:packages/solidc/docs/deferrals_2026-10-20.md`.
+
+- evmCompat `abi.encodeWithSignature` / `abi.encodeCall` - RESOLVED (keccak selector + EVM arg framing)
+- evmCompat ABI - niche recursive shapes (RESOLVED)
+- Cross-contract callee sorted-mapping entry writes (incl. msg.sender-keyed) - RESOLVED 2026-07-20 (2149ca3d, 80564df2)
+- Array-VALUE sorted insert-in-loop `for(i) m[ks[i]] = a` - RESOLVED 2026-07-20 (`7d1b104b`)
+- Array-VALUE sorted loop PER-KEY `for(i) m[ks[i]] = vs[i]` - RESOLVED 2026-07-20b (`817e8a1c`)
+- Dynamic-array resize `sstore(dynArray.slot, n)` - DONE 2026-07-20 (0b2f89c0)
+- buffered state journal + cross-contract message bus (architecture research) - IMPLEMENTED 2026-07-21
+- STORAGE-POINTER library fn on a mapping/array/state-var element - VEIN COMPLETE 2026-07-21
+- (superseded) RETURNING storage-pointer fn (BentoBox BoringRebase `addElastic`) - DONE 2026-07-21 (commit e5ab012c)
+- keccak256 inside an internal helper of a STATEFUL contract (2026-08-07) - RESOLVED
+
 ---
 
 ## bytes / string `memory` PARAMS as `__yulmem` pointers (assembly interop)  — 2026-07-15
@@ -465,40 +479,6 @@ auxiliary band.
 
 ---
 
-## evmCompat `abi.encodeWithSignature` / `abi.encodeCall` - RESOLVED (keccak selector + EVM arg framing)
-
-**Resolved.** Under `evmCompat` both now emit the EVM form: a `keccak256(sig)[:4]` selector const-folded at
-compile time (the `computeAbiSelector` path in `SymbolTableTraversal.ts`, so it matches dispatch, `.selector` and
-`msg.sig`) and the standard head/tail ABI encoding of the args (`emitEvmAbiEncode` in
-`GenerateTargetTraversal.ts` `visitAbiEncodeWithSignature` / `visitAbiEncodeCall`). The selector half followed the
-const-`keccak256` fold; the argument half then became conformance-testable, because the differential harness
-compares the whole `selector ++ args` blob.
-
-**Residual.** None for the selector: a NON-literal `abi.encodeWithSignature(sig, ...)` lowers pre-semantic to
-`abi.encodeWithSelector(bytes4(keccak256(bytes(sig))), args)`, so the keccak256 side-car supplies the runtime
-digest (the ABI row publishes `keccakCompute` + one `keccakPreimageParams` entry, which the SDK co-spends
-exactly as for a source-level `keccak256`). A native compile hashes the runtime string with `OP_SHA256` and
-needs no side-car.
-
----
-
-## evmCompat ABI - niche recursive shapes (RESOLVED)
-
-**Status: implemented.** All three deep-recursion shapes now work both directions, byte-identical to solc:
-(1) `abi.decode` of `bytes[][]`/`string[][]` (commit 4284ace9: `emitEvmDecodeDynElementArray`, a counted inner
-loop); (2) `abi.encode` of a struct with a nested dynamic- or static-struct field (commit 4ca9df7d:
-`emitEvmStructTail` keeps the tracker synced through the unpack so nested `getStackIndex` resolves, and
-`emitEvmStructInline` recurses via `emitEvmEncodeValue`); (3) `abi.decode` of a dynamic struct with a
-fixed-array or nested-static-struct field (commit 698c516d: `emitEvmAbiDecodeDynamic` head positions generalized
-to cumulative `abiStaticSize` + composite reconstruction). The `__abiblob` slot collision was avoided by keeping
-levels temporally disjoint (each nips its slots before an enclosing level names its own) rather than a depth-scoped
-namespace. Covered by conformance cases in abi/decode.conformance.test.ts.
-
-The only genuine non-support remaining is `abi.encodePacked` of an array of dynamic elements - ambiguous/disallowed
-in Solidity too, so rejecting it is correct, not a gap.
-
----
-
 ## keccak compute model - remaining fail-closed edges (2026-07-16)
 
 Every keccak form now uses the compute-and-commit side-car (stateless single/multi/complex/nested, direct
@@ -536,6 +516,20 @@ digest matches `@noble/hashes/sha3.js keccak_256`. The FINAL side-car carries th
 bytecode, so a real network's 10,000-byte per-input consensus limit caps a chained preimage at roughly 6.4 KB (and
 the whole transaction must still fit the 100 KB standard relay ceiling); the original 12 KB draft was only
 mocknet-valid.
+
+**Revised (2026-10-22, KCHAIN-1).** The 200-byte state commitments broke the 128-byte BCH 2026 limit, FINAL took
+its previous state from any output, and nothing bound a START/CONT block to the argument. Every step now runs ONE
+covenant, `KECCAK_CHAIN_COVENANT` (one lock per salt), and the unlocking `<pad> <data> <mode> <redeem>` picks it
+(1 FINAL, 2 START, 3 CONT). START/CONT commit `X || sha256(state)` (64 B, `X = sha256(X_prev || block)`). CONT and
+FINAL reveal the previous state in the first 200 pad bytes and take it only from a previous input under the same
+lock. FINAL recomputes X from the argument it is bound to. Regenerate with
+`node research/keccak-poc/gen-chain-sidecar.mjs --write`; `packages/solidcash/test/e2e/KeccakChainBinding.test.ts`
+covers settlement, the 128-byte limit and both forgeries.
+
+**Revised (2026-10-22, KCHAIN-1 liveness).** The layout reserves no band for the chain: its side-cars follow the fixed
+block, one per step, as a keccak loop's do, and FINAL's index still comes from the argument's length. The 256-slot
+band made each call fund its unused slots (~257 funder inputs), and the master's per-input scans over them broke the
+BCH 2026 density limit for a short preimage; KeccakChainBinding settles 300 and 400 bytes again.
 
 **Why deferred.** (1) The trailing region has ONE runtime-counter-indexed band; two independent counter-indexed
 users have nowhere sound to interleave. Reproduced 2026-10-15: a direct stateful function with a dynamic keccak
@@ -1094,121 +1088,6 @@ They stay DISTINCT expressions on purpose - the domains differ (`bytes1(v)` is c
 `v >= 256`; the Yul low-byte extraction is valid for any word) - but the byte-write formula is now single-source and
 callers select by domain instead of hand-building the cast. Byte-identical (same corpus/VM proof as B).
 
-## Cross-contract callee sorted-mapping entry writes (incl. msg.sender-keyed) - RESOLVED 2026-07-20 (2149ca3d, 80564df2)
-
-SHIPPED + VM-verified (solidcash `CrossContractSortedWrite.test.ts`: UPDATE + INSERT + msg.sender). All SDK
-(StatefulContract + StatefulTransactionBuilder): (1) entry INPUT co-spend by slot via `SortedList` (exact = UPDATE,
-predecessor = INSERT); (2) the KEY UNLOCK - patch B's entry unlocker with the REAL `bMasterIdx` once the tx layout is
-known (the entry covenant's write path verifies a minting NFT at `masterInputIndex = B's master`, unknown at
-block-build time; the derivation probe runs only B's master covenant, so the placeholder is fine for extraction);
-(3) entry OUTPUT from B's trace (`extractCommitmentMapFromTrace` at `bOutputBase+si`) -> new STB
-`externalCallEntryOutputs` + output-loop entry case; (4) INSERT - detect via `out.next != in.next`, mint a PLACEHOLDER
-NEW at `bMasterIdx+blockSize` so a 2nd VM pass reaches the NEW's `OP_OUTPUTTOKENCOMMITMENT` (the 1st aborts at
-`OP_OUTPUTBYTECODE` for the not-yet-existing NEW), then replace with the real commitment (per-group
-`externalCallEntryInserts` + trailing placement); (5) msg.sender - append OUR category REVERSED (internal order) as B's
-`_msgSenderCategory`, and key the entry by `keyToSlot(addressToLockScript(this.address))` (the caller's on-chain LBC,
-NOT `withCategory().lockingBytecode`). A callee LOOP write `for(i) this.bal[ks[i]] (+)= vs[i]` is now DONE
-(`e910d18a`, `solidcash/test/e2e/CrossContractLoopWrite.test.ts`): B's loop function has NO fixed entry slot
-(blockSize=1) so its N entries are trailing (B reads master+blockSize+counter); the SDK detects B's
-sortedUpsertLoopInfo, co-spends each existing entry, SDK-computes each updated commitment (B's covenant verifies -
-a wrong commitment reverts, a misplaced input trips B's coSlot==Hk check), appends the inputs to B's block, and mints
-the trailing outputs (STB `entryLoopCommitments`/`entryLoopStart` + the derive-time master-index patch on the loop
-unlockers). Supports per-key/scalar, op +/set, int, one collection. Fail-closed (clean throw): absent key (insert), a
-callee that ALSO writes other state (blockSize>1 - the data-NFT derivation is not yet interleaved with the loop
-co-spend), multi-collection, non-int, dup keys. A >60 B CHUNKED callee value stays fail-closed (VM-verified,
-`CrossContractSubcaseSoundness.test.ts`) - it would need B's value-chunk pins co-spent (same as the single-contract
-chunked-in-loop). Original analysis retained below.
-
-### Original analysis
-
-**What.** When contract A calls B via `withExternalCall` and B's called function WRITES a vmap (sorted) mapping -
-`B.deposit()` doing `this.bal[k] = v` or `this.bal[msg.sender] = v` - the transaction fails on the VM (verified:
-input 2 OP_OUTPUTTOKENCOMMITMENT verify for a normal key `bal[k]=v`; empty-stack for the msg.sender variant).
-Single-contract sorted-mapping writes work; a CROSS-CONTRACT callee's sorted write does not.
-
-**Why.** The cross-contract dispatch (`StatefulContract.ts` externalCallUtxoGroups, ~6114-6470) derives only the
-callee's SCALAR data NFTs (`bDataNfts`, `requiredDataNftIndices`) + its function args. It has NO callee sorted-mapping
-ENTRY derivation: it never co-spends the entry/predecessor, never mints P'/NEW in the callee's block layout, never
-pins the value. The single-contract path does all this in the `entryAccesses` loop (~5090-5250), but that loop runs
-only for the tx-building (caller) contract, not for a co-spent callee. So the msg.sender-keyed case (boundary #1) is
-blocked on this LARGER missing feature - it is NOT a msg.sender-resolution tweak.
-
-**What it'd take (mechanism fully mapped 2026-07-20).** Three SDK sites, no compiler change for the UPDATE case (B's
-block layout, compiled normally, already reserves the entry slot):
-1. ENTRY INPUT co-spend (`StatefulContract.ts` ~6363, the `case 'entry'` in the external block builder): today it
-   key-matches via `parseEntryCommitment` (the DEFAULT key||value shape) - WRONG for a vmap entry (slot||next||value).
-   For `bCollection.sorted`, build `SortedList.fromUtxos(bEntryUtxos)` and co-spend `list.find(keyToSlot(key))` (UPDATE)
-   or `list.predecessorOf(...)` (INSERT).
-2. ENTRY OUTPUT derivation: the group derivation (~4254-4294) runs B's VM + `extractCommitmentsFromTrace` over B's
-   DATA-NFT output range only. Widen it to B's entry-slot output offset(s) to extract the entry commitment(s), store
-   on the group, and create the output in the STB external-call output loop (`StatefulTransactionBuilder.ts` ~1293,
-   which handles keccak/event slots but has NO `entry` case).
-3. INSERT (absent key) mints P'+NEW (2 outputs); the entry slot gives ONE. The NEW rides B's trailing entry-output
-   region like the single-contract insert - needs the extraction + STB output to place a 2nd output per insert.
-THEN the msg.sender variant: set B's `_msgSenderCategory` = A's category + key by `keyToSlot(A's locking bytecode)`
-(the covenant already resolves a contract msg.sender via emitMsgSenderMintingVerification -> caller LBC; A's minting
-master is already co-spent). Repro (skipped): `solidcash/test/e2e/MsgSenderCrossContractVMap.test.ts`. NOTE: these files
-(StatefulContract/StatefulTransactionBuilder/GTT) were under heavy concurrent edit on 2026-07-20; land this when they
-are quiescent to avoid two-writer tangling in the delicate cross-contract dispatch.
-
-**Revisit if.** A real port needs a contract-to-contract call that credits the callee's balances/allowances mapping
-(the common DEX-holds-tokens shape). Un-skip the repro once the callee-entry derivation lands.
-
-## Array-VALUE sorted insert-in-loop `for(i) m[ks[i]] = a` - RESOLVED 2026-07-20 (`7d1b104b`)
-
-INLINE case SHIPPED + VM-verified (solidcash `SortedArrayValueLoop.test.ts`): a loop assigning a loop-invariant
-rawbytes value (bytes/string/int[]/bytesN) to N sorted-mapping keys now routes through the upsert loop. Covenant:
-the guard accepts a rawbytes value for the invariant-param set only; the body wraps a CHUNKABLE value as the inline
-tail `len4 ++ value` with a runtime `size<=60` assert (chunked-in-loop still fails closed), stores fixed rawbytes
-(bytesN) verbatim, and skips the value BIN2NUM (every mint CATs the tail; the 'set' repoint copies `pu_val=amt`).
-SDK: a `scalarTail` threads through a `commitValue()` helper at every commitment site; the int path is byte-identical
-(35 int upsert-loop tests unchanged). CHUNKED (>60 B) stays fail-closed on BOTH sides.
-
-## Array-VALUE sorted loop PER-KEY `for(i) m[ks[i]] = vs[i]` - RESOLVED 2026-07-20b (`817e8a1c`)
-
-The per-key varying form (vs a `bytes[]`/`int[][]` param, each key its OWN value) now routes too. The covenant needed
-only a 2-line guard relax (`isPerKeySet` accepts rawbytes; `rawbytesOk = isParamSet || isPerKeySet`): the body already
-wraps each visited `vs[i]` as the inline tail via `isChunkableVal` (value-kind-based, not param-vs-perkey), and the setup
-captures `valueArrayParam` for any type - so no body/setup change. The earlier "SDK planner too int-shaped / risks
-regressing" worry was DISPROVEN: `DeferredEntry.newVal` is now `bigint | Uint8Array` and every arithmetic path is
-int-only by the `op==='set'` guard (a rawbytes value never adds/subtracts), so the int cases are byte-identical (45
-int/invariant upsert-loop tests unchanged); the dedup stores `set` values verbatim (last-wins, no `toBig`). VM:
-`SortedArrayValueVaryingLoop.test.ts` (bytes[]/int[][] per-key independence, duplicate last-wins, >60 B fail-closed).
-
-### Still fail-closed: CHUNKED (>60 B) value in a loop (considered effort/risk deferral - NOT fundamental)
-
-Implementable via an INTERLEAVED `[entry][chunks]` output layout with a running chunk-output counter (base_i =
-`master + blockSize + runningCounter`, advanced by `1|2 + nNew` each iteration; reads locate chunks by identity, not
-position, so interleaving is sound). NOT done because threading chunk-region management through EVERY mint site of the
-deferred/chained/msg.sender-merge/insert loop state machine - the most soundness-critical covenant - is a large change
-disproportionate to the rare bulk-LONG-value pattern. The chunk NFT is keyed by `(slot=Hk32, digest)`, so even an
-invariant value cannot share one chunk set across keys. Revisit if a real port needs bulk long values in a loop.
-
-**RESOLVED (verified 2026-10-14, commit `3da2f72c0`).** A `>60 B` per-iteration sorted-loop value is already shipped: the loop body
-(`emitSortedUpsertLoopBody`) pins each slot's value chunks via `emitSortedValueChunkPin` and stores the `len4 ++
-sha256(v)` tail, so the interleaved entry/chunk outputs are covenant-bound and the SDK plans the chunks. The positive
-path is pinned by `solidcash/test/e2e/SortedArrayValueVaryingLoop.test.ts` (per-key `bytes[]`/`int[][]` values, a
-170-byte value, duplicate-key update, and the inline/chunk boundary) and `solidcash/test/e2e/ChunkedLoopRoundtrip.test.ts`
-(insert then in-place update of a 170-byte value, exact read-back), the compile surface by
-`solidc/test/ChunkedLoopValue.test.ts`, and the fail-closed chunk integrity by
-`solidcash/test/e2e/ChunkedLoopAdversarial.test.ts` (a forged chunk, a missing chunk, and a reordered chunk each fail
-the read closed at the (collection, slot, digest) address). This entry's earlier "still fail-closed" note was stale.
-
-**Revisit if.** A real port needs bulk array-value initialization across keys in one loop, OR the upsert-loop planner
-is refactored to a value-kind-generic shape for another reason (then the bytes branch is cheap + low-risk).
-
-**RESOLVED (2026-10-16, in-place UPDATE of a chunked >60B value).** `ChunkedLoopRoundtrip.test.ts`'s
-"insert then in-place update of a 170-byte value" case is now green. The UPDATE co-spends the entry's OLD
-continuation chunks at their OLD root's `ValueChunkNft` lock and legitimately recreates them under the NEW root;
-`emitSortedValueChunkPin` appended only the NEW lock to `VALUE_CHUNK_LOCK_LIST`, so the
-`emitPreserveOutsideLayoutOwnMutable` 1:1 walk refused the consumed old-chunk input. The fix (in
-`GenerateTargetTraversal.ts`, `emitNormalStep`'s UPDATE arm) rebuilds the OLD root's chunk lock from the co-spent
-entry's stored `len4++root++head` tail (gated on the stored length > 60, so an inline predecessor stays fail-closed)
-and appends it to `VALUE_CHUNK_LOCK_LIST` beside the new lock; the walk then admits both the consumed old chunks and
-the re-minted new chunks. Verified: `ChunkedLoopRoundtrip.test.ts` 1/1, `SortedArrayValueVaryingLoop.test.ts` 4/4
-(duplicate-key last-wins and the inline/chunk boundary), `ChunkedLoopAdversarial.test.ts` 3/3. The original
-fail-closed reproduction was at `e16019bfe` (pre-existing, independent of the MasterChef.deposit trailing-base fix).
-
 ## Composite sub-slot field access: top-level array-of-struct only - MOSTLY DONE 2026-07-20
 
 RESOLVED for almost everything: bool/enum leaf fields (6448f446) and NESTED ARRAYS-in-struct
@@ -1265,48 +1144,6 @@ DOCUMENT the raw-vs-typed cleaning divergence; VM-test a packed bool+int slot bo
 **Revisit if.** A concrete port needs nested-array slot access AND its sibling features (nested `delete`, struct
 flattening) land - do it alongside them, not before. Bool/enum: only with demonstrated demand, and accept the
 typed-cleaning divergence explicitly.
-
-## Dynamic-array resize `sstore(dynArray.slot, n)` - DONE 2026-07-20 (0b2f89c0)
-
-RESOLVED. Built via direct blob surgery (NOT the VM-disproven O(n^2) push/pop loop): GTT
-visitStateArrayPop, gated by StateArrayPopNode.resizeTo (LIA emits it for a fixed-width dyn array),
-branchless `elems' = (elems ++ zeros(n*width))[0 : n*width]` re-prefixed with pushdata(n), reusing
-the proven emitReadStateArrayBlob/emitWriteStateArrayBlob paths. VM-proven grow/shrink/zero/empty
-(uint256 + uint128) cross-checked vs .length and a[i]; +5 corpus (the array_copy/clear/delete
-cluster). EVM stale-bit divergence documented (BCH zero-fills). Original analysis kept below.
-
-**What.** `sstore(x.slot, n)` on a DYNAMIC array `T[] x` sets its LENGTH to n (EVM stores a dyn array's length at
-its base slot). Corpus: ~6 files (array/copying/array_copy_cleanup_*, array_copy_clear_storage*,
-inlineAssembly/inline_assembly_storage_access_local_var, array/delete/delete_storage_array_packed). Currently fails
-closed (resolveDynArrayName handles the READ `sload(x.slot)` -> length; the WRITE is unmodeled). The sound BCH
-semantic is a RESIZE: grow zero-fills, shrink truncates - which matches the corpus tests (they set length after a
-`x=y` copy whose cleanup already zeroed the freed element slots, so zero-fill == EVM's dirty-length-bump there).
-
-**Why deferred (soundness-paramount, evidence-backed).** BCH stores a fixed-width dyn array as a chunk-packed blob
-`[A$len header][packed elements]` with length = A$len/width - NOT EVM's separate length slot + keccak element
-slots. So resize = adjust the blob to n*width bytes + update A$len. Two approaches, both problematic to land
-autonomously:
- - PUSH/POP LOOP (`while(len<n) push(0); while(len>n) pop();`) - reuses proven primitives, BUT **VM-DISPROVEN**
-   2026-07-20: each push/pop reassembles the whole array blob, so the loop is O(n^2) blob ops and BLEW the
-   operation-cost density limit even for n=4-from-2 ("operation cost following operation: 2322056 > 2321600").
-   Dead end.
- - DIRECT BLOB SURGERY - the sound + cheap path: reuse emitReadStateArrayBlob (reassembles `pushdata(count)++elems`)
-   -> on-stack decode count, compute target=n*width, runtime-branch (OP_SIZE vs target) truncate (OP_SPLIT) or
-   zero-pad (OP_CAT num2bin(0, target-size)), re-encode `pushdata(n)++elems'` -> reuse emitWriteStateArrayBlob. This
-   reuses the PROVEN read+write blob paths, but the middle surgery is NEW GTT codegen with a runtime branch on
-   fund-relevant state (A$len + chunk blob). New fund-relevant codegen without review is exactly what
-   soundness-paramount says not to rush in an autonomous burn-down.
-
-**What it'd take.** A `StateArrayResizeNode` (or an LIA-emitted marker) + a GTT visitor implementing the direct
-blob surgery above, gated to `sstore(fixedWidthDynArray.slot, n)`. Scope: fixed-width element arrays only
-(variable-width bytes[]/string[] elements have per-element length prefixes - harder). VM-prove grow (zero-fill,
-existing elements preserved), shrink (truncate), and the exact corpus shape (`x=y` then resize -> tail reads 0),
-each cross-checked against `x.length` and `x[i]`. Accept + document the EVM divergence: EVM's length-bump exposes
-STALE element-slot bits, BCH zero-fills (a footgun EVM has, BCH's clean model does not replicate).
-
-**Revisit if.** Dynamic-array copy/clear/delete becomes a priority (this is that whole cluster's entry point), and
-the fund-relevant blob surgery can get review. Do it with the other array/* deep work (element-slot writes
-`sstore(keccak256(0,32)+i, v)`), not as a standalone increment.
 
 ## Calldata `.offset` on dynamic params - RESOLVED 2026-10-16 (21fb2289e)
 
@@ -1559,33 +1396,6 @@ a mapping. Detail + re-entry points in memory events_in_delegate_gap.md.
 
 ---
 
-## buffered state journal + cross-contract message bus (architecture research)  - IMPLEMENTED 2026-07-21
-
-RESOLVED as shipped. P1 (scalar write-back journal), P2 (buffered mapping/collection writes flushed through
-vmap) and P3 (the message bus) all landed with their own suites: `ScalarJournal.test.ts` / `CollectionJournal.test.ts`
-(compiler lowering), `journal-message-bus/e2e/ScalarJournalRelease1.test.ts` (scalar-journal loop settle),
-`journal-message-bus/e2e/StatefulRecursion.test.ts` (recursive state-writer settle + over-budget/unbounded
-refusals), and the `Kernel*` message-bus suites. The original analysis below is kept as the design record.
-
-**What.** A future architecture that would make state/covenant-touching functions into real
-`OP_INVOKE` subroutines (fixing recursive state-writers and generic loop-calls of state helpers) via
-an altstack write-back journal flushed at the entry point, plus a cross-contract message bus (single
-settlement authority per slot) for shared-slot composition. Full design + VM evidence + boundaries in
-`docs/buffered-state-and-message-bus-research.md`.
-
-**Why deferred.** Explicitly a FUTURE direction, not scheduled. Large, multi-phase, and P3 (the bus)
-carries vmap-comparable soundness weight. The common case (pure-function recursion/loops) already works;
-the near-term pain is covered by the existing bespoke vmap / entry-write-in-loop paths.
-
-**What it'd take.** P1 scalar journal (fixes the recursive state-writer compile-fail), P2 mapping/
-collection writes buffered with flush delegating to existing vmap, P3 the message bus. See the doc.
-
-**Revisit if.** Recursive/looping state helpers or generic cross-contract shared-slot writes become a
-recurring blocker that the per-pattern codegen can no longer absorb. Detail in memory
-internal_fn_recursion_state_buffer.md.
-
----
-
 ## ecrecover "width-0" signatures - 3-covenant split (recovery liveness gap ~2%)  - 2026-07-20
 
 **What.** ~2.3% of secp256k1 signatures have a GLV ladder so long (high-Hamming-weight scalar
@@ -1730,64 +1540,6 @@ written dynamic var (`node.dynamicWrites`), so the consumed old chunk is no long
 path took the admitting branch. Verified by the new e2e `StructArrayElementOverwrite.test.ts` (2/2: push two
 fixed-width struct elements, whole-element overwrite, field/neighbour preservation), `ChunkedArrays.test.ts` (15/15),
 and `StoragePointerMappingElem.test.ts` (4/4, including the previously failing state-array element half).
-
-## STORAGE-POINTER library fn on a mapping/array/state-var element - VEIN COMPLETE 2026-07-21
-- **STATUS: SHIPPED + VM-proven end to end** across four commits (5f2b28f3 void, e5ab012c returning, a4727002 bare):
-  void + returning fn, mapping/array/state-var element, statement + expression position, direct + using-for spelling,
-  `this.`-prefixed + BARE (no this., real-Solidity) spelling. All routed through a shared `elementAccess()` helper
-  (read-modify-write the element; a bare `m[k]` = ArrayAccess-on-mapping-identifier is rebuilt to a MappingAccess so it
-  resolves via the collection). Regression-clean (solidc 2221, e2e 148). Advanced BentoBoxV1 through the addElastic
-  walls (330, 985) to line 835.
-- **NEW BentoBoxV1 wall (line 835, SEPARATE vein):** `_tokenBalanceOf(token).sub(total.elastic)` fails "Found
-  parameters (address) in call to '_tokenBalanceOf' where (address,bytes,bigint,bytes4,bigint) were expected" - an
-  overload/name-resolution confusion (the 5-arg signature is not `_tokenBalanceOf`'s; it looks like a low-level-call
-  helper's). Does NOT reproduce in isolation (a returning ext-call helper + BoringMath `.sub()` compiles) - BentoBox-
-  specific. NOT storage-pointer. Investigate on-site if BentoBox is prioritized.
-- **RESOLVED (2026-10-15).** The line-835 wall no longer reproduces: BentoBoxV1 now compiles end-to-end through
-  `deposit()` (evmCompat + forceStateful + messageBus), with only the contract-size warning (27,444 > 10,000
-  bytes, a non-goal). The documented 5-arg `_tokenBalanceOf` param-bloat is the SAME synthetic-covenant-param
-  threading as Kashi `_isSolvent`: `_tokenBalanceOf(IERC20 token)` makes a PARAM-target external call
-  (`token.balanceOf(address(this))`), which injected `__internal__externalCallInputBase` /
-  `__internal__extcallAnchorIdxN` / `__internal__externalReturnOutputIdx` into its signature; the helper is now
-  inlined at its call site, so those params land on the entry point and `_tokenBalanceOf(token)` (1 arg) no longer
-  mismatches a 5-arg signature. The subordinate `.sub(total.elastic)` uint128->uint256 argument widening is locked
-  separately by `libraries-imports.test.ts`; the exact wall shape is locked by `ExternalCalls.test.ts`
-  (`inlines a param-target value-returning external-call helper (BentoBox _tokenBalanceOf)`).
-- Original returning-fn analysis kept below for the record.
-
-## (superseded) RETURNING storage-pointer fn (BentoBox BoringRebase `addElastic`) - DONE 2026-07-21 (commit e5ab012c)
-- **STATUS: SHIPPED + VM-proven** (StoragePointerReturningFn.test.ts). The RMW fix landed IN
-  InlineReturningStateHelpers.inlineCall (as the "What it'd take" below predicted), reusing that pass's hoisting
-  machinery so it covers BOTH statement and expression position; gated on the body WRITING the pointer so read-only
-  get/size helpers are unchanged. (The 985 wall it advanced to was then cleared by the bare-access fix a4727002.)
-- **What:** A struct-storage-pointer fn that RETURNS a value (`function addElastic(Rebase storage t, uint e)
-  returns(uint newElastic){ t.elastic += e; newElastic = t.elastic; }`) fails "Undefined reference to symbol <param>"
-  whether called in STATEMENT position (`totals[k].addElastic(x);` - return discarded, BentoBoxV1:1064,1068) or
-  EXPRESSION position (`require(bal >= totals[k].addElastic(fee))` - return used, BentoBoxV1:985,1020). General - same
-  failure for a CONTRACT-internal returning storage-pointer fn, not library-specific.
-- **Why (CONFIRMED via pass bisect 2026-07-21):** The culprit is `InlineReturningStateHelpers.eligibleStructPtr`
-  (InlineReturningStateHelpers.ts:445, runs at compiler.ts BEFORE InlineStoragePointerCalls). NamedReturnTransformation
-  first rewrites the named return into an explicit tail `return newElastic;`, which makes the fn match eligibleStructPtr
-  (single-tail-return + struct-storage-pointer param). That predicate was written for READ helpers (`get`/`size` on a
-  `Map storage`) - it expression-inlines the fn by substituting the storage param READ-style, but this fn WRITES
-  `t.elastic`, and the read-oriented substitution leaves the write's `t` dangling -> "Undefined reference to symbol t"
-  at codegen. So a returning struct-storage-pointer WRITE-helper is grabbed by the wrong inliner. (The void
-  InlineStoragePointerCalls path at :137 requires `returnTypes.length === 0`, so it never sees it.)
-- **What it'd take (now that the culprit is known):** The cleanest fix is IN `InlineReturningStateHelpers`, reusing
-  its existing expression-inline HOISTING machinery (it already replaces a call with a temp + prelude statements -
-  exactly what expression-position BentoBox `require(.. >= totals[k].addElastic(fee))` needs). Make `eligibleStructPtr`
-  (or its inline substitution) do the element READ-MODIFY-WRITE for a WRITE-helper: `S __t = m[k]; <body with param->__t>;
-  m[k] = __t; <temp> = <returned expr>;` and hoist `<temp>` in place of the call. This covers BOTH statement and
-  expression position uniformly. RISK: eligibleStructPtr currently serves read-only get/size helpers - must not
-  regress them (gate the RMW write-back on the body actually WRITING the pointer, mirroring
-  InlineStoragePointerCalls.isWritten). Alternative (statement-only, narrower): EXCLUDE write-helpers from
-  eligibleStructPtr so they fall through to InlineStoragePointerCalls, and extend THAT pass to returning fns in
-  statement position - but that leaves expression position (985/1020) still broken, so the in-place fix is preferred.
-- **Also blocks BentoBoxV1 even if fixed:** BoringMath uint128 `.add/.sub` (using-for on uint128), chained assign
-  `newElastic = total.elastic = total.elastic.add(x)`, reassignable storage-pointer local `Rebase storage total =
-  totals[token]`. BentoBoxV1 is a MULTI-wall grind, not one fix.
-- **Revisit if:** BentoBox/Kashi is prioritized; the void case (commit 5f2b28f3) already unblocked BentoBoxV1 PAST all
-  void storage-pointer walls to exactly this returning-fn wall (line 330).
 
 ## Kashi (KashiPairMediumRiskV1 / KashiPair) - walls after the abi.decode fix (bbb10174)
 The abi.decode-interface fix advanced both Kashi contracts past their first wall. Remaining:
@@ -2328,94 +2080,6 @@ Stage 3 (2026-10-14, the atomic verifier's operation cost):
   masters, NFT alterations and conservation-balanced FT theft refused. No live-node measurement was run for
   these follow-ups; BCHN is excluded by the user's instruction.
 
-## keccak256 inside an internal helper of a STATEFUL contract (2026-08-07) - RESOLVED
-
-**RESOLVED**, kept for the diagnosis and for the ruled-out list. A `keccak256` reached through an
-internal/private helper emitted its side-car read in the **stateless, count-relative** form even when the
-calling entry point was stateful and had a block layout:
-
-```
-OP_TXINPUTCOUNT  OP_1 OP_SUB  OP_INPUTBYTECODE        ; read the side-car
-OP_TXOUTPUTCOUNT OP_1 OP_SUB  OP_OUTPUTTOKENCOMMITMENT ; read the result
-```
-
-Measured on MistSwap's BentoBox constructor, which gates 62 tests (PairKashi 56, SushiMakerKashi 6).
-`_calculateDomainSeparator` is `private`, so its `keccak256` is emitted on the helper's own sub-traversal.
-
-WHY IT BREAKS. `emitKeccakComputeCall` picks its addressing in `fromEnd()`: the block-layout form
-(`emitBlockSlotIndex('keccakSideCar', i)`) when `fn.blockLayout` exists, the count-relative form otherwise. A
-helper compiled by the OP_DEFINE sub-traversal has no block layout, so it takes the count-relative branch - but
-its body is then inlined into a stateful block whose LAST input is the funder and whose LAST output is the
-event. The SDK, meanwhile, positions the side-car at the block-layout slot (`_deriveDeployCommitments` adds
-`keccakSlotCount` side-car inputs right after the data NFTs). So the covenant decodes the funder's unlocking
-script and compares it against the computed keccak argument, which can never match:
-
-```
-  1976a914830620a2d6ed15ada566e1088dc96a12d78fcec788ac    computed argument
-  001976a914830620a2d6ed15ada566e1088dc96a12d78fcec788ac  decoded from the wrong input
-```
-
-The failure surfaces only as `Failed to derive initial state commitments from constructor ... OP_VERIFY`.
-
-RULED OUT (measured, do not redo): the sparse derivation observer; shared-span outlining
-(`SOLIDCASH_NO_OUTLINE=1` fails identically); oracle-backed `block.*`; contract scale; and funding shape.
-
-TWO RELATED THINGS ARE ALREADY FIXED and are NOT sufficient on their own: `countLibraryCalls` now follows
-`resolvedFunction` so the entry point RESERVES the slot, and `Artifact.ts` pads `keccakPreimageParams` to the
-reserved slot count so the SDK SUPPLIES the side-car. Confirmed end to end after both - `BentoBoxMock`'s probe
-now builds
-
-```
-inputs=6 outputs=6 blockSize=6 slots=master,dataNft,dataNft,dataNft,keccakSideCar,event
-  [0] master  [1..3] dataNfts  [4] KECCAK SIDE-CAR  [5] funder
-```
-
-so the side-car sits at its layout slot, input 4 - and the covenant still reads
-`OP_TXINPUTCOUNT OP_1 OP_SUB` = input 5, the funder. The addressing is the only remaining piece.
-
-**HOW IT WAS FIXED.** A `keccakSideCarBasisByFunctionId`, modelled on the existing
-`outlinedDynamicReadBasisByFunctionId`: when every entry point reaching a layout-less helper reserves exactly
-ONE `keccakSideCar` slot at the SAME offset, that entry point becomes the helper's basis and the read becomes
-`masterInputIndex + offset`. Narrow on purpose - one slot, agreeing offsets, emission index 0 - so a body
-shared by entry points with differing offsets keeps the old fallback rather than baking a wrong constant.
-
-Two parts were not obvious and cost a debug cycle each:
- - `entryPointsReaching` walks `node.functions` only, and a constructor is `node.constructorDef`, a separate
-   field. A helper reached only from a constructor therefore got no basis and the fix silently did nothing;
-   `keccakEntryPointsReaching` seeds from constructorDef/fallbackDef/receiveDef as well.
- - `absoluteForward` selects `KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH` over the stateless one. It has to be
-   true whenever the basis is used, because the SDK deploys a STATEFUL side-car; otherwise the covenant reads
-   the right slot and then fails the integrity check instead of the bind (the error just moves).
-
-**THE GENERAL FIX: INLINE THE HELPER.** The basis above only covers callers that agree on a single slot, and
-MistSwap's BentoBox does not: `_calculateDomainSeparator` is reached from three entry points -
-
-| function | keccakSideCar slots (index -> offset) |
-|---|---|
-| `DOMAIN_SEPARATOR` | 0 -> 4 |
-| `__construct` | 0 -> 4 |
-| `setMasterContractApproval` | 0 -> 4, 1 -> 5, 2 -> 6 |
-
-The OFFSET agrees everywhere, so it is tempting to just drop the "exactly one slot" half of the guard - but
-that is UNSOUND. The emission index is counted PER TRAVERSAL, so the helper always starts at 0 while
-`setMasterContractApproval`'s own calls also start at 0; the helper would read a slot holding its caller's hash.
-
-The answer is not to teach the subroutine about the caller's frame but to remove the subroutine.
-`InlineReturningStateHelpers` already inlines a returning helper when it reads entries, touches scalar state,
-uses `msg.sender`, or makes a low-level/external call - each because the body needs the CALLER's frame. A
-keccak256 needs it for the same reason, so `containsKeccak(fn)` joins that predicate. Inlined, the call is
-emitted under the caller's traversal at the caller's ordinal, which is right for every caller regardless of how
-many keccaks each has.
-
-Measured: `repro-bento.mjs` prints `BENTO OK`; MistSwap contract sizes are unchanged despite the duplication
-(SushiToken 17,348, MasterChef 10,837, SushiRoll 11,526 - identical to the previous compile). On a
-size-constrained contract the duplication would be a real trade and would argue for threading the base index in
-as a frame argument instead, the way the parameterized outliner threads altstack depth.
-
-**Acceptance:** a stateful contract whose constructor calls a private `keccak256` helper deploys and reads the
-hash back; `bench/mistswap-native/repro-bento.mjs` deploys BentoBoxMock; `test/PairKashi.test.ts` and
-`test/SushiMakerKashi.test.ts` reach contract behaviour instead of dying in `beforeEach`.
-
 ## MasterChef / MasterChefV2: message-bus preflight OP_VERIFY (2026-08-07)
 
 **ROOT CAUSE FINALIZED (2026-10-15): the split regression and a zero-trip state-array loop resolver gap are
@@ -2628,7 +2292,8 @@ boundaries: (1) the compiler-reserved 256-slot trailing band holds one side-car 
 preimage longer than 255 full blocks + 135 bytes (~34 KB) still exceeds the reserved band and is refused by the
 balanced trailing-capacity check; (2) the FINAL side-car carries the full preimage in its unlocking bytecode, so a
 real network's 10,000-byte per-input consensus limit caps a chained preimage at roughly 6.4 KB (and the whole
-transaction must still fit the 100 KB standard relay ceiling).
+transaction must still fit the 100 KB standard relay ceiling). Boundary (1) is gone since 2026-10-22: the layout
+reserves no band, and the side-cars follow the fixed block.
 
 **Acceptance:** `keccak256(x)` for a runtime `x` above the single-side-car threshold (~407 bytes) and within the
 consensus input-byte limit (~6.4 KB) settles and reads back the same digest `keccak_256` computes off-chain; the
@@ -3222,6 +2887,15 @@ entry batch migrates one entry per transaction (the SDK loops), and the token-co
 of reserved access sites (a live container count below the site count is refused); a fully dynamic per-record scan
 remains deferred.
 
+**Revised 2026-10-22 (`cd3c4caa4`, `ced8e53fa`).** The SDK upgrade took the first UTXO at each container address, so a
+dust coin there could strand the real container; it funded entry steps with the mock-only `addUtxo`, and it left
+dynamic and value chunks at the old lock. It now plans every entry and container from full listings, funds each step
+from the caller, refuses before any broadcast while a genuine record would be stranded (chunks included), and takes
+`leaveBehind` to abandon named donated container coins. Still open: chunks have no migration path (the upgrade
+refuses instead), and a parameter-keyed container needs a runtime count `k` with a distinctness proof and, for
+completeness, a container registry in state, since the covenant cannot list UTXOs. Test:
+`packages/solidcash/test/e2e/UpgradeMigrationCompleteness.test.ts`.
+
 ## Logical caller identity for native compiles (model B residual, 2026-10-14)
 
 **What:** packages/solidcash/test/journal-message-bus/e2e/KernelPhysicalCallerWithScidCompose.test.ts (skipped) needs a
@@ -3229,7 +2903,7 @@ nested callee to see its proxy caller by the logical CREATE/SCID lock. Today a n
 witness (`__internal__msgSenderAnchorIdx` is evmCompat-only, SymbolTableTraversal.ts), so `msg.sender` is the proxy's
 physical master lock; the SDK registers a proxy root's `publicSelfIdentity` as its physical lock (StatefulContract.ts,
 upgrades.ts); and `address(this)` in a native delegate is physical (`__internal__graphSelfIdentityInput` is
-evmCompat-only). The title is red on the kernel parent too (W6_BASELINE.md).
+evmCompat-only). The title is red on the kernel parent too (`archive/docs:docs/framed/W6_BASELINE.md`).
 
 **Proposed design (model B: full locks end to end, no identity20 keys):** inject the anchor witness for native compiles
 (one hidden ABI input per native entry that reads `msg.sender`, about 45 B of anchor check per read); make a proxy
@@ -3343,3 +3017,257 @@ composite return such as `uint256[5]`.
 **Why deferred:** not on any failing path. The arbitrate titles' `uint256[5]` return is recovered through its canonical
 outer bytes once the participant's stream records are fed back (`a0ae125c1`). Found while diagnosing the proxy x kernel
 arbitrate titles.
+
+## The BCMR identity of a category a contract creates sits at the creating master (2026-10-20)
+
+**UNSUPPORTED by decision 2026-10-21 (`docs/framed/DECISIONS.md` D48).** A leading slot for direct `deployFrom`
+was built and reverted (`dc4232e07`); child deployments keep this layout, and BCMR for their categories is
+unsupported. Framed `new C()` was never affected (the SDK deploys that child as a top-level genesis), and the framed
+proxy's calling genesis leads with its own authhead (`f1fc26e87`).
+
+**What:** a category created inside a call (direct `deployFrom`, message-bus child deployments) takes the creating
+transaction's output 0 as its BCMR identity output, and the layout puts a participant of the creating contract there.
+Any later spend of that output can publish metadata for the child category, and every child created through the same
+master shares its lineage (`docs/bcmr/DESIGN.md`, section 7). Top-level geneses lead with their authhead.
+
+**Why deferred:** the fix moves the creating contract's master off input 0 in every creating call, which changes what
+contract code reading `tx.inputs[i]` at a fixed index sees, and needs covenant rules of its own in each convention;
+the user judged that too complicated (D48).
+
+**What it'd take:** the reverted leading slot (`61b445ec5`, `62e2d7301`): a token-free coin at input 0 for the child's
+authhead at output 0, the factory's covenant checking that output and counting its NFT, and the same in the bus
+verifier; or a census rule refusing BCMR publications in compositions (a new validator version).
+
+**Revisit if:** a factory issues user-facing tokens, or a client starts trusting self-published metadata of
+contract-created categories.
+
+## Framed token containers pay one fungible category from one frame (2026-10-20)
+
+**RESOLVED 2026-10-20.** A container now belongs to the master its unlocking names (`docs/framed/DECISIONS.md` D37),
+so frames of one contract pay one category from containers of their own and a frame spends several; one frame pays
+several categories, and a callee frame pays from its own contract's (`05161d7d1`, `ba6296865`, `e38a89325`). NFTs are
+held, minted and released, and `tokenCategory` and `nftCommitment` read (`19eefe1d6`, D38); a view reads the reserve
+(`ccc325a42`); a send on an untaken branch is dropped (`07ef425bd`). Pinned by `FramedTokenCallee.test.ts`,
+`FramedTokenNft.test.ts`, `BchNativeFramed.test.ts` and `FramedNativeToken.test.ts`.
+
+Since revised (`80c517ca7`, D39, D40): an immutable NFT with an empty commitment and no fungible amount is held and
+released, two frames of one contract send NFTs of one category, an NFT deposit settles beside NFT sends, a wrap
+settles beside an unwrap of the same token (`88e121933`), a callee keys a container by an argument its call passes
+(`ed1b88341`), and a paying run folds the two smallest containers left into the one it keeps.
+
+What remains is a limit of the VM, or of what a master can see, each for the reason given:
+
+- An immutable NFT with an empty commitment beside a fungible amount reads as a fungible token to the VM, so no
+  master can tell it is there; a deposit of such a coin is refused.
+- While a transaction mints a category from a contract's minting container, no fungible amount of the category may
+  leave the container lock, since a minted empty-commitment NFT beside it would be invisible; a call that sends one
+  out, or returns a deposit's remainder, is refused by name.
+- Each frame that mints spends a minting container of its own, since a frame's NFT sends count only after a block
+  that ends on a released or minting container; two frames of one contract mint in one transaction only when it
+  holds two minting containers.
+- Where a contract sends NFTs of a category, every NFT of the category leaving its container lock must be one of its
+  frames' sends, so another contract's NFT sends of that category, or a caller's own NFT of it passing through, do
+  not share the transaction. An NFT send to the contract's own container lock does not leave it: a transaction that
+  releases NFTs refuses it, and one that mints refuses such a send of an NFT with a capability, which reads as a
+  deposit no input outside the lock backs.
+- A run lists its NFT sends before its fungible ones, while the body makes them in its own order; the SDK cuts each
+  kind to the sends made, which holds only when the skipped sends are each kind's last.
+- Folding takes at most two containers per paying run and none when that pushes the transaction past a density
+  limit, so a contract that takes many small deposits beside frames that do not read them can still accumulate
+  containers until a payment or a read spends them.
+- Every token frame walks the transaction's inputs and outputs, so a composition of several token frames can exceed
+  the real operation-cost density limit: the BchNative vault's `wrap` beside an `unwrap` does when the `unwrap` folds a
+  second container, and such a call is planned again without folding. A composition past the limit without folding
+  is refused by the VM.
+
+## A message-bus route does not carry an own- or state-keyed token container (2026-10-20)
+
+**RESOLVED 2026-10-20** (`c919a1686`, `docs/framed/DECISIONS.md` D36): a route merges such an access under a fixed key
+and checks a state-keyed slot as this contract's container for the category it holds. Pinned by
+`TokenContainerStateKey.test.ts` and `KernelStateKeyedTokenContainerCompose.test.ts`. The entry as it stood:
+
+**What:** a route binds a token container through the key its row forwards, so a handler that keys a container by
+the contract's own category or by an immutable state variable (BchNative's `wrap` and `unwrap`) is not eligible for
+the route and runs on its own entry (DECISIONS D35). A bus-composed call to such a handler is refused.
+
+**Why deferred:** carrying such a key needs the route's identity check to read the contract's own category or its state
+on the route stack, and the route merge, the layout sharing and the forwarded-witness plumbing to keep a key that is
+not a parameter; each is a message-bus change of its own.
+
+**What it'd take:** merge own and state accesses into the route under a canonical key, read the key in the route's
+identity check (the master category, or the immutable from the route's records), and exempt them from the
+forwarded-key normalization.
+
+**Revisit if:** a contract calls a BchNative `wrap` or `unwrap` through the message bus.
+
+## NativeUsdt's master and `UsdtFacet` exceed the 10,000-byte input limit (2026-10-20)
+
+**What:** `NativeUsdt.test.ts` ("every script - master and the facets - fits the 10,000 B per-input limit") fails: the
+master compiles to 10,360 B and `nusdt_facet.scash` to 10,424 B. With the compiler at `a3a883fc5`, before the
+2026-10-20 token container work, they were already 10,245 B and 10,451 B, so the overrun predates that work, which moved
+the master by +115 B (the NAMED-MINT-1 bound +144, dropping the container merge path -47, refusing unnamed minting
+containers +20) and the facet by -27 B.
+
+**Why deferred:** bringing both under the limit meant re-splitting the NativeUsdt fixture's facets or shrinking code
+they share, which is outside the token container work.
+
+**Status:** RESOLVED 2026-10-21. The size reduction parked as `26f9b3cc3` landed as `650ac4f10` (master 9,908 B), and
+`addBlackList` and `freeze` moved from `UsdtFacet` to `UsdtSupplyFacet` (`200e234f3`, `UsdtFacet` 9,015 B). The
+title passes.
+
+## A string value argument of a bytes-like parameter in two SDK write paths (2026-10-21)
+
+**What:** `evalComputedKey` resolved an `id:` value to the argument a call passed and made a string UTF-8, so a
+`bytes32` value given as a hex string was stored as its 66 bytes of text while the call pushed its 32 bytes
+(`mapping.conformance.test.ts`, "uint256 => bytes32", once `650ac4f10` made that write unconditional and the SDK filled
+the value from the argument). Fixed there: a bytes-like parameter's string is encoded as the call encodes it. The
+upsert-loop builder's `encodeValueTail` and `rawValueBytes` and the chunkable-value paths (P5b) make a string value
+UTF-8 the same way.
+
+**Why deferred:** no test reaches those paths with a hex string for a bytes-like parameter, so a change there would land
+unverified.
+
+**What it'd take:** encode a string by its parameter's ABI type at those sites, as `evalComputedKey` now does, with a
+loop write and a long-value write of a `bytes32` and a `bytes` value given as hex strings.
+
+**Revisit if:** a loop write or a chunked write stores a bytes-like value an SDK caller passed as a hex string.
+
+## SDK e2e titles that already failed before the 2026-10-20 BCMR and token container work (2026-10-21)
+
+**What:** the full SDK e2e suite (`vitest.e2e.config.ts`, 1,593 files, mocknet) fails 23 titles in 13 files that fail
+the same way (same titles, same first error) with every package built at `769adb889`, before that work:
+`L4StatefulAdminSiteGate` (8, "min relay fee not met"), `SelfdestructDestination` (2: an input reads an output the
+destroy transaction lacks), `ConstructorKeccakHelper` (2: no side-car reserved; constructor derivation fails),
+`KernelNestedChunkedUpdate` (2), and one each in `AuditLifecycleEventIntegrity`, `ConditionalEntryWrite`,
+`DynamicArrays` (1,405 B against a 1,320 B budget), `MasterChefDeposit` and `SushiBarTransferFrom` (preflight
+OP_VERIFY), `SignatureCheckHelper` (a check left in an invoked body is not refused), `X121StrictPreflightDecision`,
+`X130DebugVmProviderFaithful` and `X46CommitmentWriter` (its documented drain no longer settles). The same run's other
+14 failures came from that work and were fixed (`0d69076df`).
+
+**Why deferred:** they predate that work and lie outside it, and no gate runs the e2e suite, so there is no known-good
+commit to bisect from yet.
+
+**What it'd take:** find a commit where each file passes, bisect, then fix or re-pin file by file.
+
+**Revisit if:** a release gate takes in the SDK e2e suite, or work touches one of these files.
+
+**Status:** RESOLVED 2026-10-21. Each was bisected (`git bisect run` on shadow worktrees) and fixed or re-pinned:
+`L4StatefulAdminSiteGate` (`063f32514`, declared fees), `SelfdestructDestination` and `X46CommitmentWriter`
+(`3fc5969bd`, then `3ca6b0a42`), `ConstructorKeccakHelper` (`1e8bcb838`), `KernelNestedChunkedUpdate` (`a60df8329`),
+`AuditLifecycleEventIntegrity` (`5e1ac21b2`), `ConditionalEntryWrite` and `SignatureCheckHelper` (`0b8d48662`),
+`DynamicArrays` (`bf1ad481f`), `MasterChefDeposit` (`feee2609f`), `SushiBarTransferFrom` (`b3ee79060`), and
+`X121StrictPreflightDecision` / `X130DebugVmProviderFaithful` (`bb2ecdab5`). The full SDK e2e suite then passed:
+1,569 files, 9,702 tests, none failed.
+
+## A destroy split into batches pins a direct container in an intermediate batch (2026-10-21)
+
+**What:** a direct container's master path pins the output at its own index (`directMasterOutputPin` in
+`packages/utils/src/state.ts`) whenever an output carries the master's minting NFT, and skips the pin only on the
+destroy path, where no master is recreated (`3fc5969bd`). A destroy of more than 200 inputs is sent in batches; an
+intermediate batch recreates the master, so a container placed there is pinned, and the batch has no output at its
+index, so it fails.
+
+**Why deferred:** the fix is in the SDK's batch planner (keep containers in the final batch, or give an intermediate
+batch an output at each container's index); no test destroys that many inputs.
+
+**What it'd take:** have `destroyStatefulContract` place every container input in the last batch, with a test that
+destroys a contract holding a container and more than 200 other inputs.
+
+**Revisit if:** a contract with a satoshi or token container is destroyed with that many inputs.
+
+**RESOLVED 2026-10-22 (`2d885fa23`).** Every container goes in the final batch beside the masters, and the destroy
+refuses before building when they do not fit. Coins at a container address are filtered to genuine containers, so
+junk padding there is left in place and reported (`DestroyResult.leftBehind`). Test:
+`packages/solidcash/test/e2e/BatchedDestroyContainers.test.ts` (a lowered `maxInputsPerTx`). Residual: a tokenless
+coin at the satoshi-container address counts as genuine, so padding past the final batch's room refuses until
+`maxInputsPerTx` is raised.
+
+## A framed contract with one function, no constructor and no fallback cannot be called (2026-10-21)
+
+**What:** `callFramedEntry` (`packages/solidcash/src/framed/call/call.ts`, the "does not plan yet" refusal) refuses
+a framed monolith with a single dispatched body and no fallback: its master is entered without a selector, which a
+user's frame cannot carry yet. A framed contract whose only function is, say, `updateMetadata` (DESIGN.md
+section 9's governed metadata) cannot authorize an update through it; a second function or a constructor avoids it
+(`BcmrGoverned.test.ts`'s framed title adds `bump()`).
+
+**Why deferred:** the composer refuses a user-entered frame carrying call data unless the program dispatches;
+entering a selector-less master needs the frame layout to carry the arguments without a selector, as function
+shards already do.
+
+**What it'd take:** let a monolith with one body take its arguments the way a function shard's root frame does, with
+a test calling such a contract.
+
+**Revisit if:** a framed contract with a single function and no constructor is deployed.
+
+## The SDK's failing-output-pin heuristic assumes one operand order (2026-10-21)
+
+**What:** `extractFailingP2sh32OutputPin` (`packages/solidcash/src/stateful/route-value-chunk-helpers.ts`) reads a
+failed `OP_OUTPUTBYTECODE ... OP_EQUALVERIFY` as `[expected, actual]`, actual on top. The compiler's fixed entry lock
+check picks the expected lock on top instead, so for that shape the heuristic records the output's actual lock as the
+expected one; under a non-kernel convention `deriveRouteValueChunks` then installs it as a `valueChunk` output, and
+`setDerivedChunkOutput` (`stb-set-derived-chunk-output.ts`) refuses the correct `entryPin` over a `valueChunk`. It
+made the SushiBar callee insert settle on the wrong output until `b3ee79060` gave that slot its entry lock up front.
+
+**Why deferred:** both are shared value-chunk heuristics many routes go through; the reported failure is fixed at its
+source, and no other test shows the shape.
+
+**What it'd take:** take the expected operand from the check's own shape (or try both orders against the P2SH32 test),
+and let an `entryPin` derived from the covenant replace a `valueChunk` placeholder for the same output, with a test
+whose fixed entry lock mismatch goes through the value-chunk derivation.
+
+**Revisit if:** a derivation settles an entry output on a lock its covenant refuses.
+
+## The SDK cannot find a BCMR identity's current authhead itself (2026-10-21)
+
+**RESOLVED 2026-10-21 (`8002d4f12`).** The identity output is now the category's authhead contract, at an address
+unique to the category (DECISIONS D46), so `resolveIdentity(provider, category)` lists that address and proves the
+candidate by walking its authchain back to the genesis with the transactions the provider serves; no spender query is
+needed. `test/e2e/BcmrAuthhead.test.ts` resolves an identity past a look-alike and after a spend.
+
+**What:** `publishMetadata` spends the identity output the caller names (`current`); a deployment returns the first
+one (`DeployResult.identity`, `deploymentIdentity()`). After an update, a later session must know the new authhead.
+DESIGN.md 5.4 describes finding it by following spends from the genesis, but `NetworkProvider` has no query for the
+transaction that spends an outpoint, so `packages/solidcash/src/bcmr/` has no resolver.
+
+**Why deferred:** every provider would need a spender query (Electrum can answer it from the output lock's history;
+the mock and RPC providers would need their own), which is outside the BCMR work.
+
+**What it'd take:** a `getSpendingTransaction(outpoint)` on `NetworkProvider`, a resolver that walks output 0 from the
+genesis to the unspent authhead, and a test that publishes twice and resolves the second authhead.
+
+**Revisit if:** a wallet or tool needs to update metadata without the outpoint from the last update.
+
+## `.address` of a plain CREATE deployment names its physical lock, not the identity its calls present (2026-10-21)
+
+**What:** since `5f0d8e67b` a plain CREATE deployment whose route proves its SCID presents its public identity
+(`getAddress()`) as `msg.sender`, while an ethers-style `contract.address` is its physical lock, where it is called.
+Ported code that passes `.address` as an identity (an owner, an allowance spender) keys it under the physical lock, and
+the deployment's later calls do not match it (`MasterChefDeposit.test.ts` now passes `getAddress()` for those). Storing
+every such `.address` as the public identity (`495f3e537`, reverted in `feee2609f`) broke calls made at the physical
+lock (`KernelForwardedCallerIdentity.test.ts`).
+
+**Why deferred:** one address value serves as both an identity and a call target in Solidity; choosing a single
+representation (or making calls resolve the public identity to the physical lock everywhere) is a design decision
+about the per-call address model (model B, full lock), not a fix.
+
+**What it'd take:** decide which lock an address argument names, then either resolve public identities to physical
+locks wherever a contract is called, or keep the two and document `getAddress()` for identities in the guides.
+
+**Revisit if:** ported Solidity passes `contract.address` where it means the caller identity.
+
+
+## Solidity 0.5+ sources may omit function visibility (2026-10-22)
+
+**What:** `257ce3067` (2026-07-28) made a `.sol` source with `pragma solidity` 0.5 or later reject a contract function
+without `public`, `external`, `internal` or `private`, as solc does. `1a533c88d` (2026-08-04, a post-merge
+consolidation) dropped the call; `AstBuilder.usesLegacySolidityDefaultFunctionVisibility` is left with no caller,
+so such sources compile with SolidCash's implicit-public default.
+
+**Why deferred:** restoring it is a strictness change: it rejects sources that compile today, it must skip free
+functions (which take no visibility) and interface rules that differ by version, and it needs a corpus and suite run
+to confirm no positive fixture breaks. Solidity-corpus strictness parity is deferred for 0.13.1.
+
+**What it'd take:** restore the check for contract and library functions only, under `pragma solidity` >= 0.5, then
+run the solc corpus negatives and the `.sol` fixtures once.
+
+**Revisit if:** the corpus strictness work resumes, or a port relies on solc rejecting a missing visibility.

@@ -821,6 +821,10 @@ export class StatefulTransactionBuilder {
     to: string | Uint8Array; amount: bigint; token?: Utxo['token'];
   }> = [];
 
+  // The outputs among `pendingOutputs` that create an absent token container for a first deposit, by category.
+  private createdTokenContainerOutputs: Map<string, { to: Uint8Array; amount: bigint; token: Utxo['token'] }> =
+    new Map();
+
   private entryNfts: EntryNftInfo[];
   private entryUpdates: Map<
   number, StateValue
@@ -893,6 +897,14 @@ export class StatefulTransactionBuilder {
 
   private get keccakLoopFollowsTrailingUser(): boolean {
     return !this.keccakLoopPrecedesTrailingUser && this.insertLoopPredecessorInputs.length > 0;
+  }
+
+  private get keccakSideCarsFollowBlock(): boolean {
+    const abiFunction = (this.masterUtxo?.unlocker as {
+      abiFunction?: { keccakChainReads?: boolean; keccakLoopReads?: boolean };
+    })?.abiFunction;
+    return this.keccakLoopSideCars.length > 0
+      && (abiFunction?.keccakChainReads === true || abiFunction?.keccakLoopReads === true);
   }
 
   private blockLayout?: FunctionBlockLayout;
@@ -2223,6 +2235,7 @@ export class StatefulTransactionBuilder {
       plannedReturnOutputIndex: this.plannedReturnOutputIndex,
       delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
+      keccakSideCarsFollowBlock: this.keccakSideCarsFollowBlock,
       builtReturnEventOutputIndices: this.builtReturnEventOutputIndices,
       tailReturnEventOutputs: () => this.tailReturnEventOutputs(),
       addReturnOutput,
@@ -4333,6 +4346,10 @@ export class StatefulTransactionBuilder {
 
   clearTokenContainerDeposits(): this {
     this.pendingTokenContainerDeposits.clear();
+    for (const output of this.createdTokenContainerOutputs.values()) {
+      this.pendingOutputs.splice(this.pendingOutputs.indexOf(output), 1);
+    }
+    this.createdTokenContainerOutputs.clear();
     return this;
   }
 
@@ -4340,6 +4357,21 @@ export class StatefulTransactionBuilder {
     if (amount <= 0n) throw new Error('Token container deposit amount must be positive');
     const prior = this.pendingTokenContainerDeposits.get(tokenContainerCategoryId) ?? 0n;
     this.pendingTokenContainerDeposits.set(tokenContainerCategoryId, prior + amount);
+    // A first deposit creates the container after the block. Its slot keeps a tokenless placeholder, since a funder
+    // holds the slot's input; the covenant reads the container's amount wherever it sits.
+    const container = this.tokenContainers.find((info) => info.tokenContainerCategoryId === tokenContainerCategoryId);
+    const lockingBytecode = this.tokenContainerLockingBytecodes.get(tokenContainerCategoryId);
+    if (container !== undefined && !container.exists && lockingBytecode !== undefined) {
+      const created = {
+        to: lockingBytecode,
+        amount: 1200n,
+        token: { category: tokenContainerCategoryId, amount: prior + amount },
+      };
+      const previous = this.createdTokenContainerOutputs.get(tokenContainerCategoryId);
+      if (previous === undefined) this.pendingOutputs.push(created);
+      else this.pendingOutputs.splice(this.pendingOutputs.indexOf(previous), 1, created);
+      this.createdTokenContainerOutputs.set(tokenContainerCategoryId, created);
+    }
     return this;
   }
 
@@ -6662,8 +6694,9 @@ export class StatefulTransactionBuilder {
         + `for category ${categoryId}`,
       );
     }
-    const hasNft = !!container.utxo.token?.nft;
-    return (inputFt - ftTransferred === 0n) && (!hasNft || nftTransferred);
+    // A minting NFT mints the sent NFT and stays, so its container never drains.
+    const nft = container.utxo.token?.nft;
+    return (inputFt - ftTransferred === 0n) && (nft === undefined || (nftTransferred && nft.capability !== 'minting'));
   }
 
   /**

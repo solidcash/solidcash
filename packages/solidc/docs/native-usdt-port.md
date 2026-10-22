@@ -25,7 +25,7 @@ It compiles with `evmCompat` and the Solidity 0.4 source rules (see `solidity-im
 supply) and settles on mocknet: transfer (first-touch insert), approve with its race guard, finite and MAX_UINT
 transferFrom, pause, blacklist, destroyBlackFunds, issue/redeem, setParams with the fee credited to the owner,
 transferOwnership, deprecate, Tether's own `balanceOf`/`totalSupply` reads, and wrap/unwrap against a
-CashTokens reserve of the contract's own category, each policy gate refusing in turn.
+CashTokens reserve of the token's own bearer category (DECISIONS D33), each policy gate refusing in turn.
 
 Three platform gaps had to close first, each general rather than USDT-specific:
 
@@ -52,7 +52,8 @@ Limits that remain:
 - **`onlyPayloadSize`** compares BCH call data (the unlocking pushes, longer than 68 bytes here), so it passes and
   guards nothing; length-prefixed pushes have no short-address attack.
 - **The deprecated forwarding path** compiles but is not exercised: it needs the upgraded contract co-spent.
-- **The reserve premint** is seeded on mocknet; deployment has no genesis fungible-token premint option yet.
+- **The reserve premint** is seeded on mocknet in these tests; a deployment premints it in the genesis with
+  `nativeToken: { funding, reserve }` (`docs/bcmr/DESIGN.md`, section 6).
 
 Reference: `TetherToken` at `0xdAC17F958D2ee523a2206206994597C13D831ec7`, solc `v0.4.18+commit.9cf6e910`.
 Audited against the **deployed verified source** (fetched via Blockscout), which is byte-identical to

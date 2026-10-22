@@ -28,7 +28,7 @@ import {
 } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
-import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
+import { ownCoinRefusal, signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type { StateValueType } from '../types/state-inference.js';
 import {
@@ -912,12 +912,10 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const funderPool: Utxo[] = [];
   const factorySigner = (factory as any)._signer;
   if (factorySigner && typeof factorySigner.getUtxos === 'function') {
-    // A reserved genesis coin holds a predicted create address, so it funds no alias slot either.
-    const { genesisOutpointKey, isReservedGenesisOutpoint } = await import('./genesis-reservations.js');
-    const signerUtxos = await factorySigner.getUtxos();
-    for (const u of signerUtxos) {
+    // A reserved genesis coin holds a predicted create address and an identity output its metadata authority, so
+    // neither funds an alias slot.
+    for (const u of await signerFundingCoins(factorySigner)) {
       if (u.token || fundingKeys.has(`${u.txid}:${u.vout}`) || u.satoshis < 1000n) continue;
-      if (isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout))) continue;
       funderPool.push(u);
     }
   }
@@ -1324,11 +1322,18 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // START/CONT/FINAL side-cars. Resolve them here so the finalized transaction co-spends them at
   // trailingBase + i; the derivation probe above already used the same side-cars to derive the digest state.
   let deployKeccakChain: { sideCars: UnlockableUtxo[]; recreates: Output[] } | undefined;
+  // The default fee's slot term does not cover the chain: each step spends ~3.9 KB (budget pad, redeem, its
+  // recreation) and FINAL also carries the whole argument.
+  let chainFee = 0n;
   if (deployAbi.keccakChainReads) {
     const chainResolution = await (factory as any)._resolveKeccakComputeCoSpends(deployAbi, finalArgs, {
       masterUtxo, stateInputUnlocker, dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
     });
     deployKeccakChain = chainResolution.chain;
+    const preimage: Uint8Array | null | undefined = chainResolution.preimages?.[0];
+    if (options.fee === undefined && deployKeccakChain) {
+      chainFee = BigInt(deployKeccakChain.sideCars.length * 4_000 + (preimage?.length ?? 0));
+    }
   }
 
   // Deploy-then-call fold: the covenant may verify a post-call child genesis (a same-tx
@@ -1636,7 +1641,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // recreated remainder; each transfer output's dust comes from the funding inputs).
   const changeAmount = totalFundingSats + trailingPadSats + chainPadSats - totalChildCost - totalEntryCost
     - totalDynamicChunkCost - eventCost - returnEventCost
-    - tokenTransferCost - fee;
+    - tokenTransferCost - fee - chainFee;
   if (changeAmount > 0n) {
     if (!changeAddress) {
       throw new Error(

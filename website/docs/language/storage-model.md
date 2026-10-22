@@ -62,6 +62,11 @@ Each field has a data-NFT index and a field index. Fields are encoded in declara
 needs more than one data NFT, every commitment begins with its encoded NFT index; both the compiler and SDK verify
 that tag so sibling data NFTs cannot be swapped.
 
+A field with no fixed width is isolated too: a `bigint`, and a struct or fixed-size array that holds a `bigint`, a
+`string` or an unbounded `bytes`, gets a data NFT of its own, so a value that grows cannot overflow a neighbour's
+commitment. Its value still has to fit that one commitment; a top-level `string` or `bytes` uses the chunk backend
+below and has no such bound.
+
 An `external` state variable is deliberately isolated in its own data NFT. Contract threads partition data NFTs, so
 `external` variables let functions that touch different variables run on different threads; see
 [Concurrency](/docs/guides/concurrency#design-state-for-partitions). Struct values without mapping or

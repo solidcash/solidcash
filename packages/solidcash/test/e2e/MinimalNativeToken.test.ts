@@ -39,8 +39,9 @@ describe('MinimalNativeToken bytecode budget', () => {
     // Only a master that can retire (a selfdestruct entry) carries that arm; this one cannot: 7374 B over 2286a2d7c.
     // The C3 count-path record pin (each own-category record held at its own index) added 54 B (7374 -> 7428), and
     // BchNative's `_nativeAmount` scale hook, which wrap and unwrap share as one function, with the exact reserve
-    // growth wrap checks, 17 B (7428 -> 7445).
-    expect(artifactBytes).toBe(7445);
+    // growth wrap checks, 17 B (7428 -> 7445). Call records (D50: each returning entry digests its call and pins
+    // its record, with one shared count of its carriers) added 154 B (7445 -> 7599).
+    expect(artifactBytes).toBe(7599);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs.map((input) => input.name))
       .toEqual(['nativeCategory_']);

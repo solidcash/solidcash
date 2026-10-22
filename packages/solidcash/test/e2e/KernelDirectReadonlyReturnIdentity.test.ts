@@ -7,6 +7,7 @@ import { Signer } from '../../src/index.js';
 import { getContractFactory } from '../../src/stateful/index.js';
 import { getDynamicChunkAddress } from '../../src/stateful/covenant-helpers.js';
 import { encodeExternalReturnValues } from '../../src/stateful/external-return-encoding.js';
+import { callRecordCommitment, callRecordDigest } from '../../src/stateful/call-record.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../src/utils.js';
 import { createMessageBusSemanticTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 import { messageBusVmAccepts } from '../journal-message-bus/e2e/vm-accepts.js';
@@ -67,32 +68,37 @@ describe('ordinary readonly return aliases beside logical identities', () => {
     const keptChunks = transaction.outputs.filter((output) => binToHex(output.lockingBytecode) === binToHex(chunkLock));
     expect(keptChunks.map((output) => binToHex(output.token!.nft!.commitment)).sort())
       .toEqual(readChunks.map((input) => binToHex(input.token!.nft!.commitment)).sort());
-    const scalar = binToHex(encodeExternalReturnValues([BigInt(payload.length)], ['uint256'], artifacts.Source.structs, true));
-    const pair = binToHex(encodeExternalReturnValues([BigInt(payload.length), BigInt(payload.length)],
-      ['uint256', 'uint256'], artifacts.Reader.structs, true));
-    expect(transaction.outputs.filter((output) => output.token?.nft
+    const scalar = encodeExternalReturnValues([BigInt(payload.length)], ['uint256'], artifacts.Source.structs, true);
+    const pair = encodeExternalReturnValues([BigInt(payload.length), BigInt(payload.length)],
+      ['uint256', 'uint256'], artifacts.Reader.structs, true);
+    const sizeAbi = artifacts.Source.abi.find((entry) => entry.name === 'size')!;
+    const measureAbi = artifacts.Reader.abi.find((entry) => entry.name === 'measure')!;
+    const record = (abiFunction: typeof sizeAbi, result: Uint8Array): string => binToHex(
+      callRecordCommitment(result, callRecordDigest(abiFunction, [])!),
+    );
+    // Both reads share the one run of `size`, so they read its one record.
+    const sourceRecords = transaction.outputs.flatMap((output, index) => (output.token?.nft
       && binToHex(output.token.category) === source.categoryId
-      && binToHex(output.token.nft.commitment) === scalar)).toHaveLength(2);
+      && binToHex(output.token.nft.commitment) === record(sizeAbi, scalar) ? [index] : []));
+    expect(sourceRecords).toHaveLength(1);
     expect(transaction.outputs.some((output) => output.token?.nft
       && binToHex(output.token.category) === reader.categoryId
-      && binToHex(output.token.nft.commitment) === pair)).toBe(true);
-    // Change the free alias and the matching caller result together. The root's own return check then
-    // succeeds, so rejection of the root input proves the shared-callee return binding itself.
+      && binToHex(output.token.nft.commitment) === record(measureAbi, pair))).toBe(true);
+    // A second record of the same call with another result: the callee admits only the record it pinned.
     const forged = structuredClone(transaction);
-    const aliasIndex = forged.outputs.findLastIndex((output) => output.token?.nft
-      && binToHex(output.token.category) === source.categoryId
-      && binToHex(output.token.nft.commitment) === scalar);
-    const rootReturn = forged.outputs.find((output) => output.token?.nft
-      && binToHex(output.token.category) === reader.categoryId
-      && binToHex(output.token.nft.commitment) === pair)!;
-    forged.outputs[aliasIndex].token!.nft!.commitment = encodeExternalReturnValues(
-      [BigInt(payload.length + 1)], ['uint256'], artifacts.Source.structs, true,
+    const twin = structuredClone(forged.outputs[sourceRecords[0]!]!);
+    twin.token!.nft!.commitment = callRecordCommitment(
+      encodeExternalReturnValues([BigInt(payload.length + 1)], ['uint256'], artifacts.Source.structs, true),
+      callRecordDigest(sizeAbi, [])!,
     );
-    rootReturn.token!.nft!.commitment = encodeExternalReturnValues(
-      [BigInt(payload.length), BigInt(payload.length + 1)], ['uint256', 'uint256'], artifacts.Reader.structs, true,
-    );
+    forged.outputs.push(twin);
+    const sourceInput = inputs.findIndex((input) => input.token?.nft?.capability === 'minting'
+      && binToHex(input.token.category) === source.categoryId);
+    expect(sourceInput).toBeGreaterThanOrEqual(0);
     const vm = createVirtualMachineBch2026ForProvider(provider);
-    expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs: inputs, transaction: forged }))).not.toBe(true);
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: sourceInput, sourceOutputs: inputs, transaction }))).toBe(true);
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: sourceInput, sourceOutputs: inputs, transaction: forged })))
+      .not.toBe(true);
     await builder.send();
     expect((await source.getState()).records).toEqual(payload);
   }, 180_000);

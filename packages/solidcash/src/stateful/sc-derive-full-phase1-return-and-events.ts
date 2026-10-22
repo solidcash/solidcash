@@ -173,6 +173,11 @@ export function deriveFullPhase1ReturnAndEvents(
         }
       }
     }
+    // A direct callee pins its call's record: the checks below read the result behind it.
+    const recordIdentity = `external-call:${logicalReturnGroupIndex(externalCallUtxoGroups, groupIdx)}`;
+    returnCommitments = returnCommitments?.map((commitment) => binToHex(
+      stb.rawOfReturnRecord(recordIdentity, hexToBin(commitment), fullTraceRet),
+    ));
     // An exact return-output comparison binds the result to the compiler-assigned channel. A schema-shaped
     // stack value is only fallback evidence: mappings and state serialization can leave canonical pushdata
     // wrappers around unrelated ABI-width words (for example a hashed key) in the same route frame.

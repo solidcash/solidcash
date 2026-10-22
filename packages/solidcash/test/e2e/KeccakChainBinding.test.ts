@@ -132,32 +132,40 @@ describe('KCHAIN-1 chained keccak256 side-car binding', () => {
       console.log(`KCHAIN-1 ${length} B: ${costs.join('; ')}`);
     }
 
-    // Through the SDK on mocknet: START, CONTs and FINAL. The send preflight applies the real BCH-2026 budget to this
-    // contract's own input too. Its budget grows with the argument, while the 256-slot chain band's funders cost the
-    // same at any length, so a short chained preimage (400 bytes) exceeds it there; 2,000 bytes fits.
-    const signer = await fundedSigner(8, 10_000_000n);
-    const hasher = (await getContractFactory(ARTIFACT, signer).deploy()) as unknown as Deployed;
-    const preimage = bytes(2000);
-    const built = await hasher.getFunction('record')(preimage).build();
-    const { transaction, sourceOutputs } = built.buildLibauthProgram();
-    const chainLock = binToHex(keccakChainLockingBytecode(hexToBin(hasher.categoryId).slice().reverse(), 'final', true));
-    const chainInputs = sourceOutputs.flatMap((output, index) => (
-      binToHex(output.lockingBytecode) === chainLock ? [index] : []));
-    expect(chainInputs.length).toBe(planKeccakChain(preimage).length);
-    expect(chainInputs.map((index) => binToHex(transaction.outputs[index].token!.nft!.commitment)))
-      .toEqual(keccakChainCommitments(preimage).map(binToHex));
-    expect(transaction.outputs.every((output) => (output.token?.nft?.commitment.length ?? 0) <= 128)).toBe(true);
-    for (const inputIndex of chainInputs) {
-      expect(vm.evaluate({ sourceOutputs, transaction, inputIndex }).error).toBeUndefined();
+    // Through the SDK on mocknet: START, CONT and FINAL right after the fixed block, with no funder band. The send
+    // preflight applies the real BCH-2026 budget to this contract's own input too, whose per-input scans a band of
+    // funders made exceed it for a short preimage.
+    const blockSize = ARTIFACT.abi.find((fn) => fn.name === 'record')!.blockLayout!.blockSize;
+    for (const length of [300, 400]) {
+      const signer = await fundedSigner(8, 10_000_000n);
+      const hasher = (await getContractFactory(ARTIFACT, signer).deploy()) as unknown as Deployed;
+      const preimage = bytes(length);
+      const built = await hasher.getFunction('record')(preimage).build();
+      const { transaction, sourceOutputs } = built.buildLibauthProgram();
+      const salt = hexToBin(hasher.categoryId).slice().reverse();
+      const chainLock = binToHex(keccakChainLockingBytecode(salt, 'final', true));
+      const chainInputs = sourceOutputs.flatMap((output, index) => (
+        binToHex(output.lockingBytecode) === chainLock ? [index] : []));
+      const steps = planKeccakChain(preimage).length;
+      expect(chainInputs).toEqual(Array.from({ length: steps }, (_v, i) => blockSize + i));
+      // At most a fee input follows FINAL.
+      expect(transaction.inputs.length).toBeLessThanOrEqual(blockSize + steps + 1);
+      expect(chainInputs.map((index) => binToHex(transaction.outputs[index].token!.nft!.commitment)))
+        .toEqual(keccakChainCommitments(preimage).map(binToHex));
+      expect(transaction.outputs.every((output) => (output.token?.nft?.commitment.length ?? 0) <= 128)).toBe(true);
+      for (const inputIndex of chainInputs) {
+        expect(vm.evaluate({ sourceOutputs, transaction, inputIndex }).error).toBeUndefined();
+      }
+      // The master at input 0 within the BCH 2026 density limit.
+      const master = vm.evaluate({ sourceOutputs, transaction, inputIndex: 0 }) as unknown as
+        { error?: string; metrics: Metrics };
+      console.log(`KCHAIN-1 ${length} B master: ${master.metrics.operationCost}/`
+        + `${master.metrics.maximumOperationCost} op, ${transaction.inputs.length} inputs, `
+        + `${transaction.outputs.length} outputs`);
+      expect(master.error).toBeUndefined();
+      await hasher.getFunction('record')(preimage).send();
+      await expect(hasher.getFunction('check')(keccak_256(preimage)).send()).resolves.toBeDefined();
     }
-    // The master at input 0, beside the trailing band of funders, within the BCH 2026 density limit.
-    const master = vm.evaluate({ sourceOutputs, transaction, inputIndex: 0 }) as unknown as
-      { error?: string; metrics: Metrics };
-    console.log(`KCHAIN-1 2000 B master: ${master.metrics.operationCost}/${master.metrics.maximumOperationCost} op, `
-      + `${transaction.inputs.length} inputs`);
-    expect(master.error).toBeUndefined();
-    await hasher.getFunction('record')(preimage).send();
-    await expect(hasher.getFunction('check')(keccak_256(preimage)).send()).resolves.toBeDefined();
   }, 300_000);
 
   it('refuses a forged previous state at FINAL-1 under another lock', () => {

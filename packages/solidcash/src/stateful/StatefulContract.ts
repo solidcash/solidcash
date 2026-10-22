@@ -12631,8 +12631,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       keccakLoopSideCars = loop.sideCars;
       keccakLoopRecreates = loop.recreates;
     } else if (abiFunction?.keccakChainReads && this.categoryId) {
-      // Chained direct preimage: one START/CONT/FINAL side-car per 136-byte block in the trailing region. The
-      // fixed keccakSideCar slot stays funder-padded; the covenant reads the FINAL side-car at blockSize + fullBlocks.
+      // Chained direct preimage: one START/CONT/FINAL side-car per 136-byte block, right after the fixed block
+      // (the layout reserves no band). The covenant reads the FINAL side-car at blockSize + fullBlocks.
       const resolution = await this._resolveKeccakComputeCoSpends(abiFunction, args, {
         masterUtxo: derivationMasterUtxo, stateInputUnlocker,
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,

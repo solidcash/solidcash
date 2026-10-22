@@ -66,7 +66,7 @@ describe('stateful chained keccak256 side-cars', () => {
     const chainSideCarInputs = built.inputs.filter((input) =>
       chainLocks.has(binToHex(input.unlocker.generateLockingBytecode())));
     expect(chainSideCarInputs.length).toBeGreaterThan(1);
-    // The master at input 0, beside the trailing band of funders, within the BCH 2026 density limit.
+    // The master at input 0 within the BCH 2026 density limit; the side-cars follow the block with no funder band.
     const { transaction, sourceOutputs } = built.buildLibauthProgram();
     const master = createVirtualMachineBch2026().evaluate({ sourceOutputs, transaction, inputIndex: 0 }) as unknown as
       { error?: string; metrics: { operationCost: number; maximumOperationCost: number } };

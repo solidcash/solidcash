@@ -526,6 +526,11 @@ lock. FINAL recomputes X from the argument it is bound to. Regenerate with
 `node research/keccak-poc/gen-chain-sidecar.mjs --write`; `packages/solidcash/test/e2e/KeccakChainBinding.test.ts`
 covers settlement, the 128-byte limit and both forgeries.
 
+**Revised (2026-10-22, KCHAIN-1 liveness).** The layout reserves no band for the chain: its side-cars follow the fixed
+block, one per step, as a keccak loop's do, and FINAL's index still comes from the argument's length. The 256-slot
+band made each call fund its unused slots (~257 funder inputs), and the master's per-input scans over them broke the
+BCH 2026 density limit for a short preimage; KeccakChainBinding settles 300 and 400 bytes again.
+
 **Why deferred.** (1) The trailing region has ONE runtime-counter-indexed band; two independent counter-indexed
 users have nowhere sound to interleave. Reproduced 2026-10-15: a direct stateful function with a dynamic keccak
 loop AND a sorted-insert mapping loop has no trailing region at all, and both the keccak side-car read and the
@@ -2287,7 +2292,8 @@ boundaries: (1) the compiler-reserved 256-slot trailing band holds one side-car 
 preimage longer than 255 full blocks + 135 bytes (~34 KB) still exceeds the reserved band and is refused by the
 balanced trailing-capacity check; (2) the FINAL side-car carries the full preimage in its unlocking bytecode, so a
 real network's 10,000-byte per-input consensus limit caps a chained preimage at roughly 6.4 KB (and the whole
-transaction must still fit the 100 KB standard relay ceiling).
+transaction must still fit the 100 KB standard relay ceiling). Boundary (1) is gone since 2026-10-22: the layout
+reserves no band, and the side-cars follow the fixed block.
 
 **Acceptance:** `keccak256(x)` for a runtime `x` above the single-side-car threshold (~407 bytes) and within the
 consensus input-byte limit (~6.4 KB) settles and reads back the same digest `keccak_256` computes off-chain; the

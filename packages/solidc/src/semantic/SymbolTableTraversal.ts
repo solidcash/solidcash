@@ -264,9 +264,6 @@ export { getMaxPushdataEncodedSizeForType };
 // layout declares one and otherwise appends the chunk run past the block, misaligning every later participant.
 const BALANCED_TRAILING_CAPACITY = 64;
 
-/** Trailing side-car slots reserved for a direct unbounded keccak256 chained read (one per 136-byte block). */
-const KECCAK_CHAIN_TRAILING_CAPACITY = 256;
-
 /** Deterministic evaluation-order numbering shared by entry writes and external graph calls. */
 class SourceEffectOrderTraversal extends AstTraversal {
   constructor(
@@ -18959,10 +18956,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       || (node.ecrecoverLoopReads === true && node.messageBusRoute !== true);
     const needsWideTrailingRegion = needsNonCounterWideTrailingRegion
       || runtimeCounterOutputCapacity > 0;
-    // A direct unbounded keccak256 chained read uses the trailing region even outside a message-bus route.
-    const chainedKeccakTrailing = node.keccakChainReads === true;
-    const needsTrailingRegion = chainedKeccakTrailing
-      || (node.name === '__message_bus1' && (needsWideTrailingRegion || collectionRouteCapacity > 0));
+    // A direct unbounded keccak256 chained read reserves no band: like a keccak loop's side-cars, its
+    // START/CONT/FINAL side-cars follow the block, one per step, and the read takes FINAL's index from the
+    // argument's length. A reserved band only made the SDK fund its unused slots.
+    const needsTrailingRegion = node.name === '__message_bus1'
+      && (needsWideTrailingRegion || collectionRouteCapacity > 0);
     if (!needsTrailingRegion) return { blockSize: offset, slots };
 
     const trailingBase = offset;
@@ -18970,12 +18968,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // than assuming one mapping plus the widest event site. Lowering also includes exact-count events before or
     // after the loop after moving them into the same source-ordered stream. Other runtime resources share this
     // bounded trailing band and the builder refuses a concrete transaction that exceeds it.
-    const trailingCapacity = chainedKeccakTrailing
-      ? KECCAK_CHAIN_TRAILING_CAPACITY
-      : runtimeCounterOutputCapacity > 0
-        ? runtimeCounterOutputCapacity
-        : needsWideTrailingRegion
-          ? Math.max(BALANCED_TRAILING_CAPACITY, fallbackCounterStreamCapacity) : collectionRouteCapacity;
+    const trailingCapacity = runtimeCounterOutputCapacity > 0
+      ? runtimeCounterOutputCapacity
+      : needsWideTrailingRegion
+        ? Math.max(BALANCED_TRAILING_CAPACITY, fallbackCounterStreamCapacity) : collectionRouteCapacity;
     for (let i = 0; i < trailingCapacity; i++) {
       slots.push({ kind: 'trailing', offset: offset++, slotIndex: i, conditional: true });
     }

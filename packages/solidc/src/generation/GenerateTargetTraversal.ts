@@ -15014,8 +15014,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !this.framedMaster && fn.blockLayout && capturedComputeBase === undefined
       && !fn.keccakInLoop && ordinaryCallCount === 1 && fn.name !== '__construct';
     if (chainEligible) fn.keccakChainReads = true;
-    // The chained side-cars start at the trailing base (the fixed block size before reserved trailing slots),
-    // not at `blockSize`, which already includes the trailing capacity reserved for them.
+    // The chained side-cars follow the fixed block, one per step; the layout reserves no band for them.
     const chainTrailingBase = fn.blockLayout?.trailingBase ?? fn.blockLayout?.blockSize ?? 1;
     // A mixed straight-line + dynamic-loop function keeps the legacy one-call trailing window: loop iterations
     // use a separate forward index family discovered at runtime, so combining its syntactic call with a fixed

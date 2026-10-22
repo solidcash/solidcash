@@ -79,7 +79,7 @@ import {
   KECCAK256_COMPUTE_SHIFTED_COVENANT,
   KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK,
   KECCAK256_COMPUTE_SALT_PREFIX_LENGTH,
-  KECCAK_CHAIN_FINAL_COVENANT_HASH,
+  KECCAK_CHAIN_COVENANT_HASH,
   ECRECOVER_COMPUTE_A_COVENANT_HASH,
   ECRECOVER_COMPUTE_B_COVENANT_HASH,
   ECRECOVER_COMPUTE_B2_COVENANT_HASH,
@@ -15125,8 +15125,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(hexToBin(shiftedLoop ? KECCAK256_COMPUTE_SHIFTED_COVENANT : KECCAK256_COMPUTE_STATEFUL_COVENANT), loc);
     } else {
       this.emit(Op.OP_HASH256, loc);                // single/multi call: compare the 32-byte hash (tight script)
+      // Every chained step shares one covenant; the [pad][arg][1][redeem] shape bound above runs its FINAL mode.
       this.emit(hexToBin(chainEligible
-        ? KECCAK_CHAIN_FINAL_COVENANT_HASH
+        ? KECCAK_CHAIN_COVENANT_HASH
         : (absoluteForward ? KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH : KECCAK256_COMPUTE_COVENANT_HASH)), loc);
     }
     this.emit(Op.OP_EQUALVERIFY, loc);              // integrity: genuine compute covenant -> []

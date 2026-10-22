@@ -4,7 +4,8 @@ import {
   buildKeccakComputeRedeem, keccakComputeLockingBytecode, KECCAK256_COMPUTE_PAD_LENGTH,
   buildKeccakComputeRedeemLegacy, keccakComputeLockingBytecodeLegacy,
   buildKeccakComputeRedeemShifted, keccakComputeLockingBytecodeShifted,
-  buildKeccakChainRedeem, keccakChainLockingBytecode, planKeccakChain, keccakChainCommitments,
+  buildKeccakChainRedeem, keccakChainLockingBytecode, planKeccakChain, keccakChainCommitments, keccakChainStates,
+  KECCAK_CHAIN_MODE,
 } from '@solidcash/utils';
 import type { Unlocker, Utxo, Output } from '../interfaces.js';
 
@@ -182,34 +183,37 @@ export function buildKeccakComputeSidecar(
 }
 
 /**
- * Build the chained keccak256 compute side-cars for one preimage larger than three blocks (or any preimage on
- * the chained path): one side-car per 136-byte block (`start` for the first, `cont` for the middle full blocks,
- * `final` for the padded remainder), chaining the running sponge state through their mutable-NFT commitments.
- * The FINAL side-car is mode-aware: mode 1 reads the previous commitment, mode 3 (solo) seeds the zero state for
- * a sub-136-byte preimage. `sidecars` must have at least `planKeccakChain(preimage).length` mutable-NFT UTXOs at
- * the chained address (stateful: consecutive block-layout slots; stateless: the last-N inputs, final last).
+ * Build the chained keccak256 compute side-cars for one preimage on the chained path: one side-car per 136-byte
+ * block (`start` for the first, `cont` for the later full blocks, `final` for the padded remainder). START/CONT
+ * commit `X || sha256(state)`; CONT and a FINAL after full blocks reveal the previous state at the front of their
+ * pad. A FINAL without a full block seeds the zero state. `sidecars` must have at least
+ * `planKeccakChain(preimage).length` mutable-NFT UTXOs at the chained address (stateful: consecutive block-layout
+ * slots; stateless: the last-N inputs, final last).
  */
 export function buildKeccakChainSidecars(
   preimage: Uint8Array, salt: Uint8Array, sidecars: readonly Utxo[], stateful = false,
 ): Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }> {
   const plan = planKeccakChain(preimage);
   const commitments = keccakChainCommitments(preimage);
+  const states = keccakChainStates(preimage);
   if (sidecars.length < plan.length) {
     throw new Error(`keccak256 chained preimage needs ${plan.length} side-car UTXO(s); found ${sidecars.length}.`);
   }
   return plan.map((step, i) => {
     const lock = keccakChainLockingBytecode(salt, step.kind, stateful);
     const redeem = buildKeccakChainRedeem(salt, step.kind, stateful);
-    // One keccak block per side-car: the budget pad plus the block and redeem pushes fund ~2.26M op.
+    // One keccak block per side-car: the budget pad plus the data and redeem pushes fund its op cost.
     const padLen = Math.max(KECCAK256_COMPUTE_PAD_LENGTH, 3200 - redeem.length - step.block.length);
     const pad = new Uint8Array(padLen);
+    if (i > 0) pad.set(states[i - 1]);
+    // <pad> <data> <mode> <redeem>: FINAL carries the FULL preimage and mode 1, the contract decoder's
+    // [pad, preimage, width, redeem] shape; START/CONT carry their 136-byte block.
+    const data = step.kind === 'final' ? preimage : step.block;
     const unlocker: Unlocker = {
       generateLockingBytecode: () => lock,
-      // The FINAL side-car carries the FULL preimage (so the contract-side bind survives) + width 1, matching
-      // the contract decoder's [pad, preimage, width, redeem] shape; start/cont carry only their 136-byte block.
-      generateUnlockingBytecode: () => step.kind === 'final'
-        ? Uint8Array.from([...pushDataBytes(pad), ...pushDataBytes(preimage), 0x51, ...pushDataBytes(redeem)])
-        : Uint8Array.from([...pushDataBytes(step.block), ...pushDataBytes(pad), ...pushDataBytes(redeem)]),
+      generateUnlockingBytecode: () => Uint8Array.from([
+        ...pushDataBytes(pad), ...pushDataBytes(data), 0x50 + KECCAK_CHAIN_MODE[step.kind], ...pushDataBytes(redeem),
+      ]),
     };
     const recreate: Output = {
       to: lock,

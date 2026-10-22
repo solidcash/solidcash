@@ -517,6 +517,15 @@ bytecode, so a real network's 10,000-byte per-input consensus limit caps a chain
 the whole transaction must still fit the 100 KB standard relay ceiling); the original 12 KB draft was only
 mocknet-valid.
 
+**Revised (2026-10-22, KCHAIN-1).** The 200-byte state commitments broke the 128-byte BCH 2026 limit, FINAL took
+its previous state from any output, and nothing bound a START/CONT block to the argument. Every step now runs ONE
+covenant, `KECCAK_CHAIN_COVENANT` (one lock per salt), and the unlocking `<pad> <data> <mode> <redeem>` picks it
+(1 FINAL, 2 START, 3 CONT). START/CONT commit `X || sha256(state)` (64 B, `X = sha256(X_prev || block)`). CONT and
+FINAL reveal the previous state in the first 200 pad bytes and take it only from a previous input under the same
+lock. FINAL recomputes X from the argument it is bound to. Regenerate with
+`node research/keccak-poc/gen-chain-sidecar.mjs --write`; `packages/solidcash/test/e2e/KeccakChainBinding.test.ts`
+covers settlement, the 128-byte limit and both forgeries.
+
 **Why deferred.** (1) The trailing region has ONE runtime-counter-indexed band; two independent counter-indexed
 users have nowhere sound to interleave. Reproduced 2026-10-15: a direct stateful function with a dynamic keccak
 loop AND a sorted-insert mapping loop has no trailing region at all, and both the keccak side-car read and the

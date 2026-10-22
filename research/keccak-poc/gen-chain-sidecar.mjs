@@ -1,19 +1,18 @@
-// Chained keccak256 compute side-cars: split a >3-block preimage across multiple co-spent side-car
-// inputs. Each side-car absorbs ONE 136-byte keccak block into the running 25-lane sponge state and
-// commits the next running state (200 bytes = lane24 || ... || lane0) to its mutable NFT. The FINAL
-// side-car instead pads the remainder, absorbs it, squeezes the 32-byte digest, and commits the digest.
+// Chained keccak256 compute side-cars: a preimage of 136 bytes or more is absorbed one 136-byte block per co-spent
+// side-car input. Every step runs ONE covenant (one lock per salt); the unlocking <pad> <data> <mode> <redeem> picks:
+//   mode 2 START: data = the first block; seed the zero state and an empty block chain X.
+//   mode 3 CONT:  data = the next block; pad[0..200) reveals the previous state S.
+//   mode 1 FINAL: data = the FULL argument (the contract binds it); pad[0..200) reveals S if it has a full block.
+// START/CONT commit X' || sha256(S') (64 bytes), X' = sha256(X || block). CONT and FINAL take S only when the
+// previous input carries this same lock and its output commits X || sha256(S). FINAL recomputes X from the
+// argument's full blocks (binding every absorbed block to its slice), pads the remainder, absorbs, squeezes and
+// commits the 32-byte digest. A FINAL-mode output is 32 bytes, so no link accepts it as a step. The contract reads
+// its FINAL slot as [pad][arg][1][redeem]; the covenant requires exactly 3 items, so that slot runs FINAL mode.
 //
-// Three covenants (each a separate P2SH32 redeem, one integrity hash each):
-//   START: state <- 25 zero lanes, absorb a FULL block, commit state
-//   CONT:  state <- prev output commitment, absorb a FULL block, commit state
-//   FINAL: state <- prev output commitment, pad the remainder block, absorb, squeeze, commit digest
-//
-// The SDK never computes the intermediate state; each covenant reads the previous one's commitment via
-// OP_INPUTINDEX OP_1SUB OP_OUTPUTTOKENCOMMITMENT (stateful slots are consecutive), so the chain is
-// verified on-chain block by block and a tampered/wrong chain fails the contract's digest bind.
-import { keccak_256 } from '@noble/hashes/sha3.js';
+// node research/keccak-poc/gen-chain-sidecar.mjs --write   bakes the covenants into @solidcash/utils.
+import { readFileSync, writeFileSync } from 'node:fs';
 import { RC } from './keccak.mjs';
-import { asm, binToHex, hexToBin, evalInput, p2sh32, hash256 } from './sidecar.mjs';
+import { asm, binToHex, p2sh32, hash256 } from './sidecar.mjs';
 import { genRoundDefine } from './genvar.mjs';
 
 const be = (v) => v.toString(16).padStart(16, '0');
@@ -63,7 +62,7 @@ const CHAIN_STEP_ID = 3;
 const CHAIN_STEP_HEX = aTo(CHAIN_STEP_ASM);
 
 const ZERO32 = '00'.repeat(32);
-const ZERO_STATE_ASM = Array.from({ length: 25 }, () => `<0x${ZERO}>`).join(' ');
+const ZERO_STATE_ASM = `<0x${ZERO}>${' OP_DUP'.repeat(24)}`;
 const SPLIT_STATE_ASM = '<8> OP_SPLIT '.repeat(24).trim();      // lane24||...||lane0 -> [lane24..lane0]
 const COMBINE_STATE_ASM = 'OP_TOALTSTACK '.repeat(25).trim() + ' OP_FROMALTSTACK'
   + ' OP_FROMALTSTACK OP_CAT'.repeat(24);
@@ -92,76 +91,69 @@ const STATELESS_TAIL =
   + 'OP_DROP OP_1';
 const STATEFUL_TAIL = STATELESS_TAIL.replace(
   'OP_INPUTINDEX OP_TXOUTPUTCOUNT OP_ADD OP_TXINPUTCOUNT OP_SUB', 'OP_INPUTINDEX');
+// The previous input's recreated output, by the same index rule as each tail.
+const STATEFUL_PREV_OUT = 'OP_INPUTINDEX OP_1SUB';
+const STATELESS_PREV_OUT = 'OP_INPUTINDEX OP_1SUB OP_TXOUTPUTCOUNT OP_ADD OP_TXINPUTCOUNT OP_SUB';
 
-function covenantAsm(stateLoad, absorbAndFinish, tail) {
-  return `${BRAND_ASM}OP_DROP `          // drop pad -> [block]
+const MODE = { final: 1, start: 2, cont: 3 };
+const PREV_STATE_ASM = '<200> OP_SPLIT OP_DROP';                 // pad -> S
+// [S] -> [X, S]: the previous input carries this lock and its output commits X || sha256(S).
+const linkAsm = (prevOut) =>
+  'OP_INPUTINDEX OP_1SUB OP_UTXOBYTECODE OP_INPUTINDEX OP_UTXOBYTECODE OP_EQUALVERIFY '
+  + `${prevOut} OP_OUTPUTTOKENCOMMITMENT <32> OP_SPLIT `
+  + 'OP_2 OP_PICK OP_SHA256 OP_EQUALVERIFY OP_SWAP';
+// [prefix] -> [X]: X = sha256(X || block) over the 136-byte blocks, from an empty X.
+const BLOCK_CHAIN_ASM = 'OP_0 OP_SWAP OP_BEGIN <136> OP_SPLIT OP_TOALTSTACK OP_CAT OP_SHA256 '
+  + 'OP_FROMALTSTACK OP_SIZE OP_NOT OP_UNTIL OP_DROP';
+
+function chainCovenant(prevOut, tail) {
+  const link = linkAsm(prevOut);
+  return asm(`${BRAND_ASM}`                                       // [pad, data, mode]
+    + 'OP_DEPTH <3> OP_NUMEQUALVERIFY '
     + `${ROUND_DEFINE_ASM} `
     + `<0x${CHAIN_STEP_HEX}> <${CHAIN_STEP_ID}> OP_DEFINE `
-    + 'OP_TOALTSTACK '                    // stash the block -> []
-    + `${stateLoad} `                     // -> [25 lanes]
-    + 'OP_FROMALTSTACK '                  // -> [25 lanes, block]
-    + `${absorbAndFinish} `               // -> [commitment]
-    + `${tail}`;
-}
-
-const START_ASM = `${ZERO_STATE_ASM}`;
-const CONT_ASM = `OP_INPUTINDEX OP_1SUB OP_OUTPUTTOKENCOMMITMENT ${SPLIT_STATE_ASM}`;
-// FINAL reads [pad, full_arg, width, salt] - the SAME unlocking shape the contract decoder reads - and derives
-// its mode from the full argument length: len >= 136 (has a full block) reads the previous committed state,
-// else seeds the zero state. It extracts the last (len % 136) bytes as the padded remainder block, so the
-// contract-side bind (full_arg == the contract's argument) stays intact.
-const FINAL_REMAINDER_ASM =
-  'OP_DUP OP_SIZE OP_DUP <136> OP_MOD OP_SUB OP_SPLIT OP_NIP OP_NIP';
-const FINAL_STATE_ASM =
-  `${FINAL_REMAINDER_ASM} `
-  + 'OP_TOALTSTACK '
-  + 'OP_IF OP_INPUTINDEX OP_1SUB OP_OUTPUTTOKENCOMMITMENT ' + `${SPLIT_STATE_ASM} `
-  + 'OP_ELSE ' + `${ZERO_STATE_ASM} `
-  + 'OP_ENDIF '
-  + 'OP_FROMALTSTACK ';
-const FINAL_ASM = `${PAD_BLOCK_ASM} <${CHAIN_STEP_ID}> OP_INVOKE ${SQUEEZE_ASM}`;
-const START_STEP = `<${CHAIN_STEP_ID}> OP_INVOKE ${COMBINE_STATE_ASM}`;
-const CONT_STEP = `<${CHAIN_STEP_ID}> OP_INVOKE ${COMBINE_STATE_ASM}`;
-
-function finalCovenant(tail) {
-  // [pad, full_arg, width, salt] -> brand -> [pad, full_arg, width] -> verify width 1 -> [pad, full_arg]
-  // -> NIP the pad -> [full_arg]; stash remainder, choose state by full_arg length, absorb, squeeze.
-  return asm(`${BRAND_ASM}`
-    + 'OP_1 OP_NUMEQUALVERIFY OP_NIP '
-    + `${ROUND_DEFINE_ASM} `
-    + `<0x${CHAIN_STEP_HEX}> <${CHAIN_STEP_ID}> OP_DEFINE `
-    + 'OP_DUP OP_SIZE <136> OP_GREATERTHANOREQUAL OP_ROT OP_DROP OP_SWAP '  // [hasFull, full_arg]
-    + `${FINAL_STATE_ASM} `
-    + `${FINAL_ASM} `
+    + `OP_DUP <${MODE.final}> OP_NUMEQUAL OP_IF `
+    // FINAL [pad, arg, 1]: stash the remainder; with a full-block prefix, bind it to the linked chain X.
+    + 'OP_DROP OP_SIZE OP_DUP <136> OP_MOD OP_SUB OP_SPLIT OP_TOALTSTACK '
+    + `OP_SIZE OP_0NOTEQUAL OP_IF ${BLOCK_CHAIN_ASM} OP_SWAP ${PREV_STATE_ASM} ${link} `   // [X(arg), X, S]
+    + `OP_ROT OP_ROT OP_EQUALVERIFY ${SPLIT_STATE_ASM} `
+    + `OP_ELSE OP_2DROP ${ZERO_STATE_ASM} OP_ENDIF `
+    + `OP_FROMALTSTACK ${PAD_BLOCK_ASM} <${CHAIN_STEP_ID}> OP_INVOKE ${SQUEEZE_ASM} `   // [digest]
+    + 'OP_ELSE '
+    // START/CONT [pad, block, mode] -> [block, X, 25 lanes] -> [X' || sha256(S')]
+    + `OP_DUP <${MODE.cont}> OP_NUMEQUAL OP_IF OP_DROP OP_SWAP ${PREV_STATE_ASM} ${link} ${SPLIT_STATE_ASM} `
+    + `OP_ELSE <${MODE.start}> OP_NUMEQUALVERIFY OP_NIP OP_0 ${ZERO_STATE_ASM} OP_ENDIF `
+    + `<26> OP_PICK OP_SIZE <136> OP_NUMEQUALVERIFY <${CHAIN_STEP_ID}> OP_INVOKE ${COMBINE_STATE_ASM} OP_SHA256 `
+    + 'OP_ROT OP_ROT OP_SWAP OP_CAT OP_SHA256 OP_SWAP OP_CAT '
+    + 'OP_ENDIF '
     + `${tail}`);
 }
 
-const START_COVENANT = asm(covenantAsm(START_ASM, START_STEP, STATEFUL_TAIL));
-const CONT_COVENANT = asm(covenantAsm(CONT_ASM, CONT_STEP, STATEFUL_TAIL));
-const FINAL_COVENANT = finalCovenant(STATEFUL_TAIL);
-const START_COVENANT_STATELESS = asm(covenantAsm(START_ASM, START_STEP, STATELESS_TAIL));
-const CONT_COVENANT_STATELESS = asm(covenantAsm(CONT_ASM, CONT_STEP, STATELESS_TAIL));
-const FINAL_COVENANT_STATELESS = finalCovenant(STATELESS_TAIL);
+const CHAIN_COVENANT = chainCovenant(STATEFUL_PREV_OUT, STATEFUL_TAIL);
+const CHAIN_COVENANT_STATELESS = chainCovenant(STATELESS_PREV_OUT, STATELESS_TAIL);
 
 const buildRedeem = (salt, covenant) => Uint8Array.from([0x20, ...salt, ...covenant]);
 const lockOf = (salt, covenant) => p2sh32(buildRedeem(salt, covenant));
 
 console.log('chain step', binToHex(asm(CHAIN_STEP_ASM)).length / 2, 'B');
-console.log('start covenant (stateful)', START_COVENANT.length, 'B hash', binToHex(hash256(START_COVENANT)));
-console.log('cont covenant  (stateful)', CONT_COVENANT.length, 'B hash', binToHex(hash256(CONT_COVENANT)));
-console.log('final covenant (stateful)', FINAL_COVENANT.length, 'B hash', binToHex(hash256(FINAL_COVENANT)));
-console.log('start covenant (stateless)', START_COVENANT_STATELESS.length, 'B hash', binToHex(hash256(START_COVENANT_STATELESS)));
-console.log('cont covenant  (stateless)', CONT_COVENANT_STATELESS.length, 'B hash', binToHex(hash256(CONT_COVENANT_STATELESS)));
-console.log('final covenant (stateless)', FINAL_COVENANT_STATELESS.length, 'B hash', binToHex(hash256(FINAL_COVENANT_STATELESS)));
-console.log('\nKECCAK_CHAIN_START_COVENANT', binToHex(START_COVENANT));
-console.log('\nKECCAK_CHAIN_CONT_COVENANT', binToHex(CONT_COVENANT));
-console.log('\nKECCAK_CHAIN_FINAL_COVENANT', binToHex(FINAL_COVENANT));
-console.log('\nKECCAK_CHAIN_START_COVENANT_STATELESS', binToHex(START_COVENANT_STATELESS));
-console.log('\nKECCAK_CHAIN_CONT_COVENANT_STATELESS', binToHex(CONT_COVENANT_STATELESS));
-console.log('\nKECCAK_CHAIN_FINAL_COVENANT_STATELESS', binToHex(FINAL_COVENANT_STATELESS));
+console.log('chain covenant (stateful)', CHAIN_COVENANT.length, 'B hash', binToHex(hash256(CHAIN_COVENANT)));
+console.log('chain covenant (stateless)', CHAIN_COVENANT_STATELESS.length, 'B hash',
+  binToHex(hash256(CHAIN_COVENANT_STATELESS)));
 
-export {
-  START_COVENANT, CONT_COVENANT, FINAL_COVENANT,
-  START_COVENANT_STATELESS, CONT_COVENANT_STATELESS, FINAL_COVENANT_STATELESS,
-  buildRedeem, lockOf, CHAIN_STEP_ASM,
-};
+if (process.argv.includes('--write')) {
+  const path = new URL('../../packages/utils/src/keccak-compute-library.ts', import.meta.url);
+  let src = readFileSync(path, 'utf8');
+  for (const [name, covenant] of [
+    ['KECCAK_CHAIN_COVENANT', CHAIN_COVENANT], ['KECCAK_CHAIN_COVENANT_STATELESS', CHAIN_COVENANT_STATELESS],
+  ]) {
+    for (const [key, value] of [[name, binToHex(covenant)], [`${name}_HASH`, binToHex(hash256(covenant))]]) {
+      const pattern = new RegExp(`(export const ${key} =\\s*')[0-9a-f]*(';)`);
+      if (!pattern.test(src)) throw new Error(`keccak-compute-library.ts has no ${key}`);
+      src = src.replace(pattern, `$1${value}$2`);
+    }
+  }
+  writeFileSync(path, src);
+  console.log('updated keccak-compute-library.ts');
+}
+
+export { CHAIN_COVENANT, CHAIN_COVENANT_STATELESS, MODE, buildRedeem, lockOf, CHAIN_STEP_ASM };

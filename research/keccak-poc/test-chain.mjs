@@ -1,12 +1,12 @@
-// End-to-end chained keccak on the real VM: a >407-byte preimage split across START/CONT/FINAL
-// side-cars whose covenants each verify their own absorb transition on-chain.
+// End-to-end chained keccak on the real VM: a >=136-byte preimage split across START/CONT/FINAL steps of the one
+// chain covenant, each verifying its own absorb transition and its link to the previous step on-chain.
 import { keccak_256 } from '@noble/hashes/sha3.js';
+import { sha256 } from '@bitauth/libauth';
 import { keccakF } from './keccak.mjs';
 import { binToHex, hexToBin, evalInput } from './sidecar.mjs';
-import { START_COVENANT, CONT_COVENANT, FINAL_COVENANT, buildRedeem, lockOf } from './gen-chain-sidecar.mjs';
+import { CHAIN_COVENANT, MODE, buildRedeem, lockOf } from './gen-chain-sidecar.mjs';
 
 const be = (v) => v.toString(16).padStart(16, '0');
-const ZERO = new Uint8Array(8);
 
 // Oracle sponge: state = 25 BigInt lanes (LE values). Absorb a block into lanes 0..16, one keccakF.
 function oracleAbsorb(state, block) {
@@ -18,8 +18,8 @@ function oracleAbsorb(state, block) {
   }
   return keccakF(A, 24);
 }
-// Script commitment byte order: lane24 || ... || lane0, each lane as its 8-byte BE value.
-function commitState(A) {
+// Script state byte order: lane24 || ... || lane0, each lane as its 8-byte BE value.
+function stateBytes(A) {
   let hex = '';
   for (let i = 24; i >= 0; i--) hex += be(A[i]);
   return hexToBin(hex);
@@ -35,66 +35,72 @@ function build(preimageHex) {
   const L = preimage.length;
   const fullBlocks = [];
   for (let off = 0; off + 136 <= L; off += 136) fullBlocks.push(preimage.slice(off, off + 136));
-  const remainder = preimage.slice(fullBlocks.length * 136);   // 0..135 bytes
   const expected = keccak_256(preimage);
 
-  // Oracle chain: state after each absorb.
+  // Oracle chain: state S and block chain X = sha256(X || block) after each absorb; commitment X || sha256(S).
   let state = new Array(25).fill(0n);
-  const intermediate = [];  // commitment after each FULL block
-  for (const blk of fullBlocks) { state = oracleAbsorb(state, blk); intermediate.push(commitState(state)); }
+  let link = new Uint8Array(0);
+  const states = [];
+  const intermediate = [];
+  for (const blk of fullBlocks) {
+    state = oracleAbsorb(state, blk);
+    link = sha256.hash(Uint8Array.from([...link, ...blk]));
+    states.push(stateBytes(state));
+    intermediate.push(Uint8Array.from([...link, ...sha256.hash(stateBytes(state))]));
+  }
 
-  const covenants = [START_COVENANT, ...fullBlocks.slice(1).map(() => CONT_COVENANT), FINAL_COVENANT];
-  const n = covenants.length;   // == fullBlocks.length + 1
+  const n = fullBlocks.length + 1;
   if (n < 2) throw new Error('chaining test needs >= 2 side-cars');
-
-  const locks = covenants.map((c) => lockOf(C, c));
-  // Build unlocking with proper data pushes: <pad> <block> <redeem>.
+  const lock = lockOf(C, CHAIN_COVENANT);
+  const redeem = buildRedeem(C, CHAIN_COVENANT);
   const pushData = (data) => {
-    const n = data.length;
-    if (n === 0) return Uint8Array.from([0x00]);
-    if (n === 1 && data[0] >= 1 && data[0] <= 16) return Uint8Array.from([0x50 + data[0]]);
-    if (n === 1 && data[0] === 0x81) return Uint8Array.from([0x4f]);
-    if (n <= 75) return Uint8Array.from([n, ...data]);
-    if (n <= 255) return Uint8Array.from([0x4c, n, ...data]);
-    return Uint8Array.from([0x4d, n & 0xff, (n >> 8) & 0xff, ...data]);
+    const len = data.length;
+    if (len === 0) return Uint8Array.from([0x00]);
+    if (len === 1 && data[0] >= 1 && data[0] <= 16) return Uint8Array.from([0x50 + data[0]]);
+    if (len === 1 && data[0] === 0x81) return Uint8Array.from([0x4f]);
+    if (len <= 75) return Uint8Array.from([len, ...data]);
+    if (len <= 255) return Uint8Array.from([0x4c, len, ...data]);
+    return Uint8Array.from([0x4d, len & 0xff, (len >> 8) & 0xff, ...data]);
   };
-  const inputUnlockings = covenants.map((c, i) => {
-    if (i === fullBlocks.length) {
-      // FINAL carries the FULL preimage (so the contract-side bind survives) + width 1: [pad, fullArg, 1, redeem].
-      return Uint8Array.from([...pushData(new Uint8Array(PAD_LEN)), ...pushData(preimage), 0x51, ...pushData(buildRedeem(C, c))]);
-    }
-    const block = fullBlocks[i];
-    return Uint8Array.from([...pushData(block), ...pushData(new Uint8Array(PAD_LEN)), ...pushData(buildRedeem(C, c))]);
+  // <pad> <data> <mode> <redeem>: CONT/FINAL reveal the previous state in the first 200 pad bytes; FINAL carries
+  // the FULL preimage (the contract-side bind) with mode 1.
+  const inputUnlockings = Array.from({ length: n }, (_v, i) => {
+    const pad = new Uint8Array(PAD_LEN);
+    if (i > 0) pad.set(states[i - 1]);
+    const final = i === fullBlocks.length;
+    const mode = final ? MODE.final : i === 0 ? MODE.start : MODE.cont;
+    return Uint8Array.from([
+      ...pushData(pad), ...pushData(final ? preimage : fullBlocks[i]), 0x50 + mode, ...pushData(redeem),
+    ]);
   });
 
-  // Outputs: recreate each side-car, committing intermediate state or final digest.
-  const outputs = covenants.map((c, i) => {
-    const commitment = i < fullBlocks.length ? intermediate[i] : expected;
-    return { lockingBytecode: locks[i], valueSatoshis: 100000n, token: tok(commitment) };
-  });
-  const sourceOutputs = covenants.map((c, i) => ({
-    lockingBytecode: locks[i], valueSatoshis: 100000n, token: tok(new Uint8Array(0)),
+  // Outputs: recreate each side-car, committing X || sha256(S) or the final digest.
+  const outputs = inputUnlockings.map((_u, i) => ({
+    lockingBytecode: lock, valueSatoshis: 100000n, token: tok(i < fullBlocks.length ? intermediate[i] : expected),
+  }));
+  const sourceOutputs = inputUnlockings.map(() => ({
+    lockingBytecode: lock, valueSatoshis: 100000n, token: tok(new Uint8Array(0)),
   }));
   const inputs = inputUnlockings.map((unlockingBytecode, i) => ({
     outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(i + 1),
     sequenceNumber: 0xffffffff, unlockingBytecode,
   }));
 
-  const results = covenants.map((_c, i) => {
+  const results = inputUnlockings.map((_u, i) => {
     try { return evalInput(inputs, sourceOutputs, outputs, i); }
     catch (err) { return { ok: false, error: 'THREW: ' + (err?.message ?? String(err)).slice(0, 120), stack: [] }; }
   });
-  return { n, expected, results };
+  return { n, results };
 }
 
 let allOk = true;
 for (const L of [136, 272, 408, 600, 1000]) {
   const preimage = new Uint8Array(L);
   for (let i = 0; i < L; i++) preimage[i] = (i * 13 + 7) & 0xff;
-  const { n, expected, results } = build(binToHex(preimage));
+  const { n, results } = build(binToHex(preimage));
   const ok = results.every((r) => r.ok);
   allOk = allOk && ok;
   const bad = results.map((r, i) => r.ok ? '' : `[${i}:${r.error?.slice(0, 40)}]`).filter(Boolean).join(' ');
-  console.log(`L=${String(L).padStart(4)} sideCars=${n} digestMatch=${binToHex(hexToBin(binToHex(expected))) === binToHex(expected)} ok=${ok}${bad}`);
+  console.log(`L=${String(L).padStart(4)} sideCars=${n} ok=${ok}${bad}`);
 }
 console.log(allOk ? '\nCHAIN OK' : '\nCHAIN FAIL');

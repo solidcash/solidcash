@@ -8,9 +8,9 @@ facets.
 
 ```text
 logical contract
-  ├─ root: owns the master, data, vmap, chunk, and container state
-  ├─ facet 0: owns code for one group of entry functions
-  └─ facet 1: owns code for another group of entry functions
+  +- root: owns the master, data, vmap, chunk, and container state
+  +- facet 0: owns code for one group of entry functions
+  +- facet 1: owns code for another group of entry functions
 ```
 
 The logical ABI stays on the root. A moved function becomes a thin selector-preserving forwarder, and the SDK
@@ -32,9 +32,12 @@ const tuned = compileStringSplit(source, {
 
 Without `forceSplit`, a contract which already fits is returned as a valid bundle with no facets. This lets tooling
 use one output type while avoiding needless deployment overhead. `maxShardBytes` is both the placement ceiling and
-the final byte limit checked for each shard; choose a value below 10,000 when operational headroom matters.
+the final byte limit checked for each shard, taken literally as redeem-script bytes; choose a value below 10,000
+when operational headroom matters. When it is omitted, the planner budgets the whole spend against the BCH
+10,000-byte input limit: the redeem script plus the constructor arguments and the widest entry point's own
+arguments. `rootFunctions` names public entry points that must stay on the root.
 
-CLI usage is explicit:
+CLI usage is explicit. `--split size` always splits (it sets `forceSplit`), even when the contract would fit:
 
 ```sh
 solidc Large.scash --split size --output Large.split.json
@@ -42,7 +45,11 @@ solidc Large.scash --split size --format ts --output Large.split.ts
 solidc Large.scash --split size --size
 ```
 
-`--split size` is the size packer. An over-cap kernel route is outside function split: `--split func` compiles one framed master per entry and is refused for any other composition. `--split size` and `--split func` cannot be combined with raw ASM or hex output. A bare `--split` is refused; the modes are `off`, `size`, and `func`.
+`--split size` is the size packer described on this page; it refuses the framed convention. `--split func` compiles
+one framed master per ABI entry (a `FunctionSplitBundle`) and requires `composition: 'framed'`, which the CLI sets
+for it; the framed convention is experimental (see [Framed Composition](/docs/guides/framed-composition)). An
+over-cap message-bus kernel route is outside function split. `--split size` and `--split func` cannot be combined
+with raw ASM or hex output. A bare `--split` is refused; the modes are `off`, `size`, and `func`.
 
 SolidHat also checks compiled artifacts against the active provider's input limit. When an ordinary stateful
 artifact exceeds that ceiling, its project compilation attempts to publish a `.split.json` bundle alongside the
@@ -62,9 +69,10 @@ The planner runs after imports, inheritance, modifiers, semantic lowering, and i
 The size decision uses emitted bytecode, not an AST estimate. A function closure which cannot fit one facet, or a
 root which remains too large, produces a measured compile diagnostic.
 
-Terminal public/external state transitions—including single-return transitions—can move. View/pure functions,
-fallback/receive handlers, lifecycle routes, unsafe routes, and delegate routes remain root-local. Overloaded
-movable entries currently fail closed because v1 routing is function-name based.
+Terminal public/external state transitions, including single-return transitions, can move. Fallback/receive
+handlers, lifecycle routes, unsafe routes, and delegate routes remain root-local. View/pure functions stay on the
+root too, unless the unsplit contract is itself over the shard limit; then they can move as well, so that the root
+still fits. Overloaded movable entries currently fail closed because v1 routing is function-name based.
 
 ## State ownership and one-hop execution
 
@@ -203,7 +211,8 @@ operation free.
 - no nested or runtime facet-to-facet calls;
 - no splitting inside one over-limit function closure;
 - no movable overloaded entry points;
-- no lifecycle, fallback, receive, pure, or view facets;
+- no lifecycle, fallback, or receive facets, and no pure or view facets unless the unsplit contract is over the
+  limit;
 - no tuple static-return decoding; and
 - staged deterministic deployment rather than one atomic multi-category genesis.
 

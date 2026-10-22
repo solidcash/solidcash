@@ -5,37 +5,42 @@ title: Built-in Functions
 SolidCash has several built-in functions for things like cryptographic and arithmetic applications, and it includes many common arithmetic and other operators that you would expect in a programming language.
 
 ## Arithmetic functions
+
+The arithmetic built-ins take `bigint` parameters, which accept any integer type. `abs`, `min` and `max` keep a
+bounded argument type: `abs` of an `int8` is an `int8`, and `min` or `max` of two bounded integers has the wider of
+the two types. With a `bigint` argument they return `bigint`.
+
 ### abs()
 ```solidity
-int abs(int a)
+bigint abs(bigint a)
 ```
 
 Returns the absolute value of argument `a`.
 
 ### min()
 ```solidity
-int min(int a, int b)
+bigint min(bigint a, bigint b)
 ```
 
 Returns the minimum value of arguments `a` and `b`.
 
 ### max()
 ```solidity
-int max(int a, int b)
+bigint max(bigint a, bigint b)
 ```
 
 Returns the maximum value of arguments `a` and `b`.
 
 ### within()
 ```solidity
-bool within(int x, int lower, int upper)
+bool within(bigint x, bigint lower, bigint upper)
 ```
 
 Returns `true` if and only if `x >= lower && x < upper`.
 
 ### addmod()
 ```solidity
-int addmod(int x, int y, int k)
+bigint addmod(bigint x, bigint y, bigint k)
 ```
 
 Returns `(x + y) % k`. Because the BCH VM has arbitrary-precision integers, the intermediate sum cannot
@@ -43,7 +48,7 @@ overflow, so this is exactly `(x + y) % k` with no wraparound.
 
 ### mulmod()
 ```solidity
-int mulmod(int x, int y, int k)
+bigint mulmod(bigint x, bigint y, bigint k)
 ```
 
 Returns `(x * y) % k`, with the same no-overflow guarantee as `addmod`.
@@ -100,12 +105,12 @@ An `address` is not implicitly a `bytes`, so hash an address with an explicit ca
 
 ## Signature checking functions
 :::caution
-All signature checking functions must comply with the [NULLFAIL][bip146] rule which only allows `0x` as an invalid signature — any other invalid signature will **immediately fail** the entire script.
+All signature checking functions must comply with the [NULLFAIL][bip146] rule, which only allows `0x` as an invalid signature. Any other invalid signature will **immediately fail** the entire script.
 :::
 
 #### Nullfail example
 
-The `NULLFAIL` rule means passing an invalid signature to `checkSig()` does not return `false` — it fails the script. To safely return `false` on a signature check, use an empty `0x` signature instead, as shown below:
+The `NULLFAIL` rule means passing an invalid signature to `checkSig()` does not return `false`: it fails the script. To safely return `false` on a signature check, use an empty `0x` signature instead, as shown below:
 
 ```solidity
 contract Escrow(pubkey seller, pubkey referee) {
@@ -146,16 +151,18 @@ each argument with `SignatureAlgorithm.ECDSA`; `SignatureTemplate` defaults to S
 bool checkDataSig(datasig s, bytes msg, pubkey pk)
 ```
 
-Checks that sig `s` is a valid signature for message `msg` and matches with public key `pk`.
+Checks that sig `s` is a valid signature for message `msg` and matches with public key `pk`. `OP_CHECKDATASIG`
+verifies the signature over `sha256(msg)`, so the signer signs `sha256(msg)`, not `msg` itself.
 
 ## Other functions
 
 ### toPaddedBytes()
 ```solidity
-bytes toPaddedBytes(int value, int length)
+bytes toPaddedBytes(bigint value, bigint length)
 ```
 
-Pads the integer `value` with zeros to the specified `length`. This is most useful when storing integer values in local state (see [local state guide][local-state-guide]).
+Pads the integer `value` with zeros to the specified `length` (`OP_NUM2BIN`). With a literal `length` the result
+type is `bytesN`, for example `bytes20` for `toPaddedBytes(x, 20)`. This is most useful when storing integer values in local state (see [local state guide][local-state-guide]).
 
 :::tip
 Using `bytes20 placeholderPkh = toPaddedBytes(0, 20)` will generate a 20 byte zero-array at runtime, whereas
@@ -164,14 +171,14 @@ Using `bytes20 placeholderPkh = toPaddedBytes(0, 20)` will generate a 20 byte ze
 
 ### intToString()
 ```solidity
-string intToString(int value)
+string intToString(bigint value)
 ```
 
 Converts an integer to its decimal string representation.
 
 ### stringToInt()
 ```solidity
-int stringToInt(string value)
+bigint stringToInt(string value)
 ```
 
 Parses a decimal string into an integer.
@@ -212,6 +219,9 @@ bytes20 ecrecoverEvm(bytes32 hash, int v, bytes32 r, bytes32 s)
 
 Recovers the signer's Ethereum address.
 
+Bare Solidity `ecrecover(hash, v, r, s)` is available only when the compiler option `ecrecover` is set to
+`'p2pkh'` or `'evm'`, which selects one of these projections.
+
 :::caution
 Recovery spans two co-spent side-car inputs per call. If the public key is already available to the spender,
 use `checkDataSig` instead: it is a single opcode. See [Cryptography](/docs/language/cryptography).
@@ -224,7 +234,9 @@ use `checkDataSig` instead: it is a single opcode. See [Cryptography](/docs/lang
 bytes32 blockhash(int blockNumber)
 ```
 
-Returns the hash of the given block, read from a per-pair oracle.
+Returns the hash of the given block, read from a per-height oracle NFT of the contract's own category. It makes
+the contract stateful; a missing oracle NFT is an error, not a zero hash. See
+[Global Variables](/docs/language/globals#blockhash-and-blobhash).
 
 ### blobhash()
 ```solidity
@@ -235,10 +247,10 @@ Always returns zero. Bitcoin Cash has no EIP-4844 blobs; this exists as a portin
 
 ### gasleft()
 ```solidity
-uint256 gasleft()
+gasleft()
 ```
 
-A fixed shim that always returns `1000000`. Bitcoin Cash has no gas metering; this exists so ported
+A fixed shim that always returns the integer `1000000`. Bitcoin Cash has no gas metering; this exists so ported
 gas-budget checks keep running. Compiler-warned; do not rely on the value.
 
 ## See also

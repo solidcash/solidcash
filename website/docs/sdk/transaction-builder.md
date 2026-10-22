@@ -43,11 +43,13 @@ The `provider` option is used to specify the network provider to use when sendin
 
 #### maximumFeeSatoshis
 
-The `maximumFeeSatoshis` option is used to specify the maximum fee for the transaction in satoshis. If this fee is exceeded, an error will be thrown when building the transaction.
+The `maximumFeeSatoshis` option is used to specify the maximum fee for the transaction in satoshis. If this fee is exceeded, `build()` and `send()` throw a `TransactionFeeTooHighError`. There is no limit by default.
+
+The fee is the difference between the input and output amounts. Outputs that exceed the inputs are always refused.
 
 #### maximumFeeSatsPerByte
 
-The `maximumFeeSatsPerByte` option is used to specify the maximum fee per byte for the transaction. If this fee is exceeded, an error will be thrown when building the transaction.
+The `maximumFeeSatsPerByte` option is used to specify the maximum fee per byte for the transaction. If this fee is exceeded, `build()` and `send()` throw a `TransactionFeePerByteTooHighError`. The default is 1000 satoshis per byte, which catches a large forgotten change output; set a lower value for a tighter guard.
 
 #### allowImplicitFungibleTokenBurn
 
@@ -56,7 +58,8 @@ The `allowImplicitFungibleTokenBurn` option is used to specify whether implicit 
 #### allowImplicitNftBurn
 
 Allows an input NFT to be omitted from the outputs. The default is `false`; enable it only for an intentional
-burn after reviewing the complete transaction.
+burn after reviewing the complete transaction. Mutable and minting NFTs are matched by category and capability, so a
+changed commitment is not a burn. An immutable NFT must reappear with the same commitment.
 
 #### skipAutomaticCoSpends
 
@@ -71,7 +74,15 @@ exact position. It does not make a contract that needs those resources executabl
 transactionBuilder.addInput(utxo: Utxo, unlocker: Unlocker, options?: InputOptions): this
 ```
 
-Adds a single input UTXO to the transaction that can be unlocked using the provided unlocker. The unlocker can be derived from a `SignatureTemplate` or a `Contract` instance's spending functions. The `InputOptions` object can be used to specify the sequence number of the input.
+Adds a single input UTXO to the transaction that can be unlocked using the provided unlocker. The unlocker can be derived from a `SignatureTemplate` (`unlockP2PKH()`), a `Signer` (`signer.unlockP2PKH()`) or a `Contract` instance's spending functions (`contract.unlock.<function>(...args)`).
+
+```ts
+interface InputOptions {
+  sequence?: number;
+}
+```
+
+The `InputOptions` object sets the input's sequence number. The default is `0xfffffffe`, which keeps the transaction locktime active. Set a relative timelock here for a contract that checks `this.age`; `encodeBip68({ blocks })` and `encodeBip68({ seconds })` from `@solidcash/utils` encode the value. Adding the same outpoint twice throws.
 
 When the UTXO states its `lockingBytecode`, building the transaction checks it against the lock a contract, P2PKH or
 placeholder unlocker spends, and refuses a mismatch with an `UnlockerLockingBytecodeMismatchError` instead of
@@ -134,6 +145,12 @@ transactionBuilder.addOutputs(outputs: Output[]): this
 
 Adds a single output or a list of outputs to the transaction. The `to` field in an output can be a string representing a cash address, or a `Uint8Array` representing a locking bytecode. For `P2PKH`, `P2SH20` and `P2SH32` outputs, it is easiest to use the cash address string. For `P2S` outputs, you need to use the locking bytecode.
 
+Each output is validated when it is added:
+
+- `amount` must be at least the dust threshold, `444 + 3 * <serialized output size>` satoshis, unless the output is an OP_RETURN output. `MockNetworkProvider` skips this check by default, but `send()` still refuses a dust output.
+- A token output sent to a cash address needs a token-aware address (`contract.tokenAddress`); otherwise it throws a `TokensToNonTokenAddressError`.
+- Token amounts must be between 0 and 2^64 - 1, the category must be 64 hex characters, and an NFT commitment can be at most 128 bytes.
+
 ```ts
 interface Output {
   to: string | Uint8Array;
@@ -179,7 +196,7 @@ Adds an OP_RETURN output to the transaction with the provided data chunks in str
 
 #### Example
 ```ts
-// Post "Hello World!" to memo.scash
+// Post "Hello World!" to memo.cash
 transactionBuilder.addOpReturnOutput(['0x6d02', 'Hello World!']);
 ```
 
@@ -197,10 +214,29 @@ transactionBuilder.addBchChangeOutputIfNeeded({
 });
 ```
 
-`addTokenChangeOutputIfNeeded()` returns the surplus fungible amount of one category and funds that output at its
-calculated dust threshold. It ignores NFTs, which must be preserved explicitly. Add all inputs and explicit token
-outputs first. Then add token change for each category, and add BCH change last. Once change for BCH or a category
-is calculated, later inputs/outputs of that asset are rejected so the computed change cannot silently become stale.
+```ts
+interface TokenChangeOutputOptions {
+  category: string;
+  to: string | Uint8Array;
+}
+
+interface BchChangeOutputOptions {
+  to: string | Uint8Array;
+  feeRate: number; // satoshis per byte
+}
+```
+
+`addTokenChangeOutputIfNeeded()` adds an output to `to` that carries the surplus fungible amount of one category,
+with the dust threshold as its BCH amount. It adds nothing when there is no surplus. It ignores NFTs, which must be
+preserved explicitly.
+
+`addBchChangeOutputIfNeeded()` adds an output to `to` with the BCH surplus minus a fee of `feeRate` satoshis per
+byte of the final transaction. When that change would be below the dust threshold, no output is added and the
+surplus goes to the fee. It throws when the surplus cannot pay the fee at that rate.
+
+Add all inputs and explicit token outputs first. Then add token change for each category, and add BCH change last.
+Once change for BCH or a category is calculated, later inputs/outputs of that asset throw an
+`OutputBchChangeLockedError` or `OutputTokenChangeLockedError`, so the computed change cannot silently become stale.
 
 
 ### setLocktime()
@@ -213,8 +249,11 @@ Sets the locktime for the transaction to set a transaction-level absolute timelo
 #### Example
 ```ts
 // Set locktime one day from now
-transactionBuilder.setLocktime((Date.now() / 1000) + 24 * 60 * 60);
+transactionBuilder.setLocktime(Math.floor(Date.now() / 1000) + 24 * 60 * 60);
 ```
+
+A contract that checks `tx.time >= t` needs a locktime of at least `t`, of the same kind (block height or timestamp).
+The network accepts the transaction only once that locktime has passed.
 
 ### getTransactionSize()
 ```ts
@@ -247,24 +286,44 @@ console.log(`Transaction fee: ${feeSats} satoshis (${feeSatsPerByte} sats/byte)`
 ### send()
 ```ts
 async transactionBuilder.send(): Promise<TransactionDetails>
+async transactionBuilder.send(raw: true): Promise<string>
 ```
 
 After completing a transaction, the `send()` function can be used to send the transaction to the BCH network. An incomplete transaction cannot be sent.
 
-Before signing and broadcasting, `send()` discovers compiler-required block-oracle, keccak, signature-recovery,
-and external-library co-spends unless `skipAutomaticCoSpends` was selected. A synchronous `build()` or `debug()`
-cannot perform network discovery; add the corresponding `addRequired*()` resources first when using those paths.
+`send()` runs these steps in order:
+
+1. It adds the compiler-required block-oracle, keccak, signature-recovery and external-library co-spends, unless
+   `skipAutomaticCoSpends` was selected.
+2. It builds and signs the transaction and applies the token burn checks.
+3. It evaluates every input locally, like `debug()`, and throws the first failure, such as a `FailedRequireError`.
+   A transaction built by the stateful SDK is evaluated on a best-effort basis, and a transaction with a custom
+   unlocker is not evaluated.
+4. It applies the fee limits and checks the finished bytes against consensus and relay rules, such as size and dust.
+5. It broadcasts through the provider, checks that the returned txid matches the transaction, and fetches the
+   transaction back.
+
+A synchronous `build()` or `debug()` cannot perform network discovery; add the corresponding `addRequired*()`
+resources first when using those paths.
+
+The result is the parsed transaction (libauth `Transaction` fields) plus its id, its hex and a `wait()` helper:
 
 ```ts
 interface TransactionDetails {
-  inputs: Uint8Array[];
-  locktime: number;
-  outputs: Uint8Array[];
   version: number;
+  inputs: Input[];   // libauth Input: outpointTransactionHash, outpointIndex, sequenceNumber, unlockingBytecode
+  outputs: Output[]; // libauth Output: lockingBytecode, valueSatoshis, token
+  locktime: number;
   txid: string;
   hex: string;
+  wait?: (confirmations?: number) => Promise<TransactionDetails>;
 }
 ```
+
+`wait()` resolves once the provider returns the transaction. For an Electrum server that can be while it is still
+unconfirmed. `wait(n)` with `n > 1` also waits until the chain has grown by `n - 1` blocks. On `MockNetworkProvider`
+the transaction is mined during `send()`, so `wait()` resolves at once. `send(true)` returns the raw transaction hex
+instead of the parsed details.
 
 #### Example
 ```ts
@@ -289,6 +348,8 @@ transactionBuilder.build(): string
 
 After completing a transaction, the `build()` function can be used to build the entire transaction and return the signed transaction hex string. This can then be imported into other libraries or applications as necessary.
 
+`build()` applies the token burn checks, the input locking-bytecode check and the fee limits. It does not evaluate the scripts and does not add co-spends; use `debug()` to evaluate them first.
+
 #### Example
 ```ts
 import { aliceTemplate, aliceAddress, bobAddress, contract, provider } from './somewhere.js';
@@ -312,12 +373,15 @@ transactionBuilder.debug(): DebugResults
 
 If you want to debug a transaction locally instead of sending it to the network, you can call the `debug()` function on the transaction. This will return intermediate values and the final result of the transaction. It will also show any logged values and `require` error messages.
 
+`debug()` returns the VM program states of every input and prints the contract's `console.log` output. A failing input throws a `FailedRequireError` or `FailedTransactionEvaluationError` (see [Transaction errors](#transaction-errors)). Only inputs with a contract or P2PKH unlocker can be debugged; a custom unlocker makes `debug()` throw.
+
 ### getBitauthUri()
 ```ts
 transactionBuilder.getBitauthUri(): string
 ```
 
-If you prefer a lower-level debugging experience, you can call the `getBitauthUri()` function on the transaction. This will return a URI that can be opened in the BitAuth IDE. This URI is also displayed in the console whenever a transaction fails.
+If you prefer a lower-level debugging experience, you can call the `getBitauthUri()` function on the transaction. This will return a URI that can be opened in the BitAuth IDE. The URI embeds the private keys of the transaction's signature templates, and the call prints a warning saying so.
+A failing `send()` or `debug()` attaches a copy with the private keys redacted to the error's `bitauthUri` property instead.
 You can read more about debugging transactions on the [debugging page](/docs/guides/debugging).
 
 :::caution
@@ -345,7 +409,7 @@ interface VmResourceUsage {
 }
 ```
 
-The verbose mode also logs the VM resource usage for each input as a table to the console.
+The verbose mode also logs the VM resource usage for each input as a table to the console. `getVmResourceUsage()` runs `debug()`, so it needs contract or P2PKH unlockers and throws on a failing input.
 
 ```
 VM Resource usage by inputs:
@@ -428,23 +492,31 @@ const signResult = await signWcTransaction(wcTransactionObj);
 
 ## Transaction errors
 
-When sending a transaction, the SolidCash SDK will throw an error if the transaction fails. If you are using an artifact compiled with `solidc@0.10.0` or later, the error will be of the type `FailedRequireError` or `FailedTransactionEvaluationError`. In case of a `FailedRequireError`, the error will refer to the corresponding `require` statement in the contract code so you know where your contract failed. If you want more information about the underlying error, you can check the `libauthErrorMessage` property of the error.
+When sending a transaction, the SolidCash SDK will throw an error if the transaction fails. All three classes below are exported from `solidcash`:
+
+- `FailedRequireError`: a `require` statement failed. The error refers to the corresponding `require` statement in the contract code so you know where your contract failed.
+- `FailedTransactionEvaluationError`: the script failed another way, with the artifact, input and source line when the artifact has debug information.
+- `FailedTransactionError`: the base class of both, also thrown on its own when the provider rejects the broadcast. Its `reason` property holds the rejection message.
+
+If you want more information about the underlying error, you can check the `libauthErrorMessage` property of the error.
 
 ```ts
 interface FailedRequireError {
   message: string;
+  reason: string;
   artifact: Artifact;
   failingInstructionPointer: number;
   requireStatement: { ip: number, line: number, message?: string };
   inputIndex: number;
-  bitauthUri: string;
+  bitauthUri: string; // private keys redacted, not enumerable
   libauthErrorMessage?: string;
+  callStack: { functionName?: string, sourceName: string, line: number, statement: string }[];
+  errorArgs?: readonly unknown[]; // decoded arguments of a failing custom error
 }
 ```
 
-If you are using an artifact compiled with an older version of `solidc`, the error will always be of the type `FailedTransactionError`. In this case, you can use the `reason` property of the error to determine the reason for the failure.
+`callStack` lists the internal function calls that led to the failing `require`; the message shows it when the
+failure is nested. Builder errors such as `TransactionFeeTooHighError`, `OutputSatoshisTooSmallError` and
+`UnlockerLockingBytecodeMismatchError` are thrown before anything is broadcast.
 
 [bitcoin-wiki-timelocks]: https://en.bitcoin.it/wiki/Timelock
-
-[transactions-simple]: /docs/sdk/transactions
-[transactions-simple-errors]: /docs/sdk/transactions#transaction-errors

@@ -16,6 +16,12 @@ import {
   TernaryOpNode,
   UnaryOpNode,
   FunctionCallNode,
+  MethodCallNode,
+  IndirectCallNode,
+  ExternalFunctionCallNode,
+  LowLevelCallNode,
+  AddressSendExpressionNode,
+  InstantiationNode,
   CollectionNode,
   FunctionDefinitionNode,
   VariableDefinitionNode,
@@ -35,6 +41,10 @@ import { createDefaultValueExpression } from '../ast/defaults.js';
 import {
   kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
 } from './KernelEntryActivation.js';
+
+/** Semantic back-references, which are not executable children of the node that holds them. */
+const BACK_REFERENCES = new Set(['type', 'symbolTable', 'location', 'resolvedFunction', 'functionReference',
+  'definition', 'collection', 'stateVariable']);
 
 // A conditional mapping op normalized to its target + taken-path value.
 interface EntryOp {
@@ -94,8 +104,9 @@ class EntryMutationCounts extends AstTraversal {
  *
  * Scoped to the sound, bounded shape: a branch with NO else whose body is only scalar mapping deletes/writes. A
  * single op is always safe (the condition runs once); multiple ops are converted only when the condition is
- * side-effect-free (no calls), since each predicated write re-evaluates it. Anything else is left untouched. The
- * early-return form (remove()'s ops after a guard) is not handled here.
+ * side-effect-free (no calls), since each predicated write re-evaluates it. A condition that reads a mapping an
+ * earlier write mutates is hoisted to a bool local first. Anything else is left untouched. The early-return form
+ * (remove()'s ops after a guard) is not handled here.
  *
  * An if/else branch whose arms are scalar entry ops plus trailing LOCAL array ops (a chunk-array push/pop
  * CacheDynamicArrayInLoop already lowered to a local) is also handled - the IterableMapping set() shape
@@ -103,7 +114,8 @@ class EntryMutationCounts extends AstTraversal {
  * hoisted to a bool local (evaluated once: the predicated writes mutate the mappings it reads), each scalar
  * target is predicated `m[k] = cond ? ifValue : elseValue` (a missing arm preserves the current value), and the
  * local array ops stay in a slimmed `if(cond)` / `if(!cond)` block (a stack-neutral local op works in a branch).
- * Result: all entry writes are unconditional (stable output count).
+ * Result: all entry writes are unconditional (stable output count). The branch is kept as written when an arm writes
+ * one target twice, or when the merged order runs two else writes out of source order and one may observe the other.
  * The kernel keeps replayable argument-guarded writes to distinct collections in their original arms, avoiding
  * creation of an absent entry on the untaken path.
  */
@@ -253,8 +265,24 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
 
     // A single op re-uses the condition once (always safe); multiple require a side-effect-free condition.
     if (ops.length > 1 && this.hasCall(node.condition)) return undefined;
+    // A re-evaluated condition that reads a mapping an earlier write mutates would see that write: evaluate it once.
+    if (ops.slice(0, -1).some((op) => this.namesMapping(node.condition, op.name))) {
+      const { def, ref } = this.hoistCondition(node);
+      return [def, ...ops.map((op) => this.buildPredicatedWrite(op, ref()))];
+    }
 
     return ops.map((op) => this.buildPredicatedWrite(op, node.condition));
+  }
+
+  // `bool __ifcond_N = <condition>;` and a reference to it, for predicated writes that mutate what the condition reads.
+  private hoistCondition(node: BranchNode): { def: VariableDefinitionNode; ref: () => ExpressionNode } {
+    const name = `__ifcond_${this.condCounter++}`;
+    const def = new VariableDefinitionNode(PrimitiveType.BOOL, [], name, cloneNode(node.condition) as ExpressionNode);
+    def.location = node.location;
+    const ref = (): ExpressionNode => {
+      const id = new IdentifierNode(name); id.location = node.location; return id;
+    };
+    return { def, ref };
   }
 
   // An if/else whose arms are scalar entry ops + trailing local array ops -> hoist the condition, predicate every
@@ -265,18 +293,11 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
     if (!ifArm || !elseArm) return undefined;
     if (ifArm.entryOps.length === 0 && elseArm.entryOps.length === 0) return undefined; // nothing to predicate
     const targets = this.mergeTargets(ifArm.entryOps, elseArm.entryOps);
-    if (!targets) return undefined; // a key we cannot match across arms
+    if (!targets) return undefined; // a key we cannot match across arms, or a target one arm writes twice
 
-    const out: StatementNode[] = [];
     // Hoist the condition: the predicated writes below mutate the mappings the condition reads, so evaluate once.
-    const condName = `__ifcond_${this.condCounter++}`;
-    const condClone = cloneNode(node.condition) as ExpressionNode;
-    const condDef = new VariableDefinitionNode(PrimitiveType.BOOL, [], condName, condClone);
-    condDef.location = node.location;
-    out.push(condDef);
-    const condRef = (): ExpressionNode => {
-      const id = new IdentifierNode(condName); id.location = node.location; return id;
-    };
+    const { def: condDef, ref: condRef } = this.hoistCondition(node);
+    const out: StatementNode[] = [condDef];
 
     // Predicate each scalar target: `m[k] = cond ? ifValue : elseValue`; a missing arm preserves the current value.
     for (const t of targets) {
@@ -328,8 +349,11 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
     return false;
   }
 
-  // Union the two arms' scalar ops by target (name + key signature), keeping source order. Last write to a target
-  // within an arm wins. undefined if any target's keys cannot be signed (so we cannot match it across arms).
+  // Union the two arms' scalar ops by target (name + key signature), keeping source order. undefined if any target's
+  // keys cannot be signed (so we cannot match it across arms), or an arm writes one target twice: one predicated write
+  // per target keeps only the arm's last op, dropping the earlier one, its value's checks and the reads it serves.
+  // The union runs the if arm's targets first, so it may run an else write before one the source runs ahead of it:
+  // also undefined when either of such a pair may observe the other.
   private mergeTargets(ifOps: EntryOp[], elseOps: EntryOp[]): MergedTarget[] | undefined {
     const order: string[] = [];
     const bySig = new Map<string, MergedTarget>();
@@ -342,12 +366,27 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
         bySig.set(sig, t);
         order.push(sig);
       }
+      if ((arm === 'if' ? t.ifOp : t.elseOp) !== undefined) return false;
       if (arm === 'if') t.ifOp = op; else t.elseOp = op;
       return true;
     };
     for (const op of ifOps) if (!add(op, 'if')) return undefined;
     for (const op of elseOps) if (!add(op, 'else')) return undefined;
-    return order.map((sig) => bySig.get(sig)!);
+    const merged = order.map((sig) => bySig.get(sig)!);
+    const at = (op: EntryOp): number => merged.findIndex((t) => t.elseOp === op);
+    for (let i = 0; i < elseOps.length; i++) {
+      for (let j = i + 1; j < elseOps.length; j++) {
+        if (at(elseOps[j]) < at(elseOps[i]) && this.mayObserve(elseOps[i], elseOps[j])) return undefined;
+      }
+    }
+    return merged;
+  }
+
+  // Whether running two writes in the other order may change what either stores: one mapping (their keys may name one
+  // entry), a value that names the other's mapping, or a value that makes a call.
+  private mayObserve(a: EntryOp, b: EntryOp): boolean {
+    return a.name === b.name || this.namesMapping(a.takenValue, b.name) || this.namesMapping(b.takenValue, a.name)
+      || this.makesCall(a.takenValue) || this.makesCall(b.takenValue);
   }
 
   // A stable string signature for a mapping target, or undefined for a key we cannot reliably match across arms.
@@ -449,5 +488,28 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
     };
     walk(node);
     return found;
+  }
+
+  // A bare `m[k]` reads the identifier `m`; `this.m[k]` is a MappingAccess.
+  private namesMapping(node: ExpressionNode, mapping: string): boolean {
+    return this.holds(node, (n) => (n instanceof IdentifierNode || n instanceof MappingAccessNode) && n.name === mapping);
+  }
+
+  private makesCall(node: ExpressionNode): boolean {
+    return this.holds(node, (n) => n instanceof FunctionCallNode || n instanceof MethodCallNode
+      || n instanceof IndirectCallNode || n instanceof ExternalFunctionCallNode || n instanceof LowLevelCallNode
+      || n instanceof AddressSendExpressionNode || n instanceof InstantiationNode);
+  }
+
+  // Whether `test` holds for a node or one of its executable children.
+  private holds(node: Node, test: (n: Node) => boolean): boolean {
+    if (test(node)) return true;
+    for (const key of Object.keys(node)) {
+      if (BACK_REFERENCES.has(key)) continue;
+      const v = (node as unknown as Record<string, unknown>)[key];
+      if (v instanceof Node && this.holds(v, test)) return true;
+      if (Array.isArray(v) && v.some((it) => it instanceof Node && this.holds(it, test))) return true;
+    }
+    return false;
   }
 }

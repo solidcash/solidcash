@@ -1,11 +1,11 @@
 # Security audit 2026-10-16 (living document)
 
-Status: complete for the 2026-10-16/17 pass. The findings are kept in discovery order; the final section,
-"Fix status (implementation pass, 2026-10-17)", is the current answer.
+Status: complete for the 2026-10-16/17 pass. The findings are kept in discovery order; the section
+"Fix pass 2026-10-22" at the end is the current answer, and supersedes the status lines above it.
 
 Fix status: DYN-1, ECR-1, FRAMED-CONT-1, MERGE-1, CONT-1, WT-1 and WT-2 are fixed with the tests named below.
-MIG-1 and KCHAIN-1 remain advisory: MIG-1 is a documented layout requirement for `migrateRecords`, and KCHAIN-1 is
-low severity on consensus limits with a forged-digest primitive under the mock's commitment limit.
+KCHAIN-1, the C3 residual, AUTHHEAD-1's contract paths, G0 and the 2026-07/2026-10 LOWs still open in code were
+fixed on 2026-10-22; MIG-1 stays open (privileged). See "Fix pass 2026-10-22".
 
 Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
 FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
@@ -762,3 +762,167 @@ from the code, nothing run beyond the authhead's own tests.
   `emitChunkRecordOutputCheck` in `GenerateTargetTraversal.ts`), so its calls cannot plant one. A node a frame declares
   kept but never reads or writes gets only the index-and-view check from that frame, as the comment above
   `emitFramedSegmentClose` records.
+
+## Fix pass 2026-10-22 ("fix all vulnerabilities")
+
+The user's request after the D46 authhead work. Every open finding in the ledgers was inventoried, the ones still open
+in code were fixed with a test each, and the closing gates ran once on mocknet at the commit named below. Each test
+named here ran on the landed tree; where an entry says the pre-fix code accepted a refused transaction, that was run
+once before the fix unless it says "by reading".
+
+### Closing gates (mocknet, once)
+
+At `ac6e74d5b`: build; utils 525/525, testing 116/116, solidhat 71 (1 skipped), testing-suite 27/27; a cold
+marketplace compile and the marketplace ladder 66/66 (2,179 s). The compiler (7 of 7,427), SDK e2e (6 of 3,794) and
+SDK (3 of 6,172) suites failed 16 tests, all from this pass, fixed on master after it:
+
+- Three honest contracts no longer fit the 10,000-byte per-input limit: UniswapV2Factory's `createPair` (89 B over),
+  a message-bus Publisher (65 B) and a pooled compose callee (29 B). `8549edfc4` and `fe8b689d7` (below, under C3).
+- A Tether staticCall failed in the SDK's return probe (TETHER-VIEW-1, `fcbd58a09`).
+- Three tests asserted what the pass changed on purpose: the selfdestruct bound (SBE-20), the G0 head (FunctionSplit),
+  and the delegate build's refusal of non-delegate entries (Delegatecall, which now runs `authorize` on the standalone
+  artifact; `packages/solidc/docs/delegatecall.md` updated). `5d7aa18de`.
+- Size and cost pins moved by the C3 record pin's intended cost: the direct-path hashes, ScalarJournal, the VMap
+  array read, MinimalNativeToken, the bus verifier size and the two-party capacity readings (`5fdf8169c`, `3cff97dec`).
+
+Each fix ran its own tests once with its neighbours: UniswapV2FactoryLiteral, KeccakChainSidecar, AuditC3CountPath,
+AuditC3BusCensusRoute, AuditC3BusParticipant, AuditC3BusGraphParkedPin, KernelDirectNestedArrayPush,
+TetherNativeToken, BranchLocalExternalCall, Delegatecall, and AtomicMessageBusCompose (40/40). The ladder did not
+rerun: the marketplace corpus compiled cold at the final master is identical to the one it ran, field for field except
+`updatedAt`.
+
+### Fixed
+
+- **C3 residual, count path** (CRITICAL class; `e33cbd7cb`, folded into the count in `c75c56778`). A function the
+  own-category count covers had only that count, so beside any such call a caller rewrote a record it does not name
+  (data flag 1) or destroyed it (flag 2) and minted a mutable NFT of C anywhere, the authhead's lock included. Every
+  own-category mutable input outside the master and the data band the auto covenant settles now comes back at its own
+  index with its lock, commitment and category. Test: `packages/solidc/test/AuditC3CountPath.test.ts`.
+  `migrateRecords` leaves its moved entry to its own check, which now pins the master at input 0 (`cd3c4caa4`). The
+  fold emitted its pass inline in every counting function, which grew UniswapV2Factory from 9,237 to 9,721 B and put
+  `createPair` 89 B over the 10,000-byte unlocking limit; the pinned count is now one shared helper per span and
+  verifier lock (`8549edfc4`, 9,265 B). A contract with one counting site carries it inline (+38 B on a one-function
+  contract).
+- **C3 residual, delegatecall proxy** (`1130af475`, `45411dffa`, `a8a3ba880`). The not-taken path compared commitment
+  and category only, so an entry or chunk could return under another lock; a direct delegate on the taken path ran no
+  walk over the proxy's records, so a value chunk could be rewritten in place, and consumed under the certified default
+  proxy. A forwarded selector could also reach a non-delegate implementation entry, which ran none of the delegate's
+  census; those entries are now unspendable in the delegate variant. Tests: `AuditC3ProxyPath.test.ts`,
+  `AuditC3DelegateTakenPath.test.ts`.
+- **C3 residual, message-bus routes** (`9dd2649d4`, `f431bee36`, `3a210faca`). A route can run with no verifier (a
+  standalone `batch`, a local-caller route), and the verifier counts only inside the participant block. Count-path and
+  census-path routes now pin every own-category record outside their block, skipping only their own verifier lock, and
+  inside the block every record at a slot no executed row claims. Tests: `AuditC3BusParticipant.test.ts`,
+  `AuditC3BusCensusRoute.test.ts`. The pins pushed two bus test contracts over the per-input limit, so a bound route
+  that is not a local-caller route now skips its verifier by `__internal__activeVerifierIndex`: its binder requires
+  that input at the verifier lock, of the own category and mutable, whenever the index is >= 0 on chain (its other
+  guard, an outpoint index other than 0xFFFFFFFF, is the SDK's probe marker). A local-caller route keeps the lock
+  compare. In a graph-route contract the route pin, the direct plain walks and the pinned counts share one parked
+  helper (`fe8b689d7`; test `AuditC3BusGraphParkedPin.test.ts`).
+- **DS-2 class, state read through a subroutine** (`095cb22d4`, `6fdfaad23`). An entry (and a split or merge entry)
+  that read state only through an invoked body skipped the data-NFT lock pin, so a mutable NFT of C at a foreign lock
+  could be read as state. Test: `packages/solidc/test/AuditDataLockSubroutineRead.test.ts`.
+- **G0** (framed, THEFT; `35c998efa`). A forwarding proxy could delegate into any framed contract whose master was its
+  category's only one, and in that transaction rewrite its records (owner takeover), drain its containers and mint its
+  events; the pre-fix head accepted all three. The master head now requires a delegate callee's category untouched
+  (one input, one output: the recreated master; a value master's containers do not shrink). V_TEMPLATE is unchanged.
+  Test: `packages/solidc/test/framed/master/delegate-callee-untouched.test.ts`.
+- **G1**: already stopped by `2d517da79` (spec T57, DECISIONS D17); D9's "open" was stale.
+- **NAMED-MINT-2** (HIGH; direct and bus; `15cc9d8ae`). After an NFT send a named container's keep compared base
+  categories only, and the SDK built every honest send that way, burning the contract's minting authority. The keep
+  holds a minting input's full category and the SDK mints the sent NFT beside it. Framed already held it (D38, D39).
+  Tests: `ContainerMintingSend.test.ts`, `FramedContainerMintingSend.test.ts`, `GraphTokenSitePackingSecurity.test.ts`.
+- **NAMED-MINT-1 route side**: tested (`7985a85ac`); the route refused all three mint shapes.
+- **AUTHHEAD-1, selfdestruct** (`78a617f08`, `2c3fc9b33`). A direct selfdestruct entry checked only the minting
+  count, so its caller could mint a look-alike identity NFT, recreate the master at a lock of its choosing (taking the
+  minting baton), or, beside a recreated master, rewrite every record and keep the contract alive (a hashlock-guarded
+  destroy rewrote a counter from 0 to 999999). An own-category mutable or minting output is now admitted only in place
+  of the same-index input with the same category, capability, lock and commitment; the SDK refuses the ordinary call
+  path of a selfdestruct function. Test: `AuditSelfdestructMintBound.test.ts`.
+- **EVENT-SCOPE-2 residual** (`958fb0120`, `b1629294b`). The artifact listed file-level, library and imported events a
+  contract never emits, which no covenant pinned; it now lists only the events a contract declares or emits (Solidity's
+  rule), and a split contract pins forged logs on every shard when its logical artifact lists an event. Tests:
+  `EventDeclaredNotEmitted.test.ts`, `SplitEventForgery.test.ts`.
+- **Foreign read slots keyed without their target** (2026-07 LOW; `e30f777e6`, `4c41bdac9`, `6a177b545`). Two reads of
+  one interface through different addresses shared one slot pinned to the first, so the second was served the first
+  target's record (mocknet-proven); this held for input and outState reads. A second target is a compile error, and so
+  is a read through an address the function reassigns; one target's outState records share one slot. Test:
+  `ForeignReadDistinctTargets.test.ts`.
+- **IfConvert** (2026-07 LOW; `6bb226632`, `acfdb8ee2`). An arm writing one entry twice kept only its last write, an
+  if without else re-evaluated its condition after earlier predicated writes (`if (m[k]==0){m[k]=1;n[k]=2;}` stored
+  n=0), and a merge could reorder an else arm. Test: `IfConvertRepeatedEntryWrite.test.ts`.
+- **Semantic LOWs** (2026-07; `8c20f93f9`, `545c84112`, `c92efecf4`, `9e7629e77`). A side-effecting key ran once per
+  rebuilt read or write (nested writes, compound ops, field rebuilds, storage-pointer aliases, pushes); it now binds
+  once. `__base_` is reserved: a user `__base_A_f` had replaced the generated base copy, so `super.f()` ran the user's
+  function. bytesN converts to `address` only explicitly. Test: `packages/solidc/test/SemanticLowHoles.test.ts`.
+- **CRYPTO-4 residuals** (`cd3c4caa4`, `ced8e53fa`). The upgrade took the first UTXO at each container address (a dust
+  coin there stranded the real container), funded entry migration with the mock-only `addUtxo`, and left dynamic and
+  value chunks at the old lock. It now plans every entry and container from full listings, funds from the caller,
+  refuses before broadcast while a genuine record would be stranded, and takes `leaveBehind` for donated coins. Test:
+  `UpgradeMigrationCompleteness.test.ts`. The compiled upgrade then counted its token-container band at run time
+  (`e72f00338`, merged from `feat/bch-native-wrapper`), so every live container coin migrates and the fixed slot count
+  the planner held each container to is gone; an argument-keyed container no category names is refused. Test:
+  `TokenContainerUpgradeMigration.test.ts`.
+- **Batched destroy** (`2d885fa23`): containers go in the final batch; junk coins at container addresses are skipped.
+  Test: `BatchedDestroyContainers.test.ts`.
+- **KCHAIN-1** (`bd801e060`, `d94df696f`, `865fb9e07`, `d2fdd8fe1`, `ebf77f670`). Each step commits a 64-byte link
+  (`X || sha256(state)`), CONT and FINAL take the state only from the previous input under the same lock, and FINAL
+  recomputes the block chain X from its argument. The 256-slot trailing band is gone: a 400-byte chained call is 5
+  inputs (was 262 and over the BCH 2026 density limit). Test: `KeccakChainBinding.test.ts`.
+- **ROUTE-SKIP-1 hardening** (`de1a94233`): clones are flagged `ownRecordsScalarOnly`, and a plain direct general batch
+  refuses -2 on a row no alias binds. Test: `packages/solidc/test/RouteSkipGuard.test.ts`.
+- **FW-4** (`754673202`): a one-byte argument converts before its push-form checks, so 0x00 and 0x80 settle.
+- **OPT-4** (`5e8eb16ef`, `992cb977e`) and **ARITH-10** narrowing (`5e8eb16ef`): registrar ids are reserved; evmCompat
+  signed narrowing wraps.
+- **Decode malleability** (2026-07 LOW; `08c0a8d97`): the SDK decoders require re-encoding to give the consumed bytes;
+  the SDK had read a raw bool 0x01 as true where the covenant reads false. Test: `StateDecodeCanonical.test.ts`.
+- **TETHER-VIEW-1** (SDK, latent; `fcbd58a09`). A return probe (staticCall) of a function whose conditional external
+  call was not taken kept the planned call base and anchor 0, so the call's check read the master's empty commitment
+  and failed before the return was pinned. It surfaced when this pass's size changes repacked the Tether split and put
+  `totalSupply` in the root. The probe now states an unreached call as not made, as a send does; covenant unchanged.
+- **TOOLS-9, TOOLS-10, SDKFRAMED-9** (`d978e9b9a`): config discovery skips files another user owns or a world-writable
+  directory holds (`SOLIDCASH_TRUST_CONFIG_OWNER=1` trusts a mounted tree); a project cache needs `trustProjectCache`;
+  resize runs the VM before broadcast. Tests: `AuditToolsBoundary.test.ts`, `AuditSdkframed9ResizePreflight.test.ts`.
+
+### October rows fixed in `d6821a812` (2026-10-13) without a ledger entry
+
+FW-3, DX-3, ARITH-2, ARITH-5, SEM-3, SEM-4, SEM-5, DX-7, FV-1, OPT-1, OPT-2, ARITH-7/8/9/11/12, CRYPTO-6, SEM-7, DX-9
+(outside the bus), SDKCORE-1/3/4, SDKFRAMED-3..8, TOOLS-2, TOOLS-5/6/8: each has a hostile test that asserts the
+refusal (`packages/solidc/test/SecurityAudit202610*.test.ts`, `packages/solidcash/test/AuditSdkcore*`,
+`AuditSdkframed*`, `packages/testing/test/*`), and those suites ran green at the 0.13.1 gates. TOOLS-3/-4 are fixed in
+`packages/testing/src/chai.ts` (missing args fail, addresses normalised, events that do not decode fail, `.reverted`
+needs VM evidence, `rejectedWith` has no source fallback).
+
+### Not changed, by decision
+
+- Direct-convention call model: presence-based `msg.sender` (F1), no sighash fence on ordinary entries (F2), typed calls
+  binding only the selector, view/static calls in regular mode (D6, kernel alignment). A callee-side return binding was
+  built (`ce51b6f18`, branch `worktree-agent-ae6a0ed55c350b8f7`) and held: it supersedes D11 and refuses honest direct
+  double calls with different arguments, and loop reads stay unbound. The framed convention is the sound route.
+- DX-9 in the bus, model B, D48, the opt-in `initializeAs: 'hop'` (SDKFRAMED-2), X1 (D11): user decisions.
+- `unsafe` tiers and an authorized upgrade's new code: by design.
+
+### Open
+
+- A bigint or unbounded bytes field beside others is sized at 9 B and fails at send past it (fail-closed). A fix that
+  gives each its own data NFT is on branch `keep-bigint-layout`; it moves the layout of most stateful contracts.
+- MIG-1 (privileged): `migrateRecords` still binds a free replacement lock; committing it needs a master-commitment
+  protocol, and the state-access path does not pin the master commitment (2026-07 LOW, no impact today).
+- Routes without a verifier: the trailing band counts as claimed as a whole once a trailing row runs, and an unused slot
+  of a collection a run handler names is not pinned.
+- CRYPTO-4: dynamic and value chunks have no migration path.
+- A direct merge of masters holding records checks them relative to `OP_INPUTINDEX` (liveness).
+- Graph-route band: the route pin skips `[master, master + blockSize)` at the compile-time block size, while the
+  verifier census walks only the physical block, so with the ledger last the fee slot falls inside the skip window when
+  blockSize exceeds the physical size plus the participant count. A record put there is refused by the route's
+  whole-transaction collection census and by the root verifier's `tx.origin` (a token-free P2PKH input), so it is not a
+  hole (`AuditC3BusGraphParkedPin.test.ts`: compose `718807d02`, band `61e461448`, `b5c6b828b`). A V5 direct-authority
+  root cannot exist: every routed verifier requires each row's owner routed and row 0's owner its consumer
+  (`compiler.ts` 13177, 13193, 13240, 13244), and the SDK refuses it (`graph.ts` 2299, `atomic.ts` 148, 212, 458), so
+  the routed root's verifier always checks `rowSubject == tx.origin`.
+- **C3 graph band, value chunk (OPEN, found 2026-10-22).** In the same window a value chunk of the contract can be
+  rewritten in place or burned: no census counts a value-chunk lock, and `tx.origin` holds once the root caller's own
+  coin sits in a balanced pad slot, which no check binds for a row that does not use it. Test:
+  `AuditC3BusGraphValueChunkBand.test.ts` (`it.fails`, `119292046`; ledger last, s = 18, B = 82, fee slot 21). Fix:
+  pin past the physical block, binding that size into the binder digest (today `__internal__graphBlockSize` carries
+  the manifest's maximum size, ~13748), instead of the compile-time blockSize.

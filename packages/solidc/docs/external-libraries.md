@@ -77,7 +77,8 @@ const BUILTIN_LIBRARIES = { keccak256: {...}, /* another hashing scheme: {...} *
    compute budget (~3 keccak blocks total; see docs/evm-storage-parity.md).
 4. A registrar's internal helper ids are reserved keccak-private constants below the 0x1000 subroutine
    registry (keccak256's round is id 2); callable library ids are loader-supplied (the compiler assigns
-   from 0x1009, incrementing per library, deconflicted); setup ids are `id + 0x1000`.
+   from 0x1009, incrementing per library, deconflicted); setup ids are `id + 0x1000`. The ids a loaded blob
+   defines (`libraryDefinedIds`) are kept free: the contract's function ids and compiler helper ids skip them.
 
 ## SDK
 

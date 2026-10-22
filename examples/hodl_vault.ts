@@ -25,7 +25,7 @@ const parameters = [alicePub, oraclePub, 100000n, 30000n];
 const contract = new Contract(artifact, parameters, { provider });
 
 // Add a mock UTXO to the mock network provider
-provider.addUtxo(contract.address, randomUtxo());
+await provider.addUtxo(contract.address, randomUtxo());
 
 // Get contract balance & output address + balance
 console.log('contract address:', contract.address);

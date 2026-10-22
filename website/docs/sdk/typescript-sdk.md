@@ -51,7 +51,7 @@ configuration:
 ```ts
 const pending = counter.call.increment(signature);
 const transaction = await pending.send();
-await transaction.wait(1);
+await transaction.wait?.(1);
 ```
 
 See [Stateful Contracts](/docs/sdk/stateful-contracts), [Contract Deployment](/docs/guides/deployment), and
@@ -76,7 +76,7 @@ const tx = await new TransactionBuilder({
   .addOutput({ to: recipientAddress, amount: vaultUtxo.satoshis - 1_000n })
   .send();
 
-await tx.wait(1);
+await tx.wait?.(1);
 ```
 
 For a stateless covenant, the SDK does not invent the transaction shape: the contract validates the inputs and
@@ -100,7 +100,7 @@ outputs you supply. See [Contract Instantiation](/docs/sdk/instantiation) and
 
 - A `NetworkProvider` runner supports chain queries and read-oriented attachment.
 - A `Signer` combines a private key with a provider, supplies P2PKH funding, and tracks logical CREATE identities.
-- `HDSigner`, `HDPublicSigner`, and `signersFromMnemonic` provide HD-wallet derivation.
+- `HDSigner`, `HDPublicSigner`, and `signersFromMnemonic` (from `solidcash/hdsigner`) provide HD-wallet derivation.
 - `SignatureTemplate` creates transaction signatures and P2PKH unlockers for manually assembled transactions.
 
 `Signer` intentionally does not emulate account-chain operations such as gas estimation, ENS, EIP-712, or generic
@@ -110,12 +110,12 @@ outputs you supply. See [Contract Instantiation](/docs/sdk/instantiation) and
 
 - `TransactionBuilder` is the general raw builder for several inputs, covenants, P2PKH funding, CashTokens,
   OP_RETURN outputs, locktime, sequence numbers, fee limits, debugging, and broadcast.
-- `StatefulTransactionBuilder` is produced by `sc.functions.<name>()`; it owns the authenticated state layout and
-  should normally be reached through `sc.call.<name>()`.
+- `sc.functions.<name>()` resolves to a `StatefulTransactionBuilder`, which owns the authenticated state layout.
+  Normal code reaches it through `sc.call.<name>()`.
 - `gatherBchUtxos()` and `gatherFungibleTokenUtxos()` perform deterministic amount gathering from an existing UTXO
   list; they do not query or lock coins.
-- `TransactionDetails` returns the txid and serialized transaction and has `wait(confirmations?)` when broadcast
-  through an SDK provider.
+- `TransactionDetails` carries the txid, the hex and the parsed transaction, and has `wait(confirmations?)` when it
+  comes from `send()`.
 
 The removed single-contract fluent transaction API is documented only for migration under
 [Legacy APIs](/docs/sdk/legacy-transaction-builder).
@@ -137,8 +137,11 @@ The stateful exports also include:
 - `StateReader`, state-layout encoders/decoders, and covenant-address helpers;
 - `ThreadManager` and `ThreadHandle` for partitioned masters;
 - event parsing/query helpers and the ethers-flavored event facade;
-- external contract registration, result-event calls, and message-bus composition;
-- lifecycle helpers for child deployment, upgrade/proxy administration, split/merge, and destruction;
+- external contract registration and result-event calls;
+- message-bus composition (`sc.batch`, `messageBus.compose`) and composed external state mutation, both
+  experimental;
+- lifecycle helpers for child deployment, upgrades and proxies, split/merge, and destruction (custom proxies and
+  `upgrades.upgradeProxy` are experimental);
 - block-register and blockhash-oracle co-spend helpers.
 
 Prefer the high-level contract method which owns the invariant. Low-level commitment builders and covenant-address
@@ -150,11 +153,13 @@ ordering is easy to get wrong.
 Compile to TypeScript for type-preserving imports:
 
 ```bash
-solidc contracts/Counter.scash --format ts --output-dir artifacts
+solidc contracts/Counter.scash --format ts --output artifacts/Counter.ts
 ```
 
+A TypeScript artifact is a default export declared `as const`:
+
 ```ts
-import { Counter } from './artifacts/Counter.js';
+import Counter from './artifacts/Counter.js';
 
 const factory = new ContractFactory(Counter, signer);
 const counter = await factory.deploy(adminPublicKey);
@@ -175,16 +180,28 @@ import { expect } from 'vitest';
 import 'solidcash/vitest';
 ```
 
-- The package root is the stateless runtime SDK: `Contract`, `TransactionBuilder`, `Signer`, `SignatureTemplate`,
-  the errors, and the `utils` namespace. Keep importing it for those.
-- Everything stateful lives on `solidcash/stateful` (`StatefulContract`, `StateReader`, `ContractBundle`, the
-  covenant helpers, entry-commitment codecs, and `upgrades`). The factory entry `ContractFactory`,
-  `getContractFactory`, and `deployContract` have their own `solidcash/contract-factory` subpath.
-- Other subpaths: `solidcash/message-bus` (composition and preflight namespace), `solidcash/framed`,
-  `solidcash/oracle`, `solidcash/network/electrum`, `solidcash/network/mock`, `solidcash/hdsigner`,
-  `solidcash/loop-call`, and `solidcash/walletconnect`.
-- `solidcash/vitest` installs SolidCash-aware Vitest matchers.
-- The `utils` namespace re-exports shared artifact, bytecode, encoding, and state-layout utilities.
+The package root stays lean: importing it does not load the stateful, mock-network or composition code. Each other
+area has its own entry point:
+
+| Entry point | Contents |
+|---|---|
+| `solidcash` | Stateless runtime: `Contract`, `TransactionBuilder`, `SignatureTemplate`, `Signer`, `Network`, the error classes, `randomUtxo`/`randomToken`/`randomNFT`, `gatherBchUtxos`/`gatherFungibleTokenUtxos`, `RegtestNetworkProvider`, `BitcoinRpcNetworkProvider`, `FullStackNetworkProvider`, and the `utils` namespace |
+| `solidcash/stateful` | `StatefulContract`, `ContractFactory`, `ContractBundle`, `SplitContractBundle`, `StateReader`, `ThreadManager`, `upgrades`, and the covenant, state-layout and event helpers |
+| `solidcash/contract-factory` | `ContractFactory`, `getContractFactory` and `deployContract` alone |
+| `solidcash/network/mock` | `MockNetworkProvider`, the in-process test network, and `FailingMockNetworkProvider` |
+| `solidcash/network/electrum` | `ElectrumNetworkProvider` |
+| `solidcash/hdsigner` | `HDSigner`, `HDPublicSigner`, `signersFromMnemonic`, `BCH_DEFAULT_HD_PATH` and `BCH_ACCOUNT_BRANCH` |
+| `solidcash/message-bus` | Message-bus composition (`compose`) and its preflight helpers (experimental) |
+| `solidcash/kernel` | The message-bus kernel route planners, for tooling (experimental) |
+| `solidcash/framed` | The framed convention: `framedDeploy`, `framedCall`, `framedRead`, `framedReceipt`, `framedQueue`, `framedComposer` and `framedReference` (experimental, see [Framed Composition](/docs/guides/framed-composition)) |
+| `solidcash/oracle` | Block oracle and blockhash co-spend helpers, such as `BlockOracleUpdater` and `resolveBlockhashCoSpend` |
+| `solidcash/bcmr` | BCMR token metadata: registry encoding, publication outputs and authchain helpers |
+| `solidcash/loop-call` | Builders for contracts that call a list of targets in a loop (`buildOpaqueLoopCallTransaction`, `buildTypedLoopCallTransaction`) |
+| `solidcash/walletconnect` | `placeholderSignature`, `placeholderPublicKey`, `placeholderP2PKHUnlocker` and the `Wc*` types |
+| `solidcash/vitest` | A side-effect import that installs the SolidCash Vitest matchers |
+
+The `utils` namespace re-exports the shared artifact, bytecode, encoding, and state-layout utilities of
+`@solidcash/utils`.
 
 For a complete project environment, use [SolidHat](/docs/tooling/solidhat). For direct test harness use, see
 [`@solidcash/testing`](/docs/tooling/testing-framework).
@@ -193,9 +210,9 @@ For a complete project environment, use [SolidHat](/docs/tooling/solidhat). For 
 
 The SDK bundles for the browser: no entry reaches the compiler. `compileFile*` reads the filesystem, and the compiler
 core hashes through `node:crypto` and keeps a disk cache, so compilation stays a Node.js step and a browser
-application supplies compiled artifacts. The proxy helper is the one exception: `buildProxyArtifact` compiles the
-generated proxy and refuses in a browser bundle, where a deployment behind a proxy takes the artifact as
-`proxyArtifact` instead.
+application supplies compiled artifacts. A [framed proxy deployment](/docs/guides/framed-composition#proxies)
+(experimental) is the one exception: it compiles the generated proxy, which a browser bundle refuses. Build the proxy
+artifact in Node.js and pass it to `upgrades.deployProxy` as the `proxy` option.
 
 A bundler also has to preserve top-level await. `@bitauth/libauth` instantiates its WebAssembly crypto behind a
 module-level `await`; Rollup, Vite and webpack handle that by default, and esbuild does it with `splitting: true`. A

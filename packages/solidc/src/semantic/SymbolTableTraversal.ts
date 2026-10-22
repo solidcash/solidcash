@@ -193,6 +193,9 @@ import {
   UndefinedExternalStateVariableError,
   UnsupportedExternalOutStateCollectionError,
   ExternalReadArgCountError,
+  ExternalReadTargetConflictError,
+  ExternalReadTargetReassignedError,
+  ExternalOutStateRecordCountError,
   UndefinedInterfaceFunctionError,
   MethodCallNotSupportedError,
   StructFieldExternalCallError,
@@ -236,7 +239,7 @@ import {
   IntType, FixedType, MappingType, FunctionType,
   type FunctionBlockLayout, type BlockLayoutSlot, resolveLibraries, type ExternalLibrary, parseTypeStrict,
   INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType, encodeInt, implicitlyCastable, type LocationI,
-  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX, EVENT_CHUNK_BYTES,
+  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX, EVENT_CHUNK_BYTES, libraryDefinedIds,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
@@ -260,9 +263,6 @@ export { getMaxPushdataEncodedSizeForType };
 // exactly those contracts - and the failure is silent, since the SDK enforces `trailingCapacity` only when the
 // layout declares one and otherwise appends the chunk run past the block, misaligning every later participant.
 const BALANCED_TRAILING_CAPACITY = 64;
-
-/** Trailing side-car slots reserved for a direct unbounded keccak256 chained read (one per 136-byte block). */
-const KECCAK_CHAIN_TRAILING_CAPACITY = 256;
 
 /** Deterministic evaluation-order numbering shared by entry writes and external graph calls. */
 class SourceEffectOrderTraversal extends AstTraversal {
@@ -910,6 +910,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   private writtenLocals: Set<string> = new Set();
   // The guard of each entry write IfConvertConditionalEntryOp kept in its branch (`keepsGuardedEntryWrite`).
   private keptEntryWriteGuards = new WeakMap<Node, ExpressionNode>();
+  // The address expression of each foreign read slot's first read (`assertExternalReadTarget`).
+  private readonly externalReadSlotTargets = new WeakMap<ExternalReadSlot | ExternalOutStateSlot, ExpressionNode>();
   // The names each statement of the current function writes, with and without tuple assignments (`followLocal`).
   private writtenNames = new WeakMap<Node, { readonly names: Set<string>; readonly tuples: Set<string> }>();
   private writtenNamesOf?: FunctionDefinitionNode;
@@ -993,6 +995,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   private isStatefulContract: boolean = false;
   private compilerOptions: CompilerOptions;
   private nextFunctionId: number = 0;
+  /** Ids a library this unit calls OP_DEFINEs when it loads; no function id of the unit may take one. */
+  private libraryDefinedFunctionIds = new Set<number>();
   private functionDefinitions: Map<string, FunctionDefinitionNode[]> = new Map();
   private constantMap: Map<string, ConstantDefinitionNode> = new Map();
   private contractMap: Map<string, ContractNode> = new Map();
@@ -1361,6 +1365,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.libraryEventSignatures = node.libraryEventSignatures;
     this.libraryAnonymousEvents = node.libraryAnonymousEvents;
     this.libraryErrorSignatures = node.libraryErrorSignatures;
+    this.libraryDefinedFunctionIds = this.loadedLibraryDefinedIds(node);
 
     // Pre-register free functions in global scope (so they can call each other and be called from contract)
     for (const func of node.freeFunctions) {
@@ -1390,7 +1395,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ));
       }
 
-      func.functionId = this.nextFunctionId++;
+      func.functionId = this.allocateFunctionId();
       const existing = this.functionDefinitions.get(func.name) ?? [];
       existing.push(func);
       this.functionDefinitions.set(func.name, existing);
@@ -2004,11 +2009,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
 
         // Assign OP_DEFINE function ID
-        func.functionId = this.nextFunctionId++;
+        func.functionId = this.allocateFunctionId();
       } else if (visibility === 'external') {
         // An external function is NOT registered as an identifier symbol (its name is not usable internally),
         // but it still gets an OP_DEFINE id so a `this.f()` self-call can invoke it as a subroutine.
-        func.functionId = this.nextFunctionId++;
+        func.functionId = this.allocateFunctionId();
       }
       const existing = this.functionDefinitions.get(func.name) ?? [];
       existing.push(func);
@@ -2019,7 +2024,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // with a raw payload routes to it, like the EVM's raw-calldata path). Register it like an external
     // function: an OP_DEFINE id + a functionDefinitions entry (its reserved __fallback name cannot collide).
     if (node.fallbackDef) {
-      node.fallbackDef.functionId = this.nextFunctionId++;
+      node.fallbackDef.functionId = this.allocateFunctionId();
       this.functionDefinitions.set(node.fallbackDef.name, [node.fallbackDef]);
     }
 
@@ -4051,10 +4056,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         // their shared transition as one batch (notably upgradeable initializers with literal-key inserts).
         // A split facet batches a lone write too: its root leaves batch-censused collections to the facet's exact
         // input and output counts, which is what lets a first-touch insert settle.
+        // A message-bus handler clone is flagged, not recognised by name: its route owns the topology.
         const splitFacetLoneWrite = this.currentContract?.isSplitFacet === true && fixedSortedWriteCount === 1;
         const ownsCollectionTopology = (node.modifiers.includes(FunctionModifier.DELEGATE)
           && fixedSortedWriteCount <= 1 && !splitFacetLoneWrite)
-          || (node.name.startsWith('__message_bus_') && !node.messageBusRoute);
+          || node.ownRecordsScalarOnly === true;
         if (!ownsCollectionTopology) {
           this.assignComposeAliasPriors(node, ordered, batchByCollection, loopWrittenCollections);
         }
@@ -4077,7 +4083,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // predecessor). Let it prove its key with the collection's first slot's proof input; the covenant refuses
         // a key a batch write targets, so a read never sees a written node's old value. Every write of the
         // collection must be a batch target for that check.
-        if (!node.messageBusRoute && !node.name.startsWith('__message_bus_')
+        if (!node.messageBusRoute && node.ownRecordsScalarOnly !== true
           && !node.modifiers.includes(FunctionModifier.DELEGATE) && this.compilerOptions.composition !== 'framed') {
           for (const info of ordered) {
             const coll = this.collectionMap.get(info.collection);
@@ -4272,6 +4278,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (bodySurvey.hasExternalRead) {
       const externalReadMap = new Map<string, ExternalReadSlot>();
       this.collectExternalReads(node.body, externalReadMap);
+      this.assertExternalReadTargetsFixed(node.body, externalReadMap.values());
 
       if (externalReadMap.size > 0) {
         let slotIndex = 0;
@@ -4852,10 +4859,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (bodySurvey.hasExternalOutStateRead) {
       const externalOutStateMap = new Map<string, ExternalOutStateSlot>();
       this.collectExternalOutStateReads(node.body, externalOutStateMap);
+      // A slot holding several data NFTs of one target is keyed under each of them.
+      const externalOutStateSlots = [...new Set(externalOutStateMap.values())];
+      this.assertExternalReadTargetsFixed(node.body, externalOutStateSlots);
 
-      if (externalOutStateMap.size > 0) {
+      if (externalOutStateSlots.length > 0) {
         let slotIndex = 0;
-        for (const slot of externalOutStateMap.values()) {
+        for (const slot of externalOutStateSlots) {
           slot.slotIndex = slotIndex++;
         }
 
@@ -4863,7 +4873,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // same interface+addressParam as an external call, share the call's UTXO group
         let allShared = true;
         if (node.externalCalls && node.externalCalls.length > 0) {
-          for (const osSlot of externalOutStateMap.values()) {
+          for (const osSlot of externalOutStateSlots) {
             const matchingCallSlot = node.externalCalls.find(
               (cs) => cs.interfaceName === osSlot.interfaceName
                 && cs.addressParam === osSlot.addressParam,
@@ -4877,8 +4887,18 @@ export default class SymbolTableTraversal extends AstTraversal {
         } else {
           allShared = false;
         }
+        // A target this function does not call settles as a participant of its own with one read data NFT.
+        const standaloneMultiRecord = externalOutStateSlots.find((slot) => slot.sharedWithCallSlotIndex === undefined
+          && slot.requiredDataNftIndices.length > 1);
+        if (standaloneMultiRecord) {
+          const target = this.externalReadSlotTargets.get(standaloneMultiRecord) ?? node;
+          throw new ExternalOutStateRecordCountError(
+            target, standaloneMultiRecord.interfaceName, target instanceof IdentifierNode ? target.name : '...',
+            standaloneMultiRecord.requiredDataNftIndices,
+          );
+        }
 
-        node.externalOutStateReads = [...externalOutStateMap.values()];
+        node.externalOutStateReads = externalOutStateSlots;
 
         // Propagate slot indices to individual outState access nodes
         this.assignExternalOutStateSlotIndices(node.body, externalOutStateMap);
@@ -6565,6 +6585,34 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
+  /**
+   * The non-negative ids the libraries this unit calls OP_DEFINE when they load (a registrar's own helpers), read
+   * by `libraryDefinedIds` as codegen reads them for its helper pool. A function calling a library loads it after
+   * the unit's own definitions, so a function id equal to one of them is defined twice at run time. keccak256 is
+   * never loaded: its side-car computes it.
+   */
+  private loadedLibraryDefinedIds(node: SourceFileNode): Set<number> {
+    const ids = new Set<number>();
+    if (!this.compilerOptions.userLibraries?.length) return ids;
+    const { contract } = node;
+    const functions = [...node.freeFunctions, ...(contract
+      ? [...contract.functions, contract.constructorDef, contract.fallbackDef, contract.receiveDef] : [])];
+    const called = new Map<string, number>();
+    const visited = new Set<Node>();
+    for (const fn of functions) if (fn?.body) this.countLibraryCalls(fn.body, called, visited);
+    called.delete(GlobalFunction.KECCAK256);
+    for (const name of called.keys()) {
+      for (const id of libraryDefinedIds(this.resolvedLibraries[name].blob)) if (id >= 0n) ids.add(Number(id));
+    }
+    return ids;
+  }
+
+  /** The next OP_DEFINE id for a function of this unit, past every id a library it calls defines. */
+  private allocateFunctionId(): number {
+    while (this.libraryDefinedFunctionIds.has(this.nextFunctionId)) this.nextFunctionId += 1;
+    return this.nextFunctionId++;
+  }
+
   private countLibraryCalls(
     node: Node, counts: Map<string, number> = new Map(), visited: Set<Node> = new Set(),
   ): Map<string, number> {
@@ -7876,33 +7924,47 @@ export default class SymbolTableTraversal extends AstTraversal {
   private collectExternalReads(node: Node, map: Map<string, ExternalReadSlot>): void {
     if (node instanceof ExternalStateAccessNode && node.readInfo) {
       const key = `${node.readInfo.interfaceName}:data:${node.readInfo.nftIndex}`;
-      if (!map.has(key)) {
+      const existing = map.get(key);
+      if (existing) {
+        this.assertExternalReadTarget(
+          existing, node, node.addressExpression, node.name, `data NFT ${node.readInfo.nftIndex}`,
+        );
+      } else {
         const addressParam = node.addressExpression instanceof IdentifierNode
           ? node.addressExpression.name : undefined;
-        map.set(key, {
+        const slot: ExternalReadSlot = {
           interfaceName: node.readInfo.interfaceName,
           kind: 'data',
           nftIndex: node.readInfo.nftIndex,
           addressParam,
           slotIndex: -1,
-        });
+        };
+        map.set(key, slot);
+        this.externalReadSlotTargets.set(slot, node.addressExpression);
       }
       return;
     }
 
     if (node instanceof ExternalMappingAccessNode && node.readInfo && !node.readInfo.outputState) {
       const key = `${node.readInfo.interfaceName}:entry:${node.readInfo.collectionSignature}`;
-      if (!map.has(key)) {
+      const existing = map.get(key);
+      if (existing) {
+        this.assertExternalReadTarget(
+          existing, node, node.addressExpression, node.name, `collection '${node.readInfo.collectionName}'`,
+        );
+      } else {
         const addressParam = node.addressExpression instanceof IdentifierNode
           ? node.addressExpression.name : undefined;
-        map.set(key, {
+        const slot: ExternalReadSlot = {
           interfaceName: node.readInfo.interfaceName,
           kind: 'entry',
           collectionName: node.readInfo.collectionName,
           collectionSignature: node.readInfo.collectionSignature,
           addressParam,
           slotIndex: -1,
-        });
+        };
+        map.set(key, slot);
+        this.externalReadSlotTargets.set(slot, node.addressExpression);
       }
       return;
     }
@@ -7975,6 +8037,81 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('parameters' in node && Array.isArray((node as any).parameters)) {
       for (const param of (node as any).parameters) {
         if (param instanceof Node) this.collectExternalReads(param, map);
+      }
+    }
+  }
+
+  /**
+   * A foreign read slot co-spends one record, pinned to the address of its first read, so a later read of the slot
+   * through another address would be served that record: refuse it. A first read through a non-parameter address
+   * leaves the slot without a pin, which code generation refuses.
+   */
+  private assertExternalReadTarget(
+    slot: ExternalReadSlot | ExternalOutStateSlot, read: Node, target: ExpressionNode, member: string, record: string,
+  ): void {
+    const first = this.externalReadSlotTargets.get(slot);
+    if (!(first instanceof IdentifierNode) || this.isExternalReadSlotTarget(slot, target)) return;
+    throw new ExternalReadTargetConflictError(
+      read, slot.interfaceName, member, record, first.name,
+      target instanceof IdentifierNode ? target.name : '...',
+    );
+  }
+
+  /** Whether `target` is the address of `slot`'s first read: the same name, bound to the same declaration. */
+  private isExternalReadSlotTarget(slot: ExternalReadSlot | ExternalOutStateSlot, target: ExpressionNode): boolean {
+    const first = this.externalReadSlotTargets.get(slot);
+    const declaration = (id: IdentifierNode): unknown => id.definition?.definition ?? id.definition;
+    return first instanceof IdentifierNode && target instanceof IdentifierNode && target.name === first.name
+      && declaration(target) === declaration(first);
+  }
+
+  /**
+   * Code generation pins each foreign read slot to the value its address name holds at the end of the function. A
+   * write to that name, or a second declaration of it, could move the pin off the target the slot's reads named.
+   */
+  private assertExternalReadTargetsFixed(
+    body: Node | undefined, slots: Iterable<ExternalReadSlot | ExternalOutStateSlot>,
+  ): void {
+    const targets = new Map<string, { interfaceName: string; first: IdentifierNode }>();
+    for (const slot of slots) {
+      const first = this.externalReadSlotTargets.get(slot);
+      if (first instanceof IdentifierNode && !targets.has(first.name)) {
+        targets.set(first.name, { interfaceName: slot.interfaceName, first });
+      }
+    }
+    if (!body || targets.size === 0) return;
+    const written = new Set<string>();
+    const declared = new Map<string, number>();
+    const declare = (name: string | undefined): void => {
+      if (name !== undefined) declared.set(name, (declared.get(name) ?? 0) + 1);
+    };
+    const skipped = new Set(['location', 'type', 'symbolTable', 'definition', 'references', 'resolvedFunction',
+      'functionReference', 'referencedContract', 'stateVariable', 'collection', 'sourceCallNode']);
+    const seen = new WeakSet<Node>();
+    const visit = (node: Node): void => {
+      if (seen.has(node) || node instanceof FunctionDefinitionNode || node instanceof ContractNode) return;
+      seen.add(node);
+      if (node instanceof AssignNode || node instanceof DeleteLocalNode) written.add(node.identifier.name);
+      else if (node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode || node instanceof ArrayPushNode
+        || node instanceof ArrayPopNode) written.add(node.name);
+      else if (node instanceof VariableDefinitionNode) declare(node.name);
+      else if (node instanceof TupleAssignmentNode) {
+        for (const element of node.elements) {
+          if (element.skip) continue;
+          if (!element.existing) declare(element.name);
+          else if (element.name !== undefined) written.add(element.name);
+        }
+      }
+      for (const [key, child] of Object.entries(node)) {
+        if (skipped.has(key)) continue;
+        if (child instanceof Node) visit(child);
+        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) visit(item);
+      }
+    };
+    visit(body);
+    for (const [name, { interfaceName, first }] of targets) {
+      if (written.has(name) || (declared.get(name) ?? 0) > 1) {
+        throw new ExternalReadTargetReassignedError(first, interfaceName, name);
       }
     }
   }
@@ -11272,36 +11409,51 @@ export default class SymbolTableTraversal extends AstTraversal {
   private collectExternalOutStateReads(node: Node, map: Map<string, ExternalOutStateSlot>): void {
     if (node instanceof ExternalMappingAccessNode && node.readInfo?.outputState) {
       const key = `${node.readInfo.interfaceName}:outState:collection:${node.readInfo.collectionSignature}`;
-      if (!map.has(key)) {
+      const existing = map.get(key);
+      if (existing) {
+        this.assertExternalReadTarget(
+          existing, node, node.addressExpression, `outState.${node.name}`,
+          `output collection '${node.readInfo.collectionName}'`,
+        );
+      } else {
         const addressParam = node.addressExpression instanceof IdentifierNode
           ? node.addressExpression.name : undefined;
-        map.set(key, {
+        const slot: ExternalOutStateSlot = {
           interfaceName: node.readInfo.interfaceName,
           addressParam,
           slotIndex: -1,
           requiredDataNftIndices: [],
-        });
+        };
+        map.set(key, slot);
+        this.externalReadSlotTargets.set(slot, node.addressExpression);
       }
       return;
     }
     if (node instanceof ExternalOutputStateAccessNode && node.accessInfo) {
-      const key = `${node.accessInfo.interfaceName}:outState:${node.accessInfo.nftIndex}`;
+      const { interfaceName, nftIndex } = node.accessInfo;
+      const key = `${interfaceName}:outState:${nftIndex}`;
       const existing = map.get(key);
+      const target = node.outStateNode.addressExpression;
       if (existing) {
-        if (!existing.requiredDataNftIndices.includes(node.accessInfo.nftIndex)) {
-          existing.requiredDataNftIndices.push(node.accessInfo.nftIndex);
-          existing.requiredDataNftIndices.sort((a, b) => a - b);
-        }
-      } else {
-        const addressParam = node.outStateNode.addressExpression instanceof IdentifierNode
-          ? node.outStateNode.addressExpression.name : undefined;
-        map.set(key, {
-          interfaceName: node.accessInfo.interfaceName,
-          addressParam,
-          slotIndex: -1,
-          requiredDataNftIndices: [node.accessInfo.nftIndex],
-        });
+        this.assertExternalReadTarget(
+          existing, node, target, `outState.${node.stateVarName}`, `output data NFT ${nftIndex}`,
+        );
+        return;
       }
+      // A target's master is co-spent once, so a read of another of its data NFTs joins the data slot already
+      // pinned to it. That slot is keyed under each of its NFTs.
+      const sibling = [...map.values()].find((slot) => slot.interfaceName === interfaceName
+        && slot.requiredDataNftIndices.length > 0 && this.isExternalReadSlotTarget(slot, target));
+      if (sibling) {
+        sibling.requiredDataNftIndices.push(nftIndex);
+        sibling.requiredDataNftIndices.sort((a, b) => a - b);
+        map.set(key, sibling);
+        return;
+      }
+      const addressParam = target instanceof IdentifierNode ? target.name : undefined;
+      const slot: ExternalOutStateSlot = { interfaceName, addressParam, slotIndex: -1, requiredDataNftIndices: [nftIndex] };
+      map.set(key, slot);
+      this.externalReadSlotTargets.set(slot, target);
       return;
     }
 
@@ -12712,7 +12864,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     node: FunctionDefinitionNode, ordered: EntryAccessInfo[], batchByCollection: ReadonlyMap<string, number[]>,
     loopWrittenCollections: ReadonlySet<string>,
   ): void {
-    if (node.messageBusRoute || node.name.startsWith('__message_bus_') || this.insideConstructor
+    if (node.messageBusRoute || node.ownRecordsScalarOnly === true || this.insideConstructor
       || node.modifiers.includes(FunctionModifier.DELEGATE) || this.compilerOptions.composition === 'framed'
       || !(node.body instanceof BlockNode)) return;
     const statements = node.body.statements ?? [];
@@ -18829,10 +18981,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       || (node.ecrecoverLoopReads === true && node.messageBusRoute !== true);
     const needsWideTrailingRegion = needsNonCounterWideTrailingRegion
       || runtimeCounterOutputCapacity > 0;
-    // A direct unbounded keccak256 chained read uses the trailing region even outside a message-bus route.
-    const chainedKeccakTrailing = node.keccakChainReads === true;
-    const needsTrailingRegion = chainedKeccakTrailing
-      || (node.name === '__message_bus1' && (needsWideTrailingRegion || collectionRouteCapacity > 0));
+    // A direct unbounded keccak256 chained read reserves no band: like a keccak loop's side-cars, its
+    // START/CONT/FINAL side-cars follow the block, one per step, and the read takes FINAL's index from the
+    // argument's length. A reserved band only made the SDK fund its unused slots.
+    const needsTrailingRegion = node.name === '__message_bus1'
+      && (needsWideTrailingRegion || collectionRouteCapacity > 0);
     if (!needsTrailingRegion) return { blockSize: offset, slots };
 
     const trailingBase = offset;
@@ -18840,12 +18993,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // than assuming one mapping plus the widest event site. Lowering also includes exact-count events before or
     // after the loop after moving them into the same source-ordered stream. Other runtime resources share this
     // bounded trailing band and the builder refuses a concrete transaction that exceeds it.
-    const trailingCapacity = chainedKeccakTrailing
-      ? KECCAK_CHAIN_TRAILING_CAPACITY
-      : runtimeCounterOutputCapacity > 0
-        ? runtimeCounterOutputCapacity
-        : needsWideTrailingRegion
-          ? Math.max(BALANCED_TRAILING_CAPACITY, fallbackCounterStreamCapacity) : collectionRouteCapacity;
+    const trailingCapacity = runtimeCounterOutputCapacity > 0
+      ? runtimeCounterOutputCapacity
+      : needsWideTrailingRegion
+        ? Math.max(BALANCED_TRAILING_CAPACITY, fallbackCounterStreamCapacity) : collectionRouteCapacity;
     for (let i = 0; i < trailingCapacity; i++) {
       slots.push({ kind: 'trailing', offset: offset++, slotIndex: i, conditional: true });
     }

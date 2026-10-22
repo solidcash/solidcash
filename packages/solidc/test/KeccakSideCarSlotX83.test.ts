@@ -90,7 +90,7 @@ interface KeccakAbiEntry {
   keccakInLoop?: boolean;
   keccakChainReads?: boolean;
   keccakPreimageParams?: (string | null)[];
-  blockLayout?: { blockSize: number; slots: { kind: string; slotIndex: number }[] };
+  blockLayout?: { blockSize: number; trailingBase?: number; slots: { kind: string; slotIndex: number }[] };
 }
 
 /** The refusal, or `undefined` if the fixture compiled. */
@@ -141,12 +141,13 @@ describe('X83: the shapes that compiled before keep their layouts', () => {
   // Each control asserts the LAYOUT as well as the compile: the mix reservation must not touch a function that
   // is all straight-line or all looped.
 
-  it('straightOnly: one unbounded call chains (no fixed slot, trailing region reserved)', () => {
+  it('straightOnly: one unbounded call chains (no fixed slot, no reserved band: its side-cars follow the block)', () => {
     const entry = entryOf(STRAIGHT_ONLY);
     expect(entry.keccakInLoop).toBeFalsy();
     expect(entry.keccakChainReads).toBe(true);
     expect(sideCarSlots(entry)).toEqual([]);
-    expect(entry.blockLayout?.slots.some((slot) => slot.kind === 'trailing')).toBe(true);
+    expect(entry.blockLayout?.slots.some((slot) => slot.kind === 'trailing')).toBe(false);
+    expect(entry.blockLayout?.trailingBase).toBeUndefined();
     expect(entry.keccakPreimageParams).toEqual(['a']);
   });
 

@@ -46,6 +46,7 @@ import {
 import {
   assertP2pkhShapeScript,
   blockRecordsNoContextCallScript,
+  countCategoryHoldersScript,
   countMastersScript,
   recogniseValidatorScriptAgainstReservedHash,
   requireSingleMasterScript,
@@ -693,6 +694,7 @@ class HeadEmitter {
     this.computeOrigin();
     this.assertSelfAddressForCodeConstantKinds();
     this.branchOnFrameKind();
+    this.assertDelegateCategoryUntouchedIfAdmitted();
     if (!this.handlesValue) this.assertZeroValue();
     this.branchOnValidatorNeed();
     // Whether the frame settles alone, and whose containers it pays from, are parked while the frame values are
@@ -907,6 +909,61 @@ class HeadEmitter {
   private assertDelegateFrame(): void {
     this.assertFrameKindValue(FRAME_KIND_DELEGATE);
     if (this.callDataSelectorUnconsumed) this.dropCallSelector();
+  }
+
+  /**
+   * Closes residual G0: a delegate frame's own category is settled by nobody when its master is its only one.
+   *
+   * A `DELEGATE` frame runs on its caller's records, so neither the master's own walk (S) nor the validator's
+   * census (V8) settles this contract when it is its category's only master in the transaction. Left open, a
+   * forwarding proxy could delegate into any framed contract and co-spend its records, containers and events while
+   * nobody holds them: its records rewritten (an owner takeover), its containers drained, events of its category
+   * minted. The guard requires the category untouched - present on exactly one input and one output, which the
+   * prologue already fixed as the recreated master - so no record, container token or event NFT of it is co-spent.
+   * A value-handling master also holds its own satoshi containers to not shrink, since those carry no token of the
+   * category and the count would miss them. Emitted only when the master admits delegate frames, and run only when
+   * the frame is one and the category has a single master; a second master routes settlement to the validator.
+   */
+  private assertDelegateCategoryUntouchedIfAdmitted(): void {
+    if (!this.admittedKinds.includes(FRAME_KIND_DELEGATE)) return;
+    this.emitBranch(
+      () => this.frameKindIs(FRAME_KIND_DELEGATE),
+      () => this.emitBranch(
+        () => {
+          this.emitInputIndex();
+          this.emitOp(Opcodes.OP_UTXOTOKENCATEGORY);
+          this.replaceTop('pin');
+          this.emitBytes(countMastersScript());
+          this.forget('pin');
+          this.push('masterCount');
+          this.pushNumber(1);
+          this.numequal();
+        },
+        () => this.assertDelegateCategoryUntouched(),
+        () => {},
+      ),
+      () => {},
+    );
+  }
+
+  /**
+   * Requires the running master's own category to appear on exactly one input and one output - the recreated
+   * master - and, for a value-handling master, its satoshi containers not to shrink. Model-neutral: it consumes
+   * everything it pushes, so the branch's two arms leave the same stack.
+   */
+  private assertDelegateCategoryUntouched(): void {
+    // The 32-byte category the active input carries, without the capability byte.
+    this.emitOp(Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY);
+    this.emitBytes(encodeDataPush(new Uint8Array([32])));
+    this.emitOp(Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+    this.emitOp(Opcodes.OP_DUP);
+    this.emitBytes(countCategoryHoldersScript('input'));
+    this.emitOp(Opcodes.OP_1, Opcodes.OP_NUMEQUALVERIFY);
+    this.emitBytes(countCategoryHoldersScript('output'));
+    this.emitOp(Opcodes.OP_1, Opcodes.OP_NUMEQUALVERIFY);
+    // A tokenless satoshi container carries no category token, so the counts above miss it; a master that holds
+    // value keeps its own containers from shrinking the way a standalone one does (audit FRAMED-CONT-1).
+    if (this.handlesValue) this.assertContainersDidNotShrink();
   }
 
   /**

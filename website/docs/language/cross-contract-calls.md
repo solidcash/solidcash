@@ -9,7 +9,9 @@ Typed calls also bind the compiler-known dispatch shape. Opaque low-level callda
 described below.
 
 That difference explains the whole call model: contract calls are synchronous and atomic, but every participating
-contract and auxiliary result must be represented by real transaction inputs or outputs.
+contract and auxiliary result must be represented by real transaction inputs or outputs. There is no call stack and
+no re-entrancy. A failing callee invalidates the whole transaction, so `try`/`catch` compiles but its catch bodies
+never run.
 
 ## Define an interface
 
@@ -49,6 +51,10 @@ contract CounterUser(address counter) {
 }
 ```
 
+The caller compares the co-spent callee master with that value, so the target must be a value the compiler can
+bind: a parameter, state, a literal, or one of the forms above. Any other target expression fails with
+`UnpinnedExternalCallTargetError`. Interface-typed handles work as well, for example `contract C(ICounter counter)`.
+
 Older code may declare the handle as `bytes`; the value is still the target locking bytecode. A 32-byte CashToken
 category by itself is not the external-call address.
 
@@ -72,6 +78,11 @@ ICounter(counter).add.staticcall(5);
 ```
 
 Use ordinary typed invocation unless an explicit mode is needed.
+
+:::caution Experimental
+Composed external state mutation, a typed call that changes the callee's state, is experimental in this release.
+Interface state reads, `outState` reads, and read-only `staticcall` are not affected by this label.
+:::
 
 ### What is authenticated
 
@@ -214,8 +225,8 @@ require(ok);
 ```
 
 The statement forms of `call` and `staticcall` bind the co-spent target. The expression form can read an
-identity/category-bound opaque return blob. `success` is `true` for a valid spend; a target or integrity failure
-invalidates the whole transaction rather than returning `false` as an EVM frame would.
+identity/category-bound opaque return blob. `success` is always `true`: a target or integrity failure invalidates
+the whole transaction rather than returning `false` as an EVM frame would.
 
 The current opaque path does **not** prove on chain that the payload bytes equal the unlocking arguments selected
 for the co-spent function, and it does not pin a dynamic selector the way a typed call does. The SDK needs the
@@ -353,19 +364,29 @@ operation-density limits. Deployment `salt` belongs to contract-creation flows.
 IPayee(payee).deposit{value: amount}();
 ```
 
-Inside stateful contracts, `msg.sender` is the locking bytecode of the authenticated calling contract, or
-`tx.origin` for a direct P2PKH-funded call. Co-presence of another contract in a transaction is not by itself caller
-authorization; generated call bindings or the message bus transcript establish the call edge.
+### How `msg.sender` is derived
+
+Inside a callee, `msg.sender` is the calling contract's address: the locking bytecode of its master, which the
+callee checks is co-spent in the same transaction. When no contract calls the function, `msg.sender` is
+`tx.origin`, the locking bytecode of the first P2PKH input that holds no tokens. A message-bus row's `msg.sender` is
+the caller recorded in the bus manifest.
+
+The value comes from the transaction's inputs, which the transaction builder chooses, not from a call frame.
+Co-presence of another contract in a transaction is not by itself caller authorization; generated call bindings or
+the message bus transcript establish the call edge. Authorize with `checkSig`, `checkMultiSig`, or
+`checkDataSig` rather than with `msg.sender` alone.
 
 ## Repeated calls and the message bus
 
 A UTXO can appear as an input only once. If an invocation graph calls the same physical contract repeatedly, a
 naive layout cannot spend its master once per logical call. Eligible contracts therefore receive a compiler-owned
 message-bus route. The bus executes multiple logical rows against one participant journal and settles one final
-replacement state atomically.
+replacement state atomically. Message-bus composition is experimental in this release.
 
 Use [Atomic Calls with the Message Bus](/docs/guides/message-bus) for graph composition, participant limits, and
-diagnostics. Direct calls remain the simpler path when every physical participant is used once.
+diagnostics. Direct calls remain the simpler path when every physical participant is used once. The framed
+convention (`composition: 'framed'`) is a separate, also experimental, composition model; see
+[Framed Composition](/docs/guides/framed-composition).
 
 ## Practical limits
 

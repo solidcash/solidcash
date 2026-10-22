@@ -455,28 +455,28 @@ export default class TypeCheckTraversal extends AstTraversal {
   /**
    * Visit every emit statement reachable from `node`. Covers all statement containers an emit can survive in:
    * blocks, switch cases, try/catch clauses, and the single-statement `body`/`block` carriers (`if`/`while`/
-   * `unchecked`).
+   * `unchecked`). `skipCatch` leaves out catch clauses, which never run on BCH.
    */
-  private visitEmits(node: Node | undefined, visit: (emit: EmitStatementNode) => void): void {
+  private visitEmits(node: Node | undefined, visit: (emit: EmitStatementNode) => void, skipCatch = false): void {
     if (!node) return;
     if (node instanceof EmitStatementNode) {
       visit(node);
       return;
     }
     if ('statements' in node && Array.isArray((node as any).statements)) {
-      for (const stmt of (node as any).statements) this.visitEmits(stmt, visit);
+      for (const stmt of (node as any).statements) this.visitEmits(stmt, visit, skipCatch);
     }
     if ('cases' in node && Array.isArray((node as any).cases)) {
-      for (const swCase of (node as any).cases) this.visitEmits(swCase, visit);
+      for (const swCase of (node as any).cases) this.visitEmits(swCase, visit, skipCatch);
     }
-    if ('catchClauses' in node && Array.isArray((node as any).catchClauses)) {
+    if (!skipCatch && 'catchClauses' in node && Array.isArray((node as any).catchClauses)) {
       for (const clause of (node as any).catchClauses) this.visitEmits(clause, visit);
     }
     if ('body' in node && (node as any).body) {
-      this.visitEmits((node as any).body, visit);
+      this.visitEmits((node as any).body, visit, skipCatch);
     }
     if ('block' in node && (node as any).block) {
-      this.visitEmits((node as any).block, visit);
+      this.visitEmits((node as any).block, visit, skipCatch);
     }
   }
 
@@ -485,7 +485,8 @@ export default class TypeCheckTraversal extends AstTraversal {
    * event is a lexical emit target but not a member of this contract's declaration list, so the artifact would
    * omit its schema. This runs AFTER type checking has selected `node.eventDefinition`, so an unused same-name
    * overload of a foreign event can no longer leak into the artifact's event inventory (Solidity lists emitted
-   * foreign events in the emitter's ABI).
+   * foreign events in the emitter's ABI). An emit in a catch clause never runs, so it lists nothing: the covenant
+   * pins no log for it (SEC-10).
    */
   private recordEmittedForeignEvents(node: Node | undefined): void {
     const contract = this.currentContract;
@@ -497,7 +498,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         && !contract.emittedForeignEvents.some((recorded) => recorded.signature === eventDefinition.signature)) {
         contract.emittedForeignEvents.push(eventDefinition);
       }
-    });
+    }, true);
   }
 
   private patchEmitSignatures(node: Node, emitInfos: EmitInfo[]): void {

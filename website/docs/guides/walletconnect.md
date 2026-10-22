@@ -8,7 +8,7 @@ SolidCash can prepare transactions for both BCH WalletConnect and WizardConnect.
 
 The BCH WalletConnect spec lays out a BCH-specific API for how Bitcoin Cash dapps can communicate with BCH wallets. BCH WalletConnect uses the generic WalletConnect transport layer, but the messages being exchanged are Bitcoin Cash-specific.
 
-The standard is supported in multiple wallets and dapps. You can find a list of Bitcoin Cash dapps supporting WalletConnect on [Tokenaut.scash].
+The standard is supported in multiple wallets and dapps. You can find a list of Bitcoin Cash dapps supporting WalletConnect on [Tokenaut.cash].
 
 :::tip
 The specification is called [`wc2-bch-bcr`][wc2-bch-bcr] and has extra discussion on the [BCH research forum].
@@ -294,7 +294,7 @@ async function signWizardTransaction(
 
 See the [WizardConnect documentation] for how to set up the `dappConnectionManager` and establish a connection with the user's wallet.
 
-[Tokenaut.scash]: https://tokenaut.scash/dapps?filter=walletconnect
+[Tokenaut.cash]: https://tokenaut.cash/dapps?filter=walletconnect
 [wc2-bch-bcr]: https://github.com/mainnet-pat/wc2-bch-bcr
 [BCH research forum]: https://bitcoincashresearch.org/t/wallet-connect-v2-support-for-bitcoincash/
 [hodl-vault-sign-client]: https://github.com/mr-zwets/bch-hodl-dapp/blob/main/src/store/store.ts#L60

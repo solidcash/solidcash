@@ -899,6 +899,14 @@ export class StatefulTransactionBuilder {
     return !this.keccakLoopPrecedesTrailingUser && this.insertLoopPredecessorInputs.length > 0;
   }
 
+  private get keccakSideCarsFollowBlock(): boolean {
+    const abiFunction = (this.masterUtxo?.unlocker as {
+      abiFunction?: { keccakChainReads?: boolean; keccakLoopReads?: boolean };
+    })?.abiFunction;
+    return this.keccakLoopSideCars.length > 0
+      && (abiFunction?.keccakChainReads === true || abiFunction?.keccakLoopReads === true);
+  }
+
   private blockLayout?: FunctionBlockLayout;
   private messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly valueChunkWriteStagingSession: ValueChunkWriteStagingSession;
@@ -2226,6 +2234,7 @@ export class StatefulTransactionBuilder {
       plannedReturnOutputIndex: this.plannedReturnOutputIndex,
       delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
+      keccakSideCarsFollowBlock: this.keccakSideCarsFollowBlock,
       builtReturnEventOutputIndices: this.builtReturnEventOutputIndices,
       tailReturnEventOutputs: () => this.tailReturnEventOutputs(),
       addReturnOutput,
@@ -6673,8 +6682,9 @@ export class StatefulTransactionBuilder {
         + `for category ${categoryId}`,
       );
     }
-    const hasNft = !!container.utxo.token?.nft;
-    return (inputFt - ftTransferred === 0n) && (!hasNft || nftTransferred);
+    // A minting NFT mints the sent NFT and stays, so its container never drains.
+    const nft = container.utxo.token?.nft;
+    return (inputFt - ftTransferred === 0n) && (nft === undefined || (nftTransferred && nft.capability !== 'minting'));
   }
 
   /**

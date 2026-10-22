@@ -4,6 +4,7 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeTransactionUnsafe } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+import type { AbiFunction, Artifact } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { TransactionDetails, Utxo } from '../interfaces.js';
 import {
@@ -27,9 +28,11 @@ import {
   getEventNftContinuationAddress,
   getSatoshiContainerAddress,
   getTokenContainerAddress,
+  isSatoshiContainerCoin,
+  isTokenContainerCoin,
 } from './covenant-helpers.js';
 import { StateReader } from './StateReader.js';
-import type { DestroyOptions, DestroyResult } from './stateful-lifecycle-types.js';
+import type { DestroyOptions, DestroyResult, LeftBehindCoin } from './stateful-lifecycle-types.js';
 import type { ConnectedStatefulContract } from './StatefulContract.js';
 
 async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigint> {
@@ -365,37 +368,29 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
     }
   }
 
-  // 5. Satoshi container UTXO (deterministic address)
-  const satoshiContainerInputs: Array<{ utxo: Utxo }> = [];
-  try {
-    const satContainerAddr = getSatoshiContainerAddress(
-      contract.inner, categoryId,
-    );
-    const satContainerUtxos = await provider.getUtxos(satContainerAddr);
-    for (const utxo of satContainerUtxos) {
-      satoshiContainerInputs.push({ utxo });
-    }
-  } catch {
-    // Satoshi container may not exist
-  }
-
-  // 6. Token container UTXOs (best-effort from extra category IDs)
-  const tokenContainerInputs: Array<{
-    utxo: Utxo; tokenContainerCategoryId: string;
-  }> = [];
-  for (const tcCatId of options.tokenContainerCategoryIds ?? []) {
-    try {
-      const tcAddr = getTokenContainerAddress(
-        contract.inner, categoryId, tcCatId,
-      );
-      const tcUtxos = await provider.getUtxos(tcAddr);
-      for (const utxo of tcUtxos) {
-        tokenContainerInputs.push({
-          utxo, tokenContainerCategoryId: tcCatId,
-        });
-      }
-    } catch {
-      // Token container may not exist
+  // 5-6. Containers. A satoshi container is a tokenless coin at its address, a token container a coin of its own
+  // address's category. Anyone can send coins there; anything else is junk, left in place and reported, so it cannot
+  // crowd the final batch or block the sweep on a token it carries. A listing error refuses: a container missed here
+  // is stranded once the master is gone.
+  const leftBehind: LeftBehindCoin[] = [];
+  const containersAt = async (address: string, isContainer: (utxo: Utxo) => boolean): Promise<Utxo[]> => (
+    (await provider.getUtxos(address)).filter((utxo) => {
+      if (isContainer(utxo)) return true;
+      leftBehind.push({
+        outpoint: `${utxo.txid}:${utxo.vout}`, address, satoshis: utxo.satoshis,
+        ...(utxo.token !== undefined && { token: utxo.token }),
+      });
+      return false;
+    })
+  );
+  const satoshiContainerUtxos = await containersAt(
+    getSatoshiContainerAddress(contract.inner, categoryId), isSatoshiContainerCoin,
+  );
+  const tokenContainerInputs: Array<{ utxo: Utxo; tokenContainerCategoryId: string }> = [];
+  for (const tcCatId of new Set((options.tokenContainerCategoryIds ?? []).map((id) => id.toLowerCase()))) {
+    const tcAddr = getTokenContainerAddress(contract.inner, categoryId, tcCatId);
+    for (const utxo of await containersAt(tcAddr, (coin) => isTokenContainerCoin(coin, tcCatId))) {
+      tokenContainerInputs.push({ utxo, tokenContainerCategoryId: tcCatId });
     }
   }
 
@@ -408,7 +403,7 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
     eventSignature?: string;
     tokenContainerCategoryId?: string;
   };
-  const allNftInputs: NftInput[] = [
+  const recordInputs: NftInput[] = [
     ...dataNftUtxos.map((u) => ({
       utxo: u, kind: 'data' as const,
     })),
@@ -423,8 +418,10 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
       utxo: c.utxo, kind: 'eventContinuation' as const,
       eventSignature: c.eventSignature,
     })),
-    ...satoshiContainerInputs.map((s) => ({
-      utxo: s.utxo, kind: 'satoshiContainer' as const,
+  ];
+  const containerInputs: NftInput[] = [
+    ...satoshiContainerUtxos.map((utxo) => ({
+      utxo, kind: 'satoshiContainer' as const,
     })),
     ...tokenContainerInputs.map((tc) => ({
       utxo: tc.utxo, kind: 'tokenContainer' as const,
@@ -432,70 +429,63 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
     })),
   ];
 
-  const totalInputs = masterUtxos.length + allNftInputs.length;
+  const totalInputs = masterUtxos.length + recordInputs.length + containerInputs.length;
   const builtTxs: DestroyBatch[] = [];
 
   if (totalInputs <= maxInputsPerTx) {
     // Single transaction: destroy everything at once
     const result = await buildDestroyTransactionHex(
       contract, categoryId, fee, recipient,
-      masterUtxos, allNftInputs,
+      masterUtxos, [...recordInputs, ...containerInputs],
       destroyFunctionName, destroyFunctionArgs,
       true, options.maxFee,
     );
     builtTxs.push(result);
   } else {
-    // Batch mode: prebuild ALL transactions before submitting any
-    const primaryMaster = { ...masterUtxos[0] };
-    const remainingMasters = masterUtxos.slice(1);
-    let remainingNfts = [...allNftInputs];
-
-    while (remainingNfts.length > 0) {
-      const batchSize = Math.min(remainingNfts.length, maxInputsPerTx - 1);
-      const isFinal = batchSize >= remainingNfts.length
-        && remainingMasters.length + 1 + batchSize <= maxInputsPerTx;
-
-      const batch = remainingNfts.splice(0, batchSize);
-
-      if (isFinal) {
-        const result = await buildDestroyTransactionHex(
-          contract, categoryId, fee, recipient,
-          [primaryMaster, ...remainingMasters], batch,
-          destroyFunctionName, destroyFunctionArgs,
-          true, options.maxFee,
-        );
-        builtTxs.push(result);
-        remainingMasters.length = 0; // Clear to prevent duplicate post-loop batch
-      } else {
-        const result = await buildDestroyTransactionHex(
-          contract, categoryId, fee, recipient,
-          [primaryMaster], batch,
-          destroyFunctionName, destroyFunctionArgs,
-          false, options.maxFee,
-        );
-        builtTxs.push(result);
-        // Compute txid locally to track master UTXO across batches without broadcasting
-        const { hash256: localHash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
-        const { binToHex: localBinToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
-
-        const localTxid = localBinToHex(localHash256(hexToBin(result.hex)).reverse());
-        primaryMaster.txid = localTxid;
-        primaryMaster.vout = 0;
-        // The batch may have paid part of its fee from the master: spend it at the value it left.
-        primaryMaster.satoshis = result.masterAmount ?? primaryMaster.satoshis;
-      }
+    // Batch mode: prebuild ALL transactions before submitting any. Every container goes in the final batch beside
+    // the masters: an intermediate batch recreates the master, so a direct container's pin there wants an output at
+    // its own input index, which the batch lacks.
+    const finalRoom = maxInputsPerTx - masterUtxos.length;
+    if (containerInputs.length > finalRoom) {
+      throw new Error(
+        `Destroy must spend all ${containerInputs.length} container coin(s) in its final transaction beside `
+        + `${masterUtxos.length} master(s), but maxInputsPerTx is ${maxInputsPerTx}: an intermediate batch `
+        + 'recreates the master, and a container spent there fails its covenant. Raise maxInputsPerTx, keeping the '
+        + 'final transaction within standard size.',
+      );
     }
+    const perBatch = maxInputsPerTx - 1;
+    const finalRecords = Math.max(0, Math.min(recordInputs.length, finalRoom - containerInputs.length));
+    const intermediateRecords = recordInputs.slice(0, recordInputs.length - finalRecords);
+    if (intermediateRecords.length > 0 && perBatch < 1) {
+      throw new Error('maxInputsPerTx must leave room for the master and a record in each intermediate destroy batch.');
+    }
+    const primaryMaster = { ...masterUtxos[0] };
+    const { hash256: localHash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
 
-    // If there are remaining masters (multi-threaded) that weren't included yet
-    if (remainingMasters.length > 0 && remainingNfts.length === 0) {
+    for (let start = 0; start < intermediateRecords.length; start += perBatch) {
       const result = await buildDestroyTransactionHex(
         contract, categoryId, fee, recipient,
-        [primaryMaster, ...remainingMasters], [],
+        [primaryMaster], intermediateRecords.slice(start, start + perBatch),
         destroyFunctionName, destroyFunctionArgs,
-        true, options.maxFee,
+        false, options.maxFee,
       );
       builtTxs.push(result);
+      // Compute txid locally to track master UTXO across batches without broadcasting
+      primaryMaster.txid = binToHex(localHash256(hexToBin(result.hex)).reverse());
+      primaryMaster.vout = 0;
+      // The batch may have paid part of its fee from the master: spend it at the value it left.
+      primaryMaster.satoshis = result.masterAmount ?? primaryMaster.satoshis;
     }
+
+    const result = await buildDestroyTransactionHex(
+      contract, categoryId, fee, recipient,
+      [primaryMaster, ...masterUtxos.slice(1)],
+      [...recordInputs.slice(recordInputs.length - finalRecords), ...containerInputs],
+      destroyFunctionName, destroyFunctionArgs,
+      true, options.maxFee,
+    );
+    builtTxs.push(result);
   }
 
   // Submit all prebuilt transactions sequentially
@@ -548,5 +538,18 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
     totalReclaimed += reclaimed;
   }
 
-  return { txs, totalReclaimed };
+  return { txs, totalReclaimed, leftBehind };
+}
+
+/**
+ * An ordinary call recreates the master and carries each record, so through a selfdestruct entry it retires nothing,
+ * and the entry refuses a carried record whose state changed. Retiring the contract takes the destroy sweep.
+ */
+export function refuseOrdinarySelfdestructCall(artifact: Artifact, abiFunction: AbiFunction | undefined): void {
+  if (!abiFunction?.modifiers?.includes('selfdestruct')) return;
+  throw new Error(
+    `${artifact.contractName}.${abiFunction.name}() is a selfdestruct entry: an ordinary call keeps the master and `
+    + 'retires nothing. Destroy the contract with StatefulContract.destroy, or StatefulContract.selfdestructTo for '
+    + 'selfdestruct(addr).',
+  );
 }

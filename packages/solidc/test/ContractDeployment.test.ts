@@ -123,9 +123,11 @@ describe('SBE-20: selfdestruct(addr) implies the selfdestruct modifier and pins 
       'contract C(pubkey admin) { int counter;'
       + ' function kill(sig s) selfdestruct { require(checkSig(s, admin)); } }',
     ).debug.bytecode));
-    // Address pin: outputs[0].lockingBytecode == addr (statement-specific; absent from the modifier-only form).
-    expect(stmt).toContain('OP_OUTPUTBYTECODE');
-    expect(modOnly).not.toContain('OP_OUTPUTBYTECODE');
+    // Address pin: outputs[0].lockingBytecode == addr (statement-specific; absent from the modifier-only form). Both
+    // forms also hold an own-category NFT output to its same-index input's lock (the selfdestruct bound).
+    expect(stmt).toContain('OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY');
+    expect(modOnly).not.toContain('OP_0 OP_OUTPUTBYTECODE');
+    expect(modOnly).toContain('OP_UTXOBYTECODE OP_OVER OP_OUTPUTBYTECODE OP_EQUALVERIFY');
     // Value pin: exactly one output, so the freed value can only land at addr (or miner fee), never siphoned.
     expect(stmt).toContain('OP_TXOUTPUTCOUNT OP_1 OP_NUMEQUALVERIFY');
     // Value floor: sum all input values (loop) then require (inputSum - outputs[0].value) < 2000 (the fee).

@@ -33,10 +33,12 @@ describe('atomic verifier bytecode specialization', () => {
     // direct -7 B, composed -27 B once the token container covenant lost its merge path (efba0f1ef) and the keep
     // of an unnamed container refused a minting NFT (306318a0b). The master pin's destroy arm (3fc5969bd) added
     // +44 / +46 B until 3ca6b0a42 kept it to contracts that can selfdestruct.
+    // +35 B direct / +97 B composed for the C3 record pin: the own-category count holds each record at its own
+    // index, and the route pins its records past the block, skipping its verifier by the bound index.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 622,
-      composed: 1700,
-      frameworkTax: 1078,
+      direct: 657,
+      composed: 1797,
+      frameworkTax: 1140,
     });
     expect(composed).toBeLessThanOrEqual(1900);
     expect(composed - direct).toBeLessThanOrEqual(1360);

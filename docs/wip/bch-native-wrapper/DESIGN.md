@@ -1,9 +1,10 @@
 # BchNativeWrapper: an ERC-20 over an existing CashTokens category (design)
 
 Kind: design, implemented on `feat/bch-native-wrapper` (`667a07d70`, `f15afb05b`, `e72f00338`, `7b5e6bbdf`,
-`3826c823e`), which also carries master's BCMR authhead work up to `ee0349bb0` (D46 to D48); not merged into master
-yet. Written 2026-10-21 against master `063f32514` and revised three times the same day with the user's answers
-(sections 11 and 12). The decisions are D41 to D45 in `docs/framed/DECISIONS.md`, which wins over this file.
+`3826c823e`, `5eb50e55f`) and merged into master on 2026-10-22, where CRYPTO-4's upgrade planner now migrates every
+live container coin (D45, section 10). Written 2026-10-21 against master `063f32514` and revised three times the same day
+with the user's answers (sections 11 and 12). The decisions are D41 to D45 in `docs/framed/DECISIONS.md`, which wins
+over this file.
 
 Sources: `packages/solidcash/contracts/` (ERC20, BchNative and its layers), `docs/bcmr/DESIGN.md` (section 6),
 `packages/solidc/docs/native-erc20.md` (supply model, reserve container), `docs/framed/AUDIT_MSG_SENDER.md` (F12) and
@@ -304,6 +305,7 @@ The sum of `balanceOf` equals `totalSupply()` by construction; only a hand-built
 | `nativeToken.category` and its checks | `src/bcmr/deployment.ts` (`wrappedCategory`, `prepareMetadata`); `src/stateful/sc-deploy.ts` (the reserve lock for the extension) | the new file |
 | The registry for C alone | `src/bcmr/deployment.ts` | the new file |
 | Every container coin migrates (D45) | `packages/solidc/src/generation/GenerateTargetTraversal.ts` (`emitUpgradeTokenBandCount` and the indices after the band), `src/stateful/sc-upgrade.ts` | `TokenContainerUpgradeMigration.test.ts` (three new cases) |
+| CRYPTO-4's planner at the merge: every live container coin, no fixed slot count | `src/stateful/sc-upgrade.ts` (`planTokenContainers`) | `UpgradeMigrationCompleteness.test.ts` (two cases changed, one new) |
 | The `virtual` warning (D45) | `packages/solidc/src/semantic/SymbolTableTraversal.ts` | `ImportedDiagnosticPositionX93.test.ts` (its probe dropped) |
 | Docs | `contracts/README.md`, `docs/bcmr/DESIGN.md` 6.8, `website/docs/guides/deployment.md`, `docs/design/CONCEPT_VALIDATION.md` | |
 

@@ -118,6 +118,25 @@ export function emitsAnyEvent(contract: ContractNode): boolean {
   });
 }
 
+/**
+ * Signatures of the events the members of `contract` emit, from the same emit metadata and walk as `emitsAnyEvent`,
+ * so a contract that emits any of them has events.
+ */
+export function emittedEventSignatures(contract: ContractNode): Set<string> {
+  const members = [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions];
+  const signatures = new Set<string>();
+  for (const info of members.flatMap((fn) => fn?.emitInfos ?? [])) {
+    const signature = info.eventDefinition?.signature || info.eventSignature;
+    if (signature) signatures.add(signature);
+  }
+  const visit = (node: Node): void => {
+    if (node instanceof EmitStatementNode && node.eventDefinition) signatures.add(node.eventDefinition.signature);
+  };
+  const seen = new Set<object>();
+  for (const fn of members) walkInvocationAst(fn?.body, visit, seen);
+  return signatures;
+}
+
 /** Walk executable nodes with the names actually in scope at each source position. */
 function walkScopedFootprintAst(
   value: Node | undefined,

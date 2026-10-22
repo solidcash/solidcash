@@ -30,7 +30,8 @@ contract Router() {
 }
 ```
 
-- Multiple `case` values, with `break` to exit
+- One value per `case`
+- Cases do not fall through: each case ends at the next `case` or `default`, and a trailing `break` is optional
 - Optional `default` branch
 - Works in stateful contracts (state is tracked across branches)
 
@@ -165,7 +166,7 @@ contract Reader(address counter) {
 
 ```solidity
 interface ITarget {
-    function increment(pubkey pk, sig s);
+    function increment();
 }
 
 contract Caller(address target) {
@@ -180,7 +181,18 @@ contract Caller(address target) {
 ```
 
 - `.call()` - stateful call (target can modify its own state)
-- `.staticcall()` - read-only (target state changes are not committed)
+- `.staticcall()` - read-only (the target's state must come out unchanged)
+
+The target is an `address`: the locking bytecode of the callee's master UTXO, which the caller checks against the
+co-spent input. A 32-byte category id is not a call target. Caller and callee are inputs of one transaction, so a
+failing callee fails the whole transaction.
+
+:::caution Experimental
+A call that changes the callee's state is composed external state mutation, which is experimental in 0.13.1.
+Calling the same contract twice in one transaction, or a call cycle, needs the
+[message bus](/docs/guides/message-bus), which is also experimental. External state reads, `.outState` reads and
+`.staticcall()` are not affected.
+:::
 
 Typed returns, low-level calls, SDK target binding, and the authenticated return-event NFT protocol are covered in
 [Cross-Contract Calls & Results](/docs/language/cross-contract-calls).
@@ -188,7 +200,9 @@ Typed returns, low-level calls, SDK target binding, and the authenticated return
 ## Delegatecall & Proxy Pattern
 
 Proxies, the inferred delegate build, and layout compatibility are covered in
-[Contract Creation & Lifecycle](/docs/language/contract-creation#proxy-and-delegatecall).
+[Contract Creation & Lifecycle](/docs/language/contract-creation#proxy-and-delegatecall). The built-in proxy
+profile (`upgrades.deployProxy`) is the stable path; custom forwarders and manual `delegatecall` forwarding are
+experimental.
 
 ## Fallback & Receive Functions
 
@@ -210,7 +224,8 @@ contract Power() {
 ```
 
 - Right-associative: `2 ** 3 ** 2` is `2 ** 9`, i.e. `512`
-- The exponent must be an **unsigned** type. A signed `int` exponent is a compile error: use `uint`/`uintN`
+- The exponent must be an **unsigned** type. A signed `int` exponent is a compile error: use `uint`/`uintN`.
+  A `bigint` exponent is accepted and checked to be non-negative at run time
 
 ## Date Literals
 
@@ -225,7 +240,7 @@ contract Deadline() {
 }
 ```
 
-Compiles to a Unix timestamp integer at compile time.
+Compiles to a Unix timestamp integer at compile time. The date is read as UTC.
 
 :::note
 The full `YYYY-MM-DDThh:mm:ss` form is required. A date-only string such as `date("2025-12-31")` is a compile
@@ -254,7 +269,7 @@ interface IRisky {
     function compute() returns (int);
 }
 
-contract Guarded(bytes32 target) {
+contract Guarded(address target) {
     int last;
 
     function attempt() public {
@@ -271,7 +286,8 @@ contract Guarded(bytes32 target) {
 The `try` block runs, but **catch bodies are dead code**. A failed opcode aborts the Bitcoin Cash script
 outright and execution cannot be resumed, so there is nothing to catch. `try`/`catch` parses and the `try`
 path compiles so that ported Solidity sources build, and the compiler warns about the divergence. Do not rely
-on a `catch` branch for error recovery.
+on a `catch` branch for error recovery. Like any call target, `target` is an `address`, and a typed call that
+changes the callee's state is experimental.
 :::
 
 ## `msg` and `tx` Globals

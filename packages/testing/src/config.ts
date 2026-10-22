@@ -5,9 +5,11 @@
  * loads directly).
  */
 import { pathToFileURL } from 'url';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join, resolve } from 'path';
+import {
+  dirname, isAbsolute, join, relative, resolve, sep,
+} from 'path';
 import type { TypegenTarget } from './typegen.js';
 
 export interface NetworkConfig {
@@ -28,6 +30,7 @@ export interface NetworkConfig {
   }>;
   policy?: Partial<{
     enforceDust: boolean;
+    /** Mock only: cap every input at BCH's 10,000 bytes, so tests and `solidhat compile` meet the real limit. */
     enforceProductionInputLimit: boolean;
   }>;
   /**
@@ -57,8 +60,17 @@ export interface SolidcashConfig {
     contracts?: string;
     artifacts?: string;
     tests?: string;
+    /**
+     * Compile cache root, `~/.cache/solidcash` by default. Compile trusts its entries as compiled output, so anyone
+     * who can write this directory can substitute artifacts. A directory inside the project needs `trustProjectCache`.
+     */
     cache?: string;
   };
+  /**
+   * Use a `paths.cache` inside the project directory. Off by default: a cloned repository can ship cache entries
+   * that replace the artifacts of its reviewed sources, so such a path is ignored for the per-user cache.
+   */
+  trustProjectCache?: boolean;
   networks?: Record<string, NetworkConfig>;
   defaultNetwork?: string;
   /** The HD mnemonic getSigners derives from (defaults to the hardhat `test test ... junk` phrase). */
@@ -121,6 +133,7 @@ export const solidcashConfigSchema = {
     compiler: { type: 'object' }, solc: { type: 'object', deprecated: true },
     composition: { enum: ['direct', 'framed'] },
     logicalIdentity: { type: 'boolean' },
+    trustProjectCache: { type: 'boolean' },
     networks: { type: 'object', additionalProperties: { type: 'object' } },
     accounts: { type: 'object' },
     typegen: { type: 'object', properties: { targets: { type: 'array', items: {
@@ -187,10 +200,47 @@ function parentDirectories(start: string): string[] {
   }
 }
 
+/**
+ * Why another local user could have planted `file`: neither this user nor root owns it, or it sits in a
+ * world-writable directory without the sticky bit. Windows has no uid and is not checked. A checkout another uid owns
+ * (a container running as root over a mounted tree) is trusted with `SOLIDCASH_TRUST_CONFIG_OWNER=1`.
+ */
+function plantedBy(file: string): string | undefined {
+  if (typeof process.getuid !== 'function') return undefined;
+  const uid = process.getuid();
+  const owner = statSync(file).uid;
+  if (owner !== uid && owner !== 0 && process.env.SOLIDCASH_TRUST_CONFIG_OWNER !== '1') {
+    return `it is owned by uid ${owner}, not by this user (uid ${uid}); set SOLIDCASH_TRUST_CONFIG_OWNER=1 to trust it`;
+  }
+  const directory = dirname(file);
+  const { mode } = statSync(directory);
+  if ((mode & 0o002) !== 0 && (mode & 0o1000) === 0) return `${directory} is world-writable without the sticky bit`;
+  return undefined;
+}
+
+const warnedPlanted = new Set<string>();
+
+/** `file` exists and no other local user could have put it there; a skipped file is reported once. */
+function ownedFile(file: string): boolean {
+  if (!existsSync(file)) return false;
+  let reason: string | undefined;
+  try {
+    reason = plantedBy(file);
+  } catch (error) {
+    reason = (error as Error).message;
+  }
+  if (reason === undefined) return true;
+  if (!warnedPlanted.has(file)) {
+    warnedPlanted.add(file);
+    console.warn(`SolidCash: ignoring ${file}: ${reason}.`);
+  }
+  return false;
+}
+
 /** A directory that bounds config discovery: the nearest package or git root, else `start` itself. */
 function projectRoot(start: string): string {
   for (const current of parentDirectories(start)) {
-    if (existsSync(join(current, 'package.json')) || existsSync(join(current, '.git'))) return current;
+    if (ownedFile(join(current, 'package.json')) || ownedFile(join(current, '.git'))) return current;
   }
   return resolve(start);
 }
@@ -201,11 +251,11 @@ export function findConfigFile(dir: string = process.cwd()): string | undefined 
   for (const current of parentDirectories(dir)) {
     for (const name of CONFIG_BASENAMES) {
       const candidate = join(current, name);
-      if (existsSync(candidate)) return candidate;
+      if (ownedFile(candidate)) return candidate;
     }
     for (const name of HARDHAT_CONFIG_BASENAMES) {
       const candidate = join(current, name);
-      if (!existsSync(candidate)) continue;
+      if (!ownedFile(candidate)) continue;
       const source = readFileSync(candidate, 'utf8')
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/\/\/.*$/gm, '');
@@ -222,7 +272,7 @@ export function findHardhatConfigFile(dir: string = process.cwd()): string | und
   for (const current of parentDirectories(dir)) {
     for (const name of HARDHAT_CONFIG_BASENAMES) {
       const candidate = join(current, name);
-      if (existsSync(candidate)) return candidate;
+      if (ownedFile(candidate)) return candidate;
     }
     if (current === root) break;
   }
@@ -249,22 +299,42 @@ function fromHardhatConfig(config: HardhatCompatConfig): SolidcashConfig {
       contracts: embedded.paths?.contracts ?? config.paths?.sources,
       tests: embedded.paths?.tests ?? config.paths?.tests,
       artifacts: embedded.paths?.artifacts ?? config.paths?.artifacts,
-      cache: embedded.paths?.cache ?? config.paths?.cache,
+      // Hardhat's cache root is not inherited: a SolidCash cache inside the project is opted into explicitly.
+      cache: embedded.paths?.cache,
     },
     mnemonic: embedded.mnemonic ?? hardhatAccounts?.mnemonic,
     accounts: embedded.accounts ?? inheritedAccounts,
   };
 }
 
+/** Drop a `paths.cache` inside the project unless the config trusts it, so the per-user cache serves instead. */
+function withTrustedCache(config: SolidcashConfig, configDir: string): SolidcashConfig {
+  const cache = config.paths?.cache;
+  if (cache === undefined || config.trustProjectCache === true) return config;
+  const directory = resolve(configDir, cache);
+  const inside = relative(configDir, directory);
+  if (isAbsolute(inside) || inside === '..' || inside.startsWith(`..${sep}`)) return config;
+  console.warn(
+    `SolidCash: ignoring paths.cache ${directory}: compile trusts its entries, and it is inside the project. `
+    + 'Set trustProjectCache: true to use it.',
+  );
+  return { ...config, paths: { ...config.paths, cache: undefined } };
+}
+
 /** Load and resolve the config from `dir` (empty config if none found). */
 export async function loadConfig(dir: string = process.cwd()): Promise<ResolvedConfig> {
   const file = findConfigFile(dir);
   if (!file) return resolveConfig({});
+  const configDir = dirname(file);
+  if (configDir !== resolve(dir) && !warnedPlanted.has(`load:${file}`)) {
+    warnedPlanted.add(`load:${file}`);
+    console.warn(`SolidCash: loading ${file}, which is not in ${resolve(dir)}.`);
+  }
   const mod = await import(pathToFileURL(file).href);
   const exported = (mod.default ?? mod.config ?? {}) as SolidcashConfig & HardhatCompatConfig;
   const isHardhat = HARDHAT_CONFIG_BASENAMES.some((name) => file.endsWith(name));
   const user = isHardhat ? fromHardhatConfig(exported) : exported;
-  return resolveConfig(user, dirname(file));
+  return resolveConfig(withTrustedCache(user, configDir), configDir);
 }
 
 /** Generate a standalone SolidCash config from the nearest Hardhat config without modifying the original. */

@@ -51,6 +51,8 @@ export function materializeCreateBuilderSyntheticArgs(
   const outStateInputCount = params.outStateInputCount as number;
   const iterationEntryInputs = params.iterationEntryInputs as readonly unknown[];
   const externalCallGroupCount = params.externalCallGroupCount as number | undefined;
+  // The published calls left after their activation was evaluated; a call missing from it is not reached.
+  const reachedExternalCalls = params.reachedExternalCalls as readonly ExternalCallAbi[] | undefined;
 
   // B8: a returning entry function takes a hidden __internal__returnOutputIdx. Default it to -1 (the
   // covenant computes the return value but does not emit it on-chain); opt-in emit sets a real index.
@@ -161,19 +163,28 @@ export function materializeCreateBuilderSyntheticArgs(
 
   // A build that co-spends no callee states each skipped conditional call as not made, by a negative master index:
   // a returning one when its return index is -1, a non-returning one always. A path that makes the call fails at
-  // its call site, which requires a non-negative master index.
-  if (abiFunction && externalCallGroupCount === 0 && !overrides?.returnProbeOnly) {
+  // its call site, which requires a non-negative master index. A return probe keeps an unresolved call at its
+  // planned base; one whose published activation is false it states as the send does, return index included.
+  const probeStatesUnreached = overrides?.returnProbeOnly === true && reachedExternalCalls !== undefined;
+  if (abiFunction && externalCallGroupCount === 0 && (!overrides?.returnProbeOnly || probeStatesUnreached)) {
     const calls = (abiFunction.externalCalls ?? []) as readonly (ExternalCallAbi & { occurrence?: string })[];
     const returning = calls.filter((call) => call.hasReturnValues);
     const positionOf = (name: string): number => abiFunction!.inputs.findIndex((input) => input.name === name);
+    const returnPositionOf = (call: ExternalCallAbi): number => positionOf(returning.length === 1
+      ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${returning.indexOf(call)}`);
     const skipped = calls.map((call) => {
       if (call.occurrence !== 'conditional' || call.loopArrayVar) return false;
+      if (probeStatesUnreached) return !reachedExternalCalls!.includes(call);
       if (!call.hasReturnValues) return true;
-      const ordinal = returning.indexOf(call);
-      const position = positionOf(returning.length === 1
-        ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${ordinal}`);
+      const position = returnPositionOf(call);
       return position >= 0 && finalArgs[position] === -1n;
     });
+    if (probeStatesUnreached) {
+      calls.forEach((call, slot) => {
+        const position = skipped[slot] && call.hasReturnValues ? returnPositionOf(call) : -1;
+        if (position >= 0) finalArgs[position] = -1n;
+      });
+    }
     let ownMasterIndices = false;
     calls.forEach((_call, slot) => {
       const position = positionOf(`__internal__extcallMasterIdx${slot}`);

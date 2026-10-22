@@ -4,7 +4,7 @@
  */
 
 import type { Artifact, ExternalCallAbi, FunctionSplitBundle } from '@solidcash/utils';
-import type { AddressType, Output, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
+import type { AddressType, Output, TokenDetails, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
 import type { FramedGenesisHeadCollection } from '../framed/deploy/genesis.js';
 import type { FunctionArgument, ConstructorArgument } from '../Argument.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
@@ -124,23 +124,41 @@ export interface UpgradeOptions<T extends Artifact = Artifact> {
   addressType?: AddressType;          // default: match old contract's addressType
   fee?: bigint;                       // default: 1000n
   maxFee?: bigint;                   // maximum allowed fee (throws if exceeded)
-  fundingUtxo?: Utxo;                // required when new layout needs additional data NFTs
-  funder?: Unlocker;                  // required when new layout needs additional data NFTs
+  /** Pays every step: required for added data NFTs, for entry migrations, and on any network but the mock. */
+  fundingUtxo?: Utxo;
+  funder?: Unlocker;                  // unlocks fundingUtxo and the change each entry migration returns to its lock
   changeAddress?: string;             // change address for leftover funding satoshis
   /**
-   * The categories whose token containers migrate: every coin at each one's container lock moves. A container keyed
-   * by a state variable (BchNative's reserve) is added from the contract's state.
+   * Foreign categories whose containers migrate, every coin at each one's container lock; own- and immutable-keyed
+   * ones (BchNative's reserve) are found without naming them.
    */
   tokenContainerCategoryIds?: string[];
   /** The migrateRecords entry to drain mapping/array entries before the upgrade (name + its user args). */
   migrateRecordsFunctionName?: string;
   migrateRecordsFunctionArgs?: FunctionArgument[];
+  /**
+   * Container coins (`txid:vout`) to abandon at the old lock, where nothing can spend them again: anyone can send a
+   * coin to a container address, and the covenant migrates exactly one satoshi-container coin.
+   */
+  leaveBehind?: string[];
+}
+
+/**
+ * A coin left at a container lock, with its value: a surplus container an upgrade's `leaveBehind` abandons at the old
+ * lock, or junk at a container address that a destroy does not spend.
+ */
+export interface LeftBehindCoin {
+  outpoint: string;
+  address: string;
+  satoshis: bigint;
+  token?: TokenDetails;
 }
 
 export interface UpgradeResult<T extends Artifact = Artifact> {
   contract: ConnectedStatefulContract<T>;
   tx: TransactionDetails;
   categoryId: string;
+  leftBehind: LeftBehindCoin[];
 }
 
 export interface DestroyOptions {
@@ -159,6 +177,8 @@ export interface DestroyOptions {
 export interface DestroyResult {
   txs: TransactionDetails[];          // 1 or more transactions
   totalReclaimed: bigint;             // total satoshis sent to recipient
+  /** Junk at a container address (not a container of it), left where nothing spends it once the master is gone. */
+  leftBehind: LeftBehindCoin[];
 }
 
 export interface DeployFromOptions<T extends Artifact = Artifact> {

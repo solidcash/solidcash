@@ -1322,11 +1322,18 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // START/CONT/FINAL side-cars. Resolve them here so the finalized transaction co-spends them at
   // trailingBase + i; the derivation probe above already used the same side-cars to derive the digest state.
   let deployKeccakChain: { sideCars: UnlockableUtxo[]; recreates: Output[] } | undefined;
+  // The default fee's slot term does not cover the chain: each step spends ~3.9 KB (budget pad, redeem, its
+  // recreation) and FINAL also carries the whole argument.
+  let chainFee = 0n;
   if (deployAbi.keccakChainReads) {
     const chainResolution = await (factory as any)._resolveKeccakComputeCoSpends(deployAbi, finalArgs, {
       masterUtxo, stateInputUnlocker, dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
     });
     deployKeccakChain = chainResolution.chain;
+    const preimage: Uint8Array | null | undefined = chainResolution.preimages?.[0];
+    if (options.fee === undefined && deployKeccakChain) {
+      chainFee = BigInt(deployKeccakChain.sideCars.length * 4_000 + (preimage?.length ?? 0));
+    }
   }
 
   // Deploy-then-call fold: the covenant may verify a post-call child genesis (a same-tx
@@ -1634,7 +1641,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // recreated remainder; each transfer output's dust comes from the funding inputs).
   const changeAmount = totalFundingSats + trailingPadSats + chainPadSats - totalChildCost - totalEntryCost
     - totalDynamicChunkCost - eventCost - returnEventCost
-    - tokenTransferCost - fee;
+    - tokenTransferCost - fee - chainFee;
   if (changeAmount > 0n) {
     if (!changeAddress) {
       throw new Error(

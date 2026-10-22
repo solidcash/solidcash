@@ -16,13 +16,19 @@ event Approval(bytes20 indexed owner, bytes20 indexed spender, int amount);
 
 ### Indexed Parameters
 
-Mark up to three parameters as `indexed`. The SDK accepts filters only for these named parameters, matching the
-Solidity API contract. All parameters remain encoded in the NFT commitment; a basic UTXO provider returns the
-event-address UTXOs and the SDK applies indexed filters after decoding them.
+Mark parameters `indexed` to make them filterable. The SDK accepts filters only for these named parameters,
+matching the Solidity API contract. Solidity allows up to three indexed parameters (four on an anonymous event),
+and `evmCompat` enforces that limit.
+
+There are no topics and no bloom filter. Every parameter, indexed or not, is encoded in the NFT commitment, so
+indexing costs nothing on chain. A provider returns the UTXOs at the event's address and the SDK applies the
+indexed filters after decoding them.
 
 ### Anonymous Events
 
-Anonymous events share a single NFT address, reducing on-chain overhead:
+An anonymous event leaves its signature out of its address. All anonymous events of a contract share one NFT
+address, and a reader tells them apart by decoding each record against the contract's anonymous event
+definitions:
 
 ```solidity
 event Debug(string message) anonymous;
@@ -30,7 +36,8 @@ event Debug(string message) anonymous;
 
 ### Scope
 
-Events can be defined at file level, contract level, or in interfaces:
+Events can be defined at file level, contract level, library level, or in interfaces. Event names may be
+overloaded with different parameter types:
 
 ```solidity
 // File-level
@@ -74,6 +81,11 @@ contract Token() {
 signature. An anonymous event uses one shared address for the contract. The record remains directly queryable while
 its NFT is unspent.
 :::
+
+Arguments may also be passed by name, in any order: `emit Transfer({from: sender, to: to, amount: amount});`.
+
+Each event NFT carries the emitting contract's token category, so events are a stateful-contract feature: the
+emitting contract lives in its own CashToken category, like a contract with state variables.
 
 ## Event NFT Protocol
 
@@ -120,6 +132,10 @@ form. See [Platform Differences](/docs/basics/platform-differences) for the poli
 
 A reached zero-parameter event uses an internal non-empty marker so it cannot be confused with a reserved but
 untaken conditional slot. The marker does not appear as an argument in decoded results.
+
+An NFT commitment holds at most 128 bytes. A longer encoded event is split across several event NFTs in order:
+the first sits at the event's own address and the rest at a continuation address derived from the same
+signature (anonymous events share one continuation address). The SDK readers below fetch and join the pieces.
 
 See [State Storage & Data Encoding](./storage-model.md#canonical-state-encoding) for the shared codec.
 
@@ -234,7 +250,11 @@ contract Token() {
 }
 ```
 
-Errors are included in the contract's ABI, allowing callers to decode failure reasons.
+Errors are artifact metadata: `artifact.errors` lists each error's name, signature and parameters. Nothing about
+an error is recorded on chain. A failed check makes the whole transaction invalid, so there is no revert data
+and no failed transaction to inspect. The reason is visible only where the SDK evaluates the transaction locally
+(preflight before broadcast, `debug()`, and the test matchers): it reports the `require` or `revert` that failed,
+its message, and the custom error's decoded arguments.
 
 ## Revert
 
@@ -255,6 +275,13 @@ contract Ledger() {
         this.balances[to] += amount;
     }
 }
+```
+
+`require` also accepts a custom error in place of a message, and error arguments may be named:
+
+```solidity
+require(amount <= balance, InsufficientBalance(amount, balance));
+revert InsufficientBalance({requested: amount, available: balance});
 ```
 
 ### Revert Variants
@@ -286,6 +313,14 @@ contract Invariant() {
 
 If the assertion fails, the transaction is aborted.
 
+## Try/Catch
+
+`try`/`catch` parses and compiles so that ported Solidity builds, but a `catch` body never runs. A Bitcoin Cash
+transaction is valid only if every input's script succeeds, so a failed callee or a failed check fails the whole
+transaction: there is no call frame to unwind and nothing to catch. The `try` block runs as ordinary code, and the
+compiler warns about the divergence. Natively `try` accepts any expression; `evmCompat` requires an external call
+or `new`, as Solidity does. See [Advanced Features](/docs/language/advanced-features#try-catch).
+
 ## Require with Messages
 
 The `require` statement is the primary validation mechanism. An optional second argument provides an error message:
@@ -300,12 +335,16 @@ contract Guarded(pubkey owner) {
 ```
 
 :::note
-External/public functions **must** end with a `require` statement (the "final require" rule). This is a covenant safety requirement enforced by the compiler.
+Every spend path of a `public` or `external` function must pass a verification - a `require`, `assert`, `revert`
+or time check - or change the contract's state. A path that does neither would let anyone spend the contract, so
+the compiler rejects it (`enforceFinalRequire`, on by default). The check does not have to be the last statement:
+one unconditional `require` earlier on the path covers the whole path.
 :::
 
 ## Console Logging
 
-For testing and debugging, `console.log` outputs values that can be inspected with test matchers:
+For testing and debugging, `console.log` outputs values that can be inspected with test matchers. Its arguments
+must be variable names or literals, not general expressions:
 
 ```solidity
 function debug(int x) {
@@ -325,29 +364,27 @@ The SDK provides test matchers for verifying errors and events:
 ```typescript
 import 'solidcash/vitest';
 
-// Require failure
-await expect(contract.call.transfer(args).send())
-    .toFailRequireWith(/Amount must be positive/);
+// Require failure: pass the unsent TransactionBuilder; the matcher evaluates it locally
+expect(transaction).toFailRequireWith(/Amount must be positive/);
 
-// Solidity-style aliases
-await expect(tx.send()).toBeReverted();
+// Solidity-style aliases: an unsent stateful call or a send() promise
+await expect(token.call.transfer(to, 1_000_000n)).toBeReverted();
 await expect(tx.send()).toBeRevertedWith(/Unauthorized/);
 
-// Event emission (type-safe)
-const result = await contract.call.transfer(to, amount).send();
-await expect(result).toEmit(contract, 'Transfer', {
+// Event emission (type-safe): pass the unsent call; the matcher sends it and decodes its event outputs
+await expect(token.call.transfer(to, 100n)).toEmit(token, 'Transfer', {
     from: senderPkh,
     to: recipientPkh,
     amount: 100n,
 });
 
 // Predicate matchers
-await expect(result).toEmit(contract, 'Transfer', {
+await expect(token.call.transfer(to, 100n)).toEmit(token, 'Transfer', {
     amount: (v: bigint) => v > 50n,
 });
 
-// Console log
-await expect(tx.send()).toLog("Value: 42");
+// Console log: pass the unsent TransactionBuilder
+expect(transaction).toLog('Value: 42');
 ```
 
 See [Test Matchers](/docs/sdk/test-matchers) for the full reference.

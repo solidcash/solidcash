@@ -130,7 +130,7 @@ import {
   BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility, StructDefinitionNode,
   exactArrayLength,
 } from './ast/AST.js';
-import AstBuilder from './ast/AstBuilder.js';
+import AstBuilder, { lvalueKeyUnitsBuilt } from './ast/AstBuilder.js';
 import { Class, GlobalFunction } from './ast/Globals.js';
 import { ThrowingErrorListener, type SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
 import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
@@ -265,8 +265,11 @@ import LowerRuntimeSignatureSelectors from './semantic/LowerRuntimeSignatureSele
 import FoldConstantBoolBranches from './semantic/FoldConstantBoolBranches.js';
 import LowerStorageSlotPointers from './semantic/LowerStorageSlotPointers.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
-import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
+import expandInheritance, {
+  assertNoReservedBaseNames, BASE_IMPL_PREFIX,
+} from './semantic/InheritanceExpansionTransformation.js';
 import lowerRequireMessageEffects from './semantic/LowerRequireMessageEffects.js';
+import bindLvalueKeyEffects from './semantic/BindLvalueKeyEffects.js';
 import autoMarkDelegateFunctions from './semantic/AutoMarkDelegateFunctions.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { validateStorageLayoutSpecifiers } from './semantic/ValidateStorageLayoutSpecifiers.js';
@@ -630,10 +633,15 @@ type InternalCompilerOptions = CompilerOptions & {
    */
   __framedContractHoldsTokens?: boolean;
   /**
-   * Set on a split shard, facet or root whose logical contract emits an event: it holds some bodies only, yet pins
-   * forged logs (SEC-10) as that contract does.
+   * Set on a split shard, facet or root whose logical contract has events (`splitLogicalEventOptions`): it holds some
+   * bodies only, yet pins forged logs (SEC-10) as that contract does.
    */
   __logicalContractEmitsEvent?: boolean;
+  /**
+   * Set beside `__logicalContractEmitsEvent`: the signatures its unsplit artifact lists. A shard lists the file-level
+   * ones among them though another shard holds the body that emits them.
+   */
+  __logicalContractEvents?: readonly string[];
   /** Shared box so the shallow-copied admission options and the binder see the same pre-lowering snapshot. */
   __pristineAstBox?: { ast?: Ast };
   /**
@@ -3329,6 +3337,8 @@ function parseAndResolve(
   // Lexing + parsing
   let ast = parseCode(parseSource, errorListener, mergedCompilerOptions.evmCompat,
     mergedCompilerOptions.chunkedArrays, undefined, mergedCompilerOptions.rootFileId);
+  // parseCode leaves read-modify-write keys unbound in a source with imports (see bindLvalueKeyEffects).
+  const lvalueKeysUnbound = ast.imports.length > 0;
   // Hardhat's console library is a compiler/runtime debugging hook, not a source dependency that SolidCash
   // should parse or link. Its calls are represented by ConsoleStatementNode and already emit no BCH bytecode,
   // while retaining artifact log metadata for the SDK debugger. Accept both Solidity import spellings without
@@ -3351,6 +3361,8 @@ function parseAndResolve(
   }
 
   if (primaryName) setPrimaryContract(ast, primaryName);
+  // With every file's declarations known; before the type repair below, which also types the bound keys' temps.
+  if (lvalueKeysUnbound) bindLvalueKeyEffects(ast);
 
   // Types are resolved during parse, before imports merge, so an imported struct used as an array element
   // (`Todo[]` where `Todo` is imported) parses to a named AddressType placeholder. Now that imported struct
@@ -3428,6 +3440,12 @@ function patchPlaceholderVerifierLock(ast: Ast, lock: Uint8Array): void {
   });
   if (patched !== 1) {
     throw new Error(`single-pass bind: expected 1 placeholder lock literal, found ${patched}`);
+  }
+  // The route's C3 record pin skips inputs at the same lock.
+  for (const fn of ast.contract.functions) {
+    if (fn.messageBusVerifierLock && bytesEqual(fn.messageBusVerifierLock, MESSAGE_BUS_PLACEHOLDER_LOCK)) {
+      fn.messageBusVerifierLock = lock;
+    }
   }
 }
 
@@ -5831,6 +5849,42 @@ function injectMessageBusEventOnlyHold(ast: Ast, compilerOptions: CompilerOption
     initialize.modifiers.push(FunctionModifier.PUBLIC);
     contract.functions.push(initialize);
   }
+}
+
+/**
+ * C3 in-block record pin: what an admitted handler's row may rewrite inside its participant block. `all` where its
+ * effects can reach any record, `trailing` where it may consume a record in the trailing band (dynamic state, an
+ * array, a chunked value, a loop, a delete), and the sorted collections whose fixed entry slots it names.
+ */
+function messageBusRecordClaim(
+  footprint: SplitStateFootprint, closure: readonly FunctionDefinitionNode[],
+  collections: ReadonlyMap<string, CollectionNode>, dynamicState: ReadonlySet<string>, lifecycle: boolean,
+): { all: boolean; trailing: boolean; collections: string[] } {
+  const claim = {
+    all: lifecycle || footprint.unknown || footprint.effects.includes('external-call'), trailing: false,
+  };
+  const named = new Set<string>();
+  for (const resource of [...footprint.reads, ...footprint.writes]) {
+    const [kind, name] = resource.split(':');
+    if (kind === 'state') {
+      if (dynamicState.has(name)) claim.trailing = true;
+    } else if (kind === 'collection') {
+      const collection = collections.get(name);
+      if (collection?.sorted !== true) claim.trailing = true;
+      else {
+        named.add(name);
+        if (isChunkableValueType(collection.innermostValueType)) claim.trailing = true;
+      }
+    }
+  }
+  for (const member of closure) {
+    walkInvocationAst(member.body, (node) => {
+      if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
+        || node instanceof MappingDeleteNode || node instanceof ArrayDeleteNode) claim.trailing = true;
+      else if (node instanceof AssemblyStatementNode) claim.all = true;
+    });
+  }
+  return { ...claim, collections: [...named] };
 }
 
 function synthesizeMessageBusRoute(
@@ -10557,6 +10611,7 @@ function synthesizeMessageBusRoute(
     handler.name = `__message_bus_${family}_${source.name}`
       + (overloadedHandlerNames.has(source.name) ? `_${selector(source)}` : '');
     (handler as MessageBusClone).messageBusCloneSourceKey = externalHandlerKey(source);
+    handler.ownRecordsScalarOnly = true;
     // Physical clone names are an implementation detail and declaration locations can be shared by several
     // overload-derived helpers. Retain the source ABI selector explicitly so the pristine binder's immutable
     // completed-descriptor scope can authorize this clone, and no sibling, during final code generation.
@@ -11358,6 +11413,41 @@ function synthesizeMessageBusRoute(
       && dynamicState.has(resource.slice('state:'.length)));
   };
   const routeHasDynamicWriter = eligible.some(handlerWritesDynamicState);
+  // C3, bound route without its verifier: a selector branch sets a route-local flag for the records its handler may
+  // rewrite inside the participant block, and the record pin holds every other own-category record there 1:1. A
+  // graph route always runs its verifier; a proxy route, and a framed build, keep the census alone.
+  const recordClaimRoute = !graphExecutionContext && !isDelegateRoute && compilerOptions.composition !== 'framed'
+    && (!!compilerOptions.__messageBusVerifierProgram
+      || (compilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true);
+  const routeRecordClaims: Array<{ flag: string; all?: true; trailing?: true; collection?: string }> = [];
+  const recordClaimFlags = new Map<FunctionDefinitionNode, string[]>();
+  if (recordClaimRoute) {
+    const flagByClaim = new Map<string, string>();
+    const flagOf = (key: string, claim: { all?: true; trailing?: true; collection?: string }): string => {
+      const known = flagByClaim.get(key);
+      if (known !== undefined) return known;
+      const flag = `__message_bus_claim_${flagByClaim.size}`;
+      flagByClaim.set(key, flag);
+      routeRecordClaims.push({ flag, ...claim });
+      return flag;
+    };
+    const claimAllModifiers = new Set([
+      FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.SPLIT,
+      FunctionModifier.MERGE, FunctionModifier.UNSAFE,
+    ]);
+    for (const fn of eligible) {
+      const closure = [...collectNamedFunctionClosure(fn, signatureClosureByName)]
+        .flatMap((name) => signatureClosureByName.get(name) ?? []);
+      const claim = messageBusRecordClaim(eligibleFootprint(fn), closure, collectionByName, dynamicState,
+        kernelLifecycleHandlers.has(fn) || kernelDeploymentHandlers.has(fn)
+          || fn.modifiers.some((modifier) => claimAllModifiers.has(modifier)));
+      const flags = claim.all ? [flagOf('all', { all: true })] : [
+        ...(claim.trailing ? [flagOf('trailing', { trailing: true })] : []),
+        ...claim.collections.map((name) => flagOf(`collection:${name}`, { collection: name })),
+      ];
+      if (flags.length > 0) recordClaimFlags.set(fn, flags);
+    }
+  }
   const buildDecodeAndCall = (
     captureResults = false, rowIndex?: number, rowExpression = String(rowIndex ?? 0),
     markDispatch = false,
@@ -11368,8 +11458,9 @@ function synthesizeMessageBusRoute(
         && (fn.returnTypes[index] as FunctionType).isExternal
         && (fn.returnedSelfFunctionTargetSets?.[index]?.length ?? 0) > 0;
       const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
-      const dynamicWriteFlag = routeHasDynamicWriter && handlerWritesDynamicState(fn)
-        ? '__message_bus_dynamic_write_active = 1;' : '';
+      const dynamicWriteFlag = (routeHasDynamicWriter && handlerWritesDynamicState(fn)
+        ? '__message_bus_dynamic_write_active = 1;' : '')
+        + (recordClaimFlags.get(fn) ?? []).map((flag) => ` ${flag} = 1;`).join('');
       const upgradeAuthorization = kernelUpgradeMode && fn.modifiers.includes(FunctionModifier.UPGRADE)
         ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
           __message_bus_upgrade_position = ${rowExpression};` : '';
@@ -13973,6 +14064,7 @@ function synthesizeMessageBusRoute(
         ${kernelUpgradeMode ? 'bigint __message_bus_upgrade_position = -1;' : ''}
         ${kernelV2SignatureFence ? 'bigint __message_bus_signature_count = 0;' : ''}
         ${routeHasDynamicWriter ? 'bigint __message_bus_dynamic_write_active = 0;' : ''}
+        ${routeRecordClaims.map((claim) => `bigint ${claim.flag} = 0;`).join(' ')}
         ${fixedIterationEntryPins}
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${routeMaximumBlobBytes});
@@ -14131,6 +14223,10 @@ function synthesizeMessageBusRoute(
     );
   }
   route.messageBusRoute = true;
+  // The lock the verifier binder requires. The C3 record pin leaves inputs at it to the verifier covenant.
+  if (useBoundRoute) route.messageBusVerifierLock = hexToBin(offloadedVerifierLock);
+  // The flags each selector branch sets for the in-block record pin.
+  if (recordClaimRoute) route.messageBusRecordClaims = routeRecordClaims;
   // Key-pool lanes are stamped on the handler while the route text is built. The batch census runs on this
   // route, so it has to see the same lanes or it keeps splitting the upsert capsule past a lane temp.
   const linearKeyPools = contract.functions.flatMap((fn) => fn.collectionJournalLinearKeyPools ?? []);
@@ -19026,10 +19122,24 @@ function splitModeOf(split: CompilerOptions['split']): 'off' | 'size' | 'func' {
   return mode;
 }
 
+/**
+ * The logical-contract event options of a split's shards, facets and root: set when the unsplit artifact, which the
+ * SDK reads the split through, lists an event, or a body the probe holds emits one. The artifact decides an emit in a
+ * library or free function, which sits in no contract body before inlining.
+ */
+function splitLogicalEventOptions(
+  logical: Artifact, probe: Ast | undefined,
+): Pick<InternalCompilerOptions, '__logicalContractEmitsEvent' | '__logicalContractEvents'> {
+  const events = (logical.events ?? []).map((event) => event.signature);
+  return events.length > 0 || (probe !== undefined && emitsAnyEvent(probe.contract))
+    ? { __logicalContractEmitsEvent: true, __logicalContractEvents: events } : {};
+}
+
 /** Per-entry framed split. The size packer below is not used. */
 function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): FunctionSplitBundle {
   const { errorListener } = compilerOptions;
   let probe: Ast | undefined;
+  let logical: Artifact | undefined;
   return compileFunctionSplit({
     code,
     options: compilerOptions,
@@ -19039,7 +19149,8 @@ function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): F
         return probe;
       },
       compileMonolith(source, options) {
-        return compileString(source, { ...stripSplitPlanning(options), errorListener });
+        logical = compileString(source, { ...stripSplitPlanning(options), errorListener });
+        return logical;
       },
       compileParsed(source, options, ast, frameKinds) {
         return compileStringUnchecked(source, {
@@ -19050,7 +19161,7 @@ function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): F
           __functionSplitFrameKinds: frameKinds,
           ...(probe !== undefined && contractNamesTokenContainer(probe.contract)
             ? { __framedContractHoldsTokens: true } : {}),
-          ...(probe !== undefined && emitsAnyEvent(probe.contract) ? { __logicalContractEmitsEvent: true } : {}),
+          ...(logical === undefined ? {} : splitLogicalEventOptions(logical, probe)),
         } as InternalCompilerOptions);
       },
       cloneAst,
@@ -19160,7 +19271,7 @@ function compileStringSplitUnchecked(
   // each candidate compilation; reparsing imports and re-expanding inheritance/modifiers for
   // every packing probe made split compilation scale with (candidate count * front-end cost).
   const probe = prepareSplitAst(code, merged, errorListener);
-  if (emitsAnyEvent(probe.contract)) merged.__logicalContractEmitsEvent = true;
+  Object.assign(merged, splitLogicalEventOptions(baseline, probe));
   const logicalName = probe.contract.name;
   const functions = probe.contract.functions;
   const byName = new Map<string, FunctionDefinitionNode[]>();
@@ -21521,6 +21632,7 @@ export function parseCode(
   // wins over any file label anyway (`importedFileCaveat`).
   const parseStarted = compilerProfileEnabled() ? Date.now() : 0;
   let sllFailed = false;
+  const lvalueKeyUnitsBefore = lvalueKeyUnitsBuilt();
   const ast = withSourceFile(importedFileId, () => {
     const lexer = new SolidCashLexer(new PackedCharStream(code) as unknown as CharStream);
     lexer.removeErrorListeners();
@@ -21608,6 +21720,9 @@ export function parseCode(
       if (base !== undefined) contract.storageLayoutBase = base;
     }
   }
+  if (code.includes(BASE_IMPL_PREFIX)) assertNoReservedBaseNames(ast);
+  // A source without imports declares every function its keys may call; one with imports binds after the merge.
+  if (ast.imports.length === 0 && lvalueKeyUnitsBuilt() !== lvalueKeyUnitsBefore) bindLvalueKeyEffects(ast);
   return ast;
 }
 

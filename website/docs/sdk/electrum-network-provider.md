@@ -25,13 +25,25 @@ Using the `network` parameter, you can specify the network to connect to. There'
 type Network = 'mainnet' | 'chipnet' | 'testnet3' | 'testnet4';
 ```
 
-Using the `options` parameter, you can specify a custom electrum client or hostname, and enable manual connection management.
+| Network | Default server |
+| --- | --- |
+| `mainnet` | `bch.imaginary.cash` |
+| `chipnet` | `chipnet.bch.ninja` |
+| `testnet4` | `testnet4.imaginary.cash` |
+| `testnet3` | `testnet.imaginary.cash` |
+
+Any other network needs a `hostname` or a custom `electrum` client. The server must speak Electrum Cash protocol
+1.5, which returns CashToken data with each UTXO.
+
+Using the `options` parameter, you can specify a custom electrum client or hostname, enable manual connection
+management, and name the block-info oracle for contracts that read block data.
 
 ```ts
 type Options = OptionsBase | CustomHostNameOptions | CustomElectrumOptions;
 
 interface OptionsBase {
   manualConnectionManagement?: boolean;
+  blockOracleCategory?: Uint8Array; // 32 bytes, display byte order
 }
 
 interface CustomHostNameOptions extends OptionsBase {
@@ -51,6 +63,10 @@ const hostname = 'chipnet.bch.ninja';
 const provider = new ElectrumNetworkProvider('chipnet', { hostname });
 ```
 
+`blockOracleCategory` sets the provider's `blockOracleCategory` and derives its `blockOracleLock`. A contract that
+reads `block.*` values bakes that lock into its bytecode and co-spends the oracle; spending one built without a
+lock fails. See [Block Data & Oracles](/docs/guides/block-oracles).
+
 ## ElectrumNetworkProvider Methods
 
 
@@ -66,6 +82,7 @@ interface Utxo {
   vout: number;
   satoshis: bigint;
   token?: TokenDetails;
+  blockHeight?: number; // 0 while unconfirmed
 }
 
 interface TokenDetails {
@@ -82,6 +99,13 @@ interface TokenDetails {
 ```ts
 const userUtxos = await provider.getUtxos(userAddress)
 ```
+
+### getUtxosForLockingBytecode()
+```ts
+async provider.getUtxosForLockingBytecode(lockingBytecode: Uint8Array | string): Promise<Utxo[]>;
+```
+Returns the UTXOs of a raw locking bytecode (a `Uint8Array` or a hex string), queried by its Electrum script hash.
+This also works for scripts that have no address.
 
 ### getBlockHeight()
 ```ts
@@ -153,6 +177,8 @@ provider.disconnect(): Promise<boolean>;
 
 Disconnects from the electrum client, returns `true` if the client was connected, `false` if it was already disconnected.
 
+Both methods throw when `manualConnectionManagement` is not enabled.
+
 ## Using electrum-cash functionality
 
 To use more of the electrum-specific functionality which is not exposed in the `ElectrumNetworkProvider` you can simply call the methods on the electrum Client itself.
@@ -169,7 +195,7 @@ If intending to use electrum-cash subscriptions, make sure to set `manualConnect
 import { ElectrumClient } from '@electrum-cash/network';
 import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 
-const electrum = new ElectrumClient('SolidCash Application', '1.4.1', 'chipnet.bch.ninja');
+const electrum = new ElectrumClient('SolidCash Application', '1.5.0', 'chipnet.bch.ninja');
 const provider = new ElectrumNetworkProvider('chipnet', {
   electrum, manualConnectionManagement: true
 });

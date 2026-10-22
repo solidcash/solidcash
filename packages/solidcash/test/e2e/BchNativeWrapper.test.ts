@@ -73,7 +73,7 @@ async function signers(provider: MockNetworkProvider, count: number): Promise<Si
 describe('BchNativeWrapper', () => {
   it('is an ERC-20 ledger with underlying() and BchNative\'s boundary, and nothing that mints', () => {
     // BchNative's boundary with ERC20.scash's ledger kept private, and the 75-byte underlying() view.
-    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(7465);
+    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(7512);
     expect(minimal.abi.filter((entry) => entry.name !== '__construct').map((entry) => entry.name).sort()).toEqual([
       'allowance', 'approve', 'balanceOf', 'totalSupply', 'transfer', 'transferFrom', 'underlying', 'unwrap', 'wrap',
     ]);

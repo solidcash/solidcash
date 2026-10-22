@@ -18,6 +18,7 @@
     "url": "git+https://github.com/CashScript/cashscript.git"
   },
   "license": "MIT",
+  "publishConfig": { "access": "public" },
   "author": "Rosco Kalis <roscokalis@gmail.com>",
   "contributors": [
     "Mathieu Geukens <mr-zwets@protonmail.com>"

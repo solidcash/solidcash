@@ -36,15 +36,29 @@ The compiler **infers** that `create` is a deploy function: it mints the child's
 the child's outputs at a fixed transaction-layout slot. The resulting ABI entry carries the `deploy` modifier.
 
 :::note
-`deploy` is **not** a source-level keyword. It was removed from the grammar and is now inferred from the
-deploy form itself, either a `new C(...)` expression or a factory that reads a genesis input's outpoint.
-Writing `deploy` explicitly is an "undefined modifier" error.
+Writing `deploy` is optional. The compiler infers it from the deploy form itself: a `new C(...)` of a stateful
+contract (one with state variables, mappings, or arrays), or a factory that reads a genesis input's outpoint. An
+explicit argument-free `deploy` in modifier position marks the function the same way; `deploy` stays an ordinary
+name elsewhere, so a function may still be called `deploy`.
+:::
+
+`new` of a stateful child must appear inside a function, and the contract that deploys it becomes stateful. A
+deploy function must be externally callable and cannot be combined with `pure`, `view`,
+`unsafe`, `upgrade`, `selfdestruct`, `split`, or `merge`.
+
+:::danger
+A deploy entry needs an unconditional `require(checkSig(s, key))` where the caller cannot choose `key`: a
+constructor argument, a state variable, or a constant. A direct compile rejects a deploy, `upgrade`, `split`, or
+`merge` function without one (`UnauthorizedLifecycleError`). `allowUnsafeOperations` turns the error into a
+warning for an intentionally permissionless entry.
 :::
 
 ### Deterministic addresses with `salt`
 
-The `salt` call option is the BCH analogue of the EVM's `CREATE2`: the child's address is derived
-deterministically from the salt rather than from a consumed outpoint.
+The `salt` call option is the BCH analogue of the EVM's `CREATE2`. `new C{salt: s}(...)` adds `s` to the
+child's redeem script as a `<s> OP_DROP` prefix, so the same code and constructor arguments give a different,
+deterministic address for each salt. EVM `CREATE2` address math does not apply. A stateful child's address also
+commits to its category, which comes from the funding outpoint.
 
 ```solidity
 contract Child(pubkey owner) {
@@ -63,6 +77,34 @@ contract Factory(pubkey admin) {
 }
 ```
 
+The SDK reads a salt that the deploy function forwards from one of its parameters, or a literal salt. For a
+computed salt, pass `childSalt` to `StatefulContract.deployFrom()`.
+
+### Funding the child with `value`
+
+`new C{value: v}(...)` pays `v` satoshis to the child's address in the deploy transaction. The value comes from the
+factory's satoshi container, so the factory must hold at least `v` there; a contract that deploys with a value is
+stateful. If the child declares a `constructor` body, it must be `payable` to receive a deploy value.
+
+```solidity
+contract Child(pubkey owner) {
+    int counter;
+    function bump() public { this.counter += 1; }
+}
+
+contract FundingFactory(pubkey admin) {
+    int created;
+
+    function createFunded(sig s, int amount) public {
+        require(checkSig(s, admin));
+        new Child{value: amount}(admin);
+        this.created += 1;
+    }
+}
+```
+
+With the SDK, pass the amount as `childValue` in the deploy options.
+
 ### Conditional and looped deploys
 
 A deploy inside an `if` branch, a loop, or a bare block compiles: the compiler verifies the deploy inline at
@@ -70,9 +112,14 @@ the site and, where needed, threads a runtime deploy counter. Multiple deploy si
 contract in one function are supported.
 
 The deploy sites in one function must use one child contract shape so their genesis groups have a derivable
-stride. A heterogeneous multi-site function fails closed with `ConditionalDeployError`. A conditional
-`new Child{value: amount}(...)` is supported; when a loop or multi-site value-deploy shape cannot be represented
-by the published layout, compilation likewise fails instead of emitting a partially checked covenant.
+stride. A heterogeneous multi-site function fails closed with `ConditionalDeployError`. A single conditional
+`new Child{value: amount}(...)` is supported; a `{value: ...}` deploy in a function with several deploy sites, or
+another value-deploy shape the published layout cannot represent, also fails with `ConditionalDeployError` instead
+of emitting a partially checked covenant.
+
+A loop deploy mints one child per iteration, and each child needs its own funding input at `vout: 0`; pass them as
+`fundingUtxos` to `deployFrom()`. A conditional deploy whose branch is not taken is an ordinary call: `.send()` on
+the pending call sends it without minting a child.
 
 ### Deploy and configure in one transaction
 
@@ -166,12 +213,13 @@ contract PolicyV1(pubkey admin) {
 }
 ```
 
-Only a contract whose whole state lives in its master NFT can upgrade in place. State variables, mapping and
-array entries, and satoshi or token containers are bound to the master's exact lock and could not follow it to
-the new bytecode, so the compiler refuses `upgrade` in a contract that keeps any of them. Evolve such a contract
-behind a proxy instead. The new version may declare state, which begins at its type defaults. The category remains
-stable while the physical contract address changes. See
-[Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) for the funding, identity, and SDK rules.
+State records are bound to the master's exact lock, so the upgrade carries them to the new bytecode: data NFTs
+are re-minted unchanged, satoshi and token containers move with the master, and mapping or array entries move one
+per transaction through a `migrateRecords` function. Keep the new state layout an extension of the old one; new
+fields begin at their type defaults. Values kept in chunk NFTs do not migrate yet, and the SDK refuses an upgrade
+that would strand one. The category remains stable while the physical contract address changes. See
+[Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) for the migration, funding, identity, and SDK
+rules.
 
 :::caution
 Whoever can satisfy the `upgrade` function controls the contract's future code. This is the same trust surface
@@ -208,6 +256,7 @@ stranded or burned if the contract does not sweep them first. A `selfdestruct` f
 hard compile error, and caller-controlled destinations require recognizable non-caller-controlled authorization.
 :::
 
+Run either form with `StatefulContract.selfdestructTo(...)`, an alias of `StatefulContract.destroy(...)`.
 Destination pins, the compiler's authorization heuristic, the single-transaction limit, event cleanup, and the
 SDK driver are covered in [Contract Destruction](./selfdestruct.md).
 
@@ -233,7 +282,8 @@ contract Parallel(pubkey admin) {
 }
 ```
 
-The modifier argument names the parameter carrying the thread count. See
+The modifier argument names the integer parameter carrying the thread count. Like a deploy entry, `split` and
+`merge` need an unconditional `require(checkSig(s, key))` with a key the caller cannot choose. See
 [Concurrency](/docs/guides/concurrency) and [Threading](/docs/sdk/threading).
 
 ## Proxy and delegatecall
@@ -249,23 +299,25 @@ contract Impl() {
         this.counter += 1;    // `this` is the PROXY's state at runtime
     }
 }
-
-contract Proxy(address impl) {
-    int counter;
-
-    fallback(bytes input) external {
-        impl.delegatecall(input);
-    }
-}
 ```
 
 For eligible state-mutating entry points, the compiler builds a **second artifact** that executes against the
 calling proxy's state and emits it as `artifact.delegateArtifact`. Reach it from the SDK via
 `contract.asDelegate()` or the proxy helpers.
 
-The recommended `upgrades.deployProxy()` helper deploys a pinned implementation and proxy together. Its built-in
-proxy does not expose a mutable implementation pointer; see
-[Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) before choosing or designing a custom proxy.
+The recommended `upgrades.deployProxy()` helper deploys a pinned implementation and the built-in proxy together:
+
+```ts
+import { getContractFactory } from 'solidcash/contract-factory';
+import { upgrades } from 'solidcash/stateful';
+
+const proxy = await upgrades.deployProxy(getContractFactory(implArtifact, signer), { counter: 0n });
+await proxy.increment().send();   // runs Impl.increment against the proxy's state
+```
+
+The built-in proxy does not expose a mutable implementation pointer. A custom proxy that forwards with its own
+`delegatecall` is experimental; see [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) before
+choosing or designing one.
 
 :::note
 New code does not need a `delegate` modifier: delegate mode is inferred and published as a second artifact.
@@ -274,9 +326,9 @@ implementation functions are the supported forward-looking form.
 :::
 
 :::caution
-A function is not eligible for the inferred delegate build if it uses `unsafe`, `upgrade`, `selfdestruct`,
-`split`, `merge`, `view`, `pure`, `internal` or `private`. Transfers and token-container operations are also
-currently ineligible.
+A function is not eligible for the inferred delegate build if it uses `unsafe`, `upgrade`, `deploy`,
+`selfdestruct`, `split`, `merge`, `view`, `pure`, `internal` or `private`, or if it issues its own delegatecall.
+Transfers and token-container operations are also currently ineligible.
 :::
 
 ### Layout compatibility
@@ -287,17 +339,18 @@ and again by the SDK at build time.
 
 ## Lifecycle modifier compatibility
 
-All lifecycle modifiers require the contract to have state variables. Not all can be combined:
+All lifecycle modifiers need a stateful contract (for example one with state variables, mappings, or events), and
+every lifecycle function must be externally callable (not `internal` or `private`). Not all can be combined:
 
-| Combination | Allowed |
+| Modifier | Cannot be combined with |
 | --- | --- |
-| `pure` + `view` | No |
-| `unsafe` + `pure` / `view` | No |
-| `internal` + `external` | No |
-| `upgrade` + `unsafe` / `selfdestruct` | No |
-| `selfdestruct` + `unsafe` | No |
-| `split` + `merge` | No |
-| `split` / `merge` + `unsafe` / `upgrade` / `selfdestruct` | No |
+| `deploy` | `unsafe`, `pure`, `view`, `upgrade`, `selfdestruct`, `split`, `merge` |
+| `upgrade` | `unsafe`, `pure`, `view`, `deploy`, `selfdestruct`, `split`, `merge`, `migrateRecords` |
+| `migrateRecords` | `unsafe`, `pure`, `view`, `upgrade`, `selfdestruct` |
+| `selfdestruct` | `unsafe`, `pure`, `view`, `deploy`, `upgrade`, `split`, `merge`, `migrateRecords` |
+| `split` / `merge` | each other, `unsafe`, `pure`, `view`, `deploy`, `upgrade`, `selfdestruct` |
+
+`pure` and `view` also exclude each other, as do `unsafe` and `pure` / `view`.
 
 ## See also
 

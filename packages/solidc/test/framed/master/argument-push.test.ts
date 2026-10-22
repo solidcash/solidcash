@@ -3,6 +3,7 @@ import {
   Opcodes, encodeDataPush, encodeLockingBytecodeP2sh32, hash256,
 } from '@bitauth/libauth';
 import { bigIntToVmNumber } from '@bitauth/libauth';
+import { encodeArgumentPayload } from '@solidcash/utils';
 import { canonicalPushScript } from '../../../src/framed/master/argument-push.js';
 import { compositionMachine } from '../machine.js';
 
@@ -12,6 +13,7 @@ import { compositionMachine } from '../machine.js';
  * The fragment exists so a caller can hash the argument pushes it computed at run time, and the bytes it produces
  * have to be the bytes a deployment writes for the same argument. libauth's `encodeDataPush` is that authority,
  * so the expectation of every case is its answer for the same value, and nothing in the test restates the rule.
+ * The one-byte sweep expects the SDK's own argument push instead, which is what a callee's call data carries.
  *
  * Each case runs the shipped fragment on the BCH-2026 machine: the value is the unlocking bytecode's push and the
  * redeem script is the fragment followed by an equality against the encoder's answer, so the input succeeds
@@ -23,8 +25,9 @@ function pushesTo(
   value: Uint8Array,
   numeric: boolean,
   canonical: Uint8Array = value,
+  encode: (data: Uint8Array) => Uint8Array = encodeDataPush,
 ): { accepted: boolean; objection?: string } {
-  const expected = encodeDataPush(canonical);
+  const expected = encode(canonical);
   const redeemScript = new Uint8Array([
     ...canonicalPushScript(numeric),
     ...encodeDataPush(expected),
@@ -51,10 +54,12 @@ function pushesTo(
 /** The raw values a push form is chosen for: every boundary of the encoding. */
 const RAW_VALUES: readonly Uint8Array[] = [
   new Uint8Array([]),
+  Uint8Array.from([0x00]),
   Uint8Array.from([0x01]),
   Uint8Array.from([0x04]),
   Uint8Array.from([0x10]),
   Uint8Array.from([0x11]),
+  Uint8Array.from([0x80]),
   Uint8Array.from([0x81]),
   Uint8Array.from([0xff]),
   Uint8Array.from([0x01, 0x02, 0x03]),
@@ -71,6 +76,15 @@ describe('the canonical push of a value', () => {
   it('emits what the encoder emits for every raw value', () => {
     for (const value of RAW_VALUES) {
       expect({ bytes: value.length, ...pushesTo(value, false) }).toStrictEqual({ bytes: value.length, accepted: true });
+    }
+  });
+
+  it('emits the push the SDK writes for every one-byte value', () => {
+    // `0x00` and `0x80` are the one-byte values that are not minimal numbers.
+    for (let byte = 0; byte <= 0xff; byte += 1) {
+      const value = Uint8Array.of(byte);
+      expect({ byte, ...pushesTo(value, false, value, encodeArgumentPayload) })
+        .toStrictEqual({ byte, accepted: true });
     }
   });
 

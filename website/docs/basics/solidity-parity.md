@@ -22,7 +22,8 @@ These Solidity constructs work as written.
 - Constructors with parent constructor arguments, `modifier` with `_` placeholder and arguments
 - `fallback` and `receive`
 - File-level declarations: `struct`, `enum`, `type`, `event`, `error`, `constant`, free functions
-- `import` in wildcard, namespace (`as`) and selective (`{ A, B } from`) forms
+- `import` in wildcard, namespace (`import "f" as X;`) and selective (`{ A, B } from`) forms. The
+  `import * as X from "f";` spelling does not parse.
 - `using L for T`, `using { f as + } for T`, `global` attachment
 
 **Types**
@@ -55,20 +56,22 @@ These Solidity constructs work as written.
 
 The `evmCompat` compiler option lets `.sol` files be parsed directly and accepts
 `pragma solidity ...`. Several porting affordances that never relax soundness are plain defaults and need no
-flag at all: hex-literal integer coercion, string-literal `bytesN` right-padding, empty function bodies
-synthesising type defaults, declaration-only files compiling to an ABI-only artifact, `uint`/`int` aliases,
-relaxed declaration order, and `Library.Type` member types.
+flag at all: bare state access (`balanceOf[a] += x`, byte-identical to `this.balanceOf[a] += x`), hex-literal
+integer coercion, string-literal `bytesN` right-padding, empty function bodies synthesising type defaults,
+declaration-only files compiling to an ABI-only artifact, `uint`/`int` aliases, contract members in any order, and
+`Library.Type` member types.
 
 See [Solidity Import Compatibility](/docs/compiler/solidity-import-compat) for the mode-specific storage, getter,
 proxy, data-location and validation lowerings, plus a release porting workflow.
 
 ## Where behaviour differs
 
-These compile, but do not mean quite what they mean on the EVM. Each one warns where it matters.
+These compile, but do not mean quite what they mean on the EVM. Several are compiler-warned, including every read
+of `msg.sender` and `tx.origin`. `msg.value` and `payable` compile without a warning, so review every use.
 
 | Construct | Difference |
 | --- | --- |
-| `msg.sender` | The caller's locking bytecode, falling back to `tx.origin` for direct spends. Prefer `checkSig` for authorization; the compiler warns. |
+| `msg.sender` | The caller's locking bytecode, falling back to `tx.origin` for direct spends. It is derived from the transaction's inputs, so prefer `checkSig` for authorization; the compiler warns on every read. |
 | `msg.value` | Net satoshi change in the contract's satoshi container, not an EVM call value. |
 | `try` / `catch` | The `try` block runs, but a failed BCH opcode aborts the script and cannot be resumed, so `catch` bodies are dead code. Compiler-warned. |
 | `keccak256` | Real keccak256, computed by a co-spent side-car input rather than a native opcode. Values match Ethereum. |
@@ -79,8 +82,8 @@ These compile, but do not mean quite what they mean on the EVM. Each one warns w
 | `block.*` | Oracle-backed reads rather than native VM state. See [Global Variables](/docs/language/globals). |
 | `block.prevrandao` | A transaction-local shim, grindable by the transaction builder. Not secure randomness; compiler-warned. |
 | `gasleft()`, `block.gaslimit` | Fixed shims (`1000000`) so ported gas-budget checks keep running. Compiler-warned; do not rely on the value. |
-| `address` | Full variable-length locking bytecode, not a 20-byte hash. `bytes20(addr)` / `uint160(addr)` narrow to the embedded P2PKH hash and warn. |
-| `payable` | Accepted and inert: every BCH address can receive value. |
+| `address` | Full variable-length locking bytecode, not a 20-byte hash. `bytes20(addr)` / `uint160(addr)` narrow to the embedded 20-byte hash and warn. |
+| `payable` | Required on an address for `.transfer` and `.send`; otherwise inert, since every BCH address can receive value. |
 | `transient` | No transaction-scoped storage exists. Lowered to a per-function local, zero-initialised each spend. Warned. |
 | `immutable` | Assigned once in the constructor and read-only afterwards, but stored in the state NFT rather than baked into bytecode. |
 | Mappings | Verified mappings (vmaps) preserve default-on-absent reads with authenticated absence proofs. They are not iterable by default; declare `enumerable mapping(...)` to opt in. |
@@ -106,15 +109,26 @@ Some things SolidCash has that Solidity does not.
 - **Working fixed-point decimals.** Solidity declares `fixed`/`ufixed` but any real use is a compile error in
   solc. SolidCash implements them as scale-correcting scaled integers.
 - **Iterable mappings.** Declare `enumerable mapping(...)` and iterate with `for-of` (values), `for-in` (keys)
-  or `for-of ... .entries` (pairs).
+  or `for-of ... .entries` (pairs), or page through the values with `for (V v of this.m.window(cursor, N))`.
 - **`switch` / `case` / `default`** as a statement.
 - **Explicit enum member values** (`enum Priority { LOW = 1, HIGH = 10 }`).
 - **String and bytes methods**: `.slice()`, `.split()`, `.reverse()`, `.length`, and `+` concatenation.
-- **`date("YYYY-MM-DD")` literals**, folded to a Unix timestamp at compile time.
+- **`date("YYYY-MM-DDThh:mm:ss")` literals**, folded to a UTC Unix timestamp at compile time.
 - **Full transaction introspection**: `tx.inputs[i]` and `tx.outputs[i]` fields, `this.activeBytecode`,
   `this.activeInputIndex`, and the covenant patterns they enable.
 - **Native BCH units**: `sats`, `satoshis`, `finney`, `bits`, `bitcoin`.
 - **CashTokens**: first-class fungible-token and NFT containers on a contract.
+
+## Experimental profiles
+
+These compile, but 0.13.1 does not include them in its stability promise:
+
+- composed external state mutation: a typed call that changes another contract's state;
+- custom delegate forwarding beyond the built-in proxy profile (`upgrades.deployProxy`);
+- message-bus kernel composition (see [Message Bus](/docs/guides/message-bus));
+- the framed convention, `composition: 'framed'` (see [Framed Composition](/docs/guides/framed-composition)); and
+- Solidity source shapes outside the subset documented here and in
+  [Solidity Import Compatibility](/docs/compiler/solidity-import-compat), even when the parser accepts them.
 
 ## A worked port
 

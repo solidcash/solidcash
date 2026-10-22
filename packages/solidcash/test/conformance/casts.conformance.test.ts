@@ -29,6 +29,12 @@ describe('casts: narrowing and byte order, per compile mode', () => {
   // on data loss (unsafe casts truncate): a deliberate safety divergence.
   it('evmCompat: uint256 -> uint8 truncates (0x1234 -> 0x34)', () => compat('uint8(a)', 'uint a', 'uint8', [0x1234n]));
   it.fails('native: uint256 -> uint8 truncation reverts', () => native('uint8(a)', 'uint a', 'uint8', [0x1234n]));
+  // Signed narrowing keeps the low N bits as two's complement too (int8(int256(200)) == -56); native reverts.
+  it('evmCompat: int256 -> int8 truncates (200 -> -56)', () => compat('int8(a)', 'int a', 'int8', [200n]));
+  it('evmCompat: int256 -> int8 truncates (-200 -> 56)', () => compat('int8(a)', 'int a', 'int8', [-200n]));
+  it('evmCompat: int256 -> int128 truncates (2^127 -> -2^127)', () => (
+    compat('int128(a)', 'int a', 'int128', [1n << 127n])));
+  it.fails('native: int256 -> int8 truncation reverts', () => native('int8(a)', 'int a', 'int8', [200n]));
   // Same-width sign reinterpretation keeps the two's-complement bits on the EVM and in evmCompat; native SolidCash
   // range-checks the cast and reverts.
   it('evmCompat: int -> uint reinterpret (-1 -> 2^256-1)', () => compat('uint256(a)', 'int a', 'uint', [-1n]));

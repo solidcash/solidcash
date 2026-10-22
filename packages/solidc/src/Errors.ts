@@ -246,6 +246,13 @@ export class ContractStorageTooLargeError extends SolidCashError {
   }
 }
 
+/** A source declaration takes a name prefix the compiler reserves for the declarations it generates. */
+export class ReservedIdentifierPrefixError extends SolidCashError {
+  constructor(node: Node, name: string, prefix: string) {
+    super(node, `Identifier '${name}' uses reserved prefix '${prefix}'`);
+  }
+}
+
 /** A struct contains itself by value (directly, or through fixed-size arrays and other structs), as solc refuses. */
 export class RecursiveStructDefinitionError extends SolidCashError {
   constructor(node: StructDefinitionNode) {
@@ -1817,6 +1824,39 @@ export class UnsupportedExternalOutStateCollectionError extends SolidCashError {
 export class ExternalReadArgCountError extends SolidCashError {
   constructor(node: Node, interfaceName: string, got: number) {
     super(node, `Interface instantiation '${interfaceName}(...)' expects 1 or 2 arguments (category[, lbc]), got ${got}`);
+  }
+}
+
+// A function co-spends one record per foreign read slot (interface + data NFT, or interface + collection, of the input
+// or the output state), pinned to the address of the slot's first read. A read of that slot through another address
+// would be served that record.
+export class ExternalReadTargetConflictError extends SolidCashError {
+  constructor(node: Node, interfaceName: string, member: string, record: string, slotTarget: string, target: string) {
+    super(node, `External read '${interfaceName}(${target}).${member}' reads the ${record} of '${interfaceName}' that `
+      + `this function already reads through '${slotTarget}'. A function co-spends one such record per interface, `
+      + 'pinned to its first read\'s address, so a second target is not supported: read every target of this record '
+      + 'through the same address, or read each target in its own function');
+  }
+}
+
+// An outState target the function does not call settles as a participant of its own, carrying the data NFT it reads.
+// A read of a second data NFT of that target is refused at compile time instead of failing at send time.
+export class ExternalOutStateRecordCountError extends SolidCashError {
+  constructor(node: Node, interfaceName: string, target: string, nftIndices: readonly number[]) {
+    super(node, `External outState read '${interfaceName}(${target}).outState' reads output data NFTs `
+      + `${nftIndices.join(', ')} of '${interfaceName}', a target this function does not call. Such a target `
+      + 'supports one output data NFT per function: read fields that share one of its data NFTs here, and the '
+      + 'others in another function');
+  }
+}
+
+// The pin of a foreign read slot checks the value its address name holds at the end of the function. A write to that
+// name, or a second declaration of it, would leave a read served the record of whatever the name holds there.
+export class ExternalReadTargetReassignedError extends SolidCashError {
+  constructor(node: Node, interfaceName: string, target: string) {
+    super(node, `External read '${interfaceName}(${target})' reads through '${target}', which this function assigns `
+      + 'or declares again. A foreign read is pinned to the value its address holds at the end of the function, so '
+      + `read '${interfaceName}' through an address this function neither assigns nor declares again`);
   }
 }
 

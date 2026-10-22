@@ -907,11 +907,15 @@ export default class MockNetworkProvider implements NetworkProvider {
    * way: `const [owner, addr1] = await provider.getSigners();`. Each is an HDSigner - a drop-in ContractFactory
    * runner. `fundingUtxos > 1` gives every account multiple funding UTXOs. `genesisFundingUtxos` partitions
    * those equal-value coins across distinct transactions, each with a genesis-eligible vout 0; the total balance
-   * remains `fundingUtxos * satoshis`, and remaining outputs are ordinary fee/block-slot funding.
+   * remains `fundingUtxos * satoshis`, and remaining outputs are ordinary fee/block-slot funding. `initialIndex`
+   * offsets the derivation, as Hardhat's `accounts.initialIndex` does.
    */
   async getSigners(
     count = 20,
-    opts: { satoshis?: bigint; mnemonic?: string; fundingUtxos?: number; genesisFundingUtxos?: number; path?: string } = {},
+    opts: {
+      satoshis?: bigint; mnemonic?: string; fundingUtxos?: number; genesisFundingUtxos?: number; path?: string;
+      initialIndex?: number;
+    } = {},
   ): Promise<HDSigner[]> {
     const satoshis = opts.satoshis ?? 1_000_000n;
     const fundingUtxos = opts.fundingUtxos ?? 1;
@@ -921,10 +925,11 @@ export default class MockNetworkProvider implements NetworkProvider {
     }
     const fundingTransactions = Math.max(1, Math.min(fundingUtxos, requestedGenesis));
     const mnemonic = opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC;
-    const signers = Array.from({ length: count }, (_, index) => this.getCachedSigner(index, { mnemonic, path: opts.path }));
+    const first = opts.initialIndex ?? 0;
+    const signers = Array.from({ length: count }, (_, k) => this.getCachedSigner(first + k, { mnemonic, path: opts.path }));
     for (let index = 0; index < signers.length; index++) {
       const signer = signers[index];
-      const key = this.signerKey(mnemonic, opts.path, index);
+      const key = this.signerKey(mnemonic, opts.path, first + index);
       if (this.fundedSignerKeys.has(key)) continue;
       // Every prefunding transaction contributes one genesis candidate. Partition the requested coin count
       // rather than adding balance; nonzero outputs remain available while CREATE look-ahead reserves vout 0.
@@ -955,9 +960,11 @@ export default class MockNetworkProvider implements NetworkProvider {
   }
 
   /** A single pre-funded HD signer at `index` (hardhat `ethers.getSigner`). */
-  async getSigner(index = 0, opts: { satoshis?: bigint; mnemonic?: string; path?: string } = {}): Promise<HDSigner> {
+  async getSigner(
+    index = 0, opts: { satoshis?: bigint; mnemonic?: string; path?: string; initialIndex?: number } = {},
+  ): Promise<HDSigner> {
     await this.getSigners(index + 1, opts);
-    return this.getCachedSigner(index, opts);
+    return this.getCachedSigner((opts.initialIndex ?? 0) + index, opts);
   }
 }
 

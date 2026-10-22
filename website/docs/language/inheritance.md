@@ -14,7 +14,7 @@ import "./Base.scash";
 
 // Namespace - access via prefix
 import "./Base.scash" as Base;
-// Usage: Base.MyStruct, Base.myFunc()
+// Usage: Base.MyStruct, Base.myFunc(); constants need a wildcard or selective import
 
 // Selective - import specific items
 import { MyStruct, myFunc } from "./Lib.scash";
@@ -27,20 +27,27 @@ import "@solidcash/math/SafeMath.scash";
 import { MAX_VALUE } from "my-library/constants.scash";
 ```
 
-The compiler resolves NPM packages from `node_modules/` and auto-appends `.scash` if needed.
+A relative path resolves against the importing file. Any other path is looked up in `node_modules/`, walking up
+from the importing file, and then next to it. The compiler appends `.scash` when the path has no extension.
 
-:::caution
-Circular imports are detected at compile time and produce an error. Organize your files to avoid dependency cycles.
+:::note
+Imports must come first in a file, after any leading pragmas. Files may import each other: a circular import
+compiles. A circular *inheritance* graph (`A is B` while `B is A`) is a compile error.
 :::
 
 ### What Can Be Imported
 
 - Constants
-- Type aliases (UDVT)
-- Enums and Structs
+- User-defined value types
+- Enums and structs
+- Events and errors
 - Interfaces
 - Free functions
-- Library definitions
+- Libraries and contracts
+- `using ... for` directives
+
+See [Imports & Interfaces](/docs/language/imports-interfaces#import-forms) for what each import form brings into
+scope.
 
 ## Contract Inheritance
 
@@ -68,6 +75,11 @@ contract Token(pubkey owner, int supply) is Ownable(owner) {
 ```
 
 Inherited functions, modifiers, state variables, and types are all available in the child contract.
+
+A base contract's parameters are supplied in the `is` list (`is Ownable(owner)`) or by the child's constructor
+(`constructor() Ownable(owner) { ... }`). Natively, a base listed without arguments passes its parameters on
+instead: they are prepended to the child's own parameters, and a child parameter with the same name is merged
+with them.
 
 ### Multiple Inheritance
 
@@ -132,7 +144,9 @@ contract GrandChild() is Child {
 Inheritance is flattened at compile time by merging parents. When two parents define the same
 function (a diamond), the child **must** provide an explicit `override` to resolve the ambiguity;
 without it the compiler errors. Functions inherited from a single common ancestor are deduplicated
-rather than treated as a conflict.
+rather than treated as a conflict. Natively a bare `override` is enough; under `evmCompat` the override
+must list every base that provides the function, as in Solidity (`override(B, C)`). The listed form works in
+both modes.
 
 ```solidity
 contract A() {
@@ -145,16 +159,18 @@ contract C() is A {
     function foo() virtual override { require(3 == 3); }
 }
 contract D() is B, C {
-    function foo() override { require(4 == 4); }  // must resolve conflict
+    function foo() override(B, C) { require(4 == 4); }  // must resolve conflict
 }
 ```
 
 :::note
 `super.f()` and `Base.f()` resolve along the **C3 linearization** (the same method resolution order
-Python and Solidity use). For the diamond above the order is `[D, B, C, A]`, so `super.foo()` inside
-`B` reaches `C` (the sibling branch) before the shared ancestor `A` - cooperative super. An
-inheritance graph with no valid C3 ordering is a compile error. Use `super.f()` to call the next
-implementation in this order, or `Base.f()` to call a specific ancestor's directly.
+Python and Solidity use). As in Solidity, bases are listed from the most base-like to the most derived, so the
+rightmost base comes first. For the diamond above the order is `[D, C, B, A]`: `super.foo()` inside `D`
+reaches `C`, `super.foo()` inside `C` reaches `B` (the sibling branch) before the shared ancestor `A`, and
+`super.foo()` inside `B` reaches `A` - cooperative super. An inheritance graph with no valid C3 ordering is a
+compile error. Use `super.f()` to call the next implementation in this order, or `Base.f()` to call a specific
+ancestor's directly.
 :::
 
 ## Abstract Contracts
@@ -185,9 +201,11 @@ contract PausableToken(pubkey admin) is Pausable {
 }
 ```
 
-- Abstract contracts cannot be compiled to artifacts directly.
+- An abstract contract cannot be deployed or created with `new`. Compiled on its own, it yields an ABI-only
+  artifact with empty bytecode.
 - All abstract functions must be implemented in any non-abstract child.
-- An implementing child must mark the function `override`. Abstract functions are implicitly `virtual`.
+- An implementing child must mark the function `override`. Abstract functions are implicitly `virtual`;
+  `evmCompat` requires writing `virtual` on them, as Solidity does.
 
 ## Interfaces
 
@@ -208,11 +226,15 @@ interface IERC20 {
 ### Interface Features
 
 - Function signatures (no body)
-- State variable declarations, with the **visibility keyword first** (`public int counter;`)
-- Mapping declarations
-- Event declarations
-- Enum and struct definitions
+- State variable declarations, with the **visibility keyword first** (`public int counter;`); the visibility
+  must be `public` or `external`
+- Mapping and array declarations, with the same rule
+- Event and error declarations
+- Enum, struct and user-defined value type definitions
+- `using ... for` directives and a bodyless `fallback`
 - Inheritance: `interface IERC721 is IERC165 { }`
+
+A contract that lists an interface in its `is` list must implement the interface's functions.
 
 ### Interface ID (EIP-165 Style)
 
@@ -264,7 +286,7 @@ reads and calls.
 
 ## Libraries
 
-Libraries are stateless collections of reusable functions:
+Libraries are collections of reusable functions:
 
 ```solidity
 library MathLib {
@@ -280,7 +302,9 @@ library MathLib {
 }
 ```
 
-Libraries cannot be compiled alone (they produce no artifact). Use them via imports or `using` directives:
+A library function without an explicit visibility is `internal`, and internal library functions are inlined
+where they are called. Compiled on its own, a library like this yields an ABI-only artifact with empty
+bytecode. Use libraries via imports or `using` directives:
 
 ```solidity
 import { MathLib } from "./MathLib.scash";
@@ -295,6 +319,9 @@ contract Calculator() {
     }
 }
 ```
+
+See [Libraries & Using-For](/docs/language/libraries) for `using ... for`, operator binding and libraries
+with `public` functions.
 
 ## Free Functions
 

@@ -17,10 +17,11 @@ const artifacts = compileFileMulti('contracts/Router.sol', {
 });
 ```
 
-SolidHat projects can make this the project default:
+SolidHat projects can make this the project default. A project created with `npm create @solidcash/solidhat`
+already has it in `solidcash.config.ts`:
 
 ```ts
-import { defineConfig } from 'solidhat/config';
+import { defineConfig } from '@solidcash/solidhat/config';
 
 export default defineConfig({
   compiler: {
@@ -45,6 +46,11 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 Browser builds must provide an `importResolver` and stable `rootFileId`; the compiler cannot read a package tree on
 their behalf.
 
+:::caution Experimental beyond the documented subset
+The supported Solidity subset is what this page and [Coming from Solidity](/docs/basics/solidity-parity) describe.
+Solidity source shapes outside it are experimental, even when the parser accepts them.
+:::
+
 ## What the mode changes
 
 The compatibility flag admits Solidity source forms and enables lowerings which would otherwise change native
@@ -68,15 +74,17 @@ restrictive functions.
 
 ### State syntax and layout bridges
 
-Bare Solidity state access is resolved through lexical scope:
+Bare Solidity state access is not mode-specific: it compiles in both modes and is byte-identical to explicit
+`this.` access (see [Defaults shared with native source](#defaults-shared-with-native-source)):
 
 ```solidity
 balanceOf[user] += amount;
 totalSupply--;
 ```
 
-Locals and parameters shadow outer declarations according to Solidity's rules. Compound assignments and
-increment/decrement are lowered to the same authenticated state operations as explicit `this.` access.
+Under `evmCompat`, a parameter, local or named return may shadow a state variable or a function, as in Solidity;
+natively that is a redefinition error. Compound assignments and increment/decrement are lowered to the same
+authenticated state operations as explicit `this.` access.
 
 Several storage-facing bridges are mode-specific:
 
@@ -99,12 +107,14 @@ artifact ABI and compiler diagnostics.
 
 The pipeline lowers supported Solidity call syntax onto the co-spend model, including named call arguments,
 call options, address/function-pointer arrays, typed loop dispatch, and low-level call forms. This does not create
-an EVM call stack; the participating contract UTXOs still have to be registered and co-spent by the SDK.
+an EVM call stack; the participating contract UTXOs still have to be registered and co-spent by the SDK. A typed
+call that mutates another contract's state (composed external state mutation) is experimental.
 
 An imported upgradeable implementation which uses an `initializer` or `reinitializer` modifier has its external
 surface marked for delegate execution, including synthesized public getters. The compiler emits the proxy-context
 build in artifact metadata; deployment and state-layout checks remain the SDK's proxy workflow. This inference is
-not permission to trust an arbitrary implementation address.
+not permission to trust an arbitrary implementation address. The stable deployment path is the built-in proxy
+profile (`upgrades.deployProxy`); custom delegate forwarding beyond it is experimental.
 
 ## Defaults shared with native source
 
@@ -112,6 +122,7 @@ Many porting improvements are now ordinary language behavior because they add sy
 contract's storage protocol. They do not require the flag, including:
 
 - hexadecimal literal coercion in integer contexts and string/hex literal right-padding for `bytesN`;
+- bare state access (`totalSupply = v`, `balanceOf[a] += x`), byte-identical to `this.totalSupply = v`;
 - declaration order flexibility, `uint`/`int` aliases and qualified `Library.Type` references;
 - empty regular function bodies returning type defaults or a guarded no-op;
 - ABI-only artifacts for interfaces, abstract/declaration-only units and inline-only libraries;
@@ -165,11 +176,11 @@ port keeps the identity it already had. What the option does **not** change:
   row) and a word-encoded (`evm-abi-v1`) result carry the 20-byte identity in either form, because a 32-byte word
   cannot hold a variable-length lock.
 
-An `address` *argument* on the framed wire is not a word: it rides as its whole locking bytecode, and the option
-decides the packing a body does with it. An explicitly chosen form is published on the artifact
-(`compiler.options.addressForm`), and the SDK reads it back through `artifactAddressForm` (`solidcash/stateful`) so
-its own derivation of a call's argument packs the same bytes the compiled body does. An artifact that names no form
-keeps its previous shape and the mode decides it.
+An `address` *argument* on the [framed](/docs/guides/framed-composition) wire is not a word: it rides as its whole
+locking bytecode, and the option decides the packing a body does with it. An explicitly chosen form is published on
+the artifact (`compiler.options.addressForm`), and the SDK reads it back through `artifactAddressForm`
+(`solidcash/stateful`) so its own derivation of a call's argument packs the same bytes the compiled body does. An
+artifact that names no form keeps its previous shape and the mode decides it.
 
 A packed payload that carries locks is longer than one that carries identities, which matters at the 128-byte
 NFT commitment limit and for any offset arithmetic over the payload.
@@ -204,12 +215,16 @@ oracle or documented BCH shims; the flag does not make EVM block context appear.
 
 Treat warnings as migration work, not cosmetic output. Important examples include:
 
-- `msg.sender`, `msg.value`, `payable`, `fallback` and `receive` have BCH call/value meanings;
+- every read of `msg.sender` or `tx.origin`: both derive from the co-spent inputs, so authorize with `checkSig`;
+- `fallback` and `receive` are compatibility features with a different call model on BCH;
 - `try/catch` cannot recover from a failed Script opcode;
 - `gasleft`, `block.gaslimit`, `block.prevrandao` and blob fields are shims, not EVM consensus values;
 - `transient` cannot communicate between calls because BCH has no nested call frame;
 - narrowing an `address` to `bytes20`/`uint160` discards the BCH locking-bytecode structure; and
 - opaque low-level calldata currently has weaker selector/payload authentication than a typed call.
+
+Some differences compile without any warning. `msg.value` is the net change of the contract's satoshi container,
+and `payable` matters only where an address needs it for `.transfer` or `.send`. Review every use.
 
 Unsupported inline assembly, storage pointers, recursive memory shapes, reflection, dynamic dispatch or external
 call graphs fail with diagnostics rather than silently adopting EVM behavior. The usual remedy is to isolate a pure

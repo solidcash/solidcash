@@ -24,7 +24,9 @@ All 4 CRITICAL fixed + regression-tested (`packages/solidc/test/SecurityAudit.te
   real covenant address. Docs: `docs/delegatecall-security.md`, `docs/delegatecall.md`, `docs/upgrades.md`.
 - **C3** FIXED (ea67656f): `emitOwnCategoryMutableNftConservation` pins the count of co-spent C-mutable(0x01)
   NFTs input==output for gated (non-entry/dynamic/deploy) functions -> un-accessed NFT DESTRUCTION rejected at
-  VM (e2e-proven). Residual: flag=1 balanced-output corruption (needs per-NFT commitment pin).
+  VM (e2e-proven). Residual: flag=1 balanced-output corruption (needs per-NFT commitment pin). The per-NFT pin
+  landed 2026-10-22 (`e33cbd7cb`, `c75c56778`; proxies and message-bus routes too): see
+  `security-audit-2026-10-16.md`, "Fix pass 2026-10-22".
 - **C2** FIXED (2026-07-22 verified-mapping merge): every mapping now uses the authenticated sorted-linked-list
   backend. Reads require either the exact node or an adjacent predecessor exclusion proof, closing omission for
   negative guards and one-time writes. Unsupported access shapes fail compilation instead of using the legacy

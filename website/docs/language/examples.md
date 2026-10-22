@@ -18,12 +18,11 @@ pragma solidcash ^0.13.0;
 // this block are disregarded. i.e. when the BCH price was $1000 in the past,
 // an oracle entry with the old block number and price can not be used.
 contract HodlVault(pubkey ownerPk, pubkey oraclePk, int minBlock, int priceTarget) {
-    function spend(sig ownerSig, datasig oracleSig, bytes oracleMessage) {
+    function spend(sig ownerSig, datasig oracleSig, bytes8 oracleMessage) {
         // Decode the message { blockHeight, price }
-        bytes4 blockHeightBin, bytes priceBin = oracleMessage.split(4);
+        bytes4 blockHeightBin, bytes4 priceBin = oracleMessage.split(4);
         int blockHeight = int(blockHeightBin);
         int price = int(priceBin);
-
 
         // Check that blockHeight is after minBlock
         require(blockHeight >= minBlock);
@@ -56,7 +55,7 @@ Due to the nature of covenants, we have to be very specific about the outputs (a
 pragma solidcash ^0.13.0;
 
 contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
-    function receive() {
+    function recvFunds() {
         require(this.age >= period);
 
         // Check that the first output sends to the recipient
@@ -93,6 +92,8 @@ contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
 AMM DEX contract based on [the Cauldron DEX contract][Cauldron-Whitepaper], you can read more details about the contract design there.
 
 The SolidCash contract code has the big advantage of abstracting away any stack management, having variable names, explicit types and a logical order of operations (compared to the 'reverse Polish notation' of raw script).
+
+Note that `int` arithmetic is overflow-checked like Solidity 0.8, which adds range checks to the compiled script. Use `bigint`, the unchecked VM-native integer, where those checks are not wanted; see [Types](/docs/language/types#choosing-between-them).
 
 ```solidity
 pragma solidcash ^0.13.0;
@@ -135,7 +136,7 @@ contract DexContract(bytes20 poolOwnerPkh) {
 }
 ```
 
-Compared to the manually written and hand-optimized opcodes version of the contract, the SolidCash compiled bytecode has just 5 extra opcodes overhead (7 extra bytes). Furthermore, even contracts with hand-optimized bytecode can still be used with the SolidCash SDK, [find out more in the optimization guide](/docs/guides/optimization#advanced-hand-optimizing-bytecode).
+Contracts with hand-optimized bytecode can still be used with the SolidCash SDK, [find out more in the optimization guide](/docs/guides/optimization#advanced-hand-optimizing-bytecode).
 
 More advanced examples on covenants, using NFTs to keep local state and issuing NFTs as receipts can be found in the [Covenants & Introspection Guide](/docs/guides/covenants).
 

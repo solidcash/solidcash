@@ -3,36 +3,42 @@ title: Writing Covenants & Introspection
 sidebar_label: Covenants & Introspection
 ---
 
-Covenants are all the rage in Bitcoin Cash smart contracts. But what are they, and how do you use them? In one sentence: **a covenant is a constraint on how money can be spent**. A simple example is creating a smart contract that may **only** send money to one specific address and nowhere else. The term *Covenant* originates in property law, where it is used to constrain the use of any object — or in the case of BCH, the use of money.
+Covenants are all the rage in Bitcoin Cash smart contracts. But what are they, and how do you use them? In one sentence: **a covenant is a constraint on how money can be spent**. A simple example is creating a smart contract that may **only** send money to one specific address and nowhere else. The term *Covenant* originates in property law, where it is used to constrain the use of any object, or in the case of BCH, the use of money.
 
 Bitcoin covenants were first proposed in a paper titled [Bitcoin Covenants][bitcoin-covenants], but several other proposals have been created over the years. In May of 2022 Bitcoin Cash implemented so-called *Native Introspection* which enables efficient and accessible covenants. This was extended with token introspection opcodes with the *CashTokens* upgrade in May of 2023.
 
 ## Accessible introspection data
 When using SolidCash, you can access a lot of *introspection data* that can be used to inspect and constrain transaction details, such as inputs and outputs.
 
-- **`int this.activeInputIndex`** - Index of the input that is currently under evaluation during transaction validation.
+- **`bigint this.activeInputIndex`** - Index of the input that is currently under evaluation during transaction validation.
 - **`bytes this.activeBytecode`** - Contract bytecode of the input that is currently under evaluation during transaction validation.
-- **`int tx.version`** - Version of the transaction.
-- **`int tx.locktime`** - `nLocktime` field of the transaction.
-- **`int tx.inputs.length`** - Number of inputs in the transaction.
-- **`int tx.inputs[i].value`** - Value of a specific input (in satoshis).
+- **`bytes this.categoryId`** - Raw token category of the input that is currently under evaluation.
+- **`bigint tx.version`** - Version of the transaction.
+- **`bigint tx.locktime`** - `nLocktime` field of the transaction.
+- **`bigint tx.inputs.length`** - Number of inputs in the transaction.
+- **`bigint tx.inputs[i].value`** - Value of a specific input (in satoshis).
 - **`bytes tx.inputs[i].lockingBytecode`** - Locking bytecode (`scriptPubKey`) of a specific input.
 - **`bytes tx.inputs[i].unlockingBytecode`** - Unlocking bytecode (`scriptSig`) of a specific input.
 - **`bytes32 tx.inputs[i].outpointTransactionHash`** - Outpoint transaction hash of a specific input.
-- **`int tx.inputs[i].outpointIndex`** - Outpoint index of a specific input.
-- **`int tx.inputs[i].sequenceNumber`** - `nSequence` number of a specific input.
+- **`bigint tx.inputs[i].outpointIndex`** - Outpoint index of a specific input.
+- **`bigint tx.inputs[i].sequenceNumber`** - `nSequence` number of a specific input.
 - **`bytes tx.inputs[i].tokenCategory`** - `tokenCategory` + `tokenCapability` of a specific input.
 - **`bytes tx.inputs[i].nftCommitment`** - NFT commitment data of a specific input.
-- **`int tx.inputs[i].tokenAmount`** - Amount of fungible tokens of a specific input.
-- **`int tx.outputs.length`** - Number of outputs in the transaction.
-- **`int tx.outputs[i].value`** - Value of a specific output (in satoshis).
+- **`bigint tx.inputs[i].tokenAmount`** - Amount of fungible tokens of a specific input.
+- **`bigint tx.outputs.length`** - Number of outputs in the transaction.
+- **`bigint tx.outputs[i].value`** - Value of a specific output (in satoshis).
 - **`bytes tx.outputs[i].lockingBytecode`** - Locking bytecode (`scriptPubKey`) of a specific output.
 - **`bytes tx.outputs[i].tokenCategory`** - `tokenCategory` + `tokenCapability` of a specific output.
 - **`bytes tx.outputs[i].nftCommitment`** - NFT commitment data of a specific output
-- **`int tx.outputs[i].tokenAmount`** - Amount of fungible tokens of a specific output.
+- **`bigint tx.outputs[i].tokenAmount`** - Amount of fungible tokens of a specific output.
+
+The raw `tokenCategory` and `this.categoryId` values use consensus byte order, followed by the capability byte when
+there is one. Split off the capability byte and reverse the 32 category bytes before comparing them with a
+display-order category ID, or use `this.category` (`bytes32`) for the contract's own category. See
+[Global Variables](/docs/language/globals) for every introspection field.
 
 ## Using introspection data
-While we know the individual data fields, it's not immediately clear how this can be used to create useful smart contracts on Bitcoin Cash. However, there are several constraints that can be created using these fields — most important of which are constraints on the recipients of funds — so that is what we discuss.
+While we know the individual data fields, it's not immediately clear how this can be used to create useful smart contracts on Bitcoin Cash. However, there are several constraints that can be created using these fields (most important of which are constraints on the recipients of funds), so that is what we discuss.
 
 ### Restricting P2PKH recipients
 One interesting technique in Bitcoin Cash is called blind escrow, meaning that funds are placed in an escrow contract. This contract can only release the funds to one of the escrow participants, and has no other control over the funds. We can implement this blind escrow as a covenant by restricting the possible recipients (although there are other possible designs for escrows).
@@ -138,6 +144,10 @@ This contract applies similar techniques as the previous two examples to verify 
 ## Local State
 
 Smart contracts which persist for multiple transactions might want to keep data for later use. This is called local state. With the CashTokens upgrade, local state can be kept in the commitment field of the NFT of the smart contract UTXO. Because the state is not kept in the script of the smart contract itself, the address can remain the same.
+
+SolidCash state variables automate this pattern: the compiler keeps them in NFT commitments and generates the
+covenant that checks every update. See [Building Stateful Contracts](/docs/guides/stateful-guide). The examples
+below write the same checks by hand.
 
 :::info
 Covenants can also use 'simulated state', where state is kept in the contract script and the contract enforces a new P2SH locking bytecode of the contract with a different state update. This method causes the contract address to change with each state update.

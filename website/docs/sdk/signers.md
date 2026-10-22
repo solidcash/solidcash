@@ -24,7 +24,8 @@ console.log(signer.pkh);
 ```
 
 The constructor accepts a 32-byte `Uint8Array`, 64-character hex (optionally `0x`-prefixed), or WIF. It derives a
-compressed public key and P2PKH CashAddress.
+compressed public key and P2PKH CashAddress. `privateKey` stays readable but is not enumerable, so
+`JSON.stringify(signer)` and console output show only the public key.
 
 ### Address and UTXOs
 
@@ -127,7 +128,9 @@ the corresponding UTXO workflow.
 runner is accepted.
 
 ```ts
-import { BCH_ACCOUNT_BRANCH, BCH_DEFAULT_HD_PATH, HDSigner } from 'solidcash/hdsigner';
+import {
+  BCH_ACCOUNT_BRANCH, BCH_DEFAULT_HD_PATH, HDPublicSigner, HDSigner, signersFromMnemonic,
+} from 'solidcash/hdsigner';
 
 const wallet = HDSigner.fromPhrase(mnemonic, provider);
 const child = wallet.deriveChild(1);
@@ -184,21 +187,26 @@ const imported = HDPublicSigner.fromExtendedKey(xpub, provider);
 ```
 
 `HDPublicSigner` can derive only non-hardened children, calculate P2PKH addresses, and query UTXOs. It holds no
-private key and cannot fund/sign a `ContractFactory` or stateful call.
+private key and cannot fund/sign a `ContractFactory` or stateful call. `signersFromMnemonic` and `HDPublicSigner`
+come from `solidcash/hdsigner`, like `HDSigner`.
 
 ## Local test signers
 
 `MockNetworkProvider` provides deterministic, pre-funded HD accounts:
 
 ```ts
+import { MockNetworkProvider } from 'solidcash/network/mock';
+
 const provider = new MockNetworkProvider();
 const [owner, user] = await provider.getSigners();
 const third = await provider.getSigner(2);
 ```
 
-`getSigners(count = 20, { satoshis, mnemonic, fundingUtxos, path })` funds each address on that mock provider.
-Only output zero of each modeled funding transaction is a token-genesis candidate; request several funding UTXOs
-when tests need concurrent funders. SolidHat exposes the same idea as `hre.ethers.getSigners()`.
+`getSigners(count = 20, { satoshis, mnemonic, fundingUtxos, genesisFundingUtxos, path })` derives the accounts from
+a fixed test mnemonic (`m/44'/145'/0'/0/i`) and funds each address on that mock provider, by default with one UTXO of
+1,000,000 satoshis. `fundingUtxos` gives each account several coins. Only output zero of a funding transaction is a
+token-genesis candidate; `genesisFundingUtxos` spreads the coins over that many funding transactions when a test
+needs several genesis inputs. SolidHat exposes the same idea as `hre.ethers.getSigners()`.
 
 See [Signature Templates](/docs/sdk/signature-templates) for transaction signature algorithms and sighash policy,
 and [Contract Deployment](/docs/guides/deployment) for signer-backed genesis.

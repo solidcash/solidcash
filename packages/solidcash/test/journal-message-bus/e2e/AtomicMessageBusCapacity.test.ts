@@ -89,29 +89,31 @@ interface CapacityReading {
 // minting NFT: each participant's bytecode is 27 B smaller, so the transaction is 54 B smaller in each convention.
 // Again when the forged-log pin skipped outputs of other categories (2286a2d7c): participant 1 is 1 B (kernel) and
 // 3 B (legacy) larger and about 35,000 units cheaper.
+// Again for the C3 record pins (each own-category record held at its own index, the route's past its block): each
+// participant input is 88-95 B larger and 4,400-7,200 units dearer; the verifier inputs are unchanged.
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 23_958, callManifestBytes: 294,
+    transactionBytes: 24_140, callManifestBytes: 294,
     worstOperationCost: 27_321, worstMaximumOperationCost: 112_800,
     worstRatio: 0.24220744680851064,
     inputOperationCosts: [
-      413_441, 379_816, 695, 957_029, 817_401, 27_321,
+      420_606, 384_234, 695, 957_029, 817_401, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_356_000, 1_803_200, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_431_200, 1_873_600, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_436, callManifestBytes: 294,
+    transactionBytes: 24_626, callManifestBytes: 294,
     worstOperationCost: 2_373_867, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.32813598916288844,
     inputOperationCosts: [
-      406_467, 401_546, 695, 2_373_867, 1_863_554, 27_321,
+      413_200, 408_778, 695, 2_373_867, 1_863_554, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_288_000, 2_253_600, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_364_000, 2_329_600, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });

@@ -28,7 +28,10 @@ satoshi amount is covered. It throws when the available non-token balance is ins
 
 #### Example
 ```ts
-const { utxos, totalAmount } = gatherBchUtxos(utxos, 100000n);
+import { gatherBchUtxos } from 'solidcash';
+
+const walletUtxos = await provider.getUtxos(walletAddress);
+const { utxos, totalAmount } = gatherBchUtxos(walletUtxos, 100_000n);
 ```
 
 ### gatherFungibleTokenUtxos()
@@ -42,5 +45,31 @@ insufficient. BCH carried by the selected token UTXOs is not included in `totalA
 
 #### Example
 ```ts
-const { utxos, totalAmount } = gatherFungibleTokenUtxos(utxos, tokenCategory, 1000n);
+import { gatherFungibleTokenUtxos } from 'solidcash';
+
+const { utxos, totalAmount } = gatherFungibleTokenUtxos(walletUtxos, tokenCategory, 1000n);
 ```
+
+## Test fixtures
+
+`randomUtxo()`, `randomToken()` and `randomNFT()` create made-up UTXO and token objects for tests. Each takes an
+optional partial object whose fields override the random defaults:
+
+```ts
+import { randomNFT, randomToken, randomUtxo } from 'solidcash';
+import { MockNetworkProvider } from 'solidcash/network/mock';
+
+const provider = new MockNetworkProvider();
+await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100_000n }));
+await provider.addUtxo(contract.tokenAddress, randomUtxo({
+  satoshis: 1_000n,
+  token: randomToken({ amount: 500n }),
+}));
+await provider.addUtxo(contract.tokenAddress, randomUtxo({
+  token: randomNFT({ nft: { capability: 'mutable', commitment: '00' } }),
+}));
+```
+
+`randomUtxo()` defaults to a random txid and vout and at least 100,000 satoshis. `randomToken()` returns a random
+category with a fungible amount, and `randomNFT()` a random category with an immutable NFT and no fungible amount.
+These objects exist only on a mock provider; a real network rejects inputs that spend them.

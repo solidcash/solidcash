@@ -4,12 +4,12 @@ interface IData {
     public mapping(int => Score) scores;
 }
 
-contract DataReader(bytes32 dataCategoryId) {
+contract DataReader(address data) {
     int total;
 
     function readScore(int id, pubkey pk, sig s) {
         require(checkSig(s, pk));
-        Score score = IData(dataCategoryId).scores[id];
+        Score score = IData(data).scores[id];
         this.total = this.total + score.value;
     }
 

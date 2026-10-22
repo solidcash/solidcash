@@ -48,6 +48,7 @@ function cloneNodeWithMemo<T extends Node>(
     clone.isExternalSelfRef = node.isExternalSelfRef;
     clone.storagePointerOnly = node.storagePointerOnly;
     clone.fromModifier = node.fromModifier;
+    if (node.lvalueKey) clone.lvalueKey = node.lvalueKey;
     if (!preserveGraphAliases) memo.delete(node);
     return clone as unknown as T;
   }

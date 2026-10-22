@@ -6,17 +6,17 @@ title: Migration Notes
 
 Version 0.13.1 is a major protocol and workflow upgrade, not only a syntax update. Existing stateless contracts can
 often be recompiled directly, but existing stateful deployments are not layout-compatible with the new
-self-pinned data/vmap/chunk protocol. Recompile, audit the artifact, and deploy a new category; a native upgrade
-cannot carry state records to new bytecode.
+self-pinned data/vmap/chunk protocol. Recompile, audit the artifact, and deploy a new category.
 
 ### Runtime and project requirements
 
-- Use Node `>=22 <23`, Yarn `>=1.22.22 <2`, and aligned 0.13.1 versions of `solidc`, `solidcash`, and the
-  `@solidcash/*` packages.
-- CI should install with `yarn --frozen-lockfile --ignore-scripts` and then run the explicit root build. Workspace
-  lifecycle compilation during installation is intentionally not the authoritative build.
-- SolidHat projects use `solidcash.config.ts`, the `solidcash` CLI, and artifacts under `artifacts/solidcash`.
-  `solidcash init --from-hardhat` creates a parallel configuration; it does not edit the Hardhat file.
+- Use Node.js 22 or newer and the same 0.13.1 version of all six packages: `solidc`, `solidcash`,
+  `@solidcash/utils`, `@solidcash/testing`, `@solidcash/solidhat` and `@solidcash/create-solidhat`. They ship as
+  ESM only.
+- SolidHat projects use `solidcash.config.ts` (with `defineConfig` from `@solidcash/solidhat/config`), the `solidhat`
+  CLI, and artifacts under `artifacts/solidcash`; a project on plain `@solidcash/testing` uses its `solidcash` CLI.
+  New projects set `compiler: { evmCompat: true }`. `solidhat init --from-hardhat` (`solidcash init --from-hardhat`
+  without SolidHat) writes `solidcash.config.ts` from the nearest Hardhat config; it does not edit the Hardhat file.
 
 ### Stateful storage and deployment
 
@@ -37,15 +37,25 @@ cannot carry state records to new bytecode.
 
 ### Calls, events, and lifecycle
 
-- Cross-contract calls are composed co-spends, not synchronous account calls. Register deployed targets through
-  the SDK's external registry and let auto-derivation construct the callee blocks and return-event outputs.
+- Cross-contract calls are composed co-spends, not synchronous account calls. A call target is an `address`, the
+  callee master's locking bytecode, not a category id. Register deployed targets through the SDK's external
+  registry and let auto-derivation construct the callee blocks and return-event outputs.
+- `msg.sender` is the calling contract's address, or `tx.origin` (the first non-token P2PKH input) for a direct
+  spend. The compiler warns on every read of `msg.sender` or `tx.origin`; authorize with `checkSig` instead.
 - Event records are immutable NFT commitments and are queried through receipts, filters, or listeners. Do not
   assume an EVM log bloom or runtime revert-data transport.
-- Native `upgrade` moves the master to new bytecode while preserving the category. The compiler refuses it in a
-  contract that keeps state records, which stay bound to the old lock. It is different from a proxy/delegate
-  deployment.
+- Native `upgrade` moves the master to new bytecode while preserving the category. Data NFTs are re-minted on the
+  new bytecode, the satoshi and token containers move with the master, and mapping entries move one per
+  transaction through a `migrateRecords` function. Values kept in chunk NFTs do not migrate yet, and the SDK refuses
+  an upgrade that would strand one. The compiler still refuses an upgrade that runs as a message-bus route in a
+  contract with state variables. A native upgrade is different from a proxy deployment, which keeps its address.
 - `selfdestruct`, child deployment, and split/merge operations require their dedicated SDK builders and explicit
   funding/recipient/thread plans.
+- Experimental in 0.13.1, outside the stable compatibility promise: calls that mutate another contract's state,
+  custom delegate forwarding beyond the built-in `upgrades.deployProxy` profile and `upgrades.upgradeProxy`,
+  message-bus kernel composition (`messageBus.compose`, `sc.batch([...])`), the
+  [framed convention](/docs/guides/framed-composition) (`composition: 'framed'`), and Solidity shapes outside the
+  compatibility manifest.
 
 ### ABI and Solidity imports
 
@@ -68,16 +78,22 @@ cannot carry state records to new bytecode.
 
 ### SDK and tests
 
-- The `solidcash` root is now the lean stateless surface only. Stateful contracts, the factory, the message bus,
-  framed composition, block oracles, network providers, HD signers, loop-call helpers, and WalletConnect helpers
-  moved to subpaths: `solidcash/stateful`, `solidcash/contract-factory`, `solidcash/message-bus`,
-  `solidcash/framed`, `solidcash/oracle`, `solidcash/network/electrum`, `solidcash/network/mock`,
-  `solidcash/hdsigner`, `solidcash/loop-call`, and `solidcash/walletconnect`. The root no longer re-exports them,
-  so importing it stays fast; update the affected `import` statements rather than the SDK.
+- The `solidcash` root is now the lean stateless surface only: `Contract`, `TransactionBuilder`,
+  `SignatureTemplate`, `Signer`, `randomUtxo`, the error classes, and the regtest, Bitcoin RPC and FullStack
+  providers. Stateful contracts, the factory, the message bus, framed composition, block oracles, the Electrum and
+  mock network providers, HD signers, loop-call helpers, WalletConnect helpers and BCMR metadata live on subpaths:
+  `solidcash/stateful`, `solidcash/contract-factory`, `solidcash/message-bus`,
+  [`solidcash/framed`](/docs/guides/framed-composition),
+  `solidcash/oracle`, `solidcash/network/electrum`, `solidcash/network/mock`, `solidcash/hdsigner`,
+  `solidcash/loop-call`, `solidcash/walletconnect` and `solidcash/bcmr`. The root does not re-export them, so
+  importing it stays fast; update the affected `import` statements rather than the SDK.
 - `Signer`/`ContractFactory` and connected methods are the maintained high-level workflow. Raw `Contract` and
   `TransactionBuilder` remain available for explicit transaction composition.
 - `MockNetworkProvider` starts empty, updates its UTXO set by default, and supports funded signers, snapshots,
-  block/time control, and a configurable VM target. Tests must create or request their funding explicitly.
+  block/time control, and a configurable VM target. Tests must create or request their funding explicitly. By
+  default it relaxes sizes (1,000,000-byte inputs, stack items and NFT commitments) and has no dust rule; only the
+  operation-cost density (800 per byte) is real, so a green mock test does not prove a transaction is valid on
+  mainnet.
 - Use Vitest with `@solidcash/testing` or SolidHat. The maintained Chai-style matchers cover named failures,
   events, BCH/token balance changes, and common transaction assertions; they are not universal Hardhat plugin
   compatibility.
@@ -89,7 +105,10 @@ cannot carry state records to new bytecode.
 
 #### bounded bytes casting
 
-To indicate that `bytes4(bytes)` casting is purely semantic (and does not offer any type safety), we have renamed it to `unsafe_bytes4(bytes)`. We have also disallowed `bytes4(int)` casting (see section *int to padded bytes casting*).
+The purely semantic cast of `bytes` to a bounded bytes type (which does not offer any type safety) is now
+`unsafe_bytes4(bytes)`. `bytes4(bytes)` is still accepted, but it now follows Solidity 0.8.5 and later: it
+right-pads with zero bytes or truncates to exactly 4 bytes, so it changes a value of a different length. Review every
+`bytesN(bytes)` cast in older code.
 
 ```solidity
 bytes x = 0x12345678;
@@ -102,11 +121,15 @@ bytes5(x); // => 0x12345678 (incorrect semantic cast)
 // marked as unsafe to indicate that this is a purely semantic cast
 unsafe_bytes4(x); // => 0x12345678 (correct semantic cast)
 unsafe_bytes5(x); // => 0x12345678 (incorrect semantic cast)
+bytes5(x);        // => 0x1234567800 (right-padded to 5 bytes)
 ```
 
 #### int to padded bytes casting
 
 In the past, `bytes4(int)` or `bytes(int, 4)` would perform a `NUM2BIN` operation, padding the value to 4 bytes, while `bytes4(bytes)` was a purely semantic type cast. This caused confusion, so instead you can now use the `toPaddedBytes(int, length)` function to perform the same padding (`NUM2BIN`) operation.
+
+`bytes4(int)` is still accepted. In a native compile it pads the number like `toPaddedBytes(int, 4)`; under
+`evmCompat` it writes the value as big-endian two's complement, as Solidity does.
 
 ```solidity
 // before
@@ -272,7 +295,7 @@ import { ElectrumCluster, ClusterOrder } from 'electrum-cash';
 import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 
 const customCluster = new ElectrumCluster('SolidCash Application', '1.4.1', 2, 3, ClusterOrder.PRIORITY);
-customCluster.addServer('bch.imaginary.scash', 50004, ElectrumTransport.WSS.Scheme, false);
+customCluster.addServer('bch.imaginary.cash', 50004, ElectrumTransport.WSS.Scheme, false);
 customCluster.addServer('blackie.c3-soft.com', 50004, ElectrumTransport.WSS.Scheme, false);
 customCluster.addServer('electroncash.dk', 50004, ElectrumTransport.WSS.Scheme, false);
 
@@ -285,12 +308,12 @@ After:
 import { ElectrumClient } from '@electrum-cash/network';
 import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 
-const customClient = new ElectrumClient('SolidCash Application', '1.4.1', 'bch.imaginary.scash');
+const customClient = new ElectrumClient('SolidCash Application', '1.4.1', 'bch.imaginary.cash');
 const provider = new ElectrumNetworkProvider('mainnet', { electrum: customClient });
 
 // or
 
-const provider = new ElectrumNetworkProvider('mainnet', { hostname: 'bch.imaginary.scash' });
+const provider = new ElectrumNetworkProvider('mainnet', { hostname: 'bch.imaginary.cash' });
 ```
 
 ## v0.9 to v0.10

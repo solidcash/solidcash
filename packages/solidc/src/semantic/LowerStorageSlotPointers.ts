@@ -279,8 +279,10 @@ export default class LowerStorageSlotPointers extends AstTraversal {
         return this.rewriteAliasRefWrite(alias.aliasRef, this.visit(args[0]) as ExpressionNode, node.location);
       }
       if (args.length === 1) {
+        // A compound `x.value += v` arrives as `x = XSlot(x.value + v)`: its value reads the alias too.
         const write = new MappingAssignNode(
-          EVM_STORAGE, [this.keyOf(alias)], this.toUint(args[0], alias.struct.fields[0].type),
+          EVM_STORAGE, [this.keyOf(alias)],
+          this.toUint(this.visit(args[0]) as ExpressionNode, alias.struct.fields[0].type),
         );
         write.location = node.location;
         return write;

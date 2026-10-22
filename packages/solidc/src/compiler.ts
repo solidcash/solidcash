@@ -130,7 +130,7 @@ import {
   BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility, StructDefinitionNode,
   exactArrayLength,
 } from './ast/AST.js';
-import AstBuilder from './ast/AstBuilder.js';
+import AstBuilder, { lvalueKeyUnitsBuilt } from './ast/AstBuilder.js';
 import { Class, GlobalFunction } from './ast/Globals.js';
 import { ThrowingErrorListener, type SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
 import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
@@ -269,6 +269,7 @@ import expandInheritance, {
   assertNoReservedBaseNames, BASE_IMPL_PREFIX,
 } from './semantic/InheritanceExpansionTransformation.js';
 import lowerRequireMessageEffects from './semantic/LowerRequireMessageEffects.js';
+import bindLvalueKeyEffects from './semantic/BindLvalueKeyEffects.js';
 import autoMarkDelegateFunctions from './semantic/AutoMarkDelegateFunctions.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { validateStorageLayoutSpecifiers } from './semantic/ValidateStorageLayoutSpecifiers.js';
@@ -3336,6 +3337,8 @@ function parseAndResolve(
   // Lexing + parsing
   let ast = parseCode(parseSource, errorListener, mergedCompilerOptions.evmCompat,
     mergedCompilerOptions.chunkedArrays, undefined, mergedCompilerOptions.rootFileId);
+  // parseCode leaves read-modify-write keys unbound in a source with imports (see bindLvalueKeyEffects).
+  const lvalueKeysUnbound = ast.imports.length > 0;
   // Hardhat's console library is a compiler/runtime debugging hook, not a source dependency that SolidCash
   // should parse or link. Its calls are represented by ConsoleStatementNode and already emit no BCH bytecode,
   // while retaining artifact log metadata for the SDK debugger. Accept both Solidity import spellings without
@@ -3358,6 +3361,8 @@ function parseAndResolve(
   }
 
   if (primaryName) setPrimaryContract(ast, primaryName);
+  // With every file's declarations known; before the type repair below, which also types the bound keys' temps.
+  if (lvalueKeysUnbound) bindLvalueKeyEffects(ast);
 
   // Types are resolved during parse, before imports merge, so an imported struct used as an array element
   // (`Todo[]` where `Todo` is imported) parses to a named AddressType placeholder. Now that imported struct
@@ -21552,6 +21557,7 @@ export function parseCode(
   // wins over any file label anyway (`importedFileCaveat`).
   const parseStarted = compilerProfileEnabled() ? Date.now() : 0;
   let sllFailed = false;
+  const lvalueKeyUnitsBefore = lvalueKeyUnitsBuilt();
   const ast = withSourceFile(importedFileId, () => {
     const lexer = new SolidCashLexer(new PackedCharStream(code) as unknown as CharStream);
     lexer.removeErrorListeners();
@@ -21640,6 +21646,8 @@ export function parseCode(
     }
   }
   if (code.includes(BASE_IMPL_PREFIX)) assertNoReservedBaseNames(ast);
+  // A source without imports declares every function its keys may call; one with imports binds after the merge.
+  if (ast.imports.length === 0 && lvalueKeyUnitsBuilt() !== lvalueKeyUnitsBefore) bindLvalueKeyEffects(ast);
   return ast;
 }
 

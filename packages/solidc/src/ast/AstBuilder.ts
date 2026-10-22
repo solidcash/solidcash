@@ -5,6 +5,7 @@ import { parameterTypeToken } from '../semantic/parameterTypeToken.js';
 import { byteElementValue } from '../semantic/byteElementValue.js';
 import { getMaxPushdataEncodedSizeForType } from '../semantic/maxEncodedSize.js';
 import { mayWriteState } from '../semantic/LowerRequireMessageEffects.js';
+import { hasSideEffects } from '../semantic/sideEffects.js';
 import { getFixedWidth, isFixedWidthType } from '../generation/utils.js';
 import { parseType, MappingType, ArrayType, StructType, IntType, FixedType, FunctionType, type Type, AddressType, ValueType, BytesType, PrimitiveType, EnumType, implicitlyCastable, isChunkPackableElementType, computeErc7201SlotNumber } from '@solidcash/utils';
 import semver from 'semver';
@@ -121,6 +122,7 @@ import {
   SwitchCaseNode,
   UsingForDirectiveNode,
   type UsingForBinding,
+  type LvalueKeyTag,
   exactArrayBounds,
 } from './AST.js';
 import { cloneNode } from './clone.js';
@@ -300,6 +302,13 @@ function warnFixedPointOnce(): void {
   emitCompilerWarning('Warning: fixed-point (fixed/ufixed types, decimal literals) is not implemented in Solidity '
     + '(solc: "Fixed point types not implemented"); solidcash compiles it with its own decimal-scaled-integer '
     + 'implementation, which differs - do not assume cross-compiler parity.');
+}
+
+// Read-modify-writes whose keys were tagged for BindLvalueKeyEffects, process-wide. Module-level for the same
+// class-shape reason as warnedFixedPoint.
+let lvalueKeyUnits = 0;
+export function lvalueKeyUnitsBuilt(): number {
+  return lvalueKeyUnits;
 }
 
 // Left-factored prefix subrules wrap labeled alternatives (`parenExpression` → GroupedExpression,
@@ -3556,11 +3565,23 @@ export default class AstBuilder
   // Parse-time value type of a tuple target (`a[i]`, `m[k].f`, `s.x`, a plain state var) and the type of each index
   // key on its chain; a step that cannot be resolved leaves the types after it undefined.
   private tupleTargetTypes(slot: TupleSlotContext, segs: LvSeg[]): { value?: Type, keys: (Type | undefined)[] } {
-    const base = slot.anyIdentifier(0)!.getText();
+    const { value: reached, keys } = this.lvalueChainTypes(slot.anyIdentifier(0)!.getText(), segs);
+    const value = reached ?? this.resolveTupleSlotType(slot);
+    const plain = value !== undefined
+      && !(value instanceof StructType || value instanceof ArrayType || value instanceof MappingType);
+    return { value: plain ? value : undefined, keys };
+  }
+
+  // Parse-time types along an lvalue chain from `base`: the type of each index key and the type reached. A step that
+  // cannot be resolved leaves the types after it undefined. A `this.` chain starts at the state variable.
+  private lvalueChainTypes(
+    base: string, segs: LvSeg[], isThis = false,
+  ): { value?: Type, keys: (Type | undefined)[] } {
     const index = this.evmCompat ? new IntType(false, 256) : PrimitiveType.BIGINT;
+    const local = isThis ? undefined : this.localArrayVarTypes.get(base) ?? this.localStructTypes.get(base);
     let cur: Type | undefined = this.storageAliases.has(base) ? undefined
-      : this.localArrayVarTypes.get(base) ?? this.localStructTypes.get(base) ?? this.mappingStateVarTypes.get(base)
-        ?? this.stateCollectionArrayTypes.get(base) ?? this.stateVarTypes.get(base);
+      : local ?? this.mappingStateVarTypes.get(base) ?? this.stateCollectionArrayTypes.get(base)
+        ?? this.stateVarTypes.get(base);
     const keys: (Type | undefined)[] = [];
     for (const seg of segs) {
       if (seg.member !== undefined) {
@@ -3570,10 +3591,7 @@ export default class AstBuilder
       keys.push(cur instanceof ArrayType ? index : cur instanceof MappingType ? cur.keyType : undefined);
       cur = cur instanceof ArrayType ? cur.elementType : cur instanceof MappingType ? cur.valueType : undefined;
     }
-    const value = cur ?? this.resolveTupleSlotType(slot);
-    const plain = value !== undefined
-      && !(value instanceof StructType || value instanceof ArrayType || value instanceof MappingType);
-    return { value: plain ? value : undefined, keys };
+    return { value: cur, keys };
   }
 
   private tupleKeysTyped(slot: TupleSlotContext, keys: (Type | undefined)[]): boolean {
@@ -6319,6 +6337,40 @@ export default class AstBuilder
     return undefined;
   }
 
+  // An lvalue write (buildLvalueChainAssign), which builds a key once per use: a read-modify-write evaluates it in
+  // the read and again in the write, and a field rebuild once per field. When a key built more than once might have
+  // a side effect, tag every build of the write's keys, and its top-level statements, for BindLvalueKeyEffects.
+  // Keys that cannot have one are left untouched.
+  private buildLvalueAssign(
+    rawName: string, isThis: boolean, nameLoc: Location, segs: LvSeg[],
+    op: string, valueCtx: ExpressionContext | undefined, loc: Location, valueNode?: ExpressionNode,
+  ): StatementNode {
+    const builds: ExpressionNode[][] = [];
+    const recorded = segs.map((seg): LvSeg => {
+      if (seg.key === undefined) return seg;
+      const key = seg.key;
+      const nodes: ExpressionNode[] = [];
+      builds.push(nodes);
+      return { key: (): ExpressionNode => { const node = key(); nodes.push(node); return node; } };
+    });
+    const statement = this.buildLvalueChainAssign(rawName, isThis, nameLoc, recorded, op, valueCtx, loc, valueNode);
+    if (!builds.some((nodes) => nodes.length > 1 && hasSideEffects(nodes[0], () => true))) return statement;
+    const types = this.lvalueChainTypes(rawName, segs, isThis).keys;
+    const keys = builds.map((nodes, index) => ({ nodes, index, type: types[index] }))
+      .filter(({ nodes }) => nodes.length > 0 && !(nodes[0] instanceof LiteralNode));
+    if (keys.some(({ type }) => type === undefined)) return statement;
+    const unit = lvalueKeyUnits++;
+    for (const { nodes, index, type } of keys) {
+      const tag: LvalueKeyTag = { unit, index, type: type! };
+      for (const node of nodes) node.lvalueKey = tag;
+    }
+    statement.lvalueKeyUnit = unit;
+    if (statement instanceof BlockNode && !statement.scoped) {
+      for (const inner of statement.statements ?? []) inner.lvalueKeyUnit = unit;
+    }
+    return statement;
+  }
+
   // Unified lvalue assignment: `this.x`, `this.m[k]`, `this.m[k].f`, `m[k]`, `m[k].f`, `m[k1][k2]` (with any
   // compound op). The lvalue shape selects the assignment node; semantic analysis routes state vs local. A
   // numKeys-0 lvalue is always `this.<scalar>` (the bare-scalar form lives in assignStatement).
@@ -6326,7 +6378,7 @@ export default class AstBuilder
   // - the interleaved member/index chain - with operator `op` and value expression `valueCtx`. Driven by
   // visitExpressionStatement / visitPrefixIncDecStatement, which reconstruct the segments from the parsed LHS
   // expression (extractLvalue). The per-kind flat lists (members/keyFns) and interleaved segs are derived here.
-  private buildLvalueAssign(
+  private buildLvalueChainAssign(
     rawName: string, isThis: boolean, nameLoc: Location, segs: LvSeg[],
     op: string, valueCtx: ExpressionContext | undefined, loc: Location, valueNode?: ExpressionNode,
   ): StatementNode {

@@ -1177,6 +1177,15 @@ export abstract class StatementNode extends Node {
   messageBusFixedChunkableWriteGuard?: string;
   /** Base contract that wrote this statement when its constructor is inlined into a derived one (`super` scope). */
   baseConstructorOf?: string;
+  /** A top-level statement of the read-modify-write whose keys carry this `LvalueKeyTag.unit` (BindLvalueKeyEffects). */
+  lvalueKeyUnit?: number;
+}
+
+/** One build of a read-modify-write's key: the write (`unit`), the key position (`index`) and the key's type. */
+export interface LvalueKeyTag {
+  unit: number;
+  index: number;
+  type: Type;
 }
 
 /** A base constructor's own modifiers, expanded with the most-derived (virtual) modifier definitions. */
@@ -1697,6 +1706,8 @@ export abstract class ExpressionNode extends Node {
   // A runtime-sized local-array key reconstructed from dominating writes. LowerVMapCounterLoops may treat this
   // expression as counter-derived without broadening that rule to arbitrary source array reads.
   messageBusDeterministicArrayKey?: boolean;
+  // One of several builds of a read-modify-write's key that might have a side effect (BindLvalueKeyEffects).
+  lvalueKey?: LvalueKeyTag;
 }
 
 // `(x op= rhs)` used as an expression: performs the assignment to local `x` and yields its new value

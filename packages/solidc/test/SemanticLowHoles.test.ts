@@ -11,6 +11,9 @@ import { compileString } from './direct-compile.js';
  * 2. `__base_` names the preserved copy of an overridden function; a source declaration may not use it.
  * 3. A bytesN value converts to an address only through an explicit `address(..)`. Address literals,
  *    LockingBytecode results, ecrecover addresses and unbounded locking bytecode keep converting.
+ * 4. The parser built the key of a compound write (`m[k] += v`, `m[k].a += 1`) and of an element-field rebuild
+ *    (`items[k].a = v`) once per use. A side-effecting key is now bound once, as in 1; a pure key is left alone.
+ *    A compound write through a storage-slot alias (`r.value += v`) compiles.
  */
 
 const E = { evmCompat: true };
@@ -56,6 +59,52 @@ describe('a side-effecting key evaluates once', () => {
       + ` function f(uint256 v) external { ${bind} uint256 a = r.value; r.value = a + v; require(true); } }`;
     expect(bytecode(src('Uint256Slot storage r = StorageSlot.getUint256Slot(nextSlot());'), E))
       .toBe(bytecode(src('bytes32 s = nextSlot(); Uint256Slot storage r = StorageSlot.getUint256Slot(s);'), E));
+  });
+});
+
+describe('a side-effecting key of a compound or field-rebuild write evaluates once', () => {
+  const NEXT = 'uint256 counter; function next() internal returns (uint256) { counter = counter + 1; return counter - 1; }'
+    + ' function peek() internal view returns (uint256) { return counter; }';
+  const src = (decl: string, body: string): string => 'struct S { uint256 a; uint256 b; }'
+    + ` contract C { ${NEXT} ${decl} function f(uint256 v) external { ${body} require(true); } }`;
+  const M = 'mapping(uint256 => uint256) m;';
+  const MS = 'mapping(uint256 => S) m;';
+
+  it('in a compound write to a mapping entry', () => {
+    expect(bytecode(src(M, 'm[next()] += v;'), E)).toBe(bytecode(src(M, 'uint256 k = next(); m[k] += v;'), E));
+    expect(bytecode(src(M, 'm[next()]++;'), E)).toBe(bytecode(src(M, 'uint256 k = next(); m[k]++;'), E));
+  });
+
+  it('in a compound write to a field of a mapping entry', () => {
+    expect(bytecode(src(MS, 'm[next()].a += 1;'), E)).toBe(bytecode(src(MS, 'uint256 k = next(); m[k].a += 1;'), E));
+  });
+
+  it('in a field write that rebuilds a state struct array element', () => {
+    expect(bytecode(src('S[] items;', 'items[next()].a = v;'), E))
+      .toBe(bytecode(src('S[] items;', 'uint256 k = next(); items[k].a = v;'), E));
+  });
+
+  it('when the state-changing function is declared in an imported file', () => {
+    const files = { 'base.scash': `contract B { ${NEXT} }` };
+    const root = (body: string): string => 'import "./base.scash"; contract C is B { mapping(uint256 => uint256) m;'
+      + ` function f(uint256 v) external { ${body} require(true); } }`;
+    expect(bytecode(root('m[next()] += v;'), { ...E, files }))
+      .toBe(bytecode(root('uint256 k = next(); m[k] += v;'), { ...E, files }));
+  });
+
+  it('and leaves a pure key in place', () => {
+    expect(bytecode(src(M, 'm[peek()] += v;'), E)).not.toBe(bytecode(src(M, 'uint256 k = peek(); m[k] += v;'), E));
+  });
+});
+
+describe('a compound write through a storage-slot alias', () => {
+  it('compiles', () => {
+    const source = 'struct Uint256Slot { uint256 value; }'
+      + ' library StorageSlot { function getUint256Slot(bytes32 slot) internal pure returns (Uint256Slot storage r)'
+      + ' { assembly { r.slot := slot } } }'
+      + ' contract C { function f(bytes32 s, uint256 v) external {'
+      + ' Uint256Slot storage r = StorageSlot.getUint256Slot(s); r.value += v; require(true); } }';
+    expect(compileString(source, E).contractName).toBe('C');
   });
 });
 

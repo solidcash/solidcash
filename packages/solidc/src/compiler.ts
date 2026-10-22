@@ -632,8 +632,8 @@ type InternalCompilerOptions = CompilerOptions & {
    */
   __framedContractHoldsTokens?: boolean;
   /**
-   * Set on a split shard, facet or root whose logical contract emits an event: it holds some bodies only, yet pins
-   * forged logs (SEC-10) as that contract does.
+   * Set on a split shard, facet or root whose logical contract has events (`splitLogicalEventOptions`): it holds some
+   * bodies only, yet pins forged logs (SEC-10) as that contract does.
    */
   __logicalContractEmitsEvent?: boolean;
   /**
@@ -19042,11 +19042,24 @@ function splitModeOf(split: CompilerOptions['split']): 'off' | 'size' | 'func' {
   return mode;
 }
 
+/**
+ * The logical-contract event options of a split's shards, facets and root: set when the unsplit artifact, which the
+ * SDK reads the split through, lists an event, or a body the probe holds emits one. The artifact decides an emit in a
+ * library or free function, which sits in no contract body before inlining.
+ */
+function splitLogicalEventOptions(
+  logical: Artifact, probe: Ast | undefined,
+): Pick<InternalCompilerOptions, '__logicalContractEmitsEvent' | '__logicalContractEvents'> {
+  const events = (logical.events ?? []).map((event) => event.signature);
+  return events.length > 0 || (probe !== undefined && emitsAnyEvent(probe.contract))
+    ? { __logicalContractEmitsEvent: true, __logicalContractEvents: events } : {};
+}
+
 /** Per-entry framed split. The size packer below is not used. */
 function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): FunctionSplitBundle {
   const { errorListener } = compilerOptions;
   let probe: Ast | undefined;
-  let logicalEvents: string[] = [];
+  let logical: Artifact | undefined;
   return compileFunctionSplit({
     code,
     options: compilerOptions,
@@ -19056,9 +19069,8 @@ function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): F
         return probe;
       },
       compileMonolith(source, options) {
-        const monolith = compileString(source, { ...stripSplitPlanning(options), errorListener });
-        logicalEvents = (monolith.events ?? []).map((event) => event.signature);
-        return monolith;
+        logical = compileString(source, { ...stripSplitPlanning(options), errorListener });
+        return logical;
       },
       compileParsed(source, options, ast, frameKinds) {
         return compileStringUnchecked(source, {
@@ -19069,8 +19081,7 @@ function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): F
           __functionSplitFrameKinds: frameKinds,
           ...(probe !== undefined && contractNamesTokenContainer(probe.contract)
             ? { __framedContractHoldsTokens: true } : {}),
-          ...(probe !== undefined && emitsAnyEvent(probe.contract)
-            ? { __logicalContractEmitsEvent: true, __logicalContractEvents: logicalEvents } : {}),
+          ...(logical === undefined ? {} : splitLogicalEventOptions(logical, probe)),
         } as InternalCompilerOptions);
       },
       cloneAst,
@@ -19180,10 +19191,7 @@ function compileStringSplitUnchecked(
   // each candidate compilation; reparsing imports and re-expanding inheritance/modifiers for
   // every packing probe made split compilation scale with (candidate count * front-end cost).
   const probe = prepareSplitAst(code, merged, errorListener);
-  if (emitsAnyEvent(probe.contract)) {
-    merged.__logicalContractEmitsEvent = true;
-    merged.__logicalContractEvents = (baseline.events ?? []).map((event) => event.signature);
-  }
+  Object.assign(merged, splitLogicalEventOptions(baseline, probe));
   const logicalName = probe.contract.name;
   const functions = probe.contract.functions;
   const byName = new Map<string, FunctionDefinitionNode[]>();

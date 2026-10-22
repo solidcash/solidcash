@@ -176,11 +176,11 @@ port keeps the identity it already had. What the option does **not** change:
   row) and a word-encoded (`evm-abi-v1`) result carry the 20-byte identity in either form, because a 32-byte word
   cannot hold a variable-length lock.
 
-An `address` *argument* on the framed wire is not a word: it rides as its whole locking bytecode, and the option
-decides the packing a body does with it. An explicitly chosen form is published on the artifact
-(`compiler.options.addressForm`), and the SDK reads it back through `artifactAddressForm` (`solidcash/stateful`) so
-its own derivation of a call's argument packs the same bytes the compiled body does. An artifact that names no form
-keeps its previous shape and the mode decides it.
+An `address` *argument* on the [framed](/docs/guides/framed-composition) wire is not a word: it rides as its whole
+locking bytecode, and the option decides the packing a body does with it. An explicitly chosen form is published on
+the artifact (`compiler.options.addressForm`), and the SDK reads it back through `artifactAddressForm`
+(`solidcash/stateful`) so its own derivation of a call's argument packs the same bytes the compiled body does. An
+artifact that names no form keeps its previous shape and the mode decides it.
 
 A packed payload that carries locks is longer than one that carries identities, which matters at the 128-byte
 NFT commitment limit and for any offset arithmetic over the payload.

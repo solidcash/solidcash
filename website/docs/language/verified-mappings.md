@@ -82,8 +82,8 @@ slot = positive255(sha256(sha256(k0) || sha256(k1) || ... || sha256(kn)))
 lets Bitcoin Script compare the full domain as non-negative numbers. Slot zero is reserved for HEAD.
 
 The key encoding is type-aware. An `address` key hashes its canonical locking bytecode, not its CashAddress text.
-Under `evmCompat`, an `address` key is hashed by its 20-byte identity instead (except under the experimental framed
-convention). The compiler and SDK use the same codec before hashing.
+Under `evmCompat`, an `address` key is hashed by its 20-byte identity instead (except under the experimental
+[framed convention](/docs/guides/framed-composition)). The compiler and SDK use the same codec before hashing.
 
 ### Node commitments
 

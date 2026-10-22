@@ -210,9 +210,9 @@ For a complete project environment, use [SolidHat](/docs/tooling/solidhat). For 
 
 The SDK bundles for the browser: no entry reaches the compiler. `compileFile*` reads the filesystem, and the compiler
 core hashes through `node:crypto` and keeps a disk cache, so compilation stays a Node.js step and a browser
-application supplies compiled artifacts. A framed proxy deployment (experimental) is the one exception: it compiles
-the generated proxy, which a browser bundle refuses. Build the proxy artifact in Node.js and pass it to
-`upgrades.deployProxy` as the `proxy` option.
+application supplies compiled artifacts. A [framed proxy deployment](/docs/guides/framed-composition#proxies)
+(experimental) is the one exception: it compiles the generated proxy, which a browser bundle refuses. Build the proxy
+artifact in Node.js and pass it to `upgrades.deployProxy` as the `proxy` option.
 
 A bundler also has to preserve top-level await. `@bitauth/libauth` instantiates its WebAssembly crypto behind a
 module-level `await`; Rollup, Vite and webpack handle that by default, and esbuild does it with `splitting: true`. A

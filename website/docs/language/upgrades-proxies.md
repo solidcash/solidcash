@@ -247,7 +247,8 @@ await upgrades.deployProxy(factory, [5n], { initializer: false });
 ```
 
 A positional array maps to state variables in declaration order when genesis seeding is forced. A named record is
-safer when the source is authored for SolidCash.
+safer when the source is authored for SolidCash. An implementation compiled for the experimental framed convention
+is deployed behind a generated proxy instead; see [Framed Composition](/docs/guides/framed-composition#proxies).
 
 For ports that define an eligible `initialize` function, the SDK auto-detects it, deploys default state, and sends
 a second delegated initialization transaction:

@@ -242,7 +242,7 @@ contract Tally {
 import { compileString } from 'solidc';
 import { Signer, randomUtxo } from 'solidcash';
 import { MockNetworkProvider } from 'solidcash/network/mock';
-import { getContractFactory } from 'solidcash/stateful';
+import { getContractFactory } from 'solidcash/contract-factory';
 
 const artifact = compileString(tallySource, { composition: 'framed' });
 const provider = new MockNetworkProvider();
@@ -461,7 +461,8 @@ In SolidHat tests, `revertedWith` and `revertedWithCustomError(...).withArgs(...
 creates two geneses, the implementation's and the proxy's.
 
 ```ts
-import { getContractFactory, upgrades, type FramedArtifact } from 'solidcash/stateful';
+import { getContractFactory } from 'solidcash/contract-factory';
+import { upgrades, type FramedArtifact } from 'solidcash/stateful';
 
 const factory = getContractFactory(vaultArtifact as FramedArtifact, signer);
 const vault = await upgrades.deployProxy(factory, [signer.getLockingBytecode()]); // a FramedProxyHandle
@@ -506,7 +507,7 @@ Reading a signer's nonce reserves the coins its next deployments will spend, whi
 
 ```ts
 import { framedDeploy } from 'solidcash/framed';
-import { getContractFactory } from 'solidcash/stateful';
+import { getContractFactory } from 'solidcash/contract-factory';
 
 const nonce = await signer.getNonce();             // reserves genesis coins for the next deployments
 const predicted = framedDeploy.predictCreateAddress(signer.getAddress(), nonce); // locking bytecode

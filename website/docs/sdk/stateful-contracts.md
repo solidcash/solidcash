@@ -8,7 +8,7 @@ The `StatefulContract` class manages the full lifecycle of stateful contracts: d
 
 ```typescript
 import { Signer } from 'solidcash';
-import { ContractFactory } from 'solidcash/stateful';
+import { ContractFactory } from 'solidcash/contract-factory';
 import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
 import artifact from './Counter.artifact.js';
 
@@ -34,7 +34,7 @@ contract-level parameters; otherwise use `StatefulContract.at()` with `construct
 `deployContract()` expose the same flow as convenience functions.
 
 ```typescript
-import { deployContract, getContractFactory } from 'solidcash/stateful';
+import { deployContract, getContractFactory } from 'solidcash/contract-factory';
 
 const sameFactory = getContractFactory(artifact, signer);
 const sameContract = await deployContract(artifact, [adminPub], signer, {

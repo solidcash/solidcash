@@ -14,7 +14,8 @@ SDK reference.
 ## Deploying several masters
 
 ```ts
-import { ContractFactory, ThreadManager } from 'solidcash/stateful';
+import { ContractFactory } from 'solidcash/contract-factory';
+import { ThreadManager } from 'solidcash/stateful';
 
 const contract = await new ContractFactory(artifact, signer).deploy(adminPublicKey, {
   initialState: { west: 0n, east: 0n },

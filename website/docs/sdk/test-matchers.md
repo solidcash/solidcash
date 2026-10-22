@@ -147,7 +147,7 @@ builder: `expect(await sc.call.debug(42n).build()).toLog('Count: 42')`.
 import { describe, it, expect, beforeAll } from 'vitest';
 import 'solidcash/vitest';
 import { SignatureTemplate } from 'solidcash';
-import { ContractFactory } from 'solidcash/stateful';
+import { ContractFactory } from 'solidcash/contract-factory';
 import { MockNetworkProvider } from 'solidcash/network/mock';
 import artifact from './Counter.artifact.js';
 

@@ -103,7 +103,8 @@ class EntryMutationCounts extends AstTraversal {
  * hoisted to a bool local (evaluated once: the predicated writes mutate the mappings it reads), each scalar
  * target is predicated `m[k] = cond ? ifValue : elseValue` (a missing arm preserves the current value), and the
  * local array ops stay in a slimmed `if(cond)` / `if(!cond)` block (a stack-neutral local op works in a branch).
- * Result: all entry writes are unconditional (stable output count).
+ * Result: all entry writes are unconditional (stable output count). An arm that writes one target twice keeps its
+ * branch as written.
  * The kernel keeps replayable argument-guarded writes to distinct collections in their original arms, avoiding
  * creation of an absent entry on the untaken path.
  */
@@ -265,7 +266,7 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
     if (!ifArm || !elseArm) return undefined;
     if (ifArm.entryOps.length === 0 && elseArm.entryOps.length === 0) return undefined; // nothing to predicate
     const targets = this.mergeTargets(ifArm.entryOps, elseArm.entryOps);
-    if (!targets) return undefined; // a key we cannot match across arms
+    if (!targets) return undefined; // a key we cannot match across arms, or a target one arm writes twice
 
     const out: StatementNode[] = [];
     // Hoist the condition: the predicated writes below mutate the mappings the condition reads, so evaluate once.
@@ -328,8 +329,9 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
     return false;
   }
 
-  // Union the two arms' scalar ops by target (name + key signature), keeping source order. Last write to a target
-  // within an arm wins. undefined if any target's keys cannot be signed (so we cannot match it across arms).
+  // Union the two arms' scalar ops by target (name + key signature), keeping source order. undefined if any target's
+  // keys cannot be signed (so we cannot match it across arms), or an arm writes one target twice: one predicated write
+  // per target keeps only the arm's last op, dropping the earlier one, its value's checks and the reads it serves.
   private mergeTargets(ifOps: EntryOp[], elseOps: EntryOp[]): MergedTarget[] | undefined {
     const order: string[] = [];
     const bySig = new Map<string, MergedTarget>();
@@ -342,6 +344,7 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
         bySig.set(sig, t);
         order.push(sig);
       }
+      if ((arm === 'if' ? t.ifOp : t.elseOp) !== undefined) return false;
       if (arm === 'if') t.ifOp = op; else t.elseOp = op;
       return true;
     };

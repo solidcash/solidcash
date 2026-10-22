@@ -1,15 +1,16 @@
 /**
  * The identity-output rule (docs/bcmr/DESIGN.md 4.4): a vout-0 coin whose transaction is a token genesis, or carries
  * a BCMR output, is an identity output, and the SDK never spends one: no fee or funding it picks takes one, and a coin
- * it is handed is refused. Each test clears the reservations the way a later session starts, so only the coin's own
- * transaction marks it, but for the title that checks the reservations themselves.
+ * it is handed is refused. The SDK's own identities sit at authhead contracts, so the identity outputs here are other
+ * transactions' outputs at the wallet's lock. Each test clears the reservations the way a later session starts, so
+ * only the coin's own transaction marks it.
  */
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../solidc/src/compiler.js';
 import { COMPOSITION_LIMITS } from '../../../solidc/test/framed/machine.js';
-import { publicationOutput, publishMetadata } from '../../src/bcmr/index.js';
+import { publicationOutput, publishMetadata, resolveIdentity } from '../../src/bcmr/index.js';
 import { callFramedEntry } from '../../src/framed/call/call.js';
 import { FramedFunctionCall } from '../../src/framed/call/handle.js';
 import { framedTokenContainerLockingBytecode } from '../../src/framed/call/token-containers.js';
@@ -21,7 +22,7 @@ import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import Signer from '../../src/Signer.js';
 import { fanOutPlainUtxos } from '../../src/stateful/ContractFactory.js';
 import {
-  clearGenesisReservations, genesisOutpointKey, isReservedGenesisOutpoint, reserveGenesisOutpoint,
+  clearGenesisReservations, genesisOutpointKey, reserveGenesisOutpoint,
 } from '../../src/stateful/genesis-reservations.js';
 import { ContractBundle, StatefulContract } from '../../src/stateful/index.js';
 import { deployStatefulContract } from '../../src/stateful/sc-deploy.js';
@@ -173,7 +174,7 @@ describe('the identity-output coin rule', () => {
     for (const refused of [reserved.satoshis, 4_000_000n, 3_000_000n]) expect(values).not.toContain(refused);
   });
 
-  it('funds a direct call without the deployer identity output or a reserved coin', async () => {
+  it('funds a direct call without a reserved coin, and leaves the authhead alone', async () => {
     clearGenesisReservations();
     const provider = new MockNetworkProvider();
     const alice = new Signer(alicePriv, provider);
@@ -182,7 +183,6 @@ describe('the identity-output coin rule', () => {
     const deployed = await StatefulContract.deploy(compileString(EMITTER, { forceStateful: true }), [], {
       provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(), initialState: {},
     });
-    const identity = { txid: deployed.tx.txid, vout: 0 };
     const change = { txid: deployed.tx.txid, vout: deployed.tx.outputs.length - 1 };
     clearGenesisReservations();
     const reserved = { txid: 'b2'.repeat(32), vout: 0, satoshis: 50_000n };
@@ -192,44 +192,34 @@ describe('the identity-output coin rule', () => {
     const emitter = deployed.contract.connect(alice) as unknown as { bump: () => { send: () => Promise<unknown> } };
     await emitter.bump().send();
     const live = (await alice.getUtxos()).map(outpoint);
-    expect(live).toContain(outpoint(identity));
+    expect((await resolveIdentity(provider, deployed.categoryId))?.txid).toBe(deployed.tx.txid);
     expect(live).toContain(outpoint(reserved));
     // The wallet did pay: the deployment's change funded the call's slots.
     expect(live).not.toContain(outpoint(change));
   });
 
-  it('keeps a rotated key identity an identity output: the update carries the current publication over', async () => {
+  it('refuses an owner coin that is another identity\'s output', async () => {
     clearGenesisReservations();
     const provider = new MockNetworkProvider();
     const alice = new Signer(alicePriv, provider);
-    const bob = new Signer(bobPriv, provider);
     const fundingUtxo = { txid: 'e1'.repeat(32), vout: 0, satoshis: 2_000_000n };
-    const fee = { txid: 'e2'.repeat(32), vout: 1, satoshis: 100_000n };
     await provider.addUtxo(alice.getAddress(), fundingUtxo);
-    await provider.addUtxo(alice.getAddress(), fee);
     const deployed = await StatefulContract.deploy(compileString(COUNTER, { forceStateful: true }), [], {
       provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(), initialState: {},
       bcmr: { name: 'Counter', timestamp: TIMESTAMP },
     });
-    const identity = deployed.identity!;
-    const update = await publishMetadata({
-      provider,
-      identity: { txid: identity.txid, vout: 0, satoshis: identity.satoshis },
-      current: { kind: 'key', unlocker: alice.unlockP2PKH() },
-      next: { kind: 'key', lockingBytecode: bob.getLockingBytecode() },
-      feeFunding: { utxo: fee, unlocker: alice.unlockP2PKH() },
-      changeAddress: alice.getAddress(),
-    });
-    expect(binToHex(update.tx.outputs[0]!.lockingBytecode)).toBe(binToHex(bob.getLockingBytecode()));
-    expect(binToHex(update.tx.outputs[1]!.lockingBytecode)).toBe(binToHex(deployed.tx.outputs[1]!.lockingBytecode));
-
-    clearGenesisReservations();
-    const rotated = { txid: update.tx.txid, vout: 0, satoshis: update.identity.satoshis };
-    expect(await ownCoinRefusal(provider, rotated, bob.getLockingBytecode(), { role: 'caller' }))
-      .toMatch(/BCMR identity output of the identity it publishes for/);
+    const { genesis, publication } = await identityCoins(provider, alice);
+    for (const [coin, holder] of [[genesis, 'category d1d1'], [publication, 'the identity it publishes for']] as const) {
+      await expect(publishMetadata({
+        provider, identity: deployed.identity!, owner: { utxo: coin, unlocker: alice.unlockP2PKH() },
+        changeAddress: alice.getAddress(),
+      })).rejects.toThrow(new RegExp(`BCMR identity output of ${holder}`));
+    }
+    const live = (await alice.getUtxos()).map(outpoint);
+    expect(live).toEqual(expect.arrayContaining([outpoint(genesis), outpoint(publication)]));
   });
 
-  it('refuses a key-held update that has neither a registry nor a publication to carry over', async () => {
+  it('refuses an update with nothing to publish; a transfer needs no publication', async () => {
     clearGenesisReservations();
     const provider = new MockNetworkProvider();
     const alice = new Signer(alicePriv, provider);
@@ -241,15 +231,16 @@ describe('the identity-output coin rule', () => {
     const deployed = await StatefulContract.deploy(compileString(COUNTER, { forceStateful: true }), [], {
       provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(), initialState: {},
     });
-    const identity = deployed.identity!;
+    const owner = { utxo: fee, unlocker: alice.unlockP2PKH() };
     await expect(publishMetadata({
-      provider,
-      identity: { txid: identity.txid, vout: 0, satoshis: identity.satoshis },
-      current: { kind: 'key', unlocker: alice.unlockP2PKH() },
-      next: { kind: 'key', lockingBytecode: bob.getLockingBytecode() },
-      feeFunding: { utxo: fee, unlocker: alice.unlockP2PKH() },
+      provider, identity: deployed.identity!, owner, changeAddress: alice.getAddress(),
+    })).rejects.toThrow(/publishes nothing to carry over/);
+    const transfer = await publishMetadata({
+      provider, identity: deployed.identity!, owner, action: { kind: 'transfer', owner: bob.getLockingBytecode() },
       changeAddress: alice.getAddress(),
-    })).rejects.toThrow(/no publication to carry over/);
+    });
+    expect(transfer.tx.outputs).toHaveLength(2);
+    expect(binToHex(transfer.tx.outputs[0]!.token!.nft!.commitment)).toBe(binToHex(bob.getLockingBytecode()));
   });
 
   it('refuses an identity output an upgrade is handed as its funding coin, and spends nothing', async () => {
@@ -354,9 +345,9 @@ describe('the identity-output coin rule', () => {
     });
     expect(paid.verdicts.filter((verdict) => !verdict.accepted)).toEqual([]);
     expect(paid.broadcast).toBeDefined();
-    // The deployment's identity output leads the caller's coins, so a filler that did not hold it out would take it.
+    // The identity outputs lead the caller's coins, so a filler that did not hold them out would take one.
     const live = (await alice.getUtxos()).map(outpoint);
-    expect(live).toEqual(expect.arrayContaining([`${deployment.tx.txid}:0`, outpoint(genesis), outpoint(publication)]));
+    expect(live).toEqual(expect.arrayContaining([outpoint(genesis), outpoint(publication)]));
     // The caller's coin and one plain coin beside it entered the call.
     const spent = before.filter((key) => !live.includes(key));
     expect(spent).toContain(outpoint(callerUtxo));
@@ -377,41 +368,5 @@ describe('the identity-output coin rule', () => {
     expect(live).toEqual(expect.arrayContaining(identities));
     // The split took the publication's change, the largest plain coin.
     expect(live).not.toContain(`${publication.txid}:2`);
-  });
-
-  it('reserves the key-held identity outpoint after a framed genesis and after a key-held update', async () => {
-    clearGenesisReservations();
-    const framedProvider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const framedFunding = { txid: 'a6'.repeat(32), vout: 0, satoshis: 500_000n };
-    const deployer = new Signer(alicePriv, framedProvider);
-    await framedProvider.addUtxo(deployer.getAddress(), framedFunding);
-    await fundShippedFacets(framedProvider);
-    const genesis = await deployStatefulContract(framedArtifact(), [], {
-      provider: framedProvider, fundingUtxo: framedFunding, funder: deployer.unlockP2PKH(),
-      changeAddress: deployer.getAddress(),
-    });
-    expect(isReservedGenesisOutpoint(genesisOutpointKey(genesis.tx.txid, 0))).toBe(true);
-
-    clearGenesisReservations();
-    const provider = new MockNetworkProvider();
-    const alice = new Signer(alicePriv, provider);
-    const fundingUtxo = { txid: 'a7'.repeat(32), vout: 0, satoshis: 2_000_000n };
-    const fee = { txid: 'a8'.repeat(32), vout: 1, satoshis: 100_000n };
-    await provider.addUtxo(alice.getAddress(), fundingUtxo);
-    await provider.addUtxo(alice.getAddress(), fee);
-    const deployed = await StatefulContract.deploy(compileString(COUNTER, { forceStateful: true }), [], {
-      provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(), initialState: {},
-      bcmr: { name: 'Counter', timestamp: TIMESTAMP },
-    });
-    clearGenesisReservations();
-    const update = await publishMetadata({
-      provider,
-      identity: { txid: deployed.identity!.txid, vout: 0, satoshis: deployed.identity!.satoshis },
-      current: { kind: 'key', unlocker: alice.unlockP2PKH() },
-      next: { kind: 'key', lockingBytecode: new Signer(bobPriv, provider).getLockingBytecode() },
-      feeFunding: { utxo: fee, unlocker: alice.unlockP2PKH() },
-      changeAddress: alice.getAddress(),
-    });
-    expect(isReservedGenesisOutpoint(genesisOutpointKey(update.tx.txid, 0))).toBe(true);
   });
 });

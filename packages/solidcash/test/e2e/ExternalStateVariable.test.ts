@@ -320,8 +320,8 @@ describe('External State Variable', () => {
 
       const txOutputs = getTxOutputs(result.tx);
 
-      // BCMR identity output + master + 2 data NFTs + change
-      expect(txOutputs[0].token).toBeUndefined();
+      // Authhead + master + 2 data NFTs + change
+      expect(txOutputs[0].token?.nft?.capability).toBe('mutable');
       expect(txOutputs[1].token?.nft?.capability).toBe('minting');
       expect(txOutputs[2].token?.nft?.capability).toBe('mutable');
       expect(txOutputs[3].token?.nft?.capability).toBe('mutable');

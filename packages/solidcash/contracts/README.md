@@ -159,20 +159,3 @@ the same value and permit later double redemption.
 If the ERC20 uses sorted mappings, it should expose a direct account-opening path like `openSelf()` in the
 example above. This creates the caller's balance row before `claimDeposit` updates it and avoids turning a
 later inherited or split route into an unsupported first-touch insert.
-
-## `BcmrGoverned`
-
-`BcmrGoverned.scash` lets a contract govern its own BCMR metadata. Deployed with the `governed` identity policy, the
-category's identity output sits under a guard that publishes a registry only beside a `MetadataUpdated` event the
-contract emitted for it, naming the registry's hash and the guard's current outpoint. The concrete contract decides
-who may authorize an update through `_bcmrMayUpdate()`:
-
-```solidity
-contract MyToken() is ERC20, BchNative, BcmrGoverned {
-    function _bcmrMayUpdate() internal view override returns (bool) { return msg.sender == this.owner; }
-}
-```
-
-The guard spends the event NFT once it matures, 144 blocks after the emit, so every metadata change is announced a
-day ahead. `governedAuthorization` from `solidcash/bcmr` gives the arguments for `updateMetadata`, and
-`applyGovernedMetadata` publishes the authorized registry. See `docs/bcmr/DESIGN.md`, section 9.

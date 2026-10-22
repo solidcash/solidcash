@@ -27,6 +27,7 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument } from '../../Argument.js';
+import { authheadLockingBytecode } from '../../bcmr/authhead.js';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { getDataNftLockingBytecode } from '../../stateful/covenant-helpers.js';
@@ -284,6 +285,9 @@ export function classifyFramedDeployment(
     if (nft.capability !== 'mutable') continue;
     const categoryId = utxo.token?.category;
     const lockingBytecode = (utxo as { readonly lockingBytecode?: Uint8Array }).lockingBytecode;
+    // The identity NFT at the category's authhead contract is no part of the deployment.
+    if (categoryId !== undefined && lockingBytecode !== undefined
+      && bytesToHex(lockingBytecode) === bytesToHex(authheadLockingBytecode(categoryId))) continue;
     const index = atRecordLock(categoryId, lockingBytecode) ? nftIndexOf(nft.commitment, layout) : undefined;
     if (index !== undefined) tagged.push({ utxo, nftIndex: index });
     else if (nft.commitment === '') validators.push(utxo);

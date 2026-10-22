@@ -1,6 +1,6 @@
 /**
- * BCMR metadata for deployed contracts (docs/bcmr/DESIGN.md): the identity output every genesis leads with, the
- * registry a deployment publishes, and the updates that follow.
+ * BCMR metadata for deployed contracts (docs/bcmr/DESIGN.md): the authhead contract every genesis leads with, the
+ * registry a deployment publishes, and the owner's spends that follow.
  */
 
 export {
@@ -31,19 +31,26 @@ export {
   type MetadataRegistry,
 } from './registry.js';
 export {
+  AUTHHEAD_BODY,
   BURNED_LOCKING_BYTECODE,
-  FROZEN_REDEEM_SCRIPT,
-  authGuardLockingBytecode,
-  authGuardRedeemScript,
-  authGuardUnlocker,
-  frozenLockingBytecode,
-  identityOutput,
+  FROZEN_LOCKING_BYTECODE,
+  authheadLockingBytecode,
+  authheadOutput,
+  authheadRedeemScript,
+  authheadToken,
+  authheadUnlocker,
+  identityStatusOf,
+  ownerLockRefusal,
+  type IdentityStatus,
+} from './authhead.js';
+export {
+  identityRecord,
   isP2pkhLock,
   lockOf,
   planGenesisIdentity,
+  resolveIdentity,
   type GenesisIdentity,
-  type IdentityPolicy,
-  type IdentityPolicyKind,
+  type IdentityOptions,
   type IdentityRecord,
 } from './identity.js';
 export { categoriesCreatedBy, identityOutputRefusal, publishesRegistry } from './authchain.js';
@@ -81,27 +88,13 @@ export {
 export {
   deploymentNftRoles,
   directNftLocks,
+  framedEventLockingBytecode,
   framedNftLocks,
   type DeploymentNftLocks,
 } from './nft-roles.js';
 export {
-  EVENT_MATURITY_BLOCKS,
-  METADATA_UPDATED,
-  applyGovernedMetadata,
-  framedEventLockingBytecode,
-  governedAuthorization,
-  governedEvent,
-  governedGuardFor,
-  governedGuardLockingBytecode,
-  governedGuardRedeemScript,
-  governedGuardUnlocker,
-  type ApplyGovernedMetadataOptions,
-  type GovernedGuard,
-} from './governed.js';
-export {
   publishMetadata,
-  type CurrentIdentity,
-  type NextIdentity,
+  type IdentityAction,
   type PublishMetadataOptions,
   type PublishMetadataResult,
 } from './publish.js';

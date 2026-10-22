@@ -20,9 +20,8 @@ import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../framed/comp
 import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
-import { identityRecord, leadingOutputs, prepareMetadata, wrappedCategory } from '../bcmr/deployment.js';
-import { governedEvent, governedGuardFor } from '../bcmr/governed.js';
-import { isP2pkhLock, planGenesisIdentity } from '../bcmr/identity.js';
+import { leadingOutputs, prepareMetadata, wrappedCategory } from '../bcmr/deployment.js';
+import { identityRecord, isP2pkhLock, planGenesisIdentity } from '../bcmr/identity.js';
 import { deploymentNftRoles, directNftLocks, framedNftLocks } from '../bcmr/nft-roles.js';
 import { BcmrError } from '../bcmr/publication.js';
 import {
@@ -34,7 +33,6 @@ import {
   getSatoshiContainerAddress,
   getTokenContainerAddress,
 } from './covenant-helpers.js';
-import { genesisOutpointKey, reserveGenesisOutpoint } from './genesis-reservations.js';
 import { deriveDeployCommitments } from './sc-derive-deploy-commitments.js';
 import { headSentinelCommitment } from './SortedList.js';
 import type { DeployOptions, DeployResult } from './stateful-lifecycle-types.js';
@@ -222,24 +220,17 @@ export async function deployStatefulContract<T extends Artifact>(
     );
   }
 
-  // Output 0 is the category's BCMR identity output, never a master: every call spends a master.
+  // Output 0 is the category's authhead contract, never a master: every call spends a master.
   const funderLock = options.funder.generateLockingBytecode();
-  const identity = await planGenesisIdentity({
-    provider: options.provider,
-    category: categoryId.toLowerCase(),
-    ...(options.identity === undefined ? {} : { policy: options.identity }),
+  const identity = planGenesisIdentity({
+    category: categoryId,
+    ...(options.identity === undefined ? {} : { identity: options.identity }),
     deployerLock: options.senderLockingBytecode
       ?? (isP2pkhLock(funderLock) ? funderLock : addressToLockScript(options.changeAddress)),
-    funder: options.funder,
-    ...(options.identity?.kind !== 'governed' ? {} : {
-      governed: governedGuardFor(artifact, categoryId, addressToLockScript(
-        getEventNftAddress(contract, categoryId, governedEvent(artifact).event.signature),
-      )),
-    }),
   });
   const leading = leadingOutputs(identity, prepared);
   const leadingTotal = leading.reduce((sum, output) => sum + output.amount, 0n);
-  const genesisInputs = [...(prepared.nativeInput === undefined ? [] : [prepared.nativeInput]), ...identity.inputs];
+  const genesisInputs = prepared.nativeInput === undefined ? [] : [prepared.nativeInput];
   const inputTotal = genesisInputs.reduce((sum, input) => sum + input.utxo.satoshis, options.fundingUtxo.satoshis);
 
   const initialBalance = options.initialBalance ?? 0n;
@@ -333,7 +324,7 @@ export async function deployStatefulContract<T extends Artifact>(
       ? output : { ...output, amount: satoshisAtLeastDust(output.amount, output) });
   };
 
-  // The identity output, the publication and the identity's own outputs lead the genesis.
+  // The identity output and the publication lead the genesis.
   for (const output of leading) builder.addOutput(output);
 
   // Minting NFT(s), one per thread
@@ -580,10 +571,6 @@ export async function deployStatefulContract<T extends Artifact>(
   }
 
   const statefulContract = SC.withCategory(contract, categoryId);
-  // A key-held identity output sits at the deployer's address, so this session's coin selection must not take it.
-  if (identity.policy === 'key' && options.metadataProbe !== true) {
-    reserveGenesisOutpoint(genesisOutpointKey(tx.txid, 0));
-  }
 
   return {
     contract: statefulContract,

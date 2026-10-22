@@ -74,8 +74,9 @@ describe('Threading', () => {
 
       const txOutputs = getTxOutputs(result.tx);
 
-      // Output 0: the category's BCMR identity output, token-free
-      expect(txOutputs[0].token).toBeUndefined();
+      // Output 0: the category's authhead, holding its identity NFT
+      expect(txOutputs[0].token?.nft?.capability).toBe('mutable');
+      expect(txOutputs[0].token?.category).toBe(result.categoryId);
 
       // Outputs 1 and 2: minting NFTs
       expect(txOutputs[1].token?.nft?.capability).toBe('minting');
@@ -111,8 +112,8 @@ describe('Threading', () => {
 
       const txOutputs = getTxOutputs(result.tx);
 
-      // Output 0: the BCMR identity output; output 1: single minting NFT
-      expect(txOutputs[0].token).toBeUndefined();
+      // Output 0: the authhead's identity NFT; output 1: single minting NFT
+      expect(txOutputs[0].token?.nft?.capability).toBe('mutable');
       expect(txOutputs[1].token?.nft?.capability).toBe('minting');
       // Output 2: first data NFT (mutable)
       expect(txOutputs[2].token?.nft?.capability).toBe('mutable');

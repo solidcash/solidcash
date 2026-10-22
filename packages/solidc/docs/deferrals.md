@@ -2996,20 +2996,23 @@ arbitrate titles.
 
 ## The BCMR identity of a category a contract creates sits at the creating master (2026-10-20)
 
-**What:** a category created inside a composition (framed `new C()`, the framed proxy's calling genesis, direct
-`deployFrom`, message-bus child deployments) takes the creating transaction's output 0 as its BCMR identity output,
-and the composition layout puts a participant of the creating contract there. Any later spend of that output can
-publish metadata for the child category, and every child created through the same master shares its lineage
-(`docs/bcmr/DESIGN.md`, section 7). Top-level geneses are unaffected: they lead with a dedicated identity output.
+**UNSUPPORTED by decision 2026-10-21 (`docs/framed/DECISIONS.md` D48).** A leading slot for direct `deployFrom`
+was built and reverted (`dc4232e07`); child deployments keep this layout, and BCMR for their categories is
+unsupported. Framed `new C()` was never affected (the SDK deploys that child as a top-level genesis), and the framed
+proxy's calling genesis leads with its own authhead (`f1fc26e87`).
 
-**Why deferred:** the SDK cannot place the child's identity output, because the layout fixes output 0. The two fixes
-are protocol changes: a validator census rule refusing any output with the `6a0442434d52` prefix (a new validator
-version, so new framed addresses, and its own rule in each direct master), or reserving output 0 in category-creating
-compositions (breaks in-place recreation from index 0). Chosen as option C of the design under the user's goal to
-implement it fully (DECISIONS D32).
+**What:** a category created inside a call (direct `deployFrom`, message-bus child deployments) takes the creating
+transaction's output 0 as its BCMR identity output, and the layout puts a participant of the creating contract there.
+Any later spend of that output can publish metadata for the child category, and every child created through the same
+master shares its lineage (`docs/bcmr/DESIGN.md`, section 7). Top-level geneses lead with their authhead.
 
-**What it'd take:** option A: the prefix check in `checkCensus` and the head program, a size measurement against the
-head's padding, and a mixed-version composition check.
+**Why deferred:** the fix moves the creating contract's master off input 0 in every creating call, which changes what
+contract code reading `tx.inputs[i]` at a fixed index sees, and needs covenant rules of its own in each convention;
+the user judged that too complicated (D48).
+
+**What it'd take:** the reverted leading slot (`61b445ec5`, `62e2d7301`): a token-free coin at input 0 for the child's
+authhead at output 0, the factory's covenant checking that output and counting its NFT, and the same in the bus
+verifier; or a census rule refusing BCMR publications in compositions (a new validator version).
 
 **Revisit if:** a factory issues user-facing tokens, or a client starts trusting self-published metadata of
 contract-created categories.
@@ -3124,6 +3127,14 @@ commit to bisect from yet.
 
 **Revisit if:** a release gate takes in the SDK e2e suite, or work touches one of these files.
 
+**Status:** RESOLVED 2026-10-21. Each was bisected (`git bisect run` on shadow worktrees) and fixed or re-pinned:
+`L4StatefulAdminSiteGate` (`063f32514`, declared fees), `SelfdestructDestination` and `X46CommitmentWriter`
+(`3fc5969bd`, then `3ca6b0a42`), `ConstructorKeccakHelper` (`1e8bcb838`), `KernelNestedChunkedUpdate` (`a60df8329`),
+`AuditLifecycleEventIntegrity` (`5e1ac21b2`), `ConditionalEntryWrite` and `SignatureCheckHelper` (`0b8d48662`),
+`DynamicArrays` (`bf1ad481f`), `MasterChefDeposit` (`feee2609f`), `SushiBarTransferFrom` (`b3ee79060`), and
+`X121StrictPreflightDecision` / `X130DebugVmProviderFaithful` (`bb2ecdab5`). The full SDK e2e suite then passed:
+1,569 files, 9,702 tests, none failed.
+
 ## A destroy split into batches pins a direct container in an intermediate batch (2026-10-21)
 
 **What:** a direct container's master path pins the output at its own index (`directMasterOutputPin` in
@@ -3176,6 +3187,11 @@ whose fixed entry lock mismatch goes through the value-chunk derivation.
 **Revisit if:** a derivation settles an entry output on a lock its covenant refuses.
 
 ## The SDK cannot find a BCMR identity's current authhead itself (2026-10-21)
+
+**RESOLVED 2026-10-21 (`8002d4f12`).** The identity output is now the category's authhead contract, at an address
+unique to the category (DECISIONS D46), so `resolveIdentity(provider, category)` lists that address and proves the
+candidate by walking its authchain back to the genesis with the transactions the provider serves; no spender query is
+needed. `test/e2e/BcmrAuthhead.test.ts` resolves an identity past a look-alike and after a spend.
 
 **What:** `publishMetadata` spends the identity output the caller names (`current`); a deployment returns the first
 one (`DeployResult.identity`, `deploymentIdentity()`). After an update, a later session must know the new authhead.

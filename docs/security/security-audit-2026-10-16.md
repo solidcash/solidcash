@@ -736,3 +736,29 @@ Found while bringing the SDK e2e suite back to green; mocknet only.
   covenant again. A proxy with a selfdestruct entry keeps the plain pin, and the SDK refuses an upgrade whose
   replacement takes the other container form, because the old covenant re-mints in its own.
 
+
+## BCMR identity outputs and look-alike NFTs (2026-10-21)
+
+Found while replacing the BCMR identity policies with the authhead contract (`docs/framed/DECISIONS.md` D46); read
+from the code, nothing run beyond the authhead's own tests.
+
+- **AUTHHEAD-1** (LOW, metadata lookups only; mitigated). The authhead's address and its mutable NFT of C are meant to
+  name a category's identity. Several contract paths can mint a mutable NFT of C at a lock their caller chooses, so a
+  look-alike with any commitment can sit at the authhead's address:
+  - the direct C3 count's recorded residual (`SECURITY-AUDIT.md`, C3): a record co-spent on a master-authorized path
+    that pins nothing (data flag 2, entry or chunk flag 1) is re-emitted at another lock, and the count still
+    balances. Delegatecall proxies count the same way;
+  - the authorized lifecycle entries `upgrade` (the master goes to the caller-supplied bytecode), `selfdestruct` (only
+    the minting count) and `split`/`merge` (only minting outputs pinned);
+  - the `unsafe` tiers.
+  A look-alike is never on the authchain, which follows outpoints (CHIP-BCMR), so BCMR clients ignore it. The SDK's
+  `resolveIdentity` proves a candidate by walking its authchain back to the genesis, and the authhead admits exactly
+  two inputs (itself and a token-free owner coin), so no spend of it can co-spend a master and duplicate its NFT.
+  Tests: `BcmrAuthhead.test.ts` (a served look-alike passed over; a third input, a token-carrying owner coin and every
+  other move of the NFT refused). Residual: a tool that names an identity by address alone, without the chain, can be
+  misled. A full fix needs the C3 per-NFT pin, which the residual already names.
+- The framed convention was checked for the same: a frame pins every mapping node and dynamic chunk it reads or writes
+  to its covenant at input and output (spec T45; `emitFramedNodeLockCheck`, `emitChunkRecordInputCheck`,
+  `emitChunkRecordOutputCheck` in `GenerateTargetTraversal.ts`), so its calls cannot plant one. A node a frame declares
+  kept but never reads or writes gets only the index-and-view check from that frame, as the comment above
+  `emitFramedSegmentClose` records.

@@ -1,7 +1,7 @@
 /**
- * The genesis layout (docs/bcmr/DESIGN.md, 4.1, 5.2, 6.2 and 9): the AuthKey right after the publication and its coin
- * after the token coin, the default snapshot time, the container key a premint of the contract's own category is
- * checked against, and the refusals of a framed premint of that category and of a governed deploy without its event.
+ * The genesis layout (docs/bcmr/DESIGN.md, 4.1, 5.2 and 6.2): the authhead at output 0 and the publication at output 1
+ * ahead of the masters, the token coin after the funding coin, the default snapshot time, the container key a premint
+ * of the contract's own category is checked against, and the refusal of a framed premint of that category.
  */
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
@@ -9,7 +9,7 @@ import { compileFile } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../solidc/src/compiler.js';
 import { COMPOSITION_LIMITS } from '../../../solidc/test/framed/machine.js';
-import { BCMR_PUBLICATION_PREFIX, authGuardLockingBytecode, type NativeTokenOptions } from '../../src/bcmr/index.js';
+import { BCMR_PUBLICATION_PREFIX, authheadLockingBytecode, type NativeTokenOptions } from '../../src/bcmr/index.js';
 import type { Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import Signer from '../../src/Signer.js';
@@ -60,14 +60,15 @@ function outpointTxids(result: DeployResult): string[] {
   return result.tx.inputs.map((input) => binToHex(input.outpointTransactionHash));
 }
 
-/** `output` is an AuthKey: an immutable NFT of `category` at `holder`'s lock. */
-function expectAuthKey(output: DeployResult['tx']['outputs'][number] | undefined, category: string, holder: Signer): void {
+/** `output` is the authhead of `category`, holding its identity NFT for `owner`. */
+function expectAuthhead(output: DeployResult['tx']['outputs'][number] | undefined, category: string, owner: Signer): void {
+  expect(binToHex(output!.lockingBytecode)).toBe(binToHex(authheadLockingBytecode(category)));
   expect(binToHex(output!.token!.category)).toBe(category);
-  expect(output!.token!.nft?.capability).toBe('none');
-  expect(binToHex(output!.lockingBytecode)).toBe(binToHex(holder.getLockingBytecode()));
+  expect(output!.token!.nft?.capability).toBe('mutable');
+  expect(binToHex(output!.token!.nft!.commitment)).toBe(binToHex(owner.getLockingBytecode()));
 }
 
-// The builders of BcmrIdentityPolicies.test.ts.
+// The builders of BcmrIdentityOwner.test.ts.
 const BUILDERS = [
   {
     builder: 'direct',
@@ -85,40 +86,31 @@ const BUILDERS = [
 
 describe('the leading outputs and the genesis coins (4.1)', () => {
   for (const { builder, provider: newProvider, artifact: compile, options } of BUILDERS) {
-    it(`puts the AuthKey after the publication, else at output 1, its coin after the token coin (${builder})`, async () => {
+    it(`leads with the authhead and the publication, the token coin after the funding coin (${builder})`, async () => {
       const provider = newProvider();
       if (builder === 'framed') await fundShippedFacets(provider);
       const artifact = compile();
       const alice = new Signer(alicePriv, provider);
       const tag = builder === 'direct' ? 'd' : 'f';
-      const [fundingUtxo, token, authKeyFunding] = [
-        await coinAt(provider, alice, `${tag}1`), await coinAt(provider, alice, `${tag}2`),
-        await coinAt(provider, alice, `${tag}3`),
-      ];
+      const [fundingUtxo, token] = [await coinAt(provider, alice, `${tag}1`), await coinAt(provider, alice, `${tag}2`)];
       const base = { provider, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(), ...options };
 
       const published = await StatefulContract.deploy(artifact, [], {
         ...base, fundingUtxo,
-        identity: { kind: 'authguard', authKeyFunding },
         nativeToken: { funding: token, bearer: { amount: 1000n, to: aliceTokenAddress } },
         bcmr: { name: 'Layout', timestamp: TIMESTAMP },
       });
-      expect(outpointTxids(published)).toEqual([fundingUtxo.txid, token.txid, authKeyFunding.txid]);
-      const [identity, publication, authKey, master] = published.tx.outputs;
-      expect(binToHex(identity!.lockingBytecode)).toBe(binToHex(authGuardLockingBytecode(authKeyFunding.txid)));
+      // The genesis creates both categories, so the token's authchain also runs through the authhead.
+      expect(outpointTxids(published)).toEqual([fundingUtxo.txid, token.txid]);
+      const [identity, publication, master] = published.tx.outputs;
+      expectAuthhead(identity, published.categoryId, alice);
       expect(binToHex(publication!.lockingBytecode.slice(0, 6))).toBe(binToHex(BCMR_PUBLICATION_PREFIX));
-      expectAuthKey(authKey, authKeyFunding.txid, alice);
       expect(master!.token?.nft?.capability).toBe('minting');
 
-      // Without a token coin the AuthKey coin is input 1; without a publication the AuthKey is output 1.
-      const bareFunding = await coinAt(provider, alice, `${tag}4`);
-      const bareKeyFunding = await coinAt(provider, alice, `${tag}5`);
-      const bare = await StatefulContract.deploy(artifact, [], {
-        ...base, fundingUtxo: bareFunding, identity: { kind: 'authguard', authKeyFunding: bareKeyFunding },
-      });
-      expect(outpointTxids(bare)).toEqual([bareFunding.txid, bareKeyFunding.txid]);
-      expectAuthKey(bare.tx.outputs[1], bareKeyFunding.txid, alice);
-      expect(bare.tx.outputs[2]!.token?.nft?.capability).toBe('minting');
+      // Without a publication the masters follow the authhead.
+      const bare = await StatefulContract.deploy(artifact, [], { ...base, fundingUtxo: await coinAt(provider, alice, `${tag}3`) });
+      expectAuthhead(bare.tx.outputs[0], bare.categoryId, alice);
+      expect(bare.tx.outputs[1]!.token?.nft?.capability).toBe('minting');
     });
   }
 });
@@ -183,32 +175,4 @@ describe('a token of the contract\'s own category (6.2)', () => {
     }
     expect(await isUnspent(alice, fundingUtxo)).toBe(true);
   });
-});
-
-describe('a governed identity (9)', () => {
-  for (const { builder, provider: newProvider, artifact: compile, options } of BUILDERS) {
-    it(`refuses an artifact without MetadataUpdated(bytes32,bytes32) before broadcasting (${builder})`, async () => {
-      const provider = newProvider();
-      if (builder === 'framed') await fundShippedFacets(provider);
-      const alice = new Signer(alicePriv, provider);
-      const fundingUtxo = await coinAt(provider, alice, builder === 'direct' ? 'd9' : 'f9');
-      const artifact = compile();
-      // An event of that name with other parameters does not count.
-      const misshapen: Artifact = {
-        ...artifact,
-        events: [...(artifact.events ?? []), {
-          name: 'MetadataUpdated',
-          signature: 'MetadataUpdated(bytes32,int256)',
-          parameters: [{ name: 'registryHash', type: 'bytes32' }, { name: 'identityTxid', type: 'int256' }],
-        }],
-      };
-      for (const candidate of [artifact, misshapen]) {
-        await expect(StatefulContract.deploy(candidate, [], {
-          provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(), ...options,
-          identity: { kind: 'governed' },
-        })).rejects.toThrow(/emits no MetadataUpdated\(bytes32 registryHash, bytes32 identityTxid\): inherit BcmrGoverned/);
-      }
-      expect(await isUnspent(alice, fundingUtxo)).toBe(true);
-    });
-  }
 });

@@ -162,6 +162,8 @@ export type PlannedValidators = PlannedValidator | PlannedValidator[];
 /** The whole plan. Every reference is an identity, and every coordinate comes from the layout. */
 export interface CompositionPlan {
   readonly blocks: readonly ContractBlock[];
+  /** The inputs placed ahead of every block, each recreated at its own index (`layoutTransaction`). */
+  readonly leading?: readonly string[];
   readonly userInputs: readonly PlannedUserInput[];
   readonly masters: readonly PlannedMaster[];
   /** The masters the transaction mints, whose blocks ride in the validator transcript (v0x03). */
@@ -331,7 +333,9 @@ function resolveOutputRegions(
 ): OutputRegions {
   const declaredEvents = plan.masters.flatMap((master) => master.events);
   const declaredSends = plan.masters.flatMap((master) => master.sends);
-  const created = createdRecordOutputs(plan.masters, plan.mintedMasters ?? []);
+  // A record created at a leading input's own index is that input's output, not one of the trailing region.
+  const leading = new Set(layout.participants.filter((placed) => placed.kind === 'leading').map((placed) => placed.index));
+  const created = createdRecordOutputs(plan.masters, plan.mintedMasters ?? []).filter((index) => !leading.has(index));
 
   const regions = allocateOutputRegions(layout, {
     ...(plan.mintedMasters?.length === undefined || plan.mintedMasters.length === 0
@@ -469,6 +473,7 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
   const layout = layoutTransaction(
     plan.blocks,
     new Map(declared.map((validator) => [validator.id, validatorFacetsOf(validator)])),
+    plan.leading,
   );
   const outputs = resolveOutputRegions(plan, layout);
   const indexOf = new Map<string, number>();

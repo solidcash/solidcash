@@ -34,10 +34,8 @@ import type { ConstructorArgument } from '../../Argument.js';
 import { Contract } from '../../Contract.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { addressToLockScript, getNetworkPrefix } from '../../utils.js';
-import { identityRecord, leadingOutputs, type PreparedMetadata } from '../../bcmr/deployment.js';
-import { framedEventLockingBytecode, governedEvent, governedGuardFor } from '../../bcmr/governed.js';
-import { isP2pkhLock, planGenesisIdentity } from '../../bcmr/identity.js';
-import { genesisOutpointKey, reserveGenesisOutpoint } from '../../stateful/genesis-reservations.js';
+import { leadingOutputs, type PreparedMetadata } from '../../bcmr/deployment.js';
+import { identityRecord, isP2pkhLock, planGenesisIdentity } from '../../bcmr/identity.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
 import { bindProviderBlockOracle } from '../call/block-oracle.js';
@@ -194,20 +192,13 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     provider: options.provider,
     ...(options.maxFee === undefined ? {} : { maximumFeeSatoshis: options.maxFee }),
   });
-  // Output 0 is the category's BCMR identity output, never a master: every call spends a master.
-  const identity = await planGenesisIdentity({
-    provider: options.provider,
-    category: categoryId.toLowerCase(),
-    ...(options.identity === undefined ? {} : { policy: options.identity }),
+  // Output 0 is the category's authhead contract, never a master: every call spends a master.
+  const identity = planGenesisIdentity({
+    category: categoryId,
+    ...(options.identity === undefined ? {} : { identity: options.identity }),
     deployerLock: senderLockingBytecode ?? addressToLockScript(options.changeAddress),
-    funder: options.funder,
-    ...(options.identity?.kind !== 'governed' ? {} : {
-      governed: governedGuardFor(artifact, categoryId, framedEventLockingBytecode(
-        categoryId.toLowerCase(), governedEvent(artifact).event,
-      )),
-    }),
   });
-  const genesisInputs = [...(prepared.nativeInput === undefined ? [] : [prepared.nativeInput]), ...identity.inputs];
+  const genesisInputs = prepared.nativeInput === undefined ? [] : [prepared.nativeInput];
   const inputTotal = genesisInputs.reduce((sum, input) => sum + input.utxo.satoshis, options.fundingUtxo.satoshis);
   builder.addInput(options.fundingUtxo, options.funder);
   for (const input of genesisInputs) builder.addInput(input.utxo, input.unlocker);
@@ -218,7 +209,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       ? output : { ...output, amount: satoshisAtLeastDust(output.amount, output) });
   };
 
-  // The identity output, the publication and the identity's own outputs lead the genesis.
+  // The identity output and the publication lead the genesis.
   for (const output of leadingOutputs(identity, prepared)) builder.addOutput(output);
 
   for (const lock of entryLocks) {
@@ -392,10 +383,6 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     throw new FramedDeployError(`The contract's own address is not encodable: ${ownAddress}`);
   }
   (statefulContract as unknown as { _framedAddress?: string })._framedAddress = ownAddress.address;
-  // A key-held identity output sits at the deployer's address, so this session's coin selection must not take it.
-  if (identity.policy === 'key' && options.broadcast !== false && options.metadataProbe !== true) {
-    reserveGenesisOutpoint(genesisOutpointKey(tx.txid, 0));
-  }
   return {
     contract: statefulContract,
     tx,

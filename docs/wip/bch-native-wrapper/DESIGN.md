@@ -1,9 +1,9 @@
 # BchNativeWrapper: an ERC-20 over an existing CashTokens category (design)
 
-Kind: design, implemented on `feat/bch-native-wrapper` over master `c2ede0be8` (`667a07d70`, `f15afb05b`,
-`e72f00338`, `7b5e6bbdf`), which fast-forwards master; not merged yet. Written 2026-10-21 against master `063f32514` and revised three times the same
-day with the user's answers (sections 11 and 12). The decisions are D41 to D45 in `docs/framed/DECISIONS.md`, which
-wins over this file.
+Kind: design, implemented on `feat/bch-native-wrapper` (`667a07d70`, `f15afb05b`, `e72f00338`, `7b5e6bbdf`,
+`3826c823e`), which also carries master's BCMR authhead work up to `ee0349bb0` (D46 to D48); not merged into master
+yet. Written 2026-10-21 against master `063f32514` and revised three times the same day with the user's answers
+(sections 11 and 12). The decisions are D41 to D45 in `docs/framed/DECISIONS.md`, which wins over this file.
 
 Sources: `packages/solidcash/contracts/` (ERC20, BchNative and its layers), `docs/bcmr/DESIGN.md` (section 6),
 `packages/solidc/docs/native-erc20.md` (supply model, reserve container), `docs/framed/AUDIT_MSG_SENDER.md` (F12) and
@@ -221,8 +221,8 @@ overlay (BCMR DESIGN 6.4).
    artifact that keys no container by state is refused, because it would wrap nothing.
 2. When the ABI carries EIP-20 `totalSupply()`, it reads 0 on the probe. An unreadable `totalSupply()` is refused, as
    it is for a premint.
-3. `category` is neither C nor the AuthGuard AuthKey category. An existing category cannot be either, because its
-   vout-0 coin is spent, but a stated category that does not exist yet can.
+3. `category` is not C. An existing category cannot be, because its vout-0 coin is spent, but a stated category
+   that does not exist yet can.
 
 A wrapper with an `upgrade` or `selfdestruct` entry deploys like any other contract (D43).
 

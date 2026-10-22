@@ -29,6 +29,8 @@ import {
   createTestProvider, getTxOutputs, createFeeFunder, setupStatefulUtxos,
 } from '../test-util.js';
 import { Utxo, TokenDetails } from '../../src/interfaces.js';
+import { authheadOutput } from '../../src/bcmr/authhead.js';
+import { addressToLockScript } from '../../src/utils.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 // A stateful contract with two state variables of different types:
@@ -957,8 +959,9 @@ describe('StatefulContract.deploy()', () => {
 
     const txOutputs = getTxOutputs(result.tx);
 
-    // Output 0: the category's BCMR identity output, token-free
-    expect(txOutputs[0].token).toBeUndefined();
+    // Output 0: the category's authhead, holding its identity NFT
+    expect(txOutputs[0].token?.nft?.capability).toBe('mutable');
+    expect(txOutputs[0].token?.category).toBe(result.categoryId);
 
     // Output 1: master UTXO with minting NFT
     expect(txOutputs[1].token?.nft?.capability).toBe('minting');
@@ -1096,12 +1099,12 @@ describe('StatefulContract.deploy()', () => {
     });
 
     const txOutputs = getTxOutputs(result.tx);
-    // Output 0 is the BCMR identity output, at the dust of the deployer's 35-byte lock.
-    expect(txOutputs[0].amount).toBe(576n);
+    // Output 0 is the authhead, at the dust of its NFT naming the deployer's 35-byte lock.
+    const identity = authheadOutput(result.categoryId, addressToLockScript(deployP2pkh.address));
+    expect(txOutputs[0].amount).toBe(identity.amount);
     expect(txOutputs[1].amount).toBe(2000n);
     expect(txOutputs[2].amount).toBe(1500n);
-    // Change = 100000 - 576 - 2000 - 1500 - 500 = 95424
-    expect(txOutputs[3].amount).toBe(95424n);
+    expect(txOutputs[3].amount).toBe(100000n - identity.amount - 2000n - 1500n - 500n);
   });
 });
 
@@ -1454,8 +1457,9 @@ describe('Multi-NFT Stateful Contract', () => {
 
       const txOutputs = getTxOutputs(result.tx);
 
-      // Output 0: the category's BCMR identity output, token-free
-      expect(txOutputs[0].token).toBeUndefined();
+      // Output 0: the category's authhead, holding its identity NFT
+      expect(txOutputs[0].token?.nft?.capability).toBe('mutable');
+      expect(txOutputs[0].token?.category).toBe(result.categoryId);
 
       // Output 1: master UTXO with minting NFT
       expect(txOutputs[1].token?.nft?.capability).toBe('minting');
@@ -1695,7 +1699,7 @@ describe('3-NFT Per-Function Optimization', () => {
       expect(result.categoryId).toBe(fundingUtxo.txid);
       const txOutputs = getTxOutputs(result.tx);
 
-      // Deploy always creates ALL data NFT outputs, after the BCMR identity output and the master
+      // Deploy always creates ALL data NFT outputs, after the authhead and the master
       expect(txOutputs[1].token?.nft?.capability).toBe('minting');
       expect(txOutputs[2].token?.nft?.capability).toBe('mutable');
       expect(txOutputs[3].token?.nft?.capability).toBe('mutable');

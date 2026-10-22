@@ -32,6 +32,10 @@ export default defineConfig({
 The compile cache defaults to `~/.cache/solidcash`. Compile trusts its entries as compiled output, so a
 `paths.cache` inside the project is used only with `trustProjectCache: true`.
 
+Config discovery skips a `solidcash.config.*`, `package.json` or `.git` that another user owns, or that sits in a
+world-writable directory without the sticky bit, and warns. A container running as root over a checkout mounted from
+another uid can trust it with `SOLIDCASH_TRUST_CONFIG_OWNER=1`.
+
 For a Hardhat-style port, apply the preset:
 
 ```ts title="vitest.config.ts"

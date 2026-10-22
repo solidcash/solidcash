@@ -109,6 +109,13 @@ await result.tx.wait();
 outputs. Supplying them for ordinary real-network upgrades also keeps the miner fee separate from contract value.
 Persist the new artifact, constructor arguments, physical address, and transaction ID beside the stable category.
 
+Every record and container is bound to the master's exact lock, so a record left at the old lock is unspendable once
+the master moves. The SDK lists every entry and container address before it sends anything and refuses the upgrade
+while a genuine record would be left behind: more live containers than the covenant migrates, or a dynamic or value
+chunk, which no upgrade path migrates yet. Coins someone else sent to a container address count as genuine when they
+carry its category; name them in `leaveBehind` to abandon them, and `result.leftBehind` reports each one with its
+value. Mapping entries migrate one per transaction, paid from `fundingUtxo`.
+
 Artifacts compiled before the authenticated replacement-bytecode witness was added are rejected. Recompile the
 old source with the current compiler before enabling its upgrade path.
 

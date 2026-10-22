@@ -2887,6 +2887,15 @@ entry batch migrates one entry per transaction (the SDK loops), and the token-co
 of reserved access sites (a live container count below the site count is refused); a fully dynamic per-record scan
 remains deferred.
 
+**Revised 2026-10-22 (`cd3c4caa4`, `ced8e53fa`).** The SDK upgrade took the first UTXO at each container address, so a
+dust coin there could strand the real container; it funded entry steps with the mock-only `addUtxo`, and it left
+dynamic and value chunks at the old lock. It now plans every entry and container from full listings, funds each step
+from the caller, refuses before any broadcast while a genuine record would be stranded (chunks included), and takes
+`leaveBehind` to abandon named donated container coins. Still open: chunks have no migration path (the upgrade
+refuses instead), and a parameter-keyed container needs a runtime count `k` with a distinctness proof and, for
+completeness, a container registry in state, since the covenant cannot list UTXOs. Test:
+`packages/solidcash/test/e2e/UpgradeMigrationCompleteness.test.ts`.
+
 ## Logical caller identity for native compiles (model B residual, 2026-10-14)
 
 **What:** packages/solidcash/test/journal-message-bus/e2e/KernelPhysicalCallerWithScidCompose.test.ts (skipped) needs a
@@ -3165,6 +3174,13 @@ batch an output at each container's index); no test destroys that many inputs.
 destroys a contract holding a container and more than 200 other inputs.
 
 **Revisit if:** a contract with a satoshi or token container is destroyed with that many inputs.
+
+**RESOLVED 2026-10-22 (`2d885fa23`).** Every container goes in the final batch beside the masters, and the destroy
+refuses before building when they do not fit. Coins at a container address are filtered to genuine containers, so
+junk padding there is left in place and reported (`DestroyResult.leftBehind`). Test:
+`packages/solidcash/test/e2e/BatchedDestroyContainers.test.ts` (a lowered `maxInputsPerTx`). Residual: a tokenless
+coin at the satoshi-container address counts as genuine, so padding past the final batch's room refuses until
+`maxInputsPerTx` is raised.
 
 ## A framed contract with one function, no constructor and no fallback cannot be called (2026-10-21)
 

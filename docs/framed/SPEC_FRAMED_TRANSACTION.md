@@ -91,7 +91,7 @@ row Dn of [`DECISIONS.md`](./DECISIONS.md), which is not the plan's Dn.
 - **Pools** (sections 12, 21). The default is 12 masters and 4 validators for every contract, and a deployment
   funds one facet UTXO.
 - **Security** (section 9). T50 (DECISIONS D15), T51 (DECISIONS D16), T52 (the read-only presence check, read as
-  absent only at the created-record sentinel, `8dedaf280`) and the residual G0 (DECISIONS D9).
+  absent only at the created-record sentinel, `8dedaf280`) and G0 (DECISIONS D9, stopped by `35c998efa`).
 
 ### Since the implementation (2026-09-29)
 
@@ -1228,7 +1228,7 @@ by the code that produces it, by the validator program, or against real state.
 | T56 | Mint immutable NFTs (forged events) or fungible amounts of a contract's category from a master that settles alone | S2 on the master path (`cd55e7a72`): the settlement walk holds the category's bare outputs to the events the frame lists, and the head's census refuses a fungible amount of the category at every index. Was open (VM-proven) | Yes |
 | T57 | Rewrite a record of a contract whose code has a `DELEGATE` site but whose frame made no delegate call (a sibling entry beside a dispatched forwarding fallback), so neither its master nor the validator settles it | S runs when the frame records no `DELEGATE` or `INTERNAL` call (`2d517da79`); V8 settles a delegate frame's records. Was open (VM-proven: a proxy record's `implementation` rewritten beside `touch`) | Yes |
 | T41 | Two frames claim the same event output, so one of two events disappears | S2 and V7: event outputs are pairwise distinct | Medium |
-| G0 | A `DELEGATE` frame's own category is settled by nobody. Its master runs on its caller's records and never settles its own (S), and V8 settles a contract only for a second master of it or for a `DELEGATE` or `INTERNAL` frame on its records. So when the frame's master is its contract's only one, nothing settles that contract: no census of its category, and no check on the records of it the transaction spends | Not stopped: a documented residual (DECISIONS D9), as the kernel's conservation rule (C3) skips delegate frames | Residual |
+| G0 | A `DELEGATE` frame's own category is settled by nobody. Its master runs on its caller's records and never settles its own (S), and V8 settles a contract only for a second master of it or for a `DELEGATE` or `INTERNAL` frame on its records. So when the frame's master is its contract's only one, nothing settles that contract: no census of its category, and no check on the records of it the transaction spends | Stopped (`35c998efa`, 2026-10-22): the master head requires a `DELEGATE` frame's own category untouched when it is the category's only master (present on one input and one output, the recreated master; a value master's containers do not shrink). Before, a forwarding proxy could rewrite, drain and mint for any framed contract it delegated into | Yes |
 
 **Residual risks:**
 - **The validator program is the single security core.** Which validator covers a composition does not matter,
@@ -1246,9 +1246,6 @@ by the code that produces it, by the validator program, or against real state.
   witness the validator does not check.
 - **Signature scope (T32, D8).** A wallet signing a transaction it did not build must decode every master's
   witnesses to show the user the calls made in their name.
-- **A delegate frame's own category (G0, DECISIONS D9).** A transaction that delegates into a contract's code
-  settles that contract nowhere when the delegate frame's master is its only one there. Behind a proxy that
-  contract is the implementation, whose own records hold its genesis state, not the application's (section 19).
 - **EVM hazards are reproduced, not fixed.**
   - A runtime self-call with a caller-chosen target and calldata acts with the contract's own authority.
   - `tx.origin` checks can be phished: a contract the user calls can reach a `tx.origin`-gated function in the

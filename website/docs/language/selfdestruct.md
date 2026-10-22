@@ -102,6 +102,13 @@ For `selfdestruct(recipient)`, the SDK `recipient` must resolve to the same lock
 expression. The helper discovers master threads, data NFTs, vmap entries, the satoshi container, and expired event
 NFTs; it then spends them with their protocol unlockers and sends the reclaimable satoshis to the recipient.
 
+Destroy through `StatefulContract.destroy` or `selfdestructTo`: the ordinary call path (`sc.destroy(...)` on the
+function itself) is refused, because it cannot burn the master. The covenant does not require the satoshi or token
+containers in the destroying transaction, so a container left out stays at its address and can never be spent again;
+the helper spends them in its final transaction. A `selfdestruct` entry admits an output carrying a mutable or
+minting NFT of the contract's category only in place of the same input (same index, lock and commitment), so a
+destroy can neither mint, nor move the master elsewhere, nor rewrite a record it carries.
+
 Event cleanup is best-effort because event NFTs have a 144-block relative lock. Unexpired event NFTs do not block
 master destruction: they may remain at their event addresses and become cleanable after their delay. Plan event
 retention and indexer behavior around that asynchronous tail.

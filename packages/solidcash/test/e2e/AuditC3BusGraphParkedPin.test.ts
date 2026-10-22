@@ -386,4 +386,85 @@ describe('C3 beside a graph route: the parked record pin holds each own-category
     await expect(provider.sendRawTransaction(composed.build())).resolves.toMatch(/^[0-9a-f]{64}$/);
     expect((await bus.getState()).count).toBe(1n);
   }, 300_000);
+
+  // The lead: the route's past-block pin skips `[master, master + blockSize)` (compile-time blockSize), while the
+  // verifier census walks only the physical block `[master, master + actualSize)`. So the slots in between,
+  // `[master + actualSize, master + blockSize)`, are walked by neither. The claim is that with the ledger last and a
+  // small enough physical block, that gap could run past the co-spent verifiers and reach the fee input, where a
+  // `side` entry would be rewritten in place unchecked. This enumerates that gap in the honest compose and settles it.
+  it('leaves every gap slot to a self-binding verifier, with the fee input past the skip window', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(LEDGER, { ...GRAPH, messageBusHandlers: ['tick'] });
+    const route = artifact.messageBus!.route;
+    const blockSize = route.blockLayout?.blockSize ?? 0;
+    expect(blockSize, 'the route has a participant block').toBeGreaterThan(0);
+    const { bus, categoryId, victimOf } = await seedLedger(provider, artifact);
+    const { contract: driver } = await seeded(
+      provider, compileString(DRIVER, GRAPH), [hexToBin(bus.inner.lockingBytecode)], {},
+    );
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+
+    // Driver last would give the driver no gap (its block is its only record), so compose with the ledger last:
+    // the ledger owns the only route whose compile-time block (the `side` mapping) exceeds its tick footprint.
+    const funder = await createBareP2pkhFeeFunder(provider, 2_000_000n);
+    const composed = await messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'poke', args: [] },
+        { contract: bus, functionName: 'tick', args: [] },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    }).build();
+    const honest = spendOf(composed);
+    expect(failures(vm, honest), 'honest compose').toEqual([]);
+
+    const victim = await victimOf(honest);
+    const master = masterOf(honest, victim);               // the ledger's master: the last participant's base
+    // Each co-spent verifier NFT carries the L3V1 commitment domain and recreates itself at its own input index.
+    const isVerifier = (output: LibauthOutput | undefined): boolean =>
+      output?.token?.nft?.capability === 'mutable'
+      && binToHex(output.token.nft.commitment).startsWith('4c335631');
+    const verifierInputs = honest.sourceOutputs.flatMap((output, index) => (isVerifier(output) ? [index] : []));
+    expect(verifierInputs.length, 'one verifier per participant').toBe(2);
+    const actualSize = verifierInputs[0]! - master;        // the ledger's physical block [master, master + actualSize)
+    const feeIndex = honest.transaction.inputs.length - 1;
+    expect(honest.sourceOutputs[feeIndex]!.token, 'the last input is the fee input').toBeUndefined();
+
+    const gap = Array.from({ length: Math.max(0, blockSize - actualSize) }, (_u, k) => master + actualSize + k);
+    const gapKinds = gap.map((slot) => (isVerifier(honest.sourceOutputs[slot]) ? 'verifier'
+      : honest.sourceOutputs[slot]?.token === undefined ? 'fee-or-tokenless' : 'token'));
+    console.log('graph gap census', JSON.stringify({
+      master, actualSize, blockSize, verifierInputs, feeIndex, gap, gapKinds,
+    }));
+
+    // With the ledger last, actualSize (the physical block) plus one verifier per participant reaches blockSize, so
+    // the gap is exactly the co-spent verifier band. Each gap slot is a verifier that recreates itself at its index;
+    // none is left to a non-verifier an attacker could rewrite.
+    for (const slot of gap) {
+      expect.soft(isVerifier(honest.sourceOutputs[slot]), `gap slot ${slot} is a self-binding verifier`).toBe(true);
+    }
+    expect.soft(actualSize + verifierInputs.length, 'the physical block and verifiers cover the skip window')
+      .toBeGreaterThanOrEqual(blockSize);
+    // The fee input lands at or past master + blockSize, outside the route pin's skip window, where the past-block
+    // pin holds it (the compose `it` above refuses a `side` entry put there).
+    expect.soft(feeIndex, 'the fee input sits at or past the skip window').toBeGreaterThanOrEqual(master + blockSize);
+
+    // Closest hostile case: a `side` entry put where the ledger's own verifier sits, a gap slot. Its covenant accepts
+    // the write, but the route refuses the compose. That verifier is the last routed one, `tx.inputs.length - 2`, the
+    // slot the route reads the atomic message envelope from, so a record there is refused at the envelope reader
+    // (the envelope must open with the PUSHDATA2 marker 0x4d) before the binder's own verifier checks run.
+    const verifierLock = binToHex(getMessageBusVerifierLockingBytecode(bus.inner, categoryId));
+    const ledgerVerifier = honest.sourceOutputs.findIndex((output, index) => index >= master
+      && binToHex(output.lockingBytecode) === verifierLock && output.token?.nft?.capability === 'mutable');
+    expect(gap, 'the ledger verifier sits in the gap').toContain(ledgerVerifier);
+    expect(ledgerVerifier, 'the ledger verifier carries the envelope').toBe(honest.transaction.inputs.length - 2);
+    const hijack = inSlot(honest, victim, master, ledgerVerifier, rewritten(victim));
+    expect(verdict(vm, hijack, ledgerVerifier), 'the entry write flag accepts the record at the verifier slot')
+      .toBe(true);
+    const refused = refusal(vm, hijack, master);
+    console.log('graph verifier-slot hijack refusal', JSON.stringify(refused));
+    expect.soft(refused.verdict, 'the route refuses a record in the verifier slot').not.toBe(true);
+    expect.soft(refused.at, 'the route refuses it at the envelope reader')
+      .toMatch(/OP_INPUTBYTECODE OP_DUP OP_1 OP_SPLIT OP_DROP OP_PUSHBYTES_1 0x4d OP_EQUALVERIFY$/);
+  }, 300_000);
 });

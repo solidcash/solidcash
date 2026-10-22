@@ -86,13 +86,17 @@ Most routes converge in a few probes. `maxDerivationIterations` defaults to 20:
 
 ```ts
 app.maxDerivationIterations = 32;
+await app.call.route(seed, amount).send();
+console.log(app.lastDerivationIterations); // VM evaluations the last derivation ran
 ```
 
 Increase it only when a large transition has a genuine chain of interdependent commitments. A failure to converge
-usually indicates missing context, an unsupported cyclic shape, a wrong manual override, or a bug—not a reason to
-set an unbounded retry count. Some compiler-recognized loop-write routes internally receive a higher safety floor.
+usually indicates missing context, an unsupported cyclic shape, a wrong manual override, or a bug, not a reason to
+set an unbounded retry count. Some compiler-recognized loop-write routes internally receive a higher safety floor,
+and message-bus kernel artifacts use the pass ceiling the compiler publishes instead.
 
-An `AutoDerivationError` preserves the failed VM phase and diagnostic. Common fixes are:
+A derivation failure throws an error named `AutoDerivationError`, which carries the underlying failure as `cause`
+when there is one. Common fixes are:
 
 - register the external target, loop array, child artifact or library instance named by the error;
 - supply raw vmap keys for key/entry iteration;
@@ -120,6 +124,7 @@ Use these as narrow escape hatches:
 | Override | When it is needed |
 | --- | --- |
 | `.withEntryKey(slot, key)` | A compiler-authored vmap access uses a key expression the SDK cannot reconstruct |
+| `.withExternalEntryKey(slot, key)` | An external mapping read must select the entry with this exact key |
 | `.setState(name, value)` | Trace extraction cannot determine an otherwise covenant-checked post-state |
 | `.emitEvent(name, ...args)` | Event arguments are not inferable from parameters and trace values |
 | `.transfer(to, amount)` | A satoshi-transfer output cannot be inferred |
@@ -131,13 +136,14 @@ override as a way to bypass state, identity, category or amount checks.
 
 ## `build()`, `debug()` and `send()`
 
-A stateful pending call's `build()` is asynchronous because it may query UTXOs and run several VM probes:
+A stateful pending call's `build()` is asynchronous because it may query UTXOs and run several VM probes. The
+pending call has no `debug()` of its own: build it, then debug the returned `TransactionBuilder`.
 
 ```ts
 const pending = app.call.withdraw(sig, recipient, amount);
 const builder = await pending.build();
 const usage = builder.getVmResourceUsage();
-const trace = await pending.debug();
+const trace = builder.debug();
 const sent = await pending.send();
 ```
 
@@ -146,7 +152,7 @@ discovery. Call helpers such as `addRequiredSidecars()` first when building thos
 
 Auto-derivation improves ergonomics; it is not a trust boundary. The final transaction is valid only because each
 input's covenant verifies its own identity, category, pre-state, post-state and effects. A malicious or buggy SDK
-can at worst propose a transaction which those checks reject—unless the contract source itself uses an `unsafe`
+can at worst propose a transaction which those checks reject, unless the contract source itself uses an `unsafe`
 route or omits the relevant authorization.
 
 ## Related concepts

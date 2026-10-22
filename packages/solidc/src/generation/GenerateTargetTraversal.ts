@@ -8942,9 +8942,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A record only an invoked body reads (a pointer call, a helper left uninlined) is state access too: the guarded
     // walk held it in place but never at the data-NFT lock. A constructor runs only in its genesis, and a framed
     // frame settles its records through its own declaration.
-    this.hasStateAccess = accessedNftIndices.length > 0 || activeJournalSlots.length > 0
-      || (hasInternalCall && this.dataNftCount > 0 && this.directConvention && !this.isDefineSubTraversal
-        && node.name !== '__construct' && this.invokesStateAccess(node.body));
+    const invokedStateAccess = hasInternalCall && this.dataNftCount > 0 && this.directConvention
+      && !this.isDefineSubTraversal && node.name !== '__construct' && this.invokesStateAccess(node.body);
+    this.hasStateAccess = accessedNftIndices.length > 0 || activeJournalSlots.length > 0 || invokedStateAccess;
 
     // Store required NFT indices on the node for artifact generation.
     // For stateful contracts (dataNftCount > 0), always store (even as empty [])
@@ -8953,7 +8953,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Upgrade/unsafe(0)/selfdestruct modifiers need ALL data NFTs regardless of body accesses,
     // because the modifier-injected code operates on the full set of data NFTs.
     // unsafe(1)/unsafe(2) use accessedNftIndices only (body reads allowed, writes forbidden).
-    // split/merge: preserve accessed read-only data NFTs; resource-free bodies keep empty [].
+    // split/merge: preserve accessed read-only data NFTs; resource-free bodies keep empty []. An invoked body reads
+    // a record at its full-layout offset, so a split/merge that invokes a state reader carries every record, each
+    // held to the data-NFT lock by its auto covenant as a record its own body reads is.
     const isSplitOrMerge = node.modifiers.includes(FunctionModifier.SPLIT)
       || node.modifiers.includes(FunctionModifier.MERGE);
     const isConstructor = node.name === '__construct';
@@ -8966,7 +8968,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // implementation may access any state on the proxy's behalf.
     const hasDelegatecall = node.lowLevelCalls?.some((lc) => lc.callMode === 'delegatecall') ?? false;
     if (isSplitOrMerge && this.dataNftCount > 0) {
-      node.requiredNftIndices = accessedNftIndices;
+      node.requiredNftIndices = invokedStateAccess
+        ? Array.from({ length: this.dataNftCount }, (_, i) => i) : accessedNftIndices;
     } else if (
       // Genesis mints the complete state layout. Even untouched/default fields must be covenant-authenticated:
       // otherwise a hostile deployment can seed arbitrary commitments in NFTs the constructor does not access.

@@ -1,5 +1,6 @@
 ---
-title: Python SDK
+title: Python
+sidebar_label: Python (no SDK yet)
 ---
 
 SolidCash has no Python SDK. To deploy, call and test SolidCash contracts, use the [TypeScript SDK][typescript-sdk]

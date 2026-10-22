@@ -113,9 +113,8 @@ export interface CompilerOptions {
   // User-supplied external libraries (script precompiles). Each registers `name(...)` as a callable with
   // the given ABI signature, backed by the hex `code` blob. Merged with the built-in libraries.
   userLibraries?: { name: string; code: string; abi: { inputs: AbiInput[]; outputs: AbiOutput[] } }[];
-  // Phase-2 scaffold (default false): route an unbounded fixed-width `T[]` state var to the dense
-  // chunk-packed backend (uint32 length header + chunk UTXOs) instead of the sparse entry-NFT collection.
-  // Will become the default for fixed-width `T[]` once the codegen/SDK land. See docs/arrays.md.
+  // Default true: route an eligible unbounded `T[]` state var to the dense chunk-packed backend (length header +
+  // chunk UTXOs). False keeps the sparse entry-NFT collection. See packages/solidc/docs/arrays.md.
   chunkedArrays?: boolean;
   // block.chainid network constant, baked as a single byte (chainId & 0xff). Convention:
   // mainnet 0, chipnet 1, testnet4 2, regtest -1 (0xff). User-land; see docs/block-and-transaction-properties.md.

@@ -3255,3 +3255,19 @@ locks wherever a contract is called, or keep the two and document `getAddress()`
 
 **Revisit if:** ported Solidity passes `contract.address` where it means the caller identity.
 
+
+## Solidity 0.5+ sources may omit function visibility (2026-10-22)
+
+**What:** `257ce3067` (2026-07-28) made a `.sol` source with `pragma solidity` 0.5 or later reject a contract function
+without `public`, `external`, `internal` or `private`, as solc does. `1a533c88d` (2026-08-04, a post-merge
+consolidation) dropped the call; `AstBuilder.usesLegacySolidityDefaultFunctionVisibility` is left with no caller,
+so such sources compile with SolidCash's implicit-public default.
+
+**Why deferred:** restoring it is a strictness change: it rejects sources that compile today, it must skip free
+functions (which take no visibility) and interface rules that differ by version, and it needs a corpus and suite run
+to confirm no positive fixture breaks. Solidity-corpus strictness parity is deferred for 0.13.1.
+
+**What it'd take:** restore the check for contract and library functions only, under `pragma solidity` >= 0.5, then
+run the solc corpus negatives and the `.sol` fixtures once.
+
+**Revisit if:** the corpus strictness work resumes, or a port relies on solc rejecting a missing visibility.

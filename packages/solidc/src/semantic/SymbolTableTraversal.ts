@@ -195,6 +195,7 @@ import {
   ExternalReadArgCountError,
   ExternalReadTargetConflictError,
   ExternalReadTargetReassignedError,
+  ExternalOutStateRecordCountError,
   UndefinedInterfaceFunctionError,
   MethodCallNotSupportedError,
   StructFieldExternalCallError,
@@ -4858,11 +4859,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (bodySurvey.hasExternalOutStateRead) {
       const externalOutStateMap = new Map<string, ExternalOutStateSlot>();
       this.collectExternalOutStateReads(node.body, externalOutStateMap);
-      this.assertExternalReadTargetsFixed(node.body, externalOutStateMap.values());
+      // A slot holding several data NFTs of one target is keyed under each of them.
+      const externalOutStateSlots = [...new Set(externalOutStateMap.values())];
+      this.assertExternalReadTargetsFixed(node.body, externalOutStateSlots);
 
-      if (externalOutStateMap.size > 0) {
+      if (externalOutStateSlots.length > 0) {
         let slotIndex = 0;
-        for (const slot of externalOutStateMap.values()) {
+        for (const slot of externalOutStateSlots) {
           slot.slotIndex = slotIndex++;
         }
 
@@ -4870,7 +4873,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // same interface+addressParam as an external call, share the call's UTXO group
         let allShared = true;
         if (node.externalCalls && node.externalCalls.length > 0) {
-          for (const osSlot of externalOutStateMap.values()) {
+          for (const osSlot of externalOutStateSlots) {
             const matchingCallSlot = node.externalCalls.find(
               (cs) => cs.interfaceName === osSlot.interfaceName
                 && cs.addressParam === osSlot.addressParam,
@@ -4884,8 +4887,18 @@ export default class SymbolTableTraversal extends AstTraversal {
         } else {
           allShared = false;
         }
+        // A target this function does not call settles as a participant of its own with one read data NFT.
+        const standaloneMultiRecord = externalOutStateSlots.find((slot) => slot.sharedWithCallSlotIndex === undefined
+          && slot.requiredDataNftIndices.length > 1);
+        if (standaloneMultiRecord) {
+          const target = this.externalReadSlotTargets.get(standaloneMultiRecord) ?? node;
+          throw new ExternalOutStateRecordCountError(
+            target, standaloneMultiRecord.interfaceName, target instanceof IdentifierNode ? target.name : '...',
+            standaloneMultiRecord.requiredDataNftIndices,
+          );
+        }
 
-        node.externalOutStateReads = [...externalOutStateMap.values()];
+        node.externalOutStateReads = externalOutStateSlots;
 
         // Propagate slot indices to individual outState access nodes
         this.assignExternalOutStateSlotIndices(node.body, externalOutStateMap);
@@ -8015,14 +8028,19 @@ export default class SymbolTableTraversal extends AstTraversal {
     slot: ExternalReadSlot | ExternalOutStateSlot, read: Node, target: ExpressionNode, member: string, record: string,
   ): void {
     const first = this.externalReadSlotTargets.get(slot);
-    if (!(first instanceof IdentifierNode)) return;
-    const declaration = (id: IdentifierNode): unknown => id.definition?.definition ?? id.definition;
-    if (target instanceof IdentifierNode && target.name === first.name
-      && declaration(target) === declaration(first)) return;
+    if (!(first instanceof IdentifierNode) || this.isExternalReadSlotTarget(slot, target)) return;
     throw new ExternalReadTargetConflictError(
       read, slot.interfaceName, member, record, first.name,
       target instanceof IdentifierNode ? target.name : '...',
     );
+  }
+
+  /** Whether `target` is the address of `slot`'s first read: the same name, bound to the same declaration. */
+  private isExternalReadSlotTarget(slot: ExternalReadSlot | ExternalOutStateSlot, target: ExpressionNode): boolean {
+    const first = this.externalReadSlotTargets.get(slot);
+    const declaration = (id: IdentifierNode): unknown => id.definition?.definition ?? id.definition;
+    return first instanceof IdentifierNode && target instanceof IdentifierNode && target.name === first.name
+      && declaration(target) === declaration(first);
   }
 
   /**
@@ -11390,28 +11408,30 @@ export default class SymbolTableTraversal extends AstTraversal {
       return;
     }
     if (node instanceof ExternalOutputStateAccessNode && node.accessInfo) {
-      const key = `${node.accessInfo.interfaceName}:outState:${node.accessInfo.nftIndex}`;
+      const { interfaceName, nftIndex } = node.accessInfo;
+      const key = `${interfaceName}:outState:${nftIndex}`;
       const existing = map.get(key);
       const target = node.outStateNode.addressExpression;
       if (existing) {
         this.assertExternalReadTarget(
-          existing, node, target, `outState.${node.stateVarName}`, `output data NFT ${node.accessInfo.nftIndex}`,
+          existing, node, target, `outState.${node.stateVarName}`, `output data NFT ${nftIndex}`,
         );
-        if (!existing.requiredDataNftIndices.includes(node.accessInfo.nftIndex)) {
-          existing.requiredDataNftIndices.push(node.accessInfo.nftIndex);
-          existing.requiredDataNftIndices.sort((a, b) => a - b);
-        }
-      } else {
-        const addressParam = target instanceof IdentifierNode ? target.name : undefined;
-        const slot: ExternalOutStateSlot = {
-          interfaceName: node.accessInfo.interfaceName,
-          addressParam,
-          slotIndex: -1,
-          requiredDataNftIndices: [node.accessInfo.nftIndex],
-        };
-        map.set(key, slot);
-        this.externalReadSlotTargets.set(slot, target);
+        return;
       }
+      // A target's master is co-spent once, so a read of another of its data NFTs joins the data slot already
+      // pinned to it. That slot is keyed under each of its NFTs.
+      const sibling = [...map.values()].find((slot) => slot.interfaceName === interfaceName
+        && slot.requiredDataNftIndices.length > 0 && this.isExternalReadSlotTarget(slot, target));
+      if (sibling) {
+        sibling.requiredDataNftIndices.push(nftIndex);
+        sibling.requiredDataNftIndices.sort((a, b) => a - b);
+        map.set(key, sibling);
+        return;
+      }
+      const addressParam = target instanceof IdentifierNode ? target.name : undefined;
+      const slot: ExternalOutStateSlot = { interfaceName, addressParam, slotIndex: -1, requiredDataNftIndices: [nftIndex] };
+      map.set(key, slot);
+      this.externalReadSlotTargets.set(slot, target);
       return;
     }
 

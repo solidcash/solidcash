@@ -48,7 +48,7 @@ additive:
 
 - Solidity sources, EVM tests, Hardhat configuration, and existing package scripts are preserved.
 - SolidCash artifacts live only under `artifacts/solidcash`.
-- SolidCash cache data lives only under `cache/solidcash`.
+- The SolidCash compile cache lives in `~/.cache/solidcash`, outside the project.
 - SolidCash tests use `vitest.solidhat.config.ts`, separate from the existing runner.
 - Existing `README.md` files are never replaced.
 
@@ -84,7 +84,6 @@ export default defineConfig({
     contracts: 'contracts',
     tests: 'test',
     artifacts: 'artifacts',
-    cache: 'cache',
   },
   compiler: {
     evmCompat: true,
@@ -113,6 +112,11 @@ Compile and preflight with real limits before publishing a deployment. In partic
 under a raised mock `maximumInputBytes` is not thereby mainnet-deployable.
 
 `solidcashConfigSchema` from `@solidcash/solidhat/config` exposes the configuration as JSON Schema.
+
+`paths.cache` defaults to `~/.cache/solidcash`. Compile trusts the entries it finds there as compiled output, so
+anyone who can write the cache can substitute artifacts for your sources. A cache inside the project is ignored
+unless the config also sets `trustProjectCache: true`; set it only for a checkout no one else writes, never for a
+cloned repository, and do not commit the cache.
 
 ## Artifacts and generated bindings
 
@@ -209,6 +213,6 @@ project was found, and package-installation status. This is useful for IDEs and 
 
 ## Ownership and cleanup
 
-SolidHat deliberately owns a small namespace. `clean` removes `artifacts/solidcash`, `cache/solidcash`, and the
+SolidHat deliberately owns a small namespace. `clean` removes `artifacts/solidcash`, the cache's `solidcash` directory, and the
 configured type-generation directories; it does not delete EVM artifacts or arbitrary project files. Keep
 generated directories dedicated to SolidHat so this ownership rule remains unambiguous.

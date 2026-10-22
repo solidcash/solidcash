@@ -23,12 +23,14 @@ export default defineConfig({
     contracts: 'contracts',
     tests: 'test',
     artifacts: 'artifacts',
-    cache: 'cache',
   },
   networks: { mock: { type: 'mock' } },
   defaultNetwork: 'mock',
 });
 ```
+
+The compile cache defaults to `~/.cache/solidcash`. Compile trusts its entries as compiled output, so a
+`paths.cache` inside the project is used only with `trustProjectCache: true`.
 
 For a Hardhat-style port, apply the preset:
 

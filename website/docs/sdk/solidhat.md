@@ -45,8 +45,9 @@ solidcash.config.ts         Compiler, paths, accounts, and networks
 vitest.solidhat.config.ts   Hardhat/Ethers compatibility aliases
 artifacts/solidcash/        Generated artifacts
 typechain-types/            Generated contract bindings
-cache/solidcash/            Incremental compilation cache
 ```
+
+The incremental compile cache lives in `~/.cache/solidcash`, outside the project.
 
 Choose the language, package manager, and compatibility versions explicitly when needed:
 
@@ -86,7 +87,7 @@ existing EVM project files intact:
 
 - `hardhat.config.*`, Solidity sources, tests, and scripts are not modified.
 - EVM artifacts remain under `artifacts`; SolidCash owns `artifacts/solidcash` only.
-- Other cache data remains under `cache`; SolidCash owns `cache/solidcash` only.
+- Hardhat's `cache` is untouched; the SolidCash compile cache lives in `~/.cache/solidcash`.
 - SolidHat creates a separate `solidcash.config.ts` and `vitest.solidhat.config.ts`.
 - An existing `README.md` is not replaced.
 
@@ -107,7 +108,6 @@ export default defineConfig({
     contracts: 'contracts',
     tests: 'test',
     artifacts: 'artifacts',
-    cache: 'cache',
   },
 
   compiler: {
@@ -154,7 +154,12 @@ export default defineConfig({
 | `paths.contracts` | `contracts` | `.scash` and Solidity-compatible `.sol` source roots. |
 | `paths.tests` | `test` | Project tests. |
 | `paths.artifacts` | `artifacts` | Artifact root; SolidHat writes beneath `solidcash/`. |
-| `paths.cache` | `cache` | Cache root; SolidHat writes beneath `solidcash/`. |
+| `paths.cache` | `~/.cache/solidcash` | Compile cache root; SolidHat writes beneath `solidcash/`. |
+
+Compile trusts the entries it finds in the cache as compiled output, so anyone who can write the cache can substitute
+artifacts for your sources. A `paths.cache` inside the project is therefore ignored unless the config also sets
+`trustProjectCache: true`. Set it only for a checkout no one else writes, never for a cloned repository, and do not
+commit the cache.
 
 ### Compiler Options
 

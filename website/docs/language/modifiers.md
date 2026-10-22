@@ -29,9 +29,15 @@ contract Token(pubkey owner) {
 }
 ```
 
+Modifiers are inlined at compile time; there is no call frame. Invocations apply left to right, code after `_`
+runs after the body, and a modifier without parameters may omit the parameter list (`modifier timelocked { ... }`).
+Modifiers take `virtual` and `override`, a bodyless `modifier hook() virtual;` is abstract, and modifiers also
+apply to constructors.
+
 ### Multiple Placeholders
 
-Unlike Solidity (which supports only one `_`), SolidCash allows multiple placeholders in a single modifier:
+A modifier needs at least one `_`. As in Solidity, it may contain several, and each one inlines the function body
+again:
 
 ```solidity
 modifier logged(string label) {
@@ -69,6 +75,8 @@ contract Fees(pubkey owner) {
 
 ## Visibility Modifiers
 
+A function without a visibility modifier is `public`.
+
 | Modifier | Scope |
 |----------|-------|
 | `external` | Only callable from outside via function selector |
@@ -98,11 +106,15 @@ inlined where that is cheaper.
 |----------|---------|
 | `pure` | Declares no state access |
 | `view` | Declares read-only state access |
-| `payable` | Function can receive BCH; enables `msg.value` |
+| `payable` | Accepted for Solidity compatibility; does not gate value |
 
 Native SolidCash and compatibility mode enforce the same effect checks: `pure` rejects contract-state and
 environment reads, and both `pure` and `view` reject state/transient-state writes, contract creation,
 low-level calls, and calls to less-restrictive functions.
+
+`payable` does not decide who can send value: every BCH address can receive it. Any function may read
+`msg.value`, except a `view` public or external function and a constructor that is not `payable`. `internal`,
+`private` and `pure` functions cannot be `payable`.
 
 ```solidity
 contract Example() {
@@ -141,12 +153,25 @@ contract Child() is Base {
 
 ## Lifecycle Modifiers
 
-These modifiers control the lifecycle of **stateful contracts**. They require the contract to have state variables.
+These modifiers control the lifecycle of **stateful contracts**. They are valid only in a stateful contract (one
+that declares state variables, mappings, arrays or events) and only on externally callable functions, and none of
+them combines with `pure` or `view`.
+
+### Authorizing lifecycle entries
+
+A `deploy`, `upgrade`, `split` or `merge` entry changes what the contract is. Its covenant checks the transition,
+not who asked for it, so the body needs an unconditional `require(checkSig(s, key))` with a key the caller cannot
+choose: a contract parameter, a state variable or a constant. Without one the compile fails with
+`UnauthorizedLifecycleError`. A `selfdestruct` function needs a `require` too, and a recipient the caller chooses
+needs a signature by such a key (`UnauthenticatedSelfdestructError`). Guard a `migrateRecords` entry the same way.
+
+The `allowUnsafeOperations` compiler option turns these errors into warnings. Keep it off unless a permissionless
+lifecycle change is intended.
 
 ### Inferred `deploy`
 
 A function that mints a child stateful contract is a deploy function. This is **inferred** from the deploy
-form itself, so there is no keyword to write:
+form itself, so the `deploy` keyword is optional:
 
 ```solidity
 contract Child(pubkey owner) {
@@ -165,25 +190,27 @@ contract Factory(pubkey admin) {
 }
 ```
 
-The resulting ABI entry carries the `deploy` modifier.
-
-:::caution
-`deploy` was removed from the grammar. Writing it explicitly is now an "undefined modifier" error. See
+The resulting ABI entry carries the `deploy` modifier. Writing it explicitly (`function createChild(sig s) deploy
+{ ... }`) still parses and has the same effect. Deploy sites in branches or loops must create the same child, and
+the transaction that creates a child cannot call it beyond a folded initializer. See
 [Contract Creation & Lifecycle](/docs/language/contract-creation).
-:::
 
 ### `upgrade`
 
-Deploys a new version of the contract code while preserving the category ID:
+Moves the contract's master NFT to a new version of the contract code while preserving the category ID. The
+address changes:
 
 ```solidity
-contract PolicyV1(pubkey admin) {
-    event Approved(int amount);
+contract LedgerV1(pubkey admin) {
+    mapping(bytes20 => int) public balances;
 
-    function approve(int amount, sig s) public {
-        require(amount <= 1000);
+    function set(sig s, bytes20 holder, int amount) {
         require(checkSig(s, admin));
-        emit Approved(amount);
+        this.balances[holder] = amount;
+    }
+
+    function migrateEntry(sig s) migrateRecords {
+        require(checkSig(s, admin));
     }
 
     function migrate(sig s) upgrade {
@@ -192,14 +219,48 @@ contract PolicyV1(pubkey admin) {
 }
 ```
 
-A contract that keeps state (state variables, mappings or arrays, satoshi or token containers) cannot declare
-`upgrade`: its records are bound to the master's exact lock and could not follow it to the new bytecode. The new
-version may declare state, which begins at its type defaults. See
-[Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
+The SDK chooses the replacement bytecode and a hidden witness binds it; the replacement's constructor body does
+not run. State moves as follows:
+
+- Data NFTs holding state variables are re-minted on the new bytecode with their values unchanged. Keep the new
+  layout an extension of the old one: added fields start at their defaults.
+- The satoshi container and token containers move with the master.
+- Mapping and array entries move one per transaction through the `migrateRecords` entry, before the master moves.
+- Values kept in chunk NFTs (dynamic `string`, `bytes` and array state, large mapping values) do not migrate yet;
+  the SDK refuses an upgrade that would strand one.
+
+An upgrade routed through the message bus (experimental) still refuses a contract that keeps state variables
+(`UpgradeStrandsBoundStateError`). See [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
+
+### `migrateRecords`
+
+Marks the entry that moves mapping and array entries to the replacement bytecode during an upgrade. Declare one
+when the contract keeps entries. `StatefulContract.upgrade` calls it once per entry before the upgrade itself,
+passing your `migrateRecordsFunctionArgs` plus the replacement's lock as a hidden argument. It is valid only in a
+stateful contract and cannot be combined with `upgrade`, `selfdestruct`, `unsafe`, `pure`, `view`, `internal` or
+`private`.
 
 ### `selfdestruct`
 
-Permanently destroys the contract by burning all NFTs and returning satoshis:
+Permanently destroys the contract by burning its master and state NFTs and releasing its satoshis. The statement
+form pins the payout to a recipient:
+
+```solidity
+contract Vault(pubkey admin, address beneficiary) {
+    uint256 withdrawals;
+
+    function destroy(sig authorization) public {
+        require(checkSig(authorization, admin));
+        selfdestruct(beneficiary);
+    }
+}
+```
+
+`selfdestruct(recipient);` requires a single output, paid to `recipient`, with a fee below 2,000 satoshis. It
+must be a direct statement of the function body, not nested in a branch or loop, and it implies the modifier, so
+do not write both. A bare `selfdestruct;` does nothing.
+
+The modifier form burns the state without pinning a recipient:
 
 ```solidity
 contract Killable(pubkey admin) {
@@ -219,7 +280,7 @@ modifier and can be stranded or burned unless the contract sweeps them deliberat
 
 ### `split`
 
-Creates N parallel contract instances (threads) from a single master:
+Mints N more master NFTs (threads) next to the running one:
 
 ```solidity
 contract Parallel(pubkey admin) {
@@ -232,11 +293,11 @@ contract Parallel(pubkey admin) {
 }
 ```
 
-The `split` modifier takes a parameter name that specifies the thread count.
+The `split` modifier names an integer parameter that holds the thread count.
 
 ### `merge`
 
-Consolidates N threads back into a single master:
+Burns N co-spent masters into the running one:
 
 ```solidity
 contract Parallel(pubkey admin) {
@@ -248,6 +309,10 @@ contract Parallel(pubkey admin) {
     }
 }
 ```
+
+`split` and `merge` bodies follow the `unsafe(1)` restrictions below: they cannot write state, access entries,
+emit events, move satoshis or tokens, call or read other contracts, or deploy children. Threads do not partition
+mapping entries, chunks or containers. See [Contract Concurrency](/docs/guides/concurrency).
 
 ### Inferred delegate mode
 
@@ -266,8 +331,9 @@ contract Implementation() {
 ```
 
 Access the inferred build through `artifact.delegateArtifact`, `contract.asDelegate()`, or the SDK proxy helpers.
-New code should not write a `delegate` modifier. The parser retains the legacy explicit form during migration,
-but ordinary `public`/`external` functions are how proxy implementation code is authored now.
+The built-in proxy profile (`upgrades.deployProxy`) is the stable route; custom delegate forwarding beyond it is
+experimental. An explicit `delegate` modifier is a legacy form that still compiles; new code should not write it,
+because ordinary `public`/`external` functions are how proxy implementation code is authored now.
 
 ### `unsafe`
 
@@ -295,8 +361,9 @@ function readOnlyNft() unsafe(2) {
 | `unsafe(2)` | Tier 1 plus `input value <= output value` |
 
 Tier 1 and 2 functions may read ordinary scalar state but cannot write state, access entries, emit events, move
-satoshis/tokens, call other contracts, or deploy children. Every tier is compiler-warned; prefer the normal
-covenant unless the transaction shape genuinely cannot use it.
+satoshis/tokens, call or read other contracts, or deploy children. `unsafe` is valid only in stateful contracts and
+combines with no lifecycle modifier, `pure` or `view`. Every tier is compiler-warned; prefer the normal covenant
+unless the transaction shape genuinely cannot use it.
 
 ## Modifier Compatibility
 
@@ -304,28 +371,22 @@ Not all modifiers can be combined. The compiler enforces these rules:
 
 | Combination | Allowed? |
 |-------------|----------|
+| The same modifier twice | No |
+| Two visibility modifiers (for example `internal` + `external`) | No |
 | `pure` + `view` | No |
+| `pure` + `payable`, `internal` / `private` + `payable` | No |
 | `unsafe` + `pure` / `view` | No |
-| `internal` + `external` | No |
-| `upgrade` + `unsafe` | No |
-| `upgrade` + `selfdestruct` | No |
-| `upgrade` + inferred `deploy` | No |
-| inferred `deploy` + `unsafe` | No |
-| `selfdestruct` + `unsafe` | No |
-| `selfdestruct` + inferred `deploy` | No |
+| `unsafe` + any lifecycle modifier | No |
+| Any lifecycle modifier + `pure` / `view` / `internal` / `private` | No |
+| `upgrade` + `deploy` / `selfdestruct` / `migrateRecords` | No |
+| `selfdestruct` + `deploy` / `migrateRecords` | No |
 | `split` + `merge` | No |
-| `split` + `unsafe` | No |
-| `split` + `upgrade` | No |
-| `split` + `selfdestruct` | No |
-| `split` + `deploy` | No |
-| `merge` + `unsafe` | No |
-| `merge` + `upgrade` | No |
-| `merge` + `selfdestruct` | No |
-| `merge` + `deploy` | No |
+| `split` / `merge` + `upgrade` / `selfdestruct` / `deploy` | No |
 
-All lifecycle modifiers (`deploy`, `upgrade`, `selfdestruct`, `split`, `merge`) require the contract to have state
-variables. Inferred delegate mode additionally requires an externally callable function that mutates proxy-owned
-state and uses none of the incompatible lifecycle or mutability modes.
+The lifecycle modifiers are `deploy` (written or inferred), `upgrade`, `migrateRecords`, `selfdestruct`, `split`
+and `merge`. They and `unsafe` are valid only in stateful contracts. Inferred delegate mode additionally requires
+an externally callable function that mutates proxy-owned state and uses none of the incompatible lifecycle or
+mutability modes.
 
 ## Fallback & Receive
 

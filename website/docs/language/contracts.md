@@ -17,8 +17,20 @@ pragma solidcash ^0.13.0;
 pragma solidcash >=0.13.0 <0.14.0;
 ```
 
+## Declarations and ordering
+A source file may hold several contracts, plus file-level structs, enums, value types, errors, events, constants,
+free functions, libraries, interfaces and `using` directives. Imports must come before all other declarations;
+pragmas may come before or after the imports. See [Imports & Interfaces](/docs/language/imports-interfaces) for
+the import forms.
+
+Inside a contract, members (enums, structs, value types, events, errors, constants, state variables, `using`
+directives, modifiers, the constructor, functions, `fallback` and `receive`) may appear in any order. A contract
+has at most one `constructor`, one `fallback` and one `receive`.
+
 ## Constructor
-For non-stateful contracts, the constructor parameters are specified directly on the contract definition and serve as immutable values accessible from all functions.
+Contract parameters are specified directly on the contract definition and serve as immutable values accessible
+from all functions. The parameter list is optional: `contract Registry { ... }` declares a contract without
+parameters.
 
 #### Example
 ```solidity
@@ -32,24 +44,35 @@ contract HTLC(pubkey sender, pubkey recipient, int expiration, bytes32 hash) {
 }
 ```
 
-Stateful contracts can additionally define an explicit `constructor()` body to initialize state variables at deployment time:
+Stateful contracts can additionally define a `constructor` block to initialize state variables at deployment
+time. Its parameters are deployment arguments: they set the initial state but, unlike contract parameters, are not
+part of the contract's bytecode.
 
 ```solidity
 contract Token(pubkey admin) {
     int totalSupply;
 
-    constructor() {
-        this.totalSupply = 1_000_000;
+    constructor(int initialSupply) {
+        this.totalSupply = initialSupply;
+    }
+
+    function mint(sig s, int amount) {
+        require(checkSig(s, admin));
+        this.totalSupply += amount;
     }
 }
 ```
 
+See [Contract Deployment](/docs/guides/deployment#deployment-arguments) for passing both kinds of arguments from
+the SDK.
+
 ### Constructor Arguments
 
-The constructor arguments are provided when initializing a specific instance of a smart contract. The provided
-arguments are added to the start of the contract's script before the opcode logic, so they behave like immutable
-instance configuration accessible from every function. Reassigning the stack value inside one function, where
-accepted, changes only that invocation's local copy; it does not change the baked argument or persist state.
+The contract parameter values (the constructor arguments) are provided when initializing a specific instance of a
+smart contract. The provided arguments are added to the start of the contract's script before the opcode logic,
+so they behave like immutable instance configuration accessible from every function. Reassigning the stack value
+inside one function, where accepted, changes only that invocation's local copy; it does not change the baked
+argument or persist state.
 
 :::info
 The SDK validates constructor arguments against the artifact ABI. A manually assembled redeem script bypasses
@@ -63,7 +86,7 @@ Upon initialization of the contract, constructor parameters are encoded and adde
 ## Functions
 The main construct in a SolidCash contract is the function. A contract can contain one or multiple functions that
 can be executed to trigger transactions that spend money from the contract. At its core, the result answers the
-question “is this spend valid?” Covenants additionally constrain the transaction itself—for example, where money
+question "is this spend valid?" Covenants additionally constrain the transaction itself, for example where money
 can be sent. To learn more, refer to the [SolidCash Covenants Guide](/docs/guides/covenants).
 
 #### Example
@@ -81,6 +104,9 @@ contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
     }
 }
 ```
+
+A function declared without a visibility keyword, like the two above, is `public`: it is an entry point and can
+also be called from inside the contract.
 
 :::note
 The functions described here are top-level contract functions, which act as the entry points for spending from the contract. SolidCash also supports reusable `internal` and `private` functions, free functions declared at file level, function overloading and function pointers. These compile to real subroutines and can be called from inside loops. See [Functions](/docs/language/functions).
@@ -127,15 +153,22 @@ contract P2PKH(bytes20 pkh) {
 ```
 
 ### Variable declaration
-Variables can be declared by specifying their type and name. All variables need to be initialised at the time of their declaration, but can be reassigned later on - unless specifying the `constant` keyword. Since SolidCash is strongly typed and has no type inference, it is not possible to use keywords such as `var` or `let` to declare variables.
+Variables are declared by specifying their type and name. An initial value is optional: a variable declared
+without one holds its type's default value (zero, `false`, empty bytes or string, or a struct whose fields all
+hold their defaults). Variables can be reassigned later on, unless declared `constant` (natively; `evmCompat`
+rejects a `constant` local, as Solidity does). Since SolidCash is strongly typed and has no type inference, it is
+not possible to use keywords such as `var` or `let` to declare variables.
 
 :::note
-SolidCash disallows variable shadowing and unused variables.
+Natively, a variable may not reuse a name that is already visible in an enclosing scope
+(`VariableRedefinitionError`). Under `evmCompat`, a declaration may shadow an outer name, as in Solidity. An unused
+variable produces a compiler warning, not an error.
 :::
 
 #### Example
 ```solidity
 int myNumber = 3000;
+int counter;                 // holds 0
 string constant myString = 'Bitcoin Cash';
 ```
 
@@ -236,7 +269,9 @@ contract P2PKH(bytes20 pkh) {
 
 ## Scope
 
-SolidCash uses nested scopes for parameters, variables and global functions. There cannot be two identical names within the same scope or within a nested scope.
+SolidCash uses nested scopes for parameters, variables and global functions. Natively, there cannot be two
+identical names within the same scope or within a nested scope; under `evmCompat`, a declaration may shadow an
+outer name, as in Solidity.
 
 There are the following scopes in the nesting order:
 

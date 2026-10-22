@@ -12402,6 +12402,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         outStateInputCount,
         iterationEntryInputs,
         externalCallGroupCount: externalCallUtxoGroups.length,
+        reachedExternalCalls: externalCallsOrchestrated.externalCalls,
       },
     );
     finalArgs = synthesized.finalArgs;

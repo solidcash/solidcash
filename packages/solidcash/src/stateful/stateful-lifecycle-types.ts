@@ -4,7 +4,7 @@
  */
 
 import type { Artifact, ExternalCallAbi, FunctionSplitBundle } from '@solidcash/utils';
-import type { AddressType, Output, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
+import type { AddressType, Output, TokenDetails, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
 import type { FramedGenesisHeadCollection } from '../framed/deploy/genesis.js';
 import type { FunctionArgument, ConstructorArgument } from '../Argument.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
@@ -124,12 +124,26 @@ export interface UpgradeOptions<T extends Artifact = Artifact> {
   /** The migrateRecords entry to drain mapping/array entries before the upgrade (name + its user args). */
   migrateRecordsFunctionName?: string;
   migrateRecordsFunctionArgs?: FunctionArgument[];
+  /**
+   * Surplus container coins (`txid:vout`) to abandon at the old lock, where nothing can spend them again: anyone can
+   * send a coin to a container address, and the covenant migrates exactly its reserved containers.
+   */
+  leaveBehind?: string[];
+}
+
+/** A container coin `leaveBehind` abandoned at the old lock, with its value. */
+export interface LeftBehindCoin {
+  outpoint: string;
+  address: string;
+  satoshis: bigint;
+  token?: TokenDetails;
 }
 
 export interface UpgradeResult<T extends Artifact = Artifact> {
   contract: ConnectedStatefulContract<T>;
   tx: TransactionDetails;
   categoryId: string;
+  leftBehind: LeftBehindCoin[];
 }
 
 export interface DestroyOptions {

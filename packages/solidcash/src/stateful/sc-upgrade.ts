@@ -5,6 +5,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
+  VALUE_INLINE_LIMIT,
   buildPushdataCommitment,
   containerMasterRetires,
   parsePushdataCommitment,
@@ -24,12 +25,15 @@ import {
   createSatoshiContainerUnlocker,
   createTokenContainerUnlocker,
   getDataNftAddress,
+  getDynamicChunkAddress,
   getEntryNftAddress,
   getSatoshiContainerAddress,
   getTokenContainerAddress,
+  getValueChunkAddress,
 } from './covenant-helpers.js';
 import { tokenContainerKeyValue } from './sc-load-create-builder-token-containers.js';
-import type { UpgradeOptions, UpgradeResult } from './stateful-lifecycle-types.js';
+import { decodeEntryCommitment } from './SortedList.js';
+import type { LeftBehindCoin, UpgradeOptions, UpgradeResult } from './stateful-lifecycle-types.js';
 
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]); // push 1-byte redeem script
@@ -51,11 +55,19 @@ async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigin
 
 const outpointOf = (utxo: Utxo): string => `${utxo.txid}:${utxo.vout}`;
 
+const describeCoin = (utxo: Utxo): string => `${outpointOf(utxo)} (${utxo.satoshis} sat`
+  + `${utxo.token ? `, ${utxo.token.amount} of ${utxo.token.category}${utxo.token.nft ? ' and an NFT' : ''}` : ''})`;
+
 const mintingToken = (master: Utxo, categoryId: string): TokenDetails => ({
   category: categoryId,
   amount: master.token?.amount ?? 0n,
   nft: { capability: 'minting', commitment: master.token?.nft?.commitment ?? '' },
 });
+
+/** A record the covenants keep: a mutable NFT of C. Anything else at a record address is junk. */
+const isRecord = (utxo: Utxo, categoryId: string): boolean => (
+  utxo.token?.category.toLowerCase() === categoryId.toLowerCase() && utxo.token.nft?.capability === 'mutable'
+);
 
 /** Every entry of every collection. The entry covenant admits only a mutable NFT of C; anything else there is junk. */
 async function listEntries(provider: Provider, contract: Contract<any, any>, categoryId: string): Promise<PlannedRecord[]> {
@@ -63,26 +75,87 @@ async function listEntries(provider: Provider, contract: Contract<any, any>, cat
   for (const collection of contract.artifact.stateLayout?.collections ?? []) {
     const address = getEntryNftAddress(contract, categoryId, collection.signature);
     for (const utxo of await provider.getUtxos(address)) {
-      if (utxo.token?.category.toLowerCase() === categoryId.toLowerCase() && utxo.token.nft?.capability === 'mutable') {
-        entries.push({ key: collection.signature, utxo });
-      }
+      if (isRecord(utxo, categoryId)) entries.push({ key: collection.signature, utxo });
     }
   }
   return entries;
 }
 
 /**
+ * Dynamic values and mapping values past the inline limit keep their bytes in chunk NFTs bound to the master's lock,
+ * and no migration path carries them, so a live chunk at an address the replacement does not share refuses.
+ */
+async function refuseStrandedChunks(
+  provider: Provider, oldContract: Contract<any, any>, newContract: Contract<any, any>, categoryId: string,
+  entries: readonly PlannedRecord[],
+): Promise<void> {
+  const stranded = new Map<string, number>();
+  const count = async (oldAddress: string, newAddress: string, what: string): Promise<void> => {
+    if (oldAddress === newAddress) return;
+    const live = (await provider.getUtxos(oldAddress)).filter((utxo) => isRecord(utxo, categoryId)).length;
+    if (live > 0) stranded.set(what, (stranded.get(what) ?? 0) + live);
+  };
+  const layout = oldContract.artifact.stateLayout;
+  for (const variable of layout?.variables ?? []) {
+    if (variable.dynamic !== true) continue;
+    await count(
+      getDynamicChunkAddress(oldContract, categoryId, variable.name, variable.type),
+      getDynamicChunkAddress(newContract, categoryId, variable.name, variable.type),
+      `chunk(s) of '${variable.name}'`,
+    );
+  }
+  for (const collection of layout?.collections ?? []) {
+    if (collection.chunkableValue !== true) continue;
+    for (const entry of entries) {
+      if (entry.key !== collection.signature) continue;
+      // The value tail is len4 ++ the value, or len4 ++ root ++ head once it outgrows the inline limit.
+      const { slot, value } = decodeEntryCommitment(hexToBin(entry.utxo.token?.nft?.commitment ?? ''));
+      if (value.length < 36 || new DataView(value.buffer, value.byteOffset).getUint32(0, true) <= VALUE_INLINE_LIMIT) {
+        continue;
+      }
+      const root = value.slice(4, 36);
+      await count(
+        getValueChunkAddress(oldContract, categoryId, collection.name, slot, root),
+        getValueChunkAddress(newContract, categoryId, collection.name, slot, root),
+        `value chunk(s) of '${collection.name}'`,
+      );
+    }
+  }
+  if (stranded.size > 0) {
+    throw new Error(
+      `Upgrade would strand ${[...stranded].map(([what, live]) => `${live} ${what}`).join(', ')} at the old lock: `
+      + 'chunks are bound to the master\'s lock and no migration carries them. Clear each dynamic value, and cut '
+      + `each mapping value to ${VALUE_INLINE_LIMIT} bytes or delete it, through the old contract before upgrading.`,
+    );
+  }
+}
+
+/** The coins of a container listing `leaveBehind` does not name; each named one is recorded with its value. */
+function keptCoins(
+  address: string, coins: readonly Utxo[], abandoned: ReadonlySet<string>, leftBehind: LeftBehindCoin[],
+): Utxo[] {
+  return coins.filter((utxo) => {
+    if (!abandoned.has(outpointOf(utxo).toLowerCase())) return true;
+    leftBehind.push({
+      outpoint: outpointOf(utxo), address, satoshis: utxo.satoshis, ...(utxo.token !== undefined && { token: utxo.token }),
+    });
+    return false;
+  });
+}
+
+/**
  * Every live token container, which must fill the covenant's reserved slots exactly. The covenant derives each old
  * container covenant from the coin's own category, so only a coin of its address's category is a container; a
- * tokenless or foreign-category coin there is junk it cannot carry, and stays where it is.
+ * tokenless or foreign-category coin there is junk it cannot carry, and stays where it is. Anyone can send a coin of
+ * that category there, so the caller may abandon surplus ones with `leaveBehind`.
  */
 async function planTokenContainers(
-  provider: Provider, contract: Contract<any, any>, categoryId: string, named: readonly string[],
-  state: Readonly<Record<string, unknown>>,
+  provider: Provider, contract: Contract<any, any>, categoryId: string, foreign: readonly string[],
+  state: Readonly<Record<string, unknown>>, abandoned: ReadonlySet<string>, leftBehind: LeftBehindCoin[],
 ): Promise<PlannedRecord[]> {
   const abi: readonly AbiFunction[] = contract.artifact.abi;
   const slots = abi.flatMap((fn) => fn.blockLayout?.slots ?? []).filter((slot) => slot.kind === 'tokenContainer').length;
-  const categories = new Set(named.map((category) => category.toLowerCase()));
+  const categories = new Set(foreign.map((category) => category.toLowerCase()));
   // A container keyed by the contract's own category or an immutable is found without the caller naming it.
   for (const access of abi.flatMap((fn) => fn.tokenContainerAccesses ?? [])) {
     if (access.keySource !== 'own' && access.keySource !== 'state') continue;
@@ -90,24 +163,28 @@ async function planTokenContainers(
     categories.add((key instanceof Uint8Array ? binToHex(key) : String(key)).toLowerCase());
   }
   const containers: PlannedRecord[] = [];
+  let abandonedCount = 0;
   for (const category of categories) {
     const address = getTokenContainerAddress(contract, categoryId, category);
-    for (const utxo of await provider.getUtxos(address)) {
-      if (utxo.token?.category.toLowerCase() === category) containers.push({ key: category, utxo });
-    }
+    const live = (await provider.getUtxos(address)).filter((utxo) => utxo.token?.category.toLowerCase() === category);
+    const kept = keptCoins(address, live, abandoned, leftBehind);
+    abandonedCount += live.length - kept.length;
+    containers.push(...kept.map((utxo) => ({ key: category, utxo })));
   }
   if (containers.length > slots) {
     throw new Error(
       `Upgrade would strand ${containers.length - slots} of ${containers.length} live token container(s) `
-      + `(${containers.map((container) => outpointOf(container.utxo)).join(', ')}): the old covenant migrates `
-      + `exactly ${slots}. Spend the extra containers through the old contract before upgrading.`,
+      + `(${containers.map((container) => describeCoin(container.utxo)).join(', ')}): the old covenant migrates `
+      + `exactly ${slots}. Spend the extra containers through the old contract, or name the ones to abandon for good `
+      + 'in leaveBehind, before upgrading.',
     );
   }
   if (containers.length < slots) {
     throw new Error(
       `Upgrade migrates exactly ${slots} token container(s), but ${containers.length} live container(s) were found `
-      + `for [${[...categories].join(', ')}]. Pass every foreign category the contract holds in `
-      + 'tokenContainerCategoryIds.',
+      + `for [${[...categories].join(', ')}]${abandonedCount > 0 ? ` once leaveBehind abandons ${abandonedCount}` : ''}. `
+      + 'Pass every foreign category the contract holds in tokenContainerCategoryIds, and leave behind only surplus '
+      + 'containers.',
     );
   }
   return containers;
@@ -239,6 +316,12 @@ export async function upgradeStatefulContract<T extends Artifact>(
   // the master is unspendable for good. Plan the whole migration from complete listings, and refuse before anything
   // is broadcast when a genuine record would be left behind.
   const entries = await listEntries(provider, oldContract.inner, categoryId);
+  await refuseStrandedChunks(provider, oldContract.inner, newContract, categoryId, entries);
+
+  // Anyone can send a coin to a container address, and the old code could spend it as its container, so a surplus
+  // coin blocks the upgrade unless the caller abandons it by outpoint; each abandoned coin is reported with its value.
+  const abandoned = new Set((options.leaveBehind ?? []).map((outpoint) => outpoint.toLowerCase()));
+  const leftBehind: LeftBehindCoin[] = [];
 
   // CRYPTO-4 satoshi-container migration: the container (bound to the old master lock) is spent with its flag=1
   // master path, drained at its input index, and re-minted at the replacement-bound covenant. Every tokenless coin
@@ -249,17 +332,19 @@ export async function upgradeStatefulContract<T extends Artifact>(
   let satoshiContainerUtxo: Utxo | undefined;
   if (keepsSatoshiContainer) {
     const satoshiAddress = getSatoshiContainerAddress(oldContract.inner, categoryId);
-    const live = (await provider.getUtxos(satoshiAddress)).filter((utxo) => utxo.token === undefined);
+    const listed = (await provider.getUtxos(satoshiAddress)).filter((utxo) => utxo.token === undefined);
+    const live = keptCoins(satoshiAddress, listed, abandoned, leftBehind);
     if (live.length === 0) {
-      throw new Error(
-        `Upgrade migrates the satoshi container, but none exists at ${satoshiAddress}. `
-        + 'Fund the satoshi container (or drain it) before upgrading.',
-      );
+      throw new Error(listed.length > 0
+        ? `leaveBehind abandons every satoshi-container UTXO at ${satoshiAddress}; the old covenant migrates exactly one.`
+        : `Upgrade migrates the satoshi container, but none exists at ${satoshiAddress}. `
+          + 'Fund the satoshi container (or drain it) before upgrading.');
     }
     if (live.length > 1) {
       throw new Error(
-        `Upgrade would strand ${live.length - 1} of ${live.length} satoshi-container UTXOs at ${satoshiAddress}: `
-        + 'the old covenant migrates exactly one. Spend the others through the old contract before upgrading.',
+        `Upgrade would strand ${live.length - 1} of ${live.length} satoshi-container UTXOs at ${satoshiAddress} `
+        + `(${live.map(describeCoin).join(', ')}): the old covenant migrates exactly one. Spend the others through `
+        + 'the old contract, or name the ones to abandon for good in leaveBehind, before upgrading.',
       );
     }
     satoshiContainerUtxo = live[0];
@@ -270,7 +355,15 @@ export async function upgradeStatefulContract<T extends Artifact>(
   // value. The compiler reserves one slot per token-container access site, and the live containers must fill them.
   const tokenContainers = await planTokenContainers(
     provider, oldContract.inner, categoryId, options.tokenContainerCategoryIds ?? [], onChainState.state,
+    abandoned, leftBehind,
   );
+  const unknown = [...abandoned].filter((outpoint) => !leftBehind.some((coin) => coin.outpoint.toLowerCase() === outpoint));
+  if (unknown.length > 0) {
+    throw new Error(
+      `leaveBehind names ${unknown.join(', ')}: only a surplus satoshi- or token-container coin of `
+      + `'${oldContract.name}' can be left behind.`,
+    );
+  }
 
   const filteredDataNftUtxos = requiredNftIndices.map((idx) => onChainState.dataNftUtxos[idx]);
   if (filteredDataNftUtxos.some((u) => u === undefined)) {
@@ -576,5 +669,5 @@ export async function upgradeStatefulContract<T extends Artifact>(
   const { StatefulContract: SC } = await import('./StatefulContract.js');
   const statefulContract = SC.withCategory(newContract, categoryId);
 
-  return { contract: statefulContract, tx, categoryId };
+  return { contract: statefulContract, tx, categoryId, leftBehind };
 }

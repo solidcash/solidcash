@@ -518,6 +518,7 @@ import {
   hydrateExternalPredicateState as hydrateExternalPredicateStateImpl,
 } from './sc-hydrate-external-predicate-state.js';
 import { upgradeStatefulContract as upgradeStatefulContractImpl } from './sc-upgrade.js';
+import type { LeftBehindCoin, UpgradeOptions, UpgradeResult } from './stateful-lifecycle-types.js';
 import {
   splitStatefulContract as splitStatefulContractImpl,
   mergeStatefulContract as mergeStatefulContractImpl,
@@ -964,26 +965,8 @@ export interface DeployResult<T extends Artifact = Artifact> {
   registry?: PublishedRegistry;
 }
 
-export interface UpgradeOptions<T extends Artifact = Artifact> {
-  provider: NetworkProvider;
-  oldContract: ConnectedStatefulContract;
-  upgradeFunctionName: string;        // must have 'upgrade' modifier in ABI
-  upgradeFunctionArgs: FunctionArgument[];
-  newArtifact: T;
-  newConstructorArgs: ConstructorArgument[];
-  addressType?: AddressType;          // default: match old contract's addressType
-  fee?: bigint;                       // default: 1000n
-  maxFee?: bigint;                   // maximum allowed fee (throws if exceeded)
-  fundingUtxo?: Utxo;                // required when new layout needs additional data NFTs
-  funder?: Unlocker;                  // required when new layout needs additional data NFTs
-  changeAddress?: string;             // change address for leftover funding satoshis
-}
-
-export interface UpgradeResult<T extends Artifact = Artifact> {
-  contract: ConnectedStatefulContract<T>;
-  tx: TransactionDetails;
-  categoryId: string;
-}
+// The upgrade's options and result are the ones sc-upgrade.ts implements.
+export type { LeftBehindCoin, UpgradeOptions, UpgradeResult };
 
 export interface DestroyOptions {
   provider: NetworkProvider;
@@ -4492,11 +4475,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   /**
    * Upgrade a stateful contract in place by moving its master (minting) NFT to the replacement's lock.
    *
-   * The category and the master's commitment carry over. Every data NFT, mapping entry and satoshi or token
-   * container is bound to the master's exact lock, so the compiler refuses an `upgrade` function in a contract
-   * that keeps any of them (UpgradeStrandsBoundStateError). Only a contract whose whole state lives in its master
-   * NFT upgrades this way. A replacement that declares state starts it at default values, in data NFTs minted at
-   * its own lock and paid by `fundingUtxo`/`funder`. A contract that keeps state needs a proxy to change code.
+   * The category and the master's commitment carry over. Every record and container is bound to the master's exact
+   * lock, so the upgrade carries them to the replacement's lock: entries one transaction each through the
+   * migrateRecords entry, data NFTs and containers in the upgrade itself. It refuses before broadcasting when a record
+   * would stay behind, including dynamic and long mapping-value chunks, which no migration carries. Surplus container
+   * coins, which anyone can send, are abandoned only when `leaveBehind` names them.
    *
    * Requirements:
    * - The upgrade function must have the 'upgrade' modifier in the old contract's ABI

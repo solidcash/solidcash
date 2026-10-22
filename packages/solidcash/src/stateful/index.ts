@@ -163,6 +163,7 @@ export {
   type DeployResult,
   type UpgradeOptions,
   type UpgradeResult,
+  type LeftBehindCoin,
   type DeployFromOptions,
   type DeployFromResult,
   type DestroyOptions,

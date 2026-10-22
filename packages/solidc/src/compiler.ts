@@ -634,6 +634,11 @@ type InternalCompilerOptions = CompilerOptions & {
    * forged logs (SEC-10) as that contract does.
    */
   __logicalContractEmitsEvent?: boolean;
+  /**
+   * Set beside `__logicalContractEmitsEvent`: the signatures its unsplit artifact lists. A shard lists the file-level
+   * ones among them though another shard holds the body that emits them.
+   */
+  __logicalContractEvents?: readonly string[];
   /** Shared box so the shallow-copied admission options and the binder see the same pre-lowering snapshot. */
   __pristineAstBox?: { ast?: Ast };
   /**
@@ -19030,6 +19035,7 @@ function splitModeOf(split: CompilerOptions['split']): 'off' | 'size' | 'func' {
 function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): FunctionSplitBundle {
   const { errorListener } = compilerOptions;
   let probe: Ast | undefined;
+  let logicalEvents: string[] = [];
   return compileFunctionSplit({
     code,
     options: compilerOptions,
@@ -19039,7 +19045,9 @@ function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): F
         return probe;
       },
       compileMonolith(source, options) {
-        return compileString(source, { ...stripSplitPlanning(options), errorListener });
+        const monolith = compileString(source, { ...stripSplitPlanning(options), errorListener });
+        logicalEvents = (monolith.events ?? []).map((event) => event.signature);
+        return monolith;
       },
       compileParsed(source, options, ast, frameKinds) {
         return compileStringUnchecked(source, {
@@ -19050,7 +19058,8 @@ function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): F
           __functionSplitFrameKinds: frameKinds,
           ...(probe !== undefined && contractNamesTokenContainer(probe.contract)
             ? { __framedContractHoldsTokens: true } : {}),
-          ...(probe !== undefined && emitsAnyEvent(probe.contract) ? { __logicalContractEmitsEvent: true } : {}),
+          ...(probe !== undefined && emitsAnyEvent(probe.contract)
+            ? { __logicalContractEmitsEvent: true, __logicalContractEvents: logicalEvents } : {}),
         } as InternalCompilerOptions);
       },
       cloneAst,
@@ -19160,7 +19169,10 @@ function compileStringSplitUnchecked(
   // each candidate compilation; reparsing imports and re-expanding inheritance/modifiers for
   // every packing probe made split compilation scale with (candidate count * front-end cost).
   const probe = prepareSplitAst(code, merged, errorListener);
-  if (emitsAnyEvent(probe.contract)) merged.__logicalContractEmitsEvent = true;
+  if (emitsAnyEvent(probe.contract)) {
+    merged.__logicalContractEmitsEvent = true;
+    merged.__logicalContractEvents = (baseline.events ?? []).map((event) => event.signature);
+  }
   const logicalName = probe.contract.name;
   const functions = probe.contract.functions;
   const byName = new Map<string, FunctionDefinitionNode[]>();

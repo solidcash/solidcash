@@ -14,6 +14,9 @@ import { compileString } from './direct-compile.js';
  * 4. The parser built the key of a compound write (`m[k] += v`, `m[k].a += 1`) and of an element-field rebuild
  *    (`items[k].a = v`) once per use. A side-effecting key is now bound once, as in 1; a pure key is left alone.
  *    A compound write through a storage-slot alias (`r.value += v`) compiles.
+ * 5. A storage pointer (`S storage p = m[k]`) ran its key on every use of `p`, and an element-field push or pop
+ *    (`data[k].d.push(v)`) in its read and again in its write-back. A side-effecting key is now bound once, at the
+ *    declaration (used or not) or before the push; a pure key is left alone.
  */
 
 const E = { evmCompat: true };
@@ -105,6 +108,44 @@ describe('a compound write through a storage-slot alias', () => {
       + ' contract C { function f(bytes32 s, uint256 v) external {'
       + ' Uint256Slot storage r = StorageSlot.getUint256Slot(s); r.value += v; require(true); } }';
     expect(compileString(source, E).contractName).toBe('C');
+  });
+});
+
+describe('a side-effecting key of a storage pointer or an element-field push evaluates once', () => {
+  const NEXT = 'uint256 counter; function next() internal returns (uint256) { counter = counter + 1; return counter - 1; }'
+    + ' function peek() internal view returns (uint256) { return counter; }';
+  const src = (decl: string, body: string): string => 'struct S { uint256 a; uint256 b; } struct D { uint256[] d; }'
+    + ` contract C { ${NEXT} ${decl} function f(uint256 v) external { ${body} require(true); } }`;
+  const MS = 'mapping(uint256 => S) m;';
+  const DA = 'D[] data;';
+  const P = { ...E, forceStateful: true, chunkedArrays: true };
+
+  it('in a storage pointer to a mapping entry, at its declaration', () => {
+    expect(bytecode(src(MS, 'S storage p = m[next()]; p.a = v; p.b = v;'), E))
+      .toBe(bytecode(src(MS, 'uint256 k = next(); S storage p = m[k]; p.a = v; p.b = v;'), E));
+    expect(bytecode(src(MS, 'S storage p = m[next()];'), E)).not.toBe(bytecode(src(MS, ''), E));
+  });
+
+  it('in a push or pop on an array field of a state struct array element', () => {
+    expect(bytecode(src(DA, 'data[next()].d.push(v);'), P))
+      .toBe(bytecode(src(DA, 'uint256 k = next(); data[k].d.push(v);'), P));
+    expect(bytecode(src(DA, 'data[next()].d.pop();'), P))
+      .toBe(bytecode(src(DA, 'uint256 k = next(); data[k].d.pop();'), P));
+  });
+
+  it('when the state-changing function is declared in an imported file', () => {
+    const files = { 'base.scash': `contract B { ${NEXT} }` };
+    const root = (body: string): string => 'import "./base.scash"; struct S { uint256 a; uint256 b; }'
+      + ` contract C is B { mapping(uint256 => S) m; function f(uint256 v) external { ${body} require(true); } }`;
+    expect(bytecode(root('S storage p = m[next()]; p.a = v; p.b = v;'), { ...E, files }))
+      .toBe(bytecode(root('uint256 k = next(); S storage p = m[k]; p.a = v; p.b = v;'), { ...E, files }));
+  });
+
+  it('and leaves a pure key in place', () => {
+    expect(bytecode(src(MS, 'S storage p = m[peek()]; p.a = v; p.b = v;'), E))
+      .not.toBe(bytecode(src(MS, 'uint256 k = peek(); S storage p = m[k]; p.a = v; p.b = v;'), E));
+    expect(bytecode(src(DA, 'data[peek()].d.push(v);'), P))
+      .not.toBe(bytecode(src(DA, 'uint256 k = peek(); data[k].d.push(v);'), P));
   });
 });
 

@@ -1179,6 +1179,8 @@ export abstract class StatementNode extends Node {
   baseConstructorOf?: string;
   /** A top-level statement of the read-modify-write whose keys carry this `LvalueKeyTag.unit` (BindLvalueKeyEffects). */
   lvalueKeyUnit?: number;
+  /** A dropped storage-pointer declaration kept in place with its own key builds (BindLvalueKeyEffects). */
+  lvalueKeyAlias?: ExpressionNode[];
 }
 
 /** One build of a read-modify-write's key: the write (`unit`), the key position (`index`) and the key's type. */
@@ -1186,6 +1188,8 @@ export interface LvalueKeyTag {
   unit: number;
   index: number;
   type: Type;
+  /** A storage-pointer declaration's key, rebuilt by every use of the alias and bound at the declaration. */
+  alias?: boolean;
 }
 
 /** A base constructor's own modifiers, expanded with the most-derived (virtual) modifier definitions. */

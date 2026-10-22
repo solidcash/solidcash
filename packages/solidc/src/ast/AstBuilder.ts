@@ -282,6 +282,28 @@ function sourceBinaryOp(left: ExpressionNode, operator: BinaryOperator, right: E
   return node;
 }
 
+// The index keys along an access-chain read (`a[i].f[j]`, `m[k].f`) in chain order, undefined for a literal tuple
+// index; undefined when the read is not a plain access chain.
+function accessChainKeys(read: ExpressionNode): Array<ExpressionNode | undefined> | undefined {
+  const keys: Array<ExpressionNode | undefined> = [];
+  let node = read;
+  for (;;) {
+    if (node instanceof FieldAccessNode) {
+      node = node.expression;
+    } else if (node instanceof ArrayAccessNode) {
+      keys.unshift(node.index);
+      node = node.array;
+    } else if (node instanceof TupleIndexOpNode) {
+      keys.unshift(undefined);
+      node = node.tuple;
+    } else if (node instanceof MappingAccessNode) {
+      return [...node.keys, ...keys];
+    } else {
+      return node instanceof IdentifierNode || node instanceof StateAccessNode ? keys : undefined;
+    }
+  }
+}
+
 // One ordered segment of an lvalue chain: a `.member` (or `.value`), or an `[index]` key. Interleaved order is
 // preserved (alternating chains like `m[i].arr[j]` depend on it). The key is a THUNK yielding a FRESH node per
 // call (read + write nodes must not share instances). Consumed by buildLvalueAssign.
@@ -3165,6 +3187,7 @@ export default class AstBuilder
         this.storageAliases.set(name, { ...path, access: expression as ExpressionNode });
         const dropped = new BlockNode([]);
         dropped.location = Location.fromCtx(ctx);
+        this.markAliasKeys(dropped, path, expression instanceof MappingAccessNode);
         return dropped;
       }
       // `mapping(...) storage p = m;`: a whole-mapping alias to a bare state-mapping identifier (no keys).
@@ -3314,6 +3337,26 @@ export default class AstBuilder
       if (cur instanceof IdentifierNode) return { container: cur.name, keys };
     }
     return undefined;
+  }
+
+  // Every use of a storage-pointer alias rebuilds its keys from clones, which keep a key's tag; Solidity evaluates
+  // them once, at the declaration. When a key of its own might have a side effect, tag the keys and keep the dropped
+  // declaration in its statement list holding them, for BindLvalueKeyEffects to bind them to temps there.
+  private markAliasKeys(
+    dropped: BlockNode, path: { container: string; keys: ExpressionNode[] }, isThis: boolean,
+  ): void {
+    // A key cloned from an enclosing alias binds at that alias's declaration.
+    const own = path.keys.map((key, index) => ({ key, index }))
+      .filter(({ key }) => !(key instanceof LiteralNode) && !key.lvalueKey?.alias);
+    if (!own.some(({ key }) => hasSideEffects(key, () => true))) return;
+    const types = this.lvalueChainTypes(path.container, path.keys.map((key) => ({ key: () => key })), isThis).keys;
+    if (own.some(({ index }) => types[index] === undefined)) return;
+    const unit = lvalueKeyUnits++;
+    for (const { key, index } of own) key.lvalueKey = { unit, index, type: types[index]!, alias: true };
+    dropped.lvalueKeyUnit = unit;
+    dropped.lvalueKeyAlias = own.map(({ key }) => key);
+    // Not flattened away before BindLvalueKeyEffects replaces it.
+    dropped.scoped = true;
   }
 
   // A tuple expression `(a, b, ...)` is only meaningful as a ternary branch in a tuple assignment or return;
@@ -6346,14 +6389,29 @@ export default class AstBuilder
     op: string, valueCtx: ExpressionContext | undefined, loc: Location, valueNode?: ExpressionNode,
   ): StatementNode {
     const builds: ExpressionNode[][] = [];
-    const recorded = segs.map((seg): LvSeg => {
+    const statement = this.buildLvalueChainAssign(
+      rawName, isThis, nameLoc, this.recordLvalueKeys(segs, builds), op, valueCtx, loc, valueNode,
+    );
+    return this.tagLvalueKeys(statement, builds, rawName, segs, isThis);
+  }
+
+  // `segs` with key thunks that also record each build into `builds`, one list per key in chain order.
+  private recordLvalueKeys(segs: LvSeg[], builds: ExpressionNode[][]): LvSeg[] {
+    return segs.map((seg): LvSeg => {
       if (seg.key === undefined) return seg;
       const key = seg.key;
       const nodes: ExpressionNode[] = [];
       builds.push(nodes);
       return { key: (): ExpressionNode => { const node = key(); nodes.push(node); return node; } };
     });
-    const statement = this.buildLvalueChainAssign(rawName, isThis, nameLoc, recorded, op, valueCtx, loc, valueNode);
+  }
+
+  // Tags the recorded builds of a write's keys, and its top-level statements, when a key built more than once might
+  // have a side effect (see buildLvalueAssign). A storage-pointer key binds at the alias declaration instead.
+  private tagLvalueKeys(
+    statement: StatementNode, recorded: ExpressionNode[][], rawName: string, segs: LvSeg[], isThis: boolean,
+  ): StatementNode {
+    const builds = recorded.map((nodes) => (nodes[0]?.lvalueKey?.alias ? [] : nodes));
     if (!builds.some((nodes) => nodes.length > 1 && hasSideEffects(nodes[0], () => true))) return statement;
     const types = this.lvalueChainTypes(rawName, segs, isThis).keys;
     const keys = builds.map((nodes, index) => ({ nodes, index, type: types[index] }))
@@ -10176,10 +10234,21 @@ export default class AstBuilder
         : this.visit(argCtx!.expression()) as ExpressionNode);
       op = this.buildArrayPush(tmpName, false, [], undefined, value, noArg, ctx);
     }
-    const back = this.buildLvalueAssign(lv.rawName, false, lv.nameLoc, lv.segs, '=', undefined, loc, idAt(tmpName));
+    // The read builds the receiver's keys on its own: one more build of each of the write-back's, so a key with a
+    // side effect binds once for both. A read that is not a plain access chain leaves the write-back to itself.
+    const readKeys = accessChainKeys(readExpr);
+    const paired = readKeys?.length === lv.segs.filter((seg) => seg.key !== undefined).length;
+    const builds: ExpressionNode[][] = [];
+    const back = paired
+      ? this.buildLvalueChainAssign(
+        lv.rawName, false, lv.nameLoc, this.recordLvalueKeys(lv.segs, builds), '=', undefined, loc, idAt(tmpName),
+      )
+      : this.buildLvalueAssign(lv.rawName, false, lv.nameLoc, lv.segs, '=', undefined, loc, idAt(tmpName));
     const block = new BlockNode([decl, op, back]);
     block.location = loc;
-    return block;
+    if (!paired) return block;
+    readKeys!.forEach((key, index) => { if (key) builds[index].unshift(key); });
+    return this.tagLvalueKeys(block, builds, lv.rawName, lv.segs, false);
   }
 
   // `m[k].d.push(v)` / `.pop()` where m is a mapping-of-struct and d is a dynamic array field of the value struct:

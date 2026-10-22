@@ -40,6 +40,8 @@ import {
 import { solidcashArtifactsPath } from './artifact-paths.js';
 
 const DEFAULT_MNEMONIC = MockNetworkProvider.DEFAULT_MNEMONIC;
+// BCH's per-input unlocking bytecode limit, which the relaxed mock defaults lift.
+const PRODUCTION_MAXIMUM_INPUT_BYTES = 10_000;
 const HARDHAT_ACCOUNT_BRANCH = "m/44'/60'/0'/0";
 
 function liveSigningChain(name: string, netCfg: NetworkConfig | undefined): string | undefined {
@@ -52,23 +54,22 @@ function liveSigningChain(name: string, netCfg: NetworkConfig | undefined): stri
   return chain;
 }
 
-/** A phrase that signs on two live chains is refused. BCH signatures carry no chain id. */
-function assertLiveMnemonicsAreChainSpecific(config: ResolvedConfig): void {
-  const chainsByPhrase = new Map<string, string[]>();
+/**
+ * Refuses a live network whose phrase also signs on another live chain: a BCH signature carries no chain id. Checked
+ * when a live network is selected or connected, so mock and regtest commands still run.
+ */
+function assertLiveMnemonicIsChainSpecific(config: ResolvedConfig, selected: string): void {
+  const chain = liveSigningChain(selected, config.networks[selected]);
+  if (chain === undefined) return;
+  const phrase = config.networks[selected].mnemonic ?? config.mnemonic;
+  if (phrase === undefined) return;
   for (const [name, netCfg] of Object.entries(config.networks)) {
-    const chain = liveSigningChain(name, netCfg);
-    if (chain === undefined) continue;
-    const phrase = netCfg.mnemonic ?? config.mnemonic;
-    if (phrase === undefined) continue;
-    const chains = chainsByPhrase.get(phrase) ?? [];
-    if (!chains.includes(chain)) chains.push(chain);
-    chainsByPhrase.set(phrase, chains);
-    if (chains.length > 1) {
-      throw new Error(
-        `Network "${name}" needs its own mnemonic. A shared phrase would sign on ${chains.join(' and ')},`
-        + ' and a BCH signature carries no chain id.',
-      );
-    }
+    const other = liveSigningChain(name, netCfg);
+    if (other === undefined || other === chain || (netCfg.mnemonic ?? config.mnemonic) !== phrase) continue;
+    throw new Error(
+      `Network "${selected}" needs its own mnemonic. A shared phrase would sign on ${chain} and ${other} `
+      + `(network "${name}"), and a BCH signature carries no chain id.`,
+    );
   }
 }
 
@@ -130,10 +131,17 @@ export function createProvider(name: string, netCfg: NetworkConfig | undefined):
       });
     }
     case 'mock':
-    default: return new MockNetworkProvider({
-      consensusLimits: { ...MOCK_CONSENSUS_LIMITS, ...netCfg?.consensus },
-      policy: netCfg?.policy,
-    });
+    default: {
+      const { enforceProductionInputLimit, ...policy }: NonNullable<NetworkConfig['policy']> = netCfg?.policy ?? {};
+      return new MockNetworkProvider({
+        consensusLimits: {
+          ...MOCK_CONSENSUS_LIMITS,
+          ...netCfg?.consensus,
+          ...(enforceProductionInputLimit ? { maximumInputBytes: PRODUCTION_MAXIMUM_INPUT_BYTES } : {}),
+        },
+        policy,
+      });
+    }
   }
 }
 
@@ -301,6 +309,8 @@ interface EthersOptions {
   artifactsDir: string;
   composition?: 'direct' | 'framed';
   accountsPath?: string;
+  /** `accounts.initialIndex`: the first derived account, so signer i is wallet initialIndex + i. */
+  accountsInitialIndex?: number;
   accountSatoshis?: bigint;
   recoveryProjection: 'p2pkh' | 'evm';
   /** False binds every deploy to the address its own transaction produces instead of a stable CREATE identity. */
@@ -327,7 +337,7 @@ function withEthersMessageSigning<T extends Signer>(signer: T): T {
 }
 
 function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOptions): SolidcashEthers {
-  const { artifactsDir, accountsPath } = opts;
+  const { artifactsDir, accountsPath, accountsInitialIndex = 0 } = opts;
   // Every deploy in the project starts from this convention; a call's own trailing overrides refine it.
   const deployDefaults: DeployContractOptions = opts.logicalIdentity ? {} : { logicalNonce: false };
   const fundRegtestSigner = async (
@@ -356,8 +366,8 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     if (typeof anyProvider.getSigners !== 'function' && provider.network !== Networks.REGTEST) return provider;
     const cacheable = provider as unknown as { getCachedSigner?: (index: number, opts: object) => Signer };
     cachedSigner ??= typeof cacheable.getCachedSigner === 'function'
-      ? cacheable.getCachedSigner(0, { mnemonic, path: accountsPath })
-      : signersFromMnemonic(mnemonic, provider, { count: 1, path: accountsPath })[0];
+      ? cacheable.getCachedSigner(accountsInitialIndex, { mnemonic, path: accountsPath })
+      : signersFromMnemonic(mnemonic, provider, { count: 1, path: accountsPath, initialIndex: accountsInitialIndex })[0];
     return cachedSigner;
   };
 
@@ -376,10 +386,12 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
         // mock accounts generously pre-split so those compiler-owned slots do
         // not turn into an artificial wallet-funding limit.
         satoshis: opts.accountSatoshis ?? 100_000_000n,
-        fundingUtxos: 128, genesisFundingUtxos: 4, mnemonic, path: accountsPath, ...o,
+        fundingUtxos: 128, genesisFundingUtxos: 4, mnemonic, path: accountsPath, initialIndex: accountsInitialIndex, ...o,
       })).map(withEthersMessageSigning);
     }
-    const signers = signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath })
+    const signers = signersFromMnemonic(o.mnemonic ?? mnemonic, provider, {
+      count, path: accountsPath, initialIndex: accountsInitialIndex,
+    })
       .map(withEthersMessageSigning);
     const satoshis = o.satoshis ?? opts.accountSatoshis ?? 100_000_000n;
     const fundingUtxos = o.fundingUtxos ?? 4;
@@ -558,11 +570,11 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       const anyProvider = provider as unknown as { getSigner?: (i: number, x: object) => Promise<Signer> };
       if (typeof anyProvider.getSigner === 'function') {
         return withEthersMessageSigning(await anyProvider.getSigner(index, {
-          satoshis: opts.accountSatoshis, mnemonic, path: accountsPath, ...o,
+          satoshis: opts.accountSatoshis, mnemonic, path: accountsPath, initialIndex: accountsInitialIndex, ...o,
         }));
       }
       const [signer] = signersFromMnemonic(o.mnemonic ?? mnemonic, provider, {
-        initialIndex: index, count: 1, path: accountsPath,
+        initialIndex: accountsInitialIndex + index, count: 1, path: accountsPath,
       });
       const connected = withEthersMessageSigning(signer);
       await fundRegtestSigner(
@@ -613,9 +625,9 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
         `Network "${candidate}" is live and requires an explicit mnemonic; refusing to use the public mock mnemonic.`,
       );
     }
+    assertLiveMnemonicIsChainSpecific(config, candidate);
     return candidateConfig;
   };
-  assertLiveMnemonicsAreChainSpecific(config);
   const selectedConfig = validateNetwork(name);
   const mnemonicFor = (netCfg: NetworkConfig | undefined): string =>
     netCfg?.mnemonic ?? config.mnemonic ?? DEFAULT_MNEMONIC;
@@ -627,6 +639,7 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
     // Keep getSigners() and the hardhat-shaped config.networks.*.accounts.path view identical. Ported suites
     // commonly reconstruct HDNodeWallets from that published path and expect wallet i to be signer i.
     accountsPath: config.accounts?.path ?? HARDHAT_ACCOUNT_BRANCH,
+    accountsInitialIndex: config.accounts?.initialIndex ?? 0,
     accountSatoshis: config.accounts?.satoshis,
     recoveryProjection: config.compiler?.ecrecover === 'evm' ? 'evm'
       : config.compiler?.ecrecover === 'p2pkh' ? 'p2pkh'

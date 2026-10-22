@@ -49,15 +49,38 @@ describe('configured SolidHat networks', () => {
     await expect(mixed.network.connect('mainnet')).rejects.toThrow('requires an explicit mnemonic');
   });
 
-  it('TOOLS-7 a shared mnemonic cannot sign on two live chains', () => {
+  it('starts the derived signers at accounts.initialIndex', async () => {
+    const all = await createHardhatRuntimeEnvironment(resolveConfig({})).ethers.getSigners(4);
+    const offset = createHardhatRuntimeEnvironment(resolveConfig({ accounts: { initialIndex: 2 } }));
+    const [first] = await offset.ethers.getSigners(1);
+    expect(first!.getAddress()).toBe(all[2]!.getAddress());
+    expect((await offset.ethers.getSigner(1)).getAddress()).toBe(all[3]!.getAddress());
+  });
+
+  it('caps mock inputs at the production limit when the policy asks for it', () => {
+    expect(createProvider('mock', { type: 'mock' }).consensusLimits?.maximumInputBytes).toBe(1_000_000);
+    const capped = createProvider('mock', {
+      type: 'mock', policy: { enforceProductionInputLimit: true }, consensus: { maximumInputBytes: 50_000 },
+    });
+    expect(capped.consensusLimits?.maximumInputBytes).toBe(10_000);
+  });
+
+  it('TOOLS-7 a shared mnemonic cannot sign on two live chains', async () => {
     const phrase = 'test test test test test test test test test test test junk';
-    expect(() => createHardhatRuntimeEnvironment(resolveConfig({
+    const shared = resolveConfig({
       mnemonic: phrase,
       networks: {
         chipnet: { type: 'electrum', network: 'chipnet' },
         mainnet: { type: 'electrum', network: 'mainnet' },
       },
-    }))).toThrow(/needs its own mnemonic/);
+    });
+    expect(() => createHardhatRuntimeEnvironment(shared, 'mainnet')).toThrow(/needs its own mnemonic/);
+    expect(() => createHardhatRuntimeEnvironment(shared, 'chipnet')).toThrow(/needs its own mnemonic/);
+    // The generated config inherits one top-level phrase on both live chains; a mock command still runs, and only
+    // reaching a live chain is refused.
+    const onMock = createHardhatRuntimeEnvironment(shared);
+    expect(onMock.network.name).toBe('mock');
+    await expect(onMock.network.connect('chipnet')).rejects.toThrow(/needs its own mnemonic/);
     expect(() => createHardhatRuntimeEnvironment(resolveConfig({
       mnemonic: phrase,
       networks: {
@@ -67,12 +90,12 @@ describe('configured SolidHat networks', () => {
           rpc: { url: 'http://127.0.0.1:8332', user: 'alice', password: 'secret' },
         },
       },
-    }))).not.toThrow();
+    }), 'chipnet')).not.toThrow();
     expect(() => createHardhatRuntimeEnvironment(resolveConfig({
       networks: {
         chipnet: { type: 'electrum', network: 'chipnet', mnemonic: phrase },
         mainnet: { type: 'electrum', network: 'mainnet', mnemonic: `${phrase} main` },
       },
-    }))).not.toThrow();
+    }), 'mainnet')).not.toThrow();
   });
 });

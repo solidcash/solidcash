@@ -30,6 +30,7 @@ export interface NetworkConfig {
   }>;
   policy?: Partial<{
     enforceDust: boolean;
+    /** Mock only: cap every input at BCH's 10,000 bytes, so tests and `solidhat compile` meet the real limit. */
     enforceProductionInputLimit: boolean;
   }>;
   /**

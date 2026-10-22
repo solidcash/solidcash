@@ -196,14 +196,14 @@ cloned repository, and do not commit the cache.
 | `accounts.path` | `m/44'/60'/0'/0` | BIP-32 branch; signer `i` uses child index `i`. |
 | `accounts.count` | `20` | Signers funded when the runtime starts on the mock network. |
 | `accounts.satoshis` | `100_000_000n` | Value of each development funding coin on mock and regtest. |
-| `accounts.initialIndex` | `0` | Reported in the Hardhat-shaped `config` view only; signers always start at index 0. |
+| `accounts.initialIndex` | `0` | First derived account: signer `i` is wallet `initialIndex + i`, on every network type. |
 
 Each network signs with its own `mnemonic`, else the top-level `mnemonic`, else the public Hardhat development
 mnemonic. The development mnemonic is accepted only on mock and regtest: SolidHat refuses to select an Electrum or a
 non-regtest Bitcoin RPC network without an explicit mnemonic. A BCH signature carries no chain id, so SolidHat also
-refuses to start when one phrase would sign on two live chains. In the generated config, set
-`SOLIDCASH_MNEMONIC_CHIPNET` and `SOLIDCASH_MNEMONIC_MAINNET` separately: if you set only `SOLIDCASH_MNEMONIC`,
-chipnet and mainnet share it and every command fails.
+refuses to select or connect a live network whose phrase would also sign on another live chain. In the generated
+config, setting only `SOLIDCASH_MNEMONIC` is enough for mock and regtest; before using chipnet or mainnet, set
+`SOLIDCASH_MNEMONIC_CHIPNET` and `SOLIDCASH_MNEMONIC_MAINNET` separately, or both inherit the one phrase and are refused.
 
 On the mock network every signer starts with many funding coins. On regtest, `getSigners()` tops each signer up from
 the node wallet. Electrum and Bitcoin RPC networks never create funds.

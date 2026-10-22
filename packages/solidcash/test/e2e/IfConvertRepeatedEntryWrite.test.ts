@@ -9,6 +9,9 @@ import { fundedSigner } from '../test-util.js';
 // lost the earlier write: `m[j] = 1; m[j] = m[j] + 1` stored the pre-branch value plus one, and a check in the dropped
 // value never ran. Such an arm now keeps its branch as written. An invariant key never reaches the merge (the entry
 // cache folds its writes into one local); a key the cache cannot hold, a local declared in a nested block, does.
+// An if without else predicated each write on its own copy of the condition, which saw the writes before it; such a
+// condition is now evaluated once. The merge runs the if arm's targets first, which could run an else write ahead of
+// one the source runs before it; a pair where one may observe the other now keeps its branch as written.
 
 const HEAD = `contract C {
   mapping(uint256 => uint256) m;
@@ -76,5 +79,54 @@ describe('if/else entry writes: an arm that writes one entry twice', () => {
     // The merged arms compile as the predicated write the source could spell itself.
     expect(sha('k = k + 1; bool cc = c; m[k] = cc ? a : 5;', {}))
       .toBe(sha('k = k + 1; if (c) { m[k] = a; } else { m[k] = 5; }', {}));
+  });
+});
+
+describe('if entry writes: the condition runs once, each arm in its own order', () => {
+  it('evaluates an if-without-else condition once, before its writes', async () => {
+    // Each predicated write re-evaluated `m[k] == 0`: the second saw the first's write and left n[k] at 0.
+    const sc: any = await getContractFactory(compileString(
+      src('if (m[k] == 0) { m[k] = 1; n[k] = 2; }'), { forceStateful: true },
+    ), await fundedSigner(12)).deploy();
+    await sc.f(4n, 0n, false).send();
+    await expect(sc.chkN(4n, 0n).send()).rejects.toThrow();
+    await sc.chk(4n, 1n).send();
+    await sc.chkN(4n, 2n).send();
+    await sc.put(4n, 7n).send();
+    await sc.f(4n, 0n, false).send();
+    await sc.chk(4n, 7n).send();
+    await sc.chkN(4n, 2n).send();
+  });
+
+  it('refuses an else arm the merge would run out of order', () => {
+    // The merge ran `n[j] = c ? 3 : m[j] + 1` before `m[j] = c ? m[j] : 1`: on mocknet n[j] took the old m[j], 10,
+    // plus one. The branch is now kept as written, and the direct convention refuses its read after the write.
+    expect(() => compileString(
+      src('if (a > 0) { uint256 j = k + 1; if (c) { n[j] = 3; } else { m[j] = 1; n[j] = m[j] + 1; } }'),
+      { forceStateful: true },
+    )).toThrow('a read of `m[j]` after its write in a branch arm is not supported on the direct convention');
+  });
+
+  it('leaves the shapes that converted soundly byte-identical', () => {
+    // Bytecode of the build before this fix (6bb226632); the default and direct conventions compile these alike.
+    const before: Record<string, string> = {
+      // The condition reads no mapping, or only the one the last write mutates.
+      'if (c) { m[k] = a; n[k] = 1; }': '84f30f1b4fa385b6552be9693571d898c91ba953ef800cb64816ffdac5440b95',
+      'if (m[k] == 0) { n[k] = 2; m[k] = 1; }': '07fe9ea4259600ca93181473f2791c8f5ddcc718560f96bf7e576f49a3b84f24',
+      // The merge runs n[k] ahead of the else arm's m[k]; neither write observes the other.
+      'k = k + 1; if (c) { n[k] = 3; } else { m[k] = 1; n[k] = 2; }':
+        '2ca27ffc4cbb551b32203123800688375ed63fc7f4d58253a9b86bf2f0a360e1',
+      'k = k + 1; if (c) { n[k] = 3; m[k] = 4; } else { m[k] = 1; n[k] = 2; }':
+        'dcfe31118ead72affbf96e117083b5f00ea4d393ac215838dc536c99e20fe081',
+    };
+    for (const [body, hash] of Object.entries(before)) {
+      expect(sha(body, {}), body).toBe(hash);
+      expect(sha(body, { messageBus: false }), body).toBe(hash);
+    }
+    expect(sha('k = k + 1; bool cc = c; n[k] = cc ? 3 : 2; m[k] = cc ? 4 : 1;', {}))
+      .toBe(sha('k = k + 1; if (c) { n[k] = 3; m[k] = 4; } else { m[k] = 1; n[k] = 2; }', {}));
+    // A hoisted condition compiles as the source could spell it. Before the fix this re-read m[k] after its write.
+    expect(sha('k = k + 1; if (m[k] == 0) { m[k] = 1; n[k] = 2; }', {}))
+      .toBe(sha('k = k + 1; bool cc = m[k] == 0; m[k] = cc ? 1 : m[k]; n[k] = cc ? 2 : n[k];', {}));
   });
 });

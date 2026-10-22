@@ -334,11 +334,12 @@ describe('Collection iteration + dynamic storage (W4)', () => {
       const salted = contract.withCategory(hexToBin(cat));
       const commitments = buildInitialStateCommitments(stateLayout, { total: 0n, log: '' });
       const entryAddress = getEntryNftAddress(salted, cat, 'balances');
+      // `total` (a bigint) takes data NFT 0 alone; the `log` length header sits in data NFT 1.
       return [
         { address: salted.tokenAddress, satoshis: 10000n,
           token: { nft: { capability: 'minting', commitment: '' } } },
-        { address: getDataNftAddress(salted, cat), satoshis: 10000n,
-          token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
+        ...commitments.map((commitment) => ({ address: getDataNftAddress(salted, cat), satoshis: 10000n,
+          token: { nft: { capability: 'mutable', commitment } } })),
         ...vmapEntries(entryAddress, [[alicePkh, 100n], [bobPkh, 200n]]),
       ];
     });

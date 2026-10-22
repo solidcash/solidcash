@@ -153,7 +153,7 @@ This is the deepest difference, and it explains most of the others.
 | Solidity pattern | On SolidCash |
 | --- | --- |
 | Re-entrancy guard (`nonReentrant`) | Unnecessary; compiles, but there is nothing to guard |
-| `msg.sender` for authorization | Works, but it is derived from the transaction's inputs; prefer `checkSig` (no compiler warning) |
+| `msg.sender` for authorization | Works, but it is derived from the transaction's inputs; prefer `checkSig`. The compiler warns on every read |
 | `block.timestamp` deadline | Works via `tx.locktime` / the block oracle |
 | Pull-payment pattern | Still good practice for UTXO contention reasons |
 | Unbounded loop over storage | Bounded by per-input operation cost, not gas |

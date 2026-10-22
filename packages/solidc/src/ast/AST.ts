@@ -532,6 +532,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Set on compiler-cloned message-bus handlers; identifies the source handler the clone was made from. */
   messageBusCloneSourceKey?: string;
   /**
+   * Set on every compiler-cloned message-bus handler, whatever its name. The route owns the clone's collection
+   * topology, so the clone's sorted records take the scalar path and carry no batch witnesses (ROUTE-SKIP-1).
+   */
+  ownRecordsScalarOnly?: boolean;
+  /**
    * The message-bus route's declared input names, in push order. A route handler shares the caller's stack, so these
    * values are physically BELOW the handler's argument block; seeding them into the handler's frame model is what
    * makes a deep read address the item the runtime actually has there.

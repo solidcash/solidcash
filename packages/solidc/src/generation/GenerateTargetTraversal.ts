@@ -2872,7 +2872,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // route slot. Treating either ordinal as an outer-owned fixed slot preallocates a speculative journal write.
     if (this.currentFunction.messageBusRoute
       && this.currentFunction.messageBusHandlerManagedEntrySlots?.includes(slotIndex)) return false;
-    if (this.currentFunction.name.startsWith('__message_bus_')
+    if (this.currentFunction.ownRecordsScalarOnly === true
       && this.currentFunction.messageBusPhysicalEntrySlots !== undefined) {
       return this.currentFunction.entryAccesses
         ?.some((entry) => entry.slotIndex === slotIndex && entry.inLoop !== true) ?? false;
@@ -34135,6 +34135,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       } else {
         if (this.readsRecordsFromFrame) this.emitFramedDistinctBatchTargets(node, targets, loc);
+        // ROUTE-SKIP-1: -2 skips a target's topology and census here. A plain direct target has no inactive row
+        // (as DS-1): only a route row, a framed skipped group or a row the preflight bound to an alias carries it.
+        if (this.directConvention && !this.readsRecordsFromFrame && !this.isCompilerMessageBusRoute()
+          && !this.currentFunctionIsDelegate) {
+          for (const slot of targets) {
+            if (this.composeBatchSlots(slot) !== undefined || (this.entrySlots[slot]?.runtimeAliasPriorSlots ?? [])
+              .some((prior) => targets.includes(prior))) continue;
+            arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
+            bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_VERIFY);
+          }
+        }
         // Pack slot||plannedNext pairs while the main stack is clean, then keep the blob at the bottom of this
         // batch's altstack frame. Reverse pushes make OP_CAT materialize declaration order.
         for (const slot of [...targets].reverse()) {

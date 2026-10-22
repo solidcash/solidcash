@@ -10562,6 +10562,7 @@ function synthesizeMessageBusRoute(
     handler.name = `__message_bus_${family}_${source.name}`
       + (overloadedHandlerNames.has(source.name) ? `_${selector(source)}` : '');
     (handler as MessageBusClone).messageBusCloneSourceKey = externalHandlerKey(source);
+    handler.ownRecordsScalarOnly = true;
     // Physical clone names are an implementation detail and declaration locations can be shared by several
     // overload-derived helpers. Retain the source ABI selector explicitly so the pristine binder's immutable
     // completed-descriptor scope can authorize this clone, and no sibling, during final code generation.

@@ -4055,10 +4055,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         // their shared transition as one batch (notably upgradeable initializers with literal-key inserts).
         // A split facet batches a lone write too: its root leaves batch-censused collections to the facet's exact
         // input and output counts, which is what lets a first-touch insert settle.
+        // A message-bus handler clone is flagged, not recognised by name: its route owns the topology.
         const splitFacetLoneWrite = this.currentContract?.isSplitFacet === true && fixedSortedWriteCount === 1;
         const ownsCollectionTopology = (node.modifiers.includes(FunctionModifier.DELEGATE)
           && fixedSortedWriteCount <= 1 && !splitFacetLoneWrite)
-          || (node.name.startsWith('__message_bus_') && !node.messageBusRoute);
+          || node.ownRecordsScalarOnly === true;
         if (!ownsCollectionTopology) {
           this.assignComposeAliasPriors(node, ordered, batchByCollection, loopWrittenCollections);
         }
@@ -4081,7 +4082,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // predecessor). Let it prove its key with the collection's first slot's proof input; the covenant refuses
         // a key a batch write targets, so a read never sees a written node's old value. Every write of the
         // collection must be a batch target for that check.
-        if (!node.messageBusRoute && !node.name.startsWith('__message_bus_')
+        if (!node.messageBusRoute && node.ownRecordsScalarOnly !== true
           && !node.modifiers.includes(FunctionModifier.DELEGATE) && this.compilerOptions.composition !== 'framed') {
           for (const info of ordered) {
             const coll = this.collectionMap.get(info.collection);
@@ -12821,7 +12822,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     node: FunctionDefinitionNode, ordered: EntryAccessInfo[], batchByCollection: ReadonlyMap<string, number[]>,
     loopWrittenCollections: ReadonlySet<string>,
   ): void {
-    if (node.messageBusRoute || node.name.startsWith('__message_bus_') || this.insideConstructor
+    if (node.messageBusRoute || node.ownRecordsScalarOnly === true || this.insideConstructor
       || node.modifiers.includes(FunctionModifier.DELEGATE) || this.compilerOptions.composition === 'framed'
       || !(node.body instanceof BlockNode)) return;
     const statements = node.body.statements ?? [];

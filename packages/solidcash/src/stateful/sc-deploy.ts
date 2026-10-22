@@ -35,6 +35,7 @@ import {
 } from './covenant-helpers.js';
 import { deriveDeployCommitments } from './sc-derive-deploy-commitments.js';
 import { headSentinelCommitment } from './SortedList.js';
+import type { ConnectedStatefulContract } from './StatefulContract.js';
 import type { DeployOptions, DeployResult } from './stateful-lifecycle-types.js';
 import { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { blockhashKeeperGenesisOutput } from '../oracle/blockhash-keeper-deployment.js';
@@ -100,7 +101,10 @@ export async function deployStatefulContract<T extends Artifact>(
     artifact,
     category: options.fundingUtxo.txid.toLowerCase(),
     deploy: options,
-    probe: (probeOptions) => deployStatefulContract(artifact, constructorArgs, probeOptions),
+    probe: async (probeOptions) => {
+      const { contract } = await deployStatefulContract(artifact, constructorArgs, probeOptions);
+      return { contract: options.splitFacets?.route(contract as unknown as ConnectedStatefulContract) ?? contract };
+    },
     ...(reserveLockingBytecode === undefined ? {} : { reserveLockingBytecode }),
     tokenSatoshis: options.dataNftAmount ?? 1200n,
     nftRoles: async () => {

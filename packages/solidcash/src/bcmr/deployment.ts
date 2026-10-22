@@ -167,7 +167,7 @@ export function wrappedCategory(nativeToken: NativeTokenOptions | undefined): st
 
 /** Reads the contract's token facts from a probe genesis that is never broadcast. */
 async function probeTokenFacts(
-  artifact: Artifact, options: DeployOptions, probe: ProbeDeploy,
+  artifact: Artifact, categoryVariable: string | undefined, options: DeployOptions, probe: ProbeDeploy,
 ): Promise<ContractTokenFacts> {
   const staging = stageBroadcasts(options.provider);
   const { contract } = await probe({
@@ -188,7 +188,6 @@ async function probeTokenFacts(
     const totalSupply = await readFact(contract, 'totalSupply');
     if (totalSupply !== undefined) facts.totalSupply = metadataInteger(totalSupply, 'totalSupply()');
   }
-  const categoryVariable = nativeCategoryStateVariable(artifact);
   if (categoryVariable !== undefined) {
     const state = await (contract as { getState: () => Promise<Record<string, unknown>> }).getState();
     const category = state[categoryVariable];
@@ -332,14 +331,16 @@ export async function prepareMetadata(options: {
   const backing = reserve !== undefined ? reserve * scale : wrapped !== undefined ? 0n : undefined;
   const checksSupply = backing !== undefined && hasTotalSupply(artifact);
   // The contract keys its container by the token's category: X, or C without nativeToken.funding (DESIGN.md, 6.2).
-  const keyVariable = nativeCategoryStateVariable(artifact);
+  // A split root's container accesses are its facets'.
+  const keyVariable = [artifact, ...(deploy.splitFacets?.artifacts ?? [])].map(nativeCategoryStateVariable)
+    .find((variable) => variable !== undefined);
   if (wrapped !== undefined && keyVariable === undefined) {
     throw new BcmrError('nativeToken.category is wrapped through a reserve container keyed by state, and '
       + `${artifact.contractName} keys none`);
   }
   const checksKey = nativeToken !== undefined && keyVariable !== undefined;
   const needsFacts = (publication !== undefined && readsMetadata) || checksSupply || checksKey;
-  const facts = needsFacts ? await probeTokenFacts(artifact, deploy, options.probe) : {};
+  const facts = needsFacts ? await probeTokenFacts(artifact, keyVariable, deploy, options.probe) : {};
 
   if (wrapped !== undefined && facts.nativeCategory === undefined) {
     throw new BcmrError(`nativeToken.category cannot be checked: the probe could not read the contract's ${keyVariable}`);

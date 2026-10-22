@@ -8,6 +8,7 @@ import type { Utxo, TransactionDetails, AddressType } from '../interfaces.js';
 import type { StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions } from './StatefulContract.js';
 import type { PublishedRegistry } from '../bcmr/deployment.js';
 import type { IdentityRecord } from '../bcmr/identity.js';
+import type { SplitFacets } from './stateful-lifecycle-types.js';
 import { addressToLockScript, getNetworkPrefix } from '../utils.js';
 
 // Heavy value imports are deferred to method/helper bodies so that loading this
@@ -47,6 +48,13 @@ export interface DeployContractOptions {
   identityAnchors?: DeployOptions['identityAnchors'];
   /** Internal composition: parent-owned logical CREATE identity for the contract deployed by this factory. */
   logicalIdentity?: { deployer: string; nonce: bigint; address: string };
+  /**
+   * Internal composition: the provider the genesis is built and broadcast through, the runner's when omitted. A split
+   * parent passes an overlay that holds its bundle's geneses until the root's is built.
+   */
+  provider?: NetworkProvider;
+  /** Internal composition: a split root's facets; see `DeployOptions.splitFacets`. */
+  splitFacets?: SplitFacets;
   /** How the genesis holds its BCMR identity output; see `DeployOptions.identity`. */
   identity?: DeployOptions['identity'];
   /** A BCMR registry the genesis publishes; see `DeployOptions.bcmr`. */
@@ -331,7 +339,8 @@ export class ContractFactory<T extends Artifact = Artifact> {
     }
     overrides = { ...this.defaultDeployOptions, ...overrides };
     const signer = this.runner instanceof Signer ? this.runner : undefined;
-    const provider: NetworkProvider = signer ? signer.provider : (this.runner as NetworkProvider);
+    const provider: NetworkProvider = overrides.provider
+      ?? (signer ? signer.provider : (this.runner as NetworkProvider));
     const constructorArgs = await normalizeRegisteredAddressArguments(
       provider,
       this.artifact.constructorInputs,
@@ -445,6 +454,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         ...(overrides.identity === undefined ? {} : { identity: overrides.identity }),
         ...(overrides.bcmr === undefined ? {} : { bcmr: overrides.bcmr }),
         ...(overrides.nativeToken === undefined ? {} : { nativeToken: overrides.nativeToken }),
+        ...(overrides.splitFacets === undefined ? {} : { splitFacets: overrides.splitFacets }),
       });
       nonceReservation?.commit();
     } catch (error) {

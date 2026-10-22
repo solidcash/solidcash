@@ -93,6 +93,15 @@ export interface DeployOptions {
   nativeToken?: NativeTokenOptions;
   /** Internal: a probe genesis that only answers the contract's views; it publishes nothing and reserves nothing. */
   metadataProbe?: true;
+  /** Internal composition: a split root's facets, which answer its probe's views and publish its container key. */
+  splitFacets?: SplitFacets;
+}
+
+/** A split root's facets, as its deployment's metadata checks read them (docs/bcmr/DESIGN.md, 6.4). */
+export interface SplitFacets {
+  readonly artifacts: readonly Artifact[];
+  /** The logical contract over a root deployed from the root's artifact, its views routed to the facets. */
+  readonly route: (root: ConnectedStatefulContract) => unknown;
 }
 
 export interface DeployResult<T extends Artifact = Artifact> {

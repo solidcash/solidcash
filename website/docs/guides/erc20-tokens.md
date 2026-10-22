@@ -230,22 +230,24 @@ contract TetherNativeToken is TetherToken, BchNative {
 
 At about 22 KB the token is over the 10,000-byte script limit, so `compileFileSplit` splits it into a root of about
 6.7 KB, which holds the state, and four facets of 8.6 to 9.3 KB (see
-[Large Contracts](/docs/compiler/large-contracts)). `SplitContractBundle` deploys the facets, then the root:
+[Large Contracts](/docs/compiler/large-contracts)). `SplitContractBundle` deploys the facets, then the root, and takes
+the same `nativeToken` and `bcmr` options as a factory:
 
 ```ts
 import { hexToBin } from '@bitauth/libauth';
 import { compileFileSplit } from 'solidc';
 import { SplitContractBundle } from 'solidcash/stateful';
 
-// category: X, the bearer category, created in a genesis of its own and printed as wallets print it.
 const split = compileFileSplit('TetherNativeToken.sol', { evmCompat: true, messageBus: false });
-const usdt = await SplitContractBundle.from(split, treasury).deploy([
-  1_000_000n, 'Tether USD', 'USDT', 6n, hexToBin(category),
-]);
+const tokenCoin = /* a token-free coin of the treasury's at vout 0 */;
+const category = tokenCoin.txid; // X
 
-// The constructor credited 1,000,000 units to the treasury: back them by paying 1,000,000 X to the reserve,
-// the root's token container, in an ordinary transaction.
-const reserve = usdt.root.getTokenContainerAddress(category);
+// The constructor credits 1,000,000 units to the treasury, and the genesis premints the 1,000,000 X that back them.
+const usdt = await SplitContractBundle.from(split, treasury).deploy(
+  [1_000_000n, 'Tether USD', 'USDT', 6n, hexToBin(category)],
+  { nativeToken: { funding: tokenCoin, reserve: 1_000_000n }, bcmr: { uris: { icon: 'ipfs://...' } } },
+);
+const { bytes, uris } = usdt.deploymentRegistry()!; // host these bytes, as below
 
 // Hand ownership to an administrator before the treasury pays anyone: see the limitation below.
 await usdt.connect(treasury).call.transferOwnership(admin.getAddress()).send();
@@ -257,7 +259,12 @@ await usdt.connect(bob).call.wrap(300n)
   .tokenContainerDeposit(category, 300n)
   .send();
 await usdt.connect(bob).call.unwrap(bob.getAddress(), 120n).send();
+const supply = await usdt.callStatic.totalSupply();
 ```
+
+The checks of [Deploying a token](#deploying-a-token) hold for a split token too. `totalSupply()` is a facet's, so the
+probe reads it through that facet, and the bundle holds the facets' geneses until the root's is built: a refused
+deployment broadcasts nothing. The registry describes X as Tether USD, and C as the contract that keeps its ledger.
 
 The SDK's test suite runs the whole USDT surface this way, beside the boundary, which follows Tether's policy: no wrap
 while the token is paused or deprecated or the holder is blacklisted, and no unwrap while paused or blacklisted.
@@ -267,11 +274,6 @@ while the token is paused or deprecated or the holder is blacklisted, and no unw
 Tether's `transfer` and `transferFrom` also credit the owner's fee, `balances[owner] += fee`. When the owner sends or
 receives, that call writes the owner's balance twice, which one call cannot compose yet, so the SDK refuses the
 transaction rather than build a wrong one. Keep the owner a separate administrator account.
-:::
-
-:::note
-The deployment checks and the registry on this page are described for a token that fits one script. A split token
-such as USDT deploys through `SplitContractBundle`, as above.
 :::
 
 ## Wrapped tokens

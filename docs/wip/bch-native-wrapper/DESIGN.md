@@ -267,8 +267,10 @@ The sum of `balanceOf` equals `totalSupply()` by construction; only a hand-built
 ## 7. Conventions
 
 - Message bus: a route carries a state-keyed container under a fixed key (D36).
-- Split: the option rides the root's genesis, whose category keys the container. `TetherNativeToken.test.ts` wraps
-  through `usdt.root.getTokenContainerAddress`.
+- Split: the option rides the root's genesis, whose category keys the container. The root's probe reads the views and
+  the container key through the facets (`DeployOptions.splitFacets`), and the bundle holds the facets' geneses until
+  the root's is built (`docs/bcmr/DESIGN.md`, 6.4). `TetherNativeToken.test.ts` premints and publishes USDT this way,
+  and wraps through `usdt.root.getTokenContainerAddress`.
 - Framed: see 3.5. The census refuses fungible amounts of C only (`docs/framed/SPEC_FRAMED_TRANSACTION.md`, S2), and X
   is never C.
 

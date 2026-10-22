@@ -375,6 +375,10 @@ of it. The first `wrap` then creates the container.
   the category nor the state depends on the genesis txid, so the probe's answers hold for the real genesis. The
   probe is signed but never relayed. A view the probe cannot read leaves its field to the options, which must then
   state it.
+- A split token (`SplitContractBundle`) keeps views and its container accesses in its facets. The probe root answers
+  through them (`DeployOptions.splitFacets`): its views route to the facets, and the container key is read from the
+  facets' ABI. The bundle holds the facets' geneses in an overlay too, released once the root's genesis is built, so a
+  refusal broadcasts nothing; and the token's funding coin funds none of the bundle's geneses.
 - Return types differ. Names and symbols are `string` (ERC20Metadata, Tether) or `bytes32` (the hand-ported USDT:
   right-padded, so strip trailing zero bytes and decode UTF-8). `decimals()` returns `uint8` or `uint256`.
 - AGENTS.md forbids selecting behaviour by function name. This selects by ABI schema, a standard interface taken as a

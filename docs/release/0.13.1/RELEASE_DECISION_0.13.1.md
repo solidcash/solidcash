@@ -157,6 +157,24 @@ Notes:
    step because the test approves the physical `chef.address` while callees now see the logical CREATE lock (it was
    already red at a later step).
 
+### The 2026-10-22 re-pin
+
+The gates were re-run at master `809de50f8`, 245 commits past `c7dc1b535`, and the bytecode identity had moved.
+Both pins were updated to the measured endpoint; no assertion or test filter changed.
+
+| Pin | Old | New |
+|---|---|---|
+| `scripts/gate.sh` identity | `{"routeBytes":44837,"fullBytes":242091,"fullHash":"cab3b849643b536f"}` | `{"routeBytes":44840,"fullBytes":247572,"fullHash":"bf00ad8f2b11dc1e"}` |
+| kernel manifest, marketplace-v1 legacy | 44837 / 242091 / `cab3b849…` | 44840 / 247572 / `bf00ad8f…` |
+| kernel manifest, marketplace-v1 kernel | 14819 / 304457 / `6b43e224…` | 14824 / 309899 / `d71e2754…` |
+| kernel manifest, unicrow-claim kernel | 1085 / 15436 / `75537e4f…` | 1092 / 15601 / `50af6a8a…` |
+
+The fixture is untouched: the marketplace source still hashes to the manifest's pinned `57d93a5b…`, and the kernel
+gate's two fresh compiles agree with each other. A bisect over the first-parent chain from `c7dc1b535` to
+`4ebd75bfa`, the merge before the D49 branch landed, locates the first deviation at `efba0f1ef`
+(`fix(containers): drop the token container's permissionless merge path`), inside the framed token-container line;
+the identity then tracks that line's churn (242044 and 260292 full bytes at intermediate commits) to the endpoint.
+
 ### What closed the 2026-10-17 failures
 
 The full list is `git log 34be189e4..11b8f7feb`. The commits that map directly onto a gate:

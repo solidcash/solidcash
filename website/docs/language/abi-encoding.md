@@ -152,4 +152,4 @@ and transaction limits. The compiler validates declared type compatibility and u
 malformed lengths, element encodings, or out-of-range schema indexes fail execution or compilation.
 
 For SDK argument types and function overload dispatch, see [TypeScript SDK](../sdk/typescript-sdk.md). For the
-compiler switches, see [The SolidCash Compiler](../compiler/compiler.md#common-compiler-options).
+compiler switches, see [The SolidCash Compiler](/docs/compiler#compiler-options).

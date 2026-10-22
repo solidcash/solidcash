@@ -12,7 +12,7 @@ Deployment means two different things in SolidCash:
 
 This guide explains the Bitcoin Cash mechanics and verification requirements of deployment. To compile and run
 repeatable deployment scripts across mocknet, BCHN regtest, chipnet, and mainnet, see the
-[SolidHat project tooling guide](/docs/sdk/solidhat#write-a-deployment-script).
+[SolidHat project tooling guide](/docs/tooling/solidhat#deployment-scripts).
 
 For the data carried by each generated output, see
 [State Storage and NFT Layout](/docs/language/storage-model).
@@ -50,8 +50,10 @@ console.log(counter.inner.address);              // physical covenant address
 console.log(counter.deploymentTransaction().txid);
 ```
 
+`waitForDeployment()` resolves once the provider returns the genesis transaction, which can be before it confirms.
 `getContractFactory(artifact, runner)` creates the same factory. `deployContract(artifact, args, runner,
-overrides)` is a one-call shortcut.
+overrides)` is a one-call shortcut. `new ContractFactory(...)` and `getContractFactory(...)` take an optional third
+argument: default deploy options that every `deploy` call starts from and that its own overrides replace.
 
 ```ts
 import { deployContract, getContractFactory } from 'solidcash/contract-factory';
@@ -137,8 +139,8 @@ const deployed = await StatefulContract.deploy(routedTokenArtifact, constructorA
 
 `resolveDeployReads()` attaches to the target, decodes its current state with the registered artifact, and returns
 the complete positional constructor list. Reads with arguments and reads in ordinary functions remain real
-co-spent external reads. Supplying the generated values manually is possible, but then the deployer—not the
-target covenant—is responsible for their correctness.
+co-spent external reads. Supplying the generated values manually is possible, but then the deployer, not the
+target covenant, is responsible for their correctness.
 
 ## The three identifiers
 
@@ -167,8 +169,9 @@ manually reverse a category returned by a SolidCash deployment API.
 
 ## What genesis creates
 
-The genesis transaction is assembled from the compiler's artifact metadata. Depending on the contract, it can
-create:
+The genesis transaction is assembled from the compiler's artifact metadata. Every genesis starts with the category's
+**BCMR identity output** at output 0, followed by a registry publication at output 1 when you pass `bcmr` (see
+[CashToken metadata](#cashtoken-metadata)). Depending on the contract, it can then create:
 
 1. One or more **master minting NFTs** at the root covenant.
 2. Mutable **data NFTs** containing the fixed-width state layout.
@@ -177,8 +180,10 @@ create:
 5. Constructor-created **event NFTs**, plain BCH transfers, and token-container outputs.
 6. Mutable **message-bus verifier NFTs** when the artifact has a composition route.
 7. A plain **satoshi-container output** when `initialBalance` is non-zero.
-8. Immutable **logical identity anchors** for signer/factory deployments.
-9. Change to the selected change address.
+8. The token premint and bearer supply that `nativeToken` asks for.
+9. Immutable **logical identity anchors** for signer/factory deployments.
+10. A `blockhash(n)` **keeper baton** when `blockhashKeeperPublicKey` is set.
+11. Change to the selected change address.
 
 The SDK calculates these outputs; application code should not manually serialize state commitments. Chunking,
 vmap sentinels, output ordering, and commitment encodings are covenant protocol details.
@@ -192,18 +197,38 @@ The factory's trailing overrides object supports:
 | `initialState` | zero/default state | Explicit initial variable values |
 | `initArgs` | positional constructor args | Arguments for the explicit `constructor(...)` block |
 | `initialBalance` | `0n` | Initial BCH in the satoshi container |
-| `threadCount` | `1` | Number of master thread NFTs created by genesis |
-| `messageBusVerificationInputCount` | `1` when required | Independently spendable message-bus verifier instances |
+| `threadCount` | `1` (framed: `12`) | Number of master thread NFTs created by genesis |
+| `messageBusVerificationInputCount` | `1` when the artifact has a bus route, else `0` | Independently spendable message-bus verifier instances |
 | `fee` | transaction-size derived | Explicit genesis transaction fee |
 | `addressType` | `p2sh32` | Address type; stateful contracts require P2SH32 |
 | `salt` | none | Bytes baked into the script for address separation or operation-density reserve |
 | `fundingUtxo` | signer-selected | Exact plain genesis input |
 | `funder` | signer unlocker | Unlocker for an explicit funding input |
 | `changeAddress` | signer address | Genesis change destination |
+| `identity` | deployer's lock | `{ owner }`: the lock that owns the category's BCMR identity |
+| `bcmr` | none | A registry the genesis publishes at output 1 |
+| `nativeToken` | none | A `BchNative` token's own category, premint, bearer supply and scale |
+| `validatorCount` | `4` | Framed deployments only: validator UTXOs at the contract's address |
+| `functionSplit` | none | A `split: 'func'` bundle: genesis mints a master pool at each shard's lock |
 
-The low-level API additionally exposes `masterAmount`, `dataNftAmount`, and `maxFee`. Their normal default is 1200
-satoshis per covenant NFT, with a size-derived transaction fee. Treat custom NFT amounts as an advanced policy
-choice: every later transaction must still satisfy relay and covenant requirements.
+With a `NetworkProvider` runner instead of a `Signer`, pass `fundingUtxo`, `funder` and `changeAddress` yourself;
+that deployment gets no logical CREATE address, so `target` is the physical address. `validatorCount` and
+`functionSplit` belong to the framed convention, which is experimental in 0.13.1 (see
+[Framed Composition](/docs/guides/framed-composition)).
+
+`StatefulContract.deploy(artifact, constructorArgs, options)` takes the same options except the signer defaults:
+`provider`, `fundingUtxo`, `funder` and `changeAddress` are required. It also accepts:
+
+| Option | Default | Purpose |
+|---|---:|---|
+| `masterAmount` | `1200n` | Satoshis on each master NFT |
+| `dataNftAmount` | `1200n` | Satoshis on each other covenant NFT, raised to the output's dust threshold when higher |
+| `maxFee` | none | Refuse a genesis whose fee is higher |
+| `blockhashKeeperPublicKey` | none | Mint a [`blockhash(n)` keeper baton](/docs/guides/block-oracles#keeper-baton) at genesis |
+| `blockhashKeeperAmount` | `10_000n` | Initial satoshis on the keeper baton |
+
+Treat custom NFT amounts as an advanced policy choice: every later transaction must still satisfy relay and covenant
+requirements.
 
 ### Threads and verifier capacity
 
@@ -215,6 +240,7 @@ independent partitions before enabling threads. Contracts can also change the ma
 
 `messageBusVerificationInputCount` is a separate concurrency control. Each composed transaction consumes and
 recreates one verifier NFT; provisioning more instances permits more message-bus compositions to be in flight.
+Message-bus composition is experimental in 0.13.1; see [Message Bus](/docs/guides/message-bus).
 
 ## Exact-input deployment
 
@@ -270,14 +296,15 @@ identity. See [Large and Split Contracts](/docs/compiler/large-contracts).
 
 A function which creates a stateful child with `new C(...)` is inferred as a deploy route. It spends the parent's
 state and one plain `vout: 0` funding input per child, then creates a self-pinned child category, master, state
-outputs, and identity anchor atomically. `deploy` is artifact metadata, not a source keyword.
+outputs, and identity anchor atomically. Writing the `deploy` modifier on that function is optional; the artifact
+records the deploy route either way.
 
 ```solidity
-contract Vault(address recipient) {
+contract Vault(pubkey recipient) {
     bool open;
 
-    function release() {
-        require(msg.sender == recipient);
+    function release(sig recipientSig) {
+        require(checkSig(recipientSig, recipient));
         this.open = false;
     }
 }
@@ -285,7 +312,7 @@ contract Vault(address recipient) {
 contract VaultFactory(pubkey admin) {
     int created;
 
-    function createVault(address recipient, sig authorization) {
+    function createVault(pubkey recipient, sig authorization) {
         require(checkSig(authorization, admin));
         new Vault(recipient);
         this.created += 1;
@@ -297,7 +324,7 @@ contract VaultFactory(pubkey admin) {
 parent.registerArtifacts(artifacts);
 
 // A connected signer selects/funds the child's vout: 0 genesis input.
-const result = await parent.createVault(recipient, authorization);
+const { child, childCategoryId } = await parent.createVault(recipient, authorization);
 
 // Or select it explicitly:
 const explicit = await parent.createVault(recipient, authorization).deploy({
@@ -348,7 +375,9 @@ Do not verify only the root address. Inspect the complete genesis transaction an
 5. Every constructor-created transfer and event is expected.
 6. The immutable identity anchor binds the saved logical address to the expected deployer, nonce, and physical
    root.
-7. There are no unaccounted minting NFTs or category-bearing outputs controlled by an unexpected address.
+7. Output 0 is the category's authhead contract, and its NFT names the expected identity owner (see
+   [CashToken metadata](#cashtoken-metadata)).
+8. There are no unaccounted minting NFTs or category-bearing outputs controlled by an unexpected address.
 
 Keep the verification script independent of the deployment script and publish enough inputs for another party to
 run it. Test the complete flow on chipnet or regtest before using mainnet authority keys or funds.
@@ -409,10 +438,12 @@ const { identity: next } = await publishMetadata({
 });
 ```
 
-`new C()` deploys its child as a genesis of its own, with its own authhead, and a framed proxy whose initializer calls
-another contract leads its genesis with the proxy's authhead too. BCMR metadata for a category a contract creates
-inside a call (`deployFrom`, message-bus child deployments) is unsupported: that category's identity output is the
-creating transaction's output 0, the factory's own participant, so do not rely on metadata published for it. See
-[CashTokens](/docs/guides/cashtokens#cashtokens-bcmr-metadata).
+A contract under the [framed convention](/docs/guides/framed-composition) (experimental) cannot run `new C()`, so
+its children are deployed from the SDK, each as a genesis of its own with its own authhead.
+[A framed proxy](/docs/guides/framed-composition#proxies) whose initializer calls another contract leads its genesis
+with the proxy's authhead too. BCMR metadata for a category a contract creates inside a call (a `new C()` under
+the default direct convention, which runs as a `deployFrom`, and message-bus child deployments) is unsupported: that
+category's identity output is the creating transaction's output 0, the factory's own participant, so do not rely on
+metadata published for it. See [CashTokens](/docs/guides/cashtokens#cashtokens-bcmr-metadata).
 
 [bcmr]: https://cashtokens.org/docs/bcmr/chip/

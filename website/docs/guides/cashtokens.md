@@ -20,6 +20,9 @@ interface Utxo {
   vout: number;
   satoshis: bigint;
   token?: TokenDetails;
+  lockingBytecode?: Uint8Array; // when the provider reports it
+  blockHeight?: number;
+  confirmations?: number;
 }
 
 interface TokenDetails {
@@ -211,6 +214,9 @@ A CashTokens genesis transaction is a transaction which creates a new `category`
 
 The requirement for a `vout0` UTXO can mean that you might need to create a setup transaction "pre-genesis" which will create this output. The "pre-genesis" txid then is your token's `category`.
 
+SolidCash's deployment APIs handle this for stateful contracts: a `Signer` selects a suitable `vout0` coin or creates
+one first. See [Contract Deployment](/docs/guides/deployment).
+
 :::tip
 CashTokens Creation is illustrated very nicely by transaction diagram in the specification document in the [section on token categories](https://cashtokens.org/docs/spec/chip#token-categories).
 :::
@@ -221,6 +227,13 @@ Although not directly related to smart contracts, BCMR metadata is important for
 
 The Paytaca BCMR indexer listens for on-chain [authchain](https://github.com/bitjson/chip-bcmr?tab=readme-ov-file#zeroth-descendant-transaction-chains) transactions which publish metadata with an OP_RETURN publication output. These type of metadata updates are self-published on-chain identity claims. The zero-th output chain since the token genesis is the authchain. The UTXO at the "head" of this chain holds the authority to update the token's metadata.
 
+A category created by a SolidCash deployment (`ContractFactory.deploy` or `StatefulContract.deploy`) already follows
+this model. Every genesis the SDK builds leads with the category's identity output at output 0, a small authhead
+contract that only the identity's owner can spend, and can publish a registry at output 1 when you pass the `bcmr`
+deploy option. `publishMetadata` from `solidcash/bcmr` later updates, transfers, freezes or burns that identity. A
+category that a contract creates inside a call has no identity output of its own. See
+[CashToken metadata](/docs/guides/deployment#cashtoken-metadata).
+
 :::tip
-For easy creation of CashTokens with BCMR metadata there is the Paytaca [CashTokens Studio](https://cashtokens.studio/) or to programmatically publish on-chain BCMR authchain updates there is the [AuthUpdate](https://github.com/mr-zwets/AuthUpdate) JS program.
+For tokens not deployed with SolidCash, the Paytaca [CashTokens Studio](https://cashtokens.studio/) creates CashTokens with BCMR metadata, and the [AuthUpdate](https://github.com/mr-zwets/AuthUpdate) JS program publishes on-chain BCMR authchain updates programmatically.
 :::

@@ -6,8 +6,8 @@
  * admitted handler names to that handler, which settles only the rows it runs. Beside a batch that runs no `put`
  * row, an entry of that collection is co-spent through the entry covenant's write flag, which only asks for the
  * master: it is rewritten in place, or destroyed while its NFT reappears at its own lock at another index. The route
- * now pins every own-category mutable input outside its participant block at its own index, except one at its
- * verifier lock. Beside a `put` batch the handler's own address count refuses the same entry, and an entry of a
+ * now pins every own-category mutable input outside its participant block at its own index, except the one at its
+ * verifier index. Beside a `put` batch the handler's own address count refuses the same entry, and an entry of a
  * collection no admitted handler names is refused by the census count. An honest batch of each handler, and an
  * honest compose whose callee row runs `put` beside the bus verifier, settle.
  *

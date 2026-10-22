@@ -671,6 +671,8 @@ const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 const VALUE_CHUNK_LOCK_LIST = '__internal__valueChunkOutputBase';
 /** The block size a shared outside-layout walk takes as its argument. */
 const OUTSIDE_LAYOUT_BLOCK_SIZE = '(__outside_layout_block_size)';
+/** The input index the parked outside-layout pin skips, -1 for none. */
+const OUTSIDE_LAYOUT_EXEMPT = '(__outside_layout_exempt)';
 /** Tracked items of the slot scans (emitSlotScans). */
 const SCAN_CATEGORY = '(__scan_category)';
 const SCAN_MINT_CATEGORY = '(__scan_mint_category)';
@@ -692,8 +694,13 @@ const routeMintCategory = (slot: number): string => `(__route_mint_category_${sl
 const routeMintLock = (slot: number): string => `(__route_mint_lock_${slot})`;
 /** The container slots and effect span a route's mint bound covers. */
 interface RouteMintBound { slots: number; span: boolean }
-/** C3 record pin: the band `[master, master + span)` the call settles, and a bound route's verifier lock. */
-interface CountedRecordPin { span: number; verifierLock?: Uint8Array }
+/**
+ * C3 record pin: the band `[master, master + span)` the call settles, and a bound route's verifier lock. With
+ * `verifierByIndex` the pin skips the input at the route's verifier index instead of every input at that lock.
+ */
+interface CountedRecordPin { span: number; verifierLock?: Uint8Array; verifierByIndex?: boolean }
+/** A bound route's verifier input index; -1 on a standalone batch. */
+const ACTIVE_VERIFIER_INDEX = '__internal__activeVerifierIndex';
 /** The tracked names of a route's mint bound operands, bottom first. */
 function routeMintBoundNames(bound: RouteMintBound): string[] {
   return [ROUTE_MINT_LO, ROUTE_MINT_HI, ...(bound.span ? [ROUTE_MINT_SPAN_START, ROUTE_MINT_SPAN_END] : []),
@@ -50077,15 +50084,53 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const delegatedCollectionHashes = (node.splitDelegateCensusedCollectionSignatures ?? [])
       .map((signature) => computeCollectionHash(signature));
     const upgrade = allowUpgradeDataNftGrowth ? node : undefined;
-    // A pinned count reads only the transaction and the executing input, so the entries share one helper per pin.
-    // Outlining cannot share it: the count hands its parked indices to the pin on the alternate stack.
     if (pin !== undefined && upgrade === undefined && delegatedCollectionHashes.length === 0) {
-      const key = `countedRecords:${pin.span}:${pin.verifierLock === undefined ? '' : binToHex(pin.verifierLock)}`;
-      if (this.invokeSharedEntryCheck(key, (t, l) => t.emitOwnCategoryMutableNftCount([], undefined, pin, l), loc)) {
-        return;
+      if (this.contractRoutePinsByIndex()) {
+        // Beside a route that pins by verifier index, the count parks, pins and counts its inputs through the
+        // route's parked record pin, and balances them against the outputs through a helper of its own.
+        if ((pin.verifierLock === undefined || pin.verifierByIndex === true) && this.emitParkedRecordCount(pin, loc)) {
+          return;
+        }
+      } else if (pin.verifierByIndex !== true) {
+        // A pinned count reads only the transaction and the executing input, so the entries share one helper per
+        // pin. Outlining cannot share it: the count hands its parked indices to the pin on the alternate stack.
+        const key = `countedRecords:${pin.span}:${pin.verifierLock === undefined ? '' : binToHex(pin.verifierLock)}`;
+        if (this.invokeSharedEntryCheck(key, (t, l) => t.emitOwnCategoryMutableNftCount([], undefined, pin, l), loc)) {
+          return;
+        }
       }
     }
     this.emitOwnCategoryMutableNftCount(delegatedCollectionHashes, upgrade, pin, loc);
+  }
+
+  /**
+   * The pinned count through the parked record pin, its exempt input the route's verifier index or none, and the
+   * shared output balance. False, with nothing emitted, where the parked pin is not defined. Stack neutral.
+   */
+  private emitParkedRecordCount(pin: CountedRecordPin, loc: SingleLocationData): boolean {
+    const balance = this.sharedEntryCheckId('countedBalance', (t, l) => t.emitOwnCategoryMutableBalance(l));
+    if (!this.invokeParkedRecordPin(pin.span, () => {
+      if (pin.verifierByIndex === true) this.emitPickTrackedFromBottom(ACTIVE_VERIFIER_INDEX, loc);
+      else this.emit(encodeInt(-1n), loc);
+    }, loc)) return false;
+    if (balance !== undefined && this.subroutineDefined.get(balance)) this.invokeSubroutineIfDefined(balance, loc);
+    else this.emitOwnCategoryMutableBalance(loc);
+    return true;
+  }
+
+  /** `[count]` -> `[]`: the own-category mutable input count `count` matches the outputs. */
+  private emitOwnCategoryMutableBalance(loc: SingleLocationData): void {
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // C ++ 0x02
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_SWAP, loc);              // [C ++ 0x01, count]
+    this.pushToStack('(this_cat_mutable)');
+    this.pushToStack('(mutable_balance)');
+    this.emitOwnCategoryMutableOutputBalance(undefined, () => undefined, loc);
   }
 
   /** The count of emitOwnCategoryMutableNftConservation. `upgrade`: the direct upgrade whose data-NFT growth it admits. */
@@ -50122,46 +50167,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, loc);               // [C ++ 0x01]
     this.pushToStack('(this_cat_mutable)');
 
-    // balance = inputMutableCount - outputMutableCount, starts at 0. With `pin` the input loop parks each
-    // matching index above a -1 sentinel instead, and emitCountedRecordPin counts and pins the parked ones.
-    if (pin === undefined) {
-      this.emit(encodeInt(0n), loc);
-      this.pushToStack('(mutable_balance)');
-    } else {
-      this.emit(encodeInt(-1n), loc);
-      this.emit(Op.OP_TOALTSTACK, loc);
-    }
+    // balance = inputMutableCount - outputMutableCount
+    this.emitOwnCategoryMutableInputCount(pin, emitExcludeDelegatedCollections, loc);
+    this.emitOwnCategoryMutableOutputBalance(upgrade, emitExcludeDelegatedCollections, loc);
+  }
 
-    // Input loop: +1 per input whose category+capability == C ++ 0x01
-    this.emit(Op.OP_TXINPUTCOUNT, loc);
-    this.pushToStack('(loop_i)');
-    this.emit(Op.OP_BEGIN, loc);
-    this.emit(Op.OP_1SUB, loc);
-    this.emit(Op.OP_DUP, loc);               // copy i
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // input[i].cat+cap
-    // pick this_cat_mutable (catcap=0, i=1, bal=2, this=3; this=2 when parking)
-    this.emit(encodeInt(BigInt(this.getStackIndex('(this_cat_mutable)') + 1)), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_EQUAL, loc);
-    emitExcludeDelegatedCollections(false);
-    this.emit(Op.OP_IF, loc);
-    if (pin === undefined) {
-      this.emit(Op.OP_SWAP, loc);            // [.., bal, i] -> [.., i, bal]
-      this.emit(Op.OP_1ADD, loc);            // bal++
-      this.emit(Op.OP_SWAP, loc);            // [.., bal+1, i]
-    } else {
-      this.emit(Op.OP_DUP, loc);
-      this.emit(Op.OP_TOALTSTACK, loc);      // park i
-    }
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_0, loc);
-    this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_UNTIL, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.popFromStack(); // (loop_i)
-    if (pin !== undefined) this.emitCountedRecordPin(pin, loc);
-
+  /**
+   * `[this_cat_mutable, balance]` -> `[]`: takes one from the balance per own-category mutable output and requires
+   * it to end at 0. `upgrade`: the direct upgrade whose data-NFT growth it admits.
+   */
+  private emitOwnCategoryMutableOutputBalance(
+    upgrade: FunctionDefinitionNode | undefined, emitExcludeDelegatedCollections: (isOutput: boolean) => void,
+    loc: SingleLocationData,
+  ): void {
     if (upgrade !== undefined) {
       // A direct upgrade co-spends every old data NFT, and no entry/chunk NFT. This also keeps a destroyed,
       // unaccessed mutable input from being masked by minting an extra data NFT.
@@ -50254,6 +50272,54 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(); // (mutable_balance)
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (this_cat_mutable)
+  }
+
+  /**
+   * `[this_cat_mutable]` -> `[this_cat_mutable, balance]`: the own-category mutable input count. With `pin` the
+   * input loop parks each matching index above a -1 sentinel instead, and emitCountedRecordPin counts and pins the
+   * parked ones.
+   */
+  private emitOwnCategoryMutableInputCount(
+    pin: CountedRecordPin | undefined, emitExcludeDelegatedCollections: (isOutput: boolean) => void,
+    loc: SingleLocationData,
+  ): void {
+    if (pin === undefined) {
+      this.emit(encodeInt(0n), loc);
+      this.pushToStack('(mutable_balance)');
+    } else {
+      this.emit(encodeInt(-1n), loc);
+      this.emit(Op.OP_TOALTSTACK, loc);
+    }
+
+    // Input loop: +1 per input whose category+capability == C ++ 0x01
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.pushToStack('(loop_i)');
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc);               // copy i
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // input[i].cat+cap
+    // pick this_cat_mutable (catcap=0, i=1, bal=2, this=3; this=2 when parking)
+    this.emit(encodeInt(BigInt(this.getStackIndex('(this_cat_mutable)') + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    emitExcludeDelegatedCollections(false);
+    this.emit(Op.OP_IF, loc);
+    if (pin === undefined) {
+      this.emit(Op.OP_SWAP, loc);            // [.., bal, i] -> [.., i, bal]
+      this.emit(Op.OP_1ADD, loc);            // bal++
+      this.emit(Op.OP_SWAP, loc);            // [.., bal+1, i]
+    } else {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_TOALTSTACK, loc);      // park i
+    }
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(); // (loop_i)
+    if (pin !== undefined) this.emitCountedRecordPin(pin, loc);
   }
 
   /**
@@ -52643,11 +52709,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * C3, census-path route. The census leaves a collection an admitted handler names to that handler, which settles
    * only the rows it runs, and counts no value-chunk lock. A standalone batch and a local-caller route run no
    * verifier, and the verifier counts records only inside the participant block. So every own-category mutable input
-   * outside `[master, master + blockSize)` comes back at its own index, except one at the bound verifier lock. The
-   * route's records, its trailing band's included, sit inside the block, so no record lock is admitted. With claim
+   * outside `[master, master + blockSize)` comes back at its own index, except the verifier (routeVerifierSkipsByIndex).
+   * The route's records, its trailing band's included, sit inside the block, so no record lock is admitted. With claim
    * flags (a bound non-graph route), so does one inside the block at a slot no row that ran claims, unless the
    * verifier ran (emitRouteBlockClaims). One pass parks each own-category mutable index and a second pins them, as
-   * in emitCountedRecordPin. A route with no bound lock, or on a proxy's block, keeps the census alone. Stack neutral.
+   * in emitCountedRecordPin; without claim flags, through the parked record pin the entries share. A route with no
+   * bound lock, or on a proxy's block, keeps the census alone. Stack neutral.
    */
   private emitRouteOutsideBlockRecordPin(node: FunctionDefinitionNode, loc: SingleLocationData): void {
     const verifierLock = node.messageBusVerifierLock;
@@ -52655,6 +52722,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (verifierLock === undefined || blockSize === undefined || blockSize <= 0
       || this.usesProxyStateBlockBase()) return;
     const inBlock = node.messageBusRecordClaims !== undefined;
+    const byIndex = this.routeVerifierSkipsByIndex(node);
+    // The entries' plain walks and pinned counts take the same helper (contractRoutePinsByIndex).
+    if (!inBlock && byIndex && this.invokeParkedRecordPin(
+      blockSize, () => this.emitPickTrackedFromBottom(ACTIVE_VERIFIER_INDEX, loc), loc,
+    )) {
+      this.emit(Op.OP_DROP, loc);
+      return;
+    }
     // [C ++ 0x01], built inline so no shared helper gains a site.
     const category = '(__route_own_mutable)';
     this.emitMasterInputIndex(loc);
@@ -52686,12 +52761,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_FROMALTSTACK, loc);      // [i]
     this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(0n), loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(encodeBool(true), loc);        // the sentinel ends the pass
-    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_IF, loc);                // not the -1 sentinel
     this.emit(Op.OP_DUP, loc);
     this.emitMasterInputIndex(loc);
     if (inBlock) {
@@ -52711,22 +52782,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ADD, loc);
       this.emit(Op.OP_WITHIN, loc);          // [i, inBlock]
     }
-    this.emit(Op.OP_OVER, loc);
-    this.emit(Op.OP_UTXOBYTECODE, loc);
-    this.emit(verifierLock, loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_BOOLOR, loc);            // [i, inBlock || verifier]
+    this.emitRouteVerifierSkip(byIndex, verifierLock, loc); // [i, inBlock || verifier]
     this.emit(Op.OP_NOTIF, loc);
     this.emitSameIndexPin(loc);
     this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(encodeBool(false), loc);
     this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_NOT, loc);               // the sentinel ends the pass
     this.emit(Op.OP_UNTIL, loc);
     if (inBlock) {
       this.emit(Op.OP_DROP, loc);
       this.popFromStack();
     }
+  }
+
+  /**
+   * Whether a bound route's C3 pin may skip its verifier by index rather than by lock. Outside a local-caller route
+   * the route source calls its binder whenever `__internal__activeVerifierIndex` >= 0 (a graph route always), and
+   * the binder requires that input at the verifier lock. The binder's other guard, a participant outpoint index of
+   * 0xFFFFFFFF, is the SDK's probe marker and names no spendable output. So on chain the index skips that one input,
+   * and at -1 none, where the lock skipped every input at the lock. A local-caller route runs its binder only for a
+   * lifecycle row, so the index is unchecked there and the lock stays.
+   */
+  private routeVerifierSkipsByIndex(node: FunctionDefinitionNode): boolean {
+    return !node.parameters.some((parameter) => parameter.name === '__internal__msgSenderCategory')
+      && this.getStackIndex(ACTIVE_VERIFIER_INDEX, true) >= 0;
+  }
+
+  /** `[i, inBand]` -> `[i, inBand || input i is the bound verifier]`, by index or by `lock`. */
+  private emitRouteVerifierSkip(byIndex: boolean, lock: Uint8Array, loc: SingleLocationData): void {
+    this.emit(Op.OP_OVER, loc);
+    if (byIndex) {
+      this.emitPickTrackedFromBottom(ACTIVE_VERIFIER_INDEX, loc);
+      this.emit(Op.OP_NUMEQUAL, loc);
+    } else {
+      this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emit(lock, loc);
+      this.emit(Op.OP_EQUAL, loc);
+    }
+    this.emit(Op.OP_BOOLOR, loc);
   }
 
   /**
@@ -53016,19 +53110,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Every own-category mutable input outside `[master, master + size)` comes back at its own index unchanged. The
    * walk reads only the transaction and the size, so the entries share one helper that takes the size as its
-   * argument; with no helper the size stays inline. Stack neutral.
+   * argument; with no helper the size stays inline. Beside a route that pins by verifier index, the helper is the
+   * parked record pin with no input exempt. Stack neutral.
    */
   private emitPlainOutsideLayoutWalk(size: number, loc: SingleLocationData): void {
-    const id = this.sharedEntryCheckId('outsideLayoutWalk', (t, l) => {
-      t.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
-      t.emitSizedOutsideLayoutWalk(l);
-    });
-    if (id !== undefined && this.subroutineDefined.get(id)) {
-      this.emit(encodeInt(BigInt(size)), loc);
-      this.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
-      this.invokeSubroutineIfDefined(id, loc);
-      this.popFromStack();
-      return;
+    if (this.contractRoutePinsByIndex()) {
+      if (this.invokeParkedRecordPin(size, () => this.emit(encodeInt(-1n), loc), loc)) {
+        this.emit(Op.OP_DROP, loc);
+        return;
+      }
+    } else {
+      const id = this.sharedEntryCheckId('outsideLayoutWalk', (t, l) => {
+        t.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
+        t.emitSizedOutsideLayoutWalk(l);
+      });
+      if (id !== undefined && this.subroutineDefined.get(id)) {
+        this.emit(encodeInt(BigInt(size)), loc);
+        this.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
+        this.invokeSubroutineIfDefined(id, loc);
+        this.popFromStack();
+        return;
+      }
     }
     const category = '(__outside_own_mutable)';
     this.emitOutsideLayoutCategory(category, loc);
@@ -53039,6 +53141,104 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Whether this contract has a bound route whose past-block pin takes the parked helper: no claim flags, its
+   * verifier skipped by index (routeVerifierSkipsByIndex), and a frame a shared check can serve.
+   */
+  private contractRoutePinsByIndex(): boolean {
+    for (const fn of this.userFunctionDefs.values()) {
+      if (fn.messageBusRoute !== true || fn.messageBusVerifierLock === undefined
+        || fn.messageBusRecordClaims !== undefined || (fn.blockLayout?.blockSize ?? 0) <= 0) continue;
+      const names = new Set(fn.parameters.map((parameter) => parameter.name));
+      if (names.has(ACTIVE_VERIFIER_INDEX) && !names.has('__internal__msgSenderCategory')
+        && !names.has('__internal__proxyMasterIndex') && !names.has(MESSAGE_BUS_OWNER_INPUT)
+        && !names.has('__internal__lifecycleOwnerInput')) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Invoke the parked record pin on `[size, exempt]`, both tracked, leaving its untracked count. False, with nothing
+   * emitted, where the helper is not defined. Counts this site toward it.
+   */
+  private invokeParkedRecordPin(size: number, emitExempt: () => void, loc: SingleLocationData): boolean {
+    const id = this.sharedEntryCheckId('parkedRecordPin', (t, l) => {
+      t.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
+      t.pushToStack(OUTSIDE_LAYOUT_EXEMPT);
+      t.emitParkedRecordPin(l);
+    });
+    if (id === undefined || !this.subroutineDefined.get(id)) return false;
+    this.emit(encodeInt(BigInt(size)), loc);
+    this.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
+    emitExempt();
+    this.pushToStack(OUTSIDE_LAYOUT_EXEMPT);
+    this.invokeSubroutineIfDefined(id, loc);
+    this.popFromStack(2);
+    return true;
+  }
+
+  /**
+   * `[size, exempt]` -> `[count]`: every own-category mutable input outside `[master, master + size)`, other than
+   * input `exempt` (-1 for none), comes back at its own index, and `count` is the number of own-category mutable
+   * inputs. One pass parks each own-category mutable index above a -1 sentinel and a second counts and pins the
+   * parked ones, as in emitCountedRecordPin, so an input that is no such record costs one short test.
+   */
+  private emitParkedRecordPin(loc: SingleLocationData): void {
+    const category = '(__outside_own_mutable)';
+    this.emitOutsideLayoutCategory(category, loc);
+    this.emit(encodeInt(-1n), loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(category) + 2)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);        // park i
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.popFromStack();
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(__parked_count)');
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);      // [size, exempt, count, i]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_IF, loc);                // not the -1 sentinel
+    this.emit(Op.OP_DUP, loc);
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_DUP, loc);               // [size, exempt, count, i, i, master, master]
+    this.emit(encodeInt(BigInt(this.getStackIndex(OUTSIDE_LAYOUT_BLOCK_SIZE) + 4)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_WITHIN, loc);            // [size, exempt, count, i, inBlock]
+    this.emit(Op.OP_OVER, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(OUTSIDE_LAYOUT_EXEMPT) + 3)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc);            // [size, exempt, count, i, inBlock || exempt]
+    this.emit(Op.OP_NOTIF, loc);
+    this.emitSameIndexPin(loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_1ADD, loc);              // count++
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_NOT, loc);               // the sentinel ends the pass
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_NIP, loc);               // [count]
+    this.popFromStack(3);
+  }
+
+  /**
    * C3 per-record pin of a function the own-category count covers, or undefined where no pin runs. The only
    * own-category mutable inputs it rewrites are the data records the auto covenant settles at `master + 1 ..`, so
    * every other one, inside the block or past it, comes back at its own index unchanged, and the count then leaves
@@ -53046,8 +53246,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * A count-path route's rows write no entry, chunk or container, so its records are that data band as well. Its
    * participant verifier, when co-spent, is an own-category mutable input its own covenant recreates at its index
-   * with a new commitment, so the pin leaves an input at the bound verifier lock to that covenant. The lock is the
-   * input's, so a route that never checks its verifier index still holds every record. A route with no bound lock
+   * with a new commitment, so the pin leaves the input at the route's verifier index, or on a local-caller route
+   * every input at the bound verifier lock, to that covenant (routeVerifierSkipsByIndex). A route with no bound lock
    * (the binder's inline-verifier intermediate) keeps the count alone.
    */
   private countedRecordPin(node: FunctionDefinitionNode, settlesDataRecords: boolean): CountedRecordPin | undefined {
@@ -53059,17 +53259,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // emitMigrateRecordsEntryMigrationCheck pins it there (the master at input 0), so the pin leaves it out.
     const migratesEntry = node.modifiers.includes(FunctionModifier.MIGRATE_RECORDS)
       && node.messageBusUpgradeRoute !== true && this.collectionDefinitions.length > 0;
-    return { span: 1 + (settlesDataRecords ? this.compactOffsetMap.size : Number(migratesEntry)), verifierLock };
+    const span = 1 + (settlesDataRecords ? this.compactOffsetMap.size : Number(migratesEntry));
+    if (verifierLock === undefined) return { span };
+    return { span, verifierLock, verifierByIndex: this.routeVerifierSkipsByIndex(node) };
   }
 
   /**
    * `[this_cat_mutable]` -> `[this_cat_mutable, balance]`: pops the inputs the count parked above its -1 sentinel,
-   * counts them, and pins each outside `[master, master + span)` and not at the verifier lock to its own index. A
+   * counts them, and pins each outside `[master, master + span)` and not the route's verifier to its own index. A
    * skipped instruction still costs, so pinning here instead of in the count's loop leaves an input that is not an
    * own-category mutable NFT one instruction cheaper than the plain count.
    */
   private emitCountedRecordPin(pin: CountedRecordPin, loc: SingleLocationData): void {
-    const { span, verifierLock } = pin;
+    const { span, verifierLock, verifierByIndex } = pin;
     this.emit(encodeInt(0n), loc);
     this.pushToStack('(mutable_balance)');
     this.emit(Op.OP_BEGIN, loc);
@@ -53091,13 +53293,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ADD, loc);
       this.emit(Op.OP_WITHIN, loc);
     }
-    if (verifierLock !== undefined) {
-      this.emit(Op.OP_OVER, loc);            // [.., bal, i, inBand, i]
-      this.emit(Op.OP_UTXOBYTECODE, loc);
-      this.emit(verifierLock, loc);
-      this.emit(Op.OP_EQUAL, loc);
-      this.emit(Op.OP_BOOLOR, loc);          // [.., bal, i, inBand || verifier]
-    }
+    // [.., bal, i, inBand || verifier]
+    if (verifierLock !== undefined) this.emitRouteVerifierSkip(verifierByIndex === true, verifierLock, loc);
     this.emit(Op.OP_NOTIF, loc);
     this.emitSameIndexPin(loc);
     this.emit(Op.OP_ENDIF, loc);

@@ -819,6 +819,18 @@ rerun: the marketplace corpus compiled cold at the final master is identical to 
   guard, an outpoint index other than 0xFFFFFFFF, is the SDK's probe marker). A local-caller route keeps the lock
   compare. In a graph-route contract the route pin, the direct plain walks and the pinned counts share one parked
   helper (`fe8b689d7`; test `AuditC3BusGraphParkedPin.test.ts`).
+- **C3 graph band, value chunk** (`0b435a977`, found 2026-10-22). A graph route's pin skipped `[master, master + B)` at
+  the compile-time block size, while the graph verifier counts records only in the physical block. With the contract
+  last and B above the physical size plus the participant count, the fee slot sat between them. A value chunk there
+  could be rewritten in place or burned: no census counts a value-chunk lock, and `tx.origin` held once the root
+  caller's own coin sat in a balanced pad slot (the mocknet node accepted the rewrite before the fix). The verifier now
+  binds `__internal__graphBlockSize` to the participant's actual size instead of its maximum, the SDK supplies that
+  size, and the route's pin skips only that authenticated block. Publisher 9,392 -> 9,395 B, the pooled compose callee
+  8,875 -> 8,878 B; marketplace artifacts unchanged. Tests: `AuditC3BusGraphValueChunkBand.test.ts`,
+  `AuditC3BusGraphParkedPin.test.ts` (compose `718807d02`, band `61e461448`, `b5c6b828b`). A V5 direct-authority root,
+  which would skip the root verifier's `tx.origin`, cannot exist: every routed verifier requires each row's owner routed
+  and row 0's owner its consumer (`compiler.ts` 13177, 13193, 13240, 13244), and the SDK refuses it (`graph.ts` 2299,
+  `atomic.ts` 148, 212, 458).
 - **DS-2 class, state read through a subroutine** (`095cb22d4`, `6fdfaad23`). An entry (and a split or merge entry)
   that read state only through an invoked body skipped the data-NFT lock pin, so a mutable NFT of C at a foreign lock
   could be read as state. Test: `packages/solidc/test/AuditDataLockSubroutineRead.test.ts`.
@@ -912,17 +924,7 @@ needs VM evidence, `rejectedWith` has no source fallback).
   of a collection a run handler names is not pinned.
 - CRYPTO-4: dynamic and value chunks have no migration path.
 - A direct merge of masters holding records checks them relative to `OP_INPUTINDEX` (liveness).
-- Graph-route band: the route pin skips `[master, master + blockSize)` at the compile-time block size, while the
-  verifier census walks only the physical block, so with the ledger last the fee slot falls inside the skip window when
-  blockSize exceeds the physical size plus the participant count. A record put there is refused by the route's
-  whole-transaction collection census and by the root verifier's `tx.origin` (a token-free P2PKH input), so it is not a
-  hole (`AuditC3BusGraphParkedPin.test.ts`: compose `718807d02`, band `61e461448`, `b5c6b828b`). A V5 direct-authority
-  root cannot exist: every routed verifier requires each row's owner routed and row 0's owner its consumer
-  (`compiler.ts` 13177, 13193, 13240, 13244), and the SDK refuses it (`graph.ts` 2299, `atomic.ts` 148, 212, 458), so
-  the routed root's verifier always checks `rowSubject == tx.origin`.
-- **C3 graph band, value chunk (OPEN, found 2026-10-22).** In the same window a value chunk of the contract can be
-  rewritten in place or burned: no census counts a value-chunk lock, and `tx.origin` holds once the root caller's own
-  coin sits in a balanced pad slot, which no check binds for a row that does not use it. Test:
-  `AuditC3BusGraphValueChunkBand.test.ts` (`it.fails`, `119292046`; ledger last, s = 18, B = 82, fee slot 21). Fix:
-  pin past the physical block, binding that size into the binder digest (today `__internal__graphBlockSize` carries
-  the manifest's maximum size, ~13748), instead of the compile-time blockSize.
+- Delegate (proxied) graph routes: the route pin returns on a proxy's block (`usesProxyStateBlockBase`), and
+  `45411dffa` left routed delegates to their verifier, which counts records only inside the participant block. A proxy
+  record outside that block, such as a value chunk in the fee slot, may have no check. Not yet checked (found
+  2026-10-22 while fixing the graph band).

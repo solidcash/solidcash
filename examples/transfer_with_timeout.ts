@@ -25,7 +25,7 @@ const provider = new MockNetworkProvider();
 const contract = new Contract(artifact, [alicePub, bobPub, 100000n], { provider });
 
 // Add a mock UTXO to the mock network provider
-provider.addUtxo(contract.address, randomUtxo());
+await provider.addUtxo(contract.address, randomUtxo());
 
 // Get contract balance & output address + balance
 console.log('contract address:', contract.address);

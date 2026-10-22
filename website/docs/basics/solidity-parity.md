@@ -66,12 +66,12 @@ proxy, data-location and validation lowerings, plus a release porting workflow.
 
 ## Where behaviour differs
 
-These compile, but do not mean quite what they mean on the EVM. Several are compiler-warned; `msg.sender`,
-`msg.value` and `payable` compile without a warning, so review every use.
+These compile, but do not mean quite what they mean on the EVM. Several are compiler-warned, including every read
+of `msg.sender` and `tx.origin`. `msg.value` and `payable` compile without a warning, so review every use.
 
 | Construct | Difference |
 | --- | --- |
-| `msg.sender` | The caller's locking bytecode, falling back to `tx.origin` for direct spends. It is derived from the transaction's inputs, so prefer `checkSig` for authorization. |
+| `msg.sender` | The caller's locking bytecode, falling back to `tx.origin` for direct spends. It is derived from the transaction's inputs, so prefer `checkSig` for authorization; the compiler warns on every read. |
 | `msg.value` | Net satoshi change in the contract's satoshi container, not an EVM call value. |
 | `try` / `catch` | The `try` block runs, but a failed BCH opcode aborts the script and cannot be resumed, so `catch` bodies are dead code. Compiler-warned. |
 | `keccak256` | Real keccak256, computed by a co-spent side-car input rather than a native opcode. Values match Ethereum. |
@@ -83,7 +83,7 @@ These compile, but do not mean quite what they mean on the EVM. Several are comp
 | `block.prevrandao` | A transaction-local shim, grindable by the transaction builder. Not secure randomness; compiler-warned. |
 | `gasleft()`, `block.gaslimit` | Fixed shims (`1000000`) so ported gas-budget checks keep running. Compiler-warned; do not rely on the value. |
 | `address` | Full variable-length locking bytecode, not a 20-byte hash. `bytes20(addr)` / `uint160(addr)` narrow to the embedded 20-byte hash and warn. |
-| `payable` | Accepted and inert: every BCH address can receive value. |
+| `payable` | Required on an address for `.transfer` and `.send`; otherwise inert, since every BCH address can receive value. |
 | `transient` | No transaction-scoped storage exists. Lowered to a per-function local, zero-initialised each spend. Warned. |
 | `immutable` | Assigned once in the constructor and read-only afterwards, but stored in the state NFT rather than baked into bytecode. |
 | Mappings | Verified mappings (vmaps) preserve default-on-absent reads with authenticated absence proofs. They are not iterable by default; declare `enumerable mapping(...)` to opt in. |

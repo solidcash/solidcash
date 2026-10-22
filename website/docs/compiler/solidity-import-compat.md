@@ -215,6 +215,7 @@ oracle or documented BCH shims; the flag does not make EVM block context appear.
 
 Treat warnings as migration work, not cosmetic output. Important examples include:
 
+- every read of `msg.sender` or `tx.origin`: both derive from the co-spent inputs, so authorize with `checkSig`;
 - `fallback` and `receive` are compatibility features with a different call model on BCH;
 - `try/catch` cannot recover from a failed Script opcode;
 - `gasleft`, `block.gaslimit`, `block.prevrandao` and blob fields are shims, not EVM consensus values;
@@ -222,9 +223,8 @@ Treat warnings as migration work, not cosmetic output. Important examples includ
 - narrowing an `address` to `bytes20`/`uint160` discards the BCH locking-bytecode structure; and
 - opaque low-level calldata currently has weaker selector/payload authentication than a typed call.
 
-Some differences compile without any warning. `msg.sender` is the caller's locking bytecode (or `tx.origin` for a
-direct spend), `msg.value` is the net change of the contract's satoshi container, and `payable` is inert. Review
-every use; authorize with `checkSig` rather than `msg.sender`.
+Some differences compile without any warning. `msg.value` is the net change of the contract's satoshi container,
+and `payable` matters only where an address needs it for `.transfer` or `.send`. Review every use.
 
 Unsupported inline assembly, storage pointers, recursive memory shapes, reflection, dynamic dispatch or external
 call graphs fail with diagnostics rather than silently adopting EVM behavior. The usual remedy is to isolate a pure

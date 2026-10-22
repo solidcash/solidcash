@@ -30,14 +30,17 @@ SolidCash introduces features that do not exist in CashScript and that close the
 - **Custom errors & revert** - structured `error` types with `revert ErrorName(args)`
 - **Enums with custom values** - `enum Priority { LOW = 1, HIGH = 10 }`
 - **Fixed-point decimals** - `fixed128x18` with full arithmetic (Solidity declared this type but never implemented it)
-- **Mapping iteration** - `for (key, value of mapping.entries)` - impossible in Solidity
+- **Mapping iteration** - declare `enumerable mapping(...)` and loop with `for (K k, V v of this.m.entries)`, over keys or values, or page by page with `.window(cursor, N)` - impossible in Solidity
 - **Switch statements, unchecked blocks, using-for, try-catch**
-- **Contract lifecycle** - inferred child deployment plus `upgrade`, `selfdestruct`, and `split`/`merge` modifiers
-- **Delegatecall & proxy patterns** - upgradeable contract architecture
-- **Cross-contract calls** - external state reads and function calls via interfaces
+- **Contract lifecycle** - inferred child deployment plus `upgrade` (with `migrateRecords` for mapping entries), `selfdestruct`, and `split`/`merge` modifiers
+- **Delegatecall & proxy patterns** - upgradeable contracts through the built-in proxy profile (`upgrades.deployProxy`); custom delegate forwarding is experimental
+- **Cross-contract calls** - external state reads and function calls via interfaces; a call that changes another contract's state (composed external state mutation) is experimental
+- **Solidity source import** - the `evmCompat` option compiles `.sol` sources in the documented subset, with EVM ABI encoding and keccak256 selectors
+- **Large contracts** - split bundles spread a contract over the 10,000-byte limit across a root and facets
 - **ABI encoding** - `abi.encode`, `abi.decode`, `abi.encodeWithSelector`, `abi.encodeCall`
 - **Token containers** - native CashToken FT/NFT management within contracts
 - **Test matchers** - `toEmit`, `toBeReverted`, `toFailRequireWith`, and `toLog` for Vitest
+- **Project tooling** - SolidHat projects (`npm create @solidcash/solidhat@latest`) with compile, test, deploy and typed bindings
 
 ### Our relationship with CashScript
 
@@ -52,5 +55,5 @@ Smart contracts on Bitcoin Cash differ from Ethereum in several important ways. 
 - **No gas fees** - flat per-byte transaction fees, orders of magnitude cheaper than Ethereum
 - **Instant confirmations** - transactions are usable in seconds (0-conf), finalized in ~10 minutes
 - **Native tokens** - CashTokens (FT + NFT) are a protocol-level feature, not smart contracts
-- **Arbitrary-precision integers** - no 256-bit overflow concerns (since May 2025 BigInt activation)
+- **Arbitrary-precision integers** - the VM has BigInt arithmetic since May 2025; SolidCash exposes it as `bigint`, while `int`/`uint` keep Solidity's checked 256-bit ranges
 - **Transaction introspection** - contracts can inspect all inputs and outputs, enabling covenant patterns impossible on Ethereum

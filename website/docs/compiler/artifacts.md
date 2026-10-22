@@ -22,7 +22,7 @@ interface Artifact {
   compiler: {
     name: string;
     version: string;
-    options?: CompilerOptions;
+    options?: CompilerOptions;     // the options that change how the artifact is read
   };
   updatedAt: string;
   fingerprint?: string;
@@ -37,10 +37,14 @@ interface Artifact {
   externalInterfaces?: readonly ExternalInterfaceInfo[];
 
   externalLibraries?: readonly ExternalLibraryAbi[];
+  isLibrary?: boolean;
+  delegateOnly?: boolean;          // a split-bundle facet
   delegateArtifact?: Artifact;
   invocationAnalysis?: InvocationAnalysisArtifact;
   messageBus?: MessageBusArtifact;
-  diagnostics?: readonly ArtifactDiagnostic[];
+  composition?: { convention: 'framed'; /* ... */ };
+  refusedFunctions?: readonly PublishedRefusedEntry[];
+  diagnostics?: readonly { severity: 'warning' | 'error'; code: string; message: string }[];
 }
 ```
 
@@ -164,10 +168,17 @@ limits, and participant/row bounds consumed by `messageBus.compose()`. It also c
 (`admittedHandlerIds`, `refusedHandlerIds`, `admissionSource`), the published `resourceBudgets`, and a concrete
 `deployability` certificate stating whether the measured route bytecode fits the 10,000-byte P2SH limit. Treat
 these as versioned wire metadata; see
-[Message Bus Artifact Reference](/docs/reference/message-bus-artifact).
+[Message Bus Artifact Reference](/docs/reference/message-bus-artifact). Message-bus composition is experimental in
+0.13.1.
 
 `externalLibraries` describes inline or co-spent libraries and compute sidecars, including branding, integrity
 hashes, ABI, result-NFT mode, and minimum instance capacity.
+
+`composition` is present only on an artifact compiled with `composition: 'framed'`, the experimental framed
+convention. It publishes the placeholders and stop sites the SDK fills and checks; see
+[Framed Composition](/docs/guides/framed-composition). `refusedFunctions` lists entry points the compiler refused:
+each stays in the ABI but fails whenever it is reached, and its `reason` lets a builder report which function is
+unsupported instead of a failed spend.
 
 `diagnostics` retains compiler warnings and errors useful to downstream tooling. Do not silently discard a
 security warning merely because bytecode was emitted under an explicit unsafe compatibility option.
@@ -193,7 +204,8 @@ context for child deployments, libraries, and cross-contract resolution.
 
 ## Split artifact bundles
 
-`compileFileSplit()` / `compileStringSplit()` return a different versioned envelope:
+With the default `split: 'size'`, `compileFileSplit()` / `compileStringSplit()` return a different versioned
+envelope (`split: 'off'` returns a plain `Artifact`):
 
 ```ts
 interface SplitArtifactBundle {
@@ -209,6 +221,10 @@ identity scheme, and publishes per-route state/effect footprints. Load it throug
 treat its delegate-only facets as standalone application-state contracts. See
 [Large Contracts & Split Bundles](/docs/compiler/large-contracts).
 
+`split: 'func'` (experimental, framed convention) returns a `FunctionSplitBundle` instead: `format:
+'solidcash-split-v2'`, a `logical` artifact for the whole contract, and one framed master per ABI entry in
+`shards`.
+
 ## TypeScript artifacts
 
 The CLI can generate a `.artifact.ts` module whose value still satisfies the runtime `Artifact` schema while its
@@ -216,7 +232,7 @@ literal ABI drives SDK generics. This provides constructor tuples, function name
 matcher types without a separate code-generation pass.
 
 ```bash
-solidc --format ts Counter.scash
+solidc Counter.scash --format ts --output Counter.artifact.ts
 ```
 
 JSON is appropriate for language-neutral storage and third-party SDKs. TypeScript is preferable inside an SDK

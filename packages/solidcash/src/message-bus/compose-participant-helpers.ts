@@ -468,7 +468,8 @@ export const graphRouteContext = (
         ? -1 : finalized.layout.participantInputs[participant]
           + finalized.callManifest.participants[participant].returnOffset,
     ),
-    __internal__graphBlockSize: BigInt(finalized.callManifest.participants[participant].maximumSize),
+    // The physical span: the verifier binds it, and the route's record pin skips exactly that block.
+    __internal__graphBlockSize: BigInt(finalized.callManifest.participants[participant].actualSize),
     __internal__graphSelfIdentityInput: BigInt(
       execution.logicalIdentityOffset !== undefined
         && execution.logicalIdentityOffset > 0

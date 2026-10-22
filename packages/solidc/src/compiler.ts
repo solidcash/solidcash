@@ -13745,7 +13745,8 @@ function synthesizeMessageBusRoute(
         require(rowCursor == callManifest.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);
         ${!graphExecutionContext ? '' : `
-        require(suppliedFixedSize == activeFixedSize && suppliedBlockSize == activeMaximumSize);
+        // The physical size: the route's record pin skips exactly this block.
+        require(suppliedFixedSize == activeFixedSize && suppliedBlockSize == activeBlockSize);
         require(suppliedEmissions == expectedEmissions);
         require(suppliedCallers == expectedCallers);
         require(suppliedSettlementBoundary == activeSettlementBoundary);

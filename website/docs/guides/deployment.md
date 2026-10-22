@@ -423,6 +423,22 @@ const { bytes, uris } = token.deploymentRegistry()!; // host these exact bytes a
 The registry then describes two identities: the token's category, with its name, symbol, decimals and reserve, and
 the contract's, which labels the contract's NFTs.
 
+[ERC-20 Tokens](/docs/guides/erc20-tokens) walks through the token contracts, Tether's USDT and wrapped tokens.
+
+A `BchNativeWrapper` token wraps a category that already exists, so its deployment creates no category and mints
+nothing: `nativeToken.category` names it, as 64 hex characters in the order wallets print. The SDK refuses it beside
+`funding`, `reserve` or `bearer`, and refuses a contract that keys its reserve by another category or whose
+`totalSupply()` does not start at 0. The registry describes the contract's category alone, with the ledger's own name,
+symbol and decimals and an extension naming the wrapped category and the reserve; the wrapped category's identity is
+its issuer's:
+
+```ts
+const token = await factory.deploy(hexToBin(category), {
+  bcmr: { description: 'Wrapped dollars.' },
+  nativeToken: { category },
+});
+```
+
 The publication defaults to the registry's IPFS CID, so pin the returned bytes as one raw block. Spend the identity
 later with `publishMetadata` from `solidcash/bcmr`, passing the owner's coin and an `action` (`update`, the default,
 `transfer`, `freeze` or `burn`):

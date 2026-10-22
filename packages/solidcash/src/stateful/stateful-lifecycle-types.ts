@@ -93,6 +93,15 @@ export interface DeployOptions {
   nativeToken?: NativeTokenOptions;
   /** Internal: a probe genesis that only answers the contract's views; it publishes nothing and reserves nothing. */
   metadataProbe?: true;
+  /** Internal composition: a split root's facets, which answer its probe's views and publish its container key. */
+  splitFacets?: SplitFacets;
+}
+
+/** A split root's facets, as its deployment's metadata checks read them (docs/bcmr/DESIGN.md, 6.4). */
+export interface SplitFacets {
+  readonly artifacts: readonly Artifact[];
+  /** The logical contract over a root deployed from the root's artifact, its views routed to the facets. */
+  readonly route: (root: ConnectedStatefulContract) => unknown;
 }
 
 export interface DeployResult<T extends Artifact = Artifact> {
@@ -119,14 +128,17 @@ export interface UpgradeOptions<T extends Artifact = Artifact> {
   fundingUtxo?: Utxo;
   funder?: Unlocker;                  // unlocks fundingUtxo and the change each entry migration returns to its lock
   changeAddress?: string;             // change address for leftover funding satoshis
-  /** Foreign categories whose containers migrate; own- and immutable-keyed ones are found without naming them. */
+  /**
+   * Foreign categories whose containers migrate, every coin at each one's container lock; own- and immutable-keyed
+   * ones (BchNative's reserve) are found without naming them.
+   */
   tokenContainerCategoryIds?: string[];
   /** The migrateRecords entry to drain mapping/array entries before the upgrade (name + its user args). */
   migrateRecordsFunctionName?: string;
   migrateRecordsFunctionArgs?: FunctionArgument[];
   /**
-   * Surplus container coins (`txid:vout`) to abandon at the old lock, where nothing can spend them again: anyone can
-   * send a coin to a container address, and the covenant migrates exactly its reserved containers.
+   * Container coins (`txid:vout`) to abandon at the old lock, where nothing can spend them again: anyone can send a
+   * coin to a container address, and the covenant migrates exactly one satoshi-container coin.
    */
   leaveBehind?: string[];
 }

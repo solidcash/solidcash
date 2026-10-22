@@ -146,47 +146,44 @@ function keptCoins(
 }
 
 /**
- * Every live token container, which must fill the covenant's reserved slots exactly. The covenant derives each old
- * container covenant from the coin's own category, so only a coin of its address's category is a container; a
- * tokenless or foreign-category coin there is junk it cannot carry, and stays where it is. Anyone can send a coin of
- * that category there, so the caller may abandon surplus ones with `leaveBehind`.
+ * Every live token container coin. The compiled upgrade migrates the whole run of token inputs after the satoshi
+ * container, so each container's coins all move, however many a reserve is spread over. The covenant derives each
+ * old container covenant from the coin's own category, so only a coin of its address's category is a container; a
+ * tokenless or foreign-category coin there is junk it cannot carry, and stays where it is. A coin `leaveBehind` names
+ * is abandoned.
  */
 async function planTokenContainers(
   provider: Provider, contract: Contract<any, any>, categoryId: string, foreign: readonly string[],
   state: Readonly<Record<string, unknown>>, abandoned: ReadonlySet<string>, leftBehind: LeftBehindCoin[],
 ): Promise<PlannedRecord[]> {
   const abi: readonly AbiFunction[] = contract.artifact.abi;
-  const slots = abi.flatMap((fn) => fn.blockLayout?.slots ?? []).filter((slot) => slot.kind === 'tokenContainer').length;
+  const accesses = abi.flatMap((fn) => fn.tokenContainerAccesses ?? []);
   const categories = new Set(foreign.map((category) => category.toLowerCase()));
+  // A container an argument keys has a category only the caller can name; unnamed, its coins would stay behind.
+  if (categories.size === 0 && accesses.some((access) => access.keySource !== 'own' && access.keySource !== 'state')) {
+    throw new Error(
+      `Upgrade migrates the token containers of '${contract.artifact.contractName}', which an argument keys: pass `
+      + 'tokenContainerCategoryIds, the categories whose containers move.',
+    );
+  }
   // A container keyed by the contract's own category or an immutable is found without the caller naming it.
-  for (const access of abi.flatMap((fn) => fn.tokenContainerAccesses ?? [])) {
+  for (const access of accesses) {
     if (access.keySource !== 'own' && access.keySource !== 'state') continue;
     const key = tokenContainerKeyValue(access, categoryId, [], -1, state);
     categories.add((key instanceof Uint8Array ? binToHex(key) : String(key)).toLowerCase());
   }
+  const migrates = abi.some((fn) => fn.blockLayout?.slots.some((slot) => slot.kind === 'tokenContainer'));
   const containers: PlannedRecord[] = [];
-  let abandonedCount = 0;
   for (const category of categories) {
     const address = getTokenContainerAddress(contract, categoryId, category);
     const live = (await provider.getUtxos(address)).filter((utxo) => isTokenContainerCoin(utxo, category));
-    const kept = keptCoins(address, live, abandoned, leftBehind);
-    abandonedCount += live.length - kept.length;
-    containers.push(...kept.map((utxo) => ({ key: category, utxo })));
+    containers.push(...keptCoins(address, live, abandoned, leftBehind).map((utxo) => ({ key: category, utxo })));
   }
-  if (containers.length > slots) {
+  if (!migrates && containers.length > 0) {
     throw new Error(
-      `Upgrade would strand ${containers.length - slots} of ${containers.length} live token container(s) `
-      + `(${containers.map((container) => describeCoin(container.utxo)).join(', ')}): the old covenant migrates `
-      + `exactly ${slots}. Spend the extra containers through the old contract, or name the ones to abandon for good `
-      + 'in leaveBehind, before upgrading.',
-    );
-  }
-  if (containers.length < slots) {
-    throw new Error(
-      `Upgrade migrates exactly ${slots} token container(s), but ${containers.length} live container(s) were found `
-      + `for [${[...categories].join(', ')}]${abandonedCount > 0 ? ` once leaveBehind abandons ${abandonedCount}` : ''}. `
-      + 'Pass every foreign category the contract holds in tokenContainerCategoryIds, and leave behind only surplus '
-      + 'containers.',
+      `Upgrade would strand ${containers.length} live token container(s) `
+      + `(${containers.map((container) => describeCoin(container.utxo)).join(', ')}): the old covenant migrates none. `
+      + 'Spend them through the old contract, or name the ones to abandon for good in leaveBehind, before upgrading.',
     );
   }
   return containers;
@@ -320,8 +317,9 @@ export async function upgradeStatefulContract<T extends Artifact>(
   const entries = await listEntries(provider, oldContract.inner, categoryId);
   await refuseStrandedChunks(provider, oldContract.inner, newContract, categoryId, entries);
 
-  // Anyone can send a coin to a container address, and the old code could spend it as its container, so a surplus
-  // coin blocks the upgrade unless the caller abandons it by outpoint; each abandoned coin is reported with its value.
+  // Anyone can send a coin to a container address, and the old code could spend it as its container: a second
+  // satoshi-container coin blocks the upgrade unless the caller abandons it by outpoint, and a token-container coin
+  // the caller names stays too; each abandoned coin is reported with its value.
   const abandoned = new Set((options.leaveBehind ?? []).map((outpoint) => outpoint.toLowerCase()));
   const leftBehind: LeftBehindCoin[] = [];
 
@@ -354,7 +352,7 @@ export async function upgradeStatefulContract<T extends Artifact>(
 
   // CRYPTO-4 token-container migration: the old containers are spent with their flag=1 master path, drained at
   // their input indices, and re-minted at the replacement-bound covenant carrying each foreign category, amount and
-  // value. The compiler reserves one slot per token-container access site, and the live containers must fill them.
+  // value. The compiled upgrade counts its band of token inputs at run time, and the funding input ends it.
   const tokenContainers = await planTokenContainers(
     provider, oldContract.inner, categoryId, options.tokenContainerCategoryIds ?? [], onChainState.state,
     abandoned, leftBehind,

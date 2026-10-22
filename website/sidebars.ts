@@ -114,6 +114,7 @@ const sidebars: SidebarsConfig = {
         'guides/covenants',
         'guides/lifecycle',
         'guides/cashtokens',
+        'guides/erc20-tokens',
         'guides/deployment',
         'guides/concurrency',
         'guides/infrastructure',

@@ -573,7 +573,7 @@ Every stateful function has a modifier set that defines its state-lifecycle effe
 | `pure` | No state access | no |
 | `view` | Read state, do not write | no |
 | `payable` | May receive satoshi inputs | no |
-| `virtual` | No-op; all functions are implicitly virtual | no |
+| `virtual` | Lets a derived contract override the function; without it the function is final (abstract functions are implicitly virtual) | no |
 | `override` | Marks an override of an inherited function | no |
 | `internal` / `external` / `public` / `private` | Visibility (at most one) | no |
 | `unsafe(tier)` | Disables some or all covenant checks | yes |

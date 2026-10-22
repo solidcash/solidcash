@@ -859,7 +859,10 @@ rerun: the marketplace corpus compiled cold at the final master is identical to 
   coin there stranded the real container), funded entry migration with the mock-only `addUtxo`, and left dynamic and
   value chunks at the old lock. It now plans every entry and container from full listings, funds from the caller,
   refuses before broadcast while a genuine record would be stranded, and takes `leaveBehind` for donated coins. Test:
-  `UpgradeMigrationCompleteness.test.ts`.
+  `UpgradeMigrationCompleteness.test.ts`. The compiled upgrade then counted its token-container band at run time
+  (`e72f00338`, merged from `feat/bch-native-wrapper`), so every live container coin migrates and the fixed slot count
+  the planner held each container to is gone; an argument-keyed container no category names is refused. Test:
+  `TokenContainerUpgradeMigration.test.ts`.
 - **Batched destroy** (`2d885fa23`): containers go in the final batch; junk coins at container addresses are skipped.
   Test: `BatchedDestroyContainers.test.ts`.
 - **KCHAIN-1** (`bd801e060`, `d94df696f`, `865fb9e07`, `d2fdd8fe1`, `ebf77f670`). Each step commits a 64-byte link
@@ -907,7 +910,7 @@ needs VM evidence, `rejectedWith` has no source fallback).
   protocol, and the state-access path does not pin the master commitment (2026-07 LOW, no impact today).
 - Routes without a verifier: the trailing band counts as claimed as a whole once a trailing row runs, and an unused slot
   of a collection a run handler names is not pinned.
-- CRYPTO-4: a parameter-keyed token container needs a runtime count; dynamic and value chunks have no migration path.
+- CRYPTO-4: dynamic and value chunks have no migration path.
 - A direct merge of masters holding records checks them relative to `OP_INPUTINDEX` (liveness).
 - Graph-route band: the route pin skips `[master, master + blockSize)` at the compile-time block size, while the
   verifier census walks only the physical block, so with the ledger last the fee slot falls inside the skip window when

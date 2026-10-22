@@ -1,0 +1,9 @@
+pragma solidcash >=0.8.0;
+
+import { BchNativeWrapper } from "../BchNativeWrapper.scash";
+
+// An ERC20 ledger over an existing CashTokens category, which it wraps one to one. Deploy it with
+// `nativeToken: { category }` and the same category as the constructor argument.
+contract MinimalWrappedToken() is BchNativeWrapper {
+    constructor(bytes32 underlying_) BchNativeWrapper(underlying_) { }
+}

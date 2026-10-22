@@ -899,6 +899,12 @@ export class StatefulTransactionBuilder {
     return !this.keccakLoopPrecedesTrailingUser && this.insertLoopPredecessorInputs.length > 0;
   }
 
+  private get keccakChainFollowsBlock(): boolean {
+    return this.keccakLoopSideCars.length > 0
+      && (this.masterUtxo?.unlocker as { abiFunction?: { keccakChainReads?: boolean } })
+        ?.abiFunction?.keccakChainReads === true;
+  }
+
   private blockLayout?: FunctionBlockLayout;
   private messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly valueChunkWriteStagingSession: ValueChunkWriteStagingSession;
@@ -2226,6 +2232,7 @@ export class StatefulTransactionBuilder {
       plannedReturnOutputIndex: this.plannedReturnOutputIndex,
       delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
+      keccakChainFollowsBlock: this.keccakChainFollowsBlock,
       builtReturnEventOutputIndices: this.builtReturnEventOutputIndices,
       tailReturnEventOutputs: () => this.tailReturnEventOutputs(),
       addReturnOutput,

@@ -24,6 +24,8 @@ export interface MaterializeReturnEventOutputsHost {
   readonly plannedReturnOutputIndex: number;
   readonly delegateEntriesAfterLowLevel: boolean;
   readonly pendingReturnEventOutputs: readonly ReturnEventRecord[];
+  /** Chained keccak side-cars follow the complete fixed block (FINAL at blockSize + fullBlocks). */
+  readonly keccakChainFollowsBlock?: boolean;
   builtReturnEventOutputIndices: Map<string, number>;
   tailReturnEventOutputs(): readonly ReturnEventRecord[];
   addReturnOutput(builder: { addOutput(output: Output): unknown }, identity: string, output: Output): void;
@@ -193,12 +195,12 @@ export function materializeReturnEventOutputs(
     placedPrimaryReturnIndices.add(absIndex);
   }
   if (!host.delegateEntriesAfterLowLevel
-    && (host.blockLayout?.trailingCapacity ?? 0) > 0
+    && ((host.blockLayout?.trailingCapacity ?? 0) > 0 || host.keccakChainFollowsBlock === true)
     && host.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')
     && host.pendingReturnEventOutputs.length === 0
     && placedPrimaryReturnIndices.size === 0) {
-    // A balanced block cannot collapse an inactive return slot: doing so
-    // shifts the bounded trailing region one position left.
+    // A balanced block, or one a keccak chain follows, cannot collapse an inactive return slot: doing so
+    // shifts the bounded trailing region (or the chain's side-cars) one position left.
     builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
   }
 }

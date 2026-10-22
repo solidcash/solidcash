@@ -9,7 +9,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { buildKeccakChainSidecars, pushDataBytes } from '../../src/keccak/keccakComputeSidecar.js';
-import type { Utxo } from '../../src/interfaces.js';
+import type { TransactionDetails, Utxo } from '../../src/interfaces.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
@@ -32,6 +32,22 @@ contract ChainBinding {
     }
 }`;
 const ARTIFACT = compileString(SOURCE, { forceStateful: true, enforceFinalRequire: false });
+// A returning chain function: its block ends in a returnEvent slot that a plain call does not emit.
+const RETURNING_SOURCE = `
+contract ChainReturn {
+    bytes32 digest;
+
+    function record(bytes memory x) public returns (bytes32) {
+        bytes32 h = keccak256(x);
+        digest = h;
+        return h;
+    }
+
+    function check(bytes32 expected) public view {
+        require(digest == expected);
+    }
+}`;
+const RETURNING = compileString(RETURNING_SOURCE, { forceStateful: true, enforceFinalRequire: false });
 
 const vm = createVirtualMachineBch2026();
 const SALT = new Uint8Array(32);                      // shared salt: the brand check is skipped
@@ -107,8 +123,9 @@ const digestFrom = (state: Uint8Array, remainder: Uint8Array): Uint8Array => {
   return Uint8Array.from({ length: 32 }, (_v, k) => Number((out[k >> 3] >> BigInt(8 * (k & 7))) & 0xffn));
 };
 
+type Call = { build(): Promise<TransactionBuilder>; send(): Promise<TransactionDetails> };
 type Deployed = {
-  getFunction(name: string): (...args: unknown[]) => { build(): Promise<TransactionBuilder>; send(): Promise<unknown> };
+  getFunction(name: string): (...args: unknown[]) => Call & { emitReturn(): Call };
   categoryId: string;
 };
 
@@ -202,6 +219,45 @@ describe('KCHAIN-1 chained keccak256 side-car binding', () => {
       };
       expect(errors([alteredLegs[0], alteredLegs[1], final])).toEqual([undefined, undefined, expect.any(String)]);
     }
+  });
+
+  it('settles a returning chain function: its unemitted return slot keeps FINAL past the whole block', async () => {
+    const layout = RETURNING.abi.find((fn) => fn.name === 'record')!.blockLayout!;
+    expect(layout.slots.at(-1)?.kind).toBe('returnEvent');
+    const signer = await fundedSigner(8, 10_000_000n);
+    const hasher = (await getContractFactory(RETURNING, signer).deploy()) as unknown as Deployed;
+    const salt = hexToBin(hasher.categoryId).slice().reverse();
+    const chainLock = binToHex(keccakChainLockingBytecode(salt, 'final', true));
+    // A plain call emits no return; the covenant still reads FINAL at blockSize + fullBlocks.
+    const preimage = bytes(300);
+    const built = await hasher.getFunction('record')(preimage).build();
+    const { transaction, sourceOutputs } = built.buildLibauthProgram();
+    const chainInputs = sourceOutputs.flatMap((output, index) => (
+      binToHex(output.lockingBytecode) === chainLock ? [index] : []));
+    expect(chainInputs).toEqual([0, 1, 2].map((step) => layout.blockSize + step));
+    expect(chainInputs.map((index) => binToHex(transaction.outputs[index].token!.nft!.commitment)))
+      .toEqual(keccakChainCommitments(preimage).map(binToHex));
+    for (const inputIndex of [0, ...chainInputs]) {
+      expect(vm.evaluate({ sourceOutputs, transaction, inputIndex }).error).toBeUndefined();
+    }
+    await hasher.getFunction('record')(preimage).send();
+    await expect(hasher.getFunction('check')(keccak_256(preimage)).send()).resolves.toBeDefined();
+    // The emitted carrier occupies the same slot and reads the digest back.
+    const second = bytes(400);
+    const emitted = await hasher.getFunction('record')(second).emitReturn().send();
+    const digest = binToHex(keccak_256(second));
+    expect(emitted.outputs.some((output) => output.token?.nft?.capability === 'none'
+      && binToHex(output.token.nft.commitment).includes(digest))).toBe(true);
+    await expect(hasher.getFunction('check')(keccak_256(second)).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  it('keeps a message-bus participant on its fixed compute slot, so no chain sits past its published block', () => {
+    const bus = compileString(RETURNING_SOURCE, { forceStateful: true, enforceFinalRequire: false, messageBus: true });
+    expect(bus.abi.find((fn) => fn.name === 'record')!.keccakChainReads).toBe(true);
+    const route = bus.messageBus!.route;
+    expect(bus.messageBus!.admittedHandlerIds).toContain('record');
+    expect(route.keccakChainReads).toBeUndefined();
+    expect(route.blockLayout!.slots.some((slot) => slot.kind === 'keccakSideCar')).toBe(true);
   });
 
   it('leaves contracts that do not hash long preimages byte-identical', () => {

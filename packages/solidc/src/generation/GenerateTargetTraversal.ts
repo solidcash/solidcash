@@ -50076,6 +50076,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const delegatedCollectionHashes = (node.splitDelegateCensusedCollectionSignatures ?? [])
       .map((signature) => computeCollectionHash(signature));
+    const upgrade = allowUpgradeDataNftGrowth ? node : undefined;
+    // A pinned count reads only the transaction and the executing input, so the entries share one helper per pin.
+    // Outlining cannot share it: the count hands its parked indices to the pin on the alternate stack.
+    if (pin !== undefined && upgrade === undefined && delegatedCollectionHashes.length === 0) {
+      const key = `countedRecords:${pin.span}:${pin.verifierLock === undefined ? '' : binToHex(pin.verifierLock)}`;
+      if (this.invokeSharedEntryCheck(key, (t, l) => t.emitOwnCategoryMutableNftCount([], undefined, pin, l), loc)) {
+        return;
+      }
+    }
+    this.emitOwnCategoryMutableNftCount(delegatedCollectionHashes, upgrade, pin, loc);
+  }
+
+  /** The count of emitOwnCategoryMutableNftConservation. `upgrade`: the direct upgrade whose data-NFT growth it admits. */
+  private emitOwnCategoryMutableNftCount(
+    delegatedCollectionHashes: readonly Uint8Array[], upgrade: FunctionDefinitionNode | undefined,
+    pin: CountedRecordPin | undefined, loc: SingleLocationData,
+  ): void {
     const emitExcludeDelegatedCollections = (isOutput: boolean): void => {
       // Stack: [.., input/output index, own-category-mutable match]. A split facet's sorted-batch verifier
       // counts *all* inputs and outputs at each listed collection address and pins the expected topology.
@@ -50145,7 +50162,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(); // (loop_i)
     if (pin !== undefined) this.emitCountedRecordPin(pin, loc);
 
-    if (allowUpgradeDataNftGrowth) {
+    if (upgrade !== undefined) {
       // A direct upgrade co-spends every old data NFT, and no entry/chunk NFT. This also keeps a destroyed,
       // unaccessed mutable input from being masked by minting an extra data NFT.
       this.emit(Op.OP_DUP, loc);
@@ -50179,11 +50196,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (loop_j)
 
-    if (allowUpgradeDataNftGrowth) {
+    if (upgrade !== undefined) {
       // The only excess outputs allowed are a contiguous run right after the re-minted data-NFT band, each at the
       // canonical data-NFT covenant of this category bound to the replacement's lock. Count that run back into the
       // balance; the count above still refuses a mutable output beyond the run or at another locking bytecode.
-      this.emit(encodeInt(BigInt(1 + 2 * this.dataNftCount + this.upgradeContainerOutputShift(node))), loc);
+      this.emit(encodeInt(BigInt(1 + 2 * this.dataNftCount + this.upgradeContainerOutputShift(upgrade))), loc);
       this.pushToStack('(upgrade_new_data_j)');
       this.emit(Op.OP_BEGIN, loc);
       this.emit(Op.OP_DUP, loc);

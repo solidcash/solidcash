@@ -109,6 +109,7 @@ const sidebars: SidebarsConfig = {
         'guides/stateful-guide',
         'guides/state-journal',
         'guides/message-bus',
+        'guides/framed-composition',
         'guides/block-oracles',
         'guides/covenants',
         'guides/lifecycle',

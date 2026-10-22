@@ -5,7 +5,8 @@ title: ABI Encoding & Call Data
 SolidCash has two ABI wire formats. Native mode uses a compact Bitcoin Script pushdata format and SHA-256
 selectors. The optional `evmCompat` mode uses Ethereum-style 32-byte head/tail encoding and Keccak-256 selectors
 for the supported Solidity ABI types. Pick the format for the system at the other end of the byte string; the two
-formats are not interchangeable.
+formats are not interchangeable. `pragma solidity` sources require `evmCompat`, and new SolidHat projects set
+`compiler: { evmCompat: true }` in `solidcash.config.ts`.
 
 This ABI is also distinct from the state commitment codec. State fields, vmap nodes, and chunk NFTs have their own
 authenticated layouts described in [State Storage & Data Encoding](./storage-model.md).
@@ -31,7 +32,8 @@ bytes payload = abi.encode(uint256(42), true, hex"cafe");
     abi.decode(payload, (uint256, bool, bytes));
 ```
 
-`abi.decodeAt`'s final integer is a zero-based **schema index**, not a byte offset:
+`abi.decodeAt`'s final argument is a zero-based **schema index** into the type tuple, not a byte offset. It must
+be an integer literal:
 
 ```solidity
 bytes4 label = abi.decodeAt(data, (uint256, bytes4, bool), 1);
@@ -62,7 +64,8 @@ Native function selectors are:
 selector = sha256(canonicalFunctionSignature)[0:4]
 ```
 
-That rule applies consistently to ABI functions, external/public dispatch, `.selector`, and `msg.sig`.
+That rule applies consistently to ABI functions, external/public dispatch, `.selector`, `msg.sig`, and
+`type(I).interfaceId`.
 
 ## EVM-compatible format
 

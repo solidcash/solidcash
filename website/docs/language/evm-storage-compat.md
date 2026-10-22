@@ -2,12 +2,19 @@
 title: EVM Storage & ERC-7201 Compatibility
 ---
 
-SolidCash does not run an EVM or store a flat `2²⁵⁶` array of 32-byte words. It does understand the storage
+SolidCash does not run an EVM or store a flat `2^256` array of 32-byte words. It does understand the storage
 assembly generated and commonly written for Solidity contracts. The compiler resolves supported `sload`,
 `sstore`, `.slot`, OpenZeppelin `StorageSlot`, and ERC-7201 shapes into authenticated state NFTs.
 
 This is a compile-time bridge over the native [state storage model](./storage-model.md), not an EVM emulator.
-The resulting transaction still has to co-spend and recreate the required data, entry, or chunk NFTs.
+The resulting transaction still has to co-spend and recreate the required data, entry, or chunk NFTs. The bridge
+works in native compiles and under `evmCompat`.
+
+:::caution Experimental
+This page lists the storage shapes the compiler supports. Other Solidity storage shapes are experimental in this
+release: most fail with a lowering diagnostic, and one that compiles still needs a test of every path across at
+least two state transitions.
+:::
 
 ## Logical slots and physical state
 
@@ -183,8 +190,8 @@ contract Config() {
 }
 ```
 
-Both the inline `.value` form and a local `XSlot storage pointer` alias are supported. Constant keys—including
-top-bit-set `bytes32` hashes—are recorded in the artifact so the SDK can find the entry without a caller-provided
+Both the inline `.value` form and a local `XSlot storage pointer` alias are supported. Constant keys, including
+top-bit-set `bytes32` hashes, are recorded in the artifact so the SDK can find the entry without a caller-provided
 key. `uint256`, `bool`, and `bytes32` slot values have the intended word round-trip; the BCH-address warning above
 still applies to `AddressSlot`.
 
@@ -228,7 +235,9 @@ EIP-7201 formula. A runtime string expression lowers to the full formula and the
 cost and sidecar requirements described in [Computation Sidecars](./computation-sidecars.md). The same builtin is
 accepted in Yul.
 
-`contract C layout at ...` is accepted for source compatibility but ignored: it has no effect on NFT layout.
+`contract C layout at <base>` is accepted for source compatibility and has no effect on the NFT layout. When the
+compiler can evaluate the base, it offsets the EVM slot numbers that `.slot`, `sload` and `sstore` see, as in
+Solidity; otherwise the compiler warns and the slot numbers start at zero.
 
 ## Porting and security checklist
 

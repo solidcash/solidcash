@@ -151,6 +151,10 @@ await call.send();
 the added input, its unlocker, token change, and BCH funding remain transaction-builder responsibilities.
 Consensus enforces the category's overall token balance.
 
+The amount must be positive, and the called function must use `this.tokens[category]` so that the transaction
+includes the container. When no container exists for the category yet, the deposit creates it: a new container
+output of 1,200 satoshis holding the deposited tokens.
+
 ## SDK access
 
 Given a connected `StatefulContract` named `vault` and a display-order category hex string:
@@ -167,8 +171,8 @@ const firstCategory = await container.category;
 ```
 
 The same address is available as `vault.getTokenContainerAddress(category)`. The accessor filters out foreign
-categories paid to that address. `utxos`, `amount`, `getAmount()`, `getNftCount()`, and `commitments` operate over
-all matching provider UTXOs; `category` is the first matching UTXO's category or `''` when none exists.
+categories paid to that address. `utxos`, `amount`, `getAmount()`, `getNftCount()` (a `number`), and `commitments`
+operate over all matching provider UTXOs; `category` is the first matching UTXO's category or `''` when none exists.
 
 An ordinary function call uses compiler effect metadata and covenant execution to derive its transfer outputs.
 If derivation cannot determine a recipient, amount, commitment, or capability, provide the exact outputs:

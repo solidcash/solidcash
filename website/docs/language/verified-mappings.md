@@ -42,7 +42,9 @@ contract Ledger() {
 - Compound assignment is an authenticated read-modify-write.
 - `delete mapping[key]` assigns the default value; it does not promise physical node removal.
 - Nested mappings derive one composite authenticated slot from all key components.
-- Public mappings receive generated getters and may be read by other contracts through an interface.
+- Other contracts read a mapping through an interface that declares it, with the same membership proof. Under
+  `evmCompat`, a `public` mapping also gets a Solidity getter function.
+- Bare access (`balances[account] += amount`) compiles to the same bytecode as the `this.` form.
 
 ## Authenticated sorted-list model
 
@@ -50,7 +52,7 @@ Each mapping is stored as a sorted, singly linked list of mutable entry NFTs. Th
 HEAD sentinel at slot zero:
 
 ```text
-HEAD(0) ──▶ K1 ──▶ K2 ──▶ ... ──▶ Kn ──▶ 0 (+infinity)
+HEAD(0) --> K1 --> K2 --> ... --> Kn --> 0 (+infinity)
 ```
 
 Every node belongs to all of these domains:
@@ -80,7 +82,8 @@ slot = positive255(sha256(sha256(k0) || sha256(k1) || ... || sha256(kn)))
 lets Bitcoin Script compare the full domain as non-negative numbers. Slot zero is reserved for HEAD.
 
 The key encoding is type-aware. An `address` key hashes its canonical locking bytecode, not its CashAddress text.
-The compiler and SDK use the same codec before hashing.
+Under `evmCompat`, an `address` key is hashed by its 20-byte identity instead (except under the experimental framed
+convention). The compiler and SDK use the same codec before hashing.
 
 ### Node commitments
 
@@ -153,9 +156,9 @@ successor while updating its value.
 An insert consumes the strict predecessor `P` and produces two authenticated nodes:
 
 ```text
-before: P.slot ──▶ P.nextSlot
+before: P.slot --> P.nextSlot
 
-after:  P.slot ──▶ requestedSlot ──▶ old P.nextSlot
+after:  P.slot --> requestedSlot --> old P.nextSlot
 ```
 
 The covenant verifies the ordering inequalities, the predecessor's unchanged value, both output addresses and
@@ -174,8 +177,8 @@ accepted as part of the new value.
 ## Values which exceed one commitment
 
 The structural `slot` and `nextSlot` fields leave 64 commitment bytes for a value. Fixed-width encodings of at
-most 64 bytes fit inline. Variable-width values—strings, bytes, dynamic arrays, chunkable structs, and oversized
-signatures—use a length-aware representation.
+most 64 bytes fit inline. Variable-width values (strings, bytes, dynamic arrays, chunkable structs, and oversized
+signatures) use a length-aware representation.
 
 ### Inline variable value
 
@@ -202,7 +205,8 @@ collection, slot, and root, while each commitment contains:
 chunkIndexLE16[2] || chunkData[1..126]
 ```
 
-For length `L > 60`, reconstruction expects exactly `ceil((L - 28) / 126)` chunks. Indexes must be consecutive
+For length `L > 60`, reconstruction expects exactly `ceil((L - 28) / 126)` chunks. The codec allows up to 32,768
+chunks, but a value assembled on chain must still fit the 10,000-byte stack-item limit. Indexes must be consecutive
 from zero; every non-final chunk must contain 126 bytes; the final chunk must have the exact remainder; the result
 must have length `L`; and its SHA-256 must equal `root`.
 
@@ -212,7 +216,9 @@ top-level dynamic state variable. See [State Storage & Data Encoding](./storage-
 
 ## Mapping iteration
 
-Mappings are non-iterable by default, matching Solidity's source model. Opt in explicitly:
+Mappings are non-iterable by default, matching Solidity's source model, and iterating a plain mapping is a compile
+error that names the fix. Opt in explicitly with `enumerable`. The visibility may come before `enumerable` or after
+the mapping type, so `public enumerable mapping(address => uint256) balances;` also parses.
 
 ```solidity
 contract Registry() {
@@ -242,9 +248,12 @@ The three modes are:
 
 | Syntax | Iteration value |
 | --- | --- |
-| `for (V value of m)` | Values |
-| `for (K key in m)` | Keys |
-| `for (K key, V value of m.entries)` | Key/value pairs |
+| `for (V value of this.m)` | Values |
+| `for (K key in this.m)` | Keys |
+| `for (K key, V value of this.m.entries)` | Key/value pairs |
+
+The loop source is always written with `this.`. Declaring a mapping `enumerable` does not change the storage or
+security model; plain and enumerable mappings are both vmaps.
 
 Iteration co-spends the reachable list and verifies the HEAD, ordering, links, category, collection address, and
 completeness. A missing middle node breaks the predecessor-to-successor link check. Values are stored in the entry
@@ -269,6 +278,37 @@ the number of entries, so do not use unbounded iteration on a mapping an attacke
 
 Runtime-bounded batch writes and iteration are accepted only for shapes the compiler can settle safely. Unsupported
 dynamic key, aliasing, loop, or large-value combinations fail closed rather than emitting a weaker transition.
+
+### Windowed iteration
+
+A values loop can walk a bounded page per call instead of the whole list, so a large mapping can be processed over
+several transactions:
+
+```solidity
+bytes32 cursor;                                   // slot of the last entry visited
+uint256 total;
+enumerable mapping(bytes32 => uint256) amounts;
+
+function sumPage() public {
+    for (uint256 amount of this.amounts.window(cursor, 10)) {
+        this.total += amount;
+    }
+}
+```
+
+- The form is `for (V value of this.m.window(cursor, N))` on an `enumerable` mapping. It yields values only.
+- `cursor` names a `bytes32` state variable; any other type is a compile error. It holds the 32-byte slot of the
+  last entry visited, not a key. Zero means the start of the list.
+- `N` is a positive integer literal: the most entries one call visits.
+- Each call co-spends the entry whose slot equals the stored cursor (the HEAD sentinel when the cursor is zero) and
+  at most `N` entries after it, stopping at the end of the list. It then writes the slot of the last entry visited
+  back to `cursor`. The covenant checks that the first entry matches the stored cursor and that the entries are
+  consecutive links, so a spender cannot skip an entry.
+- The walk follows slot order (key hashes), not insertion order. An entry inserted behind the cursor is not
+  visited until the walk starts again.
+- Once the cursor reaches the last entry, later calls visit nothing. Assign `bytes32(0)` to the cursor (for
+  example in an authorized reset function) to start again from the head.
+- The SDK reads the stored cursor and selects the window. No iteration keys are needed.
 
 ## Structs, arrays, and storage references
 
@@ -343,6 +383,12 @@ address and collection layout. A stateful external call can update the mapping a
 caller should register the concrete callee through connect-time `externals` or `withExternalCall()` so the SDK can
 find the right collection UTXOs.
 
+:::caution Experimental
+Updating another contract's state through a composed call, and message-bus composition, are experimental in this
+release. Test every composed shape under real limits before relying on it. See
+[Atomic Calls with the Message Bus](/docs/guides/message-bus).
+:::
+
 When several logical invocations of one participant use the same mapping in a message-bus transaction, the
 participant's collection journal preserves sequential semantics: later rows observe earlier pending writes and one
 final list transition is settled. Graphs whose key identities or settlement authority cannot be proved are rejected
@@ -399,8 +445,8 @@ small update does not rewrite an unrelated large chunked value.
 
 ## Related documentation
 
-- [Stateful Contracts](./stateful-contracts.md) — source declarations and operations
-- [State Storage & Data Encoding](./storage-model.md) — all NFT families and codecs
-- [How the State Journal Works](/docs/guides/state-journal) — read-after-write and final settlement
-- [Cross-Contract Calls & Results](./cross-contract-calls.md) — authenticated external state access
-- [Concurrency](/docs/guides/concurrency) — UTXO contention and contract threads
+- [Stateful Contracts](./stateful-contracts.md): source declarations and operations
+- [State Storage & Data Encoding](./storage-model.md): all NFT families and codecs
+- [How the State Journal Works](/docs/guides/state-journal): read-after-write and final settlement
+- [Cross-Contract Calls & Results](./cross-contract-calls.md): authenticated external state access
+- [Concurrency](/docs/guides/concurrency): UTXO contention and contract threads

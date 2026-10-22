@@ -26,9 +26,17 @@ contract Counter(pubkey admin) {
 
 | Modifier | Access |
 |----------|--------|
-| `public` | Readable from external contracts; auto-generates a getter |
+| `public` | Accessible everywhere in source; other contracts read it through an interface that declares it. Under `evmCompat` it also gets a Solidity getter function. |
+| `external` | Like `public`, and the variable is stored alone in its own data NFT (native only; `evmCompat` rejects it) |
 | `internal` | Accessible within the contract and inheriting contracts |
 | `private` | Accessible only within the declaring contract |
+
+Visibility is a source-level rule. State lives in NFT commitments that anyone can read on chain, and the SDK's
+`getState()` returns every field.
+
+An `external` state variable is also a layout instruction: each one gets a data NFT of its own. Contract threads
+partition data NFTs, so functions that touch different `external` variables can run on different threads; see
+[Concurrency](/docs/guides/concurrency#design-state-for-partitions).
 
 ### Constants & Immutables
 
@@ -43,12 +51,22 @@ contract Config() {
 }
 ```
 
-- `constant` - value fixed at compile time; cannot reference runtime values.
-- `immutable` - assigned once in the constructor; read-only in all other functions.
+- `constant` - value fixed at compile time; cannot reference runtime values. It is compiled into the bytecode and
+  takes no state.
+- `immutable` - assigned once in the constructor; assigning it in any other function is a compile error. Unlike
+  Solidity, the value is still stored in a data NFT.
+- `transient` - not stored at all. Every call starts the variable at its type default and drops it when the call
+  ends, like a local variable, and the compiler warns. It exists for Solidity code written for EIP-1153.
+
+```solidity
+bool transient locked;   // not persisted: false at the start of every call
+```
 
 ## State Variable Assignment
 
-State variables are accessed and modified using the `this.` prefix.
+State variables are read and written with the `this.` prefix or by their bare name. A bare name compiles to the
+same bytecode as the `this.` form; it refers to the state variable unless a local variable or parameter of the same
+name shadows it.
 
 ```solidity
 contract Counter() {
@@ -60,6 +78,11 @@ contract Counter() {
         this.owner = hash160(bytes(msg.sender));
     }
 }
+```
+
+```solidity
+counter += 1;            // same as this.counter += 1
+balances[account] = 0;   // same as this.balances[account] = 0
 ```
 
 :::caution
@@ -197,12 +220,26 @@ Mapping iteration follows the authenticated vmap links. All reachable entry NFTs
 transaction inputs, and the covenant verifies that the list is complete and correctly ordered.
 :::
 
+The loop source is always written with `this.` (`this.balances`, `this.balances.entries`). The visibility may come
+before `enumerable` or after the mapping type, so `public enumerable mapping(bytes20 => int) balances;` also parses.
+
+Entry NFTs store a hash of each key, not the key itself. Before a key or entry loop runs, pass the encoded keys to
+the SDK with `sc.setIterationKeys('balances', [key1, key2])`. Key and entry loops support single-key mappings only.
+Iteration cost grows with the number of entries, so do not iterate a mapping that an attacker can grow.
+
+A values loop can instead walk a bounded page per call, resuming from a `bytes32` cursor state variable:
+`for (int balance of this.balances.window(cursor, 10))`. See
+[Windowed iteration](./verified-mappings.md#windowed-iteration).
+
 ## Dynamic Arrays
 
 Unbounded state arrays whose elements are chunk-packable are dense, length-tracked values backed by a data-NFT
 length header and chunk NFTs. This is the default for bounded integers, fixed bytes, strings, bytes, addresses,
 fixed- or variable-width structs, and supported nested arrays. They support push, pop, index access, iteration,
-and swap-with-last deletion.
+and swap-with-last deletion. `.length` is a `bigint` natively and a `uint256` under `evmCompat`.
+
+Each chunk NFT holds up to 120 bytes of the encoded array. A read or write handles the whole chunk run, so its cost
+grows with the array, and the decoded array must fit the 10,000-byte stack-item limit.
 
 ```solidity
 contract TodoList() {
@@ -239,9 +276,12 @@ An inline packed array must fit the data NFT's 128-byte commitment budget togeth
 fields. Prefer the default chunk-packed `T[]` for a collection that must grow beyond that bound.
 :::
 
-Native bounded non-packed arrays, and any form ineligible for the dense backend, are represented as entry-NFT
-collections. They are sparse, mapping-like collections rather than length-tracked blobs. Backend selection and
-operation support are described in [Arrays](./arrays.md); both physical chunk formats are described in
+Native bounded non-packed arrays (`uint256[1000] slots;`), and any form ineligible for the dense backend, are
+represented as entry-NFT collections. They are sparse, mapping-like collections rather than length-tracked blobs,
+with no `.length`, `.push()` or `.pop()`. The `chunkedArrays: false` compiler option sends otherwise eligible
+unbounded arrays to this collection backend too. Under `evmCompat`, a bounded `T[N]` is instead one packed field, or
+a chunk-packed value when it does not fit one commitment. Backend selection and operation support are described in
+[Arrays](./arrays.md); both physical chunk formats are described in
 [State Storage & Data Encoding](./storage-model.md#dense-array-backends).
 
 ## Token Containers
@@ -251,14 +291,14 @@ category gets a deterministic covenant address bound to the contract's category.
 
 ### Token Container Properties
 
-`this.tokens[category]` exposes the container's `.tokenAmount` (fungible amount) and `.nftCount` fields.
-Output aggregates are available through `this.outState.tokens[category].tokenAmount` and
-`this.outState.tokens[category].nftCount`.
+`this.tokens[category]` exposes `.tokenAmount` (the fungible amount in the container inputs) and `.nftCount`, both
+`bigint`, plus `.tokenCategory` and `.nftCommitment` of the routed container input. Output aggregates are available
+through `this.outState.tokens[category].tokenAmount` and `this.outState.tokens[category].nftCount`.
 
 ### Token Container Methods
 
-`.transfer(lockingBytecode, amount)` sends fungible tokens, and `.transferNft(lockingBytecode, commitment, amount)`
-sends an NFT, each by enforcing the matching transaction output.
+`.transfer(lockingBytecode, amount)` sends fungible tokens, and `.transferNft(lockingBytecode, commitment, capability)`
+sends an NFT (capability `0` immutable, `1` mutable, `2` minting), each by enforcing the matching transaction output.
 
 ```solidity
 contract Vault() {
@@ -281,9 +321,10 @@ contract Vault() {
 }
 ```
 
-Category-key rules, covenant preservation, deposits, SDK access, auto-derived outputs, and the current
-multiple-UTXO limitation are covered in the dedicated
-[Token Containers](./token-containers.md) reference.
+To deposit tokens, add the token input to the call in the SDK and declare the amount with
+`.tokenContainerDeposit(category, amount)`; the called function must use `this.tokens[category]`. Category-key
+rules, covenant preservation, deposits, SDK access, auto-derived outputs, and the current multiple-UTXO limitation
+are covered in the dedicated [Token Containers](./token-containers.md) reference.
 
 ## Satoshi Container
 
@@ -300,6 +341,20 @@ contract Treasury(pubkey admin) {
     }
 }
 ```
+
+Read the container in the same transaction with `this.balance` and `this.outState.balance`:
+
+```solidity
+require(this.balance >= amount);           // satoshi-container inputs of this transaction
+require(this.outState.balance >= floor);   // satoshi-container outputs of this transaction
+payable(to).transfer(amount);              // the same payment as this.transfer(to, amount)
+```
+
+- `this.balance` is the satoshi container's value in this transaction's inputs. `addr.balance`, including
+  `address(this).balance`, is something else: it sums this transaction's inputs locked to `addr`. Neither is a
+  chain-wide balance.
+- `msg.value` is the net change of the satoshi container in this call (outputs minus inputs). It is a `bigint`
+  natively and a `uint256` under `evmCompat`. `payable` does not restrict it.
 
 Deploy with an initial balance using the SDK:
 
@@ -346,11 +401,16 @@ Under the hood, stateful contracts use CashToken NFTs to store state:
 | **Master NFT** | Contract identity and control | `minting` |
 | **Data NFTs** | State variable values (128 bytes each) | `mutable` |
 | **Entry NFTs** | Verified mapping nodes: key slot, next link, and value (one per key) | `mutable` |
-| **Chunk NFTs** | Dynamic strings, bytes, arrays, and large mapping values | `mutable` |
+| **Chunk NFTs** | Dynamic strings, bytes and arrays (120-byte chunks); large mapping values (126-byte chunks) | `mutable` |
 | **Event NFTs** | Emitted event records | `none` |
 | **Return-event NFTs** | Authenticated cross-contract return values | `none` |
 | **Token containers** | Native FT/NFT custody per held category | Depends on the held token; an NFT is optional |
 | **Satoshi Container** | BCH balance (plain UTXO) | N/A |
+
+A data NFT commitment holds up to 128 bytes of fields. A dynamic value keeps its `uint32` byte length in a data NFT
+and its bytes in chunk NFTs of up to 120 bytes each. A mapping entry stores a fixed-width value of up to 64 bytes or
+a variable-width value of up to 60 bytes inline; a longer value keeps its length, a SHA-256 root and its first 28
+bytes in the entry and the rest in 126-byte continuation chunks.
 
 Every state-modifying transaction consumes these NFTs as inputs and produces updated versions as outputs. The contract bytecode verifies that output commitments match the expected new state - this is the **covenant** mechanism that makes stateful contracts trustless.
 

@@ -21,6 +21,11 @@ contract's locking bytecode. Lifecycle operations deliberately change that rule:
 threads, `merge` consolidates them, `upgrade` changes the protected bytecode, and `selfdestruct` consumes the
 contract permanently.
 
+An `upgrade` re-mints the data NFTs on the new bytecode, and the satoshi and token containers move with the master.
+Mapping entries follow one per transaction through a `migrateRecords` function. Values kept in chunk NFTs do not
+migrate yet, and the SDK refuses an upgrade that would strand one. See
+[Upgrades, Proxies & Delegatecall](./upgrades-proxies.md).
+
 :::important
 Stateful contracts use `p2sh32`. A contract **address** is the self-pinned master locking bytecode and is the handle
 used for cross-contract interaction. The category identifies the CashToken family; the address binds that category
@@ -29,8 +34,8 @@ to the contract code and constructor arguments.
 
 ## The contract's UTXO families
 
-One logical contract can own several kinds of UTXO. They share a category but have different covenants,
-commitments, and lifetimes.
+One logical contract can own several kinds of UTXO. Its own NFT families share the contract's category; the
+containers hold BCH or another category's tokens. Each kind has its own covenant, commitment format, and lifetime.
 
 | UTXO | CashToken capability | Purpose | Typical transition |
 | --- | --- | --- | --- |
@@ -41,8 +46,8 @@ commitments, and lifetimes.
 | Vmap value-chunk NFT | `mutable` | Continuation data for one large mapping value version | Root-addressed; replaced or garbage-collected on update |
 | Event NFT | `none` | A typed emitted event record | Created by `emit`; spendable for cleanup after 144 blocks |
 | Return-event NFT | `none` | An authenticated cross-contract or explicitly emitted return value | Created as an `OP_TRUE` output and disposable after use |
-| Token container NFT | `mutable` | Custody of a selected foreign CashToken category | Preserved or pays an authenticated token output |
-| Satoshi container | none | Contract-controlled BCH | Preserved, credited, or pays an authenticated BCH output |
+| Token container | The held token's own (fungible amount, an optional NFT, or both) | Custody of a selected foreign CashToken category | Preserved, credited, or pays an authenticated token output |
+| Satoshi container | No token | Contract-controlled BCH | Preserved, credited, or pays an authenticated BCH output |
 | Oracle/compute side-car | varies | Blockhash, keccak256, ecrecover, or message-bus support | Co-spent and normally self-preserved with a new result |
 
 These are implementation families, not source-level types. For example, assigning a long `string` still looks like
@@ -57,7 +62,9 @@ Each field has a data-NFT index and a field index. Fields are encoded in declara
 needs more than one data NFT, every commitment begins with its encoded NFT index; both the compiler and SDK verify
 that tag so sibling data NFTs cannot be swapped.
 
-An `external` state variable is deliberately isolated in its own data NFT. Struct values without mapping or
+An `external` state variable is deliberately isolated in its own data NFT. Contract threads partition data NFTs, so
+`external` variables let functions that touch different variables run on different threads; see
+[Concurrency](/docs/guides/concurrency#design-state-for-partitions). Struct values without mapping or
 dynamic-array fields are stored as ordinary data-NFT fields; structs containing either are recursively flattened
 into independently backed fields. Struct fields and packed arrays are placed last in a data NFT when their
 composite footprint would make safe following-field offsets ambiguous.
@@ -72,8 +79,9 @@ contract Profile() {
 ```
 
 `constant` values are compiled into the bytecode and occupy no state. `immutable` values are fixed during
-construction. A dynamic field occupies a hidden `uint32 <name>$len` header in the data layout; its value bytes live
-in chunks.
+construction but still occupy a data-NFT field. `transient` variables occupy nothing: each call starts them at
+their default value and drops them when it ends. A dynamic field occupies a hidden `uint32 <name>$len` header in the
+data layout; its value bytes live in chunks.
 
 ### Canonical state encoding
 
@@ -169,7 +177,8 @@ swap-with-last `.delete(index)`; collection-backed arrays instead have sparse ma
 
 The `chunkedArrays` compiler option defaults to `true`. Disabling it selects the legacy collection backend for
 otherwise chunk-packable unbounded arrays and changes the available dense-array behavior; treat that as a deliberate
-compatibility choice, not a storage optimization toggle.
+compatibility choice, not a storage optimization toggle. Under `evmCompat`, a bounded `T[N]` is one packed field,
+or a chunk-packed value created with all `N` elements when it does not fit one commitment.
 
 See [Arrays](./arrays.md) for the complete selection and operation matrix.
 

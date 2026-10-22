@@ -9410,6 +9410,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // A constructor's arm runs only in its category's genesis, ahead of anything its frame supplies.
     this.emitDirectGenesisGuard(node);
+    // C3, direct proxy, taken path: a forwarded selector dispatches on the impl, whose dispatcher lists every
+    // entry point. A non-delegate entry runs none of the delegate census (self-preservation, record conservation,
+    // proxy-output count, outside-layout pin), so on the taken path the co-spent proxy master leaves its records
+    // self-authorized and unpinned - the certified default proxy dropped its own count too. The delegate variant
+    // is only ever a co-spent proxy implementation, so make its non-delegate entries unspendable: a forwarded
+    // selector then reaches a delegate entry or nothing.
+    this.emitDelegateVariantNonDelegateEntryGuard(node);
     // Only ABI entry frames contain attacker-supplied raw stack values. An OP_DEFINE subroutine is reachable
     // exclusively through compiler-emitted typed calls (including function-pointer dispatch), whose operands have
     // already been checked at their external boundary and after every bounded operation/cast. Rechecking every
@@ -10566,6 +10573,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NIP, { location: functionBodyNode.location, positionHint: PositionHint.END });
       this.nipFromStack();
     }
+  }
+
+  /**
+   * C3: a non-delegate entry point of the lazy delegate variant is unspendable. The variant (artifact.delegate-
+   * Artifact) is only ever co-spent as a proxy implementation, reached by a forwarded selector. A non-delegate
+   * entry runs none of the delegate census, so reaching one on the taken path leaves the co-spent proxy's records
+   * self-authorized and unpinned. OP_0 OP_VERIFY (stack neutral) makes only delegate entries reachable; the
+   * constructor, fallback and receive are left alone. The standalone primary artifact is a separate compile and
+   * is unaffected.
+   */
+  private emitDelegateVariantNonDelegateEntryGuard(node: FunctionDefinitionNode): void {
+    if (!this.compilerOptions.autoDelegate || this.isDefineSubTraversal) return;
+    if (!node.isEntryPoint || node.isFallback || node.isReceive || node.name === '__construct') return;
+    if (node.modifiers.includes(FunctionModifier.DELEGATE)) return;
+    // A compiler-synthesized aggregate route or participant handler is reached through its authenticated verifier,
+    // not a raw forwarded selector, so it is not this hole and must stay spendable.
+    if (this.isCompilerMessageBusRoute(node) || this.ownsMessageBusParticipantBlock(node)) return;
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_VERIFY, loc);
   }
 
   /**
@@ -52501,13 +52528,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitPreserveOutsideLayoutOwnMutable(node: FunctionDefinitionNode, loc: SingleLocationData): void {
     if (this.framedMaster || this.readsRecordsFromFrame) return;
-    // A proxy delegate executes against the proxy's record block, not its own. Its consumed OLD value chunks are
-    // authentically admitted by the delegate's own record-conservation checks, and the proxy's `__forward`
-    // covenant pins the proxy block; the 1:1 outside-layout walk here cannot name those chunks' output coordinate
-    // (it changes with the rewrite), so it refuses a legitimate chunked value write instead of preserving it.
-    if (this.usesProxyStateBlockBase()) return;
+    // A routed delegate / owner-block route handler executes beside an authenticated participant block whose
+    // sibling participants and verifier sit below it; its route verifier settles those records, and the 1:1 walk
+    // would refuse them. Keep skipping that shape.
+    if (this.usesProxyStateBlockBase() && !this.usesDelegateExecutorBlockBase()) return;
     const blockSize = node.blockLayout?.blockSize;
     if (blockSize === undefined || blockSize <= 0) return;
+    // C3 on the TAKEN path of a direct delegatecall proxy. A direct delegate writes the proxy's records, so every
+    // record covenant self-authorizes on the co-spent proxy master. The proxy count alone balances a proxy record
+    // the delegate does not touch when it is rewritten in place (data flag 1) or destroyed and re-minted, and the
+    // certified default proxy drops even that count. Pin every proxy-category mutable input outside the proxy's
+    // master+data block 1:1 here, admitting only the record families this delegate legitimately rewrites.
+    if (this.usesDelegateExecutorBlockBase()) {
+      this.emitDelegateOutsideLayoutPin(node, loc);
+      return;
+    }
     // The walk must admit a record at a mintable lock only when such a record can sit outside the block: a loop
     // record, or a written dynamic var's OLD chunk (spent at its chunk lock and recreated with a different
     // commitment). Otherwise the shorter walk below preserves every own-category mutable 1:1, which is the only
@@ -52602,6 +52637,65 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_FROMALTSTACK, loc);
       this.emit(Op.OP_DROP, loc);
     }
+    this.popFromStack(1);
+  }
+
+  /**
+   * C3, direct delegatecall proxy, taken path. Every proxy-category (= proxy master category) mutable input below
+   * the proxy master or past its master+data block comes back at its own index with its lock, commitment and
+   * category, unless it sits at a lock this delegate legitimately rewrites: the data lock, a written collection's
+   * entry lock, a written dynamic variable's chunk lock, or a consumed value chunk's lock (VALUE_CHUNK_LOCK_LIST).
+   * The master (0x02) is skipped by the mutable filter and the data NFTs sit inside the excluded block, so the
+   * delegate's honest writes are not frozen while an untouched record can neither be moved nor destroyed. Stack
+   * neutral.
+   */
+  private emitDelegateOutsideLayoutPin(node: FunctionDefinitionNode, loc: SingleLocationData): void {
+    // Only the families this delegate rewrites may sit outside the block: its written collections' entries, its
+    // written dynamic variables' chunks, and the value chunks a long mapping write consumes. Admitting every
+    // record lock would let a co-spend rewrite an entry of a collection the delegate never named.
+    const writtenCollections = new Set<string>([
+      ...this.entrySlots
+        .filter((slot) => slot.operations.includes('write') || slot.operations.includes('delete'))
+        .map((slot) => slot.collection),
+      ...this.entrySlots.filter((slot) => slot.inLoop).map((slot) => slot.collection),
+      ...(node.collectionIterations ?? []).map((iteration) => iteration.collection),
+    ]);
+    const writtenDynamic = [...new Set([
+      ...(node.dynamicWrites ?? []), ...this.pendingDynamicWrites.keys(),
+    ])];
+    // No record family can sit outside the master+data block, so every proxy-category mutable there is preserved
+    // 1:1 with no admission (the shorter walk also avoids an empty admitted-lock list).
+    if (this.dataNftCount === 0 && writtenCollections.size === 0 && writtenDynamic.length === 0
+      && this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) < 0) {
+      this.emitPlainOutsideLayoutWalk(1 + this.dataNftCount, loc);
+      return;
+    }
+    const category = '(__outside_own_mutable)';
+    // The proxy master's category ++ 0x01 (emitMasterInputIndex resolves to the authenticated proxy master here).
+    this.emitOutsideLayoutCategory(category, loc);
+    // Rebuild the 32-byte category base and park the admitted record locks on the alternate stack for the walk.
+    this.emit(encodeInt(BigInt(this.getStackIndex(category))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emitMintableRecordLocks(
+      this.collectionDefinitions
+        .filter((collection) => writtenCollections.has(collection.name))
+        .map((collection) => this.vmapCollectionSignature(collection.name)),
+      loc,
+      { dynamicNames: writtenDynamic, includeDataLock: true },
+    );
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    // The proxy's co-spent record block is its master plus data NFTs (emitDelegateProxyStateOutputCount pins that
+    // population by lock). Exclude exactly that span; every other proxy-category mutable input, before the master
+    // or past the block, is held 1:1 or admitted by its lock above.
+    this.emitDirectOutsideLayoutLoop(category, true, () => {
+      this.emit(encodeInt(BigInt(1 + this.dataNftCount)), loc);
+    }, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_DROP, loc);
     this.popFromStack(1);
   }
 

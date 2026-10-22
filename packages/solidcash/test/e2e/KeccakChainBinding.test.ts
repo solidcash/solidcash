@@ -132,23 +132,30 @@ describe('KCHAIN-1 chained keccak256 side-car binding', () => {
       console.log(`KCHAIN-1 ${length} B: ${costs.join('; ')}`);
     }
 
-    // Through the SDK on mocknet: a 3-block preimage (START, CONT, FINAL). The send preflight applies the real
-    // BCH-2026 budget to this contract's own input too, and a 300-byte argument exceeds it there.
+    // Through the SDK on mocknet: START, CONTs and FINAL. The send preflight applies the real BCH-2026 budget to this
+    // contract's own input too. Its budget grows with the argument, while the 256-slot chain band's funders cost the
+    // same at any length, so a short chained preimage (400 bytes) exceeds it there; 2,000 bytes fits.
     const signer = await fundedSigner(8, 10_000_000n);
     const hasher = (await getContractFactory(ARTIFACT, signer).deploy()) as unknown as Deployed;
-    const preimage = bytes(400);
+    const preimage = bytes(2000);
     const built = await hasher.getFunction('record')(preimage).build();
     const { transaction, sourceOutputs } = built.buildLibauthProgram();
     const chainLock = binToHex(keccakChainLockingBytecode(hexToBin(hasher.categoryId).slice().reverse(), 'final', true));
     const chainInputs = sourceOutputs.flatMap((output, index) => (
       binToHex(output.lockingBytecode) === chainLock ? [index] : []));
-    expect(chainInputs.length).toBe(3);
+    expect(chainInputs.length).toBe(planKeccakChain(preimage).length);
     expect(chainInputs.map((index) => binToHex(transaction.outputs[index].token!.nft!.commitment)))
       .toEqual(keccakChainCommitments(preimage).map(binToHex));
     expect(transaction.outputs.every((output) => (output.token?.nft?.commitment.length ?? 0) <= 128)).toBe(true);
     for (const inputIndex of chainInputs) {
       expect(vm.evaluate({ sourceOutputs, transaction, inputIndex }).error).toBeUndefined();
     }
+    // The master at input 0, beside the trailing band of funders, within the BCH 2026 density limit.
+    const master = vm.evaluate({ sourceOutputs, transaction, inputIndex: 0 }) as unknown as
+      { error?: string; metrics: Metrics };
+    console.log(`KCHAIN-1 2000 B master: ${master.metrics.operationCost}/${master.metrics.maximumOperationCost} op, `
+      + `${transaction.inputs.length} inputs`);
+    expect(master.error).toBeUndefined();
     await hasher.getFunction('record')(preimage).send();
     await expect(hasher.getFunction('check')(keccak_256(preimage)).send()).resolves.toBeDefined();
   }, 300_000);
@@ -202,8 +209,8 @@ describe('KCHAIN-1 chained keccak256 side-car binding', () => {
         require(keccak256(x) == h);
     }
 }`, {});
-    // sha256(bytecode) at base f9061ead5, before this change.
-    expect(sha(fixed.bytecode)).toBe('8c23d7ecf486a472b94a4e2dd7ce1ec2e75d10121dfa0c6c5ee366d91e74bf5e');
+    // sha256(bytecode) of this tree without KCHAIN-1 (at 94e27413c, the C3 pin folded into the count).
+    expect(sha(fixed.bytecode)).toBe('e568a8a8faa78187bf8b82b028a6aae15fb616e3fdd290c05869eac8ff3aed45');
     expect(sha(stateless.bytecode)).toBe('7f8057ef1e74a7ce3791b7d522fe3542c50240b292197ae7fabe47d57b98e85e');
     expect(ARTIFACT.bytecode.includes(KECCAK_CHAIN_COVENANT_HASH)).toBe(true);
   });

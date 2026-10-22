@@ -79,6 +79,7 @@ import {
 import type { AbiToFunctionMap } from '../types/type-inference.js';
 import type { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { onMockNetworkProviderReset } from '../network/mock-reset.js';
 import type { BcmrPublication, NativeTokenOptions, PublishedRegistry } from '../bcmr/deployment.js';
 import type { IdentityOptions, IdentityRecord } from '../bcmr/identity.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
@@ -182,7 +183,11 @@ import {
   directConventionMasterLock,
 } from './covenant-helpers.js';
 
-const signerUtxoSnapshots = new WeakMap<object, Map<string, Map<string, Utxo>>>();
+let signerUtxoSnapshots = new WeakMap<object, Map<string, Map<string, Utxo>>>();
+// A chain rewind disconnects coins a snapshot may hold (a fan-out's pieces above the restored height).
+onMockNetworkProviderReset(() => {
+  signerUtxoSnapshots = new WeakMap();
+});
 
 interface VmapCounterPermutationSpec {
   countName: string;

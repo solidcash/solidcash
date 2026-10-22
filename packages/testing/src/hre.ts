@@ -24,9 +24,14 @@ import ElectrumNetworkProvider from 'solidcash/dist/network/ElectrumNetworkProvi
 import BitcoinRpcNetworkProvider from 'solidcash/dist/network/BitcoinRpcNetworkProvider.js';
 import Signer from 'solidcash/dist/Signer.js';
 import { HDSigner, signersFromMnemonic } from 'solidcash/hdsigner';
-import { ContractFactory, getContractFactory as sdkGetContractFactory, deployContract as sdkDeployContract } from 'solidcash/dist/stateful/ContractFactory.js';
+import {
+  ContractFactory, getContractFactory as sdkGetContractFactory, deployContract as sdkDeployContract, fanOutPlainUtxos,
+} from 'solidcash/dist/stateful/ContractFactory.js';
 import type { SplitContractBundle } from 'solidcash/dist/stateful/SplitContractBundle.js';
 import { randomUtxo } from 'solidcash/dist/utils.js';
+
+/** Plain coins each regtest signer holds; mock accounts hold 128. */
+const REGTEST_PLAIN_COINS = 64;
 import * as ethersUtils from './ethers-utils.js';
 import { getCreateAddressForComposition } from './ethers-shim.js';
 import * as nh from './network-helpers.js';
@@ -349,9 +354,14 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     // Each `addUtxo` is its own transaction with the requested output at vout 0, which is the geometry
     // CREATE look-ahead reserves. Fund serially because every call spends a shared wallet coin.
     const existing = await provider.getUtxos(signer.getAddress());
-    for (let index = existing.length; index < desiredCount; index += 1) {
+    // Mock accounts come pre-split into 128 coins so compiler-owned funder slots never meet an artificial wallet
+    // limit. A regtest signer gets the same room from one fan-out, fed by one extra coin so the vout-0 coins above
+    // stay intact; with four coins a nested oracle slot found the shared funder pool empty.
+    const fanOut = existing.filter((utxo) => !utxo.token).length < REGTEST_PLAIN_COINS;
+    for (let index = existing.length; index < desiredCount + (fanOut ? 1 : 0); index += 1) {
       await provider.addUtxo(signer.getAddress(), randomUtxo({ satoshis }));
     }
+    if (fanOut) await fanOutPlainUtxos(signer, REGTEST_PLAIN_COINS);
   };
   const resolveArtifact = <T extends Artifact>(a: T | SplitArtifactBundle | string): T | SplitArtifactBundle =>
     (typeof a === 'string' ? loadArtifactOrSplitByName(artifactsDir, a) : a) as T | SplitArtifactBundle;

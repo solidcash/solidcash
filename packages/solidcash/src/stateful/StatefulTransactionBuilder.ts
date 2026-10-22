@@ -502,7 +502,7 @@ import {
   type ComputedChunkRepairResult,
   type RepairComputedChunkOutputHost,
 } from './stb-repair-computed-chunk-output.js';
-import { buildInputs, type BuildInputsHost } from './stb-build-inputs.js';
+import { buildInputs, insertBandPadDemand, type BuildInputsHost } from './stb-build-inputs.js';
 import {
   applyLearnedWriterEvents,
   learnFinalizedDelegateEvents,
@@ -917,6 +917,7 @@ export class StatefulTransactionBuilder {
   funderUtxos: UnlockableUtxo[];
   private embeddedFunderUtxos: UnlockableUtxo[];
   private relocationFunderUtxos: UnlockableUtxo[] = [];
+  private insertBandPadUtxos: UnlockableUtxo[] = [];
   private funderChangeAddress?: Uint8Array;
 
   private externalCallStateUpdates: Map<
@@ -2862,6 +2863,7 @@ export class StatefulTransactionBuilder {
       get blockLayout() { return self.blockLayout; },
       get builderOptions() { return self.builderOptions; },
       get funderUtxos() { return self.funderUtxos; },
+      get insertBandPadUtxos() { return self.insertBandPadUtxos; },
       get dataNftUtxos() { return self.dataNftUtxos; },
       get readOnlyDataNftUtxos() { return self.readOnlyDataNftUtxos; },
       get blockhashCoSpendUtxos() { return self.blockhashCoSpendUtxos; },
@@ -3825,6 +3827,16 @@ export class StatefulTransactionBuilder {
   /** Keep async-planned disposable inputs out of layout until a dynamic band actually needs them. */
   setRelocationFunderUtxos(funders: UnlockableUtxo[]): void {
     this.relocationFunderUtxos = [...funders];
+  }
+
+  /** Neutral pads the legacy delegate insert band can take; see `insertBandPadDemand`. */
+  setInsertBandPadUtxos(pads: UnlockableUtxo[]): void {
+    this.insertBandPadUtxos = [...pads];
+  }
+
+  /** How many neutral pads the legacy delegate insert band may take from `setInsertBandPadUtxos`. */
+  insertBandPadDemand(): number {
+    return insertBandPadDemand(this._buildInputsHost());
   }
 
   /**

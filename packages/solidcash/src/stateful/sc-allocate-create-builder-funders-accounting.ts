@@ -104,6 +104,32 @@ export async function allocateCreateBuilderFunders(
   const signerUtxoSnapshot = host.signerUtxoSnapshot;
   const markSharedFunder = host.markSharedFunder;
 
+  // The legacy delegate insert band pads with neutral non-P2PKH inputs. They are real UTXOs, so they exist before
+  // the synchronous input build places them.
+  const padDemand = builder.insertBandPadDemand();
+  const padProvider = host.inner.provider as typeof host.inner.provider & {
+    addUtxo?: (lockingBytecode: string, utxo: Utxo) => Promise<unknown>;
+  };
+  if (padDemand > 0 && padProvider.addUtxo) {
+    const pads: UnlockableUtxo[] = [];
+    for (let i = 0; i < padDemand; i++) {
+      const seed = new TextEncoder().encode(
+        `SolidCash insert-band pad\0${host.categoryId}:${masterUtxo.txid}:${masterUtxo.vout}`
+        + `:${overrides?.blockBase ?? 0}:${i}`,
+      );
+      const pad: Utxo = { txid: binToHex(sha256Sync(seed)), vout: 0, satoshis: 5000n };
+      await padProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), pad);
+      pads.push({
+        ...pad,
+        unlocker: {
+          generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
+          generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+        },
+      });
+    }
+    builder.setInsertBandPadUtxos(pads);
+  }
+
   // Auto-fund block-layout slots that need funder inputs (output-only slots
   // like transfers/events, non-existing entries/TCs). These are WITHIN the
   // block range - the covenant requires them at specific positions.
@@ -493,7 +519,7 @@ export async function allocateCreateBuilderFunders(
               + `:${overrides?.blockBase ?? 0}:${i}`,
               );
               const dummy: Utxo = { txid: binToHex(sha256Sync(seed)), vout: 0, satoshis: 5000n };
-              void mockProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
+              await mockProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
               selected.push({
                 ...dummy,
                 unlocker: {

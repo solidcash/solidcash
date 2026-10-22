@@ -5912,6 +5912,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Whether a function this body invokes, at any depth, reaches a data record. The invoked body is an OP_DEFINE with
+   * no covenant of its own, so the record it reads is the invoking entry's to settle, as one its own body reads.
+   */
+  private invokesStateAccess(body: Node): boolean {
+    const scanned = new Set<FunctionDefinitionNode>();
+    const seen = new Set<Node>();
+    const pending: Node[] = [body];
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      if (seen.has(current)) continue;
+      seen.add(current);
+      const callee = current instanceof FunctionCallNode ? current.resolvedFunction
+        : current instanceof IdentifierNode ? current.functionReference : undefined;
+      if (callee?.body && callee.functionId !== undefined && !scanned.has(callee)) {
+        scanned.add(callee);
+        const collector = new NftIndexCollector();
+        collector.visit(callee.body);
+        if (collector.indices.size > 0) return true;
+        pending.push(callee.body);
+      }
+      // As in `collectInvokedFunctionIds`, a back-reference is no edge: a callee body is entered above.
+      for (const key in current) {
+        if (key === 'resolvedFunction' || key === 'functionReference') continue;
+        const value = current[key as keyof Node];
+        if (value instanceof Node) pending.push(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) pending.push(item);
+      }
+    }
+    return false;
+  }
+
+  /**
    * Cached result of `functionReferenceIds` per contract node. It is a whole-contract walk called twice on the
    * same node during one emission (the indirect-dispatch prelude and `emitFunctionDefinesAndDispatch`), and a
    * read-only call census measured it at ~70-80ms per compile. The walk reads only node classes and the
@@ -8883,12 +8915,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const collector = new NftIndexCollector();
     collector.visit(node.body);
     const accessedNftIndices = [...collector.indices].sort((a, b) => a - b);
+    const hasInternalCall = this.collectInvokedFunctionIds(node.body).size > 0;
 
     // A de-inlined helper's accesses live outside the physical wrapper AST, but
     // its journal is settled by that wrapper. Treat the transitive journal
     // footprint as state access so the ordinary category and data-NFT covenant
     // epilogue cannot fall through to guarded preservation.
-    this.hasStateAccess = accessedNftIndices.length > 0 || activeJournalSlots.length > 0;
+    // A record only an invoked body reads (a pointer call, a helper left uninlined) is state access too: the guarded
+    // walk held it in place but never at the data-NFT lock. A constructor runs only in its genesis, and a framed
+    // frame settles its records through its own declaration.
+    this.hasStateAccess = accessedNftIndices.length > 0 || activeJournalSlots.length > 0
+      || (hasInternalCall && this.dataNftCount > 0 && this.directConvention && !this.isDefineSubTraversal
+        && node.name !== '__construct' && this.invokesStateAccess(node.body));
 
     // Store required NFT indices on the node for artifact generation.
     // For stateful contracts (dataNftCount > 0), always store (even as empty [])
@@ -8909,7 +8947,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Functions with delegatecall low-level calls need all data NFTs because the delegate
     // implementation may access any state on the proxy's behalf.
     const hasDelegatecall = node.lowLevelCalls?.some((lc) => lc.callMode === 'delegatecall') ?? false;
-    const hasInternalCall = this.collectInvokedFunctionIds(node.body).size > 0;
     if (isSplitOrMerge && this.dataNftCount > 0) {
       node.requiredNftIndices = accessedNftIndices;
     } else if (

@@ -1820,6 +1820,17 @@ export class ExternalReadArgCountError extends SolidCashError {
   }
 }
 
+// A function co-spends one record per foreign read slot (interface + data NFT, or interface + collection), pinned to
+// the address of the slot's first read. A read of that slot through another address would be served that record.
+export class ExternalReadTargetConflictError extends SolidCashError {
+  constructor(node: Node, interfaceName: string, member: string, record: string, slotTarget: string, target: string) {
+    super(node, `External read '${interfaceName}(${target}).${member}' reads the ${record} of '${interfaceName}' that `
+      + `this function already reads through '${slotTarget}'. A function co-spends one such record per interface, `
+      + 'pinned to its first read\'s address, so a second target is not supported: read every target of this record '
+      + 'through the same address, or read each target in its own function');
+  }
+}
+
 export class UndefinedInterfaceFunctionError extends SolidCashError {
   constructor(node: Node, interfaceName: string, functionName: string) {
     super(node, `Interface '${interfaceName}' does not declare function '${functionName}'`);

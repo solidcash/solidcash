@@ -193,6 +193,7 @@ import {
   UndefinedExternalStateVariableError,
   UnsupportedExternalOutStateCollectionError,
   ExternalReadArgCountError,
+  ExternalReadTargetConflictError,
   UndefinedInterfaceFunctionError,
   MethodCallNotSupportedError,
   StructFieldExternalCallError,
@@ -910,6 +911,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   private writtenLocals: Set<string> = new Set();
   // The guard of each entry write IfConvertConditionalEntryOp kept in its branch (`keepsGuardedEntryWrite`).
   private keptEntryWriteGuards = new WeakMap<Node, ExpressionNode>();
+  // The address expression of each foreign read slot's first read (`assertExternalReadTarget`).
+  private readonly externalReadSlotTargets = new WeakMap<ExternalReadSlot, ExpressionNode>();
   // The names each statement of the current function writes, with and without tuple assignments (`followLocal`).
   private writtenNames = new WeakMap<Node, { readonly names: Set<string>; readonly tuples: Set<string> }>();
   private writtenNamesOf?: FunctionDefinitionNode;
@@ -7882,33 +7885,43 @@ export default class SymbolTableTraversal extends AstTraversal {
   private collectExternalReads(node: Node, map: Map<string, ExternalReadSlot>): void {
     if (node instanceof ExternalStateAccessNode && node.readInfo) {
       const key = `${node.readInfo.interfaceName}:data:${node.readInfo.nftIndex}`;
-      if (!map.has(key)) {
+      const existing = map.get(key);
+      if (existing) {
+        this.assertExternalReadTarget(existing, node, `data NFT ${node.readInfo.nftIndex}`);
+      } else {
         const addressParam = node.addressExpression instanceof IdentifierNode
           ? node.addressExpression.name : undefined;
-        map.set(key, {
+        const slot: ExternalReadSlot = {
           interfaceName: node.readInfo.interfaceName,
           kind: 'data',
           nftIndex: node.readInfo.nftIndex,
           addressParam,
           slotIndex: -1,
-        });
+        };
+        map.set(key, slot);
+        this.externalReadSlotTargets.set(slot, node.addressExpression);
       }
       return;
     }
 
     if (node instanceof ExternalMappingAccessNode && node.readInfo && !node.readInfo.outputState) {
       const key = `${node.readInfo.interfaceName}:entry:${node.readInfo.collectionSignature}`;
-      if (!map.has(key)) {
+      const existing = map.get(key);
+      if (existing) {
+        this.assertExternalReadTarget(existing, node, `collection '${node.readInfo.collectionName}'`);
+      } else {
         const addressParam = node.addressExpression instanceof IdentifierNode
           ? node.addressExpression.name : undefined;
-        map.set(key, {
+        const slot: ExternalReadSlot = {
           interfaceName: node.readInfo.interfaceName,
           kind: 'entry',
           collectionName: node.readInfo.collectionName,
           collectionSignature: node.readInfo.collectionSignature,
           addressParam,
           slotIndex: -1,
-        });
+        };
+        map.set(key, slot);
+        this.externalReadSlotTargets.set(slot, node.addressExpression);
       }
       return;
     }
@@ -7983,6 +7996,26 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (param instanceof Node) this.collectExternalReads(param, map);
       }
     }
+  }
+
+  /**
+   * A foreign read slot co-spends one record, pinned to the address of its first read, so a later read of the slot
+   * through another address would be served that record: refuse it. A first read through a non-parameter address
+   * leaves the slot without a pin, which code generation refuses.
+   */
+  private assertExternalReadTarget(
+    slot: ExternalReadSlot, read: ExternalStateAccessNode | ExternalMappingAccessNode, record: string,
+  ): void {
+    const first = this.externalReadSlotTargets.get(slot);
+    if (!(first instanceof IdentifierNode)) return;
+    const target = read.addressExpression;
+    const declaration = (id: IdentifierNode): unknown => id.definition?.definition ?? id.definition;
+    if (target instanceof IdentifierNode && target.name === first.name
+      && declaration(target) === declaration(first)) return;
+    throw new ExternalReadTargetConflictError(
+      read, slot.interfaceName, read.name, record, first.name,
+      target instanceof IdentifierNode ? target.name : '...',
+    );
   }
 
   private assignExternalReadSlotIndices(node: Node, map: Map<string, ExternalReadSlot>): void {

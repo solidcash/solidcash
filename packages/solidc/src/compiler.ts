@@ -143,7 +143,7 @@ import SymbolTableTraversal, {
 } from './semantic/SymbolTableTraversal.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
 import { publishStoredValueSources } from './semantic/stored-value-source.js';
-import { getEventChunkCount, stateNftPackingLimit } from './semantic/maxEncodedSize.js';
+import { getEventChunkCount, getMaxStateFieldBytes, stateNftPackingLimit } from './semantic/maxEncodedSize.js';
 import EnsureFinalRequireTraversal, {
   rejectFreeFunctionMissingReturns,
 } from './semantic/EnsureFinalRequireTraversal.js';
@@ -4114,7 +4114,7 @@ function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: num
   let fieldIndex = 0;
   let currentNftUsed = 0;
   for (const state of contract.stateVariables) {
-    let maxSize = getMaxPushdataEncodedSizeForType(state.type);
+    let maxSize = getMaxStateFieldBytes(state.type);
     if (state.isDynamic || isDynamicStorageType(state.type)) {
       maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32));
     }

@@ -195,6 +195,7 @@ import {
   ExternalReadArgCountError,
   ExternalReadTargetConflictError,
   ExternalReadTargetReassignedError,
+  ExternalOutStateRecordCountError,
   UndefinedInterfaceFunctionError,
   MethodCallNotSupportedError,
   StructFieldExternalCallError,
@@ -229,7 +230,9 @@ import {
   UpgradeStrandsBoundStateError,
 } from '../Errors.js';
 import { parameterTypeSignature } from './parameterTypeToken.js';
-import { getEventChunkCount, getMaxPushdataEncodedSizeForType, stateNftPackingLimit } from './maxEncodedSize.js';
+import {
+  getEventChunkCount, getMaxPushdataEncodedSizeForType, getMaxStateFieldBytes, stateNftPackingLimit,
+} from './maxEncodedSize.js';
 import {
   type CompilerOptions, PrimitiveType, BytesType, type Type, StructType, EnumType, AddressType, ValueType,
   computeEventSignature, computeEventSelector, computeErrorSignature, computeCollectionSignature,
@@ -1812,11 +1815,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Dynamic-storage vars (string / unbounded bytes, chunk-packed fixed-width arrays) store only a uint32
       // length header (A$len) in the data NFT; the value lives in chunk UTXOs, so reserve the uint32 footprint.
       // string/bytes detected by type; a chunk-packed array arrives with sv.isDynamic set by the AstBuilder.
-      // See docs/dynamic-storage.md, arrays.md.
-      let maxSize = getMaxPushdataEncodedSizeForType(sv.type);
+      // See docs/dynamic-storage.md, arrays.md. A value with no static bound reserves its VM cap, so it packs alone;
+      // the tag check below measures it at its handle, since a small value still fits beside the tag.
+      let maxSize = getMaxStateFieldBytes(sv.type);
+      let recordSize = getMaxPushdataEncodedSizeForType(sv.type);
       if (isDynamicStorageType(sv.type)) sv.isDynamic = true;
       if (sv.isDynamic) {
         maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32)); // A$len: uint32 -> 6 bytes
+        recordSize = maxSize;
       }
 
       if (sv.isolatedNft) {
@@ -1902,10 +1908,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
 
       if (this.compilerOptions.tagSingletonDataNfts === true
-        && maxSize > stateNftPackingLimit(commitmentLimit, sv.nftIndex, true)) {
+        && recordSize > stateNftPackingLimit(commitmentLimit, sv.nftIndex, true)) {
         throw new SolidcDiagnosticError('STATE_RECORD_CAPACITY',
           `state variable '${sv.name}' cannot fit beside its NFT-index tag within ${commitmentLimit} bytes`,
-          { name: sv.name, nftIndex: sv.nftIndex, maximumFieldBytes: maxSize, commitmentLimit });
+          { name: sv.name, nftIndex: sv.nftIndex, maximumFieldBytes: recordSize, commitmentLimit });
       }
 
       const symbol = Symbol.stateVariable(sv);
@@ -4858,11 +4864,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (bodySurvey.hasExternalOutStateRead) {
       const externalOutStateMap = new Map<string, ExternalOutStateSlot>();
       this.collectExternalOutStateReads(node.body, externalOutStateMap);
-      this.assertExternalReadTargetsFixed(node.body, externalOutStateMap.values());
+      // A slot holding several data NFTs of one target is keyed under each of them.
+      const externalOutStateSlots = [...new Set(externalOutStateMap.values())];
+      this.assertExternalReadTargetsFixed(node.body, externalOutStateSlots);
 
-      if (externalOutStateMap.size > 0) {
+      if (externalOutStateSlots.length > 0) {
         let slotIndex = 0;
-        for (const slot of externalOutStateMap.values()) {
+        for (const slot of externalOutStateSlots) {
           slot.slotIndex = slotIndex++;
         }
 
@@ -4870,7 +4878,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // same interface+addressParam as an external call, share the call's UTXO group
         let allShared = true;
         if (node.externalCalls && node.externalCalls.length > 0) {
-          for (const osSlot of externalOutStateMap.values()) {
+          for (const osSlot of externalOutStateSlots) {
             const matchingCallSlot = node.externalCalls.find(
               (cs) => cs.interfaceName === osSlot.interfaceName
                 && cs.addressParam === osSlot.addressParam,
@@ -4884,8 +4892,18 @@ export default class SymbolTableTraversal extends AstTraversal {
         } else {
           allShared = false;
         }
+        // A target this function does not call settles as a participant of its own with one read data NFT.
+        const standaloneMultiRecord = externalOutStateSlots.find((slot) => slot.sharedWithCallSlotIndex === undefined
+          && slot.requiredDataNftIndices.length > 1);
+        if (standaloneMultiRecord) {
+          const target = this.externalReadSlotTargets.get(standaloneMultiRecord) ?? node;
+          throw new ExternalOutStateRecordCountError(
+            target, standaloneMultiRecord.interfaceName, target instanceof IdentifierNode ? target.name : '...',
+            standaloneMultiRecord.requiredDataNftIndices,
+          );
+        }
 
-        node.externalOutStateReads = [...externalOutStateMap.values()];
+        node.externalOutStateReads = externalOutStateSlots;
 
         // Propagate slot indices to individual outState access nodes
         this.assignExternalOutStateSlotIndices(node.body, externalOutStateMap);
@@ -8015,14 +8033,19 @@ export default class SymbolTableTraversal extends AstTraversal {
     slot: ExternalReadSlot | ExternalOutStateSlot, read: Node, target: ExpressionNode, member: string, record: string,
   ): void {
     const first = this.externalReadSlotTargets.get(slot);
-    if (!(first instanceof IdentifierNode)) return;
-    const declaration = (id: IdentifierNode): unknown => id.definition?.definition ?? id.definition;
-    if (target instanceof IdentifierNode && target.name === first.name
-      && declaration(target) === declaration(first)) return;
+    if (!(first instanceof IdentifierNode) || this.isExternalReadSlotTarget(slot, target)) return;
     throw new ExternalReadTargetConflictError(
       read, slot.interfaceName, member, record, first.name,
       target instanceof IdentifierNode ? target.name : '...',
     );
+  }
+
+  /** Whether `target` is the address of `slot`'s first read: the same name, bound to the same declaration. */
+  private isExternalReadSlotTarget(slot: ExternalReadSlot | ExternalOutStateSlot, target: ExpressionNode): boolean {
+    const first = this.externalReadSlotTargets.get(slot);
+    const declaration = (id: IdentifierNode): unknown => id.definition?.definition ?? id.definition;
+    return first instanceof IdentifierNode && target instanceof IdentifierNode && target.name === first.name
+      && declaration(target) === declaration(first);
   }
 
   /**
@@ -11390,28 +11413,30 @@ export default class SymbolTableTraversal extends AstTraversal {
       return;
     }
     if (node instanceof ExternalOutputStateAccessNode && node.accessInfo) {
-      const key = `${node.accessInfo.interfaceName}:outState:${node.accessInfo.nftIndex}`;
+      const { interfaceName, nftIndex } = node.accessInfo;
+      const key = `${interfaceName}:outState:${nftIndex}`;
       const existing = map.get(key);
       const target = node.outStateNode.addressExpression;
       if (existing) {
         this.assertExternalReadTarget(
-          existing, node, target, `outState.${node.stateVarName}`, `output data NFT ${node.accessInfo.nftIndex}`,
+          existing, node, target, `outState.${node.stateVarName}`, `output data NFT ${nftIndex}`,
         );
-        if (!existing.requiredDataNftIndices.includes(node.accessInfo.nftIndex)) {
-          existing.requiredDataNftIndices.push(node.accessInfo.nftIndex);
-          existing.requiredDataNftIndices.sort((a, b) => a - b);
-        }
-      } else {
-        const addressParam = target instanceof IdentifierNode ? target.name : undefined;
-        const slot: ExternalOutStateSlot = {
-          interfaceName: node.accessInfo.interfaceName,
-          addressParam,
-          slotIndex: -1,
-          requiredDataNftIndices: [node.accessInfo.nftIndex],
-        };
-        map.set(key, slot);
-        this.externalReadSlotTargets.set(slot, target);
+        return;
       }
+      // A target's master is co-spent once, so a read of another of its data NFTs joins the data slot already
+      // pinned to it. That slot is keyed under each of its NFTs.
+      const sibling = [...map.values()].find((slot) => slot.interfaceName === interfaceName
+        && slot.requiredDataNftIndices.length > 0 && this.isExternalReadSlotTarget(slot, target));
+      if (sibling) {
+        sibling.requiredDataNftIndices.push(nftIndex);
+        sibling.requiredDataNftIndices.sort((a, b) => a - b);
+        map.set(key, sibling);
+        return;
+      }
+      const addressParam = target instanceof IdentifierNode ? target.name : undefined;
+      const slot: ExternalOutStateSlot = { interfaceName, addressParam, slotIndex: -1, requiredDataNftIndices: [nftIndex] };
+      map.set(key, slot);
+      this.externalReadSlotTargets.set(slot, target);
       return;
     }
 
@@ -15647,7 +15672,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     for (const sv of allVars) {
       // Mirror the main bin-packing: dynamic-storage vars reserve only the uint32 length-header
       // footprint (A$len), so external-read nftIndex computation stays consistent with the real layout.
-      let maxSize = getMaxPushdataEncodedSizeForType(sv.type);
+      let maxSize = getMaxStateFieldBytes(sv.type);
       if (isDynamicStorageType(sv.type)) {
         maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32));
       }
@@ -18993,7 +19018,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         let nftIndex = 0;
         let currentNftUsed = 0;
         for (const state of vars) {
-          let maxSize = getMaxPushdataEncodedSizeForType(state.type);
+          let maxSize = getMaxStateFieldBytes(state.type);
           if (state.isDynamic || isDynamicStorageType(state.type)) {
             maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32));
           }

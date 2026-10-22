@@ -1839,6 +1839,17 @@ export class ExternalReadTargetConflictError extends SolidCashError {
   }
 }
 
+// An outState target the function does not call settles as a participant of its own, carrying the data NFT it reads.
+// A read of a second data NFT of that target is refused at compile time instead of failing at send time.
+export class ExternalOutStateRecordCountError extends SolidCashError {
+  constructor(node: Node, interfaceName: string, target: string, nftIndices: readonly number[]) {
+    super(node, `External outState read '${interfaceName}(${target}).outState' reads output data NFTs `
+      + `${nftIndices.join(', ')} of '${interfaceName}', a target this function does not call. Such a target `
+      + 'supports one output data NFT per function: read fields that share one of its data NFTs here, and the '
+      + 'others in another function');
+  }
+}
+
 // The pin of a foreign read slot checks the value its address name holds at the end of the function. A write to that
 // name, or a second declaration of it, would leave a read served the record of whatever the name holds there.
 export class ExternalReadTargetReassignedError extends SolidCashError {

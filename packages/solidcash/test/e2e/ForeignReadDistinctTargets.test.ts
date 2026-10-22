@@ -10,7 +10,9 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * A function co-spends one record per foreign read slot (an interface's data NFT, or one of its collections), pinned
  * to the address of the slot's first read. A read of that slot through another address was served the first target's
  * record, so a reader of two instances of one interface read one value twice. That read is now refused at compile
- * time; a read through the same address keeps sharing its slot. An outState read's slot is keyed the same way.
+ * time; a read through the same address keeps sharing its slot. An outState read's slot is keyed the same way, and
+ * holds every data NFT the function reads of its target, whose master is co-spent once. A target the function does
+ * not call settles one such data NFT, so a read of two is refused at compile time.
  */
 const ICOUNTER = `interface ICounter {
   public bigint counter;
@@ -79,6 +81,26 @@ contract TwiceReader(bytes counterAddr) {
 function outState(source: string): string {
   return source.replaceAll(').counter', ').outState.counter').replaceAll(').balances[', ').outState.balances[');
 }
+
+// Four 34-byte fields overflow one commitment, so `w` opens data NFT 1.
+const ITWIN = `interface ITwin {
+  public int x;
+  public int y;
+  public int z;
+  public int w;
+  function bump(pubkey owner, sig s);
+}`;
+
+// One target's output state read through both of its data NFTs.
+const TWIN_READER = `pragma solidcash >=0.8.0;
+${ITWIN}
+contract TwinReader(bytes twinAddr) {
+  int total;
+  function sync(pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    this.total = ITwin(twinAddr).outState.x + ITwin(twinAddr).outState.w;
+  }
+}`;
 
 // The pin checks the value the address name holds at the end of the function, which a later assignment moves.
 const MOVED_READER = `pragma solidcash >=0.8.0;
@@ -196,6 +218,13 @@ describe('foreign reads of distinct targets', () => {
     expect((await counterSc.getState()).counter).toBe(22n);
     expect((await sc.getState()).total).toBe(44n);
   }, 180_000);
+
+  it('refuses an outState read of two data NFTs of one target the function does not call', () => {
+    // Both reads join one slot of the target (data NFTs 0 and 1), which this function does not call.
+    expect(() => compileString(TWIN_READER)).toThrow(
+      /External outState read 'ITwin\(twinAddr\)\.outState' reads output data NFTs 0, 1 of 'ITwin', a target this/,
+    );
+  });
 
   it('refuses a read through an address the function assigns or declares again', () => {
     for (const source of [MOVED_READER, outState(MOVED_READER)]) {

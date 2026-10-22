@@ -33,8 +33,9 @@ import { authheadOutput } from '../../src/bcmr/authhead.js';
 import { addressToLockScript } from '../../src/utils.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
-// A stateful contract with two state variables of different types:
-//   bigint counter   - incremented each call
+// A stateful contract with two state variables of different types, packed in one data NFT (a `bigint` would take
+// one of its own, D49):
+//   int counter   - incremented each call
 //   bytes4 label  - set to caller-supplied value each call
 // Two functions:
 //   update:    reads/writes both state variables (auto-covenant enforced)
@@ -43,7 +44,7 @@ const COUNTER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
 contract Counter() {
-    bigint counter;
+    int counter;
     bytes4 label;
 
     function update(bytes4 newLabel) {
@@ -184,9 +185,9 @@ describe('Stateful Contract', () => {
       expect(artifact.stateLayout).toBeDefined();
       expect(stateLayout.variables).toHaveLength(2);
 
-      // counter: bigint at field 0
+      // counter: int256 at field 0
       expect(stateLayout.variables[0].name).toBe('counter');
-      expect(stateLayout.variables[0].type).toBe('bigint');
+      expect(stateLayout.variables[0].type).toBe('int256');
       expect(stateLayout.variables[0].nftIndex).toBe(0);
       expect(stateLayout.variables[0].fieldIndex).toBe(0);
 

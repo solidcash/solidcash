@@ -875,6 +875,11 @@ rerun: the marketplace corpus compiled cold at the final master is identical to 
   (`e72f00338`, merged from `feat/bch-native-wrapper`), so every live container coin migrates and the fixed slot count
   the planner held each container to is gone; an argument-keyed container no category names is refused. Test:
   `TokenContainerUpgradeMigration.test.ts`.
+- **Unbounded state fields** (`145b0595c`, D49): a `bigint`, or a struct or fixed-size array holding a `bigint`,
+  `string` or unbounded `bytes`, was sized at 9 B and packed beside other fields, so a wide value overflowed the
+  128-byte commitment at send (fail-closed). Each such field now takes a data NFT of its own, breaking older layouts
+  by the user's call; a function reading two data NFTs of a target it does not call is refused at compile time.
+  Tests: `UnboundedStateFieldLayout.test.ts`, `ForeignReadDistinctTargets.test.ts`.
 - **Batched destroy** (`2d885fa23`): containers go in the final batch; junk coins at container addresses are skipped.
   Test: `BatchedDestroyContainers.test.ts`.
 - **KCHAIN-1** (`bd801e060`, `d94df696f`, `865fb9e07`, `d2fdd8fe1`, `ebf77f670`). Each step commits a 64-byte link
@@ -916,8 +921,6 @@ needs VM evidence, `rejectedWith` has no source fallback).
 
 ### Open
 
-- A bigint or unbounded bytes field beside others is sized at 9 B and fails at send past it (fail-closed). A fix that
-  gives each its own data NFT is on branch `keep-bigint-layout`; it moves the layout of most stateful contracts.
 - MIG-1 (privileged): `migrateRecords` still binds a free replacement lock; committing it needs a master-commitment
   protocol, and the state-access path does not pin the master commitment (2026-07 LOW, no impact today).
 - Routes without a verifier: the trailing band counts as claimed as a whole once a trailing row runs, and an unused slot

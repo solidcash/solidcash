@@ -34,6 +34,10 @@ contract Compute() {
 
 Solidity locals and parameters are visible inside the block by name, and assignments to them flow back out.
 
+A signed variable enters the block in BCH sign-magnitude form, not EVM two's complement, so `sar`, `signextend`
+and `shl` fail the script on a negative value rather than computing a wrong word. `exp` runs one loop iteration
+per exponent bit. See [Platform Differences](/docs/basics/platform-differences#number-encoding).
+
 ### Why most of the EVM instruction set works
 
 Yul's builtin set is generated directly from the EVM instruction set, so the support boundary is a partition
@@ -55,13 +59,13 @@ of the EVM opcodes into three buckets:
 | Bitwise | `and or xor not shl shr sar` | `shl(n,x)` is `x * 2^n`, `shr(n,x)` is `x / 2^n` |
 | Comparison | `lt gt slt sgt eq iszero` | `iszero` is `OP_NOT` |
 | Control flow | `if`, `for`, `switch` / `case` / `default`, `break`, `continue`, `leave`, nested blocks | Lowered to the existing branch and loop codegen; a top-level `leave` returns early from a local Yul function |
-| Functions | `function f(a, b) -> r { ... }` | Compiled like an internal helper |
+| Functions | `function f(a, b) -> r { ... }` | Inlined at each call: no recursion, and `leave` only as an unconditional top-level statement of the function body |
 | Memory | `mstore mload mstore8 mcopy msize`, `keccak256(p, l)`, `return(p, l)`, `revert(p, l)` | Backed by the runtime `__yulmem` buffer |
 | Words | `byte(n, x)`, `signextend(b, x)`, `clz(x)`, `pop(x)`, `erc7201(namespace)` | Word selection, sign extension, leading-zero count, discard, ERC-7201 slot |
 | Storage | `sstore sload`, `.slot`, `.offset` | Virtual-slot table over state variables (value types) |
 | Transient | `tstore tload` | Zero-initialised function-scoped local; no UTXO |
 | Context | `caller callvalue origin chainid number timestamp coinbase difficulty prevrandao` | Routed to the existing globals |
-| Gas shims | `gas gasprice gaslimit basefee blobbasefee` | Routed to the gas shims; see the caution below |
+| Gas and fees | `gas gaslimit gasprice basefee blobbasefee` | `gas()` and `gaslimit()` are fixed shims (see the caution below); `gasprice()` is this transaction's fee rate and `basefee()` the block's realized fee rate, in sat/kB; `blobbasefee()` aliases `basefee()` |
 | Balance / code | `balance selfbalance extcodesize extcodehash address codesize codecopy extcodecopy` | Routed to `addr.balance`, `addr.code`, `this.activeBytecode` |
 | Calldata | `calldataload calldatasize calldatacopy` | Synthesized from `msg.sig` plus the ABI-encoded arguments |
 | Return data | `returndatasize returndatacopy` | Tracks the last low-level call's return data |
@@ -76,7 +80,7 @@ These are rejected with an explicit diagnostic naming the builtin:
 
 | Builtin | Reason |
 | --- | --- |
-| `create`, `create2` | Deploy runtime bytecode; use the high-level `new Contract(...)` |
+| `create`, `create2` | Deploy runtime bytecode; use the high-level `new Contract(...)`. A value-0 call over constant or memory-built bytecode only computes the address that bytecode would have and deploys nothing |
 | `verbatim_*` | Raw EVM bytecode has no BCH equivalent |
 | `pc` | The EVM program counter has no BCH analogue |
 | `datasize`, `dataoffset`, `datacopy`, `linkersymbol` | EVM bytecode-object builtins |
@@ -86,7 +90,7 @@ These are rejected with an explicit diagnostic naming the builtin:
 :::caution
 `gas()`, `gasleft()` and `block.gaslimit` are **fixed shims** that return `1000000`. They exist so ported
 gas-budget checks keep running; the value is meaningless on BCH, which has no gas metering. The compiler warns
-on every use.
+when a contract uses one.
 :::
 
 ### Memory model
@@ -146,7 +150,8 @@ patterns, dynamic values, OpenZeppelin factories, limitations, and security guid
 ## Native BCH assembly
 
 A block of bare opcodes is emitted directly into the script. This is the escape hatch for Bitcoin Cash
-primitives that have no high-level spelling.
+primitives that have no high-level spelling. A native block may contain only `OP_` opcodes and hex data pushes
+(`0xdeadbeef` or `deadbeef`).
 
 ```solidity
 contract Raw() {
@@ -158,11 +163,19 @@ contract Raw() {
 ```
 
 The compiler tracks the stack effect of each opcode so it can keep the surrounding code consistent, but it
-does **not** type-check the values you produce.
+does **not** type-check the values you produce. Values a block leaves on the stack have no source-level name.
+
+The compiler rejects:
+
+- unknown opcodes, and `OP_RETURN`, `OP_CODESEPARATOR`, `OP_VER`, `OP_VERIF`, `OP_VERNOTIF` and the
+  `OP_RESERVED` opcodes;
+- opcodes whose stack effect cannot be tracked statically;
+- `OP_IF`/`OP_NOTIF`/`OP_ELSE`/`OP_ENDIF` arms that leave different stack heights, and `OP_BEGIN`/`OP_UNTIL`
+  loops whose body does not restore the stack height it started with.
 
 :::caution
 Inline assembly bypasses the compiler's safety checks. A block that leaves the stack in an unexpected shape
-will produce a contract that is subtly wrong or permanently unspendable. Every assembly block emits a
+will produce a contract that is subtly wrong or permanently unspendable. Every native assembly block emits a
 compiler warning. Use it only when you fully understand the stack effects, and test on the VM.
 :::
 

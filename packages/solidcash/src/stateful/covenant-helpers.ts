@@ -499,6 +499,16 @@ export function getSatoshiContainerAddress(contract: Contract<any, any>, categor
   return scriptToAddress(covenantScript, contract.provider.network, 'p2sh32', true);
 }
 
+/** A satoshi container is a tokenless coin at its address; a coin carrying tokens there is junk. */
+export function isSatoshiContainerCoin(utxo: Utxo): boolean {
+  return utxo.token === undefined;
+}
+
+/** A token container holds its own address's category; a tokenless or foreign-category coin there is junk. */
+export function isTokenContainerCoin(utxo: Utxo, tokenContainerCategoryId: string): boolean {
+  return utxo.token?.category.toLowerCase() === tokenContainerCategoryId.toLowerCase();
+}
+
 // ---------------------------------------------------------------------------
 // State reading
 // ---------------------------------------------------------------------------

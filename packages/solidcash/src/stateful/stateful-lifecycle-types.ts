@@ -131,7 +131,10 @@ export interface UpgradeOptions<T extends Artifact = Artifact> {
   leaveBehind?: string[];
 }
 
-/** A container coin `leaveBehind` abandoned at the old lock, with its value. */
+/**
+ * A coin left at a container lock, with its value: a surplus container an upgrade's `leaveBehind` abandons at the old
+ * lock, or junk at a container address that a destroy does not spend.
+ */
 export interface LeftBehindCoin {
   outpoint: string;
   address: string;
@@ -162,6 +165,8 @@ export interface DestroyOptions {
 export interface DestroyResult {
   txs: TransactionDetails[];          // 1 or more transactions
   totalReclaimed: bigint;             // total satoshis sent to recipient
+  /** Junk at a container address (not a container of it), left where nothing spends it once the master is gone. */
+  leftBehind: LeftBehindCoin[];
 }
 
 export interface DeployFromOptions<T extends Artifact = Artifact> {

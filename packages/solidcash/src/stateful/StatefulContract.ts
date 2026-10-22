@@ -518,7 +518,9 @@ import {
   hydrateExternalPredicateState as hydrateExternalPredicateStateImpl,
 } from './sc-hydrate-external-predicate-state.js';
 import { upgradeStatefulContract as upgradeStatefulContractImpl } from './sc-upgrade.js';
-import type { LeftBehindCoin, UpgradeOptions, UpgradeResult } from './stateful-lifecycle-types.js';
+import type {
+  DestroyOptions, DestroyResult, LeftBehindCoin, UpgradeOptions, UpgradeResult,
+} from './stateful-lifecycle-types.js';
 import {
   splitStatefulContract as splitStatefulContractImpl,
   mergeStatefulContract as mergeStatefulContractImpl,
@@ -965,26 +967,10 @@ export interface DeployResult<T extends Artifact = Artifact> {
   registry?: PublishedRegistry;
 }
 
-// The upgrade's options and result are the ones sc-upgrade.ts implements.
-export type { LeftBehindCoin, UpgradeOptions, UpgradeResult };
-
-export interface DestroyOptions {
-  provider: NetworkProvider;
-  contract: ConnectedStatefulContract;
-  destroyFunctionName: string;        // must have 'selfdestruct' modifier in ABI
-  destroyFunctionArgs: FunctionArgument[];
-  recipient: string;                  // address to send remaining funds
-  fee?: bigint;                       // per-transaction fee, default 1000n
-  maxFee?: bigint;                    // maximum allowed fee per tx (throws if exceeded)
-  maxInputsPerTx?: number;            // conservative default ~200
-  /** Token container category IDs to reclaim (satoshi containers are auto-discovered) */
-  tokenContainerCategoryIds?: string[];
-}
-
-export interface DestroyResult {
-  txs: TransactionDetails[];          // 1 or more transactions
-  totalReclaimed: bigint;             // total satoshis sent to recipient
-}
+// The upgrade's and destroy's options and results are the ones sc-upgrade.ts and sc-destroy.ts implement.
+export type {
+  DestroyOptions, DestroyResult, LeftBehindCoin, UpgradeOptions, UpgradeResult,
+};
 
 export interface DeployFromOptions<T extends Artifact = Artifact> {
   provider: NetworkProvider;
@@ -4524,13 +4510,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * 2. Spending all data NFTs (using flag=2 destroy path in the covenant)
    * 3. Spending all entry NFTs (using flag=1 write path, which already allows destruction)
    * 4. Spending all expired event NFTs (using CSV timelock - best-effort)
-   * 5. Sending all reclaimed satoshis to the recipient address
+   * 5. Spending the satoshi container and each named token container; other coins there are junk, left and reported
+   * 6. Sending all reclaimed satoshis to the recipient address
    *
    * If the total number of inputs exceeds transaction size limits, batching is used:
    * - Intermediate transactions preserve one master UTXO while destroying batches of NFTs
-   * - The final transaction destroys all remaining masters and NFTs
+   * - The final transaction destroys all remaining masters and NFTs, and spends every container
    *
-   * @returns Array of transaction details and total reclaimed satoshis
+   * @returns Array of transaction details, total reclaimed satoshis, and the junk coins left behind
    */
   static async destroy(options: DestroyOptions): Promise<DestroyResult> {
     return destroyStatefulContractImpl(options);

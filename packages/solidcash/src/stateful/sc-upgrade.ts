@@ -30,6 +30,8 @@ import {
   getSatoshiContainerAddress,
   getTokenContainerAddress,
   getValueChunkAddress,
+  isSatoshiContainerCoin,
+  isTokenContainerCoin,
 } from './covenant-helpers.js';
 import { tokenContainerKeyValue } from './sc-load-create-builder-token-containers.js';
 import { decodeEntryCommitment } from './SortedList.js';
@@ -166,7 +168,7 @@ async function planTokenContainers(
   let abandonedCount = 0;
   for (const category of categories) {
     const address = getTokenContainerAddress(contract, categoryId, category);
-    const live = (await provider.getUtxos(address)).filter((utxo) => utxo.token?.category.toLowerCase() === category);
+    const live = (await provider.getUtxos(address)).filter((utxo) => isTokenContainerCoin(utxo, category));
     const kept = keptCoins(address, live, abandoned, leftBehind);
     abandonedCount += live.length - kept.length;
     containers.push(...kept.map((utxo) => ({ key: category, utxo })));
@@ -332,7 +334,7 @@ export async function upgradeStatefulContract<T extends Artifact>(
   let satoshiContainerUtxo: Utxo | undefined;
   if (keepsSatoshiContainer) {
     const satoshiAddress = getSatoshiContainerAddress(oldContract.inner, categoryId);
-    const listed = (await provider.getUtxos(satoshiAddress)).filter((utxo) => utxo.token === undefined);
+    const listed = (await provider.getUtxos(satoshiAddress)).filter(isSatoshiContainerCoin);
     const live = keptCoins(satoshiAddress, listed, abandoned, leftBehind);
     if (live.length === 0) {
       throw new Error(listed.length > 0

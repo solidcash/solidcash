@@ -17,7 +17,7 @@ it, so CashScript examples do not apply.
    `msg.sender`, `msg.value`, addresses, events, `try`/`catch`, `block.*` values and storage behave differently.
 2. Authorize with signatures. Take a `sig` parameter and check it against a stored or constructor `pubkey` with
    `checkSig`, or verify oracle data with `checkDataSig`. Do not rely on `msg.sender == owner` alone: the
-   transaction builder chooses which inputs a transaction co-spends.
+   transaction builder chooses which inputs a transaction co-spends, and the compiler warns on every read.
 3. Every public or external spend path must verify something (`require`, `assert`, `revert`, a time lock) or
    change state. A path that does neither is spendable by anyone, so the compiler rejects it by default.
 4. Treat compiler warnings as porting work. Each one marks a construct whose BCH meaning differs from Solidity.
@@ -42,7 +42,7 @@ Mappings       verified mappings: one entry NFT per key, absence proven on read;
 Calls          co-spent inputs and outputs in one transaction; no call stack, no re-entrancy
 msg.sender     caller's locking bytecode, or tx.origin for a direct spend; authorize with checkSig instead
 msg.value      net satoshi change of the contract's satoshi container
-address        full variable-length locking bytecode, not 20 bytes; `payable` is accepted and inert
+address        full variable-length locking bytecode, not 20 bytes; `.transfer`/`.send` need `address payable`
 Integers       int/uint are checked 256-bit like Solidity; bigint is arbitrary precision and never wraps
 Encoding       numbers are little-endian sign-magnitude (int256 takes 33 bytes); natively bytes32(x)[0] is the low byte
 Hashing        keccak256 is real (a co-spent side-car computes it); selectors are sha256 unless evmCompat
@@ -110,7 +110,8 @@ __gap arrays                 omitted under evmCompat; they reserve nothing on BC
 
 ### Not supported (redesign instead)
 
-- Storage-slot layout assumptions; `contract C layout at ...` is accepted and ignored.
+- Storage-slot layout assumptions. `contract C layout at <base>` is accepted, but a base the compiler can evaluate
+  only shifts EVM-visible slot numbers (`.slot`, `sload`/`sstore`); state still lives in NFTs.
 - Synchronous calls and call stacks: a failed call cannot be caught, so `catch` bodies never run, and a low-level
   call's `success` is always true.
 - Gas metering, EIP-55 checksummed address literals, blob fields.
@@ -226,7 +227,7 @@ bigint                               // arbitrary precision, never range-checked
 fixed  ufixed  fixedMxN  ufixedMxN   // fixed = fixed128x18; M = 8..256 (step 8), N = 0..80 decimals
 string  bytes  bytesN  byte          // byte = bytes1; (native) bytesN may exceed 32, e.g. bytes65
 pubkey  sig  datasig                 // ~33 / ~65 / ~64 bytes; convert implicitly to bytes
-address  address payable             // full locking bytecode, variable length; payable is inert
+address  address payable             // full locking bytecode, variable length; payable for .transfer/.send
 T[N]  T[]  mapping(K => V)           // arrays: locals, params, state; mappings: state only (Mappings and Arrays)
 function(int) internal returns (int) // function type
 Point  Status  Price  IToken         // struct, enum, value type; an interface/contract name types an address
@@ -243,7 +244,7 @@ uint256 immutable cap;                           // set once in the constructor;
 enum Priority { LOW = 1, MEDIUM = 5, HIGH }      // explicit values (extension); HIGH = 6; int(p), Priority(n)
 type Price is uint64;                            // value type: file, contract, library or interface level
 Price q = Price.wrap(v);  uint64 u = Price.unwrap(q);   // (native) also Price(v) and uint64(q)
-fixed128x18 total = 1.5 * 2.0 + 0.25;            // * and / rescale; `1.5 * 2` is a type error
+fixed128x18 total = 1.5 * 2.0 + 0.25;            // * and / rescale; natively `1.5 * 2` is a type error
 bytes memory buf = new bytes(32);                // memory is the default; assigning aliases the buffer
 Account storage acc = this.accounts[user];       // storage local: alias of a struct, array or mapping path
 ```
@@ -321,14 +322,13 @@ function total() public view returns (int) { return this.counter; }
 function stats(int a, int b) internal pure returns (int sum, int diff) { sum = a + b; diff = a - b; }
 int r = helper({a: 21});                                           // named arguments; overloading works
 constructor(int initial) { this.counter = initial; }               // deploy-time state initialiser
-fallback(bytes input) external { require(input.length > 0); }      // or fallback() external
-receive() external payable { require(tx.outputs[0].value >= 546); }  // payable is accepted and inert
+fallback(bytes input) external { require(input.length > 0); }      // or fallback() external; warned
+receive() external payable { require(tx.outputs[0].value >= 546); }  // warned: discouraged on BCH
 ```
 
 - `public` and `external` functions are entry points chosen by a 4-byte selector (sha256-derived natively,
-  keccak256 under evmCompat); `pragma solidity >=0.5` sources must state visibility. Calling an `external`
-  function internally is an error. Entry arguments are untrusted; bounded types, enums and `bool` are
-  range-checked on entry by default.
+  keccak256 under evmCompat). Calling an `external` function internally is an error. Entry arguments are
+  untrusted; bounded types, enums and `bool` are range-checked on entry by default.
 - `pure` reads no state or environment; `view` only reads; neither may write state, create or make low-level calls.
 - Falling off the end returns the named values or type defaults. An entry point may declare returns, which a
   cross-contract caller receives through a return-event NFT.
@@ -371,7 +371,8 @@ interface IToken is IBase {
 
 - C3 linearization in Solidity order: bases most-base-like first, the rightmost wins. For `D is B, C` (both
   `is A`) the order is D, C, B, A: `super.f()` in D runs C's, whose `super.f()` runs B's; `B.f()` calls B's
-  directly. `override` requires a `virtual` base; a function from two bases needs `override(B, C)`.
+  directly. `override` requires a `virtual` base. Under evmCompat a function from two bases needs
+  `override(B, C)`; natively a bare `override` is enough.
 - Abstract contracts cannot be deployed; evmCompat requires `virtual` on bodyless functions. Base parameters: pass
   `is Base(args)` or `constructor(..) Base(args)`, else (native) they become the child's parameters, merged by name.
 - Interfaces may also declare enums, structs, value types, errors, `using` and a bodyless `fallback`; their state
@@ -391,8 +392,8 @@ function addAmt(Amount a, Amount b) pure returns (Amount) { return Amount.wrap(A
 using { addAmt as + } for Amount global; // operator binding
 ```
 
-- Library functions are inlined at each call (`SafeMath.add(a, b)` or via `using`); mark them `internal` or
-  `private`. Libraries may also declare structs, enums, value types, events, errors, constants and modifiers,
+- Library functions are inlined at each call (`SafeMath.add(a, b)` or via `using`); an unmarked one is
+  `internal`. Libraries may also declare structs, enums, value types, events, errors, constants and modifiers,
   referenced as `Lib.Name`; `storage` parameters (`Data storage self`) alias the caller's state.
 - Operators bind only on value types, from pure free functions, in a file-level `using {f as op} for T global;`
   (evmCompat requires exactly this). Comparisons return `bool`, others the value type; only `-` and `~` may be
@@ -568,8 +569,8 @@ tx.origin     -- address: locking bytecode of the first P2PKH input that holds n
 tx.gasprice   -- uint32: this transaction's fee rate in sat/kB
 ```
 
-- `msg.sender` and `tx.origin` derive from the co-spent inputs, which the transaction builder picks, so authorize
-  with `checkSig`, `checkMultiSig` or `checkDataSig`, not with `msg.sender` alone.
+- The compiler warns on every read of `msg.sender` and `tx.origin`. Both derive from the co-spent inputs, which the
+  transaction builder picks, so authorize with `checkSig`, `checkMultiSig` or `checkDataSig`, not `msg.sender` alone.
 - `msg.value` is not readable in `view` public/external functions or a non-payable constructor; `pure` functions
   cannot read `msg.sender`, `msg.value`, `tx.origin`, `tx.gasprice` or `block.*`. `evmCompat` types `msg.value`
   and `.length` as `uint256`.
@@ -587,8 +588,9 @@ bytes32 blockhash(int n)       -- from a per-height oracle NFT of the contract's
 bytes32 blobhash(int i)        -- always zero
 ```
 
-- `blobbasefee`, `prevrandao`, `gaslimit` and `gasleft()` are compiler-warned shims; none of these values is
-  randomness. For deadlines prefer `tx.time` / `this.age`, which need no oracle.
+- `block.number` and `block.timestamp` warn that they lag the oracle. `blobbasefee`, `prevrandao`, `gaslimit` and
+  `gasleft()` are compiler-warned shims; none of these values is randomness. For deadlines prefer `tx.time` /
+  `this.age`, which need no oracle.
 - Oracle fields co-spend one shared block-info oracle UTXO read-only (only its owner updates it); the SDK adds the
   input. A live provider needs `blockOracleCategory`; `MockNetworkProvider` has its own oracle. `blockhash(n)`
   makes the contract stateful and is called through `StatefulContract`; a missing `(n, hash)` NFT is an error,

@@ -10429,15 +10429,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else if (!this.functionHasDelegatecall && hasAnyStatefulAccess && isSelfdestruct) {
         // Selfdestruct: skip master self-preservation (contract is being destroyed).
         // Kernel bus rows authenticate retirement census in the detached verifier; keep the minting
-        // uniqueness guard only for direct (non-bus) spends.
+        // uniqueness guard and the own-NFT bound only for direct (non-bus) spends.
         if (!this.currentFunctionIsMessageBusRoute && node.messageBusEligible !== true) {
           this.emitMintingNftUniqueness(node);
+          this.emitSelfdestructOwnNftBound(node);
         }
       } else if (!this.functionHasDelegatecall && isStatefulContract && isSelfdestruct && !hasAnyStatefulAccess) {
         // Selfdestruct without state access: direct spends still verify minting uniqueness (M6).
         // Message-bus eligible handlers defer category census to selector-derived lifecycle mode 3.
         if (!this.currentFunctionIsMessageBusRoute && node.messageBusEligible !== true) {
           this.emitMintingNftUniqueness(node);
+          this.emitSelfdestructOwnNftBound(node);
         }
       } else if (!this.functionHasDelegatecall && isStatefulContract && !isSelfdestruct) {
         // Guarded: basic covenant checks for non-stateful functions in stateful contracts
@@ -49972,6 +49974,66 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(); // remove (this_cat_cap)
     this.emit(Op.OP_ENDIF, locationData);
     if (lifecycleModeIndex >= 0) this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /**
+   * AUTHHEAD-1: a direct selfdestruct entry spends the minting master, so its transaction could mint any NFT of the
+   * category: a mutable one at the BCMR authhead lock is a look-alike identity, a minting one elsewhere moves the
+   * master. An output carrying a mutable or minting NFT of the category must stand in for the same-index input, which
+   * carries the same category and capability under the same lock: a record or master carried in place, as a call
+   * through the write path or an intermediate destroy batch leaves it. Its commitment is not pinned. Framed builds are
+   * left as they were.
+   *
+   * Stack effect: net zero.
+   */
+  private emitSelfdestructOwnNftBound(node: FunctionDefinitionNode): void {
+    if (this.framedMaster) return;
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // C ++ 0x02
+    this.pushToStack('(this_cat_minting)');
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_CAT, loc); // C ++ 0x01
+    this.pushToStack('(this_cat_mutable)');
+    // A transaction has an output, so counting down from the count visits every index once.
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.pushToStack('(loop_j)');
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // [minting, mutable, j, cat_j]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(encodeInt(5n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+    // An NFT of C with a capability: input j holds the same under the same lock. Past the inputs the read fails.
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack(3);
   }
 
   /**

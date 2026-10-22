@@ -24,9 +24,10 @@ contract Split() {
   function bump() { this.n = this.n + 1; require(this.n > 0); }
 }`;
 
+// One record holds `count` beside the note's length (a `bigint` field would take a data NFT of its own, D49).
 const SHELF = `pragma solidcash >=0.8.0;
 contract Shelf() {
-  bigint count;
+  int count;
   string note;
   mapping(bigint => bigint) stock;
   event Restocked();

@@ -270,13 +270,14 @@ contract CombinedReader(bytes counterAddr) {
 }
 `;
 
+// The three fields share one data NFT (as bigints each would take one of its own, D49).
 const MULTI_FIELD_OUTSTATE_READER = `
 pragma solidcash >=0.8.0;
 
 interface IMultiField {
-    public bigint alpha;
-    public bigint beta;
-    public bigint gamma;
+    public int alpha;
+    public int beta;
+    public int gamma;
     function setAll(pubkey owner, sig s);
 }
 

@@ -514,7 +514,8 @@ defaultNetwork: 'strict',
 ```
 
 To cap only the input size, set `policy: { enforceProductionInputLimit: true }` on a mock network: every input is
-held to BCH's 10,000 bytes, and `solidhat compile` against that network plans splits and commitments for it.
+held to BCH's 10,000 bytes, and `solidhat compile` against that network splits contracts to fit. Commitment and
+other sizes stay relaxed.
 
 Outside SolidHat, pass the same values to the SDK's provider:
 

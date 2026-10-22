@@ -739,6 +739,42 @@ export function countMastersScript(): Uint8Array {
   ]);
 }
 
+/**
+ * Consumes a 32-byte category on top and leaves how many of one side's UTXOs carry it, by any capability.
+ *
+ * Entry `[..., category]`, exit `[..., count]`. Unlike `countMastersScript`, which matches the whole category plus
+ * capability byte (so it counts only a minting master), this compares the first 32 bytes, so a record, a container
+ * holding the token, an event NFT and a master all count. A tokenless or shorter category never matches. The head
+ * uses it to require a delegate callee's own category untouched: present on exactly one input and one output, the
+ * recreated master.
+ */
+export function countCategoryHoldersScript(side: 'input' | 'output'): Uint8Array {
+  const countOp = side === 'input' ? Opcodes.OP_TXINPUTCOUNT : Opcodes.OP_TXOUTPUTCOUNT;
+  const tokenOp = side === 'input' ? Opcodes.OP_UTXOTOKENCATEGORY : Opcodes.OP_OUTPUTTOKENCATEGORY;
+  const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
+  const bytes: number[] = [];
+  pushAll(bytes, [
+    Opcodes.OP_0, Opcodes.OP_0, // count, index
+    Opcodes.OP_BEGIN,
+    Opcodes.OP_DUP, tokenOp, // the UTXO's category field (empty, 32 or 33 bytes)
+    Opcodes.OP_SIZE, num(32), Opcodes.OP_LESSTHAN,
+    Opcodes.OP_IF, Opcodes.OP_DROP, Opcodes.OP_0, // tokenless: an empty string never equals the 32-byte pin
+    Opcodes.OP_ELSE, num(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP, // the 32-byte category without the capability byte
+    Opcodes.OP_ENDIF,
+    num(3), Opcodes.OP_PICK, // the expected category, at depth 3
+    Opcodes.OP_EQUAL,
+    Opcodes.OP_IF,
+    Opcodes.OP_1, Opcodes.OP_ROLL, Opcodes.OP_1ADD, Opcodes.OP_SWAP, // count++ under the index
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_1ADD,
+    Opcodes.OP_DUP, countOp, Opcodes.OP_GREATERTHANOREQUAL,
+    Opcodes.OP_UNTIL,
+    Opcodes.OP_DROP, // index
+    Opcodes.OP_SWAP, Opcodes.OP_DROP, // category
+  ]);
+  return new Uint8Array(bytes);
+}
+
 /** The frame kinds of the calls that run on the caller's records, `DELEGATE` and `INTERNAL`, as `[low, high)`. */
 const CONTEXT_CALL_KINDS = [3, 5] as const;
 

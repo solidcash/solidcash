@@ -6,10 +6,10 @@ import {
 import { compileStringMulti } from 'solidc';
 import { encodePushdataValue, sha256 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
-import { Contract } from '../../src/index.js';
-import { StatefulContract } from '../../src/stateful/index.js';
+import { Contract, Signer } from '../../src/index.js';
+import { StatefulContract, getContractFactory, upgrades } from '../../src/stateful/index.js';
 import { callRecordDigest } from '../../src/stateful/call-record.js';
-import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
+import { addProvenUtxo, createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
 
 /**
  * Direct call records (docs/wip/call-records/DESIGN.md): a direct callee's return carrier is the record of the
@@ -203,6 +203,14 @@ async function loopDeploy(): Promise<LoopDeployed> {
   return { provider, publisher, pubCat, subCats: subCats as [string, string] };
 }
 
+// An implementation behind the default proxy: its delegated entry runs the forwarded call on the proxy's state.
+const SCALED_IMPL = `pragma solidcash >=0.8.0;
+  contract ScaledImpl() {
+    int factor;
+    function initialize(int f) public { this.factor = f; }
+    function scaled(int value) public returns (int) { this.factor = this.factor + 1; return value * this.factor; }
+  }`;
+
 describe('direct call records', () => {
   it('records the result of the call it answers, and the caller reads it', async () => {
     const d = await deploy(5n);
@@ -316,5 +324,29 @@ describe('direct call records', () => {
       encodePushdataValue([10n, 21n], 'uint256[]'));
     expectScriptRejection(await outcomeOf(d.provider, encode(tx)), masterInput(tx, d.pubCat));
     expect(await outcomeOf(d.provider, encode(control))).toBe('ACCEPTED');
+  }, 300_000);
+
+  it('records a forwarded call in the proxy\'s category, and refuses a copy beside it', async () => {
+    const provider = createTestProvider();
+    const key = new Uint8Array(32).fill(0x37);
+    const signer = new Signer(key, provider);
+    await addProvenUtxo(provider, signer.getAddress());
+    await addProvenUtxo(provider, signer.getAddress());
+    const implArtifact = compileString(SCALED_IMPL);
+    const proxy = await upgrades.deployProxy(getContractFactory(implArtifact, signer), [3n]);
+    const proxyCat = proxy.proxy.categoryId;
+    const call = (): Promise<unknown> => (proxy as any).forward('scaled', [7n]).emitReturn().send();
+    const tx = decode(await capture(provider, call));
+    const [record] = carriers(tx, proxyCat);
+    expect(carriers(tx, proxyCat)).toHaveLength(1);
+    const scaled = implArtifact.abi.find((entry: any) => entry.name === 'scaled')!;
+    const commitment = tx.outputs[record!].token!.nft!.commitment;
+    expect(binToHex(commitment.slice(0, 31))).toBe(binToHex(callRecordDigest(scaled, [7n])!));
+    expect(binToHex(commitment.slice(31))).toBe(`01${binToHex(encodeDataPush(bigIntToVmNumber(28n)))}`);
+
+    // The implementation's delegated entry pinned the record and counts the proxy's carriers.
+    await appendCopy(provider, tx, tx.outputs[record!]!);
+    expectScriptRejection(await outcomeOf(provider, encode(tx)), masterInput(tx, proxy.implementation.categoryId));
+    await call();
   }, 300_000);
 });

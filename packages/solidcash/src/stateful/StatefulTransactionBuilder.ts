@@ -5508,20 +5508,34 @@ export class StatefulTransactionBuilder {
     if (external) {
       const group = this.externalCallUtxoGroups[Number(external[1])];
       if (!group || group.compilerRoute) return undefined;
-      const physical = this.externalCallUtxoGroups[group.sharedGroupIndex ?? Number(external[1])] ?? group;
-      const artifact = (physical.logicalArtifact ?? physical.externalContract?.inner?.artifact) as Artifact | undefined;
-      const functionName = physical.logicalFunctionName ?? physical.functionName;
-      const abiFunction = artifact?.abi.find((entry) => entry.name === functionName);
-      if (!artifact || abiFunction?.callRecord !== true) return undefined;
-      return callRecordDigest(abiFunction, physical.logicalFunctionArgs ?? physical.functionArgs, {
-        structs: artifact.structs ?? artifact.stateLayout?.structs, enums: artifact.enums,
-      });
+      return this.groupCallRecordDigest(this.externalCallUtxoGroups[group.sharedGroupIndex ?? Number(external[1])]
+        ?? group);
     }
     if (identity !== this.categoryId) return undefined;
     const unlocker = this.masterUtxo.unlocker;
-    if (!isContractUnlocker(unlocker) || unlocker.abiFunction.callRecord !== true) return undefined;
-    const artifact = unlocker.contract.artifact as Artifact;
-    return callRecordDigest(unlocker.abiFunction, unlocker.params, {
+    if (isContractUnlocker(unlocker) && unlocker.abiFunction.callRecord === true) {
+      const artifact = unlocker.contract.artifact as Artifact;
+      return callRecordDigest(unlocker.abiFunction, unlocker.params, {
+        structs: artifact.structs ?? artifact.stateLayout?.structs, enums: artifact.enums,
+      });
+    }
+    // A proxy entry forwards its call: the implementation it delegates to runs that call on this state, and its
+    // record answers it.
+    for (const group of this.lowLevelCallUtxoGroups) {
+      if (group.callMode !== 'delegatecall' || group.compilerRoute) continue;
+      const digest = this.groupCallRecordDigest(group);
+      if (digest !== undefined) return digest;
+    }
+    return undefined;
+  }
+
+  /** The digest of the call a callee group runs, when its function settles a call record. */
+  private groupCallRecordDigest(group: ExternalCallUtxoGroup): Uint8Array | undefined {
+    const artifact = (group.logicalArtifact ?? group.externalContract?.inner?.artifact) as Artifact | undefined;
+    const functionName = group.logicalFunctionName ?? group.functionName;
+    const abiFunction = artifact?.abi.find((entry) => entry.name === functionName);
+    if (!artifact || abiFunction?.callRecord !== true) return undefined;
+    return callRecordDigest(abiFunction, group.logicalFunctionArgs ?? group.functionArgs, {
       structs: artifact.structs ?? artifact.stateLayout?.structs, enums: artifact.enums,
     });
   }

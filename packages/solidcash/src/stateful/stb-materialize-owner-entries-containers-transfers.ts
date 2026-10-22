@@ -254,6 +254,7 @@ export function materializeOwnerEntriesContainersTransfers(
       (s) => s.tokenContainerCategoryId === container.tokenContainerCategoryId,
     ) || host.runtimeLoopTransferOutputs.some((transfer) => transfer.kind === 'nft'
       && transfer.tokenContainerCategoryId === container.tokenContainerCategoryId);
+    const nft = container.utxo.token?.nft;
 
     builder.addOutput({
       to: lockingBytecode,
@@ -261,10 +262,8 @@ export function materializeOwnerEntriesContainersTransfers(
       token: {
         amount: remainingFtAmount,
         category: container.tokenContainerCategoryId,
-        // Preserve NFT if it wasn't transferred, strip it if it was
-        ...(!nftWasTransferred && container.utxo.token?.nft && {
-          nft: container.utxo.token.nft,
-        }),
+        // A send moves the NFT out, except a minting one, which mints the sent NFT and stays.
+        ...(nft !== undefined && (!nftWasTransferred || nft.capability === 'minting') && { nft }),
       },
     });
   }

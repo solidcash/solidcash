@@ -56596,19 +56596,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       };
 
+      // An NFT send moves the container's NFT out, so only the base category stays; a minting NFT mints the send
+      // and stays whole: [category] -> [category if minting, else its base 32 bytes].
+      const keptInputCategory: Script = [Op.OP_DUP, encodeInt(32n), Op.OP_SPLIT, Op.OP_2, Op.OP_EQUAL, Op.OP_PICK,
+        Op.OP_NIP, Op.OP_NIP];
+      // [kept, category] -> [kept, category cut to the kept size]. A minting input refuses a 32-byte output.
+      const keptOutputCategory: Script = [Op.OP_OVER, Op.OP_SIZE, Op.OP_NIP, Op.OP_SPLIT, Op.OP_DROP];
       this.emitTokenContainerInputIndex(i, locationData, 0);
       this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
       if (unconditionalNftTransfer) {
-        // NFT was transferred out - compare only base 32-byte category
-        this.emit(encodeInt(32n), locationData);
-        this.emit(Op.OP_SPLIT, locationData);
-        this.emit(Op.OP_DROP, locationData);
+        this.emit(keptInputCategory, locationData);
       } else if (hasConditionalNftOccurrence) {
         emitConditionalNftOccurrence(1);
         this.emit(Op.OP_IF, locationData);
-        this.emit(encodeInt(32n), locationData);
-        this.emit(Op.OP_SPLIT, locationData);
-        this.emit(Op.OP_DROP, locationData);
+        this.emit(keptInputCategory, locationData);
         this.emit(Op.OP_ENDIF, locationData);
       }
       // 1 untracked
@@ -56616,15 +56617,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitTokenContainerOutputIndex(i, locationData, 1);
       this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
       if (unconditionalNftTransfer) {
-        this.emit(encodeInt(32n), locationData);
-        this.emit(Op.OP_SPLIT, locationData);
-        this.emit(Op.OP_DROP, locationData);
+        this.emit(keptOutputCategory, locationData);
       } else if (hasConditionalNftOccurrence) {
         emitConditionalNftOccurrence(2);
         this.emit(Op.OP_IF, locationData);
-        this.emit(encodeInt(32n), locationData);
-        this.emit(Op.OP_SPLIT, locationData);
-        this.emit(Op.OP_DROP, locationData);
+        this.emit(keptOutputCategory, locationData);
         this.emit(Op.OP_ENDIF, locationData);
       }
       // 2 untracked

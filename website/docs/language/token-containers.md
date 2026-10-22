@@ -114,7 +114,8 @@ this.tokens[category].transferNft(
 
 The output is pinned to the recipient, commitment, capability, base category, and a fungible amount of zero.
 If the input UTXO also holds fungible tokens, those tokens stay in the preservation output unless transferred
-separately.
+separately. A container holding a minting NFT mints the sent NFT and keeps its minting NFT; a container holding an
+immutable or mutable NFT sends that NFT.
 
 ## Preservation and deposits
 
@@ -127,10 +128,11 @@ input amount - authenticated transfers <= output amount
 ```
 
 The inequality permits deposits while preventing the unauthenticated remainder from being redirected. An NFT
-transfer removes the NFT from the remainder; otherwise its category/capability is preserved.
+transfer removes an immutable or mutable NFT from the remainder; a minting NFT always stays, capability included.
+Otherwise the category/capability is preserved.
 
 Consequently, an ordinary call cannot completely drain a fungible-only container or transfer the only NFT from
-an NFT-only container. A full fungible transfer is possible when an NFT remains, and an NFT transfer is possible
+an NFT-only container, nor give up a container's minting NFT. A full fungible transfer is possible when an NFT remains, and an NFT transfer is possible
 when a positive fungible amount remains. A `selfdestruct` route is the explicit exception, but it does not choose
 token recipients automatically; account for every category in the function and transaction. See
 [Selfdestruct](./selfdestruct.md#tokens-are-not-transferred).

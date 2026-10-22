@@ -1,4 +1,4 @@
-import { hexToBin, type Output, type Transaction } from '@bitauth/libauth';
+import { binToHex, hexToBin, type Output, type Transaction } from '@bitauth/libauth';
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../../src/index.js';
@@ -141,5 +141,14 @@ describe('graph token-site bitmap and NFT occurrence packing', () => {
     expect(verdict(withOutsideFungible(sent))).toBe(true);
     expect(verdict(withOutsideFungible(withToken(sent, first, { ...send, amount: 5n })))).toMatch(refused);
     expect(verdict(withOutsideFungible(withToken(sent, end, mint(5n))))).toMatch(refused);
+    // 4. The send mints from the container's minting NFT, which the container keeps: coming back without it,
+    // fungible-only or mutable, is refused.
+    const lock = binToHex(addressToLockScript(getTokenContainerAddress(inner, categoryId, seeded.categoryId)));
+    const kept = sent.transaction.outputs.findIndex((output) => binToHex(output.lockingBytecode) === lock);
+    expect(sent.transaction.outputs[kept]!.token)
+      .toEqual({ category: send.category, amount: 50n, nft: { capability: 'minting', commitment: Uint8Array.of() } });
+    for (const nft of [undefined, { capability: 'mutable' as const, commitment: Uint8Array.of() }]) {
+      expect(verdict(withToken(sent, kept, { category: send.category, amount: 50n, ...(nft && { nft }) }))).not.toBe(true);
+    }
   }, 300_000);
 });

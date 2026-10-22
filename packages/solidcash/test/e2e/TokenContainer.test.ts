@@ -1102,11 +1102,11 @@ describe('Token Container', () => {
       // [0] = master, [1] = data NFT, [2] = preservation, [3] = FT transfer, [4] = NFT transfer
       expect(outputs.length).toBeGreaterThanOrEqual(5);
 
-      // Preservation output: remaining 125 FT, no NFT (was transferred)
+      // Preservation output: remaining 125 FT and the minting NFT, which minted the sent one
       const preservation = outputs[2];
       expect(preservation.token!.category).toBe(mixedCategory);
       expect(preservation.token!.amount).toBe(125n);
-      expect(preservation.token!.nft).toBeUndefined();
+      expect(preservation.token!.nft).toEqual({ capability: 'minting', commitment: 'beef' });
 
       // FT transfer output: 75 FT, no NFT
       const ftTransferOutput = outputs[3];

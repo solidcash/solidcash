@@ -6673,8 +6673,9 @@ export class StatefulTransactionBuilder {
         + `for category ${categoryId}`,
       );
     }
-    const hasNft = !!container.utxo.token?.nft;
-    return (inputFt - ftTransferred === 0n) && (!hasNft || nftTransferred);
+    // A minting NFT mints the sent NFT and stays, so its container never drains.
+    const nft = container.utxo.token?.nft;
+    return (inputFt - ftTransferred === 0n) && (nft === undefined || (nftTransferred && nft.capability !== 'minting'));
   }
 
   /**

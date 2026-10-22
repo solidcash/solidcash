@@ -13,7 +13,8 @@ SolidCash supports two forms with different security properties:
   recipient. It exists for compatibility and large batched cleanup; the transaction builder's recipient choice is
   not an on-chain authorization policy.
 
-Prefer the expression form when a contract holds BCH.
+Prefer the expression form when a contract holds BCH. A bare `selfdestruct;` with no argument is a discarded
+reference to the builtin: it is a no-op and destroys nothing.
 
 ## Destination-pinned destruction
 
@@ -28,7 +29,8 @@ contract Vault(pubkey admin, address beneficiary) {
 }
 ```
 
-The statement implies the lifecycle modifier; do not write both. Its covenant requires:
+The statement implies the `selfdestruct` modifier on the enclosing function, so you do not need to write it. Its
+covenant requires:
 
 ```text
 tx.outputs.length == 1
@@ -50,12 +52,13 @@ locking bytecode. A nonsensical type can compile and then fail the output-byteco
 
 ## Authorization rules
 
-Destruction must be direct and terminal. A selfdestruct function must contain a final `require`, and a statement
-nested inside a branch, loop, or `unchecked` block is rejected. A meaningless `require(true)` satisfies only the
-structural final-require rule; it is not authentication.
+Destruction must be direct and terminal. A selfdestruct function must contain a final `require`, even when
+`enforceFinalRequire` is off, and a statement nested inside a branch, loop, or `unchecked` block is rejected
+(`NestedSelfdestructError`). A meaningless `require(true)` satisfies only the structural final-require rule; it is
+not authentication.
 
 The compiler additionally rejects a caller-controlled destination unless it can recognize a genuine signature
-guard. This is unsafe:
+guard (`UnauthenticatedSelfdestructError`). This is unsafe:
 
 ```solidity
 function destroy(address recipient) public {
@@ -95,8 +98,13 @@ const result = await StatefulContract.selfdestructTo({
   maxFee: 2_000n,
 });
 
-console.log(result.txs, result.totalReclaimed);
+console.log(result.txs, result.totalReclaimed, result.leftBehind);
 ```
+
+The options also take `fee` (per transaction, default 1,000 satoshis), `maxInputsPerTx`, and
+`tokenContainerCategoryIds` for the token containers to reclaim. The result lists every transaction sent, the
+satoshis paid to the recipient, and `leftBehind`: coins at a container address that are not containers of the
+contract, which nothing can spend once the master is gone.
 
 For `selfdestruct(recipient)`, the SDK `recipient` must resolve to the same locking bytecode as the source-level
 expression. The helper discovers master threads, data NFTs, vmap entries, the satoshi container, and expired event

@@ -10172,9 +10172,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // selfdestruct body, and those carry the full data-NFT set without touching it.
       const carriesDataNfts = this.compactOffsetMap.size > 0
         && node.modifiers.includes(FunctionModifier.DELEGATE);
-      if (!this.functionHasDelegatecall && !isSelfdestruct && (this.hasStateAccess || carriesDataNfts)) {
-        this.emitAutoCovenantVerification(node);
-      }
+      const settlesDataRecords = !this.functionHasDelegatecall && !isSelfdestruct
+        && (this.hasStateAccess || carriesDataNfts);
+      if (settlesDataRecords) this.emitAutoCovenantVerification(node);
       if (!this.functionHasDelegatecall && (hasEntryWrites || hasEntryDeletes)) {
         this.emitEntryCovenantVerification(node);
       }
@@ -10429,6 +10429,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (skipRetirement) {
           this.emit(Op.OP_ENDIF, { location: node.body.location, positionHint: PositionHint.END });
         }
+        // The count still balances a record rewritten in place, or destroyed and re-emitted at another lock.
+        this.emitCountedRecordPin(node, settlesDataRecords,
+          { location: node.body.location, positionHint: PositionHint.END });
       }
       const scansMutable = this.mutableOutputCheckPending;
       this.mutableOutputCheckPending = false;
@@ -49889,8 +49892,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // contiguous run of new data NFTs at the canonical covenant bound to the replacement's lock, the master the
   // records will serve. A message-bus upgrade keeps the balanced census
   // because it appends inside the final existing data NFT and co-spends the participant's detached verifier, and
-  // its route verifier already pins the block. Residual: flag=1 corruption that re-emits a 0x01-of-C output keeps
-  // the count balanced (see SECURITY-AUDIT C3), and the run's length and commitments are not checked.
+  // its route verifier already pins the block. The count alone still balances a record rewritten in place or
+  // destroyed and re-emitted elsewhere (SECURITY-AUDIT C3): the direct count path adds emitCountedRecordPin, a
+  // delegatecall proxy does not. The upgrade run's length and commitments are not checked.
   private emitOwnCategoryMutableNftConservation(
     node: FunctionDefinitionNode, allowUpgradeDataNftGrowth = false,
   ): void {
@@ -52492,20 +52496,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // instead of preserved 1:1. The hidden value-chunk lock-list witness is present whenever the function has
       // such a write.
       || this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) >= 0;
-    // A direct walk that admits no record lock reads only the transaction and the block size, so the entries share
-    // one helper that takes the size as its argument. A walk with no helper keeps the size inline.
     if (!routeParticipantWalk && !admitMintableLocks) {
-      const id = this.sharedEntryCheckId('outsideLayoutWalk', (t, l) => {
-        t.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
-        t.emitSizedOutsideLayoutWalk(l);
-      });
-      if (id !== undefined && this.subroutineDefined.get(id)) {
-        this.emit(encodeInt(BigInt(blockSize)), loc);
-        this.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
-        this.invokeSubroutineIfDefined(id, loc);
-        this.popFromStack();
-        return;
-      }
+      this.emitPlainOutsideLayoutWalk(blockSize, loc);
+      return;
     }
     const category = '(__outside_own_mutable)';
     this.emitOutsideLayoutCategory(category, loc);
@@ -52571,6 +52564,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
     }
     this.popFromStack(1);
+  }
+
+  /**
+   * Every own-category mutable input outside `[master, master + size)` comes back at its own index unchanged. The
+   * walk reads only the transaction and the size, so the entries share one helper that takes the size as its
+   * argument; with no helper the size stays inline. Stack neutral.
+   */
+  private emitPlainOutsideLayoutWalk(size: number, loc: SingleLocationData): void {
+    const id = this.sharedEntryCheckId('outsideLayoutWalk', (t, l) => {
+      t.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
+      t.emitSizedOutsideLayoutWalk(l);
+    });
+    if (id !== undefined && this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(BigInt(size)), loc);
+      this.pushToStack(OUTSIDE_LAYOUT_BLOCK_SIZE);
+      this.invokeSubroutineIfDefined(id, loc);
+      this.popFromStack();
+      return;
+    }
+    const category = '(__outside_own_mutable)';
+    this.emitOutsideLayoutCategory(category, loc);
+    this.emitDirectOutsideLayoutLoop(category, false, () => {
+      this.emit(encodeInt(BigInt(size)), loc);
+    }, loc);
+    this.popFromStack(1);
+  }
+
+  /**
+   * C3 per-record pin of a function the own-category count covers. The only own-category mutable inputs it rewrites
+   * are the data records the auto covenant settles at `master + 1 ..`, so every other one, inside the block or past
+   * it, comes back at its own index unchanged, and the count then leaves no mutable output free. Where the auto
+   * covenant does not run, the walk holds the data records too. Stack neutral.
+   */
+  private emitCountedRecordPin(
+    node: FunctionDefinitionNode, settlesDataRecords: boolean, loc: SingleLocationData,
+  ): void {
+    if (this.isDefineSubTraversal || this.framedMaster || this.readsRecordsFromFrame || node.name === '__construct'
+      || this.usesProxyStateBlockBase() || this.ownsMessageBusParticipantBlock(node)) return;
+    this.emitPlainOutsideLayoutWalk(1 + (settlesDataRecords ? this.compactOffsetMap.size : 0), loc);
   }
 
   /** `[]` -> `[category]`: the master's 32-byte category with the mutable capability, tracked as `category`. */

@@ -83,11 +83,14 @@ async function fundedSigner(): Promise<Signer> {
   return signer;
 }
 
+// The proxy's data NFTs are its first `dataNftCount` mutable outputs, in nftIndex order.
 function proxyState(tx: any, categoryId: string, layout: any): Record<string, bigint> {
-  const out = getTxOutputs(tx).find(
+  const dataNfts = getTxOutputs(tx).filter(
     (o: any) => o.token?.nft?.capability === 'mutable' && o.token?.category === categoryId,
-  );
-  return parsePushdataCommitment(out!.token!.nft!.commitment, layout, 0) as Record<string, bigint>;
+  ).slice(0, layout.dataNftCount);
+  return Object.assign({}, ...dataNfts.map((o: any, nftIndex: number) => (
+    parsePushdataCommitment(o.token!.nft!.commitment, layout, nftIndex)
+  ))) as Record<string, bigint>;
 }
 
 describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {

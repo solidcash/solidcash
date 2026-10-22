@@ -70,21 +70,24 @@ Key design decisions:
 ## Step 2: Compile
 
 ```bash
-npx solidc SimpleToken.scash
+npx solidc SimpleToken.scash -o SimpleToken.json
 ```
 
-This produces `SimpleToken.json` and optionally `SimpleToken.artifact.ts` (with `-A` flag) containing the bytecode, ABI, state layout, and debug information.
+This writes the JSON artifact with the bytecode, ABI, state layout, and debug information. Without `-o` the
+artifact is printed to standard output, and `-f ts -o SimpleToken.artifact.ts` writes a typed TypeScript artifact
+instead. See [the compiler page](/docs/compiler) for every flag.
 
 ## Step 3: Deploy
 
 ```typescript title="deploy.ts"
+import { hexToBin } from '@bitauth/libauth';
 import { SignatureTemplate, Signer } from 'solidcash';
 import { ContractFactory } from 'solidcash/contract-factory';
 import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
-import artifact from './SimpleToken.json' assert { type: 'json' };
+import artifact from './SimpleToken.json' with { type: 'json' };
 
 const provider = new ElectrumNetworkProvider('chipnet');
-const adminKey = hexToUint8Array('...'); // your private key
+const adminKey = hexToBin('...'); // your private key
 const signer = new Signer(adminKey, provider);
 const adminPub = signer.publicKey;
 
@@ -159,18 +162,51 @@ for (const evt of events) {
 
 ## Step 6: Upgrade
 
-`SimpleToken` cannot upgrade in place. Its `totalSupply` and `balances` live in data and entry NFTs bound to the
-master's exact lock, and an `upgrade` function would move the master to new bytecode, leaving those records
-unspendable. The compiler therefore refuses `upgrade` in a contract that keeps state.
+A native upgrade moves the master NFT to new bytecode. The category ID stays the same; the contract address
+changes. The deployed code decides whether it can ever upgrade, so add the lifecycle functions to `SimpleToken`
+before you deploy it. `totalSupply` lives in a data NFT and `balances` in mapping entries, so it needs two:
 
-Decide how the code may evolve before deploying:
+```solidity
+// Moves one mapping entry to the replacement per transaction.
+function migrateEntry(sig s) migrateRecords {
+    require(checkSig(s, admin));
+}
 
-- a contract whose whole state lives in its master NFT can declare an `upgrade` function, and its replacement may
-  add state; or
-- a contract that keeps state can sit behind a custom proxy whose authenticated implementation pointer can change
-  (the built-in `deployProxy()` proxy is pinned to one implementation).
+// Moves the master, re-mints the data NFTs at the new lock and moves the containers.
+function migrate(sig s) upgrade {
+    require(checkSig(s, admin));
+}
+```
 
-See [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
+The compiler rejects an `upgrade` function without an unconditional `require(checkSig(s, key))` against a key the
+caller cannot choose. Guard `migrateEntry` with the same key: whoever calls it chooses the replacement. The SDK
+sends one `migrateEntry` transaction per mapping entry, then the upgrade:
+
+```typescript
+import { StatefulContract } from 'solidcash/stateful';
+
+const result = await StatefulContract.upgrade({
+    provider,
+    oldContract: contract,
+    upgradeFunctionName: 'migrate',
+    upgradeFunctionArgs: [adminSig],
+    migrateRecordsFunctionArgs: [adminSig],
+    newArtifact: simpleTokenV2Artifact,
+    newConstructorArgs: [adminPub],
+    fundingUtxo,
+    funder: signer.unlockP2PKH(),
+    changeAddress: signer.address,
+});
+
+console.log(result.categoryId === categoryId); // true
+console.log(result.contract.address);          // the new address
+```
+
+The replacement keeps every existing state variable with the same name, type and position, and may append new
+ones, which start at their defaults. Its constructor body does not run. Values kept in chunk NFTs (long strings,
+bytes and arrays) do not migrate yet, and the SDK refuses an upgrade that would strand one. A message-bus upgrade
+route (experimental) still cannot carry state variables, and the compiler refuses it. When the address must stay
+the same, use a proxy instead. See [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
 
 ## Step 7: Test
 
@@ -180,7 +216,7 @@ import 'solidcash/vitest';
 import { SignatureTemplate } from 'solidcash';
 import { ContractFactory } from 'solidcash/contract-factory';
 import { MockNetworkProvider } from 'solidcash/network/mock';
-import artifact from './SimpleToken.json' assert { type: 'json' };
+import artifact from './SimpleToken.json' with { type: 'json' };
 
 describe('SimpleToken', () => {
     const provider = new MockNetworkProvider();
@@ -256,9 +292,10 @@ describe('SimpleToken', () => {
 3. **Index durable audit history** - event NFTs are easy to query while unspent, but anyone may clean them up after
    144 blocks. Persist them in an application index if history must outlive the current UTXO set.
 4. **Implement access control** - always gate sensitive operations with `checkSig` or similar checks.
-5. **Plan for upgrades** - a contract that keeps state cannot upgrade in place; choose a proxy before deploying if
-   its code must change later.
-6. **Use the `unsafe` modifier sparingly** - it allows raw transaction introspection but relaxes covenant safety checks.
+5. **Plan for upgrades** - declare an `upgrade` function, plus a `migrateRecords` function when the contract has
+   mapping or array entries, before deploying. Code deployed without them can never change.
+6. **Use the `unsafe` modifier sparingly** - it skips (`unsafe`) or relaxes (`unsafe(1)`, `unsafe(2)`) the covenant
+   checks that protect the master NFT and the state.
 7. **Test with MockNetworkProvider** - fast, deterministic, no network dependency.
 
 For the underlying model, see [State Storage & Data Encoding](/docs/language/storage-model),

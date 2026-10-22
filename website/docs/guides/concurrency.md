@@ -56,10 +56,11 @@ state registers.
 ### Design state for partitions
 
 Normal fixed-width state fields are bin-packed together until the commitment budget is full. Declare an
-`external` state variable to force it into its own dedicated data NFT:
+`external` state variable to force it into its own dedicated data NFT. That data NFT is the unit threads
+partition:
 
 ```solidity
-contract ShardedCounters() {
+contract ShardedCounters(pubkey admin) {
     external int west;
     external int east;
 
@@ -71,14 +72,15 @@ contract ShardedCounters() {
         this.east = this.east + 1;
     }
 
-    function authorize(pubkey key, sig signature) unsafe {
-        require(checkSig(signature, key));
+    function authorize(sig signature) unsafe {
+        require(checkSig(signature, admin));
     }
 }
 ```
 
 Here each increment needs one data NFT and can be assigned to a different master. A function which reads both
-variables needs both indices and cannot run on either one-NFT partition.
+variables needs both indices and cannot run on either one-NFT partition. `authorize` is the gate the
+[`ThreadManager` gate operations](#threadmanager-gate-operations) use.
 
 :::caution
 `external` is both state visibility and a storage-layout instruction: it generates a getter and isolates the
@@ -91,7 +93,9 @@ Create several masters at genesis with `threadCount`. State data is created once
 master.
 
 ```ts
-const contract = await new ContractFactory(artifact, signer).deploy({
+import { ContractFactory, ThreadManager } from 'solidcash/stateful';
+
+const contract = await new ContractFactory(artifact, signer).deploy(adminPublicKey, {
   initialState: { west: 0n, east: 0n },
   threadCount: 2,
 });
@@ -138,6 +142,15 @@ In the current transaction layout, `split(additional)` preserves the selected ma
 new masters. Starting from one master, `fork(3, ...)` leaves four. `merge(consumed)` preserves one surviving
 master and burns exactly the supplied `consumed` masters.
 
+The compiler enforces these rules:
+
+- The modifier argument names an integer parameter of the function.
+- The body needs an unconditional `require(checkSig(s, key))` with a key the caller cannot choose: a constructor
+  argument, state or a constant. A direct compile rejects one without it (`UnauthorizedLifecycleError`).
+- The body follows the `unsafe(1)` restrictions: it cannot write state, touch entries, emit events, move satoshis or
+  tokens, call or read other contracts, or deploy.
+- `split` and `merge` combine with no other lifecycle modifier, `unsafe`, `pure`, `view`, `internal` or `private`.
+
 The high-level call path keeps the lifecycle call and its funding configuration together:
 
 ```ts
@@ -167,7 +180,7 @@ limits.
 ### `ThreadManager` gate operations
 
 `ThreadManager.split({ threadCount })` is a lower-level alternative for a contract with exactly one existing
-master and a non-stateful/`unsafe` authorization gate. Its `threadCount` is the **total** number of output masters;
+master and an `unsafe` (tier 0) authorization gate. Its `threadCount` is the **total** number of output masters;
 it consumes the old master and divides its satoshis across that many replacements. Optional `partitions` must be
 disjoint and cover every data NFT index.
 
@@ -175,7 +188,7 @@ disjoint and cover every data NFT index.
 const manager = new ThreadManager(contract);
 const { threads } = await manager.split({
   functionName: 'authorize',
-  args: [adminPublicKey, signature],
+  args: [signature],
   threadCount: 2,
   partitions: [[0], [1]],
   maxFee: 10_000n,
@@ -183,13 +196,14 @@ const { threads } = await manager.split({
 
 const { thread: consolidated } = await manager.merge(threads, {
   functionName: 'authorize',
-  args: [adminPublicKey, signature],
+  args: [signature],
   maxFee: 10_000n,
 });
 ```
 
-Because the gate is responsible for authorizing master creation/destruction, audit it like any `unsafe` path.
-Prefer lifecycle modifiers where their transaction shape fits the protocol.
+Tier 0 skips every covenant check, so whoever passes the gate can also steal, duplicate or burn the masters and
+rewrite state. Check a signature by a key the caller cannot choose, as `authorize` does with `admin`, and audit the
+gate like any `unsafe` path. Prefer lifecycle modifiers where their transaction shape fits the protocol.
 
 ## What threading does not partition
 

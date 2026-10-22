@@ -115,10 +115,11 @@ export interface UpgradeOptions<T extends Artifact = Artifact> {
   addressType?: AddressType;          // default: match old contract's addressType
   fee?: bigint;                       // default: 1000n
   maxFee?: bigint;                   // maximum allowed fee (throws if exceeded)
-  fundingUtxo?: Utxo;                // required when new layout needs additional data NFTs
-  funder?: Unlocker;                  // required when new layout needs additional data NFTs
+  /** Pays every step: required for added data NFTs, for entry migrations, and on any network but the mock. */
+  fundingUtxo?: Utxo;
+  funder?: Unlocker;                  // unlocks fundingUtxo and the change each entry migration returns to its lock
   changeAddress?: string;             // change address for leftover funding satoshis
-  /** Foreign token category IDs of the token containers to migrate (at most one per upgrade). */
+  /** Foreign categories whose containers migrate; own- and immutable-keyed ones are found without naming them. */
   tokenContainerCategoryIds?: string[];
   /** The migrateRecords entry to drain mapping/array entries before the upgrade (name + its user args). */
   migrateRecordsFunctionName?: string;

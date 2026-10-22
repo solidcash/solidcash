@@ -50326,6 +50326,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (collections.length === 0) return;
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const entryIdx = 1;
+    // The master sits at input 0, so the entry at 1 is exactly the one record the C3 pin leaves to this check.
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
 
     const emitOldMatch = (collectionHash: Uint8Array): void => {
       // [..] -> [.., oldMatch]: input[entryIdx] sits at this collection's old entry covenant.
@@ -52613,7 +52617,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     if (this.isDefineSubTraversal || this.framedMaster || this.readsRecordsFromFrame || node.name === '__construct'
       || this.usesProxyStateBlockBase() || this.ownsMessageBusParticipantBlock(node)) return;
-    this.emitPlainOutsideLayoutWalk(1 + (settlesDataRecords ? this.compactOffsetMap.size : 0), loc);
+    // A migrateRecords entry moves the entry at input 1 to its replacement-bound covenant, and
+    // emitMigrateRecordsEntryMigrationCheck pins it there (the master at input 0), so the walk leaves it out.
+    const migratesEntry = node.modifiers.includes(FunctionModifier.MIGRATE_RECORDS)
+      && node.messageBusUpgradeRoute !== true && this.collectionDefinitions.length > 0;
+    const span = settlesDataRecords ? this.compactOffsetMap.size : Number(migratesEntry);
+    this.emitPlainOutsideLayoutWalk(1 + span, loc);
   }
 
   /** `[]` -> `[category]`: the master's 32-byte category with the mutable capability, tracked as `category`. */

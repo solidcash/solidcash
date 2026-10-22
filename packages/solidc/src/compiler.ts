@@ -5851,6 +5851,42 @@ function injectMessageBusEventOnlyHold(ast: Ast, compilerOptions: CompilerOption
   }
 }
 
+/**
+ * C3 in-block record pin: what an admitted handler's row may rewrite inside its participant block. `all` where its
+ * effects can reach any record, `trailing` where it may consume a record in the trailing band (dynamic state, an
+ * array, a chunked value, a loop, a delete), and the sorted collections whose fixed entry slots it names.
+ */
+function messageBusRecordClaim(
+  footprint: SplitStateFootprint, closure: readonly FunctionDefinitionNode[],
+  collections: ReadonlyMap<string, CollectionNode>, dynamicState: ReadonlySet<string>, lifecycle: boolean,
+): { all: boolean; trailing: boolean; collections: string[] } {
+  const claim = {
+    all: lifecycle || footprint.unknown || footprint.effects.includes('external-call'), trailing: false,
+  };
+  const named = new Set<string>();
+  for (const resource of [...footprint.reads, ...footprint.writes]) {
+    const [kind, name] = resource.split(':');
+    if (kind === 'state') {
+      if (dynamicState.has(name)) claim.trailing = true;
+    } else if (kind === 'collection') {
+      const collection = collections.get(name);
+      if (collection?.sorted !== true) claim.trailing = true;
+      else {
+        named.add(name);
+        if (isChunkableValueType(collection.innermostValueType)) claim.trailing = true;
+      }
+    }
+  }
+  for (const member of closure) {
+    walkInvocationAst(member.body, (node) => {
+      if (node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
+        || node instanceof MappingDeleteNode || node instanceof ArrayDeleteNode) claim.trailing = true;
+      else if (node instanceof AssemblyStatementNode) claim.all = true;
+    });
+  }
+  return { ...claim, collections: [...named] };
+}
+
 function synthesizeMessageBusRoute(
   ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
   normalizeBareEntries = true, relaxResultRouteEffects = true, admitMixedScalarHandlers = true,
@@ -11377,6 +11413,41 @@ function synthesizeMessageBusRoute(
       && dynamicState.has(resource.slice('state:'.length)));
   };
   const routeHasDynamicWriter = eligible.some(handlerWritesDynamicState);
+  // C3, bound route without its verifier: a selector branch sets a route-local flag for the records its handler may
+  // rewrite inside the participant block, and the record pin holds every other own-category record there 1:1. A
+  // graph route always runs its verifier; a proxy route, and a framed build, keep the census alone.
+  const recordClaimRoute = !graphExecutionContext && !isDelegateRoute && compilerOptions.composition !== 'framed'
+    && (!!compilerOptions.__messageBusVerifierProgram
+      || (compilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true);
+  const routeRecordClaims: Array<{ flag: string; all?: true; trailing?: true; collection?: string }> = [];
+  const recordClaimFlags = new Map<FunctionDefinitionNode, string[]>();
+  if (recordClaimRoute) {
+    const flagByClaim = new Map<string, string>();
+    const flagOf = (key: string, claim: { all?: true; trailing?: true; collection?: string }): string => {
+      const known = flagByClaim.get(key);
+      if (known !== undefined) return known;
+      const flag = `__message_bus_claim_${flagByClaim.size}`;
+      flagByClaim.set(key, flag);
+      routeRecordClaims.push({ flag, ...claim });
+      return flag;
+    };
+    const claimAllModifiers = new Set([
+      FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.SPLIT,
+      FunctionModifier.MERGE, FunctionModifier.UNSAFE,
+    ]);
+    for (const fn of eligible) {
+      const closure = [...collectNamedFunctionClosure(fn, signatureClosureByName)]
+        .flatMap((name) => signatureClosureByName.get(name) ?? []);
+      const claim = messageBusRecordClaim(eligibleFootprint(fn), closure, collectionByName, dynamicState,
+        kernelLifecycleHandlers.has(fn) || kernelDeploymentHandlers.has(fn)
+          || fn.modifiers.some((modifier) => claimAllModifiers.has(modifier)));
+      const flags = claim.all ? [flagOf('all', { all: true })] : [
+        ...(claim.trailing ? [flagOf('trailing', { trailing: true })] : []),
+        ...claim.collections.map((name) => flagOf(`collection:${name}`, { collection: name })),
+      ];
+      if (flags.length > 0) recordClaimFlags.set(fn, flags);
+    }
+  }
   const buildDecodeAndCall = (
     captureResults = false, rowIndex?: number, rowExpression = String(rowIndex ?? 0),
     markDispatch = false,
@@ -11387,8 +11458,9 @@ function synthesizeMessageBusRoute(
         && (fn.returnTypes[index] as FunctionType).isExternal
         && (fn.returnedSelfFunctionTargetSets?.[index]?.length ?? 0) > 0;
       const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
-      const dynamicWriteFlag = routeHasDynamicWriter && handlerWritesDynamicState(fn)
-        ? '__message_bus_dynamic_write_active = 1;' : '';
+      const dynamicWriteFlag = (routeHasDynamicWriter && handlerWritesDynamicState(fn)
+        ? '__message_bus_dynamic_write_active = 1;' : '')
+        + (recordClaimFlags.get(fn) ?? []).map((flag) => ` ${flag} = 1;`).join('');
       const upgradeAuthorization = kernelUpgradeMode && fn.modifiers.includes(FunctionModifier.UPGRADE)
         ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
           __message_bus_upgrade_position = ${rowExpression};` : '';
@@ -13992,6 +14064,7 @@ function synthesizeMessageBusRoute(
         ${kernelUpgradeMode ? 'bigint __message_bus_upgrade_position = -1;' : ''}
         ${kernelV2SignatureFence ? 'bigint __message_bus_signature_count = 0;' : ''}
         ${routeHasDynamicWriter ? 'bigint __message_bus_dynamic_write_active = 0;' : ''}
+        ${routeRecordClaims.map((claim) => `bigint ${claim.flag} = 0;`).join(' ')}
         ${fixedIterationEntryPins}
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${routeMaximumBlobBytes});
@@ -14152,6 +14225,8 @@ function synthesizeMessageBusRoute(
   route.messageBusRoute = true;
   // The lock the verifier binder requires. The C3 record pin leaves inputs at it to the verifier covenant.
   if (useBoundRoute) route.messageBusVerifierLock = hexToBin(offloadedVerifierLock);
+  // The flags each selector branch sets for the in-block record pin.
+  if (recordClaimRoute) route.messageBusRecordClaims = routeRecordClaims;
   // Key-pool lanes are stamped on the handler while the route text is built. The batch census runs on this
   // route, so it has to see the same lanes or it keeps splitting the upsert capsule past a lane temp.
   const linearKeyPools = contract.functions.flatMap((fn) => fn.collectionJournalLinearKeyPools ?? []);

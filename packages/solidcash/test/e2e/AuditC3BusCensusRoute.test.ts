@@ -10,6 +10,12 @@
  * verifier lock. Beside a `put` batch the handler's own address count refuses the same entry, and an entry of a
  * collection no admitted handler names is refused by the census count. An honest batch of each handler, and an
  * honest compose whose callee row runs `put` beside the bus verifier, settle.
+ *
+ * Inside the block, a pad no row that ran uses (the `side` entry slot beside a `tick` batch, a trailing slot beside a
+ * `put` batch) took the same entry, rewritten or burnt. Without the verifier, which counts the block's records, the
+ * route now pins an own-category record there too: the slots a row that ran claims, through the flag its selector
+ * branch sets, and the route's own data band stay free. An honest insert, whose new node takes a trailing output
+ * beside a pad input, settles.
  */
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
@@ -88,6 +94,18 @@ function failures(vm: Vm, spend: Spend): Array<{ inputIndex: number; error: stri
   });
 }
 
+/** The victim's input, spent through the entry write flag, which only asks for the master. */
+function victimInput(victim: Victim, master: number): LibauthTransaction['inputs'][number] {
+  return {
+    outpointIndex: victim.vout, outpointTransactionHash: hexToBin(victim.txid), sequenceNumber: 0xffffffff,
+    unlockingBytecode: Uint8Array.from([
+      ...encodeDataPush(encodeIntegerValue(BigInt(master))),
+      ...encodeDataPush(encodeIntegerValue(1n)),
+      ...encodeDataPush(victim.redeem),
+    ]),
+  };
+}
+
 /** The victim at the next input index through the entry write flag, `atVictim` at its index, `extra` after all. */
 function beside(
   honest: Spend, victim: Victim, master: number, atVictim: LibauthOutput, extra: readonly LibauthOutput[] = [],
@@ -96,22 +114,64 @@ function beside(
   const outputs = [...honest.transaction.outputs];
   while (outputs.length < at) outputs.push({ lockingBytecode: OTHER_LOCK, valueSatoshis: 1_000n });
   outputs.splice(at, 0, atVictim);
-  const unlockingBytecode = Uint8Array.from([
-    ...encodeDataPush(encodeIntegerValue(BigInt(master))),
-    ...encodeDataPush(encodeIntegerValue(1n)),
-    ...encodeDataPush(victim.redeem),
-  ]);
   return {
     sourceOutputs: [...honest.sourceOutputs, victim.source],
     transaction: {
       ...honest.transaction,
-      inputs: [...honest.transaction.inputs, {
-        outpointIndex: victim.vout, outpointTransactionHash: hexToBin(victim.txid),
-        sequenceNumber: 0xffffffff, unlockingBytecode,
-      }],
+      inputs: [...honest.transaction.inputs, victimInput(victim, master)],
       outputs: [...outputs, ...extra],
     },
   };
+}
+
+/** The victim in place of the pad at `at`, inside the participant block, and `atVictim` in place of its output. */
+function inside(honest: Spend, victim: Victim, master: number, at: number, atVictim: LibauthOutput): Spend {
+  const inputs = [...honest.transaction.inputs];
+  const outputs = [...honest.transaction.outputs];
+  const sourceOutputs = [...honest.sourceOutputs];
+  inputs[at] = victimInput(victim, master);
+  outputs[at] = atVictim;
+  sourceOutputs[at] = victim.source;
+  return { sourceOutputs, transaction: { ...honest.transaction, inputs, outputs } };
+}
+
+/** In-block indices after the master whose input holds no token: the pads a batch leaves in its block. */
+function padSlots(honest: Spend, master: number, blockSize: number): number[] {
+  return Array.from({ length: blockSize - 1 }, (_unused, offset) => master + 1 + offset)
+    .filter((index) => index < honest.sourceOutputs.length && honest.sourceOutputs[index]!.token === undefined);
+}
+
+interface InBlockVerdicts {
+  readonly victim: true | string;
+  readonly burntVictim: true | string;
+  readonly rewrite: true | string;
+  readonly burn: true | string;
+}
+
+/** The victim in each pad, rewritten or burnt: the entry covenant's verdicts at the pad, and the route's. */
+function inBlockVerdicts(
+  vm: Vm, honest: Spend, victim: Victim, master: number, pads: readonly number[],
+): Record<number, InBlockVerdicts> {
+  return Object.fromEntries(pads.map((pad) => {
+    const rewrite = inside(honest, victim, master, pad, rewritten(victim));
+    const burn = inside(honest, victim, master, pad, {
+      lockingBytecode: OTHER_LOCK, valueSatoshis: victim.source.valueSatoshis,
+    });
+    return [pad, {
+      victim: verdict(vm, rewrite, pad), burntVictim: verdict(vm, burn, pad),
+      rewrite: verdict(vm, rewrite, master), burn: verdict(vm, burn, master),
+    }];
+  }));
+}
+
+/** Each pad's victim passes its own covenant and is refused by the route. */
+function expectInBlockRefused(verdicts: Record<number, InBlockVerdicts>, batch: string): void {
+  for (const [pad, result] of Object.entries(verdicts)) {
+    expect(result.victim, `the entry write flag accepts the spend at ${pad}`).toBe(true);
+    expect(result.burntVictim, `the entry write flag accepts the burn at ${pad}`).toBe(true);
+    expect.soft(result.rewrite, `beside ${batch}, the route refuses a rewritten entry at pad ${pad}`).not.toBe(true);
+    expect.soft(result.burn, `beside ${batch}, the route refuses a burnt entry at pad ${pad}`).not.toBe(true);
+  }
 }
 
 function rewritten(victim: Victim): LibauthOutput {
@@ -127,7 +187,7 @@ function moved(honest: Spend, victim: Victim, master: number): Spend {
   }, [victim.source]);
 }
 
-describe('C3 census-path route: an own-category record outside the participant block is pinned at its index', () => {
+describe('C3 census-path route: an own-category record no row that ran claims is pinned at its index', () => {
   it('settles honest batches and a compose, and refuses an entry the batch does not reach', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const busArtifact = compileString(BUS, { ...KERNEL, messageBusHandlers: ['tick', 'put'] });
@@ -210,6 +270,12 @@ describe('C3 census-path route: an own-category record outside the participant b
     expect.soft(tickVerdicts.sideRewrite, 'the route refuses a rewritten `side` entry').not.toBe(true);
     expect.soft(tickVerdicts.sideMove, 'the route refuses a moved `side` entry').not.toBe(true);
     expect.soft(tickVerdicts.otherRewrite, 'the census refuses an unnamed entry').not.toBe(true);
+    // Inside the block: the `side` entry slot and the trailing band, which no `tick` row claims, hold pads.
+    const tickPads = padSlots(tick, master, blockSize);
+    expect(tickPads.length, 'the tick batch leaves pads inside its block').toBeGreaterThan(0);
+    const tickInBlock = inBlockVerdicts(vm, tick, side, master, tickPads);
+    console.log('tick batch in-block verdicts', tickInBlock);
+    expectInBlockRefused(tickInBlock, 'a tick batch');
     await tickCall.send();
     expect((await bus.getState()).count).toBe(1n);
 
@@ -224,8 +290,20 @@ describe('C3 census-path route: an own-category record outside the participant b
     const putVerdict = verdict(vm, putRewrite, putMaster);
     console.log('put batch verdict', putVerdict);
     expect.soft(putVerdict, 'the route refuses a rewritten `side` entry beside `put`').not.toBe(true);
+    // Inside the block: the trailing band, which `put` takes no record from, holds pads.
+    const putPads = padSlots(put, putMaster, blockSize);
+    expect(putPads.length, 'the put batch leaves pads inside its block').toBeGreaterThan(0);
+    const putInBlock = inBlockVerdicts(vm, put, putSide, putMaster, putPads);
+    console.log('put batch in-block verdicts', putInBlock);
+    expectInBlockRefused(putInBlock, 'a put batch');
     await putCall.send();
     expect((await bus.getEntries('side')).map((entry) => entry.value)).toEqual(expect.arrayContaining([8n, 1n]));
+
+    // An honest insert: the new node takes a trailing output beside a pad input, the pinned band's honest use.
+    const insertCall = bus.batch([{ function: 'put', args: [11n, 4n] }]);
+    expect(failures(vm, spendOf(await insertCall.build())), 'honest insert batch').toEqual([]);
+    await insertCall.send();
+    expect((await bus.getEntries('side')).map((entry) => entry.value)).toEqual(expect.arrayContaining([8n, 1n, 4n]));
 
     // 3. Honest compose: the callee row runs `put` beside the bus verifier, which comes back with a new commitment.
     const funder = await createBareP2pkhFeeFunder(provider, 2_000_000n);

@@ -52621,15 +52621,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * only the rows it runs, and counts no value-chunk lock. A standalone batch and a local-caller route run no
    * verifier, and the verifier counts records only inside the participant block. So every own-category mutable input
    * outside `[master, master + blockSize)` comes back at its own index, except one at the bound verifier lock. The
-   * route's records, its trailing band's included, sit inside the block, so no record lock is admitted. One pass
-   * parks each own-category mutable index and a second pins them, as in emitCountedRecordPin. A route with no bound
-   * lock, or on a proxy's block, keeps the census alone. Stack neutral.
+   * route's records, its trailing band's included, sit inside the block, so no record lock is admitted. With claim
+   * flags (a bound non-graph route), so does one inside the block at a slot no row that ran claims, unless the
+   * verifier ran (emitRouteBlockClaims). One pass parks each own-category mutable index and a second pins them, as
+   * in emitCountedRecordPin. A route with no bound lock, or on a proxy's block, keeps the census alone. Stack neutral.
    */
   private emitRouteOutsideBlockRecordPin(node: FunctionDefinitionNode, loc: SingleLocationData): void {
     const verifierLock = node.messageBusVerifierLock;
     const blockSize = node.blockLayout?.blockSize;
     if (verifierLock === undefined || blockSize === undefined || blockSize <= 0
       || this.usesProxyStateBlockBase()) return;
+    const inBlock = node.messageBusRecordClaims !== undefined;
     // [C ++ 0x01], built inline so no shared helper gains a site.
     const category = '(__route_own_mutable)';
     this.emitMasterInputIndex(loc);
@@ -52657,6 +52659,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, loc);
     this.emit(Op.OP_2DROP, loc);
     this.popFromStack();
+    if (inBlock) this.emitRouteBlockClaims(node, blockSize, loc);
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_FROMALTSTACK, loc);      // [i]
     this.emit(Op.OP_DUP, loc);
@@ -52668,10 +52671,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ELSE, loc);
     this.emit(Op.OP_DUP, loc);
     this.emitMasterInputIndex(loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(BigInt(blockSize)), loc);
-    this.emit(Op.OP_ADD, loc);
-    this.emit(Op.OP_WITHIN, loc);            // [i, inBlock]
+    if (inBlock) {
+      // [claimed, i, k]: an index below the master reads bit 0, which is clear.
+      this.emit(Op.OP_SUB, loc);
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_MAX, loc);
+      this.emit(encodeInt(2n), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_RSHIFTNUM, loc);
+      this.emit(encodeInt(2n), loc);
+      this.emit(Op.OP_MOD, loc);             // [claimed, i, claimedAt]
+    } else {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(BigInt(blockSize)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_WITHIN, loc);          // [i, inBlock]
+    }
     this.emit(Op.OP_OVER, loc);
     this.emit(Op.OP_UTXOBYTECODE, loc);
     this.emit(verifierLock, loc);
@@ -52684,6 +52700,80 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeBool(false), loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_UNTIL, loc);
+    if (inBlock) {
+      this.emit(Op.OP_DROP, loc);
+      this.popFromStack();
+    }
+  }
+
+  /**
+   * `[]` -> `[claimed]`: bit k is set where an own-category record at `master + k` is one this run may rewrite. That
+   * is the route's own (data band, sidecar, route-owned entry), or one a row that ran claims by the flag its selector
+   * branch set: a collection's entry slots, or the trailing band. Each offset belongs to one group, so the masks add.
+   * A bound verifier, which counts the block's records, or a row that may rewrite any of them claims the whole block,
+   * except on a local-caller route, which runs its verifier only for a lifecycle row and so takes that row's flag.
+   * Bit 0, the master, stays clear.
+   */
+  private emitRouteBlockClaims(node: FunctionDefinitionNode, blockSize: number, loc: SingleLocationData): void {
+    const claims = node.messageBusRecordClaims ?? [];
+    const handlerManaged = new Set(node.messageBusHandlerManagedEntrySlots ?? []);
+    const named = new Set(claims.flatMap((claim) => (claim.collection === undefined ? [] : [claim.collection])));
+    const own = new Set<BlockSlotKind>(['dataNft', 'readOnlyDataNft', 'keccakSideCar', 'ecrecoverSideCar']);
+    // An entry slot no claim names stays the route's, as it was before claims.
+    const groupOf = (slot: BlockLayoutSlot): string | undefined => {
+      if (own.has(slot.kind)) return 'own';
+      if (slot.kind === 'trailing') return 'trailing';
+      if (slot.kind !== 'entry' || slot.slotIndex === undefined) return undefined;
+      const collection = this.entrySlots[slot.slotIndex]?.collection;
+      return handlerManaged.has(slot.slotIndex) && collection !== undefined && named.has(collection)
+        ? `collection:${collection}` : 'own';
+    };
+    const assigned = new Set<number>();
+    const masks = new Map<string, bigint>();
+    const slots = (node.blockLayout?.slots ?? []).filter((slot) => slot.offset > 0 && slot.offset < blockSize);
+    for (const first of [true, false]) {
+      for (const slot of slots) {
+        const group = groupOf(slot);
+        if (group === undefined || (group === 'own') !== first || assigned.has(slot.offset)) continue;
+        assigned.add(slot.offset);
+        masks.set(group, (masks.get(group) ?? 0n) | (1n << BigInt(slot.offset)));
+      }
+    }
+    const verifierIndex = '__internal__activeVerifierIndex';
+    const local = node.parameters.some((parameter) => parameter.name === '__internal__msgSenderCategory');
+    const witnesses = [...(local ? [] : [verifierIndex]), ...claims.map((claim) => claim.flag)];
+    const lost = witnesses.find((name) => this.getStackIndex(name, true) < 0);
+    if (lost !== undefined) throw new Error(`message-bus record pin: '${lost}' is not live at the route census`);
+    const claimed = '(__route_claimed)';
+    this.emit(encodeInt(masks.get('own') ?? 0n), loc);
+    this.pushToStack(claimed);
+    for (const claim of claims) {
+      const mask = claim.all ? 0n : masks.get(claim.trailing ? 'trailing' : `collection:${claim.collection}`) ?? 0n;
+      if (mask === 0n) continue;
+      this.emitPickTrackedFromBottom(claim.flag, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(encodeInt(mask), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
+    let terms = 0;
+    if (!local) {
+      this.emitPickTrackedFromBottom(verifierIndex, loc);
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      terms += 1;
+    }
+    for (const claim of claims) {
+      if (claim.all !== true) continue;
+      this.emitPickTrackedFromBottom(claim.flag, loc);
+      if (terms > 0) this.emit(Op.OP_BOOLOR, loc);
+      terms += 1;
+    }
+    if (terms === 0) return;
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeInt((1n << BigInt(blockSize)) - 2n), loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /** Each data NFT this function does not write is recreated at its offset. Stack neutral. */

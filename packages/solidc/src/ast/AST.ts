@@ -892,6 +892,12 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusRoute?: boolean;
   /** Bound route: the participant verifier's lock, the one the route's verifier binder requires. */
   messageBusVerifierLock?: Uint8Array;
+  /**
+   * Bound non-graph route: the route-local 0/1 flags a selector branch sets for the records its handler may rewrite
+   * inside the participant block (every one, the trailing band, or one collection's entry slots). Empty when no
+   * handler claims any; absent where the C3 record pin keeps the whole block to the census.
+   */
+  messageBusRecordClaims?: ReadonlyArray<{ flag: string; all?: true; trailing?: true; collection?: string }>;
   /** Resolved route dispatch. Stamped at synthesis; published as `artifact.messageBus.convention`. */
   messageBusDispatch?: 'legacy-unroll' | 'kernel-row-loop';
   messageBusMaximumRows?: number;

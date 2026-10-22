@@ -1,4 +1,4 @@
-import { type Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, type FunctionBlockLayout, type LibraryCallArg, type JournalSettlementIdentityAbi, type ConstructedKeyVectorV1Abi, type AffineRecursiveFrameV1Abi } from '@solidcash/utils';
+import { type Type, PrimitiveType, AddressBytesType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, type FunctionBlockLayout, type LibraryCallArg, type JournalSettlementIdentityAbi, type ConstructedKeyVectorV1Abi, type AffineRecursiveFrameV1Abi } from '@solidcash/utils';
 import type { AbiFunction } from '@solidcash/utils';
 import type { ChildDeploymentValueRecipe } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';
@@ -2499,7 +2499,8 @@ export class HexLiteralNode extends LiteralNode<Uint8Array> {
     public value: Uint8Array,
   ) {
     super();
-    this.type = new BytesType(value.byteLength);
+    // A `0x..` literal may stand for an address literal, so it keeps the implicit conversion to address.
+    this.type = new AddressBytesType(value.byteLength);
   }
 
   toString(): string {

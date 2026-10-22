@@ -77,6 +77,7 @@ import {
   ExpressionStatementNode,
   PlaceholderStatementNode,
   AssignmentExpressionNode,
+  ModifierDefinitionNode,
   type ParentInvocation,
 } from '../ast/AST.js';
 import { ArrayType, IntType, MappingType, StructType, type Type } from '@solidcash/utils';
@@ -104,6 +105,7 @@ import {
   IntLiteralOutOfRangeError,
   InvalidBaseConstructorArgumentError,
   InvalidBaseFunctionCallError,
+  ReservedIdentifierPrefixError,
 } from '../Errors.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { Modifier } from '../ast/Globals.js';
@@ -120,8 +122,35 @@ import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
 
 // Internal name a parent's overridden function is preserved under, so `super.f()` / `Base.f()` can
 // still reach it after the hierarchy is flattened.
+export const BASE_IMPL_PREFIX = '__base_';
 function superImplName(definingContract: string, fnName: string): string {
-  return `__base_${definingContract}_${fnName}`;
+  return `${BASE_IMPL_PREFIX}${definingContract}_${fnName}`;
+}
+
+// A source function, variable or parameter named `__base_*` could stand in for (or shadow) a preserved parent
+// implementation, so refuse it, as the symbol table refuses `__internal__` parameters. Runs on parsed source only.
+export function assertNoReservedBaseNames(ast: SourceFileNode): void {
+  const seen = new Set<Node>();
+  const check = (node: Node, name: string | undefined): void => {
+    if (name?.startsWith(BASE_IMPL_PREFIX)) throw new ReservedIdentifierPrefixError(node, name, BASE_IMPL_PREFIX);
+  };
+  const walk = (node: Node): void => {
+    if (seen.has(node)) return;
+    seen.add(node);
+    if (node instanceof FunctionDefinitionNode) {
+      for (const name of [node.name, ...node.returnNames]) check(node, name);
+    } else if (node instanceof ParameterNode || node instanceof VariableDefinitionNode
+      || node instanceof StateVariableNode || node instanceof CollectionNode || node instanceof ModifierDefinitionNode) {
+      check(node, node.name);
+    } else if (node instanceof TupleAssignmentNode) {
+      for (const element of node.elements) if (element.type && !element.existing) check(node, element.name);
+    }
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+    }
+  };
+  walk(ast);
 }
 
 

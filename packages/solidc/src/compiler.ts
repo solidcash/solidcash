@@ -265,7 +265,9 @@ import LowerRuntimeSignatureSelectors from './semantic/LowerRuntimeSignatureSele
 import FoldConstantBoolBranches from './semantic/FoldConstantBoolBranches.js';
 import LowerStorageSlotPointers from './semantic/LowerStorageSlotPointers.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
-import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
+import expandInheritance, {
+  assertNoReservedBaseNames, BASE_IMPL_PREFIX,
+} from './semantic/InheritanceExpansionTransformation.js';
 import lowerRequireMessageEffects from './semantic/LowerRequireMessageEffects.js';
 import autoMarkDelegateFunctions from './semantic/AutoMarkDelegateFunctions.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
@@ -21621,6 +21623,7 @@ export function parseCode(
       if (base !== undefined) contract.storageLayoutBase = base;
     }
   }
+  if (code.includes(BASE_IMPL_PREFIX)) assertNoReservedBaseNames(ast);
   return ast;
 }
 

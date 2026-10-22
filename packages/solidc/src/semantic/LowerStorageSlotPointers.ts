@@ -12,6 +12,7 @@ import { Class } from '../ast/Globals.js';
 import { cloneNode } from '../ast/clone.js';
 import { Location } from '../ast/Location.js';
 import { YulAssignmentNode, YulPathNode, YulLiteralNode } from '../ast/YulAST.js';
+import { hasSideEffects, stateChangingFunctionNames } from './sideEffects.js';
 
 // The OpenZeppelin StorageSlot idiom (write-to-any-slot). Two factory shapes:
 //   PARAM factory:  `f(bytes32 slot) returns (XSlot storage r) { assembly { r.slot := slot } }`  (runtime slot)
@@ -35,7 +36,9 @@ const EVM_STORAGE = '__evm_storage';
 // pointer to ANOTHER storage reference's slot, so `getXSlot(ref).value = v` is just `ref = v` - a direct write of
 // the aliased storage reference (a string/bytes state var routes through the native dynamic-storage path, not the
 // word-granular __evm_storage register that a raw-slot PARAM factory uses).
-interface Factory { struct: StructType; slotParamIdx: number; isConst?: boolean; isSlotAlias?: boolean; }
+interface Factory {
+  struct: StructType; slotParamIdx: number; slotType?: Type; isConst?: boolean; isSlotAlias?: boolean;
+}
 interface Alias { slot?: ExpressionNode; struct: StructType; isConst?: boolean; aliasRef?: ExpressionNode; }
 
 // The hidden state name a promoted struct field lands on (mirrors AstBuilder's `<var>__<field>` flattening).
@@ -51,6 +54,8 @@ export default class LowerStorageSlotPointers extends AstTraversal {
   private promotedStructs = new Set<string>();
   // CONST-factory structs actually USED (aliased or inline), collected during the visit, promoted after it.
   private constStructsToPromote = new Map<string, StructType>();
+  private stateChanging = new Set<string>();
+  private slotTemps = 0;
 
   private factoryForCall(name: string): Factory | undefined {
     return this.factories.get(name) ?? this.factories.get(name.split('.').pop()!);
@@ -61,6 +66,7 @@ export default class LowerStorageSlotPointers extends AstTraversal {
     const allFns = [...(node.freeFunctions ?? []), ...contracts.flatMap((c) => c.functions ?? [])];
     for (const fn of allFns) this.detectFactory(fn);
     if (this.factories.size === 0) return node;
+    this.stateChanging = stateChangingFunctionNames(node);
 
     if (node.contract) node.contract = this.dropFactories(this.visit(node.contract) as ContractNode);
     node.importedContracts = node.importedContracts.map((c) => this.dropFactories(this.visit(c) as ContractNode));
@@ -135,8 +141,9 @@ export default class LowerStorageSlotPointers extends AstTraversal {
     if (rhs instanceof YulPathNode && rhs.members.length === 0) {
       // `<r>.slot := <bare name>`: a param name -> PARAM factory; a non-param (a constant) -> ERC-7201 CONST factory.
       const slotParamIdx = fn.parameters.findIndex((p) => p.name === rhs.base);
-      if (slotParamIdx >= 0) this.factories.set(fn.name, { struct, slotParamIdx });
-      else this.factories.set(fn.name, { struct, slotParamIdx: -1, isConst: true });
+      if (slotParamIdx >= 0) {
+        this.factories.set(fn.name, { struct, slotParamIdx, slotType: fn.parameters[slotParamIdx].type });
+      } else this.factories.set(fn.name, { struct, slotParamIdx: -1, isConst: true });
       return;
     }
     if (rhs instanceof YulPathNode && rhs.members.join('.') === 'slot') {
@@ -222,8 +229,17 @@ export default class LowerStorageSlotPointers extends AstTraversal {
             aliasRef: node.expression.parameters[factory.slotParamIdx], struct: factory.struct,
           });
         } else {
-          this.aliases.set(node.name, { slot: node.expression.parameters[factory.slotParamIdx], struct: factory.struct });
           this.used = true;
+          const slot = node.expression.parameters[factory.slotParamIdx];
+          // Every use of the alias re-reads its slot, so a slot with a side effect is evaluated once, here.
+          if (factory.slotType && hasSideEffects(slot, (name) => this.stateChanging.has(name))) {
+            const name = `__slot_tmp_${this.slotTemps++}`;
+            const decl = new VariableDefinitionNode(factory.slotType, [], name, this.visit(slot) as ExpressionNode);
+            decl.location = node.location;
+            this.aliases.set(node.name, { slot: this.at(new IdentifierNode(name), slot), struct: factory.struct });
+            return decl;
+          }
+          this.aliases.set(node.name, { slot, struct: factory.struct });
         }
         const empty = new BlockNode([]);
         empty.location = node.location;

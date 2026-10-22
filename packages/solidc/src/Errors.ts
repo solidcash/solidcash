@@ -246,6 +246,13 @@ export class ContractStorageTooLargeError extends SolidCashError {
   }
 }
 
+/** A source declaration takes a name prefix the compiler reserves for the declarations it generates. */
+export class ReservedIdentifierPrefixError extends SolidCashError {
+  constructor(node: Node, name: string, prefix: string) {
+    super(node, `Identifier '${name}' uses reserved prefix '${prefix}'`);
+  }
+}
+
 /** A struct contains itself by value (directly, or through fixed-size arrays and other structs), as solc refuses. */
 export class RecursiveStructDefinitionError extends SolidCashError {
   constructor(node: StructDefinitionNode) {

@@ -70,6 +70,7 @@ import {
   type BlockLayoutSlot,
   type BlockSlotKind,
   resolveLibraries,
+  libraryDefinedIds,
   type ExternalLibrary,
   sidecarStripOffsets,
   encodeComputedBlockhashKey,
@@ -277,6 +278,7 @@ import {
   isFixedWidthType,
   isDynamicallyEncodedElementType,
   isSignReinterpretCast,
+  isSignedNarrowingCast,
   getFixedWidth,
 } from './utils.js';
 import { emitCompilerWarning } from '../warnings.js';
@@ -1739,6 +1741,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }>();
 
   private freeFunctionIds: bigint[] = [];
+  /** Ids the external libraries this unit loads OP_DEFINE when they run (a registrar's own helpers). */
+  private libraryDefinedIds: bigint[] = [];
   private dataNftPreserveIds = new Map<number, bigint>();
   private dataNftCommitPreserveIds = new Map<number, bigint>();
   private dataNftOutputCommitmentIds = new Map<number, bigint>();
@@ -4020,6 +4024,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.freeFunctionIds = node.freeFunctions
       .filter((f) => f.functionId !== undefined)
       .map((f) => BigInt(f.functionId!));
+    // A library load OP_DEFINEs these at run time, so the seeding reserves them too.
+    this.libraryDefinedIds = [...new Set(allFunctions.flatMap((fn) => this.loadedLibraries(fn)
+      .flatMap((lib) => (lib ? libraryDefinedIds(lib.blob) : []))))];
 
     // Emit OP_DEFINE for each free function
     for (const f of node.freeFunctions) {
@@ -5231,6 +5238,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     for (const id of invokedFunctionIds) this.compactHelperIds.used.add(BigInt(id));
     for (const id of this.freeFunctionIds) this.compactHelperIds.used.add(id);
+    for (const id of this.libraryDefinedIds) this.compactHelperIds.used.add(id);
     this.compactHelperIds.cheap = GenerateTargetTraversalWithLocation.SINGLE_BYTE_PUSH_IDS
       .filter((id) => !this.compactHelperIds.used.has(id));
     // vmap sorted collections: a WRITE slot on one is handled inline (predecessor -> P' + minted NEW), so the
@@ -7448,6 +7456,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /** The external libraries a function loads at its start. */
+  private loadedLibraries(node: FunctionDefinitionNode): ExternalLibrary[] {
+    // Result-NFT keccak has no contract-side blob to load: the side-car computes it.
+    return (node.usedLibraries ?? [])
+      .filter((name) => !(node.keccakCompute && name === GlobalFunction.KECCAK256))
+      .map((name) => this.resolvedLibraries[name]);
+  }
+
   // OP_DEFINE the just-pushed/loaded library blob (on the data stack) so its function(s) are callable.
   // Two shapes (lib.registrar): a plain body is defined directly as functionId - already re-entrant since
   // a body that does not OP_DEFINE at top level can be OP_INVOKEd repeatedly. A REGISTRAR blob defines the
@@ -8474,8 +8490,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (record.functionId !== undefined) defined.add(BigInt(record.functionId));
       if (record.compilerHelperId !== undefined) defined.add(BigInt(record.compilerHelperId));
     }
+    // A library load defines its ids at run time, after this scan of the script.
     const protectedIds = (id: bigint): boolean => this.freeFunctionIds.includes(id)
-      || this.capturedSubroutineIds.includes(id);
+      || this.capturedSubroutineIds.includes(id) || this.libraryDefinedIds.includes(id);
     const recycled = [...this.compactHelperIds.allocated]
       .filter((id) => !defined.has(id) && !protectedIds(id));
     for (const id of recycled) {
@@ -8483,8 +8500,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.compactHelperIds.allocated.delete(id);
     }
     for (const id of GenerateTargetTraversalWithLocation.SINGLE_BYTE_PUSH_IDS) {
-      if (defined.has(id) || this.freeFunctionIds.includes(id)
-        || this.capturedSubroutineIds.includes(id)) continue;
+      if (defined.has(id) || protectedIds(id)) continue;
       this.compactHelperIds.used.delete(id);
       this.compactHelperIds.allocated.delete(id);
     }
@@ -9545,12 +9561,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Load each external library this function uses and OP_DEFINE it once, before the body. Inlined
     // libraries push their blob from the contract bytecode; the rest load it from the co-spent side-car.
-    for (const libName of node.usedLibraries ?? []) {
-      // Result-NFT keccak has no contract-side blob to load: the side-car computes it. Skip the loader.
-      if (node.keccakCompute && libName === GlobalFunction.KECCAK256) continue;
+    for (const lib of this.loadedLibraries(node)) {
       const loc = { location: node.location, positionHint: PositionHint.START };
-      const lib = this.resolvedLibraries[libName];
-      if (node.inlinedLibraries?.includes(libName)) this.emitInlineLibraryDefine(lib, loc);
+      if (node.inlinedLibraries?.includes(lib.name)) this.emitInlineLibraryDefine(lib, loc);
       else this.emitExternalLibraryLoader(lib, loc);
     }
 
@@ -14858,9 +14871,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
     this.pushToStack('(value)');
     // Emit bounds check for casts to bounded int types; an assembly word written to an int variable truncates. A
-    // sign reinterpretation is in range by construction.
+    // sign reinterpretation and an evmCompat signed narrowing are in range by construction.
     if (node.type instanceof IntType && !node.isUnsafe
-      && !isSignReinterpretCast(node.expression.type as Type, node.type, evmCompat)) {
+      && !isSignReinterpretCast(node.expression.type as Type, node.type, evmCompat)
+      && !isSignedNarrowingCast(node.expression.type as Type, node.type, evmCompat)) {
       const locationData = { location: node.location, positionHint: PositionHint.END };
       if (node.evmWord) this.emitTwosComplementTruncation(node.type, locationData);
       else this.emitIntBoundsCheck(node.type, locationData);

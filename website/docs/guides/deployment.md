@@ -394,6 +394,8 @@ const { bytes, uris } = token.deploymentRegistry()!; // host these exact bytes a
 The registry then describes two identities: the token's category, with its name, symbol, decimals and reserve, and
 the contract's, which labels the contract's NFTs.
 
+[ERC-20 Tokens](/docs/guides/erc20-tokens) walks through the token contracts, Tether's USDT and wrapped tokens.
+
 A `BchNativeWrapper` token wraps a category that already exists, so its deployment creates no category and mints
 nothing: `nativeToken.category` names it, as 64 hex characters in the order wallets print. The SDK refuses it beside
 `funding`, `reserve` or `bearer`, and refuses a contract that keys its reserve by another category or whose

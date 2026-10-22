@@ -909,5 +909,11 @@ needs VM evidence, `rejectedWith` has no source fallback).
   of a collection a run handler names is not pinned.
 - CRYPTO-4: a parameter-keyed token container needs a runtime count; dynamic and value chunks have no migration path.
 - A direct merge of masters holding records checks them relative to `OP_INPUTINDEX` (liveness).
-- No hostile test yet attacks a compose on a graph route through the shared parked pin; the new test covers direct
-  entries of a graph-route contract.
+- Graph-route band: the route pin skips `[master, master + blockSize)` at the compile-time block size, while the
+  verifier census walks only the physical block, so with the ledger last the fee slot falls inside the skip window when
+  blockSize exceeds the physical size plus the participant count. A record put there is refused by the route's
+  whole-transaction collection census and by the root verifier's `tx.origin` (a token-free P2PKH input), so it is not a
+  hole (`AuditC3BusGraphParkedPin.test.ts`: compose `718807d02`, band `61e461448`, `b5c6b828b`). Not checked: a value
+  chunk in that window (the route census counts no value-chunk lock), and a V5 direct-authority root, which has no
+  verifier. `__internal__graphBlockSize` carries the manifest's maximum size, so banding the pin by the physical size
+  would first need that size bound into the digest.

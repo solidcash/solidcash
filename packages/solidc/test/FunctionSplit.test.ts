@@ -261,7 +261,7 @@ describe('split: off | size | func', () => {
     expect(off.contractName).toBe(plain.contractName);
     expect(off.bytecode).toBe(plain.bytecode);
     const docs = readFileSync(new URL('../../../website/docs/compiler/large-contracts.md', import.meta.url), 'utf8');
-    expect(docs).toContain('over-cap kernel route is outside function split');
+    expect(docs).toContain('over-cap message-bus kernel route is outside function split');
   });
 
   it('emits one salted framed shard per ABI entry, including view, pure, and external', () => {

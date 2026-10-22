@@ -52550,9 +52550,79 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitPreserveUnreadDataRecords(loc);
     // An own-category mutable NFT outside the function's block is not one of its entries, chunks, or records.
     // Re-emitting it at the same index with another commitment keeps no check that only counts layout slots.
-    // A compiler-owned message-bus route already authenticates those NFTs through the batch verifier, so the
-    // direct-block census would only re-check its legitimately rewritten return/chunk records and refuse them.
+    // A compiler-owned route's handlers rewrite records across its whole block, so it pins only past the block.
     if (!this.isCompilerMessageBusRoute(node)) this.emitPreserveOutsideLayoutOwnMutable(node, loc);
+    else this.emitRouteOutsideBlockRecordPin(node, loc);
+  }
+
+  /**
+   * C3, census-path route. The census leaves a collection an admitted handler names to that handler, which settles
+   * only the rows it runs, and counts no value-chunk lock. A standalone batch and a local-caller route run no
+   * verifier, and the verifier counts records only inside the participant block. So every own-category mutable input
+   * outside `[master, master + blockSize)` comes back at its own index, except one at the bound verifier lock. The
+   * route's records, its trailing band's included, sit inside the block, so no record lock is admitted. One pass
+   * parks each own-category mutable index and a second pins them, as in emitCountedRecordPin. A route with no bound
+   * lock, or on a proxy's block, keeps the census alone. Stack neutral.
+   */
+  private emitRouteOutsideBlockRecordPin(node: FunctionDefinitionNode, loc: SingleLocationData): void {
+    const verifierLock = node.messageBusVerifierLock;
+    const blockSize = node.blockLayout?.blockSize;
+    if (verifierLock === undefined || blockSize === undefined || blockSize <= 0
+      || this.usesProxyStateBlockBase()) return;
+    // [C ++ 0x01], built inline so no shared helper gains a site.
+    const category = '(__route_own_mutable)';
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32Inline(loc);
+    this.pushToStack(category);
+    this.emit(new Uint8Array([0x01]), loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(encodeInt(-1n), loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_TXINPUTCOUNT, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(category) + 2)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);        // park i
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.popFromStack();
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);      // [i]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(true), loc);        // the sentinel ends the pass
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(BigInt(blockSize)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_WITHIN, loc);            // [i, inBlock]
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(verifierLock, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc);            // [i, inBlock || verifier]
+    this.emit(Op.OP_NOTIF, loc);
+    this.emitSameIndexPin(loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
   }
 
   /** Each data NFT this function does not write is recreated at its offset. Stack neutral. */

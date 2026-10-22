@@ -3436,6 +3436,12 @@ function patchPlaceholderVerifierLock(ast: Ast, lock: Uint8Array): void {
   if (patched !== 1) {
     throw new Error(`single-pass bind: expected 1 placeholder lock literal, found ${patched}`);
   }
+  // The route's C3 record pin skips inputs at the same lock.
+  for (const fn of ast.contract.functions) {
+    if (fn.messageBusVerifierLock && bytesEqual(fn.messageBusVerifierLock, MESSAGE_BUS_PLACEHOLDER_LOCK)) {
+      fn.messageBusVerifierLock = lock;
+    }
+  }
 }
 
 /**
@@ -14139,6 +14145,8 @@ function synthesizeMessageBusRoute(
     );
   }
   route.messageBusRoute = true;
+  // The lock the verifier binder requires. The C3 record pin leaves inputs at it to the verifier covenant.
+  if (useBoundRoute) route.messageBusVerifierLock = hexToBin(offloadedVerifierLock);
   // Key-pool lanes are stamped on the handler while the route text is built. The batch census runs on this
   // route, so it has to see the same lanes or it keeps splitting the upsert capsule past a lane temp.
   const linearKeyPools = contract.functions.flatMap((fn) => fn.collectionJournalLinearKeyPools ?? []);

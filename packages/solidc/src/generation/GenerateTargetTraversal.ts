@@ -690,6 +690,8 @@ const routeMintCategory = (slot: number): string => `(__route_mint_category_${sl
 const routeMintLock = (slot: number): string => `(__route_mint_lock_${slot})`;
 /** The container slots and effect span a route's mint bound covers. */
 interface RouteMintBound { slots: number; span: boolean }
+/** C3 record pin: the band `[master, master + span)` the call settles, and a bound route's verifier lock. */
+interface CountedRecordPin { span: number; verifierLock?: Uint8Array }
 /** The tracked names of a route's mint bound operands, bottom first. */
 function routeMintBoundNames(bound: RouteMintBound): string[] {
   return [ROUTE_MINT_LO, ROUTE_MINT_HI, ...(bound.span ? [ROUTE_MINT_SPAN_START, ROUTE_MINT_SPAN_END] : []),
@@ -10470,7 +10472,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           { location: node.body.location, positionHint: PositionHint.END },
         );
         // The count alone still balances a record rewritten in place, or destroyed and re-emitted at another lock.
-        this.emitOwnCategoryMutableNftConservation(node, false, this.countedRecordPinSpan(node, settlesDataRecords));
+        this.emitOwnCategoryMutableNftConservation(node, false, this.countedRecordPin(node, settlesDataRecords));
         if (skipRetirement) {
           this.emit(Op.OP_ENDIF, { location: node.body.location, positionHint: PositionHint.END });
         }
@@ -49981,11 +49983,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // records will serve. A message-bus upgrade keeps the balanced census
   // because it appends inside the final existing data NFT and co-spends the participant's detached verifier, and
   // its route verifier already pins the block. The count alone still balances a record rewritten in place or
-  // destroyed and re-emitted elsewhere (SECURITY-AUDIT C3): the direct count path passes `pinSpan` and counts
-  // through emitCountedRecordPin, a delegatecall proxy does not. The upgrade run's length and commitments are not
-  // checked.
+  // destroyed and re-emitted elsewhere (SECURITY-AUDIT C3): the count path, a bound route's included, passes `pin`
+  // and counts through emitCountedRecordPin, a delegatecall proxy does not. The upgrade run's length and
+  // commitments are not checked.
   private emitOwnCategoryMutableNftConservation(
-    node: FunctionDefinitionNode, allowUpgradeDataNftGrowth = false, pinSpan?: number,
+    node: FunctionDefinitionNode, allowUpgradeDataNftGrowth = false, pin?: CountedRecordPin,
   ): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const delegatedCollectionHashes = (node.splitDelegateCensusedCollectionSignatures ?? [])
@@ -50019,9 +50021,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, loc);               // [C ++ 0x01]
     this.pushToStack('(this_cat_mutable)');
 
-    // balance = inputMutableCount - outputMutableCount, starts at 0. With `pinSpan` the input loop parks each
+    // balance = inputMutableCount - outputMutableCount, starts at 0. With `pin` the input loop parks each
     // matching index above a -1 sentinel instead, and emitCountedRecordPin counts and pins the parked ones.
-    if (pinSpan === undefined) {
+    if (pin === undefined) {
       this.emit(encodeInt(0n), loc);
       this.pushToStack('(mutable_balance)');
     } else {
@@ -50042,7 +50044,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUAL, loc);
     emitExcludeDelegatedCollections(false);
     this.emit(Op.OP_IF, loc);
-    if (pinSpan === undefined) {
+    if (pin === undefined) {
       this.emit(Op.OP_SWAP, loc);            // [.., bal, i] -> [.., i, bal]
       this.emit(Op.OP_1ADD, loc);            // bal++
       this.emit(Op.OP_SWAP, loc);            // [.., bal+1, i]
@@ -50057,7 +50059,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, loc);
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (loop_i)
-    if (pinSpan !== undefined) this.emitCountedRecordPin(pinSpan, loc);
+    if (pin !== undefined) this.emitCountedRecordPin(pin, loc);
 
     if (allowUpgradeDataNftGrowth) {
       // A direct upgrade co-spends every old data NFT, and no entry/chunk NFT. This also keeps a destroyed,
@@ -52776,28 +52778,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * C3 per-record pin span of a function the own-category count covers, or undefined where no pin runs. The only
+   * C3 per-record pin of a function the own-category count covers, or undefined where no pin runs. The only
    * own-category mutable inputs it rewrites are the data records the auto covenant settles at `master + 1 ..`, so
    * every other one, inside the block or past it, comes back at its own index unchanged, and the count then leaves
    * no mutable output free. Where the auto covenant does not run, the pin holds the data records too.
+   *
+   * A count-path route's rows write no entry, chunk or container, so its records are that data band as well. Its
+   * participant verifier, when co-spent, is an own-category mutable input its own covenant recreates at its index
+   * with a new commitment, so the pin leaves an input at the bound verifier lock to that covenant. The lock is the
+   * input's, so a route that never checks its verifier index still holds every record. A route with no bound lock
+   * (the binder's inline-verifier intermediate) keeps the count alone.
    */
-  private countedRecordPinSpan(node: FunctionDefinitionNode, settlesDataRecords: boolean): number | undefined {
+  private countedRecordPin(node: FunctionDefinitionNode, settlesDataRecords: boolean): CountedRecordPin | undefined {
     if (this.isDefineSubTraversal || this.framedMaster || this.readsRecordsFromFrame || node.name === '__construct'
-      || this.usesProxyStateBlockBase() || this.ownsMessageBusParticipantBlock(node)) return undefined;
+      || this.usesProxyStateBlockBase()) return undefined;
+    const verifierLock = this.isCompilerMessageBusRoute(node) ? node.messageBusVerifierLock : undefined;
+    if (this.ownsMessageBusParticipantBlock(node) && verifierLock === undefined) return undefined;
     // A migrateRecords entry moves the entry at input 1 to its replacement-bound covenant, and
     // emitMigrateRecordsEntryMigrationCheck pins it there (the master at input 0), so the pin leaves it out.
     const migratesEntry = node.modifiers.includes(FunctionModifier.MIGRATE_RECORDS)
       && node.messageBusUpgradeRoute !== true && this.collectionDefinitions.length > 0;
-    return 1 + (settlesDataRecords ? this.compactOffsetMap.size : Number(migratesEntry));
+    return { span: 1 + (settlesDataRecords ? this.compactOffsetMap.size : Number(migratesEntry)), verifierLock };
   }
 
   /**
    * `[this_cat_mutable]` -> `[this_cat_mutable, balance]`: pops the inputs the count parked above its -1 sentinel,
-   * counts them, and pins each outside `[master, master + span)` to its own index. A skipped instruction still
-   * costs, so pinning here instead of in the count's loop leaves an input that is not an own-category mutable NFT
-   * one instruction cheaper than the plain count.
+   * counts them, and pins each outside `[master, master + span)` and not at the verifier lock to its own index. A
+   * skipped instruction still costs, so pinning here instead of in the count's loop leaves an input that is not an
+   * own-category mutable NFT one instruction cheaper than the plain count.
    */
-  private emitCountedRecordPin(span: number, loc: SingleLocationData): void {
+  private emitCountedRecordPin(pin: CountedRecordPin, loc: SingleLocationData): void {
+    const { span, verifierLock } = pin;
     this.emit(encodeInt(0n), loc);
     this.pushToStack('(mutable_balance)');
     this.emit(Op.OP_BEGIN, loc);
@@ -52818,6 +52829,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(span)), loc);
       this.emit(Op.OP_ADD, loc);
       this.emit(Op.OP_WITHIN, loc);
+    }
+    if (verifierLock !== undefined) {
+      this.emit(Op.OP_OVER, loc);            // [.., bal, i, inBand, i]
+      this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emit(verifierLock, loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_BOOLOR, loc);          // [.., bal, i, inBand || verifier]
     }
     this.emit(Op.OP_NOTIF, loc);
     this.emitSameIndexPin(loc);

@@ -890,6 +890,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
   messageBusRoute?: boolean;
+  /** Bound route: the participant verifier's lock, the one the route's verifier binder requires. */
+  messageBusVerifierLock?: Uint8Array;
   /** Resolved route dispatch. Stamped at synthesis; published as `artifact.messageBus.convention`. */
   messageBusDispatch?: 'legacy-unroll' | 'kernel-row-loop';
   messageBusMaximumRows?: number;

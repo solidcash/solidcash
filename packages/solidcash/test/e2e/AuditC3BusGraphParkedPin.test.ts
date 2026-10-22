@@ -14,6 +14,11 @@
  * entry there, rewritten in place, or destroyed while its NFT reappears after every output, is refused by the route's
  * parked pin at its index. With the route's verifier index re-encoded to aim at that entry, the binder's lock check
  * refuses the route before the pin runs.
+ *
+ * A route that names entries pins only past its compile-time block, while the verifier census walks the physical
+ * block. GraphLedger's numbers put the fee slot past both. A route block that outgrows a cheap entry's physical block
+ * by more than the verifier count leaves the fee slot between them, where the route's collection census and the root
+ * verifier's tx.origin refuse a `side` entry instead.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -44,6 +49,18 @@ const LEDGER = `contract GraphLedger() {
   mapping(int => int) public side;
   function tick() public { this.count = this.count + 1; require(true); }
   function put(int key, int value) public { this.side[key] = value; require(true); }
+}`;
+
+// Two handler-managed mappings: the route reserves entry slots for their rows and a trailing band for their inserts.
+// A `tick` leaves the trailing band out of its physical block, so the compile-time block outgrows it by more than
+// two verifiers.
+const WIDE_LEDGER = `contract GraphLedger() {
+  int public count;
+  mapping(int => int) public side;
+  mapping(int => int) public other;
+  function tick() public { this.count = this.count + 1; require(true); }
+  function put(int key, int value) public { this.side[key] = value; require(true); }
+  function putOther(int key, int value) public { this.other[key] = value; require(true); }
 }`;
 
 // A caller, so the ledger's route runs inside a compose and the atomic envelope clears its 256-byte minimum.
@@ -104,6 +121,24 @@ function failures(vm: Vm, spend: Spend): Array<{ inputIndex: number; error: stri
     const result = verdict(vm, spend, inputIndex);
     return result === true ? [] : [{ inputIndex, error: result }];
   });
+}
+
+/** Each input the VM refuses, with the last instructions it ran. */
+function refusedInputs(vm: Vm, spend: Spend): Array<{ inputIndex: number; at: string }> {
+  return spend.transaction.inputs.flatMap((_input, inputIndex) => {
+    const state = vm.evaluate({ inputIndex, transaction: spend.transaction, sourceOutputs: spend.sourceOutputs });
+    return vm.stateSuccess(state) === true ? [] : [{
+      inputIndex,
+      at: disassembleAuthenticationInstructionsMaybeMalformed(
+        OpcodesBch2026, state.instructions.slice(Math.max(0, state.ip - 8), state.ip),
+      ),
+    }];
+  });
+}
+
+/** A co-spent verifier NFT: it carries the L3V1 commitment domain and recreates itself at its own input index. */
+function isVerifier(output: LibauthOutput | undefined): boolean {
+  return output?.token?.nft?.capability === 'mutable' && binToHex(output.token.nft.commitment).startsWith('4c335631');
 }
 
 interface Refusal {
@@ -391,7 +426,8 @@ describe('C3 beside a graph route: the parked record pin holds each own-category
   // verifier census walks only the physical block `[master, master + actualSize)`. So the slots in between,
   // `[master + actualSize, master + blockSize)`, are walked by neither. The claim is that with the ledger last and a
   // small enough physical block, that gap could run past the co-spent verifiers and reach the fee input, where a
-  // `side` entry would be rewritten in place unchecked. This enumerates that gap in the honest compose and settles it.
+  // `side` entry would be rewritten in place unchecked. This enumerates the gap in GraphLedger's honest compose, where
+  // it stops at the verifiers; the graph band block below reaches the fee input and finds other checks refusing it.
   it('leaves every gap slot to a self-binding verifier, with the fee input past the skip window', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifact = compileString(LEDGER, { ...GRAPH, messageBusHandlers: ['tick'] });
@@ -420,10 +456,6 @@ describe('C3 beside a graph route: the parked record pin holds each own-category
 
     const victim = await victimOf(honest);
     const master = masterOf(honest, victim);               // the ledger's master: the last participant's base
-    // Each co-spent verifier NFT carries the L3V1 commitment domain and recreates itself at its own input index.
-    const isVerifier = (output: LibauthOutput | undefined): boolean =>
-      output?.token?.nft?.capability === 'mutable'
-      && binToHex(output.token.nft.commitment).startsWith('4c335631');
     const verifierInputs = honest.sourceOutputs.flatMap((output, index) => (isVerifier(output) ? [index] : []));
     expect(verifierInputs.length, 'one verifier per participant').toBe(2);
     const actualSize = verifierInputs[0]! - master;        // the ledger's physical block [master, master + actualSize)
@@ -437,16 +469,16 @@ describe('C3 beside a graph route: the parked record pin holds each own-category
       master, actualSize, blockSize, verifierInputs, feeIndex, gap, gapKinds,
     }));
 
-    // With the ledger last, actualSize (the physical block) plus one verifier per participant reaches blockSize, so
-    // the gap is exactly the co-spent verifier band. Each gap slot is a verifier that recreates itself at its index;
-    // none is left to a non-verifier an attacker could rewrite.
+    // GraphLedger's numbers close it: actualSize 2 plus one verifier per participant reaches blockSize 4, so the gap is
+    // exactly the co-spent verifier band, each slot a verifier that recreates itself at its index. Nothing makes
+    // actualSize + P >= blockSize hold in general (the graph band block below).
     for (const slot of gap) {
       expect.soft(isVerifier(honest.sourceOutputs[slot]), `gap slot ${slot} is a self-binding verifier`).toBe(true);
     }
     expect.soft(actualSize + verifierInputs.length, 'the physical block and verifiers cover the skip window')
       .toBeGreaterThanOrEqual(blockSize);
-    // The fee input lands at or past master + blockSize, outside the route pin's skip window, where the past-block
-    // pin holds it (the compose `it` above refuses a `side` entry put there).
+    // Here the fee input lands at master + blockSize, outside the route pin's skip window, where the past-block pin
+    // holds it (the compose `it` above refuses a `side` entry put there).
     expect.soft(feeIndex, 'the fee input sits at or past the skip window').toBeGreaterThanOrEqual(master + blockSize);
 
     // Closest hostile case: a `side` entry put where the ledger's own verifier sits, a gap slot. Its covenant accepts
@@ -466,5 +498,88 @@ describe('C3 beside a graph route: the parked record pin holds each own-category
     expect.soft(refused.verdict, 'the route refuses a record in the verifier slot').not.toBe(true);
     expect.soft(refused.at, 'the route refuses it at the envelope reader')
       .toMatch(/OP_INPUTBYTECODE OP_DUP OP_1 OP_SPLIT OP_DROP OP_PUSHBYTES_1 0x4d OP_EQUALVERIFY$/);
+  }, 300_000);
+});
+
+describe('C3 graph band: a route block that outgrows the physical block of a cheap entry', () => {
+  // The gap in general: a route that names entries pins only past its compile-time block, and the verifier census
+  // walks only the physical block. The wide ledger's block outgrows tick's physical block by more than the two
+  // verifiers, so with the ledger last the fee slot lies in the gap. The band does not hold that slot; two checks that
+  // read the whole transaction do. The route counts every input at each collection's address against the rows that
+  // name one, and the root row's verifier takes tx.origin from the one token-free P2PKH input, the fee input.
+  it('refuses a side entry in a fee slot inside the gap by the collection census and tx.origin', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(WIDE_LEDGER, { ...GRAPH, messageBusHandlers: ['tick', 'put', 'putOther'] });
+    const layout = artifact.messageBus!.route.blockLayout!;
+    expect(layout.slots.filter((slot) => slot.kind === 'entry').length, 'the route pins on its census path')
+      .toBeGreaterThan(0);
+    const { bus, categoryId, victimOf } = await seedLedger(provider, artifact);
+    const { contract: driver } = await seeded(
+      provider, compileString(DRIVER, GRAPH), [hexToBin(bus.inner.lockingBytecode)], {},
+    );
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const funder = await createBareP2pkhFeeFunder(provider, 2_000_000n);
+    const honest = spendOf(await messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'poke', args: [] },
+        { contract: bus, functionName: 'tick', args: [] },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    }).build());
+    expect(failures(vm, honest), 'honest compose').toEqual([]);
+
+    // [driver block | ledger block | one verifier per participant | fee]: the fee slot is P = 2 past the physical
+    // block, and inside the route pin's skip window [master, master + blockSize).
+    const victim = await victimOf(honest);
+    const master = masterOf(honest, victim);
+    const verifierInputs = honest.sourceOutputs.flatMap((output, index) => (isVerifier(output) ? [index] : []));
+    const verifierLock = binToHex(getMessageBusVerifierLockingBytecode(bus.inner, categoryId));
+    const ledgerVerifier = verifierInputs.find((index) =>
+      binToHex(honest.sourceOutputs[index]!.lockingBytecode) === verifierLock);
+    const rootVerifier = verifierInputs.find((index) => index !== ledgerVerifier);
+    const actualSize = verifierInputs[0]! - master;
+    const feeIndex = honest.transaction.inputs.length - 1;
+    console.log('graph band geometry', JSON.stringify({
+      master, actualSize, blockSize: layout.blockSize, verifierInputs, ledgerVerifier, feeIndex,
+    }));
+    expect(verifierInputs, 'one verifier per participant').toEqual([master + actualSize, master + actualSize + 1]);
+    expect(ledgerVerifier, 'the ledger verifier is the last').toBe(master + actualSize + 1);
+    expect(honest.sourceOutputs[feeIndex]!.token, 'the last input is the fee input').toBeUndefined();
+    expect(feeIndex).toBe(master + actualSize + 2);
+    expect(feeIndex, 'the fee slot sits inside the route pin skip window').toBeLessThan(master + layout.blockSize);
+
+    // A `side` entry in the fee slot through the entry write flag: rewritten in place, destroyed there, or moved past
+    // every output. Its covenant accepts each.
+    const destroyed = { lockingBytecode: OTHER_LOCK, valueSatoshis: victim.source.valueSatoshis };
+    const hostile = {
+      rewrite: inSlot(honest, victim, master, feeIndex, rewritten(victim)),
+      destroy: inSlot(honest, victim, master, feeIndex, destroyed),
+      move: inSlot(honest, victim, master, feeIndex, destroyed, [victim.source]),
+    };
+    for (const [label, spend] of Object.entries(hostile)) {
+      expect(verdict(vm, spend, feeIndex), `the entry write flag accepts the ${label}`).toBe(true);
+    }
+    const refused = {
+      rewrite: refusedInputs(vm, hostile.rewrite),
+      destroy: refusedInputs(vm, hostile.destroy),
+      move: refusedInputs(vm, hostile.move),
+    };
+    console.log('graph band refusals', JSON.stringify(refused));
+
+    // The ledger verifier walks only the physical block and accepts. The route refuses at its collection census
+    // (emitVerifyChunkUtxoCount: inputs at the `side` address against the rows naming one), and the driver's
+    // verifier, which checks the root row, at tx.origin: no token-free P2PKH input is left (emitTxOrigin).
+    for (const label of ['rewrite', 'destroy'] as const) {
+      expect(refused[label].map((input) => input.inputIndex), `the route and the root verifier refuse the ${label}`)
+        .toEqual([master, rootVerifier]);
+      expect.soft(refused[label][0]?.at, `the route's collection census refuses the ${label}`)
+        .toMatch(/OP_DUP OP_DEPTH OP_PUSHBYTES_\d+ 0x[0-9a-f]+ OP_SUB OP_PICK OP_EQUALVERIFY$/);
+      expect.soft(refused[label][1]?.at, `the root verifier's tx.origin refuses the ${label}`)
+        .toMatch(/OP_UNTIL OP_DROP OP_DUP OP_SIZE OP_NIP OP_0NOTEQUAL OP_VERIFY$/);
+    }
+    // The move adds an output past the fee slot, which each verifier refuses as well (outputs match inputs).
+    expect(refused.move.map((input) => input.inputIndex), 'the route and each verifier refuse the move')
+      .toEqual(expect.arrayContaining([master, ...verifierInputs]));
   }, 300_000);
 });

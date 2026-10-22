@@ -65,13 +65,14 @@ export function canonicalPushScript(numeric: boolean): Uint8Array {
   emit(Opcodes.OP_DROP, singleByte(0x00));
   emit(Opcodes.OP_ELSE);
   emit(Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, numberPush(1), Opcodes.OP_NUMEQUAL, Opcodes.OP_IF);
-  // One byte: `0x01`-`0x10` and `0x81` have an opcode of their own.
-  emit(Opcodes.OP_DUP, numberPush(1), Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+  // One byte: `0x01`-`0x10` and `0x81` have an opcode of their own. The byte is compared as a number, and `0x00`
+  // and `0x80` are not minimal numbers, so it is converted first: both become zero and take the direct push.
+  emit(Opcodes.OP_DUP, numberPush(1), Opcodes.OP_SPLIT, Opcodes.OP_DROP, Opcodes.OP_BIN2NUM);
   emit(Opcodes.OP_DUP, numberPush(0x01), Opcodes.OP_GREATERTHANOREQUAL,
     Opcodes.OP_OVER, numberPush(0x10), Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_BOOLAND);
   emit(Opcodes.OP_IF);
   // `OP_1`-`OP_16`: the opcode byte is the value plus the base.
-  emit(Opcodes.OP_BIN2NUM, numberPush(SMALL_INTEGER_BASE), Opcodes.OP_ADD, Opcodes.OP_NIP);
+  emit(numberPush(SMALL_INTEGER_BASE), Opcodes.OP_ADD, Opcodes.OP_NIP);
   emit(Opcodes.OP_ELSE);
   emit(Opcodes.OP_DUP, singleByte(0x81), Opcodes.OP_EQUAL);
   emit(Opcodes.OP_IF);

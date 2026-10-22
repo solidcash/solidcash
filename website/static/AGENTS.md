@@ -874,7 +874,9 @@ target.staticcall(payload);                           // low-level read-only; de
 - SDK: connect instances by category, `StatefulContract.withCategory(inner, categoryId, { externals: { ICounter:
   counterSc } })`, or per call with `.withExternalCall(counterSc)`. The SDK finds inputs; the covenants enforce
   target, selector and arguments.
-- A stateful callee returns values in a return-event NFT output; read off chain with `sc.call.f(args).staticCall()`.
+- A stateful callee returns values in a return-event NFT output, the record of the call it answers (a digest of the
+  selector and arguments, then the result, or its hash past 96 bytes); the caller reads only its own call's record.
+  Read off chain with `sc.call.f(args).staticCall()`.
 - Low-level calls bind the target and an opaque return, not the payload against the callee's invocation; prefer a
   typed interface when dispatch identity matters. Void typed calls over an address array work in loops.
 - `msg.sender` in a callee is the calling contract's address, or `tx.origin` (the first non-token P2PKH input) when

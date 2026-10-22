@@ -92,7 +92,8 @@ For a stateful typed call, the generated covenants bind at least these propertie
 2. The callee master carries the required minting capability and self-pins its category.
 3. The selected function/selector and arguments agree with the co-spent callee's invocation.
 4. The caller and callee replacement outputs obey their respective state covenants.
-5. A typed return comes from a category-bound return-event output produced by that callee.
+5. A typed return comes from the callee's call record: a category-bound return-event output that names the call it
+   answers, the only one of its kind the callee admits in the transaction.
 
 The SDK is responsible for discovery, not enforcement. Passing a different instance through
 `withExternalCall()` cannot make a mismatched target valid because the caller compares it with the address used by
@@ -161,17 +162,29 @@ For an off-chain UI read, do not create a transaction merely to mimic an EVM mul
 Bitcoin Script has no returndata buffer shared between inputs. A stateful callee with a value needed by another
 contract serializes that value into a **return-event NFT output**.
 
-The callee verifies that the output:
+The NFT is the **call record** of the call it answers. Its commitment is:
+
+- a 31-byte digest of the call: the SHA256 of the function selector and each argument, numbers minimally encoded
+  (signatures are not part of it), cut to 31 bytes;
+- one form byte; and
+- the canonical encoded return blob when it fits in 96 bytes (form 1), or else its SHA256 (form 2), in which case
+  the caller's unlocking carries the blob and the caller checks it against the hash.
+
+The callee computes the digest of the call it executed, and verifies that the output:
 
 - has the callee master's base token category with `none` capability;
 - has zero fungible-token amount;
-- carries the canonical encoded return blob as its NFT commitment;
+- carries that call record as its NFT commitment;
 - uses `OP_TRUE` locking bytecode; and
 - contains no more than 1,200 satoshis.
 
-The caller verifies the same carrier against the actually co-spent callee, reads its commitment, and decodes the
-declared type or tuple before using it. For a single returning call, generated code also pins uniqueness of the
-matching return carrier to prevent a forged twin at another output index.
+It also requires the transaction to hold no other `OP_TRUE` return carrier of its category: exactly its record for a
+returning call, and none when it runs a function that returns nothing.
+
+The caller computes the digest of the call it makes, from its own selector and arguments, verifies the carrier
+against the actually co-spent callee, and accepts it only when the record's digest is its own. Then it decodes the
+declared type or tuple. A callee run on other arguments answers a different call, so its record is refused. Two
+identical reads of one view in a function share its one record.
 
 ```text
 callee input ── verifies state + return blob ──▶ callee state output

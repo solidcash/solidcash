@@ -2,6 +2,7 @@ import {
   AddressType, ArrayType, BytesType, EnumType, FixedType, IntType, PrimitiveType, StructType, type Type,
   type CompilerOptions, type ExternalResultEncoding,
 } from '@solidcash/utils';
+import { getMaxStateFieldBytes } from './maxEncodedSize.js';
 
 /** Keep compiler-generated ABI materialization finite under the consensus script-size ceiling. */
 const MAX_MATERIALIZED_RESULT_ARRAY_ELEMENTS = 10_000;
@@ -103,6 +104,27 @@ export const evmStaticResultBytes = (types: readonly Type[]): number | undefined
 export const evmResultMayNeedPreimage = (types: readonly Type[]): boolean => {
   const staticBytes = evmStaticResultBytes(types);
   return staticBytes === undefined || staticBytes > 128;
+};
+
+/** A direct call record's digest: SHA256 of the call's ordinal, selector and arguments. */
+export const CALL_RECORD_DIGEST_BYTES = 32;
+
+/** The widest result a call record carries inline, after its digest and form byte, in a 128-byte commitment. */
+export const CALL_RECORD_INLINE_RESULT_BYTES = 128 - CALL_RECORD_DIGEST_BYTES - 1;
+
+/**
+ * A result a call record may carry only as its SHA256, so the caller takes the bytes from a preimage witness: one
+ * whose encoding may exceed the record's inline capacity.
+ */
+export const externalResultMayNeedPreimage = (
+  types: readonly Type[], options: Pick<CompilerOptions, 'evmCompat'>,
+): boolean => {
+  if (externalResultEncoding(types, options) === 'evm-abi-v1') {
+    const staticBytes = evmStaticResultBytes(types);
+    return staticBytes === undefined || staticBytes > CALL_RECORD_INLINE_RESULT_BYTES;
+  }
+  const widest = types.reduce((total: number, type) => total + getMaxStateFieldBytes(type), 0);
+  return widest > CALL_RECORD_INLINE_RESULT_BYTES;
 };
 
 /** Tuple-wide wire representation emitted and expected by this exact compiler boundary. */

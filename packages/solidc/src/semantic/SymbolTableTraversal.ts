@@ -130,7 +130,7 @@ import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './external-call-local-array.js';
-import { evmResultMayNeedPreimage, externalResultEncoding } from './ExternalResultEncoding.js';
+import { externalResultMayNeedPreimage } from './ExternalResultEncoding.js';
 import { byteElementValue } from './byteElementValue.js';
 import { cloneNode } from '../ast/clone.js';
 import { computeExpressionSiteKey, generatedOriginOf, sourceFileOf } from '../ast/Location.js';
@@ -4965,6 +4965,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.externalCalls && !node.graphEmissionHandler) {
       const returningSlots = node.externalCalls.filter((ec) => ec.hasReturnValues);
       for (const slot of returningSlots) {
+        // The record a direct call reads is the digest of this method's selector and arguments; a method chosen at run
+        // time (a varying pointer, a selector table) has no constant one.
+        const recordIface = this.interfaceMap.get(slot.interfaceName);
+        const recordMethods = recordIface ? this.getAllInterfaceFunctions(recordIface)
+          .filter((candidate) => candidate.name === slot.functionName) : [];
+        if (recordMethods.length === 1 && !slot.runtimeSelector && !slot.selectorArrayVar) {
+          const parameterTypes = recordMethods[0]!.parameters.map((parameter) => parameter.type);
+          slot.callRecordSelector = this.computeAbiSelector(this.selectorSignatureFor(slot.functionName, parameterTypes));
+          slot.callRecordParameterTypes = parameterTypes;
+        }
         // Backward compat: single returning slot uses '__internal__externalReturnOutputIdx', multiple use indexed names
         const paramName = returningSlots.length === 1
           ? '__internal__externalReturnOutputIdx'
@@ -4978,10 +4988,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           returnOutputIdxSymbol.references.push({ name: paramName } as IdentifierNode);
         }
         this.pushToStack(returnOutputIdxParam);
-        // A CashTokens NFT cannot carry more than 128 return bytes. Static and dynamic ABI results
-        // that may exceed this limit need a caller preimage witness authenticated by the return NFT.
-        if (slot.returnTypes && externalResultEncoding(slot.returnTypes, this.compilerOptions) === 'evm-abi-v1'
-          && evmResultMayNeedPreimage(slot.returnTypes)) {
+        // A call record carries its result inline beside the call's digest only up to 95 bytes. A result that may
+        // be wider is recorded by its SHA256, and the caller takes the bytes from a preimage witness.
+        if (slot.returnTypes && externalResultMayNeedPreimage(slot.returnTypes, this.compilerOptions)) {
           const preimageName = returningSlots.length === 1
             ? '__internal__externalReturnPreimage'
             : `__internal__externalReturnPreimage${slot.returnSlotIndex}`;

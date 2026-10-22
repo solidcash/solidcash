@@ -899,10 +899,12 @@ export class StatefulTransactionBuilder {
     return !this.keccakLoopPrecedesTrailingUser && this.insertLoopPredecessorInputs.length > 0;
   }
 
-  private get keccakChainFollowsBlock(): boolean {
+  private get keccakSideCarsFollowBlock(): boolean {
+    const abiFunction = (this.masterUtxo?.unlocker as {
+      abiFunction?: { keccakChainReads?: boolean; keccakLoopReads?: boolean };
+    })?.abiFunction;
     return this.keccakLoopSideCars.length > 0
-      && (this.masterUtxo?.unlocker as { abiFunction?: { keccakChainReads?: boolean } })
-        ?.abiFunction?.keccakChainReads === true;
+      && (abiFunction?.keccakChainReads === true || abiFunction?.keccakLoopReads === true);
   }
 
   private blockLayout?: FunctionBlockLayout;
@@ -2232,7 +2234,7 @@ export class StatefulTransactionBuilder {
       plannedReturnOutputIndex: this.plannedReturnOutputIndex,
       delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
-      keccakChainFollowsBlock: this.keccakChainFollowsBlock,
+      keccakSideCarsFollowBlock: this.keccakSideCarsFollowBlock,
       builtReturnEventOutputIndices: this.builtReturnEventOutputIndices,
       tailReturnEventOutputs: () => this.tailReturnEventOutputs(),
       addReturnOutput,

@@ -124,15 +124,17 @@ export async function allocateCreateBuilderFunders(
     // A read-only chunk run (`iterationEntryInputs`) only has a published output coordinate on an atomic
     // participant, which is already pinned by `overrides?.omitLocalFeeTail`; a direct compact frame instead
     // omits the slot, so the run must land at the compacted coordinate the direct dynamic-read bytecode and
-    // `getChunkOutputBase` both subtract to. Chained keccak side-cars follow the complete block too: the covenant
-    // reads FINAL at blockSize + fullBlocks, and each side-car recreates at its own index.
+    // `getChunkOutputBase` both subtract to. Chained and dynamic-loop keccak side-cars follow the complete block
+    // too: the covenant reads FINAL at blockSize + fullBlocks and loop side-car k at blockSize + k, and each
+    // side-car recreates at its own index.
     const trailingGeometryNeedsReturnSlot = insertLoopPredecessors.length > 0
       || sortedLoopCommitments.size > 0
       || (iterationEntryInputs.length > 0 && overrides?.omitLocalFeeTail === true)
       || dynamicChunkInputs.length > 0
       || trailingDisposalInputs.length > 0
       || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
-      || (abiFunction as AbiFunction | undefined)?.keccakChainReads === true;
+      || (abiFunction as AbiFunction | undefined)?.keccakChainReads === true
+      || (abiFunction as AbiFunction | undefined)?.keccakLoopReads === true;
     let neededFunders = effectiveBlockLayout.slots.filter(
       (s) => outputOnlyKinds.has(s.kind)
         // An atomic participant is assembled against its published fixed-width block. Even when this

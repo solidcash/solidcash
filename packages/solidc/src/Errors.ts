@@ -1820,14 +1820,25 @@ export class ExternalReadArgCountError extends SolidCashError {
   }
 }
 
-// A function co-spends one record per foreign read slot (interface + data NFT, or interface + collection), pinned to
-// the address of the slot's first read. A read of that slot through another address would be served that record.
+// A function co-spends one record per foreign read slot (interface + data NFT, or interface + collection, of the input
+// or the output state), pinned to the address of the slot's first read. A read of that slot through another address
+// would be served that record.
 export class ExternalReadTargetConflictError extends SolidCashError {
   constructor(node: Node, interfaceName: string, member: string, record: string, slotTarget: string, target: string) {
     super(node, `External read '${interfaceName}(${target}).${member}' reads the ${record} of '${interfaceName}' that `
       + `this function already reads through '${slotTarget}'. A function co-spends one such record per interface, `
       + 'pinned to its first read\'s address, so a second target is not supported: read every target of this record '
       + 'through the same address, or read each target in its own function');
+  }
+}
+
+// The pin of a foreign read slot checks the value its address name holds at the end of the function. A write to that
+// name, or a second declaration of it, would leave a read served the record of whatever the name holds there.
+export class ExternalReadTargetReassignedError extends SolidCashError {
+  constructor(node: Node, interfaceName: string, target: string) {
+    super(node, `External read '${interfaceName}(${target})' reads through '${target}', which this function assigns `
+      + 'or declares again. A foreign read is pinned to the value its address holds at the end of the function, so '
+      + `read '${interfaceName}' through an address this function neither assigns nor declares again`);
   }
 }
 

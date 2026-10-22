@@ -194,6 +194,7 @@ import {
   UnsupportedExternalOutStateCollectionError,
   ExternalReadArgCountError,
   ExternalReadTargetConflictError,
+  ExternalReadTargetReassignedError,
   UndefinedInterfaceFunctionError,
   MethodCallNotSupportedError,
   StructFieldExternalCallError,
@@ -912,7 +913,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   // The guard of each entry write IfConvertConditionalEntryOp kept in its branch (`keepsGuardedEntryWrite`).
   private keptEntryWriteGuards = new WeakMap<Node, ExpressionNode>();
   // The address expression of each foreign read slot's first read (`assertExternalReadTarget`).
-  private readonly externalReadSlotTargets = new WeakMap<ExternalReadSlot, ExpressionNode>();
+  private readonly externalReadSlotTargets = new WeakMap<ExternalReadSlot | ExternalOutStateSlot, ExpressionNode>();
   // The names each statement of the current function writes, with and without tuple assignments (`followLocal`).
   private writtenNames = new WeakMap<Node, { readonly names: Set<string>; readonly tuples: Set<string> }>();
   private writtenNamesOf?: FunctionDefinitionNode;
@@ -4275,6 +4276,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (bodySurvey.hasExternalRead) {
       const externalReadMap = new Map<string, ExternalReadSlot>();
       this.collectExternalReads(node.body, externalReadMap);
+      this.assertExternalReadTargetsFixed(node.body, externalReadMap.values());
 
       if (externalReadMap.size > 0) {
         let slotIndex = 0;
@@ -4855,6 +4857,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (bodySurvey.hasExternalOutStateRead) {
       const externalOutStateMap = new Map<string, ExternalOutStateSlot>();
       this.collectExternalOutStateReads(node.body, externalOutStateMap);
+      this.assertExternalReadTargetsFixed(node.body, externalOutStateMap.values());
 
       if (externalOutStateMap.size > 0) {
         let slotIndex = 0;
@@ -7887,7 +7890,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       const key = `${node.readInfo.interfaceName}:data:${node.readInfo.nftIndex}`;
       const existing = map.get(key);
       if (existing) {
-        this.assertExternalReadTarget(existing, node, `data NFT ${node.readInfo.nftIndex}`);
+        this.assertExternalReadTarget(
+          existing, node, node.addressExpression, node.name, `data NFT ${node.readInfo.nftIndex}`,
+        );
       } else {
         const addressParam = node.addressExpression instanceof IdentifierNode
           ? node.addressExpression.name : undefined;
@@ -7908,7 +7913,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       const key = `${node.readInfo.interfaceName}:entry:${node.readInfo.collectionSignature}`;
       const existing = map.get(key);
       if (existing) {
-        this.assertExternalReadTarget(existing, node, `collection '${node.readInfo.collectionName}'`);
+        this.assertExternalReadTarget(
+          existing, node, node.addressExpression, node.name, `collection '${node.readInfo.collectionName}'`,
+        );
       } else {
         const addressParam = node.addressExpression instanceof IdentifierNode
           ? node.addressExpression.name : undefined;
@@ -8004,18 +8011,68 @@ export default class SymbolTableTraversal extends AstTraversal {
    * leaves the slot without a pin, which code generation refuses.
    */
   private assertExternalReadTarget(
-    slot: ExternalReadSlot, read: ExternalStateAccessNode | ExternalMappingAccessNode, record: string,
+    slot: ExternalReadSlot | ExternalOutStateSlot, read: Node, target: ExpressionNode, member: string, record: string,
   ): void {
     const first = this.externalReadSlotTargets.get(slot);
     if (!(first instanceof IdentifierNode)) return;
-    const target = read.addressExpression;
     const declaration = (id: IdentifierNode): unknown => id.definition?.definition ?? id.definition;
     if (target instanceof IdentifierNode && target.name === first.name
       && declaration(target) === declaration(first)) return;
     throw new ExternalReadTargetConflictError(
-      read, slot.interfaceName, read.name, record, first.name,
+      read, slot.interfaceName, member, record, first.name,
       target instanceof IdentifierNode ? target.name : '...',
     );
+  }
+
+  /**
+   * Code generation pins each foreign read slot to the value its address name holds at the end of the function. A
+   * write to that name, or a second declaration of it, could move the pin off the target the slot's reads named.
+   */
+  private assertExternalReadTargetsFixed(
+    body: Node | undefined, slots: Iterable<ExternalReadSlot | ExternalOutStateSlot>,
+  ): void {
+    const targets = new Map<string, { interfaceName: string; first: IdentifierNode }>();
+    for (const slot of slots) {
+      const first = this.externalReadSlotTargets.get(slot);
+      if (first instanceof IdentifierNode && !targets.has(first.name)) {
+        targets.set(first.name, { interfaceName: slot.interfaceName, first });
+      }
+    }
+    if (!body || targets.size === 0) return;
+    const written = new Set<string>();
+    const declared = new Map<string, number>();
+    const declare = (name: string | undefined): void => {
+      if (name !== undefined) declared.set(name, (declared.get(name) ?? 0) + 1);
+    };
+    const skipped = new Set(['location', 'type', 'symbolTable', 'definition', 'references', 'resolvedFunction',
+      'functionReference', 'referencedContract', 'stateVariable', 'collection', 'sourceCallNode']);
+    const seen = new WeakSet<Node>();
+    const visit = (node: Node): void => {
+      if (seen.has(node) || node instanceof FunctionDefinitionNode || node instanceof ContractNode) return;
+      seen.add(node);
+      if (node instanceof AssignNode || node instanceof DeleteLocalNode) written.add(node.identifier.name);
+      else if (node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode || node instanceof ArrayPushNode
+        || node instanceof ArrayPopNode) written.add(node.name);
+      else if (node instanceof VariableDefinitionNode) declare(node.name);
+      else if (node instanceof TupleAssignmentNode) {
+        for (const element of node.elements) {
+          if (element.skip) continue;
+          if (!element.existing) declare(element.name);
+          else if (element.name !== undefined) written.add(element.name);
+        }
+      }
+      for (const [key, child] of Object.entries(node)) {
+        if (skipped.has(key)) continue;
+        if (child instanceof Node) visit(child);
+        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) visit(item);
+      }
+    };
+    visit(body);
+    for (const [name, { interfaceName, first }] of targets) {
+      if (written.has(name) || (declared.get(name) ?? 0) > 1) {
+        throw new ExternalReadTargetReassignedError(first, interfaceName, name);
+      }
+    }
   }
 
   private assignExternalReadSlotIndices(node: Node, map: Map<string, ExternalReadSlot>): void {
@@ -11311,35 +11368,48 @@ export default class SymbolTableTraversal extends AstTraversal {
   private collectExternalOutStateReads(node: Node, map: Map<string, ExternalOutStateSlot>): void {
     if (node instanceof ExternalMappingAccessNode && node.readInfo?.outputState) {
       const key = `${node.readInfo.interfaceName}:outState:collection:${node.readInfo.collectionSignature}`;
-      if (!map.has(key)) {
+      const existing = map.get(key);
+      if (existing) {
+        this.assertExternalReadTarget(
+          existing, node, node.addressExpression, `outState.${node.name}`,
+          `output collection '${node.readInfo.collectionName}'`,
+        );
+      } else {
         const addressParam = node.addressExpression instanceof IdentifierNode
           ? node.addressExpression.name : undefined;
-        map.set(key, {
+        const slot: ExternalOutStateSlot = {
           interfaceName: node.readInfo.interfaceName,
           addressParam,
           slotIndex: -1,
           requiredDataNftIndices: [],
-        });
+        };
+        map.set(key, slot);
+        this.externalReadSlotTargets.set(slot, node.addressExpression);
       }
       return;
     }
     if (node instanceof ExternalOutputStateAccessNode && node.accessInfo) {
       const key = `${node.accessInfo.interfaceName}:outState:${node.accessInfo.nftIndex}`;
       const existing = map.get(key);
+      const target = node.outStateNode.addressExpression;
       if (existing) {
+        this.assertExternalReadTarget(
+          existing, node, target, `outState.${node.stateVarName}`, `output data NFT ${node.accessInfo.nftIndex}`,
+        );
         if (!existing.requiredDataNftIndices.includes(node.accessInfo.nftIndex)) {
           existing.requiredDataNftIndices.push(node.accessInfo.nftIndex);
           existing.requiredDataNftIndices.sort((a, b) => a - b);
         }
       } else {
-        const addressParam = node.outStateNode.addressExpression instanceof IdentifierNode
-          ? node.outStateNode.addressExpression.name : undefined;
-        map.set(key, {
+        const addressParam = target instanceof IdentifierNode ? target.name : undefined;
+        const slot: ExternalOutStateSlot = {
           interfaceName: node.accessInfo.interfaceName,
           addressParam,
           slotIndex: -1,
           requiredDataNftIndices: [node.accessInfo.nftIndex],
-        });
+        };
+        map.set(key, slot);
+        this.externalReadSlotTargets.set(slot, target);
       }
       return;
     }

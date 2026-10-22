@@ -37,7 +37,8 @@ describe('Release 1 scalar journal lowering', () => {
     // its repeated span shared too, and compiles SMALLER than the journalized one (482 vs 554 bytes) without
     // either shape having regressed - both shrank. A budget on the shipped shape is what still catches growth.
     // Every stateful entry now also sums its satoshi container and scans for foreign containers (about 515 B).
-    expect(journalized.debug.bytecode.length / 2).toBeLessThan(1_300);
+    // The C3 count-path record pin, which holds each own-category record at its own index, added 38 B (1289 -> 1327).
+    expect(journalized.debug.bytecode.length / 2).toBeLessThan(1_340);
   });
 
   it('marks only recursion which survives tail-cycle lowering for concrete SDK preflight', () => {

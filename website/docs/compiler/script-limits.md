@@ -17,7 +17,7 @@ The limit on Bitcoin Cash for contract bytecode for P2SH outputs is **10,000 byt
 
 ### Maximum contract size (P2S)
 
-The limit on Bitcoin Cash for contract bytecode for P2S outputs is **201 bytes** by the BCH consensus rules. Technically this limit is the 'maximum locking bytecode length' because for P2S outputs the script is provided directly in the **locking bytecode**.
+The limit on Bitcoin Cash for contract bytecode for P2S outputs is **201 bytes** by the BCH standardness rules. Technically this limit is the 'maximum standard locking bytecode length' because for P2S outputs the script is provided directly in the **locking bytecode**. SolidCash stateful contracts always use P2SH32.
 
 
 ### NFT commitment length limit
@@ -43,8 +43,21 @@ function maxOperationCost(unlockingBytecodeLength) {
 ### Other contract-related limits
 
 - Signature operation count (SigChecks): Limits the number of signature verifications (`OP_CHECKSIG`, `OP_CHECKDATASIG`) per transaction to ensure efficient validation.
-- Hashing limit: Limits the number of hashing operations (`OP_SHA256`, `OP_HASH160`) allowed per transaction to prevent excessive resource usage.
+- Hashing limit: Limits the hash digest iterations (`OP_SHA256`, `OP_HASH160`, ...) per input, in proportion to the input's unlocking bytecode length, to prevent excessive resource usage.
 - Stack element byte length: stack elements have a maximum length of 10,000 bytes.
+
+### How SolidCash applies these limits
+
+- By default the compiler budgets against the 10,000-byte input limit and lays out state in 128-byte
+  commitments (the `maximumInputBytes` and `commitmentLimit`
+  [compiler options](/docs/compiler#compiler-options)). A plain compile still emits a larger script, but
+  `solidc` warns when a script is over 10,000 bytes. Check sizes with `solidc <file> --size`.
+- An oversized stateful contract can compile into a split bundle. See
+  [Large Contracts & Split Bundles](/docs/compiler/large-contracts).
+- The default `MockNetworkProvider` runs the real operation-cost density (800 per byte) but relaxes sizes:
+  1,000,000-byte inputs, stack items and NFT commitments, 10,000,000-byte transactions, relaxed hash iterations and
+  no dust rule. A green mock test does not prove that a transaction is valid on mainnet. Give the mock production
+  limits, or test on regtest, before deploying.
 
 ## General transaction limits
 
@@ -100,6 +113,6 @@ The Bitcoin Cash protocol does not strictly enforce minimum fees for transaction
 For further details on transaction validation and standardness rules, see the [documentation on BCH transaction validation][standardness-docs].
 
 [op-cost-table]: https://github.com/bitjson/bch-vm-limits/blob/master/operation-costs.md
-[standardness-docs]: https://documentation.scash/protocol/blockchain/transaction-validation/network-level-validation-rules#standard-transactions.html
-[standard-outputs-docs]: https://documentation.scash/protocol/blockchain/transaction/locking-script.html
+[standardness-docs]: https://documentation.cash/protocol/blockchain/transaction-validation/network-level-validation-rules#standard-transactions
+[standard-outputs-docs]: https://documentation.cash/protocol/blockchain/transaction/locking-script.html
 [info-dust-limit]: https://bitcoincashresearch.org/t/friday-night-challenge-worst-case-dust/1181/2

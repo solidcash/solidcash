@@ -4,8 +4,11 @@ import { readFileSync } from 'node:fs';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileFile, compileFileSplit } from 'solidc';
 import { asmToScript, scriptToBytecode, type Artifact } from '@solidcash/utils';
+import { NATIVE_TOKEN_EXTENSION } from '../../src/bcmr/index.js';
 import type { Signer } from '../../src/index.js';
 import type { Utxo } from '../../src/interfaces.js';
+import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
+import type { DeployedContract } from '../../src/stateful/ContractFactory.js';
 import { SplitContractBundle, type SplitContract } from '../../src/stateful/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { NATIVE_TEST_CATEGORY, createTestProvider, getSigners } from '../test-util.js';
@@ -16,6 +19,7 @@ const tetherSource = new URL('../fixture/tether/TetherToken.sol', import.meta.ur
 const nativeSource = new URL('../fixture/tether/TetherNativeToken.sol', import.meta.url);
 const VERIFIED_SOURCE_SHA256 = '36bf0b5747dfe7f79a03c9bc09af63e93e352d3c61199fbf025fd2c962b485f8';
 const MAX_UINT = 2n ** 256n - 1n;
+const TIMESTAMP = '2026-10-22T12:00:00.000Z';
 
 const options = { evmCompat: true, messageBus: false, suppressWarnings: true };
 const scriptBytes = (artifact: Artifact): number => scriptToBytecode(asmToScript(artifact.bytecode)).length;
@@ -177,5 +181,44 @@ describe('Tether USDT verbatim with BchNative', () => {
     expect(await state()).toMatchObject({ deprecated: true });
     await refused(wrapTen(await coin('c4'.repeat(32))));
     expect(await balance(alice)).toBe(2_008n);
+  }, 900_000);
+
+  it('premints its reserve and publishes its registry through its facets, refusing before broadcasting', async () => {
+    const split = compileFileSplit(nativeSource, options);
+    const provider = new MockNetworkProvider();
+    const [treasury, alice] = await provider.getSigners(2, { fundingUtxos: 8, genesisFundingUtxos: 8 });
+    const coins = async (): Promise<string[]> => (await treasury.getUtxos())
+      .map((utxo) => `${utxo.txid}:${utxo.vout}`).sort();
+    const token = (await treasury.getUtxos()).find((utxo) => utxo.vout === 0)!;
+    const factory = SplitContractBundle.from(split, treasury);
+    const args = [1_000_000n, 'Tether USD', 'USDT', 6n, hexToBin(token.txid)];
+
+    // totalSupply() is a facet's: the probe reads it through the facet, and a premint short of it broadcasts nothing.
+    const before = await coins();
+    await expect(factory.deploy(args, { nativeToken: { funding: token, reserve: 999_999n } }))
+      .rejects.toThrow(/totalSupply\(\) of 1000000/);
+    expect(await coins()).toEqual(before);
+
+    const usdt = await factory.deploy(args, {
+      nativeToken: { funding: token, reserve: 1_000_000n }, bcmr: { timestamp: TIMESTAMP },
+    });
+    const container = usdt.root.getTokenContainerAddress(token.txid);
+    const { identities } = (usdt.root as DeployedContract).deploymentRegistry()!.registry;
+    const snapshot = identities![token.txid]![TIMESTAMP]!;
+    expect(snapshot.name).toBe('Tether USD');
+    expect(snapshot.token).toEqual({ category: token.txid, symbol: 'USDT', decimals: 6 });
+    expect(snapshot.extensions?.[NATIVE_TOKEN_EXTENSION]).toEqual({
+      reserveLockingBytecode: binToHex(addressToLockScript(container)), scale: '1', ledgerSupply: 'totalSupply()',
+    });
+    expect(identities![usdt.categoryId]![TIMESTAMP]!.name).toBe('Tether USD contract');
+
+    // The premint backs what the constructor credited: the owner unwraps through the facet that holds unwrap.
+    const tokensAt = async (address: string): Promise<bigint> => (await provider.getUtxos(address))
+      .reduce((sum, utxo) => sum + (utxo.token?.category === token.txid ? utxo.token.amount : 0n), 0n);
+    expect(await tokensAt(container)).toBe(1_000_000n);
+    await usdt.call.unwrap(alice.getAddress(), 1_000n).send();
+    expect(await tokensAt(alice.getAddress())).toBe(1_000n);
+    expect(await tokensAt(container)).toBe(999_000n);
+    expect(await usdt.callStatic.totalSupply()).toBe(999_000n);
   }, 900_000);
 });

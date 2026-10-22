@@ -49,8 +49,8 @@ function p2sh32(redeem: Uint8Array): Uint8Array {
   return encodeLockingBytecodeP2sh32(hash256(redeem));
 }
 
-function tokenOf(capability: 'minting' | 'mutable', commitment: Uint8Array): VmOutput['token'] {
-  return { category: CATEGORY, amount: 0n, nft: { capability, commitment } };
+function tokenOf(capability: 'minting' | 'mutable', nftCommitment: Uint8Array): VmOutput['token'] {
+  return { category: CATEGORY, amount: 0n, nft: { capability, commitment: nftCommitment } };
 }
 
 function input(index: number, unlockingBytecode: Uint8Array): VmTransaction['inputs'][number] {

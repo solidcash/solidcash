@@ -2,7 +2,7 @@
 title: Examples
 ---
 
-An extensive collection of examples is available in the [GitHub repository][github-examples]. Below we discuss the HodlVault example from the repository in full detail. The focus of this page is on the use of the SDK, while the [Examples page](/docs/language/examples) in the language section focuses on the SolidCash syntax.
+An extensive collection of examples is available in the [GitHub repository][github-examples]. Below we discuss the HodlVault example from the repository in full detail. The focus of this page is on the use of the SDK, while the [Examples page](/docs/language/examples) in the language section focuses on the SolidCash syntax. HodlVault is a stateless contract; for contracts with persistent state, see [Stateful Contracts](/docs/sdk/stateful-contracts).
 
 ## HodlVault
 
@@ -35,7 +35,7 @@ import { PriceOracle } from './PriceOracle.js';
 
 // Generate entropy from BIP39 mnemonic phrase and initialise a root HD-wallet node
 const seed = deriveSeedFromBip39Mnemonic('SolidCash Examples');
-const rootNode = deriveHdPrivateNodeFromSeed(seed, true);
+const rootNode = deriveHdPrivateNodeFromSeed(seed, { assumeValidity: true, throwErrors: true });
 const baseDerivationPath = "m/44'/145'/0'/0";
 
 // Derive Alice's private key, public key, public key hash and address
@@ -44,7 +44,9 @@ if (typeof aliceNode === 'string') throw new Error();
 export const alicePub = secp256k1.derivePublicKeyCompressed(aliceNode.privateKey) as Uint8Array;
 export const alicePriv = aliceNode.privateKey;
 export const alicePkh = hash160(alicePub);
-export const aliceAddress = encodeCashAddress('bchtest', 'p2pkhWithTokens', alicePkh);
+export const aliceAddress = encodeCashAddress({
+  prefix: 'bchtest', type: 'p2pkhWithTokens', payload: alicePkh, throwErrors: true,
+}).address;
 
 // Initialise a price oracle with a private key
 const oracleNode = deriveHdPath(rootNode, `${baseDerivationPath}/2`);
@@ -53,7 +55,9 @@ export const oraclePub = secp256k1.derivePublicKeyCompressed(oracleNode.privateK
 export const oraclePriv = oracleNode.privateKey;
 export const oracle = new PriceOracle(oracleNode.privateKey);
 export const oraclePkh = hash160(oraclePub);
-export const oracleAddress = encodeCashAddress('bchtest', 'p2pkhWithTokens', oraclePkh);
+export const oracleAddress = encodeCashAddress({
+  prefix: 'bchtest', type: 'p2pkhWithTokens', payload: oraclePkh, throwErrors: true,
+}).address;
 ```
 
 ### Generating a Contract
@@ -84,7 +88,7 @@ const parameters = [alicePub, oraclePub, 100000n, 30000n];
 const contract = new Contract(artifact, parameters, { provider });
 
 // Add a mock UTXO to the network provider
-provider.addUtxo(contract.address, randomUtxo());
+await provider.addUtxo(contract.address, randomUtxo());
 
 // Get contract balance & output address + balance
 console.log('contract address:', contract.address);
@@ -131,6 +135,7 @@ import { URL } from 'url';
 
 // Import keys and price oracle from common.ts
 import {
+  aliceAddress,
   alicePriv,
   alicePub,
   oracle,
@@ -149,7 +154,7 @@ const parameters = [alicePub, oraclePub, 100000n, 30000n];
 const contract = new Contract(artifact, parameters, { provider });
 
 // Add a mock UTXO to the network provider
-provider.addUtxo(contract.address, randomUtxo());
+await provider.addUtxo(contract.address, randomUtxo());
 
 // Fetch contract utxos
 const contractUtxos = await contract.getUtxos();
@@ -171,12 +176,15 @@ const selectedContractUtxo = contractUtxos[0]
 // Create the signatureTemplate for alice to sign the contract input
 const aliceSignatureTemplate = new SignatureTemplate(alicePriv)
 
-// Spend from the vault
+// Withdraw the vault UTXO to Alice, minus a 1000-satoshi fee
+const minerFee = 1000n;
+
+// Spend from the vault; the locktime must be at least the oracle message's block height (tx.time)
 const transferDetails = await new TransactionBuilder({ provider })
   .addInput(selectedContractUtxo, contract.unlock.spend(aliceSignatureTemplate, oracleSignature, oracleMessage))
   .addOutput({
-    to: contract.address,
-    amount: 1000n
+    to: aliceAddress,
+    amount: selectedContractUtxo.satoshis - minerFee
   })
   .setLocktime(currentBlockHeight)
   .send();
@@ -184,6 +192,6 @@ const transferDetails = await new TransactionBuilder({ provider })
 console.log(transferDetails);
 ```
 
-[mainnetjs]: https://mainnet.scash/
+[mainnetjs]: https://mainnet.cash/
 [libauth]: https://libauth.org/
 [github-examples]: https://github.com/CashScript/cashscript/tree/master/examples

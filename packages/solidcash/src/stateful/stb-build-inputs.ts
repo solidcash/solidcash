@@ -23,6 +23,8 @@ export interface BuildInputsHost {
   blockLayout?: FunctionBlockLayout;
   builderOptions: TransactionBuilderOptions;
   funderUtxos: UnlockableUtxo[];
+  /** Neutral non-P2PKH pads reserved for the legacy delegate insert band. */
+  insertBandPadUtxos: UnlockableUtxo[];
   dataNftUtxos: UnlockableUtxo[];
   readOnlyDataNftUtxos: UnlockableUtxo[];
   blockhashCoSpendUtxos: UnlockableUtxo[];
@@ -138,6 +140,35 @@ export function orderedFrontRegionCoSpends(
     }
   }
   return ordered;
+}
+
+/** The published block of the function a low-level-call group executes. */
+function llcBlockLayout(group: ExternalCallUtxoGroup): {
+  blockSize?: number; slots?: ReadonlyArray<{ kind: string }>;
+} | undefined {
+  const abi = group.compilerRoute?.abiFunction
+    ?? (group.externalContract.inner.artifact.abi as ReadonlyArray<{
+      name: string;
+      blockLayout?: { blockSize?: number; slots?: ReadonlyArray<{ kind: string }> };
+    }>).find((candidate) => candidate.name === group.functionName);
+  return abi?.blockLayout;
+}
+
+/**
+ * Upper bound of the neutral pads the legacy delegate insert band takes: the returnEvent gap, the surplus for NEW
+ * and the missing width of each nested low-level-call block. They are real UTXOs, so they are reserved before the
+ * synchronous input build.
+ */
+export function insertBandPadDemand(host: BuildInputsHost): number {
+  if (host.compilerRouteDelegateBlock || host.insertLoopPredecessorInputs.length === 0
+    || host.delegateLoopEntryVars().length === 0) return 0;
+  let demand = 2;
+  for (const group of host.lowLevelCallUtxoGroups) {
+    const items = flattenLlcGroupInputs(group);
+    const present = items.length > 0 ? items.length : 1 + group.dataNftUtxos.length;
+    demand += Math.max(0, (llcBlockLayout(group)?.blockSize ?? present) - present);
+  }
+  return demand;
 }
 
 export function buildInputs(
@@ -552,92 +583,25 @@ export function buildInputs(
     // Expanded after pad helpers exist: nested LLC masters padded to ABI blockSize.
     let nestedLlcWithBlockPads: UnlockableUtxo[] = nestedLlcAfterInsertBand;
     if (earlyInsertPredecessors.length > 0) {
-      // Bare P2PKH pads would become tx.origin (first non-token input). Tag them as
-      // none-cap dust so emitTxOrigin still resolves to the caller's signer fee input.
-      const asTokenPad = (pad: UnlockableUtxo): UnlockableUtxo => {
-        const token = {
-          amount: 0n,
-          // Own category: returnEvent UTXOTOKENCATEGORY checks against the contract
-          // category. Zero-cat is "no token" (tx.origin); foreign 01… kept the pad
-          // tokenful but failed EQUALVERIFY on the nested writer.
-          category: host.categoryId,
-          // 32-byte commitment so an accidental OP_SPLIT 32 on this pad cannot
-          // fail with "stack item length 0" during early introspection.
-          nft: { capability: 'none' as const, commitment: '0'.repeat(64) },
-        };
-        const padded: UnlockableUtxo = { ...pad, token };
-        // Builder sourceOutputs carry this synthetic dust token for covenant preflight.
-        // Mock/regtest submit verifies against provider prevouts — re-register the same
-        // outpoint with tokenData so SIGHASH_UTXOS and UTXO* introspection agree.
-        const provider = host.builderOptions.provider as {
-          addUtxo?: (lock: string | Uint8Array, utxo: {
-            txid: string; vout: number; satoshis: bigint; token?: typeof token;
-          }) => unknown;
-        };
-        if (typeof provider.addUtxo === 'function') {
-          void provider.addUtxo(binToHex(pad.unlocker.generateLockingBytecode()), {
-            txid: pad.txid,
-            vout: pad.vout,
-            satoshis: pad.satoshis,
-            token,
-          });
-        }
-        return padded;
-      };
-      // Prefer non-P2PKH funders (or mint OP_TRUE dust) for insert-band pads so token-free
-      // P2PKH funders remain at the tail for emitTxOrigin / msg.sender.
-      let syntheticFunderSeq = 0;
-      const mintSyntheticPadFunder = (): UnlockableUtxo | undefined => {
-        const provider = host.builderOptions.provider as {
-          addUtxo?: (lock: string | Uint8Array, utxo: {
-            txid: string; vout: number; satoshis: bigint;
-          }) => unknown;
-        };
-        if (typeof provider.addUtxo !== 'function') return undefined;
-        syntheticFunderSeq += 1;
-        const lock = Uint8Array.of(0x51);
-        const utxo = {
-          txid: `${'00'.repeat(28)}${syntheticFunderSeq.toString(16).padStart(8, '0')}`,
-          vout: 0,
-          satoshis: 1000n,
-        };
-        void provider.addUtxo(binToHex(lock), utxo);
-        return {
-          ...utxo,
-          unlocker: {
-            generateLockingBytecode: () => lock,
-            // Bare OP_TRUE (0x51) locking script — empty unlock leaves exactly one truthy item.
-            generateUnlockingBytecode: () => new Uint8Array(),
-          },
-        };
-      };
+      // Pads are neutral non-P2PKH inputs, so emitTxOrigin still resolves to the caller's P2PKH fee input: a
+      // non-P2PKH funder, else a pad reserved before this synchronous build (`insertBandPadDemand`).
+      const padReserve = [...host.insertBandPadUtxos];
       const takePadFunder = (): UnlockableUtxo | undefined => {
         const nonP2pkh = funderPool.findIndex((funder) => !isP2PKHUnlocker(funder.unlocker));
         if (nonP2pkh >= 0) return funderPool.splice(nonP2pkh, 1)[0];
-        return mintSyntheticPadFunder();
+        return padReserve.shift();
       };
       // Leading pad fills an output-only returnEvent gap after the proxy(+impl) band.
       // Only emit it when a live layout actually reserves returnEvent — updateJobWhitelist
       // is master+data only, and an unconditional pad stole the NEW funder.
       const layoutHasReturnEvent = (
         host.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')
-        || host.lowLevelCallUtxoGroups.some((group) => {
-          if (group.callMode !== 'delegatecall') return false;
-          const abi = group.compilerRoute?.abiFunction
-            ?? (group.externalContract.inner.artifact.abi as ReadonlyArray<{
-              name: string;
-              blockLayout?: { slots?: ReadonlyArray<{ kind: string }> };
-            }>).find((candidate) => candidate.name === group.functionName);
-          return abi?.blockLayout?.slots?.some((slot) => slot.kind === 'returnEvent') ?? false;
-        })
+        || host.lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall'
+          && (llcBlockLayout(group)?.slots?.some((slot) => slot.kind === 'returnEvent') ?? false))
       );
-      if (layoutHasReturnEvent) {
-        const returnPad = takePadFunder();
-        if (returnPad) returnEventPad = asTokenPad(returnPad);
-      }
+      if (layoutHasReturnEvent) returnEventPad = takePadFunder();
       // Trailing pad is surplus for NEW after HEAD (sorted upsert insert).
-      const nodePad = takePadFunder();
-      if (nodePad) newNodePad = asTokenPad(nodePad);
+      newNodePad = takePadFunder();
       // Expand nested LLC masters so INPUTINDEX+offset introspection stays in-range
       // after the insert band shifts them past the value-chunk band.
       // Prefer each group's real blockInputs; only pad with funders when the band is short.
@@ -663,16 +627,11 @@ export function buildInputs(
             continue;
           }
           expanded.push(...items);
-          const abi = group.compilerRoute?.abiFunction
-            ?? (group.externalContract.inner.artifact.abi as ReadonlyArray<{
-              name: string;
-              blockLayout?: { blockSize?: number };
-            }>).find((candidate) => candidate.name === group.functionName);
-          const blockSize = abi?.blockLayout?.blockSize ?? present;
+          const blockSize = llcBlockLayout(group)?.blockSize ?? present;
           for (let pad = present; pad < blockSize; pad += 1) {
             const funder = takePadFunder();
             if (!funder) break;
-            expanded.push(asTokenPad(funder));
+            expanded.push(funder);
           }
         }
         if (expanded.length >= nestedLlcAfterInsertBand.length) {

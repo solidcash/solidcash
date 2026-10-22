@@ -103,7 +103,7 @@ function update(int i, string label) {
 Struct arrays support construction, `push`, `pop`, indexed reads and writes, nested field updates, and
 swap-with-last `delete(index)`. Fixed-width elements use a flat chunk stream with O(1) offset calculation;
 variable-width elements use framed chunk packing and require a sequential walk to find an element. See
-[Arrays](./arrays.md).
+[Arrays](/docs/language/arrays).
 
 ### Encoding and SDK values
 
@@ -147,6 +147,10 @@ Unlike Solidity, SolidCash allows custom enum values:
 ```solidity
 enum Priority { LOW = 1, MEDIUM = 5, HIGH = 10 }
 ```
+
+A member without a value continues from the previous one: in `enum Level { LOW = 1, MEDIUM, HIGH = 10 }`,
+`MEDIUM` is 2. Converting between an enum and an integer needs an explicit cast (`int(p)`, `Priority(n)`); a cast
+from an integer is range-checked.
 
 ### Using Enums
 
@@ -203,6 +207,9 @@ contract Demo() {
 }
 ```
 
+Natively, a plain cast between a value type and its exact underlying type converts too: `TokenId(raw)` wraps and
+`bytes32(id)` unwraps. Under `evmCompat`, use `wrap` and `unwrap`, as Solidity requires.
+
 ## Using-For Directives
 
 The `using` directive attaches library functions to types, enabling method-call syntax:
@@ -233,13 +240,11 @@ Map specific functions onto operators for a user-defined value type:
 ```solidity
 type Amount is int;
 
-library AmountLib {
-    function add(Amount a, Amount b) internal returns (Amount) {
-        return Amount.wrap(Amount.unwrap(a) + Amount.unwrap(b));
-    }
+function addAmount(Amount a, Amount b) pure returns (Amount) {
+    return Amount.wrap(Amount.unwrap(a) + Amount.unwrap(b));
 }
 
-using { AmountLib.add as + } for Amount global;
+using { addAmount as + } for Amount global;
 
 contract Ledger() {
     function total(int raw) {
@@ -249,11 +254,17 @@ contract Ledger() {
 }
 ```
 
-The overloadable operators are `+ - * / % **`, `== != < <= > >=`, and `& | ^ ~`.
+The overloadable operators are `+ - * / % **`, `== != < <= > >=`, and `& | ^ ~`. Operators bind only on
+user-defined value types, and only to free functions whose parameters are that type. A comparison returns `bool`;
+every other operator returns the value type. Only `-` and `~` may be unary (one parameter).
+
+Under `evmCompat` the binding must be written exactly as above, as Solidity requires: a `pure` free function in a
+file-level `using { f as op } for T global;` directive. Native sources may also bind operators without `global`.
 
 ### Global Scope
 
-Appending `global` makes the attachment visible to every file that imports this one:
+Appending `global` makes the attachment visible to every file that imports this one. Under `evmCompat`, `global`
+is accepted only for user-defined value types, as in Solidity; the native form below also accepts other types:
 
 ```solidity
 library SafeMath {
@@ -271,7 +282,8 @@ See [Libraries & Using-For](/docs/language/libraries) for the full reference.
 
 ## Fixed-Point Decimal Types
 
-SolidCash is the **first smart contract language** with a full fixed-point implementation. Solidity declared the type but never built it.
+SolidCash implements fixed-point decimals fully. Solidity declares the types but never implemented them, so
+fixed-point is a SolidCash extension (the compiler warns once).
 
 ```solidity
 fixed128x18 price = 1.5;         // stored as 1_500_000_000_000_000_000
@@ -351,12 +363,12 @@ unchecked {
 
 | Expression | Returns | Description |
 |------------|---------|-------------|
-| `type(int256).min` | `int` | Minimum value |
-| `type(uint8).max` | `int` | Maximum value |
+| `type(int256).min` | `int256` | Minimum value |
+| `type(uint8).max` | `uint8` | Maximum value |
 | `type(fixed128x18).min` | `fixed128x18` | Min fixed-point value |
-| `type(Status).min` | `int` | First enum value |
-| `type(Status).max` | `int` | Last enum value |
+| `type(Status).min` | `bigint` | First enum value |
+| `type(Status).max` | `bigint` | Last enum value |
 | `type(IToken).interfaceId` | `bytes4` | EIP-165-style interface ID (sha256-based by default; real keccak256 under `evmCompat`) |
 | `type(MyContract).name` | `string` | Contract name as string |
-| `type(MyContract).creationCode` | `bytes` | Child contract's compiled redeem script |
+| `type(MyContract).creationCode` | `bytes` | Child contract's compiled redeem script, without constructor arguments |
 | `type(MyContract).runtimeCode` | `bytes` | Alias of `creationCode` (BCH has no creation/runtime split) |

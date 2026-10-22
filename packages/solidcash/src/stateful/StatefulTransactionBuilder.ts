@@ -502,7 +502,7 @@ import {
   type ComputedChunkRepairResult,
   type RepairComputedChunkOutputHost,
 } from './stb-repair-computed-chunk-output.js';
-import { buildInputs, type BuildInputsHost } from './stb-build-inputs.js';
+import { buildInputs, insertBandPadDemand, type BuildInputsHost } from './stb-build-inputs.js';
 import {
   applyLearnedWriterEvents,
   learnFinalizedDelegateEvents,
@@ -899,6 +899,14 @@ export class StatefulTransactionBuilder {
     return !this.keccakLoopPrecedesTrailingUser && this.insertLoopPredecessorInputs.length > 0;
   }
 
+  private get keccakSideCarsFollowBlock(): boolean {
+    const abiFunction = (this.masterUtxo?.unlocker as {
+      abiFunction?: { keccakChainReads?: boolean; keccakLoopReads?: boolean };
+    })?.abiFunction;
+    return this.keccakLoopSideCars.length > 0
+      && (abiFunction?.keccakChainReads === true || abiFunction?.keccakLoopReads === true);
+  }
+
   private blockLayout?: FunctionBlockLayout;
   private messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly valueChunkWriteStagingSession: ValueChunkWriteStagingSession;
@@ -909,6 +917,7 @@ export class StatefulTransactionBuilder {
   funderUtxos: UnlockableUtxo[];
   private embeddedFunderUtxos: UnlockableUtxo[];
   private relocationFunderUtxos: UnlockableUtxo[] = [];
+  private insertBandPadUtxos: UnlockableUtxo[] = [];
   private funderChangeAddress?: Uint8Array;
 
   private externalCallStateUpdates: Map<
@@ -2226,6 +2235,7 @@ export class StatefulTransactionBuilder {
       plannedReturnOutputIndex: this.plannedReturnOutputIndex,
       delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
+      keccakSideCarsFollowBlock: this.keccakSideCarsFollowBlock,
       builtReturnEventOutputIndices: this.builtReturnEventOutputIndices,
       tailReturnEventOutputs: () => this.tailReturnEventOutputs(),
       addReturnOutput,
@@ -2853,6 +2863,7 @@ export class StatefulTransactionBuilder {
       get blockLayout() { return self.blockLayout; },
       get builderOptions() { return self.builderOptions; },
       get funderUtxos() { return self.funderUtxos; },
+      get insertBandPadUtxos() { return self.insertBandPadUtxos; },
       get dataNftUtxos() { return self.dataNftUtxos; },
       get readOnlyDataNftUtxos() { return self.readOnlyDataNftUtxos; },
       get blockhashCoSpendUtxos() { return self.blockhashCoSpendUtxos; },
@@ -3816,6 +3827,16 @@ export class StatefulTransactionBuilder {
   /** Keep async-planned disposable inputs out of layout until a dynamic band actually needs them. */
   setRelocationFunderUtxos(funders: UnlockableUtxo[]): void {
     this.relocationFunderUtxos = [...funders];
+  }
+
+  /** Neutral pads the legacy delegate insert band can take; see `insertBandPadDemand`. */
+  setInsertBandPadUtxos(pads: UnlockableUtxo[]): void {
+    this.insertBandPadUtxos = [...pads];
+  }
+
+  /** How many neutral pads the legacy delegate insert band may take from `setInsertBandPadUtxos`. */
+  insertBandPadDemand(): number {
+    return insertBandPadDemand(this._buildInputsHost());
   }
 
   /**
@@ -6673,8 +6694,9 @@ export class StatefulTransactionBuilder {
         + `for category ${categoryId}`,
       );
     }
-    const hasNft = !!container.utxo.token?.nft;
-    return (inputFt - ftTransferred === 0n) && (!hasNft || nftTransferred);
+    // A minting NFT mints the sent NFT and stays, so its container never drains.
+    const nft = container.utxo.token?.nft;
+    return (inputFt - ftTransferred === 0n) && (nft === undefined || (nftTransferred && nft.capability !== 'minting'));
   }
 
   /**

@@ -79,6 +79,7 @@ import {
 import type { AbiToFunctionMap } from '../types/type-inference.js';
 import type { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { onMockNetworkProviderReset } from '../network/mock-reset.js';
 import type { BcmrPublication, NativeTokenOptions, PublishedRegistry } from '../bcmr/deployment.js';
 import type { IdentityOptions, IdentityRecord } from '../bcmr/identity.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
@@ -182,7 +183,11 @@ import {
   directConventionMasterLock,
 } from './covenant-helpers.js';
 
-const signerUtxoSnapshots = new WeakMap<object, Map<string, Map<string, Utxo>>>();
+let signerUtxoSnapshots = new WeakMap<object, Map<string, Map<string, Utxo>>>();
+// A chain rewind disconnects coins a snapshot may hold (a fan-out's pieces above the restored height).
+onMockNetworkProviderReset(() => {
+  signerUtxoSnapshots = new WeakMap();
+});
 
 interface VmapCounterPermutationSpec {
   countName: string;
@@ -444,7 +449,9 @@ import {
 import {
   finishCreateBuilderAtomicPromotion as finishCreateBuilderAtomicPromotionImpl,
 } from './sc-finish-create-builder-atomic-promotion.js';
-import { destroyStatefulContract as destroyStatefulContractImpl } from './sc-destroy.js';
+import {
+  destroyStatefulContract as destroyStatefulContractImpl, refuseOrdinarySelfdestructCall,
+} from './sc-destroy.js';
 import { queryEvents as queryEventsImpl } from './sc-query-events.js';
 import { getEntries as getEntriesImpl } from './sc-get-entries.js';
 import { inferConstructorArgs as inferConstructorArgsImpl } from './sc-infer-constructor-args.js';
@@ -4083,7 +4090,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       set tokens(v) { self.tokens = v; },
       getState: () => self.getState(),
       getEntries: (name: string) => self.getEntries(name),
-      createBuilder: (...a: any[]) => (self as any)._createBuilder(...a),
+      createBuilder: async (
+        functionName: string, args: any[], overrides?: { abiFunction?: AbiFunction },
+      ): Promise<StatefulTransactionBuilder> => {
+        refuseOrdinarySelfdestructCall(self.inner.artifact, overrides?.abiFunction);
+        return (self as any)._createBuilder(functionName, args, overrides);
+      },
       deriveReturnValue: (...a: any[]) => (self as any)._deriveReturnValue(...a),
       createTokenContainerAccessor: (categoryIdHex: string) => new TokenContainerAccessor(self, categoryIdHex),
       createDeployFunctionCall: (functionName: string, args: FunctionArgument[]) =>
@@ -12395,6 +12407,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         outStateInputCount,
         iterationEntryInputs,
         externalCallGroupCount: externalCallUtxoGroups.length,
+        reachedExternalCalls: externalCallsOrchestrated.externalCalls,
       },
     );
     finalArgs = synthesized.finalArgs;
@@ -12631,8 +12644,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       keccakLoopSideCars = loop.sideCars;
       keccakLoopRecreates = loop.recreates;
     } else if (abiFunction?.keccakChainReads && this.categoryId) {
-      // Chained direct preimage: one START/CONT/FINAL side-car per 136-byte block in the trailing region. The
-      // fixed keccakSideCar slot stays funder-padded; the covenant reads the FINAL side-car at blockSize + fullBlocks.
+      // Chained direct preimage: one START/CONT/FINAL side-car per 136-byte block, right after the fixed block
+      // (the layout reserves no band). The covenant reads the FINAL side-car at blockSize + fullBlocks.
       const resolution = await this._resolveKeccakComputeCoSpends(abiFunction, args, {
         masterUtxo: derivationMasterUtxo, stateInputUnlocker,
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
@@ -14989,6 +15002,10 @@ export class StatefulFunctionCall {
   }
 
   private async _applyOverrides(): Promise<StatefulTransactionBuilder> {
+    // A compiler-route call (a message-bus row or a composed participant) is not the ordinary call path.
+    if (this.compilerRoute === undefined && this.parentContract) {
+      refuseOrdinarySelfdestructCall(this.parentContract.inner.artifact, this._selectedAbiFunction());
+    }
     return applyOverridesImpl(this._applyOverridesHost());
   }
 

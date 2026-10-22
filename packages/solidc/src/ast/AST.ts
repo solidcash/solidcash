@@ -892,6 +892,12 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusRoute?: boolean;
   /** Bound route: the participant verifier's lock, the one the route's verifier binder requires. */
   messageBusVerifierLock?: Uint8Array;
+  /**
+   * Bound non-graph route: the route-local 0/1 flags a selector branch sets for the records its handler may rewrite
+   * inside the participant block (every one, the trailing band, or one collection's entry slots). Empty when no
+   * handler claims any; absent where the C3 record pin keeps the whole block to the census.
+   */
+  messageBusRecordClaims?: ReadonlyArray<{ flag: string; all?: true; trailing?: true; collection?: string }>;
   /** Resolved route dispatch. Stamped at synthesis; published as `artifact.messageBus.convention`. */
   messageBusDispatch?: 'legacy-unroll' | 'kernel-row-loop';
   messageBusMaximumRows?: number;
@@ -1179,6 +1185,8 @@ export abstract class StatementNode extends Node {
   baseConstructorOf?: string;
   /** A top-level statement of the read-modify-write whose keys carry this `LvalueKeyTag.unit` (BindLvalueKeyEffects). */
   lvalueKeyUnit?: number;
+  /** A dropped storage-pointer declaration kept in place with its own key builds (BindLvalueKeyEffects). */
+  lvalueKeyAlias?: ExpressionNode[];
 }
 
 /** One build of a read-modify-write's key: the write (`unit`), the key position (`index`) and the key's type. */
@@ -1186,6 +1194,8 @@ export interface LvalueKeyTag {
   unit: number;
   index: number;
   type: Type;
+  /** A storage-pointer or slot-factory alias declaration's key, re-read by every use and bound at the declaration. */
+  alias?: boolean;
 }
 
 /** A base constructor's own modifiers, expanded with the most-derived (virtual) modifier definitions. */

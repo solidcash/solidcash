@@ -25,6 +25,7 @@ import type NetworkProvider from './NetworkProvider.js';
 import type { ConsensusLimits, NetworkPolicy } from './NetworkProvider.js';
 import type { SnapshotRestorer } from './MockNetworkProvider.js';
 import { getNetworkPrefix, publicKeyToP2PKHLockingBytecode, randomUtxo } from '../utils.js';
+import { runMockNetworkProviderResetHooks } from './mock-reset.js';
 
 export interface RegtestProviderOptions {
   rpcUrl?: string;
@@ -95,6 +96,7 @@ interface RegtestSnapshotState {
   importedAddresses: Set<string>;
   tokenUtxos: Map<string, Map<string, Utxo>>;
   broadcastUtxos: Map<string, Utxo>;
+  lastMinedTimestamp: number;
 }
 
 export interface TokenGenesisOutput {
@@ -139,7 +141,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private tipTime = 0;
   /** Timestamp applied to the next mined block by `evm_setNextBlockTimestamp`. */
   private pendingBlockTimestamp: number | undefined;
-  /** Monotonic time for ordinary mines, never rewound by a snapshot. */
+  /** Time of the newest mined block; a restore rewinds it with the chain, as the mock chain rewinds its clock. */
   private lastMinedTimestamp = 0;
   /** Nonzero while `increaseTime` holds the clock across its median window and oracle update. */
   private holdMockTime = 0;
@@ -162,6 +164,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // Every output this process broadcasts, so a validator/facet output mined before its address is imported is
   // still visible through getUtxosForLockingBytecode (the wallet cannot rescan history for imported addresses).
   private broadcastUtxos = new Map<string, Utxo>();
+  /** Every transaction this provider has broadcast; a restore abandons the ones the restored chain lacks. */
+  private broadcastTxids = new Set<string>();
   private retainAddress: string = '';
   private retainLockingBytecode: Uint8Array = new Uint8Array();
   private static readonly RETAINED_MINT_SATOSHIS = 2_000n;
@@ -172,6 +176,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private static readonly DEFAULT_BLOCK_TIME = 1_700_000_000;
   // Comfortably above the `minimumAmount: 1` BCH filter in `pickLiveFundingInput`.
   private static readonly VOUT0_FUNDING_SATOSHIS = 200_000_000n;
+  // Below BCHN's default RPC work queue (16 queued beside 4 worker threads), so a burst never meets HTTP 503.
+  private static readonly MAX_RPC_IN_FLIGHT = 8;
 
   constructor(options: RegtestProviderOptions = {}) {
     const {
@@ -188,10 +194,10 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.rpc = new BchnRpcClient({
       url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 60_000,
     });
-    // Read requests are idempotent and state derivation can issue many of them, so retry a transient dropped
-    // connection. Mutation requests deliberately stay on the non-retrying client above.
+    // Read requests are idempotent and state derivation can issue many of them, so they retry a transient
+    // failure (in the request wrapper below). Mutation requests deliberately stay non-retrying.
     this.readRpc = new BchnRpcClient({
-      url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 60_000, maxRetries: 2, retryDelayMs: 250,
+      url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 60_000,
     });
     // A second client for probes whose FAILURE is the answer. The wrapper logs every failed request through
     // its logger, and `categoryExistsOnChain` misses once per seeded placeholder UTXO, so those misses would
@@ -204,25 +210,60 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 30_000, logger: quiet as never,
     });
     // A ported suite may replace `globalThis.fetch` with an in-memory IPFS stub. That stub assumes every POST
-    // carries an IPFS upload body and fails on a JSON-RPC request, so keep the native fetch for the node's RPC
-    // calls and hand the test's stub back afterwards. The client calls `fetch` synchronously before awaiting,
-    // so overlapping requests each start under the native function.
+    // carries an IPFS upload body and fails on a JSON-RPC request, so the node's RPC calls use the native fetch.
+    // The client looks `fetch` up synchronously when an attempt starts, so the native function is in place only
+    // for that call and the stub is back before anything else runs: held for the whole request, a suite's IPFS
+    // read during a node request reached the real network. Each attempt (a read's retry included) swaps here;
+    // the client's own retry ran after the stub was back. Requests are capped in flight: one `gettxout` per UTXO
+    // of a large category overflowed BCHN's RPC work queue.
     const nativeFetch = globalThis.fetch;
     type RpcRequest = (method: string, ...params: unknown[]) => Promise<unknown>;
-    const underNativeFetch = (original: RpcRequest): RpcRequest => async (
-      method: string, ...params: unknown[]
-    ): Promise<unknown> => {
+    let inFlight = 0;
+    const waiting: Array<() => void> = [];
+    const acquire = async (): Promise<void> => {
+      if (inFlight < RegtestNetworkProvider.MAX_RPC_IN_FLIGHT) {
+        inFlight += 1;
+        return;
+      }
+      await new Promise<void>((resolve) => { waiting.push(resolve); });
+    };
+    const release = (): void => {
+      const next = waiting.shift();
+      if (next) next();
+      else inFlight -= 1;
+    };
+    const underNativeFetch = (original: RpcRequest, method: string, params: unknown[]): Promise<unknown> => {
       const current = globalThis.fetch;
       if (current === nativeFetch) return original(method, ...params);
       globalThis.fetch = nativeFetch;
       try {
-        return await original(method, ...params);
+        return original(method, ...params);
       } finally {
         globalThis.fetch = current;
       }
     };
-    for (const client of [this.rpc, this.readRpc, this.probeRpc] as unknown as Array<{ request: RpcRequest }>) {
-      client.request = underNativeFetch(client.request.bind(client));
+    const pause = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
+    const guarded = (original: RpcRequest, retries: number): RpcRequest => async (
+      method: string, ...params: unknown[]
+    ): Promise<unknown> => {
+      await acquire();
+      try {
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            return await underNativeFetch(original, method, params);
+          } catch (error) {
+            if (attempt >= retries) throw error;
+            await pause(250);
+          }
+        }
+      } finally {
+        release();
+      }
+    };
+    const clients: Array<[BchnRpcClient, number]> = [[this.rpc, 0], [this.readRpc, 2], [this.probeRpc, 0]];
+    for (const [client, retries] of clients) {
+      const target = client as unknown as { request: RpcRequest };
+      target.request = guarded(target.request.bind(client), retries);
     }
   }
 
@@ -369,6 +410,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // fixed size would silently over-fund it. See `addUtxo`.
   private feeFunderPool = new Map<bigint, Utxo[]>();
   private feeFunderRefill = new Map<bigint, Promise<void>>();
+  /** The pooled funder each requested outpoint was served, so a repeated request gets the same live coin. */
+  private feeFunderByRequest = new Map<string, Utxo>();
   private feeFunderSizeRequests = new Map<bigint, number>();
   // Cached `listunspent` candidates for `pickLiveFundingInput`; `undefined` forces a re-list.
   private fundingCandidates: ListUnspentItem[] | undefined;
@@ -400,6 +443,18 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       // builder that requested 5,000; where the covenant cannot emit a change output the excess becomes fee, and
       // a co-spend then failed with "fee of 99000 satoshis exceeds the maximum fee cap of 50000".
       const wanted = utxo.satoshis < 546n ? 546n : utxo.satoshis;
+      // A builder names each funder by a seeded outpoint, and a mock provider keeps one UTXO per outpoint, so a
+      // re-planned transaction asks for the same funders again. Serve the same coin while it is live: a fresh
+      // pooled coin per request made every re-plan differ, and the refills that fed them mined blocks.
+      const requested = `${utxo.txid.toLowerCase()}:${utxo.vout}`;
+      const prior = this.feeFunderByRequest.get(requested);
+      if (prior !== undefined && prior.satoshis === wanted && await this.isLiveOutpoint(prior.txid, prior.vout)) {
+        Object.assign(utxo, {
+          txid: prior.txid, vout: prior.vout, satoshis: prior.satoshis,
+          lockingBytecode: prior.lockingBytecode, confirmations: prior.confirmations,
+        });
+        return utxo;
+      }
       if ((this.feeFunderPool.get(wanted)?.length ?? 0) === 0) {
         if (!this.feeFunderRefill.has(wanted)) {
           this.feeFunderRefill.set(wanted, this.refillFeeFunderPool(wanted).finally(() => {
@@ -423,6 +478,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
         pooled = await takeLive();
       }
       if (pooled === undefined) throw new Error(`no live fee funder for ${wanted} satoshis`);
+      this.feeFunderByRequest.set(requested, pooled);
       utxo.txid = pooled.txid;
       utxo.vout = pooled.vout;
       utxo.satoshis = pooled.satoshis;
@@ -482,14 +538,14 @@ export default class RegtestNetworkProvider implements NetworkProvider {
           },
         }, this.retainedMintingOutput(category)]);
         txid = await this.fundSignSend(unsignedTx);
-        await this.mine(1);
+        await this.mineBlocks(1, false);
         this.recordCategory(category, txid, 1, requested);
       } else {
         const unsignedTx = this.buildLibauthTx(fundingInput, [{
           lockingBytecode: lbc, valueSatoshis: satoshis,
         }]);
         txid = await this.fundSignSend(unsignedTx);
-        await this.mine(1);
+        await this.mineBlocks(1, false);
       }
 
       const result = await this.decodeOutputAt(txid, 0);
@@ -566,7 +622,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       },
     }, this.retainedMintingOutput(category)]);
     const txid = await this.fundSignSend(unsignedTx);
-    await this.mine(1);
+    await this.mineBlocks(1, false);
     this.recordCategory(category, txid, 1);
 
     const result = await this.decodeOutputAt(txid, 0);
@@ -682,7 +738,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     );
     try {
       const txid = await this.fundSignSend(unsignedTx);
-      await this.mine(1);
+      await this.mineBlocks(1, false);
       this.recordCategory(categoryId, txid, retainedVout);
       return await this.collectCreatedUtxos(txid, categoryId, outputs, retainedVout);
     } finally {
@@ -813,12 +869,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     }
   }
 
+  /** A failed read throws: reporting it as spent dropped live records from a caller's view of the chain. */
   private async isLiveOutpoint(txid: string, vout: number): Promise<boolean> {
-    try {
-      return await this.readRpc.request<GetTxOut>('gettxout', txid, vout, true) !== null;
-    } catch {
-      return false;
-    }
+    return await this.readRpc.request<GetTxOut>('gettxout', txid, vout, true) !== null;
   }
 
   private async pickOracleFeeCoin(): Promise<Utxo> {
@@ -849,9 +902,10 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       this.lastMinedTimestamp = this.pendingBlockTimestamp;
       this.pendingBlockTimestamp = undefined;
     } else if (this.holdMockTime === 0) {
-      // A fixture restore disconnects a block but BCHN keeps it marked invalid. Re-mining the same template
-      // (same time and transactions) would produce the same hash and be rejected, so every ordinary mine moves
-      // the mock clock forward by at least one second. `lastMinedTimestamp` deliberately survives snapshots.
+      // Every ordinary mine moves the mock clock forward by at least one second. A fixture restore disconnects
+      // blocks BCHN keeps marked invalid; re-mining one at its old time would repeat its hash, so a restore pays
+      // later blocks to a fresh address instead of keeping the clock ahead of every block ever mined. Kept ahead,
+      // the clock ran 75 hours past the fixture in a kernel cell and jobs with a 120-second window had expired.
       const timestamp = Math.max(this.tipTime + 1, this.lastMinedTimestamp + 1);
       await this.setMockTime(timestamp);
       this.mockTime = timestamp;
@@ -887,6 +941,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.feeFunderPool.clear();
     this.feeFunderRefill.clear();
     this.feeFunderSizeRequests.clear();
+    this.feeFunderByRequest.clear();
+    runMockNetworkProviderResetHooks();
     this.pendingBlockTimestamp = undefined;
     this.mockTime = 0;
     await this.setMockTime(0);
@@ -947,6 +1003,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       importedAddresses: new Set(this.importedAddresses),
       tokenUtxos: new Map([...this.tokenUtxos].map(([category, bucket]) => [category, new Map(bucket)])),
       broadcastUtxos: new Map(this.broadcastUtxos),
+      lastMinedTimestamp: this.lastMinedTimestamp,
     };
     return {
       snapshotId,
@@ -1025,13 +1082,22 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     // rescan once more so the wallet's coin set matches the restored UTXO set.
     await this.rpc.request<RescanBlockchain>('rescanblockchain', 0);
     const mempool = new Set(Object.keys(await this.readRpc.request<GetRawMempoolVerbose>('getrawmempool', true)));
+    // Abandon every transaction this provider broadcast that the restored chain and mempool lack, not only the
+    // ones since the snapshot: once a later conflicting spend was mined, the wallet replaced an earlier abandon
+    // with that block, and rewinding the block brought the earlier spender back as unconfirmed, so coins leaked
+    // restore by restore. The node refuses the ones confirmed in the restored chain. This needs a node whose
+    // `clearmempool` notifies the wallet (bitcoin-cash-node 0be3cfcf3); with a bare clear the wallet kept them
+    // flagged in-mempool and an abandon failed a node assertion. The listing covers other processes' sends.
+    const stale = new Set(this.broadcastTxids);
     const walletTxs = await this.readRpc.request<ListTransactions>('listtransactions', '*', 1000, 0, true);
-    for (const txid of new Set(walletTxs.map((tx) => tx.txid))) {
-      const entry = walletTxs.find((tx) => tx.txid === txid && tx.confirmations === 0 && !tx.abandoned);
-      if (entry === undefined || mempool.has(txid)) continue;
+    for (const tx of walletTxs) {
+      if (tx.confirmations === 0 && !tx.abandoned) stale.add(tx.txid);
+    }
+    for (const txid of stale) {
+      if (mempool.has(txid)) continue;
       try {
-        await this.rpc.request<AbandonTransaction>('abandontransaction', txid);
-      } catch { /* already conflicted or abandoned */ }
+        await this.probeRpc.request<AbandonTransaction>('abandontransaction', txid);
+      } catch { /* confirmed in the restored chain, conflicted, or already abandoned */ }
     }
     await this.rpc.request<RescanBlockchain>('rescanblockchain', 0);
 
@@ -1046,9 +1112,16 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.feeFunderPool.clear();
     this.feeFunderRefill.clear();
     this.feeFunderSizeRequests.clear();
+    this.feeFunderByRequest.clear();
+    // SDK caches derived from chain state (signer coin snapshots, genesis reservations, job events) describe
+    // the branch this rewind disconnected; the mock provider clears them on every restore, and so must this.
+    runMockNetworkProviderResetHooks();
     this.pendingBlockTimestamp = state.pendingBlockTimestamp;
     this.mockTime = state.mockTime;
     this.tipTime = state.tipTime;
+    this.lastMinedTimestamp = state.lastMinedTimestamp;
+    // A fresh coinbase address keeps every block mined from here different from the disconnected ones.
+    this.miningAddress = await this.rpc.request<GetNewAddress>('getnewaddress', 'mining');
     this.pendingOracleUpdate = false;
     await this.setMockTime(state.mockTime);
   }
@@ -1069,6 +1142,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // ---------------------------------------------------------------------------
 
   private trackBroadcastOutputs(txHex: string, txid: string): void {
+    this.broadcastTxids.add(txid);
     const tx = decodeTransactionUnsafe(hexToBin(txHex));
     for (const input of tx.inputs) {
       const key = `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`;
@@ -1162,6 +1236,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.reservedFunding.delete(`${item.txid}:${item.vout}`);
   }
 
+  // Funding is test plumbing: on the mock chain it mines nothing and the block oracle stays put. Its blocks here
+  // publish no oracle update, so a composition that reads `block.timestamp` keeps one oracle while it funds its
+  // own slots; the next send or explicit mine catches the oracle up.
   private async fundSignSend(unsignedHex: string): Promise<string> {
     const txid = await this.serializeSend(async () => {
       const tx = decodeTransactionUnsafe(hexToBin(unsignedHex));
@@ -1194,9 +1271,11 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       }
       tx.inputs = liveInputs;
       const valueOut = tx.outputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
-      const fee = 1_000n;
+      // One satoshi per byte, the stock relay floor, sized from the unsigned encoding plus a P2PKH signature per
+      // input and a change output: a refill of many funders outgrows a flat fee.
+      const feeFor = (): bigint => BigInt(Math.max(1000, encodeTransaction(tx).length + 110 * tx.inputs.length + 34));
       const added: ListUnspentItem[] = [];
-      let needed = valueOut + fee - valueIn;
+      let needed = valueOut + feeFor() - valueIn;
       try {
         while (needed > 0n) {
           const funding = await this.pickLiveFundingInput(false);
@@ -1209,9 +1288,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
           });
           added.push(funding);
           valueIn += value;
-          needed -= value;
+          needed = valueOut + feeFor() - valueIn;
         }
-        const change = valueIn - valueOut - fee;
+        const change = valueIn - valueOut - feeFor();
         if (change > 546n) {
           tx.outputs.push({
             lockingBytecode: this.toLockingBytecode(this.miningAddress),
@@ -1234,7 +1313,6 @@ export default class RegtestNetworkProvider implements NetworkProvider {
         for (const funding of added) this.releaseFunding(funding);
       }
     });
-    await this.publishOracleIfDue();
     return txid;
   }
 
@@ -1308,7 +1386,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     }]);
     try {
       await this.fundSignSend(unsignedHex);
-      await this.mine(1);
+      await this.mineBlocks(1, false);
     } finally {
       this.releaseFunding(fundingInput);
     }
@@ -1316,13 +1394,15 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.fundingCandidates = undefined;
   }
 
-  // One builder path asks for `neededFee + DUST + deficit`, which differs almost every call, so batching 20 coins
-  // for every distinct value would mint 20 to spend 1 and bloat the wallet - and `pickLiveFundingInput` is
-  // already O(wallet). Batch only values that have been asked for before; mint exactly one the first time.
+  // One builder path asks for `neededFee + DUST + deficit`, which differs almost every call, so batching coins
+  // for every distinct value would mint many to spend 1 and bloat the wallet - and `pickLiveFundingInput` is
+  // already O(wallet). Batch only values that have been asked for before; mint exactly one the first time. A
+  // repeated value (the 5,000-satoshi layout funders) comes in batches of 100: every refill mines, and with 20 a
+  // re-planned kernel composition spent most of its time refilling.
   private async refillFeeFunderPool(satoshis: bigint): Promise<void> {
     const seen = (this.feeFunderSizeRequests.get(satoshis) ?? 0) + 1;
     this.feeFunderSizeRequests.set(satoshis, seen);
-    const POOL_SIZE = seen > 1 ? 20 : 1;
+    const POOL_SIZE = seen > 1 ? 100 : 1;
     const pool = this.feeFunderPool.get(satoshis) ?? [];
     if (pool.length >= POOL_SIZE) return;
     const needed = POOL_SIZE - pool.length;
@@ -1337,7 +1417,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     );
     try {
       const txid = await this.fundSignSend(unsignedHex);
-      await this.mine(1);
+      await this.mineBlocks(1, false);
       for (let i = 0; i < needed; i++) {
         pool.push({ txid, vout: i, satoshis, lockingBytecode: lbc, confirmations: 1 });
       }

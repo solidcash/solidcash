@@ -9,6 +9,10 @@ import { detectCompatibility, detectPackageManager, initializeProject } from '..
 import { compatibilityAliases } from '../src/vitest-preset.js';
 import { promptInitOptions } from '../src/prompt.js';
 
+const solidhatManifest = createRequire(import.meta.url)('../package.json') as {
+  version: string; devDependencies: Record<string, string>;
+};
+
 const temporaryDirectories: string[] = [];
 
 function temporaryDirectory(name: string): string {
@@ -36,7 +40,7 @@ describe('initializeProject', () => {
     expect(readFileSync(join(directory, 'README.md'), 'utf8')).toContain('# counter');
     expect(readFileSync(join(directory, 'README.md'), 'utf8')).toContain('Hardhat 3 and Ethers 6');
     const pkg = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
-    expect(pkg.devDependencies['@solidcash/solidhat']).toBe('^0.13.0');
+    expect(pkg.devDependencies['@solidcash/solidhat']).toBe(`^${solidhatManifest.version}`);
     expect(pkg.scripts['solidhat:compile']).toBe('solidhat compile');
     expect(pkg.scripts['solidhat:typegen']).toBe('solidhat typegen');
     expect(pkg.scripts['solidhat:deploy']).toBe('solidhat deploy');
@@ -53,7 +57,7 @@ describe('initializeProject', () => {
 
     expect(existsSync(join(directory, 'test', 'Counter.test.js'))).toBe(true);
     expect(existsSync(join(directory, 'test', 'Counter.test.ts'))).toBe(false);
-    expect(pkg.devDependencies.vitest).toBe('^4.0.15');
+    expect(pkg.devDependencies.vitest).toBe(solidhatManifest.devDependencies.vitest);
     expect(pkg.devDependencies.typescript).toBeUndefined();
     expect(readme).toContain('pnpm solidhat:test');
     expect(readme).toContain('solidcash.config.js');

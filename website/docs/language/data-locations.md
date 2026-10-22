@@ -3,8 +3,8 @@ title: Data Locations
 ---
 
 Solidity forces you to annotate every reference-type declaration with `memory`, `calldata` or `storage`.
-SolidCash accepts all three keywords, and they carry real meaning, but you almost never have to write one.
-This page explains why, and what each keyword does when you do.
+SolidCash accepts all three keywords, and they carry real meaning, but a native `.scash` source never has to
+write one. This page explains why, and what each keyword does when you do.
 
 ## The model: two homes, not three
 
@@ -20,8 +20,15 @@ SolidCash compiles to a UTXO model where data has exactly **two** possible homes
   each spend: data NFTs for fixed-size fields, chunk UTXOs for variable-size data, entry NFTs for sparse keyed
   collections. This is the only "storage".
 
-Because non-state data has exactly one home, **SolidCash never requires a data-location keyword**. The
-Solidity friction of annotating every `bytes`, `string`, array or struct parameter simply does not exist.
+Because non-state data has exactly one home, **native SolidCash never requires a data-location keyword**. The
+Solidity friction of annotating every `bytes`, `string`, array or struct parameter does not exist in `.scash`
+sources.
+
+:::note
+A `.sol` source unit, compiled under `evmCompat`, follows Solidity 0.5 and later instead: a reference-type
+parameter, return value or local variable needs a location there, and leaving it out is a compile error. A unit
+that selects a pre-0.5 `pragma solidity` is exempt.
+:::
 
 ## The default: no modifier
 
@@ -51,7 +58,7 @@ UTXOs) and **collections** (sparse keyed, one entry NFT per key or element).
 | `int`, `uint`, `bool`, `address`, `bytesN`, `enum`, `fixedMxN` | Register: a field in the data NFT commitment | Fixed-width scalars are packed into the data NFT |
 | `string`, unbounded `bytes` | Dynamic storage: a length header plus chunk UTXOs | Grows and shrinks at runtime |
 | `T[]` (unbounded, chunk-packable element) | Dynamic storage: chunk-packed | Reuses the string/bytes machinery |
-| `T[N]` (bounded array) | Collection: one entry NFT per element | Override with `packed` for a single dense field |
+| `T[N]` (bounded array) | Collection: one entry NFT per element | Override with `packed` for a single dense field. Under `evmCompat` a bounded array is one packed field by default (chunk-packed if too large) |
 | `T[][]` (nested array with supported leaves) | Dynamic storage: chunk-packed | Recursively framed as one dense outer value |
 | `struct` | Data-NFT field, or recursively flattened | A struct with mapping/dynamic-array fields is flattened so those fields can use their own backends |
 | `mapping(K => V)` | Collection: one entry NFT per key | |
@@ -148,13 +155,13 @@ forms a top-level definition.
 
 | EVM | SolidCash |
 | --- | --- |
-| Compile-time constant; inlined, no storage slot. | Top-level `T constant X = expr;` is inlined at every use site: no state field, zero cost. As a modifier on a parameter or local it write-protects the binding, so assigning to it is a compile error. |
+| Compile-time constant; inlined, no storage slot. | Top-level `T constant X = expr;` is inlined at every use site: no state field, zero cost. Natively, as a modifier on a parameter or local it write-protects the binding, so assigning to it is a compile error. `evmCompat` rejects `constant` on a parameter or local, as Solidity does. |
 
 ### `immutable`
 
 | EVM | SolidCash |
 | --- | --- |
-| Assigned once in the constructor, then baked into the deployed bytecode. | Assigned once in the constructor, then read-only, but it **still lives in the data NFT** rather than the bytecode. The covenant rejects any write outside the constructor. |
+| Assigned once in the constructor, then baked into the deployed bytecode. | Assigned once in the constructor, then read-only, but it **still lives in the data NFT** rather than the bytecode. The compiler rejects any write outside the constructor. |
 
 For a truly bytecode-embedded constant, use a contract constructor argument or `constant`.
 
@@ -179,7 +186,8 @@ cannot be packed.
 
 ## Cheat sheet
 
-- Mutable `bytes` / `string` / array / struct parameter or local? Write **no location** (or `memory`).
+- Mutable `bytes` / `string` / array / struct parameter or local? Write **no location** (or `memory`). In a
+  `.sol` unit, write `memory`.
 - Parameter the function must not modify? **`calldata`**, which is enforced read-only. Copy it to modify.
 - Persistent state? Declare a **state variable**; it defaults to the right backend for its type.
 - Writable shorthand for a deep collection entry? **`T storage p = this.m[k];`**

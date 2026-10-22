@@ -526,6 +526,11 @@ lock. FINAL recomputes X from the argument it is bound to. Regenerate with
 `node research/keccak-poc/gen-chain-sidecar.mjs --write`; `packages/solidcash/test/e2e/KeccakChainBinding.test.ts`
 covers settlement, the 128-byte limit and both forgeries.
 
+**Revised (2026-10-22, KCHAIN-1 liveness).** The layout reserves no band for the chain: its side-cars follow the fixed
+block, one per step, as a keccak loop's do, and FINAL's index still comes from the argument's length. The 256-slot
+band made each call fund its unused slots (~257 funder inputs), and the master's per-input scans over them broke the
+BCH 2026 density limit for a short preimage; KeccakChainBinding settles 300 and 400 bytes again.
+
 **Why deferred.** (1) The trailing region has ONE runtime-counter-indexed band; two independent counter-indexed
 users have nowhere sound to interleave. Reproduced 2026-10-15: a direct stateful function with a dynamic keccak
 loop AND a sorted-insert mapping loop has no trailing region at all, and both the keccak side-car read and the
@@ -2287,7 +2292,8 @@ boundaries: (1) the compiler-reserved 256-slot trailing band holds one side-car 
 preimage longer than 255 full blocks + 135 bytes (~34 KB) still exceeds the reserved band and is refused by the
 balanced trailing-capacity check; (2) the FINAL side-car carries the full preimage in its unlocking bytecode, so a
 real network's 10,000-byte per-input consensus limit caps a chained preimage at roughly 6.4 KB (and the whole
-transaction must still fit the 100 KB standard relay ceiling).
+transaction must still fit the 100 KB standard relay ceiling). Boundary (1) is gone since 2026-10-22: the layout
+reserves no band, and the side-cars follow the fixed block.
 
 **Acceptance:** `keccak256(x)` for a runtime `x` above the single-side-car threshold (~407 bytes) and within the
 consensus input-byte limit (~6.4 KB) settles and reads back the same digest `keccak_256` computes off-chain; the
@@ -2881,6 +2887,15 @@ entry batch migrates one entry per transaction (the SDK loops), and the token-co
 of reserved access sites (a live container count below the site count is refused); a fully dynamic per-record scan
 remains deferred.
 
+**Revised 2026-10-22 (`cd3c4caa4`, `ced8e53fa`).** The SDK upgrade took the first UTXO at each container address, so a
+dust coin there could strand the real container; it funded entry steps with the mock-only `addUtxo`, and it left
+dynamic and value chunks at the old lock. It now plans every entry and container from full listings, funds each step
+from the caller, refuses before any broadcast while a genuine record would be stranded (chunks included), and takes
+`leaveBehind` to abandon named donated container coins. Still open: chunks have no migration path (the upgrade
+refuses instead), and a parameter-keyed container needs a runtime count `k` with a distinctness proof and, for
+completeness, a container registry in state, since the covenant cannot list UTXOs. Test:
+`packages/solidcash/test/e2e/UpgradeMigrationCompleteness.test.ts`.
+
 ## Logical caller identity for native compiles (model B residual, 2026-10-14)
 
 **What:** packages/solidcash/test/journal-message-bus/e2e/KernelPhysicalCallerWithScidCompose.test.ts (skipped) needs a
@@ -3160,6 +3175,13 @@ destroys a contract holding a container and more than 200 other inputs.
 
 **Revisit if:** a contract with a satoshi or token container is destroyed with that many inputs.
 
+**RESOLVED 2026-10-22 (`2d885fa23`).** Every container goes in the final batch beside the masters, and the destroy
+refuses before building when they do not fit. Coins at a container address are filtered to genuine containers, so
+junk padding there is left in place and reported (`DestroyResult.leftBehind`). Test:
+`packages/solidcash/test/e2e/BatchedDestroyContainers.test.ts` (a lowered `maxInputsPerTx`). Residual: a tokenless
+coin at the satoshi-container address counts as genuine, so padding past the final batch's room refuses until
+`maxInputsPerTx` is raised.
+
 ## A framed contract with one function, no constructor and no fallback cannot be called (2026-10-21)
 
 **What:** `callFramedEntry` (`packages/solidcash/src/framed/call/call.ts`, the "does not plan yet" refusal) refuses
@@ -3233,3 +3255,19 @@ locks wherever a contract is called, or keep the two and document `getAddress()`
 
 **Revisit if:** ported Solidity passes `contract.address` where it means the caller identity.
 
+
+## Solidity 0.5+ sources may omit function visibility (2026-10-22)
+
+**What:** `257ce3067` (2026-07-28) made a `.sol` source with `pragma solidity` 0.5 or later reject a contract function
+without `public`, `external`, `internal` or `private`, as solc does. `1a533c88d` (2026-08-04, a post-merge
+consolidation) dropped the call; `AstBuilder.usesLegacySolidityDefaultFunctionVisibility` is left with no caller,
+so such sources compile with SolidCash's implicit-public default.
+
+**Why deferred:** restoring it is a strictness change: it rejects sources that compile today, it must skip free
+functions (which take no visibility) and interface rules that differ by version, and it needs a corpus and suite run
+to confirm no positive fixture breaks. Solidity-corpus strictness parity is deferred for 0.13.1.
+
+**What it'd take:** restore the check for contract and library functions only, under `pragma solidity` >= 0.5, then
+run the solc corpus negatives and the `.sol` fixtures once.
+
+**Revisit if:** the corpus strictness work resumes, or a port relies on solc rejecting a missing visibility.

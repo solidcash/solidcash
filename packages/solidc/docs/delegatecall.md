@@ -35,7 +35,8 @@ retargeted through it). The SDK reaches the second build with `contract.asDelega
 A function gets a delegate build when it is externally callable, touches state the proxy owns (a state write,
 an `emit`, or a low-level call), and carries none of `view`, `pure`, `internal`, `private`, `unsafe`, `upgrade`,
 `deploy`, `selfdestruct`, `split`, `merge`. It must also not issue a delegatecall itself. Functions that do not
-qualify are still present in the delegate build, but in their ordinary form.
+qualify stay in the delegate build's dispatcher but are unspendable there: a selector the proxy forwards could
+otherwise run one without the delegate census over the proxy's records. Call them on the standalone artifact.
 
 Two forms are excluded because they do not currently execute in delegate mode - the delegate input fails its
 covenant:

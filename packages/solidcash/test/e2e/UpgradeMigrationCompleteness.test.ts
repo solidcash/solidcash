@@ -341,11 +341,11 @@ describe('StatefulContract.upgrade() migration completeness (CRYPTO-4)', () => {
     await result.contract.call.pay(hexToBin(TOKEN), alicePkh, 250n).send();
   });
 
-  it('refuses, before broadcasting anything, an upgrade that would strand a genuine container', async () => {
+  it('refuses, before broadcasting anything, an upgrade that would strand a container no category names', async () => {
     const { contract, categoryId } = await deploy('c2a0', ledgerVaultV1);
     await contract.call.set(new SignatureTemplate(alicePriv), hash160(alicePub), 42n).send();
     const containerAddress = getTokenContainerAddress(contract.inner, categoryId, TOKEN);
-    // Two coins of the container's own category: both are the contract's, and the covenant migrates exactly one.
+    // An argument keys the container, so only the caller can name its category; unnamed, both coins would stay.
     await provider.addUtxo(containerAddress, coin('c2a1', 2_000n, { category: TOKEN, amount: 1_000n }));
     await provider.addUtxo(containerAddress, coin('c2a2', 2_000n, { category: TOKEN, amount: 300n }));
     const funding = await upgradeFunding('c2a4');
@@ -368,9 +368,8 @@ describe('StatefulContract.upgrade() migration completeness (CRYPTO-4)', () => {
         migrateRecordsFunctionArgs: [new SignatureTemplate(alicePriv)],
         newArtifact: ledgerVaultV2,
         newConstructorArgs: [alicePub],
-        tokenContainerCategoryIds: [TOKEN],
         ...funding,
-      })).rejects.toThrow(/would strand 1 of 2 live token container/);
+      })).rejects.toThrow(/which an argument keys: pass tokenContainerCategoryIds/);
     } finally {
       (provider as any).sendRawTransaction = send;
     }
@@ -513,13 +512,7 @@ describe('StatefulContract.upgrade() migration completeness (CRYPTO-4)', () => {
         ...(leaveBehind === undefined ? {} : { leaveBehind }),
       }));
 
-    // Unnamed, the donation still blocks the upgrade; the refusal states each candidate's value.
-    await refusedBeforeBroadcast(() => upgrade('c6a3'), /would strand 1 of 2 live token container.*800 sat, 1 of/);
-    // The covenant needs one container: abandoning both leaves it short.
-    await refusedBeforeBroadcast(
-      () => upgrade('c6a4', [`${donated.txid}:0`, `${real.txid}:0`]), /migrates exactly 1 token container/,
-    );
-
+    // The upgrade would migrate both coins; naming the donation abandons it at the old lock instead.
     const result = await upgrade('c6a5', [`${donated.txid}:0`]);
     expect(result.leftBehind).toEqual([{
       outpoint: `${donated.txid}:0`, address: oldAddress, satoshis: 800n, token: { category: TOKEN, amount: 1n },
@@ -532,6 +525,33 @@ describe('StatefulContract.upgrade() migration completeness (CRYPTO-4)', () => {
     expect(reMint.amount).toBe(2_000n);
     expect(await outpoints(oldAddress)).toEqual([`${donated.txid}:0`]);
     await result.contract.call.pay(hexToBin(TOKEN), alicePkh, 250n).send();
+  });
+
+  it('migrates every coin of a token container, a donated one too, when none is left behind', async () => {
+    const { contract, categoryId } = await deploy('c8a0', vaultV1);
+    const oldAddress = getTokenContainerAddress(contract.inner, categoryId, TOKEN);
+    await provider.addUtxo(oldAddress, coin('c8a1', 2_000n, { category: TOKEN, amount: 1_000n }));
+    await provider.addUtxo(oldAddress, coin('c8a2', 800n, { category: TOKEN, amount: 1n }));
+
+    const result = await StatefulContract.upgrade({
+      provider,
+      oldContract: contract,
+      upgradeFunctionName: 'migrate',
+      upgradeFunctionArgs: [new SignatureTemplate(alicePriv)],
+      newArtifact: vaultV2,
+      newConstructorArgs: [alicePub],
+      tokenContainerCategoryIds: [TOKEN],
+      ...(await upgradeFunding('c8a3')),
+    });
+
+    // The compiled upgrade migrates its whole band of container coins, so the old lock keeps none.
+    expect(result.leftBehind).toEqual([]);
+    expect(await outpoints(oldAddress)).toEqual([]);
+    const moved = await provider.getUtxos(getTokenContainerAddress(result.contract.inner, categoryId, TOKEN));
+    expect(moved.map((utxo) => [utxo.satoshis, utxo.token?.amount])).toEqual(
+      expect.arrayContaining([[2_000n, 1_000n], [800n, 1n]]),
+    );
+    expect(moved).toHaveLength(2);
   });
 
   it('leaves a donated satoshi-container coin behind once the caller names it, and migrates the real one', async () => {

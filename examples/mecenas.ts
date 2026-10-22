@@ -21,7 +21,7 @@ const pledgeAmount = 10_000n;
 const contract = new Contract(artifact, [alicePkh, bobPkh, pledgeAmount], { provider });
 
 // Add a mock UTXO to the mock network provider
-provider.addUtxo(contract.address, randomUtxo());
+await provider.addUtxo(contract.address, randomUtxo());
 
 // Get contract balance & output address + balance
 console.log('contract address:', contract.address);

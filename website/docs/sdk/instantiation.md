@@ -22,7 +22,8 @@ const contract = new Contract(artifact, [alicePkh], {
 ```
 
 The constructor checks the artifact version, argument count, and argument types before calculating the redeem
-script and address.
+script and address. Constructor arguments are passed in declaration order; a `pubkey` or `bytes` argument takes a
+`Uint8Array`, an `int` a `bigint`.
 
 ```ts
 interface ContractOptions {
@@ -30,8 +31,12 @@ interface ContractOptions {
   addressType?: 'p2sh20' | 'p2sh32' | 'p2s';
   salt?: Uint8Array;
   category?: Uint8Array;
+  blockOracleLock?: Uint8Array;
 }
 ```
+
+`provider` is required. `blockOracleLock` overrides the provider's block-oracle lock for a contract that reads block
+data; most applications leave it unset.
 
 `p2sh32` is the default and the required address type for the stateful protocol. `p2sh20` remains available for
 compatible stateless scripts but has a smaller collision-security margin. `p2s` exposes the script itself as the
@@ -117,8 +122,11 @@ new TransactionBuilder({ provider })
 ```
 
 `contract.unlock.<function>(...args)` returns an `Unlocker`; it does not send a transaction or infer outputs.
-The argument encoder validates values against the ABI. TypeScript artifacts make constructor and unlocker names
-and argument tuples statically typed.
+The argument encoder validates values against the ABI and throws on a wrong argument count or type. TypeScript
+artifacts make constructor and unlocker names and argument tuples statically typed.
+
+A `sig` parameter takes a `SignatureTemplate`, which signs the transaction when it is built. A `datasig` parameter
+takes the signature bytes, for example from `SignatureTemplate.signMessageHash()`.
 
 ### Overloaded functions
 
@@ -148,8 +156,8 @@ For an artifact with inferred proxy-eligible functions, `asDelegate()` reconstru
 const implementation = contract.asDelegate();
 ```
 
-This is different bytecode and therefore a different address. Deploy that variant as a manual proxy
-implementation. The higher-level `upgrades.deployProxy()` path selects it automatically. See
+This is different bytecode and therefore a different address. Deploy that variant as the implementation behind a
+custom proxy (experimental). The higher-level `upgrades.deployProxy()` path selects it automatically. See
 [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
 
 ## External target registry

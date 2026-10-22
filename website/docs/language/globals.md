@@ -82,6 +82,20 @@ bytes32 this.category
 order and can include the trailing capability byte. `this.category` strips the capability and reverses the 32
 category bytes, producing the display-order ID used by SDK category strings and `this.tokens[...]`.
 
+### address(this) and balances
+
+```solidity
+address address(this)
+bigint this.balance
+bigint this.outState.balance
+bigint addr.balance
+```
+
+`address(this)` is the locking bytecode of the input being evaluated. `this.balance` is the value of the
+contract's satoshi container in this transaction's inputs, and `this.outState.balance` is its value in the
+outputs. For any other `address`, `addr.balance` sums the values of this transaction's inputs locked to `addr`; it
+is not a chain-wide balance. A state variable named `balance` hides the built-in `this.balance`.
+
 
 ### tx.version
 ```solidity
@@ -286,16 +300,21 @@ These are the Solidity-compatible caller globals, reinterpreted for the UTXO mod
 
 | Global | Type | Description |
 | --- | --- | --- |
-| `msg.sender` | `address` | Locking bytecode of the calling contract, falling back to `tx.origin` for a direct spend |
+| `msg.sender` | `address` | Locking bytecode of the calling contract (its co-spent master NFT is checked), falling back to `tx.origin` for a direct spend |
 | `msg.value` | `bigint` | Net satoshi change in the contract's satoshi container (sum of matching outputs minus sum of matching inputs) |
-| `msg.sig` | `bytes4` | The 4-byte selector of the current function (a compile-time constant) |
-| `msg.data` | `bytes` | The unlocking bytecode, with the redeem script stripped |
-| `tx.origin` | `address` | P2PKH locking bytecode of the first non-token input |
+| `msg.sig` | `bytes4` | The 4-byte selector of the current public or external function (a compile-time constant) |
+| `msg.data` | `bytes` | This input's unlocking bytecode, with the redeem script stripped |
+| `tx.origin` | `address` | Locking bytecode of the first P2PKH input that holds no tokens |
+
+`payable` does not gate `msg.value` in general: only a `view` public or external function and a constructor that
+is not `payable` reject it. A `pure` function cannot read `msg.sender`, `msg.value`, `tx.origin`, `tx.gasprice`,
+or any `block.*` value. With `evmCompat`, `msg.value` is typed `uint256`.
 
 :::caution
 On Bitcoin Cash, sender identification is weaker than on an account-based chain: `msg.sender` is derived from
-the co-spent input set rather than an authenticated call frame. Prefer `checkSig` / `checkMultiSig` for
-authentication and authorization. The compiler warns on every use of `msg.sender` and `tx.origin`.
+the co-spent input set, which the transaction builder chooses, rather than from an authenticated call frame.
+Prefer `checkSig` / `checkMultiSig` for authentication and authorization. The compiler prints a warning for each
+read of `msg.sender` and `tx.origin`.
 :::
 
 ## Block properties
@@ -306,18 +325,19 @@ state and no update function to the reader.
 
 | Global | Type | Source | Notes |
 | --- | --- | --- | --- |
-| `block.number` | `uint32` | oracle | The height the oracle owner last wrote, at most the chain tip when written |
-| `block.timestamp` | `uint32` | oracle | The time the oracle owner last wrote, below the median time past when written |
-| `block.chainid` | `uint256` | baked constant | The low byte of the numeric compiler option (`chainId & 0xff`); encoded compactly and needs no oracle |
+| `block.number` | `uint32` | oracle | The height the oracle owner last wrote, at most the chain tip when written. Compiler-warned: it can lag the tip |
+| `block.timestamp` | `uint32` | oracle | The time the oracle owner last wrote, below the median time past when written. Compiler-warned: a deadline stays open until the owner updates it |
+| `block.chainid` | `uint256` | baked constant | The low byte of the numeric `chainId` compiler option (`chainId & 0xff`, default 0). Convention: mainnet 0, chipnet 1, testnet4 2, regtest 255. Needs no oracle |
 | `block.difficulty` | `uint32` | oracle | The raw `nBits` value. **Not randomness** |
 | `block.coinbase` | `address` | oracle | Full locking bytecode of coinbase output 0 |
 | `block.basefee` | `uint32` | derived | `Floor(1000 * block.totalFees / block.size)`, i.e. the block's realized fee rate in sat/KB |
 | `block.size` | `uint32` | oracle | Block size in bytes. A BCH-native extension |
 | `block.totalFees` | `uint32` | oracle | Sum of transaction fees in satoshis. A BCH-native extension |
-| `block.gaslimit` | `uint` | fixed shim | Always `1000000`. Compiler-warned |
+| `block.gaslimit` | integer | fixed shim | Always `1000000`. Compiler-warned |
 | `block.blobbasefee` | `uint32` | alias | Aliases `block.basefee`; BCH has no EIP-4844 blobs. Compiler-warned |
 | `block.prevrandao` | `uint256` | transaction-local shim | `abs(int(sha256(input[0] prevout txid)))`. Compiler-warned |
 | `tx.gasprice` | `uint32` | derived | The current transaction's realized fee rate in sat/KB |
+| `gasleft()` | integer | fixed shim | Always `1000000`. Compiler-warned |
 
 :::caution
 `block.prevrandao` is **not secure randomness**. The transaction builder chooses which UTXO sits at input 0,
@@ -326,6 +346,9 @@ so it fully controls the value. Use commit-reveal or a `checkDataSig` oracle ins
 `block.gaslimit` and `gasleft()` are meaningless constants that exist so ported gas-budget checks keep
 running. Do not branch on their values.
 :::
+
+The oracle fields co-spend one shared block-info oracle UTXO read-only; the SDK adds that input. A live network
+provider needs its `blockOracleCategory` set, while `MockNetworkProvider` runs its own oracle.
 
 #### Example
 ```solidity
@@ -356,8 +379,9 @@ bytes32 blockhash(int blockNumber)
 bytes32 blobhash(int index)
 ```
 
-`blockhash(n)` reads a per-pair `(n -> hash)` oracle. `blobhash(i)` always returns zero: Bitcoin Cash has no
-EIP-4844 blobs, so it is a porting shim.
+`blockhash(n)` reads a per-height `(n, hash)` oracle NFT of the contract's own category. It makes the contract
+stateful, so call it through `StatefulContract`; a missing `(n, hash)` NFT is an error, not a zero hash.
+`blobhash(i)` always returns zero: Bitcoin Cash has no EIP-4844 blobs, so it is a porting shim.
 
 ## ABI encoding and decoding
 

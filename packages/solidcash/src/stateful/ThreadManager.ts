@@ -1,5 +1,6 @@
 import type { Artifact } from '@solidcash/utils';
 import { StatefulFunctionCall, type ConnectedStatefulContract } from './StatefulContract.js';
+import { refuseOrdinarySelfdestructCall } from './sc-destroy.js';
 import { StateReader } from './StateReader.js';
 import type { TransactionDetails, Utxo } from '../interfaces.js';
 import type { FunctionArgument } from '../Argument.js';
@@ -46,6 +47,7 @@ export class ThreadHandle {
     if (!abiFunction) {
       throw new Error(`Function '${functionName}' not found in contract ABI`);
     }
+    refuseOrdinarySelfdestructCall(this.contract.inner.artifact, abiFunction);
 
     const stateLayout = this.contract.inner.stateLayout!;
     const requiredNftIndices = abiFunction.requiredNftIndices

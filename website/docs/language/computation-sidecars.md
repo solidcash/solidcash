@@ -78,6 +78,10 @@ consumer  -> binds (hash,v,r,s), reads Q, applies requested projection
 | `ecrecoverP2pkh(h, v, r, s)` | P2PKH locking bytecode (`address`) | A + B |
 | `ecrecoverEvm(h, v, r, s)` | last 20 bytes of Keccak(uncompressed key) | A + B + Keccak |
 
+A recovery inside a runtime loop uses a group of three sidecars per iteration, always at the shared salt: A, B,
+and Keccak for `ecrecoverEvm`, or A, M, and a final B2 or B3 sidecar for the other two built-ins.
+`utils.ecrecoverComputeLockingBytecode` takes each of these roles.
+
 The runtime expects 32-byte `hash`, `r`, and `s` values in SolidCash/BCH little-endian representation and Ethereum
 recovery `v` values 27 or 28. Reverse conventional Ethereum big-endian hex before passing it as `bytes32`.
 
@@ -173,7 +177,8 @@ conflict even though both would recreate it. Create enough instances for expecte
 
 - one Keccak instance serves one batch of up to three straight-line calls within its block budget;
 - one A+B pair serves one recovery call;
-- one A+B+Keccak triple serves one `ecrecoverEvm` loop iteration;
+- one shared-salt triple serves one recovery loop iteration (A+B+Keccak for `ecrecoverEvm`, A+M+B2 or B3
+  otherwise);
 - a runtime loop needs capacity for its maximum simultaneously reached iteration count; and
 - shared pools need extra headroom because unrelated applications can select the same UTXOs.
 

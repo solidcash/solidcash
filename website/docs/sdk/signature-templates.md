@@ -21,7 +21,14 @@ new SignatureTemplate(
 )
 ```
 
-In place of a signature, a `SignatureTemplate` can be passed, which will generate the correct signature using the `signer` parameter. This signer can be any representation of a private key, including [WIF strings][wif], [BCHJS' `ECPair`][ecpair], [bitcore-lib-cash' `PrivateKey`][privatekey], or binary private keys represented as `Uint8Array`. This ensures that `SignatureTemplate` can be used with any BCH library.
+In place of a signature, a `SignatureTemplate` can be passed, which will generate the correct signature using the `signer` parameter. This signer can be any representation of a private key, including [WIF strings][wif], hex strings (optionally `0x`-prefixed), [BCHJS' `ECPair`][ecpair], [bitcore-lib-cash' `PrivateKey`][privatekey] (any object with a `toWIF()` method), or binary private keys represented as `Uint8Array`. This ensures that `SignatureTemplate` can be used with any BCH library. A key that is not 32 bytes long throws.
+
+The defaults are `SighashType.SIGHASH_ALL | SighashType.SIGHASH_UTXOS` and `SignatureAlgorithm.SCHNORR`.
+
+:::note
+`checkMultiSig` requires ECDSA signatures. For each signature argument of a `checkMultiSig` call, create the template
+with `new SignatureTemplate(key, undefined, SignatureAlgorithm.ECDSA)`. The Schnorr default suits `checkSig`.
+:::
 
 #### Example
 ```ts
@@ -81,6 +88,8 @@ const alicePublicKey = aliceTemplate.publicKey
 
 The `SignatureTemplate` also has a helper method to sign a message hash, which can be used to sign non-transaction messages. This is useful for generating `datasig` signatures for smart contract use cases.
 
+`signMessageHash()` signs the 32-byte hash it is given with the template's algorithm (a 64-byte Schnorr signature by default) and appends no sighash byte. `checkDataSig(s, msg, pk)` verifies a signature over `sha256(msg)`, so pass `sha256(msg)`, not `msg` itself.
+
 ```ts
 signatureTemplate.signMessageHash(message: Uint8Array): Uint8Array
 ```
@@ -102,6 +111,10 @@ The default `sighashType` is `SighashType.SIGHASH_ALL | SighashType.SIGHASH_UTXO
 option for smart contract use cases. Every signature also carries the fork id flag, which BCH consensus requires, so
 it is not part of the configured value.
 
+The constructor throws on an unknown base type or flag, and on `SIGHASH_UTXOS` combined with `SIGHASH_ANYONECANPAY`.
+It prints a warning for `SIGHASH_NONE`, `SIGHASH_SINGLE` and `SIGHASH_ANYONECANPAY`, which do not commit to all
+inputs and outputs, so another party can change the transaction.
+
 ```ts
 export enum SighashType {
   SIGHASH_ALL = 0x01,
@@ -114,6 +127,8 @@ export enum SighashType {
 
 #### Example
 ```ts
+import { SighashType, SignatureTemplate } from 'solidcash';
+
 const wif = 'L4vmKsStbQaCvaKPnCzdRArZgdAxTqVx8vjMGLW5nHtWdRguiRi1';
 
 const signatureTemplate = new SignatureTemplate(
@@ -136,6 +151,8 @@ export enum SignatureAlgorithm {
 
 #### Example
 ```ts
+import { SighashType, SignatureAlgorithm, SignatureTemplate } from 'solidcash';
+
 const wif = 'L4vmKsStbQaCvaKPnCzdRArZgdAxTqVx8vjMGLW5nHtWdRguiRi1';
 
 const sighashType = SighashType.SIGHASH_ALL | SighashType.SIGHASH_UTXOS

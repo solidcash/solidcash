@@ -37,7 +37,8 @@ contract Consumer() {
 }
 ```
 
-Everything declared at file level is importable by other files.
+Everything declared at file level is importable by other files. Imports must come first in a file, after any
+leading pragmas. Files may import each other; only a circular inheritance graph is an error.
 
 ## Import forms
 
@@ -76,7 +77,7 @@ contract Consumer() {
 
 ### Namespace import
 
-Binds the file to a namespace identifier, which qualifies **types** from that file:
+Binds the file to a namespace identifier, which qualifies the **types** and **free functions** from that file:
 
 ```solidity
 pragma solidcash ^0.13.0;
@@ -85,26 +86,30 @@ import "./types.scash" as T;
 
 contract Consumer() {
     function run(int v) {
-        T.Point memory p = T.Point(v, v);
-        require(p.x == v);
+        T.Point memory p = T.Point(v, T.double(v));
+        require(p.y == v * 2);
     }
 }
 ```
+
+The Solidity spelling `import * as T from "./types.scash";` does not parse; write `import "./types.scash" as T;`.
 
 :::caution
 Two import forms have known gaps in the current compiler:
 
 - **Renaming with `as` in a selective import** (`import { double as x2 } from "...";`) parses, but the alias
-  does not resolve. Import the original name instead.
-- **Namespace-qualified values and functions** (`M.SCALE`, `M.double(v)`) do not resolve. A namespace import
-  currently qualifies types only; use a wildcard or selective import for constants and free functions.
+  resolves only for an enum. For anything else the alias is not declared: import the original name instead.
+- **Constants are not imported through a namespace.** `T.SCALE` does not resolve; use a wildcard or selective
+  import for file-level constants. A namespace import also brings the file's types into scope under their bare
+  names, so they must not clash with local names.
 :::
 
 ### Importing Solidity sources
 
 With the `evmCompat` compiler option, `.sol` files are parsed as SolidCash and the import resolver
 also tries `.sol` candidates, so a Solidity dependency tree can be imported directly. `pragma solidity ...` is
-accepted and its version constraint is not enforced.
+accepted and its version constraint is not enforced. Solidity shapes outside the documented compatibility subset
+are experimental; see [Solidity Parity](/docs/basics/solidity-parity).
 
 Non-relative (npm-style) import paths resolve against the package tree, so
 `import "@openzeppelin/contracts/token/ERC20/IERC20.sol";` works the same way it does in a Solidity project.
@@ -140,7 +145,8 @@ In an interface, the **visibility keyword comes first**: `public uint256 totalSu
 where both orders are accepted.
 :::
 
-Interface state variables and collections must be `public` or `external`.
+Interface state variables and collections must be `public` or `external`. An interface may also declare
+events, errors, enums, structs, user-defined value types, `using ... for` directives and a bodyless `fallback`.
 
 ### Reading external state
 
@@ -191,7 +197,16 @@ contract Caller(address target) {
 ```
 
 - `.call()` - a stateful call; the target may modify its own state.
-- `.staticcall()` - read-only; the target's state changes are not committed.
+- `.staticcall()` - read-only; the target's state must come out unchanged.
+
+`target` is an address: the locking bytecode of the callee's master UTXO. The caller checks that the co-spent
+callee has exactly that lock, so a 32-byte category id is not a call target. If the callee fails, the whole
+transaction fails.
+
+:::caution Experimental
+A call that changes the callee's state is composed external state mutation, which is experimental in 0.13.1 and
+outside the stable compatibility promise. External state reads and `.staticcall()` are not affected.
+:::
 
 See [Cross-Contract Calls & Results](/docs/language/cross-contract-calls) for target binding, output-state reads,
 return-event NFTs, and the low-level `.call` / `.delegatecall` forms.
@@ -249,15 +264,16 @@ contract Vault(pubkey owner) is Ownable(owner) {
 
 :::note
 `virtual` is enforced: overriding a function the base did not mark `virtual` is a compile error. Abstract
-functions are implicitly virtual.
+functions are implicitly virtual natively; `evmCompat` requires writing `virtual` on them, as Solidity does.
 :::
 
 See [Inheritance](/docs/language/inheritance) for C3 linearization, `super`, and multiple inheritance.
 
 ## Declaration-only files
 
-A file containing only declarations - a standalone `interface`, file-level types, or an inline-only `library` -
-compiles to a minimal artifact with an ABI and empty bytecode, mirroring solc.
+A file containing only declarations - a standalone `interface`, file-level types, an inline-only `library`, or
+an `abstract contract` - compiles to a minimal artifact with an ABI and empty bytecode, mirroring solc. Such an
+artifact cannot be deployed.
 
 ## See also
 

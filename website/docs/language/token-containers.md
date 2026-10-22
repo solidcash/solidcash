@@ -114,7 +114,8 @@ this.tokens[category].transferNft(
 
 The output is pinned to the recipient, commitment, capability, base category, and a fungible amount of zero.
 If the input UTXO also holds fungible tokens, those tokens stay in the preservation output unless transferred
-separately.
+separately. A container holding a minting NFT mints the sent NFT and keeps its minting NFT; a container holding an
+immutable or mutable NFT sends that NFT.
 
 ## Preservation and deposits
 
@@ -127,10 +128,11 @@ input amount - authenticated transfers <= output amount
 ```
 
 The inequality permits deposits while preventing the unauthenticated remainder from being redirected. An NFT
-transfer removes the NFT from the remainder; otherwise its category/capability is preserved.
+transfer removes an immutable or mutable NFT from the remainder; a minting NFT always stays, capability included.
+Otherwise the category/capability is preserved.
 
 Consequently, an ordinary call cannot completely drain a fungible-only container or transfer the only NFT from
-an NFT-only container. A full fungible transfer is possible when an NFT remains, and an NFT transfer is possible
+an NFT-only container, nor give up a container's minting NFT. A full fungible transfer is possible when an NFT remains, and an NFT transfer is possible
 when a positive fungible amount remains. A `selfdestruct` route is the explicit exception, but it does not choose
 token recipients automatically; account for every category in the function and transaction. See
 [Selfdestruct](./selfdestruct.md#tokens-are-not-transferred).
@@ -149,6 +151,10 @@ await call.send();
 the added input, its unlocker, token change, and BCH funding remain transaction-builder responsibilities.
 Consensus enforces the category's overall token balance.
 
+The amount must be positive, and the called function must use `this.tokens[category]` so that the transaction
+includes the container. When no container exists for the category yet, the deposit creates it: a new container
+output of 1,200 satoshis holding the deposited tokens.
+
 ## SDK access
 
 Given a connected `StatefulContract` named `vault` and a display-order category hex string:
@@ -165,8 +171,8 @@ const firstCategory = await container.category;
 ```
 
 The same address is available as `vault.getTokenContainerAddress(category)`. The accessor filters out foreign
-categories paid to that address. `utxos`, `amount`, `getAmount()`, `getNftCount()`, and `commitments` operate over
-all matching provider UTXOs; `category` is the first matching UTXO's category or `''` when none exists.
+categories paid to that address. `utxos`, `amount`, `getAmount()`, `getNftCount()` (a `number`), and `commitments`
+operate over all matching provider UTXOs; `category` is the first matching UTXO's category or `''` when none exists.
 
 An ordinary function call uses compiler effect metadata and covenant execution to derive its transfer outputs.
 If derivation cannot determine a recipient, amount, commitment, or capability, provide the exact outputs:

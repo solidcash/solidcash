@@ -144,8 +144,12 @@ const probeFile = path.join(probeDir, 'documented-imports.ts');
 // Plain value imports, and deliberately UNREFERENCED. `tsc` reports a missing export (TS2305) whether or not
 // the name is used, while referencing them would force a choice between type and value position - and the
 // documented names are a mix, so either choice errors on half of them for reasons that are not doc rot.
+// Each name gets its own alias: one name documented from two subpaths (`ContractFactory` from both
+// `solidcash/stateful` and `solidcash/contract-factory`) is legitimate, not a duplicate identifier.
+let aliasIndex = 0;
 const lines = [...documentedNames.entries()]
-  .map(([pkg, names]) => `import { ${[...names].sort().join(', ')} } from '${pkg}';`);
+  .map(([pkg, names]) => `import { ${[...names].sort().map((name) => `${name} as __documented${aliasIndex++}`)
+    .join(', ')} } from '${pkg}';`);
 const referenced = [...documentedNames.values()].flatMap((set) => [...set]);
 fs.mkdirSync(probeDir, { recursive: true });
 fs.writeFileSync(probeFile, `${lines.join('\n')}\n`);

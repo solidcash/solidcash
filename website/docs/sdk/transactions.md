@@ -65,8 +65,8 @@ const tx = await counter.call.increment(signature).send();
 const value = await counter.call.current().staticCall();
 ```
 
-`staticCall()` runs a local covenant probe against current state and does not broadcast. The current result-event
-decoder supports one return value; tuple/multiple-return static reads are rejected. `.emitReturn().send()` instead
+`staticCall()` runs a local covenant probe against current state and does not broadcast. A single return value
+resolves to that value; several return values resolve to an array with named fields. `.emitReturn().send()` instead
 publishes a disposable return-event NFT for an off-chain consumer. See
 [Cross-Contract Calls and Results](/docs/language/cross-contract-calls#return-event-nfts).
 
@@ -109,9 +109,10 @@ await tx.wait?.();   // provider knows/mined the transaction
 await tx.wait?.(3);  // plus two subsequent blocks
 ```
 
-`wait()` polls through the provider. It resolves immediately on `MockNetworkProvider`, which mines accepted
-transactions during `send()`. It is not a finality guarantee and it does not prevent a conflicting transaction
-from replacing or invalidating an unconfirmed chain under network policy.
+`wait()` polls through the provider and resolves once the provider returns the transaction; on an Electrum server
+that can happen while the transaction is still unconfirmed. It resolves immediately on `MockNetworkProvider`, which
+mines accepted transactions during `send()`. It is not a finality guarantee and it does not prevent a conflicting
+transaction from replacing or invalidating an unconfirmed chain under network policy.
 
 Deployment results use the same mechanism:
 
@@ -142,8 +143,8 @@ The raw builder refuses implicit fungible-token and NFT burns by default. `allow
 omitting or mis-sizing change can turn the entire remainder into a miner fee, so fee caps are a last-line guard,
 not merely an estimate.
 
-Finalized-byte checks also enforce active provider/consensus input-size and relay constraints before broadcast.
-Contracts remain the final authority for covenant output preservation.
+Before broadcast, `send()` also checks the finished transaction bytes against consensus and relay rules, such as
+transaction and script sizes and dust. Contracts remain the final authority for covenant output preservation.
 
 ## Errors and debugging
 
@@ -155,6 +156,8 @@ Contracts remain the final authority for covenant output preservation.
 - output/token validation errors for dust, invalid token amounts, or token-aware address mistakes.
 
 ```ts
+import { FailedRequireError } from 'solidcash';
+
 try {
   await counter.call.increment(signature).send();
 } catch (error) {
@@ -166,12 +169,19 @@ try {
 ```
 
 `TransactionBuilder.debug()` runs a local VM trace for standard unlockers, and `getVmResourceUsage(true)` reports
-per-input execution metrics. `getBitauthUri()` creates a BitAuth IDE template.
+per-input execution metrics. `getBitauthUri()` creates a BitAuth IDE template. A stateful call has no `debug()` of
+its own: build it first and debug the resulting builder.
+
+```ts
+const builder = await counter.call.increment(signature).build();
+builder.debug();
+builder.getVmResourceUsage(true);
+```
 
 :::danger
-A BitAuth URI can contain unlocking data and private-key material. Do not paste or upload one produced with real
-keys. The `bitauthUri` attached to transaction errors is intentionally non-enumerable, but reading or logging it
-explicitly still exposes it.
+A URI from `getBitauthUri()` contains the private keys of the transaction's signature templates. Do not paste or
+upload one produced with real keys. The `bitauthUri` attached to transaction errors has the private keys redacted
+and is not enumerable, but it still holds the full transaction and unlocking data.
 :::
 
 See [Debugging](/docs/guides/debugging) and [Transaction Builder](/docs/sdk/transaction-builder) for the detailed

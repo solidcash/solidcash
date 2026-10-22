@@ -1,17 +1,17 @@
 ---
-title: SolidHat Project Tooling
-sidebar_label: SolidHat
-description: Hardhat-style compilation, testing, scripts, deployment, networks, artifacts, and TypeChain tooling for SolidCash projects.
+title: SolidHat Runtime
+sidebar_label: SolidHat Runtime
+description: The Hardhat and Ethers compatibility runtime for SolidCash tests and scripts - hre, ethers, contract factories, fixtures, network helpers, chai matchers, upgrades and the SolidHat entry points.
 ---
 
-SolidHat is the project-level development environment for SolidCash. It provides the workflow that tools such as
-Hardhat provide around an EVM compiler—project configuration, whole-project compilation, named networks, funded
-development accounts, contract factories, tests, scripts, deployment, generated bindings, and namespaced build
-output—but targets Bitcoin Cash and the SolidCash SDK.
+SolidHat's runtime gives tests and scripts the objects a Hardhat project expects: the Hardhat Runtime Environment
+(`hre`), an `ethers` object with signers and contract factories, fixtures and network helpers, chai matchers, and
+OpenZeppelin-style `upgrades`. Everything is backed by the SolidCash SDK and runs against the network your SolidHat
+configuration selects.
 
-Use SolidHat when you want one repeatable command-line workflow for a complete contract project. Use `solidc`
-directly when you only need to compile an individual source file, and use the `solidcash` SDK directly when your
-application already owns its build and deployment workflow.
+This page is the runtime reference. To create a project, configure networks and accounts, and run the `solidhat`
+commands, see [SolidHat Projects](/docs/tooling/solidhat). The same runtime ships in `@solidcash/testing` for
+projects without SolidHat; see [Testing Framework](/docs/tooling/testing-framework).
 
 :::info SolidHat is not an EVM
 SolidHat preserves familiar project ergonomics, not EVM semantics. Contracts compile to Bitcoin Script,
@@ -19,401 +19,107 @@ transactions spend UTXOs, stateful contracts use CashToken NFTs, addresses are C
 account nonce, or mutable global EVM state.
 :::
 
-## Requirements
+## Entry points
 
-- Node.js 22 or newer
-- npm, Yarn, or pnpm
-- An ESM or TypeScript project
-
-## Create a New Project
-
-Create a TypeScript project with the default Hardhat 3 and Ethers 6 compatibility surface:
-
-```bash
-npm create @solidcash/solidhat@latest my-contracts
-cd my-contracts
-npm run solidhat:test
-```
-
-The generated project contains:
-
-```text
-contracts/                  SolidCash source files
-scripts/deploy.ts           Default network-selectable deployment script
-test/                       Vitest tests
-solidcash.config.ts         Compiler, paths, accounts, and networks
-vitest.solidhat.config.ts   Hardhat/Ethers compatibility aliases
-artifacts/solidcash/        Generated artifacts
-typechain-types/            Generated contract bindings
-```
-
-The incremental compile cache lives in `~/.cache/solidcash`, outside the project.
-
-Choose the language, package manager, and compatibility versions explicitly when needed:
-
-```bash
-npm create @solidcash/solidhat@latest my-contracts -- \
-  --template typescript \
-  --package-manager npm \
-  --hardhat 3 \
-  --ethers 6
-```
-
-Available templates are `typescript`, `javascript`, and `empty`. The JavaScript template generates
-`scripts/deploy.js`; `solidhat deploy` discovers either the TypeScript or JavaScript default automatically.
-
-Useful initializer options include:
-
-| Option | Meaning |
+| Import | Provides |
 | --- | --- |
-| `--yes` | Accept non-interactive defaults. |
-| `--no-install` | Generate files without installing dependencies. |
-| `--sample` / `--no-sample` | Include or omit the sample contract, test, and deployment script. |
-| `--dry-run` | Print the planned initialization without writing files. |
-| `--hardhat 2\|3` | Select the compatibility entry point. |
-| `--ethers 5\|6` | Select the Ethers compatibility helpers and bindings. |
-
-## Add SolidHat to an Existing Project
-
-Run the initializer in the project root:
-
-```bash
-npx @solidcash/solidhat --init --dry-run
-npx @solidcash/solidhat --init
-```
-
-The operation is additive. SolidHat detects the package manager and installed Hardhat/Ethers versions, but keeps
-existing EVM project files intact:
-
-- `hardhat.config.*`, Solidity sources, tests, and scripts are not modified.
-- EVM artifacts remain under `artifacts`; SolidCash owns `artifacts/solidcash` only.
-- Hardhat's `cache` is untouched; the SolidCash compile cache lives in `~/.cache/solidcash`.
-- SolidHat creates a separate `solidcash.config.ts` and `vitest.solidhat.config.ts`.
-- An existing `README.md` is not replaced.
-
-SolidHat refuses to replace conflicting generated files unless `--force` is supplied. Initialization plans all
-writes first and rolls them back if an atomic replacement fails. Prefer `--dry-run` before changing a mature
-repository.
-
-## Configuration
-
-The project configuration is `solidcash.config.ts`, `.mjs`, or `.js`. Paths are resolved relative to the config
-file, not the shell's current directory.
-
-```ts title="solidcash.config.ts"
-import { defineConfig } from '@solidcash/solidhat/config';
-
-export default defineConfig({
-  paths: {
-    contracts: 'contracts',
-    tests: 'test',
-    artifacts: 'artifacts',
-  },
-
-  compiler: {
-    evmCompat: true,
-    ecrecover: 'p2pkh',
-  },
-
-  typegen: {
-    targets: [
-      { target: 'ethers6', layout: 'typechain', outDir: 'typechain-types' },
-    ],
-  },
-
-  mnemonic: process.env.SOLIDCASH_MNEMONIC,
-  accounts: {
-    path: "m/44'/60'/0'/0",
-    count: 1,
-    initialIndex: 0,
-    satoshis: 100_000_000n,
-  },
-
-  networks: {
-    mock: { type: 'mock' },
-    regtest: {
-      type: 'regtest',
-      rpc: {
-        url: process.env.REGTEST_RPC_URL ?? 'http://127.0.0.1:18443',
-        user: process.env.REGTEST_RPC_USER ?? 'user',
-        password: process.env.REGTEST_RPC_PASSWORD ?? 'password',
-      },
-    },
-    chipnet: { type: 'electrum', network: 'chipnet' },
-    mainnet: { type: 'electrum', network: 'mainnet' },
-  },
-
-  defaultNetwork: 'mock',
-});
-```
-
-### Paths
-
-| Field | Default | Purpose |
-| --- | --- | --- |
-| `paths.contracts` | `contracts` | `.scash` and Solidity-compatible `.sol` source roots. |
-| `paths.tests` | `test` | Project tests. |
-| `paths.artifacts` | `artifacts` | Artifact root; SolidHat writes beneath `solidcash/`. |
-| `paths.cache` | `~/.cache/solidcash` | Compile cache root; SolidHat writes beneath `solidcash/`. |
-
-Compile trusts the entries it finds in the cache as compiled output, so anyone who can write the cache can substitute
-artifacts for your sources. A `paths.cache` inside the project is therefore ignored unless the config also sets
-`trustProjectCache: true`. Set it only for a checkout no one else writes, never for a cloned repository, and do not
-commit the cache.
-
-### Compiler Options
-
-`compiler` options pass through to `solidc`. The deprecated `solc` spelling remains accepted, but new projects
-should use `compiler`.
-
-Important options include:
-
-- `evmCompat: true` for projects porting Solidity sources and imports.
-- `ecrecover: 'p2pkh'` when recovered identities should be native BCH P2PKH addresses.
-- `ecrecover: 'evm'` when an unmodified Solidity suite expects conventional 20-byte EVM addresses.
-- State-layout, script-size, optimization, and other compiler settings supported by `solidc`.
-
-The active provider's consensus limits are included in compilation. Mocknet can deliberately use generous test
-limits, while regtest and live providers retain real Bitcoin Cash limits. Always compile against a real-network
-configuration before publishing a production deployment.
-
-### Accounts
-
-`getSigners()` derives accounts from `mnemonic`, `accounts.path`, and `accounts.initialIndex`.
-
-| Field | Meaning |
-| --- | --- |
-| `path` | BIP-32 branch; a child index is appended for each signer. |
-| `count` | Number of accounts initialized by the runtime. |
-| `initialIndex` | First child index to derive. |
-| `satoshis` | Per-account development funding on mocknet or regtest. |
-
-If `mnemonic` is omitted, mocknet and regtest use the public Hardhat development mnemonic. This is suitable only
-for disposable local environments. SolidHat refuses to select Electrum or non-regtest Bitcoin RPC networks unless
-an explicit mnemonic is configured.
-
-:::danger Never reuse development keys
-The default development mnemonic is public. Never fund it on chipnet or mainnet. Load live keys from a secret
-manager or environment variable, keep production and staging keys separate, and do not commit seed phrases or RPC
-credentials.
-:::
-
-## Network Types
-
-SolidHat selects a named entry from `networks` using `--network`. When it is omitted, `defaultNetwork` is used.
-
-### Mocknet
-
-```ts
-networks: {
-  mock: {
-    type: 'mock',
-    consensus: {
-      maximumInputBytes: 500_000,
-      maximumStackItemBytes: 500_000,
-      maximumTransactionBytes: 10_000_000,
-      maximumNftCommitmentBytes: 128,
-    },
-    policy: { enforceDust: false },
-  },
-}
-```
-
-Mocknet runs entirely in-process. It creates deterministic funded signers, evaluates transactions locally, and
-updates an in-memory UTXO set. It is the fastest choice for unit tests and deployment-script development.
-
-Consensus and relay-policy overrides are mock-only. A script that succeeds with relaxed limits is not necessarily
-deployable to BCHN. Run the same deployment against regtest before using chipnet or mainnet.
-
-### BCHN Regtest
-
-```ts
-networks: {
-  regtest: {
-    type: 'regtest',
-    rpc: {
-      url: 'http://127.0.0.1:18443',
-      user: 'user',
-      password: 'password',
-    },
-  },
-},
-accounts: { count: 1, satoshis: 100_000_000n },
-```
-
-The regtest provider communicates with a Bitcoin Cash Node wallet over JSON-RPC. When `accounts.satoshis` is set,
-`getSigners()` derives the configured accounts and asks the node wallet to fund any derived address that has no UTXOs.
-Broadcast transactions are mined by the regtest provider, allowing deployment scripts to await confirmation.
-
-The repository includes `docker-compose.regtest.yml` for local development. From the repository root:
-
-```bash
-docker compose -f docker-compose.regtest.yml up -d bchn fulcrum miner
-curl --user user:password \
-  --data-binary '{"jsonrpc":"1.0","id":"ready","method":"getblockcount","params":[]}' \
-  -H 'content-type:text/plain' \
-  http://127.0.0.1:18443
-npx solidhat deploy --network regtest
-```
-
-For an application repository, use an equivalent BCHN regtest service and set `REGTEST_RPC_URL`,
-`REGTEST_RPC_USER`, and `REGTEST_RPC_PASSWORD` in the environment.
-
-### Electrum Live Networks
-
-Use Electrum for ordinary chipnet or mainnet querying and broadcasting:
-
-```ts
-networks: {
-  chipnet: { type: 'electrum', network: 'chipnet' },
-  mainnet: { type: 'electrum', network: 'mainnet' },
-  privateChipnet: {
-    type: 'electrum',
-    network: 'chipnet',
-    electrum: { host: 'chipnet.example.org' },
-  },
-}
-```
-
-Electrum never manufactures funds. The derived deployer address must already have spendable BCH and, where a
-deployment requires it, suitable `vout: 0` genesis UTXOs. SolidHat also does not mine after broadcast on live
-networks; confirmation time follows the network.
-
-### Generic Bitcoin RPC
-
-Use `bitcoin-rpc` when connecting to a wallet-enabled BCH JSON-RPC endpoint without regtest's development helpers:
-
-```ts
-networks: {
-  productionRpc: {
-    type: 'bitcoin-rpc',
-    network: 'mainnet',
-    rpc: {
-      url: process.env.BCH_RPC_URL!,
-      user: process.env.BCH_RPC_USER!,
-      password: process.env.BCH_RPC_PASSWORD!,
-    },
-  },
-}
-```
-
-`network`, `rpc.url`, `rpc.user`, and `rpc.password` must be explicit. Like Electrum, this provider does not fund
-accounts. Prefer TLS, a private network, or a local authenticated proxy; do not expose node RPC directly to the
-internet.
-
-## CLI Tasks
-
-The initializer adds package scripts such as `solidhat:compile`, `solidhat:typegen`, `solidhat:test`,
-`solidhat:deploy`, and `solidhat:clean`. You can also invoke the CLI directly.
-
-| Command | Behavior |
-| --- | --- |
-| `solidhat compile` | Compile the project graph, atomically publish artifacts, and update configured bindings. |
-| `solidhat typegen` | Generate bindings from existing artifacts. Add `--watch` for continuous generation. |
-| `solidhat test [paths...]` | Compile, then run Vitest using `vitest.solidhat.config.*`. |
-| `solidhat run <script>` | Compile, initialize the selected HRE, and import a script. |
-| `solidhat deploy [script]` | Compile and run a deployment script; defaults to `scripts/deploy.ts` or `.js`. |
-| `solidhat doctor` | Check config, paths, artifacts, and generated-output safety without modifying them. |
-| `solidhat clean` | Remove only SolidHat-owned artifacts, cache data, and configured generated bindings. |
-| `solidhat node` | Explain the active in-process mock network; it does not start BCHN. |
-
-Use `--no-compile` with `test`, `run`, or `deploy` only when artifacts are already current:
-
-```bash
-npx solidhat deploy --network regtest --no-compile
-npx solidhat run scripts/verify.ts --network chipnet --no-compile
-```
-
-`--network` can appear before or after the task:
-
-```bash
-npx solidhat --network regtest deploy
-npx solidhat deploy --network regtest
-```
-
-When invoking an npm package script, insert npm's `--` separator:
-
-```bash
-npm run solidhat:deploy -- --network regtest
-```
-
-## Compile, Artifacts, and Type Generation
-
-`solidhat compile` discovers `.scash` sources and the Solidity-compatible `.sol` dependency graph. It forwards
-effective compiler settings, writes one artifact per contract, and only replaces the published artifact tree after
-all required compilation succeeds. A failed build leaves the previous coherent artifact set intact.
-
-Artifacts use a Hardhat-like source/contract layout inside SolidHat's namespace:
-
-```text
-artifacts/
-  solidcash/
-    contracts/
-      Marketplace.scash/
-        Marketplace.json
-        Marketplace.artifact.ts
-```
-
-Resolve a unique contract by name or disambiguate it with a fully qualified name:
-
-```ts
-const Marketplace = await ethers.getContractFactory('Marketplace');
-const Qualified = await ethers.getContractFactory(
-  'contracts/Marketplace.scash:Marketplace',
-);
-```
-
-Type generation is content-addressed. Generated TypeChain-compatible modules preserve the source tree, remove stale
-files through atomic replacement, and support Ethers 5 or Ethers 6 targets:
-
-```ts
-typegen: {
-  targets: [
-    { target: 'ethers5', layout: 'typechain', outDir: 'typechain-types-v5' },
-    { target: 'ethers6', layout: 'typechain', outDir: 'typechain-types-v6' },
-  ],
-}
-```
-
-## Tests and Hardhat Compatibility
-
-The generated Vitest configuration aliases Hardhat, Ethers, Chai matchers, and network helpers to SolidCash-aware
-implementations. This allows compatible test files to retain imports such as:
+| `@solidcash/solidhat/hardhat2`, `@solidcash/solidhat/hardhat3` | `hre` (also the default export), `ethers`, `network`, `config`, `run` and `upgrades` |
+| `@solidcash/solidhat/ethers5` | Ethers 5 style utilities: the `utils` and `constants` namespaces, `BigNumber`, `AddressZero`, and the Ethers 6 functions |
+| `@solidcash/solidhat/ethers6` | The Ethers 6 API with a CashAddress-aware `getAddress` and `Contract`, BCH `getCreateAddress` and `getCreate2Address`, and the SolidCash ABI coder |
+| `@solidcash/solidhat/config` | `defineConfig`, `solidcashConfigSchema` and the configuration types |
+| `@solidcash/solidhat/vitest-preset` | `solidhatPreset(target, config?, options?)` and `compatibilityAliases(target)` |
+| `@solidcash/solidhat/offline-setup` | A Vitest setup file for hermetic suites, with `offlineRuntime()` and `assertNoNetworkViolations()` |
+| `@solidcash/solidhat/offline-network` | `installOfflineNetwork(options?)`: a `fetch` guard that fails every request no in-process service answers |
+| `@solidcash/solidhat/offline-ipfs` | `createInMemoryIpfs(options?)`: an in-memory IPFS upload service and gateway |
+| `@solidcash/solidhat/offline-rpc` | `installOfflineRpcShims` and `seedOfflineRpcCode`: answers for EVM JSON-RPC calls such as `eth_getCode` |
+| `@solidcash/solidhat/mock-contracts` | `installMockContracts` and `MockContractModel`: TypeScript models in place of compiled contracts |
+| `@solidcash/solidhat/ported-script` | `runPortedScript(path, options?)`: runs a Hardhat-era deployment script in the test process |
+| `@solidcash/solidhat/project-fixture` | `stageProjectFixture(options)`: links a ported project's sources and tests into a fixture directory |
+| `@solidcash/solidhat/cashaddr` | `encodeP2pkhCashAddress(hash160, prefix?)`: the P2PKH CashAddress of a 20-byte hash |
+| `@solidcash/solidhat`, `@solidcash/solidhat/init` | `initializeProject(options)` and the project detection helpers; see [Programmatic initialization](/docs/tooling/solidhat#programmatic-initialization) |
+
+`@solidcash/solidhat/cli` and `@solidcash/solidhat/cli-options` implement the `solidhat` command and are not meant
+to be imported.
+
+The generated Vitest config aliases `hardhat` to the Hardhat entry point and `ethers` to the Ethers entry point of
+the target chosen when the project was created (see [Create a project](/docs/tooling/solidhat#create-a-project)),
+so ported tests keep their imports:
 
 ```ts
 import { ethers, network } from 'hardhat';
 import { loadFixture, time } from '@nomicfoundation/hardhat-network-helpers';
 ```
 
-Run them through SolidHat, not through the original EVM Hardhat runner:
+Both Hardhat entry points export the same names. Hardhat 2 suites use `ethers` and `network` directly; Hardhat 3
+suites call `await network.connect()`.
 
-```bash
-npx solidhat test
-npx solidhat test test/Marketplace.test.ts
-npx solidhat test test/Marketplace.test.ts -t 'deploys with the configured fee'
+## The runtime environment
+
+```ts
+import hre, { config, ethers, network, run, upgrades } from '@solidcash/solidhat/hardhat3';
 ```
 
-Mocknet supports snapshots, fixture restoration, time advancement, funded signers, contract factories, Chai-style
-transaction assertions, and familiar Ethers helpers. Live-node tests should use fresh deployments and run
-serially; a real chain cannot be rewound like an in-memory snapshot.
+These exports are live views of the active runtime environment. It is created from `solidcash.config.ts` for the
+selected network: `defaultNetwork` inside Vitest, or the `--network` option of `solidhat run` and
+`solidhat deploy`. Without a config file it is a mock network with default settings.
 
-Compatibility entry points are deliberately separate:
+- `hre.config` is the resolved configuration. The `config` export is a Hardhat-shaped view of it: every
+  `config.networks.<name>.accounts`, and a `hardhat` entry, carries `mnemonic`, `path`, `count` and `initialIndex`.
+- `hre.network`, the `network` export, has `name`, `provider`, `config`, `ethers` and `networkHelpers`.
+  `await network.connect(name?)`, also spelled `network.create(name?)`, returns a new connection with the same
+  fields, funds its signers on mock and regtest, and points the network helpers at it. The `ethers` export stays
+  bound to the original network, so use the `ethers` of the returned connection.
+- `hre.ethers`, the `ethers` export, is described in [Signers and contracts](#signers-and-contracts).
+- `hre.networkHelpers` holds the [network helpers](#fixtures-and-network-helpers).
+- `hre.run(task, args?)`, the `run` export, runs a task. `hre.tasks.getTask(name)` and `hre.tasks.getTasks()` look
+  tasks up; see [custom tasks](/docs/tooling/testing-framework#custom-tasks-and-cli).
 
-| Project expectation | Runtime imports |
-| --- | --- |
-| Hardhat 2 + Ethers 5 | `@solidcash/solidhat/hardhat2`, `@solidcash/solidhat/ethers5` |
-| Hardhat 2 + Ethers 6 | `@solidcash/solidhat/hardhat2`, `@solidcash/solidhat/ethers6` |
-| Hardhat 3 + Ethers 6 | `@solidcash/solidhat/hardhat3`, `@solidcash/solidhat/ethers6` |
+Test files, and scripts run by `solidhat run` or `solidhat deploy`, can also read the environment as
+`globalThis.hre`.
 
-SolidHat does not emulate behavior that has no safe Bitcoin Cash equivalent. Review the
-[Solidity parity guide](/docs/basics/solidity-parity) and [platform differences](/docs/basics/platform-differences)
-when porting an EVM project.
+## Signers and contracts
 
-:::note `hardhat-deploy` is separate
-SolidHat supports Hardhat-style `run` and `deploy` scripts, but does not currently implement the optional
-`hardhat-deploy` plugin's `deployments.deploy`, tag/dependency graph, named deployments, or
-`deployments.createFixture` APIs. Use factories and explicit script composition.
-:::
+```ts
+const [owner, alice] = await ethers.getSigners();
+const Counter = await ethers.getContractFactory('Counter', owner);
+const counter = await Counter.deploy(owner.publicKey);
+await counter.waitForDeployment();
+
+const asAlice = await ethers.getContractAt('Counter', await counter.getAddress(), alice);
+const token = await ethers.deployContract('Token', [owner.publicKey], owner);
+```
+
+- `getSigners(count?, options?)` returns `count` signers (default 20) derived from the network's mnemonic, with
+  the options `satoshis` and `mnemonic`. They are funded on mock and regtest, not on Electrum or Bitcoin RPC
+  networks. `getSigner(index?)` returns one signer.
+- A signer has `address`, `getAddress()`, `publicKey`, `privateKey`, `pkh` and `provider`.
+- `getContractFactory(nameOrArtifact, signer?)` accepts a contract name, a fully qualified name such as
+  `contracts/Counter.scash:Counter`, an artifact object, or a split bundle. Without a signer the factory uses the
+  first signer, or the provider on Electrum and Bitcoin RPC networks. When compile produced a split bundle for the
+  name, the factory deploys the split form.
+- `getContractAt(nameOrArtifact, addressOrCategory, signer?)` connects to a deployed contract by its address or
+  token category.
+- `deployContract(nameOrArtifact, args?, signer?, overrides?)` creates the factory and deploys in one call.
+- `verifyMessage(message, signature)` recovers the signer of an Ethereum-style signed message. It returns a P2PKH
+  CashAddress or an EVM address, following `compiler.ecrecover` (an EVM address under `evmCompat` by default).
+  `verifyMessageP2pkh` and `verifyMessageEvm` choose explicitly.
+- BCH-native classes: `ethers.Contract`, `ethers.ContractFactory`, `ethers.Signer`, `ethers.Wallet`,
+  `ethers.HDSigner` and `ethers.HDNodeWallet`. `ethers.Wallet.createRandom()` returns a random HD signer on the
+  active network, funded on the mock.
+- Utilities: the Ethers 6 functions (`parseEther`, `keccak256`, `AbiCoder`, ...) and the Ethers 5 namespaces
+  (`ethers.utils`, `ethers.constants`, `ethers.BigNumber`).
+
+`factory.deploy(...args)` runs a real genesis deployment, funded and signed by the factory's signer. A trailing
+options object sets deployment options such as `initialState`. `factory.connect(signer)` and
+`factory.attach(addressOrCategory)` work as in Ethers. The deployed handle:
+
+- `await contract.waitForDeployment()` waits until the provider knows the deployment transaction.
+- `await contract.getAddress()` returns the address that identifies the contract: its stable CREATE identity when
+  it has one, otherwise its CashAddress.
+- `contract.deploymentTransaction()` returns the transaction details, including `txid` and serialized `hex`.
+- `contract.connect(otherSigner)` switches the signer for later calls.
+- Functions are called as `contract.fn(args)` or `contract.call.fn(args)`, and state is read as
+  `contract.stateVar()` or `contract.state.stateVar()`; see [Stateful Contracts](/docs/sdk/stateful-contracts).
 
 ## Write a Deployment Script
 
@@ -453,120 +159,187 @@ await writeFile(
 console.log(deployment);
 ```
 
-`factory.deploy()` returns an Ethers-shaped deployed handle:
-
-- `await contract.waitForDeployment()` waits until the provider knows the deployment transaction.
-- `await contract.getAddress()` returns the deployed logical CashAddress.
-- `contract.deploymentTransaction()` returns the transaction details, including `txid` and serialized `hex`.
-- `contract.connect(otherSigner)` switches the signer for later calls.
+Run it with `npx solidhat deploy --network <name>`. [Deployment scripts](/docs/tooling/solidhat#deployment-scripts)
+describes the command and the promotion from mock through regtest and chipnet to mainnet.
 
 For multi-contract systems, deploy in dependency order and pass earlier addresses or token categories to later
 constructors. Keep the deployment script deterministic where possible and write a separate verification script.
-
-## Deployment Progression
-
-Use the same script and explicit network names as a promotion pipeline:
-
-1. **Mocknet:** iterate quickly and validate arguments, deployment order, and output files.
-2. **Regtest:** enforce BCH consensus and policy with a real BCHN node and real serialized transactions.
-3. **Chipnet:** validate public-network funding, indexing, propagation, and confirmation handling.
-4. **Mainnet:** use separately reviewed configuration and keys after verifying every prior stage.
-
-Before promoting a deployment:
-
-- Run `solidhat doctor` and a clean `solidhat compile --network <network>`.
-- Confirm constructor arguments, fee destinations, owner keys, and token-category dependencies.
-- Confirm the deployer has enough BCH and the required `vout: 0` UTXOs.
-- Record the artifact/compiler version, network, transaction IDs, addresses, constructor arguments, and source commit.
-- Inspect every genesis output, NFT capability, commitment, and fungible amount.
-- Reconstruct expected addresses in an independent verification script.
-
 See [Contract Deployment](/docs/guides/deployment) for CashToken genesis design, initial state, BCMR metadata,
 concurrency outputs, and deployment verification.
 
-## Custom Tasks and Programmatic Runtime
-
-SolidHat includes a Hardhat-style task registry. A task action receives its arguments and the active runtime:
+## Fixtures and network helpers
 
 ```ts
-import { task } from '@solidcash/testing/tasks';
+import { loadFixture, mine, time } from '@nomicfoundation/hardhat-network-helpers';
 
-task('accounts', 'Print configured signer addresses')
-  .addOptionalParam('count', 'Number of accounts', 1)
-  .setAction(async (args, hre) => {
-    const signers = await hre.ethers.getSigners(Number(args.count));
-    for (const signer of signers) console.log(signer.address);
-  });
+async function deployFixture() {
+  const [owner] = await ethers.getSigners(1);
+  const counter = await ethers.deployContract('Counter', [owner.publicKey], owner);
+  return { owner, counter };
+}
+
+it('starts from a fresh deployment', async () => {
+  const { counter } = await loadFixture(deployFixture);
+  await time.increase(time.duration.days(7));
+  await mine(3);
+});
 ```
 
-The runtime exposes:
+Under the SolidHat preset this import resolves to `@solidcash/testing/network-helpers`. Without the alias, use
+`hre.networkHelpers` or the `networkHelpers` of a connection.
 
-- `hre.config`: resolved paths, compiler settings, accounts, and named networks.
-- `hre.network`: active name, provider, Ethers helpers, and `connect()`/`create()` connection seam.
-- `hre.ethers`: provider-bound signers, factories, deployed-contract lookup, deployment, and utility functions.
-- `hre.networkHelpers`: fixtures, snapshots, mining, and time helpers where the provider supports them.
-- `hre.run(taskName, args)`: programmatic task invocation.
+- `loadFixture(fixture)` runs a named fixture once and snapshots the chain. Later calls with the same function
+  restore the snapshot and return the same objects. The function is the cache key, so an anonymous function throws.
+  `clearSnapshots()` empties the cache.
+- `takeSnapshot()` returns a restorer whose `restore()` rewinds the chain. On the mock, a restore can be repeated
+  and does not invalidate other snapshots.
+- `mine(blocks?)` and `mineUpTo(height)` mine blocks.
+- `time.latest()` and `time.latestBlock()` return the tip's timestamp and height. `time.increase(seconds)` and
+  `time.increaseTo(timestamp)` move the clock and mine one block. `time.setNextBlockTimestamp(timestamp)` sets the
+  next block's time without mining. Timestamps are Unix seconds or a `Date`.
+- `time.duration`, also exported as `duration`, converts `seconds`, `minutes`, `hours`, `days`, `weeks` and
+  `years` to seconds.
+- `setBalance(address, satoshis)` adds a UTXO of that value. BCH has no account balance slot, so it cannot reduce
+  an address to an exact balance.
+- `impersonateAccount()` and `getImpersonatedSigner()` throw. There is no BCH equivalent of asking a node to sign as
+  an arbitrary account; use `getSigners()` or a `SignatureTemplate`.
 
-`solidhat run` also assigns the active runtime to `globalThis.hre` for scripts that follow Hardhat's injected-HRE
-style, though explicit imports are easier to type and test.
+The helpers act on the active network: the in-memory mock, or BCHN on regtest, where a restore invalidates the
+blocks mined since the snapshot and time uses the node's mock clock. Electrum and Bitcoin RPC networks do not
+support them.
 
-## Hardhat Configuration Migration
+Contracts read Solidity-style `block.number` and `block.timestamp` from a shared block-oracle covenant. The mock
+chain writes its height and time into that oracle whenever it mines, so these helpers move `block.*` as Hardhat's
+do; see [Block Data & Oracles](/docs/guides/block-oracles#testing-on-the-mock-network).
 
-An existing Hardhat project can opt into SolidCash with a `solidcash` section, but a standalone config is clearer
-because it avoids coupling BCH settings to the EVM toolchain. Generate one without modifying the Hardhat file:
+## Chai matchers
 
-```bash
-npx solidcash init --from-hardhat
+```ts
+import { expect } from 'chai'; // the BCH chai shim under the SolidHat preset
+
+await expect(counter.increment(sig)).to.emit(counter, 'Incremented').withArgs(1n);
+await expect(counter.increment(badSig)).to.be.revertedWith('not owner');
+await expect(vault.withdraw(1_000n)).to.be.revertedWithCustomError(vault, 'InsufficientBalance');
+await expect(() => shop.pay(sig)).to.changeBchBalance(seller, 1_000n);
+await expect(() => token.transfer(alice, 10n)).to.changeTokenBalance(token, alice, 10n);
 ```
 
-Only unambiguous path and HD-account fields are inherited. Solidity compiler settings and EVM network definitions
-are intentionally not translated into BCH configuration.
+The shim supports common equality, numeric and deep assertions, `reverted`, `revertedWith`,
+`revertedWithCustomError(...).withArgs(...)`, `emit(...).withArgs(...)`, promise `rejected` and `rejectedWith`,
+`changeBchBalance(s)`, `changeTokenBalance(s)`, `properAddress`, `properHex` and `hexEqual`. Byte arrays,
+CashAddresses, bigints, and BigNumber-compatible values are normalized for comparison.
 
-## Troubleshooting
+- The value under test is usually a contract call, which the matcher evaluates or sends. A promise or a receipt
+  also works. Balance matchers take the call itself or a function that performs the action.
+- `reverted` passes only when the contract or the VM rejects the transaction. A funding, auto-derivation or other
+  construction failure is rethrown, so a broken setup does not count as a revert.
+- `revertedWith(reason)` matches a string as a substring of the failure message, or a RegExp.
+- `revertedWithCustomError(contract, name).withArgs(...)` checks the arguments only when the failure carries the
+  error's argument tuple. Otherwise `.withArgs` fails instead of passing unchecked.
+- `changeBchBalance(account, delta)` compares the sum of the account's UTXO values before and after, so the delta
+  includes any fee the account paid.
+- `changeTokenBalance(token, account, delta)` reads `token.balanceOf(account)` when the token has that function.
+  Pass a CashToken category instead to sum the account's fungible token amounts.
 
-### `Network "..." is not configured`
+The native SolidCash matchers (`toBeRevertedWith`, `toEmit` and the rest) are registered as well, on Vitest's global
+`expect` rather than the chai shim; see [Test Matchers](/docs/sdk/test-matchers).
 
-Add the exact name under `networks` or correct `--network`. SolidHat lists the available names in the error.
+## Upgrades and proxies
 
-### A live network requires an explicit mnemonic
+```ts
+const Box = await ethers.getContractFactory('Box', owner);
 
-Set `mnemonic` from a secure environment source. SolidHat intentionally refuses to use the public development
-mnemonic with Electrum or a non-regtest Bitcoin RPC network.
+const box = await upgrades.deployProxy(Box, [42n]); // runs initialize(42n) through the proxy
+await box.store(7n);                                 // calls forward to the implementation
 
-### The deployer has insufficient funds
-
-- On mocknet, confirm `accounts.satoshis` or the signer options provide enough value.
-- On regtest, confirm BCHN's wallet is loaded, mature coinbase funds exist, and its RPC credentials are correct.
-- On chipnet/mainnet, fund the exact CashAddress returned by `getSigners()` and wait for indexing.
-
-### Deployment needs a `vout: 0` UTXO
-
-CashToken category genesis requires spending output index zero. Ordinary wallet UTXOs at other indices cannot be
-substituted. Prepare genesis funding as described in the [deployment guide](/docs/guides/deployment#exact-input-deployment).
-
-### A mock deployment succeeds but regtest fails
-
-Mocknet may have relaxed script, stack-item, transaction-size, NFT-commitment, or dust policy. Compile and run with
-`--network regtest`, then inspect the BCHN rejection rather than increasing mock limits further.
-
-### Artifacts are stale
-
-Remove only SolidHat-owned outputs and rebuild:
-
-```bash
-npx solidhat clean
-npx solidhat compile --network regtest
+const seeded = await upgrades.deployProxy(Box, { value: 42n }, { initializer: false }); // state set at genesis
 ```
 
-Avoid deleting an existing Hardhat project's entire `artifacts` or `cache` directory; SolidHat namespaces its own
-files specifically so both toolchains can coexist.
+`upgrades.deployProxy(factory, initialState?, options?)` deploys the implementation and the built-in proxy, and
+returns a handle whose calls forward through the proxy.
 
-### A script should not recompile
+- With an initializer, `initialState` is its argument list. The default initializer is the implementation's
+  `initialize` function, when it has one; `initializer: 'name'` picks another.
+- With `{ initializer: false }`, or when there is no initializer, `initialState` is a state record that seeds the
+  proxy's state at genesis.
+- `implementationConstructorArgs` supplies the implementation's constructor arguments. `runner` selects the
+  signer, by default the factory's. `proxyOverrides` and `implementationOverrides` are deploy options for the two
+  genesis transactions.
+- A split implementation is deployed directly, without an extra proxy. It accepts no custom proxy and no named
+  initializer.
 
-Use `--no-compile` only after a known-good compile with the same network-sensitive compiler limits:
+The built-in proxy pins its implementation and cannot be upgraded in place.
 
-```bash
-npx solidhat deploy --network regtest --no-compile
+:::caution Experimental
+Custom proxy contracts (the `proxy`, `forwardFunction` and `auth` options) and
+`upgrades.upgradeProxy(proxy, newFactory, options?)` are experimental. `upgradeProxy` works only with a custom
+proxy whose forwarder takes the implementation as a parameter, and only when the new implementation decodes the
+proxy's existing state commitments unchanged. The options for framed deployments (`initializeAs`, `callerFunding`)
+belong to the experimental framed convention.
+:::
+
+## Vitest integration
+
+```ts title="vitest.solidhat.config.ts"
+import { defineConfig } from 'vitest/config';
+import { solidhatPreset } from '@solidcash/solidhat/vitest-preset';
+
+export default defineConfig(solidhatPreset({ hardhat: 3, ethers: 6 }, {
+  test: { include: ['test/**/*.test.{ts,js}'] },
+}));
 ```
 
-For production deployment, a fresh explicit compile is safer than relying on this optimization.
+`solidhatPreset(target, config?, options?)` returns your Vitest config with:
+
+- Vitest globals and the Node environment;
+- a setup file that loads `solidcash.config.*` for its `defaultNetwork`, funds the mock signers, sets
+  `globalThis.hre`, and registers the chai shim and the native matchers;
+- Mocha conventions for unmodified Hardhat suites: `before` and `after`, a `this` context shared by hooks and
+  tests, `context`, `specify`, `xdescribe` and `xit`;
+- exact-match aliases that send `hardhat`, `hardhat/config`, `ethers`, `chai`, `@nomicfoundation/hardhat-ethers`,
+  `@nomiclabs/hardhat-ethers`, `@nomicfoundation/hardhat-network-helpers`,
+  `@nomicfoundation/hardhat-toolbox/network-helpers`, `@nomicfoundation/hardhat-chai-matchers` and
+  `@openzeppelin/hardhat-upgrades` to the BCH runtime. `chai-as-promised` and `chai-subset` become no-op plugins, and
+  `hardhat/types` an empty module. Exact matching leaves subpaths such as `ethers/crypto` alone.
+
+Your own `setupFiles` run after the preset's, and your aliases are added after its aliases. `{ offline: true }` as
+the third argument adds the offline setup described below. Run this config through `solidhat test`; a native
+Hardhat suite can keep its original runner. If Vitest runs from a directory other than the project, set
+`SOLIDCASH_PROJECT_ROOT` to the directory that holds `solidcash.config.ts`.
+
+## Hermetic ported suites
+
+A ported Hardhat project often calls services the EVM toolchain took for granted. With `{ offline: true }`, the
+preset adds `@solidcash/solidhat/offline-setup`, which:
+
+1. registers an in-memory IPFS upload service and gateway;
+2. replaces `fetch` with a guard that fails any request no in-process service answers;
+3. answers the EVM JSON-RPC calls that ported deployment scripts make, such as `eth_getCode`.
+
+`offlineRuntime()` returns the installed services, and `assertNoNetworkViolations()` throws when the guard blocked or
+recorded a real network request. `SOLIDCASH_OFFLINE_MODE=record` records violations instead of throwing,
+`SOLIDCASH_OFFLINE_ALLOW` lists comma-separated URLs or `/regex/` patterns that may reach the network,
+`SOLIDCASH_MOCK_IPFS_SECRET` makes the IPFS service require that upload secret, and `IPFS_UPLOAD_SERVICE_URL` and
+`IPFS_GATEWAY_URL` move its endpoints.
+
+Other helpers for ported projects:
+
+- `runPortedScript(path, options?)` runs a Hardhat-era deployment script in the test process, with `require`,
+  `__dirname` and `__filename` available and `process.exit` turned into a completion signal.
+- `installMockContracts` replaces `getContractFactory`, `getContractAt` and `upgrades.deployProxy` with TypeScript
+  models of the contracts, to test application logic without compiling. A contract without a model is refused.
+- `stageProjectFixture(options)` links a project's contract sources, tests and other trees into a fixture
+  directory (`.solidhat` by default) with relative symlinks.
+
+## What is not emulated
+
+SolidHat does not emulate behavior that has no safe Bitcoin Cash equivalent:
+
+- Account impersonation: `impersonateAccount()` throws.
+- Account balances: `setBalance()` adds a UTXO.
+- EVM frames where an internal call returns `success=false` and execution continues. A failed BCH covenant
+  invalidates the whole transaction.
+- The `hardhat-deploy` plugin; see [Deployment scripts](/docs/tooling/solidhat#deployment-scripts).
+
+Review the [Solidity parity guide](/docs/basics/solidity-parity) and
+[platform differences](/docs/basics/platform-differences) when porting an EVM project.

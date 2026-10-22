@@ -18,6 +18,7 @@
     "url": "git+https://github.com/CashScript/cashscript.git"
   },
   "license": "MIT",
+  "publishConfig": { "access": "public" },
   "author": "mainnet-pat",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

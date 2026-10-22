@@ -20,7 +20,7 @@ import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../framed/comp
 import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
-import { leadingOutputs, prepareMetadata } from '../bcmr/deployment.js';
+import { leadingOutputs, prepareMetadata, wrappedCategory } from '../bcmr/deployment.js';
 import { identityRecord, isP2pkhLock, planGenesisIdentity } from '../bcmr/identity.js';
 import { deploymentNftRoles, directNftLocks, framedNftLocks } from '../bcmr/nft-roles.js';
 import { BcmrError } from '../bcmr/publication.js';
@@ -35,6 +35,7 @@ import {
 } from './covenant-helpers.js';
 import { deriveDeployCommitments } from './sc-derive-deploy-commitments.js';
 import { headSentinelCommitment } from './SortedList.js';
+import type { ConnectedStatefulContract } from './StatefulContract.js';
 import type { DeployOptions, DeployResult } from './stateful-lifecycle-types.js';
 import { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { blockhashKeeperGenesisOutput } from '../oracle/blockhash-keeper-deployment.js';
@@ -81,9 +82,11 @@ export async function deployStatefulContract<T extends Artifact>(
       + '(docs/framed/SPEC_FRAMED_TRANSACTION.md, S2)',
     );
   }
-  const tokenCategory = (nativeFunding?.txid ?? options.fundingUtxo.txid).toLowerCase();
-  // A framed handle carries no constructor arguments: the genesis bakes them into its program.
-  const reserveLockingBytecode = options.nativeToken?.reserve === undefined ? undefined
+  const wrapped = wrappedCategory(options.nativeToken);
+  const tokenCategory = wrapped ?? (nativeFunding?.txid ?? options.fundingUtxo.txid).toLowerCase();
+  // A framed handle carries no constructor arguments: the genesis bakes them into its program. A wrapper's reserve
+  // lock is published, though the genesis puts nothing there.
+  const reserveLockingBytecode = options.nativeToken?.reserve === undefined && wrapped === undefined ? undefined
     : addressToLockScript(getTokenContainerAddress(
       new Contract(artifact, (framed ? [] : constructorArgs) as any, {
         provider: options.provider,
@@ -98,7 +101,10 @@ export async function deployStatefulContract<T extends Artifact>(
     artifact,
     category: options.fundingUtxo.txid.toLowerCase(),
     deploy: options,
-    probe: (probeOptions) => deployStatefulContract(artifact, constructorArgs, probeOptions),
+    probe: async (probeOptions) => {
+      const { contract } = await deployStatefulContract(artifact, constructorArgs, probeOptions);
+      return { contract: options.splitFacets?.route(contract as unknown as ConnectedStatefulContract) ?? contract };
+    },
     ...(reserveLockingBytecode === undefined ? {} : { reserveLockingBytecode }),
     tokenSatoshis: options.dataNftAmount ?? 1200n,
     nftRoles: async () => {

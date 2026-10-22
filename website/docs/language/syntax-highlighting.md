@@ -5,7 +5,7 @@ title: Syntax Highlighting
 When developing smart contracts for SolidCash it is useful to have the proper syntax highlighting in your code editor / IDE. If you use Visual Studio Code, there is a dedicated SolidCash extension. For other editors it is recommended to install a Solidity highlighting plugin and associate it with `.scash` files in your editor, since the syntaxes of the two languages are very similar.
 
 ## Visual Studio Code (Recommended)
-For Visual Studio Code (and derived editors like Cursor) we have an official [SolidCash extension](https://marketplace.visualstudio.com/items?itemName=SolidCash.solidcash-vscode). This extension works with `.scash` files and supports syntax highlighting, hover documentation, go-to-definition, an outline of your contracts, and starter snippets. Because of the first-class SolidCash support, Visual Studio Code with this SolidCash extension is the recommended way to develop SolidCash contracts.
+For Visual Studio Code (and derived editors like Cursor) we have an official [SolidCash extension](https://marketplace.visualstudio.com/items?itemName=solidcash.solidcash-vscode). This extension works with `.scash` files and supports syntax highlighting, hover documentation, go-to-definition, an outline of your contracts, and starter snippets. Because of the first-class SolidCash support, Visual Studio Code with this SolidCash extension is the recommended way to develop SolidCash contracts.
 
 It also provides editor intelligence for the language itself:
 
@@ -17,7 +17,7 @@ Inside `assembly { ... }` blocks the supported Yul builtins are highlighted as f
 
 To have the extension automatically suggested for any developer looking at your SolidCash contract in VScode, add the following configuration in a `.vscode/extensions.json` file:
 
-```json title="&#126;/.vscode/extensions.json"
+```json title=".vscode/extensions.json"
 {
   "recommendations": [
     "solidcash.solidcash-vscode",
@@ -27,7 +27,7 @@ To have the extension automatically suggested for any developer looking at your 
 
 ## Cursor
 
-Cursor and other VS Code forks can use the VS Code extension mentioned above. This extension should be findable in the extensions menu within the editor. If it is not, you can manually install it from the [Open VSX Registry](https://open-vsx.org/extension/SolidCash/solidcash-vscode).
+Cursor and other VS Code forks can use the VS Code extension mentioned above. This extension should be findable in the extensions menu within the editor. If it is not, you can manually install it from the [Open VSX Registry](https://open-vsx.org/extension/solidcash/solidcash-vscode).
 
 ## Sublime Text
 The most popular Solidity plugin for Sublime Text is [Ethereum](https://packagecontrol.io/packages/Ethereum). Install this plugin with [Package Control](https://packagecontrol.io/), open a `.scash` file and set Solidity as the syntax language in the Sublime menu bar:
@@ -48,8 +48,8 @@ This associates `.scash` files with Solidity, and enables syntax highlighting fo
 ## GitHub
 GitHub has highlighting for Solidity built in. To associate `.scash` files with Solidity highlighting, add a `.gitattributes` file to your repository with the following contents:
 
-```python title=".gitattributes"
-*.scash linguist-language=Solidity # GitHub
+```text title=".gitattributes"
+*.scash linguist-language=Solidity
 ```
 
 Unfortunately Gitlab does not have properly working Solidity highlighting through the `gitattributes` for now...

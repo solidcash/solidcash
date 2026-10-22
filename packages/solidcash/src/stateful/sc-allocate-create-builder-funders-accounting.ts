@@ -104,6 +104,32 @@ export async function allocateCreateBuilderFunders(
   const signerUtxoSnapshot = host.signerUtxoSnapshot;
   const markSharedFunder = host.markSharedFunder;
 
+  // The legacy delegate insert band pads with neutral non-P2PKH inputs. They are real UTXOs, so they exist before
+  // the synchronous input build places them.
+  const padDemand = builder.insertBandPadDemand();
+  const padProvider = host.inner.provider as typeof host.inner.provider & {
+    addUtxo?: (lockingBytecode: string, utxo: Utxo) => Promise<unknown>;
+  };
+  if (padDemand > 0 && padProvider.addUtxo) {
+    const pads: UnlockableUtxo[] = [];
+    for (let i = 0; i < padDemand; i++) {
+      const seed = new TextEncoder().encode(
+        `SolidCash insert-band pad\0${host.categoryId}:${masterUtxo.txid}:${masterUtxo.vout}`
+        + `:${overrides?.blockBase ?? 0}:${i}`,
+      );
+      const pad: Utxo = { txid: binToHex(sha256Sync(seed)), vout: 0, satoshis: 5000n };
+      await padProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), pad);
+      pads.push({
+        ...pad,
+        unlocker: {
+          generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
+          generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+        },
+      });
+    }
+    builder.setInsertBandPadUtxos(pads);
+  }
+
   // Auto-fund block-layout slots that need funder inputs (output-only slots
   // like transfers/events, non-existing entries/TCs). These are WITHIN the
   // block range - the covenant requires them at specific positions.
@@ -124,13 +150,17 @@ export async function allocateCreateBuilderFunders(
     // A read-only chunk run (`iterationEntryInputs`) only has a published output coordinate on an atomic
     // participant, which is already pinned by `overrides?.omitLocalFeeTail`; a direct compact frame instead
     // omits the slot, so the run must land at the compacted coordinate the direct dynamic-read bytecode and
-    // `getChunkOutputBase` both subtract to.
+    // `getChunkOutputBase` both subtract to. Chained and dynamic-loop keccak side-cars follow the complete block
+    // too: the covenant reads FINAL at blockSize + fullBlocks and loop side-car k at blockSize + k, and each
+    // side-car recreates at its own index.
     const trailingGeometryNeedsReturnSlot = insertLoopPredecessors.length > 0
       || sortedLoopCommitments.size > 0
       || (iterationEntryInputs.length > 0 && overrides?.omitLocalFeeTail === true)
       || dynamicChunkInputs.length > 0
       || trailingDisposalInputs.length > 0
-      || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0;
+      || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
+      || (abiFunction as AbiFunction | undefined)?.keccakChainReads === true
+      || (abiFunction as AbiFunction | undefined)?.keccakLoopReads === true;
     let neededFunders = effectiveBlockLayout.slots.filter(
       (s) => outputOnlyKinds.has(s.kind)
         // An atomic participant is assembled against its published fixed-width block. Even when this
@@ -489,7 +519,7 @@ export async function allocateCreateBuilderFunders(
               + `:${overrides?.blockBase ?? 0}:${i}`,
               );
               const dummy: Utxo = { txid: binToHex(sha256Sync(seed)), vout: 0, satoshis: 5000n };
-              void mockProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
+              await mockProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
               selected.push({
                 ...dummy,
                 unlocker: {

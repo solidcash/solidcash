@@ -24,9 +24,10 @@ import {
 } from '../../src/stateful/index.js';
 import { ContractUnlocker, Utxo } from '../../src/interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
+import { buildDestroyTransactionHex } from '../../src/stateful/sc-destroy.js';
 import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { addressToLockScript, createUnlockingBytecode, scriptToAddress } from '../../src/utils.js';
-import { alicePriv, alicePub } from '../fixture/vars.js';
+import { aliceAddress, alicePriv, alicePub } from '../fixture/vars.js';
 import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 /**
@@ -78,12 +79,17 @@ const runSelfdestruct = async (append?: 'own' | 'foreign' | 'ownWithFt'): Promis
   const artifact = compileString(SELFDESTRUCT_SRC);
   const provider = createTestProvider();
   const contract = new Contract(artifact, [alicePub], { provider });
-  const { categoryId } = await setupStatefulUtxos(
+  const { categoryId, masterUtxo, dataNftUtxos } = await setupStatefulUtxos(
     provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },
   );
   const salted = contract.withCategory(hexToBin(categoryId));
   const sc = StatefulContract.withCategory(contract, categoryId);
-  const builder = await (sc as any).destroy(new SignatureTemplate(alicePriv)).build();
+  // The ordinary call path refuses a selfdestruct entry. This is the sweep `StatefulContract.destroy` sends in one
+  // transaction: the master and the record burned, the value reclaimed.
+  const { builder } = await buildDestroyTransactionHex(
+    sc, categoryId, undefined, aliceAddress, [masterUtxo], dataNftUtxos.map((utxo) => ({ utxo, kind: 'data' as const })),
+    'destroy', [new SignatureTemplate(alicePriv)], true,
+  );
   const eventAddress = getEventNftAddress(salted, categoryId, artifact.events![0].signature);
 
   const { utxo, unlocker } = await createFeeFunder(provider, 20_000n);

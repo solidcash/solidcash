@@ -3,292 +3,108 @@ title: Old Transaction Builder
 ---
 
 :::caution
-This is the documentation for the old 'Simple Transaction Builder' which operated on a single contract. This API was **removed in v0.12** and is no longer available in the SDK.
-It is strongly recommended to migrate over to the new default transaction builder [using the migration notes](/docs/releases/migration-notes).
+This page describes the old 'Simple Transaction Builder', which operated on a single contract. It was **removed in
+v0.12**: none of the methods below exist in the current SDK. The page remains only as a reference for migrating old
+code to the [Transaction Builder](/docs/sdk/transaction-builder). See also the
+[migration notes](/docs/releases/migration-notes#sdk-transaction-builder).
 :::
 
-When calling a contract function of a Contract object's `functions`, an incomplete Transaction object is returned. This transaction can be completed by providing a number of outputs using the [`to()`][to()] or [`withOpReturn()`][withOpReturn()] functions. Other chained functions are included to set other transaction parameters.
+Old code called a contract function through `contract.functions.<name>(...args)`, which returned an incomplete
+transaction object. Chained methods added outputs and options, and `send()` selected the contract UTXOs, added BCH
+and token change, and broadcast the transaction.
 
-Most of the available transaction options are only useful in very specific use cases, but the functions [`to()`][to()], [`withOpReturn()`][withOpReturn()] and [`send()`][send()] are commonly used. [`withHardcodedFee()`][withHardcodedFee()] is also commonly used with covenant contracts.
+The current `Contract` has no `functions` property. `contract.unlock.<name>(...args)` returns an unlocker for one
+input, and a `TransactionBuilder` takes every input and output explicitly. Nothing is selected or added
+automatically: no contract UTXOs, no funding inputs and no change outputs.
 
-## Transaction options
+## Method mapping
+
+| Old method | Replacement on `TransactionBuilder` |
+|---|---|
+| `contract.functions.<name>(...args)` | `.addInput(utxo, contract.unlock.<name>(...args))` for each contract UTXO |
+| `.to(to, amount, token?)`, `.to(recipients)` | `.addOutput({ to, amount, token })`, `.addOutputs(outputs)` |
+| `.withOpReturn(chunks)` | `.addOpReturnOutput(chunks)` |
+| `.from(utxos)` | `.addInputs(utxos, contract.unlock.<name>(...args))` |
+| `.fromP2PKH(utxos, template)` | `.addInputs(utxos, template.unlockP2PKH())` |
+| `.withFeePerByte(feePerByte)` | `.addBchChangeOutputIfNeeded({ to, feeRate: feePerByte })` |
+| `.withHardcodedFee(fee)` | Size the outputs yourself: the fee is the input total minus the output total |
+| `.withMinChange(minChange)`, `.withoutChange()` | Add or leave out the change output; `addBchChangeOutputIfNeeded()` leaves out change below the dust threshold |
+| `.withoutTokenChange()` | Leave out `addTokenChangeOutputIfNeeded()` and set `allowImplicitFungibleTokenBurn: true` |
+| `.withAge(age)` | `.addInput(utxo, unlocker, { sequence })` with a BIP68 sequence number |
+| `.withTime(time)` | `.setLocktime(time)` |
+| `.send()` | `.send()` |
+| `.build()` (asynchronous) | `.build()` (synchronous) |
+| `.debug()`, `.bitauthUri()` | `.debug()`, `.getBitauthUri()` |
+
+`TransactionBuilder` options replace the remaining settings: `maximumFeeSatoshis` and `maximumFeeSatsPerByte` cap
+the fee, and `allowImplicitFungibleTokenBurn` and `allowImplicitNftBurn` permit burns.
+
+## Notes on the old behavior
 
 ### to()
-```ts
-transaction.to(to: string, amount: bigint, token?: TokenDetails): this
-transaction.to(outputs: Array<Recipient>): this
-```
 
-The `to()` function allows you to add outputs to the transaction. Either a single pair `to/amount` pair can be provided, or a list of them. This function can be called any number of times, and the provided outputs will be added to the list of earlier added outputs. Tokens can be sent by providing a `TokenDetails` object as the third parameter, or including it in your array of outputs with the `.token` property.
+`to()` accepted either a single `to`/`amount` pair, with an optional `TokenDetails` object, or a list of
+`Recipient` objects. The `Output` object of `addOutput()` has the same `to`, `amount` and `token` fields, and `to`
+can now also be a locking bytecode.
 
-```ts
-interface Recipient {
-  to: string;
-  amount: bigint;
-  token?: TokenDetails;
-}
+### from() and fromP2PKH()
 
-interface TokenDetails {
-  amount: bigint;
-  category: string;
-  nft?: {
-    capability: 'none' | 'mutable' | 'minting';
-    commitment: string;
-  };
-}
-```
+Without `from()`, the old builder selected contract UTXOs automatically for BCH and fungible tokens. NFTs always
+needed manual selection. Now every input is added explicitly; `gatherBchUtxos()` and `gatherFungibleTokenUtxos()`
+(see [Transaction Utilities](/docs/sdk/transaction-utilities)) select coins from a list.
 
-:::note
-The SolidCash SDK supports automatic UTXO selection for BCH and fungible CashTokens. However, if you want to send Non-Fungible CashTokens, you will need to do manual UTXO selection using `from()`.
-:::
+### withFeePerByte(), withHardcodedFee() and the change methods
 
-#### Example
-```ts
-.to('bitcoincash:qrhea03074073ff3zv9whh0nggxc7k03ssh8jv9mkx', 500000n)
-```
+The old builder added a BCH change output by default, at a fee rate of 1.0 satoshis per byte, and a token change
+output for fungible tokens. `withHardcodedFee()` fixed the fee for covenants that check it, `withMinChange()` set a
+threshold below which change went to the fee, and `withoutChange()` and `withoutTokenChange()` turned change off.
+Now `addTokenChangeOutputIfNeeded()` and `addBchChangeOutputIfNeeded()` add change only when called. A covenant
+that expects a fixed fee needs outputs sized for that fee.
 
-### withOpReturn()
-```ts
-transaction.withOpReturn(chunks: string[]): this
-```
+### withAge() and withTime()
 
-The `withOpReturn()` function allows you to add `OP_RETURN` outputs to the transaction. The `chunks` parameter can include regular UTF-8 encoded strings, or hex strings prefixed with `0x`. This function can be called any number of times, and the provided outputs will be added to the list of earlier added outputs.
+`withAge(age)` set the input sequence numbers for `this.age` (formerly `tx.age`) checks, following [BIP68][bip68].
+Pass the sequence per input with `{ sequence }`; `encodeBip68({ blocks })` and `encodeBip68({ seconds })` from
+`@solidcash/utils` encode it.
 
-#### Example
-```ts
-.withOpReturn(['0x6d02', 'Hello World!'])
-```
+`withTime(time)` set the locktime that `tx.time` checks, and the old builder defaulted it to the latest block height.
+The new builder's locktime defaults to `0`, so a contract that checks `tx.time` needs `setLocktime()`.
 
-### from()
-```ts
-transaction.from(inputs: Utxo[]): this
-```
+### send(), build() and debug()
 
-The `from()` function allows you to provide a hardcoded list of contract UTXOs to be used in the transaction. This overrides the regular UTXO selection performed by the SolidCash SDK, so **no further selection will be performed** on the provided UTXOs. This function can be called any number of times, and the provided UTXOs will be added to the list of earlier added UTXOs.
+The old `send()` resolved to a `TransactionDetails` object with the txid and hex, as the new one does; `build()`
+was asynchronous and returned the transaction hex. `bitauthUri()` is now `getBitauthUri()`.
 
-:::tip
-The built-in UTXO selection is generally sufficient. But there are specific use cases for which it makes sense to use a custom selection algorithm.
-:::
+## Example
 
-#### Example
-```ts
-.from(await instance.getUtxos())
-```
-
-### fromP2PKH()
-```ts
-transaction.fromP2PKH(input: Utxo, template: SignatureTemplate): this;
-transaction.fromP2PKH(inputs: Utxo[], template: SignatureTemplate): this;
-```
-
-The `fromP2PKH()` function allows you to provide a list of P2PKH UTXOs to be used in the transaction. The passed `SignatureTemplate` is used to sign these UTXOs. This function can be called any number of times, and the provided UTXOs will be added to the list of earlier added UTXOs.
-
-#### Example
-```ts
-import { bobAddress, bobPrivateKey } from './somewhere';
-import { SignatureTemplate } from 'solidcash';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
-
-const provider = new ElectrumNetworkProvider();
-const bobUtxos = await provider.getUtxos(bobAddress);
-
-.fromP2PKH(bobUtxos, new SignatureTemplate(bobPrivateKey))
-```
-
-
-### withFeePerByte()
-```ts
-transaction.withFeePerByte(feePerByte: number): this
-```
-
-The `withFeePerByte()` function allows you to specify the fee per per bytes for the transaction. By default the fee per bytes is set to 1.0 satoshis, which is nearly always enough to be included in the next block. So it's generally not necessary to change this.
-
-#### Example
-```ts
-.withFeePerByte(2.3)
-```
-
-### withHardcodedFee()
-```ts
-transaction.withHardcodedFee(hardcodedFee: bigint): this
-```
-
-The `withHardcodedFee()` function allows you to specify a hardcoded fee to the transaction. By default the transaction fee is automatically calculated by the SolidCash SDK, but there are certain use cases where the smart contract relies on a hardcoded fee.
-
-:::tip
-If you're not building a covenant contract, you probably do not need a hardcoded transaction fee.
-:::
-
-#### Example
-```ts
-.withHardcodedFee(1000n)
-```
-
-### withMinChange()
-```ts
-transaction.withMinChange(minChange: bigint): this
-```
-
-The `withMinChange()` function allows you to set a threshold for including a change output. Any remaining amount under this threshold will be added to the transaction fee instead.
-
-:::tip
-This is generally only useful in specific covenant use cases.
-:::
-
-#### Example
-```ts
-.withMinChange(1000n)
-```
-
-### withoutChange()
-```ts
-transaction.withoutChange(): this
-```
-
-The `withoutChange()` function allows you to disable the change output. The remaining amount will be added to the transaction fee instead. This is equivalent to `withMinChange(Number.MAX_VALUE)`.
-
-:::caution
-Be sure to check that the remaining amount (sum of inputs - sum of outputs) is not too high. The difference will be added to the transaction fee and cannot be reclaimed.
-:::
-
-#### Example
-```ts
-.withoutChange()
-```
-
-### withoutTokenChange()
-```ts
-transaction.withoutTokenChange(): this
-```
-
-The `withoutTokenChange()` function allows you to disable the change output for tokens.
-
-:::caution
-Be sure to check that the remaining amount (sum of inputs - sum of outputs) is not too high. The difference will be burned and cannot be reclaimed.
-:::
-
-#### Example
-```ts
-.withoutTokenChange()
-```
-
-### withAge()
-```ts
-transaction.withAge(age: number): this
-```
-
-The `withAge()` function allows you to specify the minimum age of the transaction inputs. This is necessary if you want to use the `tx.age` SolidCash functionality. The `age` parameter passed into this function will be the value of `tx.age` inside the smart contract. For more information, refer to [BIP68][bip68].
-
-#### Example
-```ts
-.withAge(10)
-```
-
-### withTime()
-```ts
-transaction.withTime(time: number): this
-```
-
-The `withTime()` function allows you to specify the minimum block number that the transaction can be included in. The `time` parameter will be the value of `tx.time` inside the smart contract.
-
-:::tip
-By default, the transaction's `time` variable is set to the most recent block number, which is the most common use case. So you should only override this in specific use cases.
-:::
-
-#### Example
-```ts
-.withTime(700000)
-```
-
-## Transaction building
-### send()
-```ts
-async transaction.send(): Promise<TransactionDetails>
-```
-
-After completing a transaction, the `send()` function can be used to send the transaction to the BCH network. An incomplete transaction cannot be sent.
-
-```ts
-interface TransactionDetails {
-  inputs: Uint8Array[];
-  locktime: number;
-  outputs: Uint8Array[];
-  version: number;
-  txid: string;
-  hex: string;
-}
-```
-
-#### Example
-```ts
-import { alice } from './somewhere';
-
-const txDetails = await instance.functions
-  .transfer(new SignatureTemplate(alice))
+```js
+// Old (removed)
+const txDetails = await contract.functions
+  .transfer(new SignatureTemplate(alicePrivateKey))
   .withOpReturn(['0x6d02', 'Hello World!'])
   .to('bitcoincash:qrhea03074073ff3zv9whh0nggxc7k03ssh8jv9mkx', 200000n)
-  .to('bitcoincash:qqeht8vnwag20yv8dvtcrd4ujx09fwxwsqqqw93w88', 100000n)
   .withHardcodedFee(1000n)
-  .send()
+  .send();
 ```
 
-### build()
 ```ts
-async transaction.build(): Promise<string>
+// Current
+import { SignatureTemplate, TransactionBuilder } from 'solidcash';
+
+const [contractUtxo] = await contract.getUtxos();
+
+const txDetails = await new TransactionBuilder({ provider })
+  .addInput(contractUtxo, contract.unlock.transfer(new SignatureTemplate(alicePrivateKey)))
+  .addOpReturnOutput(['0x6d02', 'Hello World!'])
+  .addOutput({ to: 'bitcoincash:qrhea03074073ff3zv9whh0nggxc7k03ssh8jv9mkx', amount: 200000n })
+  .addOutput({ to: changeAddress, amount: contractUtxo.satoshis - 200000n - 1000n }) // leaves a 1000-satoshi fee
+  .send();
 ```
-
-After completing a transaction, the `build()` function can be used to build the entire transaction and return the signed transaction hex string. This can then be imported into other libraries or applications as necessary.
-
-#### Example
-```ts
-const txHex = await instance.functions
-  .transfer(new SignatureTemplate(alice))
-  .to('bitcoincash:qrhea03074073ff3zv9whh0nggxc7k03ssh8jv9mkx', 500000n)
-  .withAge(10)
-  .withFeePerByte(10)
-  .build()
-```
-
-### debug() & bitauthUri()
-
-If you want to debug a transaction locally instead of sending it to the network, you can call the `debug()` function on the transaction. This will return intermediate values and the final result of the transaction. It will also show any logged values and `require` error messages.
-
-If you prefer a lower-level debugging experience, you can call the `bitauthUri()` function on the transaction. This will return a URI that can be opened in the BitAuth IDE. This URI is also displayed in the console whenever a transaction fails.
-
-You can read more about debugging transactions on the [debugging page](/docs/guides/debugging).
-
-:::caution
-It is unsafe to debug transactions on mainnet using the BitAuth IDE as private keys will be exposed to BitAuth IDE and transmitted over the network.
-:::
 
 ## Transaction errors
 
-When sending a transaction, the SolidCash SDK will throw an error if the transaction fails. If you are using an artifact compiled with `solidc@0.10.0` or later, the error will be of the type `FailedRequireError` or `FailedTransactionEvaluationError`. In case of a `FailedRequireError`, the error will refer to the corresponding `require` statement in the contract code so you know where your contract failed. If you want more information about the underlying error, you can check the `libauthErrorMessage` property of the error.
+The old builder threw the same error classes as the current one: `FailedRequireError`,
+`FailedTransactionEvaluationError` and `FailedTransactionError`. See
+[Transaction errors](/docs/sdk/transaction-builder#transaction-errors).
 
-```ts
-interface FailedRequireError {
-  message: string;
-  contractName: string;
-  requireStatement: { ip: number, line: number, message: string };
-  inputIndex: number,
-  libauthErrorMessage?: string,
-  bitauthUri?: string;
-}
-```
-
-If you are using an artifact compiled with an older version of `solidc`, the error will always be of the type `FailedTransactionError`. In this case, you can use the `reason` property of the error to determine the reason for the failure.
-
-[fetch-api]: https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API
 [bip68]: https://github.com/bitcoin/bips/blob/master/bip-0068.mediawiki
-
-[to()]: /docs/sdk/legacy-transaction-builder#to
-[withOpReturn()]: /docs/sdk/legacy-transaction-builder#withopreturn
-[from()]: /docs/sdk/legacy-transaction-builder#from
-[withFeePerByte()]: /docs/sdk/legacy-transaction-builder#withfeeperbyte
-[withHardcodedFee()]: /docs/sdk/legacy-transaction-builder#withhardcodedfee
-[withMinChange()]: /docs/sdk/legacy-transaction-builder#withminchange
-[withAge()]: /docs/sdk/legacy-transaction-builder#withage
-[withTime()]: /docs/sdk/legacy-transaction-builder#withtime
-
-[send()]: /docs/sdk/legacy-transaction-builder#send
-[build()]: /docs/sdk/legacy-transaction-builder#build

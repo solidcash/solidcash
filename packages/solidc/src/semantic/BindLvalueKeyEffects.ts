@@ -18,8 +18,12 @@ interface KeyBuild { holder: Holder; slot: string | number; node: ExpressionNode
  * reads every other field) and tags the builds of a key that might have a side effect (AstBuilder.buildLvalueAssign).
  * When a key built more than once has one, by the sideEffects.ts rule, the write's non-literal keys are bound to
  * temps, in order, before its first statement, so each evaluates once. Otherwise the tags are dropped and the
- * statements stay as they are. Needs every declaration: runs on an import-free source once parsed, else on the
- * program once its imports merge.
+ * statements stay as they are. A storage-pointer declaration (`S storage p = m[k]`) drops out and every use of `p`
+ * rebuilds its keys; the parser keeps it in place holding them (AstBuilder.markAliasKeys). When one has a side
+ * effect, its keys bind at the declaration for the rest of its statement list, used or not; the declaration goes.
+ * A storage-slot factory alias (`T storage d = factory(m[k])`), whose reference every use of `d` re-reads
+ * (LowerStorageSlotPointers), keeps its declaration and binds its keys before it.
+ * Needs every declaration: runs on an import-free source once parsed, else on the program once its imports merge.
  */
 export default function bindLvalueKeyEffects(ast: SourceFileNode): void {
   new LvalueKeyBinder(stateChangingFunctionNames(ast)).walk(ast);
@@ -48,8 +52,10 @@ class LvalueKeyBinder {
         if (value.some((item) => item instanceof StatementNode)) this.bindList(value as StatementNode[]);
         for (const item of value) if (item instanceof Node) this.walk(item);
       } else if (value instanceof StatementNode && value.lvalueKeyUnit !== undefined) {
+        // A dropped storage-pointer declaration gives way to its temps; any other statement follows them.
         const temps = this.bind([value]);
-        if (temps.length > 0) fields[key] = this.at(new BlockNode([...temps, value]), value);
+        if (value.lvalueKeyAlias) fields[key] = this.at(new BlockNode(temps), value);
+        else if (temps.length > 0) fields[key] = this.at(new BlockNode([...temps, value]), value);
         this.walk(fields[key] as Node);
       } else if (value instanceof Node) {
         this.walk(value);
@@ -61,11 +67,19 @@ class LvalueKeyBinder {
     }
   }
 
-  // Binds each run of consecutive statements of one write, in place.
+  // Binds each run of consecutive statements of one write, in place. A dropped storage-pointer declaration binds over
+  // the rest of the list, its alias's scope, and gives way to its temps.
   private bindList(list: Array<StatementNode | undefined>): void {
     for (let i = 0; i < list.length; i += 1) {
-      const unit = list[i]?.lvalueKeyUnit;
-      if (unit === undefined) continue;
+      const statement = list[i];
+      const unit = statement?.lvalueKeyUnit;
+      if (statement === undefined || unit === undefined) continue;
+      if (statement.lvalueKeyAlias) {
+        const temps = this.bind(list.slice(i) as StatementNode[]);
+        list.splice(i, 1, ...temps);
+        i += temps.length - 1;
+        continue;
+      }
       let end = i + 1;
       while (end < list.length && list[end]?.lvalueKeyUnit === unit) end += 1;
       const temps = this.bind(list.slice(i, end) as StatementNode[]);
@@ -74,8 +88,8 @@ class LvalueKeyBinder {
     }
   }
 
-  // The temps binding one write's keys, none when no key built twice has a side effect. Clears the write's tags;
-  // each build of a bound key becomes a read of its temp.
+  // The temps binding one write's keys, none when no key built twice has a side effect (a storage-pointer
+  // declaration's: none when no key has one). Clears the tags; each build of a bound key becomes a read of its temp.
   private bind(statements: StatementNode[]): StatementNode[] {
     const unit = statements[0].lvalueKeyUnit!;
     const keys = new Map<number, { tag: LvalueKeyTag; builds: KeyBuild[] }>();
@@ -100,8 +114,10 @@ class LvalueKeyBinder {
       }
     };
     statements.forEach((_statement, i) => collect(statements as unknown as Holder, i));
+    // A storage pointer's keys (dropped or kept declaration) bind on the declaration's own build too.
+    const declaration = [...keys.values()].some(({ tag }) => tag.alias);
     const changesState = (name: string): boolean => this.writers.has(name) || this.declared().has(name);
-    const bound = [...keys.values()].some(({ builds }) => builds.length > 1
+    const bound = [...keys.values()].some(({ builds }) => (declaration || builds.length > 1)
       && hasSideEffects(builds[0].node, changesState));
     for (const { builds } of keys.values()) for (const { node } of builds) delete node.lvalueKey;
     if (!bound) return [];
@@ -109,7 +125,10 @@ class LvalueKeyBinder {
       const name = `__lk_tmp_${this.temps++}`;
       const first = builds[0].node;
       for (const { holder, slot, node } of builds) holder[slot] = this.at(new IdentifierNode(name), node);
-      return this.at(new VariableDefinitionNode(tag.type, [], name, first), first);
+      const temp = this.at(new VariableDefinitionNode(tag.type, [], name, first), first);
+      // The declaration's own build is its only one when the alias is never used, or is a factory alias.
+      if (declaration && builds.length === 1) temp.allowUnused = true;
+      return temp;
     });
   }
 

@@ -48,8 +48,8 @@ A constant `keccak256("literal")` is folded at compile time and costs nothing at
 
 :::note
 The SDK co-spends side-cars transparently, so `contract.unlock.check(preimage)` just works, provided side-cars
-are deployed at the branded address. Side-car instances are allocated per call site, so a contract that calls
-`keccak256` in a loop needs enough of them for the maximum iteration count.
+exist at the expected branded or shared address. One Keccak side-car serves up to three straight-line calls when
+their block cost fits, and a contract that calls `keccak256` in a loop needs one for each iteration it reaches.
 :::
 
 ## Signature checking

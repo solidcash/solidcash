@@ -37,7 +37,10 @@ describe('MinimalNativeToken bytecode budget', () => {
     // outside-layout walk shared, took 1,197 B off (8632 -> 7435); the 8.5 KB title is the budget.
     // The container master pin's selfdestruct arm (no master recreated) added 50 B (7435 -> 7485).
     // Only a master that can retire (a selfdestruct entry) carries that arm; this one cannot: 7374 B over 2286a2d7c.
-    expect(artifactBytes).toBe(7374);
+    // The C3 count-path record pin (each own-category record held at its own index) added 54 B (7374 -> 7428), and
+    // BchNative's `_nativeAmount` scale hook, which wrap and unwrap share as one function, with the exact reserve
+    // growth wrap checks, 17 B (7428 -> 7445).
+    expect(artifactBytes).toBe(7445);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs.map((input) => input.name))
       .toEqual(['nativeCategory_']);

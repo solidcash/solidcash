@@ -5,8 +5,8 @@
  * A standalone `batch` runs it with no verifier. Beside it, an entry of a collection no admitted handler names is
  * co-spent through the entry covenant's write flag, which only asks for the master: the entry is rewritten in place,
  * or destroyed while a mutable NFT of the category appears at another lock. Both keep the count balanced. The route
- * now pins every own-category mutable input outside its data band at its own index, except one at its own verifier
- * lock, whose covenant recreates it with a new commitment. An honest batch, and an honest compose that co-spends that
+ * now pins every own-category mutable input outside its data band at its own index, except the one at its verifier
+ * index, whose covenant recreates it with a new commitment. An honest batch, and an honest compose that co-spends that
  * verifier, settle.
  */
 import { describe, expect, it } from 'vitest';

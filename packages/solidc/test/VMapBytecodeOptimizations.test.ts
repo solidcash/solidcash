@@ -148,7 +148,8 @@ describe('general vmap bytecode sharing', () => {
     // foreign-token, unwritten-chunk and mutable-output scans. 4592.5 once those scans list the slots they act
     // on in one classifying pass per side, and the mutable-output check tries the minted locks first.
     // 4786 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
-    expect(artifact.bytecode.length / 2).toBeLessThan(4800);
+    // 4996.5 once the C3 count-path record pin held each own-category record at its own index.
+    expect(artifact.bytecode.length / 2).toBeLessThan(5010);
   });
 
   it('nests only compiler helpers and other outlined spans, acyclically, while sharing composite array traversal', () => {

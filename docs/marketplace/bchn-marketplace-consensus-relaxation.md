@@ -110,7 +110,8 @@ The patch touches:
   commitment size.
 - `src/policy/policy.cpp`, `src/keystore.cpp`, `src/wallet/wallet.cpp`: the policy and wallet views of the same
   limits.
-- `src/rpc/blockchain.cpp`: the hidden `clearmempool` RPC used by snapshot restore.
+- `src/rpc/blockchain.cpp`: the hidden `clearmempool` RPC used by snapshot restore. It removes each transaction
+  with the wallet notified (bitcoin-cash-node `0be3cfcf3`); rebuild the image with `scripts/build-bchn-relaxed.sh`.
 
 Values that match the current mock profile:
 
@@ -129,31 +130,73 @@ The measured shapes need far less: 400,000 covers the 303,347-byte input with ma
 
 ## Marketplace matrix against the in-docker node
 
-The full matrix `[proxy,noproxy] × [kernel,framed]` was rerun in the main checkout on `master` (2026-10-19),
-each cell on a fresh node volume with the deterministic clock and the 6,144 MB worker heap.
+The full matrix `[proxy,noproxy] x [kernel,framed]` is green on BCHN at `8c8cb7645` (2026-10-21), 262/262. Every
+cell ran on the rebuilt image with the deterministic clock and the standard 30-minute test timeout, in five title
+chunks by describe group, each chunk in its own vitest process on a fresh node volume with a 3,072 MB worker
+heap. One process per cell at the 6,144 MB heap reached title 41 (`take job > sanity checks`) twice and was then
+stopped by the host's memory guard while another session's suites shared the box; the chunks peaked at 3.3 GB.
+The four previously failing titles had first passed alone at the same commit.
 
 | Cell | Result | Notes |
 | --- | --- | --- |
-| proxy × framed | **66/66** | Complete, unfiltered run. |
-| proxy × kernel | **14 passed, 52 failed (66 total)** | Standard timeout reached `post job 1` after 30 minutes; the counts use `--testTimeout=180000` so the cell completes. `unicrow params` fails first with `Missing inputs` from dead fee-funder outputs, then every `job posting` case stalls. |
-| noproxy × kernel | **17 passed, 48 failed (65 total)** | Same kernel stall, with the same 3-minute timeout override. |
-| noproxy × framed | **64 passed, 1 failed (65 total)** | `job updates > update job many times, get history` refuses `MarketplaceDataV1.publishJobEvent` at the framed guard. It passes on the mock lane, so it is regtest-specific. |
+| proxy x kernel | **66/66** | chunks 30, 10, 9, 9, 8 |
+| noproxy x kernel | **65/65** | chunks 29, 10, 9, 9, 8 |
+| proxy x framed | **66/66** | chunks 30, 10, 9, 9, 8 |
+| noproxy x framed | **65/65** | chunks 29, 10, 9, 9, 8 |
 
-The kernel failures are not BCHN consensus problems. They start in the fee-funder path: two refill
-transactions for different pool sizes spend the same wallet coin, the second is recorded as a wallet
-conflict, and the builder then spends their outputs after the block refused them. The framed cells do not
-take that path. Under the standard 30-minute timeout the kernel cells cannot complete, because each
-`job posting` case waits out the timeout.
+The run of 2026-10-20 at `c8b4c48e8` had proxy x framed 66/66, noproxy x framed 65/65, proxy x kernel 64/66
+(`post job with invalid amount`, `post job with invalid title`) and noproxy x kernel 64/65
+(`post thread message > sanity checks`); the fixes for those three are described below.
 
-Two harness defects found earlier remain fixed:
+The 2026-10-19 run had the kernel cells at 14/66 and 17/65 with a 3-minute timeout override, stalling at
+`post job 1`. None of the causes was a BCHN consensus problem; each was a place where the regtest provider or
+harness behaved unlike the mock chain:
 
-- A fixture snapshot can be captured above the base fixture's height when the fixture funds signers on first
-  execution. Restoring the base first then left the chain below the wallet snapshot and threw. A snapshot
-  above the current tip has no chain state left to undo, so the provider keeps the earlier chain and its
-  view untouched. Applying the later clock would stamp future locktimes and fail transactions as non-final.
-- The no-proxy test twin replaces `globalThis.fetch` with an in-memory IPFS stub that assumes every POST is
-  an upload. On regtest every JSON-RPC call went through that stub. The provider now uses the native fetch
-  for its RPC clients and restores the test's stub afterwards.
+- A restore rewound the chain but not the SDK's chain-derived caches, and the signer coin snapshot kept a
+  fan-out's pieces from a rewound block (`Missing inputs` in `unicrow params`). The provider now fires the mock
+  provider's reset hooks on restore and reset, and the snapshot registers one.
+- A builder names each layout funder by a seeded outpoint, and the mock chain keeps one UTXO per outpoint, so a
+  re-planned composition converges. Regtest served a fresh pooled coin per request, every re-plan differed, and
+  `post job 1` ran hundreds of rounds. A repeated request now gets the same live coin.
+- Every funding block published a block-oracle update (about 600 in `post two jobs`), so a composition reading
+  `block.timestamp` re-planned against a moving oracle. Funding blocks publish none; the next send or explicit
+  mine catches the oracle up.
+- The wallet ran dry about 25, later 40, titles in. `clearmempool` dropped transactions without telling the
+  wallet, which kept them flagged in-mempool, and abandoning one failed `!wtx.InMempool()` and killed the node.
+  Once a later conflicting spend was mined, the wallet also replaced an earlier abandon with that block, and
+  rewinding it brought the earlier spender back. The node now removes each transaction with the wallet
+  notified, and a restore abandons every broadcast the restored chain lacks.
+- The clock stayed ahead of every block ever mined, so that a re-mined block could not repeat a disconnected
+  block's hash. Over a cell it ran 75 hours past the fixture, and jobs with a 120-second window had expired. A
+  restore now rewinds the clock and pays later blocks to a fresh mining address.
+- Regtest signers held 4 coins against the mock accounts' 128, and a nested oracle slot found the shared
+  funder pool empty. Each regtest signer gets a fan-out to 64 plain coins.
+- Pad refills came 20 at a time and every refill mines; `update job many times` timed out. They now come 100 at
+  a time, with fees sized by bytes for the stock relay floor.
+
+The no-proxy x framed failure (`update job many times` refusing `publishJobEvent`) had its own cause: one
+`gettxout` per UTXO of a large category overflowed BCHN's RPC work queue (HTTP 503), the read retries ran after an
+overlapping request had put the suite's IPFS stub back, and a failed liveness read counted as spent. Node requests
+are now capped in flight, every attempt runs under the native fetch, held only for the call itself (held for the
+whole request, a suite's IPFS read in `integration test` reached the real network), and a failed read throws.
+
+The three kernel titles left red expect a revert. Their full state derivation rebinds each participant record to
+its master's input index (`rebindDeriveFullExternalResourceMaster`), and it rebuilt the record's covenant instead
+of keeping it. A mock provider states no locking bytecode on UTXOs it finds by lock, so only the live node
+refused the result (`Input #N is locked by ..., which does not match the provided unlocker`), and each call
+failed construction before its revert reason:
+
+- Proxy cell: a delegated participant's records were rebound at the executing implementation's lock. CRYPTO-4
+  binds them to the proxy master's, and `7d90dd4db` had moved the sibling reconcile but not this rebind.
+- No-proxy cell: a read that shares its callee's master with a later writer carries the writer's block, and the
+  read's own access renamed the writer's record (`users` for a `jobEvents` entry).
+
+A record now keeps its own collection and moves only its master index (`711e4d1b9`). The same calls exposed the
+legacy delegate insert band's fabricated pads: an OP_TRUE outpoint the builder made up and a contract-category
+NFT tag, each registered by an unawaited `addUtxo`. On BCHN that funded throwaway coins and raised unhandled
+rejections (`cannot mint into category`, 54 in one run). The funder allocation now reserves token-free
+dummy-funder coins (P2SH32(OP_TRUE), never `tx.origin`) before the input build takes them (`7f049cc10`). On
+mocknet at `5f242babf` the kernel cells still pass, proxy 66/66 and no-proxy 65/65.
 
 ## Implemented regtest harness
 
@@ -164,7 +207,9 @@ The regtest lane now has the same surface the mock lane provided:
 - `RegtestNetworkProvider.takeSnapshot()` records the tip height, tip hash, mock time, and provider-local maps.
 - `restore()` invalidates the first block above the snapshot with BCHN's `invalidateblock`. That disconnects
   every later block, including their wallet effects. The new `clearmempool` RPC then drops the transactions
-  BCHN returned to the mempool, so a restored fixture starts with an empty pool.
+  BCHN returned to the mempool, so a restored fixture starts with an empty pool. The restore abandons every
+  transaction the provider broadcast that the restored chain lacks, rewinds the block clock, pays later blocks
+  to a fresh mining address, and fires the SDK's reset hooks as the mock provider does.
 - `reset()` clears provider caches and the mock clock without rewinding the chain. A chain rewind here would
   invalidate every fixture snapshot; `loadFixture` owns chain rewinds, and `reset` handles the caches.
 - `send('evm_increaseTime', ...)` calls BCHN's hidden `setmocktime` RPC. `getBlockTime`, `setNextBlockTimestamp`
@@ -173,7 +218,8 @@ The regtest lane now has the same surface the mock lane provided:
   and soft-state snapshots.
 
 `clearmempool` is a new hidden RPC in the patched node. It is available only when the node is in regtest
-(`MineBlocksOnDemand`) mode.
+(`MineBlocksOnDemand`) mode. It removes each transaction through the mempool's notifying removal and waits for the
+validation queue, so the wallet stops counting them as in-mempool before the RPC returns.
 
 ## Building and running
 

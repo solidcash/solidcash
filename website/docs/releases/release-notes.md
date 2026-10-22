@@ -2,19 +2,92 @@
 title: Release Notes
 ---
 
-## Unreleased
+## v0.13.1
 
-Ported from CashScript 0.14.0, adapted to SolidCash.
+SolidCash 0.13.1 adds a Solidity-syntax language and workflow layer for Bitcoin Cash contracts. The release covers
+the documented Solidity subset, not unrestricted Solidity, EVM, Hardhat or ethers parity. It also ports the
+CashScript 0.14.0 changes listed below. This release contains several breaking changes, please refer to the
+[migration notes](/docs/releases/migration-notes#v012-to-v013) for more information.
+
+Supported in this release:
+
+- Solidity-style integer types with checked and `unchecked` arithmetic, structs, fixed and dynamic arrays, mappings,
+  inheritance, modifiers, events, declared errors, ABI helpers and the documented lowerable Yul subset.
+- Stateful contracts backed by CashToken NFT commitments: entry-backed mappings, chunked arrays, events, and SDK
+  builders for deploy, upgrade, destroy, split and merge.
+- The built-in proxy profile for scalar and data-NFT state, deployed with `upgrades.deployProxy`.
+- A Hardhat-style project workflow through `@solidcash/testing` and SolidHat: configuration, CLI tasks, the runtime
+  environment, funded signers, factories, fixtures, time and block helpers, and a maintained subset of chai
+  assertions. Create a project with `npm create @solidcash/solidhat`.
+- BCMR metadata for deployed contracts: every genesis leads with the category's identity output and can publish a
+  registry (`solidcash/bcmr`). See [CashToken metadata](/docs/guides/deployment#cashtoken-metadata).
+- Six packages released together at 0.13.1, ESM only, for Node.js 22 or newer: `solidc`, `solidcash`,
+  `@solidcash/utils`, `@solidcash/testing`, `@solidcash/solidhat` and `@solidcash/create-solidhat`.
+
+Experimental in this release, outside the stable compatibility promise. Construction stops with a named diagnostic
+when a required transaction shape cannot be produced.
+
+- Composed external state mutation: calls that change another contract's state.
+- Custom delegate forwarding beyond the built-in proxy profile, and `upgrades.upgradeProxy`.
+- Message-bus kernel composition, including `messageBus.compose` and `sc.batch([...])`.
+- The [framed calling convention](/docs/guides/framed-composition) (`composition: 'framed'`).
+- Solidity source shapes outside the compatibility manifest, even when the parser accepts them.
 
 #### solidc compiler
+- :sparkles: Allow custom `SolidCashErrorListener` to be passed to the compiler.
+- :bug: Fix missing location data in tuple assignment errors.
+- :sparkles: Default message-bus routes use the kernel row loop (`OP_DEFINE` handlers, one wrapper). Unsupported
+  handlers fail closed with `KERNEL_*`. This is an experimental profile; see the [message bus guide](/docs/guides/message-bus).
+- :sparkles: Kernel message-bus routes admit batches up to the BCH-2026 stack-item ceiling (10,000 bytes, 255 rows)
+  instead of the legacy 520-byte envelope; legacy unrolled routes keep the smaller ceiling.
+- :sparkles: Message-bus artifacts publish an admission stamp (`admittedHandlerIds`/`refusedHandlerIds`/
+  `admissionSource`), per-axis `resourceBudgets`, a `deployability` certificate for the 10,000-byte P2SH limit, and
+  a `capabilitySchema` that gives every optional field an explicit status.
+- :sparkles: New `addressForm: 'hash' | 'bytecode'` option decides the form an `address` **value** takes where the
+  compiler turns it into bytes: `'hash'` is the 20-byte Solidity identity (the embedded payload of a standard
+  P2PKH/P2SH20 lock, or `HASH160` of the lock), `'bytecode'` is the whole locking bytecode. It governs
+  `abi.encodePacked(<address>)` and a decoded address leaf; omitting it follows the mode (`'hash'` under
+  `evmCompat`, `'bytecode'` otherwise), so existing builds are unchanged. The narrowing casts are deliberately not
+  part of it - `uint160(a)` and `bytes20(a)` truncate and `address(x)` stays a no-op in either form - and a
+  fixed-width ABI word (`abi.encode(<address>)`, a word lane, a word-encoded result) still carries the identity,
+  because a 32-byte word cannot hold a variable-length lock. An `address` *argument* on the
+  [framed wire](/docs/guides/framed-composition) is not a word: it rides as its whole locking bytecode, and the
+  option decides the packing a body does with it. A packed payload that carries locks is longer (23/25/35 bytes per
+  address), which matters at the 128-byte NFT commitment limit and for offset arithmetic over the payload. An
+  explicitly chosen form is published on the artifact (`compiler.options.addressForm`), so the SDK reproduces the
+  body's own packing when it derives a call.
+- :sparkles: Under `evmCompat`, a selector is derived from Solidity's **canonical** signature spelling: `uint256`
+  for `uint`, `int256` for `int`, `uint8` for an enum, the underlying type for a user-defined value type, a
+  parenthesized tuple for a struct, and `address` for a contract type or `address payable`. Entry dispatch, the
+  artifact ABI selectors, `type(I).interfaceId`, `fn.selector` / `error.selector` / `E.selector`, `msg.sig`,
+  `abi.encodeCall` and the argument matching of `abi.encodeWithSignature` now derive from that one spelling, so each
+  matches solc. Native compiles keep the platform spelling with address payability erased.
+- :sparkles: Under `evmCompat`, `abi.encodeWithSignature` accepts a signature built at runtime. A non-literal
+  signature lowers to `abi.encodeWithSelector(bytes4(keccak256(bytes(sig))), ...)`, so the keccak256 computation
+  side-car supplies the digest; a literal signature still folds to its selector at compile time.
+- :sparkles: Under `evmCompat`, an event argument of statically known scalar width is written in **standard EVM
+  notation** - exactly the bytes `abi.encodePacked` produces at the type's natural width (a number as big-endian
+  two's-complement, `bool` one byte, `bytesN` its N bytes, an enum its one-byte ordinal) with no length byte or
+  padding - and the artifact marks that parameter `notation: 'evm'`. A variable-width byte value, an `address`, a
+  struct, an array, a UDVT and a function pointer keep the platform pushdata frame. Native compiles are unchanged.
 - :hammer_and_wrench: `compileString()`, `compileStringMulti()` and `compileStringSplit()` take `files`, an
   in-memory map of import sources, as shorthand for `importResolver: createMapResolver(files)`.
 - :hammer_and_wrench: A version pragma that fails in an imported file names that file in the `VersionError`.
 - :bug: Fix bug where date literals were parsed in the local time zone instead of UTC.
 - :bug: Fix bug where a `LockingBytecodeNullData` chunk of more than 255 bytes, sized at runtime, was pushed with a
   truncated length instead of failing the script.
+- :sparkles: Add a `warningListener` compile option that receives each compiler warning instead of the default
+  print; `suppressWarnings` still discards them.
 
 #### SolidCash SDK
+- :sparkles: In the `MockNetworkProvider`, `addUtxo()` now returns the added UTXO.
+- :sparkles: `solidcash/stateful` exports `artifactAddressForm()`, so a consumer can assert which address form an
+  artifact was compiled with, including the mode-derived default. A decoded address is presented by that form, and
+  the SDK's own derivation of a call's arguments packs an `address` the same way the compiled body does: under
+  `'bytecode'` a bare address argument is packed whole, so the caller's digest and the record's agree.
+- :sparkles: The event decoders (`parseEventCommitment` / `tryParseEventCommitment`) and the event builders
+  dispatch per argument on the artifact's `notation` field, so a parameter the compiler marked `notation: 'evm'`
+  reads back as the standard EVM notation and an unmarked one on the platform frame.
 - :sparkles: Add `calculateTransactionFee()` to `TransactionBuilder`.
 - :sparkles: A require that fails inside a nested function call reports the call stack that led to it.
 - :hammer_and_wrench: `SignatureTemplate` exposes `sighashType`, `signatureAlgorithm` and `publicKey` properties, and
@@ -36,55 +109,10 @@ Ported from CashScript 0.14.0, adapted to SolidCash.
 - :bug: Fix bug where debugging reported a VM resource limit as a failed require statement.
 - :bug: Fix bug where a failing final `require(variable)` was reported at the wrong statement in debugging.
 - :bug: Fix bug where the `MockNetworkProvider` could not spend a UTXO added with an uppercase txid.
-
-## v0.13.1
-
-#### solidc compiler
-- :sparkles: Allow custom `SolidCashErrorListener` to be passed to the compiler.
-- :bug: Fix missing location data in tuple assignment errors.
-- :sparkles: Default message-bus routes use the kernel row loop (`OP_DEFINE` handlers, one wrapper). Unsupported
-  handlers fail closed with `KERNEL_*`. This is an experimental profile; see the [message bus guide](/docs/guides/message-bus).
-- :sparkles: Kernel message-bus routes admit batches up to the BCH-2026 stack-item ceiling (10,000 bytes, 255 rows)
-  instead of the legacy 520-byte envelope; legacy unrolled routes keep the smaller ceiling.
-- :sparkles: Message-bus artifacts publish an admission stamp (`admittedHandlerIds`/`refusedHandlerIds`/
-  `admissionSource`), per-axis `resourceBudgets`, a `deployability` certificate for the 10,000-byte P2SH limit, and
-  a `capabilitySchema` that gives every optional field an explicit status.
-- :sparkles: New `addressForm: 'hash' | 'bytecode'` option decides the form an `address` **value** takes where the
-  compiler turns it into bytes: `'hash'` is the 20-byte Solidity identity (the embedded payload of a standard
-  P2PKH/P2SH20 lock, or `HASH160` of the lock), `'bytecode'` is the whole locking bytecode. It governs
-  `abi.encodePacked(<address>)` and a decoded address leaf; omitting it follows the mode (`'hash'` under
-  `evmCompat`, `'bytecode'` otherwise), so existing builds are unchanged. The narrowing casts are deliberately not
-  part of it - `uint160(a)` and `bytes20(a)` truncate and `address(x)` stays a no-op in either form - and a
-  fixed-width ABI word (`abi.encode(<address>)`, a word lane, a word-encoded result) still carries the identity,
-  because a 32-byte word cannot hold a variable-length lock. An `address` *argument* on the framed wire is not a
-  word: it rides as its whole locking bytecode, and the option decides the packing a body does with it. A packed
-  payload that carries locks is longer (23/25/35 bytes per address), which matters at the 128-byte NFT commitment
-  limit and for offset arithmetic over the payload. An explicitly chosen form is published on the artifact
-  (`compiler.options.addressForm`), so the SDK reproduces the body's own packing when it derives a call.
-- :sparkles: Under `evmCompat`, a selector is derived from Solidity's **canonical** signature spelling: `uint256`
-  for `uint`, `int256` for `int`, `uint8` for an enum, the underlying type for a user-defined value type, a
-  parenthesized tuple for a struct, and `address` for a contract type or `address payable`. Entry dispatch, the
-  artifact ABI selectors, `type(I).interfaceId`, `fn.selector` / `error.selector` / `E.selector`, `msg.sig`,
-  `abi.encodeCall` and the argument matching of `abi.encodeWithSignature` now derive from that one spelling, so each
-  matches solc. Native compiles keep the platform spelling with address payability erased.
-- :sparkles: Under `evmCompat`, `abi.encodeWithSignature` accepts a signature built at runtime. A non-literal
-  signature lowers to `abi.encodeWithSelector(bytes4(keccak256(bytes(sig))), ...)`, so the keccak256 computation
-  side-car supplies the digest; a literal signature still folds to its selector at compile time.
-- :sparkles: Under `evmCompat`, an event argument of statically known scalar width is written in **standard EVM
-  notation** - exactly the bytes `abi.encodePacked` produces at the type's natural width (a number as big-endian
-  two's-complement, `bool` one byte, `bytesN` its N bytes, an enum its one-byte ordinal) with no length byte or
-  padding - and the artifact marks that parameter `notation: 'evm'`. A variable-width byte value, an `address`, a
-  struct, an array, a UDVT and a function pointer keep the platform pushdata frame. Native compiles are unchanged.
-
-#### SolidCash SDK
-- :sparkles: In the `MockNetworkProvider`, `addUtxo()` now returns the added UTXO.
-- :sparkles: `solidcash/stateful` exports `artifactAddressForm()`, so a consumer can assert which address form an
-  artifact was compiled with, including the mode-derived default. A decoded address is presented by that form, and
-  the SDK's own derivation of a call's arguments packs an `address` the same way the compiled body does: under
-  `'bytecode'` a bare address argument is packed whole, so the caller's digest and the record's agree.
-- :sparkles: The event decoders (`parseEventCommitment` / `tryParseEventCommitment`) and the event builders
-  dispatch per argument on the artifact's `notation` field, so a parameter the compiler marked `notation: 'evm'`
-  reads back as the standard EVM notation and an unmarked one on the platform frame.
+- :hammer_and_wrench: `MockNetworkProvider` accepts a resubmitted transaction it already holds and returns its txid,
+  as a node does; a different transaction spending the same inputs still fails.
+- :hammer_and_wrench: `ElectrumNetworkProvider` uses `@electrum-cash/network` 4.4 and keeps its connection when a
+  browser tab is hidden.
 
 ## v0.13.0
 
@@ -512,7 +540,7 @@ SolidCash used to be very tightly coupled with BITBOX. This proved to be problem
 - :boom: Remove `Sig` alias for `SignatureTemplate` that was deprecated in v0.4.1.
 - :boom: **BREAKING**: Refactor contract instantiation flow
   - A contract is now instantiated by providing a compiled artifact, constructor arguments and an optional network provider.
-  - Anyone can implement the NetworkProvider interface to create a custom provider. The SolidCash SDK offers three providers out of the box: one based on electrum-cash (default), one based on FullStack.scash' infrastructure, and one based on BITBOX. See the [NetworkProvider docs](/docs/sdk/network-provider) for details.
+  - Anyone can implement the NetworkProvider interface to create a custom provider. The SolidCash SDK offers three providers out of the box: one based on electrum-cash (default), one based on FullStack.cash' infrastructure, and one based on BITBOX. See the [NetworkProvider docs](/docs/sdk/network-provider) for details.
   - See the [migration notes](/docs/releases/migration-notes#v04-to-v05) for details on migrating from the old contract instantiation flow.
 - :boom: **BREAKING**: Remove the artifacts `'networks'` field and `.deployed()` functionality, This proved to be confusing and is better suited to be handled outside of the SolidCash SDK.
 - :boom: **BREAKING**: `.send()` now returns a libauth Transaction instead of a BITBOX Transaction object. Alternatively a `raw` flag can be passed into the function to return a raw hex string.

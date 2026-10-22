@@ -20,11 +20,12 @@ uint256 count = values.length;
 
 Parameters, locals, and return values live on the VM stack; `memory` is accepted but normally optional. Their
 logical encoding begins with an element count. Fixed-width elements are tightly packed, while variable-width
-elements are individually pushdata-framed.
+elements are individually pushdata-framed. `.length` is a `bigint` natively and a `uint256` under `evmCompat`.
 
 Local dynamic arrays support indexed reads and writes, `.length`, `.push(value)`, `.push()` with the element
-default, `.pop()`, and `.delete(index)`. SolidCash's `.delete(index)` is an efficient unordered removal: it moves
-the last element into the removed position and shortens the array. It does **not** preserve order.
+default, `.pop()`, and `.delete(index)`. Under `evmCompat`, as in Solidity, `.push()` and `.pop()` are available only
+on storage arrays. SolidCash's `.delete(index)` is an efficient unordered removal: it moves the last element into
+the removed position and shortens the array. It does **not** preserve order.
 
 ```solidity
 uint256[] values = [10, 20, 30];
@@ -52,7 +53,9 @@ Two compiler options intentionally alter selection:
 
 - `chunkedArrays: false` sends otherwise eligible unbounded arrays to the legacy entry-collection backend.
 - `evmCompat: true` represents a supported bounded `T[N]` as one packed field, matching Solidity's
-  contiguous fixed-array behavior. Native `.scash` compilation keeps a non-packed bounded array as a collection.
+  contiguous fixed-array behavior. An array too large for one commitment becomes a chunk-packed value instead,
+  created with all `N` default elements. Native `.scash` compilation keeps a non-packed bounded array as a
+  collection.
 
 Because these choices change state layout and available operations, keep them stable for an already deployed
 contract.

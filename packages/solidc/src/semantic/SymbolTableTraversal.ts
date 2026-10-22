@@ -241,7 +241,7 @@ import {
   IntType, FixedType, MappingType, FunctionType,
   type FunctionBlockLayout, type BlockLayoutSlot, resolveLibraries, type ExternalLibrary, parseTypeStrict,
   INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType, encodeInt, implicitlyCastable, type LocationI,
-  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX, EVENT_CHUNK_BYTES,
+  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX, EVENT_CHUNK_BYTES, libraryDefinedIds,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
@@ -265,9 +265,6 @@ export { getMaxPushdataEncodedSizeForType };
 // exactly those contracts - and the failure is silent, since the SDK enforces `trailingCapacity` only when the
 // layout declares one and otherwise appends the chunk run past the block, misaligning every later participant.
 const BALANCED_TRAILING_CAPACITY = 64;
-
-/** Trailing side-car slots reserved for a direct unbounded keccak256 chained read (one per 136-byte block). */
-const KECCAK_CHAIN_TRAILING_CAPACITY = 256;
 
 /** Deterministic evaluation-order numbering shared by entry writes and external graph calls. */
 class SourceEffectOrderTraversal extends AstTraversal {
@@ -1000,6 +997,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   private isStatefulContract: boolean = false;
   private compilerOptions: CompilerOptions;
   private nextFunctionId: number = 0;
+  /** Ids a library this unit calls OP_DEFINEs when it loads; no function id of the unit may take one. */
+  private libraryDefinedFunctionIds = new Set<number>();
   private functionDefinitions: Map<string, FunctionDefinitionNode[]> = new Map();
   private constantMap: Map<string, ConstantDefinitionNode> = new Map();
   private contractMap: Map<string, ContractNode> = new Map();
@@ -1368,6 +1367,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.libraryEventSignatures = node.libraryEventSignatures;
     this.libraryAnonymousEvents = node.libraryAnonymousEvents;
     this.libraryErrorSignatures = node.libraryErrorSignatures;
+    this.libraryDefinedFunctionIds = this.loadedLibraryDefinedIds(node);
 
     // Pre-register free functions in global scope (so they can call each other and be called from contract)
     for (const func of node.freeFunctions) {
@@ -1397,7 +1397,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ));
       }
 
-      func.functionId = this.nextFunctionId++;
+      func.functionId = this.allocateFunctionId();
       const existing = this.functionDefinitions.get(func.name) ?? [];
       existing.push(func);
       this.functionDefinitions.set(func.name, existing);
@@ -2014,11 +2014,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
 
         // Assign OP_DEFINE function ID
-        func.functionId = this.nextFunctionId++;
+        func.functionId = this.allocateFunctionId();
       } else if (visibility === 'external') {
         // An external function is NOT registered as an identifier symbol (its name is not usable internally),
         // but it still gets an OP_DEFINE id so a `this.f()` self-call can invoke it as a subroutine.
-        func.functionId = this.nextFunctionId++;
+        func.functionId = this.allocateFunctionId();
       }
       const existing = this.functionDefinitions.get(func.name) ?? [];
       existing.push(func);
@@ -2029,7 +2029,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // with a raw payload routes to it, like the EVM's raw-calldata path). Register it like an external
     // function: an OP_DEFINE id + a functionDefinitions entry (its reserved __fallback name cannot collide).
     if (node.fallbackDef) {
-      node.fallbackDef.functionId = this.nextFunctionId++;
+      node.fallbackDef.functionId = this.allocateFunctionId();
       this.functionDefinitions.set(node.fallbackDef.name, [node.fallbackDef]);
     }
 
@@ -6192,12 +6192,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       seen.add(mod);
     }
 
-    // virtual is a no-op: all inherited functions are implicitly virtual in SolidCash
-    if (mods.includes(FunctionModifier.VIRTUAL)) {
-      const loc = this.diagLine(node.location);
-      emitCompilerWarning(`Warning: 'virtual' function modifier is a no-op in SolidCash${loc}. All inherited functions are implicitly virtual.`);
-    }
-
     // At most one visibility modifier
     const visibilityMods = mods.filter((m) => [
       FunctionModifier.INTERNAL, FunctionModifier.EXTERNAL,
@@ -6594,6 +6588,34 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (fn.usedLibraries?.includes(name)) (fn.inlinedLibraries ??= []).push(name);
       }
     }
+  }
+
+  /**
+   * The non-negative ids the libraries this unit calls OP_DEFINE when they load (a registrar's own helpers), read
+   * by `libraryDefinedIds` as codegen reads them for its helper pool. A function calling a library loads it after
+   * the unit's own definitions, so a function id equal to one of them is defined twice at run time. keccak256 is
+   * never loaded: its side-car computes it.
+   */
+  private loadedLibraryDefinedIds(node: SourceFileNode): Set<number> {
+    const ids = new Set<number>();
+    if (!this.compilerOptions.userLibraries?.length) return ids;
+    const { contract } = node;
+    const functions = [...node.freeFunctions, ...(contract
+      ? [...contract.functions, contract.constructorDef, contract.fallbackDef, contract.receiveDef] : [])];
+    const called = new Map<string, number>();
+    const visited = new Set<Node>();
+    for (const fn of functions) if (fn?.body) this.countLibraryCalls(fn.body, called, visited);
+    called.delete(GlobalFunction.KECCAK256);
+    for (const name of called.keys()) {
+      for (const id of libraryDefinedIds(this.resolvedLibraries[name].blob)) if (id >= 0n) ids.add(Number(id));
+    }
+    return ids;
+  }
+
+  /** The next OP_DEFINE id for a function of this unit, past every id a library it calls defines. */
+  private allocateFunctionId(): number {
+    while (this.libraryDefinedFunctionIds.has(this.nextFunctionId)) this.nextFunctionId += 1;
+    return this.nextFunctionId++;
   }
 
   private countLibraryCalls(
@@ -18964,10 +18986,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       || (node.ecrecoverLoopReads === true && node.messageBusRoute !== true);
     const needsWideTrailingRegion = needsNonCounterWideTrailingRegion
       || runtimeCounterOutputCapacity > 0;
-    // A direct unbounded keccak256 chained read uses the trailing region even outside a message-bus route.
-    const chainedKeccakTrailing = node.keccakChainReads === true;
-    const needsTrailingRegion = chainedKeccakTrailing
-      || (node.name === '__message_bus1' && (needsWideTrailingRegion || collectionRouteCapacity > 0));
+    // A direct unbounded keccak256 chained read reserves no band: like a keccak loop's side-cars, its
+    // START/CONT/FINAL side-cars follow the block, one per step, and the read takes FINAL's index from the
+    // argument's length. A reserved band only made the SDK fund its unused slots.
+    const needsTrailingRegion = node.name === '__message_bus1'
+      && (needsWideTrailingRegion || collectionRouteCapacity > 0);
     if (!needsTrailingRegion) return { blockSize: offset, slots };
 
     const trailingBase = offset;
@@ -18975,12 +18998,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // than assuming one mapping plus the widest event site. Lowering also includes exact-count events before or
     // after the loop after moving them into the same source-ordered stream. Other runtime resources share this
     // bounded trailing band and the builder refuses a concrete transaction that exceeds it.
-    const trailingCapacity = chainedKeccakTrailing
-      ? KECCAK_CHAIN_TRAILING_CAPACITY
-      : runtimeCounterOutputCapacity > 0
-        ? runtimeCounterOutputCapacity
-        : needsWideTrailingRegion
-          ? Math.max(BALANCED_TRAILING_CAPACITY, fallbackCounterStreamCapacity) : collectionRouteCapacity;
+    const trailingCapacity = runtimeCounterOutputCapacity > 0
+      ? runtimeCounterOutputCapacity
+      : needsWideTrailingRegion
+        ? Math.max(BALANCED_TRAILING_CAPACITY, fallbackCounterStreamCapacity) : collectionRouteCapacity;
     for (let i = 0; i < trailingCapacity; i++) {
       slots.push({ kind: 'trailing', offset: offset++, slotIndex: i, conditional: true });
     }

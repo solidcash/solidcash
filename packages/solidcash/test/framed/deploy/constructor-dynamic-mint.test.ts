@@ -9,9 +9,11 @@ import { decodeEntryCommitment } from '../../../src/stateful/SortedList.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { MOCK_CONSENSUS_LIMITS, MockNetworkProvider } from '../../../src/network/mock/index.js';
 
+// `total` is a bounded int so it shares data NFT 0 with both string length headers: a `bigint` takes a data NFT of its
+// own, and that second data NFT grew the master's unlocking bytecode past the 10,000-byte cap (10,089 bytes).
 const SOURCE = `pragma solidity ^0.8.20;
   contract ConstructorDynamicMint {
-    bigint total;
+    int total;
     string label;
     string ticker;
     mapping(address => bigint) balances;

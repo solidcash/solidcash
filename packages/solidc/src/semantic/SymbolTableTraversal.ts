@@ -239,7 +239,7 @@ import {
   IntType, FixedType, MappingType, FunctionType,
   type FunctionBlockLayout, type BlockLayoutSlot, resolveLibraries, type ExternalLibrary, parseTypeStrict,
   INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType, encodeInt, implicitlyCastable, type LocationI,
-  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX, EVENT_CHUNK_BYTES,
+  KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX, EVENT_CHUNK_BYTES, libraryDefinedIds,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
@@ -995,6 +995,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   private isStatefulContract: boolean = false;
   private compilerOptions: CompilerOptions;
   private nextFunctionId: number = 0;
+  /** Ids a library this unit calls OP_DEFINEs when it loads; no function id of the unit may take one. */
+  private libraryDefinedFunctionIds = new Set<number>();
   private functionDefinitions: Map<string, FunctionDefinitionNode[]> = new Map();
   private constantMap: Map<string, ConstantDefinitionNode> = new Map();
   private contractMap: Map<string, ContractNode> = new Map();
@@ -1363,6 +1365,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.libraryEventSignatures = node.libraryEventSignatures;
     this.libraryAnonymousEvents = node.libraryAnonymousEvents;
     this.libraryErrorSignatures = node.libraryErrorSignatures;
+    this.libraryDefinedFunctionIds = this.loadedLibraryDefinedIds(node);
 
     // Pre-register free functions in global scope (so they can call each other and be called from contract)
     for (const func of node.freeFunctions) {
@@ -1392,7 +1395,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ));
       }
 
-      func.functionId = this.nextFunctionId++;
+      func.functionId = this.allocateFunctionId();
       const existing = this.functionDefinitions.get(func.name) ?? [];
       existing.push(func);
       this.functionDefinitions.set(func.name, existing);
@@ -2006,11 +2009,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
 
         // Assign OP_DEFINE function ID
-        func.functionId = this.nextFunctionId++;
+        func.functionId = this.allocateFunctionId();
       } else if (visibility === 'external') {
         // An external function is NOT registered as an identifier symbol (its name is not usable internally),
         // but it still gets an OP_DEFINE id so a `this.f()` self-call can invoke it as a subroutine.
-        func.functionId = this.nextFunctionId++;
+        func.functionId = this.allocateFunctionId();
       }
       const existing = this.functionDefinitions.get(func.name) ?? [];
       existing.push(func);
@@ -2021,7 +2024,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // with a raw payload routes to it, like the EVM's raw-calldata path). Register it like an external
     // function: an OP_DEFINE id + a functionDefinitions entry (its reserved __fallback name cannot collide).
     if (node.fallbackDef) {
-      node.fallbackDef.functionId = this.nextFunctionId++;
+      node.fallbackDef.functionId = this.allocateFunctionId();
       this.functionDefinitions.set(node.fallbackDef.name, [node.fallbackDef]);
     }
 
@@ -6586,6 +6589,34 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (fn.usedLibraries?.includes(name)) (fn.inlinedLibraries ??= []).push(name);
       }
     }
+  }
+
+  /**
+   * The non-negative ids the libraries this unit calls OP_DEFINE when they load (a registrar's own helpers), read
+   * by `libraryDefinedIds` as codegen reads them for its helper pool. A function calling a library loads it after
+   * the unit's own definitions, so a function id equal to one of them is defined twice at run time. keccak256 is
+   * never loaded: its side-car computes it.
+   */
+  private loadedLibraryDefinedIds(node: SourceFileNode): Set<number> {
+    const ids = new Set<number>();
+    if (!this.compilerOptions.userLibraries?.length) return ids;
+    const { contract } = node;
+    const functions = [...node.freeFunctions, ...(contract
+      ? [...contract.functions, contract.constructorDef, contract.fallbackDef, contract.receiveDef] : [])];
+    const called = new Map<string, number>();
+    const visited = new Set<Node>();
+    for (const fn of functions) if (fn?.body) this.countLibraryCalls(fn.body, called, visited);
+    called.delete(GlobalFunction.KECCAK256);
+    for (const name of called.keys()) {
+      for (const id of libraryDefinedIds(this.resolvedLibraries[name].blob)) if (id >= 0n) ids.add(Number(id));
+    }
+    return ids;
+  }
+
+  /** The next OP_DEFINE id for a function of this unit, past every id a library it calls defines. */
+  private allocateFunctionId(): number {
+    while (this.libraryDefinedFunctionIds.has(this.nextFunctionId)) this.nextFunctionId += 1;
+    return this.nextFunctionId++;
   }
 
   private countLibraryCalls(

@@ -1194,7 +1194,7 @@ export interface LvalueKeyTag {
   unit: number;
   index: number;
   type: Type;
-  /** A storage-pointer declaration's key, rebuilt by every use of the alias and bound at the declaration. */
+  /** A storage-pointer or slot-factory alias declaration's key, re-read by every use and bound at the declaration. */
   alias?: boolean;
 }
 

@@ -17,6 +17,9 @@ import { compileString } from './direct-compile.js';
  * 5. A storage pointer (`S storage p = m[k]`) ran its key on every use of `p`, and an element-field push or pop
  *    (`data[k].d.push(v)`) in its read and again in its write-back. A side-effecting key is now bound once, at the
  *    declaration (used or not) or before the push; a pure key is left alone.
+ * 6. A storage-slot factory alias (`StringSlot storage d = getStringSlot(m[k])`) re-read its reference on every use of
+ *    `d`, so a side-effecting key ran once per use and never when `d` was unused. It now binds once, at the
+ *    declaration, as in 5; a pure key is left alone.
  */
 
 const E = { evmCompat: true };
@@ -146,6 +149,39 @@ describe('a side-effecting key of a storage pointer or an element-field push eva
       .not.toBe(bytecode(src(MS, 'uint256 k = peek(); S storage p = m[k]; p.a = v; p.b = v;'), E));
     expect(bytecode(src(DA, 'data[peek()].d.push(v);'), P))
       .not.toBe(bytecode(src(DA, 'uint256 k = peek(); data[k].d.push(v);'), P));
+  });
+});
+
+describe('a side-effecting key of a storage-slot factory alias evaluates once', () => {
+  const NEXT = 'uint256 counter; function next() internal returns (uint256) { counter = counter + 1; return counter - 1; }'
+    + ' function peek() internal view returns (uint256) { return counter; }';
+  const LIB = 'struct StringSlot { string value; } library StorageSlot {'
+    + ' function getStringSlot(string storage store) internal pure returns (StringSlot storage r)'
+    + ' { assembly { r.slot := store.slot } } }';
+  const src = (body: string): string => `${LIB} contract C { ${NEXT} mapping(uint256 => string) m; string[] names;`
+    + ` function f() external { ${body} require(true); } }`;
+  const alias = (ref: string): string => `StringSlot storage d = StorageSlot.getStringSlot(${ref});`;
+  const READS = ' string memory a = d.value; string memory b = d.value; require(bytes(a).length == bytes(b).length);';
+
+  it('at its declaration, used or not', () => {
+    expect(bytecode(src(alias('m[next()]') + READS), E))
+      .toBe(bytecode(src(`uint256 k = next(); ${alias('m[k]')}${READS}`), E));
+    expect(bytecode(src(alias('names[next()]') + READS), E))
+      .toBe(bytecode(src(`uint256 k = next(); ${alias('names[k]')}${READS}`), E));
+    expect(bytecode(src(alias('m[next()]')), E)).not.toBe(bytecode(src(''), E));
+  });
+
+  it('when the factory is declared in an imported file', () => {
+    const files = { 'slot.scash': LIB };
+    const root = (body: string): string => `import "./slot.scash"; contract C { ${NEXT} mapping(uint256 => string) m;`
+      + ` function f() external { ${body} require(true); } }`;
+    expect(bytecode(root(alias('m[next()]') + READS), { ...E, files }))
+      .toBe(bytecode(root(`uint256 k = next(); ${alias('m[k]')}${READS}`), { ...E, files }));
+  });
+
+  it('and leaves a pure key in place', () => {
+    expect(bytecode(src(alias('m[peek()]') + READS), E))
+      .not.toBe(bytecode(src(`uint256 k = peek(); ${alias('m[k]')}${READS}`), E));
   });
 });
 

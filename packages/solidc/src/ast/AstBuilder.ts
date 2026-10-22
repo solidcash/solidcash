@@ -304,6 +304,12 @@ function accessChainKeys(read: ExpressionNode): Array<ExpressionNode | undefined
   }
 }
 
+// A type passed by storage reference, not by value: a struct, array, mapping, string or unbounded bytes.
+function isStorageReference(type: Type | undefined): boolean {
+  return type instanceof StructType || type instanceof ArrayType || type instanceof MappingType
+    || type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined);
+}
+
 // One ordered segment of an lvalue chain: a `.member` (or `.value`), or an `[index]` key. Interleaved order is
 // preserved (alternating chains like `m[i].arr[j]` depend on it). The key is a THUNK yielding a FRESH node per
 // call (read + write nodes must not share instances). Consumed by buildLvalueAssign.
@@ -3224,6 +3230,14 @@ export default class AstBuilder
 
     const variable = this.finishVariableDefinition(ctx, type, modifiers, name, expression as ExpressionNode | undefined);
     variable.functionPointerMethodAlias = functionPointerMethodAlias;
+    // `T storage d = factory(ref)` (OZ StorageSlot.getStringSlot): every use of `d` re-reads `ref`
+    // (LowerStorageSlotPointers), so the keys of `ref` bind here, as a storage pointer's do.
+    if (modifiers.includes(Modifier.STORAGE) && expression instanceof FunctionCallNode
+      && expression.parameters.length === 1) {
+      const ref = expression.parameters[0];
+      const path = this.extractStorageAccessPath(ref);
+      if (path) this.markAliasKeys(variable, path, ref instanceof MappingAccessNode);
+    }
     return variable;
   }
 
@@ -3341,22 +3355,28 @@ export default class AstBuilder
 
   // Every use of a storage-pointer alias rebuilds its keys from clones, which keep a key's tag; Solidity evaluates
   // them once, at the declaration. When a key of its own might have a side effect, tag the keys and keep the dropped
-  // declaration in its statement list holding them, for BindLvalueKeyEffects to bind them to temps there.
+  // declaration in its statement list holding them, for BindLvalueKeyEffects to bind them to temps there. A kept
+  // declaration (`T storage d = factory(m[k])`) holds its keys itself and stays after the temps.
   private markAliasKeys(
-    dropped: BlockNode, path: { container: string; keys: ExpressionNode[] }, isThis: boolean,
+    declaration: StatementNode, path: { container: string; keys: ExpressionNode[] }, isThis: boolean,
   ): void {
     // A key cloned from an enclosing alias binds at that alias's declaration.
     const own = path.keys.map((key, index) => ({ key, index }))
       .filter(({ key }) => !(key instanceof LiteralNode) && !key.lvalueKey?.alias);
     if (!own.some(({ key }) => hasSideEffects(key, () => true))) return;
-    const types = this.lvalueChainTypes(path.container, path.keys.map((key) => ({ key: () => key })), isThis).keys;
+    const { value, keys: types } = this.lvalueChainTypes(
+      path.container, path.keys.map((key) => ({ key: () => key })), isThis,
+    );
     if (own.some(({ index }) => types[index] === undefined)) return;
+    // A factory's value argument (a raw slot) is bound whole by LowerStorageSlotPointers.
+    if (!(declaration instanceof BlockNode) && !isStorageReference(value)) return;
     const unit = lvalueKeyUnits++;
     for (const { key, index } of own) key.lvalueKey = { unit, index, type: types[index]!, alias: true };
-    dropped.lvalueKeyUnit = unit;
-    dropped.lvalueKeyAlias = own.map(({ key }) => key);
+    declaration.lvalueKeyUnit = unit;
+    if (!(declaration instanceof BlockNode)) return;
+    declaration.lvalueKeyAlias = own.map(({ key }) => key);
     // Not flattened away before BindLvalueKeyEffects replaces it.
-    dropped.scoped = true;
+    declaration.scoped = true;
   }
 
   // A tuple expression `(a, b, ...)` is only meaningful as a ternary branch in a tuple assignment or return;

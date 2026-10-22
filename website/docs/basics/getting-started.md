@@ -78,7 +78,7 @@ To get started coding locally we will use a code editor and learn how to work wi
 :::tip Project tooling
 This page demonstrates the compiler and SDK directly so each layer is visible. A SolidHat project, as created
 above, adds whole-project compilation, testing, generated bindings, named networks, and deployment scripts. See
-the [SolidHat guide](/docs/sdk/solidhat).
+the [SolidHat guide](/docs/tooling/solidhat).
 :::
 
 ### Prerequisites

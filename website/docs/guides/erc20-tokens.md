@@ -164,11 +164,25 @@ ledger backed one to one holds at most about 9.22 whole tokens. `BchNativeMultip
 `m` ledger units:
 
 ```solidity
+import { ERC20 } from "solidcash/contracts/ERC20.scash";
+import { ERC20Metadata } from "solidcash/contracts/ERC20Metadata.scash";
+import { BchNative } from "solidcash/contracts/BchNative.scash";
+import { BchNativeMultiplier } from "solidcash/contracts/BchNativeMultiplier.scash";
+
 // One native unit backs 10^12 ledger units, so the bearer token has 6 decimals.
 contract ScaledDollar() is ERC20, ERC20Metadata("Scaled Dollar", "SCD"), BchNative, BchNativeMultiplier(1e12) {
     constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) { }
 
-    // _nativeCredit and _nativeDebit as in MyDollar
+    function decimals() public view override returns (uint8) { return 18; }
+
+    // The hooks credit and debit ledger units, as in MyDollar; BchNativeMultiplier scales the reserve boundary.
+    function _nativeCredit(address account, uint256 amount) internal override {
+        _mint(account, amount);
+    }
+
+    function _nativeDebit(address account, uint256 amount) internal override {
+        _burn(account, amount);
+    }
 }
 ```
 
@@ -304,6 +318,10 @@ The rest is yours. `transfer`, `approve` and `transferFrom` stay virtual for pol
 `ERC20Metadata` and `BchNativeMultiplier`, or write the views.
 
 ```solidity
+import { BchNativeWrapper } from "solidcash/contracts/BchNativeWrapper.scash";
+import { BchNativeMultiplier } from "solidcash/contracts/BchNativeMultiplier.scash";
+import { ERC20Metadata } from "solidcash/contracts/ERC20Metadata.scash";
+
 // X has 8 decimals; one unit of X backs 100 ledger units, so the ledger shows 10.
 contract WrappedDollar() is BchNativeWrapper, BchNativeMultiplier(100), ERC20Metadata("Wrapped Dollar", "WRAPPED") {
     constructor(bytes32 underlying_) BchNativeWrapper(underlying_) { }

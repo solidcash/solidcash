@@ -10425,13 +10425,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const skipRetirement = this.beginAtomicSelfdestructExclusion(
           { location: node.body.location, positionHint: PositionHint.END },
         );
-        this.emitOwnCategoryMutableNftConservation(node);
+        // The count alone still balances a record rewritten in place, or destroyed and re-emitted at another lock.
+        this.emitOwnCategoryMutableNftConservation(node, false, this.countedRecordPinSpan(node, settlesDataRecords));
         if (skipRetirement) {
           this.emit(Op.OP_ENDIF, { location: node.body.location, positionHint: PositionHint.END });
         }
-        // The count still balances a record rewritten in place, or destroyed and re-emitted at another lock.
-        this.emitCountedRecordPin(node, settlesDataRecords,
-          { location: node.body.location, positionHint: PositionHint.END });
       }
       const scansMutable = this.mutableOutputCheckPending;
       this.mutableOutputCheckPending = false;
@@ -49893,10 +49891,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // records will serve. A message-bus upgrade keeps the balanced census
   // because it appends inside the final existing data NFT and co-spends the participant's detached verifier, and
   // its route verifier already pins the block. The count alone still balances a record rewritten in place or
-  // destroyed and re-emitted elsewhere (SECURITY-AUDIT C3): the direct count path adds emitCountedRecordPin, a
-  // delegatecall proxy does not. The upgrade run's length and commitments are not checked.
+  // destroyed and re-emitted elsewhere (SECURITY-AUDIT C3): the direct count path passes `pinSpan` and counts
+  // through emitCountedRecordPin, a delegatecall proxy does not. The upgrade run's length and commitments are not
+  // checked.
   private emitOwnCategoryMutableNftConservation(
-    node: FunctionDefinitionNode, allowUpgradeDataNftGrowth = false,
+    node: FunctionDefinitionNode, allowUpgradeDataNftGrowth = false, pinSpan?: number,
   ): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const delegatedCollectionHashes = (node.splitDelegateCensusedCollectionSignatures ?? [])
@@ -49930,9 +49929,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, loc);               // [C ++ 0x01]
     this.pushToStack('(this_cat_mutable)');
 
-    // balance = inputMutableCount - outputMutableCount, starts at 0
-    this.emit(encodeInt(0n), loc);
-    this.pushToStack('(mutable_balance)');
+    // balance = inputMutableCount - outputMutableCount, starts at 0. With `pinSpan` the input loop parks each
+    // matching index above a -1 sentinel instead, and emitCountedRecordPin counts and pins the parked ones.
+    if (pinSpan === undefined) {
+      this.emit(encodeInt(0n), loc);
+      this.pushToStack('(mutable_balance)');
+    } else {
+      this.emit(encodeInt(-1n), loc);
+      this.emit(Op.OP_TOALTSTACK, loc);
+    }
 
     // Input loop: +1 per input whose category+capability == C ++ 0x01
     this.emit(Op.OP_TXINPUTCOUNT, loc);
@@ -49941,14 +49946,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_1SUB, loc);
     this.emit(Op.OP_DUP, loc);               // copy i
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // input[i].cat+cap
-    this.emit(encodeInt(3n), loc);           // pick this_cat_mutable (catcap=0, i=1, bal=2, this=3)
+    // pick this_cat_mutable (catcap=0, i=1, bal=2, this=3; this=2 when parking)
+    this.emit(encodeInt(BigInt(this.getStackIndex('(this_cat_mutable)') + 1)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUAL, loc);
     emitExcludeDelegatedCollections(false);
     this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_SWAP, loc);              // [.., bal, i] -> [.., i, bal]
-    this.emit(Op.OP_1ADD, loc);              // bal++
-    this.emit(Op.OP_SWAP, loc);              // [.., bal+1, i]
+    if (pinSpan === undefined) {
+      this.emit(Op.OP_SWAP, loc);            // [.., bal, i] -> [.., i, bal]
+      this.emit(Op.OP_1ADD, loc);            // bal++
+      this.emit(Op.OP_SWAP, loc);            // [.., bal+1, i]
+    } else {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_TOALTSTACK, loc);      // park i
+    }
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_0, loc);
@@ -49956,6 +49967,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, loc);
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (loop_i)
+    if (pinSpan !== undefined) this.emitCountedRecordPin(pinSpan, loc);
 
     if (allowUpgradeDataNftGrowth) {
       // A direct upgrade co-spends every old data NFT, and no entry/chunk NFT. This also keeps a destroyed,
@@ -52607,22 +52619,57 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * C3 per-record pin of a function the own-category count covers. The only own-category mutable inputs it rewrites
-   * are the data records the auto covenant settles at `master + 1 ..`, so every other one, inside the block or past
-   * it, comes back at its own index unchanged, and the count then leaves no mutable output free. Where the auto
-   * covenant does not run, the walk holds the data records too. Stack neutral.
+   * C3 per-record pin span of a function the own-category count covers, or undefined where no pin runs. The only
+   * own-category mutable inputs it rewrites are the data records the auto covenant settles at `master + 1 ..`, so
+   * every other one, inside the block or past it, comes back at its own index unchanged, and the count then leaves
+   * no mutable output free. Where the auto covenant does not run, the pin holds the data records too.
    */
-  private emitCountedRecordPin(
-    node: FunctionDefinitionNode, settlesDataRecords: boolean, loc: SingleLocationData,
-  ): void {
+  private countedRecordPinSpan(node: FunctionDefinitionNode, settlesDataRecords: boolean): number | undefined {
     if (this.isDefineSubTraversal || this.framedMaster || this.readsRecordsFromFrame || node.name === '__construct'
-      || this.usesProxyStateBlockBase() || this.ownsMessageBusParticipantBlock(node)) return;
+      || this.usesProxyStateBlockBase() || this.ownsMessageBusParticipantBlock(node)) return undefined;
     // A migrateRecords entry moves the entry at input 1 to its replacement-bound covenant, and
-    // emitMigrateRecordsEntryMigrationCheck pins it there (the master at input 0), so the walk leaves it out.
+    // emitMigrateRecordsEntryMigrationCheck pins it there (the master at input 0), so the pin leaves it out.
     const migratesEntry = node.modifiers.includes(FunctionModifier.MIGRATE_RECORDS)
       && node.messageBusUpgradeRoute !== true && this.collectionDefinitions.length > 0;
-    const span = settlesDataRecords ? this.compactOffsetMap.size : Number(migratesEntry);
-    this.emitPlainOutsideLayoutWalk(1 + span, loc);
+    return 1 + (settlesDataRecords ? this.compactOffsetMap.size : Number(migratesEntry));
+  }
+
+  /**
+   * `[this_cat_mutable]` -> `[this_cat_mutable, balance]`: pops the inputs the count parked above its -1 sentinel,
+   * counts them, and pins each outside `[master, master + span)` to its own index. A skipped instruction still
+   * costs, so pinning here instead of in the count's loop leaves an input that is not an own-category mutable NFT
+   * one instruction cheaper than the plain count.
+   */
+  private emitCountedRecordPin(span: number, loc: SingleLocationData): void {
+    this.emit(encodeInt(0n), loc);
+    this.pushToStack('(mutable_balance)');
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);      // [.., bal, i]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeBool(true), loc);        // the sentinel ends the pass
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emitMasterInputIndex(loc);
+    if (span === 1) {
+      this.emit(Op.OP_NUMEQUAL, loc);
+    } else {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(BigInt(span)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_WITHIN, loc);
+    }
+    this.emit(Op.OP_NOTIF, loc);
+    this.emitSameIndexPin(loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_1ADD, loc);              // bal++
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
   }
 
   /** `[]` -> `[category]`: the master's 32-byte category with the mutable capability, tracked as `category`. */
@@ -52707,6 +52754,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitInputLockAdmitted(loc);
       this.emit(Op.OP_NOTIF, loc);
     }
+    this.emitSameIndexPin(loc);
+    if (admitMintableLocks) this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /** `[i]` -> `[i]`: output i carries input i's lock, commitment and category. */
+  private emitSameIndexPin(loc: SingleLocationData): void {
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_OUTPUTBYTECODE, loc);
     this.emit(Op.OP_OVER, loc);
@@ -52722,8 +52776,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_OVER, loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
-    if (admitMintableLocks) this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_ENDIF, loc);
   }
 
   /** `[lock]` -> `[admitted]` against the mintable-lock list parked on the alternate stack. */

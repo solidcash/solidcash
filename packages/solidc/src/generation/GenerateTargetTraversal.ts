@@ -28511,6 +28511,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Whether this function's tail runs emitDelegateOutsideLayoutPin over its value-chunk lock list. That pin spans
+   * only the proxy's master+data block, so a value chunk a single in-place update consumes past it must be listed;
+   * a plain direct walk spans the whole block, which holds those chunks.
+   */
+  private delegatePinReadsChunkLockList(): boolean {
+    return this.usesDelegateExecutorBlockBase() && !this.framedMaster && !this.readsRecordsFromFrame
+      && this.outsideLayoutWalkReadsChunkLockList();
+  }
+
+  /**
    * `[.., coSlot, coNext, coValue]` with `rawCells` untracked items above the tracked frame -> unchanged. An in-place
    * UPDATE spends the entry's OLD value chunks at their own lock (slot, old root), not the lock the new value's
    * chunks take. Append that lock to VALUE_CHUNK_LOCK_LIST so the outside-layout walk admits the spent chunks instead
@@ -29240,6 +29250,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // --- UPDATE: entry output == coSlot32 || effNext || v. effNext = coNext32 (link preserved) UNLESS a merge loop
     // re-points this entry: effNext = (repoint != 0) ? repoint : coNext32. The merge covenant already verified
     // coSlot < repoint < coNext, so this closes the chain msg.sender -> new node (whose NEW node the loop minted). ---
+    // A direct delegate's outside-layout pin reaches the OLD value chunks this update spends: admit them by lock.
+    if (this.isChunkableValue(collection.innermostValueType) && this.delegatePinReadsChunkLockList()) {
+      this.emitAdmitUpdatedOldValueChunks(collection.name, 5, loc);
+    }
     if (hasRepoint) {
       // [.., coSlot32, coNext32, coValue] -> compute effNext on top
       this.emit(encodeInt(BigInt(this.getStackIndex('(__repoint)') + 5)), loc); this.emit(Op.OP_PICK, loc); // repoint copy

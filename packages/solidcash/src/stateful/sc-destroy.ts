@@ -4,6 +4,7 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeTransactionUnsafe } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+import type { AbiFunction, Artifact } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { TransactionDetails, Utxo } from '../interfaces.js';
 import {
@@ -538,4 +539,17 @@ export async function destroyStatefulContract(options: DestroyOptions): Promise<
   }
 
   return { txs, totalReclaimed, leftBehind };
+}
+
+/**
+ * An ordinary call recreates the master and carries each record, so through a selfdestruct entry it retires nothing,
+ * and the entry refuses a carried record whose state changed. Retiring the contract takes the destroy sweep.
+ */
+export function refuseOrdinarySelfdestructCall(artifact: Artifact, abiFunction: AbiFunction | undefined): void {
+  if (!abiFunction?.modifiers?.includes('selfdestruct')) return;
+  throw new Error(
+    `${artifact.contractName}.${abiFunction.name}() is a selfdestruct entry: an ordinary call keeps the master and `
+    + 'retires nothing. Destroy the contract with StatefulContract.destroy, or StatefulContract.selfdestructTo for '
+    + 'selfdestruct(addr).',
+  );
 }

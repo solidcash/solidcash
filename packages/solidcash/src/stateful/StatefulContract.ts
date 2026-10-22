@@ -444,7 +444,9 @@ import {
 import {
   finishCreateBuilderAtomicPromotion as finishCreateBuilderAtomicPromotionImpl,
 } from './sc-finish-create-builder-atomic-promotion.js';
-import { destroyStatefulContract as destroyStatefulContractImpl } from './sc-destroy.js';
+import {
+  destroyStatefulContract as destroyStatefulContractImpl, refuseOrdinarySelfdestructCall,
+} from './sc-destroy.js';
 import { queryEvents as queryEventsImpl } from './sc-query-events.js';
 import { getEntries as getEntriesImpl } from './sc-get-entries.js';
 import { inferConstructorArgs as inferConstructorArgsImpl } from './sc-infer-constructor-args.js';
@@ -4083,7 +4085,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       set tokens(v) { self.tokens = v; },
       getState: () => self.getState(),
       getEntries: (name: string) => self.getEntries(name),
-      createBuilder: (...a: any[]) => (self as any)._createBuilder(...a),
+      createBuilder: async (
+        functionName: string, args: any[], overrides?: { abiFunction?: AbiFunction },
+      ): Promise<StatefulTransactionBuilder> => {
+        refuseOrdinarySelfdestructCall(self.inner.artifact, overrides?.abiFunction);
+        return (self as any)._createBuilder(functionName, args, overrides);
+      },
       deriveReturnValue: (...a: any[]) => (self as any)._deriveReturnValue(...a),
       createTokenContainerAccessor: (categoryIdHex: string) => new TokenContainerAccessor(self, categoryIdHex),
       createDeployFunctionCall: (functionName: string, args: FunctionArgument[]) =>
@@ -14989,6 +14996,10 @@ export class StatefulFunctionCall {
   }
 
   private async _applyOverrides(): Promise<StatefulTransactionBuilder> {
+    // A compiler-route call (a message-bus row or a composed participant) is not the ordinary call path.
+    if (this.compilerRoute === undefined && this.parentContract) {
+      refuseOrdinarySelfdestructCall(this.parentContract.inner.artifact, this._selectedAbiFunction());
+    }
     return applyOverridesImpl(this._applyOverridesHost());
   }
 

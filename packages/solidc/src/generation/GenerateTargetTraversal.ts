@@ -49979,9 +49979,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * AUTHHEAD-1: a direct selfdestruct entry spends the minting master, so its transaction could mint any NFT of the
    * category: a mutable one at the BCMR authhead lock is a look-alike identity, a minting one elsewhere moves the
    * master. An output carrying a mutable or minting NFT of the category must stand in for the same-index input, which
-   * carries the same category and capability under the same lock: a record or master carried in place, as a call
-   * through the write path or an intermediate destroy batch leaves it. Its commitment is not pinned. Framed builds are
-   * left as they were.
+   * carries the same category, capability, lock and commitment: a record or master carried unchanged, as an
+   * intermediate destroy batch carries its master. The entry checks no new state, so a carried NFT with another
+   * commitment would be a state write under the entry's guard alone. Framed builds are left as they were.
    *
    * Stack effect: net zero.
    */
@@ -50014,7 +50014,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_BOOLOR, loc);
-    // An NFT of C with a capability: input j holds the same under the same lock. Past the inputs the read fails.
+    // An NFT of C with a capability: input j holds the same under the same lock and commitment. Past the inputs the
+    // read fails.
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_OVER, loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
@@ -50023,6 +50024,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UTXOBYTECODE, loc);
     this.emit(Op.OP_OVER, loc);
     this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_ELSE, loc);
     this.emit(Op.OP_DROP, loc);

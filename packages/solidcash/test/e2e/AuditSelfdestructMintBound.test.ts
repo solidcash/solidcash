@@ -25,8 +25,10 @@ import { getTxOutputs } from '../test-util.js';
  * transaction it authorizes could mint any NFT of its category C: a mutable one at C's BCMR authhead lock is a
  * look-alike identity, and a minting one at another lock hands that power on. A guard weaker than a sighash-ALL
  * signature, here a hashlock whose preimage is public once used, lets any caller add those outputs. The entry admits a
- * mutable or minting NFT of C only in place of the same-index input holding the same under the same lock: a record or
- * master carried through, as a write-path call or an intermediate destroy batch leaves it.
+ * mutable or minting NFT of C only in place of the same-index input holding the same under the same lock and
+ * commitment: a record or master carried unchanged, as an intermediate destroy batch carries its master. The entry
+ * checks no new state, so a carried record with another commitment beside a recreated master would be a state write
+ * under the hashlock alone. The SDK's ordinary call path, which builds that shape, refuses a selfdestruct entry.
  */
 const SOURCE = `
 pragma solidcash >=0.8.0;
@@ -106,11 +108,18 @@ async function sendDestroy(
 }
 
 const lookAlike = (fx: Fixture): Output => authheadOutput(fx.categoryId, addressToLockScript(bobAddress));
-const minting = (fx: Fixture, to: string): Output => ({
-  to, amount: 2_000n, token: { category: fx.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+const minting = (fx: Fixture, to: string, commitment = ''): Output => ({
+  to, amount: 2_000n, token: { category: fx.categoryId, amount: 0n, nft: { capability: 'minting', commitment } },
 });
 const record = (fx: Fixture): Output => ({
   to: getDataNftAddress(fx.deployed.inner, fx.categoryId), amount: fx.records[0].satoshis, token: fx.records[0].token,
+});
+/** The first record at its own lock with `counter` rewritten. */
+const rewritten = (fx: Fixture, counter: bigint): Output => ({
+  ...record(fx),
+  token: { category: fx.categoryId, amount: 0n, nft: {
+    capability: 'mutable', commitment: buildPushdataCommitment(artifact.stateLayout!, { counter }, 0),
+  } },
 });
 
 /** The master recreated at output 0 and `carried` at output 1, the first record's index; the record takes its write path. */
@@ -151,10 +160,30 @@ describe('AUTHHEAD-1: a selfdestruct mints no NFT of its own category', () => {
     await expect(sendCarried(fx, lookAlike(fx))).rejects.toThrow(REFUSED);
   });
 
-  it('settles a record carried in place beside its master', async () => {
+  it('refuses, at the master, a record rewritten beside a recreated master, which would keep the contract', async () => {
+    const fx = await fixture(1);
+    await expect(sendCarried(fx, rewritten(fx, 999_999n))).rejects.toThrow(REFUSED);
+    expect((await fx.deployed.getFullState()).dataNftUtxos[0].token).toEqual(fx.records[0].token);
+  });
+
+  it('refuses, at the master, a master recreated at its own lock with another commitment', async () => {
+    const fx = await fixture(1);
+    await expect(sendDestroy(fx, [minting(fx, fx.deployed.tokenAddress, 'ab')])).rejects.toThrow(REFUSED);
+  });
+
+  it('settles a record carried unchanged beside a recreated master', async () => {
     const fx = await fixture(1);
     const tx = await sendCarried(fx, record(fx));
     expect(getTxOutputs(tx).slice(0, 2).map((output) => output.token?.nft?.capability)).toEqual(['minting', 'mutable']);
+  });
+
+  it('refuses the ordinary call path through the selfdestruct entry and points to the destroy sweep', async () => {
+    const fx = await fixture(1);
+    const refusal = /HashlockDestroy\.destroy\(\) is a selfdestruct entry.*StatefulContract\.destroy/;
+    await expect(fx.deployed.getFunction('destroy')(PREIMAGE).build()).rejects.toThrow(refusal);
+    await expect(fx.deployed.getFunction('destroy')(PREIMAGE).send()).rejects.toThrow(refusal);
+    await expect((fx.deployed.functions as any).destroy(PREIMAGE)).rejects.toThrow(refusal);
+    expect(await fx.provider.getUtxos(fx.deployed.tokenAddress)).toContainEqual(fx.master);
   });
 
   it('pays a foreign-category NFT out of a token container on a destroy', async () => {

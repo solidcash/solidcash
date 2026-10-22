@@ -15,6 +15,7 @@ import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { batchPredecessorCommitment, isPendingBatchPredecessor } from '../message-bus/pending-batch-predecessor.js';
+import { callRecordHashesResult } from './call-record.js';
 import { isDisposableAlignmentPad } from './value-chunk-band-helpers.js';
 import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
 import { groupIndexForExternalCallSlot } from './physical-external-call.js';
@@ -440,7 +441,7 @@ export function constructCreateBuilderTransactionBuilder(
       const preimageName = name.replace('externalReturnOutputIdx', 'externalReturnPreimage');
       const preimagePosition = abiFunction!.inputs.findIndex((input) => input.name === preimageName);
       const preimage = builder.getExternalCallReturnPreimage(groupIdx);
-      if (preimagePosition >= 0 && preimage && preimage.length > 128
+      if (preimagePosition >= 0 && preimage && callRecordHashesResult(preimage)
         && (!(finalArgs[preimagePosition] instanceof Uint8Array)
           || binToHex(finalArgs[preimagePosition] as Uint8Array) !== binToHex(preimage))) {
         finalArgs[preimagePosition] = preimage.slice();

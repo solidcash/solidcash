@@ -55,6 +55,8 @@ export interface PlaceTailReturnHost {
   writeViewTailsAfterWriterOccupancy(builder: TransactionBuilder, returnOutputRefs?: Map<string, Output>): void;
   restoreDeclaredMutableEntrySlots(builder: TransactionBuilder): void;
   reassertInBlockWriterReturns(builder: TransactionBuilder): void;
+  /** The digest of the call a direct return record answers; none for a routed one. */
+  callRecordDigest?(identity: string): Uint8Array | undefined;
 }
 
 export function placeTailReturnAfterSwappedTokenBlock(
@@ -211,7 +213,8 @@ export function placeTailReturnAfterSwappedTokenBlock(
         placedIndex = nextIndex;
       }
       const rawCommitment = binToHex(event.commitment);
-      const commitment = rawCommitment === '' ? '0101' : returnEventNftCommitment(event.commitment);
+      const commitment = rawCommitment === '' ? '0101'
+        : returnEventNftCommitment(event.commitment, host.callRecordDigest?.(event.identity));
       const output: Output = {
         to: Uint8Array.of(0x51),
         amount: 800n,
@@ -228,8 +231,8 @@ export function placeTailReturnAfterSwappedTokenBlock(
       returnOutputRefs?.set(event.identity, output);
       host.builtReturnEventOutputIndices.set(event.identity, placedIndex);
       if (groupIdx >= 0 && coordinate?.part === 0
-        && commitment !== '' && commitment !== '0101'
-        && !isAllZeroCommitment(commitment)) {
+        && rawCommitment !== '' && rawCommitment !== '0101'
+        && !isAllZeroCommitment(rawCommitment)) {
         host.authenticatedViewReturnByGroup.set(groupIdx, {
           categoryId: event.categoryId,
           commitment,

@@ -69,6 +69,8 @@ export interface MaterializeExternalCallOutputsHost {
     slot: FunctionBlockLayout['slots'][number],
   ): Uint8Array | undefined;
   tailReturnEventOutputs(): readonly PendingReturnEventLike[];
+  /** The digest of the call a direct return record answers; none for a routed one. */
+  callRecordDigest?(identity: string): Uint8Array | undefined;
 }
 
 /**
@@ -585,13 +587,13 @@ export function materializeExternalCallOutputs(
           // State-writing bools (transferFrom) default to success. Views (arbitratorRegistered)
           // default to false so a missing precompute cannot admit an unregistered party.
           // A fused zero seed is unset, not false — SafeERC20 abi.decode(00) fails VERIFY.
+          const identity = re?.identity ?? returnIdentity;
           const returnCommitment = returnEventNftCommitment(hexToBin(canonicalWriterReturnCommitment({
             pendingHex: re && re.commitment.length > 0 ? binToHex(re.commitment) : '',
             writesState: writerAbi?.writesState === true,
             evmBool,
             returnsBool: writerReturnsBool,
-          })));
-          const identity = re?.identity ?? returnIdentity;
+          })), host.callRecordDigest?.(identity));
           addReturnOutput(builder, identity, {
             to: new Uint8Array([0x51]),
             amount: BALANCED_SLOT_SATOSHIS,
@@ -767,7 +769,10 @@ export function materializeExternalCallOutputs(
         token: {
           amount: 0n,
           category: re.categoryId,
-          nft: { capability: 'none', commitment: returnEventNftCommitment(re.commitment) },
+          nft: {
+            capability: 'none',
+            commitment: returnEventNftCommitment(re.commitment, host.callRecordDigest?.(re.identity)),
+          },
         },
       });
     }

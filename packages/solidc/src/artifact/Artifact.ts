@@ -4418,6 +4418,7 @@ export function generateArtifact(
       resultEncoding: func.messageBusRoute
         ? 'compact-pushdata-v1' : externalResultEncoding(func.returnTypes, compilerOptions),
     }),
+    ...(func.settlesCallRecord === true && { callRecord: true }),
     ...(func.modifiers.length > 0 && {
       modifiers: func.modifiers.map((m) => m.toString()),
     }),

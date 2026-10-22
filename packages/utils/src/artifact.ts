@@ -619,6 +619,11 @@ export interface AbiFunction {
   outputs?: readonly AbiOutput[];       // return types (omitted for void functions)
   /** Tuple-wide wire representation used for typed external results. */
   resultEncoding?: ExternalResultEncoding;
+  /**
+   * A direct call's return carrier is the record of the call it answers: `digest || form || result`, the digest
+   * over its selector and arguments, the result inline or its SHA256 (docs/wip/call-records/DESIGN.md).
+   */
+  callRecord?: boolean;
   modifiers?: readonly string[];        // function modifiers (omitted if default external)
   requiredNftIndices?: readonly number[];  // sorted NFT indices this function accesses (absent = all)
   /**

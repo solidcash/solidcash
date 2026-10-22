@@ -55,7 +55,8 @@ export interface AuthenticatedViewReturnHost {
   syncRefreshedCarrierMasters(
     builder: TransactionBuilder,
     carriers: ReadonlySet<ExternalCallUtxoGroup>,
-  ): void;
+  ): void;  /** The digest of the call a direct return record answers; none for a routed one. */
+  callRecordDigest?(identity: string): Uint8Array | undefined;
 }
 
 export function ensureAuthenticatedViewReturns(
@@ -75,7 +76,7 @@ export function ensureAuthenticatedViewReturns(
     if (raw === '' || isAllZeroCommitment(raw) || raw === '0101') continue;
     byGroup.set(coordinate.groupIndex, {
       categoryId: event.categoryId,
-      commitment: returnEventNftCommitment(event.commitment),
+      commitment: returnEventNftCommitment(event.commitment, host.callRecordDigest?.(event.identity)),
       identity: event.identity,
     });
   }
@@ -89,7 +90,7 @@ export function ensureAuthenticatedViewReturns(
     if (raw === '' || isAllZeroCommitment(raw) || raw === '0101') continue;
     byGroup.set(groupIdx, {
       categoryId: group.categoryId,
-      commitment: returnEventNftCommitment(hexToBin(raw)),
+      commitment: returnEventNftCommitment(hexToBin(raw), host.callRecordDigest?.(`external-call:${groupIdx}`)),
       identity: `external-call:${groupIdx}`,
     });
   }

@@ -21,6 +21,8 @@ export interface AppendEarlyDelegateOutputsHost {
   readonly categoryId: string;
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly pendingReturnEventOutputs: readonly DeferredDelegateReturnEvent[];
+  /** The digest of the call a direct return record answers; none for a routed one. */
+  callRecordDigest?(identity: string): Uint8Array | undefined;
 }
 
 /**
@@ -78,7 +80,10 @@ export function appendEarlyDelegateOutputs(
         to: new Uint8Array([0x51]), amount: 800n,
         token: {
           amount: 0n, category: returnEvent.categoryId,
-          nft: { capability: 'none', commitment: returnEventNftCommitment(returnEvent.commitment) },
+          nft: {
+            capability: 'none',
+            commitment: returnEventNftCommitment(returnEvent.commitment, host.callRecordDigest?.(returnEvent.identity)),
+          },
         },
       });
     }

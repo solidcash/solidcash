@@ -14,7 +14,9 @@ import {
   encodeChunkableValueTail,
   EVENT_CHUNK_BYTES,
   isAuxiliaryBlockSlot,
+  sha256,
 } from '@solidcash/utils';
+import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { binToHex, binsAreEqual, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { buildSidecarRedeem, sidecarLockingBytecode, scriptToBytecode } from '@solidcash/utils';
@@ -27,6 +29,7 @@ import { assertFinalizedTransactionCovenants } from '../message-bus/preflight.js
 import { parseEventCommitment } from './StateReader.js';
 import { eventContinuationLockingBytecode, joinEventContinuations } from './event-chunks.js';
 import { type Utxo, type UnlockableUtxo, type TransactionDetails, isContractUnlocker, type Unlocker } from '../interfaces.js';
+import { callRecordDigest, callRecordHashesResult, parseCallRecord } from './call-record.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { sameIndexScidIdentityInputIndices } from './same-index-scid.js';
@@ -1513,6 +1516,7 @@ export class StatefulTransactionBuilder {
       getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       tokenWriterOccupancy: (tokenMaster, outputs) => this.tokenWriterOccupancy(tokenMaster, outputs),
       syncBuilderUnlockers: (builder) => { this._syncBuilderUnlockers(builder); },
+      callRecordDigest: (identity) => this.callRecordDigestFor(identity),
     };
   }
 
@@ -1625,6 +1629,7 @@ export class StatefulTransactionBuilder {
       reassertInBlockWriterReturns: (builder) => {
         this._reassertInBlockWriterReturns(builder);
       },
+      callRecordDigest: (identity: string) => this.callRecordDigestFor(identity),
     };
   }
 
@@ -1646,6 +1651,7 @@ export class StatefulTransactionBuilder {
       syncRefreshedCarrierMasters: (builder, carriers) => {
         this._syncRefreshedCarrierMasters(builder, carriers);
       },
+      callRecordDigest: (identity: string) => this.callRecordDigestFor(identity),
     };
   }
 
@@ -1703,6 +1709,7 @@ export class StatefulTransactionBuilder {
       syncRefreshedCarrierMasters: (builder, carriers) => {
         this._syncRefreshedCarrierMasters(builder, carriers);
       },
+      callRecordDigest: (identity: string) => this.callRecordDigestFor(identity),
     };
   }
 
@@ -1906,6 +1913,7 @@ export class StatefulTransactionBuilder {
       padOutputsToIndex: (b, index) => this._padOutputsToIndex(b, index),
       externalEntryLockingBytecode: (group, slot) => this._externalEntryLockingBytecode(group, slot),
       tailReturnEventOutputs: () => this.tailReturnEventOutputs(),
+      callRecordDigest: (identity) => this.callRecordDigestFor(identity),
     };
   }
 
@@ -2239,6 +2247,7 @@ export class StatefulTransactionBuilder {
       builtReturnEventOutputIndices: this.builtReturnEventOutputIndices,
       tailReturnEventOutputs: () => this.tailReturnEventOutputs(),
       addReturnOutput,
+      callRecordDigest: (identity) => this.callRecordDigestFor(identity),
     };
   }
 
@@ -2378,6 +2387,7 @@ export class StatefulTransactionBuilder {
       categoryId: this.categoryId,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
+      callRecordDigest: (identity) => this.callRecordDigestFor(identity),
     };
   }
 
@@ -5489,9 +5499,71 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /**
+   * The digest of the call a direct return record answers, by the record's identity: an external call's group, or
+   * this builder's own call. None for a routed call, whose route binds its result.
+   */
+  callRecordDigestFor(identity: string): Uint8Array | undefined {
+    const external = /^external-call:(\d+)(?::\d+)?$/.exec(identity);
+    if (external) {
+      const group = this.externalCallUtxoGroups[Number(external[1])];
+      if (!group || group.compilerRoute) return undefined;
+      const physical = this.externalCallUtxoGroups[group.sharedGroupIndex ?? Number(external[1])] ?? group;
+      const artifact = (physical.logicalArtifact ?? physical.externalContract?.inner?.artifact) as Artifact | undefined;
+      const functionName = physical.logicalFunctionName ?? physical.functionName;
+      const abiFunction = artifact?.abi.find((entry) => entry.name === functionName);
+      if (!artifact || abiFunction?.callRecord !== true) return undefined;
+      return callRecordDigest(abiFunction, physical.logicalFunctionArgs ?? physical.functionArgs, {
+        structs: artifact.structs ?? artifact.stateLayout?.structs, enums: artifact.enums,
+      });
+    }
+    if (identity !== this.categoryId) return undefined;
+    const unlocker = this.masterUtxo.unlocker;
+    if (!isContractUnlocker(unlocker) || unlocker.abiFunction.callRecord !== true) return undefined;
+    const artifact = unlocker.contract.artifact as Artifact;
+    return callRecordDigest(unlocker.abiFunction, unlocker.params, {
+      structs: artifact.structs ?? artifact.stateLayout?.structs, enums: artifact.enums,
+    });
+  }
+
+  /**
+   * The raw result behind a direct call's record that a callee's covenant pinned, for the record's identity (this
+   * builder's own call when omitted): its inline bytes, or the preimage of its hash taken where `trace` hashed it.
+   * Anything else is returned as given.
+   */
+  rawOfReturnRecord(
+    identity: string | undefined, commitment: Uint8Array, trace?: readonly AuthenticationProgramStateCommon[],
+  ): Uint8Array {
+    const digest = this.callRecordDigestFor(identity ?? this.categoryId);
+    if (digest === undefined) return commitment;
+    const record = parseCallRecord(commitment);
+    if (record === undefined) return commitment;
+    if (binToHex(record.digest) !== binToHex(digest)) {
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_RETURN === '1') {
+        console.error('call-record-digest-mismatch', { identity, record: binToHex(record.digest), sdk: binToHex(digest) });
+      }
+      return commitment;
+    }
+    if (record.raw !== undefined) return record.raw;
+    // A probe trace keeps only its introspection states; the result stays on their stacks until its record forms.
+    const hash = binToHex(record.hash!);
+    const seen = new Set<Uint8Array>();
+    for (let at = (trace?.length ?? 0) - 1; at >= 0; at -= 1) {
+      for (const item of trace![at]!.stack) {
+        if (seen.has(item) || !callRecordHashesResult(item)) continue;
+        seen.add(item);
+        if (binToHex(sha256(item)) === hash) return item.slice();
+      }
+    }
+    return commitment;
+  }
+
   setReturnEventOutput(
     categoryId: string, commitment: Uint8Array, identity = categoryId, provisional = false,
+    trace?: readonly AuthenticationProgramStateCommon[],
   ): this {
+    // eslint-disable-next-line no-param-reassign
+    commitment = this.rawOfReturnRecord(identity, commitment, trace);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_FAILURE_RING === '1') {
       console.error('set-return-event-output', {
         identity, categoryId, commitment: binToHex(commitment),
@@ -5566,7 +5638,9 @@ export class StatefulTransactionBuilder {
       const master = this.findMintingInputIndex(physical.categoryId);
       if (master >= 0 && offset !== undefined) return master + offset;
     }
-    const identity = `external-call:${groupIdx}`;
+    const identity = `external-call:${this.returnRecordGroupIndex(groupIdx) === groupIdx
+      || this.externalCallUtxoGroups[groupIdx]?.readonlyReturnSelector === undefined
+      ? groupIdx : this.returnRecordGroupIndex(groupIdx)}`;
     if (this.isInBlockReturnEventGroup(groupIdx)) {
       return this.builtReturnEventOutputIndices.get(identity)
         ?? this.builtReturnEventOutputIndices.get(`${identity}:0`)
@@ -6932,17 +7006,32 @@ export class StatefulTransactionBuilder {
   }
 
   /** Return events that are NOT emitted inside a callee block, in emission order. */
+  /**
+   * The group whose record answers group `groupIdx`'s read: a readonly alias reads the record of the physical call
+   * it shares (one callee run leaves one record); any other group its own logical return group.
+   */
+  private returnRecordGroupIndex(groupIdx: number): number {
+    const group = this.externalCallUtxoGroups[groupIdx];
+    if (group?.readonlyReturnSelector !== undefined && !group.compilerRoute
+      && group.sharedGroupIndex !== undefined && group.sharedGroupIndex !== groupIdx) return group.sharedGroupIndex;
+    return logicalReturnGroupIndex(this.externalCallUtxoGroups, groupIdx);
+  }
+
   private tailReturnEventOutputs(): Array<{
     categoryId: string; commitment: Uint8Array; identity: string; provisional?: boolean;
   }> {
-    const tail = selectMaterializedTailReturnEvents(
-      this.externalCallUtxoGroups,
-      this.pendingReturnEventOutputs,
-    );
     const groupIdxOf = (identity: string): number => {
       const match = /^external-call:(\d+)/.exec(identity);
       return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
     };
+    const tail = selectMaterializedTailReturnEvents(
+      this.externalCallUtxoGroups,
+      this.pendingReturnEventOutputs,
+    ).filter((re) => {
+      const idx = groupIdxOf(re.identity);
+      return idx === Number.MAX_SAFE_INTEGER || this.returnRecordGroupIndex(idx) === idx
+        || this.externalCallUtxoGroups[idx]?.readonlyReturnSelector === undefined;
+    });
     const proxyRank = (idx: number): number => (
       this.externalCallUtxoGroups[idx]?.functionName === '__forward' ? 0 : 1
     );
@@ -6969,7 +7058,7 @@ export class StatefulTransactionBuilder {
       if (master >= 0) return master + offset;
       return this.getExternalCallOutputBase(groupIdx) + offset;
     }
-    const returnIdentity = `external-call:${logicalReturnGroupIndex(this.externalCallUtxoGroups, groupIdx)}`;
+    const returnIdentity = `external-call:${this.returnRecordGroupIndex(groupIdx)}`;
     const tailOrder = this.tailReturnEventOutputs().findIndex((re) => re.identity === returnIdentity);
     return tailOrder < 0 ? -1 : this.getReturnEventOutputBase() + tailOrder;
   }
@@ -6978,7 +7067,7 @@ export class StatefulTransactionBuilder {
   getExternalCallReturnPreimage(groupIdx: number): Uint8Array | undefined {
     const group = this.externalCallUtxoGroups[groupIdx];
     if (!group) return undefined;
-    const identity = `external-call:${logicalReturnGroupIndex(this.externalCallUtxoGroups, groupIdx)}`;
+    const identity = `external-call:${this.returnRecordGroupIndex(groupIdx)}`;
     const exact = this.pendingReturnEventOutputs.find((event) => event.identity === identity);
     const first = this.pendingReturnEventOutputs.find((event) => event.identity === `${identity}:0`);
     const event = exact?.provisional && first ? first : exact ?? first;

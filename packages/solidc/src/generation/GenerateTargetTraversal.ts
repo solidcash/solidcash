@@ -7696,6 +7696,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
       // output-only offsets in that body disagree with the ones in the main script.
       subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
+      subTraversal.currentContractSettlesCallRecords = this.currentContractSettlesCallRecords;
       subTraversal.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
       subTraversal.constructorParameterCount = 0; // no data pushes in sub-traversal output
       // Entry bodies are compiled here, after the contract traversal skipped the BoringMath OP_DEFINE. Without
@@ -25558,9 +25559,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // which the callee computes over the call it executed.
       const recordSelector = node.opaqueReturn ? undefined : physicalSlot.callRecordSelector;
       if (recordSelector !== undefined) {
-        const parameterTypes = physicalSlot.callRecordParameterTypes ?? [];
-        this.emitCallRecordDigest(recordSelector, 0, parameterTypes, (index) => {
-          const parameter = node.parameters[index]!;
+        const declared = physicalSlot.callRecordParameterTypes ?? [];
+        const digested = declared.flatMap((type, index) => (type === PrimitiveType.SIG ? [] : [index]));
+        this.emitCallRecordDigest(recordSelector, 0, digested.map((index) => declared[index]), (position) => {
+          const parameter = node.parameters[digested[position]!]!;
           this.markArrayArgumentBlobEncoded(parameter);
           this.visit(parameter);
         }, locationData);
@@ -48124,7 +48126,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Declaration-only/stateless compatibility paths can retain source return types without receiving the
     // stateful return-NFT witness pair. Symbol analysis is authoritative: no witness means no return covenant.
     if (returnOutputIdxIdx < 0) return;
-    if (this.settlesDirectCallRecord(node)) {
+    node.settlesCallRecord = this.settlesDirectCallRecord(node);
+    if (node.settlesCallRecord) {
       this.emitCallRecordFromBlob(locationData);
       this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', locationData);
       // With the record directly beneath the picked index, the check is the same bytes in every function.
@@ -48379,7 +48382,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Leaves the digest of the call this entry executes, as `__internal__callDigest`, for its record. */
   private emitOwnCallRecordDigest(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
-    const visible = node.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+    // A signature authorizes the transaction the record is part of, so it is no argument of the digest.
+    const visible = node.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')
+      && parameter.type !== PrimitiveType.SIG);
     this.emitCallRecordDigest(this.callRecordSelector(node), 0, visible.map((parameter) => parameter.type),
       (index) => {
         this.emit(encodeInt(BigInt(this.getStackIndex(visible[index]!.name))), loc);

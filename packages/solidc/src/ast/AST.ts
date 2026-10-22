@@ -967,6 +967,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local message-bus journal. */
   nativeSelfBatchDispatcher?: boolean;
 
+  /** Codegen: this entry's return carrier is the record of the direct call it answers. */
+  settlesCallRecord?: boolean;
+
   isFreeFunction: boolean = false;
   // True for a function declared inside a Solidity library, including the lowered primary-library contract
   // form. Library ABI rules uniquely permit storage-reference parameters and returns at public/external

@@ -323,7 +323,8 @@ export function deriveReturnBlob(
   const hashed = extractHashedReturnCommitmentAtOutput(trace, returnOutputIndex);
   if (hashed !== undefined) return hashed;
   const commitment = commitments?.[0] ?? pending;
-  return commitment === undefined ? undefined : hexToBin(commitment);
+  // A direct entry pins its call's record; the builder keeps the result behind it.
+  return commitment === undefined ? undefined : builder.rawOfReturnRecord(undefined, hexToBin(commitment), trace);
 }
 
 /** @internal Extract a participant's message-bus return commitment from a complete bus transaction. */

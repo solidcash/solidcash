@@ -209,11 +209,11 @@ function requiredField(field: string, view: string, readsMetadata: boolean): Bcm
 /**
  * The token fields of a snapshot: stated ones checked against the contract's, omitted ones taken from it. With
  * `readsMetadata` (the artifact carries IERC20Metadata) the snapshot always has a token, and a view the probe could
- * not read must be stated.
+ * not read must be stated. `bearerScale` maps the ledger's decimals onto the bearer unit; without one (a wrapper) the
+ * fields are the ledger's own.
  */
 function resolveToken(
-  stated: BcmrPublication['token'], facts: ContractTokenFacts, scale: bigint, readsMetadata: boolean,
-  warnsUnscaled = true,
+  stated: BcmrPublication['token'], facts: ContractTokenFacts, bearerScale: bigint | undefined, readsMetadata: boolean,
 ): BcmrSnapshot['token'] | undefined {
   if (stated === undefined && !readsMetadata) return undefined;
   const contractSymbol = facts.symbol;
@@ -233,6 +233,7 @@ function resolveToken(
       );
     }
   }
+  const scale = bearerScale ?? 1n;
   const contractDecimals = facts.decimals === undefined ? undefined : nativeDecimals(facts.decimals, scale);
   if (stated?.decimals !== undefined && contractDecimals !== undefined && stated.decimals !== contractDecimals) {
     throw new BcmrError(
@@ -242,7 +243,7 @@ function resolveToken(
   }
   const decimals = stated?.decimals ?? contractDecimals;
   if (decimals === undefined && readsMetadata) throw requiredField('bcmr.token.decimals', 'decimals()', true);
-  if (warnsUnscaled && decimals === 18 && scale === 1n) {
+  if (bearerScale === 1n && decimals === 18) {
     // eslint-disable-next-line no-console
     console.warn(
       'BCMR: an 18-decimal token with no native scale can back at most about 9.22 whole tokens in CashTokens '
@@ -256,19 +257,12 @@ function resolveToken(
   };
 }
 
-/** The token category's genesis coin, refused unless it can create a category of its own. */
-async function nativeInputOf(
-  deploy: DeployOptions, category: string,
-): Promise<PreparedMetadata['nativeInput']> {
+/** The token category's genesis coin, refused unless its funder can spend it at vout 0. */
+async function nativeInputOf(deploy: DeployOptions): Promise<PreparedMetadata['nativeInput']> {
   const funding = deploy.nativeToken?.funding;
   if (funding === undefined) return undefined;
-  const nativeCategory = funding.txid.toLowerCase();
   if (funding.vout !== 0) {
     throw new BcmrError(`nativeToken.funding must be at vout 0 to create a category, got vout ${funding.vout}`);
-  }
-  if (nativeCategory === category) throw new BcmrError('the token category must differ from the contract category');
-  if (deploy.identity?.kind === 'authguard' && authKeyCategoryOf(deploy.identity) === nativeCategory) {
-    throw new BcmrError('the token category must differ from the AuthKey category');
   }
   const unlocker = deploy.nativeToken?.funder ?? deploy.funder;
   const refusal = await ownCoinRefusal(
@@ -296,7 +290,10 @@ export async function prepareMetadata(options: {
   readonly category: string;
   readonly deploy: DeployOptions;
   readonly probe: ProbeDeploy;
-  /** The contract's token container for the token's category, where the premint goes. */
+  /**
+   * The contract's token container for the token's category, given when the genesis premints or wraps: the premint
+   * goes there, and the registry publishes it as the reserve.
+   */
   readonly reserveLockingBytecode?: Uint8Array;
   /** The satoshis each token output the genesis mints carries. */
   readonly tokenSatoshis: bigint;
@@ -312,9 +309,10 @@ export async function prepareMetadata(options: {
   }
   const wrapped = wrappedCategory(nativeToken);
   const scale = nativeToken?.scale ?? 1n;
-  // Refused whether or not the contract publishes decimals() (DESIGN.md, 6.5). A wrapper publishes no bearer unit
-  // whose decimals the scale would map, so its scale is only positive.
-  if (wrapped === undefined) scaleDigits(scale);
+  // The scale that maps the ledger's decimals onto the bearer unit the registry publishes, refused unless a power of
+  // ten whether or not the contract publishes decimals() (DESIGN.md, 6.5). A wrapper publishes no bearer unit.
+  const bearerScale = wrapped === undefined ? scale : undefined;
+  if (bearerScale !== undefined) scaleDigits(bearerScale);
   else if (scale < 1n) throw new BcmrError(`nativeToken.scale must be positive, got ${scale}`);
   const reserve = nativeToken?.reserve;
   const bearer = nativeToken?.bearer;
@@ -326,16 +324,22 @@ export async function prepareMetadata(options: {
   if ((reserve ?? 0n) + (bearer?.amount ?? 0n) > MAXIMUM_FUNGIBLE_AMOUNT) {
     throw new BcmrError(`nativeToken.reserve and nativeToken.bearer together exceed ${MAXIMUM_FUNGIBLE_AMOUNT}`);
   }
-  const nativeInput = await nativeInputOf(deploy, options.category);
-  if (wrapped === options.category) throw new BcmrError('the wrapped category must differ from the contract category');
-  if (wrapped !== undefined && deploy.identity?.kind === 'authguard'
-    && authKeyCategoryOf(deploy.identity) === wrapped) {
-    throw new BcmrError('the wrapped category must differ from the AuthKey category');
+  // The category the deployment names for its token, wrapped or created, is neither the contract's nor the AuthKey's.
+  const named = wrapped ?? nativeToken?.funding?.txid.toLowerCase();
+  if (named === options.category) throw new BcmrError('the token category must differ from the contract category');
+  if (named !== undefined && deploy.identity?.kind === 'authguard' && authKeyCategoryOf(deploy.identity) === named) {
+    throw new BcmrError('the token category must differ from the AuthKey category');
   }
-  const tokenCategory = wrapped ?? (nativeInput === undefined ? options.category : nativeInput.utxo.txid.toLowerCase());
+  const nativeInput = await nativeInputOf(deploy);
+  const tokenCategory = named ?? options.category;
+  // The category the genesis issues the token in, which the registry describes: X when nativeToken.funding creates
+  // it, else C, whose contract also issues a wrapper's ledger units.
+  const issuedCategory = nativeInput === undefined ? options.category : tokenCategory;
 
   const readsMetadata = hasErc20Metadata(artifact);
-  const checksSupply = (reserve !== undefined || wrapped !== undefined) && hasTotalSupply(artifact);
+  // The ledger units the genesis backs, when it states them: the premint's, or none, as a wrapper mints nothing.
+  const backing = reserve !== undefined ? reserve * scale : wrapped !== undefined ? 0n : undefined;
+  const checksSupply = backing !== undefined && hasTotalSupply(artifact);
   // The contract keys its container by the token's category: X, or C without nativeToken.funding (DESIGN.md, 6.2).
   const keyVariable = nativeCategoryStateVariable(artifact);
   if (wrapped !== undefined && keyVariable === undefined) {
@@ -350,15 +354,15 @@ export async function prepareMetadata(options: {
     throw new BcmrError(`nativeToken.category cannot be checked: the probe could not read the contract's ${keyVariable}`);
   }
   if (checksKey && facts.nativeCategory !== undefined && facts.nativeCategory !== tokenCategory) {
-    const reversed = binToHex(hexToBin(tokenCategory).reverse());
     const token = wrapped !== undefined
-      ? `nativeToken.category is ${tokenCategory}: construct the contract with that category${
-        facts.nativeCategory === reversed ? ', in the byte order wallets print, not reversed' : ''}`
+      ? `nativeToken.category is ${tokenCategory}: construct the contract with that category`
       : nativeInput === undefined
         ? `without nativeToken.funding the token is the contract's own category ${tokenCategory}: construct the `
           + 'contract with that category, or pass nativeToken.funding'
         : `nativeToken.funding creates ${tokenCategory}: construct the contract with the funding coin's txid`;
-    throw new BcmrError(`the contract keys its reserve by category ${facts.nativeCategory}, but ${token}`);
+    const reversed = facts.nativeCategory === binToHex(hexToBin(tokenCategory).reverse())
+      ? '; the contract has it byte-reversed: pass it in the order wallets print, not reversed' : '';
+    throw new BcmrError(`the contract keys its reserve by category ${facts.nativeCategory}, but ${token}${reversed}`);
   }
   if (checksSupply && facts.totalSupply === undefined) {
     throw new BcmrError(
@@ -366,16 +370,10 @@ export async function prepareMetadata(options: {
       + 'ledger: the probe could not read the contract\'s totalSupply()',
     );
   }
-  if (wrapped !== undefined && facts.totalSupply !== undefined && facts.totalSupply !== 0n) {
-    throw new BcmrError(
-      `a wrapper's genesis backs no ledger units, but the constructor credits a totalSupply() of ${facts.totalSupply}`,
-    );
-  }
-  if (reserve !== undefined && facts.totalSupply !== undefined && reserve * scale < facts.totalSupply) {
-    throw new BcmrError(
-      `the premint backs ${reserve * scale} ledger units (reserve ${reserve} x scale ${scale}), but the constructor `
-      + `credits a totalSupply() of ${facts.totalSupply}`,
-    );
+  if (backing !== undefined && facts.totalSupply !== undefined && (facts.totalSupply < 0n || facts.totalSupply > backing)) {
+    const why = reserve === undefined ? 'a wrapper mints nothing' : `reserve ${reserve} x scale ${scale}`;
+    throw new BcmrError(`the genesis backs ${backing} ledger units (${why}), but the constructor credits a `
+      + `totalSupply() of ${facts.totalSupply}`);
   }
   const reserveLock = options.reserveLockingBytecode;
   const reserveOutput: Output | undefined = reserve === undefined || reserveLock === undefined ? undefined : {
@@ -396,17 +394,16 @@ export async function prepareMetadata(options: {
   }
   const name = publication.name ?? facts.name;
   if (name === undefined) throw requiredField('bcmr.name', 'name()', readsMetadata);
-  // A wrapper's fields are its ledger's, as the contract answers them: it has no bearer unit to scale them to.
-  const resolved = wrapped === undefined ? resolveToken(publication.token, facts, scale, readsMetadata)
-    : resolveToken(publication.token, facts, 1n, readsMetadata, false);
+  const resolved = resolveToken(publication.token, facts, bearerScale, readsMetadata);
   // The NFTs are the contract's, of its own category, whichever category the token is.
   let nfts = resolved?.nfts;
   if (publication.token?.nfts === 'generated' && resolved !== undefined) {
     if (options.nftRoles === undefined) throw new BcmrError('this deployment cannot derive its NFT roles');
     nfts = nftCategory(await options.nftRoles(), hexToBin(options.category));
   }
-  // A wrapped category is X's issuer's to describe, so the registry describes C alone.
-  const separate = wrapped === undefined && tokenCategory !== options.category;
+  // A token issued in a category of its own is an identity of its own, beside the contract's, which labels the NFTs.
+  // A wrapped category is its issuer's to describe.
+  const separate = issuedCategory !== options.category;
   const token = resolved === undefined ? undefined : {
     symbol: resolved.symbol,
     ...(resolved.decimals === undefined ? {} : { decimals: resolved.decimals }),
@@ -417,7 +414,7 @@ export async function prepareMetadata(options: {
   if (deploy.identity?.kind === 'authguard') {
     extensions.authNft = authKeyCategoryOf(deploy.identity);
   }
-  if ((reserveOutput !== undefined || wrapped !== undefined) && reserveLock !== undefined) {
+  if (reserveLock !== undefined) {
     extensions[NATIVE_TOKEN_EXTENSION] = {
       ...(wrapped === undefined ? {} : { underlying: wrapped }),
       reserveLockingBytecode: binToHex(reserveLock),
@@ -434,8 +431,7 @@ export async function prepareMetadata(options: {
     ...(token === undefined ? {} : { token }),
     ...(Object.keys(extensions).length === 0 ? {} : { extensions }),
   };
-  // A token of its own category is an identity of its own, beside the contract's, which labels the NFTs.
-  const identities = [{ category: wrapped === undefined ? tokenCategory : options.category, snapshot }];
+  const identities = [{ category: issuedCategory, snapshot }];
   if (separate) {
     identities.push({
       category: options.category, snapshot: contractSnapshot(name, token?.symbol, nfts, extensions.authNft),

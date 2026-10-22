@@ -339,8 +339,9 @@ of it. The first `wrap` then creates the container.
   a later `issue`. It is at most 9,223,372,036,854,775,807.
 - The SDK checks that the premint is at least `totalSupply()` divided by the scale, read from the probe genesis
   (6.4), so every ledger unit the constructor credits is backed, and that the contract keys its reserve by X: it reads
-  the state variable the artifact publishes as the container key from the probe and refuses another category. The
-  key check runs whenever the deployment states `nativeToken`, so with X = C it holds the key to C.
+  the state variable the artifact publishes as the container key from the probe and refuses another category,
+  naming a byte-reversed constructor argument. The key check runs whenever the deployment states `nativeToken`, so
+  with X = C it holds the key to C.
 
 ### 6.3 Field mapping
 
@@ -412,9 +413,9 @@ of it. The first `wrap` then creates the container.
   coin of X and creates no output of it; the first `wrap` creates the reserve container.
 - It is refused beside `funding`, which creates a category, and beside `reserve` or `bearer`, since every fungible amount
   of X was created in X's genesis; and when X is C or the AuthKey category.
-- The probe checks the container key as 6.2 does, and names a byte-reversed constructor argument; an artifact that keys
-  no container by state is refused; `totalSupply()`, when the ABI carries it, must read 0. Name, symbol, decimals, the
-  scale, and whether X exists are not checked.
+- The probe checks the container key as 6.2 does; an artifact that keys no container by state is refused;
+  `totalSupply()`, when the ABI carries it, must read 0. Name, symbol, decimals, the scale, and whether X exists are
+  not checked.
 - `identities` holds C alone: X's authchain is its issuer's (R1, R2). The snapshot carries the ledger's name,
   `token.symbol` and `token.decimals` as the contract answers them. C has no bearer unit, so no native scale applies
   (6.5) and the 18-decimal warning does not either. `nativeToken.scale`, any positive integer, is the creator's

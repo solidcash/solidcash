@@ -3064,26 +3064,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     t.sharedCheckBody = { masterOrdinal };
   }
 
-  /** Select the execution-resource block authorized by the delegate prologue. */
+  /**
+   * The base of a direct delegate's execution resources: its executor, which the prologue pins one master/data
+   * block after the proxy, with the entry/effect slots following it. State data NFTs stay proxy-owned.
+   */
   private emitDelegateResourceBase(locationData: SingleLocationData): void {
-    const compactOffset = 1 + this.dataNftCount;
-    const balancedOffset = this.currentFunction.blockLayout?.blockSize ?? compactOffset;
-    if (balancedOffset <= compactOffset) {
-      this.emit(Op.OP_INPUTINDEX, locationData);
-      return;
-    }
-    // Compact forwarding lays entry/effect slots after the executor. A balanced co-spend lays them in the proxy
-    // block before the executor. State data NFTs are always proxy-owned and do not use this selector.
-    this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
-    this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_INPUTINDEX, locationData);
-    this.emit(encodeInt(BigInt(compactOffset)), locationData);
-    this.emit(Op.OP_SUB, locationData);
-    this.emit(Op.OP_NUMEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(Op.OP_INPUTINDEX, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
   }
 
   /** A compiler-generated route handler receives its physical owner identity as an explicit hidden argument. */
@@ -9555,32 +9541,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMNOTEQUAL, loc); // [idx, bool]
       this.emit(Op.OP_VERIFY, loc);      // [idx]
 
-      // A direct delegate may be reached through the compact proxy master/data-NFT prefix or after its complete
-      // balanced block (including entry/event slots). The route has only the latter layout. Accept exactly the
-      // published offsets, then use this authenticated proxy witness for every later state read.
+      // Exactly one owner distance, the one the forward pins for this entry's selector: a direct delegate follows
+      // the proxy master/data block (`__proxyBlockSize`), a route its route block (`__proxyRouteBlockSize`). A second
+      // distance would let the witness name a master the forward did not place. Later state reads use this witness.
       const compactOffset = 1 + this.dataNftCount;
-      const balancedOffset = node.blockLayout?.blockSize ?? compactOffset;
-      if (!this.isCompilerMessageBusRoute(node) && balancedOffset > compactOffset) {
-        this.emit(Op.OP_DUP, loc);
-        this.emit(Op.OP_INPUTINDEX, loc);
-        this.emit(encodeInt(BigInt(compactOffset)), loc);
-        this.emit(Op.OP_SUB, loc);
-        this.emit(Op.OP_NUMEQUAL, loc);
-        this.emit(Op.OP_OVER, loc);
-        this.emit(Op.OP_INPUTINDEX, loc);
-        this.emit(encodeInt(BigInt(balancedOffset)), loc);
-        this.emit(Op.OP_SUB, loc);
-        this.emit(Op.OP_NUMEQUAL, loc);
-        this.emit(Op.OP_BOOLOR, loc);
-        this.emit(Op.OP_VERIFY, loc);
-        this.emit(Op.OP_DROP, loc);
-      } else {
-        this.emit(Op.OP_INPUTINDEX, loc);
-        this.emit(encodeInt(BigInt(this.isCompilerMessageBusRoute(node)
-          ? balancedOffset : compactOffset)), loc);
-        this.emit(Op.OP_SUB, loc);
-        this.emit(Op.OP_NUMEQUALVERIFY, loc);
-      }
+      this.emit(Op.OP_INPUTINDEX, loc);
+      this.emit(encodeInt(BigInt(this.isCompilerMessageBusRoute(node)
+        ? node.blockLayout?.blockSize ?? compactOffset : compactOffset)), loc);
+      this.emit(Op.OP_SUB, loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
 
     // Load each external library this function uses and OP_DEFINE it once, before the body. Inlined
@@ -49553,8 +49522,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             this.getStackIndex('__internal__proxyMasterIndex'), extraStackOffset);
           this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
         } else {
-          // The prologue authenticated either published delegate offset. Re-deriving only the compact one here
-          // would read an entry/funder NFT instead of proxy state in the balanced case.
+          // The prologue authenticated this witness at the one published delegate distance.
           this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
         }
       } else {

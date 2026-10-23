@@ -70,7 +70,9 @@ the proxy's *entire* state:
    `_proxyMasterIndex`).
 
    **The pin also needs POSITION.** The delegate derives its state owner positionally:
-   `proxyMasterIndex == OP_INPUTINDEX - (1 + dataNftCount)`, enforced by the delegate prologue. Identity and
+   `proxyMasterIndex == OP_INPUTINDEX - (1 + dataNftCount)`, enforced by the delegate prologue. It is the only
+   distance a direct delegate admits, whatever its block holds: its entry, effect and side-car slots follow its
+   executor, so a forwarder pinning this distance fixes the owner. Identity and
    payload alone leave that owner free, because they name an input without saying where it sits: a delegate placed
    after ANOTHER master's block satisfies them, and that master is the one the delegate authorizes while the
    forwarding proxy's own state covenant is skipped. A forwarder therefore publishes the distance from its own

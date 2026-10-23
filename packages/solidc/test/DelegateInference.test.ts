@@ -688,7 +688,7 @@ describe('delegate inference', () => {
     expect(executorAdjacentRead).toBe(false);
   });
 
-  it('binds ordinary delegate executors to compact or fully balanced layouts without widening the ABI frame', () => {
+  it('binds an ordinary delegate executor to the one compact distance whatever its block holds', () => {
     const artifact = compileString(`
       contract BalancedDelegate {
         uint counter;
@@ -719,102 +719,48 @@ describe('delegate inference', () => {
     const balancedOffset = apply.blockLayout!.blockSize;
     expect(balancedOffset).toBeGreaterThan(compactOffset);
 
+    // The forward pins a direct delegate one master/data block after the proxy, so the prologue admits exactly that
+    // distance after its `proxy != delegate` check. A second one, the full block, would let the witness name a master
+    // the forward did not place.
     const offsetGate = instructions.findIndex((instruction, index) => (
       instruction.opcode === OpcodesBCH.OP_DUP
       && instructions[index + 1]?.opcode === OpcodesBCH.OP_INPUTINDEX
-      && readNumber(instructions[index + 2]) === BigInt(compactOffset)
-      && instructions[index + 3]?.opcode === OpcodesBCH.OP_SUB
-      && instructions[index + 4]?.opcode === OpcodesBCH.OP_NUMEQUAL
-      && instructions[index + 5]?.opcode === OpcodesBCH.OP_OVER
-      && instructions[index + 6]?.opcode === OpcodesBCH.OP_INPUTINDEX
-      && readNumber(instructions[index + 7]) === BigInt(balancedOffset)
-      && instructions[index + 8]?.opcode === OpcodesBCH.OP_SUB
-      && instructions[index + 9]?.opcode === OpcodesBCH.OP_NUMEQUAL
-      && instructions[index + 10]?.opcode === OpcodesBCH.OP_BOOLOR
-      && instructions[index + 11]?.opcode === OpcodesBCH.OP_VERIFY
-      && instructions[index + 12]?.opcode === OpcodesBCH.OP_DROP
+      && instructions[index + 2]?.opcode === OpcodesBCH.OP_NUMNOTEQUAL
+      && instructions[index + 3]?.opcode === OpcodesBCH.OP_VERIFY
     ));
     expect(offsetGate).toBeGreaterThanOrEqual(0);
+    const gate = instructions.slice(offsetGate + 4, offsetGate + 8);
+    expect(gate[0]?.opcode).toBe(OpcodesBCH.OP_INPUTINDEX);
+    expect(readNumber(gate[1])).toBe(BigInt(compactOffset));
+    expect(gate[2]?.opcode).toBe(OpcodesBCH.OP_SUB);
+    expect(gate[3]?.opcode).toBe(OpcodesBCH.OP_NUMEQUALVERIFY);
 
-    // A balanced invocation places entry/funder inputs between the proxy state and executor. Once the prologue
-    // admits that layout, later state reads must reuse the authenticated proxy parameter rather than silently
-    // reverting to `INPUTINDEX - compactOffset`. The bottom-relative parameter copy is stable under untracked
-    // helper operands above the declared ABI frame.
+    // Later state reads reuse the authenticated proxy parameter. The bottom-relative parameter copy is stable under
+    // untracked helper operands above the declared ABI frame.
     const stateRead = instructions.findIndex((instruction, index) => (
-      index > offsetGate + 12 && instruction.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT
+      index >= offsetGate + 8 && instruction.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT
     ));
     expect(stateRead).toBeGreaterThanOrEqual(0);
-    const stateReadOwnerWindow = instructions.slice(Math.max(offsetGate + 13, stateRead - 8), stateRead);
+    const stateReadOwnerWindow = instructions.slice(Math.max(offsetGate + 8, stateRead - 8), stateRead);
     expect(stateReadOwnerWindow.some((instruction) => instruction.opcode === OpcodesBCH.OP_DEPTH)).toBe(true);
     expect(stateReadOwnerWindow.some((instruction) => instruction.opcode === OpcodesBCH.OP_PICK)).toBe(true);
     expect(stateReadOwnerWindow.some((instruction) => instruction.opcode === OpcodesBCH.OP_INPUTINDEX)).toBe(false);
 
-    const entryOffset = apply.blockLayout!.slots.find((slot) => slot.kind === 'entry')!.offset;
-    const resourceBaseHelper = Object.entries(artifact.debug?.invokeDebug ?? {}).find(([, candidate]) => {
-      const body = decodeAuthenticationInstructions(hexToBin(candidate.bytecode));
-      return body.some((instruction, index) => (
-        instruction.opcode === OpcodesBCH.OP_DUP
-        && body[index + 1]?.opcode === OpcodesBCH.OP_INPUTINDEX
-        && readNumber(body[index + 2]) === BigInt(compactOffset)
-        && body[index + 3]?.opcode === OpcodesBCH.OP_SUB
-        && body[index + 4]?.opcode === OpcodesBCH.OP_NUMEQUAL
-        && body[index + 5]?.opcode === OpcodesBCH.OP_IF
-        && body[index + 6]?.opcode === OpcodesBCH.OP_DROP
-        && body[index + 7]?.opcode === OpcodesBCH.OP_INPUTINDEX
-        && body[index + 8]?.opcode === OpcodesBCH.OP_ENDIF
-      ));
-    });
-    expect(resourceBaseHelper).toBeDefined();
-    const resourceBaseHelperId = BigInt(resourceBaseHelper![0]);
-    const authenticatedEntryRead = instructions.findIndex((instruction, index) => (
-      instruction.opcode === OpcodesBCH.OP_INVOKE
-      && readNumber(instructions[index - 1]) === resourceBaseHelperId
-      && readNumber(instructions[index + 1]) === BigInt(entryOffset)
-      && instructions[index + 2]?.opcode === OpcodesBCH.OP_ADD
-      && instructions.slice(index + 3, index + 7)
-        .some((candidate) => candidate.opcode === OpcodesBCH.OP_UTXOBYTECODE
-          || candidate.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT)
-    ));
-    expect(authenticatedEntryRead).toBeGreaterThanOrEqual(0);
-
-    // Output-only effects use the same authenticated physical base. Compact execution keeps the executor base;
-    // a fully balanced invocation retains the proxy-master base. The category read addresses the published event
-    // slot, and the event commitment is still equality-checked after constructing its value.
-    const eventOffset = apply.blockLayout!.slots.find((slot) => slot.kind === 'event')!.offset;
-    const authenticatedEventIndex = instructions.some((instruction, index) => (
-      instruction.opcode === OpcodesBCH.OP_INVOKE
-      && readNumber(instructions[index - 1]) === resourceBaseHelperId
-      && readNumber(instructions[index + 1]) === BigInt(eventOffset)
-      && instructions[index + 2]?.opcode === OpcodesBCH.OP_ADD
-      && instructions[index + 3]?.opcode === OpcodesBCH.OP_OUTPUTTOKENCATEGORY
-    ));
-    expect(authenticatedEventIndex).toBe(true);
-    expect(instructions.some((instruction, index) => instruction.opcode === OpcodesBCH.OP_OUTPUTTOKENCOMMITMENT
-      && instructions[index + 1]?.opcode === OpcodesBCH.OP_EQUALVERIFY)).toBe(true);
-
-    // The protocol-wide immutable-event scan must use that same selected base. A bare OP_INPUTINDEX would reject
-    // every honest balanced event even though its per-slot covenant passed. The selector may be outlined or inline.
-    // The walk may open with its category-skip loop (OP_BEGIN) before stepping down.
-    const stepsDown = (index: number): boolean => {
-      let at = index + 1;
-      while (instructions[at]?.opcode === OpcodesBCH.OP_BEGIN) at += 1;
-      return instructions[at]?.opcode === OpcodesBCH.OP_1SUB;
-    };
-    const authenticatedImmutableEventScan = instructions.some((instruction, index) => (
-      instruction.opcode === OpcodesBCH.OP_TXOUTPUTCOUNT
-      && stepsDown(index)
-      && ((instructions[index - 1]?.opcode === OpcodesBCH.OP_INVOKE
-        && readNumber(instructions[index - 2]) === resourceBaseHelperId)
-        || (instructions[index - 9]?.opcode === OpcodesBCH.OP_DUP
-          && instructions[index - 8]?.opcode === OpcodesBCH.OP_INPUTINDEX
-          && readNumber(instructions[index - 7]) === BigInt(compactOffset)
-          && instructions[index - 6]?.opcode === OpcodesBCH.OP_SUB
-          && instructions[index - 5]?.opcode === OpcodesBCH.OP_NUMEQUAL
-          && instructions[index - 4]?.opcode === OpcodesBCH.OP_IF
-          && instructions[index - 3]?.opcode === OpcodesBCH.OP_DROP
-          && instructions[index - 2]?.opcode === OpcodesBCH.OP_INPUTINDEX
-          && instructions[index - 1]?.opcode === OpcodesBCH.OP_ENDIF))
-    ));
-    expect(authenticatedImmutableEventScan).toBe(true);
+    // Entry and effect slots follow the executor: no body selects between an executor and a proxy-master base.
+    const bodies = [instructions, ...Object.values(artifact.debug?.invokeDebug ?? {})
+      .map((candidate) => decodeAuthenticationInstructions(hexToBin(candidate.bytecode)))];
+    expect(bodies.some((body) => body.some((instruction, index) => (
+      instruction.opcode === OpcodesBCH.OP_DUP
+      && body[index + 1]?.opcode === OpcodesBCH.OP_INPUTINDEX
+      && readNumber(body[index + 2]) === BigInt(compactOffset)
+      && body[index + 3]?.opcode === OpcodesBCH.OP_SUB
+      && body[index + 4]?.opcode === OpcodesBCH.OP_NUMEQUAL
+      && body[index + 5]?.opcode === OpcodesBCH.OP_IF
+    )))).toBe(false);
+    // The event commitment is still equality-checked after constructing its value.
+    expect(bodies.some((body) => body.some((instruction, index) => (
+      instruction.opcode === OpcodesBCH.OP_OUTPUTTOKENCOMMITMENT
+      && body[index + 1]?.opcode === OpcodesBCH.OP_EQUALVERIFY
+    )))).toBe(true);
   });
 });

@@ -57,10 +57,8 @@ const config: Config = {
               label: 'Telegram',
               href: 'https://t.me/SolidCashBCH',
             },
-            {
-              label: 'Showcase',
-              to: '/docs/showcase',
-            },
+            // Hidden for now:
+            // { label: 'Showcase', to: '/docs/showcase' },
           ],
         },
         {

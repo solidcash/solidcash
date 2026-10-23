@@ -1,5 +1,6 @@
 ---
 title: Showcase
+draft: true
 ---
 
 See the awesome contracts and applications that people are building on Bitcoin Cash! These projects are built

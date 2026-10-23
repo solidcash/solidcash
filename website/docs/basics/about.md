@@ -8,7 +8,7 @@ SolidCash is a high-level smart contract language for Bitcoin Cash that brings n
 SolidCash comes with a powerful TypeScript SDK for creating, debugging and testing smart contract transactions on BCH. The SDK has an integrated networkProvider API to fetch data from the BCH blockchain. With all this functionality, the Typescript SDK makes it easy to use SolidCash contracts in applications in the browser or on the server in a type-safe way.
 
 :::tip
-To see what kind of things can be built with SolidCash, you can look at the [Showcase](/docs/showcase) or [Examples](/docs/language/examples).
+To see what kind of things can be built with SolidCash, you can look at the [Examples](/docs/language/examples).
 
 To just dive into SolidCash, refer to the [Getting Started page](/docs/basics/getting-started).
 :::

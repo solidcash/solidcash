@@ -144,7 +144,7 @@ const sidebars: SidebarsConfig = {
       label: 'Community SDKs',
       items: ['community-sdks/python-sdk'],
     },
-    'showcase',
+    // 'showcase', hidden for now (draft: true in docs/showcase.md)
   ],
 };
 

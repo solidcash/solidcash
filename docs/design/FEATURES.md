@@ -3,7 +3,7 @@
 A high-level, Solidity-flavored language for Bitcoin Cash smart contracts. Compiles `.scash` to BCH Script (`solidc`); interact via the `solidcash` SDK. Targets the BCH 2026 VM (loops `OP_BEGIN/OP_UNTIL`, functions `OP_DEFINE/OP_INVOKE`).
 
 Reviewed 2026-10-20 against the 0.13.1 tree. The compatibility claim is
-`docs/release/0.13.1/SOLIDITY_COMPATIBILITY_0.13.1.md`; open
+`docs/release/0.14.0/SOLIDITY_COMPATIBILITY_0.14.0.md`; open
 limits are in `packages/solidc/docs/deferrals.md`.
 
 ## Language (compiler)

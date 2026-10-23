@@ -1,7 +1,7 @@
 # Release readiness — moved
 
-The maintained release decision is [`RELEASE_DECISION_0.13.1.md`](RELEASE_DECISION_0.13.1.md). It records the
-0.13.1 recommendation, the six audit residuals, the five skipped tests, and the gate evidence at the release
+The maintained release decision is [`RELEASE_DECISION_0.14.0.md`](RELEASE_DECISION_0.14.0.md). It records the
+0.14.0 recommendation, the six audit residuals, the five skipped tests, and the gate evidence at the release
 commit.
 
 The former readiness tracker (last reviewed 2026-08-09) is archived as history. Its 2026-08-09 "NO-GO" assessment

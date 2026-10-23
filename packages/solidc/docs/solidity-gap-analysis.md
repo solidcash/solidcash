@@ -1,8 +1,8 @@
 # Solidity parity: gap analysis and roadmap
 
 Status: historical analysis, 2026-06. This is the roadmap that drove the parity work; it is not the current
-compatibility claim. For the shipped 0.13.1 subset use
-[`SOLIDITY_COMPATIBILITY_0.13.1.md`](../../../docs/release/0.13.1/SOLIDITY_COMPATIBILITY_0.13.1.md); for open implementation limits use
+compatibility claim. For the shipped 0.14.0 subset use
+[`SOLIDITY_COMPATIBILITY_0.14.0.md`](../../../docs/release/0.14.0/SOLIDITY_COMPATIBILITY_0.14.0.md); for open implementation limits use
 `deferrals.md`. The analysis compares SolidCash against the Solidity language reference
 (`/Code/solidity/docs`, commit 816d9b2). Categories below:
 

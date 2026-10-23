@@ -1,14 +1,14 @@
-# SolidCash 0.13.1 Solidity Compatibility Manifest
+# SolidCash 0.14.0 Solidity Compatibility Manifest
 
 Status: release-candidate contract (conservative), reviewed 2026-10-11
-Applies to: `solidc` 0.13.1 with `evmCompat: true`
+Applies to: `solidc` 0.14.0 with `evmCompat: true`
 
-This manifest defines the compatibility claims for 0.13.1. “Supported” means the construct has parser, semantic,
+This manifest defines the compatibility claims for 0.14.0. “Supported” means the construct has parser, semantic,
 code-generation, and behavioral coverage on Bitcoin Cash. It does not imply EVM execution, EVM storage layout, or
 Hardhat byte-for-byte compatibility. Anything marked experimental is outside the stable release subset and must
 fail before broadcast when its required transaction shape cannot be constructed.
 
-| Area | Parse | Type check | Codegen | SDK | Behavioral evidence | 0.13.1 status |
+| Area | Parse | Type check | Codegen | SDK | Behavioral evidence | 0.14.0 status |
 |---|---:|---:|---:|---:|---|---|
 | Integers and checked/unchecked arithmetic | Yes | Yes | Yes | Yes | EVM-vs-BCH differential in both compile modes: `packages/solidcash/test/conformance/{arithmetic,unchecked,numbers,bitwise,comparisons}.conformance.test.ts`; VM spends in `packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts` | Supported; left shifts truncate to their type, as in Solidity |
 | Integer casts | Yes | Yes | Yes | Yes | `packages/solidcash/test/conformance/casts.conformance.test.ts` (both modes) | Supported. evmCompat truncates unsigned narrowing, reinterprets same-width int <-> uint as two's complement (`uint256(int256(-1)) == 2^256-1`, `int8(uint8(0xfa)) == -6`) and reads bytesN big-endian like the EVM; native reverts on loss and on sign reinterpretation by design |

@@ -2,9 +2,9 @@
 
 ## 0.14.0-beta.1
 
-Release-candidate notes, drafted as 0.13.1: see [`docs/release/0.13.1/RELEASE_NOTES_0.13.1.md`](docs/release/0.13.1/RELEASE_NOTES_0.13.1.md).
+Release-candidate notes: see [`docs/release/0.14.0/RELEASE_NOTES_0.14.0.md`](docs/release/0.14.0/RELEASE_NOTES_0.14.0.md).
 Solidity compatibility: see
-[`docs/release/0.13.1/SOLIDITY_COMPATIBILITY_0.13.1.md`](docs/release/0.13.1/SOLIDITY_COMPATIBILITY_0.13.1.md).
+[`docs/release/0.14.0/SOLIDITY_COMPATIBILITY_0.14.0.md`](docs/release/0.14.0/SOLIDITY_COMPATIBILITY_0.14.0.md).
 
 ### Supported in this release
 

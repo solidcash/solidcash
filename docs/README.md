@@ -9,7 +9,7 @@ This directory holds internal design, release, security and workstream records. 
 | --- | --- |
 | What did we decide, and what is authorized? | `docs/framed/DECISIONS.md` |
 | What is deferred, and what residual is accepted? | `packages/solidc/docs/deferrals.md` |
-| Is the release ready, and which gates ran? | `docs/release/0.13.1/RELEASE_DECISION_0.13.1.md` |
+| Is the release ready, and which gates ran? | `docs/release/0.14.0/RELEASE_DECISION_0.14.0.md` |
 | What security findings are current, and are they fixed? | `docs/security/security-audit-2026-10-16.md` |
 | What does the marketplace matrix show? | `docs/marketplace/marketplace-matrix-2026-10-14.md` |
 | What are the current mock-versus-BCHN limits? | `docs/marketplace/bchn-marketplace-consensus-relaxation.md` |
@@ -20,7 +20,7 @@ This directory holds internal design, release, security and workstream records. 
   cite them.
 - `docs/framed/` — framed composition spec (`SPEC_FRAMED_TRANSACTION.md`), per-call decisions and live assessments.
 - `docs/security/` — audit reports and `2026-10/` finding detail. Finding ids are cited by tests.
-- `docs/release/0.13.1/` — release decision, notes, readiness pointer and compatibility manifest.
+- `docs/release/0.14.0/` — release decision, notes, readiness pointer and compatibility manifest.
 - `docs/design/` — design map, comparison, concept validation, feature summary and performance findings.
 - `docs/bcmr/DESIGN.md`: BCMR metadata at deployment (identity output, publication, ERC-20 fields), a design.
 - `docs/marketplace/` — matrix records, stock inventory, BCHN relaxation and the lane patch.

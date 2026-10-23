@@ -1,9 +1,12 @@
-# Release decision — SolidCash 0.13.1
+# Release decision — SolidCash 0.14.0
 
 This document triages the six named audit residuals and the five named unconditional skips, then states the
-overall 0.13.1 release recommendation. Gate and suite evidence is recorded at the bottom, and the gate commands
+overall 0.14.0 release recommendation. Gate and suite evidence is recorded at the bottom, and the gate commands
 are run exactly as shipped. The 2026-10-17 review changed no gate pin, test assertion, or compiler/SDK behavior;
 the 2026-10-19 work fixed the lint, spellcheck and marketplace matrix failures listed below.
+
+The release was renumbered from 0.13.1 to 0.14.0 on 2026-10-23 and first ships as `0.14.0-beta.1`. The evidence
+below was recorded under the old number.
 
 ## Audit residuals
 

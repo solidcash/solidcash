@@ -1,12 +1,12 @@
-# SolidCash 0.13.1 release-candidate notes
+# SolidCash 0.14.0 release-candidate notes
 
-Status: release-candidate notes for `0.13.1`. The mocknet gates are green at `c7dc1b535` (2026-10-19), as recorded
-in [`RELEASE_DECISION_0.13.1.md`](RELEASE_DECISION_0.13.1.md). Two gates were not run: `release-application-regtest`
+Status: release-candidate notes for `0.14.0`. The mocknet gates are green at `c7dc1b535` (2026-10-19), as recorded
+in [`RELEASE_DECISION_0.14.0.md`](RELEASE_DECISION_0.14.0.md). Two gates were not run: `release-application-regtest`
 (verification was mocknet-only, by instruction) and a marketplace-matrix rerun at that commit (the last matrix run
-was all four cells green at `14bfff57a`). The exact release tag is set by the release owner.
+was all four cells green at `14bfff57a`). The release was numbered 0.13.1 when those gates ran; it first ships as `0.14.0-beta.1`.
 
-SolidCash 0.13.1 introduces a Solidity-compatible language and workflow layer for Bitcoin Cash contracts. The
-release claim is the documented subset in [`SOLIDITY_COMPATIBILITY_0.13.1.md`](SOLIDITY_COMPATIBILITY_0.13.1.md),
+SolidCash 0.14.0 introduces a Solidity-compatible language and workflow layer for Bitcoin Cash contracts. The
+release claim is the documented subset in [`SOLIDITY_COMPATIBILITY_0.14.0.md`](SOLIDITY_COMPATIBILITY_0.14.0.md),
 not unrestricted Solidity, EVM, Hardhat, or ethers parity.
 
 ## Supported in this release
@@ -18,7 +18,7 @@ not unrestricted Solidity, EVM, Hardhat, or ethers parity.
 - The built-in proxy profile for scalar and data-NFT state, deployed through `upgrades.deployProxy`.
 - A Hardhat-style project workflow through `@solidcash/testing` and SolidHat: configuration, CLI tasks, HRE,
   funded signers, factories, fixtures, time/block helpers, and the maintained chai assertion subset.
-- Six aligned 0.13.1 packages with verified exports, declarations, embedded-source maps, CLIs, and installation
+- Six aligned 0.14.0 packages with verified exports, declarations, embedded-source maps, CLIs, and installation
   from release tarballs. The packed consumer repeats the maintained stateful golden path.
 
 See [`examples/testing-suite/MIGRATION.md`](../../../examples/testing-suite/MIGRATION.md) for direct Hardhat, ethers, and

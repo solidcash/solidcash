@@ -746,7 +746,7 @@ named compatibility paths. They are not widened by new features.
 | Understand state storage | `website/docs/language/storage-model.md`, `packages/utils/src/state.ts` |
 | Understand auto-derivation | `website/docs/sdk/auto-derivation.md`, `packages/solidcash/src/stateful/` |
 | Understand mappings | `website/docs/language/verified-mappings.md`, `packages/solidcash/src/stateful/SortedList.ts` |
-| Understand `evmCompat` | `website/docs/compiler/solidity-import-compat.md`, `website/docs/language/abi-encoding.md`, `SOLIDITY_COMPATIBILITY_0.13.1.md` |
+| Understand `evmCompat` | `website/docs/compiler/solidity-import-compat.md`, `website/docs/language/abi-encoding.md`, `SOLIDITY_COMPATIBILITY_0.14.0.md` |
 | Understand the message bus | `website/docs/guides/message-bus.md`, `packages/solidcash/src/message-bus/` |
 | Understand framed composition | `docs/framed/` and `packages/solidcash/src/framed/` |
 | Work on tooling | `packages/solidhat/`, `packages/testing/` |

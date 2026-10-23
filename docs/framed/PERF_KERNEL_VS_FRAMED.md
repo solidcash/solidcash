@@ -3,7 +3,7 @@
 > **Measurement snapshot, 2026-10-05.** These numbers describe the cited worktrees, not the current master. Current
 > lane cost is in [`NOPROXY_LANE_COST.md`](./NOPROXY_LANE_COST.md); current release gates and sizes are in
 > [`../marketplace/bchn-marketplace-consensus-relaxation.md`](../marketplace/bchn-marketplace-consensus-relaxation.md)
-> and [`../release/0.13.1/RELEASE_DECISION_0.13.1.md`](../release/0.13.1/RELEASE_DECISION_0.13.1.md).
+> and [`../release/0.14.0/RELEASE_DECISION_0.14.0.md`](../release/0.14.0/RELEASE_DECISION_0.14.0.md).
 
 Measured 2026-10-05. Three lanes: framed proxied at `12c011dfe`, framed no-proxy at `d326e325b` (measurement worktree, sources retargeted at the no-proxy contracts), and the kernel lane at `d7f3c7ad6`.
 

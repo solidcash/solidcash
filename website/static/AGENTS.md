@@ -63,7 +63,7 @@ There are two routes, and both target the same compiler.
   imports including package paths such as `@openzeppelin/contracts/...`, synthesizes callable public getters, and
   switches `abi.*`, selectors, `interfaceId` and event selectors to EVM encoding and keccak256. Without the flag,
   `pragma solidity` is a diagnostic that names the option. New SolidHat projects set `compiler: { evmCompat: true }`
-  in `solidcash.config.ts`.
+  in `solidcash.config.ts`; it applies to `.scash` sources too, so remove it explicitly for native ABI and selectors.
 - **Rewrite as native `.scash`** with `pragma solidcash ^0.14.0;`. Native mode uses compact Script ABI framing and
   sha256-derived selectors, and gives the most control over bytecode size. Prefer it for new BCH-only contracts.
 
@@ -122,7 +122,8 @@ __gap arrays                 omitted under evmCompat; they reserve nothing on BC
 
 ## Toolchain
 
-Six npm packages, all versioned 0.14.0-beta.1. They ship as ESM only and target Node.js 22 or newer.
+Six npm packages, all versioned 0.14.0-beta.1. They ship as ESM only and target Node.js 22 or newer. The commands
+below resolve these names from npm; a 404 means that release is not published yet.
 
 ```text
 solidc                      -- compiler: CLI `solidc` and the compileFile/compileString API
@@ -141,9 +142,20 @@ npm install --save-dev solidc                          # compiler API and CLI (o
 ```
 
 Create flags (after `--`): `--template typescript|javascript|empty`, `--package-manager npm|yarn|pnpm`,
-`--hardhat 2|3`, `--ethers 5|6`, `--dry-run`, `--force`, `--no-install`. Without a TTY there are no prompts, and
-packages install only with `--yes` or `--install`. A project gets `solidcash.config.ts`, `vitest.solidhat.config.ts`,
-samples in `contracts/`, `test/` and `scripts/deploy.ts` (not with `empty`); compiles go to `artifacts/solidcash/`.
+`--hardhat 2|3`, `--ethers 5|6`, `--sample`, `--no-sample`, `--dry-run`, `--force`, `--yes`, `--install`,
+`--no-install`. Without a TTY there are no prompts, and packages install only with `--yes` or `--install`.
+A project gets `solidcash.config.ts`, `vitest.solidhat.config.ts`, samples in `contracts/`, `test/` and
+`scripts/deploy.ts` (not with `empty`); compiles go to `artifacts/solidcash/`.
+
+```text
+contracts/                  .scash and .sol sources
+test/                       Vitest tests
+scripts/deploy.ts           network-selectable deployment script
+solidcash.config.ts         compiler, paths, typegen, accounts, networks
+vitest.solidhat.config.ts   SolidHat preset and test include pattern
+artifacts/solidcash/        generated artifacts (ignored)
+typechain-types/            generated bindings
+```
 
 ### solidc CLI
 
@@ -156,7 +168,7 @@ solidc <file> [options]    -- e.g. solidc Counter.scash -o Counter.artifact.ts -
 --split <off|size|func>    -- size: root + facet bundle for an over-limit contract; func: one framed master per entry
 --suppress-warnings | --no-source-map  -- hide warnings | skip source maps (faster, weaker failure attribution)
 --no-message-bus           -- forbid inferred message-bus composition (fails if the contract needs it)
--S | -L                    -- skip function parameter type enforcement | the injected tx.time locktime guard
+-S | -L                    -- skip function parameter type enforcement | skip the injected tx.time locktime guard
 --allow-unverified-paths   -- unsafe: a path with no verification and no state covenant warns instead of failing
 --allow-unsafe-operations  -- unsafe: admit caller-controlled delegatecall/selfdestruct authority
 ```
@@ -181,7 +193,7 @@ primaryContractName          -- choose the contract compiled into the single art
 enforceFinalRequire          -- default true: a path with no verification and no state covenant is an error
 enforceLocktimeGuard, enforceFunctionParameterTypes  -- default true; allowUnsafeOperations default false
 optimise: false              -- debugging only: exact failing source lines, bigger script; never deploy it
-chainId                      -- block.chainid byte: mainnet 0, chipnet 1, testnet4 2, regtest -1
+chainId                      -- block.chainid as chainId & 0xff: mainnet 0, chipnet 1, testnet4 2, regtest 255
 maximumInputBytes, commitmentLimit  -- default 10,000 and 128 (BCH); raise them only for private test networks
 ```
 
@@ -193,10 +205,11 @@ the exact artifact of every deployment (https://solidcash.org/docs/compiler/arti
 
 ## Language Reference
 
-Native `.scash` is the default mode; `evmCompat: true` is for ported Solidity (`pragma solidity`, `.sol` imports,
-keccak256 selectors, EVM-style casts and ABI, stricter checks). Rules hold in both modes unless marked (native) or
-(evmCompat). Solidity shapes the parser accepts beyond the documented subset are (experimental):
-https://solidcash.org/docs/basics/solidity-parity
+The compiler default is native mode. `evmCompat: true` enables Solidity compatibility (`pragma solidity`, `.sol`
+imports, keccak256 selectors, EVM-style casts and ABI, stricter checks). It also applies to `.scash` sources, which
+is why generated SolidHat projects use EVM ABI encoding until you remove the option. Rules hold in both modes
+unless marked (native) or (evmCompat). Solidity shapes the parser accepts beyond the documented subset are
+(experimental): https://solidcash.org/docs/basics/solidity-parity
 
 ### Source File Structure
 
@@ -268,6 +281,8 @@ date("2025-12-31T14:30:00")        // UTC Unix timestamp at compile time; the fu
 7 days  2 hours                    // seconds, minutes, hours, days, weeks
 1 ether  1 gwei  1 wei             // porting units, nominal 1e18 / 1e9 / 1 (evmCompat rejects finney)
 ```
+
+SolidCash defines `finney` as 10 sats and `bits` as 100 sats.
 
 ### Operators
 
@@ -569,6 +584,8 @@ tx.origin     -- address: locking bytecode of the first P2PKH input that holds n
 tx.gasprice   -- uint32: this transaction's fee rate in sat/kB
 ```
 
+- `msg.data` exists on the normal entry path. It is unavailable inside an internal subroutine
+  (`MsgDataInSubroutineError`) and in a single-entry framed master (`FRAMED_CODEGEN_UNAVAILABLE`).
 - The compiler warns on every read of `msg.sender` and `tx.origin`. Both derive from the co-spent inputs, which the
   transaction builder picks, so authorize with `checkSig`, `checkMultiSig` or `checkDataSig`, not `msg.sender` alone.
 - `msg.value` is not readable in `view` public/external functions or a non-payable constructor; `pure` functions
@@ -590,7 +607,7 @@ bytes32 blobhash(int i)        -- always zero
 
 - `block.number` and `block.timestamp` warn that they lag the oracle. `blobbasefee`, `prevrandao`, `gaslimit` and
   `gasleft()` are compiler-warned shims; none of these values is randomness. For deadlines prefer `tx.time` /
-  `this.age`, which need no oracle.
+  `this.age`, which need no oracle. For randomness use commit-reveal or a `checkDataSig` oracle.
 - Oracle fields co-spend one shared block-info oracle UTXO read-only (only its owner updates it); the SDK adds the
   input. A live provider needs `blockOracleCategory`; `MockNetworkProvider` has its own oracle. `blockhash(n)`
   makes the contract stateful and is called through `StatefulContract`; a missing `(n, hash)` NFT is an error,
@@ -842,7 +859,8 @@ contract Forwarder(pubkey admin) {
   `delegateIndex == this.activeInputIndex + __proxyBlockSize`. The built-in proxy does this. Without the input the
   forwarder keeps the identity-and-payload pin only, so place the delegate adjacent yourself.
 - Deployed libraries (`L.f(...)` on a library function touching library state) use the same delegate co-spend
-  (experimental). Not supported in 0.14.0-beta.1: fallback-only transparent proxies, value or token movement in delegate mode.
+  (experimental). Not supported in 0.14.0-beta.1: fallback-only transparent proxies, value or token movement in
+  delegate mode.
 
 ### Cross-Contract Calls
 
@@ -989,6 +1007,9 @@ const sc2 = StatefulContract.withCategory(new Contract(artifact, ctorArgs, { pro
 const asBob = sc.connect(bob);                                // also attach(categoryId), withProvider(provider)
 ```
 
+Generated bindings also expose direct public-state getters such as `await counter.count()`; the base SDK form is
+`await counter.state.count()`.
+
 A provider runner reads; a Signer runner also funds and signs. Always pass `constructorArgs` when the SDK may spend
 the contract: a P2SH address does not reveal its redeem script. Lower-level lifecycle builders:
 
@@ -1032,18 +1053,90 @@ for exact failing lines (https://solidcash.org/docs/guides/debugging).
 ## Testing and SolidHat
 
 ```sh
-npx solidhat compile [sources...]    # cached graph compile; publishes artifacts/solidcash atomically
+npx solidhat compile [sources...]    # cached graph compile; writes artifacts/solidcash and bindings
 npx solidhat test [files] [-t name]  # compiles first (skip with --no-compile), then runs Vitest
-npx solidhat deploy [script] | run <script>  # compile, then run scripts/deploy.ts or a script with the HRE
-npx solidhat typegen [--watch]       # TypeChain-style ethers5/ethers6 bindings; names infer artifact types
+npx solidhat deploy [script] | run <script>  # compile first (skip with --no-compile), then run
+npx solidhat typegen [--watch]       # TypeChain-style ethers5/ethers6 bindings
 npx solidhat doctor [--json] | clean # check the project | remove artifacts, cache and bindings
 npx solidhat init --from-hardhat     # write solidcash.config.ts from hardhat.config.*
+npx solidhat node                    # describe the in-process mock network
 ```
 
+`compile` also refreshes the configured `typegen` targets under `typechain-types/`; a binding error aborts the
+compile.
+
 `--network <name>` selects a configured network. npm scripts: `solidhat:compile|typegen|test|deploy|clean` (flags
-after `--`). Without SolidHat, `@solidcash/testing` is the same runtime (`import hre, { ethers, network, upgrades }
-from '@solidcash/testing'`, `solidcashHardhatPreset` from `/vitest-preset`) with a `solidcash` CLI whose `test`
-does not compile first.
+after `--`). Without SolidHat, install the runtime and use the same preset:
+
+```sh
+npm install --save-dev @solidcash/testing vitest
+```
+
+```ts
+import hre, { ethers, network, upgrades } from '@solidcash/testing';
+import { solidcashHardhatPreset } from '@solidcash/testing/vitest-preset';
+```
+
+Its `solidcash` CLI does not compile before `test`.
+
+### Generated test configuration
+
+The scaffold writes this `vitest.solidhat.config.ts` for the default Hardhat 3 / Ethers 6 target:
+
+```ts
+import { defineConfig } from 'vitest/config';
+import { solidhatPreset } from '@solidcash/solidhat/vitest-preset';
+
+export default defineConfig(solidhatPreset({ hardhat: 3, ethers: 6 }, {
+  test: { include: ['test/**/*.test.{ts,js}'] },
+}));
+```
+
+### A complete stateful test
+
+This example uses:
+
+```solidity
+contract Counter(pubkey admin) {
+    int public counter;
+    function increment(sig s) { require(checkSig(s, admin), "not admin"); this.counter += 1; }
+}
+```
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { ethers } from '@solidcash/solidhat/hardhat3';
+import { SignatureTemplate } from 'solidcash';
+
+async function deployCounter() {
+  const [admin, outsider] = await ethers.getSigners(2);
+  const Counter = await ethers.getContractFactory('Counter', admin);
+  const counter = await Counter.deploy(admin.publicKey);
+  await counter.waitForDeployment();
+  return { counter, admin, outsider };
+}
+
+describe('Counter', () => {
+  it('lets the admin change state', async () => {
+    const { counter, admin } = await deployCounter();
+    await counter.increment(new SignatureTemplate(admin.privateKey));
+    expect(await counter.counter()).toBe(1n);
+  });
+
+  it('rejects an outsider', async () => {
+    const { counter, outsider } = await deployCounter();
+    await expect(counter.increment(new SignatureTemplate(outsider.privateKey)))
+      .toBeRevertedWith(/not admin/);
+  });
+});
+```
+
+Generated bindings expose direct public-state getters such as `await counter.counter()`; the base SDK form is
+`await counter.state.counter()`. `SignatureTemplate` and `toBeRevertedWith` come from the SDK and preset.
+
+Run one file or one test with `npx solidhat test test/Counter.test.ts -t 'lets the admin'`.
+
+### Project configuration
 
 ```ts
 // solidcash.config.ts
@@ -1059,10 +1152,13 @@ export default defineConfig({
     regtest: { type: 'regtest', rpc: { url: 'http://127.0.0.1:18443', user: 'user', password: 'password' } },
     // Electrum/bitcoin-rpc: explicit mnemonic, one per chain (BCH signatures carry no chain id); never funded
     chipnet: { type: 'electrum', network: 'chipnet', mnemonic: process.env.SOLIDCASH_MNEMONIC_CHIPNET },
+    mainnet: { type: 'electrum', network: 'mainnet', mnemonic: process.env.SOLIDCASH_MNEMONIC_MAINNET },
   },
   defaultNetwork: 'mock',
 });
 ```
+
+### Deployment script
 
 ```ts
 // scripts/deploy.ts -- npx solidhat deploy --network regtest
@@ -1070,7 +1166,7 @@ import { ethers, network, upgrades } from '@solidcash/solidhat/hardhat3';
 
 const [deployer] = await ethers.getSigners(1);
 const Counter = await ethers.getContractFactory('Counter', deployer); // or 'contracts/Counter.scash:Counter'
-const counter = await Counter.deploy(deployer.publicKey);
+const counter = await Counter.deploy(); // pass constructor args here for a parameterized contract
 await counter.waitForDeployment();
 console.log(network.name, await counter.getAddress(), counter.deploymentTransaction().txid);
 const box = await upgrades.deployProxy(await ethers.getContractFactory('Box', deployer), [42n]);

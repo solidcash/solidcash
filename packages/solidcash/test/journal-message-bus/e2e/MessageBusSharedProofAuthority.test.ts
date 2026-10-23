@@ -65,8 +65,10 @@ describe('message-bus shared sorted-proof authority', () => {
       { function: 'move', args: [aliceAddress, bobAddress, 1n] },
       { function: 'move', args: [carolAddress, bobAddress, 1n] },
     ]);
-    const sharedIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
-      input.name === '__message_bus_key_balances_0');
+    // routeWitnesses holds the route inputs other than batchBlob and the compiler's __internal__ ones.
+    const sharedIndex = artifact.messageBus!.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'))
+      .findIndex((input) => input.name === '__message_bus_key_balances_0');
     expect(sharedIndex).toBeGreaterThanOrEqual(0);
     const forgedWitnesses = [...distinct.routeWitnesses];
     forgedWitnesses[sharedIndex] = aliceAddress;

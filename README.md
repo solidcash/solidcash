@@ -1,7 +1,7 @@
 # SolidCash
 
-[![Build Status](https://github.com/CashScript/cashscript/actions/workflows/github-actions.yml/badge.svg)](https://github.com/CashScript/cashscript/actions/workflows/github-actions.yml)
-[![Coverage Status](https://img.shields.io/codecov/c/github/CashScript/cashscript.svg)](https://codecov.io/gh/CashScript/cashscript/)
+[![Build Status](https://github.com/solidcash/solidcash/actions/workflows/github-actions.yml/badge.svg)](https://github.com/solidcash/solidcash/actions/workflows/github-actions.yml)
+[![Coverage Status](https://img.shields.io/codecov/c/github/solidcash/solidcash.svg)](https://codecov.io/gh/solidcash/solidcash/)
 [![NPM Version](https://img.shields.io/npm/v/solidcash.svg)](https://www.npmjs.com/package/solidcash)
 [![NPM Monthly Downloads](https://img.shields.io/npm/dm/solidcash.svg)](https://www.npmjs.com/package/solidcash)
 [![NPM License](https://img.shields.io/npm/l/solidcash.svg)](https://www.npmjs.com/package/solidcash)
@@ -132,8 +132,8 @@ The "Hello World" of SolidCash contracts is defining the P2PKH pattern inside a 
 To run the examples, clone this repository and navigate to the `examples/` directory. Since the examples depend on the SDK, be sure to run `npm install` or `yarn` inside the `examples/` directory, which installs all required packages.
 
 ```bash
-git clone git@github.com:CashScript/cashscript.git
-cd cashscript/examples
+git clone git@github.com:solidcash/solidcash.git
+cd solidcash/examples
 npm install
 ```
 

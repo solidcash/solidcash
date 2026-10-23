@@ -114,10 +114,10 @@ const P2PKH = compileFile(new URL('p2pkh.scash', import.meta.url));
 compileString(sourceCode: string, options?: CompileStringOptions): Artifact
 ```
 
-Compiles a SolidCash contract from a source code string. This compile method is handy in a browser compilation setting like the [SolidCash Playground](https://playground.solidcash.org/) where testing contracts can be quickly compiled and discarded. The method is also useful if no source file is locally available (e.g. the source code is retrieved with a REST API).
+Compiles a SolidCash contract from a source code string. This compile method is handy in a browser, where test contracts can be compiled quickly and discarded. The method is also useful if no source file is locally available (e.g. the source code is retrieved with a REST API).
 
 ```ts
-const baseUrl = 'https://raw.githubusercontent.com/CashScript/cashscript'
+const baseUrl = 'https://raw.githubusercontent.com/solidcash/solidcash'
 const result = await fetch(`${baseUrl}/master/examples/p2pkh.scash`);
 const source = await result.text();
 

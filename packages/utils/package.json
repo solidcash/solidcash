@@ -11,11 +11,11 @@
   ],
   "homepage": "https://solidcash.org",
   "bugs": {
-    "url": "https://github.com/CashScript/cashscript/issues"
+    "url": "https://github.com/solidcash/solidcash/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/CashScript/cashscript.git"
+    "url": "git+https://github.com/solidcash/solidcash.git"
   },
   "license": "MIT",
   "publishConfig": { "access": "public" },

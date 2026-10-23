@@ -140,5 +140,5 @@ Contracts with hand-optimized bytecode can still be used with the SolidCash SDK,
 
 More advanced examples on covenants, using NFTs to keep local state and issuing NFTs as receipts can be found in the [Covenants & Introspection Guide](/docs/guides/covenants).
 
-[GitHub-SolidCash-Examples]: https://github.com/CashScript/cashscript/tree/master/examples
+[GitHub-SolidCash-Examples]: https://github.com/solidcash/solidcash/tree/master/examples
 [Cauldron-Whitepaper]: https://www.cauldron.quest/_files/ugd/ae85be_b1dc04d2b6b94ab5a200e3d8cd197aa3.pdf

@@ -1,7 +1,7 @@
 # @solidcash/utils
 
-[![Build Status](https://github.com/CashScript/cashscript/actions/workflows/github-actions.yml/badge.svg)](https://github.com/CashScript/cashscript/actions/workflows/github-actions.yml)
-[![Coverage Status](https://img.shields.io/codecov/c/github/CashScript/cashscript.svg)](https://codecov.io/gh/CashScript/cashscript)
+[![Build Status](https://github.com/solidcash/solidcash/actions/workflows/github-actions.yml/badge.svg)](https://github.com/solidcash/solidcash/actions/workflows/github-actions.yml)
+[![Coverage Status](https://img.shields.io/codecov/c/github/solidcash/solidcash.svg)](https://codecov.io/gh/solidcash/solidcash)
 [![NPM Version](https://img.shields.io/npm/v/@solidcash/utils.svg)](https://www.npmjs.com/package/@solidcash/utils)
 [![NPM Monthly Downloads](https://img.shields.io/npm/dm/@solidcash/utils.svg)](https://www.npmjs.com/package/@solidcash/utils)
 [![NPM License](https://img.shields.io/npm/l/@solidcash/utils.svg)](https://www.npmjs.com/package/@solidcash/utils)

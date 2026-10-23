@@ -1,6 +1,9 @@
 ---
 title: Getting Started
+description: Create a SolidHat project, then write your first SolidCash contract and build a transaction for it.
 ---
+
+{/* Hidden until the playground is deployed.
 
 ## Try SolidCash Online
 
@@ -20,6 +23,7 @@ Here are the 5 simple steps for creating your first smart contract transaction w
 3. Add mock UTXOs to the smart contract address and the wallets used for testing.
 4. Next, go to the TransactionBuilder select the contract UTXO and the function to invoke on it
 5. Finally, specify the in- and outputs for the transaction and click 'Evaluate'!
+*/}
 
 ## Create a Project
 
@@ -130,7 +134,7 @@ Then a `TransferWithTimeout` is declared which takes in 3 contract arguments and
 These contract functions both have `require` statements necessary to be met to be able to spend BCH from the contract.
 
 :::tip
-There are some other examples available on the [Examples page](/docs/language/examples) that can be used to take inspiration from. Further examples of the TypeScript and JavaScript integration can be found on [GitHub](https://github.com/CashScript/cashscript/tree/master/examples).
+There are some other examples available on the [Examples page](/docs/language/examples) that can be used to take inspiration from. Further examples of the TypeScript and JavaScript integration can be found on [GitHub](https://github.com/solidcash/solidcash/tree/master/examples).
 :::
 
 ### Compiling your contract
@@ -170,7 +174,7 @@ To initialise a contract with the SDK we will need 3 things: the contract artifa
 To do this, we import the `ElectrumNetworkProvider` and `Contract` classes from the SolidCash SDK. We also need to import the contract artifact. Lastly, we need public keys from a generated key-pair to use as contract constructor arguments.
 
 :::tip
-For a code example of how to generate key-pairs with Libauth, see the [SolidCash Examples' `common.ts`](https://github.com/CashScript/cashscript/blob/master/examples/common.ts) file where Alice and Bob's key-pairs are created.
+For a code example of how to generate key-pairs with Libauth, see the [SolidCash Examples' `common.ts`](https://github.com/solidcash/solidcash/blob/master/examples/common.ts) file where Alice and Bob's key-pairs are created.
 :::
 
 With the instantiated contract, we can now get the contract address and get the contract balance and UTXOs in the following way:

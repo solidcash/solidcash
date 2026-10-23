@@ -24,13 +24,10 @@ const config: Config = {
       },
       items: [
         { to: '/docs/basics/about', label: 'Docs', position: 'right' },
+        // Hidden until the playground is deployed:
+        // { href: 'https://playground.solidcash.org', label: 'Playground', position: 'right' },
         {
-          href: 'https://playground.solidcash.org',
-          label: 'Playground',
-          position: 'right',
-        },
-        {
-          href: 'https://github.com/CashScript/cashscript',
+          href: 'https://github.com/solidcash/solidcash',
           label: 'GitHub',
           position: 'right',
         },

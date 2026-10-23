@@ -194,4 +194,4 @@ console.log(transferDetails);
 
 [mainnetjs]: https://mainnet.cash/
 [libauth]: https://libauth.org/
-[github-examples]: https://github.com/CashScript/cashscript/tree/master/examples
+[github-examples]: https://github.com/solidcash/solidcash/tree/master/examples

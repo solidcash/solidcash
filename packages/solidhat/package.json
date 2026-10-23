@@ -4,6 +4,8 @@
   "description": "Hardhat-style project tooling for SolidCash",
   "keywords": ["solidcash", "bitcoin cash", "hardhat", "smart contracts"],
   "homepage": "https://solidcash.org",
+  "bugs": { "url": "https://github.com/solidcash/solidcash/issues" },
+  "repository": { "type": "git", "url": "git+https://github.com/solidcash/solidcash.git" },
   "license": "MIT",
   "publishConfig": { "access": "public" },
   "engines": { "node": ">=22" },

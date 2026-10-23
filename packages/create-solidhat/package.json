@@ -4,6 +4,8 @@
   "description": "Create a new SolidHat project",
   "keywords": ["solidcash", "bitcoin cash", "project initializer"],
   "homepage": "https://solidcash.org",
+  "bugs": { "url": "https://github.com/solidcash/solidcash/issues" },
+  "repository": { "type": "git", "url": "git+https://github.com/solidcash/solidcash.git" },
   "license": "MIT",
   "publishConfig": { "access": "public" },
   "engines": { "node": ">=22" },

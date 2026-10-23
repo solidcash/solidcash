@@ -105,9 +105,12 @@ A direct return carrier becomes a call record (as built):
 1. Direct single calls, aliases and hashed results: `8e6d14f44`.
 2. Loops over computed targets, the 31-byte digest, copy-safe argument digests: `141bd8ef2`. Returning batch rows were
    not built (section 3).
-3. Delegatecall, proxies and split facets: `56271e705`.
+3. Delegatecall, proxies and split facets: `56271e705`; the result behind a record read before the derivation checks it
+   (`3115d9d9c`), and each record digested from its own call (`a6222d08d`).
 4. Docs: D50, the security ledger, `cross-contract-calls.md`, the public agent reference.
-5. One ladder run for the goal; marketplace bytecode changes, so it is the gate.
+5. One ladder run for the goal. The default lane compiles framed, where records do not apply (byte-identical
+   artifacts); the proxy x kernel cell ran once on mocknet: 65 of 66, `job posting > post two jobs` failing (handled
+   elsewhere).
 
 Test: `packages/solidcash/test/e2e/CallRecords.test.ts`.
 

@@ -933,7 +933,8 @@ needs VM evidence, `rejectedWith` has no source fallback).
 
 ## Direct call results bound by call records (2026-10-22, D50)
 
-Branch `feat/call-records`: `8e6d14f44`, `141bd8ef2`, `56271e705`. Design: `docs/wip/call-records/DESIGN.md`.
+Merged into `master` from `feat/call-records`: `8e6d14f44`, `141bd8ef2`, `56271e705`, `3115d9d9c`, `a6222d08d`.
+Design: `docs/wip/call-records/DESIGN.md`.
 
 ### Fixed
 

@@ -105,7 +105,8 @@ describe('local array-element assignment', () => {
     // checks add bytes back, so the budget stays the one this line already carried rather than the shrink's 700.
     // 792 after the October hardening (standalone return-carrier refusal, canonical array-parameter walk).
     // 819 measured after the trailing batch-width binding landed on the direct convention.
-    expect(artifact.debug.bytecode.length / 2).toBeLessThan(830);
+    // 845 with call records (D50): the entry digests its own call into its record and counts its carriers.
+    expect(artifact.debug.bytecode.length / 2).toBeLessThan(860);
   });
 
   it('forwards a complete fixed-array projection at an external return boundary', () => {

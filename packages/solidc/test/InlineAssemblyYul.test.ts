@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
-import { bytecodeToAsm, hash256, sourceMapToLocationData } from '@solidcash/utils';
+import { bytecodeToAsm, computeFunctionSelectorHex, hash256, sourceMapToLocationData } from '@solidcash/utils';
 import { UnsupportedInlineAssemblyError } from '../src/Errors.js';
 
 // Phase 1 of Yul inline-assembly support: the Yul sub-grammar parses (no more opaque ':' ParseError on `:=`)
@@ -646,11 +646,18 @@ describe('bytes/string memory params and named returns as __yulmem pointers (mst
   });
 
   it('materializes a string param byte-identically to the bytes form', () => {
-    const mk = (t: string): string => compileString(
+    const mk = (t: string): string[] => compileString(
       `contract C(){function f(${t} memory p) returns (bytes32 r) {`
       + ' assembly { r := mload(add(p,0x20)) mstore(add(p,0x20), 1) } } }',
-      { evmCompat: true });
-    expect(mk('bytes').bytecode).toBe(mk('string').bytecode);
+      { evmCompat: true }).bytecode.split(' ');
+    // A returning entry digests its own call (D50): ordinal 0, then its selector, which the parameter type sets.
+    const record = (t: string): string => `0000${computeFunctionSelectorHex(`f(${t})`, true)}`;
+    const normalized = (t: string): string[] => {
+      const tokens = mk(t);
+      expect(tokens).toContain(record(t));
+      return tokens.map((token) => (token === record(t) ? '<record>' : token));
+    };
+    expect(normalized('string')).toEqual(normalized('bytes'));
   });
 
   it('materializes an uninitialized named-return string byte-identically to the bytes form', () => {

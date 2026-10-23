@@ -206,10 +206,21 @@ describe('Low-level call options + tuple-slot modifiers + value units', () => {
       + '  }'
       + '}',
     );
-    // emitSingleReturnEventUniqueness: count outputs with category==B and LBC==OP_TRUE, then == 1.
+    // The caller-side count (H2): outputs with category==B and LBC==OP_TRUE, then == the returning-call count.
+    // Call records (D50) moved that bound into the callee, so neither caller counts.
     const uniquenessPin = 'OP_OUTPUTTOKENCATEGORY OP_3 OP_PICK OP_EQUAL OP_IF OP_DUP OP_OUTPUTBYTECODE';
-    expect(unique.bytecode).toContain(uniquenessPin);
+    expect(unique.bytecode).not.toContain(uniquenessPin);
     expect(withLoop.bytecode).not.toContain(uniquenessPin);
+    // Each callee run counts its category's OP_TRUE carriers against the records it pinned, and the caller reads
+    // only the record whose digest is its own call's.
+    const callee = compileMessageBus(
+      'contract D { bool flag; function registered(address a) public returns (bool) { return this.flag; } }',
+      { suppressWarnings: true },
+    );
+    expect(callee.bytecode).toContain('OP_0 OP_TXOUTPUTCOUNT OP_BEGIN OP_1SUB OP_DUP OP_OUTPUTTOKENCATEGORY OP_3'
+      + ' OP_PICK OP_EQUAL OP_OVER OP_OUTPUTBYTECODE 51 OP_EQUAL OP_BOOLAND OP_ROT OP_ADD OP_SWAP OP_DUP OP_NOT'
+      + ' OP_UNTIL OP_DROP OP_NIP OP_NUMEQUALVERIFY');
+    expect(unique.bytecode).toContain('1f OP_SPLIT OP_SWAP OP_ROT OP_EQUALVERIFY');
   });
 
   it('evmCompat .call(data) compiles a presence pin for the callee input', () => {

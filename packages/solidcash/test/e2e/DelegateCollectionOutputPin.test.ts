@@ -15,7 +15,7 @@ import {
   getEntryNftAddress,
   slotValueToBytes,
 } from '../../src/stateful/index.js';
-import { ProxyContract } from '../../src/stateful/upgrades.js';
+import { ProxyContract, defaultProxyDelegateDistances } from '../../src/stateful/upgrades.js';
 import { defaultProxyArtifact } from '../../src/stateful/defaultProxyArtifact.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
@@ -74,8 +74,8 @@ const FORGED_VALUE = new Uint8Array([0x63]); // 99
 // count - including the OP_0 it is compared against - is shared into one invoked helper. Relaxing it is still
 // a one-opcode edit to what follows the invoke: `== 0` becomes `<= 0`. Kept in step with X50's copy.
 // Matches X50 / the regenerated default proxy: compare remaining against 0 after the inline count loop.
-const STRICT_TAIL = 'OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_1';
-const RELAXED_TAIL = 'OP_0 OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
+const STRICT_TAIL = 'OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_2DROP OP_1';
+const RELAXED_TAIL = 'OP_0 OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_2DROP OP_1';
 const raw = (builder: any): string => binToHex(encodeTransaction(builder.buildLibauthTransaction()));
 
 async function fundedSigner(): Promise<{ signer: Signer; provider: any }> {
@@ -123,8 +123,12 @@ async function deployBehindRelaxedProxy(
   } as Artifact;
   const implArtifact = compileString(MAP_IMPL);
   const implementation = await getContractFactory(implArtifact, signer).deploy({ logicalNonce: false });
-  const proxy = await new ContractFactory(graft(relaxed, implArtifact), signer)
-    .deploy(addressToLockScript(implementation.address), { initialState: { count: 0n }, logicalNonce: false });
+  // The forward's two published delegate distances, as `upgrades.deployProxy` passes them.
+  const [blockSize, routeBlockSize] = defaultProxyDelegateDistances(implArtifact);
+  const proxy = await new ContractFactory(graft(relaxed, implArtifact), signer).deploy(
+    addressToLockScript(implementation.address), blockSize, routeBlockSize,
+    { initialState: { count: 0n }, logicalNonce: false },
+  );
   const categoryId = (proxy as any).categoryId!;
   const inner = (proxy as any).inner;
   const salted = inner.category ? inner : inner.withCategory(hexToBin(categoryId));

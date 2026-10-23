@@ -858,6 +858,12 @@ contract Forwarder(pubkey admin) {
   distance publishes it as a `bigint __proxyBlockSize` constructor input; the forward then also requires
   `delegateIndex == this.activeInputIndex + __proxyBlockSize`. The built-in proxy does this. Without the input the
   forwarder keeps the identity-and-payload pin only, so place the delegate adjacent yourself.
+- A message-bus route call through a forwarder lays the delegate after the implementation's route block instead
+  (`messageBus.route.blockLayout.blockSize` in its artifact). Publish that distance beside the first as a
+  `bigint __proxyRouteBlockSize` constructor input: the forward then requires the route distance when the forwarded
+  selector is the route selector `0x53434231` and `__proxyBlockSize` for any other selector, and it requires the
+  delegate's first push to be that exact four-byte selector. The built-in proxy publishes both and `deployProxy`
+  fills them in. A forwarder with only `__proxyBlockSize` uses that one distance for every call.
 - Deployed libraries (`L.f(...)` on a library function touching library state) use the same delegate co-spend
   (experimental). Not supported in 0.14.0-beta.1: fallback-only transparent proxies, value or token movement in
   delegate mode.

@@ -1371,6 +1371,8 @@ interface SharedEntryCheck {
   readonly masterOrdinal: number | undefined;
   readonly emit: (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData) => void;
   id?: bigint;
+  /** The sites the probe counted, set when the helpers are defined. */
+  uses?: number;
 }
 
 const SORTED_FLOW_SKIPPED = new Set(['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
@@ -1710,8 +1712,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private loopIntWideId: bigint | undefined;
   /** Per-entry checks shared as one helper each. Contract-wide: the probe, the bodies and the definitions share it. */
   private sharedEntryChecks = new Map<string, SharedEntryCheck>();
-  /** Set on a shared check's body traversal: the check stays inline there, and picks its master as recorded. */
-  private sharedCheckBody: { masterOrdinal: number | undefined } | undefined;
+  /**
+   * Set on a shared check's body traversal: the check stays inline there, and picks its master as recorded. `uses`
+   * counts the check's sites.
+   */
+  private sharedCheckBody: { masterOrdinal: number | undefined; uses: number } | undefined;
   /** Set by the direct census: the output pass of the slot scans runs the mutable-output check. */
   private mutableOutputCheckPending = false;
   /** Set while the epilogue's preservation checks run and the slot scans will walk the inputs. */
@@ -3028,6 +3033,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     key: string,
     emit: (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData) => void,
   ): bigint | undefined {
+    const check = this.sharedEntryCheck(key, emit);
+    if (check === undefined) return undefined;
+    this.bumpSubroutineUse(check.useKey);
+    return check.id;
+  }
+
+  /**
+   * Inside a shared check's body: the defined helper of the check `key` on the same master, else undefined. Each
+   * inline site of this check counted one site of `key`, so the helper is taken only where `key` has sites of its
+   * own; otherwise this body keeps it inline and the helper serves no one.
+   */
+  private nestedSharedEntryCheckId(key: string): bigint | undefined {
+    if (this.sharedCheckBody === undefined) return undefined;
+    const nested = this.sharedEntryChecks.get(`${this.sharedCheckBody.masterOrdinal ?? 'self'}|${key}`);
+    if (nested?.id === undefined || !this.subroutineDefined.get(nested.id)) return undefined;
+    return (nested.uses ?? 0) > this.sharedCheckBody.uses ? nested.id : undefined;
+  }
+
+  /**
+   * The shared per-entry check `key` of this frame's master, registered on first sight without counting a site;
+   * undefined where the frame has no shared form. Checks are defined in registration order, so a check registered
+   * first can serve another's body.
+   */
+  private sharedEntryCheck(
+    key: string,
+    emit: (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData) => void,
+  ): SharedEntryCheck | undefined {
     if (this.sharedCheckBody !== undefined || this.framedMaster || this.usesMessageBusOwnerBlockBase()) {
       return undefined;
     }
@@ -3047,12 +3079,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       };
       this.sharedEntryChecks.set(fullKey, check);
     }
-    this.bumpSubroutineUse(check.useKey);
-    return check.id;
+    return check;
   }
 
-  /** A shared check's body traversal: this contract's record layout, and the master its sites pick. */
-  private prepareSharedCheckBody(t: GenerateTargetTraversalWithLocation, masterOrdinal: number | undefined): void {
+  /** A shared check's body traversal: this contract's record layout, the master its sites pick, and their count. */
+  private prepareSharedCheckBody(
+    t: GenerateTargetTraversalWithLocation, masterOrdinal: number | undefined, uses: number,
+  ): void {
     t.dataNftCount = this.dataNftCount;
     t.collectionDefinitions = this.collectionDefinitions;
     t.stateVariables = this.stateVariables;
@@ -3060,8 +3093,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     t.contractTokenContainerCount = this.contractTokenContainerCount;
     t.currentContractHoldsTokens = this.currentContractHoldsTokens;
     t.currentContractHasThreads = this.currentContractHasThreads;
+    t.currentContractSettlesCallRecords = this.currentContractSettlesCallRecords;
     t.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
-    t.sharedCheckBody = { masterOrdinal };
+    t.sharedCheckBody = { masterOrdinal, uses };
   }
 
   /**
@@ -5724,11 +5758,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Per-entry covenant checks, after every helper they invoke. Outlining cannot share them whole: their scans
     // park the rest of a list on the alternate stack, and they invoke helpers it may not nest.
     for (const check of this.sharedEntryChecks.values()) {
+      const uses = count(check.useKey);
+      check.uses = uses;
       const emitBody = (t: GenerateTargetTraversalWithLocation): void => {
-        this.prepareSharedCheckBody(t, check.masterOrdinal);
+        this.prepareSharedCheckBody(t, check.masterOrdinal, uses);
         check.emit(t, loc);
       };
-      const uses = count(check.useKey);
       if (uses < 2
         || !this.capturedSubroutineIsProfitable(this.peekCompactHelperId(), uses, emitBody, false)) continue;
       const id = this.allocateCompactHelperId();
@@ -6949,6 +6984,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.contractTokenContainerCount = this.contractTokenContainerCount;
       probe.currentContractHoldsTokens = this.currentContractHoldsTokens;
       probe.currentContractHasThreads = this.currentContractHasThreads;
+      // The record count's void and standalone sites count toward its helper too.
+      probe.currentContractSettlesCallRecords = this.currentContractSettlesCallRecords;
       probe.collectionCount = this.collectionCount;
       probe.collectionDefinitions = this.collectionDefinitions;
       probe.dataNftCount = this.dataNftCount;
@@ -48188,26 +48225,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.getStackIndex('__internal__callDigest', true) < 0) {
         throw this.unboundEntryResult(node, '__internal__callDigest');
       }
-      this.emitCallRecordFromBlob(locationData);
-      this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', locationData);
-      // With the record directly beneath the picked index, the check is the same bytes in every function.
-      if (this.getStackIndex('__internal__returnBlob') !== 0 || !this.invokeSharedEntryCheck(
-        'callRecord', (t, l) => t.emitCallRecordCheck(() => t.emit(Op.OP_OVER, l), l), locationData,
-      )) {
-        this.emitCallRecordCheck(
-          () => this.emitPickCompilerRouteFrameValue('__internal__returnBlob', locationData, 1), locationData,
-        );
-      }
-      const recordIdx = this.getStackIndex('__internal__returnBlob');
-      this.emit(encodeInt(BigInt(recordIdx)), locationData);
-      this.emit(Op.OP_ROLL, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.removeFromStack(recordIdx);
+      this.emitCallRecordSettlement(locationData);
       return;
     }
     this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', locationData);
     // Stack: [_returnOutputIdx] (1 untracked)
 
+    // A standalone run's carrier refusal is the record count at zero, so that helper is defined first.
+    if (this.contractSettlesCallRecords()) this.registerCallRecordCount();
     // With the blob directly beneath the picked index, the check is the same bytes in every function.
     const blobUnderIndex = !this.isCompilerMessageBusRoute() && this.getStackIndex('__internal__returnBlob') === 0;
     if (!blobUnderIndex || !this.invokeSharedEntryCheck(
@@ -48220,9 +48245,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Clean up __returnBlob from tracked stack
     const cleanupIdx = this.getStackIndex('__internal__returnBlob');
-    this.emit(encodeInt(BigInt(cleanupIdx)), locationData);
-    this.emit(Op.OP_ROLL, locationData);
-    this.emit(Op.OP_DROP, locationData);
+    if (cleanupIdx === 1) {
+      this.emit(Op.OP_NIP, locationData);
+    } else {
+      this.emitRollAt(cleanupIdx, locationData);
+      this.emit(Op.OP_DROP, locationData);
+    }
     this.removeFromStack(cleanupIdx);
   }
 
@@ -48258,9 +48286,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // hash. Production BCH rejects the oversized raw NFT representation at consensus; accepting it here lets an
     // isolated caller probe decode the value before the final compiler route carries those raw bytes in its
     // authenticated result frame and materializes only the hash-sized NFT.
-    this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
     this.emit(encodeInt(128n), locationData);
     this.emit(Op.OP_GREATERTHAN, locationData);
     this.emit(Op.OP_IF, locationData);
@@ -48290,15 +48316,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.emit(Op.OP_ENDIF, locationData);
 
-    this.emitReturnCarrierFormChecks(locationData);
-
-    this.emit(Op.OP_DROP, locationData); // drop _returnOutputIdx
+    this.emitReturnCarrierFormChecks(locationData); // consumes _returnOutputIdx
+    this.emit(Op.OP_VERIFY, locationData);
 
     this.emit(Op.OP_ELSE, locationData);
     // Standalone call (DX-4): refuse every own-category return carrier (none-cap, OP_TRUE lock), the fingerprint
     // the caller's return read and uniqueness count accept. Otherwise a spender passing -1 beside a self-minted
     // carrier hands the caller an unauthenticated return value. A token-less input has no category: every caller
     // read splits the callee's category at 32 and fails on it, so there is no carrier to refuse.
+    // Where the contract's records are counted by a shared helper, this refusal is that count at zero.
+    const count = this.contractSettlesCallRecords() ? this.definedCallRecordCountId() : undefined;
+    if (count !== undefined) {
+      this.emit(Op.OP_NOT, locationData); // [0]: idx < 0 here
+      this.invokeSubroutineIfDefined(count, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+      return;
+    }
     this.emit(Op.OP_DROP, locationData);
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
@@ -48332,17 +48365,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `[.., idx]` -> `[.., idx]`: the output at idx is a return carrier of this contract's category: no capability,
-   * no fungible amount, an `OP_TRUE` lock and at most 1,200 satoshis.
+   * `[.., idx]` -> `[.., inBound]`: the output at idx is a return carrier of this contract's category: no capability,
+   * no fungible amount and an `OP_TRUE` lock. `inBound` is whether it holds at most 1,200 satoshis.
    */
   private emitReturnCarrierFormChecks(locationData: SingleLocationData): void {
-    // 2. Verify output token category matches master's category
+    // 2. The output's token category is the master's, with no capability byte: not mutable or minting. A token
+    // category reads as 32 bytes only without one, so it equals the master's 32-byte category exactly.
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
-    this.emit(encodeInt(32n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    // Stack: [_returnOutputIdx, output_cat_stripped] (2 untracked)
+    // Stack: [_returnOutputIdx, output_category] (2 untracked)
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
     this.emit(encodeInt(32n), locationData);
@@ -48351,38 +48382,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     // Stack: [_returnOutputIdx] (1 untracked)
 
-    // 3. Verify NFT capability is 'none' (no capability byte), not 'mutable' or 'minting'
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
-    this.emit(encodeInt(32n), locationData);
-    this.emit(Op.OP_SPLIT, locationData); // [idx, category_32, empty] for 'none' capability
-    this.emit(Op.OP_SWAP, locationData); // [idx, empty, category_32]
-    this.emit(Op.OP_DROP, locationData); // [idx, empty]
-    this.emit(encodeInt(0n), locationData); // empty = 'none' capability (no trailing byte)
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-    // Stack: [_returnOutputIdx] (1 untracked)
-
-    // 4. Verify FT amount is 0 (prevent FT extraction via return event outputs)
+    // 3. Verify FT amount is 0 (prevent FT extraction via return event outputs)
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
     this.emit(encodeInt(0n), locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData);
     // Stack: [_returnOutputIdx] (1 untracked)
 
-    // 5. Verify output locking bytecode is OP_TRUE (anyone-can-spend for return events)
+    // 4. Verify output locking bytecode is OP_TRUE (anyone-can-spend for return events)
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_OUTPUTBYTECODE, locationData);
     this.emit(hexToBin('51'), locationData); // OP_1 (OP_TRUE)
     this.emit(Op.OP_EQUALVERIFY, locationData);
     // Stack: [_returnOutputIdx] (1 untracked)
 
-    // 6. Verify output satoshi value is bounded (prevent excessive sats locked in return event outputs)
-    this.emit(Op.OP_DUP, locationData);
+    // 5. Output satoshi value is bounded (prevent excessive sats locked in return event outputs)
     this.emit(Op.OP_OUTPUTVALUE, locationData);
     this.emit(encodeInt(1200n), locationData); // max 1200 sats (dust for max-size return event = 966)
     this.emit(Op.OP_LESSTHANOREQUAL, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
-    // Stack: [_returnOutputIdx] (1 untracked)
   }
 
   /**
@@ -48502,25 +48519,85 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && parameter.type !== PrimitiveType.SIG);
     this.emitCallRecordDigest(this.callRecordSelector(node), 0, visible.map((parameter) => parameter.type),
       (index) => {
-        this.emit(encodeInt(BigInt(this.getStackIndex(visible[index]!.name))), loc);
-        this.emit(Op.OP_PICK, loc);
+        this.emitPickAt(this.getStackIndex(visible[index]!.name), loc);
         this.pushToStack('(value)');
       }, loc);
     this.stack[0] = '__internal__callDigest';
   }
 
-  /**
-   * Replaces `__internal__returnBlob` with this call's record and drops the call's digest: the digest, a form byte,
-   * then the result inline (form 1) when it fits the commitment, or its SHA256 (form 2).
-   */
-  private emitCallRecordFromBlob(loc: SingleLocationData): void {
-    const blobIdx = this.getStackIndex('__internal__returnBlob');
-    if (blobIdx > 0) {
-      this.emit(encodeInt(BigInt(blobIdx)), loc);
-      this.emit(Op.OP_ROLL, loc);
-      this.removeFromStack(blobIdx);
-      this.pushToStack('__internal__returnBlob');
+  /** `<index> OP_PICK` in its one-byte forms: an entry body can ship without the peephole pass. */
+  private emitPickAt(index: number, loc: SingleLocationData): void {
+    if (index === 0) {
+      this.emit(Op.OP_DUP, loc);
+    } else if (index === 1) {
+      this.emit(Op.OP_OVER, loc);
+    } else {
+      this.emit(encodeInt(BigInt(index)), loc);
+      this.emit(Op.OP_PICK, loc);
     }
+  }
+
+  /** `<index> OP_ROLL` in its short forms, nothing for the top. */
+  private emitRollAt(index: number, loc: SingleLocationData): void {
+    if (index === 1) {
+      this.emit(Op.OP_SWAP, loc);
+    } else if (index === 2) {
+      this.emit(Op.OP_ROT, loc);
+    } else if (index > 2) {
+      this.emit(encodeInt(BigInt(index)), loc);
+      this.emit(Op.OP_ROLL, loc);
+    }
+  }
+
+  /**
+   * Settles this run's call record: the digest and the result blob leave the tracked stack, and the record they
+   * form is pinned at the return witness. With the two on top and the witness picked above them, every entry shares
+   * one helper.
+   */
+  private emitCallRecordSettlement(loc: SingleLocationData): void {
+    const blobIdx = this.getStackIndex('__internal__returnBlob');
+    this.emitRollAt(blobIdx, loc);
+    this.removeFromStack(blobIdx);
+    this.pushToStack('__internal__returnBlob');
+    const digestIdx = this.getStackIndex('__internal__callDigest');
+    if (digestIdx > 1) {
+      this.emitRollAt(digestIdx, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.removeFromStack(digestIdx);
+      this.stack.splice(1, 0, '__internal__callDigest');
+    }
+    // Stack: [.., digest, blob]
+    this.registerCallRecordCount();
+    const settle = this.sharedEntryCheckId('callRecordSettle', (t, l) => t.emitCallRecordSettleBody(l));
+    if (settle !== undefined && this.subroutineDefined.get(settle)) {
+      this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', loc);
+      this.invokeSubroutineIfDefined(settle, loc);
+      this.popFromStack(2);
+      return;
+    }
+    this.emitCallRecordForm(loc);
+    this.removeFromStack(1);
+    this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', loc);
+    this.popFromStack();
+    // Stack: [.., record, idx] (2 untracked)
+    this.emitCallRecordPin(loc);
+    this.emitCallRecordCount(loc);
+  }
+
+  /** `[digest, blob, idx]` -> `[]`: the shared form of emitCallRecordSettlement. */
+  private emitCallRecordSettleBody(loc: SingleLocationData): void {
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emitCallRecordForm(loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emitCallRecordPin(loc);
+    this.emitCallRecordCount(loc);
+  }
+
+  /**
+   * `[digest, blob]` -> `[record]`: the call's digest, a form byte, then the result inline (form 1) when it fits the
+   * commitment, or its SHA256 (form 2).
+   */
+  private emitCallRecordForm(loc: SingleLocationData): void {
     this.emit(Op.OP_SIZE, loc);
     this.emit(encodeInt(BigInt(CALL_RECORD_INLINE_RESULT_BYTES)), loc);
     this.emit(Op.OP_LESSTHANOREQUAL, loc);
@@ -48532,38 +48609,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_CAT, loc);
-    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__callDigest'))), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_CAT, loc);
-    const digestIdx = this.getStackIndex('__internal__callDigest');
-    this.emit(encodeInt(BigInt(digestIdx)), loc);
-    this.emit(Op.OP_ROLL, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.removeFromStack(digestIdx);
   }
 
   /**
-   * `[.., idx]` -> `[..]`: idx >= 0 pins the output at idx as this run's record (the commitment `pickRecord` copies,
-   * in carrier form); either way the transaction then holds exactly the records this run pinned.
+   * `[record, idx]` -> `[expected]`: idx >= 0 pins the output at idx as this run's record, in carrier form, and
+   * expects that one record; a standalone run (idx < 0) expects none. The carrier's satoshi bound is the expected
+   * count: an output over it expects none, and the count, which takes in the pinned carrier, then refuses it.
    */
-  private emitCallRecordCheck(pickRecord: () => void, loc: SingleLocationData): void {
+  private emitCallRecordPin(loc: SingleLocationData): void {
     this.emit(Op.OP_DUP, loc);
     this.emit(encodeInt(0n), loc);
     this.emit(Op.OP_GREATERTHANOREQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    pickRecord();
-    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_TUCK, loc);
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
     this.emitReturnCarrierFormChecks(loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_1, loc);
     this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_2DROP, loc);
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_ENDIF, loc);
-    this.emitCallRecordCount(loc);
+  }
+
+  /** The record count's shared check, registered before the checks whose bodies count records. */
+  private registerCallRecordCount(): void {
+    this.sharedEntryCheck('callRecordCount', (t, l) => t.emitCallRecordCountBody(l));
+  }
+
+  /** The record count's helper, counting this site toward it; undefined where it is not defined. */
+  private definedCallRecordCountId(): bigint | undefined {
+    const id = this.nestedSharedEntryCheckId('callRecordCount')
+      ?? this.sharedEntryCheckId('callRecordCount', (t, l) => t.emitCallRecordCountBody(l));
+    return id !== undefined && this.subroutineDefined.get(id) ? id : undefined;
   }
 
   /**
@@ -48572,8 +48650,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * category, and so no carrier.
    */
   private emitCallRecordCount(loc: SingleLocationData): void {
-    if (this.invokeSharedEntryCheck('callRecordCount', (t, l) => t.emitCallRecordCountBody(l), loc)) return;
-    this.emitCallRecordCountBody(loc);
+    const id = this.definedCallRecordCountId();
+    if (id !== undefined) this.invokeSubroutineIfDefined(id, loc);
+    else this.emitCallRecordCountBody(loc);
   }
 
   private emitCallRecordCountBody(loc: SingleLocationData): void {
@@ -48581,9 +48660,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emit(Op.OP_SIZE, loc);
     this.emit(Op.OP_IF, loc);
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_DROP, loc);                  // [expected, cat]
+    this.emitTakeFirst32(loc);                   // [expected, cat]
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_TXOUTPUTCOUNT, loc);         // [expected, cat, count, j]
     this.emit(Op.OP_BEGIN, loc);

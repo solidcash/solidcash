@@ -8,6 +8,10 @@
   text-align: center;
   position: relative;
   overflow: hidden;
+  /* Brand glow: green from the top left, gold from the bottom right */
+  background-image:
+    radial-gradient(circle at 15% 0%, rgba(0, 196, 106, 0.18), transparent 55%),
+    radial-gradient(circle at 85% 100%, rgba(255, 210, 74, 0.16), transparent 50%);
 }
 
 @media screen and (max-width: 966px) {

@@ -5,16 +5,33 @@
  */
 
 :root {
-  /* Theme colours (MIN-studio) */
-  --ifm-color-primary: #1D64F2;
-  --ifm-color-secondary: #04FF84;
-  --ifm-color-light: #f4f4f4;
-  --ifm-color-secondary-dark: #0ed482;
+  /* SolidCash brand colours, from static/img/logo.svg */
+  --sc-green: #07875F;
+  --sc-green-bright: #00C46A;
+  --sc-gold: #FFD24A;
+  --sc-ink: #02101A;
+  --sc-mist: #F2F7F9;
+  --sc-night: #08140F;
+  --sc-night-raised: #0D2018;
+  --sc-night-deep: #040B08;
 
-  /* Dark theme colour in three different intensities */
-  --ifm-color-dark: #012335;
-  --ifm-color-darker: #01121c;
-  --ifm-color-darkest: #000203;
+  /* Primary is the brand green; shades follow the Docusaurus palette generator */
+  --ifm-color-primary: var(--sc-green);
+  --ifm-color-primary-dark: #067A56;
+  --ifm-color-primary-darker: #067351;
+  --ifm-color-primary-darkest: #055E43;
+  --ifm-color-primary-light: #089469;
+  --ifm-color-primary-lighter: #089B6D;
+  --ifm-color-primary-lightest: #09B07C;
+
+  /* Secondary is the gold accent */
+  --ifm-color-secondary: var(--sc-gold);
+  --ifm-color-secondary-dark: #FFCA29;
+  --ifm-color-secondary-darker: #FFC619;
+  --ifm-color-secondary-darkest: #E6AD00;
+  --ifm-color-secondary-light: #FFDA6B;
+  --ifm-color-secondary-lighter: #FFDE7B;
+  --ifm-color-secondary-lightest: #FFEBAD;
 
   /* Default highlight colours */
   --ifm-color-danger: #ff6188;
@@ -22,25 +39,25 @@
   --ifm-color-info: #78dce8;
   --ifm-color-warning: #ffd866;
 
-  /* Links are primary colour */
-  --ifm-link-color: var(--ifm-color-primary);
+  /* Links use the darker green for contrast on white */
+  --ifm-link-color: var(--ifm-color-primary-dark);
   --ifm-menu-color-active: var(--ifm-color-primary);
   --ifm-toc-link-hover-color: var(--ifm-color-primary);
 
-  /* Navbar is dark, with secondary colour selected link */
-  --ifm-navbar-background-color: var(--ifm-color-dark);
-  --ifm-navbar-link-color: var(--ifm-color-light);
-  --ifm-navbar-link-hover-color: var(--ifm-color-secondary);
+  /* Navbar is the green-black night tone, with gold for hovered links */
+  --ifm-navbar-background-color: var(--sc-night-raised);
+  --ifm-navbar-link-color: var(--sc-mist);
+  --ifm-navbar-link-hover-color: var(--sc-gold);
 
-  /* Background is white, while any accents in the background are light */
+  /* Background is white, while any accents in the background are mist */
   --ifm-background-color: #ffffff;
-  --ifm-code-background: var(--ifm-color-light);
-  --ifm-background-surface-color: var(--ifm-color-light);
-  --ifm-footer-background-color: var(--ifm-color-light);
+  --ifm-code-background: var(--sc-mist);
+  --ifm-background-surface-color: var(--sc-mist);
+  --ifm-footer-background-color: var(--sc-mist);
 
-  /* Heading text is black */
-  --ifm-alert-color:#000000;
-  --ifm-heading-color: #000000;
+  /* Headings are brand ink */
+  --ifm-alert-color: #000000;
+  --ifm-heading-color: var(--sc-ink);
 
   /* Slightly smaller code font */
   --ifm-code-font-size: 95%;
@@ -49,35 +66,36 @@
 }
 
 .navbar--dark {
-  --ifm-navbar-background-color: var(--ifm-color-dark);
-  --ifm-navbar-link-hover-color: var(--ifm-color-secondary);
+  --ifm-navbar-background-color: var(--sc-night-raised);
+  --ifm-navbar-link-hover-color: var(--sc-gold);
+  --ifm-navbar-link-active-color: var(--sc-gold);
 }
 
 html[data-theme="dark"] {
-  /* Theme colours inverted in dark mode */
-  --ifm-color-primary: #04FF84;
-  --ifm-color-primary-dark: #0ed482;
-  --ifm-color-secondary: #1D64F2;
-  --ifm-color-secondary-dark: #306CCE;
+  /* The brighter brand green reads on the night background */
+  --ifm-color-primary: var(--sc-green-bright);
+  --ifm-color-primary-dark: #00B05F;
+  --ifm-color-primary-darker: #00A75A;
+  --ifm-color-primary-darkest: #00894A;
+  --ifm-color-primary-light: #00D875;
+  --ifm-color-primary-lighter: #00E17A;
+  --ifm-color-primary-lightest: #00FF8A;
+  --ifm-link-color: var(--ifm-color-primary);
 
-  /* Extend navbar in dark mode */
-  --ifm-background-surface-color: var(--ifm-color-dark);
+  /* Night tones: raised for the navbar and surfaces, deep for the footer */
+  --ifm-background-surface-color: var(--sc-night-raised);
+  --ifm-background-color: var(--sc-night);
+  --ifm-footer-background-color: var(--sc-night-deep);
+  --ifm-table-stripe-background: var(--sc-night-deep);
 
-  /* Background colour in the same family as navbar but darker,
-   * while accent colours are another step darker */
-  --ifm-background-color: var(--ifm-color-darker);
-  --ifm-footer-background-color: var(--ifm-color-darkest);
-  --ifm-table-stripe-background: var(--ifm-color-darkest);
+  /* Inline code is a green-grey step above the background, with light text */
+  --ifm-code-background: #16291F;
+  --ifm-code-color: var(--sc-mist);
 
-  /* Code background is the navbar colour blended with gray, code text is light */
-  --ifm-code-background: #3b515d;
-  --ifm-code-color: var(--ifm-color-light);
-
-  /* Always use green for the navbar links */
-  --ifm-navbar-link-hover-color: var(--ifm-color-primary);
+  --ifm-navbar-link-hover-color: var(--sc-gold);
 
   /* Alert headings are black, while regular headings are white */
-  --ifm-alert-color:#000000;
+  --ifm-alert-color: #000000;
   --ifm-heading-color: #ffffff;
 
   --ifm-alert-background-color: #474748;

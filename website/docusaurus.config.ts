@@ -12,8 +12,8 @@ const config: Config = {
   projectName: 'solidcash',
   themeConfig: {
     prism: {
-      theme: prismThemes.nightOwlLight,
-      darkTheme: prismThemes.nightOwl,
+      theme: prismThemes.oneLight,
+      darkTheme: prismThemes.oneDark,
       additionalLanguages: ['solidity', 'antlr4'],
     },
     image: 'img/logo.svg',

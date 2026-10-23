@@ -96,15 +96,16 @@ describe('dynamic write after a conditional returning call', () => {
     const handler = await deploy(provider, HANDLER, { counter: 40n });
     const caller = await deploy(provider, ONE_CALL, { a: [], target: handler.addr, last: 0n });
 
-    // Runs: master, data, callee master, callee data, return event, chunk, change.
+    // Runs: master, data x2, callee master, callee data, return event, chunk, change. D49 gives the unbounded
+    // `a` array a data NFT of its own, beside the scalar record.
     const ran = await capture(provider, () => caller.sc.fire(2n, true).withExternalCall(handler.sc, 'inc', [2n]).send());
-    await refusesMovedChunk(ran, 5);
+    await refusesMovedChunk(ran, 6);
     expect((await caller.sc.getState()).last).toBe(42n);
     expect((await caller.sc.getState()).a).toEqual([2n]);
 
-    // Skipped: master, data, chunk, change. The anchoring call's return index is -1.
+    // Skipped: master, data x2, chunk, change. The anchoring call's return index is -1.
     const skipped = await capture(provider, () => caller.sc.fire(3n, false).send());
-    await refusesMovedChunk(skipped, 2);
+    await refusesMovedChunk(skipped, 3);
     expect((await caller.sc.getState()).a).toEqual([2n, 3n]);
     expect((await caller.sc.getState()).last).toBe(42n);
     expect((await handler.sc.getState()).counter).toBe(42n);
@@ -148,7 +149,7 @@ describe('dynamic write after a conditional returning call', () => {
     const firstMaster = tx.inputs.findIndex((input) => lockOf(input) === binToHex(first.addr));
     const firstReturn = tx.outputs.findIndex((output) => ofCategory(first.categoryId)(output)
       && binToHex(output.lockingBytecode) === '51');
-    expect([firstMaster, firstReturn]).toEqual([2, 4]);
+    expect([firstMaster, firstReturn]).toEqual([3, 5]);
     // The second call is stated as not made, and the chunk run follows the first call's return event.
     const witnesses: Record<string, bigint> = {
       __internal__externalCallInputBase: 2n,
@@ -185,17 +186,17 @@ describe('dynamic write after a conditional returning call', () => {
       a: [], first: first.addr, second: second.addr, last: 0n,
     });
 
-    // Both run: two callee blocks, two return events, then the chunk.
+    // Both run: the caller's master and two data NFTs, two callee blocks, two return events, then the chunk.
     const ran = await capture(provider, () => caller.sc.fire(2n, true)
       .withExternalCall(first.sc, 'inc', [2n])
       .withExternalCall(second.sc, 'inc', [2n]).send());
-    await refusesMovedChunk(ran, 8);
+    await refusesMovedChunk(ran, 9);
     expect((await caller.sc.getState()).last).toBe(42n + 102n);
     expect((await caller.sc.getState()).a).toEqual([2n]);
 
     // Both skipped: every return index is -1, so the run follows the caller's own block.
     const skipped = await capture(provider, () => caller.sc.fire(3n, false).send());
-    await refusesMovedChunk(skipped, 2);
+    await refusesMovedChunk(skipped, 3);
     expect((await caller.sc.getState()).a).toEqual([2n, 3n]);
     expect((await first.sc.getState()).counter).toBe(42n);
     expect((await second.sc.getState()).counter).toBe(102n);

@@ -48175,12 +48175,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // _returnOutputIdx >= 0 means cross-contract call (verify event UTXO)
     // _returnOutputIdx < 0 means standalone call (skip event UTXO)
 
-    const returnOutputIdxIdx = this.getStackIndex('__internal__returnOutputIdx', true);
-    // Declaration-only/stateless compatibility paths can retain source return types without receiving the
-    // stateful return-NFT witness pair. Symbol analysis is authoritative: no witness means no return covenant.
-    if (returnOutputIdxIdx < 0) return;
+    // Symbol analysis gives every returning entry this witness, so a missing one was consumed by the body. Skipping
+    // here left the result bound by neither a record nor a return carrier.
+    if (this.getStackIndex('__internal__returnOutputIdx', true) < 0) {
+      throw this.unboundEntryResult(node, '__internal__returnOutputIdx');
+    }
     node.settlesCallRecord = this.settlesDirectCallRecord(node);
     if (node.settlesCallRecord) {
+      if (this.getStackIndex('__internal__callDigest', true) < 0) {
+        throw this.unboundEntryResult(node, '__internal__callDigest');
+      }
       this.emitCallRecordFromBlob(locationData);
       this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', locationData);
       // With the record directly beneath the picked index, the check is the same bytes in every function.
@@ -48217,6 +48221,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ROLL, locationData);
     this.emit(Op.OP_DROP, locationData);
     this.removeFromStack(cleanupIdx);
+  }
+
+  /** A returning entry whose body consumed `consumed`, a value its result is bound with, so nothing would bind it. */
+  private unboundEntryResult(node: FunctionDefinitionNode, consumed: string): SolidcDiagnosticError {
+    return new SolidcDiagnosticError(
+      'RETURN_RESULT_UNBOUND',
+      `'${node.name}' returns values, but \`${consumed}\` is gone from its stack where its result is bound, so no `
+      + 'call record or return carrier would bind it. A `return` operand that left no value took it as the result: '
+      + 'a compiler defect.',
+      { function: node.name, consumed },
+    );
   }
 
   /**

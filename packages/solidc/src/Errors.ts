@@ -75,6 +75,8 @@ export type SolidcDiagnosticCode =
   | 'SPLIT_SIZE_REFUSES_FRAMED'
   // An event payload wider than one NFT commitment, emitted where its continuation chunks have no layout.
   | 'EVENT_PAYLOAD_EXCEEDS_COMMITMENT'
+  // A returning entry whose body consumed the value its result is bound with: no record or carrier would bind it.
+  | 'RETURN_RESULT_UNBOUND'
   // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
   | 'KERNEL_LAYOUT'
   | 'KERNEL_UNBOUNDED_KEY'

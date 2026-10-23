@@ -39,7 +39,7 @@ async function faithfulSigner(provider: MockNetworkProvider): Promise<Signer> {
 
 // A dynamic chunked write: the shape whose commitments the probe has to discover, and the one that failed on
 // the faithful path with a bare OP_VERIFY before 2b05b292.
-const CHUNKED = `pragma solidcash ^0.13.0;
+const CHUNKED = `pragma solidcash ^0.14.0;
 contract C() {
   bytes a;
   bytes b;
@@ -60,7 +60,7 @@ const OVER_BUDGET_LOOP = `contract C {
 }`;
 
 // A whole-array assign, the X171 family.
-const ARRAY_ASSIGN = `pragma solidcash ^0.13.0;
+const ARRAY_ASSIGN = `pragma solidcash ^0.14.0;
 contract C() {
   bigint[] xs;
   function assign() { this.xs = [1, 2, 3]; }

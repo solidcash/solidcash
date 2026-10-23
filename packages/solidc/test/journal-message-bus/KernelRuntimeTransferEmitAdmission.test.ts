@@ -11,7 +11,7 @@ const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true }
 
 describe('kernel route runtime-transfer + emit admission boundary', () => {
   it('refuses a wide emit beside a runtime transfer loop', () => {
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract KernelTransferWideEvent() {
         event Wide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e);
         int count;
@@ -28,7 +28,7 @@ describe('kernel route runtime-transfer + emit admission boundary', () => {
   });
 
   it('streams a narrow emit beside a runtime transfer loop compact', () => {
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract KernelTransferNarrowEvent() {
         event Narrow(int value);
         int count;

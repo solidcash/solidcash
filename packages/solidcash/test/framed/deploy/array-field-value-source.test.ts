@@ -19,7 +19,7 @@ import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x5b));
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Note { int kind; int16[2] pair; string memo; string tag; }'
   + '   mapping(string => Note) notes;'

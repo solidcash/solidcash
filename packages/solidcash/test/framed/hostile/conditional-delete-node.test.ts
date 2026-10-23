@@ -63,7 +63,7 @@ const TAGS_BODY = ' contract Tags {'
   + '   mapping(string => string) tags;'
   + '   function remove(string k, int c) { if (c > 0) { delete this.tags[k]; } require(true); }'
   + ' }';
-const TAGS = deployFramedMaster(`pragma solidcash ^0.13.0;${TAGS_BODY}`, 'framed conditional delete');
+const TAGS = deployFramedMaster(`pragma solidcash ^0.14.0;${TAGS_BODY}`, 'framed conditional delete');
 const LOCK = TAGS.collectionLock('tags');
 const ENTRY_SLOT = TAGS.artifact.abi.find((fn) => fn.name === 'remove')!.blockLayout!.slots
   .find((slot) => slot.kind === 'entry')!;
@@ -108,7 +108,7 @@ describe('a framed delete a branch guards settles at the node its group names', 
 
 const HUB_LABEL = 'framed conditional delete hub';
 const TAGS_LABEL = 'framed conditional delete tags';
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ITags { function remove(string k, int c); }'
   + TAGS_BODY
   + ' contract Hub {'
@@ -205,7 +205,7 @@ const holding = (text: string): Uint8Array => node(SLOT, NEXT, encodeChunkableVa
 const PAIR_HUB_LABEL = 'framed conditional delete pair hub';
 const PAIR_TAGS_LABEL = 'framed conditional delete pair tags';
 const PAIR_TAGS = hexOf(seededAddress(PAIR_TAGS_LABEL));
-const PAIR_SOURCE = 'pragma solidcash ^0.13.0;'
+const PAIR_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ITags { function put(string k, string v); function remove(string k, int c); }'
   + ' contract Tags {'
   + '   mapping(string => string) tags;'
@@ -412,7 +412,7 @@ const OLD = encodeChunkableValueTail(encoder.encode('old'));
 const WRITTEN = encodeChunkableValueTail(encoder.encode('written'));
 
 /** `edit`'s write precedes a guarded delete of its collection: a swap-remove alias of a value that chunks. */
-const EDIT = 'pragma solidcash ^0.13.0;'
+const EDIT = 'pragma solidcash ^0.14.0;'
   + ' contract Tags {'
   + '   mapping(string => string) tags;'
   + '   function edit(string a, string v, string k, int c) {'
@@ -510,7 +510,7 @@ describe('a framed delete a branch guards, of a key the list does not hold', () 
  * alias, refused for a value that chunks; this one is not, and may insert its key.
  */
 let tidyDeployment: DeployedMaster | undefined;
-const tidyMaster = (): DeployedMaster => (tidyDeployment ??= deployFramedMaster('pragma solidcash ^0.13.0;'
+const tidyMaster = (): DeployedMaster => (tidyDeployment ??= deployFramedMaster('pragma solidcash ^0.14.0;'
   + ' contract Tags {'
   + '   mapping(string => string) tags;'
   + '   function tidy(string a, string v, string k, int c) {'

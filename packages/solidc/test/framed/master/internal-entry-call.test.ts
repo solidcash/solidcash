@@ -13,7 +13,7 @@ import { publishedRefusals } from './refused-entry.js';
  * message call, whose callee does not keep the caller's sender (`toys/identity.test.ts` pins it refused).
  */
 
-const ledger = (members: string): string => 'pragma solidcash ^0.13.0;'
+const ledger = (members: string): string => 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   mapping(int => int) seen;'
   + members

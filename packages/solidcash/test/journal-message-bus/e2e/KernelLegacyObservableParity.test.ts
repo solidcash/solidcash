@@ -11,7 +11,7 @@ import { createVirtualMachineBch2026ForProvider } from '../../../src/network/cre
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
 contract ObservableEffects() {
   int total;
   event Applied(int indexed key, int observedTotal, bool increased);
@@ -23,7 +23,7 @@ contract ObservableEffects() {
 
 }`;
 
-const MIXED_RUNTIME_SOURCE = `pragma solidcash ^0.13.0;
+const MIXED_RUNTIME_SOURCE = `pragma solidcash ^0.14.0;
 contract MixedRuntimeEffects() {
   int total;
   mapping(int => int) values;
@@ -39,7 +39,7 @@ contract MixedRuntimeEffects() {
 
 }`;
 
-const STATE_SOURCE = `pragma solidcash ^0.13.0;
+const STATE_SOURCE = `pragma solidcash ^0.14.0;
 contract ObservableState() {
   int total;
   mapping(int => int) values;

@@ -31,7 +31,7 @@ const ADDRESS_COUNTER = validatorAddress(CATEGORY_COUNTER, REAL_VALIDATOR_PROGRA
 const ADDRESS_POKER = validatorAddress(CATEGORY_POKER, REAL_VALIDATOR_PROGRAM);
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICounter { function bump(); }'
   + ' contract Counter { int public counter; function bump() { this.counter = this.counter + 1; } }'
   + ' contract Poker { address public target; function poke() { ICounter(this.target).bump(); } }';

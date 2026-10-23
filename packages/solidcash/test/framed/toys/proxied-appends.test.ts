@@ -74,7 +74,7 @@ const APPEND = { id: 17n, item: 10n } as const;
  * writes the dynamic array and emits; making no call is what keeps it admissible while a body that both touched the
  * dynamic value and called would be refused by name.
  */
-const IMPL_SOURCE = 'pragma solidcash ^0.13.0;'
+const IMPL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   int[] items;'
@@ -361,7 +361,7 @@ describe('an append-shape entry entered through a proxy\'s fallback', () => {
     // The same shape with the call inside the writer's own body rather than the proxy's: the entry touches a
     // dynamic value and makes an external call, and the head parks the record block's base so the body's own
     // layout width turns it into the run's coordinate against the segment its call has reached.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface IPing { function ping(); }'
       + ' contract Impl {'
       + '   address public implementation;'

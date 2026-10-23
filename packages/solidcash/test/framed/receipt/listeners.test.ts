@@ -42,7 +42,7 @@ const EMITTER_LABEL = 'the nested listener emitter';
 const emitterAddress = seededAddress(EMITTER_LABEL);
 
 // The caller emits an event of its own and then calls the emitter, whose nested frame emits another.
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IEmitter { function fire(); }'
   + ' contract Emitter { event Report(int a);'
   + `   function fire() { emit Report(${BIG}); require(true); } }`

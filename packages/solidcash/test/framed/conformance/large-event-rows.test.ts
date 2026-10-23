@@ -40,7 +40,7 @@ function outpointHash(seed: number): string {
 const EMITTER_ADDRESS = hexOf(seededAddress('large event emitter row 13'));
 
 /** A unit whose caller reaches a callee, and the callee emits the >128-byte event; the caller also emits. */
-const NESTED_SOURCE = 'pragma solidcash ^0.13.0;'
+const NESTED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IEmitter { function publish() external; }'
   + ' contract Emitter {'
   + '   event Report(int a, int b, int c, int d, int e);'
@@ -63,7 +63,7 @@ const NESTED_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The same >128-byte event emitted by a single contract's own root entry, with no nested frame. */
-const ROOT_SOURCE = 'pragma solidcash ^0.13.0;'
+const ROOT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Solo {'
   + '   event Report(int a, int b, int c, int d, int e);'
   + '   int public sent;'

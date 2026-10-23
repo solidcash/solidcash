@@ -43,7 +43,7 @@ const CLAIMER = `0x${addressOf(CLAIMER_CATEGORY)}`;
 const JUDGE = `0x${addressOf(JUDGE_PROXY_CATEGORY)}`;
 
 const SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'interface IClaimer { function claim(address judge) returns (int); function ping() returns (int); }',
   'interface IJudge {',
   '  function count() returns (int); function enter() returns (int); function enterLate() returns (int);',

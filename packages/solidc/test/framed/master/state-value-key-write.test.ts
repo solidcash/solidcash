@@ -38,7 +38,7 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 /** A call into the ledger's own `bump`, at the address its category derives. */
 const CALL = `ILedger(0x${Buffer.from(ADDRESS).toString('hex')}).bump.call();`;
 
-const ledger = (body: string, parameters = 'uint amount'): string => 'pragma solidcash ^0.13.0;'
+const ledger = (body: string, parameters = 'uint amount'): string => 'pragma solidcash ^0.14.0;'
   + ' interface ILedger { function bump(); }'
   + ' contract Ledger {'
   + '   uint nextId;'

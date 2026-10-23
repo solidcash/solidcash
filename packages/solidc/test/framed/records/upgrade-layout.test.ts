@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { SolidcDiagnosticError } from '../../../src/Errors.js';
 
-const V1 = 'pragma solidcash ^0.13.0;'
+const V1 = 'pragma solidcash ^0.14.0;'
   + ' struct Pos { int x; int y; }'
   + ' contract Vault {'
   + '   int public total; int public deposits; Pos public pos; bytes32 external note;'
@@ -23,7 +23,7 @@ const reference = compileStringMulti(V1, { composition: 'framed' }).Vault!.state
 /** A replacement named `Next`, with the given struct and declarations, compiled against the old layout. */
 function next(struct: string, body: string): ReturnType<typeof compileStringMulti> {
   return compileStringMulti(
-    `pragma solidcash ^0.13.0; struct Pos { ${struct} } contract Next { ${body}`
+    `pragma solidcash ^0.14.0; struct Pos { ${struct} } contract Next { ${body}`
     + ' function deposit(int by) { this.deposits = this.deposits + by; } }',
     { composition: 'framed', upgradesFrom: { Next: reference } },
   );

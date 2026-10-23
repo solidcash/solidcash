@@ -44,7 +44,7 @@ const RECORD_ID = 'record';
 const USER_ID = 'user';
 const READER_USER_ID = 'reader';
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IB { function g(); }'
   + ' interface IA { function k(); }'
   + ` contract B { function g() { IA(0x${hexOf(seededAddress(A_LABEL))}).k.call(); require(true); } }`

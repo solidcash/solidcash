@@ -40,17 +40,17 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
 /** One send to the frame's sender. */
-const PAY_SOURCE = 'pragma solidcash ^0.13.0;'
+const PAY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Payer { function pay(int amount) { this.transfer(msg.sender, amount); require(true); } }';
 
 /** Two sends to the frame's sender. */
-const PAY_TWO_SOURCE = 'pragma solidcash ^0.13.0;'
+const PAY_TWO_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Payer {'
   + '   function pay(int a, int b) { this.transfer(msg.sender, a); this.transfer(msg.sender, b); require(true); }'
   + ' }';
 
 /** A deposit through receive() and a release that pays it out. */
-const ESCROW_SOURCE = 'pragma solidcash ^0.13.0;'
+const ESCROW_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Escrow {'
   + '   receive() external payable { require(true); }'
   + '   function release(int amount) { this.transfer(msg.sender, amount); require(true); }'

@@ -9,7 +9,7 @@ import { compileString } from '../src/compiler.js';
  */
 describe('vmap resolved value-kind boundaries', () => {
   it('compiles a 2D array-value element write m[k][i][j] = v', () => {
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract C() { mapping(int => int[][]) grid;
         function setCell(int k, int i, int j, int v) public { this.grid[k][i][j] = v; require(true); } }`,
     { forceStateful: true });
@@ -17,7 +17,7 @@ describe('vmap resolved value-kind boundaries', () => {
   });
 
   it('compiles a different-key sorted insert loop for(i) m[ks[i]] = v', () => {
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract C() { mapping(int => int) m;
         function fill(int[] ks, int v) public {
           for (int i = 0; i < ks.length; i = i + 1) { this.m[ks[i]] = v; }
@@ -27,7 +27,7 @@ describe('vmap resolved value-kind boundaries', () => {
   });
 
   it('compiles a function-pointer element value mapping (functionId on the wire)', () => {
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract C() { mapping(bytes4 => function(int) returns (int)) routes;
         function double(int x) internal returns (int) { return x * 2; }
         function register(bytes4 sel) public { this.routes[sel] = double; require(true); }

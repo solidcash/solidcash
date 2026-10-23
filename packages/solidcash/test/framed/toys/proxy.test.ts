@@ -35,7 +35,7 @@ const IMPL_LABEL = 'proxy hop implementation';
 // The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
 const RECORD_INDEX = 3;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   function answer() pure { require(true); }'
   + ' }'
@@ -152,7 +152,7 @@ function compose(): Composition {
   };
 }
 
-const PROLOGUE = 'pragma solidcash ^0.13.0;';
+const PROLOGUE = 'pragma solidcash ^0.14.0;';
 
 /** The one shape the convention serves: the fallback forwards its own received call data to an address it holds. */
 const FORWARDED_SOURCE = PROLOGUE

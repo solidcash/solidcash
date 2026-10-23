@@ -12,7 +12,7 @@ This smart contract works by connecting with a price oracle. This price oracle i
 This involves some degree of trust in the price oracle, but since the oracle produces price data for everyone to use, their incentive to attack *your* smart contract is minimised. To improve this situation, you can also choose to connect with multiple oracle providers so you do not have to trust a single party.
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 // A minimum block is provided to ensure that oracle price entries from before
 // this block are disregarded. i.e. when the BCH price was $1000 in the past,
@@ -52,7 +52,7 @@ The contract works by checking that a UTXO is at least 30 days old, after which 
 Due to the nature of covenants, we have to be very specific about the outputs (amounts and destinations) of the transaction. This also means that we have to account for the special case where the remaining contract balance is lower than the `pledge` amount, meaning no remainder should be sent back. Finally, we have to account for a small fee that has to be taken from the contract's balance to pay the miners.
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
     function recvFunds() {
@@ -96,7 +96,7 @@ The SolidCash contract code has the big advantage of abstracting away any stack 
 Note that `int` arithmetic is overflow-checked like Solidity 0.8, which adds range checks to the compiled script. Use `bigint`, the unchecked VM-native integer, where those checks are not wanted; see [Types](/docs/language/types#choosing-between-them).
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 contract DexContract(bytes20 poolOwnerPkh) {
     function swap() {

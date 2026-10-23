@@ -28,7 +28,7 @@ const CONTRACT_ADDRESS = validatorAddress(CATEGORY, REAL_VALIDATOR_PROGRAM);
 const TEMPLATE_HASH = sha256(REAL_VALIDATOR_PROGRAM);
 const MASTER_ID = 'hasher-1';
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Hasher {'
   + '   function check(bytes left, bytes right, bytes32 expected) {'
   + '     require(keccak256(left) == expected);'

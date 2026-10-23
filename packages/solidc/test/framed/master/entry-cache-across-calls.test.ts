@@ -25,7 +25,7 @@ const OTHER_SOURCE = 'interface IOther { function ping(); function take(uint v);
 const CALL = `IOther(${OTHER}).ping.call();`;
 
 /** A ledger whose `move` entry runs `body`. */
-const LEDGER = (body: string): string => `pragma solidcash ^0.13.0;${OTHER_SOURCE}`
+const LEDGER = (body: string): string => `pragma solidcash ^0.14.0;${OTHER_SOURCE}`
   + ' contract Ledger {'
   + '   struct Row { uint a; uint b; }'
   + '   mapping(address => uint) balances;'

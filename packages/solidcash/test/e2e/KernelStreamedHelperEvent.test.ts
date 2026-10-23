@@ -16,7 +16,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * the rest at its continuation covenant.
  */
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
 contract StreamedHelperEvents() {
   int count;
   event Wide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e);

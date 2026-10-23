@@ -34,7 +34,7 @@ const MASTER_ID = 'vault-1';
 // The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
 const RECORD_INDEX = 3;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Other { function ping() { require(true); } }'
   + ' contract Vault {'
   + '   address public implementation;'

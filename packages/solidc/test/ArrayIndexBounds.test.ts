@@ -47,7 +47,7 @@ function settleDirect(artifact: Artifact, args: readonly Arg[]): boolean {
   return createVirtualMachineBch2026().verify({ sourceOutputs, transaction }) === true;
 }
 
-const P = 'pragma solidcash ^0.13.0;';
+const P = 'pragma solidcash ^0.14.0;';
 
 /** The entry `f` of `members`, settled on each convention. */
 function conventions(members: string, label: string): Array<[string, (args: readonly Arg[]) => boolean]> {

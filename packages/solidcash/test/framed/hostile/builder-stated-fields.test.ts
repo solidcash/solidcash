@@ -32,7 +32,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * created-record region, the retval slot and the value the frame carries.
  */
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   event Moved(int indexed who, int amount);'
   + '   int public count;'
@@ -444,7 +444,7 @@ describe('fields the settlement does not refuse', () => {
  * declares a dynamic value's run only beside a mapping write), appends one element to a `Post[]`, and then asks
  * whether the run's width and the chunks' commitments are bound by the settlement.
  */
-const IMPL_SOURCE = 'pragma solidcash ^0.13.0;'
+const IMPL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Post { int id; string title; int at; }'
   + '   address public implementation;'

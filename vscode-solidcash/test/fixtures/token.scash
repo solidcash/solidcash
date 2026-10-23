@@ -1,4 +1,4 @@
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 import "./math.scash";
 import { Ledger as Book, Receipt } from "./ledger.scash";

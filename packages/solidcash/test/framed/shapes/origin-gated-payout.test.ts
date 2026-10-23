@@ -77,7 +77,7 @@ const STORE_AFTER = 1n;
 /** Five 32-byte fields: the payout terms, a commitment well above the 128-byte data-NFT size. */
 const BIG = 452312848583266388373324160190187140051835877600158453279131187530910662656n;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ILedger { function sealedAt() view returns (int); }'
   + ' interface IToken { function transfer(address to, int amount); }'
   + ' interface IEscrow { function release(); }'

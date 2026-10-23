@@ -5,7 +5,7 @@ import { createTestProvider } from '../test-util.js';
 
 describe('state array index normalization', () => {
   it('accepts ABI-compatible decimal strings while retaining bounds checks', async () => {
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract Sequence() {
         int[] records;
         function preserve() public { require(true); }

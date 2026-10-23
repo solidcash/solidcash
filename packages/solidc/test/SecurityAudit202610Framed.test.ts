@@ -34,7 +34,7 @@ describe('FM-1 a bare-lock mutable NFT is not the validator', () => {
   const USER_LOCK = encodeLockingBytecodeP2pkh(label('fm1 user').slice(0, 20));
   const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
   const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
-  const SOURCE = 'pragma solidcash ^0.13.0;'
+  const SOURCE = 'pragma solidcash ^0.14.0;'
     + ' interface ICallee { function ping(); }'
     + ' contract Callee { function ping() { require(true); } }'
     + ' contract Caller {'
@@ -162,7 +162,7 @@ describe('FW-1 and FW-2 against the genuine validator', () => {
   const ADDRESS_COUNTER = validatorAddress(CATEGORY_COUNTER, REAL_VALIDATOR_PROGRAM);
   const ADDRESS_POKER = validatorAddress(CATEGORY_POKER, REAL_VALIDATOR_PROGRAM);
   const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
-  const SOURCE = 'pragma solidcash ^0.13.0;'
+  const SOURCE = 'pragma solidcash ^0.14.0;'
     + ' interface ICounter { function bump(); }'
     + ' contract Counter { int public counter; function bump() { this.counter = this.counter + 1; } }'
     + ' contract Poker { address public target; function poke() { ICounter(this.target).bump(); } }';

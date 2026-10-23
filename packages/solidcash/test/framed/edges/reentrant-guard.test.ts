@@ -29,7 +29,7 @@ const tokenWith = (
 ): { category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable'; commitment: Uint8Array } } =>
   ({ category, amount: 0n, nft: { capability, commitment } });
 
-const GUARDED = 'pragma solidcash ^0.13.0;'
+const GUARDED = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Guarded {'
@@ -157,7 +157,7 @@ describe('a guard a callee re-enters', () => {
     // re-enters the contract mid-guard. Both entries share one master head; the head walks the call section with
     // the length the block declares and each body pins it to the calls its own source makes, so the two entries
     // may declare different lengths.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface ICallee { function hop(); }'
       + ' contract Callee { function hop() { require(true); } }'
       + ' contract Guarded {'

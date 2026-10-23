@@ -54,7 +54,7 @@ const COUNTER_AFTER = 6n;
  */
 function source(): string {
   const callee = hexOf(seededAddress(PING_LABEL));
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IPing { function ping(); }'
     + ' contract Impl {'
     + '   address public implementation;'

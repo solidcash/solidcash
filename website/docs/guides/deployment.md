@@ -213,7 +213,7 @@ The factory's trailing overrides object supports:
 
 With a `NetworkProvider` runner instead of a `Signer`, pass `fundingUtxo`, `funder` and `changeAddress` yourself;
 that deployment gets no logical CREATE address, so `target` is the physical address. `validatorCount` and
-`functionSplit` belong to the framed convention, which is experimental in 0.13.1 (see
+`functionSplit` belong to the framed convention, which is experimental in 0.14.0-beta.1 (see
 [Framed Composition](/docs/guides/framed-composition)).
 
 `StatefulContract.deploy(artifact, constructorArgs, options)` takes the same options except the signer defaults:
@@ -240,7 +240,7 @@ independent partitions before enabling threads. Contracts can also change the ma
 
 `messageBusVerificationInputCount` is a separate concurrency control. Each composed transaction consumes and
 recreates one verifier NFT; provisioning more instances permits more message-bus compositions to be in flight.
-Message-bus composition is experimental in 0.13.1; see [Message Bus](/docs/guides/message-bus).
+Message-bus composition is experimental in 0.14.0-beta.1; see [Message Bus](/docs/guides/message-bus).
 
 ## Exact-input deployment
 

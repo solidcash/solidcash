@@ -25,7 +25,7 @@ import { tryParseEventCommitment } from '../../src/stateful/StateReader.js';
 import { aliceAddress, alicePkh, alicePriv } from '../fixture/vars.js';
 import { fundShippedFacets } from '../framed/shapes/harness.js';
 
-const LIBRARY = `pragma solidcash ^0.13.0;
+const LIBRARY = `pragma solidcash ^0.14.0;
 event Fired(int value);
 library Log {
   function fire(int value) internal { emit Fired(value); }
@@ -37,7 +37,7 @@ contract Emitter {
 }`;
 
 /** The same contract emitting in its own body, which the split's probe always saw. */
-const OWN_BODY = `pragma solidcash ^0.13.0;
+const OWN_BODY = `pragma solidcash ^0.14.0;
 event Fired(int value);
 contract Emitter {
   int counter;

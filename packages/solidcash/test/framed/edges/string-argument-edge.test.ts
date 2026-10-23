@@ -20,7 +20,7 @@ import {
  * callee's reason, and nothing is broadcast.
  */
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface INotebook {'
   + '   function review(int id, string text, int score) returns (int);'
   + '   function expand(string key) view returns (string);'

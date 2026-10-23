@@ -19,7 +19,7 @@ either prove or reject.
 :::
 
 :::caution Experimental
-Message-bus composition is experimental in 0.13.1: inferred bus routes, `messageBus.compose` and `sc.batch`. A call
+Message-bus composition is experimental in 0.14.0-beta.1: inferred bus routes, `messageBus.compose` and `sc.batch`. A call
 that changes another contract's state is outside the release's stability promise. The artifact fields, the SDK
 entry points and the source shapes the compiler admits can change between releases.
 :::
@@ -309,7 +309,7 @@ never treated as deployable.
 which `assertReadableKernelExecutionPlans(artifact)` from `solidcash/message-bus` checks before a reader trusts the
 plan.
 
-This convention is experimental in 0.13.1. Compose only `eligible` handlers from an `available` artifact, and check
+This convention is experimental in 0.14.0-beta.1. Compose only `eligible` handlers from an `available` artifact, and check
 the deployability certificate before treating a compiled route as safe to broadcast.
 
 ## Route-planning helpers

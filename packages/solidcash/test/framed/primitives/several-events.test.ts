@@ -29,7 +29,7 @@ const BETA = 2n;
 
 describe('two events of one contract emitted from two frames', () => {
   it('lists both at their own outputs and reads both commitments back, accepted at every contract input', () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Log {'
       + '   event Alpha(int x);'
       + '   event Beta(int y);'

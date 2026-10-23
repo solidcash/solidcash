@@ -23,7 +23,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * machine: the callee's frame has to be planned, derived and settled, and the transaction has to broadcast.
  */
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IPing { function ping(int n); }'
   + ' contract Ping { int public seen; function ping(int n) { require(n >= this.seen); require(true); } }'
   + ' contract Caller {'

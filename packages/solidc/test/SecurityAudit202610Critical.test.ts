@@ -45,7 +45,7 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 type SourceOutputs = NonNullable<VmProgram['sourceOutputs']>;
 
-const P = 'pragma solidcash ^0.13.0;';
+const P = 'pragma solidcash ^0.14.0;';
 const BUS = { messageBus: true } as const;
 const CATEGORY = Uint8Array.from({ length: 32 }, (_, i) => (0x29 + i * 17) & 0xff);
 const FOREIGN = Uint8Array.from({ length: 32 }, (_, i) => (0x44 + i * 13) & 0xff);

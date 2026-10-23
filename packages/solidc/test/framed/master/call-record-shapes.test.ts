@@ -18,7 +18,7 @@ import { hexOf, seededAddress } from '../../../../solidcash/test/framed/shapes/h
 
 const CALLEE = hexOf(seededAddress('call shape callee'));
 
-const HEAD = 'pragma solidcash ^0.13.0;';
+const HEAD = 'pragma solidcash ^0.14.0;';
 
 const INTERFACES = ' interface IState { function add(int x); }'
   + ' interface IPeek { function peek() returns (int); }'

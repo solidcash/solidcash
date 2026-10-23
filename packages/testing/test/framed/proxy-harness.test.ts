@@ -35,7 +35,7 @@ const COMPOSITION_LIMITS = {
 
 // Two state records - a scalar, and a key the compiler isolates into one of its own - so the implementation and
 // the proxy it generates both use multi-record commitments.
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Counter {'
   + '   int public total;'
   + '   pubkey external owner;'

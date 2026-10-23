@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../../../src/compiler.js';
 
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
   interface IReader { function first(address holder) returns (bool); function second(string label) returns (bool); }
   contract Guarded {
     function run(address target, address holder) { validate(holder, target); require(true); }

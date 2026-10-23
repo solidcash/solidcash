@@ -80,7 +80,7 @@ function verdict(sourceOutputs: SourceOutputs, transaction: VmTransaction): true
 describe('October 2026 class B holes', () => {
   it('CRYPTO-4 a second minting baton cannot rewrite a data record, and a contract-sized master can', () => {
     const artifact = compileString(
-      'pragma solidcash ^0.13.0; contract C { int n; function touch() { this.n = this.n + 1; require(true); } }',
+      'pragma solidcash ^0.14.0; contract C { int n; function touch() { this.n = this.n + 1; require(true); } }',
       { messageBus: true },
     );
     const fn = artifact.abi.find((entry) => entry.name === 'touch');
@@ -262,7 +262,7 @@ describe('October 2026 class B holes', () => {
 
   it('CRYPTO-4 a compiler-built value chunk rejects a long non-master minting NFT, and the bound master can', () => {
     const artifact = compileString(
-      'pragma solidcash ^0.13.0; contract C { enumerable mapping(bytes32 => bytes) rec;'
+      'pragma solidcash ^0.14.0; contract C { enumerable mapping(bytes32 => bytes) rec;'
       + ' function write(bytes32 k, bytes v) { this.rec[k] = v; require(true); } }',
       { messageBus: false, forceStateful: true },
     );
@@ -350,7 +350,7 @@ describe('October 2026 class B holes', () => {
 
   it('CRYPTO-4 a second long value chunk cannot be an unbound lock, and both bound chunks can', () => {
     const artifact = compileString(
-      'pragma solidcash ^0.13.0; contract C {'
+      'pragma solidcash ^0.14.0; contract C {'
       + ' enumerable mapping(bytes32 => bytes) a; enumerable mapping(bytes32 => bytes) b;'
       + ' function write(bytes32 k, bytes v, bytes32 k2, bytes w) {'
       + ' this.a[k] = v; this.b[k2] = w; require(true); } }',
@@ -446,7 +446,7 @@ describe('October 2026 class B holes', () => {
   });
 
   it('DX-8 a delegate call cannot rewrite the implementation record, and the preserved record can', () => {
-    const P = 'pragma solidcash ^0.13.0;';
+    const P = 'pragma solidcash ^0.14.0;';
     const artifact = compileString(
       `${P} contract C() { bigint counter; function touch() public { this.counter = this.counter + 1; require(true); } }`,
     ).delegateArtifact;
@@ -514,7 +514,7 @@ describe('October 2026 class B holes', () => {
   });
 
   it('DX-7 a factory genesis cannot mint an extra child-category coin, and the declared genesis can', async () => {
-    const P = 'pragma solidcash ^0.13.0;';
+    const P = 'pragma solidcash ^0.14.0;';
     const src = `${P} contract Child() { bigint x; function ping() { require(true); } }`
       + ' contract Factory() { function create() { Child c = new Child(); require(c.length > 0); } }';
     // The kernel route's witness is a composed batch. This spend is the direct deploy epilogue, which holds

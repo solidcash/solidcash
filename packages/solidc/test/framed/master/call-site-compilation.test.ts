@@ -59,14 +59,14 @@ const FORTY_THREE = encodeResultList([encodeIntegerValue(43n)]);
  * A caller that passes a compile-time argument and ignores the result. `7` is the source's own operand, so the
  * digest the site computes is `SHA256(selector || push(7))` and nothing else can satisfy it.
  */
-const ARGUMENT_SOURCE = 'pragma solidcash ^0.13.0;'
+const ARGUMENT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping(int x); }'
   + ' contract Caller {'
   + `   function callIt() { ICallee(0x${toHex(ADDRESS_CALLEE)}).ping(7); require(true); }`
   + ' }';
 
 /** A caller that uses the value the call returns: `require` compares it with `42`. */
-const RESULT_SOURCE = 'pragma solidcash ^0.13.0;'
+const RESULT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping() returns (int); }'
   + ' contract Caller {'
   + `   function callIt() { require(ICallee(0x${toHex(ADDRESS_CALLEE)}).ping() == 42); }`

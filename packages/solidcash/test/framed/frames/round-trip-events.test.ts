@@ -72,7 +72,7 @@ const token = (
   ({ category, amount: 0n, nft: { capability, commitment: EMPTY } });
 
 /** Two contracts where every contract emits, so the compiler admits the unit, and `A.f` emits after its call. */
-const ROUND_TRIP_SOURCE = 'pragma solidcash ^0.13.0;'
+const ROUND_TRIP_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IB { function g(); }'
   + ' interface IA { function k(); }'
   + ' contract B {'
@@ -301,7 +301,7 @@ describe('a plan whose entry emits after its call returns', () => {
   it('emits every contract of a unit whose contracts attribute different numbers of events', () => {
     // Only one contract of this unit emits, and the quiet one keeps no state of its own, so nothing but the
     // contract's own bodies can decide its event region: both masters are emitted.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface IB { function g(); }'
       + ' interface IA { function k(); }'
       + ' contract B {'
@@ -329,7 +329,7 @@ describe('a plan whose entry emits after its call returns', () => {
  * the machine accepts the master's own input.
  */
 describe('an entry that emits and makes no call', () => {
-  const SOURCE = 'pragma solidcash ^0.13.0;'
+  const SOURCE = 'pragma solidcash ^0.14.0;'
     + ' contract Log {'
     + '   event First(int x);'
     + '   event Second(int y);'

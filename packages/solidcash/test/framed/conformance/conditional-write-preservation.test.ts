@@ -22,7 +22,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * record whose value differs from what the node was spent with is refused at the master.
  */
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function set(address to, uint amount) { balances[to] = amount; require(true); }'

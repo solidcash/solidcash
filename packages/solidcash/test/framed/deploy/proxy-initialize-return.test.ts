@@ -24,7 +24,7 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 const IMPL_CATEGORY = '55'.repeat(31) + 'aa';
 const PROXY_CATEGORY = '66'.repeat(31) + '99';
 
-const IMPL_SOURCE = 'pragma solidcash ^0.13.0;'
+const IMPL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   uint public initialized;'

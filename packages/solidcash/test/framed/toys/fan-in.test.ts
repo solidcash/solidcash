@@ -48,7 +48,7 @@ const PREVIOUS = 7n;
 const NODE_INDEX = 6;
 const ZERO_SLOT = new Uint8Array(32);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IToken {'
   + '   function approve(address spender, int amount);'
   + '   function transferFrom(address holder, address recipient, int amount);'

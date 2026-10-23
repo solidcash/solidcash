@@ -31,7 +31,7 @@ const OUTER_PROXY_CATEGORY = '66'.repeat(31) + '99';
 /** An element whose declared body pushes the array value past the inline limit, so its run occupies chunk records. */
 const BODY = 'ab'.repeat(120);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IStore { function append(int id, Piece p); }'
   + ' struct Piece { int8 kind; bytes body; }'
   + ' contract Store {'

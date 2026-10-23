@@ -19,7 +19,7 @@ import { compileString } from '../../../src/compiler.js';
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
-const STATE_CONTRACT = 'pragma solidcash ^0.13.0;'
+const STATE_CONTRACT = 'pragma solidcash ^0.14.0;'
   + ' contract Counter(pubkey admin) {'
   + '   int public counter;'
   + '   function increment(sig s) {'
@@ -28,7 +28,7 @@ const STATE_CONTRACT = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const SENDER_CONTRACT = 'pragma solidcash ^0.13.0;'
+const SENDER_CONTRACT = 'pragma solidcash ^0.14.0;'
   + ' contract Gate(address owner) {'
   + '   int public hits;'
   + '   function bump() { require(msg.sender == owner); this.hits = this.hits + 1; }'

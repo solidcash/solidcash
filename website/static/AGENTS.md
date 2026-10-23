@@ -1,7 +1,7 @@
 # SolidCash -- AI Agent Reference
 
 Reference for AI coding agents that write SolidCash contracts or port Solidity contracts to Bitcoin Cash. It
-covers SolidCash 0.13.1 (beta). This file is served at https://solidcash.org/AGENTS.md; the full documentation is
+covers SolidCash 0.14.0-beta.1. This file is served at https://solidcash.org/AGENTS.md; the full documentation is
 at https://solidcash.org/docs.
 
 SolidCash is a smart-contract language for Bitcoin Cash (BCH) with Solidity syntax. The `solidc` compiler turns
@@ -31,7 +31,7 @@ it, so CashScript examples do not apply.
    a transaction is valid on mainnet. See "Limits and Costs".
 8. Experimental profiles are outside the stable promise: composed external state mutation, custom delegate
    forwarding beyond the built-in proxy, and message-bus kernel composition. Say so when a design depends on one.
-9. 0.13.1 is a beta and security hardening is ongoing. Do not advise putting significant value behind a contract
+9. 0.14.0-beta.1 is a beta and security hardening is ongoing. Do not advise putting significant value behind a contract
    without an independent review.
 
 ## Key Differences from Solidity
@@ -64,7 +64,7 @@ There are two routes, and both target the same compiler.
   switches `abi.*`, selectors, `interfaceId` and event selectors to EVM encoding and keccak256. Without the flag,
   `pragma solidity` is a diagnostic that names the option. New SolidHat projects set `compiler: { evmCompat: true }`
   in `solidcash.config.ts`.
-- **Rewrite as native `.scash`** with `pragma solidcash ^0.13.0;`. Native mode uses compact Script ABI framing and
+- **Rewrite as native `.scash`** with `pragma solidcash ^0.14.0;`. Native mode uses compact Script ABI framing and
   sha256-derived selectors, and gives the most control over bytecode size. Prefer it for new BCH-only contracts.
 
 Both modes accept bare state access (`balanceOf[a] += x`) as well as the explicit `this.balanceOf[a]` form.
@@ -122,7 +122,7 @@ __gap arrays                 omitted under evmCompat; they reserve nothing on BC
 
 ## Toolchain
 
-Six npm packages, all versioned 0.13.1. They ship as ESM only and target Node.js 22 or newer.
+Six npm packages, all versioned 0.14.0-beta.1. They ship as ESM only and target Node.js 22 or newer.
 
 ```text
 solidc                      -- compiler: CLI `solidc` and the compileFile/compileString API
@@ -201,7 +201,7 @@ https://solidcash.org/docs/basics/solidity-parity
 ### Source File Structure
 
 ```solidity
-pragma solidcash ^0.13.0;                    // native: only `solidcash`; `pragma solidity` needs evmCompat
+pragma solidcash ^0.14.0;                    // native: only `solidcash`; `pragma solidity` needs evmCompat
 import "./Base.scash";                       // wildcard: every file-level declaration
 import "./Types.scash" as T;                 // namespace: qualified types (T.Point, T.Color.Red)
 import { Pair, helper } from "./Lib.scash";  // selective; an `as` rename resolves only for enums
@@ -837,7 +837,7 @@ contract Forwarder(pubkey admin) {
   with `upgrades.deployProxy(factory, state, { proxy: forwarderArtifact, auth: () => [adminSig] })`;
   `upgrades.upgradeProxy(proxy, newFactory)` re-targets only this parameter-mode shape.
 - Deployed libraries (`L.f(...)` on a library function touching library state) use the same delegate co-spend
-  (experimental). Not supported in 0.13.1: fallback-only transparent proxies, value or token movement in delegate mode.
+  (experimental). Not supported in 0.14.0-beta.1: fallback-only transparent proxies, value or token movement in delegate mode.
 
 ### Cross-Contract Calls
 

@@ -16,7 +16,7 @@ import {
  * node carries and the group the segment declares.
  */
 
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 const A = distinctBytes(20, 0x11);
 const B = distinctBytes(20, 0x23);
 const C = encodeIntegerValue(300n);

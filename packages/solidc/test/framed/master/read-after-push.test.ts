@@ -39,7 +39,7 @@ import {
  * after its write was already the written value: those controls stand beside the mapping shapes.
  */
 
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 const STATE = ' uint public count; bytes4 public lastKind; mapping(uint => bytes4[]) logs;';
 
 /** The bodies that push, each reading the entry after its push. */

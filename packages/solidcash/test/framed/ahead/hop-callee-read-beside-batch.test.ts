@@ -54,7 +54,7 @@ const PAYER = encodeLockingBytecodeP2pkh(alicePkh);
 const THIRD = hexToBin(`a914${'5d2e7f4a1b8c3d6e9f0a2b4c6d8e1f3a5b7c9d0e'}87`);
 
 const SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'interface ICoin {',
   '  function transferFrom(address from, address to, uint amount) returns (bool);',
   '  function transferVia(address from, address to, address witness, uint amount) returns (bool);',

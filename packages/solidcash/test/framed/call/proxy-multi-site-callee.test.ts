@@ -31,7 +31,7 @@ const hexOf = (bytes: Uint8Array): string => binToHex(bytes);
 // The callee reads its own record beside every call, so each of its masters declares the record it shares with the
 // contract's other masters. The last site is guarded by a forwarded boolean, so the plan resolves the guard against
 // the caller's own argument rather than filling it.
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IStore { function note(int a, int b); function tick(int n); }'
   + ' contract Store {'
   + '   int public floor;'

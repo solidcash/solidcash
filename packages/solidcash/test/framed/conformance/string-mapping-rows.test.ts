@@ -127,7 +127,7 @@ describe('spec section 23 row 24: a string => string mapping set and delete', ()
   }, 120_000);
 
   it('sets, reads, deletes and reads again through the shipped proxy path', async () => {
-    const PROXY_SOURCE = 'pragma solidcash ^0.13.0;'
+    const PROXY_SOURCE = 'pragma solidcash ^0.14.0;'
       + ' contract Impl {'
       + '   mapping(string => string) tags;'
       + '   function initialize(string k, string v) { this.tags[k] = v; }'

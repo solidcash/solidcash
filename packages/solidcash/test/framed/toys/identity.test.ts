@@ -127,7 +127,7 @@ const OWNER = USER_LOCK;
 const NON_OWNER = new Uint8Array([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x33), 0x88, 0xac]);
 
 /** The plan's exact sweep shape: `sweep(t)` calls `this.transfer(t, bal[address(this)])` and transfer debits `bal`. */
-const MAPPING_SWEEP_SOURCE = 'pragma solidcash ^0.13.0;'
+const MAPPING_SWEEP_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Tok {'
   + '   mapping(address => int) bal;'
   + '   function transfer(address to, int amount) {'
@@ -144,7 +144,7 @@ const MAPPING_SWEEP_SOURCE = 'pragma solidcash ^0.13.0;'
  * This is the same shape as the plan's `sweep(t)` with the treasury named in the source, so the frame's own
  * argument plays no part. The callee still writes a sorted mapping through a self-call, which is refused.
  */
-const LITERAL_SWEEP_SOURCE = 'pragma solidcash ^0.13.0;'
+const LITERAL_SWEEP_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Tok {'
   + '   mapping(address => int) bal;'
   + '   function transfer(address to, int amount) {'
@@ -162,7 +162,7 @@ const LITERAL_SWEEP_SOURCE = 'pragma solidcash ^0.13.0;'
  * argument of a call statement: the shape whose entry access the block layout used to omit. The callee also writes
  * a scalar, which gives the segment a computed record of its own beside the node the read declares.
  */
-const READ_THROUGH_SELF_SOURCE = 'pragma solidcash ^0.13.0;'
+const READ_THROUGH_SELF_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Tok {'
   + '   mapping(address => int) bal;'
   + '   int seen;'
@@ -178,7 +178,7 @@ const READ_THROUGH_SELF_SOURCE = 'pragma solidcash ^0.13.0;'
  * compares `msg.sender` with the contract's own address to choose which one it debits. The plan's exact shape is
  * refused (below), so this is the reachable statement of the same rule.
  */
-const SCALAR_SWEEP_SOURCE = 'pragma solidcash ^0.13.0;'
+const SCALAR_SWEEP_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Tok {'
   + '   int balSelf;'
   + '   int balUser;'
@@ -190,20 +190,20 @@ const SCALAR_SWEEP_SOURCE = 'pragma solidcash ^0.13.0;'
   + `   function sweep() { this.transfer(0x${hexOf(TREASURY)}, this.balSelf); require(true); }`
   + ' }';
 
-const OWNER_SOURCE = 'pragma solidcash ^0.13.0;'
+const OWNER_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Tok {'
   + `   function ownerOnly() { require(msg.sender == 0x${hexOf(OWNER)}); }`
   + '   function callOwnerOnly() { this.ownerOnly(); require(true); }'
   + ' }';
 
-const ADDRESS_THIS_SELF_SOURCE = 'pragma solidcash ^0.13.0;'
+const ADDRESS_THIS_SELF_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Tok {'
   + '   function onlySelf() { require(msg.sender == address(this)); }'
   + '   function callOnlySelf() { this.onlySelf(); require(true); }'
   + ' }';
 
 /** The same self-call spelled through a base cast, which the builder lowers the same way as `this.g()`. */
-const BASE_SELF_SOURCE = 'pragma solidcash ^0.13.0;'
+const BASE_SELF_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Base {'
   + '   function onlySelf() virtual { require(msg.sender == address(this)); }'
   + ' }'
@@ -212,14 +212,14 @@ const BASE_SELF_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function callOnlySelf() { Base(this).onlySelf(); require(true); }'
   + ' }';
 
-const ADDRESS_THIS_DIRECT_SOURCE = 'pragma solidcash ^0.13.0;'
+const ADDRESS_THIS_DIRECT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Tok {'
   + '   function ping() { require(true); }'
   + '   function onlySelf() { require(msg.sender == address(this)); }'
   + ' }';
 
 /** The same self-guard with the contract's address written as a literal, which the self-call can compile. */
-const LITERAL_SELF_SOURCE = 'pragma solidcash ^0.13.0;'
+const LITERAL_SELF_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Tok {'
   + `   function onlySelf() { require(msg.sender == 0x${hexOf(TOK_ADDRESS)}); }`
   + '   function callOnlySelf() { this.onlySelf(); require(true); }'
@@ -231,7 +231,7 @@ const ESCROW_ADDRESS = seededAddress(ESCROW_LABEL);
 
 /** `Escrow.refund` is gated on `tx.origin` and reached only through `Market.refund`. */
 function escrowSource(guard: string): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IEscrow { function refund(); }'
     + ` contract Escrow { function refund() { ${guard} require(true); } }`
     + ` contract Market { function refund() { IEscrow(0x${hexOf(ESCROW_ADDRESS)}).refund.call(); require(true); } }`;
@@ -424,7 +424,7 @@ describe('sweep: the internal transfer debits the contract, as the EVM does', ()
     // data as the selector followed by that argument's pushes: the frame's own parameter is bound from them, so the
     // body's guard on the value holds. The control pushes another address, which the body's own require refuses, so
     // the accepted frame is the argument being read rather than the guard being dropped.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ` contract Tok { function sweep(address t) { require(t == 0x${hexOf(TREASURY)}); }`
       + ' function ping() { require(true); } }';
     const { artifacts, contracts } = compileAndDeploy(source, { Tok: TOK_LABEL });
@@ -632,7 +632,7 @@ describe('Escrow.refund reached through Market.refund on the shipped path: tx.or
   const PAYER = encodeLockingBytecodeP2pkh(alicePkh);
   const OTHER = encodeLockingBytecodeP2pkh(bobPkh);
   const REFUND = 40n;
-  const REFUND_SOURCE = 'pragma solidcash ^0.13.0;'
+  const REFUND_SOURCE = 'pragma solidcash ^0.14.0;'
     + ' interface IEscrow { function refund(); function refundRecorded(); }'
     + ' contract Escrow {'
     + '   address public payer;'
@@ -868,7 +868,7 @@ describe('Escrow.refund reached through Market.refund on the shipped path: tx.or
  */
 describe('a call to the contract\'s own address on a second master runs as the contract too', () => {
   /** `callG` calls `g` at the contract's own address; `g` asserts it runs for the contract. */
-  const SELF_TARGET_SOURCE = 'pragma solidcash ^0.13.0;'
+  const SELF_TARGET_SOURCE = 'pragma solidcash ^0.14.0;'
     + ' interface ITok { function g(); }'
     + ' contract Tok {'
     + '   function g() { require(msg.sender == address(this)); }'

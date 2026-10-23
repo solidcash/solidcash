@@ -4,7 +4,7 @@ import { compileString } from '../src/compiler.js';
 
 // A state field with no static bound (`bigint`, unbounded `bytes` inside a struct) reserved 9 bytes, so it packed
 // beside other fields and a wide value overflowed the 128-byte commitment at send time. It now packs alone.
-const BIGINT_SOURCE = `pragma solidcash ^0.13.0;
+const BIGINT_SOURCE = `pragma solidcash ^0.14.0;
 contract Wide {
   int public low;
   bigint public big;
@@ -12,7 +12,7 @@ contract Wide {
   function set(bigint next) { this.big = next; require(true); }
 }`;
 
-const STRUCT_SOURCE = `pragma solidcash ^0.13.0;
+const STRUCT_SOURCE = `pragma solidcash ^0.14.0;
 struct Note { int id; bytes body; }
 contract Notes {
   int public low;

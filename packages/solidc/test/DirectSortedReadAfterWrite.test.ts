@@ -38,7 +38,7 @@ const ZERO_SLOT = new Uint8Array(32);
 const CATEGORY = distinctBytes(32, 0x29);
 const FUNDER_LOCK = Uint8Array.from([0x51]);
 const VALUE = 20_000n;
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 
 /** One body `f`'s spend: the entry it writes, its arguments, and the node it rewrites. */
 interface Spend {

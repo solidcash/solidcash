@@ -18,7 +18,7 @@ import {
  * be visible to whatever view of the provider a lookup is made through.
  */
 
-const PING_SOURCE = 'pragma solidcash ^0.13.0;'
+const PING_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ping {'
   + '   int public seen;'
   + '   function ping(int n) { require(n >= this.seen); }'

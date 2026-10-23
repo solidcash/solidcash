@@ -29,7 +29,7 @@ const CATEGORY = seededCategory('master program');
 const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52]); // OP_1 OP_2, any program the address rule accepts
 const OWNER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Frame(address owner, address expected) {'
   + '   function bump() {'
   + '     require(msg.sender == owner);'
@@ -144,7 +144,7 @@ describe('a compiled framed master', () => {
   // A body's mapping access proves the journal record's clean synthetic form, whose zero successor is a 32-byte
   // zero push. The compiled master therefore contains the reserved category pattern a third time beside the head's
   // own two slots; the published offsets must still name the head's slots.
-  const BODY_ZERO_PUSH_SOURCE = 'pragma solidcash ^0.13.0;'
+  const BODY_ZERO_PUSH_SOURCE = 'pragma solidcash ^0.14.0;'
     + ' contract Tagged {'
     + '   mapping(string => string) tags;'
     + '   function init() public { this.tags["DA"] = "DIGITAL_AUDIO"; require(true); }'
@@ -350,7 +350,7 @@ describe('a framed master evaluated in the BCH-2026 virtual machine', () => {
 });
 
 describe('a stateful framed master', () => {
-  const STATEFUL_SOURCE = 'pragma solidcash ^0.13.0;'
+  const STATEFUL_SOURCE = 'pragma solidcash ^0.14.0;'
     + ' contract Vault(address owner) {'
     + '   int public hits;'
     + '   function bump() { require(msg.sender == owner); this.hits = this.hits + 1; }'

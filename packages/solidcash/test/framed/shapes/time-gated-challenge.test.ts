@@ -96,7 +96,7 @@ const ZERO_SLOT = new Uint8Array(32);
 const LOCKTIME_AFTER_PAYMENT = Number(PAYMENT_BLOCK) + 1;
 const NON_FINAL_SEQUENCE = 0xfffffffe;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IJudge { function gate(); }'
   + ' interface IEscrow {'
   + '   function paidAt() view returns (int);'
@@ -399,7 +399,7 @@ describe('a user-entered root that reaches an escrow through a judge gated on th
  * The case records where this geometry stands rather than papering over it.
  */
 
-const SINGLE_SOURCE = 'pragma solidcash ^0.13.0;'
+const SINGLE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IJudge { function gate(); }'
   + ' interface IEscrow {'
   + '   function paidAt() view returns (int);'

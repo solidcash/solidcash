@@ -22,7 +22,7 @@ const CALL = `IOther(${OTHER}).ping.call();`;
 const EDGE_CALL = `IOther(${OTHER}).ping();`;
 
 /** A ledger whose `move` entry runs `body`. */
-const LEDGER = (body: string): string => `pragma solidcash ^0.13.0;${PING}`
+const LEDGER = (body: string): string => `pragma solidcash ^0.14.0;${PING}`
   + ' contract Ledger {'
   + '   struct Row { uint a; uint b; }'
   + '   mapping(address => uint) balances;'

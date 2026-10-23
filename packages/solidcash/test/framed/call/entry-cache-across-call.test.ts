@@ -51,7 +51,7 @@ const ALICE_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
 // The ledger reaches the settler through an interface-typed local, which leaves its body graph-free, so the
 // message-bus lowering does not rewrite the field updates in place first and they reach the entry cache.
 const SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'interface ISettler { function settle(address ledger, int id, int stage) returns (int); }',
   'interface ILedger {',
   '  function open(int id); function advance(int id) returns (int); function restage(int id) returns (int);',

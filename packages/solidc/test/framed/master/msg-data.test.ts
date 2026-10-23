@@ -33,14 +33,14 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
 const SELF = '   function self(bytes expected) { require(address(this) == expected); }';
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Probe {'
   + '   function data(int length) { require(msg.data.length == length); }'
   + SELF
   + '   receive() external payable { require(msg.data.length == 0); }'
   + ' }';
 /** The same reads through a helper, from an entry, the fallback and `receive()`. */
-const HELPER_SOURCE = 'pragma solidcash ^0.13.0;'
+const HELPER_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Probe {'
   + '   function _data() internal returns (bytes) { return msg.data; }'
   + '   function data(int length) { require(_data().length == length); }'
@@ -48,7 +48,7 @@ const HELPER_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   receive() external payable { require(_data().length == 0); }'
   + ' }';
 /** The control: the same entries without a read of `msg.data`. */
-const PLAIN_SOURCE = `pragma solidcash ^0.13.0; contract Probe { function data(int length) { require(length > 0); }${SELF} }`;
+const PLAIN_SOURCE = `pragma solidcash ^0.14.0; contract Probe { function data(int length) { require(length > 0); }${SELF} }`;
 
 /** The machine's verdict on a user's frame into the compiled source carrying `callData`. */
 function spend(source: string, callData: readonly Uint8Array[]): boolean {
@@ -120,7 +120,7 @@ describe('msg.data in a framed master', () => {
   });
 
   it('is refused by name in a master with one entry, whose user frame carries no selector', () => {
-    const sole = 'pragma solidcash ^0.13.0; contract Sole { function only() { require(msg.data.length > 0); } }';
+    const sole = 'pragma solidcash ^0.14.0; contract Sole { function only() { require(msg.data.length > 0); } }';
     expect(() => compileString(sole, { composition: 'framed' })).toThrow(/msg\.data in a master with one entry/);
   });
 });
@@ -130,7 +130,7 @@ type SigBody = 'fallback(bytes input) external' | 'receive() external payable';
 /** A contract whose `body` requires `msg.sig`, read directly and through a helper, to be `expected`. */
 const sigSource = (body: SigBody, expected: Uint8Array): string => {
   const literal = `0x${Buffer.from(expected).toString('hex')}`;
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' contract Sig {'
     + '   function only() { require(true); }'
     + '   function _sig() internal returns (bytes4) { return msg.sig; }'

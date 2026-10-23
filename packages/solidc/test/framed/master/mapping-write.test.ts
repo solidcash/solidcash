@@ -41,7 +41,7 @@ const TO = new Uint8Array(20).fill(0x33);
 const AMOUNT = 42;
 const VALUE_TAIL = new Uint8Array([AMOUNT]);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Balances {'
   + '   mapping(address => uint) balances;'
   + '   function set(address to, uint amount) {'
@@ -299,7 +299,7 @@ describe('a framed master whose entry writes a verified mapping', () => {
     // begins: the frame's record holds the value the arm started from, and no straight line names the other. The
     // shape is left refused rather than derived approximately; `key-forms-write.test.ts` runs the admitted sender,
     // expression and record keys through the machine.
-    const stateKey = 'pragma solidcash ^0.13.0;'
+    const stateKey = 'pragma solidcash ^0.14.0;'
       + ' contract ComputedKey {'
       + '   address owner;'
       + '   mapping(address => uint) balances;'

@@ -111,7 +111,7 @@ emitting the same event twice remains two distinct event outputs.
 ## Journal semantics in the message bus
 
 In a direct call, one function invocation owns the contract's journal. A message-bus transaction (experimental in
-0.13.1) can execute several logical rows for the same physical participant while spending that participant's master only once. Those
+0.14.0-beta.1) can execute several logical rows for the same physical participant while spending that participant's master only once. Those
 rows share one participant-local pending view in authenticated call-manifest order:
 
 ```text

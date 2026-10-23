@@ -7,7 +7,7 @@ const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program
 // --- Contract sources (kept small to avoid exceeding bytecode limit) -----
 
 const LITERAL_ACCESS_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract LiteralAccess() {
     function testAccess(bigint row, bigint col) {
         bigint[3][] matrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
@@ -27,7 +27,7 @@ contract LiteralAccess() {
 `;
 
 const PUSH_POP_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract PushPop() {
     function testPushPop() {
         bigint[3][] rows = [[10, 20, 30]];
@@ -54,7 +54,7 @@ contract PushPop() {
 `;
 
 const INNER_EXTRACT_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract InnerExtract() {
     function testExtractRow() {
         bigint[3][] matrix = [[1, 2, 3], [4, 5, 6]];
@@ -76,7 +76,7 @@ contract InnerExtract() {
 `;
 
 const DIAGONAL_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Diagonal() {
     function testDiagonal(bigint n) {
         bigint[3][] matrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
@@ -86,7 +86,7 @@ contract Diagonal() {
 `;
 
 const DELETE_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Delete2D() {
     function testDelete() {
         bigint[2][] pairs = [[1, 2], [3, 4], [5, 6]];
@@ -101,7 +101,7 @@ contract Delete2D() {
 `;
 
 const ASSIGN_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Assign2D() {
     function testOuterAssign() {
         bigint[2][] pairs = [[1, 2], [3, 4]];
@@ -123,7 +123,7 @@ contract Assign2D() {
 `;
 
 const BOOL_2D_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Bool2D() {
     function testLiteral() {
         bool[2][] flags = [[true, false], [false, true]];
@@ -144,7 +144,7 @@ contract Bool2D() {
 `;
 
 const BYTES_2D_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Bytes2D() {
     function testLiteral(bytes4 target) {
         bytes4[2][] pairs = [[0xdeadbeef, 0xcafebabe], [0x12345678, 0xaabbccdd]];
@@ -163,7 +163,7 @@ contract Bytes2D() {
 `;
 
 const FIXED_2D_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Fixed2D() {
     function testAccess() {
         bigint[3][2] grid = [[1, 2, 3], [4, 5, 6]];
@@ -185,7 +185,7 @@ contract Fixed2D() {
 `;
 
 const FIXED_INNER_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract FixedInner() {
     function testInnerLength() {
         bigint[3][2] grid = [[10, 20, 30], [40, 50, 60]];
@@ -196,7 +196,7 @@ contract FixedInner() {
 `;
 
 const FAILURE_VALUE_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract FailureValue() {
     function testWrongValue() {
         bigint[2][] pairs = [[10, 20], [30, 40]];
@@ -206,7 +206,7 @@ contract FailureValue() {
 `;
 
 const FAILURE_LENGTH_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract FailureLength() {
     function testWrongLength() {
         bigint[2][] pairs = [[1, 2]];
@@ -216,7 +216,7 @@ contract FailureLength() {
 `;
 
 const FAILURE_PUSH_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract FailurePush() {
     function testWrongAfterPush() {
         bigint[2][] pairs = [[1, 2]];

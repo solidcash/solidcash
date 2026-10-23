@@ -88,7 +88,7 @@ const INPUT_COUNT = USER_INDEX + 1;
 const entryPush = (n: bigint): Uint8Array => encodeDataPush(encodeIntegerValue(n));
 
 const STRUCT_N = 9n;
-const STRUCT_SOURCE = 'pragma solidcash ^0.13.0;'
+const STRUCT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Rec { string tag; int n; }'
   + ' interface ICallee { function put(Rec r); }'
   + ' contract Callee { function put(Rec r) { require(r.n > 0); } }'
@@ -103,7 +103,7 @@ const structBlob = (n: bigint): Uint8Array => concatBytes([
 /** The struct argument's wire push: the blob under its own length. */
 const structArgumentPushes = (n: bigint): Uint8Array => encodeArgumentList([structBlob(n)]);
 
-const ARRAY_SOURCE = 'pragma solidcash ^0.13.0;'
+const ARRAY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function take(uint16[2] xs); }'
   + ' contract Callee { function take(uint16[2] xs) { require(xs[0] > 0); } }'
   + ' contract Caller { function callIt() {'
@@ -116,7 +116,7 @@ const arrayBlob = (first: bigint): Uint8Array => encodePushdataValue([first, 7n]
 const arrayArgumentPushes = (first: bigint): Uint8Array => encodeArgumentList([arrayBlob(first)]);
 
 /** The same array built inline at the call site, so the literal itself is what the site encodes. */
-const ARRAY_LITERAL_SOURCE = 'pragma solidcash ^0.13.0;'
+const ARRAY_LITERAL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function take(uint16[2] xs); }'
   + ' contract Callee { function take(uint16[2] xs) { require(xs[0] > 0); } }'
   + ' contract Caller { function callIt() {'
@@ -129,7 +129,7 @@ const ARRAY_LITERAL_SOURCE = 'pragma solidcash ^0.13.0;'
  * argument; the site keeps the local for the earlier argument's read rather than consuming it at the marked one.
  */
 const SHARED_N = 8n;
-const SHARED_SOURCE = 'pragma solidcash ^0.13.0;'
+const SHARED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Rec { string tag; int n; }'
   + ' interface ICallee { function pay(Rec r, int fee); }'
   + ' contract Callee { function pay(Rec r, int fee) { require(r.n == fee); } }'
@@ -142,7 +142,7 @@ const sharedPushes = (member: bigint, fee: bigint): Uint8Array =>
   encodeCallDataArguments([structBlob(member), encodeIntegerValue(fee)]);
 
 /** The same local read by two scalar arguments, the later one the marked final use. */
-const SHARED_SCALAR_SOURCE = 'pragma solidcash ^0.13.0;'
+const SHARED_SCALAR_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function pair(int a, int b); }'
   + ' contract Callee { function pair(int a, int b) { require(a == b + 1); } }'
   + ' contract Caller { function callIt(int n) {'
@@ -150,7 +150,7 @@ const SHARED_SCALAR_SOURCE = 'pragma solidcash ^0.13.0;'
   + `   ICallee(0x${toHex(ADDRESS_CALLEE)}).pair(fee + 1, fee); require(true); } }`;
 
 /** A call passing an external function pointer, which is a pair and not the one item a digest is computed from. */
-const POINTER_SOURCE = 'pragma solidcash ^0.13.0;'
+const POINTER_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function use(function(int) external returns (int) cb); }'
   + ' contract Callee { function use(function(int) external returns (int) cb) { require(true); } }'
   + ' contract Caller { function callIt() {'

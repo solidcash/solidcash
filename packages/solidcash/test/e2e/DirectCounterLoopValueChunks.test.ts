@@ -12,7 +12,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * entry now keeps its own list, as a route without the witness does.
  */
 
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
 contract CounterLoopChunkedValues() {
   mapping(int => bytes32[]) values;
   function pushMany(int n, bytes32 value) public {

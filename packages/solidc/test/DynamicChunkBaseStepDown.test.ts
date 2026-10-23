@@ -16,7 +16,7 @@ import { compileString } from '../dist/compiler.js';
  * gated, `roi < 0 && max(witnessed indices) < 0`. Trailing-base reconstructions elsewhere in the body (read
  * chunks, mapping inserts, runtime mapping outputs) keep their own ungated step-down.
  */
-const RETURNING_WRITE = `pragma solidcash ^0.13.0;
+const RETURNING_WRITE = `pragma solidcash ^0.14.0;
 interface IProbe { function ping(int x) external returns (int); }
 contract Anchor(address a) {
   bytes[] items;

@@ -175,7 +175,7 @@ const GUARDED = hexOf(seededAddress(GUARDED_LABEL));
 const HOOK = hexOf(seededAddress(HOOK_LABEL));
 
 /** A callee that calls back into a guarded entry of the contract that called it. */
-const REENTRY_SOURCE = 'pragma solidcash ^0.13.0;'
+const REENTRY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IHook { function hook(); }'
   + ' interface IGuarded { function bump(); }'
   + ` contract Hook { function hook() { IGuarded(0x${GUARDED}).bump(); require(true); } }`

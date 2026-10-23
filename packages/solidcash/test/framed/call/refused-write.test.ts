@@ -28,7 +28,7 @@ const CATEGORY_HEX = '77'.repeat(31) + '88';
 const CALLER_TXID = '78'.repeat(32);
 const PHRASE = 'test test test test test test test test test test test junk';
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Counter {'
   + '   int public counter;'
   + '   function add(int by) {'

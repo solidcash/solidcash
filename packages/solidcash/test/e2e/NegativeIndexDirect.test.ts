@@ -18,7 +18,7 @@ import { createTestProvider } from '../test-util.js';
  * element.
  */
 
-const P = 'pragma solidcash ^0.13.0;';
+const P = 'pragma solidcash ^0.14.0;';
 const KIND = Uint8Array.from([0x3c, 0x61, 0x86, 0xab]);
 const NOTE = Uint8Array.from([0x52, 0x0e, 0x97]);
 /** The machine's refusal of a split at `index * width` for a negative index. */

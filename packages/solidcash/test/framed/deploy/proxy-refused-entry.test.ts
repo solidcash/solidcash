@@ -29,7 +29,7 @@ const PROXY_CATEGORY = '42'.repeat(31) + 'bd';
 
 // The refused shape: the payload is opaque, so the call names no method the convention could compile as a typed
 // call, and the body keeps its own low-level refusal.
-const REFUSED_SOURCE = 'pragma solidcash ^0.13.0;\n'
+const REFUSED_SOURCE = 'pragma solidcash ^0.14.0;\n'
   + 'contract Impl {\n'
   + '  uint public initialized;\n'
   + '  int public version;\n'
@@ -47,7 +47,7 @@ const REFUSED_SOURCE = 'pragma solidcash ^0.13.0;\n'
   + '}\n';
 
 // The same fields and the same body with the opaque call replaced by a state write: an ordinary framed entry.
-const SERVED_SOURCE = 'pragma solidcash ^0.13.0;\n'
+const SERVED_SOURCE = 'pragma solidcash ^0.14.0;\n'
   + 'contract Impl {\n'
   + '  uint public initialized;\n'
   + '  int public version;\n'

@@ -28,7 +28,7 @@ const NON_EMPTY_START = new Uint8Array([0x01]);
 const EMPTY = new Uint8Array(0);
 
 const MASTER = deployFramedMaster(
-  'pragma solidcash ^0.13.0; contract Holder { struct Account { uint total; mapping(address => uint) parts; }'
+  'pragma solidcash ^0.14.0; contract Holder { struct Account { uint total; mapping(address => uint) parts; }'
   + ' Account acc; function set(address k, uint v) { acc.parts[k] = v; } }',
   'created record start view',
 );

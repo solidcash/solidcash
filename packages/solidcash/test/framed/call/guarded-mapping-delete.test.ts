@@ -27,7 +27,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * a write of its collection the group is the same, and the write's insert or update may take that node.
  */
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Tags {'
   + '   mapping(string => string) tags;'
   + '   function put(string k, string v) { this.tags[k] = v; require(true); }'
@@ -36,7 +36,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 const TAGS = compileStringMulti(SOURCE, { composition: 'framed' }).Tags!;
 // The delete runs ahead of the write: a write a delete of its collection follows is a swap-remove alias, which
 // updates in place only.
-const NOTES = compileStringMulti('pragma solidcash ^0.13.0;'
+const NOTES = compileStringMulti('pragma solidcash ^0.14.0;'
   + ' contract Notes {'
   + '   mapping(string => string) tags;'
   + '   function put(string k, string v) { this.tags[k] = v; require(true); }'

@@ -34,7 +34,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
 
 // The proxy's records are the implementation's records: the implementation's write rebuilds the record from its
 // own declaration, so both name the same fields and the address the fallback forwards to is one of them.
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   uint public initialized;'
@@ -47,7 +47,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const DIRECT_SOURCE = 'pragma solidcash ^0.13.0;'
+const DIRECT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Counter { int public counter; function initialize() public { this.counter = 5; } }';
 
 /** A relaxed mock network, matching what a composition shape needs to run. */
@@ -105,7 +105,7 @@ interface TableRun {
 let tableRun: Promise<TableRun> | undefined;
 function tableDeployment(): Promise<TableRun> {
   tableRun ??= (async (): Promise<TableRun> => {
-    const artifacts = compileStringMulti('pragma solidcash ^0.13.0;'
+    const artifacts = compileStringMulti('pragma solidcash ^0.14.0;'
       + ' contract Table {'
       + '   struct Row { string note; bigint amount; }'
       + '   bigint public counter;'

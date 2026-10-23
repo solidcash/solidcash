@@ -65,7 +65,7 @@ const ROOT_PROXY_ADDRESS = validatorAddress(hexToBin(ROOT_PROXY_CATEGORY), VALID
 
 /** The five contracts; `guarded` keeps the escrow's own reentrancy guard, a write to its data record. */
 function sourceFor(guarded: boolean): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' struct Job { address worker; address arbitrator; int state; int escrowId; int disputed; }'
     + ' interface IStore {'
     + '   function markDown(address who); function markRefusal(address who); function log(int id, int kind);'

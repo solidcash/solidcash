@@ -32,14 +32,14 @@ const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 const OWNER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
 const OTHER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(7));
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Frame(address owner, address expected) {'
   + '   function bump() { require(msg.sender == owner); }'
   + '   function nudge() { require(address(this) == expected); }'
   + ' }';
 
 /** Entry points that take an argument, so the selector and the argument layout are exercised together. */
-const ARGUMENT_SOURCE = 'pragma solidcash ^0.13.0;'
+const ARGUMENT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Choice(address owner) {'
   + '   function pick(int n) { require(msg.sender == owner); require(n == 7); }'
   + '   function drop(int n) { require(msg.sender == owner); require(n == 3); }'

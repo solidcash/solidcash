@@ -14,7 +14,7 @@ import { compileString } from '../dist/compiler.js';
  * return-event carrier: measured on the no-proxy marketplace `publishJobPost`, slot 7 named output 18 while slot 6
  * named 31, and the SDK had materialized the chunks at 32.
  */
-const TWO_RETURNING = `pragma solidcash ^0.13.0;
+const TWO_RETURNING = `pragma solidcash ^0.14.0;
 interface IProbe { function ping(int x) external returns (int); }
 contract Anchor(address a, address b) {
   bytes[] items;
@@ -25,7 +25,7 @@ contract Anchor(address a, address b) {
   }
 }`;
 
-const ONE_RETURNING = `pragma solidcash ^0.13.0;
+const ONE_RETURNING = `pragma solidcash ^0.14.0;
 interface IProbe { function ping(int x) external returns (int); }
 contract Anchor(address a, address b) {
   bytes[] items;

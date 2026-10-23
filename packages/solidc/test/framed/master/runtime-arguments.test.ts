@@ -49,7 +49,7 @@ const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 const INPUT_COUNT = 5;
 
 /** The caller passes a bounded number only the running code counts. */
-const NUMERIC_SOURCE = 'pragma solidcash ^0.13.0;'
+const NUMERIC_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function bump(int n); }'
   + ' contract Callee { function bump(int n) { require(n > 0); } }'
   + ' contract Caller {'
@@ -57,7 +57,7 @@ const NUMERIC_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The caller passes bytes only the running code has: the lock `tx.origin` answers with. */
-const BYTES_SOURCE = 'pragma solidcash ^0.13.0;'
+const BYTES_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function take(bytes origin); }'
   + ' contract Callee { function take(bytes origin) { require(origin.length > 0); } }'
   + ' contract Caller {'
@@ -69,7 +69,7 @@ const BYTES_SOURCE = 'pragma solidcash ^0.13.0;'
  * the callee's own body names each parameter's value and length, and only one assignment of the two pushes
  * satisfies it.
  */
-const PAIR_SOURCE = 'pragma solidcash ^0.13.0;'
+const PAIR_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping(int x, bytes y); }'
   + ` contract Callee { function ping(int x, bytes y) { require(x == ${INPUT_COUNT}); `
   + `require(y.length == ${USER_LOCK.length}); } }`
@@ -81,7 +81,7 @@ const PAIR_SOURCE = 'pragma solidcash ^0.13.0;'
  * The same two-parameter call with both arguments named in the source, so the digest is folded at compile time
  * rather than computed where the call runs. The two paths have to agree on the order the call data carries.
  */
-const PAIR_CONSTANT_SOURCE = 'pragma solidcash ^0.13.0;'
+const PAIR_CONSTANT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping(int x, bytes y); }'
   + ' contract Callee { function ping(int x, bytes y) { require(x == 7); require(y.length == 2); } }'
   + ' contract Caller {'

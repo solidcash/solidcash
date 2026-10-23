@@ -39,7 +39,7 @@ const ID = 7n;
 const AWARD = ID + 100n;
 
 // `record` writes the award first, then makes an unguarded call and reaches a guarded site.
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IOracle { function amountOf(int id) view returns (int); }'
   + ' interface IEscrow { function settle(int id); }'
   + ' contract Oracle {'

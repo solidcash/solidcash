@@ -142,7 +142,7 @@ describe('spec section 23 row 10: address(this).balance compared with 0', () => 
  * compiler refuses the entry and the constructor that run it by name, and the call path and the deployment answer
  * with the published reason rather than with a failed compile or an opcode.
  */
-const KEPT_ENTRY_SOURCE = 'pragma solidcash ^0.13.0;'
+const KEPT_ENTRY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Till {'
   + '   int public seen;'
   + '   function f(int expected) { require(mine() == expected); this.seen = 1; }'
@@ -150,7 +150,7 @@ const KEPT_ENTRY_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function mine() internal view returns (int) { return address(this).balance; }'
   + ' }';
 
-const KEPT_CONSTRUCTOR_SOURCE = 'pragma solidcash ^0.13.0;'
+const KEPT_CONSTRUCTOR_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Opening {'
   + '   int public seen;'
   + '   constructor() { this.seen = mine(); }'

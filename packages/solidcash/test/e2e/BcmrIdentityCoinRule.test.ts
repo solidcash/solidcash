@@ -53,7 +53,7 @@ contract Emitter() {
 }`;
 
 // Two bodies: a user's frame to a one-body framed contract carries no selector, which the call path does not plan.
-const FRAMED = 'pragma solidcash ^0.13.0; contract C { int n;'
+const FRAMED = 'pragma solidcash ^0.14.0; contract C { int n;'
   + ' function poke(bool go) { if (go) this.n = this.n + 1; else this.n = this.n + 1; require(this.n > 0); }'
   + ' function touch() { this.n = this.n + 1; require(this.n > 0); } }';
 

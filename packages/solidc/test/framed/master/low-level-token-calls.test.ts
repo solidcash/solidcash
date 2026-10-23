@@ -38,7 +38,7 @@ const OPAQUE_RETURN_REFUSAL = "the call to '__raw__' takes the direct path's ret
 const CODE_EXTRACT_TEST = 'OP_SIZE OP_DUP 17 OP_NUMEQUAL OP_SWAP 23 OP_NUMEQUAL OP_BOOLOR OP_NOTIF OP_DROP OP_0 OP_ELSE';
 
 /** A caller whose token call data is built by `abi.encodeCall` and invoked through `address(token).call`. */
-const ENCODE_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+const ENCODE_CALL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IToken { function transfer(address to, int amount); }'
   + ' contract Caller {'
   + '   function callIt(address token, address to, int amount) {'
@@ -49,7 +49,7 @@ const ENCODE_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The same call data built by a raw selector, as the vendored 4.9.3 helper spells it. */
-const ENCODE_SELECTOR_SOURCE = 'pragma solidcash ^0.13.0;'
+const ENCODE_SELECTOR_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Caller {'
   + '   function callIt(address token, address to, int amount) {'
   + '     bytes data = abi.encodeWithSelector(hex"a9059cbb", to, amount);'
@@ -59,7 +59,7 @@ const ENCODE_SELECTOR_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The same call with no result bound, which the compiler keeps as a bare low-level call. */
-const BARE_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+const BARE_CALL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IToken { function transfer(address to, int amount); }'
   + ' contract Caller {'
   + '   function callIt(address token, address to, int amount) {'
@@ -70,18 +70,18 @@ const BARE_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The `address.code.length` gate `Address.functionCall` uses to tell a contract from a plain account. */
-const CODE_LENGTH_SOURCE = 'pragma solidcash ^0.13.0;'
+const CODE_LENGTH_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Caller { function check(address token) { require(token.code.length > 0); } }';
 
 /** The typed call the same argument values would make, which the convention serves. */
-const TYPED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+const TYPED_CALL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IToken { function transfer(address to, int amount); }'
   + ' contract Caller {'
   + '   function callIt(IToken token, address to, int amount) { token.transfer(to, amount); require(true); }'
   + ' }';
 
 /** The same `abi.encodeCall` payload, but its method named through the `IToken`-typed variable `token`. */
-const VARIABLE_RECEIVER_SOURCE = 'pragma solidcash ^0.13.0;'
+const VARIABLE_RECEIVER_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IToken { function transfer(address to, int amount); }'
   + ' contract Caller {'
   + '   function callIt(IToken token, address to, int amount) {'
@@ -93,7 +93,7 @@ const VARIABLE_RECEIVER_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The same payload passed through a value-returning helper's `bytes` parameter, as `Address.functionCall` does. */
-const HELPER_PARAMETER_SOURCE = 'pragma solidcash ^0.13.0;'
+const HELPER_PARAMETER_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IToken { function transfer(address to, int amount) returns (bool); }'
   + ' library Addr { function functionCall(address target, bytes data) internal returns (bytes) {'
   + '   (bool success, bytes returndata) = target.call(data); require(success); return returndata; } }'

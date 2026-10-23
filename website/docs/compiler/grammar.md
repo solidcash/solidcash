@@ -29,7 +29,7 @@ import
 Imports must come before every other declaration. Pragmas may come before the imports or anywhere after them.
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 import "./Base.scash";
 import { Pair, helper } from "./Library.scash";

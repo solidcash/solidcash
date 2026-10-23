@@ -15,7 +15,7 @@ import {
 } from './framed/master/record-spend.js';
 import { REAL_VALIDATOR_PROGRAM } from './framed/master/validator-input.js';
 
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
   contract Box {
     uint8 public stored;
     function read(uint8 expected) { require(this.stored == expected); }

@@ -25,7 +25,7 @@ function pinnedEntryAddress(inner: Contract<any, any>, categoryId: string, colle
   return getEntryNftAddress(inner.withCategory(hexToBin(categoryId)), categoryId, collection);
 }
 
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
 contract PendingScalarRows() {
   mapping(int => int) values;
   function addMany(int[] keys, int delta) public {
@@ -34,7 +34,7 @@ contract PendingScalarRows() {
   }
 }`;
 
-const DEFAULT_SOURCE = `pragma solidcash ^0.13.0;
+const DEFAULT_SOURCE = `pragma solidcash ^0.14.0;
 contract DefaultScalarRows() {
   mapping(int => int) values;
   function addMany(int[] keys, int delta) public {
@@ -51,7 +51,7 @@ contract DefaultScalarRows() {
   }
 }`;
 
-const ABSENT_DELETE_SOURCE = `pragma solidcash ^0.13.0;
+const ABSENT_DELETE_SOURCE = `pragma solidcash ^0.14.0;
 contract AbsentDeleteRows() {
   mapping(int => int) values;
   function clearMany(int[] keys) public {
@@ -60,7 +60,7 @@ contract AbsentDeleteRows() {
   }
 }`;
 
-const EFFECT_SOURCE = `pragma solidcash ^0.13.0;
+const EFFECT_SOURCE = `pragma solidcash ^0.14.0;
 contract PendingScalarEffectFence() {
   mapping(int => int) values;
   event Hit(int key);
@@ -73,7 +73,7 @@ contract PendingScalarEffectFence() {
   }
 }`;
 
-const MULTI_COLLECTION_SOURCE = `pragma solidcash ^0.13.0;
+const MULTI_COLLECTION_SOURCE = `pragma solidcash ^0.14.0;
 contract PendingScalarCollections() {
   mapping(int => int) left;
   mapping(int => int) right;
@@ -87,7 +87,7 @@ contract PendingScalarCollections() {
   }
 }`;
 
-const INTERLEAVED_SITE_SOURCE = `pragma solidcash ^0.13.0;
+const INTERLEAVED_SITE_SOURCE = `pragma solidcash ^0.14.0;
 contract InterleavedMappingWrites() {
   mapping(int => int) values;
   function writeBoth(int[] first, int[] second) public {

@@ -10,7 +10,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 // lays the collection out as a multi-target batch: the inserted NEW node occupies the fixed entry slot and the
 // rewritten predecessor is republished in a trailing lane. The predecessor witness must name that compiled
 // trailing lane, not the projected entry slot (whose output carries the NEW node instead).
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
 contract KernelUnionPredOut() {
   mapping(int => int) m;
   mapping(int => int) totals;

@@ -2,15 +2,15 @@
 title: Migration Notes
 ---
 
-## v0.12 to v0.13
+## v0.12 to v0.14
 
-Version 0.13.1 is a major protocol and workflow upgrade, not only a syntax update. Existing stateless contracts can
+Version 0.14.0-beta.1 is a major protocol and workflow upgrade, not only a syntax update. Existing stateless contracts can
 often be recompiled directly, but existing stateful deployments are not layout-compatible with the new
 self-pinned data/vmap/chunk protocol. Recompile, audit the artifact, and deploy a new category.
 
 ### Runtime and project requirements
 
-- Use Node.js 22 or newer and the same 0.13.1 version of all six packages: `solidc`, `solidcash`,
+- Use Node.js 22 or newer and the same 0.14.0-beta.1 version of all six packages: `solidc`, `solidcash`,
   `@solidcash/utils`, `@solidcash/testing`, `@solidcash/solidhat` and `@solidcash/create-solidhat`. They ship as
   ESM only.
 - SolidHat projects use `solidcash.config.ts` (with `defineConfig` from `@solidcash/solidhat/config`), the `solidhat`
@@ -51,7 +51,7 @@ self-pinned data/vmap/chunk protocol. Recompile, audit the artifact, and deploy 
   contract with state variables. A native upgrade is different from a proxy deployment, which keeps its address.
 - `selfdestruct`, child deployment, and split/merge operations require their dedicated SDK builders and explicit
   funding/recipient/thread plans.
-- Experimental in 0.13.1, outside the stable compatibility promise: calls that mutate another contract's state,
+- Experimental in 0.14.0-beta.1, outside the stable compatibility promise: calls that mutate another contract's state,
   custom delegate forwarding beyond the built-in `upgrades.deployProxy` profile and `upgrades.upgradeProxy`,
   message-bus kernel composition (`messageBus.compose`, `sc.batch([...])`), the
   [framed convention](/docs/guides/framed-composition) (`composition: 'framed'`), and Solidity shapes outside the

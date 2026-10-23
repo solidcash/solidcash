@@ -22,7 +22,7 @@ import { refusalMessageOf } from './refused-entry.js';
 /** The reason a body that reaches an assembly block the lowering left in place is refused. */
 const INLINE_ASSEMBLY_REASON = 'inline assembly is not composed framed';
 
-const HEAD = 'pragma solidcash ^0.13.0;'
+const HEAD = 'pragma solidcash ^0.14.0;'
   + ' interface IToken { function transfer(address to, int amount) returns (bool); }';
 
 /** The payload is a local, handed to a helper that makes the call and RETURNS what it produced. */
@@ -60,14 +60,14 @@ const PAYLOAD_ACROSS_VOID_HELPER = `${HEAD}`
  * Native opcodes have no Yul tree, so the lowering leaves the block in place and only the body that reaches it is
  * refused; the other entry keeps its program.
  */
-const ASSEMBLY_BESIDE_A_COMPILING_BODY = 'pragma solidcash ^0.13.0;'
+const ASSEMBLY_BESIDE_A_COMPILING_BODY = 'pragma solidcash ^0.14.0;'
   + ' contract Mixed {'
   + '   function withAsm() { assembly { OP_DUP OP_ADD 0x01 } require(true); }'
   + '   function plain() { require(true); }'
   + ' }';
 
 /** An entry body whose assembly is memory loads, which the lowering rewrites into ordinary statements. */
-const LOWERABLE_ASSEMBLY = 'pragma solidcash ^0.13.0;'
+const LOWERABLE_ASSEMBLY = 'pragma solidcash ^0.14.0;'
   + ' contract Reads {'
   + '   function pick(bytes blob) internal returns (int) {'
   + '     int head;'
@@ -79,7 +79,7 @@ const LOWERABLE_ASSEMBLY = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** A helper's native assembly no body calls. */
-const ASSEMBLY_IN_UNREACHED_HELPER = 'pragma solidcash ^0.13.0;'
+const ASSEMBLY_IN_UNREACHED_HELPER = 'pragma solidcash ^0.14.0;'
   + ' library Lifted { function lift() internal { assembly { OP_DUP OP_ADD 0x01 } } }'
   + ' contract Caller { function callIt() { require(true); } }';
 

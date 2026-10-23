@@ -37,7 +37,7 @@ const NAMER = hexOf(seededAddress(NAMER_LABEL));
 const RELAY = hexOf(seededAddress(RELAY_LABEL));
 const QUIET = hexOf(seededAddress(QUIET_LABEL));
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IRelay { function take(); }'
   + ' interface INamer { function shout(); }'
   + ` contract Relay { function take() { INamer(0x${NAMER}).shout(); require(true); } }`

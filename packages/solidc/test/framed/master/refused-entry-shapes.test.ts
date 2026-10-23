@@ -35,7 +35,7 @@ describe('a derived write key that reads an element of a dynamic state array', (
   it('refuses the body whose key reads the element through the array cache local', () => {
     // The push makes the compiler cache the array in a local the body defines in its own prologue, and the
     // derivation is emitted before that prologue, so the element is not a value the master holds where it hashes.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Ledger {'
       + '   struct Entry { uint amount; }'
       + '   Entry[] entries;'
@@ -51,7 +51,7 @@ describe('a derived write key that reads an element of a dynamic state array', (
   it('serves the same write when the key is a bare parameter', () => {
     // The boundary: the mapping write beside the same array is served, so the refusal begins at the element read the
     // key performs rather than at the write or the array.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Ledger {'
       + '   struct Entry { uint amount; }'
       + '   Entry[] entries;'
@@ -70,7 +70,7 @@ describe('a verified-mapping write whose segment a call the source does not fix 
   it('serves the write a branch of calls precedes, reading the segment the declared count names', () => {
     // One arm calls, so the write lands in segment 0 or 1 depending on the arm. No call follows it, so the write
     // lands in the last segment the run opens, whose index is the call count the block itself declares.
-    const source = `pragma solidcash ^0.13.0;${CALL_CONTRACT}`
+    const source = `pragma solidcash ^0.14.0;${CALL_CONTRACT}`
       + ' contract Ledger {'
       + '   mapping(address => uint) balances;'
       + '   function move(bool go, address to, uint amount) {'
@@ -82,7 +82,7 @@ describe('a verified-mapping write whose segment a call the source does not fix 
   });
 
   it('serves the write a loop of calls precedes, whose segment the declared count also names', () => {
-    const source = `pragma solidcash ^0.13.0;${CALL_CONTRACT}`
+    const source = `pragma solidcash ^0.14.0;${CALL_CONTRACT}`
       + ' contract Ledger {'
       + '   mapping(address => uint) balances;'
       + '   function move(int turns, address to, uint amount) {'
@@ -96,7 +96,7 @@ describe('a verified-mapping write whose segment a call the source does not fix 
   it('refuses the write a call follows, because the declared count no longer names its segment', () => {
     // The run's declared call count includes the call after the write, so the write lands in an earlier segment than
     // that count names: the derivation cannot locate it and the entry stays refused.
-    const source = `pragma solidcash ^0.13.0;${CALL_CONTRACT}`
+    const source = `pragma solidcash ^0.14.0;${CALL_CONTRACT}`
       + ' contract Ledger {'
       + '   mapping(address => uint) balances;'
       + '   function move(bool go, address to, uint amount) {'
@@ -111,7 +111,7 @@ describe('a verified-mapping write whose segment a call the source does not fix 
   // A branch whose arms make the same number of calls is served and settled in `write-after-call.test.ts`.
   it('serves the write when no call sits beside it', () => {
     // The boundary: the write's own segment is the frame's first, which the derivation reads without a skip.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Ledger {'
       + '   mapping(address => uint) balances;'
       + '   function move(address to, uint amount) { balances[to] = amount; require(true); }'

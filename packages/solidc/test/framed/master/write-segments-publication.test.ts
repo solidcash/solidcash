@@ -40,7 +40,7 @@ const PING = 'interface IOther { function ping(); } contract Other { function pi
 const OTHER = '0x' + '11'.repeat(31) + 'ee';
 
 /** A ledger whose entries move a mapping entry, grow a dynamic array, and call another contract. */
-const LEDGER = (body: string): string => `pragma solidcash ^0.13.0;${PING}`
+const LEDGER = (body: string): string => `pragma solidcash ^0.14.0;${PING}`
   + ' contract Ledger {'
   + '   uint public count;'
   + '   string[] public names;'
@@ -67,7 +67,7 @@ const RECORD_AND_MAPPING_SOURCE = LEDGER(`this.count = 1; balances[to] = amount;
 const FIXED_AND_SIZED_SOURCE = LEDGER(`this.count = 1; this.names.push("hi"); ${CALL}`);
 // The batch's write sits in a loop over the caller's own array beside the call, so its target varies per turn and
 // no one segment index names where it lands: the entry publishes where each turn writes instead.
-const VARYING_LOOP_SOURCE = `pragma solidcash ^0.13.0;${PING}`
+const VARYING_LOOP_SOURCE = `pragma solidcash ^0.14.0;${PING}`
   + ' contract Ledger {'
   + '   uint public count;'
   + '   mapping(address => uint) balances;'
@@ -95,7 +95,7 @@ const varyingLoop = compileStringMulti(VARYING_LOOP_SOURCE, { composition: 'fram
  * segment: the record names both of its landings, so a builder chains them and leaves the value between them to the
  * body that computes it.
  */
-const GUARDED_LEDGER = (condition: string): string => `pragma solidcash ^0.13.0;${PING}`
+const GUARDED_LEDGER = (condition: string): string => `pragma solidcash ^0.14.0;${PING}`
   + ' contract Ledger {'
   + '   uint public count;'
   + '   mapping(address => uint) balances;'
@@ -112,7 +112,7 @@ const GUARDED_ONE_ARM_SOURCE = GUARDED_LEDGER(`if (take) { ${CALL} }`);
 const GUARDED_TWO_ARMS_SOURCE = GUARDED_LEDGER(`if (take) { ${CALL} } else { require(amount > 0); }`);
 // The batch's write stands between two conditional calls: a call precedes it on one path and follows it on another,
 // so no segment the run opens is its own and the entry publishes no fact.
-const GUARDED_BETWEEN_SOURCE = `pragma solidcash ^0.13.0;${PING}`
+const GUARDED_BETWEEN_SOURCE = `pragma solidcash ^0.14.0;${PING}`
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function move(address to, uint amount, bool first, bool second) {'
@@ -131,7 +131,7 @@ const guardedBetween = compileStringMulti(GUARDED_BETWEEN_SOURCE, { composition:
  * A ledger whose body sets a record, calls once per turn of a loop, and restores the record, with `after` past the
  * restore: the loop's own bound decides how many calls stand before the restore.
  */
-const GUARDED_LOOP_SOURCE = (after: string): string => `pragma solidcash ^0.13.0;${PING}`
+const GUARDED_LOOP_SOURCE = (after: string): string => `pragma solidcash ^0.14.0;${PING}`
   + ' contract Ledger {'
   + '   uint public count;'
   + '   function move(int turns) {'

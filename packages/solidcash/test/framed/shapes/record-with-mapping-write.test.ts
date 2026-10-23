@@ -77,7 +77,7 @@ const COUNT_BEFORE = 7n;
 const COUNT_AFTER = 8n;
 const MASTER_INDEX = 0;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   int public count;'
   + '   mapping(int => int) registrations;'

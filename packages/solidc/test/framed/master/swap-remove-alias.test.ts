@@ -18,7 +18,7 @@ import {
  * machine's on the master's own input.
  */
 
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 const SWAP = deployFramedMaster(`${PRAGMA} contract Swap { mapping(uint => uint) m;`
   + ' function swap(uint a, uint b, uint x) { m[a] = x; delete m[b]; }'
   + ' }', 'swap remove alias');

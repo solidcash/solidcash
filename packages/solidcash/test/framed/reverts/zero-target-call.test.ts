@@ -30,7 +30,7 @@ const IMPL_CATEGORY = id32('4a');
 const PROXY_CATEGORY = id32('4b');
 const TOKEN_CATEGORY = id32('4e');
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IERC20 { function balanceOf(address who) returns (uint); }'
   + ' contract Token {'
   + '   mapping(address => uint) balances;'

@@ -48,7 +48,7 @@ const NOTE = 'n'.repeat(140);
  * coordinate: both shapes settle over the same declaration.
  */
 function sourceOf(hashed: boolean): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IPing { function measure() view returns (uint); }'
     + ' contract Ping {'
     + '   int public touched;'

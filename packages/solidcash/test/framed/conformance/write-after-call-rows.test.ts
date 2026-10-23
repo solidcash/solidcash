@@ -55,7 +55,7 @@ const ESCROW_BASE = 1000n;
 /** A created record's input index: the record has no input, the transaction makes it. */
 const CREATED = 0xffff;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Counter { int value; }'
   + ' interface ICoin { function pull(int amount) returns (bool); }'
   + ' interface IEscrow { function fund(int id, int amount) returns (int); function fundNext(int amount) returns (int); }'

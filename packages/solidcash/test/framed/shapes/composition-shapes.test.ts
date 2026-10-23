@@ -50,7 +50,7 @@ function expectDerivationConvergedWithAssembly(
 }
 
 describe('one contract entered once with no calls', () => {
-  const SOURCE = 'pragma solidcash ^0.13.0; contract Solo { function ping() { require(true); } }';
+  const SOURCE = 'pragma solidcash ^0.14.0; contract Solo { function ping() { require(true); } }';
 
   it('lays out one master and its user, derives the single segment, and the machine accepts it', () => {
     const { artifacts, contracts } = compileAndDeploy(SOURCE, { Solo: 'a contract entered once' });
@@ -84,7 +84,7 @@ describe('one contract entered once with no calls', () => {
 
 describe('two contracts where the first calls the second', () => {
   const calleeAddress = seededAddress('the called contract');
-  const SOURCE = 'pragma solidcash ^0.13.0;'
+  const SOURCE = 'pragma solidcash ^0.14.0;'
     + ' interface ICallee { function ping(); }'
     + ' contract Callee { function ping() { require(true); } }'
     + ' contract Caller {'
@@ -153,7 +153,7 @@ describe('two contracts where the first calls the second', () => {
 });
 
 describe('two independent roots of two different contracts', () => {
-  const SOURCE = 'pragma solidcash ^0.13.0;'
+  const SOURCE = 'pragma solidcash ^0.14.0;'
     + ' contract First { function left() { require(true); } }'
     + ' contract Second { function right() { require(true); } }';
 
@@ -215,7 +215,7 @@ describe('two independent roots of two different contracts', () => {
 
 describe('one contract entering another of its own entries', () => {
   const ownAddress = seededAddress('the self-calling contract');
-  const SOURCE = 'pragma solidcash ^0.13.0;'
+  const SOURCE = 'pragma solidcash ^0.14.0;'
     + ' interface IOwn { function inner(); }'
     + ' contract Own {'
     + `   function start() { IOwn(0x${hexOf(ownAddress)}).inner.call(); require(true); }`
@@ -284,7 +284,7 @@ describe('one contract entering another of its own entries', () => {
     // The self-call target may be spelled as the contract's own address. The caller's own code holds that address
     // as its frame `self`, so the site binds its record to it as it does a computed target. The run on two masters
     // is pinned by the identity toy (`toys/identity.test.ts`).
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface IOwn { function inner(); }'
       + ' contract Own {'
       + '   function start() { IOwn(address(this)).inner.call(); require(true); }'
@@ -303,7 +303,7 @@ describe('a call and a return call between two contracts', () => {
     // the body that runs pins the block's declared length to its own.
     const firstAddress = seededAddress('the returning contract');
     const secondAddress = seededAddress('the called-back contract');
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface ISecond { function respond(); }'
       + ' interface IFirst { function finish(); }'
       + ' contract First {'
@@ -325,7 +325,7 @@ describe('a three-contract chain that calls back to the first', () => {
   const firstAddress = seededAddress('the chain head');
   const secondAddress = seededAddress('the chain middle');
   const thirdAddress = seededAddress('the chain tail');
-  const SOURCE = 'pragma solidcash ^0.13.0;'
+  const SOURCE = 'pragma solidcash ^0.14.0;'
     + ' interface ISecond { function middle(); function back(); }'
     + ' interface IThird { function end(); }'
     + ' interface IFirst { function finish(); }'
@@ -483,7 +483,7 @@ describe('a three-contract chain that calls back to the first', () => {
 });
 
 describe('two entry points of one contract entered independently', () => {
-  const SOURCE = 'pragma solidcash ^0.13.0;'
+  const SOURCE = 'pragma solidcash ^0.14.0;'
     + ' contract Twin { function left() { require(true); } function right() { require(true); } }';
 
   /** Two masters of one contract, one validator, entered by two separate users. */
@@ -552,7 +552,7 @@ describe('two independent pairs that each need their own validator', () => {
   // covering its own callee, so every master points at the validator that covers it.
   const leftCalleeAddress = seededAddress('the first callee');
   const rightCalleeAddress = seededAddress('the second callee');
-  const SOURCE = 'pragma solidcash ^0.13.0;'
+  const SOURCE = 'pragma solidcash ^0.14.0;'
     + ' interface ILeftCallee { function ping(); }'
     + ' interface IRightCallee { function ping(); }'
     + ' contract Left {'

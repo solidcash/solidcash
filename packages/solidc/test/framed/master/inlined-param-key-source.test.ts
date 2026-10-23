@@ -7,7 +7,7 @@ import { compileString } from '../../../src/compiler.js';
 // as an opaque expression makes a framed master materialize it at its batch-witness derivation, which shifts the
 // frame and unsettles a later segment close.
 const ADDR = '76a914' + '11'.repeat(20) + '88ac';
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ISink { function take(int amount); }'
   + ' contract Impl {'
   + '   mapping(address => uint) awarded;'

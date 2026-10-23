@@ -11,7 +11,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * `++`/`--`, as the pass that turns such an assignment into a statement ran only for those.
  */
 
-const SOURCE = `pragma solidcash ^0.13.0; contract C {
+const SOURCE = `pragma solidcash ^0.14.0; contract C {
   uint n; bool z;
   function twice(uint x) internal returns (uint) { return x * 2; }
   function condition(uint e) { uint y = (z = true) ? 5 : 6; require(z); require(y == e); }

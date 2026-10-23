@@ -69,7 +69,7 @@ const USER_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
  * body can require a record to carry. The interface declares `ping` with no parameters, which is the selector the
  * call site records.
  */
-const CALLER_SOURCE = 'pragma solidcash ^0.13.0;'
+const CALLER_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Caller {'
   + `   function callIt() { ICallee(0x${Buffer.from(ADDRESS_B).toString('hex')}).ping.call(); require(true); }`

@@ -43,7 +43,7 @@ const OWNER = 0x91n;
 const TITLE = 't'.repeat(130);
 
 /** One bare push whose field is filled from state, so the element's value is not something the artifact states. */
-const UNSET_ELEMENT_SOURCE = 'pragma solidcash ^0.13.0;'
+const UNSET_ELEMENT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Detail { uint amount; uint extra; }'
   + '   address public implementation;'
@@ -54,7 +54,7 @@ const UNSET_ELEMENT_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The same push inside a loop over the call's own array, beside a mapping the loop also writes. */
-const LOOP_APPEND_SOURCE = 'pragma solidcash ^0.13.0;'
+const LOOP_APPEND_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Detail { uint amount; uint extra; }'
   + '   address public implementation;'
@@ -73,7 +73,7 @@ const LOOP_APPEND_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The fixture's own shape: a bare push whose element is filled through a storage pointer, clock field and all. */
-const FIXTURE_SHAPED_SOURCE = 'pragma solidcash ^0.13.0;'
+const FIXTURE_SHAPED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Roles { address creator; address arbitrator; address worker; }'
   + '   struct JobPost { int state; bool whitelistWorkers; Roles roles; string title; bytes32 contentHash;'
@@ -95,7 +95,7 @@ const FIXTURE_SHAPED_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The same push in a loop bounded by state rather than by the call, so its width is not a call fact. */
-const UNRESOLVED_LOOP_SOURCE = 'pragma solidcash ^0.13.0;'
+const UNRESOLVED_LOOP_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Detail { uint amount; uint extra; }'
   + '   address public implementation;'

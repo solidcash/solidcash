@@ -50,7 +50,7 @@ const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
  * A two-contract source whose second contract's entry calls the first. The call target is a code-baked address
  * literal, which is the shape whose callee address the head can compare a witness call record against.
  */
-const callingSource = (target: Uint8Array): string => 'pragma solidcash ^0.13.0;'
+const callingSource = (target: Uint8Array): string => 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'

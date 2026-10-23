@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.13.1
+## 0.14.0-beta.1
 
-Release-candidate notes: see [`docs/release/0.13.1/RELEASE_NOTES_0.13.1.md`](docs/release/0.13.1/RELEASE_NOTES_0.13.1.md).
+Release-candidate notes, drafted as 0.13.1: see [`docs/release/0.13.1/RELEASE_NOTES_0.13.1.md`](docs/release/0.13.1/RELEASE_NOTES_0.13.1.md).
 Solidity compatibility: see
 [`docs/release/0.13.1/SOLIDITY_COMPATIBILITY_0.13.1.md`](docs/release/0.13.1/SOLIDITY_COMPATIBILITY_0.13.1.md).
 
@@ -14,7 +14,7 @@ Solidity compatibility: see
   events, and the documented deploy, upgrade, destroy, split, and merge builders.
 - The built-in proxy profile for scalar and data-NFT state, deployed through `upgrades.deployProxy`.
 - A Hardhat-style project workflow through `@solidcash/testing` and SolidHat.
-- Six aligned 0.13.1 packages with verified exports, declarations, embedded-source maps, CLIs, and installation
+- Six aligned 0.14.0-beta.1 packages with verified exports, declarations, embedded-source maps, CLIs, and installation
   from release tarballs.
 
 ### Experimental profiles

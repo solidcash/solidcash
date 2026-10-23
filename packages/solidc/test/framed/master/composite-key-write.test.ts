@@ -39,7 +39,7 @@ const AMOUNT = 42;
 const VALUE_TAIL = new Uint8Array([AMOUNT]);
 const EMPTY = new Uint8Array(0);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Allowances {'
   + '   mapping(address => mapping(address => uint)) allowances;'
   + '   function approve(address owner, address spender, uint amount) {'
@@ -48,7 +48,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The same composite target, written from the value it holds: the read has to name the same node. */
-const READ_WRITE_SOURCE = 'pragma solidcash ^0.13.0;'
+const READ_WRITE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Increase {'
   + '   mapping(address => mapping(address => uint)) allowances;'
   + '   function bump(address owner, address spender, uint amount) {'
@@ -215,7 +215,7 @@ describe('a framed master whose entry writes a two-key mapping target', () => {
   it('refuses a key the body does not hold where the derivation runs', () => {
     // A key read from state after an arm that may rewrite it is not a value the master holds where it derives the
     // slot, for either key level: the record names the value the arm started from.
-    const computed = 'pragma solidcash ^0.13.0;'
+    const computed = 'pragma solidcash ^0.14.0;'
       + ' contract ComputedKey {'
       + '   address owner;'
       + '   mapping(address => mapping(address => uint)) allowances;'

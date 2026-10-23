@@ -40,7 +40,7 @@ const ACCESS: Record<Access, string> = {
 };
 
 /** The entry's access to the record, with and without the send that follows it. */
-const source = (access: Access, sends: boolean): string => 'pragma solidcash ^0.13.0;'
+const source = (access: Access, sends: boolean): string => 'pragma solidcash ^0.14.0;'
   + ' contract Till {'
   + '   int paid;'
   + `   function pay(int amount) {${ACCESS[access]}${sends ? ' this.transfer(msg.sender, amount);' : ''}`

@@ -98,7 +98,7 @@ const G_SELECTOR = computeFunctionSelector(computeFunctionSignature('g', []));
 const K_SELECTOR = computeFunctionSelector(computeFunctionSignature('k', []));
 const VALUE = 20_000n;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IB { function g(); }'
   + ' interface IA { function k(); }'
   + ' contract B {'

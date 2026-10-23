@@ -52,7 +52,7 @@ const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const ADDRESS = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
 const USER_LOCK = new Uint8Array([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x22), 0x88, 0xac]);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Counter {'
   + '   int public counter;'
   + '   function bump(int by) { this.counter = this.counter + by; require(true); }'
@@ -299,7 +299,7 @@ describe('reading a framed record the contract already wrote', () => {
 
   it('reports the machine\'s objection when the read entry refuses', async () => {
     // A record of zero fails the entry's own guard, so its body never reaches the return comparison.
-    const refusing = 'pragma solidcash ^0.13.0;\n'
+    const refusing = 'pragma solidcash ^0.14.0;\n'
       + ' contract Guarded {\n'
       + '   int public counter;\n'
       + '   function current() view returns (int) {\n'

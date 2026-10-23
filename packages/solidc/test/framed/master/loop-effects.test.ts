@@ -14,7 +14,7 @@ import { publishedRefusals } from './refused-entry.js';
  */
 
 const compile = (body: string): ReturnType<typeof compileStringMulti> => compileStringMulti(
-  'pragma solidcash ^0.13.0;'
+  'pragma solidcash ^0.14.0;'
   + ' contract Looper {'
   + '   int public count;'
   + '   bytes32 public digest;'
@@ -105,7 +105,7 @@ describe('a body whose looped effects no builder could lay', () => {
   });
 
   it('refuses the whole contract for a constructor that emits from a loop, which its genesis does not count', () => {
-    expect(() => compileStringMulti('pragma solidcash ^0.13.0;'
+    expect(() => compileStringMulti('pragma solidcash ^0.14.0;'
       + ' contract Looper {'
       + '   int public count;'
       + '   event Seen(int x);'

@@ -62,7 +62,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -130,7 +130,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -192,7 +192,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -293,7 +293,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -386,7 +386,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -450,7 +450,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -495,7 +495,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -550,7 +550,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -638,7 +638,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -674,7 +674,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -719,7 +719,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -764,7 +764,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -881,7 +881,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1003,7 +1003,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1051,7 +1051,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1092,7 +1092,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1133,7 +1133,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1205,7 +1205,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1253,7 +1253,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1315,7 +1315,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1370,7 +1370,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1411,7 +1411,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1452,7 +1452,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1493,7 +1493,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1545,7 +1545,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1593,7 +1593,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1633,7 +1633,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1690,7 +1690,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,
@@ -1747,7 +1747,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': false,
           'enforceLocktimeGuard': true,
@@ -1842,7 +1842,7 @@ export const fixtures: Fixture[] = [
       },
       'compiler': {
         'name': 'solidc',
-        'version': '0.13.1',
+        'version': '0.14.0-beta.1',
         'options': {
           'enforceFunctionParameterTypes': true,
           'enforceLocktimeGuard': true,

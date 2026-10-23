@@ -44,7 +44,7 @@ const WRITE = 'balances[ARRAY[i]] = amount;';
 const loop = (array: string, body: string): string =>
   `for (int i = 0; i < ${array}.length; i = i + 1) { ${body.replace(/ARRAY/g, array)} }`;
 const compile = (parameters: string, body: string): ReturnType<typeof compileStringMulti> =>
-  compileStringMulti(`pragma solidcash ^0.13.0;${OTHER}`
+  compileStringMulti(`pragma solidcash ^0.14.0;${OTHER}`
     + ' contract Ledger {'
     + '   mapping(address => uint) balances;'
     + `   function move(${parameters}, uint amount) { ${body} }`

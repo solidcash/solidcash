@@ -32,7 +32,7 @@ const ROOT_IMPL_CATEGORY = idOf('root implementation');
 const ROOT_PROXY_CATEGORY = idOf('root proxy');
 const CALLER_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Job { int state; int kind; }'
   + ' interface ISink { function note(int id, int kind); }'
   + ' contract Sink { int public seen; function note(int id, int kind) { require(id >= 0); require(kind > 0); } }'

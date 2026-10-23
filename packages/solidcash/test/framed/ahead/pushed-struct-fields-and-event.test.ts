@@ -26,7 +26,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * two boundaries of that arithmetic: the same entry without the write, with it, and with the write and the payload
  * event, all of which settle.
  */
-const SOURCE = (fields: string, event: string, tail = ''): string => 'pragma solidcash ^0.13.0;'
+const SOURCE = (fields: string, event: string, tail = ''): string => 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct EventData { uint8 type_; bytes who; bytes data_; uint32 timestamp_; }'
   + '   struct Post {'

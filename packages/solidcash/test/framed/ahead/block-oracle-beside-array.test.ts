@@ -82,7 +82,7 @@ const JOURNAL_LINES = [
 /** The post's own writes, as the fixture's `publishJobPost` makes them, with or without its clock stamp. */
 function postSource(clock: boolean): string {
   return [
-    'pragma solidcash ^0.13.0;',
+    'pragma solidcash ^0.14.0;',
     ...JOURNAL_LINES,
     'struct Task { int state; bool gated; address creator; string title; int amount; uint32 at; }',
     'contract Desk {',
@@ -107,7 +107,7 @@ function postSource(clock: boolean): string {
 /** The append alone, with the clock stamp, with an isolated field of its own instead, or with neither. */
 function appendSource(extra: 'clock' | 'spare' | 'none'): string {
   return [
-    'pragma solidcash ^0.13.0;',
+    'pragma solidcash ^0.14.0;',
     'struct Task { int state; address creator; string title; int amount; uint32 at; }',
     'contract Desk {',
     '  address public implementation;',
@@ -128,7 +128,7 @@ function appendSource(extra: 'clock' | 'spare' | 'none'): string {
 
 /** The clock stamped into a scalar of the record the entry names, with no run after the records. */
 const CLOCK_ONLY_SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'contract Desk {',
   '  address public implementation;',
   '  uint32 stamp;',
@@ -139,7 +139,7 @@ const CLOCK_ONLY_SOURCE = [
 
 /** A counter in the second record: the first holds only addresses the entry never reads. */
 const SECOND_RECORD_SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'contract Desk {',
   '  address public implementation;',
   '  address a;',
@@ -157,7 +157,7 @@ const SECOND_RECORD_SOURCE = [
 function readSource(view: boolean): string {
   const isMember = `function isMember(address who)${view ? ' view' : ''} returns (bool)`;
   return [
-    'pragma solidcash ^0.13.0;',
+    'pragma solidcash ^0.14.0;',
     'struct Member { address who; bytes key; string name; int up; }',
     `interface IJournal { ${isMember}; }`,
     'contract Journal {',

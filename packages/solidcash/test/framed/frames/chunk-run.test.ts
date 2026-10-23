@@ -51,7 +51,7 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 /** The data NFT's lock: the data-NFT covenant the contract's category derives. */
 const STATE_LOCK = stateRecordLockingBytecode(bytesToHex(CATEGORY));
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Named {'
   + '   string public name;'
   + '   function append() { this.name = string.concat(this.name, "!"); }'
@@ -293,7 +293,7 @@ describe('a state whose value lives in chunks', () => {
     // The entry appends a run of bytes, so one write crosses two chunk boundaries: 100 bytes are one chunk and the
     // 250-byte result is three, which creates the second and third chunks beside the kept first one.
     const tail = 'b'.repeat(150);
-    const growSource = 'pragma solidcash ^0.13.0;'
+    const growSource = 'pragma solidcash ^0.14.0;'
       + ' contract Named {'
       + '   string public name;'
       + `   function append() { this.name = string.concat(this.name, "${tail}"); }`
@@ -332,7 +332,7 @@ describe('a state whose value lives in chunks', () => {
   it('accepts a run that shrinks, spending a chunk and writing no record back', () => {
     // 121 bytes need two chunks and a five-byte write needs one, so the second chunk is removed: spent with the
     // write's authorization and no record written at its index.
-    const shrinkSource = 'pragma solidcash ^0.13.0;'
+    const shrinkSource = 'pragma solidcash ^0.14.0;'
       + ' contract Named {'
       + '   string public name;'
       + '   function append() { this.name = "short"; }'

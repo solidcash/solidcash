@@ -48,7 +48,7 @@ const CALLER_TXID = '33'.repeat(31) + 'cc';
 const SECOND_CALLER_TXID = '44'.repeat(31) + 'bb';
 
 /** The append the deployment's initialize makes (one element, the frame's own sender), made again by a later call. */
-const APPEND_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+const APPEND_CALL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   address[] public items;'
@@ -57,7 +57,7 @@ const APPEND_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** A mapping entry whose value the node holds inline, written beside the append the way a counter is bumped. */
-const COUNTER_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
+const COUNTER_BESIDE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   address[] public items;'
@@ -67,7 +67,7 @@ const COUNTER_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** An insert of a chunked struct value beside the append, over a mapping the deployment's own entry never wrote. */
-const UNSEEDED_REGISTER_SOURCE = 'pragma solidcash ^0.13.0;'
+const UNSEEDED_REGISTER_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Member { address who; string name; string bio; uint up; }'
   + '   address public implementation;'
@@ -82,7 +82,7 @@ const UNSEEDED_REGISTER_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The append in a body that also builds its struct value, which the artifact publishes no element source for. */
-const CONSTRUCTED_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
+const CONSTRUCTED_BESIDE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Member { address who; string name; string bio; uint up; }'
   + '   address public implementation;'
@@ -105,7 +105,7 @@ const CONSTRUCTED_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
  * The body's own value pin stops on the count it computed, and the value and its digest are operands at that stop,
  * so the hop learns the value there and re-plans the write's run from it.
  */
-const UNSTATED_VALUE_SOURCE = 'pragma solidcash ^0.13.0;'
+const UNSTATED_VALUE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Member { address who; string name; string bio; uint up; }'
   + '   address public implementation;'
@@ -127,7 +127,7 @@ const UNSTATED_VALUE_SOURCE = 'pragma solidcash ^0.13.0;'
  * run of chunk records beside the dynamic value's run. Both runs are open in one segment; each is addressed by the
  * rule the body uses for it.
  */
-const LONG_UPDATE_SOURCE = 'pragma solidcash ^0.13.0;'
+const LONG_UPDATE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Member { address who; string name; string bio; uint up; }'
   + '   address public implementation;'
@@ -144,7 +144,7 @@ const LONG_UPDATE_SOURCE = 'pragma solidcash ^0.13.0;'
  * literal and a field read back out of the live node (`field:reference(map:escrows(id:id))`). The string is long
  * enough that the node keeps only its hash and the write needs a run of value chunks.
  */
-const PARTIAL_FIELD_SOURCE = 'pragma solidcash ^0.13.0;'
+const PARTIAL_FIELD_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Escrow { uint16 claimed; string reference; }'
   + '   address public implementation;'
@@ -160,7 +160,7 @@ const SHRINK_FIELD_SOURCE = PARTIAL_FIELD_SOURCE.replace(
 );
 
 /** The write's real shape: the marketplace's 13-field `Escrow`, whose last member is a dynamic string. */
-const FULL_ESCROW_SOURCE = 'pragma solidcash ^0.13.0;'
+const FULL_ESCROW_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Escrow { address buyer; uint64 challengeExtension; address seller; uint64 challengePeriodStart;'
   + '     address marketplace; uint256 marketplaceFee; uint64 challengePeriodEnd; address currency; uint16 claimed;'
@@ -178,7 +178,7 @@ const SETTLE_FIELD_SOURCE = FULL_ESCROW_SOURCE.replace(
 );
 
 /** The same partial write behind the reentrancy guard the marketplace's entry carries. */
-const GUARDED_PARTIAL_SOURCE = 'pragma solidcash ^0.13.0;'
+const GUARDED_PARTIAL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' abstract contract Guard {'
   + '   uint256 private constant _NOT_ENTERED = 1;'
   + '   uint256 private constant _ENTERED = 2;'
@@ -195,7 +195,7 @@ const GUARDED_PARTIAL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** A partial write whose new field value is a local the artifact does not state, so the hop learns the value. */
-const UNSTATED_PARTIAL_SOURCE = 'pragma solidcash ^0.13.0;'
+const UNSTATED_PARTIAL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Escrow { uint16 claimed; string reference; }'
   + '   address public implementation;'
@@ -209,7 +209,7 @@ const UNSTATED_PARTIAL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** An element type the artifact states only as a literal, which the hop sizes through the shipped encoder. */
-const LITERAL_SOURCE = 'pragma solidcash ^0.13.0;'
+const LITERAL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   int[] public items;'
@@ -217,7 +217,7 @@ const LITERAL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** A write whose run the artifact publishes no element for, because the body pushes more than once. */
-const WIDE_SOURCE = 'pragma solidcash ^0.13.0;'
+const WIDE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   address[] public items;'
@@ -227,7 +227,7 @@ const WIDE_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** A loop write whose keys the call's own array names, beside the append that names the run. */
-const LOOP_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
+const LOOP_BESIDE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   address[] public items;'
@@ -245,7 +245,7 @@ const LOOP_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
  * The body pushes one element and then writes the mapping under the index that element took, so every turn's key is
  * counted from the written value rather than from the one the segment started from.
  */
-const LOOP_KEYED_BY_APPEND_SOURCE = 'pragma solidcash ^0.13.0;'
+const LOOP_KEYED_BY_APPEND_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   address[] public items;'

@@ -21,7 +21,7 @@ type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['eval
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 const EMPTY = new Uint8Array(0);
 const ZERO32 = new Uint8Array(32);
 const CATEGORY = Uint8Array.from({ length: 32 }, (_, index) => (0x29 + index * 37) & 0xff);

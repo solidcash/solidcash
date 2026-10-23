@@ -26,7 +26,7 @@ import { createTestProvider, getSigners } from '../test-util.js';
  * enters its constructor: the spend is refused by the guard's name and the state the genesis wrote stands.
  */
 
-const OWNED = `pragma solidcash ^0.13.0;
+const OWNED = `pragma solidcash ^0.14.0;
 contract Owned {
   address public owner;
   int public n;
@@ -35,7 +35,7 @@ contract Owned {
 }`;
 
 /** A token whose constructor mints its supply to the deployer. */
-const MINTED = `pragma solidcash ^0.13.0;
+const MINTED = `pragma solidcash ^0.14.0;
 contract Minted {
   mapping(address => int) public balances;
   int public totalSupply;

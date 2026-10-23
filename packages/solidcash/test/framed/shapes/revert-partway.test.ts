@@ -68,7 +68,7 @@ const PAIR_ROOT = 'root-1';
 const PAIR_STORE = 'store-1';
 
 function pairSource(rootBody: string): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IStore { function write(int next) returns (int); }'
     + ' contract Store {'
     + '   int public count;'
@@ -200,7 +200,7 @@ const CHAIN_MID = 'mid-1';
 const CHAIN_DEEP = 'deep-1';
 
 function chainSource(deepBody: string): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' error Rejected(int code, int limit);'
     + ' interface IStore { function write(int next); }'
     + ' interface IMid { function enter(); }'

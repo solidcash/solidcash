@@ -1,6 +1,6 @@
 {
   "name": "solidc",
-  "version": "0.13.1",
+  "version": "0.14.0-beta.1",
   "description": "SolidCash compiler - compile smart contracts to Bitcoin Cash Script or artifacts",
   "keywords": [
     "bitcoin",
@@ -53,7 +53,7 @@
   "dependencies": {
     "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8",
     "@noble/hashes": "^2.0.0",
-    "@solidcash/utils": "^0.13.1",
+    "@solidcash/utils": "^0.14.0-beta.1",
     "antlr4": "^4.13.2",
     "commander": "^14.0.0",
     "semver": "^7.7.2"

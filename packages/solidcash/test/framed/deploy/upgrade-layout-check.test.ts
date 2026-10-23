@@ -16,7 +16,7 @@ const DEPOSIT = ' function deposit(int by) returns (int) {'
   + ' this.total = this.total + by; this.deposits = this.deposits + 1; require(this.total >= 0); return this.total; }';
 const FALLBACK = ' fallback(bytes input) external returns (bytes) { (bool ok, bytes returned) = '
   + 'this.implementation.delegatecall(input); require(ok); return returned; }';
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ` contract Vault {${FIELDS}${DEPOSIT} }`
   + ` contract VaultV2 {${FIELDS}`
   + '   function deposit(int by) returns (int) {'

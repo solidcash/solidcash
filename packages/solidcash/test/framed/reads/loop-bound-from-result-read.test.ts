@@ -46,7 +46,7 @@ const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 const empty = new Uint8Array(0);
 
 /** The store answers its count and, per element, ten times the index plus one; the pager walks a page of them. */
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IStore { function count() view returns (int); function at(int i) view returns (int); }'
   + ' contract Store {'
   + '   int public n;'
@@ -235,7 +235,7 @@ const READER_HEX = bytesToHex(READER_CATEGORY);
 const SHELF_ADDRESS = validatorAddress(SHELF_CATEGORY, VALIDATOR_PROGRAM);
 const SHELF_IMPL_ADDRESS = validatorAddress(SHELF_IMPL_CATEGORY, VALIDATOR_PROGRAM);
 
-const PROXIED_SOURCE = 'pragma solidcash ^0.13.0;'
+const PROXIED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IShelf { function count() external view returns (uint); function at(uint i) external view returns (uint); }'
   + ' contract Shelf {'
   + '   address public implementation;'

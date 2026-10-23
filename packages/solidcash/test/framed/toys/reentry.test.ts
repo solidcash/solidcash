@@ -64,7 +64,7 @@ const ID = 1n;
 const ZERO_SLOT = new Uint8Array(32);
 
 /** The write-then-call half of the shape: `claim` re-enters `markClaimed` and returns a pair `release` reads back. */
-const PAIRED_SOURCE = 'pragma solidcash ^0.13.0;'
+const PAIRED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IClaimer { function claim(int id) returns (int, int); }'
   + ' interface IVault { function markClaimed(int id); }'
   + ' contract Claimer {'
@@ -378,7 +378,7 @@ describe('the pair a claim returns beside the record write', () => {
 });
 
 /** The vault graph with an integer record and an integer balance, so every commitment is a shipped integer tail. */
-const GRAPH_SOURCE = 'pragma solidcash ^0.13.0;'
+const GRAPH_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IToken { function transfer(address to, int amount); }'
   + ' interface IVault {'
   + '   function markClaimed(int id);'
@@ -843,7 +843,7 @@ describe('the vault graph: release, two payments through the token and the emit'
  * own input instead matched no declared record, so the declared-view read came back empty and its non-emptiness
  * guard failed. The control below shows the read resolving that declaration rather than the spent commitment.
  */
-const READBACK_SOURCE = 'pragma solidcash ^0.13.0;'
+const READBACK_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IVault { function get(int id) view returns (int); }'
   + ' interface IClaimer { function claim(int id) returns (int); }'
   + ' contract Vault {'
@@ -1045,7 +1045,7 @@ describe('the claimer\'s read-back of the record `release` wrote', () => {
 });
 
 /** The read-back shape without an event, so the created node's trailing output follows the participants directly. */
-const CREATED_READBACK_SOURCE = 'pragma solidcash ^0.13.0;'
+const CREATED_READBACK_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IVault { function get(int id) view returns (int); }'
   + ' interface IClaimer { function claim(int id) returns (int); }'
   + ' contract Vault {'

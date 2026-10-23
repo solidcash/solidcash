@@ -63,7 +63,7 @@ const USER_INDEX = 3;
 
 const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
@@ -298,7 +298,7 @@ describe('a host driving the derivation from a real compile', () => {
 });
 
 const SOLO_ENTRY = 'Solo.ping()';
-const SOLO_SOURCE = 'pragma solidcash ^0.13.0;'
+const SOLO_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Solo { function ping() { require(true); } }';
 
 describe('a host driving a caller whose entry makes no call', () => {
@@ -474,7 +474,7 @@ const NEAR_INDEX = 1;
 /** The argument the frame entered with: the `else` arm runs, so the callee called is the near one. */
 const CHOOSER_ARGUMENT = new Uint8Array(0);
 
-const CONDITIONAL_SOURCE = 'pragma solidcash ^0.13.0;'
+const CONDITIONAL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IFar { function ping(); }'
   + ' interface INear { function pong(); }'
   + ' contract Near { function pong() { require(true); } }'
@@ -484,7 +484,7 @@ const CONDITIONAL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** A contract one of whose bodies is a shape the framed convention cannot emit. */
-const REFUSED_ENTRY_SOURCE = 'pragma solidcash ^0.13.0;'
+const REFUSED_ENTRY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Only {'
   + '   function bad() returns (function(int) external returns (int)) { revert("no"); }'
   + ' }';

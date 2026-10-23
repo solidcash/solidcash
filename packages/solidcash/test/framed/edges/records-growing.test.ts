@@ -34,7 +34,7 @@ const HEAD_INDEX = 2;
 const CREATED_INDEX = 1;
 const ZERO_SLOT = new Uint8Array(32);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Registry {'
   + '   mapping(address => uint) public balances;'
   + `   function seed() { balances[0x${Buffer.from(KEY).toString('hex')}] = ${VALUE}; require(true); }`

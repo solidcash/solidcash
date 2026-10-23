@@ -138,7 +138,7 @@ This is the deepest difference, and it explains most of the others.
   because there is no mid-execution to re-enter. Re-entrancy guards ported from Solidity are harmless but
   unnecessary. When a call graph does not fit that model (an owner invoked twice, or a cycle), the
   [message bus](/docs/guides/message-bus) folds the invocations into one authenticated atomic transition
-  instead of introducing a call stack. Message-bus composition is experimental in 0.13.1.
+  instead of introducing a call stack. Message-bus composition is experimental in 0.14.0-beta.1.
 - **Memory is on-stack, not a separate heap.** The `memory` keyword is accepted and meaningful for aliasing,
   but there is no separate memory region. See [Data Locations](/docs/language/data-locations).
 - **Addresses are full locking bytecode**, variable length, not a fixed 20- or 32-byte hash. `payable` is a

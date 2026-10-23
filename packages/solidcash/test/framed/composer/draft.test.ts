@@ -50,7 +50,7 @@ const CALLER_MASTER = 'caller-1';
 const CALLEE_MASTER = 'callee-1';
 const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'

@@ -33,7 +33,7 @@ contract Counter() {
   function bump() { this.count = this.count + 1; require(this.count > 0); }
 }`;
 
-const FRAMED = 'pragma solidcash ^0.13.0; contract C { int n;'
+const FRAMED = 'pragma solidcash ^0.14.0; contract C { int n;'
   + ' function touch() { this.n = this.n + 1; require(this.n > 0); } }';
 
 const TOKEN = new URL('../fixture/bcmr_metadata_token.scash', import.meta.url);

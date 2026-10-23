@@ -44,7 +44,7 @@ const JUDGE = `0x${addressOf(JUDGE_PROXY_CATEGORY)}`;
 // The judge reaches the claimer through an interface-typed local, which leaves its body graph-free, so the message-bus
 // lowering does not rewrite the field update in place first and the update reaches the entry cache.
 const SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'interface IClaimer { function claim(address judge, int id) returns (int); function ping() returns (int); }',
   'interface IJudge {',
   '  function count(int id) returns (int); function enter(int id) returns (int);',

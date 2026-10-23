@@ -33,7 +33,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * against are the ones the caller passed, and the shipped-path cases drive `callFramedEntry` over a real deployment.
  */
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function move(address[] workers, uint amount) {'
@@ -161,7 +161,7 @@ describe('the turns of a run-time-loop mapping write', () => {
   it('keeps the caller\'s order and refuses a descending array when the value comes per key', () => {
     // A per-key value (`valueArray[i]`) is not the lane's to permute, so the array stays as the caller passed it and
     // the body cannot walk a descending one: the derivation refuses it where the turns are derived.
-    const perKey = compileStringMulti('pragma solidcash ^0.13.0;'
+    const perKey = compileStringMulti('pragma solidcash ^0.14.0;'
       + ' contract Ledger {'
       + '   mapping(address => uint) balances;'
       + '   function move(address[] workers, uint[] amounts) {'
@@ -205,7 +205,7 @@ describe('the turns of a run-time-loop mapping write', () => {
  * `predicateArrayParam` and `predicateEquals`, and the body walks every element but writes only the selected ones.
  * The turns are those elements, and a reordered key array carries its guard along, the skipped elements after.
  */
-const GUARDED = compileStringMulti('pragma solidcash ^0.13.0;'
+const GUARDED = compileStringMulti('pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function grant(address[] workers, uint[] flags) {'

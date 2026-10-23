@@ -12,7 +12,7 @@ import {
 } from '@solidcash/utils';
 import { compileString, compileStringSplit } from '../src/index.js';
 
-const P = 'pragma solidcash ^0.13.0;';
+const P = 'pragma solidcash ^0.14.0;';
 const vm = createVirtualMachineBch2026();
 const FUNDER = Uint8Array.from([0x51]);
 const VALUE = 10_000n;

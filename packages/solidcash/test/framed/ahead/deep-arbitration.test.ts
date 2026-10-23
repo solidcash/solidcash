@@ -78,7 +78,7 @@ function source(bound: 'count' | 'this.turns', turns = TURNS): string {
   const vaultAddress = addressOf(VAULT_CATEGORY);
   const judgeAddress = addressOf(JUDGE_CATEGORY);
   return [
-    'pragma solidcash ^0.13.0;',
+    'pragma solidcash ^0.14.0;',
     'interface IStore { function write(int amount); }',
     'interface IJudge { function enter(uint16[2] xs) returns (uint16[5]); function readFlag() view returns (int);'
       + ' function calc(uint16[5] xs) pure returns (uint16[5]); }',

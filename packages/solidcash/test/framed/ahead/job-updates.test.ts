@@ -68,7 +68,7 @@ const DIGEST = hexToBin('a0b16ada95e7d6bd78efb91c368a3bd6d3b0f6b77cd3f2766447552
 /** The contracts; `pull` decides whether the token's `transferFrom` reads the allowance. */
 function source(pull: Pull): string {
   return [
-    'pragma solidcash ^0.13.0;',
+    'pragma solidcash ^0.14.0;',
     'struct Entry { int kind; bytes who; bytes data; int stamp; }',
     'struct Seat { bytes key; int fee; }',
     'struct Job {',

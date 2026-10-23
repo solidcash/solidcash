@@ -95,7 +95,7 @@ function vitestTemplate(target: CompatibilityTarget): string {
   return `import { defineConfig } from 'vitest/config';\nimport { solidhatPreset } from '@solidcash/solidhat/vitest-preset';\n\nexport default defineConfig(solidhatPreset(${JSON.stringify(target)}, {\n  test: { include: ['test/**/*.test.{ts,js}'] },\n}));\n`;
 }
 
-const SAMPLE_CONTRACT = 'pragma solidcash ^0.13.0;\n\ncontract Counter() {\n    function increment(int value) {\n        require(value >= 0);\n    }\n}\n';
+const SAMPLE_CONTRACT = 'pragma solidcash ^0.14.0;\n\ncontract Counter() {\n    function increment(int value) {\n        require(value >= 0);\n    }\n}\n';
 
 function sampleTest(target: CompatibilityTarget): string {
   return `import { describe, expect, it } from 'vitest';\nimport { ethers } from '@solidcash/solidhat/hardhat${target.hardhat}';\n\ndescribe('Counter', () => {\n  it('loads its factory', async () => {\n    const factory = await ethers.getContractFactory('Counter');\n    expect(factory).toBeDefined();\n  });\n});\n`;

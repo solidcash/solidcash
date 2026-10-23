@@ -32,7 +32,7 @@ const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
 const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 
 // `evmCompat` is the mode the ported contracts (and the marketplace project) compile under.
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Clock {'
   + '   address public implementation;'
   + '   uint32 public stamped;'

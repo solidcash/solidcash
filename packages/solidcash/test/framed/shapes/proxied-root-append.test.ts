@@ -121,7 +121,7 @@ const BIG_BLOB = new Uint8Array(150).fill(0xab);
  *
  * It declares the address its generated proxy delegates to, so the proxy can mirror the store's record exactly.
  */
-const STORE_SOURCE = 'pragma solidcash ^0.13.0;'
+const STORE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Store {'
   + '   address public implementation;'
   + '   int[] public items;'
@@ -165,7 +165,7 @@ function appendPushes(frame: number): readonly Uint8Array[] {
 const ROOT_IMPL_SOURCE = ((): string => {
   const calls = APPENDS.map((append) =>
     `     IStore(0x${STORE_PROXY_ADDRESS_HEX}).append(${append.tag}, ${append.item});`).join('\n');
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IStore { function append(int tag, int item); }'
     + ' contract RootImpl {'
     + '   address public implementation;'
@@ -179,7 +179,7 @@ const ROOT_IMPL_SOURCE = ((): string => {
 })();
 
 /** The same root, but its entry passes the store's items as run-time arguments rather than stating them. */
-const ROOT_IMPL_RUNTIME_SOURCE = 'pragma solidcash ^0.13.0;'
+const ROOT_IMPL_RUNTIME_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IStore { function append(int tag, int item); }'
   + ' contract RootImpl {'
   + '   address public implementation;'
@@ -649,7 +649,7 @@ const TAGS: readonly bigint[] = [1n, 2n, 3n];
 const TAG_VALUES = TAGS.map((tag) => READER_N + tag);
 const TOTAL = TAG_VALUES.reduce((sum, value) => sum + value, 0n);
 
-const READ_SOURCE = 'pragma solidcash ^0.13.0;'
+const READ_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IRead { function tag(int id) view returns (int); }'
   + ' contract RootRead {'
   + '   address public implementation;'

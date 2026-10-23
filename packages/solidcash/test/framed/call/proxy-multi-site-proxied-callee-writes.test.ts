@@ -36,7 +36,7 @@ const OUTER_IMPL_CATEGORY = '33'.repeat(31) + 'cc';
 const OUTER_PROXY_CATEGORY = '44'.repeat(31) + 'bb';
 const PING_ADDRESS = validatorAddress(hexToBin(PING_CATEGORY), VALIDATOR_PROGRAM);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IPing { function ping(int n); }'
   + ' interface IInner { function record(int id, int value); }'
   + ' contract Ping { int public last; function ping(int n) { require(n >= this.last); require(true); } }'

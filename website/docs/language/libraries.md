@@ -18,7 +18,7 @@ not touch the library's declared state is still inlined; a public function which
 deployed delegate-library path described below.
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 library SafeMath {
     function add(int a, int b) internal returns (int) {
@@ -158,7 +158,7 @@ The overloadable operators are `+ - * / % **`, `== != < <= > >=`, and `& | ^ ~`.
 ## Deployed delegate libraries
 
 :::caution Experimental
-Deployed delegate libraries are experimental in 0.13.1 and outside the stable compatibility promise. Prefer an
+Deployed delegate libraries are experimental in 0.14.0-beta.1 and outside the stable compatibility promise. Prefer an
 inline library unless the code must move to a co-spent input.
 :::
 
@@ -168,7 +168,7 @@ touches state declared by the library, it is automatically marked as a delegate 
 Solidity `DELEGATECALL`-linked library.
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 library Counter {
     uint256 count;
@@ -235,7 +235,7 @@ Library-call arguments are positional and must be either a forwarded parameter o
 compile-time literal:
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 import "./counter.scash";
 

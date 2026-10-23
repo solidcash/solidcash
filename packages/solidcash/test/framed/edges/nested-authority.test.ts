@@ -19,7 +19,7 @@ const CAL_ADDRESS = seededAddress('nested authority cal');
 
 /** Compiles a Caller -> Cal composition whose callee entry is guarded by `guard`, and settles it. */
 function settleGuard(guard: string): ReturnType<typeof composeAndDerive> {
-  const source = 'pragma solidcash ^0.13.0;'
+  const source = 'pragma solidcash ^0.14.0;'
     + ' interface ICal { function check(); }'
     + ` contract Cal { function check() { ${guard} require(true); } }`
     + ' contract Caller { function start() {'

@@ -67,7 +67,7 @@ type Variant = 'flow' | 'unguarded' | 'untimed';
 /** The four contracts; the variant decides what the judge keeps of its own guard and its time gate. */
 function sourceFor(variant: Variant, paidAt: bigint): string {
   const guarded = variant === 'flow';
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' struct Terms { address buyer; address seller; int start; }'
     + ' struct Job { address creator; address worker; address arbitrator; int state; int escrowId; int disputed; }'
     + ' interface IStore { function log(int id, int kind); }'

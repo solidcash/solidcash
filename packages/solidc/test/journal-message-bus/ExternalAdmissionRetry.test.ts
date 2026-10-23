@@ -43,7 +43,7 @@ describe('external admission attribution fixed point', () => {
     const unsupported = Array.from({ length: 6 }, (_, index) => `
       function unsupported${index}() external selfdestruct { require(true); }
     `).join('');
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract ManyUnsupported {
         int current;
         ${unsupported}

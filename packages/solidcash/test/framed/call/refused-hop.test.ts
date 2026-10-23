@@ -29,7 +29,7 @@ const IMPL_CATEGORY = '66'.repeat(31) + '99';
 const PROXY_CATEGORY = '67'.repeat(31) + '98';
 const HOP_COIN = { txid: '68'.repeat(32), vout: 0, satoshis: 300_000n };
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' error Short(int requested, int available);'
   + ' contract Impl {'
   + '   address public implementation;'

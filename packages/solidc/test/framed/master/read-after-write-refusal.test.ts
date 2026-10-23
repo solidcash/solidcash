@@ -22,7 +22,7 @@ import {
  * spend rather than settle a wrong value.
  */
 
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 const PING = '0x0b1c2d3e4f5061728394a5b6c7d8e9fa1b2c3d4e';
 const STATE = ' uint public count; mapping(uint => bytes4[]) logs; mapping(uint => uint) totals;'
   + ' mapping(uint => mapping(uint => bytes4[])) grid;';

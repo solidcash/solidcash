@@ -33,7 +33,7 @@ const CALLER_TXID = '33'.repeat(31) + 'cc';
 const SECOND_CALLER_TXID = '44'.repeat(31) + 'bb';
 
 /** The body whose delete sits inside a branch: the compiler publishes it as a conditional soft-delete slot. */
-const GUARDED_SOURCE = 'pragma solidcash ^0.13.0;'
+const GUARDED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   address public owner;'
   + '   address external keeper;'
@@ -46,7 +46,7 @@ const GUARDED_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The same removal with no branch: the shipped in-place write of the value type's default. */
-const PLAIN_SOURCE = 'pragma solidcash ^0.13.0;'
+const PLAIN_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   address public owner;'
   + '   address external keeper;'

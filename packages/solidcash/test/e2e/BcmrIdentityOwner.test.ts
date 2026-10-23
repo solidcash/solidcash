@@ -23,7 +23,7 @@ contract Counter() {
   function bump() { this.count = this.count + 1; require(this.count > 0); }
 }`;
 
-const FRAMED = 'pragma solidcash ^0.13.0; contract C { int n;'
+const FRAMED = 'pragma solidcash ^0.14.0; contract C { int n;'
   + ' function touch() { this.n = this.n + 1; require(this.n > 0); } }';
 
 /** A 25-byte lock that is not P2PKH: it drops a 23-byte push, so `OP_1` spends it. */

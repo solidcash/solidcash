@@ -58,7 +58,7 @@ if (ABOVE.length < 5) throw new Error('fewer than five candidate holders sort ab
 const [LOW, MIDDLE, HIGH, HOLDER, BEYOND] = ABOVE as [Uint8Array, Uint8Array, Uint8Array, Uint8Array, Uint8Array];
 
 const SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'interface IToken { function transfer(address to, int amount); }',
   'contract Token {',
   '  mapping(address => int) balances;',

@@ -20,7 +20,7 @@ const OPTIONS = {
   suppressWarnings: true,
 } as const;
 
-const STORE_SOURCE = `pragma solidcash ^0.13.0;
+const STORE_SOURCE = `pragma solidcash ^0.14.0;
 contract Store() {
   struct Row { int ordinal; bytes payload; }
   mapping(int => Row[]) rows;
@@ -43,7 +43,7 @@ contract Store() {
   }
 }`;
 
-const COORDINATOR_SOURCE = `pragma solidcash ^0.13.0;
+const COORDINATOR_SOURCE = `pragma solidcash ^0.14.0;
 interface IStore {
   function append(int key, int ordinal, bytes payload) external;
 }

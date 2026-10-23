@@ -19,7 +19,7 @@ import { publishedRefusals } from './refused-entry.js';
  * (the segment the write lands in, rather than the transition never being emitted at all).
  */
 
-const SOURCE = (call: 'none' | 'before' | 'after' | 'conditionalBefore'): string => 'pragma solidcash ^0.13.0;'
+const SOURCE = (call: 'none' | 'before' | 'after' | 'conditionalBefore'): string => 'pragma solidcash ^0.14.0;'
   + ' interface IOther { function ping(); }'
   + ' contract Other { function ping() { require(true); } }'
   + ' contract Ledger {'

@@ -1,4 +1,4 @@
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 /* This is a contract showcasing covenants outside of regular transactional use.
  * It enforces the contract to make an "announcement" on Memo.cash, and send the

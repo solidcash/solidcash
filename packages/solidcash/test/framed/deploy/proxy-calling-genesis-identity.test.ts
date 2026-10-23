@@ -24,7 +24,7 @@ const WRITER_CATEGORY = 'a4'.repeat(31) + '5b';
 const IMPL_CATEGORY = 'a1'.repeat(32);
 const PROXY_CATEGORY = 'a2'.repeat(32);
 const WRITER = validatorAddress(hexToBin(WRITER_CATEGORY), VALIDATOR_PROGRAM);
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IWriter { function bump(); }'
   + ' contract Writer { int public count; function bump() { this.count = this.count + 1; require(this.count > 0); } }'
   + ' contract Calling {'

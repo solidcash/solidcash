@@ -29,7 +29,7 @@ const VALUE = 20_000n;
 const B_AT = `IB(0x${toHex(addressOf('b'))})`;
 const C_AT = `IC(0x${toHex(addressOf('c'))})`;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IB { function f(int x); }'
   + ' interface IC { function g(int x); function h(int x) returns (int); }'
   + ' contract B { function f(int x) { require(x > 0); } }'

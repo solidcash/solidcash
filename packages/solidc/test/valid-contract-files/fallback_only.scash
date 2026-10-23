@@ -1,4 +1,4 @@
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 contract FallbackOnly(bytes20 owner) {
     function transfer(pubkey pk, sig s) {

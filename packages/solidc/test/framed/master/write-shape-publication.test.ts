@@ -48,7 +48,7 @@ const OTHER = '0x' + '11'.repeat(31) + 'ee';
 const CALL = `IOther(${OTHER}).ping.call();`;
 
 /** A ledger with one record, one dynamic value and one mapping, so one body can write any of them. */
-const LEDGER = (members: string, body: string): string => `pragma solidcash ^0.13.0;${PING}`
+const LEDGER = (members: string, body: string): string => `pragma solidcash ^0.14.0;${PING}`
   + ' contract Ledger {'
   + '   uint public count;'
   + '   string[] public names;'
@@ -74,7 +74,7 @@ const MAPPING_WITH_RUN_SOURCE = LEDGER('', `balances[to] = amount; ${CALL} this.
 // fact a builder declares the batch's records in. The machine's verdict on this shape is
 // `solidcash/test/framed/conformance/loop-upsert-beside-call.test.ts`, which settles it through the head the
 // genesis minted.
-const LOOP_UPSERT_BESIDE_CALL_SOURCE = `pragma solidcash ^0.13.0;${PING}`
+const LOOP_UPSERT_BESIDE_CALL_SOURCE = `pragma solidcash ^0.14.0;${PING}`
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function move(address to, uint amount, int turns) {'
@@ -85,7 +85,7 @@ const LOOP_UPSERT_BESIDE_CALL_SOURCE = `pragma solidcash ^0.13.0;${PING}`
   + ' }';
 // The same body with a second call between the loop and the end: the write runs before both calls, so it lands in
 // the segment the frame opens with however many calls follow it.
-const LOOP_UPSERT_BETWEEN_CALLS_SOURCE = `pragma solidcash ^0.13.0;${PING}`
+const LOOP_UPSERT_BETWEEN_CALLS_SOURCE = `pragma solidcash ^0.14.0;${PING}`
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function move(address to, uint amount, int turns) {'
@@ -100,7 +100,7 @@ const LOOP_UPSERT_BETWEEN_CALLS_SOURCE = `pragma solidcash ^0.13.0;${PING}`
 // the shipped call path settles and whose mutation it refuses (the first case of
 // `solidcash/test/framed/conformance/loop-upsert-settlement.test.ts`). The body below is that guard's body, so the
 // fact this file pins and the machine pair that file pins are about one shape.
-const LOOP_UPSERT_ALONE_SOURCE = 'pragma solidcash ^0.13.0;'
+const LOOP_UPSERT_ALONE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function move(address to, uint amount, int turns) {'

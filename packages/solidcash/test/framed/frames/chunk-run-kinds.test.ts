@@ -179,7 +179,7 @@ function verdict(
   return vm.stateSuccess(state) === true ? 'accepted' : `refused: ${String(state.error)}`;
 }
 
-const pragma = 'pragma solidcash ^0.13.0;';
+const pragma = 'pragma solidcash ^0.14.0;';
 const uints = (values: readonly bigint[]): Uint8Array => packFixedWidthArray([...values], 'uint256');
 const locks = (seeds: readonly number[]): Uint8Array[] =>
   seeds.map((seed) => encodeLockingBytecodeP2pkh(distinct(20, seed)));

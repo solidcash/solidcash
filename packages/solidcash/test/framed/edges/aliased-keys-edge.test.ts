@@ -24,7 +24,7 @@ import {
  * body, and the hop names that refusal.
  */
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IHolder { function pushRead(int a, int b, int kind) returns (int); function seed(int k, int v); }'
   + ' contract Holder {'
   + '   mapping(int => int[]) mine;'

@@ -17,7 +17,7 @@ import { hexOf, seededAddress } from '../../../../solidcash/test/framed/shapes/h
  */
 
 const CALLEE = `0x${hexOf(seededAddress('early return callee'))}`;
-const HEAD = 'pragma solidcash ^0.13.0; interface IState { function add(int x); }';
+const HEAD = 'pragma solidcash ^0.14.0; interface IState { function add(int x); }';
 const call = (argument: number): string => ` IState(${CALLEE}).add(${argument});`;
 
 const RETURNS = `${HEAD} contract Caller {`

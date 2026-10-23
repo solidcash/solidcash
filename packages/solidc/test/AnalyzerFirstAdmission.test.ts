@@ -49,7 +49,7 @@ describe('analyzer-first admission', () => {
   });
 
   it('kernel compile stamps attribution-spans (not published-fallback)', () => {
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract Counter {
         int current;
         function bump(int value) public { current = value; require(value >= 0); }
@@ -62,7 +62,7 @@ describe('analyzer-first admission', () => {
   });
 
   it('stamps the optimized first-rung artifact from attribution spans', () => {
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract FastCounter {
         int current;
         function bump(int value) public { current = value; require(value >= 0); }
@@ -139,7 +139,7 @@ describe('published-fallback retirement', () => {
     const unsupported = Array.from({ length: 6 }, (_, index) => `
       function unsupported${index}() external selfdestruct { require(true); }
     `).join('');
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract ManyUnsupported {
         int current;
         ${unsupported}

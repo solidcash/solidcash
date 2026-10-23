@@ -23,7 +23,7 @@ import { compositionMachine, compositionProvider } from './framed/machine.js';
  */
 
 /** A framed contract whose helper pool is pressured past the single-byte range, with or without a constructor. */
-const pressuredContract = (internals: number, withConstructor: boolean): string => 'pragma solidcash ^0.13.0;'
+const pressuredContract = (internals: number, withConstructor: boolean): string => 'pragma solidcash ^0.14.0;'
   + ' contract Rep {'
   + '   int public counter;'
   + '   mapping(int => int) totals;'
@@ -64,7 +64,7 @@ describe('the identifiers a compiled framed master defines', () => {
   });
 
   it('leaves the capture undefined rather than colliding when a single read is not worth outlining', () => {
-    const single = 'pragma solidcash ^0.13.0;'
+    const single = 'pragma solidcash ^0.14.0;'
       + ' contract Rep {'
       + '   int public counter;'
       + '   mapping(int => int) totals;'

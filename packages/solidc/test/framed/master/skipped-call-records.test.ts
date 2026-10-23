@@ -29,7 +29,7 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x24));
 const EMPTY = new Uint8Array(0);
 const VALUE = 20_000n;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IB { function f(int x); }'
   + ' interface IC { function g(int x); }'
   + ' contract B { function f(int x) { require(x > 0); } }'

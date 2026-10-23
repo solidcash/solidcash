@@ -44,7 +44,7 @@ const deploy = (source: string, label: string): ChunkRunContract =>
 /** A spent and a written version of one value. */
 type Versions = readonly [Uint8Array, Uint8Array];
 
-const pairSource = (type: string, entry: string): string => 'pragma solidcash ^0.13.0;'
+const pairSource = (type: string, entry: string): string => 'pragma solidcash ^0.14.0;'
   + ' contract Pair {'
   + `   ${type} public first;`
   + `   ${type} public second;`
@@ -278,7 +278,7 @@ const KINDS: readonly ElementKind[] = [
 
 describe.each(KINDS)('a framed master that writes a string beside $label', (kind) => {
   const mixSource = (entry: string, order: 'label first' | 'items first' = 'label first'): string =>
-    'pragma solidcash ^0.13.0;'
+    'pragma solidcash ^0.14.0;'
     + ' contract Mix {'
     + (order === 'label first'
       ? `   string public label; ${kind.element}[] public items;`
@@ -398,7 +398,7 @@ describe.each(KINDS)('a framed master that writes a string beside $label', (kind
 });
 
 describe('a framed master that pops a uint256[] to nothing beside a string', () => {
-  const shrink = deploy('pragma solidcash ^0.13.0; contract Mix { string public label; uint[] public items;'
+  const shrink = deploy('pragma solidcash ^0.14.0; contract Mix { string public label; uint[] public items;'
     + ' function shrink(string x) { this.label = x; this.items.pop(); } }', 'uint256 pop to nothing');
   const popLast = (label: Versions, mutation: ChunkRunMutation = {}): boolean => evaluateChunkRuns(shrink, {
     args: [label[1]],
@@ -422,7 +422,7 @@ describe('a framed master that pops a uint256[] to nothing beside a string', () 
 describe('a framed master that writes a mapping beside its dynamic values', () => {
   // The batch's walk holds every record past its group to the records the body pinned: a run counts the wider of
   // its two versions, so a shrink's consumed chunks are among them.
-  const ledgerSource = (values: string, entry: string): string => 'pragma solidcash ^0.13.0;'
+  const ledgerSource = (values: string, entry: string): string => 'pragma solidcash ^0.14.0;'
     + ' contract Ledger {'
     + `   ${values}`
     + '   mapping(address => uint) public balances;'

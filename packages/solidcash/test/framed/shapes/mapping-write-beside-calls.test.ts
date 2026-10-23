@@ -53,7 +53,7 @@ const ESCROW_ADDRESS = seededAddress('mapping write beside calls escrow');
 const ID = 7n;
 const AMOUNT = ID + 100n;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IOracle { function amountOf(int id) view returns (int); }'
   + ' interface IEscrow { function settle(int id); }'
   + ' contract Oracle { function amountOf(int id) view returns (int) { return id + 100; } }'

@@ -18,7 +18,7 @@ import {
  * (`solidcash/test/framed/edges/aliased-keys-edge.test.ts`).
  */
 
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 const GROWER = deployFramedMaster(`${PRAGMA} contract Grower { uint public count; mapping(uint => uint8[]) logs;`
   + ' function grow(uint k, uint t) { for (uint i = 0; i < t; i++) { uint n = this.logs[k].length;'
   + '   this.logs[k].push(uint8(n)); } }'

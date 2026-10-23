@@ -45,7 +45,7 @@ const REGISTRY_INIT_TXID = category('60');
 const ROOT_INIT_TXID = category('71');
 const CALL_TXID = category('82');
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IRegistry { function note(int i); }'
   + ' interface ILedger { function move(int key, int by) returns (bool); }'
   + ' interface IPay { function transfer(int amount) returns (bool); }'

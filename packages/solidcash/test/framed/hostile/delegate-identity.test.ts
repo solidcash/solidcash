@@ -51,7 +51,7 @@ const RECORD_ID = 'record';
 /** A second user's P2PKH lock: the natural forgery for a delegate frame's `sender`. */
 const OTHER_USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x55));
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl { function answer() pure { require(true); } }'
   + ' contract Other { function noop() pure { require(true); } }'
   + ' contract Proxy {'

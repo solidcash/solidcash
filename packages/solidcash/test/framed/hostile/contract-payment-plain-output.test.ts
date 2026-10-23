@@ -37,7 +37,7 @@ import { addressOf } from '../call/value-harness.js';
  * in the transcript, so each case is a whole transaction a builder could assemble.
  */
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Payer {'
   + '   int public paid;'
   + '   receive() external payable { require(true); }'

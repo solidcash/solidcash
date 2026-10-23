@@ -22,7 +22,7 @@ import {
  * body is compiled. Each verdict is the BCH-2026 machine's on the master's own input.
  */
 
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 const STATE = ' uint count; mapping(uint => uint) balances;';
 const ALIASED = deployFramedMaster(`${PRAGMA} contract Aliased {${STATE}`
   + ' function debit(uint a, uint b, uint x) { balances[a] = balances[a] - x; count = balances[b]; }'

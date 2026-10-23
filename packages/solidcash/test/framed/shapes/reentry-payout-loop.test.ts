@@ -108,7 +108,7 @@ const SHARES = 1n;
  * rather than compares the payout, so it too embeds no count.
  */
 function source(): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IClaimer { function claim() returns (int); }'
     + ' interface IEscrow {'
     + '   function release();'

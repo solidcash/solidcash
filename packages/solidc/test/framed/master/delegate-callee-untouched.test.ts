@@ -85,13 +85,13 @@ function deployVictim(label: string, source: string, entry: string, handlesValue
 
 const COUNTER = deployVictim(
   'untouched counter',
-  'pragma solidcash ^0.13.0; contract Counter { int public counter;'
+  'pragma solidcash ^0.14.0; contract Counter { int public counter;'
   + ' function increment() { this.counter = this.counter + 1; require(this.counter > 0); } }',
   'increment', false,
 );
 const VAULT = deployVictim(
   'untouched vault',
-  'pragma solidcash ^0.13.0; contract Vault { int public counter;'
+  'pragma solidcash ^0.14.0; contract Vault { int public counter;'
   + ' receive() external payable { this.counter = this.counter + 1; require(this.counter > 0); } }',
   '__receive', true,
 );

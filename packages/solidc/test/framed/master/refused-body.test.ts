@@ -32,7 +32,7 @@ const ADDRESS = validatorAddress(CATEGORY, REAL_VALIDATOR_PROGRAM);
 const TEMPLATE_HASH = sha256(REAL_VALIDATOR_PROGRAM);
 const OWNER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Choice {'
   + '   function good() { require(true); }'
   + '   function bad() returns (function(int) external returns (int)) { revert("no"); }'
@@ -40,7 +40,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** A contract whose only body is refused, so the master serves nothing and must still compile. */
-const ALL_REFUSED_SOURCE = 'pragma solidcash ^0.13.0;'
+const ALL_REFUSED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Only {'
   + '   function bad() returns (function(int) external returns (int)) { revert("no"); }'
   + ' }';
@@ -148,7 +148,7 @@ describe('a body the master cannot serve', () => {
  * The call here sits in a switch arm, a shape the call walk cannot count through, so the body stays refused by
  * name and its entry still sizes nothing.
  */
-const REFUSED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+const REFUSED_CALL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IOracle { function get(int id) view returns (int); }'
   + ' contract Feed {'
   + '   address public oracle;'
@@ -196,7 +196,7 @@ describe('a refused call-making entry', () => {
  * without that call, so the head's standalone arm refuses the user's root frame before any body runs. The entry is
  * entered with a composed frame instead — the validator input and the call record — which this file does not build.
  */
-const SERVED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+const SERVED_CALL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IOracle { function get(int id) view returns (int); }'
   + ' contract Feed {'
   + '   address public oracle;'
@@ -393,7 +393,7 @@ describe('a Solidity-compatible initializer the master serves', () => {
  * is refused with that body, by name, as an entry is, and its genesis answers with the published reason rather
  * than stopping at the body's stub.
  */
-const constructorRunning = (name: string, members: string): string => 'pragma solidcash ^0.13.0;'
+const constructorRunning = (name: string, members: string): string => 'pragma solidcash ^0.14.0;'
   + ` contract ${name} {`
   + '   int public seen;'
   + members

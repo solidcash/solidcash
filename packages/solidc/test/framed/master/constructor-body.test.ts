@@ -39,7 +39,7 @@ const VALUE = 20_000n;
 const ADMIN = new Uint8Array(20).fill(0x11);
 const OTHER_ADMIN = new Uint8Array(20).fill(0x22);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Vault {'
   + '   bytes20 immutable deployer;'
   + '   constructor(bytes20 admin) { this.deployer = hash160(admin); }'

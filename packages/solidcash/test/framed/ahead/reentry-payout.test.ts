@@ -72,7 +72,7 @@ const RATING = 3n;
 function source(bound: 'count' | 'this.turns', turns = TURNS): string {
   const escrowAddress = addressOf(ESCROW_CATEGORY);
   return [
-    'pragma solidcash ^0.13.0;',
+    'pragma solidcash ^0.14.0;',
     'interface IStore { function rate(int score); function review(int score); function note(int kind);'
       + ' function deliver(); }',
     'interface IEscrow { function release(); function readRecord() view returns (int);'

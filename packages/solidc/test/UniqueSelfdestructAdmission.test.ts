@@ -14,7 +14,7 @@ const KERNEL = {
 
 describe('unique selfdestruct admission unique selfdestruct admission', () => {
   it('admits a single modifier-only fixed-state selfdestruct', () => {
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract OneKill {
         int current;
         function kill() public selfdestruct { require(true); }
@@ -30,7 +30,7 @@ describe('unique selfdestruct admission unique selfdestruct admission', () => {
     const unsupported = Array.from({ length: 6 }, (_, index) => `
       function unsupported${index}() external selfdestruct { require(true); }
     `).join('');
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract ManyUnsupported {
         int current;
         ${unsupported}

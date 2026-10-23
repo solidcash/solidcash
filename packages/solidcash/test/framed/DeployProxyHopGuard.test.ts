@@ -27,7 +27,7 @@ vi.mock('../../src/framed/proxy/index.js', async (importOriginal): Promise<Recor
   },
 }));
 
-const SOURCE = 'pragma solidcash ^0.13.0; contract Impl { address public implementation; uint public initialized;'
+const SOURCE = 'pragma solidcash ^0.14.0; contract Impl { address public implementation; uint public initialized;'
   + ' function initialize(address expected) { require(msg.sender == expected);'
   + ' require(this.initialized == 0, "already initialized"); this.initialized = 1; } }';
 const impl = compileStringMulti(SOURCE, { composition: 'framed' }).Impl!;

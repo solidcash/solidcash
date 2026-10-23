@@ -33,7 +33,7 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const MASTER_VALUE = 20_000n;
 const USER_VALUE = 100_000n;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Sample {'
   + '   function ping() { require(true); }'
   + ' }';

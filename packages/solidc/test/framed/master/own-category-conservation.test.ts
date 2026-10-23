@@ -73,14 +73,14 @@ function deploy(name: string, source: string): Deployed {
 /** `release` reads no record and writes none: the shape that carries C3. */
 const RELEASE = '   function release(int escrowId) { require(escrowId > 0); }';
 
-const LEDGER = deploy('ledger', 'pragma solidcash ^0.13.0;'
+const LEDGER = deploy('ledger', 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) marks;'
   + '   function mark(address who, uint amount) { marks[who] = amount; }'
   + RELEASE
   + ' }');
 
-const BLOB = deploy('blob', 'pragma solidcash ^0.13.0;'
+const BLOB = deploy('blob', 'pragma solidcash ^0.14.0;'
   + ' contract Blob {'
   + '   bytes public data;'
   + '   function set(bytes value) { this.data = value; }'
@@ -88,7 +88,7 @@ const BLOB = deploy('blob', 'pragma solidcash ^0.13.0;'
   + ' }');
 
 /** The ledger with a forwarding fallback beside its entries: a head that can make a delegate call. */
-const FORWARDER = deploy('forwarder', 'pragma solidcash ^0.13.0;'
+const FORWARDER = deploy('forwarder', 'pragma solidcash ^0.14.0;'
   + ' contract Forwarder {'
   + '   address implementation;'
   + '   mapping(address => uint) marks;'

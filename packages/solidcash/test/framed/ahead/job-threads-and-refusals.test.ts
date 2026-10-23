@@ -64,7 +64,7 @@ const HASH = Uint8Array.from({ length: 32 }, (_unused, index) => (index * 13 + 5
 const TASK = 0n;
 
 const SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'struct Note { uint8 kind; bytes who; bytes data; uint32 at; }',
   'struct Member { address who; bytes key; string name; string bio; string avatar; int up; int down; }',
   'struct Arbiter {',

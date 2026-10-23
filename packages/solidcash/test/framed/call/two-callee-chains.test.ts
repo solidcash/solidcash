@@ -46,7 +46,7 @@ const CALL_TXID = category('71');
 // read-only reach; and `Ledger.move` writes a mapping node and returns a value, so its frame has to learn both the
 // record it wrote and the value it returned. `Root.run` reaches them in that order and then writes its own dynamic
 // array, so the loop's records and the later calls share the caller's one segment.
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IRegistry { function note(int i); }'
   + ' interface IView { function peek() returns (int); }'
   + ' interface ILedger { function move(int by) returns (bool); }'

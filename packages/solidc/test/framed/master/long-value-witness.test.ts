@@ -22,7 +22,7 @@ const CATEGORY = seededCategory('long value witness framed');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 
 /** One body writes a long mapping value and another reads one back. */
-const SPLIT_SOURCE = 'pragma solidcash ^0.13.0;'
+const SPLIT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Tags {'
   + '   mapping(string => string) tags;'
   + '   function put(string k, string v) { tags[k] = v; }'
@@ -30,7 +30,7 @@ const SPLIT_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The same read in the same body as the write, which resolves without the head's slot. */
-const SINGLE_BODY_SOURCE = 'pragma solidcash ^0.13.0;'
+const SINGLE_BODY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Tags {'
   + '   mapping(string => string) tags;'
   + '   function put(string k, string v) { tags[k] = v; string back = tags[k]; require(back.length >= 0); }'

@@ -7,7 +7,7 @@ import type { ContractUnlocker } from '../../src/interfaces.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
-const OWNER_SOURCE = `pragma solidcash ^0.13.0;
+const OWNER_SOURCE = `pragma solidcash ^0.14.0;
 contract RoutedOwner() {
   bigint counter;
   function forward(bytes input, address implementation) external {
@@ -16,7 +16,7 @@ contract RoutedOwner() {
   }
 }`;
 
-const IMPLEMENTATION_SOURCE = `pragma solidcash ^0.13.0;
+const IMPLEMENTATION_SOURCE = `pragma solidcash ^0.14.0;
 contract RoutedImplementation() {
   bigint counter;
   function increment() public {

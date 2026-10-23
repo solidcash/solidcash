@@ -67,7 +67,7 @@ describe('a literal-decided helper arm by composition', () => {
   });
 });
 
-const JOBS_SOURCE = 'pragma solidcash ^0.13.0;'
+const JOBS_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Job { int state; int kind; }'
   + ' interface ISink { function note(int id, int kind); }'
   + ' contract Sink { int public seen; function note(int id, int kind) { require(id >= 0); require(kind > 0); } }'

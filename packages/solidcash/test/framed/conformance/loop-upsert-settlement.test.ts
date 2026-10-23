@@ -29,7 +29,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * accept-and-refused-mutation pair is taken there for one turn and for three.
  */
 
-const FIXED_SOURCE = 'pragma solidcash ^0.13.0;'
+const FIXED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function move(address to, uint amount, int turns) {'
@@ -39,7 +39,7 @@ const FIXED_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function ping() { require(true); }'
   + ' }';
 
-const VARYING_SOURCE = 'pragma solidcash ^0.13.0;'
+const VARYING_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function move(address[] workers, uint amount) {'
@@ -50,7 +50,7 @@ const VARYING_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The same loop storing a literal `true` under every key, whose value the artifact publishes as one boolean. */
-const BOOL_SOURCE = 'pragma solidcash ^0.13.0;'
+const BOOL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   mapping(address => bool) allowlist;'
   + '   function move(address[] workers) {'

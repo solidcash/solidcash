@@ -19,21 +19,21 @@ const TARGET = '0x' + '11'.repeat(20);
 const returningInterface = ' interface IAnswer { function answer() returns (int); }';
 const voidInterface = ' interface IPing { function ping(); }';
 
-const WRITE_WITH_RETURNING_CALL = 'pragma solidcash ^0.13.0;'
+const WRITE_WITH_RETURNING_CALL = 'pragma solidcash ^0.14.0;'
   + returningInterface
   + ' contract A {'
   + '   string[] public names;'
   + `   function push() { this.names.push("hi"); int r = IAnswer(${TARGET}).answer(); require(r == 1); }`
   + ' }';
 
-const WRITE_WITH_VOID_CALL = 'pragma solidcash ^0.13.0;'
+const WRITE_WITH_VOID_CALL = 'pragma solidcash ^0.14.0;'
   + voidInterface
   + ' contract A {'
   + '   string[] public names;'
   + `   function push() { this.names.push("hi"); IPing(${TARGET}).ping.call(); require(true); }`
   + ' }';
 
-const RECORD_ARRAY_WITH_CALL = 'pragma solidcash ^0.13.0;'
+const RECORD_ARRAY_WITH_CALL = 'pragma solidcash ^0.14.0;'
   + voidInterface
   + ' contract A {'
   + '   struct P { int x; }'
@@ -41,7 +41,7 @@ const RECORD_ARRAY_WITH_CALL = 'pragma solidcash ^0.13.0;'
   + `   function push() { this.pts.push(P(1)); IPing(${TARGET}).ping.call(); require(true); }`
   + ' }';
 
-const READ_WITH_CALL = 'pragma solidcash ^0.13.0;'
+const READ_WITH_CALL = 'pragma solidcash ^0.14.0;'
   + voidInterface
   + ' contract A {'
   + '   string public name;'
@@ -49,14 +49,14 @@ const READ_WITH_CALL = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The write on its own: the frame's segments do not multiply, so the run is locatable. */
-const WRITE_WITHOUT_CALL = 'pragma solidcash ^0.13.0;'
+const WRITE_WITHOUT_CALL = 'pragma solidcash ^0.14.0;'
   + ' contract A {'
   + '   string[] public names;'
   + '   function push() { this.names.push("hi"); require(true); }'
   + ' }';
 
 /** A call with no dynamic value: there is no run to locate. */
-const CALL_WITHOUT_DYNAMIC = 'pragma solidcash ^0.13.0;'
+const CALL_WITHOUT_DYNAMIC = 'pragma solidcash ^0.14.0;'
   + voidInterface
   + ' contract B {'
   + `   function callIt() { IPing(${TARGET}).ping.call(); require(true); }`

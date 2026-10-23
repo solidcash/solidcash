@@ -6,7 +6,7 @@ import { compileString, compileStringMulti, DEFAULT_COMPILER_OPTIONS } from '../
  * Two process-level invocations of compileString plus compileStringMulti must both succeed.
  */
 export const DEFAULT_LIMIT_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 contract Vault() {
   int public stored;
@@ -92,7 +92,7 @@ describe('default 10,000-byte compile path', () => {
 
   it('caches two loop-free writes to the same sorted mapping key as one upsert', () => {
     const sameKey = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract SameKey() {
   mapping(bytes20 => int) public balances;
   function creditTwice(bytes20 to, int a, int b) {
@@ -103,7 +103,7 @@ contract SameKey() {
 }
 `);
     const once = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract SameKey() {
   mapping(bytes20 => int) public balances;
   function creditOnce(bytes20 to, int a) {
@@ -113,7 +113,7 @@ contract SameKey() {
 }
 `);
     const twoKeys = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract SameKey() {
   mapping(bytes20 => int) public balances;
   function creditTwo(bytes20 a, bytes20 b, int x) {

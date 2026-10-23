@@ -29,7 +29,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
 const IMPL_CATEGORY = '11'.repeat(31) + 'ee';
 const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 
-const SINGLE_SOURCE = 'pragma solidcash ^0.13.0;'
+const SINGLE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   mapping(string => string) tags;'
   + '   function initialize() { this.tags["DV"] = "DIGITAL_VIDEO"; }'
@@ -39,7 +39,7 @@ const SINGLE_SOURCE = 'pragma solidcash ^0.13.0;'
  * The read-modify-write shape: the entry reads the key it writes, so the read is what decides whether the write
  * splices a new node in or rewrites the one the key already names.
  */
-const COUNTER_SOURCE = 'pragma solidcash ^0.13.0;'
+const COUNTER_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   mapping(address => uint) balances;'
   + '   function initialize(address who) { this.balances[who] = this.balances[who] + 1; }'
@@ -51,7 +51,7 @@ const COUNTER_SOURCE = 'pragma solidcash ^0.13.0;'
  * The struct's pushdata encoding runs past the 60 bytes a node's tail holds inline, so the write keeps the value's
  * length and digest in the node and its bytes in a run of chunk records.
  */
-const STRUCT_SOURCE = 'pragma solidcash ^0.13.0;'
+const STRUCT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct User { address who; string name; string bio; int up; int down; }'
   + '   mapping(address => User) users;'
@@ -76,7 +76,7 @@ const SECOND_CALLER_TXID = '44'.repeat(31) + 'bb';
  * The initialize entry writes the collection once, as a deployment does: a framed deployment mints the empty head
  * of every sorted collection it declares, and the first write splices through it.
  */
-const LOOP_SOURCE = 'pragma solidcash ^0.13.0;'
+const LOOP_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   uint256 public openedAt;'
   + '   uint256 public closedAt;'
@@ -207,7 +207,7 @@ describe('a proxied initialize that writes a sorted mapping', () => {
   });
 
   it('settles a write whose value the artifact publishes no source for, from the value the entry computed', async () => {
-    const computed = 'pragma solidcash ^0.13.0;'
+    const computed = 'pragma solidcash ^0.14.0;'
       + ' contract Impl {'
       + '   mapping(string => string) tags;'
       + '   function initialize(string a, string b) { this.tags["DA"] = a + b; }'

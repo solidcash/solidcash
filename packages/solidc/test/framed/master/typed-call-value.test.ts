@@ -43,7 +43,7 @@ const DEPOSIT_SELECTOR = computeFunctionSelector(computeFunctionSignature('depos
 const AMOUNT = 10_000n;
 const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IWrapper { function deposit(); }'
   + ' contract Wrapper { function deposit() payable { require(msg.value > 0); } }'
   + ' contract Payer { function forward(int amount) {'

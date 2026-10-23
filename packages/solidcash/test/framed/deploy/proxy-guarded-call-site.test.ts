@@ -36,7 +36,7 @@ const INNER_ADDRESS = validatorAddress(hexToBin(INNER_CATEGORY), VALIDATOR_PROGR
 
 /** Three call sites, the middle one behind a branch the arguments make unreachable. */
 function sourceOf(): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IInner { function probe(uint x) view returns (uint); }'
     + ' contract Inner {'
     + '   uint public hits;'
@@ -65,7 +65,7 @@ function sourceOf(): string {
 
 /** The same guard, but on the proxied entry's own sites: three, the middle one unreachable this execution. */
 function sourceOfGuardedEntry(): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IOuter { function run(uint x, uint mode) returns (uint); }'
     + ' contract Outer {'
     + '   uint public status;'
@@ -87,7 +87,7 @@ function sourceOfGuardedEntry(): string {
 
 /** An internal helper forwards the entry's arguments in a different order to its guarded call. */
 function sourceOfInternalGuardedEntry(): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IOuter { function run(uint x, uint mode) returns (uint); }'
     + ' contract Outer {'
     + '   uint public status;'

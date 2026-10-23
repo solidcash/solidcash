@@ -23,7 +23,7 @@ const PHRASE = 'test test test test test test test test test test test junk';
 const SEED_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x33));
 const OTHER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x44));
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   constructor(address owner) { this.balances[owner] = 1; }'

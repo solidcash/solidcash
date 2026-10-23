@@ -49,7 +49,7 @@ const KEEPER = `0x${addressOf(KEEPER_PROXY_CATEGORY)}`;
 const GHOST = addressOf(idOf('ghost'));
 
 const SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'interface IRelay { function poke(address keeper); }',
   'interface IKeeper { function enter(); function stamp(); }',
   'interface IStore { function bump(); function put(int id, int v); function value() returns (int); }',

@@ -43,7 +43,7 @@ const PRED_INDEX = 2;
 /** The created node's output index, which the compiler's block layout fixes at the entry slot's offset. */
 const NODE_INDEX = 1;
 
-const SENDER_KEY_SOURCE = 'pragma solidcash ^0.13.0;'
+const SENDER_KEY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract SenderBalances {'
   + '   mapping(address => uint) balances;'
   + '   function set(uint amount) {'
@@ -51,7 +51,7 @@ const SENDER_KEY_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const EXPRESSION_KEY_SOURCE = 'pragma solidcash ^0.13.0;'
+const EXPRESSION_KEY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract ZeroBalances {'
   + '   mapping(address => uint) balances;'
   + '   function set(uint amount) {'
@@ -231,7 +231,7 @@ describe('a framed master keyed by a compile-time expression', () => {
  * constant holds, and the 32 bytes `bytes32(uint256(1))` widens the number to (`OP_NUM2BIN`, little-endian
  * natively) rather than the one-byte number an off-chain reader reads through the cast.
  */
-const CONSTANT_KEY_SOURCE = 'pragma solidcash ^0.13.0;'
+const CONSTANT_KEY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract RoleBalances {'
   + '   bytes32 constant ROLE = keccak256("ROLE");'
   + '   mapping(bytes32 => uint) balances;'
@@ -240,7 +240,7 @@ const CONSTANT_KEY_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const CAST_KEY_SOURCE = 'pragma solidcash ^0.13.0;'
+const CAST_KEY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract WideBalances {'
   + '   mapping(bytes32 => uint) balances;'
   + '   function set(uint amount) {'
@@ -276,7 +276,7 @@ describe.each([
  * the other branch is a cast of a literal. The derivation emits the whole ternary there, so the slot is the one the
  * taken branch's value names rather than a constant.
  */
-const TERNARY_SENDER_SOURCE = 'pragma solidcash ^0.13.0;'
+const TERNARY_SENDER_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract TernaryBalances {'
   + '   mapping(address => uint) balances;'
   + '   function set(uint amount) {'
@@ -311,7 +311,7 @@ describe('a framed master keyed by a ternary over the frame values', () => {
  * the slot is derived from is the record the frame declares for it. The derivation reads that record at the top of
  * the body, and the write is keyed by the field it holds.
  */
-const STATE_FIELD_SOURCE = 'pragma solidcash ^0.13.0;'
+const STATE_FIELD_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Id { uint value; }'
   + ' contract Escrow {'
   + '   Id next;'
@@ -457,7 +457,7 @@ describe('a framed master keyed by a field of its state record', () => {
  * and the field's base is the element the entry's own code writes: the derivation already holds that element where
  * the slot is computed, so the branch is a value the body holds at its start rather than one it computes later.
  */
-const COLLECTION_FIELD_TERNARY_SOURCE = 'pragma solidcash ^0.13.0;'
+const COLLECTION_FIELD_TERNARY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Roles { address worker; }'
   + ' struct JobPost { Roles roles; int state; }'
   + ' contract JobList {'
@@ -490,7 +490,7 @@ describe('a framed master keyed by a ternary over another mapping\'s entry', () 
   it('serves the write: the entry read in the key takes a slot, whose record the frame declares', () => {
     // The machine's verdict on a key read from another mapping's entry, bare and in a ternary, is in
     // `nested-entry-read.test.ts`.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Foreign {'
       + '   mapping(uint => address) owners;'
       + '   mapping(address => uint) balances;'
@@ -505,7 +505,7 @@ describe('a framed master keyed by a ternary over another mapping\'s entry', () 
 
 describe('a framed master keyed by a value the body does not hold where it derives the slot', () => {
   it('refuses a key the body computes with a call', () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Hashed {'
       + '   mapping(bytes20 => uint) balances;'
       + '   function set(pubkey pk, uint amount) { balances[hash160(pk)] = amount; }'
@@ -514,7 +514,7 @@ describe('a framed master keyed by a value the body does not hold where it deriv
   });
 
   it('refuses a bare environment value inside a ternary', () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Times {'
       + '   mapping(int => uint) balances;'
       + '   function set(uint amount) { balances[(1 == 1) ? tx.locktime : 0] = amount; }'

@@ -76,7 +76,7 @@ describe('legacy message-bus row result locals', () => {
 
   it('remaps every target of a multi-result assignment in each unrolled row', () => {
     const artifact = compileString(`
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract PairState() {
         int marker;
         function pair(int value) public returns (int, bool) {

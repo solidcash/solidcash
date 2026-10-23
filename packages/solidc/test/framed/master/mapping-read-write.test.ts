@@ -42,7 +42,7 @@ const OLD_TAIL = new Uint8Array([OLD_VALUE]);
 const NEW_TAIL = new Uint8Array([NEW_VALUE]);
 const EMPTY = new Uint8Array(0);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Balances {'
   + '   mapping(address => uint) balances;'
   + '   function add(address to, uint amount) {'
@@ -51,7 +51,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** A second entry point, so the master dispatches and the entry is reached by its own selector. */
-const TWO_ENTRY_SOURCE = 'pragma solidcash ^0.13.0;'
+const TWO_ENTRY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Balances2 {'
   + '   mapping(address => uint) balances;'
   + '   function add(address to, uint amount) { balances[to] = balances[to] + amount; }'
@@ -206,7 +206,7 @@ describe('a framed master whose entry reads and rewrites one mapping entry', () 
   it('serves a read of one entry beside a write of another', () => {
     // The read's entry is not a target of the batch: the frame declares its node kept ahead of the batch's groups,
     // which fixes the value it saw.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Move {'
       + '   mapping(address => uint) balances;'
       + '   function move(address to, uint amount) {'
@@ -234,7 +234,7 @@ describe('a framed master whose entry reads and rewrites one mapping entry', () 
  * relinked in place, then the created node. A read of an absent entry is the case a minting entry point takes, and
  * the accept below is only reachable when the value the read saw was the default.
  */
-const INSERT_SOURCE = 'pragma solidcash ^0.13.0;'
+const INSERT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Fresh {'
   + '   mapping(address => uint) balances;'
   + '   function add(address to, uint amount) {'

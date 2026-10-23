@@ -2,12 +2,12 @@
 title: Release Notes
 ---
 
-## v0.13.1
+## v0.14.0-beta.1
 
-SolidCash 0.13.1 adds a Solidity-syntax language and workflow layer for Bitcoin Cash contracts. The release covers
+SolidCash 0.14.0-beta.1 adds a Solidity-syntax language and workflow layer for Bitcoin Cash contracts. The release covers
 the documented Solidity subset, not unrestricted Solidity, EVM, Hardhat or ethers parity. It also ports the
 CashScript 0.14.0 changes listed below. This release contains several breaking changes, please refer to the
-[migration notes](/docs/releases/migration-notes#v012-to-v013) for more information.
+[migration notes](/docs/releases/migration-notes#v012-to-v014) for more information.
 
 Supported in this release:
 
@@ -21,7 +21,7 @@ Supported in this release:
   assertions. Create a project with `npm create @solidcash/solidhat`.
 - BCMR metadata for deployed contracts: every genesis leads with the category's identity output and can publish a
   registry (`solidcash/bcmr`). See [CashToken metadata](/docs/guides/deployment#cashtoken-metadata).
-- Six packages released together at 0.13.1, ESM only, for Node.js 22 or newer: `solidc`, `solidcash`,
+- Six packages released together at 0.14.0-beta.1, ESM only, for Node.js 22 or newer: `solidc`, `solidcash`,
   `@solidcash/utils`, `@solidcash/testing`, `@solidcash/solidhat` and `@solidcash/create-solidhat`.
 
 Experimental in this release, outside the stable compatibility promise. Construction stops with a named diagnostic

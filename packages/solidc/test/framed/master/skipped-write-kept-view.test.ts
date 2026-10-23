@@ -22,7 +22,7 @@ import { validatorFacetPlacements, validatorSpend } from './validator-input.js';
  * asked for their verdict on one transaction.
  */
 
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 const LEDGER = deployFramedMaster(`${PRAGMA} contract Ledger { mapping(uint => uint) balances;`
   + ' function credit(uint a, uint x) { balances[a] += x; }'
   + ' function maybeDebit(uint a, uint x, bool c) { if (c) { balances[a] -= x; } }'

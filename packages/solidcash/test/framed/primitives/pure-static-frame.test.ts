@@ -32,7 +32,7 @@ const ARGUMENT = encodePushdataValue(ELEMENTS, 'uint16[2]');
 
 /** The two-contract unit; the caller's argument is whatever the caller body hands its call. */
 function source(argumentExpression: string, declarations = ''): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface ICal { function f(uint16[2] xs) pure returns (uint16[2]); }'
     + ' contract Cal { function f(uint16[2] xs) pure returns (uint16[2]) {'
     + '   require(xs[0] == 1); require(xs[1] == 2); return xs; } }'

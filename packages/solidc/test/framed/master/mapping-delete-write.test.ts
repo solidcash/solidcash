@@ -36,7 +36,7 @@ const OLD_VALUE = 7;
 const EMPTY = new Uint8Array(0);
 
 /** The removal the master is asked to perform. */
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Balances {'
   + '   mapping(address => uint) balances;'
   + '   function clear(address to) {'
@@ -45,7 +45,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The same entry writing the value type's default by hand, which the removal compiles to. */
-const DEFAULT_SOURCE = 'pragma solidcash ^0.13.0;'
+const DEFAULT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Balances {'
   + '   mapping(address => uint) balances;'
   + '   function clear(address to) {'

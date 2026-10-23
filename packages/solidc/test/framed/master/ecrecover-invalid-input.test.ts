@@ -54,7 +54,7 @@ const SIGNER = '0x02111111111111111111111111111111111111111111111111111111111111
 const SIGNER_P2PKH = '0x76a914' + '11'.repeat(20) + '88ac';
 
 /** A valid recovery used normally: the recovered key is compared with the signer. */
-const VALID_SOURCE = 'pragma solidcash ^0.13.0;'
+const VALID_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Auth {'
   + '   function check(bytes32 h, int v, bytes32 r, bytes32 s) {'
   + `     require(ecrecoverPubKey(h, v, r, s) == pubkey(${SIGNER}));`
@@ -66,7 +66,7 @@ const VALID_SOURCE = 'pragma solidcash ^0.13.0;'
  * signature arrives as `bytes`, its length is the caller's check, and `r`/`s`/`v` are sliced out and handed to the
  * builtin. Whether the blob is empty, short or well-formed is a run-time fact of the argument.
  */
-const SHORT_SIGNATURE_SOURCE = 'pragma solidcash ^0.13.0;'
+const SHORT_SIGNATURE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Verifier {'
   + '   function verify(bytes32 hash, bytes signature) {'
   + '     bytes32 r = bytes32(signature.slice(0, 32));'
@@ -77,7 +77,7 @@ const SHORT_SIGNATURE_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The EVM-address projection: `ecrecoverEvm(hash, v, r, s)` returns a 20-byte address. */
-const EVM_PROJECTION_SOURCE = 'pragma solidcash ^0.13.0;'
+const EVM_PROJECTION_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Auth {'
   + '   function check(bytes32 h, int v, bytes32 r, bytes32 s) {'
   + `     require(ecrecoverEvm(h, v, r, s) == bytes20(${'0x' + '11'.repeat(20)}));`
@@ -85,7 +85,7 @@ const EVM_PROJECTION_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The bare Solidity name, which the `ecrecover` option maps to the P2PKH projection. */
-const BARE_NAME_SOURCE = 'pragma solidcash ^0.13.0;'
+const BARE_NAME_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Auth {'
   + '   function check(bytes32 h, int v, bytes32 r, bytes32 s) {'
   + `     require(ecrecover(h, v, r, s) == address(${SIGNER_P2PKH}));`
@@ -140,7 +140,7 @@ describe('the direct convention serves the same recovery', () => {
 
 describe('the admission is a property of the body that makes the call', () => {
   it('serves the sibling body and the recovery body together', () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Mixed {'
       + '   function good() { require(true); }'
       + '   function bad(bytes32 h, int v, bytes32 r, bytes32 s) {'
@@ -357,7 +357,7 @@ function verdicts(spend: { transaction: VmTransaction; sourceOutputs: VmProgram[
 /** Compiles one recovery source with the given literal `(h, v, r, s)` and comparison, and returns its master. */
 function compileRecoverySource(args: { h: Uint8Array; v: number; r: Uint8Array; s: Uint8Array }, comparison: string, projection: 'pubkey' | 'evm'): Uint8Array {
   const call = projection === 'pubkey' ? 'ecrecoverPubKey' : 'ecrecoverEvm';
-  const source = 'pragma solidcash ^0.13.0;'
+  const source = 'pragma solidcash ^0.14.0;'
     + ' contract Auth {'
     + '   function check() {'
     + `     require(${call}(bytes32(0x${binToHex(args.h)}), ${args.v}, `

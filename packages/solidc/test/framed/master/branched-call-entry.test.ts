@@ -45,7 +45,7 @@ const CALL = `ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call();`;
 
 /** A caller whose entry is the given body, over a callee that answers `ping()`. */
 function source(signature: string, body: string): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface ICallee { function ping(); }'
     + ' contract Callee { function ping() { require(true); } }'
     + ` contract Caller { function callIt(${signature}) { ${body} } }`;
@@ -72,7 +72,7 @@ interface Spend {
  * the entry the frame reaches in its own unlocking bytecode while a single-entry master reads none.
  */
 function multiEntrySource(entries: readonly string[]): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface ICallee { function ping(); }'
     + ' contract Callee { function ping() { require(true); } }'
     + ` contract Caller { ${entries.join(' ')} }`;

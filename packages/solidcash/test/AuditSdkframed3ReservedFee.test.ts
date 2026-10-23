@@ -18,7 +18,7 @@ import p2pkhArtifact from './fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from './fixture/vars.js';
 import { fundShippedFacets } from './framed/shapes/harness.js';
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract C { int n;'
   + ' function poke(bool go) { if (go) this.n = this.n + 1; else this.n = this.n + 1; require(this.n > 0); }'
   + ' function touch() { this.n = this.n + 1; require(this.n > 0); } }';

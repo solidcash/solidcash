@@ -41,7 +41,7 @@ const OTHER = encodeLockingBytecodeP2pkh(bobPkh);
 const lockOf = (seed: number): Uint8Array => encodeLockingBytecodeP2pkh(
   Uint8Array.from({ length: 20 }, (_unused, at) => (seed * 17 + at * 3) & 0xff),
 );
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 /** The refusal a body's own failed `require` meets. */
 const REQUIRE_FAILED = /Program failed an OP_VERIFY operation/;
 

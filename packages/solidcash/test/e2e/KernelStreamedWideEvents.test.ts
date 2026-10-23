@@ -17,7 +17,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * commitments (5 x 33 bytes); `Many` grows with its array; `Narrow` fits one.
  */
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
 contract StreamedWideEvents() {
   int count;
   event Wide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e);

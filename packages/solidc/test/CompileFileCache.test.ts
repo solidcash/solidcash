@@ -22,7 +22,7 @@ describe('compileFile artifact cache', () => {
   it('hits the in-process cache on a second compileFile of the same source', () => {
     dir = mkdtempSync(join(tmpdir(), 'solidc-file-cache-'));
     const file = join(dir, 'Cached.scash');
-    writeFileSync(file, 'pragma solidcash ^0.13.0;\ncontract Cached() { function f(int x) { require(x == 1); } }\n');
+    writeFileSync(file, 'pragma solidcash ^0.14.0;\ncontract Cached() { function f(int x) { require(x == 1); } }\n');
     const first = compileFile(file, { suppressWarnings: true, messageBus: false });
     expect(getArtifactCacheHitCount()).toBe(0);
     const second = compileFile(file, { suppressWarnings: true, messageBus: false });
@@ -34,7 +34,7 @@ describe('compileFile artifact cache', () => {
   it('hits the in-process cache on a second compileFileMulti without re-probing', () => {
     dir = mkdtempSync(join(tmpdir(), 'solidc-file-multi-cache-'));
     const file = join(dir, 'Cached.scash');
-    writeFileSync(file, 'pragma solidcash ^0.13.0;\ncontract Cached() { function f(int x) { require(x == 1); } }\n');
+    writeFileSync(file, 'pragma solidcash ^0.14.0;\ncontract Cached() { function f(int x) { require(x == 1); } }\n');
     const options = { suppressWarnings: true, messageBus: false, compileDeclarations: ['Cached'] };
     const first = compileFileMulti(file, options);
     expect(getArtifactCacheHitCount()).toBe(0);
@@ -47,7 +47,7 @@ describe('compileFile artifact cache', () => {
   it('allows compileFileMulti callers to explicitly disable the artifact cache', () => {
     dir = mkdtempSync(join(tmpdir(), 'solidc-file-multi-no-cache-'));
     const file = join(dir, 'Uncached.scash');
-    writeFileSync(file, 'pragma solidcash ^0.13.0;\ncontract Uncached() { function f(int x) { require(x == 1); } }\n');
+    writeFileSync(file, 'pragma solidcash ^0.14.0;\ncontract Uncached() { function f(int x) { require(x == 1); } }\n');
     const options = {
       suppressWarnings: true,
       messageBus: false,
@@ -64,7 +64,7 @@ describe('compileFile artifact cache', () => {
     const previous = process.env.SOLIDC_COMPILE_CACHE;
     delete process.env.SOLIDC_COMPILE_CACHE;
     try {
-      const source = 'pragma solidcash ^0.13.0;\ncontract Uncached() { function f(int x) { require(x == 1); } }\n';
+      const source = 'pragma solidcash ^0.14.0;\ncontract Uncached() { function f(int x) { require(x == 1); } }\n';
       const first = compileString(source, { suppressWarnings: true, messageBus: false });
       const second = compileString(source, { suppressWarnings: true, messageBus: false });
       expect(first.debug?.bytecode).toBe(second.debug?.bytecode);

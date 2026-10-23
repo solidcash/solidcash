@@ -37,7 +37,7 @@ const SPENDER = new Uint8Array(20).fill(0x55);
 const AMOUNT = 42;
 const EMPTY = new Uint8Array(0);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Wallet {'
   + '   mapping(address => uint) balances;'
   + '   mapping(address => mapping(address => uint)) allowances;'

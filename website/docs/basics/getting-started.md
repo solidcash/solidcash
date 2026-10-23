@@ -112,7 +112,7 @@ We can start from a basic `TransferWithTimeout` smart contract, a simple contrac
 
 Open your code editor to start writing your first SolidCash smart contract. Then create a new file `TransferWithTimeout.scash` and copy over the smart contracts code from below.
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
     // Allow the recipient to claim their received money

@@ -23,7 +23,7 @@ import {
  * `read-after-push.test.ts`, and its refusal after a push the frame does not keep in `read-after-write-refusal`.
  */
 
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 const STATE = ' uint public count; bytes4 public lastKind; mapping(uint => bytes4[]) logs; mapping(uint => uint) at;'
   + ' mapping(uint => uint) seen; mapping(uint => mapping(uint => uint)) grid;';
 

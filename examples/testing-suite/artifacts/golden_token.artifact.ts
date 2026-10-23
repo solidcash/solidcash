@@ -347,7 +347,7 @@ export default {
   ],
   compiler: {
     name: 'solidc',
-    version: '0.13.1',
+    version: '0.14.0-beta.1',
     options: {
       enforceFunctionParameterTypes: true,
       enforceLocktimeGuard: true,
@@ -357,7 +357,7 @@ export default {
       messageBus: false,
     },
   },
-  updatedAt: '2026-10-22T19:09:43.408Z',
+  updatedAt: '2026-10-23T08:17:16.142Z',
   invocationAnalysis: {
     version: 1,
     protocolVersions: [

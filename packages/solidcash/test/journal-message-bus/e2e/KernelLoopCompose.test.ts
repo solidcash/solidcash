@@ -28,7 +28,7 @@ import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-pro
 
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
 
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
 contract KernelAcc() {
   int x;
   function bump(int n) internal { this.x = this.x + n; }
@@ -52,7 +52,7 @@ contract KernelAcc() {
   function check(int expected) public { require(this.x == expected); }
 }`;
 
-const MIXED_JOURNAL_SOURCE = `pragma solidcash ^0.13.0;
+const MIXED_JOURNAL_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelMixedJournal() {
   string note;
   mapping(bytes20 => bigint) balances;
@@ -72,7 +72,7 @@ contract KernelMixedJournal() {
   }
 }`;
 
-const COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelCounterMapping() {
   mapping(int => int) m;
   function write(int n, int value) public {
@@ -90,7 +90,7 @@ contract KernelCounterMapping() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
-const SAME_MAPPING_FIXED_READ_SOURCE = `pragma solidcash ^0.13.0;
+const SAME_MAPPING_FIXED_READ_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelSameMappingFixedRead() {
   mapping(int => int) m;
   function seed(int key, int value) public { this.m[key] = value; require(true); }
@@ -106,7 +106,7 @@ contract KernelSameMappingFixedRead() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
-const COUNTER_MAPPING_ARRAY_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_ARRAY_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelCounterMappingArray() {
   mapping(int => int[]) values;
   function pushMany(int n, int value) public {
@@ -119,7 +119,7 @@ contract KernelCounterMappingArray() {
   }
 }`;
 
-const COUNTER_MAPPING_ARRAY_POP_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_ARRAY_POP_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelCounterMappingArrayPop() {
   mapping(int => int[]) values;
   function pushMany(int n, int value) public {
@@ -132,7 +132,7 @@ contract KernelCounterMappingArrayPop() {
   }
 }`;
 
-const COUNTER_MAPPING_ARRAY_CHUNK_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_ARRAY_CHUNK_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelCounterMappingArrayChunk() {
   mapping(int => bytes32[]) values;
   function pushMany(int n, bytes32 value) public {
@@ -141,7 +141,7 @@ contract KernelCounterMappingArrayChunk() {
   }
 }`;
 
-const COUNTER_MAPPING_ARRAY_VALUES_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_ARRAY_VALUES_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelCounterMappingArrayValues() {
   mapping(int => int[]) values;
   function pushEach(int n, int[] additions) public {
@@ -154,7 +154,7 @@ contract KernelCounterMappingArrayValues() {
   }
 }`;
 
-const COUNTER_MAPPING_ARRAY_DUPLICATE_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_ARRAY_DUPLICATE_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelCounterMappingArrayDuplicate() {
   mapping(int => int[]) values;
   function pushAliased(int n) public {
@@ -163,7 +163,7 @@ contract KernelCounterMappingArrayDuplicate() {
   }
 }`;
 
-const COUNTER_MAPPING_ARRAY_DUPLICATE_CHUNK_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_ARRAY_DUPLICATE_CHUNK_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelCounterMappingArrayDuplicateChunk() {
   mapping(int => bytes32[]) values;
   function pushAliased(int n, bytes32 value) public {
@@ -172,7 +172,7 @@ contract KernelCounterMappingArrayDuplicateChunk() {
   }
 }`;
 
-const AFFINE_COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+const AFFINE_COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelAffineCounterMapping() {
   mapping(int => int) m;
   function writeAffine(int n, int value) public {
@@ -185,7 +185,7 @@ contract KernelAffineCounterMapping() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
-const EXACT_COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+const EXACT_COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelExactCounterMapping() {
   mapping(int => int) m;
   function writeAscending(bool active, int bound, int stride, int value) public {
@@ -197,7 +197,7 @@ contract KernelExactCounterMapping() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
-const REASSIGNED_BOUND_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+const REASSIGNED_BOUND_MAPPING_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelReassignedBoundMapping() {
   mapping(int => int) m;
   function writeParam(int n, int value) public {
@@ -219,7 +219,7 @@ contract KernelReassignedBoundMapping() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
-const AFFINE_COUNTER_VALUE_SOURCE = `pragma solidcash ^0.13.0;
+const AFFINE_COUNTER_VALUE_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelAffineCounterValue() {
   mapping(int => int) m;
   function write(int n, int amount) public {
@@ -234,7 +234,7 @@ contract KernelAffineCounterValue() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
-const EFFECTFUL_HELPER_VALUE_SOURCE = `pragma solidcash ^0.13.0;
+const EFFECTFUL_HELPER_VALUE_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelEffectfulHelperValue() {
   mapping(int => int) m;
   int calls;
@@ -251,7 +251,7 @@ contract KernelEffectfulHelperValue() {
   }
 }`;
 
-const DISJOINT_RUNTIME_VALUE_ROWS_SOURCE = `pragma solidcash ^0.13.0;
+const DISJOINT_RUNTIME_VALUE_ROWS_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelDisjointRuntimeValueRows() {
   struct Pair { int first; int second; }
   mapping(int => Pair) left;
@@ -313,7 +313,7 @@ contract KernelDisjointRuntimeValueRows() {
   }
 }`;
 
-const TRACED_COUNTER_VALUE_SOURCE = `pragma solidcash ^0.13.0;
+const TRACED_COUNTER_VALUE_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelTracedCounterValue() {
   mapping(int => int) m;
   function writeRetained(int n, int base) public {
@@ -352,7 +352,7 @@ contract KernelTracedCounterValue() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
-const COUNTER_MAPPING_READ_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_READ_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelCounterMappingRead() {
   struct Rec { int left; bytes payload; }
   mapping(int => int) source;
@@ -413,7 +413,7 @@ contract KernelCounterMappingRead() {
   }
 }`;
 
-const PARAMETER_ARRAY_MAPPING_READ_SOURCE = `pragma solidcash ^0.13.0;
+const PARAMETER_ARRAY_MAPPING_READ_SOURCE = `pragma solidcash ^0.14.0;
 event Copied(int key);
 contract KernelParameterArrayMappingRead() {
   mapping(int => int) source;
@@ -429,7 +429,7 @@ contract KernelParameterArrayMappingRead() {
   function check(int key, int expected) public { require(this.destination[key] == expected); }
 }`;
 
-const PARAMETER_ARRAY_VALUE_SOURCE = `pragma solidcash ^0.13.0;
+const PARAMETER_ARRAY_VALUE_SOURCE = `pragma solidcash ^0.14.0;
 event Applied(int key, bytes32 digest);
 contract KernelParameterArrayValue() {
   mapping(int => bytes) values;
@@ -443,7 +443,7 @@ contract KernelParameterArrayValue() {
   function check(int key, bytes expected) public { require(this.values[key] == expected); }
 }`;
 
-const AFFINE_COUNTER_STATE_VALUE_SOURCE = `pragma solidcash ^0.13.0;
+const AFFINE_COUNTER_STATE_VALUE_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelAffineCounterStateValue() {
   int total;
   mapping(int => int) m;
@@ -456,7 +456,7 @@ contract KernelAffineCounterStateValue() {
   }
 }`;
 
-const COUNTER_MAPPING_RMW_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_RMW_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelCounterMappingRmw() {
   mapping(int => int) m;
   function credit(int n, int amount) public {
@@ -470,13 +470,13 @@ contract KernelCounterMappingRmw() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
-const SOLE_FUNCTION_SOURCE = `pragma solidcash ^0.13.0;
+const SOLE_FUNCTION_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelSoleFunction() {
   int x;
   function set(int value) public { this.x = value; require(true); }
 }`;
 
-const NESTED_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+const NESTED_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelNestedMultiMapping() {
   mapping(int => mapping(int => int)) a;
   mapping(int => mapping(int => int)) b;
@@ -489,7 +489,7 @@ contract KernelNestedMultiMapping() {
   }
 }`;
 
-const SAME_LOOP_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+const SAME_LOOP_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelSameLoopMultiMapping() {
   mapping(int => int) a;
   mapping(int => int) b;
@@ -504,7 +504,7 @@ contract KernelSameLoopMultiMapping() {
   function checkB(int key, int expected) public { require(this.b[key] == expected); }
 }`;
 
-const SELECTED_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+const SELECTED_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelSelectedMultiMapping() {
   mapping(int => mapping(int => int)) a;
   mapping(int => mapping(int => int)) b;
@@ -517,7 +517,7 @@ contract KernelSelectedMultiMapping() {
   }
 }`;
 
-const REPEATED_COUNTER_KEY_SOURCE = `pragma solidcash ^0.13.0;
+const REPEATED_COUNTER_KEY_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelRepeatedCounterKey() {
   mapping(int => mapping(int => mapping(int => int))) nested;
   function write(int scope, int n) public {
@@ -532,7 +532,7 @@ contract KernelRepeatedCounterKey() {
   }
 }`;
 
-const DERIVED_COUNTER_KEY_SOURCE = `pragma solidcash ^0.13.0;
+const DERIVED_COUNTER_KEY_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelDerivedCounterKey() {
   mapping(int => mapping(int => int)) nested;
   function write(int bound) public {
@@ -541,7 +541,7 @@ contract KernelDerivedCounterKey() {
   }
 }`;
 
-const SEQUENTIAL_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+const SEQUENTIAL_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelSequentialMultiMapping() {
   mapping(int => int) a;
   mapping(int => int) b;
@@ -558,7 +558,7 @@ contract KernelSequentialMultiMapping() {
   function checkB(int key, int expected) public { require(this.b[key] == expected); }
 }`;
 
-const COUNTER_MAPPING_EVENT_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_EVENT_SOURCE = `pragma solidcash ^0.14.0;
 event Before(int i);
 event Hit(int i);
 event Echo(int i) anonymous;
@@ -577,7 +577,7 @@ contract KernelCounterMappingEvent() {
   }
 }`;
 
-const EFFECTFUL_EVENT_ARGUMENT_SOURCE = `pragma solidcash ^0.13.0;
+const EFFECTFUL_EVENT_ARGUMENT_SOURCE = `pragma solidcash ^0.14.0;
 event Hit(int value);
 contract KernelEffectfulEventArgument() {
   int calls;
@@ -595,7 +595,7 @@ contract KernelEffectfulEventArgument() {
   }
 }`;
 
-const EFFECTFUL_TRANSFER_ARGUMENT_SOURCE = `pragma solidcash ^0.13.0;
+const EFFECTFUL_TRANSFER_ARGUMENT_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelEffectfulTransferArgument() {
   int calls;
   mapping(int => int) values;
@@ -612,7 +612,7 @@ contract KernelEffectfulTransferArgument() {
   }
 }`;
 
-const CONDITIONAL_COUNTER_EVENT_SOURCE = `pragma solidcash ^0.13.0;
+const CONDITIONAL_COUNTER_EVENT_SOURCE = `pragma solidcash ^0.14.0;
 event Hit(int i);
 contract KernelConditionalCounterEvent() {
   mapping(int => int) m;
@@ -627,7 +627,7 @@ contract KernelConditionalCounterEvent() {
   }
 }`;
 
-const COUNTER_MAPPING_TRANSFER_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_TRANSFER_SOURCE = `pragma solidcash ^0.14.0;
 event Mark(int value);
 contract KernelCounterMappingTransfer() {
   mapping(int => int) m;
@@ -659,7 +659,7 @@ contract KernelCounterMappingTransfer() {
   }
 }`;
 
-const RUNTIME_TOKEN_TRANSFER_SOURCE = `pragma solidcash ^0.13.0;
+const RUNTIME_TOKEN_TRANSFER_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelRuntimeTokenTransfer() {
   mapping(int => int) rows;
   mapping(int => int) otherRows;
@@ -686,7 +686,7 @@ contract KernelRuntimeTokenTransfer() {
   }
 }`;
 
-const RUNTIME_NFT_TRANSFER_SOURCE = `pragma solidcash ^0.13.0;
+const RUNTIME_NFT_TRANSFER_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelRuntimeNftTransfer() {
   mapping(int => int) rows;
   function send(int n, bytes32 category, bytes recipient, bytes commitment, int capability) public {
@@ -698,7 +698,7 @@ contract KernelRuntimeNftTransfer() {
   }
 }`;
 
-const CONDITIONAL_RUNTIME_NFT_TRANSFER_SOURCE = `pragma solidcash ^0.13.0;
+const CONDITIONAL_RUNTIME_NFT_TRANSFER_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelConditionalRuntimeNftTransfer() {
   mapping(int => int) rows;
   function split(
@@ -713,7 +713,7 @@ contract KernelConditionalRuntimeNftTransfer() {
   }
 }`;
 
-const EFFECTFUL_TOKEN_TRANSFER_ARGUMENT_SOURCE = `pragma solidcash ^0.13.0;
+const EFFECTFUL_TOKEN_TRANSFER_ARGUMENT_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelEffectfulTokenTransferArgument() {
   int calls;
   mapping(int => int) rows;
@@ -730,7 +730,7 @@ contract KernelEffectfulTokenTransferArgument() {
   }
 }`;
 
-const CONDITIONAL_RUNTIME_TOKEN_TRANSFER_SOURCE = `pragma solidcash ^0.13.0;
+const CONDITIONAL_RUNTIME_TOKEN_TRANSFER_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelConditionalRuntimeTokenTransfer() {
   mapping(int => int) rows;
   function split(int n, bytes32 evenCategory, bytes32 oddCategory, bytes evenRecipient, bytes oddRecipient) public {
@@ -746,7 +746,7 @@ contract KernelConditionalRuntimeTokenTransfer() {
   }
 }`;
 
-const CONDITIONAL_COUNTER_LOOP_SOURCE = `pragma solidcash ^0.13.0;
+const CONDITIONAL_COUNTER_LOOP_SOURCE = `pragma solidcash ^0.14.0;
 event Hit(int i);
 contract KernelConditionalCounterLoop() {
   bool gate;
@@ -776,7 +776,7 @@ contract KernelConditionalCounterLoop() {
   function checkScoped(int key, int expected) public { require(this.scoped[key] == expected); }
 }`;
 
-const SELECTED_COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+const SELECTED_COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.14.0;
 event Selected(int i);
 event Visited(int i);
 contract KernelSelectedCounterMapping() {
@@ -929,7 +929,7 @@ contract KernelSelectedCounterMapping() {
   }
 }`;
 
-const INDEPENDENT_ROW_LOOP_SOURCE = `pragma solidcash ^0.13.0;
+const INDEPENDENT_ROW_LOOP_SOURCE = `pragma solidcash ^0.14.0;
 event ABefore(int n);
 event AHit(int i);
 event AAfter(int n);
@@ -955,7 +955,7 @@ contract KernelIndependentRows() {
   function checkB(int key, int expected) public { require(this.b[key] == expected); }
 }`;
 
-const DISJOINT_SAME_COLLECTION_ROWS_SOURCE = `pragma solidcash ^0.13.0;
+const DISJOINT_SAME_COLLECTION_ROWS_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelDisjointSameCollectionRows() {
   mapping(int => mapping(int => int)) values;
   event StepHit(int value);
@@ -1058,7 +1058,7 @@ contract KernelDisjointSameCollectionRows() {
   }
 }`;
 
-const COUNTER_MAPPING_TYPED_CALLER_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_TYPED_CALLER_SOURCE = `pragma solidcash ^0.14.0;
 interface IKernelCounterSink { function ping(int value); }
 contract KernelCounterCaller(address sink) {
   mapping(int => int) m;
@@ -1072,12 +1072,12 @@ contract KernelCounterCaller(address sink) {
   }
 }`;
 
-const COUNTER_MAPPING_TYPED_CALLEE_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_TYPED_CALLEE_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelCounterSink() {
   function ping(int value) public { require(value >= 0); }
 }`;
 
-const COUNTER_MAPPING_DO_TYPED_CALLER_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_MAPPING_DO_TYPED_CALLER_SOURCE = `pragma solidcash ^0.14.0;
 interface IKernelCounterSink { function ping(int value); }
 contract KernelDoCounterCaller(address sink) {
   mapping(int => int) m;
@@ -1102,7 +1102,7 @@ contract KernelDoCounterCaller(address sink) {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
-const RANGED_DO_COUNTER_SOURCE = `pragma solidcash ^0.13.0;
+const RANGED_DO_COUNTER_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelRangedDoCounter() {
   mapping(int => int) m;
   function write(int bound) public {
@@ -1112,7 +1112,7 @@ contract KernelRangedDoCounter() {
   }
 }`;
 
-const COUNTER_STRUCT_RMW_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_STRUCT_RMW_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelCounterStructRmw() {
   struct Inner { int left; }
   struct Pair { Inner inner; int right; }
@@ -1137,7 +1137,7 @@ contract KernelCounterStructRmw() {
   }
 }`;
 
-const COUNTER_DIRECT_STRUCT_RMW_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_DIRECT_STRUCT_RMW_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelCounterDirectStructRmw() {
   struct Pair { int left; int right; }
   mapping(int => Pair) pairs;
@@ -1153,7 +1153,7 @@ contract KernelCounterDirectStructRmw() {
   }
 }`;
 
-const COUNTER_FIXED_MAPPING_READ_SOURCE = `pragma solidcash ^0.13.0;
+const COUNTER_FIXED_MAPPING_READ_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelCounterFixedMappingRead() {
   mapping(int => int) source;
   mapping(int => int) target;
@@ -1173,7 +1173,7 @@ contract KernelCounterFixedMappingRead() {
   }
 }`;
 
-const IMMUTABLE_DEFAULT_KEY_ARRAY_SOURCE = `pragma solidcash ^0.13.0;
+const IMMUTABLE_DEFAULT_KEY_ARRAY_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelImmutableDefaultKeyArray() {
   mapping(int => int) slots;
   function write(int count) public {
@@ -1184,7 +1184,7 @@ contract KernelImmutableDefaultKeyArray() {
   function check(int expected) unsafe { require(this.slots[0] == expected); }
 }`;
 
-const DOMINATING_LOCAL_KEY_ARRAY_SOURCE = `pragma solidcash ^0.13.0;
+const DOMINATING_LOCAL_KEY_ARRAY_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelDominatingLocalKeyArray() {
   mapping(int => int) slots;
   function write(int count, int first, int second) public {
@@ -1197,7 +1197,7 @@ contract KernelDominatingLocalKeyArray() {
   function check(int key, int expected) public { require(this.slots[key] == expected); }
 }`;
 
-const RESIZED_LOCAL_KEY_ARRAY_SOURCE = `pragma solidcash ^0.13.0;
+const RESIZED_LOCAL_KEY_ARRAY_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelResizedLocalKeyArray() {
   mapping(int => int) slots;
   function write(int count, int first, int second) public {
@@ -1213,7 +1213,7 @@ contract KernelResizedLocalKeyArray() {
   function check(int key, int expected) public { require(this.slots[key] == expected); }
 }`;
 
-const SAME_ITERATION_LOCAL_KEY_ARRAY_SOURCE = `pragma solidcash ^0.13.0;
+const SAME_ITERATION_LOCAL_KEY_ARRAY_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelSameIterationLocalKeyArray() {
   mapping(int => int) slots;
   function write(int count, int offset) public {
@@ -1257,7 +1257,7 @@ contract KernelSameIterationLocalKeyArray() {
   function check(int key, int expected) public { require(this.slots[key] == expected); }
 }`;
 
-const DOMINATING_STATE_PREDICATE_SOURCE = `pragma solidcash ^0.13.0;
+const DOMINATING_STATE_PREDICATE_SOURCE = `pragma solidcash ^0.14.0;
 event Hit(int value);
 contract KernelDominatingStatePredicate() {
   bool enabled;
@@ -1311,7 +1311,7 @@ contract KernelDominatingStatePredicate() {
   function check(int key, int expected) public { require(this.values[key] == expected); }
 }`;
 
-const LOOP_CARRIED_GUARD_SOURCE = `pragma solidcash ^0.13.0;
+const LOOP_CARRIED_GUARD_SOURCE = `pragma solidcash ^0.14.0;
 event Phase(int value);
 contract KernelLoopCarriedGuard() {
   mapping(int => int) values;
@@ -1386,7 +1386,7 @@ contract KernelLoopCarriedGuard() {
   function checkBreak(int key, int expected) public { require(this.breakValues[key] == expected); }
 }`;
 
-const BOOL_RMW_SOURCE = `pragma solidcash ^0.13.0;
+const BOOL_RMW_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelBoolRmw() {
   mapping(int => bool) flags;
   function flip(int count) public {
@@ -1396,7 +1396,7 @@ contract KernelBoolRmw() {
   function check(int key, bool expected) public { require(this.flags[key] == expected); }
 }`;
 
-const FIXED_RMW_SOURCE = `pragma solidcash ^0.13.0;
+const FIXED_RMW_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelFixedRmw() {
   mapping(int => fixed128x18) values;
   function raise(int count, fixed128x18 floor) public {
@@ -1408,7 +1408,7 @@ contract KernelFixedRmw() {
   function check(int key, fixed128x18 expected) public { require(this.values[key] == expected); }
 }`;
 
-const DYNAMIC_BYTES_RMW_SOURCE = `pragma solidcash ^0.13.0;
+const DYNAMIC_BYTES_RMW_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelDynamicBytesRmw() {
   mapping(int => bytes) values;
   function append(int count, bytes suffix) public {
@@ -1419,7 +1419,7 @@ contract KernelDynamicBytesRmw() {
   }
 }`;
 
-const DYNAMIC_BYTES_SCALAR_SOURCE = `pragma solidcash ^0.13.0;
+const DYNAMIC_BYTES_SCALAR_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelDynamicBytesScalar() {
   mapping(int => bytes) values;
   function set(int key, bytes value) public {
@@ -1428,7 +1428,7 @@ contract KernelDynamicBytesScalar() {
   }
 }`;
 
-const MULTI_DYNAMIC_BYTES_SCALAR_SOURCE = `pragma solidcash ^0.13.0;
+const MULTI_DYNAMIC_BYTES_SCALAR_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelMultiDynamicBytesScalar() {
   mapping(int => bytes) left;
   mapping(int => bytes) right;
@@ -1439,7 +1439,7 @@ contract KernelMultiDynamicBytesScalar() {
   }
 }`;
 
-const DYNAMIC_STRING_RMW_SOURCE = `pragma solidcash ^0.13.0;
+const DYNAMIC_STRING_RMW_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelDynamicStringRmw() {
   mapping(int => string) values;
   function append(int count, string suffix) public {
@@ -1450,7 +1450,7 @@ contract KernelDynamicStringRmw() {
   }
 }`;
 
-const DYNAMIC_STRUCT_RMW_SOURCE = `pragma solidcash ^0.13.0;
+const DYNAMIC_STRUCT_RMW_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelDynamicStructRmw() {
   struct Record { bytes data; int revisions; }
   mapping(int => Record) records;
@@ -1465,7 +1465,7 @@ contract KernelDynamicStructRmw() {
   }
 }`;
 
-const rawScalarRmwSource = (type: string): string => `pragma solidcash ^0.13.0;
+const rawScalarRmwSource = (type: string): string => `pragma solidcash ^0.14.0;
 contract KernelRawScalarRmw() {
   mapping(int => ${type}) values;
   function replace(int count, ${type} expected, ${type} replacement, ${type} fallbackValue) public {
@@ -2840,7 +2840,7 @@ describe('kernel mixed journal compose', () => {
 describe('kernel counter-key mapping loop compose', () => {
   it('settles a batched invariant key from its reassigned point-in-time value', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract KernelReassignedInvariantKey() {
         mapping(int => int) keyed;
         mapping(int => int) totals;

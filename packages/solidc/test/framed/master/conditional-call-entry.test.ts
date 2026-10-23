@@ -41,7 +41,7 @@ const CALLEE_INDEX = 1;
 const VALIDATOR_INDEX = 2;
 const USER_INDEX = 3;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IState { function add(int x); }'
   + ' contract Callee { function add(int x) { require(x > 0); } }'
   + ' contract Caller {'
@@ -231,7 +231,7 @@ describe('an entry whose fixed call follows a conditional one', () => {
  * the way a fixed body does; only the record's position is the count the execution carries. This is a
  * parameter-checking helper's shape: a conditional call to an address the contract holds, with a run-time argument.
  */
-const RUNTIME_OPERANDS_SOURCE = 'pragma solidcash ^0.13.0;'
+const RUNTIME_OPERANDS_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IState { function add(int x); }'
   + ' contract Caller {'
   + '   address target;'

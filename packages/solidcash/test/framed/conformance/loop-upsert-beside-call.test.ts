@@ -61,11 +61,11 @@ const OPEN = '   function move(uint amount, int turns) {\n';
 const LOOP = '     for (int i = 0; i < turns; i = i + 1) { this.total = amount + uint(i); }\n';
 
 /** The body under test: the call first, so the loop and the write it settles share the segment the call opened. */
-const CALL_THEN_LOOP_SOURCE = `pragma solidcash ^0.13.0;${HEAD()}`
+const CALL_THEN_LOOP_SOURCE = `pragma solidcash ^0.14.0;${HEAD()}`
   + OPEN + CALL + LOOP + '     require(turns > 0);\n   }\n }';
 
 /** The same body with the loop before the call, whose write lands in the segment the frame opens with. */
-const LOOP_THEN_CALL_SOURCE = `pragma solidcash ^0.13.0;${HEAD()}`
+const LOOP_THEN_CALL_SOURCE = `pragma solidcash ^0.14.0;${HEAD()}`
   + OPEN + LOOP + CALL + '     require(true);\n   }\n }';
 
 /** A mapping on the entry's state, entered with an `address` key, so the same loop writes a chain node per turn. */
@@ -76,7 +76,7 @@ const MAPPING_HEAD = (): string => HEAD() + '   mapping(address => uint) balance
  * which is the shape `updateJobWhitelist` has. The key is the frame's own, so this is the *served* variant of the
  * loop upsert except for the call the body also makes.
  */
-const MAPPING_WALL_SOURCE = `pragma solidcash ^0.13.0;${MAPPING_HEAD()}`
+const MAPPING_WALL_SOURCE = `pragma solidcash ^0.14.0;${MAPPING_HEAD()}`
   + '   function move(address to, uint amount, int turns) {\n'
   + '     for (int i = 0; i < turns; i = i + 1) { balances[to] = amount; }\n'
   + `     IOther(0x${hexOf(calleeAddress())}).ping.call();\n`
@@ -89,7 +89,7 @@ const MAPPING_WALL_SOURCE = `pragma solidcash ^0.13.0;${MAPPING_HEAD()}`
  * artifact publishes where each turn writes (`turns`), and the hop declares each record from the segment that mints
  * it on, which is what the machine's verdict below measures.
  */
-const LOOP_CALLS_SOURCE = 'pragma solidcash ^0.13.0;'
+const LOOP_CALLS_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IOther { function ping(address who); }'
   + ' contract Other { int public touched; function ping(address who) { require(this.touched == 0); } }'
   + ' contract Impl {'

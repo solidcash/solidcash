@@ -32,13 +32,13 @@ const GROUPS = [
     link: CONTRACTS,
     items: {
       pragma: [
-        'pragma solidcash ^0.13.0;',
+        'pragma solidcash ^0.14.0;',
         'Declares the compiler version range the source is written for. `pragma solidity ...` is also '
         + 'accepted so ported Solidity files compile unchanged.',
         `${CONTRACTS}#pragma`,
       ],
       solidcash: [
-        'pragma solidcash ^0.13.0;',
+        'pragma solidcash ^0.14.0;',
         'Pragma dialect name: the version constraint is checked against the SolidCash compiler version.',
         `${CONTRACTS}#pragma`,
       ],

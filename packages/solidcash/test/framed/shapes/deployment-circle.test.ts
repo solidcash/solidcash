@@ -48,7 +48,7 @@ const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 const VALUE = 20_000n;
 
 /** No constructors: the initial state is the initializer, so each contract serves one entry and needs no dispatch. */
-const CIRCLE_SOURCE = 'pragma solidcash ^0.13.0;'
+const CIRCLE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Alpha { address next; function ping() { require(true); } }'
   + ' contract Beta { address next; function ping() { require(true); } }'
   + ' contract Gamma { address next; function ping() { require(true); } }'
@@ -58,7 +58,7 @@ const CIRCLE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function close() { this.next = this.prev; require(true); }'
   + ' }';
 
-const TOKEN_SOURCE = 'pragma solidcash ^0.13.0;'
+const TOKEN_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Token {'
   + '   int public totalSupply;'
   + '   int public allowance;'

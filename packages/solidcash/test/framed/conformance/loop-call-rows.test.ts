@@ -68,7 +68,7 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
 const PRIMARY_A = 11n;
 const PRIMARY_B = 23n;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ICatalog { function kindOf(int tag) view returns (int); }'
   + ' interface IPayout { function send(int to, int amount) returns (bool); }'
   + ' contract Catalog {'
@@ -377,7 +377,7 @@ describe('spec section 23 row 4: the per-turn condition, composed with the calls
   const USER = 'user';
   const SHARES = [4n, 0n, 6n];
   const PAYOUT_ADDRESS = hexOf(seededAddress(PAYOUT_LABEL));
-  const { artifacts: composed, contracts } = compileAndDeploy('pragma solidcash ^0.13.0;'
+  const { artifacts: composed, contracts } = compileAndDeploy('pragma solidcash ^0.14.0;'
     + ' interface IPayout { function send(int to, int amount); }'
     + ' contract Payout {'
     + '   event Paid(int to, int amount);'

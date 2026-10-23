@@ -34,7 +34,7 @@ const USER_ID = 'user';
 const APP_CATEGORY = seededCategory(APP_LABEL);
 const CALLEE_ADDRESS = seededAddress(CALLEE_LABEL);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IPing { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Appender {'

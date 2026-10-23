@@ -48,7 +48,7 @@ const BOB_LOCK = encodeLockingBytecodeP2pkh(bobPkh);
 // `Journal` holds the two keys `post` notes, so each note rewrites a node the deployment holds: two notes into an
 // empty `marks` would each mint its head, which the hop refuses by name (`call/two-created-heads.test.ts`).
 const SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'error ShortBalance(address holder, int balance, int needed);',
   'interface IJournal { function note(int id); function isOpen() returns (bool); }',
   'interface IRoster { function isReferee(address who) returns (bool); function isMember(address who) returns (bool); }',

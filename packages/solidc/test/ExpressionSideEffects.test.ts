@@ -23,7 +23,7 @@ import { deployFramedMaster, distinctBytes, evaluateMasterSpend, spent } from '.
 
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
-const P = 'pragma solidcash ^0.13.0;';
+const P = 'pragma solidcash ^0.14.0;';
 const num = (value: bigint): Uint8Array => encodeIntegerValue(value);
 
 /** Verifies a direct spend of `entry` of a stateless contract with `args` in parameter order. */

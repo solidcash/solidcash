@@ -3,7 +3,7 @@ import { encodeIntegerValue } from '@solidcash/utils';
 import { keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { deployFramedMaster, evaluateMasterSpend, node, spent } from './record-spend.js';
 
-const master = deployFramedMaster(`pragma solidcash ^0.13.0;
+const master = deployFramedMaster(`pragma solidcash ^0.14.0;
   contract Ledger {
     int stored;
     mapping(int => int) m;

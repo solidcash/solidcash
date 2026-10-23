@@ -34,11 +34,11 @@ const ADDRESS = seededAddress(LABEL);
 const RECORD_INDEX = 1;
 const NODE_INDEX = 2;
 
-const SELF_CALL = 'pragma solidcash ^0.13.0; contract Tok { mapping(address => int) bal; int seen;'
+const SELF_CALL = 'pragma solidcash ^0.14.0; contract Tok { mapping(address => int) bal; int seen;'
   + ' function onlySelfRecord(int x) { this.seen = x; require(true); }'
   + ` function readThrough() { this.onlySelfRecord(this.bal[0x${hexOf(ADDRESS)}]); require(true); } }`;
 
-const LOCAL_READ = 'pragma solidcash ^0.13.0; contract Tok { mapping(address => int) bal; int seen;'
+const LOCAL_READ = 'pragma solidcash ^0.14.0; contract Tok { mapping(address => int) bal; int seen;'
   + ` function readThrough() { int v = this.bal[0x${hexOf(ADDRESS)}]; this.seen = v; require(true); } }`;
 
 interface Case {

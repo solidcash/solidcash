@@ -1,4 +1,4 @@
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 /// A receipt of a settled transfer.
 struct Receipt {

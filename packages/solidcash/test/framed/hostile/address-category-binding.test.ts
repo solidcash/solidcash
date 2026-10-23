@@ -32,7 +32,7 @@ const FOREIGN_CATEGORY = seededCategory('address binding foreign');
 const ADDRESS = validatorAddress(CATEGORY, PROGRAM);
 const FOREIGN_ADDRESS = validatorAddress(FOREIGN_CATEGORY, PROGRAM);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Sample {'
   + '   function ping() { require(true); }'
   + ' }';

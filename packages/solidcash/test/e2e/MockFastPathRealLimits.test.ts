@@ -23,7 +23,7 @@ import { randomUtxo } from '../../src/utils.js';
 const REAL_LIMITS = { maximumInputBytes: 10_000, maximumStackItemBytes: 10_000, maximumNftCommitmentBytes: 128 };
 const realLimitsProvider = (): MockNetworkProvider => new MockNetworkProvider({ consensusLimits: REAL_LIMITS });
 
-const COUNTER = `pragma solidcash ^0.13.0;
+const COUNTER = `pragma solidcash ^0.14.0;
 contract C() {
   bigint n;
   function set(bigint v) { this.n = v; }

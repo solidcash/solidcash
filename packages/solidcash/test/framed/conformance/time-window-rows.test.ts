@@ -54,7 +54,7 @@ const OPENED_AT = 1_700_000_000n;
 const DAY = 86_400n;
 const NON_FINAL_SEQUENCE = 0xfffffffe;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Board {'
   + '   int public openedAt;'
   + '   int public ratedAt;'

@@ -60,7 +60,7 @@ const INNER_SELECTOR = computeFunctionSelector(computeFunctionSignature('deep', 
  * entered.
  */
 function source(calleeBody: string, callerBody: string, callerBeforeCall = ''): string {
-  return `pragma solidcash ^0.13.0;
+  return `pragma solidcash ^0.14.0;
 error InsufficientBalance(int requested, int available);
 interface ICallee { function ping(); }
 contract Callee {
@@ -191,7 +191,7 @@ function lineOf(text: string, needle: string): number {
  * two below it.
  */
 function sourceThree(): string {
-  return `pragma solidcash ^0.13.0;
+  return `pragma solidcash ^0.14.0;
 interface IInner { function deep(); }
 interface ICallee { function ping(); }
 contract Inner {

@@ -51,7 +51,7 @@ function feedSource(name: string, shares: Readonly<Record<number, number>>): str
     + ' }';
 }
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IFeed { function shares() view returns (uint16[5]); }'
   + ' interface IMath { function twice(int x) view returns (int); }'
   + ' interface ISink { function take(int turn, int amount) returns (int); }'

@@ -36,7 +36,7 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
 const FRAMED = { composition: 'framed' as const, suppressWarnings: true };
 const ADMIN = `0x${binToHex(alicePub)}`;
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
 contract Ledger {
   int x;
   pubkey constant ADMIN = pubkey(${ADMIN});
@@ -428,7 +428,7 @@ describe('function-split calls on the composition machine', () => {
   }, 120_000);
 
   it('checks addrV on a foreign call and spends the callee function master', async () => {
-    const callerBundle = compileStringSplit(`pragma solidcash ^0.13.0;
+    const callerBundle = compileStringSplit(`pragma solidcash ^0.14.0;
       interface ILedger { function f(int k) external; }
       contract Caller {
         int n;
@@ -494,7 +494,7 @@ describe('function-split calls on the composition machine', () => {
     const encoded = lockingBytecodeToCashAddress({ bytecode: callerLock, prefix: 'bchtest' });
     if (typeof encoded === 'string') throw new Error(encoded);
     // The implementation names `implementation`, so the generated proxy redeclares that field in the same record.
-    const proxyBundle = compileStringSplit(`pragma solidcash ^0.13.0;
+    const proxyBundle = compileStringSplit(`pragma solidcash ^0.14.0;
       contract Ledger {
         address public implementation;
         int x;
@@ -590,7 +590,7 @@ describe('function-split calls on the composition machine', () => {
   }, 120_000);
 
   it('accepts a two-contract cycle on the framed validator and refuses the caller shard as the callee', async () => {
-    const alphaBundle = compileStringSplit(`pragma solidcash ^0.13.0;
+    const alphaBundle = compileStringSplit(`pragma solidcash ^0.14.0;
       interface IBeta { function step(address origin) external; }
       contract Alpha {
         int n;
@@ -601,7 +601,7 @@ describe('function-split calls on the composition machine', () => {
         }
         function finish() { this.n = 2; require(this.n == 2); }
       }`, { split: 'func', ...FRAMED });
-    const betaBundle = compileStringSplit(`pragma solidcash ^0.13.0;
+    const betaBundle = compileStringSplit(`pragma solidcash ^0.14.0;
       interface IAlpha { function finish() external; }
       contract Beta {
         int m;

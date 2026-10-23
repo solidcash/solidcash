@@ -42,7 +42,7 @@ const RECEIVE_SELECTOR = computeFunctionSelector(computeFunctionSignature('__rec
 const DEPOSIT_SELECTOR = computeFunctionSelector(computeFunctionSignature('deposit', []));
 const AMOUNT = 10_000n;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Vault { receive() external payable { require(true); } }'
   + ' contract Depot { function deposit() payable { require(msg.value > 0); } }'
   + ' contract Payer { function pay(bytes to, int amount) { this.transfer(to, amount); require(true); } }';

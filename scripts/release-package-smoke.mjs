@@ -113,7 +113,7 @@ import '@solidcash/testing/network-helpers';
 import '@solidcash/solidhat/config';
 
 const artifact = compileString('contract Packed(pubkey owner) { function unlock(sig s) { require(checkSig(s, owner)); } }');
-if (compilerVersion !== '0.13.1' || artifact.contractName !== 'Packed' || artifact.bytecode.length === 0) {
+if (compilerVersion !== '0.14.0-beta.1' || artifact.contractName !== 'Packed' || artifact.bytecode.length === 0) {
   throw new Error('packed compiler did not produce the expected artifact');
 }
 const contract = new Contract(artifact, [new Uint8Array(33).fill(2)], { provider: new MockNetworkProvider() });

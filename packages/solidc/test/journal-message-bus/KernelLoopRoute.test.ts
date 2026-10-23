@@ -13,7 +13,7 @@ import LowerVMapCounterLoops, {
 const OPTIONS = { messageBus: true as const, forceStateful: true, messageBusKernel: true };
 
 const VOID_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Acc() {
   int x;
   function add(int n) public {
@@ -24,7 +24,7 @@ contract Acc() {
 `;
 
 const RETURN_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Acc() {
   int x;
   function add(int n) public {
@@ -38,7 +38,7 @@ contract Acc() {
 `;
 
 const TWO_JOURNAL_HANDLER_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Store() {
   mapping(int => int) values;
   function write(int n, int value) public {
@@ -56,7 +56,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'nested counter-keyed mapping rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract NestedStore() {
         mapping(int => mapping(int => int)) values;
         function write(int outer, int count, int value) public {
@@ -72,7 +72,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'typed-call event and result rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       interface Remote { function read(int key) external returns (int); }
       contract Pipeline(Remote remote) {
         event Observed(int value);
@@ -88,7 +88,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'rank-dependent associative recurrence rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract Product() {
         event Observed(bigint value);
         bigint product;
@@ -122,7 +122,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'source-ordered non-associative recurrence rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract Fold() {
         event Number(bigint value);
         event Mask(uint256 value);
@@ -151,7 +151,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'literal-bound source-loop escape rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract LiteralDomain() {
         mapping(int => int) values;
         function select(bool skip, bool stop) public {
@@ -171,7 +171,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'read-only state bounded constructed-key rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract StableBound() {
         int limit;
         mapping(int => int) values;
@@ -195,7 +195,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'fixed-array-length bounded constructed-key rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract FixedBound() {
         mapping(int => int) values;
         function fill(int[] memory keys, int base, int stop) internal pure {
@@ -219,7 +219,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'exact fixed local key-vector rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract FiniteKeys() {
         mapping(int => int) values;
         function write(int count, int base) public {
@@ -239,7 +239,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'immutable fixed key-vector alias rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract AliasedKeys() {
         mapping(int => int) values;
         function write(int count, int base) public {
@@ -260,7 +260,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'pure fixed key-vector producer rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract ProducedKeys() {
         mapping(int => int) values;
         function element(int base) internal pure returns (int) { return base + 2; }
@@ -286,7 +286,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'conditional fixed key-vector rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract ConditionalKeys() {
         mapping(int => int) values;
         function write(int count, int base, bool choose) public {
@@ -306,7 +306,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'switch fixed key-vector rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract SwitchedKeys() {
         mapping(int => int) values;
         function write(int count, int base, int mode) public {
@@ -330,7 +330,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'runtime allocation-length key rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract AllocationLengthKeys() {
         mapping(int => int) values;
         function fill(int[] memory keys, int base, int stop) internal pure {
@@ -354,7 +354,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'straight-line resized allocation-length rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract ResizedAllocationLengthKeys() {
         mapping(int => int) values;
         function fill(int[] memory keys, int base, int stop) internal pure {
@@ -381,7 +381,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'exhaustive resize-join allocation-length rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract ExhaustiveResizeJoinKeys() {
         mapping(int => int) values;
         function fill(int[] memory keys, int base, int stop) internal pure {
@@ -411,7 +411,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'exhaustive resize-switch allocation-length rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract ExhaustiveResizeSwitchKeys() {
         mapping(int => int) values;
         function fill(int[] memory keys, int base, int stop) internal pure {
@@ -440,7 +440,7 @@ const ROUTE_SCALING_FAMILIES = [
   {
     name: 'fixed source-loop resized allocation-length rows',
     source: `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract FixedLoopResizeKeys() {
         mapping(int => int) values;
         function fill(int[] memory keys, int base, int stop) internal pure {
@@ -512,7 +512,7 @@ const journalContextNames = (fn: FunctionDefinitionNode): string[] => fn.paramet
 describe('message-bus kernel loop route', () => {
   it('copies the typed value rather than the enclosing carrier into an inline chunkable entry tail', () => {
     const artifact = compileString(`
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract Store() {
         struct Pair { int left; int right; }
         mapping(int => Pair) values;
@@ -646,7 +646,7 @@ describe('message-bus kernel loop route', () => {
 
   it('dispatches event-emitting handlers from the runtime row loop without a new clone family', () => {
     const artifact = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Acc() {
   event Ping(int n);
   int x;
@@ -669,7 +669,7 @@ contract Acc() {
 
   it('journals a reusable scalar helper as one OP_INVOKE body on the kernel route', () => {
     const artifact = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Acc() {
   int x;
   function bump(int n) internal { this.x = ((this.x + n) * 3 - n) / 2; }
@@ -781,7 +781,7 @@ contract Acc() {
   it('publishes one transaction-wide final flush for general scalar set and add rows', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const artifact = compileString(`
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract Store() {
         mapping(int => int) values;
         function setRows(int[] keys, int value) public {
@@ -812,7 +812,7 @@ contract Acc() {
 
   it('keeps first-touch record ordinals separate from dense materialized output ordinals', () => {
     const artifact = compileString(`
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract Store() {
         mapping(int => int) source;
         mapping(int => int) destination;
@@ -849,7 +849,7 @@ contract Acc() {
 
   it('propagates the journal context through direct and one-level internal calls', () => {
     const functions = contextPropagatedFunctions(`
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract Store() {
         mapping(int => int) values;
         function leaf(int n) internal {
@@ -870,7 +870,7 @@ contract Acc() {
 
   it('reaches a fixed point through two returning helper levels', () => {
     const source = `
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract Store() {
         mapping(int => int) values;
         function leaf(int n) internal returns (int) {
@@ -905,7 +905,7 @@ contract Acc() {
 
   it('unions mixed collection cardinalities while keeping one record carrier', () => {
     const functions = contextPropagatedFunctions(`
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract Store() {
         mapping(int => int) left;
         mapping(int => int) right;
@@ -940,7 +940,7 @@ contract Acc() {
 
   it('fails closed when an unresolved function pointer could enter the journal context ABI', () => {
     const artifact = compileString(`
-      pragma solidcash ^0.13.0;
+      pragma solidcash ^0.14.0;
       contract Store() {
         mapping(int => int) values;
         function leaf(int n) internal {

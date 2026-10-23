@@ -33,7 +33,7 @@ import {
  */
 
 const CATEGORY = seededCategory('chunk plan');
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Named {'
   + '   string public name;'
   + '   function append() { this.name = string.concat(this.name, "!"); }'
@@ -128,7 +128,7 @@ describe('the chunk plan', () => {
 
   it('keeps two variables\' collections apart', () => {
     const two = compileString(
-      'pragma solidcash ^0.13.0; contract Two {'
+      'pragma solidcash ^0.14.0; contract Two {'
       + ' string public a; string public b;'
       + ' function grow() { this.a = string.concat(this.a, "x"); this.b = string.concat(this.b, "y"); } }',
       { composition: 'framed' },
@@ -146,7 +146,7 @@ describe('the chunk plan', () => {
 
   it('refuses a variable that is not dynamic, and one the layout does not declare', () => {
     const plain = compileString(
-      'pragma solidcash ^0.13.0; contract Plain { int public n; function bump() { this.n = this.n + 1; } }',
+      'pragma solidcash ^0.14.0; contract Plain { int public n; function bump() { this.n = this.n + 1; } }',
       { composition: 'framed' },
     );
     expect(() => planChunkRun({ layout: plain.stateLayout, variable: 'n', spent: SPENT, written: WRITTEN }))

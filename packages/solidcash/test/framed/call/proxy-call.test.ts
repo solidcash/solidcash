@@ -27,7 +27,7 @@ const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 
 // The implementation declares the field the fallback forwards to beside the state its entries write: its own write
 // rebuilds the record from its declaration, so the address has to be one of the fields that survives it.
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   uint public initialized;'
@@ -51,7 +51,7 @@ const impl = artifacts.Impl!;
 
 // The shape whose fallback drops the delegated result, which a caller can still write by hand. Kept as a compiled
 // artifact rather than the generated source so the refusal it trips stays pinned while the generated shape moves.
-const BARE_PROXY_SOURCE = 'pragma solidcash ^0.13.0;'
+const BARE_PROXY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract BareProxy {'
   + '   address public implementation;'
   + '   uint public initialized;'

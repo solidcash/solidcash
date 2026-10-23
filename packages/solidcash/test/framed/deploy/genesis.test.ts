@@ -45,14 +45,14 @@ const VALIDATOR_PROGRAM = buildValidatorProgram();
 const ADDRESS = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
 const OWNER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Vault {'
   + '   int public total;'
   + '   constructor(int seed) { this.total = seed + 1; }'
   + '   function check(int v) { require(this.total == v); }'
   + ' }';
 
-const NOARG_SOURCE = 'pragma solidcash ^0.13.0;'
+const NOARG_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Plain {'
   + '   int public total;'
   + '   constructor() { this.total = 42; }'
@@ -150,7 +150,7 @@ describe('a framed genesis derived by running the constructor frame', () => {
  * derivation learns it from the body's own comparison against the output the block lists. The control mutates that
  * payload off the computed value and the machine refuses the transaction.
  */
-const EMITTING_SOURCE = 'pragma solidcash ^0.13.0;'
+const EMITTING_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Registry {'
   + '   int public count;'
   + '   event Registered(int id, string name);'
@@ -252,7 +252,7 @@ describe('a framed genesis whose constructor emits an event', () => {
 
   it('serves an anonymous event, whose covenant embeds no signature hash', () => {
     const anonymousArtifact = compileString(
-      'pragma solidcash ^0.13.0;'
+      'pragma solidcash ^0.14.0;'
       + ' contract Beacon {'
       + '   int public count;'
       + '   event Ping(int value) anonymous;'
@@ -285,7 +285,7 @@ describe('a framed genesis whose constructor emits an event', () => {
  * beside the record outputs, whose commitments stay at the pre-state. The control mutates the payload off the value
  * the body computed and the machine refuses the transaction.
  */
-const ANNOUNCE_SOURCE = 'pragma solidcash ^0.13.0;'
+const ANNOUNCE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Announcer {'
   + '   int public seq;'
   + '   event Announced(int value);'
@@ -332,7 +332,7 @@ describe('a framed genesis whose constructor emits without writing state', () =>
  * The nodes come from the shipped planner against the empty list, and the block's segment declares the pair, which
  * is what the master's own batch derivation reads and its settlement chains.
  */
-const MAPPING_SOURCE = 'pragma solidcash ^0.13.0;'
+const MAPPING_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Registry {'
   + '   int public count;'
   + '   mapping(address => int) public balances;'
@@ -430,7 +430,7 @@ describe('a framed genesis whose constructor writes a mapping entry', () => {
 
   it('derives a mapping-only constructor, whose whole state is the list it writes', () => {
     const plain = compileString(
-      'pragma solidcash ^0.13.0;'
+      'pragma solidcash ^0.14.0;'
       + ' contract Reg {'
       + '   mapping(address => int) public balances;'
       + '   constructor(address admin) { this.balances[admin] = 1; }'
@@ -449,7 +449,7 @@ describe('a framed genesis whose constructor writes a mapping entry', () => {
 
   it('derives a constructor that writes two collections, one batch per collection in the order it verifies them', () => {
     const multi = compileString(
-      'pragma solidcash ^0.13.0;'
+      'pragma solidcash ^0.14.0;'
       + ' contract Multi {'
       + '   mapping(address => int) public first;'
       + '   mapping(address => int) public second;'
@@ -478,7 +478,7 @@ describe('a framed genesis whose constructor writes a mapping entry', () => {
 
   it('derives a struct literal as a mapping value, the node carrying the encoding the body computed', () => {
     const seeded = compileString(
-      'pragma solidcash ^0.13.0;'
+      'pragma solidcash ^0.14.0;'
       + ' struct Terms { address who; int start; }'
       + ' contract Seeded {'
       + '   mapping(int => Terms) public terms;'
@@ -511,7 +511,7 @@ describe('a framed genesis whose constructor writes a mapping entry', () => {
  * sentinel and creates one node per target. The values are the body's to compute, so each created node's
  * commitment is learned from the body's own close rather than declared in advance.
  */
-const BATCH_SOURCE = 'pragma solidcash ^0.13.0;'
+const BATCH_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Split {'
   + '   int public count;'
   + '   mapping(address => int) public balances;'
@@ -599,7 +599,7 @@ describe('a framed genesis whose constructor writes one mapping as a sorted batc
  * the segment's records past its groups to the chunks the body pinned, so the running chunk width must count the
  * dynamic-state chunks the same way it counts a sorted mapping's value chunks.
  */
-const BATCH_DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
+const BATCH_DYNAMIC_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   string public label;'
   + '   mapping(address => int) public balances;'
@@ -640,7 +640,7 @@ describe('a framed genesis whose constructor writes a dynamic value, a sorted ba
  * alone, so the deployment's constructor frame now carries a validator reference, which the derivation builds, and
  * the probe closes on a declaration rather than on the head's standalone refusal.
  */
-const SERVED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+const SERVED_CALL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IOracle { function get(int id) view returns (int); }'
   + ' contract Feed {'
   + '   address public oracle;'
@@ -689,7 +689,7 @@ describe('a framed genesis beside a call-making entry the master serves', () => 
  * the body runs and declare it; the body's own close still settles the header commitment. A later literal write
  * replaces an earlier one, and the artifact publishes that literal, so the deployment states it.
  */
-const DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
+const DYNAMIC_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Named {'
   + '   string public name;'
   + '   constructor(string n) { this.name = n; }'
@@ -737,7 +737,7 @@ describe('a framed genesis whose constructor writes a dynamic value', () => {
     // the artifact publishes that source, so the deployment states its run. A value no source names, such as a
     // concat of constructor arguments, is refused by name rather than planned.
     const runtime = compileString(
-      'pragma solidcash ^0.13.0;'
+      'pragma solidcash ^0.14.0;'
       + ' contract Named {'
       + '   string public name;'
       + '   constructor(int n) { this.name = string.concat("a", "b"); this.name = "c"; }'
@@ -793,7 +793,7 @@ describe('a framed genesis whose constructor writes a dynamic value', () => {
  * answered it with the derivation's own synthetic inputs and the deployment minted that as state. The artifact
  * publishes the refusal, and the deployment reads it and refuses by name before it builds or broadcasts anything.
  */
-const BALANCE_SOURCE = 'pragma solidcash ^0.13.0;'
+const BALANCE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Peek {'
   + '   int public seen;'
   + '   constructor(address who) { this.seen = who.balance; }'
@@ -864,7 +864,7 @@ describe('a framed genesis whose constructor the compiler refused', () => {
   it('refuses by name a constructor that runs a body the master cannot serve', async () => {
     // The constructor invokes a refused entry, whose stub its probe used to stop at with an opcode; the closure
     // refuses the constructor with that body, and the deployment answers with the reason.
-    const runner = compileString('pragma solidcash ^0.13.0;'
+    const runner = compileString('pragma solidcash ^0.14.0;'
       + ' contract Runner {'
       + '   int public seen;'
       + '   constructor() { bad(); this.seen = 1; }'
@@ -899,7 +899,7 @@ describe('a framed genesis whose constructor the compiler refused', () => {
  * body's own bind, exactly as it learns an unstated write. The control is a hash inside a loop, whose side-car
  * count the artifact cannot fix.
  */
-const HASH_SOURCE = 'pragma solidcash ^0.13.0;'
+const HASH_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Hasher {'
   + '   bytes32 public h;'
   + '   constructor(bytes32 seed) { this.h = keccak256(seed); }'
@@ -941,7 +941,7 @@ describe('a framed genesis whose constructor hashes a runtime value', () => {
   });
 
   it('settles a preimage the artifact does not name, from the body\'s own bind', () => {
-    const computed = compileString('pragma solidcash ^0.13.0;'
+    const computed = compileString('pragma solidcash ^0.14.0;'
       + ' contract Hasher {'
       + '   bytes32 public h;'
       + '   constructor(bytes seed) { this.h = keccak256(bytes.concat(seed, hex"01")); }'
@@ -978,7 +978,7 @@ describe('a framed genesis whose constructor hashes a runtime value', () => {
   });
 
   it('refuses a hash inside a loop, whose side-car count the artifact cannot fix, by name', () => {
-    const looping = compileString('pragma solidcash ^0.13.0;'
+    const looping = compileString('pragma solidcash ^0.14.0;'
       + ' contract Hasher {'
       + '   bytes32 public h;'
       + '   constructor(bytes32 seed, int turns) {'
@@ -1019,7 +1019,7 @@ describe('a framed genesis whose constructor hashes a runtime value', () => {
  * encoder sizes. The control is a value a call the replay cannot rule out produces, which stays unstated and is
  * refused by name.
  */
-const HASHED_DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
+const HASHED_DYNAMIC_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Tag {'
   + '   bytes32 public digest;'
   + '   string public label;'
@@ -1085,7 +1085,7 @@ describe('a framed genesis whose constructor hashes beside a dynamic write', () 
   });
 
   it('refuses a dynamic value a call the replay cannot rule out produces, by name', () => {
-    const concatenated = compileString('pragma solidcash ^0.13.0;'
+    const concatenated = compileString('pragma solidcash ^0.14.0;'
       + ' contract Tag {'
       + '   bytes32 public digest;'
       + '   string public label;'
@@ -1112,7 +1112,7 @@ describe('a framed genesis whose constructor hashes beside a dynamic write', () 
  * is one the body computes, learned from the body's own bind the way an unstated write is. The state the
  * deployment mints carries all three hashes the constructor stored.
  */
-const TRIO_SOURCE = 'pragma solidcash ^0.13.0;'
+const TRIO_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Trio {'
   + '   bytes32 public first;'
   + '   bytes32 public second;'

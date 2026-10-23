@@ -15,7 +15,7 @@ import { hexOf, seededAddress } from '../../../../solidcash/test/framed/shapes/h
 const FIRST = hexOf(seededAddress('return operand first'));
 const SECOND = hexOf(seededAddress('return operand second'));
 
-const HEAD = 'pragma solidcash ^0.13.0;';
+const HEAD = 'pragma solidcash ^0.14.0;';
 
 const INTERFACES = ' interface IOne { function one() returns (int); }'
   + ' interface ITwo { function two() returns (int); }';

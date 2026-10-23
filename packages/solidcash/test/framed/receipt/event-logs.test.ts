@@ -49,7 +49,7 @@ describe('an event emitted by a nested frame', () => {
   const EMITTER_LABEL = 'the nested event emitter';
   const emitterAddress = seededAddress(EMITTER_LABEL);
   // The caller emits an event of its own and then calls the emitter, whose own event the nested frame emits.
-  const SOURCE = 'pragma solidcash ^0.13.0;'
+  const SOURCE = 'pragma solidcash ^0.14.0;'
     + ' interface IEmitter { function fire(); }'
     + ' contract Emitter { event Report(int a, int b, int c, int d, int e);'
     + `   function fire() { emit Report(${BIG}, ${BIG}, ${BIG}, ${BIG}, ${BIG}); require(true); } }`
@@ -189,7 +189,7 @@ describe('an event emitted by a nested frame', () => {
 });
 
 describe('a composition that emits nothing', () => {
-  const SOURCE = 'pragma solidcash ^0.13.0; contract Solo { function ping() { require(true); } }';
+  const SOURCE = 'pragma solidcash ^0.14.0; contract Solo { function ping() { require(true); } }';
 
   it('reports no logs', () => {
     const { artifacts, contracts } = compileAndDeploy(SOURCE, { Solo: 'a quiet contract' });
@@ -218,7 +218,7 @@ describe('a composition that emits nothing', () => {
 describe('an event covenant no frame lists', () => {
   const EMITTER_LABEL = 'the unlisted event emitter';
   const emitterAddress = seededAddress(EMITTER_LABEL);
-  const SOURCE = 'pragma solidcash ^0.13.0;'
+  const SOURCE = 'pragma solidcash ^0.14.0;'
     + ' interface IEmitter { function fire(); }'
     + ' contract Emitter { event Report(int a);'
     + '   function fire() { emit Report(7); require(true); } }'

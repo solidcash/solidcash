@@ -28,7 +28,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
 const CATEGORY_HEX = '5a'.repeat(31) + 'a5';
 const CALLER_TXID = '5b'.repeat(32);
 
-const GATE_SOURCE = 'pragma solidcash ^0.13.0;'
+const GATE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Gate {'
   + '   int public passes;'
   + '   mapping(address => int) allowance;'
@@ -41,7 +41,7 @@ const GATE_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** Four 32-byte fields fill the first record, so the counter sits in the second. */
-const WIDE_SOURCE = 'pragma solidcash ^0.13.0;'
+const WIDE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Wide {'
   + '   bytes32 public a;'
   + '   bytes32 public b;'
@@ -56,7 +56,7 @@ const WIDE_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** A key read in one mapping beside a write of another: the allow-list beside a balance. */
-const CLUB_SOURCE = 'pragma solidcash ^0.13.0;'
+const CLUB_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Club {'
   + '   mapping(address => int) allowed;'
   + '   mapping(address => int) balances;'
@@ -69,7 +69,7 @@ const CLUB_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** A key read beside a write of another key of the same mapping: the sender's balance beside the recipient's. */
-const POOL_SOURCE = 'pragma solidcash ^0.13.0;'
+const POOL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Pool {'
   + '   mapping(address => int) balances;'
   + '   function seed(address who, int amount) { this.balances[who] = amount; }'

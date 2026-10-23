@@ -106,7 +106,7 @@ describe('whether every call precedes the write', () => {
 describe('an entry whose write follows a call the source does not fix', () => {
   // The served and refused shapes of a guarded call before the write are `refused-entry-shapes.test.ts`'s.
   it('is served when its write precedes every call it makes', () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Ledger {'
       + '   mapping(address => uint) balances;'
       + '   function move(bool pick, address to, uint amount) {'

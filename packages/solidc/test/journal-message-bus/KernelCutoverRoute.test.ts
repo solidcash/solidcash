@@ -44,7 +44,7 @@ const assertKernelRoute = (source: string, handlerName: string): ReturnType<type
 describe('message-bus kernel cutover route', () => {
   it('publishes active-entry callers for ordinary and delegate routes', () => {
     const source = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 interface ISink { function ping() external; }
 contract Caller(address sink) {
   int marker;
@@ -70,7 +70,7 @@ contract Caller(address sink) {
 
   it('journals a parameter-keyed mapping helper on the runtime row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Ledger() {
   mapping(bytes20 => int) balances;
   function bump(bytes20 who, int n) internal {
@@ -92,7 +92,7 @@ contract Ledger() {
 
   it('journals a msg.sender-keyed mapping write without _rN route inputs', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Ledger() {
   mapping(address => int) balances;
   function credit(int n) public {
@@ -105,7 +105,7 @@ contract Ledger() {
 
   it('captures a returning ERC-20-shaped mapping handler inside the same loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Token() {
   mapping(bytes20 => int) balances;
   function credit(bytes20 who, int n) public returns (bool) {
@@ -120,7 +120,7 @@ contract Token() {
 
   it('keeps a returning ERC-20 mapping writer with an event on kernel row dispatch', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Token() {
   mapping(address => mapping(address => uint)) allowances;
   event Approval(address indexed owner, address indexed spender, uint value);
@@ -144,7 +144,7 @@ contract Token() {
 
   it('pools an explicit read-only mapping result wrapper with sibling writers', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 struct Record { uint256 stable; uint256 phase; string tail; }
 contract Store {
   mapping(uint256 => Record) private records;
@@ -159,7 +159,7 @@ contract Store {
 
   it('journals an expression-keyed mapping write on the runtime row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Ledger() {
   mapping(int => int) slots;
   int next;
@@ -174,7 +174,7 @@ contract Ledger() {
 
   it('journals an expression-keyed parameter-array mapping loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Ledger() {
   mapping(int => mapping(bytes20 => int)) seen;
   int[] records;
@@ -203,7 +203,7 @@ contract Ledger() {
 
   it('dispatches an IERC20-shaped external call from the runtime row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 interface IERC20 { function transfer(address to, int amount) returns (bool); }
 contract Mixed() {
   int last;
@@ -222,7 +222,7 @@ contract Mixed() {
 
   it('journals a literal local key array after unrolling it to a scalar write', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Ledger() {
   mapping(int => mapping(bytes20 => int)) seen;
   bytes20 member;
@@ -240,7 +240,7 @@ contract Ledger() {
 
   it('dispatches a satoshi transfer from the runtime row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Pay() {
   function pay(bytes recipient, int amount) public {
     this.transfer(recipient, amount);
@@ -286,7 +286,7 @@ contract Pay {
 
   it('dispatches if/else this.transfer from the runtime row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Pay() {
   function denied(bool p, bytes a, bytes b) public {
     if (p) this.transfer(a, 1); else this.transfer(b, 1);
@@ -331,7 +331,7 @@ contract Pay {
 
   it('journals a UDVT wrap as an expression-keyed mapping write on the row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 type TokenId is bytes32;
 contract Ledger() {
   mapping(TokenId => int) m;
@@ -384,7 +384,7 @@ contract C {
 
   it('dispatches a counter-keyed mapping loop that also makes a typed call from the row loop', () => {
     const artifact = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 interface I { function r(int i); }
 contract Slots() {
   mapping(int => int) m;
@@ -443,7 +443,7 @@ contract C {
 
   it('captures a returning UDVT inside the same loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 type TokenId is bytes32;
 contract Ledger() {
   TokenId last;
@@ -456,7 +456,7 @@ contract Ledger() {
 
   it('journals a counter-keyed mapping delete loop on the row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Slots() {
   mapping(int => int) m;
   function denied(int n) public {
@@ -472,7 +472,7 @@ contract Slots() {
 
   it('routes two fixed-width scalar mutation streams in one counter-loop execution group', () => {
     const artifact = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Slots() {
   mapping(int => int) a;
   mapping(int => int) b;
@@ -492,7 +492,7 @@ contract Slots() {
 
   it('journals a do-while counter-keyed mapping loop on the row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Slots() {
   mapping(int => int) m;
   function denied(int n) public {
@@ -510,7 +510,7 @@ contract Slots() {
 
   it('dispatches a do-while counter-keyed mapping loop with a typed call from the row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 interface I { function r(int i); }
 contract Slots() {
   mapping(int => int) m;
@@ -532,7 +532,7 @@ contract Slots() {
 
   it('journals fallback that wraps a UDVT mapping key on the row loop', () => {
     const artifact = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 type TokenId is bytes32;
 contract C() {
   mapping(TokenId => int) hits;
@@ -551,7 +551,7 @@ contract C() {
 
   it('journals a fixed-point mapping value write on the row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Ledger() {
   mapping(int => fixed128x18) m;
   function denied(int k, fixed128x18 v) public { this.m[k] = v; require(true); }
@@ -562,7 +562,7 @@ contract Ledger() {
 
   it('journals a ufixed mapping value write on the row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Ledger() {
   mapping(int => ufixed128x18) m;
   function denied(int k, ufixed128x18 v) public { this.m[k] = v; require(true); }
@@ -573,7 +573,7 @@ contract Ledger() {
 
   it('journals a pubkey mapping value write on the row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Keys() {
   mapping(bytes20 => pubkey) m;
   function denied(bytes20 k, pubkey pk) public { this.m[k] = pk; require(true); }
@@ -584,7 +584,7 @@ contract Keys() {
 
   it('journals an invariant-key mapping write inside a while-true break loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Slots() {
   mapping(int => int) m;
   function denied(int k) public {
@@ -599,7 +599,7 @@ contract Slots() {
 
   it('dispatches owner-frame delegate handlers from the runtime row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Acc() {
   int x;
   function add(int n) public delegate {
@@ -612,7 +612,7 @@ contract Acc() {
 
   it('dispatches a token-container transfer from the runtime row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Vault() {
   function send(bytes32 category, bytes recipient, int amount) public {
     require(this.tokens[category].tokenAmount >= amount);
@@ -633,7 +633,7 @@ contract Vault() {
 
   it('journals a counter-keyed mapping loop from the runtime row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Slots() {
   mapping(int => int) slots;
   function fill(int n) public {
@@ -648,7 +648,7 @@ contract Slots() {
 
   it('journals nested msg.sender and getter argument keys without _rN', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Registry() {
   mapping(int => mapping(address => int)) permissions;
   function consume(int id) public {
@@ -670,7 +670,7 @@ contract Registry() {
 
   it('keeps a scalar pause handler beside a collection sibling on the row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Governed() {
   address owner;
   bool paused;
@@ -694,7 +694,7 @@ contract Governed() {
 
   it('journals ERC-20 transferFrom from/to as two row-arg slots on the loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Token() {
   mapping(address => int) balances;
   mapping(address => mapping(address => int)) allowances;
@@ -736,7 +736,7 @@ contract Registry {
 
   it('journals a returning nested mapping read on the row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Registry() {
   mapping(int => mapping(address => int)) permissions;
   function lookup(int id, address who) public returns (int) {
@@ -772,7 +772,7 @@ contract Auth {
 
   it('dispatches a complete fixed-array identity set from the runtime row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Acc() {
   int[4] scores;
   function bump() public {
@@ -786,7 +786,7 @@ contract Acc() {
 
   it('journals a mapping read with a typed interface call on the row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 interface IRegistry { function contains(address who) returns (bool); }
 contract Gateway() {
   mapping(int => mapping(address => bool)) permissions;
@@ -804,7 +804,7 @@ contract Gateway() {
 
   it('journals a mapping write with an IERC20-shaped call on the row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 interface IERC20 { function transfer(address to, int amount) returns (bool); }
 contract Gateway() {
   mapping(int => mapping(address => bool)) permissions;
@@ -820,7 +820,7 @@ contract Gateway() {
 
   it('journals an expression-keyed second mapping alternative on the row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Token() {
   mapping(address => int) balances;
   address sink;
@@ -836,7 +836,7 @@ contract Token() {
 
   it('journals a mapping struct field write as a whole-entry update on the row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   struct Record { int value; }
   mapping(int => Record) records;
@@ -875,7 +875,7 @@ contract Pay {
 
   it('journals a helper-owned permission loop after unrolling the literal key array', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Ledger() {
   mapping(int => mapping(bytes20 => int)) seen;
   bytes20 member;
@@ -939,7 +939,7 @@ contract Registry {
 
   it('constructs locking bytecode from the runtime row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Pay() {
   function ping(bytes20 pkh) public {
     bytes lb = new LockingBytecodeP2PKH(pkh);
@@ -971,7 +971,7 @@ contract C {
 
   it('dispatches a token-container NFT transfer from the runtime row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Vault() {
   function sendNft(bytes32 category, bytes recipient, bytes commitment, int capability) public {
     require(this.tokens[category].tokenAmount >= 0);
@@ -993,7 +993,7 @@ contract Vault() {
 
   it('journals a mapping-of-fixed-array element write on the row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   mapping(int => int[2]) slots;
   function denied(int k, int v) public { this.slots[k][0] = v; require(true); }
@@ -1004,7 +1004,7 @@ contract C() {
 
   it('journals a mapping-of-fixed-array element read on the row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   mapping(int => int[2]) slots;
   function denied(int k) public returns (int) { return this.slots[k][0]; }
@@ -1061,7 +1061,7 @@ contract C {
 
   it('dispatches two satoshi transfers from the runtime row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Pay() {
   function denied(bytes a, bytes b) public {
     this.transfer(a, 1);
@@ -1075,7 +1075,7 @@ contract Pay() {
 
   it('dispatches a typed call with value from the runtime row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 interface I { function r(); }
 contract C() {
   address a;
@@ -1088,7 +1088,7 @@ contract C() {
 
   it('dispatches a token-container transfer without a prior tokenAmount read', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract Vault() {
   function denied(bytes32 category, bytes recipient, int amount) public {
     this.tokens[category].transfer(recipient, amount);
@@ -1100,7 +1100,7 @@ contract Vault() {
 
   it('dispatches blockhash from the runtime row loop', () => {
     const artifact = assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   bytes32 last;
   function denied(int n) public { this.last = blockhash(n); require(true); }
@@ -1112,7 +1112,7 @@ contract C() {
 
   it('journals a packed array write on the row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   int[] packed scores;
   function denied(int x) public { this.scores.push(x); require(true); }
@@ -1123,7 +1123,7 @@ contract C() {
 
   it('journals a nested dynamic array write on the row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   int[][] nested;
   function denied(int x) public {
@@ -1157,7 +1157,7 @@ contract C {
 
   it('reads this.activeBytecode from the runtime row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   function denied() public { require(this.activeBytecode.length > 0); }
   function control() public { require(true); }
@@ -1167,7 +1167,7 @@ contract C() {
 
   it('constructs LockingBytecodeNullData from the runtime row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   function denied(bytes a, bytes b) public {
     bytes lb = new LockingBytecodeNullData([a, b]);
@@ -1180,7 +1180,7 @@ contract C() {
 
   it('dispatches two token-container categories from the runtime row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   function denied(bytes32 c1, bytes32 c2, bytes to, int amt) public {
     this.tokens[c1].transfer(to, amt);
@@ -1221,7 +1221,7 @@ contract C {
 
   it('journals a mapping write that also reads blockhash on the row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   mapping(int => bytes32) m;
   function denied(int n) public { this.m[n] = blockhash(n); require(true); }
@@ -1232,7 +1232,7 @@ contract C() {
 
   it('dispatches a native typed .call from the runtime row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 interface I { function r(); }
 contract C() {
   bytes32 cat;
@@ -1244,7 +1244,7 @@ contract C() {
 
   it('dispatches a native typed .staticcall from the runtime row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 interface I { function r() returns (int); }
 contract C() {
   bytes32 cat;
@@ -1257,7 +1257,7 @@ contract C() {
 
   it('iterates an enumerable mapping on the row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   enumerable mapping(bytes20 => int) m;
   function denied() public { for (int v of this.m) { require(v >= 0); } }
@@ -1295,7 +1295,7 @@ contract C {
 
   it('journals a nested counter-keyed mapping write on the row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   mapping(int => mapping(int => int)) m;
   function denied(int k, int n) public {
@@ -1309,7 +1309,7 @@ contract C() {
 
   it('captures a returning enum encoded as int on the row loop', () => {
     const artifact = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 enum Status { A, B }
 contract C() {
   Status st;
@@ -1324,7 +1324,7 @@ contract C() {
 
   it('captures an enum in the middle of a mixed multi-return handler', () => {
     const artifact = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   enum Phase { Pending, Ready }
   function inspect(uint count, bool active) public returns (uint, Phase, bool) {
@@ -1398,7 +1398,7 @@ contract C {
 
   it('journals a SolidCash dynamic-array element delete on the row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   int[] items;
   function denied(int i) public { delete this.items[i]; require(true); }
@@ -1409,7 +1409,7 @@ contract C() {
 
   it('publishes fallback and receive on the kernel route', () => {
     const artifact = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   int x;
   fallback(bytes input) external { this.x = 1; require(true); }
@@ -1424,7 +1424,7 @@ contract C() {
 
   it('dispatches a one-argument typed .call from the runtime row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 interface I { function r(int n); }
 contract C() {
   bytes32 cat;
@@ -1436,7 +1436,7 @@ contract C() {
 
   it('dispatches a one-argument typed .staticcall statement from the runtime row loop', () => {
     assertKernelRoute(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 interface I { function r(int n) returns (int); }
 contract C() {
   bytes32 cat;
@@ -1462,7 +1462,7 @@ contract C {
 
   it('dispatches receive with a satoshi transfer from the runtime row loop', () => {
     const artifact = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   receive() external payable { this.transfer(msg.sender, 1); require(true); }
   function control() public { require(true); }
@@ -1481,7 +1481,7 @@ contract C() {
 
   it('dispatches a caller-directed BCH effect beside a graph emission', () => {
     const artifact = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 interface I { function next(); }
 contract C(address child) {
   function refundAndCall() public {
@@ -1502,7 +1502,7 @@ contract C(address child) {
 
   it('dispatches fallback with a typed call from the runtime row loop', () => {
     const artifact = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 interface I { function r(); }
 contract C() {
   address dest;
@@ -1550,7 +1550,7 @@ contract C {
 
   it('keeps a non-normalized void recursive mapping continuation off the kernel route as KERNEL_LAYOUT', () => {
     const artifact = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 contract C() {
   mapping(int => int) m;
   function denied(int n) public {

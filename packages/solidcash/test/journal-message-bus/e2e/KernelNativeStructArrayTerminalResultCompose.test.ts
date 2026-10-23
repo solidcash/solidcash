@@ -17,7 +17,7 @@ const KERNEL = {
   suppressWarnings: true,
 } as const;
 
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
 enum Status { Idle, Ready }
 struct Detail { bytes2 tag; Status status; }
 struct Rec { int value; Detail detail; bytes note; bytes4[2] marks; }
@@ -66,7 +66,7 @@ describe('kernel native terminal struct-array result composition', () => {
     const source = StatefulContract.withCategory(
       inner.withCategory(hexToBin(categoryId)), categoryId,
     );
-    const consumerArtifact = compileString(`pragma solidcash ^0.13.0;
+    const consumerArtifact = compileString(`pragma solidcash ^0.14.0;
       enum Status { Idle, Ready }
       struct Detail { bytes2 tag; Status status; }
       struct Rec { int value; Detail detail; bytes note; bytes4[2] marks; }

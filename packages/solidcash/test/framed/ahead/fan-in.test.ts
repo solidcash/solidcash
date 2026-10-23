@@ -64,7 +64,7 @@ const FEE = 250n;
 /** The notes the job holds when it is taken: the one its opening posted. */
 const NOTES_BEFORE = 1n;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Note { int kind; bytes who; bytes data; int stamp; }'
   + ' struct Member { bytes key; int score; }'
   + ' struct Judge { bytes key; int fee; }'

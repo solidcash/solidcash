@@ -78,7 +78,7 @@ let guard: Artifact;
 
 beforeAll(() => {
   signer = splittableSigner();
-  guard = compileStringMulti('pragma solidcash ^0.13.0;'
+  guard = compileStringMulti('pragma solidcash ^0.14.0;'
     + ' error InvalidSignature();'
     + ' error InvalidSignatureLength(int length);'
     + ' contract Guard {'

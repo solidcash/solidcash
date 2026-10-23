@@ -28,7 +28,7 @@ const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 const CALLER_TXID = '33'.repeat(31) + 'cc';
 
 /** An append of the element type's default, whose address field is `address(0)`. */
-const DEFAULT_SOURCE = 'pragma solidcash ^0.13.0;'
+const DEFAULT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Pair { address who; uint amount; }'
   + '   address public implementation;'
@@ -37,7 +37,7 @@ const DEFAULT_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** The same element spelled out, which the artifact states identically. */
-const SPELLED_SOURCE = 'pragma solidcash ^0.13.0;'
+const SPELLED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Pair { address who; uint amount; }'
   + '   address public implementation;'

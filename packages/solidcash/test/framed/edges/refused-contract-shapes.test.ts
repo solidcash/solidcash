@@ -33,7 +33,7 @@ function refusal(source: string): string {
 
 describe('a low-level call', () => {
   it('is refused by name: the witness call checks are not emitted', () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Low { function f(address target) { target.call(hex"12345678"); require(true); } }';
     const message = refusal(source);
     expect(message).toContain('FRAMED_CODEGEN_UNAVAILABLE');
@@ -43,7 +43,7 @@ describe('a low-level call', () => {
 
 describe('a keccak compute side-car', () => {
   it('is refused by name inside a loop whose bound is no counted recurrence', () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Hashes {'
       + '   bytes32 h;'
       + '   function f(bytes a, int n) { int left = n; while (left > 0) { this.h = keccak256(a); left = left / 2; } }'

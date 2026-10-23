@@ -13,7 +13,7 @@ import { CreateLookahead } from '../../../src/framed/deploy/create-lookahead.js'
  * own selection for `deployFrom` has to skip it, as `ContractFactory`'s does, and fund the child from another coin.
  */
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Child() { int counter; function bump() { this.counter = this.counter + 1; require(true); } }'
   + ' contract Factory() { int made; function make() { Child child = new Child(); this.made = this.made + 1; } }';
 

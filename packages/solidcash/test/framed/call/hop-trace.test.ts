@@ -34,7 +34,7 @@ const CALL_TXID = '708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5
 // callee's own entry refuses. Both `Outer` entries reach `Inner` through the address their own record holds, which
 // is the address `Inner`'s proxy presents, so the callee is placed as a proxy fallback plus the implementation
 // entry it delegates to.
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IInner { function ping(); function pingBad(); }'
   + ' contract Inner {'
   + '   address public implementation;'

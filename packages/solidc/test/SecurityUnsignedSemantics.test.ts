@@ -33,7 +33,7 @@ function settleDirect(artifact: Artifact, args: readonly bigint[]): boolean {
   return createVirtualMachineBch2026().verify({ sourceOutputs, transaction }) === true;
 }
 
-const P = 'pragma solidcash ^0.13.0;';
+const P = 'pragma solidcash ^0.14.0;';
 const compile = (params: string, body: string): Artifact =>
   compileString(`${P} contract C { function f(${params}) ${body} }`, { messageBus: false });
 

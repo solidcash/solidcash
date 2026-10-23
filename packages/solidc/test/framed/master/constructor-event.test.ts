@@ -37,7 +37,7 @@ const SEED = 5;
 /** The listed output index: past a filler output, so a block-layout read would land on the filler instead. */
 const EVENT_OUTPUT = 2;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Launcher {'
   + '   event Launched(int value);'
   + '   constructor(int seed) { emit Launched(seed); }'

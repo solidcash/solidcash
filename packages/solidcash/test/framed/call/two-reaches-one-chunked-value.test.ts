@@ -44,7 +44,7 @@ const KEY = 1n;
 const SEED = 100n;
 
 /** A proxied log whose initialize seeds key 1, and a proxied root that reaches its append twice, or three times. */
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ILog { function append(int k, int value); }'
   + ' contract Log {'
   + '   address public implementation;'

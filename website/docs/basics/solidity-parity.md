@@ -121,7 +121,7 @@ Some things SolidCash has that Solidity does not.
 
 ## Experimental profiles
 
-These compile, but 0.13.1 does not include them in its stability promise:
+These compile, but 0.14.0-beta.1 does not include them in its stability promise:
 
 - composed external state mutation: a typed call that changes another contract's state;
 - custom delegate forwarding beyond the built-in proxy profile (`upgrades.deployProxy`);
@@ -135,7 +135,7 @@ These compile, but 0.13.1 does not include them in its stability promise:
 A minimal Solidity contract, and the same thing in SolidCash:
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 interface IERC20 {
     function transfer(address to, uint256 amount) returns (bool);

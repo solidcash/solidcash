@@ -36,7 +36,7 @@ const SERVICE_ADDRESS = validatorAddress(hexToBin(SERVICE_CATEGORY), VALIDATOR_P
 /** The entry whose outer call's argument list makes the inner call. */
 function sourceOf(): string {
   const service = `IService(0x${binToHex(SERVICE_ADDRESS)})`;
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IService { function apply(uint id_, uint amount_, uint fee_) returns (uint);'
     + '   function feeOf(uint id_) view returns (uint); }'
     + ' contract Service {'

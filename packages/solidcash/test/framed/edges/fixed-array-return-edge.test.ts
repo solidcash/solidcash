@@ -17,7 +17,7 @@ import {
  * refused with their reason, and nothing is broadcast.
  */
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ISplitter {'
   + '   function split(int total, int buyerShare) returns (uint256[5]);'
   + '   function bands(int buyerShare) view returns (uint16[5]);'

@@ -37,7 +37,7 @@ function settleDirect(artifact: Artifact, args: readonly Uint8Array[]): boolean 
   return createVirtualMachineBch2026().verify({ sourceOutputs, transaction }) === true;
 }
 
-const P = 'pragma solidcash ^0.13.0;';
+const P = 'pragma solidcash ^0.14.0;';
 const compile = (members: string): Artifact => compileString(`${P} contract C { ${members} }`, { messageBus: false });
 
 /** A `count ++ tight-elements` array blob for a fixed-width numeric element type. */

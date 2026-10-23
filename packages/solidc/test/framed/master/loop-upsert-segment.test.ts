@@ -59,7 +59,7 @@ const CALL = `IOther(0x${toHex(ADDRESS_OTHER)}).ping.call(); require(true);`;
 const OTHER = ' interface IOther { function ping(); } contract Other { function ping() { require(true); } }';
 
 /** The entry under test: a run-time loop upserts a mapping, and one call sits beside the loop, after it. */
-const LOOP_SOURCE = `pragma solidcash ^0.13.0;${OTHER}`
+const LOOP_SOURCE = `pragma solidcash ^0.14.0;${OTHER}`
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function move(address[] workers, uint amount) {'
@@ -69,7 +69,7 @@ const LOOP_SOURCE = `pragma solidcash ^0.13.0;${OTHER}`
   + ' }';
 
 /** The control: the same head and call with the loop removed, so no record is declared for a mapping. */
-const PLAIN_SOURCE = `pragma solidcash ^0.13.0;${OTHER}`
+const PLAIN_SOURCE = `pragma solidcash ^0.14.0;${OTHER}`
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + `   function move(address[] workers, uint amount) { ${CALL} }`
@@ -82,7 +82,7 @@ const PLAIN_SOURCE = `pragma solidcash ^0.13.0;${OTHER}`
  * The mapping is not a verified batch here, and the upsert is carried by the run-time-loop machinery: the artifact
  * publishes where each turn writes (`turns`), and `loop-turn-segments.test.ts` asks the machine about two turns.
  */
-const LOOP_CALL_INSIDE_SOURCE = `pragma solidcash ^0.13.0;${OTHER}
+const LOOP_CALL_INSIDE_SOURCE = `pragma solidcash ^0.14.0;${OTHER}
  contract Ledger {
    mapping(address => uint) balances;
    function move(address[] workers, uint amount) {
@@ -94,7 +94,7 @@ const LOOP_CALL_INSIDE_SOURCE = `pragma solidcash ^0.13.0;${OTHER}
  }`;
 
 /** The control: the head's non-loop counterpart, one mapping write beside the same call. */
-const BATCH_SOURCE = `pragma solidcash ^0.13.0;${OTHER}`
+const BATCH_SOURCE = `pragma solidcash ^0.14.0;${OTHER}`
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function move(address to, uint amount) {'

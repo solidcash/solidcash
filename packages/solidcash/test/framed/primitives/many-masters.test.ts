@@ -64,7 +64,7 @@ interface Ledger {
 }
 
 const SOURCE = (specs: readonly LedgerSpec[], calls: readonly string[]): string =>
-  'pragma solidcash ^0.13.0;'
+  'pragma solidcash ^0.14.0;'
   + specs.map((spec) => ` interface I${spec.contract} { function step(); }`).join('')
   + specs.map((spec) => ` contract ${spec.contract} {`
     + '   int public total;'

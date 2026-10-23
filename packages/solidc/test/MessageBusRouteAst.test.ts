@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 
 const SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 contract Bus() {
   int public stored;
@@ -36,7 +36,7 @@ describe('message-bus route AST assembly', () => {
 
   it('matches the oracle on a resource-shaped ERC-20 route with prior-row aliases', () => {
     const token = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 contract Token() {
   mapping(address => uint) balances;
@@ -90,7 +90,7 @@ contract Token() {
 
   it('keeps graph-free ERC-20 leaves kernel-shaped in a graph-enabled project', () => {
     const artifact = compileString(`
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 contract Token() {
   mapping(address => uint) balances;

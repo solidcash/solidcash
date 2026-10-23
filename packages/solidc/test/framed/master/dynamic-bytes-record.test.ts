@@ -21,20 +21,20 @@ import {
  * does. Each refusal moves one fact of an accepted transaction.
  */
 
-const APPEND_SOURCE = 'pragma solidcash ^0.13.0;'
+const APPEND_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Blob {'
   + '   bytes public data;'
   + '   function append() { this.data = bytes.concat(this.data, 0x21); }'
   + ' }';
 
-const SET_SOURCE = 'pragma solidcash ^0.13.0;'
+const SET_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Blob {'
   + '   bytes public data;'
   + '   function set(bytes value) { this.data = value; }'
   + ' }';
 
 /** Two values in one record: a read of one must be served by its own chunks, kept where they are. */
-const READ_SOURCE = 'pragma solidcash ^0.13.0;'
+const READ_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Pair {'
   + '   bytes public data;'
   + '   bytes public other;'
@@ -42,7 +42,7 @@ const READ_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** A write beside a read of another value: the read value's chunks lead the run region and stay kept. */
-const COPY_SOURCE = 'pragma solidcash ^0.13.0;'
+const COPY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Pair {'
   + '   bytes public data;'
   + '   bytes public other;'

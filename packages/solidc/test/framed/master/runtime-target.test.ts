@@ -74,7 +74,7 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
  * The call is a static read, so its frame kind is the static one. The address is read from the caller's own record,
  * which is what the site hands to the check.
  */
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IAnswer { function peek() returns (int); }'
   + ` contract Answer { function peek() returns (int) { return ${ANSWER}; } }`
   + ' contract Counter {'
@@ -288,7 +288,7 @@ const refusalOf = (source: string): string => refusalMessageOf(source);
 
 describe('the target shapes a site admits and refuses', () => {
   it('compiles a call to an address the caller holds in a parameter', () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface ICallee { function peek() returns (int); }'
       + ' contract Caller { function readIt(address target) {'
       + '   int r = ICallee(target).peek.staticcall(); require(r == 1); } }';
@@ -296,7 +296,7 @@ describe('the target shapes a site admits and refuses', () => {
   });
 
   it('compiles a call to an address the caller holds in a local', () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface ICallee { function peek() returns (int); }'
       + ' contract Caller { address public stored; function readIt() {'
       + '   address target = this.stored;'
@@ -308,7 +308,7 @@ describe('the target shapes a site admits and refuses', () => {
     // The check parks the target above the digest, which it is emitted beneath, so the two are reached at the
     // fields they bind. The source is enough to show the pair composes; the runtime verdict for a computed target
     // is the composition above.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface ICallee { function peek(int n) returns (int); }'
       + ' contract Caller { address public stored; function readIt() {'
       + '   int r = ICallee(this.stored).peek(tx.inputs.length); require(r == 1); } }';
@@ -316,7 +316,7 @@ describe('the target shapes a site admits and refuses', () => {
   });
 
   it('refuses a call whose target is the transaction\'s own sender, whose category must match the callee\'s', () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface ICallee { function peek() returns (int); }'
       + ' contract Caller { function readIt() {'
       + '   int r = ICallee(msg.sender).peek.staticcall(); require(r == 1); } }';
@@ -326,7 +326,7 @@ describe('the target shapes a site admits and refuses', () => {
   it('refuses a call whose target is a value the caller\'s own code does not hold as one value', () => {
     // `tx.origin` is transaction data rather than a parameter or a state field, so no one stack value the caller
     // computed names the callee.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface ICallee { function peek() returns (int); }'
       + ' contract Caller { function readIt() {'
       + '   int r = ICallee(tx.origin).peek.staticcall(); require(r == 1); } }';

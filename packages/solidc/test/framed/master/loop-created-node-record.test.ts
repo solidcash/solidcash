@@ -23,7 +23,7 @@ const K = distinctBytes(20, 0x13);
 const V = 42n;
 const TOTAL = 5n;
 
-const HEADER = 'pragma solidcash ^0.13.0; contract Holder { struct Account { uint total;'
+const HEADER = 'pragma solidcash ^0.14.0; contract Holder { struct Account { uint total;'
   + ' mapping(address => uint) parts; } Account acc; function set(';
 
 /** The control: one write, no loop. */

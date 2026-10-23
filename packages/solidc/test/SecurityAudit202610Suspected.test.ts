@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { asmToScript, scriptToBytecode, type Script } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
 
-const P = 'pragma solidcash ^0.13.0;';
+const P = 'pragma solidcash ^0.14.0;';
 
 /** Byte offset of each top-level script element. */
 function elementStarts(script: Script): number[] {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../../../src/compiler.js';
 import { refusalMessageOf, refusalOf } from './refused-entry.js';
 
-const STATE_CONTRACT = 'pragma solidcash ^0.13.0;'
+const STATE_CONTRACT = 'pragma solidcash ^0.14.0;'
   + ' contract Counter(pubkey admin) {'
   + '   int public counter;'
   + '   function increment(sig s) {'
@@ -12,27 +12,27 @@ const STATE_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** A composite return: a function pointer is a pair, not one value the frame compares against `retval`. */
-const COMPOSITE_RETURN_CONTRACT = 'pragma solidcash ^0.13.0;'
+const COMPOSITE_RETURN_CONTRACT = 'pragma solidcash ^0.14.0;'
   + ' contract Holder {'
   + '   function point() returns (function(int) external returns (int)) { revert("no"); }'
   + ' }';
 
 /** An entry that emits one event: the head checks the event list, whose count the entry fixes. */
-const EVENT_CONTRACT = 'pragma solidcash ^0.13.0;'
+const EVENT_CONTRACT = 'pragma solidcash ^0.14.0;'
   + ' contract Pinged {'
   + '   event Ping(int indexed x);'
   + '   function ping() { emit Ping(1); }'
   + ' }';
 
 /** An entry whose event count is the loop's trip count, which the head checks as a run the block declares. */
-const LOOP_EVENT_CONTRACT = 'pragma solidcash ^0.13.0;'
+const LOOP_EVENT_CONTRACT = 'pragma solidcash ^0.14.0;'
   + ' contract Repeated {'
   + '   event Ping(int indexed x);'
   + '   function ping(int n) { for (int i = 0; i < n; i = i + 1) { emit Ping(i); } }'
   + ' }';
 
 /** An entry that emits on a branch beside a loop's emits, so the outputs it lists depend on the branch. */
-const BRANCHED_LOOP_EVENT_CONTRACT = 'pragma solidcash ^0.13.0;'
+const BRANCHED_LOOP_EVENT_CONTRACT = 'pragma solidcash ^0.14.0;'
   + ' contract Repeated {'
   + '   event Ping(int indexed x);'
   + '   function ping(int n) {'
@@ -42,19 +42,19 @@ const BRANCHED_LOOP_EVENT_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** Dynamic state stores its bytes in a run of chunk NFTs whose base a framed frame cannot name. */
-const DYNAMIC_READ_CONTRACT = 'pragma solidcash ^0.13.0;'
+const DYNAMIC_READ_CONTRACT = 'pragma solidcash ^0.14.0;'
   + ' contract Named {'
   + '   string name;'
   + '   function getName() returns (string) { return this.name; }'
   + ' }';
 
-const DYNAMIC_WRITE_CONTRACT = 'pragma solidcash ^0.13.0;'
+const DYNAMIC_WRITE_CONTRACT = 'pragma solidcash ^0.14.0;'
   + ' contract Named {'
   + '   string name;'
   + '   function setName(string value) { this.name = value; }'
   + ' }';
 
-const DYNAMIC_CONSTRUCTOR_CONTRACT = 'pragma solidcash ^0.13.0;'
+const DYNAMIC_CONSTRUCTOR_CONTRACT = 'pragma solidcash ^0.14.0;'
   + ' contract Named {'
   + '   string name;'
   + '   constructor(string initial) { this.name = initial; }'

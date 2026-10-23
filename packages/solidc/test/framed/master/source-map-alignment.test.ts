@@ -13,7 +13,7 @@ import { compileStringMulti } from '../../../src/compiler.js';
  * padding appended after the map is built.
  */
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   uint total;'
   + '   mapping(address => uint) balances;'

@@ -42,47 +42,47 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
 /** The stateless entry: one unconditional send to the frame's sender. */
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Sender { function pay(int amount) { this.transfer(msg.sender, amount); require(true); } }';
 
 /** The conditional entry: the send happens only when the argument is positive. */
-const CONDITIONAL_SOURCE = 'pragma solidcash ^0.13.0;'
+const CONDITIONAL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Sender {'
   + '   function pay(int amount) { if (amount > 0) { this.transfer(msg.sender, amount); } require(true); }'
   + ' }';
 
 /** The entry that pays a lock its caller names, so the recipient is whatever the argument carries. */
-const NAMED_SOURCE = 'pragma solidcash ^0.13.0;'
+const NAMED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Sender { function pay(bytes to, int amount) { this.transfer(to, amount); require(true); } }';
 
 /** A value-carrying low-level call with no payload, its result bound and required, as a refund spells it. */
-const VALUE_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+const VALUE_CALL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Sender {'
   + '   function pay(address to, int amount) { (bool success, ) = to.call{value: amount}(""); require(success); }'
   + ' }';
 
 /** The same call as a statement with a gas option, its result dropped, as an escrow share spells it. */
-const VALUE_CALL_STATEMENT_SOURCE = 'pragma solidcash ^0.13.0;'
+const VALUE_CALL_STATEMENT_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Sender {'
   + '   function pay(address to, int amount) { to.call{value: amount, gas: 5000}(""); require(true); }'
   + ' }';
 
 /** Two entries behind one dispatching head, only one of which sends. */
-const DISPATCHED_SOURCE = 'pragma solidcash ^0.13.0;'
+const DISPATCHED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Sender {'
   + '   function pay(int amount) { this.transfer(msg.sender, amount); require(true); }'
   + '   function idle(int amount) { require(amount >= 0); }'
   + ' }';
 
 /** The stateful entry: the send runs beside a record write the frame settles. */
-const STATEFUL_SOURCE = 'pragma solidcash ^0.13.0;'
+const STATEFUL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Sender {'
   + '   int public counter;'
   + '   function pay(int amount) { this.counter = this.counter + 1; this.transfer(msg.sender, amount); require(true); }'
   + ' }';
 
 /** The entry that reads its record, writes none, and sends. */
-const READING_SOURCE = 'pragma solidcash ^0.13.0;'
+const READING_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Sender {'
   + '   int public limit;'
   + '   function pay(int amount) { require(amount <= this.limit); this.transfer(msg.sender, amount); }'

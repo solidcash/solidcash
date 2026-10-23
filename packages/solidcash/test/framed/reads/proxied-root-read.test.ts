@@ -26,7 +26,7 @@ const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 
 // A field registered alone in its own data NFT makes the implementation's layout span more than one record, so the
 // proxy keeps its address in one of its own past them.
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   uint public initialized;'
   + '   int public total;'

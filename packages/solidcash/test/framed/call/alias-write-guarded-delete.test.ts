@@ -34,7 +34,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * delete's node, so a write of one ahead of a guarded delete is refused by name rather than lost.
  */
 
-const BOOK = compileStringMulti('pragma solidcash ^0.13.0;'
+const BOOK = compileStringMulti('pragma solidcash ^0.14.0;'
   + ' contract Book {'
   + '   mapping(int => int) m;'
   + '   function put(int k, int v) { this.m[k] = v; require(true); }'
@@ -44,7 +44,7 @@ const BOOK = compileStringMulti('pragma solidcash ^0.13.0;'
   + ' }', { composition: 'framed' }).Book!;
 
 /** A guarded delete alone in its batch. */
-const DROPS = compileStringMulti('pragma solidcash ^0.13.0;'
+const DROPS = compileStringMulti('pragma solidcash ^0.14.0;'
   + ' contract Drops {'
   + '   mapping(int => int) m;'
   + '   function put(int k, int v) { this.m[k] = v; require(true); }'
@@ -272,7 +272,7 @@ describe('a write ahead of a guarded delete of the same mapping, called through 
   }, 600_000);
 
   it('refuses by name a write of a value that chunks ahead of a guarded delete of its mapping', () => {
-    const tags = (body: string): Artifact => compileStringMulti('pragma solidcash ^0.13.0;'
+    const tags = (body: string): Artifact => compileStringMulti('pragma solidcash ^0.14.0;'
       + ' contract Tags {'
       + '   mapping(string => string) tags;'
       + `   function edit(string a, string v, string k, int c) { ${body} require(true); }`

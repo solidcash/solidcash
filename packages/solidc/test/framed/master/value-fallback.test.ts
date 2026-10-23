@@ -40,7 +40,7 @@ describe('a framed master with a fallback, entered by a user', () => {
   const OWNER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
   const OTHER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(7));
   // `bump` and the fallback require different facts, so a verdict names the body that ran.
-  const SOURCE = 'pragma solidcash ^0.13.0;'
+  const SOURCE = 'pragma solidcash ^0.14.0;'
     + ' contract Sink(address owner, bytes expected) {'
     + '   function bump() { require(msg.sender == owner); }'
     + '   fallback(bytes input) external { require(input == expected); }'
@@ -149,7 +149,7 @@ describe('a contract paying another contract that has a fallback, compiled frame
   const PAYER_CONTAINER = containerLock(CATEGORY_PAYER);
   const PAYEE_CONTAINER = containerLock(CATEGORY_PAYEE);
   const AMOUNT = 10_000n;
-  const SOURCE = 'pragma solidcash ^0.13.0;'
+  const SOURCE = 'pragma solidcash ^0.14.0;'
     + ' contract Tip { function note() { require(true); } fallback() external payable { require(msg.value > 0); } }'
     + ' contract Sole { fallback() external payable { require(msg.value > 0); } }'
     + ' contract Quiet { function note() { require(true); }'

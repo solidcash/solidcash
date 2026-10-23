@@ -71,7 +71,7 @@ const VAULT = hexAddress(VAULT_CATEGORY);
 const GATE = hexAddress(GATE_CATEGORY);
 
 const SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'interface IStore { function write(int id); }',
   'interface IGate {',
   '  function enter(uint16[2] split) returns (uint16[5]);',

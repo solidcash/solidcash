@@ -35,7 +35,7 @@ describe('compileString attribution-spans admission (item 13 non-tautology)', ()
       function unsupported${index}() external selfdestruct { require(true); }
     `).join('');
     clearPublishedHandlerAdmissionGateInvocations();
-    const artifact = compileString(`pragma solidcash ^0.13.0;
+    const artifact = compileString(`pragma solidcash ^0.14.0;
       contract ManyUnsupported {
         int current;
         ${unsupported}

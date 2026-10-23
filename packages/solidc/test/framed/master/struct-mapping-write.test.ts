@@ -18,7 +18,7 @@ import {
  * record the frame declares beside its groups, and the collection each node belongs to.
  */
 
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 const ACCOUNT = 'struct Account { uint total; mapping(address => uint) parts; }';
 const K = distinctBytes(20, 0x13);
 const O = distinctBytes(20, 0x2b);

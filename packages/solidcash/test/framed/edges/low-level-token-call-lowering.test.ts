@@ -38,7 +38,7 @@ const LABELS = { Caller: CALLER_LABEL, Token: TOKEN_LABEL };
 const TOKEN_ADDRESS = seededAddress(TOKEN_LABEL);
 const AMOUNT = 5n;
 
-const HEAD = 'pragma solidcash ^0.13.0;'
+const HEAD = 'pragma solidcash ^0.14.0;'
   + ' interface IERC20 { function transfer(address to, int amount) returns (bool); }'
   + ' contract Token {'
   + '   function transfer(address to, int amount) returns (bool) { require(true); return true; }'
@@ -352,7 +352,7 @@ describe('a low-level token call whose callee and method are statically known', 
     ]);
 
     // A payload the compiler cannot name at all.
-    const opaquePayload = 'pragma solidcash ^0.13.0;'
+    const opaquePayload = 'pragma solidcash ^0.14.0;'
       + ' contract Caller { function f(bytes payload) {'
       + `   (bool ok, bytes data) = address(${TARGET}).call(payload);`
       + '   require(ok);'

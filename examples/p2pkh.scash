@@ -1,4 +1,4 @@
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 contract P2PKH(bytes20 pkh) {
     // Require pk to match stored pkh and signature to match

@@ -1,4 +1,4 @@
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 // This contract forces HODLing until a certain price target has been reached
 // A minimum block is provided to ensure that oracle price entries from before this block are disregarded

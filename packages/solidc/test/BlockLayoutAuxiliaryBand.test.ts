@@ -8,7 +8,7 @@ import { compileString } from './direct-compile.js';
 // tail must contain no auxiliary kind.
 
 const SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 interface ICounter {
     public int counter;

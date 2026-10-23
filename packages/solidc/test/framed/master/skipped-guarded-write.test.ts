@@ -29,7 +29,7 @@ const CATEGORY = seededCategory('skipped guarded write framed');
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const TO = new Uint8Array(20).fill(0x33);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Balances {'
   + '   mapping(address => uint) balances;'
   + '   function set(address to, uint amount) {'

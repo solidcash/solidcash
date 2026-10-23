@@ -34,7 +34,7 @@ const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 const OWNER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
 
 /** The helper's `require` sits on its own line, so the report's line is the helper's rather than the entry's. */
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + '\n contract Vault {'
   + '\n   function guard(bytes key) private pure { require(bytes(key).length == 33, "key must be 33 bytes"); }'
   + '\n   function seal(bytes key) { guard(key); require(true); }'

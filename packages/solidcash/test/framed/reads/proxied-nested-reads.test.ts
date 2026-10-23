@@ -56,7 +56,7 @@ const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 const empty = new Uint8Array(0);
 
 /** The two implementations, each holding the `implementation` field its generated proxy forwards to. */
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IStore {'
   + '   function value() view returns (int);'
   + '   function count() view returns (int);'
@@ -261,7 +261,7 @@ describe('a read that reaches another contract\'s implementation at its proxy ad
 
 describe('a view whose return type is a struct', () => {
   it('is served by the compiler, so its blob is the one the shipped decoder reads', () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Catalog {'
       + '   struct Item { int id; string[] labels; }'
       + '   function item(int id) view returns (Item) { return Item(id, ["a"]); }'
@@ -272,7 +272,7 @@ describe('a view whose return type is a struct', () => {
   });
 
   it('reads a struct carrying a string list back, decoded through the shipped decoder', async () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Catalog {'
       + '   struct Item { int id; string[] labels; }'
       + '   function item() view returns (Item) { return Item(7, ["a", "b"]); }'

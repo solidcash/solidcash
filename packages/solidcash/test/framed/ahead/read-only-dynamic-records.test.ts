@@ -60,7 +60,7 @@ const TITLE = 'An element whose title keeps the array in a run of chunk records'
 const ITEM = 0n;
 
 const SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'struct Item { int state; address owner; string title; }',
   'interface IPinger { function level() view returns (int); }',
   'contract Pinger {',

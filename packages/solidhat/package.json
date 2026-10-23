@@ -1,6 +1,6 @@
 {
   "name": "@solidcash/solidhat",
-  "version": "0.13.1",
+  "version": "0.14.0-beta.1",
   "description": "Hardhat-style project tooling for SolidCash",
   "keywords": ["solidcash", "bitcoin cash", "hardhat", "smart contracts"],
   "homepage": "https://solidcash.org",
@@ -48,8 +48,8 @@
   },
   "dependencies": {
     "@noble/hashes": "^1.4.0",
-    "@solidcash/testing": "^0.13.1",
-    "solidcash": "^0.13.1"
+    "@solidcash/testing": "^0.14.0-beta.1",
+    "solidcash": "^0.14.0-beta.1"
   },
   "devDependencies": {
     "@types/node": "^22.17.0",

@@ -38,7 +38,7 @@ const LEDGER = hexOf(seededAddress(LEDGER_LABEL));
 const SINK = hexOf(seededAddress(SINK_LABEL));
 const QUIET = hexOf(seededAddress(QUIET_LABEL));
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ISink { function take(); }'
   + ' interface ILedger { function bump(); }'
   + ` contract Sink { function take() { ILedger(0x${LEDGER}).bump(); require(true); } }`

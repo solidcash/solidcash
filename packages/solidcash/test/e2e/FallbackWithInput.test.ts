@@ -13,7 +13,7 @@ import { ContractUnlocker } from '../../src/interfaces.js';
 
 // Contract with fallback(bytes input) - the `input` parameter is equivalent to msg.data
 const FALLBACK_WITH_INPUT_SOURCE = `
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 contract FallbackWithInput(bytes20 owner) {
     function transfer(pubkey pk, sig s) {

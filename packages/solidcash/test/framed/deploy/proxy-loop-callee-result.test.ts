@@ -24,7 +24,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * Solidity-compatible one returns an ABI tuple whose first byte is an offset.
  */
 function source(declaration: string): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IData { function tags(string key) external view returns (string); }'
     + ' contract Data {'
     + '   mapping(string => string) public tags;'

@@ -17,7 +17,7 @@ import { createTestProvider } from '../test-util.js';
  * without the nodes the loop wrote, and one whose loop writes nothing deploys with the empty list's head alone.
  */
 
-const SOURCE = `pragma solidcash ^0.13.0; contract Ledger {
+const SOURCE = `pragma solidcash ^0.14.0; contract Ledger {
   mapping(uint => uint) values;
   constructor(uint[] memory keys, uint v) { for (uint i = 0; i < keys.length; i++) { this.values[keys[i]] = v; } }
   function check(uint k, uint e) { require(this.values[k] == e); }

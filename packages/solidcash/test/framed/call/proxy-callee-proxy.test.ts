@@ -31,7 +31,7 @@ function funding(txid: string): { txid: string; vout: number; satoshis: bigint }
 // A callee that is two contracts *and* calls a third: the proxy leg delegates to the implementation entry, which
 // then reaches a contract of its own. The callee's own call has to be bound before the frame that makes it is
 // settled, exactly as the root hop binds the implementation entry's calls.
-const RELAY_SOURCE = 'pragma solidcash ^0.13.0;'
+const RELAY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IPing { function ping(int n); }'
   + ' interface IInner { function relay(int n); function lateWrite(int id, int v); }'
   + ' contract Ping { int public last; function ping(int n) { require(n >= this.last); require(true); } }'

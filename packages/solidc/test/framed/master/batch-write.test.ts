@@ -38,7 +38,7 @@ const AMOUNT = 42;
 const VALUE_TAIL = new Uint8Array([AMOUNT]);
 const EMPTY = new Uint8Array(0);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Balances {'
   + '   mapping(address => uint) balances;'
   + '   function set(address a, address b, uint amount) {'

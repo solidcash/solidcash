@@ -53,7 +53,7 @@ const TITLE = 't'.repeat(130);
  * fact of the machine rather than a value the element vocabulary speaks, so the artifact publishes no element for
  * the append at all.
  */
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Post { int id; string title; int at; }'
   + '   address public implementation;'

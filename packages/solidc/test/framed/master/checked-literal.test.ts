@@ -30,7 +30,7 @@ type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['eval
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Bounds {'
   + '   function inc(uint8 a) { require(a + 1 > a); }'
   + '   function dec(uint256 a) { require(a - 1 < a); }'

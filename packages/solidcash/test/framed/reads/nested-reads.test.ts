@@ -103,7 +103,7 @@ async function fund(
 
 describe('reading a view that reads another contract\'s view off chain', () => {
   it('returns the composed value, with nothing broadcast', async () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface IB { function value() view returns (int); }'
       + ' contract B { int public v; function value() view returns (int) { return this.v; } }'
       + ' contract A {'
@@ -135,7 +135,7 @@ describe('reading a view that reads another contract\'s view off chain', () => {
   });
 
   it('returns the value at the end of a three-contract chain', async () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface IB { function mid() view returns (int); }'
       + ' interface IC { function leaf() view returns (int); }'
       + ' contract C { int public c; function leaf() view returns (int) { return this.c; } }'
@@ -173,7 +173,7 @@ describe('reading a view that reads another contract\'s view off chain', () => {
   });
 
   it('reports the innermost refusal when a nested view refuses, and builds nothing', async () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface IB { function grab() view returns (int); }'
       + ' contract B {'
       + '   int public v;'
@@ -221,7 +221,7 @@ describe('reading a view that reads another contract\'s view off chain', () => {
     // A paging getter: the root reads a count, refuses an index past it, and only then reads the element. The element
     // read is planned too and refuses its own index, but the root stops before making that call, so its guard is the
     // refusal the execution meets first (spec V6).
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface IB { function count() view returns (int); function at(int i) view returns (int); }'
       + ' contract B {'
       + '   int public n;'
@@ -262,7 +262,7 @@ describe('reading a view that reads another contract\'s view off chain', () => {
   });
 
   it('refuses by name an entry calling a contract the caller did not supply', async () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' interface IB { function mid() view returns (int); }'
       + ' interface IC { function leaf() view returns (int); }'
       + ' contract C { int public c; function leaf() view returns (int) { return this.c; } }'

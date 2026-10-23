@@ -65,7 +65,7 @@ const KINDS: readonly ElementKind[] = [
   },
 ];
 
-const source = (kind: ElementKind, entry: string): string => 'pragma solidcash ^0.13.0;'
+const source = (kind: ElementKind, entry: string): string => 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + `   ${kind.element}[] public items;`
   + `   ${entry}`

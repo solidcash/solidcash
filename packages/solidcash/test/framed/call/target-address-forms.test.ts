@@ -23,7 +23,7 @@ import { addressPayloadToLockingBytecode } from '../../../src/utils.js';
 
 const VALIDATOR_PROGRAM = framedValidator.buildValidatorProgram();
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ISink { function ping(); }'
   + ' contract Sink { int public hits; function ping() { this.hits = this.hits + 1; require(true); } }'
   + ' contract Caller { function go(address target) { ISink(target).ping(); require(true); } }';

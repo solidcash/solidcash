@@ -20,7 +20,7 @@
   "Stateful contract": {
     "prefix": "stateful",
     "body": [
-      "pragma solidcash ^0.13.0;",
+      "pragma solidcash ^0.14.0;",
       "",
       "contract ${1:Counter}(pubkey admin) {",
       "\tint public ${2:counter};",

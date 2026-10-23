@@ -31,7 +31,7 @@ const vm = createVirtualMachineBch2026();
 
 const OWNER_HEX = Buffer.from(OWNER).toString('hex');
 // `p()` reaches `this.owner` through a pointer; no entry below names the record itself.
-const READERS = 'pragma solidcash ^0.13.0; contract C { bytes20 owner;'
+const READERS = 'pragma solidcash ^0.14.0; contract C { bytes20 owner;'
   + ' function ownerA() internal view returns (bytes20) { return this.owner; }'
   + ` function ownerB() internal view returns (bytes20) { return hex"${'00'.repeat(20)}"; }`;
 const POINTER_READ = 'function() internal view returns (bytes20) p = b ? ownerA : ownerB;'
@@ -40,7 +40,7 @@ const SOURCE = `${READERS} function go(bool b) { ${POINTER_READ} require(true); 
 const SPLIT = `${READERS} function fork(int n, bool b) split(n) { ${POINTER_READ} } }`;
 const MERGE = `${READERS} function join(int n, bool b) merge(n) { ${POINTER_READ} } }`;
 // A public getter called as `this.ownerOf()` is invoked, not inlined.
-const SELF_CALL_SPLIT = 'pragma solidcash ^0.13.0; contract C { bytes20 owner;'
+const SELF_CALL_SPLIT = 'pragma solidcash ^0.14.0; contract C { bytes20 owner;'
   + ' function ownerOf() public view returns (bytes20) { return this.owner; }'
   + ` function fork(int n) split(n) { require(this.ownerOf() == hex"${OWNER_HEX}"); } }`;
 // The lifecycle entries carry no signature, which only the unsafe-operations option admits.

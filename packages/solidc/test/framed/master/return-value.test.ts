@@ -52,7 +52,7 @@ const OTHER_RETVAL = encodeArgumentList([encodeIntegerValue(7n)]);
  * The callee returns one value; the caller consumes it, so the callee's return is bound to the caller's record
  * of the call's result as well as to the callee's own computation.
  */
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IAnswer { function answer() returns (int); }'
   + ` contract Answer { function answer() returns (int) { return ${ANSWER}; } }`
   + ' contract Caller {'
@@ -231,10 +231,10 @@ describe('the return shapes a master can settle', () => {
   it('serves several return values, including a struct among them', () => {
     // A frame's `retval` is one byte string: a tuple's canonical encoding is the concatenation of its values'
     // encodings, so several values settle against it the way one scalar does, and a struct is one blob among them.
-    const pair = 'pragma solidcash ^0.13.0;'
+    const pair = 'pragma solidcash ^0.14.0;'
       + ' contract Pair { function pair() returns (int, int) { return (1, 2); } }';
     expect(isServed(pair)).toBe(true);
-    const mixed = 'pragma solidcash ^0.13.0;'
+    const mixed = 'pragma solidcash ^0.14.0;'
       + ' contract Holder { struct Point { int x; int y; }'
       + '   function point() returns (int, Point) { return (1, Point(2, 3)); } }';
     expect(isServed(mixed)).toBe(true);
@@ -245,7 +245,7 @@ describe('the return shapes a master can settle', () => {
  * A master with one returning entry and one void entry: the head parks the frame's `retval` for the whole master,
  * so the returning body compares against it and the void body requires it empty.
  */
-const MIXED_SOURCE = 'pragma solidcash ^0.13.0;'
+const MIXED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Mixed {'
   + `   function answer() returns (int) { return ${ANSWER}; }`
   + '   function ping() { require(true); }'
@@ -322,7 +322,7 @@ describe('a master with a returning entry and a void entry', () => {
  * A stateful view: the entry reads its record and returns the value it read. The record is kept in place, so the
  * transaction writes the commitment it spent, and the entry's return is settled against the frame's `retval`.
  */
-const VIEW_SOURCE = 'pragma solidcash ^0.13.0;'
+const VIEW_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract View {'
   + '   int public counter;'
   + '   function get() returns (int) { return this.counter; }'
@@ -412,7 +412,7 @@ describe('a stateful view whose entry returns the value it read', () => {
  * value it computed also has to settle the record it wrote. The commitment the record holds at the end is the one
  * the write produced, and the value the frame records is the new one.
  */
-const WRITE_SOURCE = 'pragma solidcash ^0.13.0;'
+const WRITE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Counter {'
   + '   int public counter;'
   + '   function bump() returns (int) { this.counter = this.counter + 1; return this.counter; }'

@@ -30,7 +30,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from './shapes/harness.js';
 const STATE = ' address public implementation; uint public initialized;';
 const WRITER_CATEGORY = 'a4'.repeat(31) + '5b';
 const WRITER = validatorAddress(hexToBin(WRITER_CATEGORY), VALIDATOR_PROGRAM);
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IWriter { function bump(); }'
   + ' contract Writer { int public count; function bump() { this.count = this.count + 1; require(this.count > 0); } }'
   + ` contract Impl {${STATE}`

@@ -47,7 +47,7 @@ const FACET_SATOSHIS = 10_000n;
 
 // The callees carry a record each: the oracle's entry returns a field of it, and the escrow's entry reads one.
 // `Impl`'s entries read their own record beside the call, so the frame's segments declare the record it touches.
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IOracle { function amountOf() view returns (int); }'
   + ' interface IWriter { function bump(); }'
   + ' interface IGuard { function bump(); }'
@@ -105,7 +105,7 @@ const ledger = artifacts.Ledger!;
 
 // Shapes the artifact compiles but the planner used to refuse by name: an occurrence the source leaves open, a
 // target the entry's own code computes, and an entry that mixes a guarded call with a loop.
-const UNFIXED = compileStringMulti('pragma solidcash ^0.13.0;'
+const UNFIXED = compileStringMulti('pragma solidcash ^0.14.0;'
   + ' interface IOracle { function amountOf() view returns (int); }'
   + ' interface IEscrow { function settle(); }'
   + ' contract Oracle { int public answer; function amountOf() view returns (int) { return this.answer; } }'
@@ -131,7 +131,7 @@ const CYCLE_A_CATEGORY = 'aa'.repeat(31) + '55';
 const CYCLE_B_CATEGORY = 'bb'.repeat(31) + '44';
 const CYCLE_A_ADDRESS = validatorAddress(hexToBin(CYCLE_A_CATEGORY), VALIDATOR_PROGRAM);
 const CYCLE_B_ADDRESS = validatorAddress(hexToBin(CYCLE_B_CATEGORY), VALIDATOR_PROGRAM);
-const CYCLE = compileStringMulti('pragma solidcash ^0.13.0;'
+const CYCLE = compileStringMulti('pragma solidcash ^0.14.0;'
   + ' interface ICycleB { function y(); }'
   + ' interface ICycleA { function x(); }'
   + ` contract CycleA { int public seen; function x() { ICycleB(0x${hexOf(CYCLE_B_ADDRESS)}).y(); require(true); } }`

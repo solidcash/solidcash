@@ -42,7 +42,7 @@ const AMOUNT = 42n;
 
 // `record` writes its mapping's node first, makes a call, and then writes its own record: the call closes the
 // segment the mapping's records are declared in.
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IEscrow { function settle(int amount); }'
   + ' contract Escrow {'
   + '   int public touched;'
@@ -64,7 +64,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 
 // The same body beside a dynamic value's write: the run that write grows is pinned in the last segment, so the
 // mapping's records and the run land in different segments, each declared in its own.
-const DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
+const DYNAMIC_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IEscrow { function settle(int amount); }'
   + ' contract Escrow {'
   + '   int public touched;'
@@ -94,7 +94,7 @@ const dynamicImpl = dynamicArtifacts.Impl!;
 // event calls after it, and the job's own record written last. The literal leaves the calls varying on the body's
 // paths, so the frame compares the run's segment with the batch's as it runs; the four fixed-width fields put a
 // second data record beside the one the entry names.
-const REFUND_SOURCE = 'pragma solidcash ^0.13.0;'
+const REFUND_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IEscrow { function settle(int amount); }'
   + ' contract Escrow {'
   + '   int public touched;'

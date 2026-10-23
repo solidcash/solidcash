@@ -73,22 +73,22 @@ function deploy(name: string, source: string): Contract {
   };
 }
 
-const LEDGER = deploy('ledger', 'pragma solidcash ^0.13.0;'
+const LEDGER = deploy('ledger', 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function put(address who, uint amount) { balances[who] = amount; }'
   + ' }');
-const PAIR = deploy('pair', 'pragma solidcash ^0.13.0;'
+const PAIR = deploy('pair', 'pragma solidcash ^0.14.0;'
   + ' contract Pair {'
   + '   mapping(address => uint) balances;'
   + '   function putTwo(address a, address b, uint amount) { balances[a] = amount; balances[b] = amount; }'
   + ' }');
-const CREDIT = deploy('credit', 'pragma solidcash ^0.13.0;'
+const CREDIT = deploy('credit', 'pragma solidcash ^0.14.0;'
   + ' contract Credit {'
   + '   mapping(address => uint) balances;'
   + '   function credit(address who, uint amount) { balances[who] = balances[who] + amount; }'
   + ' }');
-const MOVER_SOURCE = 'pragma solidcash ^0.13.0;'
+const MOVER_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Mover {'
   + '   mapping(address => uint) balances;'
   + '   function move(address from, address to, uint amount) {'

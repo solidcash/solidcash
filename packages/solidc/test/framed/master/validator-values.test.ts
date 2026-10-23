@@ -30,7 +30,7 @@ const CONTAINER_LOCK = encodeLockingBytecodeP2sh32(
   hash256(scriptToBytecode(buildSatoshiContainerCovenantScript(CATEGORY))),
 );
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Till {'
   + '   int public total;'
   + '   function deposit() payable { this.total = this.total + msg.value; }'

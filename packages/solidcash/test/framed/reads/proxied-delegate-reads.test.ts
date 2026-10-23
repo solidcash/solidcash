@@ -50,7 +50,7 @@ const PROXY_ADDRESS = validatorAddress(PROXY_CATEGORY, VALIDATOR_PROGRAM);
 const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 const empty = new Uint8Array(0);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Job { int id; int price; }'
   + ' interface IJobs {'
   + '   function getPrice(int jobId) view returns (int);'
@@ -224,7 +224,7 @@ describe('a read whose proxied callee reads a dynamic array element', () => {
  * ABI-encoded blob its own `return` leaves rather than the canonical push of one value. The answer the read
  * reports is the value the callee's own frame computed, carried verbatim up through the proxy's fallback.
  */
-const RETURN_SOURCE = 'pragma solidcash ^0.13.0;'
+const RETURN_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Job { int id; int price; }'
   + ' interface IStore { function priceOf(int id) external view returns (int); }'
   + ' contract Store {'

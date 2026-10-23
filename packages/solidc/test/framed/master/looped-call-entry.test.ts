@@ -36,7 +36,7 @@ const CALLEE_INDEX = 1;
 const VALIDATOR_INDEX = 2;
 const USER_INDEX = 3;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IState { function add(int x); }'
   + ' contract Callee { function add(int x) { require(x > 0); } }'
   + ' contract Caller {'
@@ -164,7 +164,7 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string; ip?: nu
 
 describe('an entry whose call runs inside a loop, behind an arm that skips it', () => {
   /** A loop whose first iteration is skipped by the arm, so the records do not start at the first iteration. */
-  const SOURCE_WITH_ARM = 'pragma solidcash ^0.13.0;'
+  const SOURCE_WITH_ARM = 'pragma solidcash ^0.14.0;'
     + ' interface IState { function add(int x); }'
     + ' contract Callee { function add(int x) { require(x > 0); } }'
     + ' contract Caller {'

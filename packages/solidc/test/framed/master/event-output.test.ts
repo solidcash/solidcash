@@ -43,14 +43,14 @@ const EMITTED = 7;
  */
 const EVENT_OUTPUT = 2;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Emitter {'
   + '   event Ping(int value);'
   + '   function fire(int n) { emit Ping(n); require(true); }'
   + ' }';
 
 /** The control: a master with no event at all, so the event slot machinery must leave it untouched. */
-const QUIET_SOURCE = 'pragma solidcash ^0.13.0;'
+const QUIET_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Quiet { function idle() { require(true); } }';
 
 type Artifact = ReturnType<typeof compileString>;
@@ -302,7 +302,7 @@ describe('an entry that emits an event, compiled framed', () => {
  * index there before the settlement runs, so the two have to keep out of each other's way. The record sits right
  * after the master, which is where a compiled body reads its state from.
  */
-const STATEFUL_SOURCE = 'pragma solidcash ^0.13.0;'
+const STATEFUL_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract StatefulEmitter {'
   + '   int public counter;'
   + '   event Ping(int value);'
@@ -384,7 +384,7 @@ describe('a compiled master with no event', () => {
 });
 
 /** Two entries, each emitting the same event, so a selector reaches the same body shape under a dispatcher. */
-const TWO_ENTRY_SOURCE = 'pragma solidcash ^0.13.0;'
+const TWO_ENTRY_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Emitter2 {'
   + '   event Ping(int value);'
   + '   function fire(int n) { emit Ping(n); require(true); }'

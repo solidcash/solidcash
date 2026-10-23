@@ -72,7 +72,7 @@ const NOTES_ADDRESS = seededAddress('mapping values notes');
 const LEDGER_ADDRESS = seededAddress('mapping values ledger');
 const text = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface ITags { function put(string k, string v); }'
   + ' interface INotes { function check(string k, string v); }'
   + ' contract Tags {'

@@ -71,7 +71,7 @@ function freshClock(): MockNetworkProvider {
 
 /** The caller reaches the callee by address; both bodies gate on the same absolute time. */
 function sourceFor(gate: number): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface ICallee { function ping(); }'
     + ` contract Callee { function ping() { require(tx.time >= ${gate}); } }`
     + ' contract Caller {'
@@ -333,7 +333,7 @@ describe('a framed composition whose rule is strictly after the payment block', 
     const clock = freshClock();
     const gate = clock.getBlockTime() + 1;
     const artifact = compileStringMulti(
-      'pragma solidcash ^0.13.0;'
+      'pragma solidcash ^0.14.0;'
       + ' contract Vault {'
       + '   int public total;'
       + `   constructor() { require(tx.time >= ${gate}); this.total = 1; }`

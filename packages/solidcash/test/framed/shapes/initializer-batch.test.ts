@@ -81,7 +81,7 @@ const USER_ID = 'user';
 const MASTER = 'registry-1';
 const MASTER_INDEX = 0;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Registry {'
   + '   address owner;'
   + '   address hub;'

@@ -33,8 +33,8 @@ const OP_TRUE_LOCK = new Uint8Array([Opcodes.OP_1]);
 const VALUE = 1_000n;
 const EMPTY = new Uint8Array(0);
 
-const QUIET = 'pragma solidcash ^0.13.0; contract Quiet { function idle() { require(true); } }';
-const EMITTER = 'pragma solidcash ^0.13.0;'
+const QUIET = 'pragma solidcash ^0.14.0; contract Quiet { function idle() { require(true); } }';
+const EMITTER = 'pragma solidcash ^0.14.0;'
   + ' contract Emitter { event Ping(int value); function fire(int n) { emit Ping(n); require(true); } }';
 
 type Machine = ReturnType<typeof createVirtualMachineBch2026>;

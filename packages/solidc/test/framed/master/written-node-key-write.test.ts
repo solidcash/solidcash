@@ -25,7 +25,7 @@ import { refusalMessageOf } from './refused-entry.js';
  * list holds them, since the batch's own walk holds its targets to one sorted list.
  */
 
-const DEED = deployFramedMaster('pragma solidcash ^0.13.0;'
+const DEED = deployFramedMaster('pragma solidcash ^0.14.0;'
   + ' contract Deed {'
   + '   mapping(uint => address) owners;'
   + '   mapping(address => uint) balances;'
@@ -145,7 +145,7 @@ describe('a framed master keyed by a value it reads out of a node the same body 
 });
 
 describe('a framed master refuses by name the keys it cannot derive out of a node the body writes', () => {
-  const unit = (body: string): string => 'pragma solidcash ^0.13.0;'
+  const unit = (body: string): string => 'pragma solidcash ^0.14.0;'
     + ' interface IPing { function ping() external; }'
     + ' contract Registry {'
     + '   mapping(uint => address) owners; mapping(address => uint) balances;'

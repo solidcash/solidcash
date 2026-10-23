@@ -42,27 +42,27 @@ const SOURCE = 'pragma solidity ^0.8.0;\n'
   + ' return a; } }';
 
 /** A struct of scalar members, returned as one pushdata blob of its fields. */
-const PAIR_SOURCE = 'pragma solidcash ^0.13.0;'
+const PAIR_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Pair { int x; int y; }'
   + ' contract Answer { function claim() returns (Pair) { return Pair(1, 2); } }';
 
 /** A struct with a dynamic `string` member. */
-const TAG_SOURCE = 'pragma solidcash ^0.13.0;'
+const TAG_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Rec { string tag; int n; }'
   + ' contract Answer { function claim() returns (Rec) { return Rec("hi", 3); } }';
 
 /** A struct with a dynamic `string[]` member. */
-const TAGS_SOURCE = 'pragma solidcash ^0.13.0;'
+const TAGS_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Tagged { string[] tags; int n; }'
   + ' contract Answer { function claim() returns (Tagged) { return Tagged(["a", "b"], 3); } }';
 
 /** A struct whose mapping member is state, so it has no value a return could compare. */
-const MAPPING_MEMBER_SOURCE = 'pragma solidcash ^0.13.0;'
+const MAPPING_MEMBER_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' struct Bad { mapping(int => int) m; int n; }'
   + ' contract Answer { function claim() returns (Bad) { revert("no"); } }';
 
 /** An entry returning an external function pointer, which is an (address, selector) pair and not one item. */
-const POINTER_SOURCE = 'pragma solidcash ^0.13.0;'
+const POINTER_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Answer { function claim() returns (function(int) external returns (int)) { revert("no"); } }';
 
 /** The member types the shipped decoder reads each returned blob back through. */

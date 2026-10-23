@@ -46,7 +46,7 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 /** A state record sits at the data-NFT covenant for its category, which the master now pins on both sides. */
 const STATE_LOCK = dataRecordLock(CATEGORY);
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Counter {'
   + '   int public counter;'
   + '   function increment() {'

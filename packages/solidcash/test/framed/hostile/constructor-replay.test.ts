@@ -25,7 +25,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * replay by the guard's name, nothing is broadcast, and the category's records and nodes keep the genesis state.
  */
 
-const OWNED = 'pragma solidcash ^0.13.0;'
+const OWNED = 'pragma solidcash ^0.14.0;'
   + ' contract Owned {'
   + '   address public owner;'
   + '   int public n;'
@@ -34,7 +34,7 @@ const OWNED = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** A token whose constructor mints to its deployer, the marketplace FakeToken's shape. */
-const MINTED = 'pragma solidcash ^0.13.0;'
+const MINTED = 'pragma solidcash ^0.14.0;'
   + ' contract Minted {'
   + '   mapping(address => int) balances;'
   + '   int public totalSupply;'

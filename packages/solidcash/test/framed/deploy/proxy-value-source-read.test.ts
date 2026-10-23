@@ -33,7 +33,7 @@ const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 const CALLER_TXID = '33'.repeat(31) + 'cc';
 const SECOND_CALLER_TXID = '44'.repeat(31) + 'bb';
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Member { address who; uint up; uint down; }'
   + '   address public implementation;'
@@ -114,7 +114,7 @@ async function heldValue(
 }
 
 /** An entry that reads the mapping under one key and writes it under the caller's: two mapping entries. */
-const DETACHED = 'pragma solidcash ^0.13.0;'
+const DETACHED = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   struct Member { address who; uint up; uint down; }'
   + '   address public implementation;'
@@ -234,7 +234,7 @@ describe('a proxied call whose mapping value is built from the node it writes', 
     // continuation chunks, so the hop reassembles the node's whole value from them to compose the write, and hands
     // the same value to the frame's block as the value witness the body's own read takes.
     const long = 'n'.repeat(100);
-    const longSource = 'pragma solidcash ^0.13.0;'
+    const longSource = 'pragma solidcash ^0.14.0;'
       + ' contract Impl {'
       + '   struct Member { address who; string name; uint up; }'
       + '   address public implementation;'

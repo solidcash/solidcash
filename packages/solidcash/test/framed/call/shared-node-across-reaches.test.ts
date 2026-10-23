@@ -50,7 +50,7 @@ const OTHER = hexToBin(`76a914${bytesToHex(sha256(utf8ToBin('shared node other h
 const NEWCOMER = hexToBin(`76a914${bytesToHex(sha256(utf8ToBin('shared node newcomer'))).slice(0, 40)}88ac`);
 
 const SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'interface IToken {',
   '  function balanceOf(address who) returns (int);',
   '  function debit(address who, int amount);',

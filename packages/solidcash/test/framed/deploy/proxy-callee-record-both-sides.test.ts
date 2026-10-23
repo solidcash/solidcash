@@ -38,7 +38,7 @@ const INNER_ADDRESS = validatorAddress(hexToBin(INNER_CATEGORY), VALIDATOR_PROGR
 
 /** The callee writes one record before its first call and again after its last, and another in between. */
 function sourceOf(): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IInner { function probe(uint x) view returns (uint); }'
     + ' contract Inner {'
     + '   uint public hits;'

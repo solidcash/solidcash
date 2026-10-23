@@ -24,7 +24,7 @@ const KERNEL = {
 
 // `note` keeps an event window in the route block; `mark` inserts a key (one rewritten predecessor lane) and
 // streams the same record on its runtime effect stream.
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
 contract WidthLedger() {
   mapping(int => int) marks;
   event Logged(int value);

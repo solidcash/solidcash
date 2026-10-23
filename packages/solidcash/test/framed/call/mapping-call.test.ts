@@ -35,7 +35,7 @@ const CATEGORY_HEX = '77'.repeat(31) + '88';
 const CALLER_TXID = '88'.repeat(32);
 const SECOND_CALLER_TXID = '88'.repeat(31) + 'c2';
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   constructor(address owner) { this.balances[owner] = 1; }'
@@ -207,7 +207,7 @@ describe('calling an entry that writes a mapping on a deployed framed contract',
     // `viaSet` calls the entry `set`, and `viaSetAndReturn` the returning `setAndReturn`, each writing the node the
     // constructor seeded for the caller. The called entry is inlined into its caller, whose own batch then covers
     // the write; the call used not to compile at all.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Ledger {'
       + '   mapping(address => uint) balances;'
       + '   constructor(address owner) { this.balances[owner] = 1; }'
@@ -236,7 +236,7 @@ describe('calling an entry that writes a mapping on a deployed framed contract',
   });
 
   it('settles an entry that calls, by name or through this, one reading msg.sender to write a scalar', async () => {
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Ledger {'
       + '   mapping(address => uint) balances;'
       + '   int total;'
@@ -265,7 +265,7 @@ describe('calling an entry that writes a mapping on a deployed framed contract',
     // `move` writes `to` but reads `from` beside that write. The read's node is declared kept ahead of the batch's
     // groups, but `to` sorts right above `from` and is spliced in beside it, so the insert relinks the node the read
     // spends: one UTXO, two records.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Ledger {'
       + '   mapping(address => uint) balances;'
       + '   constructor(address owner) { this.balances[owner] = 1; }'
@@ -302,7 +302,7 @@ describe('calling an entry that writes a mapping on a deployed framed contract',
     // does. The front end that produces the form is not reproducible from a short source here, so the case takes
     // the published form itself: the same compiled artifact, with the key source rewritten to the label the
     // harness artifact carries, driven through the whole shipped call path.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Ledger {'
       + '   mapping(address => uint) balances;'
       + '   constructor(address owner) { this.balances[owner] = 1; }'
@@ -350,7 +350,7 @@ describe('calling an entry that writes a mapping on a deployed framed contract',
     // crediting an argument key in one batch, then emits. The genesis binds the constructor's frame caller to the
     // deployer's coin, so the seeded node is the caller's and the call reads and rewrites it; the entry's event
     // is declared as a trailing output and its payload is learned from the body's own comparison.
-    const source = 'pragma solidcash ^0.13.0;'
+    const source = 'pragma solidcash ^0.14.0;'
       + ' contract Ledger {'
       + '   uint total;'
       + '   mapping(address => uint) balances;'

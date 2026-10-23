@@ -39,7 +39,7 @@ const INNER_ADDRESS = validatorAddress(hexToBin(INNER_CATEGORY), VALIDATOR_PROGR
  * segment and keeps it in the next, exactly as the entry's own body does one level up.
  */
 function sourceOf(): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IInner { function probe(uint x) view returns (uint); }'
     + ' contract Inner {'
     + '   uint public hits;'

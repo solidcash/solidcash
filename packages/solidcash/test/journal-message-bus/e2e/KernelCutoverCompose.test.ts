@@ -12,7 +12,7 @@ import { createTestProvider, genesisFtContainer, setupStatefulUtxos } from '../.
 
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
 
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
 contract KernelLedger() {
   mapping(bytes20 => int) balances;
   function bump(bytes20 who, int n) internal {
@@ -102,7 +102,7 @@ describe('kernel cutover mapping compose', () => {
   }, 180_000);
 });
 
-const TOKEN_SOURCE = `pragma solidcash ^0.13.0;
+const TOKEN_SOURCE = `pragma solidcash ^0.14.0;
 contract KernelVault() {
   function send(bytes32 category, bytes recipient, int amount) public {
     require(this.tokens[category].tokenAmount >= amount);

@@ -47,7 +47,7 @@ const READER = `0x${addressOf(READER_CATEGORY)}`;
 const COUNTER = `0x${addressOf(COUNTER_PROXY_CATEGORY)}`;
 
 const SOURCE = [
-  'pragma solidcash ^0.13.0;',
+  'pragma solidcash ^0.14.0;',
   'interface IReader {',
   '  function look(address counter, int k) returns (int); function raise(address counter, int k) returns (int);',
   '  function ping() returns (int); function marked(address counter, int k) returns (bool);',

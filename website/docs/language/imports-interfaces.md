@@ -17,7 +17,7 @@ Outside any contract, a `.scash` file may declare:
 - `using ... for` directives
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 struct Point { int x; int y; }
 
@@ -47,7 +47,7 @@ leading pragmas. Files may import each other; only a circular inheritance graph 
 Brings every file-level declaration into scope:
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 import "./types.scash";
 
@@ -63,7 +63,7 @@ contract Consumer() {
 Brings named declarations into scope:
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 import { Point, SCALE, double } from "./types.scash";
 
@@ -80,7 +80,7 @@ contract Consumer() {
 Binds the file to a namespace identifier, which qualifies the **types** and **free functions** from that file:
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 import "./types.scash" as T;
 
@@ -125,7 +125,7 @@ Solidity, a SolidCash interface can declare **state variables and collections**,
 contract's state is a covenant introspection operation rather than a call.
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 interface IBase {
     function ping();
@@ -153,7 +153,7 @@ events, errors, enums, structs, user-defined value types, `using ... for` direct
 Given an interface and the target contract's self-pinned locking bytecode address, you can read its state directly:
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 interface IToken {
     public uint256 totalSupply;
@@ -180,7 +180,7 @@ trustless. The SDK resolves and attaches the required inputs automatically.
 ### Calling external functions
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 interface ICounter {
     function increment();
@@ -204,7 +204,7 @@ callee has exactly that lock, so a 32-byte category id is not a call target. If 
 transaction fails.
 
 :::caution Experimental
-A call that changes the callee's state is composed external state mutation, which is experimental in 0.13.1 and
+A call that changes the callee's state is composed external state mutation, which is experimental in 0.14.0-beta.1 and
 outside the stable compatibility promise. External state reads and `.staticcall()` are not affected.
 :::
 
@@ -238,7 +238,7 @@ An `abstract contract` may leave functions unimplemented and cannot be deployed 
 inheritance:
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 abstract contract Ownable(pubkey owner) {
     modifier onlyOwner(sig s) {

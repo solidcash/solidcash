@@ -29,7 +29,7 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 const WHO = Uint8Array.from([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x33), 0x88, 0xac]);
 const ALLOWED = node(keyToSlot(WHO), new Uint8Array(32), new Uint8Array([1]));
 
-const FRAMED_SOURCE = 'pragma solidcash ^0.13.0;'
+const FRAMED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Gate {'
   + '   mapping(address => uint) allowed;'
   + '   uint claims;'

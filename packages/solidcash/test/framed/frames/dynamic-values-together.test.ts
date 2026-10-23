@@ -68,7 +68,7 @@ interface Shape {
   readonly second: readonly [Uint8Array, Uint8Array];
 }
 
-const source = (shape: Shape): string => 'pragma solidcash ^0.13.0;'
+const source = (shape: Shape): string => 'pragma solidcash ^0.14.0;'
   + ' contract Pair { bytes public first; bytes public second;'
   + ` function set() { this.first = 0x${bytesToHex(shape.first[1])}; this.second = 0x${bytesToHex(shape.second[1])}; }`
   + ' }';

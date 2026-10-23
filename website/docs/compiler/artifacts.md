@@ -169,7 +169,7 @@ limits, and participant/row bounds consumed by `messageBus.compose()`. It also c
 `deployability` certificate stating whether the measured route bytecode fits the 10,000-byte P2SH limit. Treat
 these as versioned wire metadata; see
 [Message Bus Artifact Reference](/docs/reference/message-bus-artifact). Message-bus composition is experimental in
-0.13.1.
+0.14.0-beta.1.
 
 `externalLibraries` describes inline or co-spent libraries and compute sidecars, including branding, integrity
 hashes, ABI, result-NFT mode, and minimum instance capacity.

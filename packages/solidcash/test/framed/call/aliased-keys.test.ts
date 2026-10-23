@@ -33,14 +33,14 @@ const CALLER_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
 /** Another holder, whose hash bytes are distinct. */
 const OTHER_LOCK = encodeLockingBytecodeP2pkh(Uint8Array.from({ length: 20 }, (_, at) => (0x31 + at * 7) & 0xff));
 
-const LEDGER = compileStringMulti('pragma solidcash ^0.13.0;'
+const LEDGER = compileStringMulti('pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   constructor(address owner) { this.balances[owner] = 100; }'
   + '   function transfer(address to, uint amount) { this.balances[msg.sender] -= amount; this.balances[to] += amount; }'
   + ' }', { composition: 'framed' }).Ledger!;
 
-const TALLY = compileStringMulti('pragma solidcash ^0.13.0;'
+const TALLY = compileStringMulti('pragma solidcash ^0.14.0;'
   + ' contract Tally {'
   + '   uint public count;'
   + '   mapping(uint => uint) totals;'
@@ -48,7 +48,7 @@ const TALLY = compileStringMulti('pragma solidcash ^0.13.0;'
   + '   function setThenRead(uint a, uint b, uint v) { this.totals[a] = v; this.count = this.totals[b]; }'
   + ' }', { composition: 'framed' }).Tally!;
 
-const BUMPER = compileStringMulti('pragma solidcash ^0.13.0;'
+const BUMPER = compileStringMulti('pragma solidcash ^0.14.0;'
   + ' contract Bumper {'
   + '   mapping(uint => uint) totals;'
   + '   function seed(uint k, uint v) { this.totals[k] = v; }'

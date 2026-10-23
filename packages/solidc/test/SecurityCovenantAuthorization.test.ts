@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 
-const P = 'pragma solidcash ^0.13.0;';
+const P = 'pragma solidcash ^0.14.0;';
 // Direct (non-kernel) compiles exercise the source-level covenant-authorization rules; the kernel lane manages
 // lifecycle authority through its own signature policy and is covered separately.
 const direct = { messageBus: false } as const;

@@ -57,7 +57,7 @@ const callNamespace = (contract: StatefulContract): Record<string, StatefulCalla
 
 describe('StatefulContract overload selector identity', () => {
   it('dispatches different-arity overloads from call and getFunction while retaining each exact selector', () => {
-    const { artifact, contract } = attach(`pragma solidcash ^0.13.0;
+    const { artifact, contract } = attach(`pragma solidcash ^0.14.0;
       contract Overloaded() {
         int stored;
         function act() public { this.stored = 1; require(true); }
@@ -82,7 +82,7 @@ describe('StatefulContract overload selector identity', () => {
   });
 
   it('exposes same-arity overloads by explicit ABI signature on call and getFunction', () => {
-    const { artifact, contract } = attach(`pragma solidcash ^0.13.0;
+    const { artifact, contract } = attach(`pragma solidcash ^0.14.0;
       contract Overloaded() {
         int stored;
         function choose(int next) public { this.stored = next; require(true); }
@@ -104,7 +104,7 @@ describe('StatefulContract overload selector identity', () => {
   });
 
   it('refuses a bare name when same-arity overloads cannot be selected without guessing', () => {
-    const { contract } = attach(`pragma solidcash ^0.13.0;
+    const { contract } = attach(`pragma solidcash ^0.14.0;
       contract Overloaded() {
         int stored;
         function choose(int next) public { this.stored = next; require(true); }
@@ -117,7 +117,7 @@ describe('StatefulContract overload selector identity', () => {
   });
 
   it('makes callStatic signature-aware and passes the exact ABI into return derivation', async () => {
-    const { artifact, contract } = attach(`pragma solidcash ^0.13.0;
+    const { artifact, contract } = attach(`pragma solidcash ^0.14.0;
       contract Overloaded() {
         int stored;
         function read(int next) public view returns (int) { return next; }
@@ -138,7 +138,7 @@ describe('StatefulContract overload selector identity', () => {
   });
 
   it('resolves batch rows by canonical signature or selector and refuses an ambiguous bare name', () => {
-    const { artifact, contract } = attach(`pragma solidcash ^0.13.0;
+    const { artifact, contract } = attach(`pragma solidcash ^0.14.0;
       contract Overloaded() {
         int stored;
         function choose(int next) public { this.stored = next; require(true); }

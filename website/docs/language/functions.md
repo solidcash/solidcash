@@ -12,7 +12,7 @@ For the catalogue of built-in functions like `sha256` and `checkSig`, see
 ## Declaring a function
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
     function transfer(sig recipientSig) {
@@ -212,7 +212,7 @@ Functions can be declared at file level, outside any contract. They are importab
 helpers at every call site.
 
 ```solidity
-pragma solidcash ^0.13.0;
+pragma solidcash ^0.14.0;
 
 function double(int v) returns (int) {
     return v * 2;

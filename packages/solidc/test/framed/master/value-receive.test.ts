@@ -45,11 +45,11 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
 /** A contract whose only entry is `receive()`, so the master has no dispatcher. */
-const RECEIVE_SOURCE = 'pragma solidcash ^0.13.0;'
+const RECEIVE_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Vault { receive() external payable { require(true); } }';
 
 /** `receive()` beside a payable and a non-payable function, behind the dispatcher. */
-const MIXED_SOURCE = 'pragma solidcash ^0.13.0;'
+const MIXED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Vault {'
   + '   receive() external payable { require(true); }'
   + '   function deposit() public payable { require(msg.value > 0); }'
@@ -57,11 +57,11 @@ const MIXED_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 /** No payable body at all. */
-const PLAIN_SOURCE = 'pragma solidcash ^0.13.0;'
+const PLAIN_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Plain { function ping(int x) public { require(x >= 0); } }';
 
 /** `receive()` that books what it receives in a record. */
-const LEDGER_SOURCE = 'pragma solidcash ^0.13.0;'
+const LEDGER_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   int public received;'
   + '   receive() external payable { this.received = this.received + msg.value; }'

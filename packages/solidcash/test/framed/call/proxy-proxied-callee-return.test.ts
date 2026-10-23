@@ -28,7 +28,7 @@ const DIRECT_DATA_CATEGORY = 'e5'.repeat(31) + '1a';
 
 // Every callee entry is declared without `view`: a read-only (STATIC) call may not sit above the proxy's DELEGATE
 // leg, which the shipped validator refuses by name (see the suite's report).
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IData {'
   + '   function score() returns (int);'
   + '   function label() returns (string);'

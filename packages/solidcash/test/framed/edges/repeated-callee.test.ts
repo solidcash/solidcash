@@ -55,7 +55,7 @@ const RECORD_LOCK = stateRecordLockingBytecode(hexOf(LOG_CATEGORY));
 
 /** The source, with the number of turns the loop makes written as its bound. */
 function source(trips: number): string {
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface ILog { function append(int item); }'
     + ' contract Log {'
     + '   int public total;'

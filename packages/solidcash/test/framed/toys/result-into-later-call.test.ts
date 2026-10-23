@@ -37,7 +37,7 @@ const RUNTIME_ID = 6n;
 function source(mode: IdMode): string {
   const id = mode === 'literal' ? LITERAL_ID.toString() : 'id';
   const declare = mode === 'runtime' ? '     int id = tx.inputs.length;\n' : '';
-  return 'pragma solidcash ^0.13.0;'
+  return 'pragma solidcash ^0.14.0;'
     + ' interface IFee { function fee(int id) view returns (int); }'
     + ' interface IPay { function pay(int id, int amount); }'
     + ' contract Fee { function fee(int id) view returns (int) { return id * 2; } }'

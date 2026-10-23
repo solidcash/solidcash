@@ -25,7 +25,7 @@ import { callerOf, currentCaller, deploy } from './call/value-harness.js';
  * transaction is rebuilt with the container co-spent and its value/tokens redirected. The forged spend must be
  * refused and the captured honest spend must settle.
  */
-const SOURCE = `pragma solidcash ^0.13.0;
+const SOURCE = `pragma solidcash ^0.14.0;
 contract Vault {
   int public count;
   function touch(int by) { this.count = this.count + by; require(true); }

@@ -27,7 +27,7 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * incoming state closes; one that dropped every write would lose the call the body makes true.
  */
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IPing { function ping(int n); }'
   + ' contract Ping { int public seen; function ping(int n) { require(n >= this.seen); require(true); } }'
   + ' contract Ledger {'
@@ -47,7 +47,7 @@ const ledger = artifacts.Ledger!;
 const ping = artifacts.Ping!;
 
 /** The mirror whose write is a dynamic value's push: its records are rebuilt in the run's last segment. */
-const DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
+const DYNAMIC_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IPing { function ping(int n); }'
   + ' contract Ping { int public seen; function ping(int n) { require(n >= this.seen); require(true); } }'
   + ' contract Queue {'

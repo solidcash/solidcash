@@ -47,7 +47,7 @@ const ROOT_IMPL_CATEGORY = idOf('root implementation');
 const ROOT_PROXY_CATEGORY = idOf('root proxy');
 
 /** A proxied store whose two collections its initialize leaves empty, and a proxied root that reaches it. */
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IStore { function log(int id, int v); function put(int id, int v); }'
   + ' contract Store {'
   + '   address public implementation;'

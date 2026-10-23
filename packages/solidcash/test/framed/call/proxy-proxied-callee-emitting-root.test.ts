@@ -28,7 +28,7 @@ const LEDGER_IMPL_CATEGORY = '3f7a1c9e5b2d8046a1f3c5e7b9d0f2a4' + 'c6e8b0d2f4a6c
 const LEDGER_PROXY_CATEGORY = '7b2e4d6f8a0c2e4f6b8d0a2c4e6f8b0d' + '2a4c6e8f0b2d4a6c8e0f2b4d6a8c0e2e';
 const LEDGER_INIT_TXID = '5c8e0a2b4d6f8a0c2e4b6d8f0a2c4e6b' + '8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c';
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Ledger {'
   + '   address public implementation;'
   + '   int public base;'

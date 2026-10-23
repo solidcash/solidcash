@@ -20,7 +20,7 @@ import {
  * node/chunk class, both of which sit at a category covenant that is not the data-NFT covenant.
  */
 
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 const PLAIN = encodeLockingBytecodeP2sh32(hash256(new Uint8Array([1, 2, 3])));
 
 describe('a read-only data record is held to the data-NFT covenant', () => {

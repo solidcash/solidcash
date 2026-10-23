@@ -28,18 +28,18 @@ const OTHER_TARGET = new Uint8Array(35).fill(0x22);
 const SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
 const PONG_SELECTOR = computeFunctionSelector(computeFunctionSignature('pong', []));
 
-const callingSource = (): string => 'pragma solidcash ^0.13.0;'
+const callingSource = (): string => 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
   + `   function callIt() { ICallee(0x${toHex(TARGET)}).ping.call(); require(true); }`
   + ' }';
 
-const silentSource = (): string => 'pragma solidcash ^0.13.0;'
+const silentSource = (): string => 'pragma solidcash ^0.14.0;'
   + ' contract Solo { function ping() { require(true); } }';
 
 /** An entry whose call runs inside a loop, so one execution reaches the site a number of times the source does not fix. */
-const loopedCallSource = (): string => 'pragma solidcash ^0.13.0;'
+const loopedCallSource = (): string => 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
@@ -47,7 +47,7 @@ const loopedCallSource = (): string => 'pragma solidcash ^0.13.0;'
   + 'require(true); } }';
 
 /** An entry that calls the same method at the same target twice: the lowering coalesces the two into one batch. */
-const repeatedCallSource = (): string => 'pragma solidcash ^0.13.0;'
+const repeatedCallSource = (): string => 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
@@ -55,7 +55,7 @@ const repeatedCallSource = (): string => 'pragma solidcash ^0.13.0;'
   + 'require(true); } }';
 
 /** Two entries that make different calls, so the table must name each entry's own callee. */
-const twoEntrySource = (): string => 'pragma solidcash ^0.13.0;'
+const twoEntrySource = (): string => 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping(); function pong(); }'
   + ' contract Caller {'
   + `   function a() { ICallee(0x${toHex(TARGET)}).ping.call(); require(true); }`

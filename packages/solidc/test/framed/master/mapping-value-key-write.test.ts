@@ -24,7 +24,7 @@ import { refusalMessageOf } from './refused-entry.js';
  * the BCH-2026 machine for its verdict on the master's own input: the `deals` node kept ahead of the `owed` group.
  */
 
-const ESCROW = deployFramedMaster('pragma solidcash ^0.13.0;'
+const ESCROW = deployFramedMaster('pragma solidcash ^0.14.0;'
   + ' contract Escrow {'
   + '   struct Deal { address payee; uint amount; }'
   + '   mapping(uint => Deal) deals;'
@@ -115,7 +115,7 @@ describe('a framed master keyed by a value it reads out of another mapping', () 
 describe('a framed master keyed by a value it reads out of a node the same body writes', () => {
   it('serves the entry: the key is derived once the node\'s own group is (written-node-key-write)', () => {
     // A transfer debits the holder its token record names and then moves the record.
-    const ledger = 'pragma solidcash ^0.13.0;'
+    const ledger = 'pragma solidcash ^0.14.0;'
       + ' contract Ledger {'
       + '   mapping(uint => address) owners;'
       + '   mapping(address => uint) balances;'

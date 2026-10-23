@@ -22,7 +22,7 @@ import {
  * verdict is the BCH-2026 machine's on the master's own input.
  */
 
-const PRAGMA = 'pragma solidcash ^0.13.0;';
+const PRAGMA = 'pragma solidcash ^0.14.0;';
 const LEDGER = deployFramedMaster(`${PRAGMA} contract Ledger { mapping(uint => uint) balances;`
   + ' function debit(uint a, uint b, uint x, bool c) { if (c) { balances[a] -= x; } balances[b] -= x; }'
   + ' function credit(uint a, uint b, uint x, bool c) { if (c) { balances[a] += x; } balances[b] += x; }'

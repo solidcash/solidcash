@@ -107,7 +107,7 @@ interface Shape {
  * present because a user's frame leads its call data with a selector only when the master has more than one body
  * to dispatch over, and `this.marker` is the write the entry settles.
  */
-const contract = (extraFields: string, entryBody: string): string => 'pragma solidcash ^0.13.0;'
+const contract = (extraFields: string, entryBody: string): string => 'pragma solidcash ^0.14.0;'
   + ' struct Note { string label; int amount; }'
   + ' contract Answer {'
   + '   int public marker;'

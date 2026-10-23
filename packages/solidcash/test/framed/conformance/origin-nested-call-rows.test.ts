@@ -43,7 +43,7 @@ const STRANGER_LOCK = encodeLockingBytecodeP2pkh(bobPkh);
 const CLAIM_ID = 3n;
 const AMOUNT = 25n;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IVault { function release(int id, int amount); function releaseBySender(int id, int amount); }'
   + ' contract Vault {'
   + '   address public owner;'

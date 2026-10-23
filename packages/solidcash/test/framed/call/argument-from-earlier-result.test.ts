@@ -40,7 +40,7 @@ const CALL_TXID = category('5f');
 const PRICE = 7n;
 const COUNT = 3n;
 
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' interface IFeed { function price() view returns (int); function count() view returns (int); }'
   + ' interface IMath { function twice(int x) view returns (int); function thrice(int x) view returns (int); }'
   + ' contract Feed {'

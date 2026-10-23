@@ -31,7 +31,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
 
 // The proxy's records are the implementation's records, so both declare the same fields: the implementation's
 // write rebuilds the record from its own declaration, and a field only one of them knew would not survive it.
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
   + '   address implementation;'
   + '   int public version;'

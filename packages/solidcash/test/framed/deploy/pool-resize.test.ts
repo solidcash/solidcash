@@ -32,7 +32,7 @@ import { alicePkh, alicePriv, alicePub, bobPriv } from '../../fixture/vars.js';
  */
 
 const ADMIN = new SignatureTemplate(sha256(new TextEncoder().encode('pool resize admin')));
-const SOURCE = 'pragma solidcash ^0.13.0;'
+const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Pool {'
   + `   pubkey constant ADMIN = pubkey(0x${binToHex(ADMIN.getPublicKey())});`
   + '   int public total;'
@@ -181,7 +181,7 @@ describe('merge(n): the admin retires exactly n masters, and a master survives',
 });
 
 describe('an entry neither mints nor retires a master', () => {
-  const SAMPLE = 'pragma solidcash ^0.13.0; contract Sample { function ping() { require(true); } }';
+  const SAMPLE = 'pragma solidcash ^0.14.0; contract Sample { function ping() { require(true); } }';
   const sample = deployMaster(compileString(SAMPLE, { composition: 'framed' }), CATEGORY, VALIDATOR_PROGRAM);
   const block: WitnessBlock = {
     kind: 0, callerRef: 1, originRef: 1, validatorRef: 0xffff, sender: USER_LOCK, self: sample.address, value: 0n,
@@ -203,7 +203,7 @@ describe('an entry neither mints nor retires a master', () => {
   it('refuses a master minted or retired beside a composition, which no validator settles', () => {
     // The callee can merge, so a master of it can be spent to retire; only a merge may recreate one beside that.
     const calleeAddress = seededAddress('pool resize callee');
-    const { artifacts, contracts } = compileAndDeploy('pragma solidcash ^0.13.0;'
+    const { artifacts, contracts } = compileAndDeploy('pragma solidcash ^0.14.0;'
       + ' interface ICallee { function ping(); }'
       + ' contract Callee {'
       + `   pubkey constant ADMIN = pubkey(0x${binToHex(ADMIN.getPublicKey())});`

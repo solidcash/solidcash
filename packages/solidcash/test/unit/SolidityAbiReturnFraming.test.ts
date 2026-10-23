@@ -4,19 +4,19 @@ import { artifactUsesSolidityAbi, resolveExternalResultEncoding } from '../../sr
 describe('artifactUsesSolidityAbi', () => {
   it('does not infer EVM return framing from a Solidity pragma alone', () => {
     expect(artifactUsesSolidityAbi({
-      compiler: { name: 'solidc', version: '0.13.1', options: {} },
+      compiler: { name: 'solidc', version: '0.14.0-beta.1', options: {} },
     })).toBe(false);
   });
 
   it('follows the explicit evmCompat switch', () => {
     expect(artifactUsesSolidityAbi({
-      compiler: { name: 'solidc', version: '0.13.1', options: { evmCompat: true } },
+      compiler: { name: 'solidc', version: '0.14.0-beta.1', options: { evmCompat: true } },
     })).toBe(true);
   });
 
   it('ignores a pragma solidity source marker when the option is omitted', () => {
     expect(artifactUsesSolidityAbi({
-      compiler: { name: 'solidc', version: '0.13.1' },
+      compiler: { name: 'solidc', version: '0.14.0-beta.1' },
     })).toBe(false);
   });
 });
@@ -24,7 +24,7 @@ describe('artifactUsesSolidityAbi', () => {
 describe('resolveExternalResultEncoding', () => {
   const solidityArtifact = {
     contractName: 'MixedResults',
-    compiler: { name: 'solidc', version: '0.13.1', options: { evmCompat: true } },
+    compiler: { name: 'solidc', version: '0.14.0-beta.1', options: { evmCompat: true } },
   } as const;
 
   it('uses exact function metadata instead of the artifact-wide compatibility mode', () => {

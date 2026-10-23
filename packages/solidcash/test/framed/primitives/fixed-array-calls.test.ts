@@ -113,7 +113,7 @@ function drive(spec: ArrayCase): readonly bigint[] {
 
 /** A callee that requires the elements it read and returns them unchanged. */
 const identitySource = (type: string, requirements: readonly string[]): ArrayCase['source'] =>
-  (calleeAddress: string, argument: string): string => 'pragma solidcash ^0.13.0;'
+  (calleeAddress: string, argument: string): string => 'pragma solidcash ^0.14.0;'
     + ` interface ICal { function f(${type} xs) pure returns (${type}); }`
     + ` contract Cal { function f(${type} xs) pure returns (${type}) {`
     + `${requirements.map((check) => `   require(${check});`).join('')} return xs; } }`
@@ -145,7 +145,7 @@ describe('fixed-size array arguments and results across a read-only call', () =>
     const spec: ArrayCase = {
       label: 'uint16[5] return', type: 'uint16[5]', argument, argumentExpression: decodeIntegerValue(argument).toString(),
       result: [1n, 2n, 3n, 4n, 5n],
-      source: (calleeAddress: string, argumentExpression: string): string => 'pragma solidcash ^0.13.0;'
+      source: (calleeAddress: string, argumentExpression: string): string => 'pragma solidcash ^0.14.0;'
         + ' interface ICal { function f(uint16 x) pure returns (uint16[5]); }'
         + ' contract Cal { function f(uint16 x) pure returns (uint16[5]) {'
         + '   uint16[5] r; r[0] = x; r[1] = x + 1; r[2] = x + 2; r[3] = x + 3; r[4] = x + 4; return r; } }'

@@ -29,7 +29,7 @@ const tokenWith = (
 ): { category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable'; commitment: Uint8Array } } =>
   ({ category, amount: 0n, nft: { capability, commitment } });
 
-const stateful = (post: string): string => 'pragma solidcash ^0.13.0;'
+const stateful = (post: string): string => 'pragma solidcash ^0.14.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Ledger {'

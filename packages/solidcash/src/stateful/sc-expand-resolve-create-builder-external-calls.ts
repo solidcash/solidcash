@@ -295,19 +295,19 @@ export async function expandResolveCreateBuilderExternalCalls(
         // A varying-method dispatch table co-spends each callee with its OWN registered method (the covenant
         // verifies it against the on-chain selector array); a fixed-method array uses the ABI functionName.
         const entries = host.getExternalTargetEntriesByInterface(ec.interfaceName);
-        const resolvedArgs = host.resolveExternalArgs(
-          ec.argSources, args, artifact, undefined, abiFunction?.inputs,
-          undefined, 0, false, publicSelfAddress,
-        ) ?? [];
         const start = expanded.length;
-        for (const entry of entries) {
+        for (const [occurrence, entry] of entries.entries()) {
           const inst = entry.instance;
           const fnName = (ec.selectorArrayVar && entry.method) ? entry.method : ec.functionName;
           expanded.push({ ...ec, loopArrayVar: undefined });
+          // Each iteration's callee runs that iteration's call, whose record the caller digests.
           presetResolved.push({
             externalContract: inst,
             functionName: fnName,
-            args: resolvedArgs,
+            args: host.resolveExternalArgs(
+              ec.argSources, args, artifact, undefined, abiFunction?.inputs,
+              undefined, occurrence, false, publicSelfAddress,
+            ) ?? [],
           });
         }
         loopIdxRanges.push({ start, count: entries.length, fnPtrCall: !!ec.fnPtrCall });

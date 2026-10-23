@@ -8,6 +8,7 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { isContractUnlocker } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
+import { callRecordHashesResult } from './call-record.js';
 import {
   matchMaterializedReturnOutputs,
   type MaterializedReturnExpectation,
@@ -34,6 +35,8 @@ export interface MaterializedReturnWitnessReconcileHost {
     builder: TransactionBuilder,
     carriers: ReadonlySet<ExternalCallUtxoGroup>,
   ): void;
+  /** The digest of the call a direct return record answers; none for a routed one. */
+  callRecordDigest?(identity: string): Uint8Array | undefined;
 }
 
 /** Rebind return-index arguments after every output owner has materialized. */
@@ -75,10 +78,12 @@ export function reconcileMaterializedReturnWitnesses(
       ?? group.precomputedReturnCommitment
       ?? group.loopReturnCommitments?.[0];
     if (commitment === undefined) continue;
+    const digest = host.callRecordDigest?.(pending?.identity ?? `external-call:${groupIdx}`);
     tailExpectations.push({
       groupIndex: groupIdx,
       categoryId: pending?.categoryId ?? group.categoryId,
       commitment,
+      ...(digest === undefined ? {} : { digest }),
       currentIndex: group.returnOutputIndex,
       builtIndex: host.getBuiltExternalCallReturnEventOutputIndex(groupIdx),
     });
@@ -140,11 +145,17 @@ export function reconcileMaterializedReturnWitnesses(
       const token = output?.token;
       if (!token?.nft) continue;
       const actual = token.nft.commitment.toLowerCase();
-      const raw = host.pendingReturnEventOutputs.find((event) =>
-        event.categoryId.toLowerCase() === token.category.toLowerCase()
-        && event.commitment.length > 128
-        && (returnEventNftCommitment(event.commitment) === actual
-          || binToHex(event.commitment) === actual))?.commitment;
+      // A result recorded by its SHA256 (past 95 bytes in a call record, past 128 otherwise) rides in the witness.
+      const raw = host.pendingReturnEventOutputs.find((event) => {
+        if (event.categoryId.toLowerCase() !== token.category.toLowerCase()) return false;
+        const digest = host.callRecordDigest?.(event.identity);
+        if (digest !== undefined) {
+          return callRecordHashesResult(event.commitment)
+            && returnEventNftCommitment(event.commitment, digest) === actual;
+        }
+        return event.commitment.length > 128
+          && (returnEventNftCommitment(event.commitment) === actual || binToHex(event.commitment) === actual);
+      })?.commitment;
       if (!raw || unlocker.params[paramIndex] instanceof Uint8Array
         && binToHex(unlocker.params[paramIndex] as Uint8Array) === binToHex(raw)) continue;
       unlocker.params[paramIndex] = raw.slice();

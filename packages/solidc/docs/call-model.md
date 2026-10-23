@@ -94,10 +94,14 @@ UTXO (and any required data NFTs) are co-spent in the same transaction.
 ### Return values
 
 A returning callee emits a **return-event NFT**: category-bound to B's master (base 32 bytes), `none`
-capability, FT amount 0, `OP_TRUE` (anyone-can-spend) locking bytecode, satoshis <= 1200 (dust). The caller
-reads its commitment at the witness index `__internal__externalReturnOutputIdx[N]` via
-`OP_OUTPUTTOKENCOMMITMENT` and decodes the pushdata-framed fields. Single value, multi-value tuple
-(destructured `(a, b) = IFoo(addr).f()`), and forward-looking opaque `bytes` are all supported.
+capability, FT amount 0, `OP_TRUE` (anyone-can-spend) locking bytecode, satoshis <= 1200 (dust). Its commitment is
+the **call record** of the call it answers (D50, `docs/wip/call-records/DESIGN.md`): a 31-byte digest of the call's
+selector and arguments, a form byte, then the encoded result inline (up to 96 bytes) or its SHA256, whose bytes ride
+in the caller's `__internal__externalReturnPreimage[N]`. The callee digests the call it ran, pins its record and
+admits no other `OP_TRUE` carrier of its category. The caller digests its own call, reads the record at the witness
+index `__internal__externalReturnOutputIdx[N]` via `OP_OUTPUTTOKENCOMMITMENT`, requires the digest to be its own and
+decodes the pushdata-framed fields. Single value, multi-value tuple (destructured `(a, b) = IFoo(addr).f()`), and
+forward-looking opaque `bytes` are all supported; an opaque read checks no digest.
 
 ### What is compile-time vs runtime
 

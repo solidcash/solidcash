@@ -967,6 +967,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local message-bus journal. */
   nativeSelfBatchDispatcher?: boolean;
 
+  /** Codegen: this entry's return carrier is the record of the direct call it answers. */
+  settlesCallRecord?: boolean;
+
   isFreeFunction: boolean = false;
   // True for a function declared inside a Solidity library, including the lowered primary-library contract
   // form. Library ABI rules uniquely permit storage-reference parameters and returns at public/external
@@ -3110,6 +3113,9 @@ export interface ExternalCallSlot {
   readonlyReturnSelector?: Uint8Array;
   /** Set only when codegen emits the direct shared-readonly return equality check. */
   readonlyReturnBindingSelector?: Uint8Array;
+  /** A returning direct call's record: the callee method's selector and declared parameter types, for its digest. */
+  callRecordSelector?: Uint8Array;
+  callRecordParameterTypes?: Type[];
   // Same-address varying-method pointer: the RUNTIME selector expression (`cond ? a.selector : b.selector`).
   // The epilogue evaluates it and asserts the co-spent callee's selector == it, instead of the witness param.
   runtimeSelector?: ExpressionNode;

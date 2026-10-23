@@ -105,8 +105,13 @@ async function buildTx(
   tb.addOutput({ to: contract.address, amount: 100000n });
   tb.addOutput({ to: OP_TRUE, amount: 1200n, token: { category: C0, amount: 0n, nft: { capability: 'minting', commitment: '' } } });
   tb.addOutput({ to: OP_TRUE, amount: 1200n, token: { category: C1, amount: 0n, nft: { capability: 'minting', commitment: '' } } });
-  tb.addOutput({ to: OP_TRUE, amount: 1000n, token: { category: C0, amount: 0n, nft: { capability: 'none', commitment: 'deadbeef' } } });
-  tb.addOutput({ to: OP_TRUE, amount: 1000n, token: { category: C1, amount: 0n, nft: { capability: 'none', commitment: 'cafe' } } });
+  // A return event is a call record; an opaque read checks no digest and takes its inline result.
+  const record = (result: string): string => `${'00'.repeat(31)}01${result}`;
+  for (const [category, result] of [[C0, 'deadbeef'], [C1, 'cafe']] as const) {
+    tb.addOutput({
+      to: OP_TRUE, amount: 1000n, token: { category, amount: 0n, nft: { capability: 'none', commitment: record(result) } },
+    });
+  }
   tb.addOutput({ to: OP_TRUE, amount: 7000n });
   return tb;
 }

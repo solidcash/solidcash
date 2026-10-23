@@ -10,6 +10,7 @@ import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { hasEquivalentMutableNftOutput } from './mutable-output-reassert.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
+import { parseCallRecord } from './call-record.js';
 import {
   relocateChangeAfterOccupancy,
   writerBlockOccupancyEnd,
@@ -43,6 +44,8 @@ export interface InBlockWriterReturnHost {
     outputs?: ReadonlyArray<{ token?: { nft?: { commitment?: string } } }>,
   ): Set<number>;
   syncBuilderUnlockers(builder: TransactionBuilder): void;
+  /** The digest of the call a direct return record answers; none for a routed one. */
+  callRecordDigest?(identity: string): Uint8Array | undefined;
 }
 
 /**
@@ -85,14 +88,18 @@ export function reassertInBlockWriterReturns(
         writerAbi.outputs!.map((output) => output.type),
         `function '${writerAbi.name}' result`,
       ) === 'evm-abi-v1';
+    const digest = host.callRecordDigest?.(identity);
+    // The slot may already hold this call's record; its result is the bytes past the record's digest and form.
+    const occupantHex = String(occupant?.token?.nft?.commitment ?? '');
+    const occupantRecord = digest !== undefined && occupantHex !== '' ? parseCallRecord(hexToBin(occupantHex)) : undefined;
     const commitment = returnEventNftCommitment(hexToBin(canonicalWriterReturnCommitment({
       pendingHex: pending && pending.commitment.length > 0
         ? binToHex(pending.commitment)
-        : String(occupant?.token?.nft?.commitment ?? ''),
+        : occupantRecord?.raw !== undefined ? binToHex(occupantRecord.raw) : occupantHex,
       writesState: writerAbi?.writesState === true,
       evmBool,
       returnsBool: writerReturnsBool,
-    })));
+    })), digest);
     if (isViewReturnTailOutput({
       to: occupant?.to instanceof Uint8Array ? occupant.to : undefined,
       token: occupant?.token,

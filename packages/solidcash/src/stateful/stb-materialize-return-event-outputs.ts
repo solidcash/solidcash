@@ -29,6 +29,8 @@ export interface MaterializeReturnEventOutputsHost {
   builtReturnEventOutputIndices: Map<string, number>;
   tailReturnEventOutputs(): readonly ReturnEventRecord[];
   addReturnOutput(builder: { addOutput(output: Output): unknown }, identity: string, output: Output): void;
+  /** The digest of the call a direct return record answers; none for a routed one. */
+  callRecordDigest?(identity: string): Uint8Array | undefined;
 }
 
 /**
@@ -43,6 +45,9 @@ export function materializeReturnEventOutputs(
   },
   deferredDelegateReturnEvents: readonly ReturnEventRecord[],
 ): void {
+  const recordCommitment = (re: { commitment: Uint8Array; identity: string }): string => (
+    returnEventNftCommitment(re.commitment, host.callRecordDigest?.(re.identity))
+  );
   // X56. The delegate return channel, deferred from the facet-preservation block above so the co-spent
   // implementation's own event outputs keep the position its covenant resolves for them.
   for (const re of deferredDelegateReturnEvents) {
@@ -52,7 +57,7 @@ export function materializeReturnEventOutputs(
       token: {
         amount: 0n,
         category: re.categoryId,
-        nft: { capability: 'none', commitment: returnEventNftCommitment(re.commitment) },
+        nft: { capability: 'none', commitment: recordCommitment(re) },
       },
     });
   }
@@ -74,7 +79,7 @@ export function materializeReturnEventOutputs(
       token: {
         amount: 0n,
         category: re.categoryId,
-        nft: { capability: 'none', commitment: returnEventNftCommitment(re.commitment) },
+        nft: { capability: 'none', commitment: recordCommitment(re) },
       },
     };
     output.amount = BigInt(Math.max(Number(output.amount), calculateDust(output)));
@@ -138,7 +143,7 @@ export function materializeReturnEventOutputs(
       token: {
         amount: 0n,
         category: re.categoryId,
-        nft: { capability: 'none', commitment: returnEventNftCommitment(re.commitment) },
+        nft: { capability: 'none', commitment: recordCommitment(re) },
       },
     });
   }
@@ -149,7 +154,7 @@ export function materializeReturnEventOutputs(
       token: {
         amount: 0n,
         category: re.categoryId,
-        nft: { capability: 'none', commitment: returnEventNftCommitment(re.commitment) },
+        nft: { capability: 'none', commitment: recordCommitment(re) },
       },
     });
   }

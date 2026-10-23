@@ -108,6 +108,7 @@ import {
   FrameKind,
   computeFunctionSelector,
   computeFunctionSignature,
+  canonicalSelectorSignature,
   isEvmNotationScalarType,
   resolveAddressForm,
   INVALID_FUNCTION_POINTER_ID,
@@ -323,7 +324,8 @@ import {
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
 import {
-  evmStaticResultBytes, evmResultMayNeedPreimage, externalResultEncoding,
+  externalResultEncoding, externalResultMayNeedPreimage,
+  CALL_RECORD_DIGEST_BYTES, CALL_RECORD_INLINE_RESULT_BYTES,
   isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
 } from '../semantic/ExternalResultEncoding.js';
 import { analyseContractInvocations, emitsAnyEvent, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
@@ -2626,6 +2628,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // True when the contract reads blockhash(n): forces it stateful (the oracle is branded to its own category).
   private currentContractUsesBlockhash: boolean = false;
   private currentContractHasMessageBus: boolean = false;
+  /** An entry of this contract returns values, so every direct run of it accounts for its call records. */
+  private currentContractSettlesCallRecords: boolean = false;
   /**
    * The message-bus route's declared inputs, in push order (the SDK pushes `[blob, ...routeWitnesses]`). A route
    * handler shares the caller's stack, so these values are physically BELOW the handler's own argument block -
@@ -5171,6 +5175,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
     this.currentContractHasMessageBus = node.functions.some((fn) => fn.messageBusRoute === true);
+    this.currentContractSettlesCallRecords = node.functions.some((fn) => fn.isEntryPoint && fn.returnTypes.length > 0
+      && !fn.graphEmissionHandler && !this.isCompilerMessageBusRoute(fn));
     // Match the predicate codegen itself uses for a route (`currentFunctionIsMessageBusRoute`): the AST
     // `messageBusRoute` flag is set by route synthesis, which runs AFTER this contract visit, so keying on it here
     // silently produced an empty band (measured: the owner pick's ordinal did not move at all).
@@ -7690,6 +7696,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
       // output-only offsets in that body disagree with the ones in the main script.
       subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
+      subTraversal.currentContractSettlesCallRecords = this.currentContractSettlesCallRecords;
       subTraversal.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
       subTraversal.constructorParameterCount = 0; // no data pushes in sub-traversal output
       // Entry bodies are compiled here, after the contract traversal skipped the BoringMath OP_DEFINE. Without
@@ -9928,6 +9935,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (box) box.codegenMatchedKernelJournalDispositionCommitment = dispositionDigest;
     }
     if (!this.isDefineSubTraversal && node.isEntryPoint) this.emitEntryFunctionIdChecks(node);
+    // The digest of the call this entry executes, taken before the body consumes its parameters; its record pins it.
+    if (!this.isDefineSubTraversal && this.settlesDirectCallRecord(node)) this.emitOwnCallRecordDigest(node);
     this.refuseStaleSortedReads(node);
     node.body = this.visit(node.body) as BlockNode;
     this.emitRepeatedSortedUpsertLoopCensuses(node);
@@ -10374,6 +10383,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           if (this.framedReturnsValue) this.emitFramedReturnCheck(node);
         } else if (node.returnTypes.length > 0) {
           this.emitReturnEventCovenantVerification(node);
+        } else if (!this.isDefineSubTraversal && this.contractSettlesCallRecords()
+          && !this.isCompilerMessageBusRoute(node)) {
+          // A void run of a contract whose entries return values leaves no record of its category.
+          const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
+          this.emit(Op.OP_0, loc);
+          this.emitCallRecordCount(loc);
         }
       }
       // A body whose calls repeat pins the number it made against the count the block declares, here, where the
@@ -25540,6 +25555,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const returnParamName = returningSlotCount === 1
         ? '__internal__externalReturnOutputIdx'
         : `__internal__externalReturnOutputIdx${returnSlotIndex}`;
+      // The record names the call it answers: the digest of this call's method and the arguments the source passes,
+      // which the callee computes over the call it executed.
+      const verifiesDigest = this.emitCallerCallRecordDigest(node, physicalSlot, locationData);
       const returnOutputIdxIdx = this.getStackIndex(returnParamName);
       this.emit(encodeInt(BigInt(returnOutputIdxIdx)), locationData);
       this.emit(Op.OP_PICK, locationData);
@@ -25555,41 +25573,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
-      // Stack: [return_blob] (1 untracked)
-
-      if (!node.opaqueReturn
-        && externalResultEncoding(returnTypes, this.compilerOptions) === 'evm-abi-v1'
-        && evmResultMayNeedPreimage(returnTypes)) {
-        const dynamicResult = evmStaticResultBytes(returnTypes) === undefined;
-        if (dynamicResult) {
-          // A dynamic ABI return is stored raw when it fits the NFT commitment and by SHA256 when
-          // it does not. Canonical dynamic ABI encodings are at least two words, so a 32-byte
-          // commitment is the hashed case. The preimage branch authenticates its full value.
-          this.emit(Op.OP_SIZE, locationData); // [commitment, length]
-          this.emit(encodeInt(32n), locationData);
-          this.emit(Op.OP_EQUAL, locationData);
-          this.emit(Op.OP_IF, locationData); // [commitment]
-        }
+      // Stack: [digest?, record] (record untracked): the call's digest, a form byte, then the result or its SHA256.
+      this.emit(encodeInt(BigInt(CALL_RECORD_DIGEST_BYTES)), locationData);
+      this.emit(Op.OP_SPLIT, locationData);           // [digest?, recordDigest, rest]
+      if (verifiesDigest) {
+        this.emit(Op.OP_SWAP, locationData);
+        this.emit(Op.OP_ROT, locationData);
+        this.emit(Op.OP_EQUALVERIFY, locationData);   // [rest]
+        this.popFromStack();
+      } else {
+        this.emit(Op.OP_NIP, locationData);
+      }
+      this.emit(Op.OP_1, locationData);
+      this.emit(Op.OP_SPLIT, locationData);           // [form, field]
+      this.emit(Op.OP_SWAP, locationData);            // [field, form]
+      if (externalResultMayNeedPreimage(returnTypes, this.compilerOptions)) {
+        // Form 2 records the result's SHA256: the caller's preimage witness holds the bytes.
+        this.emit(Op.OP_2, locationData);
+        this.emit(Op.OP_EQUAL, locationData);
+        this.emit(Op.OP_IF, locationData);            // [hash]
         const preimageParamName = returningSlotCount === 1
           ? '__internal__externalReturnPreimage'
           : `__internal__externalReturnPreimage${returnSlotIndex}`;
-        // A long result is committed by SHA256(raw); a short dynamic result is decoded directly from its
-        // raw commitment. Authenticate the supplied preimage only on the digest branch.
-        // One untracked output commitment is above the tracked parameters at this point.
+        // One untracked hash is above the tracked parameters here.
         this.emit(encodeInt(BigInt(this.getStackIndex(preimageParamName) + 1)), locationData);
-        this.emit(Op.OP_PICK, locationData); // [digest, raw]
-        if (dynamicResult) {
-          this.emit(Op.OP_SIZE, locationData);
-          this.emit(encodeInt(128n), locationData);
-          this.emit(Op.OP_GREATERTHAN, locationData);
-          this.emit(Op.OP_VERIFY, locationData); // only an oversized return may use a digest
-        }
+        this.emit(Op.OP_PICK, locationData);          // [hash, raw]
         this.emit(Op.OP_DUP, locationData);
-        this.emit(Op.OP_SHA256, locationData); // [digest, raw, SHA256(raw)]
-        this.emit(Op.OP_ROT, locationData); // [raw, SHA256(raw), digest]
-        this.emit(Op.OP_EQUALVERIFY, locationData); // [raw]
-        if (dynamicResult) this.emit(Op.OP_ENDIF, locationData);
+        this.emit(Op.OP_SHA256, locationData);
+        this.emit(Op.OP_ROT, locationData);
+        this.emit(Op.OP_EQUALVERIFY, locationData);   // [raw]
+        this.emit(Op.OP_ENDIF, locationData);
+      } else {
+        // A result no wider than the record's inline capacity is carried inline, form 1.
+        this.emit(Op.OP_1, locationData);
+        this.emit(Op.OP_EQUALVERIFY, locationData);
       }
+      // Stack: [return_blob] (1 untracked)
 
       if (node.opaqueReturn) {
         // EVM-parity `(bool success, bytes data) = addr.call(payload)`: the whole return-event commitment is
@@ -47838,6 +47857,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // commitment by the return types onto the stack (typed values, not opaque bytes) and clean the loop temps
       // BELOW the values. The getReserves half of the Router02 fee-on-transfer swap; the void path below drops it.
       if (slot.hasReturnValues && slot.returnTypes && slot.returnTypes.length > 0) {
+        // This iteration's callee runs this iteration's call, so its record answers this iteration's arguments.
+        const verifiesDigest = this.emitCallerCallRecordDigest(node, slot, loc);
         // Multiple returning slots (e.g. getReserves + balanceOf in one loop) get INDEXED return-output-idx params;
         // a single one keeps the bare name (matches the non-loop returning read).
         const loopReturningCount = this.externalCallSlots.filter((s) => s.hasReturnValues).length;
@@ -47886,8 +47907,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(1200n), loc);
         this.emit(Op.OP_LESSTHANOREQUAL, loc);
         this.emit(Op.OP_VERIFY, loc);         // [..., retidx]
-        // read commitment + TYPED-decode by the return types (mirrors the non-loop returning read)
-        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., blob]
+        // read the record + TYPED-decode its result by the return types (mirrors the non-loop returning read)
+        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., digest?, record]
+        this.emitInlineCallRecordField(verifiesDigest, loc); // [..., blob]
         for (let k = 0; k < slot.returnTypes.length; k++) {
           if (k === slot.returnTypes.length - 1) {
             this.emitPushdataDecodeLastField(slot.returnTypes[k], loc);
@@ -47967,8 +47989,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_LESSTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);         // [..., retidx]
 
-    // read commitment as returnData; success = true (opaque)
-    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., returnData]
+    // read the record's result as returnData; success = true (opaque)
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., record]
+    this.emitInlineCallRecordField(false, loc);   // [..., returnData]
     this.emit(Op.OP_1, loc);                      // [..., returnData, true]
     this.emit(Op.OP_SWAP, loc);                   // [..., true, returnData]
     this.pushToStack('(success)');
@@ -48098,6 +48121,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Declaration-only/stateless compatibility paths can retain source return types without receiving the
     // stateful return-NFT witness pair. Symbol analysis is authoritative: no witness means no return covenant.
     if (returnOutputIdxIdx < 0) return;
+    node.settlesCallRecord = this.settlesDirectCallRecord(node);
+    if (node.settlesCallRecord) {
+      this.emitCallRecordFromBlob(locationData);
+      this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', locationData);
+      // With the record directly beneath the picked index, the check is the same bytes in every function.
+      if (this.getStackIndex('__internal__returnBlob') !== 0 || !this.invokeSharedEntryCheck(
+        'callRecord', (t, l) => t.emitCallRecordCheck(() => t.emit(Op.OP_OVER, l), l), locationData,
+      )) {
+        this.emitCallRecordCheck(
+          () => this.emitPickCompilerRouteFrameValue('__internal__returnBlob', locationData, 1), locationData,
+        );
+      }
+      const recordIdx = this.getStackIndex('__internal__returnBlob');
+      this.emit(encodeInt(BigInt(recordIdx)), locationData);
+      this.emit(Op.OP_ROLL, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.removeFromStack(recordIdx);
+      return;
+    }
     this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', locationData);
     // Stack: [_returnOutputIdx] (1 untracked)
 
@@ -48172,6 +48214,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.emit(Op.OP_ENDIF, locationData);
 
+    this.emitReturnCarrierFormChecks(locationData);
+
+    this.emit(Op.OP_DROP, locationData); // drop _returnOutputIdx
+
+    this.emit(Op.OP_ELSE, locationData);
+    // Standalone call (DX-4): refuse every own-category return carrier (none-cap, OP_TRUE lock), the fingerprint
+    // the caller's return read and uniqueness count accept. Otherwise a spender passing -1 beside a self-minted
+    // carrier hands the caller an unauthenticated return value. A token-less input has no category: every caller
+    // read splits the callee's category at 32 and fails on it, so there is no carrier to refuse.
+    this.emit(Op.OP_DROP, locationData);
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_TXOUTPUTCOUNT, locationData);        // [cat, n]
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_1SUB, locationData);                 // [cat, j]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_EQUAL, locationData);                // [cat, j, ownImmutable]
+    this.emit(Op.OP_OVER, locationData);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.emit(hexToBin('51'), locationData);
+    this.emit(Op.OP_EQUAL, locationData);
+    this.emit(Op.OP_BOOLAND, locationData);
+    this.emit(Op.OP_NOT, locationData);
+    this.emit(Op.OP_VERIFY, locationData);               // [cat, j]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_NOT, locationData);
+    this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /**
+   * `[.., idx]` -> `[.., idx]`: the output at idx is a return carrier of this contract's category: no capability,
+   * no fungible amount, an `OP_TRUE` lock and at most 1,200 satoshis.
+   */
+  private emitReturnCarrierFormChecks(locationData: SingleLocationData): void {
     // 2. Verify output token category matches master's category
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
@@ -48219,44 +48307,233 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_LESSTHANOREQUAL, locationData);
     this.emit(Op.OP_VERIFY, locationData);
     // Stack: [_returnOutputIdx] (1 untracked)
+  }
 
-    this.emit(Op.OP_DROP, locationData); // drop _returnOutputIdx
+  /**
+   * True when `node` settles a direct call record: a direct-convention entry returning values whose epilogue pins
+   * the record at its return witness. Message-bus routes, graph handlers and framed entries bind results otherwise.
+   */
+  private settlesDirectCallRecord(node: FunctionDefinitionNode): boolean {
+    return !this.framedMaster && node.isEntryPoint && node.returnTypes.length > 0 && !node.graphEmissionHandler
+      && !this.isCompilerMessageBusRoute(node) && !this.functionHasDelegatecall && !this.blockEndsWithRevert(node.body)
+      && this.getStackIndex('__internal__returnOutputIdx', true) >= 0;
+  }
 
-    this.emit(Op.OP_ELSE, locationData);
-    // Standalone call (DX-4): refuse every own-category return carrier (none-cap, OP_TRUE lock), the fingerprint
-    // the caller's return read and uniqueness count accept. Otherwise a spender passing -1 beside a self-minted
-    // carrier hands the caller an unauthenticated return value. A token-less input has no category: every caller
-    // read splits the callee's category at 32 and fails on it, so there is no carrier to refuse.
-    this.emit(Op.OP_DROP, locationData);
-    this.emitMasterInputIndex(locationData);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(encodeInt(32n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(Op.OP_TXOUTPUTCOUNT, locationData);        // [cat, n]
-    this.emit(Op.OP_BEGIN, locationData);
-    this.emit(Op.OP_1SUB, locationData);                 // [cat, j]
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_EQUAL, locationData);                // [cat, j, ownImmutable]
-    this.emit(Op.OP_OVER, locationData);
-    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
-    this.emit(hexToBin('51'), locationData);
-    this.emit(Op.OP_EQUAL, locationData);
-    this.emit(Op.OP_BOOLAND, locationData);
-    this.emit(Op.OP_NOT, locationData);
-    this.emit(Op.OP_VERIFY, locationData);               // [cat, j]
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_NOT, locationData);
-    this.emit(Op.OP_UNTIL, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
+  /** True when an entry of this contract returns values, so every run of it accounts for its records. */
+  private contractSettlesCallRecords(): boolean {
+    return !this.framedMaster && this.currentContractSettlesCallRecords;
+  }
+
+  /** A number enters a call digest by value, so another encoding of the same number digests alike. */
+  private isNumericCallRecordType(type: Type | undefined): boolean {
+    const resolved = type instanceof ValueType ? type.underlyingType : type;
+    return resolved === PrimitiveType.BOOL || resolved === PrimitiveType.BIGINT || resolved === PrimitiveType.INT
+      || resolved instanceof IntType || resolved instanceof FixedType || resolved instanceof EnumType;
+  }
+
+  /**
+   * `[..]` -> `[.., digest]`: a call record's digest, the first 31 bytes of the SHA256 of the call's ordinal as two
+   * little-endian bytes, its selector, and each argument as its length in two little-endian bytes and its bytes, a
+   * number minimally encoded. `emitArgument(i)` leaves argument i on top as one tracked value.
+   */
+  private emitCallRecordDigest(
+    selector: Uint8Array, ordinal: number, argumentTypes: readonly (Type | undefined)[],
+    emitArgument: (index: number) => void, loc: SingleLocationData,
+  ): void {
+    const prefix = new Uint8Array(2 + selector.length);
+    prefix[0] = ordinal & 0xff;
+    prefix[1] = (ordinal >> 8) & 0xff;
+    prefix.set(selector, 2);
+    this.emit(prefix, loc);
+    this.pushToStack('(record_preimage)');
+    for (let index = 0; index < argumentTypes.length; index += 1) {
+      emitArgument(index);
+      if (this.isNumericCallRecordType(argumentTypes[index])) this.emit(Op.OP_BIN2NUM, loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(encodeInt(2n), loc);
+      this.emit(Op.OP_NUM2BIN, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_CAT, loc);
+      this.emit(Op.OP_CAT, loc);
+      this.popFromStack(2);
+      this.pushToStack('(record_preimage)');
+    }
+    this.emit(Op.OP_SHA256, loc);
+    this.emit(encodeInt(BigInt(CALL_RECORD_DIGEST_BYTES)), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
+    this.pushToStack('(record_digest)');
+  }
+
+  /**
+   * Leaves the digest of the call `node` makes, as one tracked value, when its slot names the method it calls; the
+   * arguments are visited as copies, so no final use is consumed here.
+   */
+  private emitCallerCallRecordDigest(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
+  ): boolean {
+    const selector = node.opaqueReturn ? undefined : slot.callRecordSelector;
+    if (selector === undefined) return false;
+    const declared = slot.callRecordParameterTypes ?? [];
+    const digested = declared.flatMap((type, index) => (type === PrimitiveType.SIG ? [] : [index]));
+    this.emitCallRecordDigest(selector, 0, digested.map((index) => declared[index]), (position) => {
+      const argument = cloneNode(node.parameters[digested[position]!]!) as ExpressionNode;
+      this.markArrayArgumentBlobEncoded(argument);
+      this.visit(argument);
+    }, loc);
+    return true;
+  }
+
+  /**
+   * `[.., digest?, record]` -> `[.., field]` for a record whose result rides inline: with `verifyDigest` the record
+   * must answer the call whose tracked digest lies beneath it. A hashed result has no preimage here, and fails.
+   */
+  private emitInlineCallRecordField(verifyDigest: boolean, loc: SingleLocationData): void {
+    this.emit(encodeInt(BigInt(CALL_RECORD_DIGEST_BYTES)), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    if (verifyDigest) {
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_ROT, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.popFromStack();
+    } else {
+      this.emit(Op.OP_NIP, loc);
+    }
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+  }
+
+  /** The selector a call record of this entry carries: its dispatch selector. */
+  private callRecordSelector(node: FunctionDefinitionNode): Uint8Array {
+    if (node.functionSelector !== undefined) return node.functionSelector;
+    const visible = node.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+    const evmCompat = this.compilerOptions.evmCompat === true;
+    const signature = evmCompat
+      ? canonicalSelectorSignature(node.name, visible.map((parameter) => parameter.type))
+      : computeFunctionSignature(node.name, visible.map((parameter) => parameter.type.toString()));
+    return computeFunctionSelector(signature, evmCompat);
+  }
+
+  /** Leaves the digest of the call this entry executes, as `__internal__callDigest`, for its record. */
+  private emitOwnCallRecordDigest(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    // A signature authorizes the transaction the record is part of, so it is no argument of the digest.
+    const visible = node.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')
+      && parameter.type !== PrimitiveType.SIG);
+    this.emitCallRecordDigest(this.callRecordSelector(node), 0, visible.map((parameter) => parameter.type),
+      (index) => {
+        this.emit(encodeInt(BigInt(this.getStackIndex(visible[index]!.name))), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.pushToStack('(value)');
+      }, loc);
+    this.stack[0] = '__internal__callDigest';
+  }
+
+  /**
+   * Replaces `__internal__returnBlob` with this call's record and drops the call's digest: the digest, a form byte,
+   * then the result inline (form 1) when it fits the commitment, or its SHA256 (form 2).
+   */
+  private emitCallRecordFromBlob(loc: SingleLocationData): void {
+    const blobIdx = this.getStackIndex('__internal__returnBlob');
+    if (blobIdx > 0) {
+      this.emit(encodeInt(BigInt(blobIdx)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.removeFromStack(blobIdx);
+      this.pushToStack('__internal__returnBlob');
+    }
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(BigInt(CALL_RECORD_INLINE_RESULT_BYTES)), loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_SHA256, loc);
+    this.emit(Op.OP_2, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__callDigest'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    const digestIdx = this.getStackIndex('__internal__callDigest');
+    this.emit(encodeInt(BigInt(digestIdx)), loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(digestIdx);
+  }
+
+  /**
+   * `[.., idx]` -> `[..]`: idx >= 0 pins the output at idx as this run's record (the commitment `pickRecord` copies,
+   * in carrier form); either way the transaction then holds exactly the records this run pinned.
+   */
+  private emitCallRecordCheck(pickRecord: () => void, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    pickRecord();
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emitReturnCarrierFormChecks(loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emitCallRecordCount(loc);
+  }
+
+  /**
+   * `[.., expected]` -> `[..]`: the transaction holds exactly `expected` return carriers of this contract's category
+   * (no capability, `OP_TRUE` lock), so no record this run did not pin can stand beside it. A token-less input has no
+   * category, and so no carrier.
+   */
+  private emitCallRecordCount(loc: SingleLocationData): void {
+    if (this.invokeSharedEntryCheck('callRecordCount', (t, l) => t.emitCallRecordCountBody(l), loc)) return;
+    this.emitCallRecordCountBody(loc);
+  }
+
+  private emitCallRecordCountBody(loc: SingleLocationData): void {
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);                  // [expected, cat]
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);         // [expected, cat, count, j]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(hexToBin('51'), loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLAND, loc);               // [expected, cat, count, j, carrier]
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_SWAP, loc);                  // [expected, cat, count', j]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_NIP, loc);                   // [expected, count]
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   private emitExternalReturnEventVerification(node: FunctionDefinitionNode): void {
@@ -48357,10 +48634,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, locationData); // returnIdx >= 0
     }
 
-    // One direct readonly input executes once. Its identical zero-argument aliases must publish the same
-    // result, even though source-call uniqueness permits one carrier per logical call. Otherwise the second
-    // carrier is freely minted beside the one return the callee authenticates. Batches authenticate separate
-    // rows; conditional and loop calls retain their own occurrence protocol.
+    // One direct readonly input executes once, so its identical zero-argument aliases read its one record: the
+    // callee holds the transaction to the records it pinned, and each read checks its own digest. The binding is
+    // published for the SDK, which lays both reads on that record.
     if (!this.framedMaster && !node.graphEmissionHandler && !this.isCompilerMessageBusRoute()) {
       const aliases = returningSlots.filter((slot) => slot.readonlyReturnSelector !== undefined
         && !slot.optional && !slot.condition && !slot.batchInvocations && !slot.batchRepresentative
@@ -48372,133 +48648,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           if (binToHex(left.readonlyReturnSelector!) !== binToHex(right.readonlyReturnSelector!)) continue;
           left.readonlyReturnBindingSelector = left.readonlyReturnSelector;
           right.readonlyReturnBindingSelector = right.readonlyReturnSelector;
-          this.emitSlotMasterIndex(left, locationData);
-          this.emitSlotMasterIndex(right, locationData, 1);
-          this.emit(Op.OP_2DUP, locationData);
-          this.emit(Op.OP_NUMEQUAL, locationData);
-          this.emit(Op.OP_IF, locationData);
-          this.emit(Op.OP_DUP, locationData);
-          this.emit(encodeInt(0n), locationData);
-          this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
-          this.emit(Op.OP_IF, locationData);
-          this.emitPickCompilerRouteFrameValue(
-            `__internal__externalReturnOutputIdx${left.returnSlotIndex}`, locationData, 2,
-          );
-          this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
-          this.emitPickCompilerRouteFrameValue(
-            `__internal__externalReturnOutputIdx${right.returnSlotIndex}`, locationData, 3,
-          );
-          this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
-          this.emit(Op.OP_EQUALVERIFY, locationData);
-          this.emit(Op.OP_ENDIF, locationData);
-          this.emit(Op.OP_ENDIF, locationData);
-          this.emit(Op.OP_2DROP, locationData);
         }
       }
     }
-
-    // H2: bind each caller return read to the genuine callee return event by enforcing per-callee UNIQUENESS. The
-    // caller reads a return from a free witness index; nothing pinned it to the output the callee constrained, so
-    // an attacker could mint an extra (category-C, none-cap, FT-0, OP_TRUE) output with a forged commitment and
-    // point the witness at it (the co-spent callee master authorizes minting category-C outputs). Count the
-    // OP_TRUE + category-C outputs per callee and require the count to equal that callee's genuine returning-call
-    // count, so no forged twin can exist alongside any number of honest returns. Regular events carry a P2SH32
-    // covenant bytecode (not OP_TRUE) and never match.
-    //
-    // Group by callee address identity (not by slot): every slot targeting the same contract shares its category.
-    // A runtime-loop return (`data.tagAt(i)`) produces one return event PER ITERATION, so its count is not a
-    // compile-time constant; skip uniqueness for a callee that has any loop return (the old single-slot workaround
-    // already did this). Slots with no address identity (msg.sender / loop-array / function-pointer targets) are
-    // left to their per-slot identity checks, as before.
-    const returnGroups = new Map<string, { slot?: ExternalCallSlot; count: number; looped: boolean }>();
-    for (const slot of this.externalCallSlots) {
-      if (!slot.hasReturnValues) continue;
-      const identity = slot.addressParam ? `param:${slot.addressParam}`
-        : slot.addressStateVar ? `state:${slot.addressStateVar}`
-          : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
-      if (identity === '') continue;
-      const looped = slot.inlineLoopDispatch || this.isExternalCallSlotLoopNested(slot);
-      const existing = returnGroups.get(identity);
-      if (existing) {
-        existing.looped = existing.looped || looped;
-        if (!looped) {
-          existing.count += 1;
-          existing.slot ??= slot;
-        }
-      } else {
-        returnGroups.set(identity, { slot: looped ? undefined : slot, count: looped ? 0 : 1, looped });
-      }
-    }
-    for (const { slot, count, looped } of returnGroups.values()) {
-      if (!looped && slot !== undefined && count > 0) {
-        this.emitReturnEventUniqueness(slot, count, locationData);
-      }
-    }
-  }
-
-  // H2 helper: require exactly `expectedCount` outputs matching the return-event fingerprint of `slot`'s callee
-  // category (32-byte none-cap category == B, locking bytecode == OP_TRUE). Mirrors emitMintingNftUniqueness'
-  // output loop. `expectedCount` is the number of genuine returning calls to that callee, so any forged twin is
-  // refused whether the call site is single or one of several.
-  private emitReturnEventUniqueness(slot: ExternalCallSlot, expectedCount: number, loc: SingleLocationData): void {
-    // Compute B's 32-byte category from the co-spent callee master (per-slot runtime index or base+offset).
-    this.emitSlotMasterIndex(slot, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(0n), loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_DROP, loc); // [B_cat32]
-    this.pushToStack('(b_cat)');
-
-    this.emit(encodeInt(0n), loc); // counter
-    this.pushToStack('(re_count)');
-
-    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
-    this.emit(Op.OP_1SUB, loc);
-    this.pushToStack('(loop_j)');
-    this.emit(Op.OP_BEGIN, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(0n), loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(encodeBool(true), loc);
-    this.emit(Op.OP_ELSE, loc);
-    // category match: output[j] category (32-byte none-cap) == B_cat32
-    this.emit(Op.OP_DUP, loc);                 // copy j
-    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // outcat (32 for none-cap, 33 otherwise)
-    this.emit(encodeInt(3n), loc);             // pick b_cat (outcat=0, j=1, count=2, b_cat=3)
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_EQUAL, loc);               // catMatch
-    this.emit(Op.OP_IF, loc);
-    // bytecode match: output[j] locking bytecode == OP_TRUE (0x51)
-    this.emit(Op.OP_DUP, loc);                 // copy j
-    this.emit(Op.OP_OUTPUTBYTECODE, loc);
-    this.emit(hexToBin('51'), loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_SWAP, loc);                // [.., count, j] -> [.., j, count]
-    this.emit(Op.OP_1ADD, loc);
-    this.emit(Op.OP_SWAP, loc);                // [.., count+1, j]
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_1SUB, loc);                // j--
-    this.emit(encodeBool(false), loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_UNTIL, loc);
-    this.popFromStack(); // (loop_j)
-
-    this.emit(encodeInt(BigInt(expectedCount)), loc);
-    this.emit(Op.OP_NUMEQUALVERIFY, loc); // exactly the genuine return events, no forged twin
-    this.popFromStack(); // (re_count)
-    this.emit(Op.OP_DROP, loc);
-    this.popFromStack(); // (b_cat)
-    this.emit(Op.OP_ENDIF, loc);
   }
 
   private emitExternalOutStateVerification(node: FunctionDefinitionNode): void {

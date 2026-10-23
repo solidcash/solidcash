@@ -1,11 +1,13 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodePushdataValue } from '@solidcash/utils';
+import { CALL_RECORD_DIGEST_BYTES, callRecordCommitment } from './stateful/call-record.js';
 import type { Contract } from './Contract.js';
 import { TransactionBuilder } from './TransactionBuilder.js';
 import type { NetworkProvider } from './network/index.js';
 import type { Utxo, Unlocker } from './interfaces.js';
 
 const OP_TRUE = new Uint8Array([0x51]);
+const OPAQUE_DIGEST = new Uint8Array(CALL_RECORD_DIGEST_BYTES);
 
 /**
  * One entry in the unified external-target registry (keyed by address = locking bytecode hex). Serves both the
@@ -203,7 +205,12 @@ export function buildOpaqueLoopCallTransaction(opts: BuildOpaqueLoopCallOptions)
     tb.addOutput({
       to: OP_TRUE,
       amount: returnDust,
-      token: { category, amount: 0n, nft: { capability: 'none', commitment: binToHex(cospends[i].returnData) } },
+      token: {
+        category,
+        amount: 0n,
+        // An opaque read checks no digest: the record carries its claimed result inline.
+        nft: { capability: 'none', commitment: binToHex(callRecordCommitment(cospends[i].returnData, OPAQUE_DIGEST)) },
+      },
     });
   }
 

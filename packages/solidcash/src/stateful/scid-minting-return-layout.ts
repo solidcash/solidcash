@@ -271,6 +271,8 @@ export type MaterializedReturnExpectation = {
   groupIndex: number;
   categoryId: string;
   commitment: Uint8Array | string;
+  /** The digest of the call a direct return record answers; none for a routed one. */
+  digest?: Uint8Array;
   currentIndex?: number;
   builtIndex?: number;
 };
@@ -299,7 +301,7 @@ export function matchMaterializedReturnOutputs(
     if (output.token?.category?.toLowerCase() !== expected.categoryId.toLowerCase()) return false;
     const raw = typeof expected.commitment === 'string'
       ? hexToBin(commitmentHexOf(expected.commitment)) : expected.commitment;
-    const wanted = raw.length === 0 ? '0101' : returnEventNftCommitment(raw);
+    const wanted = raw.length === 0 ? '0101' : returnEventNftCommitment(raw, expected.digest);
     return commitmentHexOf(output.token.nft?.commitment).toLowerCase() === wanted;
   };
 

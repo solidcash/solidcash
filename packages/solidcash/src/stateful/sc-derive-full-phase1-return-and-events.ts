@@ -173,6 +173,11 @@ export function deriveFullPhase1ReturnAndEvents(
         }
       }
     }
+    // A direct callee pins its call's record: the checks below read the result behind it.
+    const recordIdentity = `external-call:${logicalReturnGroupIndex(externalCallUtxoGroups, groupIdx)}`;
+    returnCommitments = returnCommitments?.map((commitment) => binToHex(
+      stb.rawOfReturnRecord(recordIdentity, hexToBin(commitment), fullTraceRet),
+    ));
     // An exact return-output comparison binds the result to the compiler-assigned channel. A schema-shaped
     // stack value is only fallback evidence: mappings and state serialization can leave canonical pushdata
     // wrappers around unrelated ABI-width words (for example a hashed key) in the same route frame.
@@ -248,6 +253,8 @@ export function deriveFullPhase1ReturnAndEvents(
         group.categoryId,
         hexToBin(returnCommitments[0]),
         `external-call:${returnGroupIndex}`,
+        false,
+        fullTraceRet,
       );
       // A shared ordinary readonly input executes only one selected zero-argument frame. Every active
       // identical alias is bound to that same result by the caller covenant; retain its distinct output channel.
@@ -257,7 +264,9 @@ export function deriveFullPhase1ReturnAndEvents(
             || alias.readonlyReturnSelector !== group.readonlyReturnSelector
             || alias.callerIdentity?.categoryId !== group.callerIdentity?.categoryId
             || alias.callerIdentity?.lockingBytecode !== group.callerIdentity?.lockingBytecode) continue;
-          stb.setReturnEventOutput(group.categoryId, hexToBin(returnCommitments[0]), `external-call:${aliasIndex}`);
+          stb.setReturnEventOutput(
+            group.categoryId, hexToBin(returnCommitments[0]), `external-call:${aliasIndex}`, false, fullTraceRet,
+          );
         }
       }
       if (returnGroupIndex !== groupIdx) {
@@ -265,6 +274,8 @@ export function deriveFullPhase1ReturnAndEvents(
           group.categoryId,
           hexToBin(returnCommitments[0]),
           `external-call:${groupIdx}`,
+          false,
+          fullTraceRet,
         );
       }
     }
@@ -681,11 +692,11 @@ export function deriveFullPhase1ReturnAndEvents(
       const returnGroupIndex = logicalReturnGroupIndex(externalCallUtxoGroups, groupIdx);
       const commitment = hexToBin(returnCommitments[0]);
       stb.setReturnEventOutput(
-        group.categoryId, commitment, `external-call:${returnGroupIndex}`,
+        group.categoryId, commitment, `external-call:${returnGroupIndex}`, false, returnTrace,
       );
       if (returnGroupIndex !== groupIdx) {
         stb.setReturnEventOutput(
-          group.categoryId, commitment, `external-call:${groupIdx}`,
+          group.categoryId, commitment, `external-call:${groupIdx}`, false, returnTrace,
         );
       }
     }

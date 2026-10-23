@@ -912,10 +912,9 @@ needs VM evidence, `rejectedWith` has no source fallback).
 
 ### Not changed, by decision
 
-- Direct-convention call model: presence-based `msg.sender` (F1), no sighash fence on ordinary entries (F2), typed calls
-  binding only the selector, view/static calls in regular mode (D6, kernel alignment). A callee-side return binding was
-  built (`ce51b6f18`, branch `worktree-agent-ae6a0ed55c350b8f7`) and held: it supersedes D11 and refuses honest direct
-  double calls with different arguments, and loop reads stay unbound. The framed convention is the sound route.
+- Direct-convention call model: presence-based `msg.sender` (F1), no sighash fence on ordinary entries (F2), view/static
+  calls in regular mode (kernel alignment). Typed calls binding only the selector, and the held callee-side return
+  binding `ce51b6f18`: superseded by call records (D50), below.
 - DX-9 in the bus, model B, D48, the opt-in `initializeAs: 'hop'` (SDKFRAMED-2), X1 (D11): user decisions.
 - `unsafe` tiers and an authorized upgrade's new code: by design.
 
@@ -931,3 +930,39 @@ needs VM evidence, `rejectedWith` has no source fallback).
   `45411dffa` left routed delegates to their verifier, which counts records only inside the participant block. A proxy
   record outside that block, such as a value chunk in the fee slot, may have no check. Not yet checked (found
   2026-10-22 while fixing the graph band).
+
+## Direct call results bound by call records (2026-10-22, D50)
+
+Merged into `master` from `feat/call-records`: `8e6d14f44`, `141bd8ef2`, `56271e705`, `3115d9d9c`, `a6222d08d`.
+Design: `docs/wip/call-records/DESIGN.md`.
+
+### Fixed
+
+- **Direct return binding** (was "Not changed, by decision"). A direct caller's read was bound to the callee's
+  category, and to its selector for a multi-function callee, but not to the arguments the callee ran. A spender could
+  co-spend the callee on other arguments, or lay a carrier of its category beside the callee's, and the caller took
+  that result. A direct callee's return carrier is now a call record, `digest(31) || form(1) || result`, the digest
+  over the call's selector and arguments, the result inline up to 96 bytes or its SHA256 with the bytes in the
+  caller's witness. The callee pins its record and holds the transaction to exactly the records it pinned (one, or
+  none for a run that returns nothing). The caller digests its own call and reads only that record. Tests:
+  `packages/solidcash/test/e2e/CallRecords.test.ts`. The two forgery cases carry a control: the same transaction is
+  accepted once the caller's own argument agrees, so the digest is what refuses it.
+- **D11's residual** (a third own-category `OP_TRUE` carrier beside a delegate): the implementation's delegated entry
+  pins the forwarded call's record in the proxy's category and counts that category. Test: the forwarded-call case in
+  `CallRecords.test.ts`.
+- **D6 on a loop over computed targets**: each iteration's callee runs that iteration's call and the caller checks its
+  record per iteration. The SDK resolved every iteration's callee with iteration 0's arguments; it now resolves each
+  iteration's own (`sc-expand-resolve-create-builder-external-calls.ts`). Test: the loop case in
+  `CallRecords.test.ts`.
+
+### Open, or bound otherwise
+
+- An opaque read (`call`, Multicall-style loops) checks no digest, as its payload is opaque: its result is bound by
+  the exact count and by D8's argument binding. A Multicall over arbitrary non-SolidCash targets stays
+  caller-permissive (`loop-call.ts`).
+- R11's view witnesses in a loop stay caller-permissive, as before.
+- A callee spent once runs one call. A fixed callee repeated in a loop is refused by the direct builder; two calls with
+  different arguments to one callee fail the count on a direct path. Both run through the atomic composer (message
+  bus), which binds each row. Two master threads of one callee in one transaction are refused by the count.
+- A loop iteration's result must fit 96 bytes inline: there is no per-iteration preimage witness, so a hashed record
+  fails the read (fail closed).

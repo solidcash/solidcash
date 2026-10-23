@@ -837,6 +837,13 @@ rerun: the marketplace corpus compiled cold at the final master is identical to 
   mocknet node accepted it). That route now takes `__internal__participantBlockSize`, bound in its binder digest
   against the verifier's own `activeBlockSize`, and claims only that block once the verifier ran: +8 to +9 B per bound
   leaf route and +5 B on its verifier; marketplace artifacts unchanged. Test: `AuditC3BusLeafValueChunkBand.test.ts`.
+- **C3 proxied routes** (`6cece8511`, found 2026-10-23). On a proxy's block both C3 pins returned early, `45411dffa`
+  pinned only direct delegates, and the certified default proxy drops its record count, so nothing held a proxy record
+  a delegate route does not touch. The route pin now runs there: base the proxy master the prologue and binder
+  authenticate, its own category, the verifier exempt by index; window `__internal__graphBlockSize` on a graph route,
+  else `__internal__participantBlockSize` once the verifier ran and the compile-time block on a standalone run.
+  Delegate artifacts +60 to +81 B; non-proxy artifacts byte-identical. Test: `AuditC3BusProxyRoutePin.test.ts`
+  (compile check and an honest proxied compose; no hostile transaction was built).
 - **DS-2 class, state read through a subroutine** (`095cb22d4`, `6fdfaad23`). An entry (and a split or merge entry)
   that read state only through an invoked body skipped the data-NFT lock pin, so a mutable NFT of C at a foreign lock
   could be read as state. Test: `packages/solidc/test/AuditDataLockSubroutineRead.test.ts`.
@@ -932,10 +939,9 @@ needs VM evidence, `rejectedWith` has no source fallback).
   of a collection a run handler names is not pinned.
 - CRYPTO-4: dynamic and value chunks have no migration path.
 - A direct merge of masters holding records checks them relative to `OP_INPUTINDEX` (liveness).
-- Proxied routes: on a proxy's block the route pin and the counted pin both return early
-  (`usesProxyStateBlockBase`), and the default proxy's record count is dropped for certified delegates, so from the
-  code nothing holds a proxy record the route does not touch, standalone or composed (2026-10-23, read, not run). Fix
-  in progress.
+- Proxy position on a standalone delegate run (read, not checked): the default proxy's `__forward` pins the
+  implementation's lock and payload but not its position, and the delegate takes the minting master at
+  implementation - B as its base, so the forwarding proxy and the pinned base may differ.
 
 ## Direct call results bound by call records (2026-10-22, D50)
 

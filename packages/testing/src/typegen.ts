@@ -61,9 +61,9 @@ function sourceModules(contractsDir: string): Map<string, { module: string; iden
 }
 
 function stableArtifactJson(artifact: Artifact): string {
-  const stable: Partial<Artifact> = { ...artifact };
-  delete stable.updatedAt;
-  return JSON.stringify(stable);
+  // The compiler writes a flat and a nested copy, and each copy's lazy delegate build carries its own timestamp.
+  // Drop every `updatedAt` so the copies compare by content, while any real bytecode or ABI difference still fails.
+  return JSON.stringify(artifact, (key, value: unknown) => key === 'updatedAt' ? undefined : value);
 }
 
 function readArtifacts(artifactsDir: string, contractsDir: string): ArtifactFile[] {

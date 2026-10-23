@@ -219,6 +219,45 @@ describe('TypeChain-compatible generation', () => {
     expect(fs.readFileSync(path.join(options.targets[0].outDir, 'contracts', 'nested', 'Counter.ts'), 'utf8'))
       .toContain('Ethers 5-compatible layout');
   });
+  it('merges flat and nested copies whose delegate timestamps differ', () => {
+    const root = project();
+    const flat = artifact('2026-01-01T00:00:00.000Z');
+    flat.delegateArtifact = { ...artifact('2026-01-01T00:00:01.000Z'), contractName: 'CounterDelegate' };
+    writeFixture(root, flat);
+    fs.writeFileSync(path.join(root, 'artifacts', 'solidcash', 'Counter.json'), JSON.stringify(flat));
+    const nested = artifact('2026-01-02T00:00:00.000Z');
+    nested.delegateArtifact = { ...artifact('2026-01-02T00:00:01.000Z'), contractName: 'CounterDelegate' };
+    fs.writeFileSync(
+      path.join(root, 'artifacts', 'solidcash', 'contracts', 'nested', 'Counter.scash', 'Counter.json'),
+      JSON.stringify(nested),
+    );
+    const outDir = path.join(root, 'typechain-types');
+    expect(() => generateTypechainTargets({
+      artifactsDir: path.join(root, 'artifacts', 'solidcash'),
+      contractsDir: path.join(root, 'contracts'),
+      cacheDir: path.join(root, 'cache', 'solidcash'),
+      targets: [{ target: 'ethers6', outDir }],
+    })).not.toThrow();
+    expect(fs.existsSync(path.join(outDir, 'contracts', 'nested', 'Counter.ts'))).toBe(true);
+  });
+  it('rejects flat and nested copies with different content', () => {
+    const root = project();
+    writeFixture(root, artifact('2026-01-01T00:00:00.000Z', '51'));
+    fs.writeFileSync(
+      path.join(root, 'artifacts', 'solidcash', 'Counter.json'),
+      JSON.stringify(artifact('2026-01-01T00:00:00.000Z', '51')),
+    );
+    fs.writeFileSync(
+      path.join(root, 'artifacts', 'solidcash', 'contracts', 'nested', 'Counter.scash', 'Counter.json'),
+      JSON.stringify(artifact('2026-01-01T00:00:00.000Z', '52')),
+    );
+    expect(() => generateTypechainTargets({
+      artifactsDir: path.join(root, 'artifacts', 'solidcash'),
+      contractsDir: path.join(root, 'contracts'),
+      cacheDir: path.join(root, 'cache', 'solidcash'),
+      targets: [{ target: 'ethers6', outDir: path.join(root, 'typechain-types') }],
+    })).toThrow(/multiple distinct artifacts/);
+  });
   it('regenerates cached bindings when an obsolete generated contract remains', () => {
     const root = project();
     writeFixture(root, artifact());

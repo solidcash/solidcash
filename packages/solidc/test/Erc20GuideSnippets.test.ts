@@ -35,11 +35,14 @@ const importResolver = (importPath: string, currentFile: string): { source: stri
   return existsSync(file) ? { source: readFileSync(file, 'utf8'), id: file } : undefined;
 };
 
-const compileSnippet = (contractName: string) => compileString(fencedBlockDeclaring(contractName), {
-  importResolver,
-  rootFileId: join(here, 'doc-snippet.scash'),
-  suppressWarnings: true,
-});
+const compileSnippet = (contractName: string): ReturnType<typeof compileString> => compileString(
+  fencedBlockDeclaring(contractName),
+  {
+    importResolver,
+    rootFileId: join(here, 'doc-snippet.scash'),
+    suppressWarnings: true,
+  },
+);
 
 describe('ERC-20 guide snippets', () => {
   it('compiles the scaled ledger snippet against the shipped BchNative base', () => {

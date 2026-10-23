@@ -18,6 +18,7 @@ import SignatureTemplate from '../../solidcash/src/SignatureTemplate.js';
 import { createSighashPreimage } from '../../solidcash/src/utils.js';
 import { alicePriv, alicePub } from '../../solidcash/test/fixture/vars.js';
 import { encodeEntryCommitment, keyToSlot, keyToSlotMulti } from '../../solidcash/src/stateful/SortedList.js';
+import { callRecordCommitment, callRecordDigest } from '../../solidcash/src/stateful/call-record.js';
 import { compileString, compileStringSplit } from '../src/index.js';
 
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
@@ -818,7 +819,10 @@ describe('October 2026 class C holes', () => {
     const spend = (which: bigint): Array<true | string> => {
       const n = which === 0n ? 1 : 0;
       const returned = which === 0n ? idOf(pickerArtifact, 'ok') : idOf(pickerArtifact, 'other');
-      const commitment = join([encodedId(n), encodedId(returned)]);
+      // D50: the carrier is the record of this call, digest(get, which) || form 1 || result.
+      const digest = callRecordDigest(pickerFn, pickerFn.inputs.map((entry) => (entry.name === 'which' ? which : 0n)));
+      if (!digest) throw new Error('get publishes no selector');
+      const commitment = callRecordCommitment(join([encodedId(n), encodedId(returned)]), digest);
       const callerValues: Record<string, Uint8Array> = {
         target: pickerLock,
         which: num(which),

@@ -103,14 +103,16 @@ The unconditional return-event ordering coverage is regtest-gated; unbounded ret
 **Release-ready on the mocknet gates at `c7dc1b535`** (`master`, 2026-10-19). Every gate in the table below exits 0
 at that commit, and the six residuals and five skips above stay non-blocking. `master` carries all the release work:
 the readiness and matrix fixes (merge `168a45b9d`), `feat/tether-bch-native` (merge `e974a00e4`),
-`solidcash_v0.13.1` (merge `30b457b10`, history only) and the D30 record (`c7dc1b535`). Two items outside the gates
-are left for the release owner:
+`solidcash_v0.13.1` (merge `30b457b10`, history only) and the D30 record (`c7dc1b535`). The most recent mocknet
+verification is 2026-10-23 at `0f7da2afa`, on `release-readiness/2026-10-22` taken from master `809de50f8`; its gate
+table, the re-pin it needed and the four green marketplace cells are in "The 2026-10-23 verification" below. Two
+items outside the gates are left for the release owner:
 
 - `release-application-regtest` was not run: verification ran on mocknet only, by instruction. It last passed
   against stock BCHN v29.0.0 at `88cc906ec` (`docs/framed/REGTEST_AT_HEAD.md`).
-- The marketplace matrix last ran at `14bfff57a`, all four cells green (262/262). `master` has since gained the
-  tether branch's compiler and SDK commits; at `c7dc1b535` the marketplace bytecode identity is unchanged, but the
-  four cells were not re-run.
+- The marketplace matrix ran at `14bfff57a` with all four cells green (262/262), and again at `7e5c0f897` on
+  2026-10-23 with the same four cells green (262/262), the latter on master `809de50f8` with the D49 layout. Both
+  are semantic mock results on their named commits, not stock-BCHN claims.
 
 ## Gate and suite evidence
 
@@ -174,6 +176,52 @@ gate's two fresh compiles agree with each other. A bisect over the first-parent 
 `4ebd75bfa`, the merge before the D49 branch landed, locates the first deviation at `efba0f1ef`
 (`fix(containers): drop the token container's permissionless merge path`), inside the framed token-container line;
 the identity then tracks that line's churn (242044 and 260292 full bytes at intermediate commits) to the endpoint.
+
+### The 2026-10-23 verification
+
+Every mocknet gate was re-run from the isolated worktree `/Code/cashscript/.worktrees/release-readiness`, branch
+`release-readiness/2026-10-22`, created from master `809de50f8`; the verified tree is `0f7da2afa` (this section was
+written after that run). Runs were made one at a time with `TESTS_USE_REGTEST` unset and no `SOLIDC_*` or `FRAMED_*`
+overrides, and the tree was clean before and after each gate. The worktree's 237 symlinks all resolve inside it or to
+the sibling `effectiveacceleration.ai` checkout.
+
+| Gate | Commit | Result |
+|---|---|---|
+| `scripts/gate.sh full` | `0f7da2afa` | exit 0 (675 s): identity `{"routeBytes":44840,"fullBytes":247572,"fullHash":"bf00ad8f2b11dc1e"}` matches; utils 525/525; solidc 473 files, 7431 passed, 0 failed |
+| `kernel-beta-gate` | `7e5c0f897` | exit 0 (34 min) without `--allow-dirty`: `diagnosticOnly: false`, `head 7e5c0f897`, sourceFingerprints matched, every required kernel proof passed |
+| `yarn test` | `7e5c0f897` | exit 0 (34 min): utils 525/525; solidc 7431 passed; solidcash 5988 passed, 5 expected failures, 186 skipped, 5 todo; testing 118/118; testing-suite 27/27; solidhat 71 passed, 1 skipped |
+| `yarn test:e2e` | `7e5c0f897` | exit 0 (23 min): 608 files, 3786 passed, 24 skipped, 3 todo, 0 failed |
+| `yarn lint` | `0f7da2afa` | exit 0 (308 s) |
+| `yarn spellcheck` | `0f7da2afa` | exit 0, no unknown words |
+| `check:source-tree` | `0f7da2afa` | exit 0 |
+| `check:doc-citations` | `0f7da2afa` | exit 0 |
+| `release-security-conformance` | `0f7da2afa` | exit 0 (80 s) |
+| `release-package-smoke` | `0f7da2afa` | exit 0 (317 s) |
+| `release-docs-snippets` | `0f7da2afa` | exit 0 (10 s): 346 blocks, 172 standalone, 160 compiled, 12 skipped (imports a file the docs do not ship), 2 historical, 0 failed |
+| `release-corpus-baseline` | `0f7da2afa` | exit 0 against the retained scorecard |
+| `release-application-conformance` | `0f7da2afa` | exit 0 (13 s) |
+| `release-generated-project-smoke` | `0f7da2afa` | exit 0 (28 s) |
+| marketplace matrix | `7e5c0f897` | all four cells green, 262/262, 0 failed and 0 skipped; see `../../marketplace/marketplace-matrix-2026-10-14.md` |
+| `release-application-regtest` | not run | mocknet-only verification, as in the 2026-10-19 run |
+
+The gates ran at three successive commits because each failure was fixed and committed before the next gate: the
+re-pin and the vocabulary fix, then the layout pins and the SDK derivation fix (`7e5c0f897`), then a return type on
+the new guide-snippet test helper (`0f7da2afa`, test-only; the matrix cells' shipped code is unchanged by it).
+
+What this run changed:
+
+- The bytecode identity and both kernel cold baselines were re-pinned, as recorded in the 2026-10-22 section above.
+- `kernel-beta-gate` refused an application name in the regtest provider's comment. The comment was fixed and the
+  gate's vocabulary scan moved into `scripts/kernel-beta-vocabulary.mjs`, pinned by
+  `scripts/kernel-beta-vocabulary.test.mjs`.
+- Four D49 layout pins moved: the proxied `Table` fixture's data-NFT counts, the conditional-return output indices,
+  and the `deployProxy` route's counts. Their assertions are unchanged; the values come from the compiled layouts.
+- A D49 regression in the SDK's caller-side derivation: a framed callee whose entry writes two data NFT records had
+  its second record materialized with the pre-call commitment, so the callee's route refused the transaction with
+  `OP_VERIFY` at its master input. The derivation now re-probes until every required record is learned, pinned by
+  `FramedExternalCallMultiRecordState.test.ts`.
+- Two ERC-20 guide snippets gained the imports they were missing, and the scaled snippet its hook implementations;
+  `Erc20GuideSnippets.test.ts` compiles both against the shipped `solidcash/contracts` base contracts.
 
 ### What closed the 2026-10-17 failures
 

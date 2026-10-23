@@ -23077,6 +23077,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
+    // No arguments encode as empty bytes, still one value.
+    if (node.parameters.length === 0) {
+      this.emit(new Uint8Array(0), locationData);
+      this.pushToStack('(value)');
+      return node;
+    }
+
     node.parameters.forEach((param, i) => {
       param = this.visit(param);
       node.parameters[i] = param;
@@ -23147,6 +23154,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitAbiEncodePacked(node: AbiEncodePackedNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
+
+    // No arguments encode as empty bytes, still one value.
+    if (node.parameters.length === 0) {
+      this.emit(new Uint8Array(0), locationData);
+      this.pushToStack('(value)');
+      return node;
+    }
 
     node.parameters.forEach((param, i) => {
       const evmPacked = this.compilerOptions.evmCompat;

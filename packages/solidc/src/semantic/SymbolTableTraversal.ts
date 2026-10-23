@@ -14328,6 +14328,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     // g(); }`). Classify it before consulting the contract-wide overload map.
     const calleeSym = this.symbolTables[0].get(node.identifier.name);
     const hasFunctionOverloads = this.functionDefinitions.has(node.identifier.name);
+    // `this.x()` is the getter of a public function-pointer state variable: with no function named x it reads
+    // x. Calling through the pointer x holds instead left no value for the expression.
+    const getterVisibility = this.stateVariableMap.get(node.identifier.name)?.visibility;
+    if (node.fromThisCall && node.parameters.length === 0 && !hasFunctionOverloads
+      && calleeSym?.symbolType === SymbolType.STATE_VARIABLE && calleeSym.type instanceof FunctionType
+      && (getterVisibility === StateVariableVisibility.PUBLIC || getterVisibility === StateVariableVisibility.EXTERNAL)) {
+      return this.visit(node.identifier);
+    }
     const lexicalPointerShadow = (calleeSym?.symbolType === SymbolType.VARIABLE
       || calleeSym?.symbolType === SymbolType.STATE_VARIABLE)
       && calleeSym.type instanceof FunctionType && hasFunctionOverloads;
@@ -14469,7 +14477,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       && calleeSym.type instanceof FunctionType && hasFunctionOverloads;
     if (calleeSym?.type instanceof FunctionType && (!hasFunctionOverloads || lexicalPointerShadow)) {
       if (lexicalPointerShadow) node.call.lexicalIndirectCall = true;
-      node.call = this.visit(node.call) as FunctionCallNode;
+      const call = this.visit(node.call);
+      // A getter read (`this.x();`) is a discarded value, not a call.
+      if (call instanceof StateAccessNode) {
+        const statement = new ExpressionStatementNode(call);
+        statement.location = node.location;
+        return statement;
+      }
+      node.call = call as FunctionCallNode;
       const foldedRevert = this.foldedCallRevertStatement(node.call);
       if (foldedRevert) return this.visit(foldedRevert);
       return node;

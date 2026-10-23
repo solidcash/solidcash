@@ -315,3 +315,26 @@ Full copies of the two long-running logs before their master versions were trimm
 | --- | --- | --- |
 | `bench/solidity-corpus/PROGRESS_2026-10-12.md` | `bench/solidity-corpus/PROGRESS.md` at `66f6839ea` | full session log through 2026-10-12 |
 | `packages/solidc/docs/deferrals_2026-10-20.md` | `packages/solidc/docs/deferrals.md` at `66f6839ea` | full deferral log before resolved-entry trim |
+
+## Batch 2026-10-23
+
+Archived from `master` at `803659e76`. 16 file(s).
+
+| path | kind | first seen | last active | last commit | open items now live in |
+| --- | --- | --- | --- | --- | --- |
+| `docs/framed/PERF_KERNEL_VS_FRAMED.md` | historical snapshot | 2026-10-06 | 2026-10-23 | `ee594bc31` | docs/README.md |
+| `docs/framed/TRIAGE_SECURITY.md` | historical snapshot | 2026-10-06 | 2026-10-20 | `cec06b30e` | docs/README.md |
+| `docs/design/COMPARISON.md` | historical snapshot | 2026-10-20 | 2026-10-20 | `b1df6be93` | docs/README.md |
+| `docs/design/PERF_FINDINGS.md` | historical snapshot | 2026-10-20 | 2026-10-20 | `b1df6be93` | docs/README.md |
+| `docs/security/security-audit-2026-10-15.md` | historical snapshot | 2026-10-20 | 2026-10-20 | `b1df6be93` | docs/README.md |
+| `docs/security/security-audit-2026-10-feat-parity.md` | historical snapshot | 2026-10-20 | 2026-10-20 | `b1df6be93` | docs/README.md |
+| `packages/solidc/docs/message-bus-semantic-test-profile.md` | historical snapshot | 2026-08-03 | 2026-08-03 | `9d9a42b3d` | docs/README.md |
+| `packages/solidc/docs/buffered-state-and-message-bus-research.md` | historical snapshot | 2026-07-26 | 2026-08-09 | `875366745` | docs/README.md |
+| `packages/solidc/docs/mapping-soundness-research.md` | historical snapshot | 2026-07-08 | 2026-08-09 | `875366745` | docs/README.md |
+| `packages/solidc/docs/delegate-modifier-drop-evaluation.md` | historical snapshot | 2026-07-25 | 2026-07-25 | `0c579efc9` | docs/README.md |
+| `packages/solidc/docs/solidity-gap-analysis.md` | historical snapshot | 2026-06-17 | 2026-10-23 | `ee594bc31` | docs/README.md |
+| `packages/solidcash/test/SKIPPED-TESTS.md` | historical snapshot | 2026-07-23 | 2026-08-09 | `875366745` | docs/README.md |
+| `research/keccak-poc/README.md` | historical snapshot | 2026-07-22 | 2026-07-22 | `09fa261be` | docs/README.md |
+| `research/keccak-poc/SIDECAR.md` | historical snapshot | 2026-07-22 | 2026-07-22 | `09fa261be` | docs/README.md |
+| `research/keccak-poc/INTEGRATION.md` | historical snapshot | 2026-07-22 | 2026-08-03 | `9d9a42b3d` | docs/README.md |
+| `research/ecrecover-poc/README.md` | historical snapshot | 2026-07-22 | 2026-07-22 | `09fa261be` | docs/README.md |

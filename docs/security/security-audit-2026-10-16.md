@@ -859,6 +859,13 @@ rerun: the marketplace corpus compiled cold at the final master is identical to 
   block after the proxy (six route and compose tests failed). `8033bfa46` adds the committed constructor input
   `__proxyRouteBlockSize`: the forwarded selector, bound to the delegate's first push, picks exactly one distance
   (the route's for `SCB1`, the direct one otherwise). Proxy 362 -> 384 B; every proxy address changes again.
+- **Direct delegate owner distance** (`c1883fb8e`, found 2026-10-23). A direct delegate whose block exceeds
+  `1 + dataNftCount` (entry, event, return-event, keccak or ecrecover slots) accepted its block size as a second owner
+  distance beside the one the forward pins, so the witness picked which. Its prologue now accepts only
+  `1 + dataNftCount` (a route keeps its route block), and its entry, effect and side-car slots follow its own input.
+  Affected implementations shrink, so their addresses change; the shipped proxy is unchanged. Test:
+  `DelegateOwnerDistance.test.ts` (the accepted distance against the pinned one for each shape, and an honest
+  `deployProxy` call); the displaced-owner transaction was not built.
 - **DS-2 class, state read through a subroutine** (`095cb22d4`, `6fdfaad23`). An entry (and a split or merge entry)
   that read state only through an invoked body skipped the data-NFT lock pin, so a mutable NFT of C at a foreign lock
   could be read as state. Test: `packages/solidc/test/AuditDataLockSubroutineRead.test.ts`.
@@ -948,10 +955,8 @@ needs VM evidence, `rejectedWith` has no source fallback).
 
 ### Open
 
-- Direct delegate owner (read, not checked; 2026-10-23): a direct delegate whose block is larger than
-  `1 + dataNftCount` takes `OP_INPUTINDEX - blockSize` as its owner in its prologue, which the forward's direct
-  distance does not match; whether such a delegate can be reached through a forwarder, and what then holds the
-  forwarding proxy's records, is unchecked.
+- A forwarder with neither `delegateForwarding` nor a low-level call slot (artifacts from before 2026-09) still
+  places a direct delegate after its full block, which the delegate now refuses (`c1883fb8e`): fail-closed.
 
 - MIG-1 (privileged): `migrateRecords` still binds a free replacement lock; committing it needs a master-commitment
   protocol, and the state-access path does not pin the master commitment (2026-07 LOW, no impact today).

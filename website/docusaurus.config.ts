@@ -67,12 +67,12 @@ const config: Config = {
           title: 'Social',
           items: [
             {
-              label: 'Kalis.me',
-              href: 'https://kalis.me',
+              label: '@mainnet_pat',
+              href: 'https://t.me/mainnet_pat',
             },
             {
               label: 'Twitter',
-              href: 'https://twitter.com/SolidCashBCH',
+              href: 'https://x.com/mainnet_pat',
             },
           ],
         },

@@ -844,6 +844,17 @@ rerun: the marketplace corpus compiled cold at the final master is identical to 
   else `__internal__participantBlockSize` once the verifier ran and the compile-time block on a standalone run.
   Delegate artifacts +60 to +81 B; non-proxy artifacts byte-identical. Test: `AuditC3BusProxyRoutePin.test.ts`
   (compile check and an honest proxied compose; no hostile transaction was built).
+- **Proxy position on a standalone delegate run** (`2f5a671b4`, found 2026-10-23). The default proxy's `__forward`
+  pinned the implementation's lock and forwarded calldata but not its position, and the delegate takes its state
+  owner at `OP_INPUTINDEX - (1 + dataNftCount)`. A delegate placed after another master's block was therefore
+  authorized against that master, while the forwarding proxy's own state covenant is skipped on the delegatecall
+  path, so the forwarding proxy's state was forgeable (the C1 class). A forwarder now publishes the distance as the
+  compiler-owned constructor input `bigint __proxyBlockSize` (the built-in proxy passes the grafted
+  `1 + dataNftCount`) and the forward requires `delegateIndex == OP_INPUTINDEX + __proxyBlockSize`; the value is
+  committed by the forwarder's own p2sh32. Proxy artifacts +12 B and every proxy address changes. Coverage is
+  compile-level (`DelegateInputIndexCoordinates.test.ts` asserts the pin, and its absence for a forwarder that
+  publishes no distance) plus the honest proxy suites; the displaced-delegate transaction was not built, so the
+  refusal itself is unrun.
 - **DS-2 class, state read through a subroutine** (`095cb22d4`, `6fdfaad23`). An entry (and a split or merge entry)
   that read state only through an invoked body skipped the data-NFT lock pin, so a mutable NFT of C at a foreign lock
   could be read as state. Test: `packages/solidc/test/AuditDataLockSubroutineRead.test.ts`.
@@ -939,9 +950,6 @@ needs VM evidence, `rejectedWith` has no source fallback).
   of a collection a run handler names is not pinned.
 - CRYPTO-4: dynamic and value chunks have no migration path.
 - A direct merge of masters holding records checks them relative to `OP_INPUTINDEX` (liveness).
-- Proxy position on a standalone delegate run (read, not checked): the default proxy's `__forward` pins the
-  implementation's lock and payload but not its position, and the delegate takes the minting master at
-  implementation - B as its base, so the forwarding proxy and the pinned base may differ.
 
 ## Direct call results bound by call records (2026-10-22, D50)
 

@@ -24,6 +24,7 @@ export default {
           type: 'sig',
         },
       ],
+      sourceEffectOrder: 'linear',
       signatureGuard: {
         key: {
           kind: 'constructorArg',
@@ -40,6 +41,7 @@ export default {
           type: 'sig',
         },
       ],
+      sourceEffectOrder: 'linear',
       signatureGuard: {
         key: {
           kind: 'constructorArg',
@@ -49,7 +51,7 @@ export default {
     },
   ],
   bytecode: '537a7bac7777 3486e360 OP_DEFINE 537a7cad7cb16d51 2203057b OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
-  source: 'pragma solidcash ^0.13.0;\n\ncontract TransferWithTimeout(\n    pubkey sender,\n    pubkey recipient,\n    int timeout\n) {\n    // Require recipient\'s signature to match\n    function transfer(sig recipientSig) {\n        require(checkSig(recipientSig, recipient));\n    }\n\n    // Require timeout time to be reached and sender\'s signature to match\n    function timeout(sig senderSig) {\n        require(checkSig(senderSig, sender));\n        require(tx.time >= timeout);\n    }\n}\n',
+  source: 'pragma solidcash ^0.14.0;\n\ncontract TransferWithTimeout(\n    pubkey sender,\n    pubkey recipient,\n    int timeout\n) {\n    // Require recipient\'s signature to match\n    function transfer(sig recipientSig) {\n        require(checkSig(recipientSig, recipient));\n    }\n\n    // Require timeout time to be reached and sender\'s signature to match\n    function timeout(sig senderSig) {\n        require(checkSig(senderSig, sender));\n        require(tx.time >= timeout);\n    }\n}\n',
   debug: {
     bytecode: '06537a7bac7777043486e3608908537a7cad7cb16d51042203057b89748c7a82549d8a',
     sourceMap: '9:4:11:5;;;14::17;;;3:0:18:1;;;;;;',
@@ -89,15 +91,17 @@ export default {
   fingerprint: '938bd4e34785c264a20e3b08fca31283fd92dd76acad7c91e6e11fc15161189d',
   compiler: {
     name: 'solidc',
-    version: '0.13.1',
+    version: '0.14.0-beta.1',
     options: {
       enforceFunctionParameterTypes: true,
       enforceLocktimeGuard: true,
+      enforceFinalRequire: true,
+      allowUnsafeOperations: false,
       commitmentLimit: 1000000,
-      messageBus: true,
+      messageBus: false,
     },
   },
-  updatedAt: '2026-08-05T14:46:57.149Z',
+  updatedAt: '2026-10-23T08:18:15.080Z',
   invocationAnalysis: {
     version: 1,
     protocolVersions: [
@@ -160,11 +164,4 @@ export default {
       },
     ],
   },
-  diagnostics: [
-    {
-      severity: 'error',
-      code: 'message-bus-route-not-synthesized',
-      message: 'No message-bus route was synthesized for \'TransferWithTimeout\': it has no message-bus batch entry point and cannot participate in a message bus. Only the direct per-function route exists. Rejected entry points - \'transfer\': not-examined-by-route-synthesis; \'timeout\': not-examined-by-route-synthesis.',
-    },
-  ],
 } as const;

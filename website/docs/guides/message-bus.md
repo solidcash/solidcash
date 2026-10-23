@@ -189,7 +189,7 @@ assertDeployabilityCertificate(bus.deployability); // throws when missing or ove
 Prepare calls from category-bound `StatefulContract` instances in compiler-authored depth-first execution order:
 
 ```ts
-import * as messageBus from 'solidcash/message-bus';
+import * as messageBus from '@solidcash/solidcash/message-bus';
 
 const composition = messageBus.compose({
   calls: [
@@ -306,7 +306,7 @@ never treated as deployable.
 `inactive`, `incomplete`), so `undefined` never has to be guessed at; read it with
 `resolveKernelCapability(schema, id)` or `assertKernelCapabilityStatus(schema, id, allowed)` from
 `@solidcash/utils`. `kernelExecutionPlans` commits each admitted handler's plan digest into the route bytecode,
-which `assertReadableKernelExecutionPlans(artifact)` from `solidcash/message-bus` checks before a reader trusts the
+which `assertReadableKernelExecutionPlans(artifact)` from `@solidcash/solidcash/message-bus` checks before a reader trusts the
 plan.
 
 This convention is experimental in 0.14.0-beta.1. Compose only `eligible` handlers from an `available` artifact, and check
@@ -314,7 +314,7 @@ the deployability certificate before treating a compiled route as safe to broadc
 
 ## Route-planning helpers
 
-`solidcash/kernel` exposes the artifact-driven planners the SDK uses to lay out kernel routes: delegate forwarding,
+`@solidcash/solidcash/kernel` exposes the artifact-driven planners the SDK uses to lay out kernel routes: delegate forwarding,
 entry-journal witnesses and the journal record budget. They are for tooling that builds or inspects bus
 transactions itself; `messageBus.compose` and `sc.batch` call them for you. For example,
 `assertKernelJournalRecordBudget(recordCounts)` throws when the records of all streams together exceed the

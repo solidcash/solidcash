@@ -15,7 +15,7 @@
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { validatorAddress, type Artifact } from '@solidcash/utils';
-import { framedValidator } from 'solidc/runtime';
+import { framedValidator } from '@solidcash/solidc/runtime';
 import type { Utxo } from '../../interfaces.js';
 import type Signer from '../../Signer.js';
 import { selectGenesisFundingUtxo, selectGenesisFundingUtxoForCost } from '../../stateful/ContractFactory.js';

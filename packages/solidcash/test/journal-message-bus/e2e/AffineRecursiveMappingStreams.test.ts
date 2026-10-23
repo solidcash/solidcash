@@ -1,6 +1,6 @@
 import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import { messageBusVerifierCommitment } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import {
   Contract,

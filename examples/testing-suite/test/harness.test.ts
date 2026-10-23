@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-unused-expressions */
 import exampleArtifact from '../artifacts/solidcash/example.artifact.js';
-import { Contract, TransactionBuilder, randomUtxo } from 'solidcash';
+import { Contract, TransactionBuilder, randomUtxo } from '@solidcash/solidcash';
 // Hardhat-parity harness surface (see ../HARDHAT-PARITY.md)
 import { ethers, network, loadFixture, time, mine, mineUpTo, duration } from '@solidcash/testing';
 import { parseEther, formatEther, getBigNumber, keccak256, AbiCoder, ZeroAddress, ADDRESS_ZERO } from '@solidcash/testing/ethers';
@@ -139,7 +139,7 @@ describe('harness: string / hex matchers (waffle)', () => {
 
 describe('harness: new ethers.Contract(addr, artifact, runner) bare form', () => {
   it('maps to StatefulContract lean constructor (category id or address + runner)', async () => {
-    const { compileString } = await import('solidc');
+    const { compileString } = await import('@solidcash/solidc');
     const art = compileString('pragma solidcash >=0.8.0;\ncontract C() { bigint v; function set(bigint x) { this.v = x; } }');
     const [alice] = await ethers.getSigners();
     const cat = 'ab'.repeat(31) + '54'; // 64-char category id

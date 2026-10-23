@@ -27,7 +27,7 @@ import {
   type Transcript,
   type WitnessBlock,
 } from '@solidcash/utils';
-import { framedValidator } from 'solidc/runtime';
+import { framedValidator } from '@solidcash/solidc/runtime';
 import { assertValidatorCoverage, type EntryFacts } from './need-test.js';
 import {
   allocateOutputRegions,

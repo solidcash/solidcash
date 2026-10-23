@@ -46,7 +46,7 @@ import {
   validatorRedeemScript,
   type Artifact, type FunctionSplitBundle, type RecordEntry, type StateValue, type StructDefinitionInfo,
 } from '@solidcash/utils';
-import { framedValidator } from 'solidc/runtime';
+import { framedValidator } from '@solidcash/solidc/runtime';
 import { requireFramedFunderSighash } from '../sighash.js';
 import {
   encodeFunctionArgument, encodeFunctionArguments, type ConstructorArgument, type FunctionArgument,

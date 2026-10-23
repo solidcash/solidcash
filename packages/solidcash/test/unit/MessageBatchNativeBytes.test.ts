@@ -1,6 +1,6 @@
 import { cashAddressToLockingBytecode } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { encodeMessageBatch } from '../../src/message-bus/message-bus.js';
 

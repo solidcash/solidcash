@@ -9,7 +9,7 @@ SolidCash extends Vitest with custom matchers for testing contract behavior: req
 Add the import to your test setup file:
 
 ```typescript title="vitest.setup.ts"
-import 'solidcash/vitest';
+import '@solidcash/solidcash/vitest';
 ```
 
 In your Vitest config, enable globals and reference the setup file:
@@ -145,10 +145,10 @@ builder: `expect(await sc.call.debug(42n).build()).toLog('Count: 42')`.
 
 ```typescript
 import { describe, it, expect, beforeAll } from 'vitest';
-import 'solidcash/vitest';
-import { SignatureTemplate } from 'solidcash';
-import { ContractFactory } from 'solidcash/contract-factory';
-import { MockNetworkProvider } from 'solidcash/network/mock';
+import '@solidcash/solidcash/vitest';
+import { SignatureTemplate } from '@solidcash/solidcash';
+import { ContractFactory } from '@solidcash/solidcash/contract-factory';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
 import artifact from './Counter.artifact.js';
 
 describe('Counter', () => {
@@ -198,8 +198,8 @@ describe('Counter', () => {
 For unit tests, use `MockNetworkProvider` to simulate the network:
 
 ```typescript
-import { randomUtxo } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
+import { randomUtxo } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
 
 const provider = new MockNetworkProvider();
 
@@ -217,7 +217,7 @@ harnesses; pass `consensusLimits` and `policy` to the constructor to test produc
 ## Testing Utilities
 
 ```typescript
-import { randomUtxo, randomToken, randomNFT } from 'solidcash';
+import { randomUtxo, randomToken, randomNFT } from '@solidcash/solidcash';
 
 const utxo = randomUtxo({ satoshis: 50_000n });  // random txid and vout, 50,000 sats
 const token = randomToken();                      // random category and fungible amount

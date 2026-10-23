@@ -54,8 +54,8 @@ SolidCash `TransactionBuilder` has a `generateWcTransactionObject()` method for 
 Use `placeholderP2PKHUnlocker(userAddress)` for P2PKH inputs that should be signed by the connected wallet.
 
 ```ts
-import { TransactionBuilder } from "solidcash";
-import { placeholderP2PKHUnlocker } from "solidcash/walletconnect";
+import { TransactionBuilder } from "@solidcash/solidcash";
+import { placeholderP2PKHUnlocker } from "@solidcash/solidcash/walletconnect";
 
 async function proposeWcTransaction(userAddress: string) {
   // Use a placeholder unlocker which will be replaced by the user's wallet
@@ -87,8 +87,8 @@ async function proposeWcTransaction(userAddress: string) {
 Use `placeholderSignature()` and `placeholderPublicKey()` for contract arguments that should be filled in by the wallet.
 
 ```ts
-import { TransactionBuilder } from "solidcash";
-import { placeholderSignature, placeholderPublicKey } from "solidcash/walletconnect";
+import { TransactionBuilder } from "@solidcash/solidcash";
+import { placeholderSignature, placeholderPublicKey } from "@solidcash/solidcash/walletconnect";
 
 async function unlockHodlVault() {
   // Use placeholder arguments which will be filled in by the user's wallet
@@ -125,7 +125,7 @@ See [the Hodl Vault source code][hodl-vault-sign-client] for how to initialize t
 ```ts
 import SignClient from "@walletconnect/sign-client";
 import { stringify } from "@bitauth/libauth";
-import { type WcTransactionObject } from "solidcash/walletconnect";
+import { type WcTransactionObject } from "@solidcash/solidcash/walletconnect";
 
 interface SignedTxObject {
   signedTransaction: string;
@@ -186,8 +186,8 @@ The wallet derives the key for each listed input index, and uses it both to sign
 Build the transaction with `placeholderP2PKHUnlocker()`, exactly as with BCH WalletConnect. Then construct `inputPaths` for the user inputs, matching the order in which you added them.
 
 ```ts
-import { TransactionBuilder } from "solidcash";
-import { placeholderP2PKHUnlocker } from "solidcash/walletconnect";
+import { TransactionBuilder } from "@solidcash/solidcash";
+import { placeholderP2PKHUnlocker } from "@solidcash/solidcash/walletconnect";
 
 async function proposeWizardTransaction() {
   // Use placeholder unlockers which will be replaced by the user's wallet
@@ -228,8 +228,8 @@ Because the `inputPaths` indices reference the final transaction input order, co
 Contract inputs that use `placeholderSignature()` and `placeholderPublicKey()` work too, for example reclaiming from a Hodl Vault or withdrawing from a Cauldron pool. Add an `inputPaths` entry for the contract input's index and the wallet fills the placeholder signature and public key using the HD key for that path.
 
 ```ts
-import { TransactionBuilder } from "solidcash";
-import { placeholderSignature, placeholderPublicKey } from "solidcash/walletconnect";
+import { TransactionBuilder } from "@solidcash/solidcash";
+import { placeholderSignature, placeholderPublicKey } from "@solidcash/solidcash/walletconnect";
 
 async function unlockHodlVault() {
   // Use placeholder arguments which will be filled in by the user's wallet
@@ -273,7 +273,7 @@ WizardConnect covers transaction signing only. For arbitrary message signing, us
 Send the request to your WizardConnect dapp client. Its `signTransaction` method takes the `transaction` and `inputPaths` and returns the signed transaction.
 
 ```ts
-import { type WcTransactionObject } from "solidcash/walletconnect";
+import { type WcTransactionObject } from "@solidcash/solidcash/walletconnect";
 
 interface SignTransactionRequest {
   transaction: WcTransactionObject;

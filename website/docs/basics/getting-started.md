@@ -103,7 +103,7 @@ To set up your SolidCash developer environment, see the [Syntax Highlighting](/d
 The command line SolidCash compiler `solidc` can be installed from NPM.
 
 ```bash
-npm install -g solidc
+npm install -g @solidcash/solidc
 ```
 
 ### Writing your first contract
@@ -164,7 +164,7 @@ It's recommended to use TypeScript for full type-safety of all your contract log
 The TypeScript SDK can be installed into your project with NPM. Note that SolidCash is a [pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c).
 
 ```bash
-npm install solidcash
+npm install @solidcash/solidcash
 ```
 
 ### Initialising a Contract
@@ -180,8 +180,8 @@ For a code example of how to generate key-pairs with Libauth, see the [SolidCash
 With the instantiated contract, we can now get the contract address and get the contract balance and UTXOs in the following way:
 
 ```javascript
-import { Contract } from 'solidcash';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { Contract } from '@solidcash/solidcash';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 import artifact from './TransferWithTimeout.json' with { type: 'json' };
 import { alicePub, bobPub } from './keys.js';
 
@@ -209,8 +209,8 @@ Finally to create a transaction spending from the smart contract UTXO we use the
 To spend from an input you specify the `UTXO` together with an `Unlocker` to actually provide the 'unlock' script matching the input's locking bytecode. For the initialized smart contract the `Unlockers` are available as methods on the `Contract` instance. Below we will invoke the `transfer` function on the contract utxo through `contract.unlock.transfer(...)`.
 
 ```javascript
-import { Contract, SignatureTemplate, TransactionBuilder, randomUtxo } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
+import { Contract, SignatureTemplate, TransactionBuilder, randomUtxo } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
 import { alicePub, bobPriv, bobPub } from './keys.js';
 import artifact from './TransferWithTimeout.json' with { type: 'json' };
 

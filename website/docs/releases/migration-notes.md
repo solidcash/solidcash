@@ -10,7 +10,7 @@ self-pinned data/vmap/chunk protocol. Recompile, audit the artifact, and deploy 
 
 ### Runtime and project requirements
 
-- Use Node.js 22 or newer and the same 0.14.0-beta.1 version of all six packages: `solidc`, `solidcash`,
+- Use Node.js 22 or newer and the same 0.14.0-beta.1 version of all six packages: `@solidcash/solidc`, `@solidcash/solidcash`,
   `@solidcash/utils`, `@solidcash/testing`, `@solidcash/solidhat` and `@solidcash/create-solidhat`. They ship as
   ESM only.
 - SolidHat projects use `solidcash.config.ts` (with `defineConfig` from `@solidcash/solidhat/config`), the `solidhat`
@@ -82,10 +82,10 @@ self-pinned data/vmap/chunk protocol. Recompile, audit the artifact, and deploy 
   `SignatureTemplate`, `Signer`, `randomUtxo`, the error classes, and the regtest, Bitcoin RPC and FullStack
   providers. Stateful contracts, the factory, the message bus, framed composition, block oracles, the Electrum and
   mock network providers, HD signers, loop-call helpers, WalletConnect helpers and BCMR metadata live on subpaths:
-  `solidcash/stateful`, `solidcash/contract-factory`, `solidcash/message-bus`,
-  [`solidcash/framed`](/docs/guides/framed-composition),
-  `solidcash/oracle`, `solidcash/network/electrum`, `solidcash/network/mock`, `solidcash/hdsigner`,
-  `solidcash/loop-call`, `solidcash/walletconnect` and `solidcash/bcmr`. The root does not re-export them, so
+  `@solidcash/solidcash/stateful`, `@solidcash/solidcash/contract-factory`, `@solidcash/solidcash/message-bus`,
+  [`@solidcash/solidcash/framed`](/docs/guides/framed-composition),
+  `@solidcash/solidcash/oracle`, `@solidcash/solidcash/network/electrum`, `@solidcash/solidcash/network/mock`, `@solidcash/solidcash/hdsigner`,
+  `@solidcash/solidcash/loop-call`, `@solidcash/solidcash/walletconnect` and `@solidcash/solidcash/bcmr`. The root does not re-export them, so
   importing it stays fast; update the affected `import` statements rather than the SDK.
 - `Signer`/`ContractFactory` and connected methods are the maintained high-level workflow. Raw `Contract` and
   `TransactionBuilder` remain available for explicit transaction composition.
@@ -223,8 +223,8 @@ Since the new transaction builder is quite different from the old one, it may be
 With the deprecated 'simple transaction builder' the API looked like this:
 
 ```js
-import { SignatureTemplate } from 'solidcash';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { SignatureTemplate } from '@solidcash/solidcash';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 
 const provider = new ElectrumNetworkProvider(Network.MAINNET);
 
@@ -252,8 +252,8 @@ With the new transaction builder the API looks like this:
 
 
 ```js
-import { TransactionBuilder, SignatureTemplate } from 'solidcash';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { TransactionBuilder, SignatureTemplate } from '@solidcash/solidcash';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 
 const provider = new ElectrumNetworkProvider(Network.MAINNET);
 
@@ -292,7 +292,7 @@ Before:
 
 ```ts
 import { ElectrumCluster, ClusterOrder } from 'electrum-cash';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 
 const customCluster = new ElectrumCluster('SolidCash Application', '1.4.1', 2, 3, ClusterOrder.PRIORITY);
 customCluster.addServer('bch.imaginary.cash', 50004, ElectrumTransport.WSS.Scheme, false);
@@ -306,7 +306,7 @@ After:
 
 ```ts
 import { ElectrumClient } from '@electrum-cash/network';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 
 const customClient = new ElectrumClient('SolidCash Application', '1.4.1', 'bch.imaginary.cash');
 const provider = new ElectrumNetworkProvider('mainnet', { electrum: customClient });
@@ -329,12 +329,12 @@ The `Argument` type has been split into `FunctionArgument` and `ConstructorArgum
 ## v0.7 to v0.8
 
 ### solidc compiler
-`solidc` is now a [Pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c). This means that you can no longer use `require` to import `solidcash`. For more information, see the [ESM documentation](https://nodejs.org/api/esm.html).
+`solidc` is now a [Pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c). This means that you can no longer use `require` to import `@solidcash/solidcash`. For more information, see the [ESM documentation](https://nodejs.org/api/esm.html).
 
 `LockingBytecodeP2SH` should be replaced with `LockingBytecodeP2SH20` to keep the same behaviour, or updated to `LockingBytecodeP2SH32` to use the recommended new `P2SH32` Address type.
 
 ### SolidCash SDK
-`solidcash` is now a [Pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c). This means that you can no longer use `require` to import `solidcash`. For more information, see the [ESM documentation](https://nodejs.org/api/esm.html).
+`solidcash` is now a [Pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c). This means that you can no longer use `require` to import `@solidcash/solidcash`. For more information, see the [ESM documentation](https://nodejs.org/api/esm.html).
 
 #### Contract instantiation
 When instantiating a `Contract` object, you now have to pass an options object as a third parameter instead of a network provider. This options object contains the network provider, as well as the address type. The address type defaults to `p2sh32` but can be changed to `p2sh20` if you want to keep the same address type as in earlier versions of the SDK.
@@ -462,18 +462,18 @@ contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
 
 ## v0.5 to v0.6
 ### solidc compiler
-The exports for library usage of `solidc` have been updated. All utility-type exports have been moved to the `@solidcash/utils` package, but they are still accessible from the `utils` export from `solidc`. Note that the recommended use of `solidc` is still the CLI, not the NPM package.
+The exports for library usage of `solidc` have been updated. All utility-type exports have been moved to the `@solidcash/utils` package, but they are still accessible from the `utils` export from `@solidcash/solidc`. Note that the recommended use of `solidc` is still the CLI, not the NPM package.
 
 In v0.5 you could encode a string like this:
 ```js
-const { Data } = require('solidc');
+const { Data } = require('@solidcash/solidc');
 
 const encodedString = Data.encodeString('Hello World');
 ```
 
 While for v0.6 you'd need to use the `utils` export or `@solidcash/utils`:
 ```js
-const { utils } = require('solidc');
+const { utils } = require('@solidcash/solidc');
 const { encodeString } = require('@solidcash/utils');
 
 const encodedString = utils.encodeString('Hello World');
@@ -486,14 +486,14 @@ Compilation functions used to be exported as part of the `SolidCompiler` object,
 
 In v0.5 compilation looked like this:
 ```js
-const { SolidCompiler } = require('solidc');
+const { SolidCompiler } = require('@solidcash/solidc');
 
 const Mecenas = SolidCompiler.compileFile(path.join(__dirname, 'mecenas.scash'));
 ```
 
 In v0.6, this needs to be changed to this:
 ```js
-const { compileFile } = require('solidc');
+const { compileFile } = require('@solidcash/solidc');
 
 const Mecenas = compileFile(path.join(__dirname, 'mecenas.scash'));
 ```
@@ -511,7 +511,7 @@ In v0.4 a contract could be compiled or imported using `Contract.compile()` or `
 
 In v0.4, contract instantiation looked like this:
 ```js
-const { Contract } = require('solidcash');
+const { Contract } = require('@solidcash/solidcash');
 
 const Mecenas = Contract.compile(path.join(__dirname, 'mecenas.scash'), 'testnet');
 const contract = Mecenas.new(alicePkh, bobPkh, 10000);
@@ -519,7 +519,7 @@ const contract = Mecenas.new(alicePkh, bobPkh, 10000);
 
 In v0.5, this needs to be changed to look like this:
 ```js
-const { SolidCompiler, ElectrumNetworkProvider, Contract } = require('solidcash');
+const { SolidCompiler, ElectrumNetworkProvider, Contract } = require('@solidcash/solidcash');
 
 const Mecenas = SolidCompiler.compileFile(path.join(__dirname, 'mecenas.scash'));
 const provider = new ElectrumNetworkProvider('testnet');

@@ -12,9 +12,9 @@ import type { TaskArguments } from './tasks.js';
 
 // `upgrades` (deployProxy/upgradeProxy) transitively pulls the whole StatefulContract graph. Load it lazily so
 // importing `hardhat` does not evaluate the heavy proxy/stateful modules until a suite actually deploys a proxy.
-type UpgradesNamespace = typeof import('solidcash/dist/stateful/upgrades.js').upgrades;
-const upgradesModule = (): Promise<typeof import('solidcash/dist/stateful/upgrades.js')> =>
-  import('solidcash/dist/stateful/upgrades.js');
+type UpgradesNamespace = typeof import('@solidcash/solidcash/dist/stateful/upgrades.js').upgrades;
+const upgradesModule = (): Promise<typeof import('@solidcash/solidcash/dist/stateful/upgrades.js')> =>
+  import('@solidcash/solidcash/dist/stateful/upgrades.js');
 const upgrades = {
   deployProxy: (...args: Parameters<UpgradesNamespace['deployProxy']>) =>
     upgradesModule().then((m) => m.deployProxy(...args)),

@@ -1,6 +1,6 @@
 import { padMinimallyEncodedVmNumber, flattenBinArray } from '@bitauth/libauth';
 import { encodeInt, sha256 } from '@solidcash/utils';
-import { SignatureAlgorithm, SignatureTemplate } from 'solidcash';
+import { SignatureAlgorithm, SignatureTemplate } from '@solidcash/solidcash';
 
 export class PriceOracle {
   constructor(public privateKey: Uint8Array) { }

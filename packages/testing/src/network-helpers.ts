@@ -1,14 +1,14 @@
 /**
  * @nomicfoundation/hardhat-network-helpers analogue for the SolidCash harness (HARDHAT-PARITY.md WS5/WS6).
  * These operate on an "active" test provider (a MockNetworkProvider) that the HRE sets; when none is set a
- * shared default one is created lazily so `import { loadFixture, time } from 'solidcash/network-helpers'` works
+ * shared default one is created lazily so `import { loadFixture, time } from '@solidcash/solidcash/network-helpers'` works
  * standalone. Snapshots are independent deep clones (via the mem-cash indexer), so restore is repeatable and,
  * unlike EVM, never invalidates other snapshots.
  */
-import MockNetworkProvider, { type SnapshotRestorer } from 'solidcash/dist/network/MockNetworkProvider.js';
-import { takeDeploymentRegistrySnapshot, type DeploymentRegistrySnapshot } from 'solidcash/dist/stateful/deployment-registry.js';
-import { takeSoftStateSnapshot, type SoftStateSnapshot } from 'solidcash/dist/stateful/soft-state-overlays.js';
-import { randomUtxo } from 'solidcash/dist/utils.js';
+import MockNetworkProvider, { type SnapshotRestorer } from '@solidcash/solidcash/dist/network/MockNetworkProvider.js';
+import { takeDeploymentRegistrySnapshot, type DeploymentRegistrySnapshot } from '@solidcash/solidcash/dist/stateful/deployment-registry.js';
+import { takeSoftStateSnapshot, type SoftStateSnapshot } from '@solidcash/solidcash/dist/stateful/soft-state-overlays.js';
+import { randomUtxo } from '@solidcash/solidcash/dist/utils.js';
 
 /** The subset of provider capabilities the helpers require (MockNetworkProvider implements all of them). */
 export interface TestNetworkProvider {

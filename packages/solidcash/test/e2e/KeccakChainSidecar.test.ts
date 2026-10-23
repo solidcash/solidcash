@@ -3,7 +3,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { binToHex, createVirtualMachineBch2026, hexToBin } from '@bitauth/libauth';
 import type { ResolvedTransactionBch } from '@bitauth/libauth';
 import { keccakChainLockingBytecode } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import type NetworkProvider from '../../src/network/NetworkProvider.js';
 import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';

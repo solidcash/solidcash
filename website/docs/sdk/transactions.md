@@ -156,7 +156,7 @@ transaction and script sizes and dust. Contracts remain the final authority for 
 - output/token validation errors for dust, invalid token amounts, or token-aware address mistakes.
 
 ```ts
-import { FailedRequireError } from 'solidcash';
+import { FailedRequireError } from '@solidcash/solidcash';
 
 try {
   await counter.call.increment(signature).send();

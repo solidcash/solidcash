@@ -3,7 +3,7 @@ import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import {
   FrameKind, buildPushdataCommitment, type Artifact, type StateValue,
 } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';

@@ -1,7 +1,7 @@
 import { stringify } from '@bitauth/libauth';
-import { Contract, Output, randomUtxo, TransactionBuilder } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
-import { compileFile } from 'solidc';
+import { Contract, Output, randomUtxo, TransactionBuilder } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
+import { compileFile } from '@solidcash/solidc';
 import { URL } from 'url';
 
 // Import Alice and Bob's pkh and Alice's address from common.ts

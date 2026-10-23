@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { INVALID_FUNCTION_POINTER_ID } from '@solidcash/utils';
 import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';

@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { compileStringMulti } from '../direct-compile.js';
-import type { ResolvedImport } from 'solidc';
+import type { ResolvedImport } from '@solidcash/solidc';
 import {
   Contract,
   SignatureTemplate,

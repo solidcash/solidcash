@@ -7,7 +7,7 @@
 // cspell:ignore stETH STETH XMIN XSIL
 import { hexToBin } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
-import { compileFile } from 'solidc';
+import { compileFile } from '@solidcash/solidc';
 import { describe, expect, it, vi } from 'vitest';
 import { NATIVE_TOKEN_EXTENSION } from '../../src/bcmr/index.js';
 import type { Utxo } from '../../src/interfaces.js';

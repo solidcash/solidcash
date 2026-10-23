@@ -3,7 +3,7 @@ import {
   bigIntToVmNumber, binToHex, encodeDataPush, encodeLockingBytecodeP2pkh, hash256, type Transaction,
 } from '@bitauth/libauth';
 import { FrameKind, encodeWitnessBlock, sha256, type WitnessBlock } from '@solidcash/utils';
-import { framedLifecycle, framedValidator } from 'solidc';
+import { framedLifecycle, framedValidator } from '@solidcash/solidc';
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { callerUnlockingBytecode } from '../../../../solidc/test/framed/master/caller-input.js';

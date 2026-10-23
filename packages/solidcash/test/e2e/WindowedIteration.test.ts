@@ -1,4 +1,4 @@
-import { compileString as rawCompileString } from 'solidc';
+import { compileString as rawCompileString } from '@solidcash/solidc';
 import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import { Contract } from '../../src/index.js';
 import {

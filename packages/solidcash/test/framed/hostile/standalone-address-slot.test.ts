@@ -3,7 +3,7 @@ import { encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32
 import {
   asmToScript, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { fillPlaceholders } from '../../../../solidc/src/framed/master/placeholders.js';
 import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';

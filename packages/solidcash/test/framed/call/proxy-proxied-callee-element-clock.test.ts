@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { type Artifact, type StateRecord } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';

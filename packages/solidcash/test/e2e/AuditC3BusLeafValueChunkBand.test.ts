@@ -19,7 +19,7 @@ import {
   encodeLockingBytecodeP2sh32, encodeTransaction, hash256, hexToBin,
 } from '@bitauth/libauth';
 import { OpcodesBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, buildValueChunkCommitment, buildValueChunkCovenantScript,
   computeCollectionHash, encodeIntegerValue, scriptToBytecode, sha256, splitValueIntoValueChunks,

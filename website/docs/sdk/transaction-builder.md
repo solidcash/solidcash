@@ -28,8 +28,8 @@ interface TransactionBuilderOptions {
 
 #### Example
 ```ts
-import { TransactionBuilder, Network } from 'solidcash';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { TransactionBuilder, Network } from '@solidcash/solidcash';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 
 const provider = new ElectrumNetworkProvider(Network.MAINNET);
 const transactionBuilder = new TransactionBuilder({ provider });
@@ -431,7 +431,7 @@ Generates a `WcTransactionObject` that can be used to sign a transaction with a 
 
 ```ts
 import type { TransactionCommon, Input, Output } from '@bitauth/libauth';
-import type { AbiFunction, Artifact } from 'solidcash';
+import type { AbiFunction, Artifact } from '@solidcash/solidcash';
 
 interface WcTransactionOptions {
   broadcast?: boolean;
@@ -463,8 +463,8 @@ See the [WalletConnect guide](/docs/guides/walletconnect) for more information o
 #### Example
 ```ts
 import { aliceAddress, contract, provider, signWcTransaction } from './somewhere.js';
-import { TransactionBuilder } from 'solidcash';
-import { placeholderP2PKHUnlocker, placeholderPublicKey, placeholderSignature } from 'solidcash/walletconnect';
+import { TransactionBuilder } from '@solidcash/solidcash';
+import { placeholderP2PKHUnlocker, placeholderPublicKey, placeholderSignature } from '@solidcash/solidcash/walletconnect';
 
 const contractUtxos = await contract.getUtxos();
 const aliceUtxos = await provider.getUtxos(aliceAddress);
@@ -492,7 +492,7 @@ const signResult = await signWcTransaction(wcTransactionObj);
 
 ## Transaction errors
 
-When sending a transaction, the SolidCash SDK will throw an error if the transaction fails. All three classes below are exported from `solidcash`:
+When sending a transaction, the SolidCash SDK will throw an error if the transaction fails. All three classes below are exported from `@solidcash/solidcash`:
 
 - `FailedRequireError`: a `require` statement failed. The error refers to the corresponding `require` statement in the contract code so you know where your contract failed.
 - `FailedTransactionEvaluationError`: the script failed another way, with the artifact, input and source line when the artifact has debug information.

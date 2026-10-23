@@ -1,6 +1,6 @@
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { type Artifact } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';

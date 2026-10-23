@@ -5,7 +5,7 @@
  * structural slots are filled from the signer, not from the OP_TRUE dummy funder.
  */
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../src/index.js';
 import Signer from '../src/Signer.js';

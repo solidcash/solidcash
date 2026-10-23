@@ -22,7 +22,7 @@ import {
   validatorTemplateHash,
 } from '@solidcash/utils';
 import { blockOracleLockFor } from '../../oracle/block-oracle-lock.js';
-import { compositionPlaceholders } from 'solidc/runtime';
+import { compositionPlaceholders } from '@solidcash/solidc/runtime';
 
 const {
   ADDRESS_SLOT_LENGTH,

@@ -7,7 +7,7 @@ import {
   buildChunkCommitment, buildPushdataCommitment, encodePushdataValue, splitValueIntoChunks,
   type Artifact,
 } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   chunkRecordLockingBytecode, deployMaster, entryRecordLockingBytecode, readFramedDeployment,

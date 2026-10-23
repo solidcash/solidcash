@@ -171,7 +171,7 @@ describe('initializeProject', () => {
       chai: expect.stringContaining('testing/dist/chai.js'),
     });
     const require = createRequire(import.meta.url);
-    expect(aliases.solidcash).toBe(require.resolve('solidcash'));
+    expect(aliases['@solidcash/solidcash']).toBe(require.resolve('@solidcash/solidcash'));
     expect(aliases['@solidcash/testing']).toBe(require.resolve('@solidcash/testing'));
     expect(compatibilityAliases({ hardhat: 3, ethers: 6 })).toMatchObject({
       hardhat: expect.stringContaining('solidhat/dist/hardhat3.js'),

@@ -1,5 +1,5 @@
 {
-  "name": "solidc",
+  "name": "@solidcash/solidc",
   "version": "0.14.0-beta.1",
   "description": "SolidCash compiler - compile smart contracts to Bitcoin Cash Script or artifacts",
   "keywords": [
@@ -19,6 +19,9 @@
     "url": "git+https://github.com/solidcash/solidcash.git"
   },
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "author": "Rosco Kalis <roscokalis@gmail.com>",
   "contributors": [
     "Mathieu Geukens <mr-zwets@protonmail.com>",

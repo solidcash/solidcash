@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it, vi } from 'vitest';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider } from '../test-util.js';

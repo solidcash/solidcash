@@ -113,9 +113,9 @@ if (failures.length > 0) {
  * runtime presence, so every type-only export reads as missing. It reported `WcTransactionObject` as dropped
  * when `index.ts` re-exports it perfectly well through `export * from './walletconnect-utils.js'`.
  */
-const OWN_PACKAGES = new Set(['solidcash', 'solidc', '@solidcash/utils']);
+const OWN_PACKAGES = new Set(['@solidcash/solidcash', '@solidcash/solidc', '@solidcash/utils']);
 // Subpaths of our packages count as ours too. After the SDK's lean-root split most documented names arrive through
-// a subpath (`solidcash/stateful`, `solidcash/walletconnect`, ...), so checking only the bare specifiers would let a
+// a subpath (`@solidcash/solidcash/stateful`, `@solidcash/solidcash/walletconnect`, ...), so checking only the bare specifiers would let a
 // documented subpath import rot silently - the exact rename this gate exists to catch.
 const isOwnSpecifier = (specifier: string): boolean =>
   [...OWN_PACKAGES].some((name) => specifier === name || specifier.startsWith(`${name}/`));
@@ -145,7 +145,7 @@ const probeFile = path.join(probeDir, 'documented-imports.ts');
 // the name is used, while referencing them would force a choice between type and value position - and the
 // documented names are a mix, so either choice errors on half of them for reasons that are not doc rot.
 // Each name gets its own alias: one name documented from two subpaths (`ContractFactory` from both
-// `solidcash/stateful` and `solidcash/contract-factory`) is legitimate, not a duplicate identifier.
+// `@solidcash/solidcash/stateful` and `@solidcash/solidcash/contract-factory`) is legitimate, not a duplicate identifier.
 let aliasIndex = 0;
 const lines = [...documentedNames.entries()]
   .map(([pkg, names]) => `import { ${[...names].sort().map((name) => `${name} as __documented${aliasIndex++}`)

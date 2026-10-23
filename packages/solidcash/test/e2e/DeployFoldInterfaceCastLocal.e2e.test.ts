@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { Contract, TransactionBuilder } from '../../src/index.js';
 import { createTestProvider } from '../test-util.js';
 import { aliceAddress } from '../fixture/vars.js';

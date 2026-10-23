@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { deployMaster } from '../../../src/framed/deploy/index.js';

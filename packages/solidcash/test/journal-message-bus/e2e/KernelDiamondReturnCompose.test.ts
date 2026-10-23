@@ -4,7 +4,7 @@
  * Shared-category Mid→Leaf dual-invoke remains a deeper residual; this cell covers return fan-in.
  */
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../../src/index.js';
 import { StatefulContract } from '../../../src/stateful/index.js';

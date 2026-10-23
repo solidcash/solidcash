@@ -9,7 +9,7 @@
 import { readFileSync } from 'node:fs';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { validatorAddress } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../solidc/src/compiler.js';
 import { callFramedEntry, type FramedCallResult } from '../../src/framed/call/index.js';

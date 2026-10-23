@@ -11,7 +11,7 @@
 import {
   binToHex, decodeTransactionUnsafe, encodeLockingBytecodeP2pkh, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { compileStringSplit } from 'solidc';
+import { compileStringSplit } from '@solidcash/solidc';
 import { encodeEventCommitment, type SplitArtifactBundle } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { callFramedEntry, type FramedCallResult } from '../../src/framed/call/index.js';

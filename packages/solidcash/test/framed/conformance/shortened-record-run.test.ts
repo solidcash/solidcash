@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hexToBin } from '@bitauth/libauth';
 import { INDEX_NONE, bytesToHex, validatorAddress } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';

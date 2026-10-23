@@ -1,6 +1,6 @@
 import { hexToBin } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
-import { compileString, compileStringMulti } from 'solidc';
+import { compileString, compileStringMulti } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import {
   Contract,

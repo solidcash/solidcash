@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString, compileStringMulti } from 'solidc';
+import { compileString, compileStringMulti } from '@solidcash/solidc';
 import { hexToBin } from '@bitauth/libauth';
 import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { getContractFactory, type StatefulContract } from '../../src/stateful/index.js';

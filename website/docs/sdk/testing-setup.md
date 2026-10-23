@@ -24,8 +24,8 @@ stored UTXO. You can use the helper functions `randomUtxo()`, `randomToken()` an
 #### Example
 
 ```ts
-import { randomUtxo, randomToken, randomNFT } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
+import { randomUtxo, randomToken, randomNFT } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
 
 const provider = new MockNetworkProvider();
 const contractUtxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 10_000n }));
@@ -54,7 +54,7 @@ with `consensusLimits` and `policy`, as shown in [Test under real limits](/docs/
 To make automated tests easier, the SDK provides a Vitest extension for `console.log`, `require`, revert, and event assertions:
 
 ```ts
-import 'solidcash/vitest';
+import '@solidcash/solidcash/vitest';
 ```
 
 The extension needs Vitest's `globals: true`; see [Test Matchers](/docs/sdk/test-matchers#setup) for the setup and
@@ -139,9 +139,9 @@ contract Example() {
 
 ```ts title="Example test file"
 import artifact from '../artifacts/example.artifact.js';
-import { Contract, TransactionBuilder, randomUtxo, type Utxo } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
-import 'solidcash/vitest';
+import { Contract, TransactionBuilder, randomUtxo, type Utxo } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
+import '@solidcash/solidcash/vitest';
 
 describe('Example contract', () => {
   const provider = new MockNetworkProvider();

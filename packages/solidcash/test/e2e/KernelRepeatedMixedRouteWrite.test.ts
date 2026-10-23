@@ -2,7 +2,7 @@ import {
   bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructions,
 } from '@bitauth/libauth';
 import { MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, scriptToBytecode } from '@solidcash/utils';
-import { compileString, compileStringMulti } from 'solidc';
+import { compileString, compileStringMulti } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Signer } from '../../src/index.js';
 import {

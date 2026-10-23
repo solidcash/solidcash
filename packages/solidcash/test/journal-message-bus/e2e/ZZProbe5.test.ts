@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { writeFileSync } from 'node:fs';
 import { describe, it } from 'vitest';
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 } as const;

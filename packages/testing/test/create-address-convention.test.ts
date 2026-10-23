@@ -1,8 +1,8 @@
 import { binToHex } from '@bitauth/libauth';
-import { compileString } from 'solidc';
-import MockNetworkProvider from 'solidcash/dist/network/MockNetworkProvider.js';
-import { addressToLockScript } from 'solidcash/dist/utils.js';
-import { createLookaheadForAddress } from 'solidcash/dist/framed/deploy/create-lookahead-session.js';
+import { compileString } from '@solidcash/solidc';
+import MockNetworkProvider from '@solidcash/solidcash/dist/network/MockNetworkProvider.js';
+import { addressToLockScript } from '@solidcash/solidcash/dist/utils.js';
+import { createLookaheadForAddress } from '@solidcash/solidcash/dist/framed/deploy/create-lookahead-session.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHardhatRuntimeEnvironment } from '../src/hre.js';
 import { resolveConfig } from '../src/config.js';

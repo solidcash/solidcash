@@ -7,7 +7,7 @@
 import {
   binToHex, decodeAuthenticationInstructions, hexToBin, utf8ToBin,
 } from '@bitauth/libauth';
-import { compileFile } from 'solidc';
+import { compileFile } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../solidc/src/compiler.js';
 import { COMPOSITION_LIMITS } from '../../../solidc/test/framed/machine.js';

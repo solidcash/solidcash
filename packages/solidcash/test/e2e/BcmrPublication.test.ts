@@ -5,7 +5,7 @@
 // cspell:ignore XDOL
 import { createHash } from 'node:crypto';
 import { binToHex, hexToBin, utf8ToBin, type NftCategory } from '@bitauth/libauth';
-import { compileFile } from 'solidc';
+import { compileFile } from '@solidcash/solidc';
 import { describe, expect, it, vi } from 'vitest';
 import {
   publishMetadata, withSnapshot, type IdentityAction, type IdentityRecord, type MetadataRegistry,

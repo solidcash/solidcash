@@ -1,6 +1,6 @@
-import { BitcoinRpcNetworkProvider, RegtestNetworkProvider } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { BitcoinRpcNetworkProvider, RegtestNetworkProvider } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../src/config.js';
 import { createHardhatRuntimeEnvironment, createProvider } from '../src/hre.js';

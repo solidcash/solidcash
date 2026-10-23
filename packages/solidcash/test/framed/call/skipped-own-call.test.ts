@@ -34,7 +34,7 @@ describe('an entry whose own argument guards a call away, on the plain call path
   it('settles the calls each argument makes, one record per call the execution made', async () => {
     const compiled = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never);
     const artifacts: Readonly<Record<string, Artifact>> = { A: compiled.A!, B: compiled.B! };
-    const { framedValidator } = await import('solidc');
+    const { framedValidator } = await import('@solidcash/solidc');
     const validatorProgram = framedValidator.buildValidatorProgram();
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });

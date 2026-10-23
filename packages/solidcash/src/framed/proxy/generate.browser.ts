@@ -17,7 +17,7 @@ export function buildProxyArtifact(implementationArtifact: Artifact, _hopGuard?:
   throw new FramedProxyDeployError(
     `cannot build the proxy artifact for "${implementationArtifact.contractName}" in a browser bundle: the `
     + 'generated proxy is compiled by the compiler, which the browser build of the SDK does not ship. Build it in '
-    + 'Node with `buildProxyArtifact` (from "solidcash/dist/framed/proxy/index.js") and pass it as `proxy` to '
+    + 'Node with `buildProxyArtifact` (from "@solidcash/solidcash/dist/framed/proxy/index.js") and pass it as `proxy` to '
     + '`upgrades.deployProxy` or as `proxyArtifact` to `deployFramedProxy`. For a separate initialize hop, pass the '
     + "hop caller's locking bytecode as its second argument, so only that caller can initialize the proxy.",
   );

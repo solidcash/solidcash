@@ -2,7 +2,7 @@ import {
   compileString as compileStringRaw,
   compileStringMulti as compileStringMultiRaw,
   compileStringSplit as compileStringSplitRaw,
-} from 'solidc';
+} from '@solidcash/solidc';
 
 type StringOptions = NonNullable<Parameters<typeof compileStringRaw>[1]>;
 type MultiOptions = NonNullable<Parameters<typeof compileStringMultiRaw>[1]>;

@@ -20,7 +20,7 @@ entry points never silently change deployment topology.
 ## Compile a split bundle
 
 ```ts
-import { compileFileSplit, compileStringSplit } from 'solidc';
+import { compileFileSplit, compileStringSplit } from '@solidcash/solidc';
 
 const bundle = compileFileSplit('Large.scash');
 
@@ -98,7 +98,7 @@ participants; a split bundle partitions one logical contract's code while retain
 ## Deploy and call
 
 ```ts
-import { SplitContractBundle } from 'solidcash/stateful';
+import { SplitContractBundle } from '@solidcash/solidcash/stateful';
 
 const factory = SplitContractBundle.from(bundle, signer);
 const app = await factory.deploy([owner], {
@@ -177,7 +177,7 @@ not supported by split v1 and fail closed.
 ## Proxies and upgrades
 
 ```ts
-import { upgrades } from 'solidcash/stateful';
+import { upgrades } from '@solidcash/solidcash/stateful';
 
 const proxied = await upgrades.deployProxy(factory, { count: 0n });
 ```

@@ -7,7 +7,7 @@
 import {
   binToHex, decodeTransactionUnsafe, encodeLockingBytecodeP2pkh, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { compileFile } from 'solidc';
+import { compileFile } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { Contract } from '../../src/Contract.js';

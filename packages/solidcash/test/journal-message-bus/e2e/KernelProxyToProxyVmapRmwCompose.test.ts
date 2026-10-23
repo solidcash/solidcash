@@ -1,5 +1,5 @@
 import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Signer } from '../../../src/index.js';
 import * as messageBus from '../../../src/message-bus/index.js';

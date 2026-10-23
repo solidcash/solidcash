@@ -109,7 +109,7 @@ Use `withDelegatecall` on the proxy's fallback call to auto-derive the whole lay
 co-spend, calldata, and the return wiring:
 
 ```ts
-import { StatefulContract } from 'solidcash';
+import { StatefulContract } from '@solidcash/solidcash';
 
 const proxy = StatefulContract.withCategory(proxyContract, proxyCategoryId);
 // asDelegate() selects the delegate build. It is a different script, so deploy THIS one as the

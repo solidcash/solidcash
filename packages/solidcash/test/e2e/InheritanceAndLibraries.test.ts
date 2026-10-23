@@ -1,4 +1,4 @@
-import { compileString, PrivateStateVariableAccessError } from 'solidc';
+import { compileString, PrivateStateVariableAccessError } from '@solidcash/solidc';
 import { ResolvedImport, buildInitialStateCommitments } from '@solidcash/utils';
 import {
   Contract,

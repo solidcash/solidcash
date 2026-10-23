@@ -11,8 +11,8 @@ Session Log as work lands. Do NOT delete completed items (they document the mapp
 > **RESOLVED 2026-07-19 - the harness lives in `@solidcash/testing` (`packages/testing`).** The complete harness
 > modules were MOVED there from `solidcash/src/hardhat` (per user: "consolidate into @solidcash/testing"). The
 > earlier incomplete files (`accounts`/`environment`/`factory`/`compile`) were replaced. SDK-level primitives
-> stay in `solidcash` (MockNetworkProvider snapshot/time, the `solidcash/vitest` matchers, `SnapshotRestorer`
-> export, ContractFactory, Signer, BlockOracleUpdater) and the harness imports them from the `solidcash` package.
+> stay in `@solidcash/solidcash` (MockNetworkProvider snapshot/time, the `@solidcash/solidcash/vitest` matchers, `SnapshotRestorer`
+> export, ContractFactory, Signer, BlockOracleUpdater) and the harness imports them from the `@solidcash/solidcash` package.
 > **Public surface**: `@solidcash/testing` (main = HRE/ethers/tasks/config), `@solidcash/testing/chai`,
 > `@solidcash/testing/network-helpers`, `@solidcash/testing/ethers`; CLI bin `solidcash` -> `dist/cli.js`.
 > The testing-suite imports `@solidcash/testing` (aliased to `hardhat`/`chai`/`@nomicfoundation/hardhat-network-helpers`

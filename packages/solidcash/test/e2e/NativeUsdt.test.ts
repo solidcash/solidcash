@@ -1,7 +1,7 @@
 import {
   describe, it, expect, beforeAll,
 } from 'vitest';
-import { compileFile } from 'solidc';
+import { compileFile } from '@solidcash/solidc';
 import { URL } from 'url';
 import { hexToBin } from '@bitauth/libauth';
 import { asmToScript, scriptToBytecode } from '@solidcash/utils';

@@ -1,6 +1,6 @@
 /* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
-import { compileString as _csRawSolidc } from 'solidc';
+import { compileString as _csRawSolidc } from '@solidcash/solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';

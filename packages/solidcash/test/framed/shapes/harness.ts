@@ -16,7 +16,7 @@ import {
   validatorAddress,
   type Artifact,
 } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { deployMaster } from '../../../src/framed/deploy/index.js';

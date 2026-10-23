@@ -1,5 +1,5 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { compileString, compileStringMulti } from 'solidc';
+import { compileString, compileStringMulti } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../../src/index.js';
 import { StatefulContract } from '../../../src/stateful/index.js';

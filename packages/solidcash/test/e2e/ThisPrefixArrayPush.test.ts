@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString as _csRawSolidc } from 'solidc';
+import { compileString as _csRawSolidc } from '@solidcash/solidc';
 
 // Default (entry-model) array push/pop byte format; vmap push/pop is covered by SortedMappingArrayElementWrite.
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>

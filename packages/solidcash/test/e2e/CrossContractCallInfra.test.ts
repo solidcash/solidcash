@@ -1,7 +1,7 @@
 // Cross-contract call infrastructure: unbounded-bytes returns, return-event extraction order,
 // per-slot master index for under-declared interfaces.
 import { describe, it, expect } from 'vitest';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import * as messageBus from '../../src/message-bus/index.js';

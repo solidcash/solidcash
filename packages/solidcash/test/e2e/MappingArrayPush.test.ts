@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString as _csRawSolidc } from 'solidc';
+import { compileString as _csRawSolidc } from '@solidcash/solidc';
 import {
   Contract,
   SignatureTemplate,

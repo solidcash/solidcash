@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { compileString, compileStringSplit } from 'solidc';
+import { compileString, compileStringSplit } from '@solidcash/solidc';
 import { messageBusVerifierCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import {
   Contract,

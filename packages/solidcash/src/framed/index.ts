@@ -1,4 +1,4 @@
-// The framed composition surface, re-exported under `solidcash/framed` so the package root stays light.
+// The framed composition surface, re-exported under `@solidcash/solidcash/framed` so the package root stays light.
 
 export * as framedComposer from './composer/index.js';
 export * as framedReference from './validator/reference/index.js';

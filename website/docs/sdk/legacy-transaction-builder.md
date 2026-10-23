@@ -89,7 +89,7 @@ const txDetails = await contract.functions
 
 ```ts
 // Current
-import { SignatureTemplate, TransactionBuilder } from 'solidcash';
+import { SignatureTemplate, TransactionBuilder } from '@solidcash/solidcash';
 
 const [contractUtxo] = await contract.getUtxos();
 

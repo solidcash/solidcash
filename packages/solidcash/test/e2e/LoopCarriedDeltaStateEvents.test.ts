@@ -1,6 +1,6 @@
 import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import {
   Contract,
   SignatureTemplate,

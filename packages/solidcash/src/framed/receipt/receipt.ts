@@ -32,7 +32,7 @@ import {
   type StateValue,
   type StructDefinitionInfo,
 } from '@solidcash/utils';
-import { framedValidator } from 'solidc/runtime';
+import { framedValidator } from '@solidcash/solidc/runtime';
 import { tryParseEventCommitment } from '../../stateful/StateReader.js';
 import { blockContractName, type CompositionDraft } from '../composer/index.js';
 

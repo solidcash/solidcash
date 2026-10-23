@@ -193,7 +193,7 @@ import {
   readAnonymousEventsFromChain,
   getEventNftAddress,
   getAnonymousEventNftAddress,
-} from 'solidcash/stateful';
+} from '@solidcash/solidcash/stateful';
 
 // Named events
 const eventAddr = getEventNftAddress(contract.inner, categoryId, 'Transfer');
@@ -362,7 +362,7 @@ function debug(int x) {
 The SDK provides test matchers for verifying errors and events:
 
 ```typescript
-import 'solidcash/vitest';
+import '@solidcash/solidcash/vitest';
 
 // Require failure: pass the unsent TransactionBuilder; the matcher evaluates it locally
 expect(transaction).toFailRequireWith(/Amount must be positive/);

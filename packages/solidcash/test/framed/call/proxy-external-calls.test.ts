@@ -3,7 +3,7 @@ import { binToHex, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hexT
 import {
   bytesToHex, hash256, parsePushdataCommitment, validatorAddress, type Artifact,
 } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';

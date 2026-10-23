@@ -8,8 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 SolidCash is a high-level language for Bitcoin Cash smart contracts. The repository is a monorepo with three packages under `packages/`:
 
-- **solidc** — Compiler: `.scash` source → artifact (JSON/TS with bytecode)
-- **solidcash** — TypeScript SDK: artifact → contract interaction → transactions
+- **@solidcash/solidc** — Compiler: `.scash` source → artifact (JSON/TS with bytecode)
+- **@solidcash/solidcash** — TypeScript SDK: artifact → contract interaction → transactions
 - **@solidcash/utils** — Shared types, bytecode utilities, optimizations
 
 ## Common Commands

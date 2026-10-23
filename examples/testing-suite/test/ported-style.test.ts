@@ -7,7 +7,7 @@
 import { ethers, network } from 'hardhat';
 import { expect } from 'chai';
 import { loadFixture, time, mine } from '@nomicfoundation/hardhat-network-helpers';
-import { Contract, TransactionBuilder, randomUtxo } from 'solidcash';
+import { Contract, TransactionBuilder, randomUtxo } from '@solidcash/solidcash';
 import exampleArtifact from '../artifacts/solidcash/example.artifact.js';
 
 async function deployExampleFixture() {

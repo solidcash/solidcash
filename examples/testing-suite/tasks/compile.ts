@@ -36,7 +36,7 @@ let compilerMtime: number | undefined;
 function newestCompilerMtime(): number {
   if (compilerMtime !== undefined) return compilerMtime;
   let newest = 0;
-  for (const pkg of ['solidc', '@solidcash/utils']) {
+  for (const pkg of ['@solidcash/solidc', '@solidcash/utils']) {
     try {
       const pkgJson = require.resolve(`${pkg}/package.json`);
       const pkgRoot = path.dirname(pkgJson);
@@ -90,7 +90,7 @@ export const compile = async (): Promise<void> => {
   if (pending.length === 0) return;
   const [{ formatArtifact }, { compileString }] = await Promise.all([
     import('@solidcash/utils'),
-    import('solidc'),
+    import('@solidcash/solidc'),
   ]);
 
   pending.forEach((fn) => {

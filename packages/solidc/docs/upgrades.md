@@ -5,7 +5,7 @@ deploys an implementation, deploys a proxy that holds the live state, seeds the 
 method calls forward to the implementation through a **pinned delegatecall**.
 
 ```typescript
-import { getContractFactory, upgrades } from 'solidcash';
+import { getContractFactory, upgrades } from '@solidcash/solidcash';
 
 const Impl = getContractFactory(implArtifact, signer);   // the delegate (logic)
 const proxy = await upgrades.deployProxy(Impl, { counter: 5n });   // built-in proxy + initial state

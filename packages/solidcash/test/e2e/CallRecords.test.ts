@@ -3,7 +3,7 @@ import {
   bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeAuthenticationInstructions,
   encodeDataPush, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import { encodePushdataValue, sha256 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { Contract, Signer } from '../../src/index.js';

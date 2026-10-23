@@ -120,7 +120,7 @@ different A, B, and Keccak locking bytecodes.
 
 ```ts
 import { hexToBin } from '@bitauth/libauth';
-import { TransactionBuilder, utils } from 'solidcash';
+import { TransactionBuilder, utils } from '@solidcash/solidcash';
 
 const consumerSalt = hexToBin(contract.categoryId).slice().reverse();
 const keccakLock = utils.keccakComputeLockingBytecode(consumerSalt, true);

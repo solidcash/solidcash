@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 

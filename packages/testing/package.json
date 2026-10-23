@@ -59,8 +59,8 @@
     "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8",
     "@solidcash/utils": "^0.14.0-beta.1",
     "ethers": "^6.17.0",
-    "solidc": "^0.14.0-beta.1",
-    "solidcash": "^0.14.0-beta.1"
+    "@solidcash/solidc": "^0.14.0-beta.1",
+    "@solidcash/solidcash": "^0.14.0-beta.1"
   },
   "devDependencies": {
     "eslint": "^8.54.0",

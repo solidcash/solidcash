@@ -14,7 +14,7 @@ import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { compileFileMulti } from 'solidc';
+import { compileFileMulti } from '@solidcash/solidc';
 import { asmToBytecode } from '@solidcash/utils';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');

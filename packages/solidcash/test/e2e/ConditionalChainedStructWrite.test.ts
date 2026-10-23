@@ -1,4 +1,4 @@
-import { compileString as _csRawSolidc } from 'solidc';
+import { compileString as _csRawSolidc } from '@solidcash/solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {

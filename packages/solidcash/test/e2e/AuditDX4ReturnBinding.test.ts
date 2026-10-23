@@ -3,7 +3,7 @@ import {
   bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe,
   encodeAuthenticationInstructions, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';

@@ -12,7 +12,7 @@ import type { SplitFacets } from './stateful-lifecycle-types.js';
 import { addressToLockScript, getNetworkPrefix } from '../utils.js';
 
 // Heavy value imports are deferred to method/helper bodies so that loading this
-// module (the `solidcash/contract-factory` entry) does not evaluate the
+// module (the `@solidcash/solidcash/contract-factory` entry) does not evaluate the
 // StatefulContract, TransactionBuilder, or framed-deploy graphs at import time.
 
 /** Deploy overrides (a trailing object on `factory.deploy(...)` / the 3rd arg of `deployContract`). */

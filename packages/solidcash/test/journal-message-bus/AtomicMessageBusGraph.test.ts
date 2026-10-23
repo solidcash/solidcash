@@ -4,7 +4,7 @@ import {
   type Artifact,
   type ChildDeploymentSiteAbi,
 } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { SignatureTemplate } from '../../src/index.js';
 import * as messageBus from '../../src/message-bus/index.js';
 import { hasTransientConvergenceResultSeed } from '../../src/message-bus/compose-prepared-invocation.js';

@@ -3,7 +3,7 @@
  * Stream head at consumer construction must consume the helper row first.
  */
 import { hexToBin } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../../src/index.js';
 import { StatefulContract } from '../../../src/stateful/index.js';

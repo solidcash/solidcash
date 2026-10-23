@@ -1,4 +1,4 @@
-import { generateLibauthSourceOutputs } from 'solidcash/dist/utils.js';
+import { generateLibauthSourceOutputs } from '@solidcash/solidcash/dist/utils.js';
 import {
   SighashType,
   SignatureAlgorithm,

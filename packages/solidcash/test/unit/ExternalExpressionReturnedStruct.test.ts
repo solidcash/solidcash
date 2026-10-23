@@ -1,5 +1,5 @@
 import type { FunctionArgument } from '../../src/Argument.js';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { evaluateExternalExpression } from '../../src/stateful/sc-evaluate-external-expression.js';
 import { externalReturnsForCallsites } from '../../src/stateful/external-returns-for-callsites.js';

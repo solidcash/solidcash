@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, sha256, utf8ToBin } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import type { Artifact } from '@solidcash/utils';
 import {
   Contract,

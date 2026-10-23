@@ -40,7 +40,7 @@ information, the source line. Both errors expose `inputIndex`, the VM's own mess
 BitAuth IDE link as `bitauthUri` (see [Bitauth IDE](#bitauth-ide)). The link is not part of the message.
 
 ```ts
-import { FailedRequireError } from 'solidcash';
+import { FailedRequireError } from '@solidcash/solidcash';
 
 try {
   transactionBuilder.debug();
@@ -78,7 +78,7 @@ statement rather than the exact one. While you debug, compile with `optimise: fa
 one-to-one mapping from instructions to source lines, so a failure points at the exact line and `require`.
 
 ```ts
-import { compileFile } from 'solidc';
+import { compileFile } from '@solidcash/solidc';
 
 const debugArtifact = compileFile(new URL('./HodlVault.scash', import.meta.url), { optimise: false });
 ```

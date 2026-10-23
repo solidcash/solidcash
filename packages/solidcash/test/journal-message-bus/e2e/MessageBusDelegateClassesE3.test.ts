@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   Artifact, buildInitialStateCommitments, buildPushdataCommitment, parsePushdataCommitment,

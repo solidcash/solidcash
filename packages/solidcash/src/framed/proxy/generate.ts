@@ -6,7 +6,7 @@
  * source, the layout agreement check - is shared through `generate-core.js`.
  */
 
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import type { Artifact } from '@solidcash/utils';
 import { compileProxyArtifact } from './generate-core.js';
 

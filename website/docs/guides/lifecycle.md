@@ -142,7 +142,7 @@ function join(int n, sig s) merge(n) { require(n >= 1); require(checkSig(s, admi
 caller cannot choose, such as a constructor argument. A direct compile rejects one without it.
 
 ```ts
-import { StatefulContract } from 'solidcash/stateful';
+import { StatefulContract } from '@solidcash/solidcash/stateful';
 
 await factory.call.create(adminSig); // awaiting deploys the child with the connected signer
 

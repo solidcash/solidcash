@@ -5,9 +5,9 @@ title: Network Provider
 The SolidCash SDK needs to connect to the BCH network to perform certain operations, like retrieving the contract's balance, or sending transactions. The recommended network provider to use blockchain network functionality is the `ElectrumNetworkProvider`, however for local development it is recommended to use a `MockNetworkProvider`.
 
 ```ts
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
-import { MockNetworkProvider } from 'solidcash/network/mock';
-import { RegtestNetworkProvider } from 'solidcash';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
+import { RegtestNetworkProvider } from '@solidcash/solidcash';
 ```
 
 The Electrum and mock providers have their own subpaths so that importing the package root does not load their
@@ -140,7 +140,7 @@ commitment, operation-density, hash-iteration, and dust boundaries. Omitted prof
 Relaxed mock limits are test-only and do not make an oversized transaction relayable on mainnet.
 
 ```ts
-import type { ConsensusLimits, NetworkPolicy } from 'solidcash';
+import type { ConsensusLimits, NetworkPolicy } from '@solidcash/solidcash';
 
 const limits: ConsensusLimits = {
   maximumInputBytes: 10_000,           // one input's unlocking or locking bytecode

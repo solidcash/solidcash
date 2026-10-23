@@ -1,7 +1,7 @@
 import { hexToBin } from '@bitauth/libauth';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../../src/index.js';
 import { StatefulContract } from '../../../src/stateful/index.js';

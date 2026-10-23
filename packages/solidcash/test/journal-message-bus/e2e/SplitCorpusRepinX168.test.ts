@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { describe, it } from 'vitest';
-import { compileFileSplit } from 'solidc';
+import { compileFileSplit } from '@solidcash/solidc';
 import {
   reportSplitCase, validateX168Manifest, writeSplitCorpusReport,
 } from './message-bus-split-corpus-report-x168.js';

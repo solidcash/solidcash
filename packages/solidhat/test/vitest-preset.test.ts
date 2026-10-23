@@ -4,8 +4,8 @@ import { compatibilityAliases, solidhatPreset } from '../src/vitest-preset.js';
 describe('solidhatPreset', () => {
   it('resolves the installed solidcash package aliases to real files', () => {
     const aliases = compatibilityAliases({ hardhat: 3, ethers: 6 });
-    expect(existsSync(aliases.solidcash)).toBe(true);
-    expect(existsSync(aliases['solidcash/vitest'])).toBe(true);
+    expect(existsSync(aliases['@solidcash/solidcash'])).toBe(true);
+    expect(existsSync(aliases['@solidcash/solidcash/vitest'])).toBe(true);
   });
 
   it('maps every Hardhat and Ethers entry point onto a compatibility shim', () => {
@@ -43,7 +43,7 @@ describe('solidhatPreset', () => {
     });
     const alias = config.resolve?.alias as { find: string | RegExp; replacement: string }[];
     expect(alias.some((rule) => rule.replacement === '/tmp/utils.js')).toBe(true);
-    expect(config.resolve?.dedupe).toEqual(['@solidcash/testing', 'solidcash', 'viem']);
+    expect(config.resolve?.dedupe).toEqual(['@solidcash/testing', '@solidcash/solidcash', 'viem']);
     expect(config.test?.globals).toBe(true);
   });
 });

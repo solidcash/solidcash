@@ -153,8 +153,8 @@ export default defineConfig({
 | --- | --- | --- |
 | `paths.contracts` | `contracts` | Source root for `.scash` and Solidity-compatible `.sol` files. |
 | `paths.tests` | `test` | Project tests. |
-| `paths.artifacts` | `artifacts` | Artifact root; SolidHat writes beneath `solidcash/`. |
-| `paths.cache` | `~/.cache/solidcash` | Compile cache root; SolidHat writes beneath `solidcash/`. |
+| `paths.artifacts` | `artifacts` | Artifact root; SolidHat writes beneath `@solidcash/solidcash/`. |
+| `paths.cache` | `~/.cache/solidcash` | Compile cache root; SolidHat writes beneath `@solidcash/solidcash/`. |
 | `trustProjectCache` | `false` | Allow a `paths.cache` inside the project. |
 | `compiler` | none | Options passed to `solidc`. The legacy name `solc` is accepted. |
 | `composition` | `direct` | Experimental: `framed` compiles every entry point in the framed convention. |
@@ -520,7 +520,7 @@ other sizes stay relaxed.
 Outside SolidHat, pass the same values to the SDK's provider:
 
 ```ts
-import { MockNetworkProvider } from 'solidcash/network/mock';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
 
 const provider = new MockNetworkProvider({
   consensusLimits: {

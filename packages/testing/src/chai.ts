@@ -5,7 +5,7 @@
  * (equal/gt/true/...) throw immediately, chai-style; async ones (reverted/emit/change*) return a Promise to
  * `await`, ethers-style. A `chai` module alias lets ported files' `import { expect } from 'chai'` resolve here.
  */
-import 'solidcash/vitest';
+import '@solidcash/solidcash/vitest';
 import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { hash160 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';

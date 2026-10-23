@@ -122,8 +122,8 @@ rerun.
 ### SDK migration
 
 ```ts
-import { SignatureTemplate } from 'solidcash';
-import { StatefulContract } from 'solidcash/stateful';
+import { SignatureTemplate } from '@solidcash/solidcash';
+import { StatefulContract } from '@solidcash/solidcash/stateful';
 
 const admin = new SignatureTemplate(adminPrivateKey);
 const result = await StatefulContract.upgrade({
@@ -213,8 +213,8 @@ implementation whose only eligible entry is a single function keeps its selector
 returns one handle that dispatches implementation method names:
 
 ```ts
-import { getContractFactory } from 'solidcash/contract-factory';
-import { upgrades } from 'solidcash/stateful';
+import { getContractFactory } from '@solidcash/solidcash/contract-factory';
+import { upgrades } from '@solidcash/solidcash/stateful';
 
 const implementationFactory = getContractFactory(counterArtifact, signer);
 const proxy = await upgrades.deployProxy(
@@ -332,8 +332,8 @@ to it. It sends no transaction to the proxy: the proxy's lock, address, and stat
 forwarder's own check decides whether it accepts the new implementation.
 
 ```ts
-import { getContractFactory } from 'solidcash/contract-factory';
-import { upgrades } from 'solidcash/stateful';
+import { getContractFactory } from '@solidcash/solidcash/contract-factory';
+import { upgrades } from '@solidcash/solidcash/stateful';
 
 const proxy = await upgrades.deployProxy(getContractFactory(counterV1Artifact, admin), { counter: 0n }, {
   proxy: forwarderArtifact,

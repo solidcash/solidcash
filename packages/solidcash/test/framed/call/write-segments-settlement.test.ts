@@ -4,7 +4,7 @@ import {
   buildPushdataCommitment, bytesToHex, encodeIntegerValue, validatorAddress, type Artifact,
   type PublishedWriteSegment,
 } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate, encodeFunctionArgument } from '../../../src/index.js';

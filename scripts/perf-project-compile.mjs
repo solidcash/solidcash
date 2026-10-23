@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { compileFileMulti } from 'solidc';
+import { compileFileMulti } from '@solidcash/solidc';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const allRoots = [

@@ -1,7 +1,7 @@
 import {
   beforeAll, describe, expect, it,
 } from 'vitest';
-import { compileFile } from 'solidc';
+import { compileFile } from '@solidcash/solidc';
 import { hexToBin } from '@bitauth/libauth';
 import { URL } from 'url';
 import type { Utxo } from '../../src/interfaces.js';

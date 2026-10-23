@@ -51,8 +51,8 @@ retain the public `int` amount type; admission proves each amount against the bo
 can enter state.
 
 ```solidity
-import { BchNative } from "solidcash/contracts/BchNative.scash";
-import { BlackList } from "solidcash/contracts/BlackList.scash";
+import { BchNative } from "@solidcash/solidcash/contracts/BchNative.scash";
+import { BlackList } from "@solidcash/solidcash/contracts/BlackList.scash";
 
 contract MyToken(address initialOwner) is ERC20, BchNative, BlackList {
 
@@ -88,7 +88,7 @@ the multiplier compresses the ledger into the reserve: one native CashToken base
 ledger units, and `wrap`/`unwrap` convert with `native = ledger / multiplier`.
 
 ```solidity
-import { BchNativeMultiplier } from "solidcash/contracts/BchNativeMultiplier.scash";
+import { BchNativeMultiplier } from "@solidcash/solidcash/contracts/BchNativeMultiplier.scash";
 
 // One native base unit = 100 ledger units, so 500 ledger units bridge 5 CashTokens.
 contract ScaledToken() is ERC20, BchNative, BchNativeMultiplier(100) {
@@ -121,9 +121,9 @@ category and mints nothing, and the SDK checks that the contract keys its reserv
 `totalSupply()` starts at 0.
 
 ```solidity
-import { BchNativeWrapper } from "solidcash/contracts/BchNativeWrapper.scash";
-import { BchNativeMultiplier } from "solidcash/contracts/BchNativeMultiplier.scash";
-import { ERC20Metadata } from "solidcash/contracts/ERC20Metadata.scash";
+import { BchNativeWrapper } from "@solidcash/solidcash/contracts/BchNativeWrapper.scash";
+import { BchNativeMultiplier } from "@solidcash/solidcash/contracts/BchNativeMultiplier.scash";
+import { ERC20Metadata } from "@solidcash/solidcash/contracts/ERC20Metadata.scash";
 
 contract MyWrapped() is BchNativeWrapper, BchNativeMultiplier(100), ERC20Metadata("Wrapped Example", "WRAPPED") {
     constructor(bytes32 underlying_) BchNativeWrapper(underlying_) { }

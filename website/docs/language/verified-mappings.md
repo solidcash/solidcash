@@ -366,7 +366,7 @@ import {
   decodeEntryCommitment,
   getEntryNftAddress,
   getValueChunkAddress,
-} from 'solidcash/stateful';
+} from '@solidcash/solidcash/stateful';
 ```
 
 `SortedList` validates and plans membership, non-membership, insert, update, and delete transitions. Application

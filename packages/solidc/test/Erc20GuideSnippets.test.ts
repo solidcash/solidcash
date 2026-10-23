@@ -8,7 +8,7 @@ import { compileString } from '../src/index.js';
  * The ERC-20 guide's import-bearing snippets.
  *
  * `scripts/release-docs-snippets.ts` skips a fenced block that imports, because a bare `compileString` cannot resolve
- * a package specifier. These two blocks inherit the shipped `solidcash/contracts/*.scash` base contracts, so the gate
+ * a package specifier. These two blocks inherit the shipped `@solidcash/solidcash/contracts/*.scash` base contracts, so the gate
  * cannot cover them; compile them here against the sources those imports name.
  */
 const here = dirname(fileURLToPath(import.meta.url));
@@ -22,9 +22,9 @@ const fencedBlockDeclaring = (contractName: string): string => {
   return block;
 };
 
-/** Resolves the guide's `solidcash/contracts/*.scash` specifiers, and the relative imports inside those files. */
+/** Resolves the guide's `@solidcash/solidcash/contracts/*.scash` specifiers, and the relative imports inside those files. */
 const importResolver = (importPath: string, currentFile: string): { source: string; id: string } | undefined => {
-  const prefix = 'solidcash/contracts/';
+  const prefix = '@solidcash/solidcash/contracts/';
   const candidate = importPath.startsWith(prefix)
     ? join(contractsDir, importPath.slice(prefix.length))
     : importPath.startsWith('.')

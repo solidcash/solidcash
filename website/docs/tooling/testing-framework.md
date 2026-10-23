@@ -54,9 +54,9 @@ aliases supported Hardhat/Ethers imports to the BCH runtime. It also adapts comm
 `require('hardhat')` forms used by older suites. Unlike SolidHat's preset, it always maps `ethers` to the Ethers 6
 surface, and maps `ethers/lib/utils` to the Ethers 5 utilities.
 
-For a normal SolidCash test which does not need Hardhat import aliases, add `import 'solidcash/vitest'` to the
+For a normal SolidCash test which does not need Hardhat import aliases, add `import '@solidcash/solidcash/vitest'` to the
 setup file and enable Vitest globals; see [Test Matchers](/docs/sdk/test-matchers#setup). The SDK publishes a Vitest
-extension; there is no separate `solidcash/jest` package export.
+extension; there is no separate `@solidcash/solidcash/jest` package export.
 
 ## Entry points
 
@@ -160,7 +160,7 @@ and execution continues. A failed BCH covenant invalidates the whole transaction
 For native Vitest style, import the SDK extension and pass the unsent call or `TransactionBuilder`:
 
 ```ts
-import 'solidcash/vitest';
+import '@solidcash/solidcash/vitest';
 
 await expect(contract.call.withdraw(amount))
   .toBeRevertedWith(/insufficient balance/i);

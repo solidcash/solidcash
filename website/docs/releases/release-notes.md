@@ -20,8 +20,8 @@ Supported in this release:
   environment, funded signers, factories, fixtures, time and block helpers, and a maintained subset of chai
   assertions. Create a project with `npm create @solidcash/solidhat`.
 - BCMR metadata for deployed contracts: every genesis leads with the category's identity output and can publish a
-  registry (`solidcash/bcmr`). See [CashToken metadata](/docs/guides/deployment#cashtoken-metadata).
-- Six packages released together at 0.14.0-beta.1, ESM only, for Node.js 22 or newer: `solidc`, `solidcash`,
+  registry (`@solidcash/solidcash/bcmr`). See [CashToken metadata](/docs/guides/deployment#cashtoken-metadata).
+- Six packages released together at 0.14.0-beta.1, ESM only, for Node.js 22 or newer: `@solidcash/solidc`, `@solidcash/solidcash`,
   `@solidcash/utils`, `@solidcash/testing`, `@solidcash/solidhat` and `@solidcash/create-solidhat`.
 
 Experimental in this release, outside the stable compatibility promise. Construction stops with a named diagnostic
@@ -81,7 +81,7 @@ when a required transaction shape cannot be produced.
 
 #### SolidCash SDK
 - :sparkles: In the `MockNetworkProvider`, `addUtxo()` now returns the added UTXO.
-- :sparkles: `solidcash/stateful` exports `artifactAddressForm()`, so a consumer can assert which address form an
+- :sparkles: `@solidcash/solidcash/stateful` exports `artifactAddressForm()`, so a consumer can assert which address form an
   artifact was compiled with, including the mode-derived default. A decoded address is presented by that form, and
   the SDK's own derivation of a call's arguments packs an `address` the same way the compiled body does: under
   `'bytecode'` a bare address argument is packed whole, so the caller's digest and the record's agree.
@@ -373,7 +373,7 @@ https://x.com/SolidCashBCH/status/1713928572677583023
 
 ## v0.8.0
 
-:warning: From v0.8.0 onwards, SolidCash is a [Pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c). This means that you can no longer use `require()` to import `solidcash` or `solidc`.
+:warning: From v0.8.0 onwards, SolidCash is a [Pure ESM package](https://gist.github.com/sindresorhus/a39789f98801d908bbc7ff3ecc99d99c). This means that you can no longer use `require()` to import `@solidcash/solidcash` or `solidc`.
 
 This release also contains several breaking changes, please refer to the [migration notes](/docs/releases/migration-notes) for more information.
 

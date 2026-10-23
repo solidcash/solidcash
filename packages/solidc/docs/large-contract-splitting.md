@@ -24,7 +24,7 @@ so deployment fixes the facet graph immutably.
 ## Compiler API
 
 ```ts
-import { compileFileSplit, compileStringSplit } from 'solidc';
+import { compileFileSplit, compileStringSplit } from '@solidcash/solidc';
 
 const bundle = compileFileSplit('Large.scash');
 const forced = compileStringSplit(source, {
@@ -92,7 +92,7 @@ fallback because current delegate covenant context is one-hop.
 ## SDK deployment and calls
 
 ```ts
-import { Signer, SplitContractBundle, upgrades } from 'solidcash';
+import { Signer, SplitContractBundle, upgrades } from '@solidcash/solidcash';
 
 const factory = SplitContractBundle.from(bundle, signer);
 const app = await factory.deploy(constructorArgs, {

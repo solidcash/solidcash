@@ -6,7 +6,7 @@
 import {
   binToHex, decodeTransactionUnsafe, encodeLockingBytecodeP2pkh, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { compileFileSplit } from 'solidc';
+import { compileFileSplit } from '@solidcash/solidc';
 import { asmToScript, scriptToBytecode, type FunctionSplitBundle } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { callFramedEntry, type FramedCallResult } from '../../src/framed/call/index.js';

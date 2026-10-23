@@ -1,5 +1,5 @@
 import { scriptToBytecode } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { encodeFunctionArgument } from '../../src/index.js';
 import * as messageBus from '../../src/message-bus/index.js';

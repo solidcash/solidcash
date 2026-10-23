@@ -88,8 +88,8 @@ readers pin only the lock. The category is the txid of the `vout: 0` outpoint th
 
 ```ts
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { SignatureTemplate, TransactionBuilder } from 'solidcash';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { SignatureTemplate, TransactionBuilder } from '@solidcash/solidcash';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 import { blockOracleLockingBytecode, encodeBlockOracleCommitment, hash160 } from '@solidcash/utils';
 
 const genesisProvider = new ElectrumNetworkProvider('mainnet');
@@ -122,8 +122,8 @@ The SDK reads the oracle lock from the provider's `blockOracleLock`, and the kee
 
 ```ts
 import { hexToBin } from '@bitauth/libauth';
-import { Contract, SignatureTemplate, TransactionBuilder } from 'solidcash';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { Contract, SignatureTemplate, TransactionBuilder } from '@solidcash/solidcash';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 
 const provider = new ElectrumNetworkProvider('mainnet', {
   blockOracleCategory: hexToBin(oracleCategory),
@@ -171,7 +171,7 @@ benefit the spender, use a native `tx.time` floor.
 oracle-aware provider (for a stateful deployment, its `.inner`):
 
 ```ts
-import { BlockOracleUpdater, createRpcClient } from 'solidcash/oracle';
+import { BlockOracleUpdater, createRpcClient } from '@solidcash/solidcash/oracle';
 
 const rpc = createRpcClient('mainnet', {
   url: process.env.BCH_RPC_URL,
@@ -217,9 +217,9 @@ To exercise the keeper, seed older fields and sync against the mock chain:
 
 ```ts
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { Contract } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
-import { BlockOracleUpdater } from 'solidcash/oracle';
+import { Contract } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
+import { BlockOracleUpdater } from '@solidcash/solidcash/oracle';
 import { mockBlockOracleRpc } from '@solidcash/testing';
 
 const provider = new MockNetworkProvider();
@@ -271,7 +271,7 @@ mint this baton. Pass `blockhashKeeperPublicKey` to `StatefulContract.deploy` to
 this option. It requires an artifact that reads `blockhash`; omitting it preserves existing deployment behavior.
 
 ```ts
-import { StatefulContract } from 'solidcash/stateful';
+import { StatefulContract } from '@solidcash/solidcash/stateful';
 
 const { contract: consumer } = await StatefulContract.deploy(consumerArtifact, [], {
   provider, fundingUtxo, funder, changeAddress,

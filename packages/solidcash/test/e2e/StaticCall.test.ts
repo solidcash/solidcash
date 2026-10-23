@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { compileString as compileKernelString } from 'solidc';
+import { compileString as compileKernelString } from '@solidcash/solidc';
 import { binToHex } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
 import { Contract } from '../../src/index.js';

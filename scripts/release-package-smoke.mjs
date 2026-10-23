@@ -102,9 +102,9 @@ try {
   run('npm', ['ls', '--all'], { cwd: consumer, capture: true });
 
   writeFileSync(join(consumer, 'smoke.mjs'), `
-import { compileString, version as compilerVersion } from 'solidc';
-import { Contract } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
+import { compileString, version as compilerVersion } from '@solidcash/solidc';
+import { Contract } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
 import * as utils from '@solidcash/utils';
 import * as testing from '@solidcash/testing';
 import * as solidhat from '@solidcash/solidhat';
@@ -130,7 +130,7 @@ import { existsSync } from 'node:fs';
 import { compatibilityAliases } from '@solidcash/solidhat/vitest-preset';
 
 const aliases = compatibilityAliases({ hardhat: 3, ethers: 6 });
-for (const name of ['solidcash', 'solidcash/vitest']) {
+for (const name of ['@solidcash/solidcash', '@solidcash/solidcash/vitest']) {
   if (!existsSync(aliases[name])) {
     throw new Error(\`packed preset alias \${name} points at \${aliases[name]}, which does not exist\`);
   }
@@ -180,7 +180,7 @@ contract GoldenToken(pubkey owner) {
 }
 `);
   writeFileSync(join(consumer, 'test', 'golden-path.test.js'), `
-import { SignatureTemplate } from 'solidcash';
+import { SignatureTemplate } from '@solidcash/solidcash';
 import { ethers, loadFixture } from '@solidcash/testing';
 import { expect } from '@solidcash/testing/chai';
 
@@ -221,10 +221,10 @@ describe('packed release golden path', () => {
   run('npx', ['vitest', 'run', '--config', 'vitest.config.js'], { cwd: consumer });
 
   writeFileSync(join(consumer, 'smoke.ts'), `
-import { compileString, type CompileOptions } from 'solidc';
-import { Contract, type Artifact } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
-import 'solidcash/vitest';
+import { compileString, type CompileOptions } from '@solidcash/solidc';
+import { Contract, type Artifact } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
+import '@solidcash/solidcash/vitest';
 import { defineConfig } from '@solidcash/solidhat/config';
 import { loadFixture } from '@solidcash/testing/network-helpers';
 

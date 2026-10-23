@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { Contract, TransactionBuilder } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import * as messageBus from '../../src/message-bus/index.js';

@@ -26,11 +26,11 @@ const testingStub = (name: string): string => testingEntry(`stubs/${name}`);
 const solidhatEntry = (name: string): string => fileURLToPath(
   new URL(`../dist/${name}.js`, import.meta.url),
 );
-// `solidcash` is unscoped, so the workspace sibling path does not exist in an installed project. Resolve the
-// package instead: it is a dependency of solidhat and resolves correctly in both layouts.
+// Resolve the package rather than a sibling path: it is a dependency of solidhat and resolves correctly in both
+// layouts.
 const requireFromHere = createRequire(import.meta.url);
-const solidcashEntry = (): string => requireFromHere.resolve('solidcash');
-const solidcashVitest = requireFromHere.resolve('solidcash/vitest');
+const solidcashEntry = (): string => requireFromHere.resolve('@solidcash/solidcash');
+const solidcashVitest = requireFromHere.resolve('@solidcash/solidcash/vitest');
 const testingSetup = fileURLToPath(
   new URL('../../testing/dist/vitest-setup.js', import.meta.url),
 );
@@ -55,12 +55,12 @@ export function compatibilityAliases(target: CompatibilityTarget): Record<string
     '@solidcash/testing/ethers': testingEntry('ethers-utils'),
     '@solidcash/testing/ethers-shim': testingEntry('ethers-shim'),
     '@solidcash/testing/hre': testingEntry('hre'),
-    solidcash: solidcashEntry(),
+    '@solidcash/solidcash': solidcashEntry(),
     'chai-subset': testingStub('chai-plugin'),
     'chai-as-promised': testingStub('chai-plugin'),
     // Keep the setup extension in the same workspace package graph as this preset. Vite otherwise resolves a
     // symlinked testing package through the source checkout and can look for this subpath in the wrong worktree.
-    'solidcash/vitest': solidcashVitest,
+    '@solidcash/solidcash/vitest': solidcashVitest,
   };
 }
 
@@ -84,7 +84,7 @@ export function solidhatPreset(
     resolve: {
       ...user.resolve,
       alias: [...exactAliases, ...userAliases],
-      dedupe: ['@solidcash/testing', 'solidcash', ...(user.resolve?.dedupe ?? [])],
+      dedupe: ['@solidcash/testing', '@solidcash/solidcash', ...(user.resolve?.dedupe ?? [])],
     },
     optimizeDeps: {
       ...user.optimizeDeps,

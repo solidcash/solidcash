@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileFile, compileFileSplit, compileString } from 'solidc';
+import { compileFile, compileFileSplit, compileString } from '@solidcash/solidc';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   asmToScript, buildTokenContainerCovenantScript, bytecodeToScript, decodeInt, Op, scriptToBytecode,

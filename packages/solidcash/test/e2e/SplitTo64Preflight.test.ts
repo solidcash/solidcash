@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileStringSplit } from 'solidc';
+import { compileStringSplit } from '@solidcash/solidc';
 import { Signer } from '../../src/index.js';
 import { SplitContractBundle } from '../../src/stateful/index.js';
 import { createTestProvider } from '../test-util.js';

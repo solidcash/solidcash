@@ -3,7 +3,7 @@
  *
  * Extracted from `StatefulContract.ts`: these are pure, artifact-driven planners for the kernel and message-bus
  * calling conventions, kept here so the core stateful class no longer carries the whole plugin surface. The class
- * re-exports them for the public `solidcash/stateful` barrel.
+ * re-exports them for the public `@solidcash/solidcash/stateful` barrel.
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';

@@ -3,7 +3,7 @@ import {
   bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe,
   encodeAuthenticationInstructions, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { compileString as compileMessageBus } from 'solidc';
+import { compileString as compileMessageBus } from '@solidcash/solidc';
 import { compileString } from '../direct-compile.js';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';

@@ -1,5 +1,5 @@
 import { binToHex, encodeTransaction, hexToBin, utf8ToBin } from '@bitauth/libauth';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import { parsePushdataCommitment, sha256 } from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';

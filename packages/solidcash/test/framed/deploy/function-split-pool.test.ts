@@ -6,7 +6,7 @@ import {
   ATOMIC_MESSAGE_BUS_DOMAIN_HEX, MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN,
   bytesEqual, bytesToHex, FrameKind, TokenCapability, type FunctionSplitBundle, type StateLayout,
 } from '@solidcash/utils';
-import { framedValidator } from 'solidc/runtime';
+import { framedValidator } from '@solidcash/solidc/runtime';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringSplit } from '../../../../solidc/src/compiler.js';
 import { SignatureTemplate } from '../../../src/index.js';

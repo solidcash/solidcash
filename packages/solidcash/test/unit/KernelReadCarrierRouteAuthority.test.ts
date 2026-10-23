@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import {
   kernelJournalDispositionCommitmentMarker,
   kernelJournalDispositionManifestDigest,

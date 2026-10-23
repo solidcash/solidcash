@@ -3,7 +3,7 @@ import {
   hexToBin, vmNumberToBigInt,
 } from '@bitauth/libauth';
 import { decodePushdataValue, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import {
   Contract,

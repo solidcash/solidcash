@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { bytesToHex } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { makeCallResolver, resolveCallTarget } from '../../../src/framed/proxy/call-resolution.js';

@@ -1,6 +1,6 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { addressToGraphEmissionBytes } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { deriveCompiledGraphPlan } from '../../src/message-bus/worklist.js';
 

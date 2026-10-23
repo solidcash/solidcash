@@ -17,7 +17,7 @@ The `solidc` command line interface is used to compile SolidCash `.scash` files 
 You can use `npm` to install the `solidc` command line tool globally.
 
 ```bash
-npm install -g solidc
+npm install -g @solidcash/solidc
 ```
 
 ### CLI Usage
@@ -90,7 +90,7 @@ Generally SolidCash contracts are compiled to an Artifact JSON file using the CL
 compiled programmatically with the `solidc` package.
 
 ```bash
-npm install solidc
+npm install @solidcash/solidc
 ```
 
 ### compileFile()
@@ -131,7 +131,7 @@ last concrete top-level contract unless `primaryContractName` is provided). To c
 use the additive multi APIs:
 
 ```ts
-import { compileFileMulti, compileStringMulti } from 'solidc';
+import { compileFileMulti, compileStringMulti } from '@solidcash/solidc';
 
 const artifacts = compileFileMulti('Protocol.scash');
 const tokenArtifact = artifacts.Token;
@@ -145,7 +145,7 @@ deployable entries. Duplicate top-level names are a compile error.
 For a deploy-aware wrapper which carries the complete artifact graph into the SDK, use `ContractBundle`:
 
 ```ts
-import { ContractBundle } from 'solidcash/stateful';
+import { ContractBundle } from '@solidcash/solidcash/stateful';
 
 const bundle = ContractBundle.from(artifacts, { provider, signer });
 const { contract: factory } = await bundle.deploy('Factory', [owner], deployOptions);
@@ -157,7 +157,7 @@ This lets typed child deployments and linked library dependencies resolve artifa
 ## Split bundles
 
 ```ts
-import { compileFileSplit, compileStringSplit } from 'solidc';
+import { compileFileSplit, compileStringSplit } from '@solidcash/solidc';
 
 const split = compileFileSplit('Large.scash', {
   maxShardBytes: 9_500,
@@ -219,7 +219,7 @@ defaults: `enforceFunctionParameterTypes: true`, `enforceLocktimeGuard: true`, `
 | `optimise` | Default `true`. `false` emits the unoptimised script so a VM failure points at the exact source line. Debugging only: the script is larger, so never deploy it. |
 
 ```ts
-import { compileString, defaultWarningListener, type CompilerWarning } from 'solidc';
+import { compileString, defaultWarningListener, type CompilerWarning } from '@solidcash/solidc';
 
 const warnings: CompilerWarning[] = [];
 const artifact = compileString('import "./math.scash";\ncontract Calculator() { ... }', {

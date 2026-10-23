@@ -2,9 +2,9 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { compileStringSplit } from 'solidc';
+import { compileStringSplit } from '@solidcash/solidc';
 import { formatSplitArtifactBundle } from '@solidcash/utils';
-import { deriveLogicalCreateAddress } from 'solidcash/stateful';
+import { deriveLogicalCreateAddress } from '@solidcash/solidcash/stateful';
 import { createHardhatRuntimeEnvironment } from '../src/hre.js';
 import { resolveConfig } from '../src/config.js';
 

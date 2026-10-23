@@ -283,7 +283,7 @@ async function framedAnswer(row: Row): Promise<{ readonly role?: Answer; readonl
   const target = artifacts[row.target]!;
   const refused = target.composition?.refusedEntries?.find((entry) => entry.functionName.includes(row.entry));
   if (refused !== undefined) return { refusal: `${refused.functionName}: ${refused.reason}` };
-  const { framedValidator } = await import('solidc');
+  const { framedValidator } = await import('@solidcash/solidc');
   const validatorProgram = framedValidator.buildValidatorProgram();
   const leading = await leadingChain(row, artifacts, validatorProgram);
   if ('refusal' in leading) return leading;

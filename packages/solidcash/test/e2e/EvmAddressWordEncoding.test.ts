@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { scriptToBytecode, sha256 } from '@solidcash/utils';
-import { compileString as compileKernel } from 'solidc';
+import { compileString as compileKernel } from '@solidcash/solidc';
 import { compileString } from '../direct-compile.js';
 import {
   Contract,

@@ -32,8 +32,8 @@ during a transfer would count the same value twice. Tokens paid to the reserve o
 Import them from the SDK package:
 
 ```solidity
-import { ERC20 } from "solidcash/contracts/ERC20.scash";
-import { BchNative } from "solidcash/contracts/BchNative.scash";
+import { ERC20 } from "@solidcash/solidcash/contracts/ERC20.scash";
+import { BchNative } from "@solidcash/solidcash/contracts/BchNative.scash";
 ```
 
 | Contract | What it adds |
@@ -53,9 +53,9 @@ import { BchNative } from "solidcash/contracts/BchNative.scash";
 ```solidity
 pragma solidcash >=0.8.0;
 
-import { ERC20 } from "solidcash/contracts/ERC20.scash";
-import { ERC20Metadata } from "solidcash/contracts/ERC20Metadata.scash";
-import { BchNative } from "solidcash/contracts/BchNative.scash";
+import { ERC20 } from "@solidcash/solidcash/contracts/ERC20.scash";
+import { ERC20Metadata } from "@solidcash/solidcash/contracts/ERC20Metadata.scash";
+import { BchNative } from "@solidcash/solidcash/contracts/BchNative.scash";
 
 contract MyDollar() is ERC20, ERC20Metadata("My Dollar", "MYD"), BchNative {
     constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) { }
@@ -112,8 +112,8 @@ deposit of 101 does not wrap 100.
 
 ```ts
 import { hexToBin } from '@bitauth/libauth';
-import { Signer } from 'solidcash';
-import { ContractFactory } from 'solidcash/contract-factory';
+import { Signer } from '@solidcash/solidcash';
+import { ContractFactory } from '@solidcash/solidcash/contract-factory';
 import myDollarArtifact from './MyDollar.artifact.js';
 
 const deployer = new Signer(deployerPrivateKey, provider);
@@ -166,10 +166,10 @@ ledger backed one to one holds at most about 9.22 whole tokens. `BchNativeMultip
 ```solidity
 pragma solidcash >=0.8.0;
 
-import { ERC20 } from "solidcash/contracts/ERC20.scash";
-import { ERC20Metadata } from "solidcash/contracts/ERC20Metadata.scash";
-import { BchNative } from "solidcash/contracts/BchNative.scash";
-import { BchNativeMultiplier } from "solidcash/contracts/BchNativeMultiplier.scash";
+import { ERC20 } from "@solidcash/solidcash/contracts/ERC20.scash";
+import { ERC20Metadata } from "@solidcash/solidcash/contracts/ERC20Metadata.scash";
+import { BchNative } from "@solidcash/solidcash/contracts/BchNative.scash";
+import { BchNativeMultiplier } from "@solidcash/solidcash/contracts/BchNativeMultiplier.scash";
 
 // One native unit backs 10^12 ledger units, so the bearer token has 6 decimals.
 contract ScaledDollar() is ERC20, ERC20Metadata("Scaled Dollar", "SCD"), BchNative, BchNativeMultiplier(1e12) {
@@ -214,7 +214,7 @@ ownership and deprecation. One subclass adds the CashTokens boundary, and implem
 pragma solidity ^0.8.20;
 
 import {TetherToken} from "./TetherToken.sol";
-import {BchNative} from "solidcash/contracts/BchNative.scash";
+import {BchNative} from "@solidcash/solidcash/contracts/BchNative.scash";
 
 contract TetherNativeToken is TetherToken, BchNative {
     constructor(
@@ -251,8 +251,8 @@ the same `nativeToken` and `bcmr` options as a factory:
 
 ```ts
 import { hexToBin } from '@bitauth/libauth';
-import { compileFileSplit } from 'solidc';
-import { SplitContractBundle } from 'solidcash/stateful';
+import { compileFileSplit } from '@solidcash/solidc';
+import { SplitContractBundle } from '@solidcash/solidcash/stateful';
 
 const split = compileFileSplit('TetherNativeToken.sol', { evmCompat: true, messageBus: false });
 const tokenCoin = /* a token-free coin of the treasury's at vout 0 */;
@@ -301,7 +301,7 @@ reserve, and leave only by `unwrap`, so `totalSupply()` is exactly the amount wr
 ```solidity
 pragma solidcash >=0.8.0;
 
-import { BchNativeWrapper } from "solidcash/contracts/BchNativeWrapper.scash";
+import { BchNativeWrapper } from "@solidcash/solidcash/contracts/BchNativeWrapper.scash";
 
 contract WrappedToken() is BchNativeWrapper {
     constructor(bytes32 underlying_) BchNativeWrapper(underlying_) { }
@@ -322,9 +322,9 @@ The rest is yours. `transfer`, `approve` and `transferFrom` stay virtual for pol
 ```solidity
 pragma solidcash >=0.8.0;
 
-import { ERC20Metadata } from "solidcash/contracts/ERC20Metadata.scash";
-import { BchNativeMultiplier } from "solidcash/contracts/BchNativeMultiplier.scash";
-import { BchNativeWrapper } from "solidcash/contracts/BchNativeWrapper.scash";
+import { ERC20Metadata } from "@solidcash/solidcash/contracts/ERC20Metadata.scash";
+import { BchNativeMultiplier } from "@solidcash/solidcash/contracts/BchNativeMultiplier.scash";
+import { BchNativeWrapper } from "@solidcash/solidcash/contracts/BchNativeWrapper.scash";
 
 // X has 8 decimals; one unit of X backs 100 ledger units, so the ledger shows 10.
 contract WrappedDollar() is BchNativeWrapper, BchNativeMultiplier(100), ERC20Metadata("Wrapped Dollar", "WRAPPED") {
@@ -423,7 +423,7 @@ To publish a new snapshot later, the owner spends the identity with `publishMeta
 created beside C shares C's identity output, so resolve C's identity and add the snapshot to the token's category:
 
 ```ts
-import { publishMetadata, resolveIdentity, withSnapshot } from 'solidcash/bcmr';
+import { publishMetadata, resolveIdentity, withSnapshot } from '@solidcash/solidcash/bcmr';
 
 const identity = await resolveIdentity(provider, token.categoryId); // C's identity, proven back to the genesis
 const { registry } = token.deploymentRegistry()!;

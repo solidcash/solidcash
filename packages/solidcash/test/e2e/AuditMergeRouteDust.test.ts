@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { sha256, type Artifact } from '@solidcash/utils';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import { Contract, type Utxo } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import * as messageBus from '../../src/message-bus/index.js';

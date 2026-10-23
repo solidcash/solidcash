@@ -1,7 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { ecrecoverComputeLockingBytecode } from '@solidcash/utils';
 import { ethers } from 'ethers';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../../src/index.js';
 import { StatefulContract } from '../../../src/stateful/index.js';

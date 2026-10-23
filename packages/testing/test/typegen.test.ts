@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
-import { compileFileMulti } from 'solidc';
+import { compileFileMulti } from '@solidcash/solidc';
 import { resolveConfig } from '../src/config.js';
 import { compileSolidityProject } from '../src/project-compiler.js';
 import { generateTypechainTargets } from '../src/typegen.js';

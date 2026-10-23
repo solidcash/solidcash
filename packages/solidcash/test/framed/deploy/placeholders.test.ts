@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compositionPlaceholders } from 'solidc';
+import { compositionPlaceholders } from '@solidcash/solidc';
 
 /**
  * Deployment-time constants in a master script, driven through the shipped module.

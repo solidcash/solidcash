@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, type Artifact } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';

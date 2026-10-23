@@ -5,7 +5,7 @@
  * `time.increase(...)` / `mine(...)` move block.* as Hardhat's do. `mockBlockOracleRpc(provider)` is an RpcLike
  * whose height/time come from the mock provider, for running that keeper against the mock chain.
  */
-import type { RpcLike } from 'solidcash/oracle';
+import type { RpcLike } from '@solidcash/solidcash/oracle';
 
 interface BlockTimeProvider {
   getBlockHeight(): Promise<number>;
@@ -42,5 +42,5 @@ export function mockBlockOracleRpc(provider: BlockTimeProvider): RpcLike {
   };
 }
 
-export { BlockOracleUpdater, fetchBlockOracleFields } from 'solidcash/dist/oracle/blockOracleUpdater.js';
-export type { RpcLike, BlockOracleFields } from 'solidcash/dist/oracle/blockOracleUpdater.js';
+export { BlockOracleUpdater, fetchBlockOracleFields } from '@solidcash/solidcash/dist/oracle/blockOracleUpdater.js';
+export type { RpcLike, BlockOracleFields } from '@solidcash/solidcash/dist/oracle/blockOracleUpdater.js';

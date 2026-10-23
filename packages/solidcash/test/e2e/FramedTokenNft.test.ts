@@ -11,7 +11,7 @@ import {
 import { describe, expect, it } from 'vitest';
 import { compileString, compileStringMulti } from '../../../solidc/src/compiler.js';
 import { validatorAddress } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import { callFramedEntry, type FramedCallResult } from '../../src/framed/call/index.js';
 import { framedTokenContainerLockingBytecode } from '../../src/framed/call/token-containers.js';
 import type { Utxo } from '../../src/interfaces.js';

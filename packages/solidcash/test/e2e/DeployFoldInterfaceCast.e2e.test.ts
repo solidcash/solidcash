@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import type { ArtifactMap } from '@solidcash/utils';
 import { MockNetworkProvider } from '../../src/network/mock/index.js';

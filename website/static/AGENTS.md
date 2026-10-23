@@ -71,7 +71,7 @@ Both modes accept bare state access (`balanceOf[a] += x`) as well as the explici
 `evmCompat` changes ABI bytes, selectors and some storage layouts, so choose the mode before the first deployment.
 
 ```ts
-import { compileFileMulti } from 'solidc';
+import { compileFileMulti } from '@solidcash/solidc';
 const artifacts = compileFileMulti('contracts/Token.sol', { evmCompat: true }); // one artifact per contract
 ```
 
@@ -126,8 +126,8 @@ Six npm packages, all versioned 0.14.0-beta.1. They ship as ESM only and target 
 below resolve these names from npm; a 404 means that release is not published yet.
 
 ```text
-solidc                      -- compiler: CLI `solidc` and the compileFile/compileString API
-solidcash                   -- SDK: Contract, TransactionBuilder, StatefulContract, providers, signers
+@solidcash/solidc           -- compiler: CLI `solidc` and the compileFile/compileString API
+@solidcash/solidcash        -- SDK: Contract, TransactionBuilder, StatefulContract, providers, signers
 @solidcash/utils            -- shared artifact/ABI types and script helpers (a dependency of the others)
 @solidcash/testing          -- Hardhat-style runtime: config, HRE, tasks, network helpers, chai shim (CLI `solidcash`)
 @solidcash/solidhat         -- project tooling built on @solidcash/testing (CLI `solidhat`)
@@ -137,8 +137,8 @@ solidcash                   -- SDK: Contract, TransactionBuilder, StatefulContra
 ```sh
 npm create @solidcash/solidhat@latest my-app -- --yes  # new project; --yes accepts defaults and installs
 npx @solidcash/solidhat --init --dry-run               # preview adding SolidHat to an existing (Hardhat) project
-npm install solidcash                                  # SDK only
-npm install --save-dev solidc                          # compiler API and CLI (or: npm install -g solidc)
+npm install @solidcash/solidcash                       # SDK only
+npm install --save-dev @solidcash/solidc               # compiler API and CLI (or: npm install -g @solidcash/solidc)
 ```
 
 Create flags (after `--`): `--template typescript|javascript|empty`, `--package-manager npm|yarn|pnpm`,
@@ -179,7 +179,7 @@ gets a warning that BCH will not accept it. The CLI has no Solidity-mode flag.
 ### Compile API (Node.js)
 
 ```ts
-import { compileFile, compileFileMulti, compileFileSplit, compileString } from 'solidc';
+import { compileFile, compileFileMulti, compileFileSplit, compileString } from '@solidcash/solidc';
 
 const artifact = compileFile(new URL('./Counter.scash', import.meta.url)); // the last concrete contract
 const all = compileFileMulti('Protocol.scash');                    // ArtifactMap keyed by contract name
@@ -833,7 +833,7 @@ contract LedgerV1(pubkey admin) {
   delegatecall, and functions (helpers included) that move satoshis or use token containers. Proxy and
   implementation must declare the same state fields with the same names, types and positions.
 - Stable profile: `upgrades.deployProxy(getContractFactory(implArtifact, signer), { counter: 5n })` from
-  `solidcash/stateful`, then `proxy.increment().send()`. Its proxy bakes in the implementation's lock: no mutable
+  `@solidcash/solidcash/stateful`, then `proxy.increment().send()`. Its proxy bakes in the implementation's lock: no mutable
   implementation pointer (`upgrades.upgradeProxy` refuses it). Updating a mapping entry works, inserting a key is
   rejected. An `initialize` function is auto-detected and run through the proxy; `{ initializer: false }` seeds
   state at genesis instead.
@@ -927,7 +927,7 @@ target.staticcall(payload);                           // low-level read-only; de
   Docs: https://solidcash.org/docs/guides/message-bus
 
 ```ts
-await messageBus.compose({ calls: [caller.call.prepare(1n), callee.call.settle(1n)],   // from 'solidcash/message-bus'
+await messageBus.compose({ calls: [caller.call.prepare(1n), callee.call.settle(1n)],   // from '@solidcash/solidcash/message-bus'
   funder: feeUtxo, changeAddress }).send();          // calls in depth-first order; the fee input's lock is tx.origin
 await counter.batch([{ function: 'add', args: [1n] }, { function: 'add', args: [2n] }]).send();   // one contract
 ```
@@ -967,10 +967,10 @@ await sc.call.join(1n, adminSig).withConsumedMasters([threads[1].masterUtxo], ch
 ## SDK
 
 ```ts
-import { Contract, TransactionBuilder, SignatureTemplate, Signer, Network, randomUtxo } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';         // not exported from the root
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum'; // not exported from the root
-import { StatefulContract, ContractFactory, upgrades } from 'solidcash/stateful';
+import { Contract, TransactionBuilder, SignatureTemplate, Signer, Network, randomUtxo } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';         // not exported from the root
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum'; // not exported from the root
+import { StatefulContract, ContractFactory, upgrades } from '@solidcash/solidcash/stateful';
 // Also: solidcash/{hdsigner,contract-factory,message-bus,oracle,bcmr,walletconnect}
 ```
 
@@ -1033,7 +1033,7 @@ await StatefulContract.split({ ... });  await StatefulContract.merge({ ... });
   becomes the CashToken category). `destroy` returns `{ txs, totalReclaimed, leftBehind }`.
 - Child deploys: `await factory.call.createChild(args).deploy(options)` after `factory.registerChild(childArtifact)`,
   or via `ContractBundle.from(compileFileMulti(file), { provider, signer })`. `upgrade` needs the `upgrade` modifier.
-- Experimental: `messageBus.compose({ calls, funder, changeAddress }).send()` (`solidcash/message-bus`),
+- Experimental: `messageBus.compose({ calls, funder, changeAddress }).send()` (`@solidcash/solidcash/message-bus`),
   `sc.batch([...])`, and cross-contract state mutation wired through `externals`.
 
 ### Providers, signers, debugging
@@ -1112,7 +1112,7 @@ contract Counter(pubkey admin) {
 ```ts
 import { describe, expect, it } from 'vitest';
 import { ethers } from '@solidcash/solidhat/hardhat3';
-import { SignatureTemplate } from 'solidcash';
+import { SignatureTemplate } from '@solidcash/solidcash';
 
 async function deployCounter() {
   const [admin, outsider] = await ethers.getSigners(2);
@@ -1198,7 +1198,7 @@ await expect(counter.increment(sig)).to.emit(counter, 'Incremented').withArgs(1n
 await expect(counter.increment(badSig)).to.be.revertedWith('not owner');
 await expect(() => shop.pay(sig)).to.changeBchBalance(seller, 1_000n);  // also changeTokenBalance(cat, acct, n)
 
-import 'solidcash/vitest';      // native matchers; the SolidHat preset registers them already
+import '@solidcash/solidcash/vitest';      // native matchers; the SolidHat preset registers them already
 expect(builder).toFailRequireWith(/Insufficient/); // toFailRequire, toLog: an unsent TransactionBuilder
 await expect(sc.call.withdraw(1n)).toBeRevertedWith(/not owner/); // also toBeReverted, toRevert, toRevertWith
 await expect(sc.call.transfer(to, 10n)).toEmit(sc, 'Transfer', { to, amount: 10n }); // sends the call

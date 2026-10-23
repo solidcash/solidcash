@@ -12,8 +12,8 @@ It is not an account-chain signer. Bitcoin Cash has no gas account, account tran
 ## Single-key signer
 
 ```ts
-import { Network, Signer } from 'solidcash';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { Network, Signer } from '@solidcash/solidcash';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 
 const provider = new ElectrumNetworkProvider('chipnet');
 const signer = new Signer(privateKeyOrWif, provider);
@@ -130,7 +130,7 @@ runner is accepted.
 ```ts
 import {
   BCH_ACCOUNT_BRANCH, BCH_DEFAULT_HD_PATH, HDPublicSigner, HDSigner, signersFromMnemonic,
-} from 'solidcash/hdsigner';
+} from '@solidcash/solidcash/hdsigner';
 
 const wallet = HDSigner.fromPhrase(mnemonic, provider);
 const child = wallet.deriveChild(1);
@@ -188,14 +188,14 @@ const imported = HDPublicSigner.fromExtendedKey(xpub, provider);
 
 `HDPublicSigner` can derive only non-hardened children, calculate P2PKH addresses, and query UTXOs. It holds no
 private key and cannot fund/sign a `ContractFactory` or stateful call. `signersFromMnemonic` and `HDPublicSigner`
-come from `solidcash/hdsigner`, like `HDSigner`.
+come from `@solidcash/solidcash/hdsigner`, like `HDSigner`.
 
 ## Local test signers
 
 `MockNetworkProvider` provides deterministic, pre-funded HD accounts:
 
 ```ts
-import { MockNetworkProvider } from 'solidcash/network/mock';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
 
 const provider = new MockNetworkProvider();
 const [owner, user] = await provider.getSigners();

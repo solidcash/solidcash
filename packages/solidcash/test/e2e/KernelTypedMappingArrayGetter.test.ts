@@ -3,7 +3,7 @@ import {
   buildValueChunkCommitment, decodedAddressEncoding, encodeChunkableValueTail, encodePushdataValue,
   sha256, splitValueIntoValueChunks,
 } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Signer } from '../../src/index.js';
 import {

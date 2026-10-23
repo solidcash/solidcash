@@ -3,7 +3,7 @@ import {
   encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
-import { compileString, compileStringMulti } from 'solidc';
+import { compileString, compileStringMulti } from '@solidcash/solidc';
 import {
   blockhashOracleLockingBytecode, buildBlockhashCommitment,
   buildChunkCommitment, scriptToBytecode, sha256,

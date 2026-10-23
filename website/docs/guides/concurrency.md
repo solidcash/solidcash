@@ -93,8 +93,8 @@ Create several masters at genesis with `threadCount`. State data is created once
 master.
 
 ```ts
-import { ContractFactory } from 'solidcash/contract-factory';
-import { ThreadManager } from 'solidcash/stateful';
+import { ContractFactory } from '@solidcash/solidcash/contract-factory';
+import { ThreadManager } from '@solidcash/solidcash/stateful';
 
 const contract = await new ContractFactory(artifact, signer).deploy(adminPublicKey, {
   initialState: { west: 0n, east: 0n },

@@ -10,8 +10,8 @@ manages category-branded state resources.
 ## Construct a contract
 
 ```ts
-import { Contract } from 'solidcash';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { Contract } from '@solidcash/solidcash';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 import artifact from './P2PKH.artifact.js';
 
 const provider = new ElectrumNetworkProvider('chipnet');

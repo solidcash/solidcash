@@ -308,8 +308,8 @@ calling proxy's state and emits it as `artifact.delegateArtifact`. Reach it from
 The recommended `upgrades.deployProxy()` helper deploys a pinned implementation and the built-in proxy together:
 
 ```ts
-import { getContractFactory } from 'solidcash/contract-factory';
-import { upgrades } from 'solidcash/stateful';
+import { getContractFactory } from '@solidcash/solidcash/contract-factory';
+import { upgrades } from '@solidcash/solidcash/stateful';
 
 const proxy = await upgrades.deployProxy(getContractFactory(implArtifact, signer), { counter: 0n });
 await proxy.increment().send();   // runs Impl.increment against the proxy's state

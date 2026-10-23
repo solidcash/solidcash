@@ -1,4 +1,4 @@
-import { compileString, UnimplementedAbstractFunctionError } from 'solidc';
+import { compileString, UnimplementedAbstractFunctionError } from '@solidcash/solidc';
 import { ResolvedImport } from '@solidcash/utils';
 import {
   Contract,

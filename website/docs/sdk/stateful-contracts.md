@@ -2,14 +2,14 @@
 title: Stateful Contracts
 ---
 
-The `StatefulContract` class manages the full lifecycle of stateful contracts: deployment, state reading, function calls, upgrades, and destruction. `StatefulContract`, `ContractFactory`, `ContractBundle` and `ThreadManager` come from `solidcash/stateful`; the package root exports only the stateless surface.
+The `StatefulContract` class manages the full lifecycle of stateful contracts: deployment, state reading, function calls, upgrades, and destruction. `StatefulContract`, `ContractFactory`, `ContractBundle` and `ThreadManager` come from `@solidcash/solidcash/stateful`; the package root exports only the stateless surface.
 
 ## Deploying with a signer
 
 ```typescript
-import { Signer } from 'solidcash';
-import { ContractFactory } from 'solidcash/contract-factory';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { Signer } from '@solidcash/solidcash';
+import { ContractFactory } from '@solidcash/solidcash/contract-factory';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 import artifact from './Counter.artifact.js';
 
 const provider = new ElectrumNetworkProvider('chipnet');
@@ -34,7 +34,7 @@ contract-level parameters; otherwise use `StatefulContract.at()` with `construct
 `deployContract()` expose the same flow as convenience functions.
 
 ```typescript
-import { deployContract, getContractFactory } from 'solidcash/contract-factory';
+import { deployContract, getContractFactory } from '@solidcash/solidcash/contract-factory';
 
 const sameFactory = getContractFactory(artifact, signer);
 const sameContract = await deployContract(artifact, [adminPub], signer, {
@@ -47,7 +47,7 @@ const sameContract = await deployContract(artifact, [adminPub], signer, {
 Use the lower-level API when a wallet or transaction service supplies the exact genesis input and unlocker:
 
 ```typescript
-import { StatefulContract } from 'solidcash/stateful';
+import { StatefulContract } from '@solidcash/solidcash/stateful';
 
 const { contract, tx, categoryId } = await StatefulContract.deploy(
     artifact,
@@ -239,7 +239,7 @@ await counter.batch([
 
 `sc.batch()` runs several public functions of one contract against one master input through the compiler's
 message-bus route. It works only when the artifact publishes a message bus whose selected handlers are eligible.
-`messageBus.compose()` from `solidcash/message-bus` composes calls to several contracts in one transaction. Both
+`messageBus.compose()` from `@solidcash/solidcash/message-bus` composes calls to several contracts in one transaction. Both
 are experimental; see [Atomic Calls with the Message Bus](/docs/guides/message-bus).
 
 ## Reading State
@@ -415,7 +415,7 @@ The upgrade carries the contract's state records to the new lock:
 them for the upgrade fee too. The result is `{ contract, tx, categoryId, leftBehind }`. The category stays stable
 while the physical contract address changes.
 
-A proxy keeps the address instead: `upgrades.deployProxy()` from `solidcash/stateful` is the stable profile, while
+A proxy keeps the address instead: `upgrades.deployProxy()` from `@solidcash/solidcash/stateful` is the stable profile, while
 custom proxies and `upgrades.upgradeProxy()` are experimental. See
 [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) for both models.
 
@@ -492,8 +492,8 @@ Register the child artifact with `factory.registerChild(childArtifact)`, or comp
 ## Multi-contract artifact bundles
 
 ```typescript
-import { ContractBundle } from 'solidcash/stateful';
-import { compileFileMulti } from 'solidc';
+import { ContractBundle } from '@solidcash/solidcash/stateful';
+import { compileFileMulti } from '@solidcash/solidc';
 
 const artifacts = compileFileMulti('Protocol.scash');
 const protocol = ContractBundle.from(artifacts, { provider, signer });

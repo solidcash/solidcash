@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 // The testing layer's matchers import the SDK by package name, which resolves to the built output; point both entries
 // they use at the sources, so the matchers and the hop they await share one copy of the SDK.
-vi.mock('solidcash', () => import('../../../src/index.js'));
-vi.mock('solidcash/vitest', () => import('../../../src/test/TestExtensions.js'));
+vi.mock('@solidcash/solidcash', () => import('../../../src/index.js'));
+vi.mock('@solidcash/solidcash/vitest', () => import('../../../src/test/TestExtensions.js'));
 
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, sha256, validatorAddress } from '@solidcash/utils';

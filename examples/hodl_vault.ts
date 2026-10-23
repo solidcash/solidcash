@@ -1,7 +1,7 @@
 import { stringify } from '@bitauth/libauth';
-import { Contract, SignatureTemplate, TransactionBuilder, Output, randomUtxo } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
-import { compileFile } from 'solidc';
+import { Contract, SignatureTemplate, TransactionBuilder, Output, randomUtxo } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
+import { compileFile } from '@solidcash/solidc';
 import { URL } from 'url';
 
 // Import keys and price oracle from common.ts

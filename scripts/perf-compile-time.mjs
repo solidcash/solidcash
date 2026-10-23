@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Time the maintained marketplace compile (all declarations, legacy convention). */
 import path from 'node:path';
-import { compileFileMulti } from 'solidc';
+import { compileFileMulti } from '@solidcash/solidc';
 const source = path.join(process.cwd(), '.marketplace/contracts/MarketplaceV1.sol');
 const options = {
   evmCompat: true, messageBus: true, messageBusKernel: false, messageBusGraphContext: true,

@@ -317,7 +317,7 @@ value-returning broadcasts fail closed.
 For a stateless caller, use the explicit helpers:
 
 ```ts
-import { buildTypedLoopCallTransaction, deriveTypedLoopCoSpends } from 'solidcash/loop-call';
+import { buildTypedLoopCallTransaction, deriveTypedLoopCoSpends } from '@solidcash/solidcash/loop-call';
 
 const { targets, cospends } = await deriveTypedLoopCoSpends([
   { contract: pair0, fn: 'swap', args: pair0Args },

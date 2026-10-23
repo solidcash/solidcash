@@ -166,8 +166,8 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     const {
       compileString, compileStringMulti, compileStringSplit, compileFileMulti, compileFileSplit,
       version: compilerVersion,
-    } = await import('solidc');
-    const compilerEntry = createRequire(import.meta.url).resolve('solidc');
+    } = await import('@solidcash/solidc');
+    const compilerEntry = createRequire(import.meta.url).resolve('@solidcash/solidc');
     const compilerUtilsEntry = createRequire(import.meta.url).resolve('@solidcash/utils');
     const compilerCacheIdentity = `${compilerVersion}:${compilerJavaScriptFingerprint(compilerEntry)}`
       + `:${compilerJavaScriptFingerprint(compilerUtilsEntry)}`

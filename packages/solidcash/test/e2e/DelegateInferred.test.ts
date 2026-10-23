@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';

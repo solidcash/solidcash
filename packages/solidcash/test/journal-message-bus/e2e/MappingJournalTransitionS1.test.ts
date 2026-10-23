@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString as compile } from 'solidc';
+import { compileString as compile } from '@solidcash/solidc';
 import {
   bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';

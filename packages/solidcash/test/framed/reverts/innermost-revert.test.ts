@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FrameKind, computeFunctionSelector, computeFunctionSignature, validatorAddress } from '@solidcash/utils';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { deployMaster } from '../../../src/framed/deploy/index.js';

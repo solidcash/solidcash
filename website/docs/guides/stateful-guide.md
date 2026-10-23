@@ -81,9 +81,9 @@ instead. See [the compiler page](/docs/compiler) for every flag.
 
 ```typescript title="deploy.ts"
 import { hexToBin } from '@bitauth/libauth';
-import { SignatureTemplate, Signer } from 'solidcash';
-import { ContractFactory } from 'solidcash/contract-factory';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { SignatureTemplate, Signer } from '@solidcash/solidcash';
+import { ContractFactory } from '@solidcash/solidcash/contract-factory';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 import artifact from './SimpleToken.json' with { type: 'json' };
 
 const provider = new ElectrumNetworkProvider('chipnet');
@@ -183,7 +183,7 @@ caller cannot choose. Guard `migrateEntry` with the same key: whoever calls it c
 sends one `migrateEntry` transaction per mapping entry, then the upgrade:
 
 ```typescript
-import { StatefulContract } from 'solidcash/stateful';
+import { StatefulContract } from '@solidcash/solidcash/stateful';
 
 const result = await StatefulContract.upgrade({
     provider,
@@ -212,10 +212,10 @@ the same, use a proxy instead. See [Upgrades, Proxies & Delegatecall](/docs/lang
 
 ```typescript title="SimpleToken.test.ts"
 import { describe, it, expect, beforeAll } from 'vitest';
-import 'solidcash/vitest';
-import { SignatureTemplate } from 'solidcash';
-import { ContractFactory } from 'solidcash/contract-factory';
-import { MockNetworkProvider } from 'solidcash/network/mock';
+import '@solidcash/solidcash/vitest';
+import { SignatureTemplate } from '@solidcash/solidcash';
+import { ContractFactory } from '@solidcash/solidcash/contract-factory';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
 import artifact from './SimpleToken.json' with { type: 'json' };
 
 describe('SimpleToken', () => {

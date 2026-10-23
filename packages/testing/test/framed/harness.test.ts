@@ -2,7 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import { formatArtifact } from '@solidcash/utils';
 import { createHardhatRuntimeEnvironment } from '../../src/hre.js';
 import { resolveConfig } from '../../src/config.js';

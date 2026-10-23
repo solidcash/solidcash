@@ -901,7 +901,7 @@ async function framedProxyHandle(
 ): Promise<ConnectedStatefulContract<Artifact>> {
   const { Contract } = await import('../Contract.js');
   const { deployMaster } = await import('../framed/deploy/material.js');
-  const { framedValidator } = await import('solidc/runtime');
+  const { framedValidator } = await import('@solidcash/solidc/runtime');
   const inner = new Contract(implementationArtifact, [] as never, {
     provider: signer.provider, category: hexToBin(proxyCategoryId),
   });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import {
   buildMessageBusResourceBudgets,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,

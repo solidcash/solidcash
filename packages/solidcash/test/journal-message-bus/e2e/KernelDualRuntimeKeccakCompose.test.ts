@@ -1,7 +1,7 @@
 import { bigIntToVmNumber, binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import { keccakComputeLockingBytecode } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import {
   Contract,

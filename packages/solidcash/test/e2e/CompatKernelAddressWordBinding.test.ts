@@ -1,7 +1,7 @@
 import {
   binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructions, encodeDataPush, hexToBin,
 } from '@bitauth/libauth';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { ContractFactory, StatefulContract } from '../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';

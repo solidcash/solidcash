@@ -20,7 +20,7 @@ convention on `artifact.composition`, and the SDK routes deployment and calls by
 working.
 
 ```ts
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 
 const artifact = compileString(source, { composition: 'framed' });
 artifact.composition?.convention; // 'framed'; absent on a direct artifact
@@ -168,7 +168,7 @@ Keep the default direct convention when:
 Pass `composition: 'framed'` to any compile function:
 
 ```ts
-import { compileFileMulti, compileString } from 'solidc';
+import { compileFileMulti, compileString } from '@solidcash/solidc';
 
 const tally = compileString(source, { composition: 'framed' });
 const protocol = compileFileMulti('Protocol.scash', { composition: 'framed', evmCompat: true });
@@ -239,10 +239,10 @@ contract Tally {
 ```
 
 ```ts
-import { compileString } from 'solidc';
-import { Signer, randomUtxo } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
-import { getContractFactory } from 'solidcash/contract-factory';
+import { compileString } from '@solidcash/solidc';
+import { Signer, randomUtxo } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
+import { getContractFactory } from '@solidcash/solidcash/contract-factory';
 
 const artifact = compileString(tallySource, { composition: 'framed' });
 const provider = new MockNetworkProvider();
@@ -315,7 +315,7 @@ targets and then by interface name. To reach contracts deployed elsewhere, call 
 `framedCall.callFramedEntry` and name them in `externals`:
 
 ```ts
-import { framedCall } from 'solidcash/framed';
+import { framedCall } from '@solidcash/solidcash/framed';
 
 const result = await framedCall.callFramedEntry({
   provider,
@@ -346,7 +346,7 @@ A callee contract can be re-entered; the entered contract cannot yet.
 ### Reads
 
 ```ts
-import { framedDeploy, framedRead } from 'solidcash/framed';
+import { framedDeploy, framedRead } from '@solidcash/solidcash/framed';
 
 const read = await framedRead.readFramedEntry({
   provider, artifact: tallyArtifact, categoryId, functionName: 'current', args: [],
@@ -371,7 +371,7 @@ contract's address (a callee's event names the callee), the event name, and its 
 order.
 
 ```ts
-import { framedReceipt } from 'solidcash/framed';
+import { framedReceipt } from '@solidcash/solidcash/framed';
 
 for (const log of framedReceipt.compositionEventLogs(result.draft, [vaultArtifact, tokenArtifact])) {
   console.log(log.contract, log.eventName, log.args);
@@ -427,7 +427,7 @@ deployment fail with its reason in the same way.
   was given.
 
 ```ts
-import { framedComposer } from 'solidcash/framed';
+import { framedComposer } from '@solidcash/solidcash/framed';
 
 try {
   await tally.call.add(-10n);
@@ -461,8 +461,8 @@ In SolidHat tests, `revertedWith` and `revertedWithCustomError(...).withArgs(...
 creates two geneses, the implementation's and the proxy's.
 
 ```ts
-import { getContractFactory } from 'solidcash/contract-factory';
-import { upgrades, type FramedArtifact } from 'solidcash/stateful';
+import { getContractFactory } from '@solidcash/solidcash/contract-factory';
+import { upgrades, type FramedArtifact } from '@solidcash/solidcash/stateful';
 
 const factory = getContractFactory(vaultArtifact as FramedArtifact, signer);
 const vault = await upgrades.deployProxy(factory, [signer.getLockingBytecode()]); // a FramedProxyHandle
@@ -506,8 +506,8 @@ deployment's address derives from its category, and the category is the txid of 
 Reading a signer's nonce reserves the coins its next deployments will spend, which lets you predict their addresses:
 
 ```ts
-import { framedDeploy } from 'solidcash/framed';
-import { getContractFactory } from 'solidcash/contract-factory';
+import { framedDeploy } from '@solidcash/solidcash/framed';
+import { getContractFactory } from '@solidcash/solidcash/contract-factory';
 
 const nonce = await signer.getNonce();             // reserves genesis coins for the next deployments
 const predicted = framedDeploy.predictCreateAddress(signer.getAddress(), nonce); // locking bytecode
@@ -584,9 +584,9 @@ function credit(address to, uint256 value) public {
 
 See [Artifacts](/docs/compiler/artifacts) for the rest of the artifact.
 
-## The `solidcash/framed` entry point
+## The `@solidcash/solidcash/framed` entry point
 
-The contract handle covers most applications. The `solidcash/framed` subpath exposes the layers beneath it:
+The contract handle covers most applications. The `@solidcash/solidcash/framed` subpath exposes the layers beneath it:
 
 | Namespace | Purpose | Main entries |
 | --- | --- | --- |

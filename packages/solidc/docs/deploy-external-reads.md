@@ -52,7 +52,7 @@ address held by input `_pool`". You can either pass the resolved addresses yours
 on-chain with `resolveDeployReads`:
 
 ```ts
-import { resolveDeployReads } from 'solidcash';
+import { resolveDeployReads } from '@solidcash/solidcash';
 
 // Provide only the non-hoisted inputs; register the target's artifact so its state can be decoded.
 const args = await resolveDeployReads(

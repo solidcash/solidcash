@@ -7,7 +7,7 @@ import {
   KECCAK_CHAIN_COVENANT_HASH, KECCAK_CHAIN_MODE, buildKeccakChainRedeem, hash256, keccakChainCommitments,
   keccakChainLockingBytecode, keccakChainStates, keccakF1600, planKeccakChain, sha256, type KeccakChainKind,
 } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { buildKeccakChainSidecars, pushDataBytes } from '../../src/keccak/keccakComputeSidecar.js';
 import type { TransactionDetails, Utxo } from '../../src/interfaces.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';

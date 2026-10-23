@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { planCompiledGraph } from '../../src/message-bus/graph.js';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 
 const KERNEL = {
   forceStateful: true,

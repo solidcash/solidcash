@@ -983,7 +983,7 @@ async function callInShape(
       + 'carries no selector, which this call path does not plan yet',
     );
   }
-  const { framedValidator } = await import('solidc/runtime');
+  const { framedValidator } = await import('@solidcash/solidc/runtime');
   const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
   const machine = options.vm ?? createVirtualMachineBch2026ForProvider(provider);
   const category = new Uint8Array(hexToBin(categoryId));

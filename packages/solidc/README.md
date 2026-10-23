@@ -2,9 +2,9 @@
 
 [![Build Status](https://github.com/solidcash/solidcash/actions/workflows/github-actions.yml/badge.svg)](https://github.com/solidcash/solidcash/actions/workflows/github-actions.yml)
 [![Coverage Status](https://img.shields.io/codecov/c/github/solidcash/solidcash.svg)](https://codecov.io/gh/solidcash/solidcash/)
-[![NPM Version](https://img.shields.io/npm/v/solidcash.svg)](https://www.npmjs.com/package/solidcash)
-[![NPM Monthly Downloads](https://img.shields.io/npm/dm/solidcash.svg)](https://www.npmjs.com/package/solidcash)
-[![NPM License](https://img.shields.io/npm/l/solidcash.svg)](https://www.npmjs.com/package/solidcash)
+[![NPM Version](https://img.shields.io/npm/v/@solidcash/solidcash.svg)](https://www.npmjs.com/package/@solidcash/solidcash)
+[![NPM Monthly Downloads](https://img.shields.io/npm/dm/@solidcash/solidcash.svg)](https://www.npmjs.com/package/@solidcash/solidcash)
+[![NPM License](https://img.shields.io/npm/l/@solidcash/solidcash.svg)](https://www.npmjs.com/package/@solidcash/solidcash)
 
 SolidCash is a high-level programming language for smart contracts on Bitcoin Cash. It offers a strong abstraction layer over Bitcoin Cash' native virtual machine, Bitcoin Script. Its syntax is based on Ethereum's smart contract language Solidity, but its functionality is very different since smart contracts on Bitcoin Cash differ greatly from smart contracts on Ethereum. For a detailed comparison of them, refer to the blog post [*Smart Contracts on Ethereum, Bitcoin and Bitcoin Cash*](https://kalis.me/smart-contracts-eth-btc-bch/).
 
@@ -18,7 +18,7 @@ SolidCash features a compiler as a standalone command line tool, called `solidc`
 
 ### Installation
 ```bash
-npm install -g solidc
+npm install -g @solidcash/solidc
 ```
 
 ### Usage

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { compileFile, compileFileSplit } from 'solidc';
+import { compileFile, compileFileSplit } from '@solidcash/solidc';
 import { asmToScript, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import { NATIVE_TOKEN_EXTENSION } from '../../src/bcmr/index.js';
 import type { Signer } from '../../src/index.js';

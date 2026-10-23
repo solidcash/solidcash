@@ -12,23 +12,23 @@ import { SigningKey as EthersSigningKey } from 'ethers/crypto';
 import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from 'ethers/hash';
 import { getBytes as getEthersBytes } from 'ethers/utils';
 import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
-import type { Network, NetworkProvider, ConstructorArgument, Utxo, ConsensusLimits, NetworkPolicy } from 'solidcash';
+import type { Network, NetworkProvider, ConstructorArgument, Utxo, ConsensusLimits, NetworkPolicy } from '@solidcash/solidcash';
 import type {
   ContractRunner, ConnectedStatefulContract, SplitContract, SplitDeployOptions,
   DeployedContract, DeployContractOptions,
-} from 'solidcash/stateful';
-import { Network as Networks } from 'solidcash/dist/interfaces.js';
-import MockNetworkProvider, { MOCK_CONSENSUS_LIMITS } from 'solidcash/dist/network/MockNetworkProvider.js';
-import RegtestNetworkProvider from 'solidcash/dist/network/RegtestNetworkProvider.js';
-import ElectrumNetworkProvider from 'solidcash/dist/network/ElectrumNetworkProvider.js';
-import BitcoinRpcNetworkProvider from 'solidcash/dist/network/BitcoinRpcNetworkProvider.js';
-import Signer from 'solidcash/dist/Signer.js';
-import { HDSigner, signersFromMnemonic } from 'solidcash/hdsigner';
+} from '@solidcash/solidcash/stateful';
+import { Network as Networks } from '@solidcash/solidcash/dist/interfaces.js';
+import MockNetworkProvider, { MOCK_CONSENSUS_LIMITS } from '@solidcash/solidcash/dist/network/MockNetworkProvider.js';
+import RegtestNetworkProvider from '@solidcash/solidcash/dist/network/RegtestNetworkProvider.js';
+import ElectrumNetworkProvider from '@solidcash/solidcash/dist/network/ElectrumNetworkProvider.js';
+import BitcoinRpcNetworkProvider from '@solidcash/solidcash/dist/network/BitcoinRpcNetworkProvider.js';
+import Signer from '@solidcash/solidcash/dist/Signer.js';
+import { HDSigner, signersFromMnemonic } from '@solidcash/solidcash/hdsigner';
 import {
   ContractFactory, getContractFactory as sdkGetContractFactory, deployContract as sdkDeployContract, fanOutPlainUtxos,
-} from 'solidcash/dist/stateful/ContractFactory.js';
-import type { SplitContractBundle } from 'solidcash/dist/stateful/SplitContractBundle.js';
-import { randomUtxo } from 'solidcash/dist/utils.js';
+} from '@solidcash/solidcash/dist/stateful/ContractFactory.js';
+import type { SplitContractBundle } from '@solidcash/solidcash/dist/stateful/SplitContractBundle.js';
+import { randomUtxo } from '@solidcash/solidcash/dist/utils.js';
 
 /** Plain coins each regtest signer holds; mock accounts hold 128. */
 const REGTEST_PLAIN_COINS = 64;
@@ -81,11 +81,11 @@ function assertLiveMnemonicIsChainSpecific(config: ResolvedConfig, selected: str
 // StatefulContract is the single heaviest SDK module (~759 KB and its transitive graph). The HRE only needs it
 // when a contract is attached/deployed (`Contract`/`getContractAt`), so it is loaded lazily and cached. `initHre`
 // awaits this before publishing the HRE, keeping the module out of the entry package's import graph.
-type StatefulContractCtor = typeof import('solidcash/dist/stateful/StatefulContract.js').StatefulContract;
+type StatefulContractCtor = typeof import('@solidcash/solidcash/dist/stateful/StatefulContract.js').StatefulContract;
 let statefulContractCtor: StatefulContractCtor | undefined;
 async function loadStatefulContract(): Promise<StatefulContractCtor> {
   if (!statefulContractCtor) {
-    statefulContractCtor = (await import('solidcash/dist/stateful/StatefulContract.js')).StatefulContract;
+    statefulContractCtor = (await import('@solidcash/solidcash/dist/stateful/StatefulContract.js')).StatefulContract;
   }
   return statefulContractCtor;
 }
@@ -203,7 +203,7 @@ class HardhatSplitContractFactory {
 
   private async loadSplit(): Promise<SplitContractBundle> {
     if (!this.splitInstance) {
-      const { SplitContractBundle: SplitContractBundleValue } = await import('solidcash/dist/stateful/SplitContractBundle.js');
+      const { SplitContractBundle: SplitContractBundleValue } = await import('@solidcash/solidcash/dist/stateful/SplitContractBundle.js');
       this.splitInstance = SplitContractBundleValue.from(this.bundle, this.runner);
     }
     return this.splitInstance;

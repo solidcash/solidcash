@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { bytecodeToAsm } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../../src/index.js';

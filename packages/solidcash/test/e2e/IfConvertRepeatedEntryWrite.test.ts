@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { getContractFactory } from '../../src/stateful/index.js';
 import { fundedSigner } from '../test-util.js';
 

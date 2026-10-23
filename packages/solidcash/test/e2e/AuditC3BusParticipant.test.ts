@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import {
   buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue, scriptToBytecode,
 } from '@solidcash/utils';

@@ -1,5 +1,5 @@
 import { createVirtualMachineBch2026, hexToBin, sha256 } from '@bitauth/libauth';
-import { compileString, compileStringMulti } from 'solidc';
+import { compileString, compileStringMulti } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../src/index.js';
 import { MockNetworkProvider } from '../../src/network/mock/index.js';

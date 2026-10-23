@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDataPush, hash256, encodeLockingBytecodeP2sh32, Opcodes } from '@bitauth/libauth';
-import { masterPrologue, witnessReader } from 'solidc';
+import { masterPrologue, witnessReader } from '@solidcash/solidc';
 import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { encodeWitnessBlock, type WitnessBlock } from '@solidcash/utils';

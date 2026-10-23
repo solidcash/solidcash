@@ -159,7 +159,7 @@ export function resolveConfig(config: SolidcashConfig = {}, baseDir?: string): R
   return {
     paths: {
       contracts: resolvePath(config.paths?.contracts, 'contracts'),
-      // Artifact root. SolidCash-owned files are written beneath its `solidcash/` namespace so native Hardhat
+      // Artifact root. SolidCash-owned files are written beneath its `@solidcash/solidcash/` namespace so native Hardhat
       // artifacts and build-info can coexist in the same root.
       artifacts: resolvePath(config.paths?.artifacts, 'artifacts'),
       tests: resolvePath(config.paths?.tests, 'test'),

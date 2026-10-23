@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compositionPlaceholders } from 'solidc';
+import { compositionPlaceholders } from '@solidcash/solidc';
 import {
   asmToScript, bytecodeToAsm, scriptToBytecode, validatorTemplateHash, type Artifact,
 } from '@solidcash/utils';

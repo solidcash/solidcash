@@ -2,7 +2,7 @@ import {
   binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructions, hexToBin,
 } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../../src/index.js';
 import * as messageBus from '../../../src/message-bus/index.js';

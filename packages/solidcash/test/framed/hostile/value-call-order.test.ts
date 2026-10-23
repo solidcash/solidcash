@@ -52,7 +52,7 @@ let payment: Payment | undefined;
 beforeAll(async () => {
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const { framedValidator } = await import('solidc');
+  const { framedValidator } = await import('@solidcash/solidc');
   const validatorProgram = framedValidator.buildValidatorProgram();
   const deploy = async (name: string, args: readonly Uint8Array[]): Promise<string> => {
     const fundingUtxo = { txid: binToHex(sha256(utf8ToBin(`${name} funding`))), vout: 0, satoshis: 500_000n };

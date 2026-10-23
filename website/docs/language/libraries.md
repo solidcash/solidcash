@@ -189,8 +189,8 @@ The SDK co-spends the linked library automatically after the deployed instance h
 manually assembled deployment, link the consumer to the library locking bytecode and register the live instance:
 
 ```ts
-import { Contract } from 'solidcash';
-import { StatefulContract } from 'solidcash/stateful';
+import { Contract } from '@solidcash/solidcash';
+import { StatefulContract } from '@solidcash/solidcash/stateful';
 import { hexToBin } from '@bitauth/libauth';
 
 const library = StatefulContract.withCategory(
@@ -299,7 +299,7 @@ source-level `library` declaration.
 Pass precompiled Script and its ABI through `userLibraries`:
 
 ```ts
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 
 const incLibrary = {
   name: 'inc',
@@ -350,7 +350,7 @@ explicit `build()` or `debug()` workflows must resolve the required side-car fir
 
 ```ts
 import { resolveLibraryBlob } from '@solidcash/utils';
-import { TransactionBuilder } from 'solidcash';
+import { TransactionBuilder } from '@solidcash/solidcash';
 
 const descriptor = artifact.externalLibraries!.find((item) => item.name === 'inc')!;
 const blob = resolveLibraryBlob(descriptor);

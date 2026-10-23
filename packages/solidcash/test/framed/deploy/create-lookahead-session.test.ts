@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 // The shim imports the SDK by package name, which resolves to the built output; point every entry it uses at the
 // sources so the session registry the test opens and the session registry the shim reads are the same one. The
-// subpath entries matter: before the package-root split everything came from `solidcash` and one mock sufficed.
-vi.mock('solidcash', () => import('../../../src/index.js'));
-vi.mock('solidcash/stateful', () => import('../../../src/stateful/index.js'));
-vi.mock('solidcash/framed', () => import('../../../src/framed/index.js'));
+// subpath entries matter: before the package-root split everything came from `@solidcash/solidcash` and one mock sufficed.
+vi.mock('@solidcash/solidcash', () => import('../../../src/index.js'));
+vi.mock('@solidcash/solidcash/stateful', () => import('../../../src/stateful/index.js'));
+vi.mock('@solidcash/solidcash/framed', () => import('../../../src/framed/index.js'));
 
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { validatorAddress } from '@solidcash/utils';

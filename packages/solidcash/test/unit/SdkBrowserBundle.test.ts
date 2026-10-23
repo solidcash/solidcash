@@ -14,8 +14,8 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * The compiler is Node-only (`compileFile*` reads the filesystem; `compiler.ts` hashes through `node:crypto` and
  * keeps a disk cache), so a browser bundle must not reach it. These tests bundle the SHIPPED `dist` the way a
  * bundler outside this repository does - including the package's `browser` field - so that a re-introduced barrel
- * import (`solidc` instead of `solidc/runtime`) fails here instead of in an application. `tsconfigRaw` drops this
- * repository's `paths` mapping, which would otherwise resolve `solidc/runtime` to `packages/solidc/src`: a consumer
+ * import (`@solidcash/solidc` instead of `@solidcash/solidc/runtime`) fails here instead of in an application. `tsconfigRaw` drops this
+ * repository's `paths` mapping, which would otherwise resolve `@solidcash/solidc/runtime` to `packages/solidc/src`: a consumer
  * has no such mapping.
  *
  * A bundle RUNS when the bundler preserves top-level await, which is what `splitting` gives esbuild and what Rollup,

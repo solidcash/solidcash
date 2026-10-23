@@ -3,9 +3,9 @@
 // solidcash SDK against MockNetworkProvider: TransactionBuilder.send() runs the real script VM locally
 // (via debug()) and throws FailedRequireError iff a require() failed. So resolve = PASS, throw = MISMATCH.
 import { compileString } from '../direct-compile.js';
-import { Contract, TransactionBuilder, FailedRequireError, FailedTransactionError, randomUtxo } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
-import { StatefulContract, getContractFactory } from 'solidcash/stateful';
+import { Contract, TransactionBuilder, FailedRequireError, FailedTransactionError, randomUtxo } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
+import { StatefulContract, getContractFactory } from '@solidcash/solidcash/stateful';
 import { setupStatefulUtxos } from '../test-util.js';
 import { binToHex } from '@bitauth/libauth';
 import { SHARED_LIBRARY_SALT, keccakComputeLockingBytecode } from '@solidcash/utils';

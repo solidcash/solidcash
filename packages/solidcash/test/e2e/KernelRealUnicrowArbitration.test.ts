@@ -4,7 +4,7 @@ import {
   buildValueChunkCommitment, encodeChunkableValueTail, encodePushdataValue,
   sha256, splitValueIntoValueChunks, type StateValue,
 } from '@solidcash/utils';
-import { compileFile } from 'solidc';
+import { compileFile } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import {
   Contract,

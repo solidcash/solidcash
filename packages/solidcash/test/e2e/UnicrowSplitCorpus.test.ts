@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { compileFile, compileFileSplit } from 'solidc';
+import { compileFile, compileFileSplit } from '@solidcash/solidc';
 import { Signer } from '../../src/index.js';
 import {
   ContractFactory,

@@ -188,7 +188,7 @@ security warning merely because bytecode was emitted under an explicit unsafe co
 A source file may contain several deployable contracts, libraries, interfaces, and declaration-only units:
 
 ```ts
-import { compileFile, compileFileMulti } from 'solidc';
+import { compileFile, compileFileMulti } from '@solidcash/solidc';
 
 const primary = compileFile('Protocol.scash');
 const artifacts = compileFileMulti('Protocol.scash');

@@ -1,7 +1,7 @@
 import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
 import { scriptToBytecode, type Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { SignatureTemplate } from '../../src/index.js';
 import * as messageBus from '../../src/message-bus/index.js';
 import { encodeFunctionArgument } from '../../src/Argument.js';

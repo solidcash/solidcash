@@ -3,7 +3,7 @@ import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import {
   asmToScript, chainCategory, hash256, scriptToBytecode, validatorAddress, validatorTemplateHash,
 } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { fillPlaceholders } from '../../../../solidc/src/framed/master/placeholders.js';
 import type { FramedTransaction as ModelledTransaction } from '../../../../solidc/src/framed/validator/index.js';
 import { seededCategory } from '../../../../solidc/test/framed/master/validator-input.js';

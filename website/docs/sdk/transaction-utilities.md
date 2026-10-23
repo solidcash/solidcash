@@ -28,7 +28,7 @@ satoshi amount is covered. It throws when the available non-token balance is ins
 
 #### Example
 ```ts
-import { gatherBchUtxos } from 'solidcash';
+import { gatherBchUtxos } from '@solidcash/solidcash';
 
 const walletUtxos = await provider.getUtxos(walletAddress);
 const { utxos, totalAmount } = gatherBchUtxos(walletUtxos, 100_000n);
@@ -45,7 +45,7 @@ insufficient. BCH carried by the selected token UTXOs is not included in `totalA
 
 #### Example
 ```ts
-import { gatherFungibleTokenUtxos } from 'solidcash';
+import { gatherFungibleTokenUtxos } from '@solidcash/solidcash';
 
 const { utxos, totalAmount } = gatherFungibleTokenUtxos(walletUtxos, tokenCategory, 1000n);
 ```
@@ -56,8 +56,8 @@ const { utxos, totalAmount } = gatherFungibleTokenUtxos(walletUtxos, tokenCatego
 optional partial object whose fields override the random defaults:
 
 ```ts
-import { randomNFT, randomToken, randomUtxo } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
+import { randomNFT, randomToken, randomUtxo } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
 
 const provider = new MockNetworkProvider();
 await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100_000n }));

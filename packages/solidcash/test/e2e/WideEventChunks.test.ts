@@ -1,5 +1,5 @@
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
-import { compileString as compileProduction } from 'solidc';
+import { compileString as compileProduction } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { Contract, TransactionBuilder } from '../../src/index.js';

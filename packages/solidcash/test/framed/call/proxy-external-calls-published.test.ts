@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { bytesToHex, buildPushdataCommitment, sha256, type Artifact } from '@solidcash/utils';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { registerDeployment } from '../../../src/stateful/deployment-registry.js';
 import {

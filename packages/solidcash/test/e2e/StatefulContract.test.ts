@@ -1,5 +1,5 @@
 import { compileString } from '../direct-compile.js';
-import { compileString as compileMessageBusString } from 'solidc';
+import { compileString as compileMessageBusString } from '@solidcash/solidc';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   Contract,

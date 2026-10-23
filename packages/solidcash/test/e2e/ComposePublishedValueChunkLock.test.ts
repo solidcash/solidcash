@@ -3,7 +3,7 @@ import {
   buildValueChunkCommitment, buildValueChunkCovenantScript, computeCollectionHash,
   sha256, splitValueIntoValueChunks, valueChunkSignature,
 } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../src/index.js';
 import { compose } from '../../src/message-bus/compose.js';

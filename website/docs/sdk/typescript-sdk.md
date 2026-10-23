@@ -25,9 +25,9 @@ also be attached to its CashToken category or deployed through a genesis transac
 ## Stateful quick start
 
 ```ts
-import { Signer } from 'solidcash';
-import { ContractFactory } from 'solidcash/contract-factory';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { Signer } from '@solidcash/solidcash';
+import { ContractFactory } from '@solidcash/solidcash/contract-factory';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 import counterArtifact from './Counter.artifact.js';
 
 const provider = new ElectrumNetworkProvider('chipnet');
@@ -60,8 +60,8 @@ See [Stateful Contracts](/docs/sdk/stateful-contracts), [Contract Deployment](/d
 ## Stateless quick start
 
 ```ts
-import { Contract, SignatureTemplate, TransactionBuilder } from 'solidcash';
-import { ElectrumNetworkProvider } from 'solidcash/network/electrum';
+import { Contract, SignatureTemplate, TransactionBuilder } from '@solidcash/solidcash';
+import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 import vaultArtifact from './Vault.artifact.js';
 
 const provider = new ElectrumNetworkProvider('chipnet');
@@ -100,7 +100,7 @@ outputs you supply. See [Contract Instantiation](/docs/sdk/instantiation) and
 
 - A `NetworkProvider` runner supports chain queries and read-oriented attachment.
 - A `Signer` combines a private key with a provider, supplies P2PKH funding, and tracks logical CREATE identities.
-- `HDSigner`, `HDPublicSigner`, and `signersFromMnemonic` (from `solidcash/hdsigner`) provide HD-wallet derivation.
+- `HDSigner`, `HDPublicSigner`, and `signersFromMnemonic` (from `@solidcash/solidcash/hdsigner`) provide HD-wallet derivation.
 - `SignatureTemplate` creates transaction signatures and P2PKH unlockers for manually assembled transactions.
 
 `Signer` intentionally does not emulate account-chain operations such as gas estimation, ENS, EIP-712, or generic
@@ -173,11 +173,11 @@ source maps, composition routes, split metadata, and security requirements may a
 ## Package entry points
 
 ```ts
-import { Contract, utils } from 'solidcash';
-import { StatefulContract } from 'solidcash/stateful';
-import * as messageBus from 'solidcash/message-bus';
+import { Contract, utils } from '@solidcash/solidcash';
+import { StatefulContract } from '@solidcash/solidcash/stateful';
+import * as messageBus from '@solidcash/solidcash/message-bus';
 import { expect } from 'vitest';
-import 'solidcash/vitest';
+import '@solidcash/solidcash/vitest';
 ```
 
 The package root stays lean: importing it does not load the stateful, mock-network or composition code. Each other
@@ -186,19 +186,19 @@ area has its own entry point:
 | Entry point | Contents |
 |---|---|
 | `solidcash` | Stateless runtime: `Contract`, `TransactionBuilder`, `SignatureTemplate`, `Signer`, `Network`, the error classes, `randomUtxo`/`randomToken`/`randomNFT`, `gatherBchUtxos`/`gatherFungibleTokenUtxos`, `RegtestNetworkProvider`, `BitcoinRpcNetworkProvider`, `FullStackNetworkProvider`, and the `utils` namespace |
-| `solidcash/stateful` | `StatefulContract`, `ContractFactory`, `ContractBundle`, `SplitContractBundle`, `StateReader`, `ThreadManager`, `upgrades`, and the covenant, state-layout and event helpers |
-| `solidcash/contract-factory` | `ContractFactory`, `getContractFactory` and `deployContract` alone |
-| `solidcash/network/mock` | `MockNetworkProvider`, the in-process test network, and `FailingMockNetworkProvider` |
-| `solidcash/network/electrum` | `ElectrumNetworkProvider` |
-| `solidcash/hdsigner` | `HDSigner`, `HDPublicSigner`, `signersFromMnemonic`, `BCH_DEFAULT_HD_PATH` and `BCH_ACCOUNT_BRANCH` |
-| `solidcash/message-bus` | Message-bus composition (`compose`) and its preflight helpers (experimental) |
-| `solidcash/kernel` | The message-bus kernel route planners, for tooling (experimental) |
-| `solidcash/framed` | The framed convention: `framedDeploy`, `framedCall`, `framedRead`, `framedReceipt`, `framedQueue`, `framedComposer` and `framedReference` (experimental, see [Framed Composition](/docs/guides/framed-composition)) |
-| `solidcash/oracle` | Block oracle and blockhash co-spend helpers, such as `BlockOracleUpdater` and `resolveBlockhashCoSpend` |
-| `solidcash/bcmr` | BCMR token metadata: registry encoding, publication outputs and authchain helpers |
-| `solidcash/loop-call` | Builders for contracts that call a list of targets in a loop (`buildOpaqueLoopCallTransaction`, `buildTypedLoopCallTransaction`) |
-| `solidcash/walletconnect` | `placeholderSignature`, `placeholderPublicKey`, `placeholderP2PKHUnlocker` and the `Wc*` types |
-| `solidcash/vitest` | A side-effect import that installs the SolidCash Vitest matchers |
+| `@solidcash/solidcash/stateful` | `StatefulContract`, `ContractFactory`, `ContractBundle`, `SplitContractBundle`, `StateReader`, `ThreadManager`, `upgrades`, and the covenant, state-layout and event helpers |
+| `@solidcash/solidcash/contract-factory` | `ContractFactory`, `getContractFactory` and `deployContract` alone |
+| `@solidcash/solidcash/network/mock` | `MockNetworkProvider`, the in-process test network, and `FailingMockNetworkProvider` |
+| `@solidcash/solidcash/network/electrum` | `ElectrumNetworkProvider` |
+| `@solidcash/solidcash/hdsigner` | `HDSigner`, `HDPublicSigner`, `signersFromMnemonic`, `BCH_DEFAULT_HD_PATH` and `BCH_ACCOUNT_BRANCH` |
+| `@solidcash/solidcash/message-bus` | Message-bus composition (`compose`) and its preflight helpers (experimental) |
+| `@solidcash/solidcash/kernel` | The message-bus kernel route planners, for tooling (experimental) |
+| `@solidcash/solidcash/framed` | The framed convention: `framedDeploy`, `framedCall`, `framedRead`, `framedReceipt`, `framedQueue`, `framedComposer` and `framedReference` (experimental, see [Framed Composition](/docs/guides/framed-composition)) |
+| `@solidcash/solidcash/oracle` | Block oracle and blockhash co-spend helpers, such as `BlockOracleUpdater` and `resolveBlockhashCoSpend` |
+| `@solidcash/solidcash/bcmr` | BCMR token metadata: registry encoding, publication outputs and authchain helpers |
+| `@solidcash/solidcash/loop-call` | Builders for contracts that call a list of targets in a loop (`buildOpaqueLoopCallTransaction`, `buildTypedLoopCallTransaction`) |
+| `@solidcash/solidcash/walletconnect` | `placeholderSignature`, `placeholderPublicKey`, `placeholderP2PKHUnlocker` and the `Wc*` types |
+| `@solidcash/solidcash/vitest` | A side-effect import that installs the SolidCash Vitest matchers |
 
 The `utils` namespace re-exports the shared artifact, bytecode, encoding, and state-layout utilities of
 `@solidcash/utils`.

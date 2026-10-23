@@ -182,7 +182,7 @@ when present and reverse the 32-byte category before comparing it with a display
 
 ```ts
 import { swapEndianness } from '@bitauth/libauth';
-import { Contract } from 'solidcash';
+import { Contract } from '@solidcash/solidcash';
 
 // A raw introspection comparison needs consensus byte order.
 const contract = new Contract(artifact, [swapEndianness(tokenId)], { provider })
@@ -230,7 +230,7 @@ The Paytaca BCMR indexer listens for on-chain [authchain](https://github.com/bit
 A category created by a SolidCash deployment (`ContractFactory.deploy` or `StatefulContract.deploy`) already follows
 this model. Every genesis the SDK builds leads with the category's identity output at output 0, a small authhead
 contract that only the identity's owner can spend, and can publish a registry at output 1 when you pass the `bcmr`
-deploy option. `publishMetadata` from `solidcash/bcmr` later updates, transfers, freezes or burns that identity. A
+deploy option. `publishMetadata` from `@solidcash/solidcash/bcmr` later updates, transfers, freezes or burns that identity. A
 category that a contract creates inside a call has no identity output of its own. See
 [CashToken metadata](/docs/guides/deployment#cashtoken-metadata).
 

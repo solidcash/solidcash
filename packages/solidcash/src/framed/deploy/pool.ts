@@ -9,7 +9,7 @@
  */
 
 import { TokenCapability, bytesEqual, type Artifact, type FunctionSplitBundle } from '@solidcash/utils';
-import { framedValidator } from 'solidc/runtime';
+import { framedValidator } from '@solidcash/solidc/runtime';
 import { FACET_SATOSHIS } from '../composer/draft.js';
 import { prepareFunctionSplitDeployment } from './entry-pool.js';
 import { deployMaster, type DeployedMaster } from './material.js';

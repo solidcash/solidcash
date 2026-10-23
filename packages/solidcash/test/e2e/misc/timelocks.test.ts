@@ -13,7 +13,7 @@ import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import twtArtifact from '../../fixture/transfer_with_timeout.artifact.js';
 import { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { createTestProvider, getTxOutputs } from '../../test-util.js';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import RegtestNetworkProvider from '../../../src/network/RegtestNetworkProvider.js';
 import type { Transaction } from '@bitauth/libauth';
 

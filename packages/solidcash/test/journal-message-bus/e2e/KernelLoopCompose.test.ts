@@ -2,7 +2,7 @@ import {
   bigIntToVmNumber, binToHex, hexToBin, sha256,
 } from '@bitauth/libauth';
 import { bytecodeToAsm, encodeEventCommitment } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import {
   Contract,

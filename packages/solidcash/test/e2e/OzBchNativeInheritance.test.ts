@@ -2,7 +2,7 @@ import {
   beforeAll, describe, expect, it,
 } from 'vitest';
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
-import { compileFile, compileFileSplit } from 'solidc';
+import { compileFile, compileFileSplit } from '@solidcash/solidc';
 import { asmToScript, buildChunkCommitment, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import type { Utxo } from '../../src/interfaces.js';
 import {

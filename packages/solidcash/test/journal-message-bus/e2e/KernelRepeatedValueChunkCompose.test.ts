@@ -3,7 +3,7 @@ import {
   buildValueChunkCommitment, encodeChunkableValueTail, encodePushdataValue,
   sha256, splitValueIntoValueChunks,
 } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../../src/index.js';
 import { StatefulContract } from '../../../src/stateful/index.js';

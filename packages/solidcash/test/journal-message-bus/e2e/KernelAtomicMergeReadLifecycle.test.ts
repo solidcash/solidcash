@@ -1,6 +1,6 @@
 import { hexToBin } from '@bitauth/libauth';
 import { sha256, type Artifact } from '@solidcash/utils';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import {
   Contract,

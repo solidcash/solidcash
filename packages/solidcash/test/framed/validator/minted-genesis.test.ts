@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, test } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { encodeDataPush, encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import {
   FrameKind,

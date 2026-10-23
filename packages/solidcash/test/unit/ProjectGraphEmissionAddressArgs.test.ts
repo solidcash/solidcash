@@ -5,7 +5,7 @@ import {
   encodeMessageBatch, encodeMessageBusArguments, projectGraphEmissionAddressArgs,
   projectMessageBusHandlerArguments,
 } from '../../src/message-bus/message-bus.js';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 
 describe('projectGraphEmissionAddressArgs', () => {
   it('leaves int-only args unchanged', () => {

@@ -2046,7 +2046,7 @@ async function composeInPasses(options: {
  */
 export async function readFramedEntry(options: FramedReadOptions): Promise<FramedReadResult> {
   const { provider, categoryId, functionName } = options;
-  const { framedValidator } = await import('solidc/runtime');
+  const { framedValidator } = await import('@solidcash/solidc/runtime');
   const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
   const machine = options.vm ?? createVirtualMachineBch2026ForProvider(provider);
 

@@ -1,4 +1,4 @@
-import { compileString as _csRawSolidc } from 'solidc';
+import { compileString as _csRawSolidc } from '@solidcash/solidc';
 
 // Asserts fixed-array element surgery through the mandatory vmap entry layout.
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>

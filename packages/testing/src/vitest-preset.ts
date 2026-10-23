@@ -211,7 +211,7 @@ export function solidcashHardhatPreset(userConfig: ViteLikeConfig = {}): ViteLik
     plugins: [cjsHardhatRequirePlugin(mergedAlias), ...userPlugins],
     optimizeDeps: {
       ...userConfig.optimizeDeps,
-      exclude: ['solidc', 'solidcash', '@solidcash/testing', '@solidcash/utils', ...userExclude],
+      exclude: ['@solidcash/solidc', '@solidcash/solidcash', '@solidcash/testing', '@solidcash/utils', ...userExclude],
     },
     resolve: {
       ...userConfig.resolve,

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   binToHex, decodeAuthenticationInstructions, hexToBin, OpcodesBCH, type AuthenticationProgramStateCommon,
 } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { getContractFactory } from '../../src/stateful/index.js';
 import { findRedeemScriptStart } from '../../src/stateful/trace-commitment-helpers.js';
 import { fundedSigner } from '../test-util.js';

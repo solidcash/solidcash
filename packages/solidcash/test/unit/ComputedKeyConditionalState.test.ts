@@ -1,5 +1,5 @@
 import { bigIntToVmNumber, hexToBin } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { evalComputedKey } from '../../src/stateful/StatefulContract.js';
 import { evalComputedKey as evalRouteComputedKey } from '../../src/stateful/route-expression-key.js';

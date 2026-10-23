@@ -65,9 +65,9 @@ export const oracleAddress = encodeCashAddress({
 For development purposes, we'll use the `MockNetworkProvider` so you can simulate transactions in a 'mock' network environment. To do proper testing, you also need to add "mock" UTXOs to the `MockNetworkProvider`.
 
 ```ts title="hodl_vault.ts"
-import { Contract, SignatureTemplate, randomUtxo } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
-import { compileFile } from 'solidc';
+import { Contract, SignatureTemplate, randomUtxo } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
+import { compileFile } from '@solidcash/solidc';
 import { URL } from 'url';
 
 // Import keys and price oracle from common.ts
@@ -102,7 +102,7 @@ We need to create the functionality for generating and signing the oracle messag
 ```ts title="PriceOracle.ts"
 import { padMinimallyEncodedVmNumber, flattenBinArray } from '@bitauth/libauth';
 import { encodeInt, sha256 } from '@solidcash/utils';
-import { SignatureAlgorithm, SignatureTemplate } from 'solidcash';
+import { SignatureAlgorithm, SignatureTemplate } from '@solidcash/solidcash';
 
 export class PriceOracle {
   constructor(public privateKey: Uint8Array) { }
@@ -128,9 +128,9 @@ export class PriceOracle {
 Finally, we can put all of this together to create a working smart contract application. We use the generated keys as contract arguments directly or in a `SignatureTemplate` to create a transaction signature.
 
 ```ts title="hodl_vault.ts"
-import { Contract, SignatureTemplate, TransactionBuilder, randomUtxo } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
-import { compileFile } from 'solidc';
+import { Contract, SignatureTemplate, TransactionBuilder, randomUtxo } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
+import { compileFile } from '@solidcash/solidc';
 import { URL } from 'url';
 
 // Import keys and price oracle from common.ts

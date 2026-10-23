@@ -12,7 +12,7 @@ e2e tests, not as a public network emulator or persistence layer. Every accepted
 at once.
 
 ```ts
-import { MockNetworkProvider } from 'solidcash/network/mock';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
 
 const provider = new MockNetworkProvider();
 const [owner, user] = await provider.getSigners(2, {
@@ -59,7 +59,7 @@ useful for isolated debug evaluation.
 ### UTXO and token fixtures
 
 ```ts
-import { randomUtxo } from 'solidcash';
+import { randomUtxo } from '@solidcash/solidcash';
 
 await provider.addUtxo(addressOrLockingBytecode, randomUtxo({
   vout: 0,
@@ -118,7 +118,7 @@ The mock mints its own block-info oracle and writes its height and time into it 
 bridge between relaxed in-memory evaluation and real node admission.
 
 ```ts
-import { RegtestNetworkProvider } from 'solidcash';
+import { RegtestNetworkProvider } from '@solidcash/solidcash';
 
 const provider = new RegtestNetworkProvider({
   rpcUrl: 'http://localhost:18443',
@@ -152,7 +152,7 @@ rewind the chain; use a snapshot, or reset the BCHN data directory, when test is
 
 ```ts
 import BCHJS from '@psf/bch-js';
-import { FullStackNetworkProvider } from 'solidcash';
+import { FullStackNetworkProvider } from '@solidcash/solidcash';
 
 const bchjs = new BCHJS({
   restURL: 'https://api.fullstack.cash/v3/',
@@ -168,7 +168,7 @@ builder which must avoid accidentally treating token-bearing UTXOs as BCH-only i
 ## `BitcoinRpcNetworkProvider`
 
 ```ts
-import { BitcoinRpcNetworkProvider } from 'solidcash';
+import { BitcoinRpcNetworkProvider } from '@solidcash/solidcash';
 
 const provider = new BitcoinRpcNetworkProvider(
   'mainnet',

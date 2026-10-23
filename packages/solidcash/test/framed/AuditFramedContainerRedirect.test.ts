@@ -4,7 +4,7 @@ import {
 } from '@bitauth/libauth';
 import { buildTokenContainerCovenantScript, scriptToBytecode } from '@solidcash/utils';
 import { compileStringMulti } from '../../../solidc/src/compiler.js';
-import { framedValidator } from 'solidc';
+import { framedValidator } from '@solidcash/solidc';
 import { callFramedEntry, sendFramedValue } from '../../src/framed/call/index.js';
 import { TransactionBuilder } from '../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';

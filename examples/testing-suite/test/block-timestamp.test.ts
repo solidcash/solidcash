@@ -7,8 +7,8 @@
  * like Hardhat's `time.increaseTo` for a ported Solidity timelock. On a live chain the oracle owner's
  * BlockOracleUpdater pushes those fields; `mockBlockOracleRpc` points it at the mock chain.
  */
-import { compileString } from 'solidc';
-import { getContractFactory, StatefulContract } from 'solidcash/stateful';
+import { compileString } from '@solidcash/solidc';
+import { getContractFactory, StatefulContract } from '@solidcash/solidcash/stateful';
 import { ethers, network, loadFixture, time, mockBlockOracleRpc, BlockOracleUpdater } from '@solidcash/testing';
 import { expect } from '@solidcash/testing/chai';
 

@@ -123,7 +123,7 @@ rather than testing the optional fields directly.
 
 \`kernelExecutionPlans\` commits one digest per admitted handler into the route bytecode; each \`digest\` appears as
 a unique push/drop marker in \`artifact.bytecode\`. Readers gate on \`kernelPlanVersion\` through
-\`assertReadableKernelExecutionPlans()\` from \`solidcash/message-bus\`.
+\`assertReadableKernelExecutionPlans()\` from \`@solidcash/solidcash/message-bus\`.
 
 \`tokenContainerCoLayout\` is a non-overlapping span proof for a route that reserves token-container slots beside
 trailing dynamic-value capacity.

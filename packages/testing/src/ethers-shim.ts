@@ -25,8 +25,8 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 // Reach the SDK through its named subpaths rather than through physical `dist` leaf files. The subpath is a
 // stable package entry a test can `vi.mock` back onto the sources, which is what keeps a test's reservations
 // and this shim's reads in one module instance; a `dist` leaf path can be neither redirected nor deduplicated.
-import { deriveLogicalAddressFromSeed, deriveLogicalCreateAddress } from 'solidcash/stateful';
-import { framedDeploy } from 'solidcash/framed';
+import { deriveLogicalAddressFromSeed, deriveLogicalCreateAddress } from '@solidcash/solidcash/stateful';
+import { framedDeploy } from '@solidcash/solidcash/framed';
 // CashAddress-aware ABI coder (wins over ethers/utils re-export for defaultAbiCoder / AbiCoder).
 // Cycle-free: cash-abi-coder only imports ethers/abi + libauth.
 import { AbiCoder as CashAbiCoder, defaultAbiCoder as cashDefaultAbiCoder } from './cash-abi-coder.js';
@@ -114,7 +114,7 @@ export class Contract {
           } }).hre;
           // Prefer live registry hit (KashiPair.init does new ethers.Contract(await pair.asset(), ERC20abi)).
           try {
-            const solidcash = await import('solidcash/stateful');
+            const solidcash = await import('@solidcash/solidcash/stateful');
             const provider = hre?.ethers?.provider as {
               getUtxos?: (a: string) => Promise<Array<{ token?: { category?: string; nft?: { capability?: string } } }>>;
             } | undefined;

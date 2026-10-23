@@ -3,7 +3,7 @@ import {
   decodePushdataValue, encodeChunkableValueTail, encodePushdataValue,
   type AbiFunction, type Artifact, type EntryAccessAbi,
 } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Signer } from '../../src/index.js';
 import {

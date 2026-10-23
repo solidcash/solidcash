@@ -6,7 +6,7 @@
 // cspell:ignore WEXM
 import { readFileSync } from 'node:fs';
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { compileFile, compileString } from 'solidc';
+import { compileFile, compileString } from '@solidcash/solidc';
 import { asmToScript, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { NATIVE_TOKEN_EXTENSION } from '../../src/bcmr/index.js';

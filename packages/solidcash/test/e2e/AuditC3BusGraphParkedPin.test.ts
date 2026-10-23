@@ -26,7 +26,7 @@ import {
   encodeLockingBytecodeP2sh32, hash256, hexToBin,
 } from '@bitauth/libauth';
 import { OpcodesBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import {
   buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue, scriptToBytecode,
 } from '@solidcash/utils';

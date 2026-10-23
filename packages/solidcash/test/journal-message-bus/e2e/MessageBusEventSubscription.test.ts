@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import {
   Contract,
   Signer,

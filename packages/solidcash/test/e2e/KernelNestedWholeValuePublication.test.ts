@@ -1,5 +1,5 @@
 import { encodePushdataValue } from '@solidcash/utils';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Signer } from '../../src/index.js';
 import {

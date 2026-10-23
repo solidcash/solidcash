@@ -39,9 +39,9 @@
   "scripts": {
     "test": "lerna run test --ignore solidcash-examples && yarn workspace testing-suite test",
     "test:fast": "lerna run test:fast --ignore solidcash-examples --ignore testing-suite",
-    "test:e2e": "yarn workspace solidcash test:e2e",
+    "test:e2e": "yarn workspace @solidcash/solidcash test:e2e",
     "test:all": "yarn test && yarn test:e2e",
-    "test:regtest": "yarn workspace solidcash test:regtest",
+    "test:regtest": "yarn workspace @solidcash/solidcash test:regtest",
     "test:package-smoke": "node scripts/release-package-smoke.mjs",
     "test:docs-snippets": "tsx scripts/release-docs-snippets.ts",
     "test:corpus-baseline": "node scripts/release-corpus-baseline.mjs",
@@ -62,12 +62,12 @@
     "solidcash": "node packages/testing/dist/cli.js",
     "build": "tsc -b tsconfig.packages.json && yarn workspace testing-suite compile",
     "build:watch": "tsc -b tsconfig.packages.json --watch --preserveWatchOutput --assumeChangesOnlyAffectDirectDependencies",
-    "test:compiler:watch": "yarn workspace solidc test:watch",
-    "test:compiler:changed": "yarn workspace solidc test:changed",
-    "test:sdk:watch": "yarn workspace solidcash test:watch",
-    "test:sdk:changed": "yarn workspace solidcash test:changed",
-    "test:e2e:watch": "yarn workspace solidcash test:e2e:watch",
-    "test:e2e:changed": "yarn workspace solidcash test:e2e:changed"
+    "test:compiler:watch": "yarn workspace @solidcash/solidc test:watch",
+    "test:compiler:changed": "yarn workspace @solidcash/solidc test:changed",
+    "test:sdk:watch": "yarn workspace @solidcash/solidcash test:watch",
+    "test:sdk:changed": "yarn workspace @solidcash/solidcash test:changed",
+    "test:e2e:watch": "yarn workspace @solidcash/solidcash test:e2e:watch",
+    "test:e2e:changed": "yarn workspace @solidcash/solidcash test:e2e:changed"
   },
   "dependencies": {
     "@noble/ciphers": "^2.2.0",

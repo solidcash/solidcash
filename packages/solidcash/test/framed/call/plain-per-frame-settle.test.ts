@@ -61,7 +61,7 @@ async function deployed(): Promise<Deployed> {
   run ??= (async (): Promise<Deployed> => {
     const compiled = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never);
     const artifacts = { A: compiled.A!, B: compiled.B!, C: compiled.C!, D: compiled.D! };
-    const { framedValidator } = await import('solidc');
+    const { framedValidator } = await import('@solidcash/solidc');
     const validatorProgram = framedValidator.buildValidatorProgram();
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });

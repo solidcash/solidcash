@@ -14,8 +14,8 @@ SDK reference.
 ## Deploying several masters
 
 ```ts
-import { ContractFactory } from 'solidcash/contract-factory';
-import { ThreadManager } from 'solidcash/stateful';
+import { ContractFactory } from '@solidcash/solidcash/contract-factory';
+import { ThreadManager } from '@solidcash/solidcash/stateful';
 
 const contract = await new ContractFactory(artifact, signer).deploy(adminPublicKey, {
   initialState: { west: 0n, east: 0n },
@@ -239,7 +239,7 @@ caller cannot choose (a constructor argument, state or a constant), never a key 
 ## Reading state and masters
 
 ```ts
-import { StateReader, getContractState } from 'solidcash/stateful';
+import { StateReader, getContractState } from '@solidcash/solidcash/stateful';
 
 const onChain = await getContractState(contract.inner, contract.categoryId);
 console.log(onChain.state);

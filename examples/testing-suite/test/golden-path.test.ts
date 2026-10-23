@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-explicit-any */
-import { SignatureTemplate } from 'solidcash';
+import { SignatureTemplate } from '@solidcash/solidcash';
 import { ethers, loadFixture } from '@solidcash/testing';
 import { expect } from '@solidcash/testing/chai';
 

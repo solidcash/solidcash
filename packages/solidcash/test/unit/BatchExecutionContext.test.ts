@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import type { AbiFunction } from '@solidcash/utils';
 import {
   assertAndSettleExecutionContexts,

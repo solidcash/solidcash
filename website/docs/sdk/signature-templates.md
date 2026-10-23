@@ -127,7 +127,7 @@ export enum SighashType {
 
 #### Example
 ```ts
-import { SighashType, SignatureTemplate } from 'solidcash';
+import { SighashType, SignatureTemplate } from '@solidcash/solidcash';
 
 const wif = 'L4vmKsStbQaCvaKPnCzdRArZgdAxTqVx8vjMGLW5nHtWdRguiRi1';
 
@@ -151,7 +151,7 @@ export enum SignatureAlgorithm {
 
 #### Example
 ```ts
-import { SighashType, SignatureAlgorithm, SignatureTemplate } from 'solidcash';
+import { SighashType, SignatureAlgorithm, SignatureTemplate } from '@solidcash/solidcash';
 
 const wif = 'L4vmKsStbQaCvaKPnCzdRArZgdAxTqVx8vjMGLW5nHtWdRguiRi1';
 

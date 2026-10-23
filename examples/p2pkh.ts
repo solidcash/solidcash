@@ -1,7 +1,7 @@
 import { stringify } from '@bitauth/libauth';
-import { compileFile } from 'solidc';
-import { SignatureTemplate, Contract, TransactionBuilder, Output, randomUtxo } from 'solidcash';
-import { MockNetworkProvider } from 'solidcash/network/mock';
+import { compileFile } from '@solidcash/solidc';
+import { SignatureTemplate, Contract, TransactionBuilder, Output, randomUtxo } from '@solidcash/solidcash';
+import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
 import { URL } from 'url';
 
 // Import Alice's keys from common.ts

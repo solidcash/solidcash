@@ -1,4 +1,4 @@
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '@solidcash/solidc';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import {
   Contract,

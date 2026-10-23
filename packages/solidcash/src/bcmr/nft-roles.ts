@@ -203,7 +203,7 @@ export function framedEventLockingBytecode(category: string, event: EventDefinit
 export async function framedNftLocks(
   artifact: Artifact, category: string, provider: NetworkProvider,
 ): Promise<DeploymentNftLocks> {
-  const { framedValidator } = await import('solidc/runtime');
+  const { framedValidator } = await import('@solidcash/solidc/runtime');
   const { bindProviderBlockOracle } = await import('../framed/call/block-oracle.js');
   const { deployMaster } = await import('../framed/deploy/material.js');
   const {

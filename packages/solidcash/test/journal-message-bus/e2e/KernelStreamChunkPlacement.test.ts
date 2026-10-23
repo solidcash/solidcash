@@ -1,6 +1,6 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { buildChunkCommitment, encodeEventCommitment, sha256, splitValueIntoChunks } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, type TransactionBuilder } from '../../../src/index.js';
 import { StatefulContract } from '../../../src/stateful/index.js';

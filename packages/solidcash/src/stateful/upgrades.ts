@@ -646,7 +646,7 @@ function resolveInitializer(opt: string | false | undefined, impl: Artifact): st
 
 // Graft an implementation's state layout onto the layout-independent default proxy: its bytecode never reads its
 // own state fields (and ships with dataNftCount 0), so event-only and state-holding implementations both fit.
-// Keep the proxy's own constructorInputs (`implementation`).
+// Keep the proxy's own constructorInputs (`implementation` and the delegate distances).
 function graftDefaultProxy(impl: Artifact): Artifact {
   const dataNftCount = impl.stateLayout?.dataNftCount ?? 0;
   const requiredNftIndices = Array.from({ length: dataNftCount }, (_, index) => index);
@@ -677,10 +677,10 @@ function graftDefaultProxy(impl: Artifact): Artifact {
   // `... OP_1 OP_CAT OP_1 OP_INVOKE` since the outliner extracted the counting loop into a helper. Pinning
   // the operand made this fail closed on a shape change that does not affect the swap, while pinning the
   // suffix keeps the guarantee that actually matters: that slicing this tail off and appending the relaxed
-  // one yields a well-formed script whose ONLY difference is the comparison. The trailing `OP_2DROP OP_DROP`
-  // drops the counts and the frame (which carries one more constructor input than before `__proxyBlockSize`).
-  const strictTail = 'OP_NUMEQUALVERIFY OP_2DROP OP_DROP OP_1';
-  const delegatedCardinalityTail = 'OP_2DROP OP_2DROP OP_DROP OP_1';
+  // one yields a well-formed script whose ONLY difference is the comparison. The trailing `OP_2DROP OP_2DROP`
+  // drops the counted category and the frame left there: the delegate index and the two published distances.
+  const strictTail = 'OP_NUMEQUALVERIFY OP_2DROP OP_2DROP OP_1';
+  const delegatedCardinalityTail = 'OP_2DROP OP_2DROP OP_2DROP OP_1';
   const canDelegateCardinality = impl.delegateProxyStateOutputCountPinned === true;
   if (canDelegateCardinality && !defaultProxyArtifact.bytecode.endsWith(strictTail)) {
     throw new Error('Built-in proxy covenant shape changed; refusing to derive the delegate-authorized variant.');
@@ -700,6 +700,20 @@ function graftDefaultProxy(impl: Artifact): Artifact {
     // authenticate a proxy-owned atomic participant.
     ...(impl.messageBus && { messageBus: { ...impl.messageBus, routeInBytecode: false } }),
   } as Artifact;
+}
+
+/**
+ * The two delegate distances the built-in forward commits as constructor inputs, one picked by the forwarded
+ * selector: `__proxyBlockSize`, the grafted master + data block a direct delegate call's implementation follows,
+ * and `__proxyRouteBlockSize`, the implementation's message-bus route block a route call's (selector SCB1)
+ * implementation follows. An implementation without a route in its bytecode takes the direct distance for both.
+ */
+export function defaultProxyDelegateDistances(impl: Artifact): readonly [bigint, bigint] {
+  const block = BigInt(1 + (impl.stateLayout?.dataNftCount ?? 0));
+  const bus = impl.messageBus;
+  const route = bus?.available !== false && bus?.routeInBytecode !== false
+    ? bus?.route?.blockLayout?.blockSize : undefined;
+  return [block, route === undefined ? block : BigInt(route)];
 }
 
 /** A stateful implementation the compiler marked as compiled for the framed convention. */
@@ -1068,14 +1082,12 @@ export async function deployProxy<TImpl extends Artifact>(
         if (reserve > 0) proxyOverrides.salt = new Uint8Array(reserve);
       }
       const defaultProxy = graftDefaultProxy(implArtifact);
-      // The forward pins its delegate to `activeInputIndex + __proxyBlockSize`, so the base the delegate derives
-      // is this proxy and not another master. The value is the grafted block: master + the implementation's data
-      // NFTs, which is where the SDK lays the co-spent implementation input.
-      const proxyForwardBlockSize = BigInt(
-        defaultProxy.abi.find((entry) => entry.name === '__forward')?.blockLayout?.blockSize ?? 1,
-      );
+      // The forward pins its delegate to `activeInputIndex + distance`, the distance picked by the forwarded
+      // selector, so the base the delegate derives is this proxy and not another master: where the SDK lays the
+      // co-spent implementation input, after the grafted block or after the implementation's route block.
+      const [proxyBlockSize, proxyRouteBlockSize] = defaultProxyDelegateDistances(implArtifact);
       proxy = await new ContractFactory(defaultProxy, runner)
-        .deploy(implLbc, proxyForwardBlockSize, {
+        .deploy(implLbc, proxyBlockSize, proxyRouteBlockSize, {
           ...proxyOverrides, initialState: seededState, logicalNonce: false, logicalIdentity,
         });
       shape = { name: '__forward', mode: 'baked' };

@@ -79,6 +79,19 @@ the proxy's *entire* state:
    committed by the forwarder's own p2sh32, so no witness selects it. A custom forwarder that omits the input keeps
    the position-free pin and must place its delegate by its own layout.
 
+   **The distance depends on the call kind.** A delegate running its message-bus route derives its owner as
+   `OP_INPUTINDEX - routeBlockSize` (the route's compile-time block, `messageBus.route.blockLayout.blockSize`), and
+   the SDK lays a route call's implementation after that block. A forwarder may publish this second distance beside
+   the first as the constructor input `__proxyRouteBlockSize` (the built-in proxy does; `deployProxy` passes the
+   implementation's route block, or `1 + dataNftCount` when its bytecode carries no route). The forward then
+   requires exactly one of the two, picked by the forwarded payload's selector: `SCB1`, the reserved route
+   selector, takes the route distance and any other selector the direct one. The payload pin also requires the
+   delegate's first push to be exactly that four-byte selector (its leading opcode is a push of four bytes), so
+   the selector the forward reads is the item the delegate's dispatcher invokes, and a payload shorter than four
+   bytes is refused. A witness therefore cannot run a route at the direct distance or a direct entry at the route
+   distance. Without `__proxyRouteBlockSize` the forward keeps the single published distance for both kinds, so
+   such a forwarder cannot forward a route whose block differs from it.
+
 **B. A function that issues a delegatecall must not self-mutate.** Because the delegatecall epilogue skips
 `emitAutoCovenantVerification` *unconditionally*, any `this.x = ...` in that function is unauthorized — and this
 is not specific to the fallback:

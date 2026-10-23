@@ -27597,18 +27597,50 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // ANOTHER master's block, and the delegate would authorize that master while this proxy's own state
         // covenant is skipped on the delegatecall path. A proxy publishes the distance as the constructor input
         // `__proxyBlockSize`, which its own p2sh32 commits to; the SDK supplies the grafted `1 + dataNftCount`.
+        // A message-bus route derives its owner one route block back instead, so a proxy may publish that distance
+        // beside it as `__proxyRouteBlockSize`: the forwarded payload's selector then picks exactly one of the two,
+        // the route's for SCB1 (the reserved route selector) and the direct one otherwise, and the payload pin
+        // below requires that selector to be the delegate's first push, the item its dispatcher invokes.
         // A custom proxy that places the delegate by its own layout keeps the witness-only pin until it declares
-        // that input, which docs/delegatecall-security.md records as the remaining requirement.
-        if (this.forwardProxyBlockSizeParameter() !== undefined
-          && this.getStackIndex('__proxyBlockSize', true) >= 0
-          && !this.currentFunction.delegateIndexFromBlockSlot) {
+        // `__proxyBlockSize`, which docs/delegatecall-security.md records as the remaining requirement.
+        const singleFunctionLibrary = node.synthesizedFromLibraryCall && !node.librarySelectorDispatched;
+        const ownForwardInput = this.currentFunction.name === '__forward'
+          && node.data instanceof IdentifierNode
+          && node.data.name === 'input'
+          && this.currentFunction.parameters[0]?.name === 'input';
+        const positionPinned = this.forwardsProxyDistance('__proxyBlockSize')
+          && !this.currentFunction.delegateIndexFromBlockSlot;
+        const routeDistance = positionPinned && !singleFunctionLibrary
+          && this.forwardsProxyDistance('__proxyRouteBlockSize');
+        if (positionPinned) {
           this.debugComputeBase('delegate-position', '__proxyBlockSize',
             this.getStackIndex('__proxyBlockSize'), 0);
           // Every value pushed here is untracked, so each one gets a stack-model marker: a later bottom-ordinal
           // pick is only the named slot while the model's length is the runtime depth.
           this.emitPickTrackedFromBottom('__proxyBlockSize', locationData);  // [blockSize]
           this.pushToStack('(proxy-block-size)');
-          this.emitMasterInputIndex(locationData);                          // [blockSize, proxyMaster]
+          if (routeDistance) {
+            if (ownForwardInput) {
+              this.emitPickTrackedFromBottom('input', locationData);         // [blockSize, input]
+              this.pushToStack('(proxy-call-kind)');
+            } else {
+              this.visit(node.data);                                         // [blockSize, input]
+            }
+            // A payload shorter than a selector fails the split.
+            this.emit(encodeInt(4n), locationData);
+            this.emit(Op.OP_SPLIT, locationData);
+            this.emit(Op.OP_DROP, locationData);                            // [blockSize, selector]
+            this.emit(hexToBin('53434231'), locationData);
+            this.emit(Op.OP_EQUAL, locationData);                           // [blockSize, isRoute]
+            this.emit(Op.OP_IF, locationData);
+            this.popFromStack();
+            this.emit(Op.OP_DROP, locationData);
+            this.popFromStack();
+            this.emitPickTrackedFromBottom('__proxyRouteBlockSize', locationData); // [routeBlockSize]
+            this.pushToStack('(proxy-block-size)');
+            this.emit(Op.OP_ENDIF, locationData);                           // [distance]
+          }
+          this.emitMasterInputIndex(locationData);                          // [distance, proxyMaster]
           this.pushToStack('(proxy-master)');
           this.emit(Op.OP_ADD, locationData);                               // [expectedDelegate]
           this.popFromStack(2);
@@ -27624,12 +27656,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // C1/piece-7: skipped for a single-public-function library. Such a library compiles to a contract with
         // one entry point, whose unlocking script carries NO leading selector - and with one function there is
         // nothing for a caller to choose, so the identity pin alone is the whole property.
-        const singleFunctionLibrary = node.synthesizedFromLibraryCall && !node.librarySelectorDispatched;
         if (!singleFunctionLibrary) {
-          const ownForwardInput = this.currentFunction.name === '__forward'
-            && node.data instanceof IdentifierNode
-            && node.data.name === 'input'
-            && this.currentFunction.parameters[0]?.name === 'input';
           if (ownForwardInput) {
             this.emit(Op.OP_INPUTINDEX, locationData);
             this.emit(Op.OP_INPUTBYTECODE, locationData);
@@ -27657,7 +27684,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_INPUTBYTECODE, locationData); // [input, ubcode]
           this.emit(encodeInt(1n), locationData);
           this.emit(Op.OP_SPLIT, locationData);        // [input, pushbyte, ubcode_rest]
-          this.emit(Op.OP_NIP, locationData);          // [input, ubcode_rest]
+          if (routeDistance) {
+            // The selector the position pin read is the delegate's first push: a push of exactly four bytes.
+            this.emit(Op.OP_SWAP, locationData);       // [input, ubcode_rest, pushbyte]
+            this.emit(hexToBin('04'), locationData);
+            this.emit(Op.OP_EQUALVERIFY, locationData); // [input, ubcode_rest]
+          } else {
+            this.emit(Op.OP_NIP, locationData);        // [input, ubcode_rest]
+          }
           this.emit(Op.OP_OVER, locationData);         // [input, ubcode_rest, input]
           this.emit(Op.OP_SIZE, locationData);         // [input, ubcode_rest, input, input_len]
           this.emit(Op.OP_NIP, locationData);          // [input, ubcode_rest, input_len]
@@ -27677,12 +27711,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * The forwarder's published delegate distance. A contract opts in by declaring the compiler-owned constructor
-   * input `__proxyBlockSize` (bigint), which its own p2sh32 commits to, so the delegate position is not a witness.
+   * Whether the forwarder publishes the delegate distance `name` and it is live here. A contract opts in by declaring
+   * the compiler-owned constructor input (bigint), which its own p2sh32 commits to, so the delegate position is not
+   * a witness: `__proxyBlockSize` for a direct delegate call and, beside it, `__proxyRouteBlockSize` for a call
+   * whose delegate runs its message-bus route.
    */
-  private forwardProxyBlockSizeParameter(): ParameterNode | undefined {
-    return this.contractParameters.find((parameter) => parameter.name === '__proxyBlockSize'
-      && parameter.type === PrimitiveType.BIGINT);
+  private forwardsProxyDistance(name: string): boolean {
+    return this.contractParameters.some((parameter) => parameter.name === name
+      && parameter.type === PrimitiveType.BIGINT)
+      && this.getStackIndex(name, true) >= 0;
   }
 
   /**

@@ -831,6 +831,12 @@ rerun: the marketplace corpus compiled cold at the final master is identical to 
   which would skip the root verifier's `tx.origin`, cannot exist: every routed verifier requires each row's owner routed
   and row 0's owner its consumer (`compiler.ts` 13177, 13193, 13240, 13244), and the SDK refuses it (`graph.ts` 2299,
   `atomic.ts` 148, 212, 458).
+- **C3 leaf band, value chunk** (`59c921204`, found 2026-10-23). The graph fix covered graph-context participants
+  only. A default leaf callee (no external calls, no `messageBusGraphContext`) has a bound route with claim flags,
+  which claimed its whole compile-time block once its verifier ran, so the same fee-slot case stayed open there (the
+  mocknet node accepted it). That route now takes `__internal__participantBlockSize`, bound in its binder digest
+  against the verifier's own `activeBlockSize`, and claims only that block once the verifier ran: +8 to +9 B per bound
+  leaf route and +5 B on its verifier; marketplace artifacts unchanged. Test: `AuditC3BusLeafValueChunkBand.test.ts`.
 - **DS-2 class, state read through a subroutine** (`095cb22d4`, `6fdfaad23`). An entry (and a split or merge entry)
   that read state only through an invoked body skipped the data-NFT lock pin, so a mutable NFT of C at a foreign lock
   could be read as state. Test: `packages/solidc/test/AuditDataLockSubroutineRead.test.ts`.
@@ -926,10 +932,10 @@ needs VM evidence, `rejectedWith` has no source fallback).
   of a collection a run handler names is not pinned.
 - CRYPTO-4: dynamic and value chunks have no migration path.
 - A direct merge of masters holding records checks them relative to `OP_INPUTINDEX` (liveness).
-- Delegate (proxied) graph routes: the route pin returns on a proxy's block (`usesProxyStateBlockBase`), and
-  `45411dffa` left routed delegates to their verifier, which counts records only inside the participant block. A proxy
-  record outside that block, such as a value chunk in the fee slot, may have no check. Not yet checked (found
-  2026-10-22 while fixing the graph band).
+- Proxied routes: on a proxy's block the route pin and the counted pin both return early
+  (`usesProxyStateBlockBase`), and the default proxy's record count is dropped for certified delegates, so from the
+  code nothing holds a proxy record the route does not touch, standalone or composed (2026-10-23, read, not run). Fix
+  in progress.
 
 ## Direct call results bound by call records (2026-10-22, D50)
 

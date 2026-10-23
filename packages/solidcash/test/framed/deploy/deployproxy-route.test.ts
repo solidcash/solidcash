@@ -125,8 +125,10 @@ function tableDeployment(): Promise<TableRun> {
       append(note: string, amount: bigint): Promise<unknown>;
       rows(index: number): Promise<{ note: string; amount: bigint }>;
     };
-    expect(artifacts.Table!.stateLayout!.dataNftCount).toBe(1);
-    expect(buildProxyArtifact(artifacts.Table!).stateLayout!.dataNftCount).toBe(2);
+    // D49: the unbounded `rows` array takes a data NFT of its own, so the implementation keeps two and the proxy
+    // adds its own `address` record.
+    expect(artifacts.Table!.stateLayout!.dataNftCount).toBe(2);
+    expect(buildProxyArtifact(artifacts.Table!).stateLayout!.dataNftCount).toBe(3);
     expect(await handle.getState()).toMatchObject({ counter: 7n, rows: [] });
     const note = 'a dynamic row crossing a chunk boundary '.repeat(5);
     await handle.append(note, 9n);

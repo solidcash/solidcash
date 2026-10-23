@@ -175,6 +175,9 @@ import { BchNativeMultiplier } from "solidcash/contracts/BchNativeMultiplier.sca
 contract ScaledDollar() is ERC20, ERC20Metadata("Scaled Dollar", "SCD"), BchNative, BchNativeMultiplier(1e12) {
     constructor(bytes32 nativeCategory_) BchNative(nativeCategory_) { }
 
+    function decimals() public view override returns (uint8) { return 18; }
+
+    // The hooks credit and debit ledger units, as in MyDollar; BchNativeMultiplier scales the reserve boundary.
     function _nativeCredit(address account, uint256 amount) internal override {
         _mint(account, amount);
     }

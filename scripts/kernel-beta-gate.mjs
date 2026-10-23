@@ -6,6 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { scanKernelVocabulary } from './kernel-beta-vocabulary.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = resolve(root, 'scripts/kernel-beta-manifest.json');
@@ -45,38 +46,14 @@ if (!Array.isArray(manifest.forbiddenApplicationNames)
   || manifest.forbiddenApplicationNames.some((name) => typeof name !== 'string' || name.length === 0)) {
   throw new Error('kernel beta manifest must publish its forbidden application-name vocabulary');
 }
-const productionDiff = git(
-  'diff', '--unified=0', manifest.censusCommit, '--',
-  'packages/solidc/src', 'packages/solidcash/src', 'packages/utils/src',
-);
-const addedProductionLines = productionDiff.split('\n')
-  .filter((line) => line.startsWith('+') && !line.startsWith('+++'));
-const escapedApplicationNames = manifest.forbiddenApplicationNames
-  .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-// Treat the manifest entries as forbidden vocabulary stems. Application-shaped
-// identifiers are commonly suffixed (for example, a version or operation), so
-// word boundaries would let the most likely leaks through.
-const applicationNamePattern = new RegExp(`(?:${escapedApplicationNames.join('|')})`, 'i');
-const shapedLines = addedProductionLines.filter((line) => applicationNamePattern.test(line));
+const { shapedLines, shapedKernelLines } = scanKernelVocabulary({
+  root,
+  censusCommit: manifest.censusCommit,
+  forbiddenApplicationNames: manifest.forbiddenApplicationNames,
+});
 if (shapedLines.length > 0) {
   throw new Error(`kernel implementation added application-shaped production names:\n${shapedLines.join('\n')}`);
 }
-// The diff fence prevents new leaks anywhere in production. Also scan the complete kernel implementation so an
-// edited pre-census line cannot retain application-shaped evidence without appearing as a newly added token. Shared
-// SDK legacy adapters are intentionally outside this list; their kernel exclusion is covered by schema-name parity.
-const kernelImplementationFiles = [
-  'packages/solidc/src/compiler.ts',
-  'packages/solidc/src/generation/GenerateTargetTraversal.ts',
-  'packages/solidc/src/semantic/KernelJournalStreamPlan.ts',
-  'packages/solidc/src/semantic/LowerVMapCounterLoops.ts',
-  'packages/solidcash/src/stateful/KernelDelegateForwarding.ts',
-  'packages/solidcash/src/stateful/KernelEntryJournal.ts',
-  'packages/solidcash/src/stateful/KernelLifecycleTopology.ts',
-  'packages/utils/src/artifact.ts',
-];
-const shapedKernelLines = kernelImplementationFiles.flatMap((file) =>
-  readFileSync(resolve(root, file), 'utf8').split('\n').flatMap((line, index) =>
-    applicationNamePattern.test(line) ? [`${file}:${index + 1}:${line}`] : []));
 if (shapedKernelLines.length > 0) {
   throw new Error(`kernel implementation contains application-shaped production names:\n${shapedKernelLines.join('\n')}`);
 }

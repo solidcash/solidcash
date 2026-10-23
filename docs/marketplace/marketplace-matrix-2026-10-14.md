@@ -53,6 +53,30 @@ to a Solidity bytes argument and two allocated-local-array mapping-key provenanc
 
 ## Current validation status
 
+> **At `7e5c0f897` (2026-10-23), mocknet:** all four cells pass, 262/262, with 0 failed and 0 skipped, each from its
+> own cold compile. This is the first matrix run after D49 (`809de50f8`, a data NFT of its own for each `bigint` and
+> each unbounded state field). It exposed one regression the ahead-gated tests do not cover: a framed callee whose
+> entry writes two data NFT records had its second record settled with the pre-call commitment, which the callee's
+> own route refused with `OP_VERIFY`. `7e5c0f897` makes the caller's derivation re-probe until every required record
+> is learned and pins it with `FramedExternalCallMultiRecordState.test.ts`; every cell in the table ran after it. The
+> runs came from the isolated worktree `/Code/cashscript/.worktrees/release-readiness`, branch
+> `release-readiness/2026-10-22`, based on master `809de50f8`.
+
+| Cell | Passed | Failed | Skipped | Wall time | Cold compile |
+| --- | ---: | ---: | ---: | ---: | --- |
+| proxy × framed | 66 | 0 | 0 | 1924s | 9 sources to 19 artifacts |
+| proxy × kernel | 66 | 0 | 0 | 3479s | 9 sources to 19 artifacts |
+| noproxy × framed | 65 | 0 | 0 | 1814s | 22 sources to 26 artifacts |
+| noproxy × kernel | 65 | 0 | 0 | 2646s | 22 sources to 26 artifacts |
+
+Each cell ran the suite below after `node scripts/marketplace-lane.mjs <lane>`, the `composition` line set to
+`framed` or `direct`, and `rm -rf .marketplace/cache node_modules/.experimental-vitest-cache` followed by
+`node packages/solidhat/dist/cli.js compile`, with no title filter and no bail option. The first no-proxy × kernel
+attempt reached 60 of 65 titles with no failing test and then lost its Vitest worker to `SIGKILL` while another
+session ran a marketplace compile on the same host; the cell was re-run from a fresh cold compile once the host was
+idle, and the table records that run. Every cell also reports a native Vitest JSON result whose `numFailedTests`,
+`numPendingTests` and `numTodoTests` are 0.
+
 > **At `14bfff57a` (2026-10-19), mocknet:** all four cells pass again, 262/262 (proxy x kernel 66, proxy x framed 66,
 > no-proxy x kernel 65, no-proxy x framed 65). At `11b8f7feb` proxy x kernel arbitrate failed at input 1462 and
 > no-proxy x kernel failed 20 titles; the four causes and fixes are in `../release/0.14.0/RELEASE_DECISION_0.14.0.md`, "What closed the

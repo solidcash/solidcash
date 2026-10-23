@@ -1,6 +1,13 @@
+import { existsSync } from 'node:fs';
 import { compatibilityAliases, solidhatPreset } from '../src/vitest-preset.js';
 
 describe('solidhatPreset', () => {
+  it('resolves the installed solidcash package aliases to real files', () => {
+    const aliases = compatibilityAliases({ hardhat: 3, ethers: 6 });
+    expect(existsSync(aliases.solidcash)).toBe(true);
+    expect(existsSync(aliases['solidcash/vitest'])).toBe(true);
+  });
+
   it('maps every Hardhat and Ethers entry point onto a compatibility shim', () => {
     const aliases = compatibilityAliases({ hardhat: 2, ethers: 6 });
     expect(aliases.hardhat).toContain('hardhat2.js');

@@ -125,6 +125,20 @@ console.log('packed runtime smoke passed');
 `);
   run('node', ['smoke.mjs'], { cwd: consumer });
 
+  writeFileSync(join(consumer, 'smoke-preset.mjs'), `
+import { existsSync } from 'node:fs';
+import { compatibilityAliases } from '@solidcash/solidhat/vitest-preset';
+
+const aliases = compatibilityAliases({ hardhat: 3, ethers: 6 });
+for (const name of ['solidcash', 'solidcash/vitest']) {
+  if (!existsSync(aliases[name])) {
+    throw new Error(\`packed preset alias \${name} points at \${aliases[name]}, which does not exist\`);
+  }
+}
+console.log('packed preset aliases resolve');
+`);
+  run('node', ['smoke-preset.mjs'], { cwd: consumer });
+
   mkdirSync(join(consumer, 'contracts'));
   mkdirSync(join(consumer, 'test'));
   writeFileSync(join(consumer, 'solidcash.config.js'), `

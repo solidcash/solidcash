@@ -13816,7 +13816,7 @@ function synthesizeMessageBusRoute(
           sha256(callManifest), toPaddedBytes(activeInputIndex, 2),
           toPaddedBytes(expectedLocalRows, 2), sha256(localBatch)
           ${bindingDigestGraphValues}${!participantSizedRoute ? ''
-    : ', toPaddedBytes(suppliedParticipantBlockSize, 2)'}
+  : ', toPaddedBytes(suppliedParticipantBlockSize, 2)'}
         ));`}
         ${useBoundRoute ? compactAtomicBinder : inlinedAtomicVerifierBody}
         ${sharedEnvelopeTransport ? '' : `bytes expectedEnvelopeHash = sha256(bytes.concat(

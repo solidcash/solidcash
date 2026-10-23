@@ -11,7 +11,8 @@ defined only by [`verified-mappings.md`](verified-mappings.md); every mapping is
 closed. Do not use historical opt-out instructions from this log.
 
 Related: `bench/solidity-corpus/ATTENTION.md` (autonomous-grind decisions + soundness caveats),
-`docs/platform-differences.md` (BCH-vs-EVM primitives), `docs/solidity-gap-analysis.md`.
+`docs/platform-differences.md` (BCH-vs-EVM primitives),
+`archive/docs:packages/solidc/docs/solidity-gap-analysis.md`.
 
 Format per entry: **what**, **why deferred**, **what it'd take**, **revisit if**.
 

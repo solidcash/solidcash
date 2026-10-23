@@ -2,8 +2,8 @@
 //
 // KECCAK256_LIBRARY_BLOB is a one-shot REGISTRAR (stack in: [callableId]): run once, it OP_DEFINEs the keccak
 // round (a reserved keccak-internal id, 2) and the keccak-main function at the CONSUMER-PROVIDED callableId,
-// the latter padding + absorbing an arbitrary-length message (single-tx limit ~408 bytes; see keccak-poc/
-// INTEGRATION.md and README.md). It lives in a side-car UTXO; a contract loads it by introspection, verifies
+// the latter padding + absorbing an arbitrary-length message (single-tx limit ~408 bytes). It lives in a
+// side-car UTXO; a contract loads it by introspection, verifies
 // it by hash (KECCAK256_LIBRARY_BLOB_HASH), pushes the compiler-assigned library id, OP_DEFINEs the registrar
 // under a transient setup id, and OP_INVOKEs it ONCE. Call-sites then OP_INVOKE that id any number of times -
 // the round is defined once and never redefined, so keccak256 is RE-ENTRANT (multiple keccak256 calls, or

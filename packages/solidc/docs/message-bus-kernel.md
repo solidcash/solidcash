@@ -12,7 +12,7 @@ escape hatch for reproducing the **legacy** clone/unroll convention and its old 
 extended with new clone families or admission flags.
 
 Related: [`journal-and-message-bus.md`](./journal-and-message-bus.md),
-[`buffered-state-and-message-bus-research.md`](./buffered-state-and-message-bus-research.md),
+`archive/docs:packages/solidc/docs/buffered-state-and-message-bus-research.md`,
 [`call-model.md`](./call-model.md), [`message-bus-coverage-matrix.md`](./message-bus-coverage-matrix.md).
 
 ---

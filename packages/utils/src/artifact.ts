@@ -1658,7 +1658,7 @@ export interface DeployReadHint {
 /**
  * An external script library the contract loads at runtime from a co-spent side-car UTXO
  * (introspection + OP_DEFINE + OP_INVOKE). The SDK deploys the side-car once with the contract and
- * co-spends it for any call that uses the library. See keccak-poc/INTEGRATION.md.
+ * co-spends it for any call that uses the library.
  */
 export interface ExternalLibraryAbi {
   name: string;       // the builtin resolves its library by this name (e.g. 'keccak256')

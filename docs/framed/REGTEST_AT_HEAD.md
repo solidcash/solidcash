@@ -48,7 +48,7 @@ transaction is attempted:
 | largest compiled artifact (`MarketplaceV1`, framed) | 144,485 bytes | 10,000 |
 | `MarketplaceDataV1` | 118,379 bytes | 10,000 |
 | largest unlocking script on a composed call | 24,937 bytes | 10,000 per input |
-| the same on the largest lane (`PERF_KERNEL_VS_FRAMED.md`) | 133,320-135,908 bytes | 10,000 |
+| the same on the largest lane (`archive/docs:docs/framed/PERF_KERNEL_VS_FRAMED.md`) | 133,320-135,908 bytes | 10,000 |
 
 `solidcash.config.ts` says why the fixture passes at all: its `mock` network sets
 `maximumInputBytes: 10_000_000`, `operationCostBudgetPerByte: 1_000_000` and `maximumTransactionBytes:

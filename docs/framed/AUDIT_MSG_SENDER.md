@@ -7,7 +7,8 @@ direct void `this.f()` mapping-reader failure is now covered by a focused local 
 caller's collection witnesses, two different-key reads settle, and a wrong-key call is refused
 ([AuditTranscriptStateIntegrity.test.ts](../../packages/solidcash/test/e2e/AuditTranscriptStateIntegrity.test.ts)).
 This does not claim the mapping-writer shape in F7 was revalidated, or change the deferred native model-B
-identity policy. Current implementation status lives in [the integration audit](../security/security-audit-2026-10-feat-parity.md).
+identity policy. Current implementation status is recorded in
+`archive/docs:docs/security/security-audit-2026-10-feat-parity.md`.
 
 **Requirement** (plan D7, user decision): `msg.sender` behaves exactly as in Solidity, in every call context.
 `tx.origin` and `address(this)` come with it, since they are defined by the same call frames.

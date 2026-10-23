@@ -84,7 +84,7 @@ Three cases, exhaustive:
    Merkle tree, sorted linked list of entry-UTXOs, a baked Bloom filter, ...), each with a different
    contention/read-write profile - a global mutable root is *not* the right default because it serializes reads
    and writes. The full design space, resource costs, the contention analysis, and a decision matrix are in
-   `mapping-soundness-research.md`.
+   `archive/docs:packages/solidc/docs/mapping-soundness-research.md`.
 
 **Historical rollout reasoning.** The proposed fix was a sound mechanism—either a nullifier or an authenticated
 set—rather than stronger pattern matching for negative guards. Mandatory verified mappings implemented the

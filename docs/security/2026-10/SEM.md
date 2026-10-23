@@ -9,7 +9,7 @@ generation/GenerateTargetTraversal.ts.
 ## Current follow-up status (2026-10-14)
 
 The findings below preserve the original audit snapshot and its evidence. Current implementation and validation
-status is tracked in the [integration audit](../security-audit-2026-10-feat-parity.md).
+status is recorded in `archive/docs:docs/security/security-audit-2026-10-feat-parity.md`.
 
 - SEM-1 now has path-sensitive final-require checks. Focused local VM tests also verify the two covenant-covered
   early-return exemptions: a direct mapping reader rejects a rewritten mapping node, and a framed reader rejects

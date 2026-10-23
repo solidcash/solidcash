@@ -10,7 +10,7 @@ which is what the compiler picks for every graph-free contract (compiler.ts:4270
 ## Current follow-up status (2026-10-14)
 
 The findings below preserve the original audit snapshot and its evidence. Current implementation and validation
-status is tracked in the [integration audit](../security-audit-2026-10-feat-parity.md).
+status is recorded in `archive/docs:docs/security/security-audit-2026-10-feat-parity.md`.
 
 - The DS-1 follow-up involving a direct singleton conditional scalar write is fixed. If-conversion had turned a
   skipped no-read write into an insert of an enumerable zero-valued node. The source branch now retains its

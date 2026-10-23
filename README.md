@@ -106,8 +106,7 @@ A stateful contract compiles under one of two composition conventions, selected 
   ecrecover, and library side-cars to any spend that co-spends a minting NFT of the contract category or that
   reaches the side-car's public lock. Those holes do not need `msg.sender`. Do not treat `msg.sender` as an
   authorization check under this convention - use a signature (`checkSig`) or a framed contract instead.
-  Current findings and fix status are in `docs/security/security-audit-2026-10-16.md`; the earlier
-  `docs/framed/TRIAGE_SECURITY.md` is the 2026-10-05 snapshot of the same findings.
+  Current findings and fix status are in `docs/security/security-audit-2026-10-16.md`.
 - **`framed`** binds the sender on chain at the validator (V5 in `packages/solidc/src/framed/.../validator/program.ts`;
   master head at `master-head.ts`), at the cost of a larger deployment (one UTXO per master and validator, 12
   masters and 4 validators by default) and larger scripts.
@@ -117,9 +116,8 @@ Size is the practical limit for both. The marketplace-scale fixture exceeds the 
 bytes - so its lanes run against a mock network with relaxed limits and only two small applications are proven on
 a real regtest node. Current mock-versus-real limits and the relaxed-node path are in
 `docs/marketplace/bchn-marketplace-consensus-relaxation.md`; the matrix runs are in
-`docs/marketplace/marketplace-matrix-2026-10-14.md`. The 2026-10 snapshots `docs/framed/REGTEST_AT_HEAD.md` and
-`docs/framed/PERF_KERNEL_VS_FRAMED.md` hold the detailed measurements. Treat this release as a **mocknet beta**
-for anything at marketplace scale.
+`docs/marketplace/marketplace-matrix-2026-10-14.md`. The 2026-10 snapshot `docs/framed/REGTEST_AT_HEAD.md` holds
+the detailed measurements. Treat this release as a **mocknet beta** for anything at marketplace scale.
 
 ## Examples
 

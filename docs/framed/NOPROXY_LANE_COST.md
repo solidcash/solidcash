@@ -207,7 +207,7 @@ both at `40b437c60`, read with `scripts/artifact-sizes.mjs`:
   `MarketplaceDataV1` 47 / 46; `Unicrow` and the other four identical. The framed composition metadata
   (`composition.convention = 'framed'`, 4 placeholders, 2 stop-site blocks) is the same in both lanes.
 
-### Composed-transaction shape (from `docs/framed/PERF_KERNEL_VS_FRAMED.md`, measured 2026-10-05)
+### Composed-transaction shape (from `archive/docs:docs/framed/PERF_KERNEL_VS_FRAMED.md`, measured 2026-10-05)
 
 `SOLIDCASH_TX_TRACE=1` broadcast traces, against the same two projects:
 
@@ -221,7 +221,7 @@ Caveat: these are different titles, so they bound the size difference but do not
 protocol-size effect. They are consistent with the no-proxy lane composing larger, more frame/input-heavy
 transactions.
 
-### CPU split (same `PERF_KERNEL_VS_FRAMED.md` run, one worker each)
+### CPU split (same `archive/docs:docs/framed/PERF_KERNEL_VS_FRAMED.md` run, one worker each)
 
 | bucket | proxied (`take job` + `approve result`) | noproxy (`approve sanity` + `refund sanity`) |
 |---|---:|---:|
@@ -286,7 +286,7 @@ different composition complexity:
 composed call carries more masters/records -> more inputs/outputs and a much larger unlocking script, which the VM
 then re-verifies on every input on every re-derivation.
 
-**Evidence for.** The `PERF_KERNEL_VS_FRAMED.md` traces (section 3): proxied composed call 6 in / 8 out, 24,937 B
+**Evidence for.** The `archive/docs:docs/framed/PERF_KERNEL_VS_FRAMED.md` traces (section 3): proxied composed call 6 in / 8 out, 24,937 B
 unlocking; noproxy composed calls 40-45 in / 61-71 out, 130 KB unlocking. The framed protocol runs the validator over
 every consumer's unlocking bytecode, so larger transactions multiply VM work.
 

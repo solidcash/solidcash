@@ -27,7 +27,7 @@ MERGE-1 (merge with the consumed masters' satoshis sent to the spender's output)
 - Tree: `feat/per-call` at `74bd5ff06` plus the uncommitted edit to
   `packages/solidc/src/generation/GenerateTargetTraversal.ts` (`emitPreserveOutsideLayoutOwnMutable`) and the
   untracked test `packages/solidcash/test/e2e/StructArrayElementOverwrite.test.ts`.
-- Baseline: `archive/docs:docs/security-reaudit-working-tree.md` (read at `056f4036b`), `security-audit-2026-10-15.md`,
+- Baseline: `archive/docs:docs/security-reaudit-working-tree.md` (read at `056f4036b`), `archive/docs:docs/security/security-audit-2026-10-15.md`,
   `SECURITY-AUDIT-2026-10.md` and `2026-10/`. Ids from those files are not re-reported unless
   the current code changes their status. Open from baseline: DX-6 / DS-3 (iterating entry spend), SDKFRAMED-2
   (opt-in hop race).

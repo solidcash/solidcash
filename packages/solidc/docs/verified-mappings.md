@@ -473,7 +473,8 @@ Important coverage includes:
 - long direct and computed values, tampered chunks, strict reconstruction, and overwrite collection;
 - malformed, cyclic, duplicated, and disconnected sorted lists.
 
-See `mapping-omission-security.md` for the original vulnerability and `mapping-soundness-research.md` for the design
+See `mapping-omission-security.md` for the original vulnerability and
+`archive/docs:packages/solidc/docs/mapping-soundness-research.md` for the design
 alternatives that led to vmap. See `vmap-codegen-optimization.md` for measured bytecode/runtime overhead and the ranked
 optimization plan.
 

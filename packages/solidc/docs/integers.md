@@ -216,6 +216,6 @@ size or to opt out of overflow checks.
 ## See also
 
 - `arrays.md` - array backends (chunk-packed vs framed vs collection) in detail.
-- `solidity-gap-analysis.md` and `solidity-import-compat.md` - Solidity parity and porting.
+- `archive/docs:packages/solidc/docs/solidity-gap-analysis.md` and `solidity-import-compat.md` - Solidity parity and porting.
 - Fixed-point numbers (`fixedNxM`/`ufixedNxM`) share the sign-magnitude width rule and the same bounds-check /
   `unchecked` machinery; they are scaled integers (value * 10^decimals).

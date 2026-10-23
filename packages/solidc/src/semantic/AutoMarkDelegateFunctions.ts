@@ -16,7 +16,7 @@ import { containsStatefulOperation } from './EnsureFinalRequireTraversal.js';
  * On BCH the mode cannot be decided at runtime - a delegate function writes a CO-SPENT proxy's state instead of
  * its own, which is different locking bytecode. So the compiler emits the contract twice: the standalone
  * artifact, and (when this pass marks anything) a delegate variant carried as artifact.delegateArtifact. The
- * SDK picks the variant when the contract is used behind a proxy. See docs/delegate-modifier-drop-evaluation.md.
+ * SDK picks the variant when the contract is used behind a proxy.
  *
  * Mirrors the auto-marking already done for state-touching `library` declarations in AstBuilder.
  */

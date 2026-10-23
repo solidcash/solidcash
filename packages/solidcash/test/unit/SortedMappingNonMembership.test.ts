@@ -6,7 +6,7 @@ import { Op } from '@solidcash/utils';
 // slot(32) ++ nextKey(32) ++ value. Non-membership of key k is proven by co-spending the bracketing predecessor
 // P with P.slot < k < P.nextKey (nextKey 0 = +infinity). This test proves the property that closes vmap: the
 // bracket CANNOT be satisfied for a PRESENT key, and a fabricated predecessor fails category authentication - so
-// a spender can no longer omit an existing entry to make the guard read the default. See mapping-soundness-research.md B2.
+// a spender can no longer omit an existing entry to make the guard read the default.
 
 // The contract's category. It is non-palindromic, so the covenant must compare the internal order that
 // OP_UTXOTOKENCATEGORY answers with, not the display-order token category on the UTXO. An attacker cannot mint a

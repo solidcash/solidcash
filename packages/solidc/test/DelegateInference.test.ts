@@ -7,7 +7,7 @@ import { compileString } from '../src/index.js';
 
 // Compiler-side rules for inferring the proxy-implementation (delegate) build. Source never writes `delegate`;
 // the SDK-facing behaviour is covered in solidcash/test/e2e/DelegateInferred.test.ts.
-// See docs/delegatecall.md and docs/delegate-modifier-drop-evaluation.md.
+// See docs/delegatecall.md.
 
 const markedNames = (src: string): string[] => {
   // This suite classifies delegate eligibility, including intentionally hostile low-level targets. Production

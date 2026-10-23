@@ -836,6 +836,11 @@ contract Forwarder(pubkey admin) {
   (`UntrustedDelegatecallTargetError`). A forwarder cannot write its own state or delegatecall in a loop. Deploy it
   with `upgrades.deployProxy(factory, state, { proxy: forwarderArtifact, auth: () => [adminSig] })`;
   `upgrades.upgradeProxy(proxy, newFactory)` re-targets only this parameter-mode shape.
+- The delegate must sit one forwarder block after the forwarding input, because the delegate derives the proxy
+  master it authorizes as `itsInputIndex - (1 + dataNftCount)`. A forwarder that lays its delegate at a fixed
+  distance publishes it as a `bigint __proxyBlockSize` constructor input; the forward then also requires
+  `delegateIndex == this.activeInputIndex + __proxyBlockSize`. The built-in proxy does this. Without the input the
+  forwarder keeps the identity-and-payload pin only, so place the delegate adjacent yourself.
 - Deployed libraries (`L.f(...)` on a library function touching library state) use the same delegate co-spend
   (experimental). Not supported in 0.14.0-beta.1: fallback-only transparent proxies, value or token movement in delegate mode.
 

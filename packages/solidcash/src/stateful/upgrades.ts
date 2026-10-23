@@ -677,9 +677,10 @@ function graftDefaultProxy(impl: Artifact): Artifact {
   // `... OP_1 OP_CAT OP_1 OP_INVOKE` since the outliner extracted the counting loop into a helper. Pinning
   // the operand made this fail closed on a shape change that does not affect the swap, while pinning the
   // suffix keeps the guarantee that actually matters: that slicing this tail off and appending the relaxed
-  // one yields a well-formed script whose ONLY difference is the comparison.
-  const strictTail = 'OP_NUMEQUALVERIFY OP_2DROP OP_1';
-  const delegatedCardinalityTail = 'OP_2DROP OP_2DROP OP_1';
+  // one yields a well-formed script whose ONLY difference is the comparison. The trailing `OP_2DROP OP_DROP`
+  // drops the counts and the frame (which carries one more constructor input than before `__proxyBlockSize`).
+  const strictTail = 'OP_NUMEQUALVERIFY OP_2DROP OP_DROP OP_1';
+  const delegatedCardinalityTail = 'OP_2DROP OP_2DROP OP_DROP OP_1';
   const canDelegateCardinality = impl.delegateProxyStateOutputCountPinned === true;
   if (canDelegateCardinality && !defaultProxyArtifact.bytecode.endsWith(strictTail)) {
     throw new Error('Built-in proxy covenant shape changed; refusing to derive the delegate-authorized variant.');
@@ -1066,8 +1067,15 @@ export async function deployProxy<TImpl extends Artifact>(
         );
         if (reserve > 0) proxyOverrides.salt = new Uint8Array(reserve);
       }
-      proxy = await new ContractFactory(graftDefaultProxy(implArtifact), runner)
-        .deploy(implLbc, {
+      const defaultProxy = graftDefaultProxy(implArtifact);
+      // The forward pins its delegate to `activeInputIndex + __proxyBlockSize`, so the base the delegate derives
+      // is this proxy and not another master. The value is the grafted block: master + the implementation's data
+      // NFTs, which is where the SDK lays the co-spent implementation input.
+      const proxyForwardBlockSize = BigInt(
+        defaultProxy.abi.find((entry) => entry.name === '__forward')?.blockLayout?.blockSize ?? 1,
+      );
+      proxy = await new ContractFactory(defaultProxy, runner)
+        .deploy(implLbc, proxyForwardBlockSize, {
           ...proxyOverrides, initialState: seededState, logicalNonce: false, logicalIdentity,
         });
       shape = { name: '__forward', mode: 'baked' };

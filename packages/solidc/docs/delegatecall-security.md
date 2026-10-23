@@ -69,6 +69,16 @@ the proxy's *entire* state:
    composes with delegates that serve many proxies (proxy -> delegate address; delegate -> proxy master via
    `_proxyMasterIndex`).
 
+   **The pin also needs POSITION.** The delegate derives its state owner positionally:
+   `proxyMasterIndex == OP_INPUTINDEX - (1 + dataNftCount)`, enforced by the delegate prologue. Identity and
+   payload alone leave that owner free, because they name an input without saying where it sits: a delegate placed
+   after ANOTHER master's block satisfies them, and that master is the one the delegate authorizes while the
+   forwarding proxy's own state covenant is skipped. A forwarder therefore publishes the distance from its own
+   input to its delegate as the constructor input `__proxyBlockSize` (the SDK's built-in proxy passes the grafted
+   `1 + dataNftCount`), and the forward requires `delegateIndex == OP_INPUTINDEX + __proxyBlockSize`. The value is
+   committed by the forwarder's own p2sh32, so no witness selects it. A custom forwarder that omits the input keeps
+   the position-free pin and must place its delegate by its own layout.
+
 **B. A function that issues a delegatecall must not self-mutate.** Because the delegatecall epilogue skips
 `emitAutoCovenantVerification` *unconditionally*, any `this.x = ...` in that function is unauthorized — and this
 is not specific to the fallback:

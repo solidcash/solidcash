@@ -167,7 +167,9 @@ whose covenant expresses the bound you actually want; do not relax this one.
 so the SDK needs no compiler at runtime). To regenerate after a compiler change, compile `DEFAULT_PROXY_SOURCE`
 (exported from that file) with `compileString`, drop the volatile `updatedAt`, and `JSON.stringify` the artifact
 back into the file (keep the `/* eslint-disable */` header). The bytecode is layout-independent, so it does not
-depend on any specific implementation.
+depend on any specific implementation. Its second constructor input, `bigint __proxyBlockSize`, is the one
+implementation-specific value: `deployProxy` passes the grafted block (`1 + dataNftCount`), and the forward requires
+its delegate to sit exactly that far from its own input, so the base the delegate derives is this proxy.
 
 **Apply no manual edit afterwards.** The file used to carry one - the conservation above, hand-relaxed to
 `out >= in` so a delegate could mint entry nodes - and it was applied to the `bytecode` field only, leaving

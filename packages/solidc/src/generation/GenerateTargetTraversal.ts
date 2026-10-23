@@ -27591,6 +27591,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_EQUALVERIFY, locationData);  // []
         this.popFromStack();                         // untrack impl
 
+        // (a2) POSITION: the delegate must sit exactly one proxy block after THIS input. The delegate derives
+        // its state owner positionally (`proxyMasterIndex == OP_INPUTINDEX - (1 + dataNftCount)`), so the
+        // identity and payload pins alone leave that owner unfixed: a witness could name a delegate placed after
+        // ANOTHER master's block, and the delegate would authorize that master while this proxy's own state
+        // covenant is skipped on the delegatecall path. A proxy publishes the distance as the constructor input
+        // `__proxyBlockSize`, which its own p2sh32 commits to; the SDK supplies the grafted `1 + dataNftCount`.
+        // A custom proxy that places the delegate by its own layout keeps the witness-only pin until it declares
+        // that input, which docs/delegatecall-security.md records as the remaining requirement.
+        if (this.forwardProxyBlockSizeParameter() !== undefined
+          && this.getStackIndex('__proxyBlockSize', true) >= 0
+          && !this.currentFunction.delegateIndexFromBlockSlot) {
+          this.debugComputeBase('delegate-position', '__proxyBlockSize',
+            this.getStackIndex('__proxyBlockSize'), 0);
+          // Every value pushed here is untracked, so each one gets a stack-model marker: a later bottom-ordinal
+          // pick is only the named slot while the model's length is the runtime depth.
+          this.emitPickTrackedFromBottom('__proxyBlockSize', locationData);  // [blockSize]
+          this.pushToStack('(proxy-block-size)');
+          this.emitMasterInputIndex(locationData);                          // [blockSize, proxyMaster]
+          this.pushToStack('(proxy-master)');
+          this.emit(Op.OP_ADD, locationData);                               // [expectedDelegate]
+          this.popFromStack(2);
+          this.pushToStack('(proxy-expected-delegate)');
+          this.emitDelegateInputIndex(node, locationData);                  // [expectedDelegate, delegateIdx]
+          this.emit(Op.OP_NUMEQUALVERIFY, locationData);                    // []
+          this.popFromStack();
+        }
+
         // (b) SELECTOR: the delegate's unlocking bytecode leads with the forwarded calldata (`input`), so a
         // co-spent-but-wrong delegate FUNCTION can't slip past the identity pin. Mirrors emitLowLevelCall-
         // Verification: skip the push-opcode byte, then compare the next |input| bytes against `input`.
@@ -27647,6 +27674,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
     }
     return node;
+  }
+
+  /**
+   * The forwarder's published delegate distance. A contract opts in by declaring the compiler-owned constructor
+   * input `__proxyBlockSize` (bigint), which its own p2sh32 commits to, so the delegate position is not a witness.
+   */
+  private forwardProxyBlockSizeParameter(): ParameterNode | undefined {
+    return this.contractParameters.find((parameter) => parameter.name === '__proxyBlockSize'
+      && parameter.type === PrimitiveType.BIGINT);
   }
 
   /**

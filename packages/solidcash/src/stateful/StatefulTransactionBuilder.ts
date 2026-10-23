@@ -5506,10 +5506,11 @@ export class StatefulTransactionBuilder {
   callRecordDigestFor(identity: string): Uint8Array | undefined {
     const external = /^external-call:(\d+)(?::\d+)?$/.exec(identity);
     if (external) {
+      // A group's own logical call: a group sharing another's callee input names a call of its own, and an
+      // identical readonly alias names the same call as the group it shares.
       const group = this.externalCallUtxoGroups[Number(external[1])];
       if (!group || group.compilerRoute) return undefined;
-      return this.groupCallRecordDigest(this.externalCallUtxoGroups[group.sharedGroupIndex ?? Number(external[1])]
-        ?? group);
+      return this.groupCallRecordDigest(group);
     }
     if (identity !== this.categoryId) return undefined;
     const unlocker = this.masterUtxo.unlocker;
@@ -7026,8 +7027,9 @@ export class StatefulTransactionBuilder {
    */
   private returnRecordGroupIndex(groupIdx: number): number {
     const group = this.externalCallUtxoGroups[groupIdx];
-    if (group?.readonlyReturnSelector !== undefined && !group.compilerRoute
-      && group.sharedGroupIndex !== undefined && group.sharedGroupIndex !== groupIdx) return group.sharedGroupIndex;
+    const shared = group?.sharedGroupIndex === undefined ? undefined : this.externalCallUtxoGroups[group.sharedGroupIndex];
+    if (group?.readonlyReturnSelector !== undefined && !group.compilerRoute && group.sharedGroupIndex !== groupIdx
+      && shared?.readonlyReturnSelector === group.readonlyReturnSelector) return group.sharedGroupIndex!;
     return logicalReturnGroupIndex(this.externalCallUtxoGroups, groupIdx);
   }
 

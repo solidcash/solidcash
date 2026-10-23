@@ -175,7 +175,7 @@ const protocol = compileFileMulti('Protocol.scash', { composition: 'framed', evm
 ```
 
 An unknown convention name fails with `FRAMED_CODEGEN_UNAVAILABLE` rather than falling back to the default. The
-options reference is in [Compiler](/docs/compiler/compiler).
+options reference is in [Compiler](/docs/compiler).
 
 ### SolidHat
 

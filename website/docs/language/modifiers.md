@@ -190,10 +190,10 @@ contract Factory(pubkey admin) {
 }
 ```
 
-The resulting ABI entry carries the `deploy` modifier. Writing it explicitly (`function createChild(sig s) deploy
-{ ... }`) still parses and has the same effect. Deploy sites in branches or loops must create the same child, and
-the transaction that creates a child cannot call it beyond a folded initializer. See
-[Contract Creation & Lifecycle](/docs/language/contract-creation).
+The resulting ABI entry carries the `deploy` modifier. Writing it explicitly
+(`function createChild(sig s) deploy { ... }`) still parses and has the same effect. Deploy sites in branches or
+loops must create the same child, and the transaction that creates a child cannot call it beyond a folded
+initializer. See [Contract Creation & Lifecycle](/docs/language/contract-creation).
 
 ### `upgrade`
 

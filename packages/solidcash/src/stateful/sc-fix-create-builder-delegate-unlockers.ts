@@ -447,7 +447,7 @@ export async function fixCreateBuilderDelegateUnlockers(
         // Standalone route execution has no atomic verifier region. The compiler uses the same negative
         // sentinel as _batchRaw to skip its optional verifier binder; graph composition replaces it with
         // the finalized verifier input through the complete compiler-owned argument vector above.
-        if (inp.name === '__internal__activeVerifierIndex') {
+        if (inp.name === '__internal__activeVerifierIndex' || inp.name === '__internal__participantBlockSize') {
           return -1n;
         }
         if (inp.name === '__internal__msgSenderCategory') {

@@ -568,6 +568,8 @@ export function batchRaw(
       const value = resolvedCallerInternalWitnesses[input.name];
       if (value !== undefined) return value;
       if (input.name === '__internal__activeVerifierIndex') return -1n;
+      // Read only once a verifier ran; a composition supplies it with the verifier index.
+      if (input.name === '__internal__participantBlockSize') return -1n;
       if (input.name === '__internal__graphSelfIdentityInput') return -1n;
       if (input.name === '__internal__messageBusOwnerBandInput') return BigInt(blockBase);
       // The route's own oracle slot. A composition that already spends the oracle repoints it to that input.

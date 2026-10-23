@@ -2398,6 +2398,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__graphSettlementTable',
         '__internal__graphSelfIdentityInput',
         '__internal__activeVerifierIndex',
+        '__internal__participantBlockSize',
         '__internal__lifecycleOwnerInput',
         '__internal__upgradeBytecode',
         '__internal__upgradeStateSuffix',

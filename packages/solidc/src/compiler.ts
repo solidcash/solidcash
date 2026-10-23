@@ -12234,8 +12234,13 @@ function synthesizeMessageBusRoute(
   const useBoundRoute = !!offloadedVerifier
     || (compilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true;
   const lifecycleReturnTransport = kernelLifecycleHandlers.size > 0;
-  const verifierBinderRouteParameters = useBoundRoute
-    ? ['bigint __internal__activeVerifierIndex'] : [];
+  // A bound route that is not a graph route takes its participant's physical size: its binder digest carries it,
+  // and the verifier's digest the participant's actual span (bindingDigestParticipantSize), so the two must agree.
+  const participantSizedRoute = useBoundRoute && !graphExecutionContext;
+  const verifierBinderRouteParameters = useBoundRoute ? [
+    ...(participantSizedRoute ? ['bigint __internal__participantBlockSize'] : []),
+    'bigint __internal__activeVerifierIndex',
+  ] : [];
   const ownerBandRouteParameters = graphExecutionContext
     ? [`bigint ${MESSAGE_BUS_OWNER_BAND_INPUT}`] : [];
   const routeParameterList = [
@@ -12423,6 +12428,9 @@ function synthesizeMessageBusRoute(
           toPaddedBytes(suppliedFixedSize, 2), toPaddedBytes(suppliedBlockSize, 2), sha256(suppliedEmissions),
           sha256(suppliedCallers), toPaddedBytes(suppliedSettlementBoundary, 2),
           sha256(suppliedCompletionPositions), sha256(suppliedSettlementTable)`;
+  // Outside a graph the verifier hashes the participant's physical size itself, so a bound route's binder digest
+  // proves the `__internal__participantBlockSize` it was given, which its record claims read (emitRouteBlockClaims).
+  const bindingDigestParticipantSize = graphExecutionContext ? '' : ', toPaddedBytes(activeBlockSize, 2)';
   const atomicManifestV2Expression = compilerOptions.messageBusKernel === true
     ? 'manifestVersion == hex"4c33425553320000"' : 'false';
   const atomicManifestV4Expression = compilerOptions.messageBusKernel === true
@@ -13026,7 +13034,7 @@ function synthesizeMessageBusRoute(
         bytes bindingDigest = sha256(bytes.concat(
           sha256(callManifest), toPaddedBytes(activeBase, 2),
           toPaddedBytes(expectedLocalRows, 2), sha256(localBatch)
-          ${bindingDigestGraphValues}
+          ${bindingDigestGraphValues}${bindingDigestParticipantSize}
         ));
         bigint activeVerifier = expectedBase + ${directParticipantMode ? 'activeRoutedOrdinal' : 'activeParticipant'};
         require(tx.inputs[activeVerifier].tokenCategory.length == 33
@@ -13798,6 +13806,7 @@ function synthesizeMessageBusRoute(
         bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
         ${!kernelUpgradeMode ? '' : ', bytes __internal__upgradeBytecode, bytes __internal__upgradeStateSuffix'}
         ${!useBoundRoute ? '' : ', bigint __internal__activeVerifierIndex'}
+        ${!participantSizedRoute ? '' : ', bigint suppliedParticipantBlockSize'}
         ${!graphExecutionContext ? '' : `,
         bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
         bigint suppliedSettlementBoundary, bytes suppliedCompletionPositions, bytes suppliedSettlementTable`}
@@ -13806,7 +13815,8 @@ function synthesizeMessageBusRoute(
         ${!useBoundRoute ? '' : `bytes bindingDigest = sha256(bytes.concat(
           sha256(callManifest), toPaddedBytes(activeInputIndex, 2),
           toPaddedBytes(expectedLocalRows, 2), sha256(localBatch)
-          ${bindingDigestGraphValues}
+          ${bindingDigestGraphValues}${!participantSizedRoute ? ''
+    : ', toPaddedBytes(suppliedParticipantBlockSize, 2)'}
         ));`}
         ${useBoundRoute ? compactAtomicBinder : inlinedAtomicVerifierBody}
         ${sharedEnvelopeTransport ? '' : `bytes expectedEnvelopeHash = sha256(bytes.concat(
@@ -13860,6 +13870,7 @@ function synthesizeMessageBusRoute(
             ${atomicParticipantInput}, rowCount, batchBlob
             ${!kernelUpgradeMode ? '' : ', __internal__upgradeBytecode, __internal__upgradeStateSuffix'}
             ${!useBoundRoute ? '' : ', __internal__activeVerifierIndex'}
+            ${!participantSizedRoute ? '' : ', __internal__participantBlockSize'}
             ${!graphExecutionContext ? '' : `,
             __internal__graphFixedSize, __internal__graphBlockSize,
             __internal__graphEmissions, __internal__graphCallers,

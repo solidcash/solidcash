@@ -3,14 +3,15 @@
  *
  * AuditC3BusGraphValueChunkBand with the ledger a default leaf callee: no external call and no
  * `messageBusGraphContext`, so its route is bound with claim flags and is not a graph route. It takes no
- * `__internal__graphBlockSize`. Once its verifier ran, the route claims its whole compile-time block
- * `[master, master + B)` (emitRouteBlockClaims), while the verifier census walks only the physical block
- * `[master, master + s)`. With the ledger last and B > s + P, the fee slot sits between them.
+ * `__internal__graphBlockSize` but `__internal__participantBlockSize`, its physical size s, which its binder digest
+ * carries and its verifier hashes from the manifest. Once the verifier ran, the route claims only the physical block
+ * `[master, master + s)` (emitRouteBlockClaims), the block the verifier census walks, not its compile-time block
+ * `[master, master + B)`. With the ledger last and B > s + P, the fee slot sits between them.
  *
- * A ledger value chunk in the fee slot, spent through the entry write flag, is refused by the root verifier's
- * `tx.origin` when rewritten or burned, and also by the route's output slot scan when moved to a P2PKH. With the
- * root caller's own coin in a balanced pad slot, which keeps `tx.origin`, no input refuses the rewrite or the burn:
- * KNOWN OPEN, held as `it.fails` until a fix binds the leaf route's physical size or the verifier holds the band.
+ * A ledger value chunk in the fee slot, spent through the entry write flag, is refused by the route's record pin and
+ * by the root verifier's `tx.origin` when rewritten or burned, and by the route's output slot scan when moved to a
+ * P2PKH. With the root caller's own coin in a balanced pad slot, which keeps `tx.origin`, the route's pin alone
+ * refuses the rewrite and the burn.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -63,7 +64,14 @@ const KEY = 5n;
 const VALUE = new Uint8Array(200).fill(0xab);
 const OTHER_LOCK = Uint8Array.of(0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x66), 0x88, 0xac);
 const TX_ORIGIN_REFUSAL = /OP_UNTIL OP_DROP OP_DUP OP_SIZE OP_NIP OP_0NOTEQUAL OP_VERIFY$/;
+// The route's record pin: an own-category record past its claims comes back at its own index, lock and commitment.
+// The leaf route invokes that check as a shared body, so a refusal ends inside it.
+const PIN_REFUSAL = {
+  rewrite: /OP_DUP OP_OUTPUTTOKENCOMMITMENT OP_OVER OP_UTXOTOKENCOMMITMENT OP_EQUALVERIFY$/,
+  burn: /OP_DUP OP_OUTPUTBYTECODE OP_OVER OP_UTXOBYTECODE OP_EQUALVERIFY$/,
+} as const;
 const VERIFIER_INDEX = '__internal__activeVerifierIndex';
+const PARTICIPANT_SIZE = '__internal__participantBlockSize';
 
 type LibauthTransaction = ReturnType<TransactionBuilder['buildLibauthTransaction']>;
 type LibauthOutput = LibauthTransaction['outputs'][number];
@@ -108,6 +116,8 @@ interface RouteKind {
   readonly bound: boolean;
   readonly graph: boolean;
   readonly localCaller: boolean;
+  /** The route takes its physical size, `__internal__participantBlockSize`. */
+  readonly participantSized: boolean;
   /** The bytecode holds `OP_IF OP_DROP <(1 << B) - 2> OP_ENDIF`, the claim of the whole compile-time block. */
   readonly wholeBlockClaim: boolean;
 }
@@ -140,6 +150,7 @@ function routeKind(artifact: Artifact): RouteKind {
     bound: names.includes(VERIFIER_INDEX),
     graph: names.some((name) => name.startsWith('__internal__graph')),
     localCaller: names.includes('__internal__msgSenderCategory'),
+    participantSized: names.includes(PARTICIPANT_SIZE),
     wholeBlockClaim: blockSize > 0n && bodies.some((hex) => holdsAt(hex, claim)),
   };
 }
@@ -323,16 +334,18 @@ const outcomeOf = (provider: Provider, spend: Spend): Promise<string> => provide
   .then(() => 'ACCEPTED').catch((error: Error) => error.message);
 
 /** On a fresh chain, the chunk in the fee slot beside a root caller pad that pays the fee input's fee. */
-async function rootPadAttack(fate: Fate): Promise<{ pad: number; refused: Refusals; outcome: string }> {
+async function rootPadAttack(fate: Fate): Promise<{ master: number; pad: number; refused: Refusals; outcome: string }> {
   const s = await scenario();
   const { honest, feeIndex } = s;
   const feePaid = honest.sourceOutputs[feeIndex]!.valueSatoshis - honest.transaction.outputs[feeIndex]!.valueSatoshis;
   const spend = signed(chunkInFeeSlot(s, await originInPad(s, honest, feePaid + 5_000n), fate), s.funder);
-  return { pad: s.pad, refused: refusedInputs(s.vm, spend), outcome: await outcomeOf(s.provider, spend) };
+  return {
+    master: s.master, pad: s.pad, refused: refusedInputs(s.vm, spend), outcome: await outcomeOf(s.provider, spend),
+  };
 }
 
 describe('C3 leaf band: a value chunk in the fee slot of a default leaf callee\'s compose', () => {
-  it('binds a claim-flag route, settles the honest compose and refuses the chunk by tx.origin', async () => {
+  it('binds a sized claim-flag route, settles the honest compose, refuses the chunk at the pin and tx.origin', async () => {
     const { ledger, driver } = artifacts();
     const kinds = { ledger: routeKind(ledger), driver: routeKind(driver) };
     console.log('leaf band route kinds', JSON.stringify({
@@ -344,9 +357,10 @@ describe('C3 leaf band: a value chunk in the fee slot of a default leaf callee\'
       verifierProgramBytes: (ledger.messageBus!.verifierProgram?.functions ?? [])
         .reduce((total, fn) => total + fn.bytecode.length / 2, 0),
     }));
-    // A bound route that is not a graph route: no `__internal__graphBlockSize`, and the verifier's whole-block claim.
-    expect.soft(kinds.ledger, 'the ledger route is bound with claim flags')
-      .toEqual({ bound: true, graph: false, localCaller: false, wholeBlockClaim: true });
+    // A bound route that is not a graph route: no `__internal__graphBlockSize` but its physical size, and no claim of
+    // the whole compile-time block.
+    expect.soft(kinds.ledger, 'the ledger route is bound with claim flags and its physical size')
+      .toEqual({ bound: true, graph: false, localCaller: false, participantSized: true, wholeBlockClaim: false });
     expect.soft(kinds.driver.graph, 'the driver route is a graph route').toBe(true);
 
     const s = await scenario();
@@ -357,7 +371,7 @@ describe('C3 leaf band: a value chunk in the fee slot of a default leaf callee\'
     }));
 
     // [driver block | ledger block | one verifier per participant | fee]: the fee slot is P = 2 past the ledger's
-    // physical block and inside its compile-time block [master, master + B), which the verifier's claim covers.
+    // physical block and inside its compile-time block [master, master + B).
     expect.soft(verifierInputs, 'one verifier per participant')
       .toEqual([master + physicalSize, master + physicalSize + 1]);
     expect.soft(honest.sourceOutputs[feeIndex]!.token, 'the last input is the fee input').toBeUndefined();
@@ -372,10 +386,15 @@ describe('C3 leaf band: a value chunk in the fee slot of a default leaf callee\'
       refused[fate] = refusedInputs(vm, spend);
     }
     console.log('leaf band refusals', JSON.stringify(refused));
-    // With the fee input gone no token-free P2PKH input is left, so the root verifier refuses at tx.origin.
+    // Rewritten or burned, the ledger route refuses it at its record pin, which past its physical block claims nothing
+    // once the verifier ran, and the root verifier at tx.origin: with the fee input gone no token-free P2PKH input is
+    // left. Moved to a P2PKH, the ledger route refuses it at its output slot scan, before the pin.
     for (const fate of ['rewrite', 'burn'] as const) {
-      const root = refused[fate].find((input) => input.inputIndex === rootVerifier);
-      expect.soft(root?.at, `the root verifier's tx.origin refuses the ${fate}`).toMatch(TX_ORIGIN_REFUSAL);
+      expect.soft(refused[fate].map((input) => input.inputIndex), `the route and the root verifier refuse the ${fate}`)
+        .toEqual([master, rootVerifier]);
+      expect.soft(refused[fate][0]?.at, `the route's record pin refuses the ${fate}`).toMatch(PIN_REFUSAL[fate]);
+      expect.soft(refused[fate][1]?.at, `the root verifier's tx.origin refuses the ${fate}`)
+        .toMatch(TX_ORIGIN_REFUSAL);
     }
     expect.soft(refused.steal.map((input) => input.inputIndex), 'the route and the root verifier refuse the steal')
       .toEqual(expect.arrayContaining([master, rootVerifier]));
@@ -384,17 +403,17 @@ describe('C3 leaf band: a value chunk in the fee slot of a default leaf callee\'
     expect((await s.bus.getState()).count).toBe(1n);
   }, 300_000);
 
-  // The root caller's own coin in a balanced pad slot keeps tx.origin, as in the graph test. The leaf route's claim
-  // covers its whole compile-time block once the verifier ran, so its pin skips the fee slot, and the verifier
-  // counts records only in the physical block. Each fate runs on a fresh chain: an accepted spend would make the
-  // other a double spend.
-  it.fails('KNOWN OPEN C3 leaf band value chunk: refuses a chunk in the fee slot rewritten or burned beside a root '
-    + 'caller pad', async () => {
+  // The root caller's own coin in a balanced pad slot keeps tx.origin, as in the graph test, and the verifier counts
+  // records only in the physical block. Once the verifier ran the leaf route claims only that block, so its record pin
+  // alone refuses the rewrite and the burn. Each fate runs on a fresh chain.
+  it('refuses a chunk in the fee slot rewritten or burned beside a root caller pad at the route pin', async () => {
     const results = { rewrite: await rootPadAttack('rewrite'), burn: await rootPadAttack('burn') };
     console.log('leaf band root caller pad', JSON.stringify(results));
     for (const fate of ['rewrite', 'burn'] as const) {
-      expect(results[fate].refused.length, `an input refuses the ${fate}`).toBeGreaterThan(0);
-      expect(results[fate].outcome, `the node refuses the ${fate}`).not.toBe('ACCEPTED');
+      const { master, refused, outcome } = results[fate];
+      expect(refused.map((input) => input.inputIndex), `only the ledger route refuses the ${fate}`).toEqual([master]);
+      expect.soft(refused[0]?.at, `the route's record pin refuses the ${fate}`).toMatch(PIN_REFUSAL[fate]);
+      expect(outcome, `the node refuses the ${fate}`).not.toBe('ACCEPTED');
     }
   }, 600_000);
 });

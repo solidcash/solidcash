@@ -2659,6 +2659,11 @@ export async function assembleAtomicComposition(
         ? uint16(Number(argument))
         : sha256(argument as Uint8Array));
     }
+    // A verifier with no graph arguments binds the participant's physical size instead, which a bound route
+    // supplies as `__internal__participantBlockSize`.
+    if (graphArguments.length === 0) {
+      bindingDigestParts.push(uint16(graph.callManifest.participants[participant.participant].actualSize));
+    }
     const bindingDigest = sha256(concat(...bindingDigestParts));
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RETURN_VECTOR === '1') {

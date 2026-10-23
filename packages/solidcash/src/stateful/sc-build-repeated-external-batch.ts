@@ -391,8 +391,8 @@ export function buildRepeatedExternalBatch(
   // batch route without relying on any contract or handler name.
   const provisionalGraphContext: Record<string, FunctionArgument> = {};
   for (const input of capability.route.inputs) {
-    if (['__internal__activeVerifierIndex', '__internal__graphFixedSize', '__internal__graphBlockSize',
-      '__internal__graphSelfIdentityInput',
+    if (['__internal__activeVerifierIndex', '__internal__participantBlockSize', '__internal__graphFixedSize',
+      '__internal__graphBlockSize', '__internal__graphSelfIdentityInput',
       '__internal__graphSettlementBoundary', '__internal__blockhashInputIndex'].includes(input.name)) {
       provisionalGraphContext[input.name] = -1n;
     } else if (['__internal__graphEmissions', '__internal__graphCallers',

@@ -470,6 +470,8 @@ export const graphRouteContext = (
     ),
     // The physical span: the verifier binds it, and the route's record pin skips exactly that block.
     __internal__graphBlockSize: BigInt(finalized.callManifest.participants[participant].actualSize),
+    // The same span for a bound route outside a graph: its binder digest carries it, and its record claims read it.
+    __internal__participantBlockSize: BigInt(finalized.callManifest.participants[participant].actualSize),
     __internal__graphSelfIdentityInput: BigInt(
       execution.logicalIdentityOffset !== undefined
         && execution.logicalIdentityOffset > 0

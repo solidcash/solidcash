@@ -268,6 +268,8 @@ export interface ExternalCallUtxoGroup {
   resolveLoopReturnCommitment?: (occurrenceIndex: number) => Promise<Uint8Array>;
   /** Resolve the typed value for direct composition of a compiler-proven returned-array loop. */
   resolveLoopReturnValue?: (occurrenceIndex: number) => Promise<StateValue>;
+  /** The arguments of one loop occurrence's call, which that occurrence's call record digests. */
+  resolveLoopFunctionArgs?: (occurrenceIndex: number) => any[] | undefined;
   /** Return slot owned by the state-writing call fused into this physical group. */
   fusedReturnGroupIndex?: number;
   /** Absolute output index verified by this physical call's return covenant. */

@@ -374,6 +374,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
     const loopReturnCommitments = precomputedReturns.loopReturnCommitments;
     const resolveLoopReturnCommitment = precomputedReturns.resolveLoopReturnCommitment;
     const resolveLoopReturnValue = precomputedReturns.resolveLoopReturnValue;
+    const resolveLoopFunctionArgs = precomputedReturns.resolveLoopFunctionArgs;
     const {
       sharedLogicalArtifact,
       preserveFirstConditionalWriter,
@@ -578,6 +579,7 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       loopReturnCommitments,
       resolveLoopReturnCommitment,
       resolveLoopReturnValue,
+      resolveLoopFunctionArgs,
       refreshChunkableRouteWitnesses,
       delegateCallerIdentity,
       externalCallUtxoGroups,

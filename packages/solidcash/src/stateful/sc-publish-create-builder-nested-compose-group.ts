@@ -46,6 +46,7 @@ export type PublishCreateBuilderNestedComposeGroupParams = {
   loopReturnCommitments: Uint8Array[] | undefined;
   resolveLoopReturnCommitment: ((occurrenceIndex: number) => Promise<Uint8Array>) | undefined;
   resolveLoopReturnValue: ((occurrenceIndex: number) => Promise<any>) | undefined;
+  resolveLoopFunctionArgs: ((occurrenceIndex: number) => any[] | undefined) | undefined;
   refreshChunkableRouteWitnesses: ((...args: any[]) => any) | undefined;
   delegateCallerIdentity: unknown;
   externalCallUtxoGroups: ExternalCallUtxoGroup[];
@@ -68,7 +69,7 @@ export function publishCreateBuilderNestedComposeGroup(
     childBatchEntryCommitments, childDynamicChunkResources, selectedLayout,
     sharedGroupIndex, delegateCallGroupIndex,
     childValueChunkSlots, precomputedReturnCommitment, loopReturnCommitments,
-    resolveLoopReturnCommitment, resolveLoopReturnValue, refreshChunkableRouteWitnesses,
+    resolveLoopReturnCommitment, resolveLoopReturnValue, resolveLoopFunctionArgs, refreshChunkableRouteWitnesses,
     delegateCallerIdentity, externalCallUtxoGroups, lowLevelCallUtxoGroups,
   } = params;
 
@@ -199,6 +200,7 @@ export function publishCreateBuilderNestedComposeGroup(
     }),
     ...(resolveLoopReturnCommitment && { resolveLoopReturnCommitment }),
     ...(resolveLoopReturnValue && { resolveLoopReturnValue }),
+    ...(resolveLoopFunctionArgs && { resolveLoopFunctionArgs }),
     ...(childValueChunkSlots > 0 && { valueChunkOutputCount: childValueChunkSlots }),
     ...(refreshChunkableRouteWitnesses && {
       refreshRouteDerivedArguments: refreshChunkableRouteWitnesses,

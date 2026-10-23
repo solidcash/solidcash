@@ -25513,6 +25513,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // If this call has return values, read them from the return event UTXO
     if (node.callInfo?.hasReturnValues && node.callInfo.returnTypes) {
+      // A discarded opaque result binds nothing the body uses, and a void callee pins no record to read. The
+      // epilogue still checks the form of a carrier the witness names.
+      if (node.discardedOpaqueReturn) return node;
       if (!physicalSlot) {
         // X75. Fail closed with a named diagnostic rather than an internal sentinel. This is the single site
         // every unbound returning edge converges on, whichever upstream gate let it through.

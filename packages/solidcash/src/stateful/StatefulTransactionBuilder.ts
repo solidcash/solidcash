@@ -5504,13 +5504,13 @@ export class StatefulTransactionBuilder {
    * this builder's own call. None for a routed call, whose route binds its result.
    */
   callRecordDigestFor(identity: string): Uint8Array | undefined {
-    const external = /^external-call:(\d+)(?::\d+)?$/.exec(identity);
+    const external = /^external-call:(\d+)(?::(\d+))?$/.exec(identity);
     if (external) {
       // A group's own logical call: a group sharing another's callee input names a call of its own, and an
       // identical readonly alias names the same call as the group it shares.
       const group = this.externalCallUtxoGroups[Number(external[1])];
       if (!group || group.compilerRoute) return undefined;
-      return this.groupCallRecordDigest(group);
+      return this.groupCallRecordDigest(group, Number(external[2] ?? 0));
     }
     if (identity !== this.categoryId) return undefined;
     const unlocker = this.masterUtxo.unlocker;
@@ -5530,13 +5530,19 @@ export class StatefulTransactionBuilder {
     return undefined;
   }
 
-  /** The digest of the call a callee group runs, when its function settles a call record. */
-  private groupCallRecordDigest(group: ExternalCallUtxoGroup): Uint8Array | undefined {
+  /**
+   * The digest of the call a callee group runs, when its function settles a call record. A rolled loop's later
+   * part answers its own occurrence's call.
+   */
+  private groupCallRecordDigest(group: ExternalCallUtxoGroup, occurrence = 0): Uint8Array | undefined {
     const artifact = (group.logicalArtifact ?? group.externalContract?.inner?.artifact) as Artifact | undefined;
     const functionName = group.logicalFunctionName ?? group.functionName;
     const abiFunction = artifact?.abi.find((entry) => entry.name === functionName);
     if (!artifact || abiFunction?.callRecord !== true) return undefined;
-    return callRecordDigest(abiFunction, group.logicalFunctionArgs ?? group.functionArgs, {
+    const args = occurrence > 0 && group.resolveLoopFunctionArgs
+      ? group.resolveLoopFunctionArgs(occurrence) : group.logicalFunctionArgs ?? group.functionArgs;
+    if (args === undefined) return undefined;
+    return callRecordDigest(abiFunction, args, {
       structs: artifact.structs ?? artifact.stateLayout?.structs, enums: artifact.enums,
     });
   }

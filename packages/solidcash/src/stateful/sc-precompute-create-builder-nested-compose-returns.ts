@@ -24,6 +24,7 @@ export type PrecomputeCreateBuilderNestedComposeReturnsResult = {
   loopReturnCommitments: Uint8Array[] | undefined;
   resolveLoopReturnCommitment: ((occurrenceIndex: number) => Promise<Uint8Array>) | undefined;
   resolveLoopReturnValue: ((occurrenceIndex: number) => Promise<StateValue>) | undefined;
+  resolveLoopFunctionArgs: ((occurrenceIndex: number) => FunctionArgument[] | undefined) | undefined;
   effectiveReturnFn: AbiFunction | undefined;
   effectiveReturnArtifact: Artifact;
   returnStructs: Artifact['structs'] | undefined;
@@ -73,6 +74,7 @@ export async function precomputeCreateBuilderNestedComposeReturns(
   let loopReturnCommitments: Uint8Array[] | undefined;
   let resolveLoopReturnCommitment: ((occurrenceIndex: number) => Promise<Uint8Array>) | undefined;
   let resolveLoopReturnValue: ((occurrenceIndex: number) => Promise<StateValue>) | undefined;
+  let resolveLoopFunctionArgs: ((occurrenceIndex: number) => FunctionArgument[] | undefined) | undefined;
   const effectiveReturnFn = proxyTargetFn ?? selectedFn;
   const effectiveReturnArtifact = proxyTargetFn && proxyCallee
     ? proxyCallee.implementation.inner.artifact
@@ -258,28 +260,29 @@ export async function precomputeCreateBuilderNestedComposeReturns(
     const encodeReturn = (value: StateValue): Uint8Array => encodeExternalReturnValue(
       value, returnType, returnStructs, calleeUsesSolidityAbi, returnEnums,
     );
+    resolveLoopFunctionArgs = (index: number): FunctionArgument[] | undefined => host.resolveExternalArgs(
+      (nested.argSources ?? []).map((source) => (
+        source.kind === 'arrayElement' ? {
+          ...source,
+          // Bind this reached occurrence into the element index. A published step selects
+          // `indexValue + indexStepValue * occurrence`; without one the artifact predates the
+          // step and expands the bare index in array order, where the ordinal IS the index.
+          indexValue: source.indexStepValue === undefined
+            ? index
+            : (source.indexValue ?? 0) + source.indexStepValue * index,
+          // The step is already applied, so clear it: this resolution is also given `index`.
+          indexStepValue: undefined,
+        } : source
+      )),
+      delegateVisibleArgs, callInfoContract.inner.artifact, onChainState.state,
+      delegateVisibleInputs,
+      undefined,
+      index,
+      false,
+      delegateSelfAddress,
+    );
     resolveLoopReturnValue = async (index: number): Promise<StateValue> => {
-      const nextArgs = host.resolveExternalArgs(
-        (nested.argSources ?? []).map((source) => (
-          source.kind === 'arrayElement' ? {
-            ...source,
-            // Bind this reached occurrence into the element index. A published step selects
-            // `indexValue + indexStepValue * occurrence`; without one the artifact predates the
-            // step and expands the bare index in array order, where the ordinal IS the index.
-            indexValue: source.indexStepValue === undefined
-              ? index
-              : (source.indexValue ?? 0) + source.indexStepValue * index,
-            // The step is already applied, so clear it: this resolution is also given `index`.
-            indexStepValue: undefined,
-          } : source
-        )),
-        delegateVisibleArgs, callInfoContract.inner.artifact, onChainState.state,
-        delegateVisibleInputs,
-        undefined,
-        index,
-        false,
-        delegateSelfAddress,
-      );
+      const nextArgs = resolveLoopFunctionArgs!(index);
       let nextValue: StateValue | undefined;
       if (nextArgs) {
         const mappingGetter = proxyCallee
@@ -352,6 +355,7 @@ export async function precomputeCreateBuilderNestedComposeReturns(
     loopReturnCommitments,
     resolveLoopReturnCommitment,
     resolveLoopReturnValue,
+    resolveLoopFunctionArgs,
     effectiveReturnFn,
     effectiveReturnArtifact,
     returnStructs,

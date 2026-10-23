@@ -329,6 +329,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
       ...(ec.maximumOccurrences !== undefined && { loopMaximumOccurrences: ec.maximumOccurrences }),
       resolveLoopReturnCommitment,
       resolveLoopReturnValue,
+      resolveLoopFunctionArgs: (occurrenceIndex: number) => host.resolveLoopArgs(occurrenceIndex),
     }),
     ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
     ...(bDynamicChunkInputs.length > 0 && { ordinaryDynamicChunkInputs: bDynamicChunkInputs }),

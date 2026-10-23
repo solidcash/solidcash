@@ -393,6 +393,9 @@ export async function expandCreateBuilderLateTransitive(
       const selectedFn = (selectedContract.inner.artifact.abi as readonly AbiFunction[])
         .find((candidate) => candidate.name === (rawFunctionName ?? nested.functionName));
       if (!selectedFn) continue;
+      // A raw call into a function that returns nothing answers with no record, so no return carrier is planned.
+      const groupSlot = nested.interfaceName === '__raw__' && nested.hasReturnValues
+        && (selectedFn.outputs?.length ?? 0) === 0 ? { ...nested, hasReturnValues: false } : nested;
       // Recursion is a property of the discovered logical call path. A shared physical NFT carrier can be
       // retargeted from release to setClaimed and then to sendEscrowShare while a claim loop is expanded;
       // reading that mutable owner here would mistake the second sibling share call for recursion.
@@ -817,7 +820,7 @@ export async function expandCreateBuilderLateTransitive(
           .some((slot) => slot.kind === 'returnEvent');
         // Hidden sender identity is derived from the physical edge's parent. Once a later writer owns the
         // carrier, retaining the provisional edge would make C observe A as msg.sender in A -> B -> C.
-        allGroupEcSlots[physicalOwnerIndex] = nested;
+        allGroupEcSlots[physicalOwnerIndex] = groupSlot;
         // A -> B -> A' is a legitimate callback when A' shares A's physical NFT. The newly appended
         // A' logical group records B as its parent; moving A's earlier carrier under B would instead
         // turn the ancestry into A -> B -> A and make later graph discovery falsely recursive.
@@ -969,7 +972,7 @@ export async function expandCreateBuilderLateTransitive(
           preparedAtomicNodeByExternalGroup.set(childGroupIndex, atomicNodeIndex);
         }
       }
-      allGroupEcSlots = [...allGroupEcSlots, nested];
+      allGroupEcSlots = [...allGroupEcSlots, groupSlot];
       allGroupParentIndices = [...allGroupParentIndices, parentGroupIndex];
       lateTransitiveGroupIndices.add(childGroupIndex);
     }

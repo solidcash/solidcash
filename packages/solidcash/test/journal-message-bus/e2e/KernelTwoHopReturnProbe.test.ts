@@ -6,6 +6,7 @@ import { Contract } from '../../../src/index.js';
 import { StatefulContract } from '../../../src/stateful/index.js';
 import * as messageBus from '../../../src/message-bus/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { callRecordCommitment, callRecordDigest } from '../../../src/stateful/call-record.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
@@ -290,7 +291,12 @@ describe('kernel two-hop return probe', () => {
       && output.token.category !== undefined
       && binToHex(output.token.category) === setup.categoryId
     ));
-    expect(returnOutput?.token?.nft?.commitment).toEqual(hexToBin(ethers.sha256(raw).slice(2)));
+    // D50: the carrier is the record of this call, digest(values) || form 2 || SHA256(result).
+    const digest = callRecordDigest(artifact.abi.find((fn) => fn.name === 'values')!, []);
+    if (!digest) throw new Error('values publishes no selector');
+    const commitment = returnOutput?.token?.nft?.commitment;
+    expect(commitment).toEqual(callRecordCommitment(raw, digest));
+    expect(commitment?.slice(32)).toEqual(hexToBin(ethers.sha256(raw).slice(2)));
   }, 120_000);
 
   it('pins the missing-authenticated-return error string for .emitReturn()', () => {

@@ -1,4 +1,4 @@
-import { binToHex, hexToBin, sha256 } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from '@solidcash/solidc';
 import { ethers } from 'ethers';
 import { describe, expect, it } from 'vitest';
@@ -14,6 +14,7 @@ import {
 import * as messageBus from '../../../src/message-bus/index.js';
 import { isContractUnlocker } from '../../../src/interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { callRecordCommitment, callRecordDigest } from '../../../src/stateful/call-record.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
@@ -93,8 +94,12 @@ describe('kernel nested dynamic return preimages', () => {
     ).slice(2));
     expect(binToHex(preimage)).toBe(binToHex(expected));
     const returnOutputIndex = Number(unlocker.params[outputIndexArg]);
+    // D50: the carrier is the record of this call, digest(read) || form 2 || SHA256(result), past 96 bytes.
+    const digest = callRecordDigest(producerArtifact.abi.find((fn) => fn.name === 'read')!, []);
+    if (!digest) throw new Error('read publishes no selector');
+    expect(expected.length).toBeGreaterThan(96);
     expect(transaction.outputs[returnOutputIndex]?.token?.nft?.commitment)
-      .toEqual(expected.length > 128 ? sha256.hash(expected) : expected);
+      .toEqual(callRecordCommitment(expected, digest));
 
     const forged = preimage.slice();
     forged[forged.length - 1] ^= 1;

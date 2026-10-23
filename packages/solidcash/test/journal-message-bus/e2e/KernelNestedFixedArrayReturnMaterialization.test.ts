@@ -1,4 +1,4 @@
-import { binToHex, hexToBin, sha256 } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from '@solidcash/solidc';
 import { ethers } from 'ethers';
 import { describe, expect, it } from 'vitest';
@@ -6,6 +6,7 @@ import { Contract } from '../../../src/index.js';
 import { StatefulContract } from '../../../src/stateful/index.js';
 import { isContractUnlocker, type ContractUnlocker } from '../../../src/interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { callRecordCommitment, callRecordDigest } from '../../../src/stateful/call-record.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
@@ -133,15 +134,21 @@ describe('kernel nested fixed-array return materialization', () => {
 
     const producerResult = externalResultConsumedBy('ArrayConsumer');
     const intermediateResult = externalResultConsumedBy('ArrayInvoker');
+    // D50: each carrier is the record of its call, digest(method, arguments) || form 2 || SHA256(result).
+    const readFn = producerArtifact.abi.find((fn) => fn.name === 'read')!;
+    const consumeFn = consumerArtifact.abi.find((fn) => fn.name === 'consume')!;
+    const readDigest = callRecordDigest(readFn, []);
+    const consumeDigest = callRecordDigest(consumeFn, consumeFn.inputs.map((input) => (input.name === 'key' ? 7n : 0n)));
+    if (!readDigest || !consumeDigest) throw new Error('read and consume publish selectors');
     expect(producerResult, `producer result output ${producerResult.outputIndex}`).toMatchObject({
       category: producerSetup.categoryId,
       capability: 'none',
-      commitment: binToHex(sha256.hash(hexToBin(expectedProducerResult))),
+      commitment: binToHex(callRecordCommitment(hexToBin(expectedProducerResult), readDigest)),
     });
     expect(intermediateResult, `intermediate result output ${intermediateResult.outputIndex}`).toMatchObject({
       category: consumerSetup.categoryId,
       capability: 'none',
-      commitment: binToHex(sha256.hash(hexToBin(expectedIntermediateResult))),
+      commitment: binToHex(callRecordCommitment(hexToBin(expectedIntermediateResult), consumeDigest)),
     });
 
     const vm = createVirtualMachineBch2026ForProvider(provider);

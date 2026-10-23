@@ -20,6 +20,7 @@ import {
   usesFastVmPaths,
 } from '../network/createVirtualMachine.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { CALL_RECORD_INLINE_RESULT_BYTES } from './call-record.js';
 import { captureProbeContinuations } from './probe-instruction-sequence.js';
 
 export function isP2sh32LockingBytecode(bytes: Uint8Array | undefined): boolean {
@@ -32,6 +33,24 @@ const PROBE_TRACE_OPCODES = new Set<number>([
   Op.OP_OUTPUTTOKENAMOUNT, Op.OP_OUTPUTTOKENCATEGORY,
   Op.OP_INPUTBYTECODE, Op.OP_EQUALVERIFY,
 ]);
+
+/** The sparse observer's operations: OP_SHA256 only keeps a hashed call record's result and projects no state. */
+const SPARSE_PROBE_OPCODES = new Set<number>([...PROBE_TRACE_OPCODES, Op.OP_SHA256]);
+
+/** A callee run pins one record; a probe keeps at most this many hashed record results. */
+const MAX_PROBE_RECORD_RESULTS = 16;
+
+/**
+ * True at a callee's `ELSE SHA256 2 ENDIF`, where its call record replaces a result past the inline capacity with
+ * that result's SHA256: no later observation holds the result, so the sparse trace keeps it here.
+ */
+export function isCallRecordHashStep(state: AuthenticationProgramStateCommon): boolean {
+  const { instructions, ip } = state;
+  return instructions[ip]?.opcode === Op.OP_SHA256 && instructions[ip - 1]?.opcode === Op.OP_ELSE
+    && instructions[ip + 1]?.opcode === Op.OP_2 && instructions[ip + 2]?.opcode === Op.OP_ENDIF
+    && !state.controlStack.some((frame) => frame === false)
+    && (state.stack.at(-1)?.length ?? 0) > CALL_RECORD_INLINE_RESULT_BYTES;
+}
 
 /** Compiler value-chunk identity scan's terminal `DROP, EQUALVERIFY, 2DROP` count check. */
 export function isValueChunkIdentityCountPin(
@@ -353,8 +372,10 @@ export class BoundedProbeTraceCollector {
   private hexCache = new WeakMap<Uint8Array, string>();
   private scannedEvidenceItems = new WeakSet<Uint8Array>();
   private longItemKeys = new WeakMap<Uint8Array, string>();
+  private recordResults: Uint8Array[] = [];
 
   reset(): void {
+    this.recordResults = [];
     this.awaitingVerification = false;
     this.ordinal = 0;
     this.projected = [];
@@ -486,6 +507,12 @@ export class BoundedProbeTraceCollector {
 
   observe(state: AuthenticationProgramStateCommon): void {
     const opcode = state.instructions[state.ip]?.opcode;
+    if (opcode === Op.OP_SHA256) {
+      const result = state.stack.at(-1);
+      if (result !== undefined && isCallRecordHashStep(state) && !this.recordResults.includes(result)
+        && this.recordResults.length < MAX_PROBE_RECORD_RESULTS) this.recordResults.push(result);
+      return;
+    }
     const identityCountPin = isValueChunkIdentityCountPin(state.instructions, state.ip);
     if (opcode === Op.OP_EQUALVERIFY && !this.awaitingVerification && !identityCountPin) return;
     if (this.projected.length >= MAX_PROJECTED_PROBE_STATES) {
@@ -529,12 +556,13 @@ export class BoundedProbeTraceCollector {
         || this.lockDigestHexes.has(digest)) candidates.push(item);
     }
     if (widest && !candidates.includes(widest)) candidates.push(widest);
-    if (candidates.length > 0 || this.authItems.size > 0) {
+    if (candidates.length > 0 || this.authItems.size > 0 || this.recordResults.length > 0) {
       trace.push({
         ...finalState,
         ip: -1,
         instructions: [],
-        stack: [...candidates, ...this.authItems.values()],
+        // A hashed call record's result, which `rawOfReturnRecord` finds by the record's SHA256.
+        stack: [...candidates, ...this.authItems.values(), ...this.recordResults],
         alternateStack: [],
         controlStack: [],
       });
@@ -571,14 +599,14 @@ function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
       // OP_INVOKE and OP_UTXOBYTECODE are the two operations that decide a subprogram call: the first shows the
       // operands a caller hands down (the callee consumes them immediately), the second shows which input a
       // participant check resolved to. Both are absent from the production observer set.
-        ? new Set([...PROBE_TRACE_OPCODES, Op.OP_EQUAL, Op.OP_VERIFY, Op.OP_HASH160,
+        ? new Set([...SPARSE_PROBE_OPCODES, Op.OP_EQUAL, Op.OP_VERIFY, Op.OP_HASH160,
           Op.OP_INVOKE, Op.OP_UTXOBYTECODE,
           // `emitPickTrackedFromBottom` is `OP_DEPTH; n; OP_SUB; OP_PICK`, so observing these three names which frame
           // slot (i.e. which hidden ABI witness) a participant check resolved its coordinate from.
           Op.OP_PICK, Op.OP_DEPTH, Op.OP_INPUTINDEX])
         : debugTraceOperationMode === 'project'
-          ? new Set([...PROBE_TRACE_OPCODES, Op.OP_HASH160])
-          : PROBE_TRACE_OPCODES,
+          ? new Set([...SPARSE_PROBE_OPCODES, Op.OP_HASH160])
+          : SPARSE_PROBE_OPCODES,
     beforeOperation: (unknownState) => {
       const state = unknownState as AuthenticationProgramStateCommon;
       const debugEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } })
@@ -681,7 +709,7 @@ function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
       // Diagnostic-only observations must not change the reduced trace consumed by the derivation extractors.
       // In particular, retaining OP_EQUAL/OP_VERIFY here breaks otherwise-adjacent introspection/EQUALVERIFY
       // pairs and can make enabling diagnostics change transaction construction.
-      if (debugTraceOperations && !PROBE_TRACE_OPCODES.has(opcode as Op)) return;
+      if (debugTraceOperations && !SPARSE_PROBE_OPCODES.has(opcode as Op)) return;
       cached.collector.observe(state);
     },
   });

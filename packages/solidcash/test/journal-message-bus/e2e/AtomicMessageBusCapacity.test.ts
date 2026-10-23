@@ -96,29 +96,31 @@ interface CapacityReading {
 // Again on 2026-10-23. The call-records merge (0639d52bd) had moved the transaction 22 B (kernel) and 21 B (legacy)
 // and the participant inputs. Binding the leaf route's physical size then adds 10 B and 8 B, all on the sink: its
 // route argument and binder, and 580 units on its verifier.
+// Again when the call-record settlement became one shared helper (18860c4fd): the sink's input is 28 B (kernel) and
+// 20 B (legacy) smaller and about 1,500-1,900 units cheaper.
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_172, callManifestBytes: 294,
+    transactionBytes: 24_144, callManifestBytes: 294,
     worstOperationCost: 27_321, worstMaximumOperationCost: 112_800,
     worstRatio: 0.24220744680851064,
     inputOperationCosts: [
-      420_568, 387_785, 695, 957_089, 817_981, 27_321,
+      420_568, 385_860, 695, 957_089, 817_981, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_416_000, 1_914_400, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_416_000, 1_892_000, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_655, callManifestBytes: 294,
+    transactionBytes: 24_635, callManifestBytes: 294,
     worstOperationCost: 2_373_927, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.3281442828707287,
     inputOperationCosts: [
-      413_098, 412_160, 695, 2_373_927, 1_864_134, 27_321,
+      413_098, 410_617, 695, 2_373_927, 1_864_134, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_348_800, 2_368_000, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_348_800, 2_352_000, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });

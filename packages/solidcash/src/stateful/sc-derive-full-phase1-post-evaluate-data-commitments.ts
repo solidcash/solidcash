@@ -161,6 +161,34 @@ export function deriveFullPhase1PostEvaluateDataCommitments(
     for (const [name, value] of Object.entries(bState)) {
       stb.setExternalCallState(group.categoryId, name, value);
     }
+    // A callee with more than one data NFT authenticates its records one at a time: the probe reaches a record's
+    // check only when every earlier record already carries its derived value in the probe's outputs, so a single
+    // pass learns the first record and stops at the second. Re-probe after each round until every required record
+    // is known or a round learns nothing (D49, a bigint or unbounded field per data NFT).
+    let known = bCommitments;
+    let currentTrace = fullTrace;
+    for (let round = 1; round < bRequiredNftCount && known.length < bRequiredNftCount; round += 1) {
+      stb._refreshInputs();
+      const nextProbe = stb.build();
+      const nextTrace = evaluateProbeTrace(host.inner.provider, {
+        inputIndex: bMasterIdx,
+        sourceOutputs: generateLibauthSourceOutputs(nextProbe.inputs),
+        transaction: nextProbe.buildLibauthTransaction(),
+      });
+      const next = extractCommitmentsFromTrace(nextTrace, bRequiredNftCount, bDataOutputRange);
+      if (!next || next.length <= known.length) {
+        currentTrace = nextTrace;
+        break;
+      }
+      const newlyKnown = next.slice(0, bRequiredNftCount);
+      const nextState = commitmentsToState(newlyKnown, group.stateLayout, group.requiredDataNftIndices);
+      for (const [name, value] of Object.entries(nextState)) {
+        stb.setExternalCallState(group.categoryId, name, value);
+      }
+      known = newlyKnown;
+      currentTrace = nextTrace;
+    }
+    return { fullTrace: currentTrace, bOutputBase, skipGroup: false };
   }
 
   return { fullTrace, bOutputBase, skipGroup: false };

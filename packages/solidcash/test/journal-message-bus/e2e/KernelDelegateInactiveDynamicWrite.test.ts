@@ -104,10 +104,11 @@ describe('delegate route inactive dynamic writes', () => {
       changeAddress: funder.unlocker.generateLockingBytecode(),
     });
 
-    // Full-admission union still densifies (trailing capacity for dormant). Keep as negative
-    // characterization beside KernelProxyInactiveUnionSettle (slim admitted-handlers green path).
-    await expect(composition.build()).rejects.toThrow(
-      /operation cost density limit|incomplete dynamic chunks/,
-    );
+    // The full-admission union used to overrun the proxy input's density budget by 37 units (458,437 / 458,400).
+    // The forward's position and route-distance pins (2f5a671b4, 8033bfa46) grew the proxy's unlocking, which raised
+    // that budget more than its cost, so the compose now fits and settles, as the slim admitted-handlers path does
+    // (KernelProxyInactiveUnionSettle).
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect((await deployed.proxy.getState()).marker).toBe(1n);
   }, 180_000);
 });

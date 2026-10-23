@@ -52959,24 +52959,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * verifier, and the verifier counts records only inside the participant block. So every own-category mutable input
    * outside `[master, master + size)` comes back at its own index, except the verifier (routeVerifierSkipsByIndex).
    * A graph route skips its authenticated physical block: `size` is `__internal__graphBlockSize`, which its verifier
-   * binds to the participant's actual span. Any other route without claim flags skips its compile-time block.
-   * The route's records, its trailing band's included, sit inside the block, so no record lock is admitted. With claim
+   * binds to the participant's actual span. Any other route without claim flags skips its compile-time block, except
+   * one on a proxy's block (below). The route's records, its trailing band's included, sit inside the block, so no
+   * record lock is admitted: a consumed old value chunk too, which only a direct delegate's narrower walk admits by
+   * lock (delegatePinReadsChunkLockList). With claim
    * flags (a bound non-graph route), the pin skips only the claimed slots (emitRouteBlockClaims): those of the rows
    * that ran, or, once the verifier ran, its authenticated physical block, `__internal__participantBlockSize` slots.
    * One pass parks each own-category mutable index and a second pins them, as in emitCountedRecordPin; without claim
-   * flags, through the parked record pin the entries share. A route with no bound lock, or on a proxy's block, keeps
-   * the census alone. Stack neutral.
+   * flags, through the parked record pin the entries share. A route with no bound lock keeps the census alone.
+   *
+   * On a proxy's block (a delegate route) the records are the proxy's: the base is the proxy master the route's
+   * prologue and binder authenticate (`__internal__proxyMasterIndex`, emitMasterInputIndex) and the category its own.
+   * Such a route takes no claim flags: a graph one skips `__internal__graphBlockSize` as above, and any other one
+   * skipping its verifier by index picks its window at run time (emitParticipantSizedWindow). Stack neutral.
    */
   private emitRouteOutsideBlockRecordPin(node: FunctionDefinitionNode, loc: SingleLocationData): void {
     const verifierLock = node.messageBusVerifierLock;
     const blockSize = node.blockLayout?.blockSize;
-    if (verifierLock === undefined || blockSize === undefined || blockSize <= 0
-      || this.usesProxyStateBlockBase()) return;
+    if (verifierLock === undefined || blockSize === undefined || blockSize <= 0) return;
     const inBlock = node.messageBusRecordClaims !== undefined;
     const byIndex = this.routeVerifierSkipsByIndex(node);
     const graphSized = node.parameters.some((parameter) => parameter.name === GRAPH_BLOCK_SIZE);
+    const participantSized = !inBlock && !graphSized && byIndex && this.usesProxyStateBlockBase()
+      && node.parameters.some((parameter) => parameter.name === PARTICIPANT_BLOCK_SIZE);
+    if (participantSized && this.getStackIndex(PARTICIPANT_BLOCK_SIZE, true) < 0) {
+      throw new Error(`message-bus record pin: '${PARTICIPANT_BLOCK_SIZE}' is not live at the route census`);
+    }
     const emitSize = (): void => {
       if (graphSized) this.emitPickTrackedFromBottom(GRAPH_BLOCK_SIZE, loc);
+      else if (participantSized) this.emitParticipantSizedWindow(blockSize, loc);
       else this.emit(encodeInt(BigInt(blockSize)), loc);
     };
     // The entries' plain walks and pinned counts take the same helper (contractRoutePinsByIndex).
@@ -53077,6 +53088,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUAL, loc);
     }
     this.emit(Op.OP_BOOLOR, loc);
+  }
+
+  /**
+   * `[]` -> `[size]`, the window of a bound non-graph route on a proxy's block. Once the verifier ran
+   * (`__internal__activeVerifierIndex` >= 0, which on chain ran the binder: routeVerifierSkipsByIndex) it is
+   * `__internal__participantBlockSize`, which the binder digest proves to be the physical block the verifier census
+   * walks. A standalone run (-1) has no verifier, and the prologue holds the executor at `master + blockSize`, so the
+   * compile-time block. Reads the bottom of the frame only, so it runs under untracked items.
+   */
+  private emitParticipantSizedWindow(blockSize: number, loc: SingleLocationData): void {
+    this.emitPickTrackedFromBottom(PARTICIPANT_BLOCK_SIZE, loc);
+    this.emitPickTrackedFromBottom(ACTIVE_VERIFIER_INDEX, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(encodeInt(BigInt(blockSize)), loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
@@ -53203,7 +53232,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.framedMaster || this.readsRecordsFromFrame) return;
     // A routed delegate / owner-block route handler executes beside an authenticated participant block whose
     // sibling participants and verifier sit below it; its route verifier settles those records, and the 1:1 walk
-    // would refuse them. Keep skipping that shape.
+    // would refuse them. Keep skipping that shape: the route's own pin (emitRouteOutsideBlockRecordPin) holds the
+    // records outside that block.
     if (this.usesProxyStateBlockBase() && !this.usesDelegateExecutorBlockBase()) return;
     const blockSize = node.blockLayout?.blockSize;
     if (blockSize === undefined || blockSize <= 0) return;
@@ -53515,11 +53545,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * participant verifier, when co-spent, is an own-category mutable input its own covenant recreates at its index
    * with a new commitment, so the pin leaves the input at the route's verifier index, or on a local-caller route
    * every input at the bound verifier lock, to that covenant (routeVerifierSkipsByIndex). A route with no bound lock
-   * (the binder's inline-verifier intermediate) keeps the count alone.
+   * (the binder's inline-verifier intermediate) keeps the count alone. A route on a proxy's block pins the proxy's
+   * records as emitRouteOutsideBlockRecordPin does; today its `delegate` modifier keeps it off the count path, so that
+   * census-path pin is the one it runs.
    */
   private countedRecordPin(node: FunctionDefinitionNode, settlesDataRecords: boolean): CountedRecordPin | undefined {
     if (this.isDefineSubTraversal || this.framedMaster || this.readsRecordsFromFrame || node.name === '__construct'
-      || this.usesProxyStateBlockBase()) return undefined;
+      || (this.usesProxyStateBlockBase() && !this.isCompilerMessageBusRoute(node))) return undefined;
     const verifierLock = this.isCompilerMessageBusRoute(node) ? node.messageBusVerifierLock : undefined;
     if (this.ownsMessageBusParticipantBlock(node) && verifierLock === undefined) return undefined;
     // A migrateRecords entry moves the entry at input 1 to its replacement-bound covenant, and

@@ -217,8 +217,8 @@ describe('Low-level call options + tuple-slot modifiers + value units', () => {
       'contract D { bool flag; function registered(address a) public returns (bool) { return this.flag; } }',
       { suppressWarnings: true },
     );
-    expect(callee.bytecode).toContain('OP_0 OP_TXOUTPUTCOUNT OP_BEGIN OP_1SUB OP_DUP OP_OUTPUTTOKENCATEGORY OP_3'
-      + ' OP_PICK OP_EQUAL OP_OVER OP_OUTPUTBYTECODE 51 OP_EQUAL OP_BOOLAND OP_ROT OP_ADD OP_SWAP OP_DUP OP_NOT'
+    expect(callee.bytecode).toContain('OP_0 OP_TXOUTPUTCOUNT OP_BEGIN OP_1SUB OP_DUP OP_OUTPUTBYTECODE 51 OP_EQUAL'
+      + ' OP_OVER OP_OUTPUTTOKENCATEGORY OP_4 OP_PICK OP_EQUAL OP_BOOLAND OP_ROT OP_ADD OP_SWAP OP_DUP OP_NOT'
       + ' OP_UNTIL OP_DROP OP_NIP OP_NUMEQUALVERIFY');
     expect(unique.bytecode).toContain('1f OP_SPLIT OP_SWAP OP_ROT OP_EQUALVERIFY');
   });

@@ -1,7 +1,9 @@
 import {
   beforeAll, describe, expect, it,
 } from 'vitest';
-import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
+import {
+  binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
+} from '@bitauth/libauth';
 import { compileFile, compileFileSplit } from '@solidcash/solidc';
 import { asmToScript, buildChunkCommitment, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import type { Utxo } from '../../src/interfaces.js';
@@ -131,7 +133,13 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     expect(await token.state._allowances(bobLedger, aliceLedger)).toBe(2n);
 
     await fund(alice);
-    await token.connect(alice).call.transferFrom(bobLedger, aliceLedger, 2n).send();
+    const masters = new Set((await provider.getUtxos(token.address)).map((utxo) => `${utxo.txid}:${utxo.vout}`));
+    const spend = await token.connect(alice).call.transferFrom(bobLedger, aliceLedger, 2n).send();
+    // Mocknet admits 1,000,000-byte inputs; the honest spend's master input must fit the 10,000-byte limit.
+    const masterInputs = decodeTransactionUnsafe(hexToBin(spend.hex)).inputs
+      .filter((input) => masters.has(`${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`));
+    expect(masterInputs).toHaveLength(1);
+    expect(masterInputs[0]!.unlockingBytecode.length).toBeLessThan(10_000);
     expect(await token.state._balances(bobLedger)).toBe(2n);
     expect(await token.state._balances(aliceLedger)).toBe(3n);
     expect(await token.state._allowances(bobLedger, aliceLedger)).toBe(0n);

@@ -150,6 +150,13 @@ A direct return carrier becomes a call record (as built):
 - Bytes: a digest and a compare per call site, the digest per callee run, and the completeness walk (a shared helper).
   The marketplace ladder is the size gate; contracts near the 10,000-byte limit, such as UniswapV2Factory, are the
   risk.
+- Compact layout (direct compiles, not `messageBus: true`): a selector dispatcher hands each entry `0 || selector`
+  on top, which a returning entry extends with its arguments (one shared append helper) and every other entry's
+  cleanup drops; the shared settlement hashes that preimage; the count reads each output's lock before its category.
+  A contract with the multi-call entry, a sole inlined entry or a fallback or receive dispatcher keeps the pushed
+  prefix, and a frame keeps the digest it takes at entry.
+  OZ BchNative (OzBchNativeInheritance) 9,623 -> 9,517 B, its honest `transferFrom` master input 10,093 -> 9,987 B;
+  message-bus compiles are byte-identical.
 - A result over 96 bytes takes the hashed form (it used to past 128).
 
 ## 9. Phases

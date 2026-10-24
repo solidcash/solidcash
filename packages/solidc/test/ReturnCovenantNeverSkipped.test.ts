@@ -65,9 +65,11 @@ describe('a returning entry never skips its return covenant', () => {
       + ' function twice(int a) returns (int) { return a * 2; }'
       + ' function outer(int a) returns (int, bytes) { return (twice(a) + 1, abi.encodePacked(a)); } }');
     for (const name of ['add', 'pick', 'twice', 'outer']) expectRecordPin(native, name);
-    // The digest preimage leads with the ordinal (0) and the entry's own selector.
+    // The digest preimage leads with the ordinal (0) and the entry's own selector, which the dispatcher prefixes for
+    // the entry it invokes, so no entry pushes its own.
     const add = native.abi.find((entry) => entry.name === 'add')!;
-    expect(native.bytecode).toContain(`0000${add.selector}`);
+    expect(native.bytecode).toContain('0000 OP_OVER OP_CAT OP_SWAP OP_INVOKE');
+    expect(native.bytecode).not.toContain(`0000${add.selector}`);
 
     const store = compileString('contract Store { uint256 x;'
       + ' function get() public view returns (uint256) { return x; }'

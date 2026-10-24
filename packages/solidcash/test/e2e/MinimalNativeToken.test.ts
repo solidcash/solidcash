@@ -42,8 +42,9 @@ describe('MinimalNativeToken bytecode budget', () => {
     // growth wrap checks, 17 B (7428 -> 7445). Call records (D50: each returning entry digests its call and pins
     // its record, with one shared count of its carriers) added 154 B (7445 -> 7599), and their shared settlement (one
     // helper forms, pins and counts each record, and a standalone run's refusal is that count at zero, 18860c4fd)
-    // took 67 B off (7599 -> 7532).
-    expect(artifactBytes).toBe(7532);
+    // took 67 B off (7599 -> 7532). The dispatcher handing each entry its record prefix, the digest hashed in that
+    // settlement and the count reading each output's lock first took 18 B off (7532 -> 7514).
+    expect(artifactBytes).toBe(7514);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs.map((input) => input.name))
       .toEqual(['nativeCategory_']);

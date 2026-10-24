@@ -672,6 +672,8 @@ const MESSAGE_BUS_DYNAMIC_WRITE_ACTIVE = '__message_bus_dynamic_write_active';
 const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 /** The value-chunk lock list the mutable-output check admits: the chunk-base witness, or a route-owned item. */
 const VALUE_CHUNK_LOCK_LIST = '__internal__valueChunkOutputBase';
+/** The `ordinal 0 || selector` the selector dispatcher leaves a dispatched entry, its call record's prefix. */
+const CALL_RECORD_PREFIX = '__internal__callRecordPrefix';
 /** The block size a shared outside-layout walk takes as its argument. */
 const OUTSIDE_LAYOUT_BLOCK_SIZE = '(__outside_layout_block_size)';
 /** The input index the parked outside-layout pin skips, -1 for none. */
@@ -2643,6 +2645,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private currentContractCarriesCallBatch: boolean = false;
   /** The entry being compiled is a frame: it holds its call context, digests its ordinal and hands back its pin. */
   private callBatchFrame: boolean = false;
+  /** The selector dispatcher hands each entry it invokes its call record's prefix (CALL_RECORD_PREFIX). */
+  private dispatchHandsCallPrefix: boolean = false;
+  /** The dispatched entry this body traversal compiles, which finds its call record's prefix on top. */
+  private callPrefixEntry: FunctionDefinitionNode | undefined;
   /**
    * The message-bus route's declared inputs, in push order (the SDK pushes `[blob, ...routeWitnesses]`). A route
    * handler shares the caller's stack, so these values are physically BELOW the handler's own argument block -
@@ -6708,6 +6714,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The multi-call entry is a second selector, so a sole entry is defined and dispatched to like any other.
     if (fallbackIsSoleEntry || (dispatchFunctions.length === 1 && !hasFallback && !hasReceive
       && !soleFnNeedsSelectorDispatch && !this.currentContractCarriesCallBatch)) {
+      this.dispatchHandsCallPrefix = false;
       this.outlineSharedFunctionBodies(outlineLoc);
       if (cheapAdmission && !keepAdmissionBody(dispatchFunctions[0])) {
         // Throwaway admission omitted the only entry body; helper defines already emitted.
@@ -6718,6 +6725,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     } else {
+      // A direct contract's selector dispatcher leaves each entry it invokes `0 || selector`, the prefix of its call
+      // record, so no returning entry pushes its own. Message-bus programs and the multi-call entry keep theirs.
+      this.dispatchHandsCallPrefix = !hasFallback && !hasReceive && !this.currentContractCarriesCallBatch
+        && this.directConvention && this.contractSettlesCallRecords() && this.compactCallRecords
+        && !dispatchFunctions.some((fn) => this.isCompilerMessageBusRoute(fn));
       // OP_DEFINE each entry-point function with its 4-byte hash selector, then dispatch
       dispatchFunctions.forEach((f) => {
         if (cheapAdmission && f.isEntryPoint && !keepAdmissionBody(f)) return;
@@ -7205,6 +7217,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_1SUB, loc);
       this.emit(Op.OP_ROLL, loc);
       this.emitEntrySelectorSizeCheck(loc);
+      if (this.dispatchHandsCallPrefix) {
+        // [.., selector] -> [.., 0 || selector, selector]: the invoked entry's call record prefix, ordinal 0.
+        this.emit(new Uint8Array(2), loc);
+        this.emit(Op.OP_OVER, loc);
+        this.emit(Op.OP_CAT, loc);
+        this.emit(Op.OP_SWAP, loc);
+      }
       this.emit(Op.OP_INVOKE, loc);
       return;
     }
@@ -7845,6 +7864,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
       subTraversal.currentContractSettlesCallRecords = this.currentContractSettlesCallRecords;
       subTraversal.currentContractCarriesCallBatch = this.currentContractCarriesCallBatch;
+      subTraversal.callPrefixEntry = this.dispatchHandsCallPrefix ? func : undefined;
       subTraversal.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
       subTraversal.constructorParameterCount = 0; // no data pushes in sub-traversal output
       // Entry bodies are compiled here, after the contract traversal skipped the BoringMath OP_DEFINE. Without
@@ -9398,6 +9418,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     } else {
       node.parameters = this.visitList(node.parameters) as ParameterNode[];
+      // The dispatcher left this entry its call record's prefix on top. An entry that settles a record starts its own
+      // call's preimage from it; any other leaves it to its cleanup, so every entry's frame lies at one depth.
+      if (this.callPrefixEntry === node) this.pushToStack(CALL_RECORD_PREFIX);
       // A frame of the multi-call entry takes its call context before anything else uses the alternate stack.
       if (node.callBatchCandidate === true) {
         this.callBatchFrame = this.currentContractCarriesCallBatch && this.settlesDirectCallRecord(node);
@@ -48581,6 +48604,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return !this.framedMaster && this.currentContractSettlesCallRecords;
   }
 
+  /**
+   * A direct compile's entries settle their own call records from the digest's preimage, hashed by the shared
+   * settlement, digest arguments through one helper, and count records reading each output's lock first. A
+   * message-bus compile keeps the digest taken at entry: its programs sit at the per-input limit, and these layouts
+   * are not smaller there.
+   */
+  private get compactCallRecords(): boolean {
+    return this.compilerOptions.messageBus !== true;
+  }
+
+  /** This entry's `__internal__callDigest` is its digest's preimage: a compact layout outside a frame. */
+  private settlesOwnCallPreimage(): boolean {
+    return this.compactCallRecords && !this.callBatchFrame;
+  }
+
   /** A number enters a call digest by value, so another encoding of the same number digests alike. */
   private isNumericCallRecordType(type: Type | undefined): boolean {
     const resolved = type instanceof ValueType ? type.underlyingType : type;
@@ -48592,12 +48630,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * `[..]` -> `[.., digest]`: a call record's digest, the first 31 bytes of the SHA256 of the call's ordinal as two
    * little-endian bytes, its selector, and each argument as its length in two little-endian bytes and its bytes, a
    * number minimally encoded. `emitArgument(i)` leaves argument i on top as one tracked value. `emitLateOrdinal`
-   * pushes the ordinal once the arguments have run, so a call an argument makes takes its ordinal first.
+   * pushes the ordinal once the arguments have run, so a call an argument makes takes its ordinal first. With `own`,
+   * an entry's own call outside a frame, it leaves the preimage, which its settlement hashes, and starts from the
+   * tracked `ordinal || selector` `own.prefix` names where the dispatcher left one.
    */
   private emitCallRecordDigest(
     selector: Uint8Array, ordinal: number, argumentTypes: readonly (Type | undefined)[],
     emitArgument: (index: number) => void, loc: SingleLocationData, emitOrdinal?: () => void,
-    emitLateOrdinal?: () => void,
+    emitLateOrdinal?: () => void, own?: { prefix?: string },
   ): void {
     if (emitOrdinal) {
       // [.., ordinal u16le] -> [.., ordinal || selector]
@@ -48606,6 +48646,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_CAT, loc);
     } else if (emitLateOrdinal) {
       this.emit(selector, loc);
+    } else if (own?.prefix !== undefined) {
+      const prefixIdx = this.getStackIndex(own.prefix);
+      this.emitRollAt(prefixIdx, loc);
+      this.removeFromStack(prefixIdx);
     } else {
       const prefix = new Uint8Array(2 + selector.length);
       prefix[0] = ordinal & 0xff;
@@ -48617,12 +48661,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let index = 0; index < argumentTypes.length; index += 1) {
       emitArgument(index);
       if (this.isNumericCallRecordType(argumentTypes[index])) this.emit(Op.OP_BIN2NUM, loc);
-      this.emit(Op.OP_SIZE, loc);
-      this.emit(encodeInt(2n), loc);
-      this.emit(Op.OP_NUM2BIN, loc);
-      this.emit(Op.OP_SWAP, loc);
-      this.emit(Op.OP_CAT, loc);
-      this.emit(Op.OP_CAT, loc);
+      if (!this.compactCallRecords || !this.invokeSharedStackHelper(
+        'callRecordArgument', (t, l) => t.emitCallRecordArgumentInline(l), loc,
+      )) {
+        this.emitCallRecordArgumentInline(loc);
+      }
       this.popFromStack(2);
       this.pushToStack('(record_preimage)');
     }
@@ -48632,12 +48675,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SWAP, loc);
       this.emit(Op.OP_CAT, loc);
     }
+    if (own !== undefined) return;
+    this.emitCallRecordDigestOfPreimage(loc);
+    this.popFromStack();
+    this.pushToStack('(record_digest)');
+  }
+
+  /** `[.., preimage, argument]` -> `[.., preimage || size u16le || argument]`. */
+  private emitCallRecordArgumentInline(loc: SingleLocationData): void {
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(2n), loc);
+    this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_CAT, loc);
+  }
+
+  /** `[.., preimage]` -> `[.., digest]`: the first 31 bytes of the preimage's SHA256. */
+  private emitCallRecordDigestOfPreimage(loc: SingleLocationData): void {
     this.emit(Op.OP_SHA256, loc);
     this.emit(encodeInt(BigInt(CALL_RECORD_DIGEST_BYTES)), loc);
     this.emit(Op.OP_SPLIT, loc);
     this.emit(Op.OP_DROP, loc);
-    this.popFromStack();
-    this.pushToStack('(record_digest)');
   }
 
   /**
@@ -48788,7 +48847,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return computeFunctionSelector(signature, evmCompat);
   }
 
-  /** Leaves the digest of the call this entry executes, as `__internal__callDigest`, for its record. */
+  /**
+   * Leaves the call this entry executes, as `__internal__callDigest`, for its record: its digest, or in a compact
+   * layout outside a frame of the multi-call entry the digest's preimage, which its settlement hashes.
+   */
   private emitOwnCallRecordDigest(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     // A signature authorizes the transaction the record is part of, so it is no argument of the digest.
@@ -48802,11 +48864,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_2, loc);
       this.emit(Op.OP_NUM2BIN, loc);
     } : undefined;
+    const prefix = this.getStackIndex(CALL_RECORD_PREFIX, true) >= 0 ? CALL_RECORD_PREFIX : undefined;
     this.emitCallRecordDigest(this.callRecordSelector(node), 0, visible.map((parameter) => parameter.type),
       (index) => {
         this.emitPickAt(this.getStackIndex(visible[index]!.name), loc);
         this.pushToStack('(value)');
-      }, loc, emitOrdinal);
+      }, loc, emitOrdinal, undefined, this.settlesOwnCallPreimage() ? { prefix } : undefined);
     this.stack[0] = '__internal__callDigest';
   }
 
@@ -48859,9 +48922,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Settles this run's call record: the digest and the result blob leave the tracked stack, and the record they
-   * form is pinned at the return witness. With the two on top and the witness picked above them, every entry shares
-   * one helper.
+   * Settles this run's call record: the digest (a frame's) or its preimage and the result blob leave the tracked
+   * stack, and the record they form is pinned at the return witness. With the two on top and the witness picked
+   * above them, every entry shares one helper.
    */
   private emitCallRecordSettlement(loc: SingleLocationData): void {
     const blobIdx = this.getStackIndex('__internal__returnBlob');
@@ -48875,7 +48938,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.removeFromStack(digestIdx);
       this.stack.splice(1, 0, '__internal__callDigest');
     }
-    // Stack: [.., digest, blob]
+    // Stack: [.., digest or preimage, blob]
     this.registerCallRecordCount();
     if (this.callBatchFrame) {
       this.emitCallRecordForm(loc);
@@ -48892,6 +48955,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.invokeSubroutineIfDefined(settle, loc);
       this.popFromStack(2);
       return;
+    }
+    if (this.settlesOwnCallPreimage()) {
+      this.emit(Op.OP_SWAP, loc);
+      this.emitCallRecordDigestOfPreimage(loc);
+      this.emit(Op.OP_SWAP, loc);
     }
     this.emitCallRecordForm(loc);
     this.removeFromStack(1);
@@ -48927,11 +48995,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
   }
 
-  /** `[digest, blob, idx]` -> `[]`: the shared form of emitCallRecordSettlement. */
+  /** `[digest or its preimage, blob, idx]` -> `[]`: the shared form of emitCallRecordSettlement. */
   private emitCallRecordSettleBody(loc: SingleLocationData): void {
-    this.emit(Op.OP_TOALTSTACK, loc);
-    this.emitCallRecordForm(loc);
-    this.emit(Op.OP_FROMALTSTACK, loc);
+    if (this.settlesOwnCallPreimage()) {
+      this.emit(Op.OP_ROT, loc);
+      this.emitCallRecordDigestOfPreimage(loc);
+      this.emit(Op.OP_ROT, loc);                 // [idx, digest, blob]
+      this.emitCallRecordForm(loc);
+      this.emit(Op.OP_SWAP, loc);
+    } else {
+      this.emit(Op.OP_TOALTSTACK, loc);
+      this.emitCallRecordForm(loc);
+      this.emit(Op.OP_FROMALTSTACK, loc);
+    }
     this.emitCallRecordPin(loc);
     this.emitCallRecordCount(loc);
   }
@@ -49008,15 +49084,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_TXOUTPUTCOUNT, loc);         // [expected, cat, count, j]
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_1SUB, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
-    this.emit(encodeInt(3n), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_OVER, loc);
-    this.emit(Op.OP_OUTPUTBYTECODE, loc);
-    this.emit(hexToBin('51'), loc);
-    this.emit(Op.OP_EQUAL, loc);
+    if (this.compactCallRecords) {
+      // The lock first: the category-first form shares its opening with the own-category scans' step, and the
+      // outliner then splits that scan's shared helper.
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);
+      this.emit(hexToBin('51'), loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_OVER, loc);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+      this.emit(encodeInt(4n), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUAL, loc);
+    } else {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+      this.emit(encodeInt(3n), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_OVER, loc);
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);
+      this.emit(hexToBin('51'), loc);
+      this.emit(Op.OP_EQUAL, loc);
+    }
     this.emit(Op.OP_BOOLAND, loc);               // [expected, cat, count, j, carrier]
     this.emit(Op.OP_ROT, loc);
     this.emit(Op.OP_ADD, loc);

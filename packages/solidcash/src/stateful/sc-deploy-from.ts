@@ -36,6 +36,7 @@ import {
 } from '../utils.js';
 import {
   createDataNftUnlocker,
+  createDynamicChunkUnlocker,
   createEntryNftUnlocker,
   createSatoshiContainerUnlocker,
   createTokenContainerUnlocker,
@@ -49,10 +50,14 @@ import {
   getTokenContainerAddress,
 } from './covenant-helpers.js';
 import { evalComputedKey } from './route-expression-key.js';
+import { callRecordDigest } from './call-record.js';
+import { returnEventNftCommitment } from './return-event-nft-commitment.js';
+import { registeredValueAddressLockingBytecode, registerDeployment } from './deployment-registry.js';
 import {
   bytesToSlotValue,
   decodeEntryCommitment,
   encodeEntryCommitment,
+  headSentinelCommitment,
   keyToSlotMulti,
   SortedList,
 } from './SortedList.js';
@@ -71,8 +76,9 @@ export async function deployFromStatefulContract<T extends Artifact>(
   options: DeployFromOptions<T>,
 ): Promise<DeployFromResult<T>> {
   const {
-    provider, factory, deployFunctionName, deployFunctionArgs,
+    provider, factory, deployFunctionName,
   } = options;
+  const rawDeployFunctionArgs = options.deployFunctionArgs;
 
   // Validate the deploy function exists and has the 'deploy' modifier
   const deployAbi = factory.inner.artifact.abi.find(
@@ -89,6 +95,17 @@ export async function deployFromStatefulContract<T extends Artifact>(
       + 'Only functions with the deploy modifier can be used for contract deployment.',
     );
   }
+
+  // The covenant sees each address argument as the registered deployment's value identity (a physical locking
+  // bytecode for a plain contract, its public CREATE identity for a kernel participant). Derive salts, mapping
+  // keys and constructor genesis from those same bytes: a cashaddr string here would otherwise sort and pack
+  // differently from the value the script compares, deriving a child address the factory never creates.
+  const deployFunctionArgs = rawDeployFunctionArgs.map((arg, index) => {
+    const input = deployAbi.inputs[index];
+    if (!input || input.name.startsWith('__internal__')) return arg;
+    if (input.type !== 'address' && !input.type.startsWith('address ')) return arg;
+    return typeof arg === 'string' ? (registeredValueAddressLockingBytecode(provider, arg) ?? arg) : arg;
+  });
 
   // Resolve the child + funding from the call, the factory's child registry, the recorded `new C(param)`
   // argument mapping, and the factory's deploy defaults - so a call need only pass what isn't already known.
@@ -287,7 +304,29 @@ export async function deployFromStatefulContract<T extends Artifact>(
     category: hexToBin(fu.txid),
     ...(childSalt && { salt: childSalt }),
   }));
+  // Publish created children so an off-chain CREATE2 prediction can resolve the exact address this transaction
+  // will produce (the address commits to the funding coin's category, so it is not a pure function of salt).
+  for (const [index, child] of childContracts.entries()) {
+    registerDeployment(provider, {
+      contractName: childArtifact.contractName,
+      address: child.address,
+      lockingBytecode: child.lockingBytecode,
+      contract: child,
+      parentAddress: factory.target,
+      parentLockingBytecode: factory.inner.lockingBytecode,
+      salt: childSalt ? binToHex(childSalt) : undefined,
+      category: fundingUtxos[index]?.txid,
+    });
+  }
   const childContractUnsalted = childContracts[0];
+  if ((globalThis as any).process?.env?.DEBUG_DEPLOY_FROM) {
+    console.error('DEPLOY_FROM', JSON.stringify({
+      childSalt: childSalt ? binToHex(childSalt) : undefined,
+      category: fundingUtxos[0].txid,
+      address: childContractUnsalted.address,
+      bytecodeLen: childContractUnsalted.bytecode.length / 2,
+    }));
+  }
 
   // The returned handle uses the same self-pinned address as the first deployed genesis.
   const childContract = childContractUnsalted;
@@ -332,10 +371,14 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const genesisInputTypes = deployAbi.inputs
     .filter((input) => !input.name.startsWith('__internal__'))
     .map((input) => input.type);
+  // A child constructor/initializer observes the deploying contract as `msg.sender`; the compiler-folded recipe
+  // names the deploying input's locking bytecode, so materialize the same value identity here.
+  const callerValueIdentity = hexToBin(factory.inner.lockingBytecode);
   if (deployTarget?.genesisState) {
     for (const field of deployTarget.genesisState.fields) {
       childSeedState[field.name] = evaluateGenesisRecipe!(
         field.value, deployFunctionArgs, genesisInputTypes, artifactUsesSolidityAbi(factory.inner.artifact),
+        undefined, callerValueIdentity,
       ) as StateValueType;
     }
   }
@@ -344,16 +387,22 @@ export async function deployFromStatefulContract<T extends Artifact>(
       && candidate.signature === entry.collectionSignature);
     if (!collection || !['array', 'mapping'].includes(collection.kind)
       || (collection.kind === 'array' && collection.bound === undefined)
-      || collection.keyType !== entry.keyType || collection.valueType !== entry.valueType) {
+      || (!entry.head && (collection.keyType !== entry.keyType
+        || collection.valueType !== entry.valueType))) {
       throw new Error(
         `Constructor entry '${entry.collection}' does not match child '${childArtifact.contractName}' layout.`,
       );
     }
+    if (entry.head === true) {
+      return { collectionSignature: entry.collectionSignature, commitment: binToHex(headSentinelCommitment()) };
+    }
     const key = evaluateGenesisRecipe!(
       entry.key, deployFunctionArgs, genesisInputTypes, artifactUsesSolidityAbi(factory.inner.artifact),
+      undefined, callerValueIdentity,
     );
     const value = evaluateGenesisRecipe!(
       entry.value, deployFunctionArgs, genesisInputTypes, artifactUsesSolidityAbi(factory.inner.artifact),
+      undefined, callerValueIdentity,
     );
     if (collection.kind === 'array'
       && (typeof key !== 'bigint' || key < 0n || key >= BigInt(collection.bound!))) {
@@ -547,6 +596,17 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const predictedAddressReturn = encodeExternalReturnValues(
     [pairAddressValue], ['address'], factoryLayout.structs,
     artifactUsesSolidityAbi(factory.inner.artifact), factory.inner.artifact.enums,
+  );
+  // A returning direct entry carries its result inside a call record: digest(31) || form(1) || result. The
+  // covenant computes the digest over the deploy call it runs, so the seeded carrier must commit to that same
+  // digest rather than the bare ABI result.
+  const predictedReturnCommitment = returnEventNftCommitment(
+    predictedAddressReturn,
+    deployAbi.callRecord === true
+      ? callRecordDigest(deployAbi, deployFunctionArgs, {
+        structs: factoryLayout.structs, enums: factory.inner.artifact.enums,
+      })
+      : undefined,
   );
   const valueTailFor = (collection: NonNullable<typeof factoryLayout.collections>[number]): Uint8Array => {
     if (collection.valueType === 'bytes32') return fundingCatValue;
@@ -990,6 +1050,34 @@ export async function deployFromStatefulContract<T extends Artifact>(
     ];
   }
 
+  // A dynamic-array write on a NON-EMPTY value (`allPairs.push` after the first pair) spends the array's existing
+  // chunk NFTs to replace them. The negative sentinel is only valid for the first chunk: pass the absolute input
+  // coordinate where those chunks are appended and co-spend them.
+  const dynamicChunkInputBaseIndex = deployAbi.inputs
+    .findIndex((input) => input.name === '__internal__dynamicChunkInputBase');
+  if ((deployAbi.dynamicWrites ?? []).length > 0) {
+    const outputOnlyKinds = new Set([
+      'event', 'eventChunk', 'returnEvent', 'deployDataNft', 'valueChunk', 'valueChunkOutput',
+      'dynamicChunkOutput', 'transfer',
+    ]);
+    const layoutInputCount = (deployAbi.blockLayout?.slots ?? [])
+      .filter((slot) => !outputOnlyKinds.has(slot.kind)).length;
+    const priorChunks: Utxo[] = [];
+    for (const varName of deployAbi.dynamicWrites ?? []) {
+      priorChunks.push(...(onChainState.dynamicChunkUtxos?.[varName] ?? []));
+    }
+    if (priorChunks.length > 0) {
+      const chunkBase = layoutInputCount + deployTrailingInputs.length;
+      const variable = factoryLayout.variables?.find((entry) => entry.dynamic
+        && (deployAbi.dynamicWrites ?? []).includes(entry.name));
+      const chunkUnlocker = variable === undefined
+        ? placeholderFunder
+        : createDynamicChunkUnlocker(factory.inner, 0, factory.categoryId, variable.name, variable.type);
+      for (const utxo of priorChunks) deployTrailingInputs.push({ utxo, unlocker: chunkUnlocker });
+      if (dynamicChunkInputBaseIndex >= 0) finalArgs[dynamicChunkInputBaseIndex] = BigInt(chunkBase);
+    }
+  }
+
   // Create unlockers for factory's master UTXO and data NFTs. The master is a covenant input like the data NFTs, so
   // a zero-state factory's deploy gets the same best-effort template debug (its strict replay reports the P2PKH
   // funder's signature as NULLFAIL); the finalized-bytes gate and the broadcast stay authoritative.
@@ -1069,7 +1157,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
         category: factory.categoryId, amount: 0n,
         nft: {
           capability: 'none',
-          commitment: binToHex(predictedAddressReturn),
+          commitment: predictedReturnCommitment,
         },
       },
     }]
@@ -1533,13 +1621,12 @@ export async function deployFromStatefulContract<T extends Artifact>(
       // The child address is already fixed by the funding category, constructor, and computed salt. For a
       // returning deploy such as createPair, it is therefore an authoritative seed even when an earlier vmap
       // verify prevents the derivation trace from reaching the return-event comparison.
-      const seedReturn = predictedAddressReturn;
       builder.addOutput({
         to: new Uint8Array([0x51]),
         amount: 800n,
         token: {
           category: factory.categoryId, amount: 0n,
-          nft: { capability: 'none', commitment: binToHex(seedReturn) },
+          nft: { capability: 'none', commitment: predictedReturnCommitment },
         },
       });
     } else {
@@ -1658,7 +1745,10 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // category (matching the SDK), so childContract's self-pinned address equals the deployed genesis address.
   // See docs/external-contract-calls.md.
   const { StatefulContract: SC } = await import('./StatefulContract.js');
-  const childStateful = new SC(childContract, childCategoryId) as ConnectedStatefulContract<T>;
+  const statefulChildren = childContracts.map((child, index) => new SC(
+    child, fundingUtxos[index]?.txid ?? childCategoryId,
+  ) as ConnectedStatefulContract<T>);
+  const childStateful = statefulChildren[0];
 
   return { factory, child: childStateful, tx, childCategoryId };
 }

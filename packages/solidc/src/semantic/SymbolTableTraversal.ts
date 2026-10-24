@@ -3617,7 +3617,27 @@ export default class SymbolTableTraversal extends AstTraversal {
     const stateFieldType = (name: string): Type | undefined => deployNode.referencedContract
       ?.stateVariables.find((sv) => sv.name === name)?.type;
     const subs = new Map<string, ExpressionNode>(); // forwarded args + earlier locals -> parent-context expr
-    foo.parameters.forEach((p, i) => { if (i < parentArgs.length) subs.set(p.name, parentArgs[i]); });
+    // A forwarded argument that names a parent local carries its initializer into the fold: the genesis recipe
+    // serializes handler inputs by name, and a bare local (`address token0 = a < b ? a : b;`) is not one.
+    const expandParentArgument = (expression: ExpressionNode, seen = new Set<ExpressionNode>()): ExpressionNode => {
+      if (seen.has(expression)) return expression;
+      seen.add(expression);
+      if (expression instanceof IdentifierNode) {
+        const initializer = this.findLocalInit(this.currentFunction?.body, expression.name)
+          ?? this.findAssignmentValue(this.currentFunction?.body, expression.name);
+        if (initializer) {
+          if ((globalThis as any).process?.env?.SOLIDC_DEBUG_GENESIS_RECIPE === '1') {
+            console.error('EXPAND_PARENT_ARG', expression.name, initializer.constructor.name,
+              (initializer as any).operator ?? '', (initializer as any).name ?? '');
+          }
+          return expandParentArgument(cloneNode(initializer), seen);
+        }
+      }
+      return expression;
+    };
+    foo.parameters.forEach((p, i) => {
+      if (i < parentArgs.length) subs.set(p.name, expandParentArgument(parentArgs[i]));
+    });
     // Seed with the genesis so far (ctor fold + earlier folded calls): a `this.field` read inside foo must
     // see the TRUE current value, not the type default.
     const fieldExprs = new Map<string, ExpressionNode>(deployNode.foldedStateInit ?? []);
@@ -10822,14 +10842,62 @@ export default class SymbolTableTraversal extends AstTraversal {
       const rawPayload = node.opaqueReturn && node.parameters.length === 1
         ? resolveInitializer(node.parameters[0])
         : undefined;
+      // `abi.encodeWithSelector(SELECTOR, ..)` names a `bytes4 constant` instead of spelling the literal. The
+      // call edge still needs the selector to select the pinned callee, so fold the canonical constant forms
+      // (`bytes4(keccak256(bytes("sig")))`, `bytes4(hex"........")`) while the initializer is still in reach.
+      const foldSelectorConstant = (
+        expression: ExpressionNode, seen = new Set<Node>(),
+      ): Uint8Array | undefined => {
+        if (seen.has(expression)) return undefined;
+        const resolved = resolveInitializer(expression);
+        if (resolved !== expression) {
+          seen.add(expression);
+          return foldSelectorConstant(resolved, seen);
+        }
+        if (expression instanceof HexLiteralNode) {
+          return expression.value.length >= 4 ? expression.value.slice(0, 4) : undefined;
+        }
+        // The signature bytes a `keccak256(..)` call would hash, when the argument is a literal (possibly
+        // wrapped in `bytes(..)` or a cast).
+        const signatureOf = (candidate: ExpressionNode | undefined): string | undefined => {
+          if (candidate instanceof StringLiteralNode) return candidate.value;
+          if (candidate instanceof CastNode) return signatureOf(candidate.expression);
+          if (candidate instanceof FunctionCallNode && candidate.parameters.length === 1
+            && (candidate.identifier.name === 'bytes' || candidate.identifier.name === 'string')) {
+            return signatureOf(candidate.parameters[0]);
+          }
+          return undefined;
+        };
+        const selectorOfKeccak = (candidate: ExpressionNode | undefined): Uint8Array | undefined => {
+          if (candidate instanceof FunctionCallNode && candidate.parameters.length === 1
+            && candidate.identifier.name === 'keccak256') {
+            const signature = signatureOf(candidate.parameters[0]);
+            if (signature !== undefined) return computeEvmFunctionSelector(signature);
+          }
+          return undefined;
+        };
+        if (expression instanceof CastNode) {
+          return selectorOfKeccak(expression.expression)
+            ?? foldSelectorConstant(expression.expression, seen)?.slice(0, 4);
+        }
+        if (expression instanceof FunctionCallNode && expression.parameters.length === 1) {
+          if (expression.identifier.name === 'bytes4') {
+            return selectorOfKeccak(expression.parameters[0]);
+          }
+          return selectorOfKeccak(expression);
+        }
+        return undefined;
+      };
       const rawFunctionName = rawPayload instanceof AbiEncodeCallNode
         ? rawPayload.functionName
         : undefined;
       const rawSelector = rawPayload instanceof AbiEncodeCallNode
         ? rawPayload.computedSelector
         : rawPayload instanceof AbiEncodeWithSelectorNode
-          && rawPayload.selector instanceof HexLiteralNode
-          ? rawPayload.selector.value : undefined;
+          ? rawPayload.selector instanceof HexLiteralNode
+            ? rawPayload.selector.value
+            : foldSelectorConstant(rawPayload.selector)
+          : undefined;
       const rawParameters = rawPayload instanceof AbiEncodeCallNode
         || rawPayload instanceof AbiEncodeWithSelectorNode
         ? rawPayload.parameters : undefined;

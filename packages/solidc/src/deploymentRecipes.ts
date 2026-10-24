@@ -83,6 +83,9 @@ const unaryOperators = new Set<UnaryOperator>([
 const materializableCastType = /^(?:address|bool|bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])?)$/;
 // eslint-disable-next-line max-len
 const numericRecipeType = /^(?:bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)$/;
+// Relational operators on byte values compare them as unsigned big-endian numbers, the same rule the compiled
+// script uses for `address < address` (the source's token0/token1 sort).
+const byteOrderedRecipeType = /^(?:address|pubkey|bytes(?:[1-9]|[12]\d|3[0-2]))$/;
 const concatenableRecipeType = /^(?:bytes(?:[1-9]|[12]\d|3[0-2])?|string)$/;
 // Hash opcodes consume one VM stack item. Numeric/fixed/bool values therefore have an exact minimal VM-number
 // representation, while signatures, aggregates, collections, and other multi-item values remain fenced.
@@ -403,6 +406,14 @@ export function childDeploymentValueRecipe(
   if (expression instanceof StateAccessNode && aliases && aliasDefinitions) {
     return aliases.get(aliasDefinitions.get(`this.${expression.name}`) ?? expression.stateVariable as object);
   }
+  // `msg.sender` inside a child constructor/initializer folds to the deploying input's locking bytecode. In the
+  // recipe language that is the caller's value identity, which the SDK materializes from the deploying contract.
+  if (expression instanceof UnaryOpNode
+    && expression.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+    && expression.expression instanceof NullaryOpNode
+    && expression.expression.operator === NullaryOperator.INPUT_INDEX) {
+    return { kind: 'logicalCaller', resultType: 'address' };
+  }
   const declaredType = recipeType(expression);
   if (expression instanceof IntLiteralNode) {
     const resultType = declaredType ?? (expectedType ? physicalRecipeType(expectedType) : 'int');
@@ -647,10 +658,15 @@ export function childDeploymentValueRecipe(
     }
     const equality = expression.operator === BinaryOperator.EQ || expression.operator === BinaryOperator.NE;
     const logical = expression.operator === BinaryOperator.AND || expression.operator === BinaryOperator.OR;
+    const relational = [BinaryOperator.LT, BinaryOperator.LE, BinaryOperator.GT, BinaryOperator.GE]
+      .includes(expression.operator);
+    const byteOrdered = relational
+      && !!left?.resultType && !!right?.resultType
+      && byteOrderedRecipeType.test(left.resultType) && byteOrderedRecipeType.test(right.resultType);
     let supportedOperands = equality || (logical
       ? left?.resultType === 'bool' && right?.resultType === 'bool'
-      : !!left?.resultType && !!right?.resultType
-        && numericRecipeType.test(left.resultType) && numericRecipeType.test(right.resultType));
+      : byteOrdered || (!!left?.resultType && !!right?.resultType
+        && numericRecipeType.test(left.resultType) && numericRecipeType.test(right.resultType)));
     const leftFixedDecimals = fixedRecipeDecimals(left?.resultType);
     const rightFixedDecimals = fixedRecipeDecimals(right?.resultType);
     const resultFixedDecimals = fixedRecipeDecimals(resultType);
@@ -687,10 +703,13 @@ export function childDeploymentGenesisEntries(
   handlerInputTypes: ReadonlyMap<string, string>,
   aliases?: ReadonlyMap<object, ChildDeploymentValueRecipe>,
   aliasDefinitions?: ReadonlyMap<string, object>,
+  /** The child's declared collections: sorted ones without a constructor write mint their empty HEAD. */
+  collections?: readonly {
+    name: string; type: ArrayType | MappingType; keyType: Type; innermostValueType: Type; sorted: boolean;
+  }[],
 ): ChildDeploymentGenesisEntryAbi[] | undefined {
-  if (!entries) return [];
   const result: ChildDeploymentGenesisEntryAbi[] = [];
-  for (const entry of entries) {
+  for (const entry of entries ?? []) {
     const collection = entry.collection;
     const arrayType = collection.type instanceof ArrayType && collection.type.bound !== undefined
       && !(collection.type.elementType instanceof ArrayType)
@@ -719,6 +738,22 @@ export function childDeploymentGenesisEntries(
       valueType: physicalRecipeType(valueType),
       key,
       value,
+    });
+  }
+  // A sorted (vmap) collection with no constructor write still needs its HEAD[slot 0 | next 0] node at
+  // genesis: every later read and insert anchors on it, and only a genesis transaction can mint it. Publish one
+  // synthetic entry per such collection; the deploy covenant authenticates its all-zero commitment.
+  const written = new Set(result.map((entry) => entry.collection));
+  for (const collection of collections ?? []) {
+    if (collection.sorted !== true || written.has(collection.name)) continue;
+    result.push({
+      collection: collection.name,
+      collectionSignature: computeCollectionSignature(collection.name, collection.type.toString()),
+      keyType: physicalRecipeType(collection.keyType),
+      valueType: physicalRecipeType(collection.innermostValueType),
+      key: { kind: 'intLiteral', value: '0', resultType: 'bigint' },
+      value: { kind: 'intLiteral', value: '0', resultType: 'bigint' },
+      head: true,
     });
   }
   return result;
@@ -1825,16 +1860,31 @@ export function childDeploymentGenesisState(
   for (const [name, expression] of foldedState ?? []) {
     const variable = variables.find((candidate) => candidate.name === name);
     if (!variable || (!allowUnpackedLayout
-      && (variable.nftIndex === undefined || variable.fieldIndex === undefined))) return undefined;
+      && (variable.nftIndex === undefined || variable.fieldIndex === undefined))) {
+      if ((globalThis as any).process?.env?.SOLIDC_DEBUG_GENESIS_RECIPE === '1') {
+        console.error('GENESIS_VARIABLE_MISS', name, !!variable, variable?.nftIndex, variable?.fieldIndex, allowUnpackedLayout);
+      }
+      return undefined;
+    }
     const type = physicalRecipeType(variable.type);
     // Finite fixed-layout structs and arrays are materialized as ordered aggregate recipes. Dynamic or cyclic
     // layouts remain fenced until their chunk topology and recursive encoding can be authenticated explicitly.
-    if (!materializableGenesisType(variable.type)) return undefined;
+    if (!materializableGenesisType(variable.type)) {
+      if ((globalThis as any).process?.env?.SOLIDC_DEBUG_GENESIS_RECIPE === '1') {
+        console.error('GENESIS_TYPE_MISS', name, variable.type?.toString?.());
+      }
+      return undefined;
+    }
     const value = childDeploymentValueRecipe(
       expression, handlerInputs, false, handlerInputTypes, aliases, aliasDefinitions, variable.type,
       new Set(), helperFunctions,
     );
-    if (!value) return undefined;
+    if (!value) {
+      if ((globalThis as any).process?.env?.SOLIDC_DEBUG_GENESIS_RECIPE === '1') {
+        console.error('GENESIS_RECIPE_MISS', name, variable.type?.toString?.(), expression?.constructor?.name);
+      }
+      return undefined;
+    }
     fields.push({
       name, type, nftIndex: variable.nftIndex ?? 0,
       fieldIndex: variable.fieldIndex ?? variables.indexOf(variable), value,

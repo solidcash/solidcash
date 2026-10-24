@@ -7,7 +7,9 @@
 import fs from 'fs';
 import path from 'path';
 import { encodeCashAddress } from '@bitauth/libauth/build/lib/address/cash-address.js';
+import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { hash160 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { SigningKey as EthersSigningKey } from 'ethers/crypto';
 import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from 'ethers/hash';
 import { getBytes as getEthersBytes } from 'ethers/utils';
@@ -17,6 +19,7 @@ import type {
   ContractRunner, ConnectedStatefulContract, SplitContract, SplitDeployOptions,
   DeployedContract, DeployContractOptions,
 } from '@solidcash/solidcash/stateful';
+import { listDeployments } from '@solidcash/solidcash/stateful';
 import { Network as Networks } from '@solidcash/solidcash/dist/interfaces.js';
 import MockNetworkProvider, { MOCK_CONSENSUS_LIMITS } from '@solidcash/solidcash/dist/network/MockNetworkProvider.js';
 import RegtestNetworkProvider from '@solidcash/solidcash/dist/network/RegtestNetworkProvider.js';
@@ -334,6 +337,60 @@ function withEthersMessageSigning<T extends Signer>(signer: T): T {
     value: async (message: string | Uint8Array): Promise<string> =>
       new EthersSigningKey(signer.privateKey).sign(hashEvmMessage(message)).serialized,
   });
+  // EIP-712 typed-data signing is a plain secp256k1 signature over the typed-data digest. BCH covenant
+  // ecrecover verifies the same curve, so the ethers-parity method can produce the EVM-shaped signature the
+  // ported permit() tests expect instead of refusing the operation.
+  Object.defineProperty(signer, 'signTypedData', {
+    configurable: true,
+    value: async (
+      domain: Record<string, unknown>, types: Record<string, unknown>, value: Record<string, unknown>,
+    ): Promise<string> => {
+      const { TypedDataEncoder } = await import('ethers/hash');
+      // EIP-712's `address` type is a 20-byte EVM word. A ported contract sees its own address (and every
+      // argument) as the 20-byte identity hash160(lock), so normalize CashAddress strings to that same value
+      // before hashing; ethers rejects a CashAddress as an address.
+      const evmAddress = (candidate: unknown): unknown => {
+        if (typeof candidate !== 'string' || /^0x[0-9a-fA-F]{40}$/.test(candidate)) return candidate;
+        try {
+          const decoded = cashAddressToLockingBytecode(candidate) as unknown as { bytecode?: Uint8Array };
+          if (decoded?.bytecode) {
+            const lock = decoded.bytecode;
+            const hex = binToHex(lock);
+            // A P2PKH/P2SH20 address's identity is the payload; a contract (P2SH32) commits to hash160(lock).
+            if (lock.length === 25 && hex.startsWith('76a914') && hex.endsWith('88ac')) return `0x${hex.slice(6, 46)}`;
+            if (lock.length === 23 && hex.startsWith('a914') && hex.endsWith('87')) return `0x${hex.slice(4, 44)}`;
+            return `0x${binToHex(hash160(lock))}`;
+          }
+        } catch { /* not a CashAddress */ }
+        return candidate;
+      };
+      const normalize = (typeName: string, candidate: unknown): unknown => {
+        if (typeName === 'address') return evmAddress(candidate);
+        if (typeName.endsWith('[]') && Array.isArray(candidate)) {
+          return candidate.map((entry) => normalize(typeName.slice(0, -2), entry));
+        }
+        const fields = (types as Record<string, unknown>)[typeName];
+        if (Array.isArray(fields) && candidate !== null && typeof candidate === 'object') {
+          const copy: Record<string, unknown> = { ...(candidate as Record<string, unknown>) };
+          for (const field of fields as Array<{ name: string; type: string }>) {
+            copy[field.name] = normalize(field.type, copy[field.name]);
+          }
+          return copy;
+        }
+        return candidate;
+      };
+      const normalizedDomain = { ...domain };
+      if ('verifyingContract' in normalizedDomain) {
+        normalizedDomain.verifyingContract = evmAddress(normalizedDomain.verifyingContract);
+      }
+      const primary = (Object.keys(types) as string[]).find((name) => name !== 'EIP712Domain');
+      const normalizedValue = primary === undefined ? value : normalize(primary, value) as Record<string, unknown>;
+      const digest = TypedDataEncoder.hash(
+        normalizedDomain as never, types as never, normalizedValue as never,
+      );
+      return new EthersSigningKey(signer.privateKey).sign(digest).serialized;
+    },
+  });
   Object.defineProperty(signer, 'connect', {
     configurable: true,
     value: (nextProvider: NetworkProvider): Signer => withEthersMessageSigning(connect(nextProvider)),
@@ -396,7 +453,7 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
         // mock accounts generously pre-split so those compiler-owned slots do
         // not turn into an artificial wallet-funding limit.
         satoshis: opts.accountSatoshis ?? 100_000_000n,
-        fundingUtxos: 128, genesisFundingUtxos: 4, mnemonic, path: accountsPath, initialIndex: accountsInitialIndex, ...o,
+        fundingUtxos: 512, genesisFundingUtxos: 4, mnemonic, path: accountsPath, initialIndex: accountsInitialIndex, ...o,
       })).map(withEthersMessageSigning);
     }
     const signers = signersFromMnemonic(o.mnemonic ?? mnemonic, provider, {
@@ -508,6 +565,24 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     }
     return wrapFactoryDeploy(sdkGetContractFactory(loaded as T, boundRunner, deployDefaults));
   }) as SolidcashEthers['getContractFactory'];
+  // ethers semantics: (taker) contract methods win a name collision with a framework member. The SDK's dispatch
+  // proxy lets a framework member keep its own name, so `pair.name()` would resolve the contract-name getter;
+  // a getter-created contract must expose the ABI routine under that bare name, as ethers does.
+  const preferAbiMethods = <T extends object>(contract: T, loaded: Artifact): T => {
+    const abiNames = new Set((loaded.abi ?? []).map((entry) => entry.name).filter(Boolean));
+    return new Proxy(contract, {
+      get(target, prop, receiver) {
+        if (typeof prop === 'string' && abiNames.has(prop)) {
+          const direct = Reflect.get(target, prop, target);
+          if (typeof direct !== 'function') {
+            const getFunction = Reflect.get(target, 'getFunction', target);
+            if (typeof getFunction === 'function') return (getFunction as (name: string) => unknown).call(target, prop);
+          }
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+  };
   const contractAt = (<T extends Artifact>(artifactOrName: T | SplitArtifactBundle | string,
     addressOrCategory: string, runner?: ContractRunner) => {
     const loaded = resolveArtifact(artifactOrName);
@@ -517,9 +592,58 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     }
     return (async () => {
       const SC = await loadStatefulContract();
-      const connected = SC.at(addressOrCategory, loaded as T, runner ?? defaultRunner());
+      // A factory-created child's address commits to its category, which only the creating frame knows. Reuse
+      // the registered handle so `getContractAt` reads the state this session actually deployed.
+      const { findDeploymentByAddress, listDeployments } = await import('@solidcash/solidcash/stateful');
+      let registered = typeof addressOrCategory === 'string'
+        ? findDeploymentByAddress(provider as never, addressOrCategory) : undefined;
+      // A getter's decoded `address` is the 20-byte Solidity identity of the child's physical lock; resolve it
+      // against the same registry when a test feeds that value back into `getContractAt`.
+      const rawAddress: unknown = addressOrCategory;
+      if (registered === undefined && rawAddress instanceof Uint8Array
+        && rawAddress.length === 20) {
+        const wanted = binToHex(rawAddress);
+        registered = [...listDeployments(provider as never)].reverse().find((entry) => (
+          entry.lockingBytecode !== undefined
+          && binToHex(hash160(hexToBin(entry.lockingBytecode))) === wanted
+        ));
+      }
+      // Once the identity maps to a deployment, connect through that deployment's cash address: the identity
+      // is not itself an address, and `SC.at` needs either a category or a spendable address to resolve state.
+      const lookupAddress: string | undefined = registered?.address
+        ?? (typeof addressOrCategory === 'string' ? addressOrCategory : undefined);
+      if ((globalThis as any).process?.env?.DEBUG_CREATE2) {
+        console.error('CONTRACT_AT', addressOrCategory, loaded.contractName, registered?.contractName,
+          registered?.category);
+      }
+      if (registered?.contractName === loaded.contractName && registered.category !== undefined) {
+        // Rebuild the child with the exact salt and category its creator used: the data-NFT covenant embeds the
+        // (salted) master lock, so an unsalted handle would query the wrong state addresses.
+        const options: Record<string, unknown> = { provider, addressType: 'p2sh32' };
+        if (registered.salt !== undefined) options.salt = hexToBin(registered.salt);
+        const child = SC.from(loaded as T, [], options as never, registered.category);
+        // ethers parity: `getContractAt` connects the default signer just like `.at()` does. Without it the
+        // builder provisions no native P2PKH input, and a covenant reading msg.sender/tx.origin (emitTxOrigin
+        // scans for exactly that input) refuses the transaction with an empty origin.
+        const runner = defaultRunner() as unknown as {
+          unlockP2PKH?: unknown; getAddress?: unknown; _logicalNonceSigner?: unknown;
+        };
+        if (typeof runner?.unlockP2PKH === 'function' && typeof runner.getAddress === 'function') {
+          (child as unknown as { _signer?: unknown })._signer = runner;
+          (child as unknown as { _logicalNonceSigner?: unknown })._logicalNonceSigner = runner;
+        }
+        return preferAbiMethods(child as object, loaded) as typeof child;
+      }
+      if (lookupAddress === undefined) {
+        throw new Error(
+          `getContractAt: no deployment matches the 20-byte identity ${binToHex(rawAddress as Uint8Array)}`,
+        );
+      }
+      // `at` is async (it eagerly resolves the category); await it before the dispatch proxy wraps the handle,
+      // otherwise the proxy shadows `Promise.prototype.then` and the caller's `await` throws.
+      const connected = await SC.at(lookupAddress, loaded as T, runner ?? defaultRunner());
       registerDeployTargetChildren(connected as Registerable);
-      return connected;
+      return preferAbiMethods(connected as object, loaded) as typeof connected;
     })();
   }) as SolidcashEthers['getContractAt'];
   const contractDeploy = (<T extends Artifact>(artifactOrName: T | SplitArtifactBundle | string,
@@ -657,14 +781,29 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
           : 'p2pkh',
     logicalIdentity: config.logicalIdentity,
   };
-  const base = buildConnection(name, selectedConfig, mnemonic, ethersOpts);
+  // ethers v6 exposes the chain id through provider.getNetwork(). The covenant's `block.chainid` is the
+  // compiler's configured selector (masked to one byte), so report the same value the compiled contracts use.
+  const attachEthersNetwork = <C extends { provider: unknown }>(conn: C): C => {
+    const target = conn.provider as { getNetwork?: unknown } | undefined;
+    if (target !== undefined && typeof target.getNetwork !== 'function') {
+      (target as { getNetwork?: () => Promise<{ chainId: bigint; name: string }> }).getNetwork =
+        async () => ({ chainId: BigInt((config.compiler as { chainId?: number } | undefined)?.chainId ?? 0), name });
+    }
+    const exposed = (conn as unknown as { ethers?: { provider?: unknown } }).ethers?.provider;
+    if (exposed !== undefined && exposed !== target && typeof (exposed as { getNetwork?: unknown }).getNetwork !== 'function') {
+      (exposed as { getNetwork?: () => Promise<{ chainId: bigint; name: string }> }).getNetwork =
+        (target as { getNetwork?: () => Promise<{ chainId: bigint; name: string }> } | undefined)?.getNetwork;
+    }
+    return conn;
+  };
+  const base = attachEthersNetwork(buildConnection(name, selectedConfig, mnemonic, ethersOpts));
   // The active provider backs the module-global network helpers (loadFixture/time/...).
   setActiveProvider(base.provider as unknown as nh.TestNetworkProvider);
 
   const connect = async (n?: string): Promise<NetworkConnection> => {
     const cn = n ?? name;
     const cnCfg = validateNetwork(cn);
-    const conn = buildConnection(cn, cnCfg, mnemonicFor(cnCfg), ethersOpts);
+    const conn = attachEthersNetwork(buildConnection(cn, cnCfg, mnemonicFor(cnCfg), ethersOpts));
     await conn.ethers.getSigners(config.accounts?.count ?? 20);
     setActiveProvider(conn.provider as unknown as nh.TestNetworkProvider);
     return conn;

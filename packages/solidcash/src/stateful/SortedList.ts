@@ -58,6 +58,9 @@ export function keyToSlotMulti(
   collection?: Pick<CollectionInfo, 'keyType' | 'keyTypes' | 'addressKeyEncoding'>,
 ): Uint8Array {
   const types = collection?.keyTypes ?? [collection?.keyType];
+  if ((globalThis as any).process?.env?.DEBUG_VMAP_SLOT) {
+    console.error('VMAP_KEYS', types, keys.map((k) => binToHex(k)), (new Error().stack ?? '').split('\n').slice(2, 14).join(' | '));
+  }
   const normalized = collection?.addressKeyEncoding === 'identity20'
     ? keys.map((key, index) => {
       if (types[index] !== 'address' && types[index] !== 'address payable') return key;

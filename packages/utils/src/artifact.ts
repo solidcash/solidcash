@@ -499,6 +499,8 @@ export interface ChildDeploymentGenesisEntryAbi {
   valueType: string;
   key: ChildDeploymentValueRecipe;
   value: ChildDeploymentValueRecipe;
+  /** The collection's empty-map HEAD sentinel, minted at genesis with an all-zero entry commitment. */
+  head?: true;
 }
 
 export interface ChildDeploymentSiteAbi {

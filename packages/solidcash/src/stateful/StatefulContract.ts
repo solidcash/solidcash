@@ -85,7 +85,7 @@ import type { IdentityOptions, IdentityRecord } from '../bcmr/identity.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 import { isScidIdentityCommitment, resolveLogicalIdentity, type ResolvedLogicalIdentity } from './logical-identity.js';
 
-import { addressToLockScript, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode } from '../utils.js';
+import { addressToLockScript, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode, tryCashAddressToLockScript } from '../utils.js';
 
 import { SortedList, keyToSlotMulti, bytesToSlotValue, encodeEntryCommitment, decodeEntryCommitment } from './SortedList.js';
 import {
@@ -2099,6 +2099,8 @@ export function evalComputedKey(
   state?: Readonly<Record<string, StateValue>>,
   stateLengthDeltas?: Readonly<Record<string, bigint>>,
   mappingValue?: (collection: string, key: unknown) => StateValue | undefined,
+  /** The calling covenant's own physical lock, for keys spelled `address(this)`. */
+  selfLockingBytecode?: Uint8Array,
 ): Uint8Array | undefined {
   if (!label) return undefined;
   const encode = (value: unknown): Uint8Array | undefined => {
@@ -2173,6 +2175,11 @@ export function evalComputedKey(
     if (m) return BigInt(m[1].replace(/_/g, ''));
     m = s.match(/^state:(.+)$/);
     if (m) return state?.[m[1]];
+    // `address(this)` is published as the spending input's own locking bytecode. The SDK knows that lock, but
+    // not from the ABI arguments; without it the key silently falls back to the empty string and collides with
+    // `address(0)` (the pair's burn wrote both balance slots to one vmap key).
+    m = s.match(/^cast:address\(unop:tx\.inputs\[[^\]]+\]\.lockingBytecode\(nullop:this\.activeInputIndex\)\)$/);
+    if (m) return selfLockingBytecode;
     m = s.match(/^unop:\.length\((.*)\)$/);
     if (m) {
       const stateRef = m[1].match(/^state:(.+)$/);
@@ -4142,13 +4149,53 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Mapping collections also dispatch as bare-name getters (`sc.<mapping>(key)`); both resolve via `this.state`.
     for (const c of this.inner.stateLayout?.collections ?? []) if (c.kind === 'mapping') stateNames.add(c.name);
     const solidityStateGetters = this.inner.artifact.compiler?.options?.evmCompat === true;
+    // ethers v6 exposes `contract.fn.staticCall(...)` / `contract.fn.send(...)` on the function property itself.
+    // The bare dispatch value is the SDK call builder, so give it the same callable shape; a trailing ethers
+    // overrides object (`{ value }`) is split from the ABI arguments and applied to the call.
+    const ethersStyleFunctions = new Map<string, unknown>();
+    const abiFunction = (name: string) => this.inner.artifact.abi.find((entry) => entry.name === name);
+    const ethersStyleFunction = (raw: (...args: any[]) => any, name: string): unknown => {
+      const cached = ethersStyleFunctions.get(name);
+      if (cached !== undefined) return cached;
+      const publicInputs = abiFunction(name)?.inputs?.filter((input) => !input.name.startsWith('__internal__')).length;
+      const splitOverrides = (args: unknown[]): { args: unknown[]; overrides?: Record<string, unknown> } => {
+        if (publicInputs === undefined || args.length !== publicInputs + 1) return { args };
+        const last = args[args.length - 1];
+        if (!last || typeof last !== 'object' || last instanceof Uint8Array || Array.isArray(last)) {
+          return { args };
+        }
+        return { args: args.slice(0, -1), overrides: last as Record<string, unknown> };
+      };
+      const invoke = (args: unknown[]): any => {
+        const { args: plain, overrides } = splitOverrides(args);
+        let call = raw.apply(this.call, plain);
+        if (overrides?.value !== undefined && typeof call?.withValue === 'function') {
+          call = call.withValue(BigInt(overrides.value as bigint | number | string));
+        }
+        return call;
+      };
+      const wrapper = ((...args: unknown[]) => invoke(args)) as unknown as {
+        (...args: unknown[]): any;
+        staticCall: (...args: unknown[]) => Promise<unknown>;
+        callStatic: (...args: unknown[]) => Promise<unknown>;
+        send: (...args: unknown[]) => Promise<unknown>;
+      };
+      wrapper.staticCall = (...args: unknown[]) => invoke(args).staticCall();
+      wrapper.callStatic = wrapper.staticCall;
+      wrapper.send = (...args: unknown[]) => invoke(args).send();
+      ethersStyleFunctions.set(name, wrapper);
+      return wrapper;
+    };
     return new Proxy(this, {
       get(target, prop, receiver) {
         if (typeof prop === 'string' && !(prop in target)) {
           // Solidity's generated public getters share their state variable's name. The authenticated state
           // accessor preserves the declared struct/array shape; the ABI route is a flattened multi-return.
           if (solidityStateGetters && stateNames.has(prop)) return (target.state as any)[prop];
-          if (abiNames.has(prop)) return (target.call as any)[prop];
+          if (abiNames.has(prop)) {
+            const raw = (target.call as any)[prop];
+            return typeof raw === 'function' ? ethersStyleFunction(raw, prop) : raw;
+          }
           if (stateNames.has(prop)) return (target.state as any)[prop];
         }
         return Reflect.get(target, prop, receiver);
@@ -7008,6 +7055,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       requiredNftIndices,
       abiFunction,
     );
+    // Export-side reads in a compiler-described expression (`m[address(this)]`) resolve against the same
+    // entry nodes this build already loaded; keep them reachable from the synchronous expression evaluator.
+    (this as unknown as { _activeMappingEntryUtxos?: Utxo[] })._activeMappingEntryUtxos =
+      (onChainState as { entryNftUtxos?: Utxo[] }).entryNftUtxos ?? [];
     timing('state-loaded');
     const statefulCall = (name: string): FunctionArgument[] | undefined => (
       functionName === name ? args
@@ -7513,10 +7564,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 return addressToLockScript(senderSigner.getAddress());
               }
               // Auto-derive a direct computed key (hash160(pk), sha256(x), ...) from its canonical label.
-              const auto = evalComputedKey(source.postWriteExpressionLabel ?? source.expressionLabel,
+              const auto = evalComputedKey(
+                source.postWriteExpressionLabel ?? source.expressionLabel
+                  ?? (/^[a-z]+:/.test(paramName) ? paramName : undefined),
                 entryArgs, entryAbiFunction!.inputs,
                 onChainState.state, undefined,
-                (name, key) => mappingKeyValue(name, key, source.preWriteMappingCollections));
+                (name, key) => mappingKeyValue(name, key, source.preWriteMappingCollections),
+                hexToBin(publicSelfIdentity.lockingBytecode));
               if (auto) return auto;
               // `map:<stateArray>(...)` keys an entry by an element of a dynamic state array, which no ABI input can
               // express: the label indexes by a source-loop local. The entry access's own frame is the row that
@@ -7633,11 +7687,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   ? addressToLockScript((this._signer ?? this._logicalNonceSigner)!.getAddress())
                   : evalComputedKey(
                     access.keySources[0].postWriteExpressionLabel
-                      ?? access.keySources[0].expressionLabel,
+                      ?? access.keySources[0].expressionLabel
+                      ?? (/^[a-z]+:/.test(keyNames[0]) ? keyNames[0] : undefined),
                     entryArgs, entryAbiFunction!.inputs, describedState,
                     undefined, (name, key) => mappingKeyValue(
                       name, key, access.keySources?.[0]?.preWriteMappingCollections,
                     ),
+                    hexToBin(publicSelfIdentity.lockingBytecode),
                   )
                   ?? overrides?.entryKeyOverrides?.get(slotIndex) ?? new Uint8Array(0))
                 : access.keySources?.[0]?.kind === 'stateArrayLast'
@@ -8919,6 +8975,44 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && entryAbiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')) {
         batchPredOutputBase -= 1;
       }
+      // A protocol-fee mint (`if (feeTo != 0) _mint(feeTo, ...)`) is compiled as a conditional entry access
+      // without an activation witness. When feeTo is the zero address its key IS address(0), the same slot the
+      // MINIMUM_LIQUIDITY mint uses: the guard is false, so its slot spends a neutral filler and keeps no node.
+      // A non-zero feeTo resolves to a distinct slot and stays active.
+      const inactiveFeeSlots = new Set<number>();
+      for (const access of entryAbiFunction?.entryAccesses ?? []) {
+        const label = access.keySources?.[0]?.expressionLabel ?? '';
+        if (!/functionName=feeTo\b/.test(label)) continue;
+        const slotIndex = access.slotIndex;
+        const collection = stateLayout.collections.find((candidate) => candidate.name === access.collection);
+        if (slotIndex === undefined || collection === undefined) continue;
+        const target = batchTargetSlots.get(slotIndex);
+        if (target !== undefined
+          && bytesToSlotValue(target) === bytesToSlotValue(keyToSlotMulti([new Uint8Array(20)], collection))) {
+          inactiveFeeSlots.add(slotIndex);
+        }
+      }
+      for (const slotIndex of inactiveFeeSlots) {
+        const entry = entryNfts.find((candidate) => candidate.slotIndex === slotIndex);
+        if (entry) {
+          entry.exists = false;
+          entry.utxo = undefined;
+        }
+        runtimeMessageBusAliasSkipSlots.add(slotIndex);
+        // The inactive fee lane shares its target with the active MINIMUM_LIQUIDITY lane. Alias it to that lane
+        // so both bind one planned target and the inactive lane contributes no second witness/output.
+        const batch = (entryAbiFunction?.sortedBatchInfo ?? []).find((candidate) =>
+          candidate.slotIndices.includes(slotIndex));
+        const target = batchTargetSlots.get(slotIndex);
+        const owner = batch?.slotIndices.find((candidate) => candidate !== slotIndex
+          && !inactiveFeeSlots.has(candidate)
+          && target !== undefined && batchTargetSlots.has(candidate)
+          && bytesToSlotValue(batchTargetSlots.get(candidate)!) === bytesToSlotValue(target));
+        if (owner !== undefined) {
+          batchAliasOwners.set(slotIndex, owner);
+          batchAliasSkips.add(slotIndex);
+        }
+      }
       for (const batch of entryAbiFunction?.sortedBatchInfo ?? []) {
         const collection = stateLayout.collections.find((c) => c.name === batch.collection);
         if (!collection) throw new Error(`Unknown vmap batch collection: ${batch.collection}`);
@@ -9008,6 +9102,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }));
         const writes = batch.slotIndices
           .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !inactiveBatchSlots.has(slotIndex)
+            && !inactiveFeeSlots.has(slotIndex)
             && !readOnlyBatchSlots.has(slotIndex) && !noOpSlots.has(slotIndex) && !lentSlots.has(slotIndex))
           .map((slotIndex) => ({ slot: settlementSlots.get(slotIndex)!, value: new Uint8Array() }));
         if (writes.some((w) => !w.slot)) throw new Error(`vmap batch '${batch.collection}' is missing a target slot`);
@@ -9462,6 +9557,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const proofOwnerOffset = proofOwner === undefined ? undefined
             : entryAbiFunction!.blockLayout?.slots.find((candidate) =>
               candidate.kind === 'entry' && candidate.slotIndex === proofOwner.slotIndex)?.offset;
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_PRED === '1') {
+            console.error('pred-debug', JSON.stringify({
+              functionName, slotIndex, target: binToHex(batchTargetSlots.get(slotIndex) ?? new Uint8Array()).slice(0, 12),
+              proofSlot: proofSlot.slice(0, 12), predOrdinal, firstLinearPred,
+              first: firstLinearPredSlot.get(proofSlot), predOutputs: predOutputs.map((o) => binToHex(o.slot).slice(0, 12)),
+            }));
+          }
           const predOut = predOrdinal < 0 || !firstLinearPred
             ? -1n
             : singleTargetRowBatch
@@ -11694,6 +11796,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let externalOutStateUtxoGroups: ExternalCallUtxoGroup[] = [];
     let outStateInputCount = 0;
 
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_EXTCALL === '1') {
+      console.error('create-builder-orchestrate', JSON.stringify({
+        functionName, abiFunction: abiFunction?.name, calls: abiFunction?.externalCalls?.length,
+        reads: abiFunction?.externalReads?.length, resolved: true,
+      }));
+    }
     // Handle external function calls (cross-contract calls via interfaces)
     const externalCallsOrchestrated = await orchestrateCreateBuilderExternalCallsImpl(
       {
@@ -13680,12 +13788,66 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return evaluateExternalExpressionImpl(
       {
         resolveExternalArgs: (...a: any[]) => (this as any)._resolveExternalArgs(...a),
+        resolveMappingValue: (collection: string, keys: readonly FunctionArgument[]) =>
+          this._resolveActiveMappingValue(collection, keys),
       },
       expression, functionArgs, artifact, state, callerInputs, externalReturns,
-      occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress, localBindings,
-      stateLengthDeltas, strictFieldAccess,
+      occurrenceIndex, stateIncludesPriorWrites,
+      // `address(this)` in a compiler-described expression is this contract's own physical lock when the call
+      // site did not name a distinct executing identity.
+      executionSelfAddress ?? hexToBin(this.inner.lockingBytecode),
+      localBindings, stateLengthDeltas, strictFieldAccess,
       executionCallerAddress,
     );
+  }
+
+  /**
+   * Read one entry of the build's own sorted mapping from the nodes loaded for this call. The compiler
+   * serializes `m[address(this)]` in an external-call argument as a `stateAccess`; the value is not a data-NFT
+   * field, so this is the only synchronous source for it.
+   */
+  private _resolveActiveMappingValue(
+    collectionName: string, keys: readonly FunctionArgument[],
+  ): FunctionArgument | undefined {
+    const layout = this.inner.artifact.stateLayout;
+    const collection = layout?.collections?.find((candidate) => candidate.name === collectionName);
+    const utxos = (this as unknown as { _activeMappingEntryUtxos?: Utxo[] })._activeMappingEntryUtxos;
+    if (!collection || utxos === undefined) return undefined;
+    const keyTypes = collection.keyTypes ?? [collection.keyType];
+    const encoded: Uint8Array[] = [];
+    for (const [index, key] of keys.entries()) {
+      const keyType = keyTypes[index] ?? collection.keyType;
+      if (keyType === 'address' || keyType === 'address payable') {
+        if (key instanceof Uint8Array) {
+          encoded.push(key);
+          continue;
+        }
+        if (typeof key === 'string') {
+          const lock = key.includes(':') ? tryCashAddressToLockScript(key) : undefined;
+          const hex = key.startsWith('0x') ? hexToBin(key.slice(2)) : undefined;
+          if (lock === undefined && hex === undefined) return undefined;
+          encoded.push(lock ?? hex!);
+          continue;
+        }
+        return undefined;
+      }
+      if (key instanceof Uint8Array) encoded.push(key);
+      else if (typeof key === 'bigint') encoded.push(bigIntToVmNumber(key));
+      else if (typeof key === 'number') encoded.push(bigIntToVmNumber(BigInt(key)));
+      else if (typeof key === 'boolean') encoded.push(bigIntToVmNumber(key ? 1n : 0n));
+      else return undefined;
+    }
+    const slot = keyToSlotMulti(encoded, collection);
+    const entry = SortedList.fromUtxos(utxos).find(slot);
+    if (entry === undefined) {
+      return getDefaultStateValue(collection.valueType, layout?.structs) as FunctionArgument;
+    }
+    try {
+      return decodePushdataValue(entry.value, 0, collection.valueType, layout?.structs)
+        .value as FunctionArgument;
+    } catch {
+      return getDefaultStateValue(collection.valueType, layout?.structs) as FunctionArgument;
+    }
   }
 
   /**
@@ -13717,7 +13879,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     externalContract: StatefulContract,
     callerArtifact: Artifact = this.inner.artifact,
     callerState?: Record<string, StateValue>,
-    calleeRouteArtifact: Artifact = externalContract.inner.artifact,
+    calleeRouteArtifact: Artifact | undefined = (externalContract as { inner?: { artifact?: Artifact } })
+      ?.inner?.artifact,
     callerInputs?: readonly { type: string }[],
     callerStateIncludesPriorWrites = false,
     callerSelfAddress?: FunctionArgument,
@@ -14400,6 +14563,9 @@ export class StatefulFunctionCall {
       this.functionName, (this.functionArgs ?? []) as FunctionArgument[],
       this.callInfos.length > 0 ? this.callInfos : undefined,
       this._selectedAbiFunction(),
+      // A read that reaches an external contract carries the same call info a send would: without it the
+      // derive path sees an unresolved external call and cannot build the read's co-spends.
+      this.externalCallInfos.length > 0 ? this.externalCallInfos : undefined,
     ) as Promise<StateValueType>;
   }
 
@@ -14647,7 +14813,14 @@ export class StatefulFunctionCall {
   private _isPureRead(): boolean {
     if (!this.parentContract || this.functionName === undefined) return false;
     const abiFn = this.parentContract.inner.artifact.abi.find((f) => f.name === this.functionName);
-    if (!abiFn || abiFn.writesState !== false) return false;
+    if (!abiFn) return false;
+    // `writesState` is published as `true` for a write and omitted for a read. Treat an omitted flag as a read
+    // only when the compiler also recorded a `view`/`pure` modifier, so a state-changing entry that does not
+    // publish the flag keeps the send path.
+    const readOnly = abiFn.writesState === false
+      || (abiFn.writesState === undefined
+        && (abiFn.modifiers?.includes('view') === true || abiFn.modifiers?.includes('pure') === true));
+    if (!readOnly) return false;
     // A struct-typed mapping getter is published as one output per scalar field (Solidity's auto-getter tuple).
     // Refusing anything but a single output here made `await data.users(addr)` SEND a transaction and hand back
     // TransactionDetails, so every named field of the result read `undefined`.

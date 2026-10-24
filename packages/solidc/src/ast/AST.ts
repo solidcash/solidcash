@@ -2042,6 +2042,8 @@ export class InstantiationNode extends ExpressionNode {
   isStatefulDeploy: boolean = false;
   deployedDataNftCount: number = 0;
   deployedEntryNftCount: number = 0;
+  /** Sorted child collections whose empty HEAD sentinel the deploy mints (no constructor write). */
+  deployedHeadCollections?: Array<{ name: string; signature: string }>;
   deployedStateVars: StateVariableNode[] = [];
   // Deploy-then-call fold: a same-tx `a.foo(x)` on this deploy result is folded into the genesis - the
   // child is deployed in its post-foo state. Maps a child state-var name to the (parent-context) expression

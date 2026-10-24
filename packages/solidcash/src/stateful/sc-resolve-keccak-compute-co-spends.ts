@@ -18,7 +18,7 @@ import type {
 } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
-  buildKeccakChainSidecars, buildKeccakComputeSidecar,
+  buildKeccakChainSidecars, buildKeccakComputeSidecar, groupKeccakPreimages,
 } from '../keccak/keccakComputeSidecar.js';
 import { addressToLockScript } from '../utils.js';
 import {
@@ -196,7 +196,9 @@ export async function resolveKeccakComputeCoSpends(
     : keccakComputeLockingBytecode(salt, true);
   let scUtxos = (await host.inner.provider.getUtxosForLockingBytecode(lock))
     .filter((u) => u.token?.nft?.capability === 'mutable');
-  const batchCount = legacy ? totalCallCount : Math.ceil(totalCallCount / 3);
+  // Allocate conservatively: one side-car per preimage. The resolved preimages are grouped below by their
+  // block cost, because a single side-car funds at most three keccak blocks, not three preimages.
+  const batchCount = totalCallCount;
   // Mock providers can mint the branded compute side-cars on demand. Production providers do not expose
   // addUtxo, so real networks retain the explicit deployment requirement below.
   if (scUtxos.length < batchCount) {
@@ -274,11 +276,16 @@ export async function resolveKeccakComputeCoSpends(
   if (preimages.some((p) => p === null) && probeCtx?.deferUnresolved !== true) {
     await host.extractStatefulKeccakPreimages(abiFunction, preimages, salt, scUtxos, probeCtx);
   }
+  const groups = groupKeccakPreimages(preimages, legacy);
+  if (scUtxos.length < groups.length) {
+    throw new Error(`keccak256 needs ${groups.length} compute side-car UTXO(s) at the branded address; `
+      + `found ${scUtxos.length}. Deploy one mutable-NFT side-car per three keccak blocks.`);
+  }
   const resolved: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }> = [];
-  for (let batch = 0; batch < batchCount; batch++) {
-    const batchPreimages = preimages.slice(batch * 3, batch * 3 + 3);
+  for (let batch = 0; batch < groups.length; batch++) {
+    const batchPreimages = groups[batch];
     if (legacy) {
-      const preimage = preimages[batch];
+      const preimage = batchPreimages[0];
       if (!(preimage instanceof Uint8Array) && probeCtx?.deferUnresolved !== true) {
         throw new Error(`keccak256 preimage ${batch} could not be resolved.`);
       }

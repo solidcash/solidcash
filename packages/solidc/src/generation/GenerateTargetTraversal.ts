@@ -21827,13 +21827,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           false, undefined, undefined, node.referencedContract?.functions,
         )
         : undefined;
+      if ((globalThis as any).process?.env?.SOLIDC_DEBUG_GENESIS_RECIPE === '1') {
+        console.error('GTT_DEPLOY_TARGET', node.referencedContract?.name,
+          'complete', node.constructorStateFoldComplete,
+          'folded', [...(node.foldedStateInit?.keys() ?? [])],
+          'genesis', genesisState !== undefined);
+      }
       const genesisEntries = node.constructorStateFoldComplete === true
         ? childDeploymentGenesisEntries(
           node.foldedCollectionEntries, deployFnParamIndices, deployFnParamTypes,
           this.deploymentRecipeAnalysis.get(node)?.aliases,
           this.deploymentRecipeAnalysis.get(node)?.aliasDefinitions,
+          node.referencedContract?.collections,
         ) : undefined;
       node.deployedEntryNftCount = genesisEntries?.length ?? 0;
+      const headEntries = genesisEntries?.filter((entry) => entry.head === true) ?? [];
+      node.deployedHeadCollections = headEntries.length > 0
+        ? headEntries.map((entry) => ({ name: entry.collection, signature: entry.collectionSignature }))
+        : undefined;
       this.currentFunction.deployTargets.push({
         contractName: node.referencedContract!.name,
         dataNftCount: node.deployedDataNftCount,
@@ -44867,9 +44878,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const slotBase = this.getBlockSlotOffset('deploy', 0);
     const inputBase = slotBase - this.countOutputOnlySlotsBefore(slotBase);
     const dataNftCount = node.deployedDataNftCount;
-    const genesisEntries = node.deployedEntryNftCount === node.foldedCollectionEntries?.length
-      ? node.foldedCollectionEntries : [];
-    const entryNftCount = genesisEntries.length;
+    const foldedEntries = node.deployedEntryNftCount === (node.foldedCollectionEntries?.length ?? 0)
+      + (node.deployedHeadCollections?.length ?? 0) ? (node.foldedCollectionEntries ?? []) : [];
+    const headCollections = node.deployedEntryNftCount === foldedEntries.length
+      + (node.deployedHeadCollections?.length ?? 0) ? (node.deployedHeadCollections ?? []) : [];
+    const entryNftCount = foldedEntries.length + headCollections.length;
     // A LOOP `new C{value:}()` interleaves its value transfer as the LAST output of each child's group (there is
     // no fixed transfer slot for a runtime-variable count), so the per-child stride grows by 1.
     const loopValueTransfer = useCounter && hasEffectiveCallValue(node.callOptions?.value);
@@ -45049,9 +45062,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // output bytecode. This is transitive (first == expected and each later == first) and avoids embedding the
     // sizeable category-parameterized entry covenant once per constructor write.
     const authenticatedEntryLbcExtra = new Map<string, number>();
-    for (const [entryIndex, entry] of genesisEntries.entries()) {
+    const entryVerifications: Array<{
+      signature: string; keyType?: Type; valueType?: Type;
+      key?: ExpressionNode; value?: ExpressionNode; head?: true;
+    }> = [
+      ...foldedEntries.map((entry) => ({
+        signature: computeCollectionSignature(entry.collection.name, entry.collection.type.toString()),
+        keyType: entry.collection.keyType, valueType: entry.collection.innermostValueType,
+        key: entry.key, value: entry.value,
+      })),
+      ...headCollections.map((collection) => ({ signature: collection.signature, head: true as const })),
+    ];
+    for (const [entryIndex, entry] of entryVerifications.entries()) {
       const extra = 1 + dataNftCount + entryIndex;
-      const collectionSignature = computeCollectionSignature(entry.collection.name, entry.collection.type.toString());
+      const collectionSignature = entry.signature;
       const authenticatedExtra = authenticatedEntryLbcExtra.get(collectionSignature);
       if (authenticatedExtra === undefined) {
         this.emit(encodeInt(BigInt(this.getStackIndex(categoryName))), locationData);
@@ -45087,18 +45111,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.popFromStack(2);
 
-      const savedStack = [...this.stack];
-      this.scopeDepth += 1;
-      this.visit(entry.key);
-      this.emitPushdataEncode(entry.collection.keyType, locationData);
-      this.visit(entry.value);
-      this.emitPushdataEncode(entry.collection.innermostValueType, locationData);
-      this.scopeDepth -= 1;
-      this.emit(Op.OP_CAT, locationData);
-      this.popFromStack(2);
-      this.pushToStack('(value)');
-      this.stack = savedStack;
-      this.pushToStack('(value)');
+      if (entry.head === true) {
+        // HEAD[slot 0 | next 0] with the empty-value pad: 128 zero bytes.
+        this.emit(new Uint8Array(128), locationData);
+        this.pushToStack('(value)');
+      } else {
+        const savedStack = [...this.stack];
+        this.scopeDepth += 1;
+        this.visit(entry.key!);
+        this.emitPushdataEncode(entry.keyType!, locationData);
+        this.visit(entry.value!);
+        this.emitPushdataEncode(entry.valueType!, locationData);
+        this.scopeDepth -= 1;
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(value)');
+        this.stack = savedStack;
+        this.pushToStack('(value)');
+      }
       emitOutIndex(extra);
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
       this.pushToStack('(value)');
@@ -45219,8 +45249,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const { deployIndex, masterLbcStackName, categoryStackName } = deploy;
       const deployNode = deploy.node;
       const dataNftCount = deployNode.deployedDataNftCount;
-      const genesisEntries = deployNode.deployedEntryNftCount === deployNode.foldedCollectionEntries?.length
-        ? deployNode.foldedCollectionEntries : [];
+      const foldedEntries = deployNode.deployedEntryNftCount === (deployNode.foldedCollectionEntries?.length ?? 0)
+        + (deployNode.deployedHeadCollections?.length ?? 0) ? (deployNode.foldedCollectionEntries ?? []) : [];
+      const headCollections = deployNode.deployedEntryNftCount === foldedEntries.length
+        + (deployNode.deployedHeadCollections?.length ?? 0) ? (deployNode.deployedHeadCollections ?? []) : [];
+      const entryVerifications: Array<{
+        signature: string; keyType?: Type; valueType?: Type;
+        key?: ExpressionNode; value?: ExpressionNode; head?: true;
+      }> = [
+        ...foldedEntries.map((entry) => ({
+          signature: computeCollectionSignature(entry.collection.name, entry.collection.type.toString()),
+          keyType: entry.collection.keyType, valueType: entry.collection.innermostValueType,
+          key: entry.key, value: entry.value,
+        })),
+        ...headCollections.map((collection) => ({ signature: collection.signature, head: true as const })),
+      ];
 
       // --- a. Master NFT output at block layout deploy offset ---
       // Cumulative offset accounts for heterogeneous deploys with different dataNftCount values
@@ -45399,7 +45442,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // collection compare against that authenticated output, retaining exact address binding with much less
       // verifier bytecode than repeating the parameterized covenant construction.
       const authenticatedEntryLbcOffsets = new Map<string, number>();
-      for (const [entryIndex, entry] of genesisEntries.entries()) {
+      for (const [entryIndex, entry] of entryVerifications.entries()) {
         const entryOutputOffset = deployOffset + 1 + dataNftCount + entryIndex;
         const emitEntryOutputIndex = (): void => {
           if (!this.emitGraphDeployOutputIndex(entryOutputOffset, locationData)) {
@@ -45408,7 +45451,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             this.emit(Op.OP_ADD, locationData);
           }
         };
-        const collectionSignature = computeCollectionSignature(entry.collection.name, entry.collection.type.toString());
+        const collectionSignature = entry.signature;
         const authenticatedOffset = authenticatedEntryLbcOffsets.get(collectionSignature);
         if (authenticatedOffset === undefined) {
           const entryCategoryIndex = this.getStackIndex(categoryStackName);
@@ -45451,18 +45494,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_EQUALVERIFY, locationData);
         this.popFromStack(2);
 
-        const savedStack = [...this.stack];
-        this.scopeDepth += 1;
-        this.visit(entry.key);
-        this.emitPushdataEncode(entry.collection.keyType, locationData);
-        this.visit(entry.value);
-        this.emitPushdataEncode(entry.collection.innermostValueType, locationData);
-        this.scopeDepth -= 1;
-        this.emit(Op.OP_CAT, locationData);
-        this.popFromStack(2);
-        this.pushToStack('(value)');
-        this.stack = savedStack;
-        this.pushToStack('(value)');
+        if (entry.head === true) {
+          // HEAD[slot 0 | next 0] with the empty-value pad: 128 zero bytes.
+          this.emit(new Uint8Array(128), locationData);
+          this.pushToStack('(value)');
+        } else {
+          const savedStack = [...this.stack];
+          this.scopeDepth += 1;
+          this.visit(entry.key!);
+          this.emitPushdataEncode(entry.keyType!, locationData);
+          this.visit(entry.value!);
+          this.emitPushdataEncode(entry.valueType!, locationData);
+          this.scopeDepth -= 1;
+          this.emit(Op.OP_CAT, locationData);
+          this.popFromStack(2);
+          this.pushToStack('(value)');
+          this.stack = savedStack;
+          this.pushToStack('(value)');
+        }
         emitEntryOutputIndex();
         this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
         this.pushToStack('(value)');
@@ -45476,10 +45525,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const fixedIndex = this.currentFunction.graphEmissionHandler ? undefined : deployIndex;
       this.emitDeployCapabilityOutputCount(graphCategory, 0x02, 1, locationData, fixedIndex);
       this.emitDeployCapabilityOutputCount(
-        graphCategory, 0x01, dataNftCount + genesisEntries.length, locationData, fixedIndex,
+        graphCategory, 0x01, dataNftCount + entryVerifications.length, locationData, fixedIndex,
       );
       this.emitDeployChildCategoryBound(
-        graphCategory, 1 + dataNftCount + genesisEntries.length, locationData, fixedIndex,
+        graphCategory, 1 + dataNftCount + entryVerifications.length, locationData, fixedIndex,
       );
     }
 

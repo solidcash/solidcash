@@ -12,7 +12,7 @@ const isCashAddr = (x: unknown): x is string =>
   typeof x === 'string' && /^(bitcoincash|bchtest|bchreg):[0-9a-z]+$/i.test(x);
 
 /** Map a BCH CashAddress to a synthetic 20-byte ETH-style hex address for ethers ABI coding. */
-function cashAddressToEthHex(addr: string): string {
+export function cashAddressToEthHex(addr: string): string {
   const decoded = cashAddressToLockingBytecode(addr);
   if (typeof decoded === 'string') return addr;
   const bc = decoded.bytecode;

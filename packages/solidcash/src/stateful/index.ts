@@ -247,9 +247,10 @@ export {
 } from './KernelDelegateForwarding.js';
 export {
   registerDeployment, findDeploymentByName, findDeploymentByAddress, findDeploymentByLockingBytecode,
-  findDeploymentImplementing, clearDeployments, takeDeploymentRegistrySnapshot,
+  findDeploymentImplementing, clearDeployments, takeDeploymentRegistrySnapshot, listDeployments,
   type RegisteredDeployment, type DeploymentRegistrySnapshot,
 } from './deployment-registry.js';
+export { genesisOutpointKey, isReservedGenesisOutpoint } from './genesis-reservations.js';
 export {
   getDataNftAddress,
   getMessageBusVerifierAddress,

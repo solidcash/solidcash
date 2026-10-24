@@ -151,6 +151,8 @@ export function encodeFunctionArgument(
   argument: FunctionArgument,
   typeStr: string,
   structs?: readonly StructDefinitionInfo[],
+  /** How the owning artifact materializes an address. `'hash'` keeps its 20-byte identity; `'bytecode'`
+   * (the BCH-native default) wraps a bare payload in a P2PKH lock. */
 ): EncodedFunctionArgument {
   // Struct-typed parameter (Solidity encodes a struct as an ABI tuple): accept an object keyed by field name
   // or a positional tuple array - both are valid Solidity/ethers forms. Delegate to the shared pushdata

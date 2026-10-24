@@ -20,19 +20,27 @@ export * from 'ethers/utils';
 export * from 'ethers/wallet';
 export * from 'ethers/wordlists';
 
-import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { cashAddressToLockingBytecode, lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { sha256 as sha256Binary } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 // Reach the SDK through its named subpaths rather than through physical `dist` leaf files. The subpath is a
 // stable package entry a test can `vi.mock` back onto the sources, which is what keeps a test's reservations
 // and this shim's reads in one module instance; a `dist` leaf path can be neither redirected nor deduplicated.
 import { deriveLogicalAddressFromSeed, deriveLogicalCreateAddress } from '@solidcash/solidcash/stateful';
+import {
+  findDeploymentByAddress, genesisOutpointKey, isReservedGenesisOutpoint, listDeployments,
+} from '@solidcash/solidcash/stateful';
+import { Contract as SolidCashContract } from '@solidcash/solidcash';
+import { bytecodeToScript, scriptToAsm } from '@solidcash/utils';
+import { getActiveProvider } from './network-helpers.js';
 import { framedDeploy } from '@solidcash/solidcash/framed';
 // CashAddress-aware ABI coder (wins over ethers/utils re-export for defaultAbiCoder / AbiCoder).
 // Cycle-free: cash-abi-coder only imports ethers/abi + libauth.
 import { AbiCoder as CashAbiCoder, defaultAbiCoder as cashDefaultAbiCoder } from './cash-abi-coder.js';
 import { hexlify, toUtf8Bytes, toUtf8String, getBytes, concat, zeroPadValue, zeroPadBytes, isHexString, isBytesLike } from 'ethers/utils';
 import { getAddress as ethersGetAddress, isAddress } from 'ethers/address';
-import { id, solidityPacked, solidityPackedKeccak256 } from 'ethers/hash';
+import { id, solidityPacked as ethersSolidityPacked, solidityPackedKeccak256 } from 'ethers/hash';
+import { cashAddressToEthHex } from './cash-abi-coder.js';
 import { keccak256, sha256, ripemd160 } from 'ethers/crypto';
 import { parseUnits, formatUnits, parseEther, formatEther } from 'ethers/utils';
 // units may live on ethers root in some versions — import carefully without bare `ethers` (aliased to this file).
@@ -60,6 +68,22 @@ export function getAddress(value: string | Uint8Array): string {
     }
   }
   return ethersGetAddress(`0x${hex}`);
+}
+
+/** CashAddress-aware `solidityPacked`, matching the compiler's `abi.encodePacked` address form. */
+export function solidityPacked(types: readonly string[], values: readonly unknown[]): string {
+  const mapped = values.map((value, index) => {
+    const type = types[index];
+    if (type === 'address' && typeof value === 'string' && /^(bitcoincash|bchtest|bchreg):/i.test(value)) {
+      return cashAddressToEthHex(value);
+    }
+    if (type === 'address[]' && Array.isArray(value)) {
+      return value.map((entry) => (typeof entry === 'string' && /^(bitcoincash|bchtest|bchreg):/i.test(entry))
+        ? cashAddressToEthHex(entry) : entry);
+    }
+    return value;
+  });
+  return ethersSolidityPacked(types, mapped);
 }
 
 /**
@@ -254,8 +278,98 @@ export function getCreateAddress(tx: { from: string; nonce: number | bigint }): 
 export function getCreate2Address(
   from: string, salt: string | Uint8Array, initCodeHash: string | Uint8Array,
 ): string {
-  const saltHex = typeof salt === 'string' ? salt : binToHex(salt);
+  const saltHex = (typeof salt === 'string' ? salt : binToHex(salt)).replace(/^0x/i, '').toLowerCase();
+  if ((globalThis as any).process?.env?.DEBUG_CREATE2) console.error('GET_CREATE2_CALLED', from, saltHex);
   const codeHex = typeof initCodeHash === 'string' ? initCodeHash : binToHex(initCodeHash);
-  // CREATE2 remains a deterministic compatibility placeholder until its separate salt registry is implemented.
+  try {
+    const provider = getActiveProvider() as any;
+    const parent = findDeploymentByAddress(provider, from);
+    // A child this session already created is the exact answer: its address commits to the funding coin's
+    // category, which a pure salt hash cannot reconstruct after the coin is spent.
+    const registered = [...listDeployments(provider)].reverse().find((entry) => (
+      entry.salt?.toLowerCase() === saltHex
+      && entry.parentAddress !== undefined
+      && (entry.parentAddress === (parent?.address ?? from)
+        || (parent?.lockingBytecode !== undefined && entry.parentLockingBytecode === parent.lockingBytecode))
+    ));
+    if (registered) return registered.address;
+    const predicted = process.env.DISABLE_PREDICT ? undefined : predictFactoryChildAddress(provider, parent?.contract, saltHex);
+    if ((globalThis as any).process?.env?.DEBUG_CREATE2) {
+      console.error('GET_CREATE2', JSON.stringify({
+        from, saltHex, parent: parent ? [parent.address, parent.contractName] : null, predicted,
+        contractKeys: parent?.contract ? Object.keys(parent.contract as object).slice(0, 20) : null,
+      }));
+    }
+    if (predicted) return predicted;
+  } catch (error) {
+    if ((globalThis as any).process?.env?.DEBUG_CREATE2) console.error('GET_CREATE2_ERROR', String(error));
+    /* not a BCH deployment context: fall back to the deterministic placeholder */
+  }
+  // CREATE2 remains a deterministic compatibility placeholder when no deployment context can predict the child.
   return deriveLogicalAddressFromSeed(`create2:${from}:${saltHex}:${codeHex}`, prefixOf(from));
+}
+
+/**
+ * Predict the next stateful child a factory's deploy function will create. The child's p2sh32 address commits to
+ * its category, which is the txid of the genesis funding coin `deployFrom` selects; mirror that selection (the
+ * same signer, the same ordered UTXO set, the same vout-0/token-free/cost rules) and build the child script.
+ */
+function predictFactoryChildAddress(provider: any, factory: any, saltHex: string): string | undefined {
+  const artifact = factory?.inner?.artifact;
+  const deployFn = artifact?.abi?.find((candidate: any) => (candidate.deployTargets?.length ?? 0) > 0);
+  const target = deployFn?.deployTargets?.[0];
+  const childArtifact = target && factory?._getChild?.(target.contractName);
+  const signer = factory?._signer;
+  const indexer = provider?.indexer;
+  if ((globalThis as any).process?.env?.DEBUG_CREATE2) {
+    console.error('PREDICT_INPUTS', JSON.stringify({
+      hasTarget: !!target, hasChild: !!childArtifact, signer: !!signer, indexer: !!indexer,
+      deployFn: deployFn?.name, childName: target?.contractName,
+      factoryKeys: factory ? Object.keys(factory).slice(0, 12) : null,
+      canGetChild: typeof factory?._getChild,
+    }));
+  }
+  if (!target || !childArtifact || !signer || !indexer) return undefined;
+  if ((globalThis as any).process?.env?.DEBUG_CREATE2) {
+    console.error('PREDICT_SIGNER', Object.keys(signer), typeof signer.address, signer.address,
+      'proto', Object.getOwnPropertyNames(Object.getPrototypeOf(signer)));
+  }
+  const signerLock: Uint8Array = typeof signer.generateLockingBytecode === 'function'
+    ? signer.generateLockingBytecode()
+    : (() => {
+      const decoded = cashAddressToLockingBytecode(signer.address);
+      if (typeof decoded === 'string') throw new Error('prediction signer has no locking bytecode');
+      return decoded.bytecode;
+    })();
+  const dataNfts = BigInt(childArtifact.stateLayout?.dataNftCount ?? target.dataNftCount ?? 1);
+  const cost = 1200n + 1200n * dataNfts + 5000n + 2400n;
+  const entries = indexer.getUtxos(binToHex(sha256Binary.hash(signerLock))) as Array<{
+    outpoint: { txid: string; vout: number }; satoshis: bigint; tokenData?: unknown;
+  }>;
+  if ((globalThis as any).process?.env?.DEBUG_CREATE2) {
+    console.error('PREDICT_UTXOS', signer.address, entries.length,
+      entries.filter((entry) => entry.outpoint.vout === 0 && !entry.tokenData).slice(0, 8)
+        .map((entry) => [entry.outpoint.txid, entry.outpoint.vout, String(entry.satoshis)]));
+  }
+  const funding = entries.find((entry) => entry.outpoint.vout === 0 && entry.tokenData === undefined
+    && entry.satoshis >= cost
+    && !isReservedGenesisOutpoint(genesisOutpointKey(entry.outpoint.txid, entry.outpoint.vout)));
+  if (!funding) return undefined;
+  const effectiveArtifact = {
+    ...childArtifact,
+    bytecode: scriptToAsm(bytecodeToScript(hexToBin(target.creationBytecode))),
+  };
+  const child = new SolidCashContract(effectiveArtifact as any, [], {
+    provider,
+    addressType: 'p2sh32',
+    category: hexToBin(funding.outpoint.txid),
+    salt: hexToBin(saltHex),
+  } as any) as any;
+  if ((globalThis as any).process?.env?.DEBUG_CREATE2) {
+    console.error('PREDICT_CHILD', JSON.stringify({
+      category: funding.outpoint.txid, salt: saltHex, address: child.address,
+      bytecodeLen: child.bytecode.length / 2,
+    }));
+  }
+  return child.address;
 }

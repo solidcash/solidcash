@@ -140,6 +140,9 @@ export async function orchestrateCreateBuilderExternalCalls(
     [key: string]: any;
   },
 ): Promise<OrchestrateCreateBuilderExternalCallsResult> {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_EXTCALL === '1') {
+    console.error('extcall-enter', JSON.stringify({ name: params.abiFunction?.name, calls: (params.abiFunction as any)?.externalCalls?.length }));
+  }
   let {
     finalArgs,
     outStateInputCount,
@@ -272,6 +275,13 @@ export async function orchestrateCreateBuilderExternalCalls(
     overrides?.returnProbeOnly === true,
   );
   let externalCalls = expandedExternal.externalCalls;
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_EXTCALL === '1') {
+    console.error('extcall-expanded', JSON.stringify({
+      calls: externalCalls?.length, resolved: expandedExternal.resolvedExternalCalls?.length,
+      resolvedKeys: expandedExternal.resolvedExternalCalls?.map((c: any) => c && Object.keys(c).slice(0, 6)),
+      overridesCalls: params.overrides?.externalCalls?.length,
+    }));
+  }
   const loopIdxRanges = expandedExternal.loopIdxRanges;
   let callerStateSnapshot = expandedExternal.callerStateSnapshot;
   let resolvedExternalCalls = expandedExternal.resolvedExternalCalls as ExternalCallInfo[] | undefined;
@@ -729,6 +739,16 @@ export async function orchestrateCreateBuilderExternalCalls(
       }
     }
 
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_EXTCALL === '1') {
+      console.error('extcall-groups', JSON.stringify({
+        externalCallOutputStart, returnEventOutputBase,
+        groups: externalCallUtxoGroups.map((g, i) => ({
+          i, name: g.functionName, hasReturn: groupMetas[i]?.ecSlot.hasReturnValues,
+          inBlock: isInBlockGroup(i), offset: g.blockLayout?.slots.find((s) => s.kind === 'returnEvent')?.offset,
+        })),
+        map: [...returnEventIndexMap.entries()],
+      }));
+    }
     const nestedBasesUnlockers = await finalizeCreateBuilderNestedBasesUnlockersImpl(
       {
         provider: host.inner.provider,

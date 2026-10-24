@@ -1523,12 +1523,16 @@ export class TransactionBuilder {
     // ordering decides nothing. It costs nothing on the admitted path: the bytes are assessed first and an
     // admitted verdict returns before the VM is touched, so all 1,159 accepted sends the X126 probe measured
     // through this site are byte-for-byte unaffected.
-    const { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder, finalizedByteGateReceiptOf } = await import('./message-bus/preflight.js');
+    const { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } = await import('./message-bus/preflight.js');
+    const { finalizedByteGateReceiptOf, finalizedByteGateOptionsForProvider } = await import('./message-bus/finalized-byte-gate.js');
+    // A send that never ran an exact message-bus preflight has no receipt. The destination provider's
+    // consensus limits are then the only profile available, and they are the authority a real provider
+    // would judge the bytes against. With no configured limits this is the empty profile, unchanged.
     assertFinalizedBytesWithCovenant(
       this,
       transaction,
       inputSubjectsOfBuilder(this),
-      finalizedByteGateReceiptOf(this),
+      finalizedByteGateReceiptOf(this) ?? finalizedByteGateOptionsForProvider(this.provider),
     );
 
     let txid: string;

@@ -8,7 +8,7 @@ import {
 } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import { buildKeccakComputeSidecar } from '../keccak/keccakComputeSidecar.js';
+import { buildKeccakComputeSidecar, groupKeccakPreimages } from '../keccak/keccakComputeSidecar.js';
 
 export interface ResolveExternalKeccakSideCarsHost {
   readonly provider: NetworkProvider;
@@ -66,15 +66,15 @@ export async function resolveExternalKeccakSideCars(
   }
   const inputs: UnlockableUtxo[] = [];
   const recreates: Output[] = [];
-  const batchCount = Math.ceil(params.length / 3);
-  for (let batch = 0; batch < batchCount; batch++) {
-    const batchPreimages = preimages.slice(batch * 3, batch * 3 + 3);
+  const groups = groupKeccakPreimages(preimages);
+  for (let batch = 0; batch < groups.length; batch++) {
+    const batchPreimages = groups[batch];
     if (batchPreimages.some((preimage) => !(preimage instanceof Uint8Array))) {
       throw new Error(`keccak256 preimage batch ${batch} could not be resolved.`);
     }
     if (!scUtxos[batch]) {
       throw new Error(`keccak256 compute side-car UTXO not found for external call (batch ${batch}); deploy one `
-        + 'mutable-NFT side-car per three keccak256 calls at the shared side-car address.');
+        + 'mutable-NFT side-car per three keccak blocks at the shared side-car address.');
     }
     const { unlocker, recreate } = buildKeccakComputeSidecar(
       batchPreimages as Uint8Array[], salt, scUtxos[batch], true,

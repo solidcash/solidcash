@@ -8,6 +8,13 @@ export interface RegisteredDeployment {
   address: string;
   lockingBytecode?: string;
   contract: unknown;
+  /** For a factory-created child: the deploying contract's logical and value identities. */
+  parentAddress?: string;
+  parentLockingBytecode?: string;
+  /** The CREATE2 salt the child address was composed with, when one was used. */
+  salt?: string;
+  /** A factory-created stateful child's token category (the genesis funding outpoint's txid). */
+  category?: string;
 }
 
 /** Exact covenant bytecode which executes calls made by a registered deployment. */

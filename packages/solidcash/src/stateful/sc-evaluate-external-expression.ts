@@ -2,7 +2,7 @@
  * phase-boundary extract: SC class-body extract — evaluate compiler-described external-call expressions.
  */
 
-import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import {
   decodePushdataValue,
@@ -375,18 +375,21 @@ export function evaluateExternalExpression(
       keys.push(key);
     }
     const direct = state?.[expression.name] as unknown;
-    // A mapping-backed state variable is not a data-NFT field, so the caller's own state never carries it: the
-    // host's keyed lookup is what reads the node the deployment holds for those keys.
-    if (direct === undefined && host.resolveMappingValue !== undefined) {
-      return host.resolveMappingValue(expression.name, keys);
-    }
     let value: unknown = direct;
+    let directResolved = direct !== undefined;
     for (const key of keys) {
       if (Array.isArray(value)) value = value[Number(key)];
       else if (value && typeof value === 'object') value = (value as Record<string, unknown>)[String(key)];
-      else return undefined;
+      else { directResolved = false; value = undefined; break; }
+      if (value === undefined) { directResolved = false; break; }
     }
-    return value as FunctionArgument | undefined;
+    if (directResolved) return value as FunctionArgument | undefined;
+    // A mapping-backed state variable's entries are not data-NFT fields, and the plain snapshot may still carry
+    // a placeholder for the collection. The host's keyed lookup reads the node the deployment actually holds.
+    if (host.resolveMappingValue !== undefined) {
+      return host.resolveMappingValue(expression.name, keys);
+    }
+    return undefined;
   }
   if (expression.kind === 'field' && expression.expression && expression.name) {
     let base = evaluate(expression.expression);
@@ -586,11 +589,29 @@ export function evaluateExternalExpression(
         : expression.type === 'string' ? '' : new Uint8Array();
     return Array.from({ length }, () => empty) as FunctionArgument;
   }
+  // A producer result is published with more or fewer source coordinates depending on where it is referenced
+  // (`sourceCallsiteId` is present on an activation condition but not on the same producer's address source).
+  // Match the identity fields that decide the value, rather than one exact serialization.
+  const producerReturn = (candidate: ExternalCallExpression): FunctionArgument | undefined => {
+    if (!externalReturns) return undefined;
+    const exact = externalReturns.get(JSON.stringify(candidate));
+    if (exact !== undefined) return exact;
+    for (const [key, value] of externalReturns) {
+      let parsed: { kind?: string; callsiteId?: number; resultIndex?: number; name?: string };
+      try { parsed = JSON.parse(key); } catch { continue; }
+      if (parsed.kind !== candidate.kind) continue;
+      if (parsed.callsiteId !== candidate.callsiteId) continue;
+      if (parsed.resultIndex !== candidate.resultIndex) continue;
+      if (parsed.name !== candidate.name) continue;
+      return value;
+    }
+    return undefined;
+  };
   if (expression.kind === 'externalCall') {
-    return externalReturns?.get(JSON.stringify(expression));
+    return producerReturn(expression);
   }
   if (expression.kind === 'producerResult') {
-    return externalReturns?.get(JSON.stringify(expression));
+    return producerReturn(expression);
   }
   if (expression.kind === 'arrayAccess' && expression.left && expression.right) {
     const array = evaluate(expression.left);
@@ -737,6 +758,19 @@ export function evaluateExternalExpression(
       };
       const result = execute(expression.statements);
       if (!invalid && result.returned) return result.value;
+    }
+    // Library arithmetic (`SafeMath.mul/add/sub/div`) is serialized as a call without an inline helper body.
+    // Evaluate the four checked-arithmetic primitives from their operands; the covenant enforces the same
+    // overflow guard, so a value that would fail there never reaches transaction assembly.
+    if (expression.name && values.length === 2) {
+      const match = expression.name.match(/\.(add|sub|mul|div)$/);
+      if (match && typeof values[0] === 'bigint' && typeof values[1] === 'bigint') {
+        const [left, right] = values as [bigint, bigint];
+        if (match[1] === 'add') return left + right;
+        if (match[1] === 'sub') return left >= right ? left - right : undefined;
+        if (match[1] === 'mul') return left * right;
+        if (match[1] === 'div') return right === 0n ? undefined : left / right;
+      }
     }
     // Struct constructors are admitted only by the artifact's exact declared schema; spelling is not authority.
     if (expression.name && expression.type === expression.name

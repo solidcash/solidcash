@@ -56,7 +56,8 @@ export function buildRepeatedExternalBatch(
   externalContract: StatefulContract,
   callerArtifact: Artifact = host.inner.artifact,
   callerState?: Record<string, StateValue>,
-  calleeRouteArtifact: Artifact = externalContract.inner.artifact,
+  calleeRouteArtifact: Artifact | undefined = (externalContract as { inner?: { artifact?: Artifact } })
+    ?.inner?.artifact,
   callerInputs?: readonly { type: string }[],
   callerStateIncludesPriorWrites = false,
   callerSelfAddress?: FunctionArgument,
@@ -75,7 +76,8 @@ export function buildRepeatedExternalBatch(
     throw new Error('Repeated external message-bus batch must contain at least two source callsites');
   }
 
-  const capability = calleeRouteArtifact.messageBus;
+  const routeArtifact = calleeRouteArtifact ?? callerArtifact;
+  const capability = routeArtifact.messageBus;
   if (!capability || capability.version !== 1 || capability.selector !== '53434231') {
     throw new Error(
       `${externalCall.interfaceName} does not advertise a compatible message-bus route`,
@@ -188,16 +190,16 @@ export function buildRepeatedExternalBatch(
     // reads `__internal__msgSenderCategory` instead, so print both halves to see whether the same identity is
     // published twice or only once.
     console.error('route-caller-identity', JSON.stringify({
-      callee: calleeRouteArtifact.contractName,
+      callee: routeArtifact.contractName,
       rows: (externalCall.batchInvocations ?? []).length,
       callerIdentity,
       callerLockingBytecode: String(routeMsgSender).slice(0, 34),
-      declaresMsgSenderCategory: (calleeRouteArtifact.abi ?? []).some((fn) =>
+      declaresMsgSenderCategory: (routeArtifact.abi ?? []).some((fn) =>
         (fn.inputs ?? []).some((input) => input.name === '__internal__msgSenderCategory')),
     }));
   }
 
-  const structs = calleeRouteArtifact.structs
+  const structs = routeArtifact.structs
     ?? externalContract.inner.stateLayout?.structs;
   const keyWitnessValues = new Map<string, {
     value: FunctionArgument;
@@ -244,7 +246,7 @@ export function buildRepeatedExternalBatch(
     if (!args || args.length !== row.inputs.length) {
       throw new Error(`Could not resolve every argument for external message-bus batch row ${rowIndex}`);
     }
-    const handlerAbi = calleeRouteArtifact.abi.find((fn) => (
+    const handlerAbi = routeArtifact.abi.find((fn) => (
       fn.selector?.toLowerCase() === row.selector.toLowerCase()
     ));
     if (!handlerAbi) throw new Error(`Message-bus handler ABI '${handler.name}' is missing`);
@@ -349,7 +351,7 @@ export function buildRepeatedExternalBatch(
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_VMAP_PROOF === '1') {
     console.error('delegate-route-vmap-args', {
-      contract: calleeRouteArtifact.contractName,
+      contract: routeArtifact.contractName,
       inputs: routeWitnessInputs.map((input, index) => ({
         name: input.name,
         value: routeWitnesses[index] instanceof Uint8Array

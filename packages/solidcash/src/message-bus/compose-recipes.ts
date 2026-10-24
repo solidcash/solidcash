@@ -96,8 +96,23 @@ const recipeType = (
   ?? (recipe.kind === 'handlerInput' ? inputTypes[recipe.inputIndex] : undefined)
   ?? (() => { throw new Error('messageBus: deployment recipe has no result type'); })();
 
-const numericRecipeValue = (value: FunctionArgument, typeName: string, solidityAbi: boolean): bigint => {
-  if (typeof value === 'bigint') return value;
+/** Unsigned big-endian byte comparison, ignoring leading zero bytes (the compiled bytes->number ordering). */
+const compareUnsignedBigEndian = (left: Uint8Array, right: Uint8Array): number => {
+  let leftStart = 0;
+  while (leftStart < left.length && left[leftStart] === 0) leftStart += 1;
+  let rightStart = 0;
+  while (rightStart < right.length && right[rightStart] === 0) rightStart += 1;
+  const leftLength = left.length - leftStart;
+  const rightLength = right.length - rightStart;
+  if (leftLength !== rightLength) return leftLength < rightLength ? -1 : 1;
+  for (let index = 0; index < leftLength; index += 1) {
+    const difference = left[leftStart + index]! - right[rightStart + index]!;
+    if (difference !== 0) return difference < 0 ? -1 : 1;
+  }
+  return 0;
+};
+
+const numericRecipeValue = (value: FunctionArgument, typeName: string, solidityAbi: boolean): bigint => {  if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
   if (typeof value === 'boolean') return value ? 1n : 0n;
   if (typeof value === 'string' && /^(?:-?\d+|0x[0-9a-f]+)$/i.test(value)) return BigInt(value);
@@ -385,6 +400,24 @@ export const evaluateChildDeploymentRecipe = (
   }
   const rightValue = evaluate(recipe.right);
   const rightType = recipeType(recipe.right, inputTypes);
+  // Relational operators on byte values compare them as unsigned big-endian numbers (the compiled script's
+  // address ordering), not as minimal VM numbers.
+  const byteRelational = ['<', '<=', '>', '>='].includes(recipe.operator)
+    && (parseTypeStrict(leftType) instanceof AddressType || parseTypeStrict(leftType) instanceof BytesType)
+    && (parseTypeStrict(rightType) instanceof AddressType || parseTypeStrict(rightType) instanceof BytesType);
+  if (byteRelational) {
+    const comparison = compareUnsignedBigEndian(
+      byteRecipeValue(leftValue, leftType, solidityAbi),
+      byteRecipeValue(rightValue, rightType, solidityAbi),
+    );
+    switch (recipe.operator) {
+      case '<': return comparison < 0;
+      case '<=': return comparison <= 0;
+      case '>': return comparison > 0;
+      case '>=': return comparison >= 0;
+      default: break;
+    }
+  }
   const leftParsedType = parseTypeStrict(leftType);
   const rightParsedType = parseTypeStrict(rightType);
   const resultParsedType = parseTypeStrict(resultType);

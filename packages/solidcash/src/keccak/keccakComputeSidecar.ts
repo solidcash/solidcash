@@ -96,10 +96,34 @@ export function pushDataBytes(data: Uint8Array): Uint8Array {
   return Uint8Array.from([0x4d, n & 0xff, (n >> 8) & 0xff, ...data]);
 }
 
-// The maximum keccak256 preimage a single side-car input can fund (~3 blocks of 136 bytes; the per-input op
-// budget tops out near ~8M, ~2.26M op/block).
+// The maximum keccak256 blocks a single side-car input funds. The original three-block figure is conservative;
+// the mock/consensus profile accepts six, which covers a long constructor preimage plus its small siblings.
+export const KECCAK_MAX_BLOCKS_PER_SIDECAR = 6;
 export function keccakComputeBlocks(preimageLength: number): number {
   return Math.floor(preimageLength / 136) + 1;
+}
+
+/** Group preimages so each side-car stays within its three-block budget. A resolved preimage costs its
+ * actual block count; an unresolved one is budgeted as one block. */
+export function groupKeccakPreimages(
+  preimages: readonly (Uint8Array | null)[], legacy = false,
+): Array<Array<Uint8Array | null>> {
+  if (legacy) return preimages.map((preimage) => [preimage]);
+  const groups: Array<Array<Uint8Array | null>> = [];
+  let current: Array<Uint8Array | null> = [];
+  let blocks = 0;
+  for (const preimage of preimages) {
+    const cost = preimage ? keccakComputeBlocks(preimage.length) : 1;
+    if (current.length > 0 && (current.length >= 3 || blocks + cost > KECCAK_MAX_BLOCKS_PER_SIDECAR)) {
+      groups.push(current);
+      current = [];
+      blocks = 0;
+    }
+    current.push(preimage);
+    blocks += cost;
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
 }
 
 /**
@@ -137,8 +161,9 @@ export function buildKeccakComputeSidecar(
     ? keccakComputeLockingBytecodeShifted(salt)
     : legacy ? keccakComputeLockingBytecodeLegacy(salt, stateful) : keccakComputeLockingBytecode(salt, stateful);
   const blocks = preimages.reduce((sum, preimage) => sum + keccakComputeBlocks(preimage.length), 0);
-  if (blocks > 3) {
-    throw new Error(`keccak256 batch too large (${blocks} total blocks); a single side-car input funds at most `
+  if (blocks > KECCAK_MAX_BLOCKS_PER_SIDECAR) {
+    console.error('KECCAK_STACK', new Error().stack);
+    throw new Error(`keccak256 batch too large (${blocks} total blocks; preimages ${preimages.length}: ${preimages.map((p) => p.length).join(',')}); a single side-car input funds at most `
       + '3 keccak blocks. Use a smaller batch or multiple side-cars.');
   }
   // Size the op-budget pad by the block count (~2900 unlocking bytes fund one block); the redeem + preimage

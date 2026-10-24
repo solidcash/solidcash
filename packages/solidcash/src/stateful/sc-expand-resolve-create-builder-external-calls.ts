@@ -177,6 +177,8 @@ export async function expandResolveCreateBuilderExternalCalls(
     }
   }
 
+  // Producer results resolved for the activation predicates, reused to resolve a conditional call's target.
+  let producerReturns: ReadonlyMap<string, FunctionArgument> | undefined;
   // A published false activation has no call operand or participant block to resolve. The final covenant
   // remains authoritative if an earlier write changes the condition: an omitted required callee cannot
   // satisfy its on-chain identity check. Keep unresolved conditions as candidates rather than guessing.
@@ -189,9 +191,37 @@ export async function expandResolveCreateBuilderExternalCalls(
         conditions, args, artifact, callerStateSnapshot, abiFunction?.inputs, publicSelfAddress,
       ) as Record<string, StateValue>;
     }
-    externalCalls = externalCalls.filter((call) => call.occurrence !== 'conditional' || !call.condition
-      || host.evaluateExternalExpression(call.condition, args, artifact, callerStateSnapshot,
-        abiFunction?.inputs, undefined, 0, false, publicSelfAddress) !== false);
+    // A condition may depend on an earlier call's result (`totalSupply == 0 && msg.sender == migrator()`).
+    // Resolve those producers first: without them the condition stays unknown, its zero-target callee cannot be
+    // resolved, and the all-or-nothing resolution below would drop every *other* reached call as well. A
+    // producer that cannot be resolved only means the condition stays unknown; it never proves the call away.
+    let conditionReturns: ReadonlyMap<string, FunctionArgument> | undefined;
+    if (host.resolveExternalExpressionReturns
+      && conditions.some((condition) => containsReturningExpression(condition))) {
+      try {
+        conditionReturns = await host.resolveExternalExpressionReturns(
+          conditions.map((expression) => ({ kind: 'expression', expression })),
+          args, callerStateSnapshot, abiFunction?.inputs, publicSelfAddress,
+          abiFunction?.externalCalls ?? [],
+        );
+      } catch (error) {
+        if (!(error instanceof ExternalExpressionUnresolvedConditionError)) throw error;
+      }
+    }
+    producerReturns = conditionReturns;
+    externalCalls = externalCalls.filter((call) => {
+      if (call.occurrence !== 'conditional' || !call.condition) return true;
+      const verdict = host.evaluateExternalExpression(call.condition, args, artifact, callerStateSnapshot,
+        abiFunction?.inputs, conditionReturns, 0, false, publicSelfAddress);
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_EXTCALL === '1' && call.functionName === 'desiredLiquidity') {
+        console.error('extcall-condition', JSON.stringify({
+          f: call.functionName, verdict: typeof verdict === 'bigint' ? String(verdict) : verdict,
+          hasReturns: conditionReturns !== undefined,
+        }));
+      }
+      return verdict !== false;
+    });
     if (externalCalls.length === 0) {
       return {
         externalCalls: [], presetResolved: [], loopIdxRanges: [], resolvedExternalCalls: [],
@@ -325,7 +355,7 @@ export async function expandResolveCreateBuilderExternalCalls(
   // falling back to [] for no-arg functions.
   let resolvedExternalCalls = overrideExternalCalls;
   if (externalCalls && externalCalls.length > 0 && !resolvedExternalCalls) {
-    const autoResolved: CreateBuilderResolvedExternalCall[] = [];
+    const autoResolved: Array<CreateBuilderResolvedExternalCall | undefined> = [];
     let canAutoResolve = true;
     for (let eci = 0; eci < externalCalls.length; eci++) {
       const ec = externalCalls[eci];
@@ -337,12 +367,13 @@ export async function expandResolveCreateBuilderExternalCalls(
       let registeredAtAddress: unknown;
       const hasPublishedTarget = ec.addressSource !== undefined
         || ec.addressStateVar !== undefined || ec.addressLiteral !== undefined;
+      let address: unknown;
       if (hasPublishedTarget) {
         callerStateSnapshot ??= (await host.getFullState()).state;
-        const address = ec.addressSource
+        address = ec.addressSource
           ? host.resolveExternalArgs(
             [ec.addressSource], args, artifact, callerStateSnapshot, abiFunction?.inputs,
-            undefined, 0, false, publicSelfAddress,
+            producerReturns, 0, false, publicSelfAddress,
           )?.[0]
           : ec.addressStateVar !== undefined
             ? callerStateSnapshot[ec.addressStateVar]
@@ -367,6 +398,32 @@ export async function expandResolveCreateBuilderExternalCalls(
       const registered = pinned ?? registeredAtAddress
         ?? (hasPublishedTarget ? undefined : host.getExternalRegistryEntry(ec.interfaceName));
       if (!registered) {
+        // A conditional call whose published target resolves to the zero identity has no callee. A *returning*
+        // call there cannot succeed (empty returndata fails the ABI decode), so a successful execution never
+        // takes it: drop the callsite the way a proven-false condition is dropped. Failing the whole fan-out
+        // instead would also drop every reached call before it (balanceOf, feeTo) and produce a transaction
+        // whose return witnesses cannot be filled.
+        const zeroTarget = ec.hasReturnValues === true && ec.occurrence === 'conditional'
+          && ((address instanceof Uint8Array && address.every((byte) => byte === 0))
+            || (typeof address === 'string' && /^(?:0x)?0*$/i.test(address))
+            || (typeof address === 'bigint' && address === 0n)
+            || address === 0);
+        if (zeroTarget) {
+          autoResolved.push(undefined);
+          continue;
+        }
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_EXTCALL === '1') {
+          console.error('extcall-unresolved', JSON.stringify({
+            interfaceName: ec.interfaceName, functionName: ec.functionName,
+            occurrence: ec.occurrence, hasPublishedTarget,
+            addressStateVar: ec.addressStateVar,
+            addressSource: ec.addressSource ? JSON.stringify(ec.addressSource).slice(0, 120) : undefined,
+            addressLiteral: ec.addressLiteral,
+            address: address instanceof Uint8Array ? [...address].map((b) => b.toString(16).padStart(2, '0')).join('') : address,
+            producerReturns: producerReturns ? [...producerReturns.keys()] : undefined,
+          }, (_key, value) => (typeof value === 'bigint' ? value.toString() : value)));
+        }
         canAutoResolve = false;
         break;
       }
@@ -430,7 +487,14 @@ export async function expandResolveCreateBuilderExternalCalls(
       });
     }
     if (canAutoResolve && autoResolved.length === externalCalls.length) {
-      resolvedExternalCalls = autoResolved;
+      const kept = autoResolved.filter((call): call is CreateBuilderResolvedExternalCall => call !== undefined);
+      if (kept.length !== autoResolved.length) {
+        externalCalls = externalCalls.filter((_call, index) => autoResolved[index] !== undefined);
+        if (presetResolved) {
+          presetResolved = presetResolved.filter((_call, index) => autoResolved[index] !== undefined);
+        }
+      }
+      resolvedExternalCalls = kept;
     }
   }
 

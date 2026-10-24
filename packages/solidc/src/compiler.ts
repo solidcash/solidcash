@@ -4361,6 +4361,7 @@ function childDeploymentSites(
       const genesisEntries = value.constructorStateFoldComplete === true
         ? childDeploymentGenesisEntries(
           value.foldedCollectionEntries, inputIndex, inputTypes, analyzed?.aliases, analyzed?.aliasDefinitions,
+          child.collections,
         ) : undefined;
       if (root.messageBusEligible === true && value.hasFoldedChildCall && !genesisState) {
         throw new Error(`Kernel folded child initialization at site ${sites.length} has no complete genesis proof`);
@@ -18733,13 +18734,20 @@ function compileResolvedAst(
   }
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
+  const blockOracleLockSlots = findBlockOracleLockSlots(asmToBytecode(artifact.bytecode));
   if (ast.contract.usesBlockOracle) {
-    const slots = findBlockOracleLockSlots(asmToBytecode(artifact.bytecode));
-    if (slots.length === 0) {
+    if (blockOracleLockSlots.length === 0) {
       throw new Error(`'${artifact.contractName}' reads the block oracle but did not publish its lock pin`);
     }
     artifact.usesBlockOracle = true;
-    artifact.blockOracleLockSlots = slots;
+    artifact.blockOracleLockSlots = blockOracleLockSlots;
+  } else if (blockOracleLockSlots.length > 0) {
+    // An embedded child creation template can carry the child's oracle lock sentinel even when this contract
+    // never reads the oracle itself. Publish those slots so the deployment utility binds the same lock the SDK
+    // binds into the child: the parent covenant hashes the child script, so an unpatched embedded sentinel would
+    // derive a different child address than the one the SDK deploys. `usesBlockOracle` stays false (this
+    // contract needs no keeper) while the byte-level pins are still rewritten.
+    artifact.blockOracleLockSlots = blockOracleLockSlots;
   }
   const boundVerifierProgram = mergedCompilerOptions.__messageBusVerifierProgram ?? singlePassVerifierProgram;
   if (boundVerifierProgram && artifact.messageBus?.route.inputs.some((input) =>

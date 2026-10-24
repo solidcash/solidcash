@@ -6,8 +6,10 @@
 import './builtin-tasks.js';
 import {
   getActiveHre, getDefaultHre, createHardhatRuntimeEnvironment, initHre, hardhatCompatConfig,
+  loadArtifactByName,
   type HardhatRuntimeEnvironment, type SolidcashEthers, type HardhatNetwork,
 } from './hre.js';
+import { asmToBytecode } from '@solidcash/utils';
 import type { TaskArguments } from './tasks.js';
 
 // `upgrades` (deployProxy/upgradeProxy) transitively pulls the whole StatefulContract graph. Load it lazily so
@@ -45,6 +47,20 @@ export const network = lazy<HardhatNetwork>((h) => h.network);
 export const config = lazy<Record<string, unknown>>((h) => hardhatCompatConfig(h.config));
 /** `hre.run(taskName, args?)`. */
 export const run = (taskName: string, args?: TaskArguments): Promise<unknown> => getActiveHre().run(taskName, args);
+
+/**
+ * hardhat `artifacts.readArtifact` parity for ported suites. SolidCash publishes the contract script as ASM;
+ * Hardhat callers (and `keccak256(artifact.bytecode)`) expect a hex creation bytecode.
+ */
+const toHex = (bytes: Uint8Array): string =>
+  `0x${Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+export const artifacts = {
+  async readArtifact(name: string): Promise<Record<string, unknown>> {
+    const artifact = loadArtifactByName(getActiveHre().config.paths.artifacts, name);
+    const bytecode = toHex(asmToBytecode(artifact.bytecode));
+    return { ...artifact, bytecode, deployedBytecode: bytecode };
+  },
+};
 /** OpenZeppelin-style upgradeable-proxy deploy/upgrade helpers. */
 export { upgrades };
 

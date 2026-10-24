@@ -326,7 +326,7 @@ import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js'
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
 import {
   externalResultEncoding, externalResultMayNeedPreimage,
-  CALL_RECORD_DIGEST_BYTES, CALL_RECORD_INLINE_RESULT_BYTES,
+  CALL_RECORD_DIGEST_BYTES, CALL_RECORD_INLINE_RESULT_BYTES, namesCallRecordArguments,
   isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
 } from '../semantic/ExternalResultEncoding.js';
 import { analyseContractInvocations, emitsAnyEvent, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
@@ -48642,6 +48642,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const selector = node.opaqueReturn ? undefined : slot.callRecordSelector;
     if (selector === undefined) return false;
     const declared = slot.callRecordParameterTypes ?? [];
+    // Arguments left to the callee's witness: the read is bound by the record's category and the callee's run.
+    if (!namesCallRecordArguments(declared, node.parameters.length)) return false;
     const digested = declared.flatMap((type, index) => (type === PrimitiveType.SIG ? [] : [index]));
     const ordinal = slot.callOrdinal;
     const counter = this.liveCallOrdinalCounter(slot);

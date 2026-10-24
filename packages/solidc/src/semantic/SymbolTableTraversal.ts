@@ -130,7 +130,7 @@ import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './external-call-local-array.js';
-import { externalResultMayNeedPreimage } from './ExternalResultEncoding.js';
+import { externalResultMayNeedPreimage, namesCallRecordArguments } from './ExternalResultEncoding.js';
 import { byteElementValue } from './byteElementValue.js';
 import { cloneNode } from '../ast/clone.js';
 import { computeExpressionSiteKey, generatedOriginOf, sourceFileOf } from '../ast/Location.js';
@@ -11844,7 +11844,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * True when a direct call can run as a frame of its callee's multi-call entry: a fixed method of a fixed target,
-   * declared view or pure, whose result its record binds.
+   * declared view or pure, whose result its record binds by the arguments the call names.
    */
   private isDirectFrameCall(slot: ExternalCallSlot): boolean {
     if (!slot.hasReturnValues || slot.opaqueReturn || slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector
@@ -11852,7 +11852,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       || slot.callValueEffect || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) return false;
     const iface = this.interfaceMap.get(slot.interfaceName);
     const methods = iface ? this.getAllInterfaceFunctions(iface).filter((fn) => fn.name === slot.functionName) : [];
-    return methods.length === 1 && (methods[0].stateMutability === 'view' || methods[0].stateMutability === 'pure');
+    if (methods.length !== 1 || (methods[0].stateMutability !== 'view' && methods[0].stateMutability !== 'pure')) {
+      return false;
+    }
+    // Frames are told apart by their records' digests: a call leaving its arguments to the callee digests none.
+    return slot.sourceCallNode === undefined || namesCallRecordArguments(
+      methods[0].parameters.map((parameter) => parameter.type), slot.sourceCallNode.parameters.length,
+    );
   }
 
   /**

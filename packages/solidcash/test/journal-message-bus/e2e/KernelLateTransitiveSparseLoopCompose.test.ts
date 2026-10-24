@@ -150,11 +150,14 @@ describe('kernel late transitive sparse loop graph planning', () => {
     expect(participantContracts.filter((name) => name === 'SparseLoopSink')).toHaveLength(1);
     expect(vmAccepts(builder)).toBe(true);
 
-    await expect((deployed as any).relayReturning(coordinator.inner.lockingBytecode, values).build())
-      .rejects.toThrow(/return metadata has no per-occurrence source identity/);
+    // A bus compile builds its repeated calls as rows, each bound by its own selector and argument in the loop's reach
+    // order, so a skipped middle iteration needs no compact carrier identity. The coordinator requires
+    // `observed == 3`, which holds only if the last reached row's result is echo(3)'s, not echo(2)'s.
+    const sparseReturning = await (deployed as any)
+      .relayReturning(coordinator.inner.lockingBytecode, values).build();
+    expect(vmAccepts(sparseReturning)).toBe(true);
 
-    // Compact return carriers are sound for a dense zero-based reached prefix: carrier occurrence and source
-    // loop indices are then the same authenticated identity even though the final source element is skipped.
+    // The dense zero-based reached prefix builds the same way, with the final source element skipped.
     const returningBuilder = await (deployed as any)
       .relayReturning(coordinator.inner.lockingBytecode, [2n, 3n, 0n]).build();
     const returningTransaction = returningBuilder.buildLibauthTransaction();
@@ -177,6 +180,107 @@ describe('kernel late transitive sparse loop graph planning', () => {
     });
     // Decimal accumulation distinguishes the compact source-order rows [2, 3] from reversal,
     // duplicated skipped iterations, or a guessed occurrence-zero argument.
+    await expect(sink.getState()).resolves.toMatchObject({ total: 23n });
+  }, 180_000);
+
+  it('builds the bus composition its send settles: each repeated owner spent once, through its route', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const signer = new Signer(new Uint8Array(32).fill(0x5d), provider);
+    for (let index = 0; index < 48; index += 1) {
+      await provider.addUtxo(signer.getAddress(), {
+        txid: (0x400n + BigInt(index)).toString(16).padStart(64, '0'),
+        vout: 0,
+        satoshis: 500_000n,
+      });
+    }
+    const sinkArtifact = compileString(`pragma solidity ^0.8.0;
+      contract BusRowSink {
+        uint16 public total;
+        function add(uint16 value) public {
+          total = total * 10 + value;
+          require(true);
+        }
+        function echo(uint16 value) public pure returns (uint16) {
+          return value;
+        }
+      }`, { ...KERNEL, messageBusGraphContext: true });
+    const sinkBase = new Contract(sinkArtifact, [], { provider });
+    const sinkSetup = await setupStatefulUtxos(
+      provider, sinkBase, sinkArtifact.stateLayout!, { total: 0n }, { saltContract: true },
+    );
+    const sink = StatefulContract.withCategory(
+      sinkBase.withCategory(hexToBin(sinkSetup.categoryId)), sinkSetup.categoryId,
+    );
+    const coordinatorArtifact = compileString(`pragma solidity ^0.8.0;
+      interface IBusRowSink {
+        function add(uint16 value) external;
+        function echo(uint16 value) external view returns (uint16);
+      }
+      contract BusRowCoordinator(address sink) {
+        function run(uint16[3] memory values) public {
+          for (uint i = 0; i < values.length; i++) {
+            if (values[i] != 0) IBusRowSink(sink).add(values[i]);
+          }
+          require(true);
+        }
+        function runReturning(uint16[3] memory values) public {
+          uint16 observed;
+          for (uint i = 0; i < values.length; i++) {
+            if (values[i] != 0) observed = IBusRowSink(sink).echo(values[i]);
+          }
+          require(observed == 3);
+        }
+      }`, { ...KERNEL, messageBusGraphContext: true });
+    const coordinatorBase = new Contract(coordinatorArtifact, [sink.inner.lockingBytecode], { provider });
+    const coordinatorSetup = await setupStatefulUtxos(
+      provider, coordinatorBase, coordinatorArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const coordinator = StatefulContract.withCategory(
+      coordinatorBase.withCategory(hexToBin(coordinatorSetup.categoryId)), coordinatorSetup.categoryId,
+    );
+    coordinator._registerResolvedExternal('IBusRowSink', sink);
+    const relayArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IBusRowCoordinator {
+        function run(uint16[3] memory values) external;
+        function runReturning(uint16[3] memory values) external;
+      }
+      contract BusRowRelay {
+        uint16 public marker;
+        function relay(address coordinator, uint16[3] memory values) public {
+          this.marker = this.marker + 1;
+          IBusRowCoordinator(coordinator).run(values);
+          require(true);
+        }
+        function relayReturning(address coordinator, uint16[3] memory values) public {
+          this.marker = this.marker + 1;
+          IBusRowCoordinator(coordinator).runReturning(values);
+          require(true);
+        }
+      }`, { ...KERNEL, messageBusGraphContext: true });
+    const deployed = await upgrades.deployProxy(
+      getContractFactory(relayArtifact, signer), { marker: 0n }, { initializer: false },
+    );
+    deployed.implementation._registerResolvedExternal('IBusRowCoordinator', coordinator);
+    const ownerFunctions = (builder: TransactionBuilder, contractName: string): string[] => builder.inputs
+      .flatMap((input) => ('contract' in input.unlocker
+        && input.unlocker.contract.artifact.contractName === contractName
+        ? [input.unlocker.abiFunction.name] : []));
+
+    // A direct build spends the sink once for its last add; the composition runs both rows through its route.
+    const builder = await (deployed as any).relay(coordinator.inner.lockingBytecode, [2n, 0n, 3n])
+      .build() as TransactionBuilder;
+    expect(ownerFunctions(builder, 'BusRowCoordinator')).toEqual([coordinatorArtifact.messageBus!.route.name]);
+    expect(ownerFunctions(builder, 'BusRowSink')).toEqual([sinkArtifact.messageBus!.route.name]);
+    expect(vmAccepts(builder)).toBe(true);
+
+    // Two returning rows of one sink: each echo is its own row, where a direct sink run would answer one.
+    const returning = await (deployed as any)
+      .relayReturning(coordinator.inner.lockingBytecode, [2n, 3n, 0n]).build() as TransactionBuilder;
+    expect(ownerFunctions(returning, 'BusRowSink')).toEqual([sinkArtifact.messageBus!.route.name]);
+    expect(vmAccepts(returning)).toBe(true);
+
+    // The built transaction itself settles every reached row, in source order.
+    await expect(builder.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(sink.getState()).resolves.toMatchObject({ total: 23n });
   }, 180_000);
 

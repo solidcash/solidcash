@@ -418,8 +418,9 @@ export async function deriveReturnValue(
       if (callable) return callable(...resolvedArgs).staticCall();
     }
   }
-  // A top-level read whose calls reach one owner more than once is read from the composition its send would use
-  // (deriveComposedReturnBlob). Every other read, and every nested frame, keeps the return probe below.
+  // A top-level read whose calls reach one owner more than once, or loop over a fixed callee, is read from the
+  // composition its send would use (deriveComposedReturnBlob). Every other read, and every nested frame, keeps the
+  // return probe below.
   let builder: StatefulTransactionBuilder | undefined;
   let blob = host.contract !== undefined && directResult && delegatedReturn === undefined && abiFunction !== undefined
     && (calls?.length ?? 0) === 0 && calleeCalls === undefined && callerContract === undefined

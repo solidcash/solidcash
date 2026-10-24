@@ -81,6 +81,25 @@ export function repeatedTypedLoopRefusal(call: ExternalCallAbi): Error {
     + 'connect a signer before sending');
 }
 
+/**
+ * Whether a bus-compiled root's discovered graph runs as bus rows: it reaches one state owner more than once, or
+ * the root loops over a fixed callee and reaches any callee. A direct callee run settles one call (D50).
+ */
+export function plansRepeatedBusRows(
+  entry: Pick<AbiFunction, 'externalCalls'>,
+  calls: readonly { contract: { categoryId: string; inner: { lockingBytecode: string } } }[],
+): boolean {
+  if (calls.length < 2) return false;
+  if (entry.externalCalls?.some(isRepeatedTypedLoopCallsite)) return true;
+  const owners = new Set<string>();
+  return calls.some(({ contract }) => {
+    const owner = `${contract.categoryId.toLowerCase()}:${contract.inner.lockingBytecode.toLowerCase()}`;
+    if (owners.has(owner)) return true;
+    owners.add(owner);
+    return false;
+  });
+}
+
 /** Counter names of compiler `loopIndex` sources nested in a published callsite. */
 function collectLoopCounters(value: unknown, seen = new Set<object>(), out = new Set<string>()): Set<string> {
   if (!value || typeof value !== 'object' || seen.has(value as object)) return out;

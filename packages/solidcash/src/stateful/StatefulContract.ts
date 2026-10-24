@@ -572,7 +572,10 @@ import {
 } from './sc-replace-repeated-external-batch-row.js';
 import { buildRepeatedExternalBatch as buildRepeatedExternalBatchImpl } from './sc-build-repeated-external-batch.js';
 import { resolveExternalArgs as resolveExternalArgsImpl } from './sc-resolve-external-args.js';
-import { sendWithoutLogicalNonce as sendWithoutLogicalNonceImpl } from './sc-send-without-logical-nonce.js';
+import {
+  buildBusRowComposition,
+  sendWithoutLogicalNonce as sendWithoutLogicalNonceImpl,
+} from './sc-send-without-logical-nonce.js';
 import { pushAutoResolvedExternalCall as pushAutoResolvedExternalCallImpl } from './sc-with-external-call.js';
 import { resolveEcrecoverComputeCoSpends as resolveEcrecoverComputeCoSpendsImpl } from './sc-resolve-ecrecover-co-spends.js';
 import { resolveStatefulKeccakLoop as resolveStatefulKeccakLoopImpl } from './sc-resolve-stateful-keccak-loop.js';
@@ -14723,6 +14726,14 @@ export class StatefulFunctionCall {
       functionName: this.functionName,
       parentContract: this.parentContract,
       trySplitMergeBuild: () => this._trySplitMergeBuild(),
+      busRowComposition: () => buildBusRowComposition({
+        functionName: this.functionName,
+        parentContract: this.parentContract,
+        preparedRootCall: () => this._messageBusCompositionDescriptor(),
+        invalidateSignerUtxos: (s) => invalidateSignerUtxos(s),
+        signerUtxoSnapshot: (s) => signerUtxoSnapshot(s),
+        retireSignerUtxos: (s, u) => retireSignerUtxos(s, u),
+      }),
       applyOverrides: () => this._applyOverrides(),
       selectedAbiFunction: () => this._selectedAbiFunction(),
       recursivePreflightHasSignatures: () => this._recursivePreflightHasSignatures(),

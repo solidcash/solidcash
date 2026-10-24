@@ -114,11 +114,16 @@ describe('kernel late satoshi-container resources', () => {
       const masterIndex = provisional.inputs.findIndex((input) => input.token?.category === wallet.categoryId
       && input.token.nft?.capability === 'minting');
       expect(masterIndex).toBeGreaterThan(0);
-      if (funded) {
-        const container = provisional.inputs.find((input) => input.txid === 'c7'.repeat(32))!;
-        expect(isContractUnlocker(container.unlocker)).toBe(true);
-        if (!isContractUnlocker(container.unlocker)) throw new Error('missing container unlocker');
+      const container = provisional.inputs.find((input) => input.txid === 'c7'.repeat(32));
+      if (funded && active) {
+        expect(container !== undefined && isContractUnlocker(container.unlocker)).toBe(true);
+        if (container === undefined || !isContractUnlocker(container.unlocker)) {
+          throw new Error('missing container unlocker');
+        }
         expect(container.unlocker.params).toEqual([1n, BigInt(masterIndex)]);
+      } else {
+        // The bus composition spends the container only for a taken payment; an untaken one leaves it unspent.
+        expect(container).toBeUndefined();
       }
       expect(prepared.__preparedAtomicCalls?.map((node) => node.functionName))
         .toEqual(['relay', 'prime', 'touch', 'run', 'pay', 'record']);

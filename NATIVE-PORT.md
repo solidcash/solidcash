@@ -199,6 +199,9 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 - `TestFactory` inherits `UniswapV2Factory` instead of storing the EVM pair creation code. Its `create2`
   lowering then shares the production child template and constructor-placeholder substitution, and it no
   longer carries a dormant multi-kilobyte `bytes` state variable.
+- The harness exposes `provider.getBalance(address)` as the address's UTXO sum, and a deployment whose ABI
+  moves native value (a `transferCount` or a satoshi-container slot) is funded with an initial container
+  balance. A payable helper can then reach its own covenant before failing on the transfer itself.
 
 ### Remaining architectural gaps (captured failures)
 
@@ -216,6 +219,11 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 - **Ether value.** The original tests pass wei (`parseEther("1")`) as `msg.value`; BCH satoshis cannot carry
   those magnitudes, and the contracts compare `msg.value` against wei-denominated token amounts. A value model
   must scale both sides or the Router/SushiRoll ETH paths cannot be expressed.
+- **Internal-call expression as an external-call target.** `getReserves` calls
+  `IUniswapV2Pair(address(UniswapV2Library.pairFor(factory, a, b))).getReserves()`. The SDK's expression
+  evaluator cannot evaluate the nested pure `pairFor` call, so the external call is unresolved and the
+  caller's return decode reads an empty item (`OP_SPLIT` index 31 on a zero-length stack item). Resolving
+  that expression would let the create2 projection reach the pair.
 - **Dormant large `bytes` state.** A factory that stores the pair creation code in `bytes` state (the old
   `TestFactory`) makes every spend recreate its chunks; the broadcast VM then fails `OP_VERIFY` even though
   the SDK preflight passed. `TestFactory` now inherits the production factory and stores nothing.
